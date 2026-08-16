@@ -42,7 +42,7 @@ export function generationProfilesPath(query: GenerationConfigQuery) {
 }
 
 export function featureFlagsPath(query: GenerationConfigQuery) {
-  return withQuery("/api/v1/admin/feature-flags", {
+  return withQuery("/api/v2/admin/feature-flags", {
     search: query.search,
     enabled: query.flagEnabled,
     cursor: query.flagCursor,

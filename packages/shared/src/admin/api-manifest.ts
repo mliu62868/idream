@@ -161,6 +161,12 @@ function mutationMetadata(
 }
 
 const collaborationRead = ["character.project.read", "creative.run.read", "case.read", "ops.incident.read"] as const;
+/**
+ * SPEC: Saved View 的 scope 词表比协作目标多两个队列，权限矩阵跟着多两条。
+ * INTENT: 和 `savedViewScopeSchema` 一一对应；写死在 `collaborationRead` 上会让支持工单
+ *         和人审队列的 Saved View 只能凭协作权限打开，那是两拨完全不同的人。
+ */
+const savedViewScopeRead = [...collaborationRead, "support.request.read", "safety.review.read"] as const;
 const collaborationWrite = ["character.project.write", "creative.run.write", "case.assign", "ops.incident.manage"] as const;
 export const ADMIN_COMMAND_TARGET_READ_PERMISSIONS = {
   admin_case: "case.read",
@@ -354,10 +360,10 @@ export const ADMIN_V2_API_OPERATIONS = [
   operation("GET", "/api/v2/admin/metrics/reconciliation", allOf("analytics.metric.read"), "metricReconciliationQuerySchema", "metricReconciliationReportSchema"),
   operation("GET", "/api/v2/admin/reconciliation/invariants", allOf("analytics.metric.read"), "none", "adminInvariantReportSchema"),
 
-  operation("GET", "/api/v2/admin/saved-views", allOfAndOneOfBy("saved_view_scope_read", ["dashboard.read"], collaborationRead), "savedViewListQuerySchema", "savedViewListResponseSchema"),
-  operation("POST", "/api/v2/admin/saved-views", allOfAndOneOfBy("saved_view_scope_read", ["dashboard.read"], collaborationRead), "savedViewCreateSchema+idempotency-key", "savedViewMutationResponseSchema"),
-  operation("PATCH", "/api/v2/admin/saved-views/:id", allOfAndOneOfBy("saved_view_scope_read", ["dashboard.read"], collaborationRead), "savedViewUpdateSchema+if-match", "savedViewUpdateResponseSchema"),
-  operation("DELETE", "/api/v2/admin/saved-views/:id", allOfAndOneOfBy("saved_view_scope_read", ["dashboard.read"], collaborationRead), "if-match", "savedViewDeleteSchema"),
+  operation("GET", "/api/v2/admin/saved-views", allOfAndOneOfBy("saved_view_scope_read", ["dashboard.read"], savedViewScopeRead), "savedViewListQuerySchema", "savedViewListResponseSchema"),
+  operation("POST", "/api/v2/admin/saved-views", allOfAndOneOfBy("saved_view_scope_read", ["dashboard.read"], savedViewScopeRead), "savedViewCreateSchema+idempotency-key", "savedViewMutationResponseSchema"),
+  operation("PATCH", "/api/v2/admin/saved-views/:id", allOfAndOneOfBy("saved_view_scope_read", ["dashboard.read"], savedViewScopeRead), "savedViewUpdateSchema+if-match", "savedViewUpdateResponseSchema"),
+  operation("DELETE", "/api/v2/admin/saved-views/:id", allOfAndOneOfBy("saved_view_scope_read", ["dashboard.read"], savedViewScopeRead), "if-match", "savedViewDeleteSchema"),
   operation("GET", "/api/v2/admin/search", allOf("dashboard.read"), "globalAdminSearchQuerySchema", "globalAdminSearchResponseSchema", ["customer.read", "character.project.read", "creative.run.read", "case.read", "ops.incident.read", "generation.job.read"]),
 
   operation("GET", "/api/v2/admin/today", allOf("dashboard.read"), "todayProjectionQuerySchema", "todayProjectionSchema"),
@@ -388,6 +394,26 @@ export const ADMIN_V2_API_OPERATIONS = [
   operation("POST", "/api/v2/admin/approvals", allOf("dashboard.read"), "approvalCreateRequestSchema", "approvalMutationResponseSchema"),
   operation("POST", "/api/v2/admin/approvals/:id/approve", allOf("admin.approval.review"), "approvalDecisionRequestSchema", "approvalMutationResponseSchema"),
   operation("POST", "/api/v2/admin/approvals/:id/reject", allOf("admin.approval.review"), "approvalDecisionRequestSchema", "approvalMutationResponseSchema"),
+  // ---- people: migrated from v1 ----
+  operation("GET", "/api/v2/admin/users", allOf("user.read"), "accessUserListQuerySchema", "accessUserListResponseSchema"),
+  operation("GET", "/api/v2/admin/users/:id", allOf("user.read"), "path:id", "accessUserDetailSchema"),
+  operation("POST", "/api/v2/admin/users/:id/status", allOf("user.status.write"), "accessUserStatusCommandSchema+idempotency-key", "accessUserCommandResultSchema", undefined, { commandType: "user.status.write" }),
+  operation("POST", "/api/v2/admin/users/:id/role", allOf("user.role.write"), "accessUserRoleCommandSchema+idempotency-key", "accessUserCommandResultSchema", undefined, { commandType: "user.role.write" }),
+  operation("GET", "/api/v2/admin/users/:id/permissions", allOf("user.role.write"), "path:id", "accessUserPermissionListSchema"),
+  operation("POST", "/api/v2/admin/users/:id/permissions", allOf("user.role.write"), "accessUserPermissionCommandSchema+idempotency-key", "accessUserPermissionResultSchema", undefined, { commandType: "admin.permission.write" }),
+
+  operation("GET", "/api/v2/admin/support/requests", allOf("support.request.read"), "supportRequestListQuerySchema", "supportRequestListResponseSchema"),
+  operation("PATCH", "/api/v2/admin/support/requests/:id", allOf("support.request.write"), "supportRequestPatchSchema+idempotency-key", "supportRequestMutationResponseSchema", undefined, { commandType: "support.request.update" }),
+  operation("POST", "/api/v2/admin/support/requests/:id/escalate", allOf("support.request.write"), "supportRequestEscalateSchema+idempotency-key", "supportRequestMutationResponseSchema", undefined, { commandType: "support.request.escalate" }),
+  // SPEC: 明文查看不带幂等键。
+  // INTENT: 它写的是审计，不是状态 —— 重放同一个 key 应当再记一条查看记录，而不是把上一次的
+  //         明文原样发回来。幂等在这里恰好会抹掉这条链路唯一的产出。
+  operation("POST", "/api/v2/admin/support/plaintext/view", allOf("support.plaintext.view"), "supportPlaintextViewRequestSchema", "supportPlaintextViewResponseSchema"),
+
+  operation("GET", "/api/v2/admin/audit-log", allOf("audit.read"), "auditLogQuerySchema", "auditLogListResponseSchema"),
+
+  operation("GET", "/api/v2/admin/feature-flags", allOf("ops.queue.read"), "featureFlagListQuerySchema", "featureFlagListResponseSchema"),
+  operation("PATCH", "/api/v2/admin/feature-flags/:key", allOf("config.feature_flag.write"), "featureFlagPatchSchema+idempotency-key", "featureFlagMutationResponseSchema", undefined, { commandType: "config.feature_flag.write" }),
 ] as const satisfies readonly AdminV2ApiOperation[];
 
 /** One declared operation, literals intact. */

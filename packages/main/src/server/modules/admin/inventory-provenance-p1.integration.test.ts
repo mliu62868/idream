@@ -6,7 +6,7 @@ import {
   getFeaturedCharacters,
   listContentCharacters,
 } from "@/server/modules/admin/content/merchandising";
-import { listSupportRequests } from "@/server/modules/admin/support/service";
+import { GET as supportRequestsRoute } from "@/app/api/v2/admin/support/requests/route";
 import { adminV2 } from "@/server/test/trust-safety-admin-v2";
 
 describe("Admin P1 inventory provenance", () => {
@@ -254,8 +254,8 @@ describe("Admin P1 inventory provenance", () => {
 
   it("filters support requests by requester provenance", async () => {
     const data = await call(
-      listSupportRequests,
-      `/api/v1/admin/support/requests?search=${token}&limit=100`,
+      supportRequestsRoute,
+      `/api/v2/admin/support/requests?search=${token}&limit=100`,
     );
     expect(ids(data.items)).toEqual(
       new Set([supportIds.customer, supportIds.internal]),

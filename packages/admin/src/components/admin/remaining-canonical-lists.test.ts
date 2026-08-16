@@ -106,7 +106,7 @@ describe("remaining canonical admin list surfaces", () => {
     expect(accessListPath(accessQueryFromSearch(
       "?accessSearch=kim&accessRole=admin&accessStatus=active&accessDataClass=internal&accessCursor=A",
     ))).toBe(
-      "/api/v1/admin/users?q=kim&role=admin&status=active&dataClass=internal&cursor=A&limit=25",
+      "/api/v2/admin/users?q=kim&role=admin&status=active&dataClass=internal&cursor=A&limit=25",
     );
 
     const moderation = moderationQueryFromSearch(
@@ -125,7 +125,7 @@ describe("remaining canonical admin list surfaces", () => {
     expect(auditListPath(auditQueryFromSearch(
       "?auditSearch=publish&auditAction=release&auditActor=operator&auditTargetType=character&auditCursor=AU",
     ))).toBe(
-      "/api/v1/admin/audit-log?search=publish&action=release&actorId=operator&targetType=character&cursor=AU&limit=25",
+      "/api/v2/admin/audit-log?search=publish&action=release&actorId=operator&targetType=character&cursor=AU&limit=25",
     );
     expect(contentListPath(contentQueryFromSearch(
       "?contentSearch=alex&contentStatus=approved&contentVisibility=public&contentCursor=C",
@@ -155,7 +155,7 @@ describe("remaining canonical admin list surfaces", () => {
       "/api/v1/admin/generation/model-profiles?search=qwen&mode=image&status=active&cursor=GP&limit=25",
     );
     expect(featureFlagsPath(config)).toBe(
-      "/api/v1/admin/feature-flags?search=qwen&enabled=true&cursor=GF&limit=25",
+      "/api/v2/admin/feature-flags?search=qwen&enabled=true&cursor=GF&limit=25",
     );
 
     const chat = chatOpsQueryFromSearch(

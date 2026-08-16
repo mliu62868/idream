@@ -1,8 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { GET as auditLogRoute } from "@/app/api/v2/admin/audit-log/route";
+import { GET as featureFlagsRoute } from "@/app/api/v2/admin/feature-flags/route";
 import { prisma } from "@/server/lib/db";
 import { handle } from "@/server/lib/http";
 import { dispatchAdmin } from "./service";
+
+// SPEC: 已迁到 v2 的清单经自己的 Route Handler 走，其余仍走 v1 dispatcher。
+// INTENT: 这个文件同时覆盖十几个域，迁移是分批的 —— 一张表把「谁已经搬走了」写明，
+//         比按域拆成十几个文件更容易看出还剩谁。
+const migratedListRoutes: Record<string, (request: Request) => Promise<Response>> = {
+  "audit-log": auditLogRoute,
+  "feature-flags": featureFlagsRoute,
+};
 
 type PageInfo = { endCursor: string | null; hasNextPage: boolean };
 
@@ -14,10 +24,14 @@ describe("remaining canonical admin lists", () => {
   const ids = (kind: string) => [0, 1].map((index) => `${token}-${kind}-${index}`);
 
   async function call(segments: string[], query: string) {
-    const request = new Request(`http://test.local/api/v1/admin/${segments.join("/")}?${query}`, {
-      headers: { "x-idream-user-id": actorId, "x-idream-role": "admin" },
-    });
-    const response = await handle(() => dispatchAdmin(request, segments))(request);
+    const migrated = segments.length === 1 ? migratedListRoutes[segments[0]!] : undefined;
+    const request = new Request(
+      `http://test.local/api/${migrated ? "v2" : "v1"}/admin/${segments.join("/")}?${query}`,
+      { headers: { "x-idream-user-id": actorId, "x-idream-role": "admin" } },
+    );
+    const response = migrated
+      ? await migrated(request)
+      : await handle(() => dispatchAdmin(request, segments))(request);
     return { response, body: await response.json() as { data?: Record<string, unknown>; error?: unknown } };
   }
 

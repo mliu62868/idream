@@ -32,3 +32,6 @@ export * from "./moderation";
 export * from "./compliance";
 export * from "./approvals";
 export * from "./risk";
+export * from "./support";
+export * from "./audit-log";
+export * from "./feature-flags";

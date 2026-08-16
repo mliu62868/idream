@@ -634,7 +634,7 @@ test("flow 8: admin control-plane API routes respond", async ({ page }) => {
     ]),
   );
 
-  const audit = await page.request.get("/api/v1/admin/audit-log", { headers });
+  const audit = await page.request.get("/api/v2/admin/audit-log", { headers });
   expect(audit.ok()).toBeTruthy();
   expect(Array.isArray((await audit.json()).data.items)).toBe(true);
 });

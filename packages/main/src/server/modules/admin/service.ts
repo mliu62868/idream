@@ -68,7 +68,6 @@ import {
   deleteAnnouncement,
 } from "./announcements";
 import { listExperiments } from "./experiments";
-import { auditLog } from "./audit/query";
 import {
   billingAdjustment,
   resolveCheckoutReconciliation,
@@ -78,7 +77,6 @@ import {
   requestSubscriptionRefund,
 } from "./billing/refund";
 import { billingLedger, billingReconciliation, listSubscriptions } from "./billing/query";
-import { listFeatureFlags, patchFeatureFlag } from "./config/feature-flags";
 import {
   createPricingRule,
   listPricingRules,
@@ -86,14 +84,6 @@ import {
   publishPricingRule,
   rollbackPricingRule,
 } from "./pricing/service";
-import {
-  getUserDetail,
-  listUserPermissions,
-  listUsers,
-  setUserPermission,
-  updateUserRole,
-  updateUserStatus,
-} from "./users/service";
 import {
   deadLetterQueue,
   discardDeadLetterBatch,
@@ -115,12 +105,6 @@ import {
   rollbackModelProfile,
   uploadModelImport,
 } from "./generation/config/service";
-import {
-  escalateSupportRequest,
-  listSupportRequests,
-  patchSupportRequest,
-  viewPlaintext,
-} from "./support/service";
 import {
   createRedeemCode,
   disableRedeemCode,
@@ -144,11 +128,6 @@ import {
   setCharacterVisibility,
 } from "./content/merchandising";
 import { analyticsOverview, providerOps } from "./overviews/service";
-import {
-  createSavedView,
-  deleteSavedView,
-  listSavedViews,
-} from "./saved-views/service";
 import { adminDashboard } from "./dashboard/service";
 import {
   createAdminPreset,
@@ -170,15 +149,6 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
   const [resource, id, action, child, grandchild] = segments;
 
   if (resource === "dashboard" && !id && method === "GET") return adminDashboard(request);
-
-  if (resource === "users") {
-    if (!id && method === "GET") return listUsers(request);
-    if (id && !action && method === "GET") return getUserDetail(request, id);
-    if (id && action === "status" && method === "POST") return updateUserStatus(request, id);
-    if (id && action === "role" && method === "POST") return updateUserRole(request, id);
-    if (id && action === "permissions" && method === "GET") return listUserPermissions(request, id);
-    if (id && action === "permissions" && method === "POST") return setUserPermission(request, id);
-  }
 
   if (resource === "generation") {
     if (id === "jobs" && !action && method === "GET") return listGenerationJobs(request);
@@ -290,37 +260,12 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
     }
   }
 
-  if (resource === "feature-flags") {
-    if (!id && method === "GET") return listFeatureFlags(request);
-    if (id && !action && method === "PATCH") return patchFeatureFlag(request, id);
-  }
-
   if (resource === "analytics" && id === "overview" && !action && method === "GET") {
     return analyticsOverview(request);
   }
 
   if (resource === "ops" && id === "providers" && !action && method === "GET") {
     return providerOps(request);
-  }
-
-  if (resource === "audit-log" && !id && method === "GET") return auditLog(request);
-
-  if (resource === "support" && id === "requests") {
-    if (!action && method === "GET") return listSupportRequests(request);
-    if (action && !child && method === "PATCH") return patchSupportRequest(request, action);
-    if (action && child === "escalate" && !grandchild && method === "POST") {
-      return escalateSupportRequest(request, action);
-    }
-  }
-
-  if (resource === "support" && id === "plaintext" && action === "view" && method === "POST") {
-    return viewPlaintext(request);
-  }
-
-  if (resource === "saved-views") {
-    if (!id && method === "GET") return listSavedViews(request);
-    if (!id && method === "POST") return createSavedView(request);
-    if (id && !action && method === "DELETE") return deleteSavedView(request, id);
   }
 
   if (resource === "content" && id === "characters") {

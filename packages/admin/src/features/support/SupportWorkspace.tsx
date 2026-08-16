@@ -16,7 +16,14 @@ import {
 } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { apiDelete, apiGet, apiWrite } from "@/components/admin/api";
+import {
+  savedViewDeleteSchema,
+  savedViewListResponseSchema,
+  savedViewMutationResponseSchema,
+  type SavedView,
+} from "@idream/shared/admin";
+import { apiGet, apiWrite } from "@/components/admin/api";
+import { adminV2Request } from "@/lib/admin-v2-api";
 import {
   ConfirmDialog,
   type ConfirmSpec,
@@ -29,7 +36,9 @@ import { createLatestRequestGate } from "@/lib/latest-request";
 import {
   defaultSupportQuery,
   supportListPath,
+  supportQueryFromSavedState,
   supportQueryFromSearch,
+  supportSavedState,
   supportWorkspaceUrl,
   type SupportQuery,
 } from "./query";
@@ -42,11 +51,6 @@ type ListResponse = {
   asOf?: string;
   freshness?: string;
 };
-type SavedView = {
-  id: string;
-  label: string;
-  filters: unknown;
-};
 type PlaintextTargetType = "generation_job" | "media";
 type PlaintextResult = {
   target: { type: PlaintextTargetType; id: string; ownerId: string };
@@ -54,7 +58,7 @@ type PlaintextResult = {
   authorization: { ticketId: string | null; legalHoldId: string | null };
 };
 
-const savedViewScope = "support.requests";
+const savedViewScope = "support_request";
 
 export function SupportWorkspace({
   canViewPlaintext,
@@ -80,7 +84,6 @@ export function SupportWorkspace({
   const [notice, setNotice] = useState<string | null>(null);
   const gate = useRef(createLatestRequestGate());
   const savedViewCreateKey = useRef<string | null>(null);
-  const savedViewDeleteKeys = useRef(new Map<string, string>());
 
   const load = useCallback(async (next: SupportQuery) => {
     const request = gate.current.begin();
@@ -108,10 +111,11 @@ export function SupportWorkspace({
     setSavedViewsLoading(true);
     setSavedViewError(null);
     try {
-      const response = await apiGet<{ items: SavedView[] }>(
-        `/api/v1/admin/saved-views?scope=${encodeURIComponent(savedViewScope)}`,
+      const response = await adminV2Request(
+        `/api/v2/admin/saved-views?scope=${savedViewScope}`,
+        { schema: savedViewListResponseSchema },
       );
-      setSavedViews(response.items);
+      setSavedViews([...response.items]);
     } catch (cause) {
       setSavedViewError(
         cause instanceof Error ? cause.message : "Saved views failed",
@@ -182,21 +186,12 @@ export function SupportWorkspace({
     setSavedViewError(null);
     try {
       savedViewCreateKey.current ??= crypto.randomUUID();
-      await apiWrite(
-        "/api/v1/admin/saved-views",
-        "POST",
-        {
-          scope: savedViewScope,
-          label,
-          filters: {
-            query: draft.search.trim(),
-            status: draft.status,
-            sla: draft.sla,
-            category: draft.category.trim(),
-          },
-        },
-        { "idempotency-key": savedViewCreateKey.current },
-      );
+      await adminV2Request("/api/v2/admin/saved-views", {
+        method: "POST",
+        idempotencyKey: savedViewCreateKey.current,
+        body: { scope: savedViewScope, label, queryState: supportSavedState(draft) },
+        schema: savedViewMutationResponseSchema,
+      });
       savedViewCreateKey.current = null;
       setSavedViewLabel("");
       await loadSavedViews();
@@ -208,12 +203,12 @@ export function SupportWorkspace({
   async function deleteSavedView(view: SavedView) {
     setSavedViewError(null);
     try {
-      const key = savedViewDeleteKeys.current.get(view.id) ?? crypto.randomUUID();
-      savedViewDeleteKeys.current.set(view.id, key);
-      await apiDelete(`/api/v1/admin/saved-views/${view.id}`, {
-        "idempotency-key": key,
+      await adminV2Request(`/api/v2/admin/saved-views/${encodeURIComponent(view.id)}`, {
+        method: "DELETE",
+        // SPEC: 删除按版本号删 —— 服务端 If-Match 不匹配就 409。
+        ifMatch: view.version,
+        schema: savedViewDeleteSchema,
       });
-      savedViewDeleteKeys.current.delete(view.id);
       setSavedViews((items) => items.filter((item) => item.id !== view.id));
     } catch (cause) {
       setSavedViewError(
@@ -223,8 +218,7 @@ export function SupportWorkspace({
   }
 
   function applySavedView(view: SavedView) {
-    const next = supportQueryFromSavedView(view.filters);
-    navigate(next);
+    navigate(supportQueryFromSavedState(view.queryState));
   }
 
   function confirmAction(input: {
@@ -540,7 +534,7 @@ function PlaintextAccessPanel() {
     setResult(null);
     try {
       const response = await apiWrite<PlaintextResult>(
-        "/api/v1/admin/support/plaintext/view",
+        "/api/v2/admin/support/plaintext/view",
         "POST",
         {
           targetType,
@@ -701,7 +695,7 @@ function supportRows(
       actions.push({
         label: "Escalate",
         icon: <AlertTriangle className="h-4 w-4" />,
-        endpoint: `/api/v1/admin/support/requests/${id}/escalate`,
+        endpoint: `/api/v2/admin/support/requests/${id}/escalate`,
         method: "POST",
       });
     if (status === "received")
@@ -757,7 +751,7 @@ function supportRows(
                     id,
                     label: action.label,
                     endpoint:
-                      action.endpoint ?? `/api/v1/admin/support/requests/${id}`,
+                      action.endpoint ?? `/api/v2/admin/support/requests/${id}`,
                     method: action.method ?? "PATCH",
                     status: action.next,
                     includeResolution: action.resolution,
@@ -776,18 +770,6 @@ function supportRows(
       ],
     };
   });
-}
-
-function supportQueryFromSavedView(value: unknown): SupportQuery {
-  if (!value || typeof value !== "object") return defaultSupportQuery;
-  const record = value as Record<string, unknown>;
-  return {
-    search: typeof record.query === "string" ? record.query : "",
-    status: typeof record.status === "string" ? record.status : "all",
-    sla: typeof record.sla === "string" ? record.sla : "all",
-    category: typeof record.category === "string" ? record.category : "",
-    cursor: "",
-  };
 }
 
 function sameQuery(left: SupportQuery, right: SupportQuery) {

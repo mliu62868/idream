@@ -1,9 +1,5 @@
 import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
-import {
-  accessUserListQuerySchema,
-  accessUserListResponseSchema,
-} from "@idream/shared/admin";
 import { z } from "zod";
 import {
   applyOverrides,
@@ -14,111 +10,100 @@ import type { ActorRole } from "@/server/lib/auth";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
-import { ok } from "@/server/lib/http";
 import { dreamcoinBalance } from "@/server/modules/billing/ledger";
+import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
 import {
   actorWithPermission,
   jsonBody,
+  queryParams,
   type AdminActor,
-} from "@/server/modules/admin/shared/legacy-primitives";
-import {
-  publicUser,
-  redactGenerationJob,
-} from "@/server/modules/admin/shared/presenters";
-import { canonicalRequestHash } from "@/server/modules/admin-v2/shared/control-plane-command";
+} from "@/server/modules/admin-v2/shared/authority";
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
+import {
+  decodeAdminListCursor,
+  encodeAdminListCursor,
+} from "@/server/modules/admin-v2/shared/list-cursor";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
-import { decodeAdminListCursor, encodeAdminListCursor } from "@/server/modules/admin-v2/shared/list-cursor";
 
-const statusChangeSchema = z.object({
-  status: z.enum(["active", "suspended"]),
-  reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.string().trim().min(1).max(160),
-});
+/**
+ * SPEC: 用户权威 —— 名录、明细、状态 / 角色 / 权限覆盖三条写命令。
+ * INTENT: 与 `customers` 的 360 视图不是一回事：那边看的是「这个客户遇到了什么」，这边定的是
+ *         「这个人能做什么」。两者的权限键（customer.read vs user.*）也不同，合并只会让一次
+ *         客服查询顺带拿到改角色的入口。
+ */
 
-const roleChangeSchema = z.object({
-  role: z.enum(["user", "moderator", "support", "ops", "analyst", "admin"]),
-  reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.string().trim().min(1).max(160),
-});
+type UserCommandResult = Record<string, unknown>;
 
-const permissionOverrideSchema = z.object({
-  permissionKey: z.string().trim().min(1).max(80),
-  effect: z.enum(["grant", "revoke", "clear"]),
-  reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.string().trim().min(1).max(160),
-});
+function userSummary(user: {
+  id: string;
+  email: string;
+  displayName: string | null;
+  name: string | null;
+  role: string;
+  status: string;
+  createdAt: Date;
+}) {
+  return {
+    id: user.id,
+    email: user.email,
+    displayName: user.displayName ?? user.name,
+    role: user.role,
+    status: user.status,
+    createdAt: user.createdAt.toISOString(),
+  };
+}
 
-type UserCommandInput = {
+function permissionOverrideDto(override: {
+  id: string;
+  userId: string;
+  permissionKey: string;
+  effect: string;
+  reason: string;
+  createdById: string;
+  createdAt: Date;
+}) {
+  return {
+    id: override.id,
+    userId: override.userId,
+    permissionKey: override.permissionKey,
+    effect: override.effect,
+    reason: override.reason,
+    createdById: override.createdById,
+    createdAt: override.createdAt.toISOString(),
+  };
+}
+
+async function runUserCommand(input: {
   request: Request;
   actor: AdminActor;
   commandType: string;
-  targetId: string;
+  userId: string;
   payload: unknown;
-  execute: (tx: Prisma.TransactionClient, requestId: string) => Promise<Record<string, unknown>>;
-};
-
-async function executeIdempotentUserCommand(input: UserCommandInput) {
-  const idempotencyKey = requireIdempotencyKey(input.request);
+  execute: (
+    tx: Prisma.TransactionClient,
+    requestId: string,
+  ) => Promise<UserCommandResult>;
+}) {
   const requestId = input.request.headers.get("x-request-id")?.trim() || randomUUID();
-  const scope = `${env.APP_ENV}:${input.actor.id}`;
-  const requestHash = canonicalRequestHash({
+  return executeAtomicIdempotentMutation({
+    environment: env.APP_ENV,
+    actor: input.actor,
+    idempotencyKey: requireIdempotencyKey(input.request),
+    requestId,
     commandType: input.commandType,
-    target: { type: "user", id: input.targetId },
+    target: { type: "user", id: input.userId },
     payload: input.payload,
-    retryMode: "idempotent",
-  });
-
-  return prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`SELECT 1::int AS locked FROM pg_advisory_xact_lock(hashtext(${`${scope}:${idempotencyKey}`}))`;
-    const existing = await tx.controlPlaneCommand.findUnique({
-      where: { scope_idempotencyKey: { scope, idempotencyKey } },
-    });
-    if (existing) {
-      if (existing.requestHash !== requestHash) {
-        throw Errors.conflict("Idempotency-Key was already used for a different user command", {
-          commandId: existing.id,
-          existingRequestHash: existing.requestHash,
-          submittedRequestHash: requestHash,
-        });
-      }
-      if (existing.status !== "succeeded" || !existing.result) {
-        throw Errors.conflict("The original user command has not completed", {
-          commandId: existing.id,
-          status: existing.status,
-        });
-      }
-      return { ...(existing.result as Record<string, unknown>), replayed: true };
-    }
-
-    const result = { ...await input.execute(tx, requestId), replayed: false };
-    await tx.controlPlaneCommand.create({
-      data: {
-        scope,
-        idempotencyKey,
-        commandType: input.commandType,
-        targetType: "user",
-        targetId: input.targetId,
-        actorId: input.actor.id,
-        requestId,
-        requestHash,
-        requestPayload: toInputJson(input.payload),
-        retryMode: "idempotent",
-        status: "succeeded",
-        result: toInputJson(result),
-        finishedAt: new Date(),
-      },
-    });
-    return result;
+    mutate: (tx) => input.execute(tx, requestId),
+    decorateResult: (result, replayed) => ({
+      ...(result as UserCommandResult),
+      replayed,
+    }),
   });
 }
 
 export async function listUsers(request: Request) {
   await actorWithPermission(request, "user.read");
-  const url = new URL(request.url);
-  const query = accessUserListQuerySchema.parse(
-    Object.fromEntries(url.searchParams),
-  );
+  const query = queryParams(request, "GET /api/v2/admin/users");
   const q = query.q ?? query.search;
   const limit = query.limit ?? 40;
   const queryIdentity = {
@@ -127,26 +112,32 @@ export async function listUsers(request: Request) {
     status: query.status,
     dataClass: query.dataClass,
   };
-  const cursorKeys = query.cursor ? decodeAdminListCursor(query.cursor, "admin_users", queryIdentity) : null;
+  const cursorKeys = query.cursor
+    ? decodeAdminListCursor(query.cursor, "admin_users", queryIdentity)
+    : null;
   const [cursorCreatedAt, cursorId] = cursorKeys
     ? z.tuple([z.string().datetime(), z.string().min(1)]).parse(cursorKeys)
     : [null, null];
-  const cursorWhere: Prisma.UserWhereInput | undefined = cursorCreatedAt && cursorId ? {
-    OR: [
-      { createdAt: { lt: new Date(cursorCreatedAt) } },
-      { createdAt: new Date(cursorCreatedAt), id: { lt: cursorId } },
-    ],
-  } : undefined;
+  const cursorWhere: Prisma.UserWhereInput | undefined = cursorCreatedAt && cursorId
+    ? {
+        OR: [
+          { createdAt: { lt: new Date(cursorCreatedAt) } },
+          { createdAt: new Date(cursorCreatedAt), id: { lt: cursorId } },
+        ],
+      }
+    : undefined;
   const users = await prisma.user.findMany({
     where: {
       role: query.role,
       status: query.status,
       dataClass: query.dataClass,
-      OR: q ? [
+      OR: q
+        ? [
             { id: { contains: q } },
             { email: { contains: q } },
             { displayName: { contains: q } },
-          ] : undefined,
+          ]
+        : undefined,
       AND: cursorWhere,
     },
     include: {
@@ -181,15 +172,18 @@ export async function listUsers(request: Request) {
   );
 
   const last = page.at(-1);
-  return ok(accessUserListResponseSchema.parse({
+  return {
     items,
     pageInfo: {
       endCursor: users.length > limit && last
-        ? encodeAdminListCursor("admin_users", queryIdentity, [last.createdAt.toISOString(), last.id])
+        ? encodeAdminListCursor("admin_users", queryIdentity, [
+            last.createdAt.toISOString(),
+            last.id,
+          ])
         : null,
       hasNextPage: users.length > limit,
     },
-  }));
+  };
 }
 
 export async function getUserDetail(request: Request, userId: string) {
@@ -210,8 +204,9 @@ export async function getUserDetail(request: Request, userId: string) {
     },
   });
   if (!user) throw Errors.notFound("User not found");
+  const ageVerification = user.ageVerifications[0] ?? null;
 
-  return ok({
+  return {
     user: {
       id: user.id,
       email: user.email,
@@ -219,29 +214,86 @@ export async function getUserDetail(request: Request, userId: string) {
       role: user.role,
       status: user.status,
       dataClass: user.dataClass,
-      createdAt: user.createdAt,
-      ageVerification: user.ageVerifications[0] ?? null,
-      preferences: user.preferences,
+      createdAt: user.createdAt.toISOString(),
+      ageVerification: ageVerification
+        ? {
+            id: ageVerification.id,
+            provider: ageVerification.provider,
+            status: ageVerification.status,
+            jurisdiction: ageVerification.jurisdiction,
+            requiredReason: ageVerification.requiredReason,
+            verifiedAt: ageVerification.verifiedAt?.toISOString() ?? null,
+            expiresAt: ageVerification.expiresAt?.toISOString() ?? null,
+            createdAt: ageVerification.createdAt.toISOString(),
+          }
+        : null,
+      preferences: user.preferences
+        ? {
+            userId: user.preferences.userId,
+            mutedTags: user.preferences.mutedTags,
+            safeModeFlags: user.preferences.safeModeFlags,
+            notificationSettings: user.preferences.notificationSettings,
+            locale: user.preferences.locale,
+            updatedAt: user.preferences.updatedAt.toISOString(),
+          }
+        : null,
     },
-    subscriptions: user.subscriptions,
-    entitlements: user.entitlements,
-    ledger: user.ledgerEntries,
+    subscriptions: user.subscriptions.map((subscription) => ({
+      id: subscription.id,
+      provider: subscription.provider,
+      status: subscription.status,
+      planSlug: subscription.plan.slug,
+      planName: subscription.plan.name,
+      billingPeriod: subscription.plan.billingPeriod,
+      currentPeriodEnd: subscription.currentPeriodEnd?.toISOString() ?? null,
+      cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
+      createdAt: subscription.createdAt.toISOString(),
+    })),
+    entitlements: user.entitlements.map((entitlement) => ({
+      id: entitlement.id,
+      key: entitlement.key,
+      value: entitlement.value,
+      source: entitlement.source,
+      expiresAt: entitlement.expiresAt?.toISOString() ?? null,
+      createdAt: entitlement.createdAt.toISOString(),
+    })),
+    ledger: user.ledgerEntries.map((entry) => ({
+      id: entry.id,
+      delta: entry.delta,
+      balanceAfter: entry.balanceAfter,
+      reason: entry.reason,
+      sourceId: entry.sourceId,
+      createdAt: entry.createdAt.toISOString(),
+    })),
     dreamcoins: { balance: await dreamcoinBalance(user.id) },
-    generationJobs: user.generationJobs.map(redactGenerationJob),
-  });
+    generationJobs: user.generationJobs.map((job) => ({
+      id: job.id,
+      mode: job.mode,
+      model: job.model,
+      status: job.status,
+      provider: job.provider,
+      errorCode: job.errorCode,
+      outputCount: job.outputCount,
+      costDreamcoins: job.costDreamcoins,
+      promptHidden: Boolean(job.prompt),
+      negativePromptHidden: Boolean(job.negativePrompt),
+      createdAt: job.createdAt.toISOString(),
+      completedAt: job.completedAt?.toISOString() ?? null,
+    })),
+  };
 }
 
 export async function updateUserStatus(request: Request, userId: string) {
   const actor = await actorWithPermission(request, "user.status.write");
-  const body = statusChangeSchema.parse(await jsonBody(request));
+  const body = await jsonBody(request, "POST /api/v2/admin/users/:id/status");
   if (body.confirmation !== `${userId}:${body.status}`) {
     throw Errors.badRequest("Confirmation did not match user status target");
   }
-  const result = await executeIdempotentUserCommand({
+  return runUserCommand({
     request,
     actor,
     commandType: "user.status.write",
-    targetId: userId,
+    userId,
     payload: body,
     execute: async (tx, requestId) => {
       const before = await tx.user.findUnique({ where: { id: userId } });
@@ -267,23 +319,22 @@ export async function updateUserStatus(request: Request, userId: string) {
         aggregateId: userId,
         payload: { userId, from: before.status, to: updated.status, actorId: actor.id, requestId },
       } });
-      return { user: publicUser(updated) };
+      return { user: userSummary(updated) };
     },
   });
-  return ok(result);
 }
 
 export async function updateUserRole(request: Request, userId: string) {
   const actor = await actorWithPermission(request, "user.role.write");
-  const body = roleChangeSchema.parse(await jsonBody(request));
+  const body = await jsonBody(request, "POST /api/v2/admin/users/:id/role");
   if (body.confirmation !== `${userId}:${body.role}`) {
     throw Errors.badRequest("Confirmation did not match role-change target");
   }
-  const result = await executeIdempotentUserCommand({
+  return runUserCommand({
     request,
     actor,
     commandType: "user.role.write",
-    targetId: userId,
+    userId,
     payload: body,
     execute: async (tx, requestId) => {
       const before = await tx.user.findUnique({ where: { id: userId } });
@@ -306,10 +357,9 @@ export async function updateUserRole(request: Request, userId: string) {
         aggregateId: userId,
         payload: { userId, from: before.role, to: updated.role, actorId: actor.id, requestId },
       } });
-      return { user: publicUser(updated) };
+      return { user: userSummary(updated) };
     },
   });
-  return ok(result);
 }
 
 export async function listUserPermissions(request: Request, userId: string) {
@@ -320,29 +370,34 @@ export async function listUserPermissions(request: Request, userId: string) {
     where: { userId },
     orderBy: { createdAt: "desc" },
   });
-  const effective = [...applyOverrides(resolvePermissions(user.role as ActorRole), overrides)].sort();
-  return ok({ role: user.role, overrides, effective });
+  return {
+    role: user.role,
+    overrides: overrides.map(permissionOverrideDto),
+    effective: [...applyOverrides(resolvePermissions(user.role as ActorRole), overrides)].sort(),
+  };
 }
 
 export async function setUserPermission(request: Request, userId: string) {
   const actor = await actorWithPermission(request, "user.role.write");
-  const body = permissionOverrideSchema.parse(await jsonBody(request));
+  const body = await jsonBody(request, "POST /api/v2/admin/users/:id/permissions");
   if (body.confirmation !== `${userId}:${body.permissionKey}:${body.effect}`) {
     throw Errors.badRequest("Confirmation did not match permission-override target");
   }
   if (body.effect !== "clear" && !isPermissionKey(body.permissionKey)) {
     throw Errors.badRequest("Unknown permission key");
   }
-  const result = await executeIdempotentUserCommand({
+  return runUserCommand({
     request,
     actor,
-    commandType: `admin.permission.${body.effect}`,
-    targetId: userId,
+    commandType: "admin.permission.write",
+    userId,
     payload: body,
     execute: async (tx, requestId) => {
       const user = await tx.user.findUnique({ where: { id: userId } });
       if (!user) throw Errors.notFound("User not found");
-      const before = await tx.adminUserPermission.findFirst({ where: { userId, permissionKey: body.permissionKey } });
+      const before = await tx.adminUserPermission.findFirst({
+        where: { userId, permissionKey: body.permissionKey },
+      });
       await tx.adminUserPermission.deleteMany({ where: { userId, permissionKey: body.permissionKey } });
       const updated = body.effect === "clear"
         ? null
@@ -353,20 +408,15 @@ export async function setUserPermission(request: Request, userId: string) {
             reason: body.reason,
             createdById: actor.id,
           } });
-      const action = body.effect === "grant"
-        ? "admin.permission.grant"
-        : body.effect === "revoke"
-          ? "admin.permission.revoke"
-          : "admin.permission.clear";
       await tx.adminAuditLog.create({ data: {
         actorId: actor.id,
         actorRole: actor.role,
-        action,
+        action: `admin.permission.${body.effect}`,
         targetType: "user",
         targetId: userId,
         reason: body.reason,
-        before: before ? { permissionKey: before.permissionKey, effect: before.effect } : undefined,
-        after: { permissionKey: body.permissionKey, effect: body.effect },
+        before: before ? toInputJson({ permissionKey: before.permissionKey, effect: before.effect }) : undefined,
+        after: toInputJson({ permissionKey: body.permissionKey, effect: body.effect }),
         requestId,
       } });
       await tx.mainOutboxEvent.create({ data: {
@@ -375,8 +425,10 @@ export async function setUserPermission(request: Request, userId: string) {
         aggregateId: userId,
         payload: { userId, permissionKey: body.permissionKey, effect: body.effect, actorId: actor.id, requestId },
       } });
-      return { override: updated, cleared: body.effect === "clear" };
+      return {
+        override: updated ? permissionOverrideDto(updated) : null,
+        cleared: body.effect === "clear",
+      };
     },
   });
-  return ok(result);
 }

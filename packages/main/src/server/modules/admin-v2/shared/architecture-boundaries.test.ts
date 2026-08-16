@@ -69,24 +69,6 @@ describe("Admin v2 architecture boundaries", () => {
     expect(writers).toEqual(["modules/admin-v2/creative/run-create.ts"]);
   });
 
-  it("keeps the legacy user domain implementation out of the dispatcher monolith", async () => {
-    const dispatcher = await readFile(
-      path.join(process.cwd(), "src/server/modules/admin/service.ts"),
-      "utf8",
-    );
-    const userDomain = await readFile(
-      path.join(process.cwd(), "src/server/modules/admin/users/service.ts"),
-      "utf8",
-    ).catch(() => "");
-
-    expect(dispatcher).not.toContain("const statusChangeSchema");
-    expect(dispatcher).not.toContain("async function listUsers");
-    expect(dispatcher).not.toContain("async function setUserPermission");
-    expect(userDomain).toContain("export async function listUsers");
-    expect(userDomain).toContain("export async function setUserPermission");
-    expect(userDomain).not.toContain(["@/server/modules/admin", "service"].join("/"));
-  });
-
   it("keeps generation config and dead-letter authorities out of the dispatcher monolith", async () => {
     const dispatcher = await readFile(
       path.join(process.cwd(), "src/server/modules/admin/service.ts"),
@@ -111,26 +93,13 @@ describe("Admin v2 architecture boundaries", () => {
     expect(deadLetterDomain).not.toContain(["@/server/modules/admin", "service"].join("/"));
   });
 
-  it("keeps the access authority out of the dispatcher monolith", async () => {
-    const dispatcher = await readFile(path.join(process.cwd(), "src/server/modules/admin/service.ts"), "utf8");
-    const access = await readFile(path.join(process.cwd(), "src/server/modules/admin/users/service.ts"), "utf8");
-
-    expect(dispatcher).not.toContain("async function listUsers");
-    expect(access).toContain("export async function listUsers");
-  });
-
-  it("keeps support and promo authorities out of the dispatcher monolith", async () => {
+  it("keeps the promo authority out of the dispatcher monolith", async () => {
     const root = path.join(process.cwd(), "src/server/modules/admin");
     const dispatcher = await readFile(path.join(root, "service.ts"), "utf8");
-    const support = await readFile(path.join(root, "support/service.ts"), "utf8").catch(() => "");
     const promo = await readFile(path.join(root, "promo/service.ts"), "utf8").catch(() => "");
 
-    expect(dispatcher).not.toContain("const supportRequestPatchSchema");
-    expect(dispatcher).not.toContain("async function listSupportRequests");
-    expect(dispatcher).not.toContain("async function viewPlaintext");
     expect(dispatcher).not.toContain("const redeemCodeCreateSchema");
     expect(dispatcher).not.toContain("async function listRedeemCodes");
-    expect(support).toContain("export async function listSupportRequests");
     expect(promo).toContain("export async function listRedeemCodes");
   });
 
@@ -157,18 +126,13 @@ describe("Admin v2 architecture boundaries", () => {
     expect(content).toContain("executeIdempotentDomainCommand");
   });
 
-  it("keeps overview and generic saved-view authorities out of the dispatcher", async () => {
+  it("keeps overview authority out of the dispatcher", async () => {
     const root = path.join(process.cwd(), "src/server/modules/admin");
     const dispatcher = await readFile(path.join(root, "service.ts"), "utf8");
     const overviews = await readFile(path.join(root, "overviews/service.ts"), "utf8").catch(() => "");
-    const savedViews = await readFile(path.join(root, "saved-views/service.ts"), "utf8").catch(() => "");
     expect(dispatcher).not.toContain("async function analyticsOverview");
     expect(dispatcher).not.toContain("async function providerOps");
-    expect(dispatcher).not.toContain("async function listSavedViews");
-    expect(dispatcher).not.toContain("const savedViewCreateSchema");
     expect(overviews).toContain("export async function analyticsOverview");
-    expect(savedViews).toContain("export async function createSavedView");
-    expect(savedViews).toContain("executeIdempotentDomainCommand");
   });
 
   it("leaves the legacy dispatcher as a route table and compatibility export surface", async () => {
