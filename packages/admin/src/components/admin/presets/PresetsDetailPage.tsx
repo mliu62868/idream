@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
@@ -10,6 +10,8 @@ import { FormSection, Field, INPUT_CLASS, TEXTAREA_CLASS } from "@/components/ad
 import { DangerButton, GhostButton, PrimaryButton } from "@/components/admin/ui/buttons";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
+import { LoadingWorkspace } from "@/features/operations/WorkspaceUi";
+import { InfoGrid, useWriteFeedback, WriteFeedbackBanner } from "@/components/admin/section-kit";
 import {
   PRESET_TYPES,
   PRESET_VISIBILITY,
@@ -41,19 +43,6 @@ function draftFromRow(row: PresetRow): PresetDraft {
   };
 }
 
-function InfoGrid({ items }: { items: { label: string; value: ReactNode }[] }) {
-  return (
-    <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3">
-      {items.map((item) => (
-        <div key={item.label}>
-          <dt className="text-xs text-[var(--ad-text-muted)]">{item.label}</dt>
-          <dd className="mt-0.5 text-sm text-[var(--ad-ink)]">{item.value}</dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
-
 export function PresetsDetailPage({ id }: { id: string }) {
   const { t, value } = useAdminI18n();
   const [rows, setRows] = useState<PresetRow[]>([]);
@@ -64,6 +53,7 @@ export function PresetsDetailPage({ id }: { id: string }) {
   const [pending, setPending] = useState<PendingAction>(null);
   const [saving, setSaving] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -113,6 +103,7 @@ export function PresetsDetailPage({ id }: { id: string }) {
       await reload();
       setMode("view");
       setDraft(null);
+      reportSuccess(t("Saved. {label} now shows the edited values.", { label: draft.label }));
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : t("Request failed"));
     } finally {
@@ -127,6 +118,7 @@ export function PresetsDetailPage({ id }: { id: string }) {
     try {
       await apiWrite(`${PRESETS_LIST}/${id}`, "PATCH", { status: "active" }, { "idempotency-key": crypto.randomUUID() });
       await reload();
+      reportSuccess(t("Restored. This preset is selectable again."));
     } catch (restoreError) {
       setError(restoreError instanceof Error ? restoreError.message : t("Request failed"));
     } finally {
@@ -144,12 +136,13 @@ export function PresetsDetailPage({ id }: { id: string }) {
       onSubmit: async () => {
         await apiWrite(`${PRESETS_LIST}/${id}`, "PATCH", { status: "archived" }, { "idempotency-key": crypto.randomUUID() });
         await reload();
+        reportSuccess(t("Archived. {label} is no longer offered to users.", { label: row.label }));
       },
     };
-  }, [pending, row, id, t, reload]);
+  }, [pending, row, id, t, reload, reportSuccess]);
 
   if (loading) {
-    return <p className="text-sm text-[var(--ad-text-muted)]">{t("Loading…")}</p>;
+    return <LoadingWorkspace label="Loading…" />;
   }
 
   if (!row) {
@@ -197,6 +190,7 @@ export function PresetsDetailPage({ id }: { id: string }) {
       status={row.status}
       title={row.label}
     >
+      <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
       {error ? <p role="alert" className="text-sm text-[var(--ad-red-text)]">{error}</p> : null}
 
       {mode === "edit" && draft ? (

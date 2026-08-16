@@ -13,6 +13,7 @@ import {
 import { useEffect, useState } from "react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { useWriteFeedback, WriteFeedbackBanner } from "@/components/admin/section-kit";
 
 type ContentStatus = "template" | "draft" | "published";
 type IndexingStatus = "noindex" | "index";
@@ -79,6 +80,7 @@ export function CmsView() {
   const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
   const [editLoadingPath, setEditLoadingPath] = useState<string | null>(null);
   const [editBusy, setEditBusy] = useState(false);
+  const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
 
   async function load() {
     setLoading(true);
@@ -88,11 +90,11 @@ export function CmsView() {
         "/api/v2/admin/cms/pages",
       );
       if (!Array.isArray(data.items) || !data.items.every(isPageRow)) {
-        throw new Error("CMS page list response was incomplete");
+        throw new Error(t("The CMS page list response was incomplete."));
       }
       setPages(data.items);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Load failed");
+      setError(err instanceof Error ? err.message : t("Request failed"));
     } finally {
       setLoading(false);
     }
@@ -130,10 +132,16 @@ export function CmsView() {
         reason: publishDraft.reason.trim(),
         confirmation: publishDraft.confirmation.trim(),
       });
+      const { path, nextStatus } = publishDraft;
       setPublishDraft(null);
       await load();
+      reportSuccess(
+        nextStatus === "published"
+          ? t("{path} is published and indexable per its indexing status.", { path })
+          : t("{path} is unpublished and back to draft. It is no longer served.", { path }),
+      );
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Publish failed";
+      const message = err instanceof Error ? err.message : t("Request failed");
       // A status command is a one-shot operation against the exact row version
       // displayed to the operator. Never retain a stale confirmation.
       setPublishDraft(null);
@@ -154,7 +162,7 @@ export function CmsView() {
         `/api/v2/admin/cms/page?path=${encodeURIComponent(page.path)}`,
       );
       if (!isPageDetail(data.page)) {
-        throw new Error("CMS page response was incomplete");
+        throw new Error(t("The CMS page response was incomplete."));
       }
       setEditDraft({
         path: data.page.path,
@@ -168,7 +176,7 @@ export function CmsView() {
         confirmation: "",
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Page load failed");
+      setError(err instanceof Error ? err.message : t("Request failed"));
     } finally {
       setEditLoadingPath(null);
     }
@@ -179,7 +187,7 @@ export function CmsView() {
     setEditBusy(true);
     setError(null);
     try {
-      const body = parseBodyObject(editDraft.bodyJson);
+      const body = parseBodyObject(editDraft.bodyJson, t("The article body must be a JSON object."));
       await apiWrite("/api/v2/admin/cms/pages", "PATCH", {
         path: editDraft.path,
         template: "article",
@@ -192,10 +200,12 @@ export function CmsView() {
         reason: editDraft.reason.trim(),
         confirmation: editDraft.confirmation.trim(),
       });
+      const savedPath = editDraft.path;
       setEditDraft(null);
       await load();
+      reportSuccess(t("Draft saved for {path}. Publishing is still a separate action.", { path: savedPath }));
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Save failed";
+      const message = err instanceof Error ? err.message : t("Request failed");
       if (/changed|since it was loaded/i.test(message)) {
         setEditDraft(null);
         await load();
@@ -226,13 +236,14 @@ export function CmsView() {
           {t("Refresh")}
         </button>
       </div>
+      <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
       {error ? (
         <p className="text-xs text-[var(--ad-red-text)]" role="alert">
           {error}
         </p>
       ) : null}
 
-      <CreatePageForm reload={load} />
+      <CreatePageForm onCreated={reportSuccess} reload={load} />
 
       {editDraft ? (
         <EditPageForm
@@ -555,7 +566,7 @@ function EditPageForm({
   );
 }
 
-function CreatePageForm({ reload }: { reload: () => Promise<void> }) {
+function CreatePageForm({ onCreated, reload }: { onCreated: (message: string) => void; reload: () => Promise<void> }) {
   const { t } = useAdminI18n();
   const [path, setPath] = useState("");
   const [title, setTitle] = useState("");
@@ -573,7 +584,7 @@ function CreatePageForm({ reload }: { reload: () => Promise<void> }) {
     setBusy(true);
     setErr(null);
     try {
-      const body = parseBodyObject(bodyJson);
+      const body = parseBodyObject(bodyJson, t("The article body must be a JSON object."));
       await apiWrite("/api/v2/admin/cms/pages", "POST", {
         path: path.trim(),
         template: "article",
@@ -594,8 +605,9 @@ function CreatePageForm({ reload }: { reload: () => Promise<void> }) {
       setReason("");
       setConfirmation("");
       await reload();
+      onCreated(t("Created draft {path}. It is not served until you publish it.", { path: expectedPath }));
     } catch (error) {
-      setErr(error instanceof Error ? error.message : "Create failed");
+      setErr(error instanceof Error ? error.message : t("Request failed"));
     } finally {
       setBusy(false);
     }
@@ -710,10 +722,11 @@ function canSaveEdit(draft: EditDraft) {
   );
 }
 
-function parseBodyObject(value: string): Record<string, unknown> {
+// INTENT: 文案由调用方注入——这是个模块级纯函数，拿不到 t()，硬编码英文会在中文 locale 露馅。
+function parseBodyObject(value: string, invalidMessage: string): Record<string, unknown> {
   const parsed = JSON.parse(value) as unknown;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("body must be a JSON object");
+    throw new Error(invalidMessage);
   }
   return parsed as Record<string, unknown>;
 }

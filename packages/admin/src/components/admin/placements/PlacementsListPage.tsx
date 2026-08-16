@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Plus } from "lucide-react";
 import { apiGet } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
@@ -11,6 +11,9 @@ import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { PrimaryButton } from "@/components/admin/ui/buttons";
 import { StatusPill } from "@/components/admin/ui/StatusPill";
 import { AssetImage } from "@/components/admin/ui/AssetImage";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import { useDebouncedReload, useUrlBootstrap } from "@/components/admin/section-kit";
+import { createLatestRequestGate } from "@/lib/latest-request";
 import { ALL_STATUSES, placementsListPath, type Placement } from "./placements-api";
 
 // SPEC: 铺位列表页 —— 缩略图 + slot/目标/状态表格；关键词搜索 + 状态筛选（spec §7 列表页）。
@@ -25,12 +28,16 @@ export function PlacementsListPage({ canPublish }: { canPublish: boolean }) {
   const [cursor, setCursor] = useState<string | undefined>();
   const [pageInfo, setPageInfo] = useState({ endCursor: null as string | null, hasNextPage: false });
   const [ready, setReady] = useState(false);
+  // INVARIANT: 慢响应不能覆盖新一轮筛选的结果——本页此前没有闸，是五个列表页里唯一漏掉的。
+  const requestGate = useRef(createLatestRequestGate());
 
   const reload = useCallback(async (nextCursor?: string) => {
+    const request = requestGate.current.begin();
     setLoading(true);
     setError(null);
     try {
       const data = await apiGet<{ items: Placement[]; pageInfo: { endCursor: string | null; hasNextPage: boolean } }>(placementsListPath({ search, status, cursor: nextCursor }));
+      if (!request.isCurrent()) return;
       setRows(data.items);
       setCursor(nextCursor);
       setPageInfo(data.pageInfo);
@@ -40,28 +47,21 @@ export function PlacementsListPage({ canPublish }: { canPublish: boolean }) {
       if (nextCursor) params.set("cursor", nextCursor);
       window.history.replaceState(null, "", `${window.location.pathname}${params.size ? `?${params}` : ""}`);
     } catch (loadError) {
+      if (!request.isCurrent()) return;
       setError(loadError instanceof Error ? loadError.message : t("Request failed"));
     } finally {
-      setLoading(false);
+      if (request.isCurrent()) setLoading(false);
     }
   }, [search, status, t]);
 
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const timer = window.setTimeout(() => {
-      setSearch(params.get("search") ?? "");
-      setStatus(params.get("status") ?? "all");
-      setCursor(params.get("cursor") ?? undefined);
-      setReady(true);
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, []);
+  useUrlBootstrap(useCallback((params: URLSearchParams) => {
+    setSearch(params.get("search") ?? "");
+    setStatus(params.get("status") ?? "all");
+    setCursor(params.get("cursor") ?? undefined);
+    setReady(true);
+  }, []), requestGate.current);
 
-  useEffect(() => {
-    if (!ready) return;
-    const timer = window.setTimeout(() => void reload(cursor), search.trim() ? 250 : 0);
-    return () => window.clearTimeout(timer);
-  }, [cursor, ready, reload, search]);
+  useDebouncedReload({ cursor, ready, reload, search });
 
   const newAction = canPublish ? (
     <Link href="/admin/content/placements/new">
@@ -91,14 +91,14 @@ export function PlacementsListPage({ canPublish }: { canPublish: boolean }) {
         title={t("Placements")}
       />
       <FilterBar
-        onSearch={(value) => { setSearch(value); setCursor(undefined); }}
+        onSearch={(nextSearch) => { requestGate.current.invalidate(); setSearch(nextSearch); setCursor(undefined); }}
         search={search}
         searchPlaceholder={t("Search by slot, target, or asset ID")}
         selects={[
           {
             name: t("Status"),
             value: status,
-            onChange: (value) => { setStatus(value); setCursor(undefined); },
+            onChange: (nextStatus) => { requestGate.current.invalidate(); setStatus(nextStatus); setCursor(undefined); },
             options: [
               { value: "all", label: t("All") },
               ...ALL_STATUSES.map((item) => ({ value: item, label: value(item) })),
@@ -106,7 +106,7 @@ export function PlacementsListPage({ canPublish }: { canPublish: boolean }) {
           },
         ]}
       />
-      {error ? <p role="alert" className="mb-4 text-sm text-[var(--ad-red-text)]">{error}</p> : null}
+      {error ? <AuthorityRequestError message={error} onRetry={() => void reload(cursor)} snapshotAt={null} /> : null}
       {loading && rows.length === 0 ? (
         <p className="text-sm text-[var(--ad-text-muted)]">{t("Loading…")}</p>
       ) : rows.length === 0 && error ? null : (

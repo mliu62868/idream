@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Plus } from "lucide-react";
 import { apiGet } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
@@ -18,6 +18,7 @@ import {
   createAuthorityState,
 } from "@/lib/authority-state";
 import { createLatestRequestGate } from "@/lib/latest-request";
+import { useDebouncedReload, useUrlBootstrap } from "@/components/admin/section-kit";
 import { PRESET_TYPES, PRESETS_LIST, type PresetRow } from "./presets-api";
 
 type PresetsResponse = { items: PresetRow[]; pageInfo: { endCursor: string | null; hasNextPage: boolean } };
@@ -54,26 +55,14 @@ export function PresetsListPage() {
     }
   }, [search, t, type]);
 
-  useEffect(() => {
-    const gate = requestGate.current;
-    const params = new URLSearchParams(window.location.search);
-    const timer = window.setTimeout(() => {
-      setSearch(params.get("search") ?? "");
-      setType(params.get("type") ?? "all");
-      setCursor(params.get("cursor") ?? undefined);
-      setReady(true);
-    }, 0);
-    return () => {
-      gate.invalidate();
-      window.clearTimeout(timer);
-    };
-  }, []);
+  useUrlBootstrap(useCallback((params: URLSearchParams) => {
+    setSearch(params.get("search") ?? "");
+    setType(params.get("type") ?? "all");
+    setCursor(params.get("cursor") ?? undefined);
+    setReady(true);
+  }, []), requestGate.current);
 
-  useEffect(() => {
-    if (!ready) return;
-    const timer = window.setTimeout(() => void reload(cursor), search.trim() ? 250 : 0);
-    return () => window.clearTimeout(timer);
-  }, [cursor, ready, reload, search]);
+  useDebouncedReload({ cursor, ready, reload, search });
 
   const newAction = (
     <Link href="/admin/generation/presets/new">

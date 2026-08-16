@@ -7,6 +7,7 @@ import { ChevronRight, Loader2, Plus, RefreshCcw, Search, Trash2 } from "lucide-
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { adminV2Request } from "@/lib/admin-v2-api";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { useWriteFeedback, WriteFeedbackBanner } from "@/components/admin/section-kit";
 import {
   announcementListPath,
   announcementQueryFromSearch,
@@ -46,6 +47,7 @@ export function AnnouncementsView() {
   const [error, setError] = useState<string | null>(null);
   const [actionDraft, setActionDraft] = useState<AnnouncementActionDraft | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
+  const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
   const [query, setQuery] = useState<AnnouncementQuery>({ announcementSearch: "", announcementLevel: "", announcementActive: "", announcementCursor: "" });
   const [pageInfo, setPageInfo] = useState<{ endCursor: string | null; hasNextPage: boolean }>({ endCursor: null, hasNextPage: false });
 
@@ -59,11 +61,11 @@ export function AnnouncementsView() {
       setItems(data.items);
       setPageInfo(data.pageInfo);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Load failed");
+      setError(err instanceof Error ? err.message : t("Request failed"));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0);
@@ -88,6 +90,7 @@ export function AnnouncementsView() {
 
   function startAction(kind: AnnouncementActionDraft["kind"], item: Announcement) {
     setError(null);
+    clearFeedback();
     setActionDraft({ kind, item, reason: "", confirmation: "" });
   }
 
@@ -107,10 +110,18 @@ export function AnnouncementsView() {
           confirmation: actionDraft.confirmation.trim(),
         });
       }
+      const { kind, item } = actionDraft;
       setActionDraft(null);
       await load();
+      reportSuccess(
+        kind === "delete"
+          ? t("Deleted “{title}”. It no longer shows anywhere on the site.", { title: item.title })
+          : item.active
+            ? t("Deactivated “{title}”. It is hidden from the site now.", { title: item.title })
+            : t("Activated “{title}”. It is visible site-wide now.", { title: item.title }),
+      );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Announcement action failed");
+      setError(err instanceof Error ? err.message : t("Request failed"));
     } finally {
       setActionBusy(false);
     }
@@ -143,9 +154,10 @@ export function AnnouncementsView() {
           {t("Refresh")}
         </button>
       </div>
+      <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
       {error ? <p role="alert" className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
 
-      <CreateAnnouncementForm reload={load} />
+      <CreateAnnouncementForm onCreated={reportSuccess} reload={load} />
 
       {actionDraft ? (
         <section className="rounded-lg border border-[var(--ad-yellow-text)]/20 bg-[var(--ad-yellow-bg)] p-3">
@@ -255,7 +267,7 @@ function canConfirmAnnouncementAction(draft: AnnouncementActionDraft) {
   return draft.reason.trim().length >= 3 && confirmation === draft.item.id;
 }
 
-function CreateAnnouncementForm({ reload }: { reload: () => void }) {
+function CreateAnnouncementForm({ onCreated, reload }: { onCreated: (message: string) => void; reload: () => void }) {
   const { t, value: valueLabel } = useAdminI18n();
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
@@ -287,8 +299,13 @@ function CreateAnnouncementForm({ reload }: { reload: () => void }) {
       setReason("");
       setConfirmation("");
       reload();
+      onCreated(
+        active
+          ? t("Created “{title}”. It is live site-wide now.", { title: trimmedTitle })
+          : t("Created “{title}”. Activate it when you want it on the site.", { title: trimmedTitle }),
+      );
     } catch (error) {
-      setErr(error instanceof Error ? error.message : "Create failed");
+      setErr(error instanceof Error ? error.message : t("Request failed"));
     } finally {
       setBusy(false);
     }
@@ -304,7 +321,7 @@ function CreateAnnouncementForm({ reload }: { reload: () => void }) {
   return (
     <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <h2 className="text-sm font-semibold">{t("Create announcement")}</h2>
-      <p className="mt-1 text-xs text-[var(--ad-text-muted)]">站内 banner（即站内广播渠道）。active 即对全站可见。</p>
+      <p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t("An in-product banner — this is the site-wide broadcast channel. Active means visible to everyone.")}</p>
       <div className="mt-3 grid gap-3 md:grid-cols-2">
         <input className={inputClass} onChange={(e) => setTitle(e.target.value)} placeholder={t("Title")} value={title} />
         <input className={inputClass} onChange={(e) => setBody(e.target.value)} placeholder={t("Body")} value={body} />

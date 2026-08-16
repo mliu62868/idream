@@ -16,6 +16,8 @@ import {
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { adminV2Request } from "@/lib/admin-v2-api";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
+import { useWriteFeedback, WriteFeedbackBanner } from "@/components/admin/section-kit";
 import { cn } from "@/lib/utils";
 
 type ReviewCharacter = {
@@ -96,11 +98,12 @@ export function ReviewQueueView() {
   const [savedViewsLoading, setSavedViewsLoading] = useState(true);
   const [savedViewLabel, setSavedViewLabel] = useState("");
   const [savingView, setSavingView] = useState(false);
-  const [savedViewError, setSavedViewError] = useState<string | null>(null);
   const [cursor, setCursor] = useState<string | undefined>();
   const [pageInfo, setPageInfo] = useState({ endCursor: null as string | null, hasNextPage: false });
   const [ready, setReady] = useState(false);
-  const [success, setSuccess] = useState<{ message: string; href: string | null } | null>(null);
+  const [deletingView, setDeletingView] = useState<SavedView | null>(null);
+  const [decisionLink, setDecisionLink] = useState<string | null>(null);
+  const { feedback, reportSuccess, reportFailure, clearFeedback } = useWriteFeedback();
   const savedViewCreateKey = useRef<string | null>(null);
 
   const load = useCallback(async (nextCursor?: string) => {
@@ -117,15 +120,14 @@ export function ReviewQueueView() {
       setPageInfo(data.pageInfo);
       window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Load failed");
+      setError(err instanceof Error ? err.message : t("Request failed"));
     } finally {
       setLoading(false);
     }
-  }, [filters.query, filters.reportFilter]);
+  }, [filters.query, filters.reportFilter, t]);
 
   const loadSavedViews = useCallback(async () => {
     setSavedViewsLoading(true);
-    setSavedViewError(null);
     try {
       const data = await adminV2Request(
         `/api/v2/admin/saved-views?scope=${REVIEW_QUEUE_SAVED_VIEW_SCOPE}`,
@@ -133,11 +135,11 @@ export function ReviewQueueView() {
       );
       setSavedViews([...data.items]);
     } catch (err) {
-      setSavedViewError(err instanceof Error ? err.message : "Saved views failed");
+      reportFailure(err instanceof Error ? err.message : t("Request failed"));
     } finally {
       setSavedViewsLoading(false);
     }
-  }, []);
+  }, [reportFailure, t]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -163,7 +165,7 @@ export function ReviewQueueView() {
     const label = savedViewLabel.trim();
     if (!label || savingView) return;
     setSavingView(true);
-    setSavedViewError(null);
+    clearFeedback();
     try {
       savedViewCreateKey.current ??= crypto.randomUUID();
       await adminV2Request("/api/v2/admin/saved-views", {
@@ -179,29 +181,39 @@ export function ReviewQueueView() {
       savedViewCreateKey.current = null;
       setSavedViewLabel("");
       await loadSavedViews();
+      reportSuccess(t("Saved view {label} saved.", { label }));
     } catch (err) {
-      setSavedViewError(err instanceof Error ? err.message : "Save failed");
+      reportFailure(err instanceof Error ? err.message : t("Request failed"));
     } finally {
       setSavingView(false);
     }
   }
 
-  async function deleteSavedView(view: SavedView) {
-    setSavedViewError(null);
-    try {
-      await adminV2Request(`/api/v2/admin/saved-views/${encodeURIComponent(view.id)}`, {
-        method: "DELETE",
-        ifMatch: view.version,
-        schema: savedViewDeleteSchema,
-      });
-      setSavedViews((current) => current.filter((item) => item.id !== view.id));
-    } catch (err) {
-      setSavedViewError(err instanceof Error ? err.message : "Delete failed");
-    }
-  }
+  // SPEC: 删除保存的视图必须先确认——这是本页唯一的破坏性写操作，且服务端不做软删除。
+  // INTENT: DELETE 契约（collaboration.ts savedViewDeleteSchema）不收 reason，所以
+  // requireReason:false——不让运营填一个会被丢弃的原因。双击防护由 ConfirmDialog 的 busy 守卫兜住。
+  const deleteViewSpec: ConfirmSpec | null = deletingView
+    ? {
+        title: t("Delete saved view {label}", { label: deletingView.label }),
+        summary: t("Only this saved filter set is removed. No submission or decision is affected."),
+        destructive: { expectedName: deletingView.label },
+        requireReason: false,
+        submitLabel: t("Delete"),
+        onSubmit: async () => {
+          const view = deletingView;
+          await adminV2Request(`/api/v2/admin/saved-views/${encodeURIComponent(view.id)}`, {
+            method: "DELETE",
+            ifMatch: view.version,
+            schema: savedViewDeleteSchema,
+          });
+          setSavedViews((current) => current.filter((item) => item.id !== view.id));
+          reportSuccess(t("Saved view {label} deleted.", { label: view.label }));
+        },
+      }
+    : null;
 
   function applySavedView(view: SavedView) {
-    setSavedViewError(null);
+    clearFeedback();
     setFilters(savedFiltersFromQueryState(view.queryState));
     setCursor(undefined);
   }
@@ -209,13 +221,13 @@ export function ReviewQueueView() {
   return (
     <div className="space-y-4">
       <p className="text-xs text-[var(--ad-text-muted)]">
-        角色人审队列：仅展示 status=pending 的提交。Approve 将角色置为 approved 并进入发布准备；只有 Release 发布后角色才会公开。Reject 置为 rejected，均需理由并审计。
+        {t("Human review queue for pending character submissions only. Approve moves the character to approved and into publication prep; it only goes public after Release. Reject moves it to rejected. Both require a reason and are audited.")}
       </p>
 
-      {success ? (
-        <p className="text-xs text-[var(--ad-green-text)]" role="status">
-          {success.message}{" "}
-          {success.href ? <a className="font-semibold underline underline-offset-4" href={success.href}>{t("Open Character Asset Studio")}</a> : null}
+      <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
+      {feedback?.tone === "success" && decisionLink ? (
+        <p className="text-xs">
+          <a className="font-semibold underline underline-offset-4" href={decisionLink}>{t("Open Character Asset Studio")}</a>
         </p>
       ) : null}
 
@@ -305,7 +317,7 @@ export function ReviewQueueView() {
               <button
                 aria-label={t("Delete saved view {label}", { label: view.label })}
                 className="flex h-full w-8 items-center justify-center border-l border-[var(--ad-border)] text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]"
-                onClick={() => void deleteSavedView(view)}
+                onClick={() => setDeletingView(view)}
                 title={t("Delete saved view {label}", { label: view.label })}
                 type="button"
               >
@@ -329,7 +341,6 @@ export function ReviewQueueView() {
             </button>
           ) : null}
         </div>
-        {savedViewError ? <p className="mt-2 text-xs text-[var(--ad-red-text)]">{savedViewError}</p> : null}
       </section>
 
       <section className="rounded-lg overflow-hidden border border-[var(--ad-border)] bg-[var(--ad-surface)]">
@@ -422,12 +433,16 @@ export function ReviewQueueView() {
           pending={pending}
           onClose={() => setPending(null)}
           onDone={async (result) => {
-            setSuccess(reviewDecisionSuccess(result));
+            const outcome = reviewDecisionSuccess(result);
+            setDecisionLink(outcome.href);
+            reportSuccess(t(outcome.message));
             setPending(null);
             await load(cursor);
           }}
         />
       ) : null}
+
+      {deleteViewSpec ? <ConfirmDialog onClose={() => setDeletingView(null)} spec={deleteViewSpec} /> : null}
     </div>
   );
 }
@@ -515,7 +530,7 @@ function DecisionDialog({
       );
       await onDone(result);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Decision failed");
+      setError(err instanceof Error ? err.message : t("Request failed"));
       setBusy(false);
     }
   }
@@ -535,8 +550,12 @@ function DecisionDialog({
           {decision === "approve" ? t("Approve") : t("Reject")} {item.character.name}
         </h3>
         <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-          确认提交后角色将被置为 {decision === "approve" ? valueLabel("approved") : valueLabel("rejected")}。
-          {decision === "approve" ? " 审核通过后进入发布准备，仍需完成 Asset、QA 与 Release 才会上线。" : null}
+          {t("On submit this character becomes {status}.", {
+            status: valueLabel(decision === "approve" ? "approved" : "rejected"),
+          })}
+          {decision === "approve"
+            ? ` ${t("Approval only starts publication prep — Asset, QA and Release must still complete before it goes live.")}`
+            : null}
         </p>
         <div className="mt-4 space-y-3">
           <textarea

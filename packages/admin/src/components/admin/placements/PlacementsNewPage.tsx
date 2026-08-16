@@ -125,7 +125,7 @@ export function PlacementsNewPage() {
             <p className="mt-2 text-xs text-[var(--ad-yellow-text)]" role="status">
               {blockedAssets.length === 1
                 ? t("1 approved asset is hidden because generation authority is incomplete or untrusted.")
-                : t("{count} approved assets are hidden because generation authority is incomplete or untrusted.").replace("{count}", String(blockedAssets.length))}
+                : t("{count} approved assets are hidden because generation authority is incomplete or untrusted.", { count: blockedAssets.length })}
             </p>
           ) : null}
           {!loadingAssets && !error && assets.length === 0 ? (

@@ -10,8 +10,9 @@ import { StatusPill } from "@/components/admin/ui/StatusPill";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { AssetImage } from "@/components/admin/ui/AssetImage";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
-import { DangerButton, GhostButton } from "@/components/admin/ui/buttons";
+import { DangerButton, GhostButton, PrimaryButton } from "@/components/admin/ui/buttons";
 import { createLatestRequestGate } from "@/lib/latest-request";
+import { useDebouncedReload, useUrlBootstrap } from "@/components/admin/section-kit";
 import {
   ASSET_PURPOSES,
   ASSET_STATUSES,
@@ -100,30 +101,23 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
     }
   }, [purpose, search, status, targetId, t]);
 
+  useUrlBootstrap(useCallback((params: URLSearchParams) => {
+    setStatus(params.get("status") ?? "all");
+    setPurpose(params.get("purpose") ?? "all");
+    setSearch(params.get("search") ?? "");
+    setTargetId(params.get("targetId") ?? "");
+    setCursor(params.get("cursor") ?? undefined);
+    setReady(true);
+  }, []), requestGate.current);
+  // 依赖预检有自己的在途请求，卸载时也要作废——它和列表请求不共用同一个闸。
   useEffect(() => {
-    const gate = requestGate.current;
     const preflightGate = preflightRequestGate.current;
-    const params = new URLSearchParams(window.location.search);
-    const timer = window.setTimeout(() => {
-      setStatus(params.get("status") ?? "all");
-      setPurpose(params.get("purpose") ?? "all");
-      setSearch(params.get("search") ?? "");
-      setTargetId(params.get("targetId") ?? "");
-      setCursor(params.get("cursor") ?? undefined);
-      setReady(true);
-    }, 0);
-    return () => {
-      gate.invalidate();
-      preflightGate.invalidate();
-      window.clearTimeout(timer);
-    };
+    return () => preflightGate.invalidate();
   }, []);
 
-  useEffect(() => {
-    if (!ready) return;
-    const timer = window.setTimeout(() => void reload(cursor), search.trim() ? 250 : 0);
-    return () => window.clearTimeout(timer);
-  }, [cursor, ready, reload, search]);
+  useDebouncedReload({ cursor, ready, reload, search });
+
+  const hasFilters = status !== "all" || purpose !== "all" || search.trim().length > 0 || targetId.trim().length > 0;
 
   const selectableIds = useMemo(
     () => rows.filter((asset) => asset.platformStatus !== "archived").map((asset) => asset.id),
@@ -152,7 +146,7 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
     setServerConflict(null);
     setBulkStatus(null);
     try {
-      const result = await preflightArchiveAssets(ids);
+      const result = await preflightArchiveAssets(ids, t("Request failed"));
       if (!request.isCurrent()) return;
       const blockers = result.blockers.flatMap((blocker) =>
         blocker.dependencies.map((dependency) => ({
@@ -191,7 +185,7 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
 
   const submitBulkArchive = useCallback(async (assetIds: readonly string[], reason: string) => {
     try {
-      const result = await bulkArchiveAssets({ assetIds, reason });
+      const result = await bulkArchiveAssets({ assetIds, reason, fallbackMessage: t("Request failed") });
       setSelectedIds(new Set());
       setPreflightBlockers([]);
       setServerConflict(null);
@@ -346,7 +340,35 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
       {loading && rows.length === 0 ? (
         <p className="text-sm text-[var(--ad-text-muted)]">{t("Loading…")}</p>
       ) : rows.length === 0 && !error ? (
-        <EmptyState title={t("No platform assets match these filters.")} />
+        // SPEC: 空态要给出路。图库没有 /new——资产由 Creative Run 产出，所以出路是"放宽筛选"
+        // 或"去 Creative Run 生成"，不是一句灰字。
+        <EmptyState
+          action={
+            <div className="flex flex-wrap justify-center gap-2">
+              {hasFilters ? (
+                <GhostButton
+                  onClick={() => {
+                    clearForNextQuery();
+                    setStatus("all");
+                    setPurpose("all");
+                    setSearch("");
+                    setTargetId("");
+                    setCursor(undefined);
+                  }}
+                >
+                  {t("Reset filters")}
+                </GhostButton>
+              ) : null}
+              <Link href="/admin/creative/runs">
+                <PrimaryButton>{t("Go to Creative Runs")}</PrimaryButton>
+              </Link>
+            </div>
+          }
+          hint={hasFilters
+            ? t("Assets are produced by Creative Runs. Widen the filters, or start a run to create new ones.")
+            : t("Assets are produced by Creative Runs. Start a run to create the first one.")}
+          title={hasFilters ? t("No platform assets match these filters.") : t("No platform assets yet.")}
+        />
       ) : rows.length > 0 ? (
         <CardGrid>
           {rows.map((asset, index) => (

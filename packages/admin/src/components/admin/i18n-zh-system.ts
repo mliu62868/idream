@@ -49,4 +49,19 @@ export const adminZhSystem: Record<string, string> = {
     "追溯重要运营决定对应的操作人、目标、原因、请求和命令证据。",
   "action, target, reason, or request": "操作、目标、原因或请求",
   "operator ID": "运营人员 ID",
+  // ---- 视图组运营化改造（合规 DSAR 下载与写反馈）----
+  // RELOCATE: 这一块属于 i18n-zh-customers.ts（合规域词条的实际归属），本轮 agent 不持有该文件；
+  // 合并时整块搬过去即可，key 无冲突。
+  "The export is redacted structured data with no raw prompt or chat text. Erasure runs the P0-F cross-service flow and needs confirmation.":
+    "导出的是脱敏后的结构化数据，不含明文 prompt 或聊天内容。擦除走 P0-F 跨服务流程，需要确认。",
+  "{id} was already erased — nothing changed.":
+    "{id} 此前已被擦除——本次没有产生任何变化。",
+  "Erasure requested for {id}. The cross-service flow reports completion in the audit log.":
+    "已为 {id} 发起擦除。跨服务流程完成后会在审计日志里回报。",
+  "Export preview":
+    "导出预览",
+  "Download JSON":
+    "下载 JSON",
+  "{id} is now {status}. The queue below reflects the new state.":
+    "{id} 现在是 {status}。下方队列已反映新状态。",
 };

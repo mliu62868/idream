@@ -182,4 +182,67 @@ export const adminZhGrowth: Record<string, string> = {
   "· significance:": "· 显著性：",
   "· state v": "· 状态 v",
   "· version": "· 版本",
+  // ---- 视图组运营化改造（实验启停确认与报告 / 洞察诚实化 / 公告与 CMS 写反馈）----
+  "Draft {key} created. It is not assigning traffic until you start it.":
+    "草稿 {key} 已创建。在你启动之前它不会分配任何流量。",
+  "Start experiment":
+    "启动实验",
+  "Stop experiment":
+    "停止实验",
+  "Starting assigns live traffic to {key} v{version}. The reason you enter is written to the audit log.":
+    "启动会把线上流量分配给 {key} v{version}。你填写的理由会写进审计日志。",
+  "Stopping ends live assignment for {key} v{version} and cannot be undone by restarting the same version. The reason you enter is written to the audit log.":
+    "停止会终止 {key} v{version} 的线上分流，且无法通过重启同一版本撤销。你填写的理由会写进审计日志。",
+  "Type the experiment key to confirm":
+    "输入实验 key 以确认",
+  "{key} v{version} is running.":
+    "{key} v{version} 已在运行。",
+  "{key} v{version} is stopped.":
+    "{key} v{version} 已停止。",
+  "surface.what-changed.v1":
+    "surface.what-changed.v1",
+  "What should change, for whom, and which metric should move":
+    "改什么、对谁改、期望哪个指标发生变化",
+  "Flag monitoring is unavailable for this permission set; managed experiments are still shown.":
+    "当前权限看不到 flag 监控；受管实验仍然展示。",
+  "Quality {quality} · maturity {maturity} · guardrails {guardrails} · significance {significance}":
+    "质量 {quality} · 成熟度 {maturity} · 护栏 {guardrails} · 显著性 {significance}",
+  "{metric} is {state}; observed regression {observed} pp against a {max} pp limit.":
+    "{metric} 当前 {state}；实测回退 {observed} pp，上限 {max} pp。",
+  "{variant}: {subjects} mature subjects, rate {rate}%, lift {lift} pp vs control, p={p}.":
+    "{variant}：成熟样本 {subjects} 个，比例 {rate}%，相对对照组提升 {lift} pp，p={p}。",
+  "Lift is withheld from decisions until every arm has at least {minimum} mature production exposures and all guardrails pass.":
+    "在每个实验组都达到至少 {minimum} 次成熟的生产曝光、且护栏全部通过之前，提升幅度不参与决策。",
+  "No funnel or cohort series exists behind this page":
+    "本页背后没有漏斗或分群序列",
+  "This is a contract gap, not a rendering gap: the authority this page reads returns generation health only. Nothing is being hidden from you — there is no funnel or retention series to show, and none is invented here.":
+    "这是数据契约的缺口，不是渲染的缺口：本页读取的权威只返回生成健康度。没有任何东西被藏起来——根本不存在可展示的漏斗或留存序列，本页也不会编一个出来。",
+  "What this page can answer today is below: per-profile generation health, and a configuration check that never calls a provider.":
+    "本页今天能回答的问题在下方：按档案看生成健康度，以及一次不调用供应器的配置检查。",
+  "Deleted “{title}”. It no longer shows anywhere on the site.":
+    "已删除“{title}”。它不再出现在站内任何位置。",
+  "Deactivated “{title}”. It is hidden from the site now.":
+    "已停用“{title}”。它现在对全站隐藏。",
+  "Activated “{title}”. It is visible site-wide now.":
+    "已启用“{title}”。它现在对全站可见。",
+  "Created “{title}”. It is live site-wide now.":
+    "已创建“{title}”，并已对全站生效。",
+  "Created “{title}”. Activate it when you want it on the site.":
+    "已创建“{title}”。需要上站时再启用它。",
+  "An in-product banner — this is the site-wide broadcast channel. Active means visible to everyone.":
+    "站内 banner——这是全站广播渠道。启用即对所有人可见。",
+  "The CMS page list response was incomplete.":
+    "CMS 页面列表的响应不完整。",
+  "The CMS page response was incomplete.":
+    "CMS 页面的响应不完整。",
+  "The article body must be a JSON object.":
+    "文章正文必须是一个 JSON 对象。",
+  "{path} is published and indexable per its indexing status.":
+    "{path} 已发布，是否收录取决于它的 indexing 状态。",
+  "{path} is unpublished and back to draft. It is no longer served.":
+    "{path} 已下线并回到草稿，不再对外提供。",
+  "Draft saved for {path}. Publishing is still a separate action.":
+    "{path} 的草稿已保存。发布仍是单独的一步。",
+  "Created draft {path}. It is not served until you publish it.":
+    "草稿 {path} 已创建。发布之前不会对外提供。",
 };
