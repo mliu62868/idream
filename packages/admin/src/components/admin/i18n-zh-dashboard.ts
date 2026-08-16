@@ -122,7 +122,6 @@ export const adminZhDashboard: Record<string, string> = {
   "{done} succeeded, {failed} failed": "{done} 条成功，{failed} 条失败",
   "Action failed": "操作失败",
   "Technical details": "技术详情",
-  "Dismiss": "关闭",
   "You are not authorized to run this action": "你没有执行这个操作的权限",
   "This work item no longer exists": "这条工作项已不存在",
   "Someone changed this item first. Refresh and retry.": "这条工作项刚被别人改过，请刷新后重试。",

@@ -11,7 +11,8 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { CheckCircle2, Info, X, XCircle } from "lucide-react";
-import { getStoredAdminLocale, translateAdmin, useAdminI18n } from "@/components/admin/i18n";
+import { translateAdmin, useAdminI18n } from "@/components/admin/i18n";
+import { readAdminLocaleFromDocument } from "@/components/admin/shell-preferences";
 import { cn } from "@/lib/utils";
 import { operatorErrorCopy, technicalDetailText } from "./request-error-copy";
 
@@ -160,7 +161,7 @@ function ToastViewport({
   // INTENT: Provider 挂在 AdminI18nProvider 之外（AdminConsoleClientOnly 是唯一允许的挂载点），
   //         useAdminI18n() 在这里只拿得到默认英文 context。正文由调用处翻译好再传进来，
   //         只有下面两句外壳文案自己查表——查的仍然是同一张词典，不是第二套 i18n。
-  const locale = getStoredAdminLocale();
+  const locale = readAdminLocaleFromDocument();
   return (
     <div
       aria-label={translateAdmin(locale, "Action results")}

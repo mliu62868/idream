@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { getStoredAdminLocale, translateAdmin } from "@/components/admin/i18n";
+import { translateAdmin } from "@/components/admin/i18n";
+import { readAdminLocaleFromDocument } from "@/components/admin/shell-preferences";
 
 // SPEC: 后台渲染崩溃时的兜底页。运营读到的是「出了什么事 + 下一步」，
 //       React 抛出的 message / digest 折进技术详情，可一键复制给工程。
@@ -16,7 +17,7 @@ export default function AdminError({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
-  const locale = getStoredAdminLocale();
+  const locale = readAdminLocaleFromDocument();
   const t = (key: string) => translateAdmin(locale, key);
   const [copied, setCopied] = useState(false);
   const detail = [

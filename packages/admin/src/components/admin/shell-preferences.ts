@@ -87,3 +87,17 @@ const ONE_YEAR_SECONDS = 60 * 60 * 24 * 365;
 export function writeAdminPreferenceCookie(name: string, value: string) {
   document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=${ONE_YEAR_SECONDS}; samesite=lax`;
 }
+
+// SPEC: 客户端读语言偏好，给 AdminI18nProvider 之外的出口用。
+// INTENT: 错误边界替换整棵子树、toast 走 portal，两者都拿不到 provider context，但它们
+//         查的必须是同一个 cookie 和同一张词典——否则运营会在中文后台看到英文 toast。
+// INVARIANT: 服务端渲染阶段没有 document，按默认语言渲染；挂载后 cookie 才是权威。
+export function readAdminLocaleFromDocument(): AdminLocale {
+  if (typeof document === "undefined") return DEFAULT_ADMIN_SHELL_PREFERENCES.locale;
+  return readAdminShellPreferences((name) =>
+    document.cookie
+      .split("; ")
+      .find((entry) => entry.startsWith(`${name}=`))
+      ?.slice(name.length + 1),
+  ).locale;
+}
