@@ -20,7 +20,7 @@ import {
   resolveCharacterCustomerPreviewAssets,
   resolveCharacterAssetReviewEvidence,
   resolveCharacterAssetSubject,
-} from "./CharacterAssetStudio";
+} from "./character-asset-studio-authority";
 
 // 只给 journey 投影里前端真正读的那部分；其余字段与本用例无关。
 function journey(

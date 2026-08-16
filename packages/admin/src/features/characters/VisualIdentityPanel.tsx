@@ -6,7 +6,7 @@ import Image from "next/image";
 import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { apiWrite } from "@/components/admin/api";
-import { characterAssetReadinessAction } from "@/features/characters/CharacterAssetStudio";
+import { characterAssetReadinessAction } from "@/features/characters/character-asset-studio-authority";
 import {
   VisualIdentityExperimentWorkbench,
   type ActivateIdentityCandidateInput,
