@@ -1,9 +1,10 @@
 import type { Metadata } from "next";
 import { adminBootstrapSchema, type AdminBootstrap } from "@idream/shared/admin";
-import { headers } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { AdminDevLogin } from "@/components/admin/AdminDevLogin";
 import { canReadAnyWorkspace, parseAdminPath } from "@/components/admin/nav-config";
+import { readAdminShellPreferences } from "@/components/admin/shell-preferences";
 import { proxyToMain } from "@/server/main-proxy";
 import { AdminConsoleClientOnly } from "../AdminConsoleClientOnly";
 
@@ -40,9 +41,14 @@ export async function renderAdminRoute(
   // INTENT: 在取 bootstrap 之前判——拼错的 URL 不该先打一次权威服务再显示成 Today。
   if (!parseAdminPath(initialSection)) notFound();
 
-  const headerList = await headers();
+  const [headerList, cookieStore] = await Promise.all([headers(), cookies()]);
   const bootstrap = await loadBootstrap(headerList);
   if (!bootstrap) return <AdminAuthorityUnavailable />;
+
+  // SPEC: 语言、工作模式、展开的分组在服务端就读出来，随首帧下发。
+  // INTENT: 它们过去存 localStorage、挂载后才读，于是首帧必然是 English + 全折叠侧栏，
+  //         几百毫秒后整页跳变一次。cookie 让首帧就是最终形态。
+  const preferences = readAdminShellPreferences((name) => cookieStore.get(name)?.value);
 
   const canReadAdmin = Boolean(bootstrap.actor)
     && canReadAnyWorkspace(new Set(bootstrap.permissions));
@@ -62,6 +68,7 @@ export async function renderAdminRoute(
       initialAccess={Boolean(bootstrap.actor)}
       initialPermissions={bootstrap.permissions}
       initialSection={initialSection}
+      preferences={preferences}
       shellSignals={bootstrap.shellSignals}
       devLogout={bootstrap.devLogin.enabled}
     />

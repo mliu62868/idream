@@ -2,6 +2,7 @@
 
 import type { AdminPermissionKey } from "@idream/shared/admin/permissions";
 import { AdminConsoleClient } from "@/components/admin/AdminConsoleClient";
+import type { AdminShellPreferences } from "@/components/admin/shell-preferences";
 import type { AdminShellSignals } from "@/components/admin/shell-signals";
 import { ToastProvider } from "@/components/admin/ui/Toast";
 
@@ -15,6 +16,7 @@ type AdminConsoleClientOnlyProps = {
   initialSection: string;
   initialAccess: boolean;
   initialPermissions: AdminPermissionKey[];
+  preferences: AdminShellPreferences;
   shellSignals: AdminShellSignals;
   devLogout?: boolean;
 };

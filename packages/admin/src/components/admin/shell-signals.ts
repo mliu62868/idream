@@ -24,6 +24,14 @@ export function adminShellSignalChips(signals: AdminShellSignals): AdminShellSig
   ].filter((chip): chip is AdminShellSignalChip => chip.value !== null);
 }
 
+// SPEC: 顶栏常驻提示里唯一还留着的溯源信号——只在"这里不是生产环境"时出现。
+// INTENT: 完整的来源芯片已经从每页一整行挪进账号菜单，但"我现在在哪套环境"不能只在菜单里：
+//         运营在 staging 上以为自己在改生产（或反过来）是会真出事的一类误判。生产是默认态，
+//         不用喊；其余（含 unknown —— 不知道自己在哪儿本身就该说出来）都必须一眼看见。
+export function adminShellEnvironmentNotice(signals: AdminShellSignals): string | null {
+  return signals.environment === "production" ? null : signals.environment;
+}
+
 type Environment = Readonly<Record<string, string | undefined>>;
 
 export function deriveAdminShellSignals(env: Environment): AdminShellSignals {

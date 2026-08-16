@@ -8,7 +8,9 @@ import {
   ADMIN_WORKSPACES,
   adminEntryRedirect,
   canReadAnyWorkspace,
+  defaultOpenNavGroups,
   defaultWorkModeForRole,
+  missingWorkspacePermissions,
   navGroupsForPermissions,
   navItems,
   parseAdminPath,
@@ -51,6 +53,13 @@ describe("admin navigation information architecture", () => {
 
   it("presents Character as the primary admin object", () => {
     expect(navItems.find((item) => item.id === "content/official")?.label).toBe("Characters");
+  });
+
+  // SPEC: 外壳给多少外框由导航项自己声明，外壳里不再有 `sectionId === "content/official"` 的特判。
+  it("declares its own shell chrome instead of being special-cased by the shell", () => {
+    for (const item of navItems) expect(["default", "compact"], item.id).toContain(item.chrome);
+    expect(navItems.filter((item) => item.chrome === "compact").map((item) => item.id))
+      .toEqual(["content/official"]);
   });
 
   it("maps canonical routes and query-backed saved views onto domain workspaces", () => {
@@ -167,6 +176,18 @@ describe("permission and work-mode navigation", () => {
     expect(sectionIsPermitted("content/assets", new Set(["content.asset.read"]))).toBe(false);
   });
 
+  // SPEC: 拒绝页要能说出差哪几个键——只报 read.allOf 里真实缺失的，不多不少。
+  it("names exactly the read keys a denied workspace is missing", () => {
+    const characters = navItems.find((item) => item.id === "content/official")!;
+    expect(missingWorkspacePermissions(characters, new Set())).toEqual(characters.read.allOf);
+    expect(missingWorkspacePermissions(characters, new Set(["character.project.read"])))
+      .toEqual(["character.release.read", "character.performance.read"]);
+    expect(missingWorkspacePermissions(characters, new Set(characters.read.allOf))).toEqual([]);
+    // 持有无关的键不能让缺失列表变短。
+    expect(missingWorkspacePermissions(characters, new Set(["audit.read"])))
+      .toEqual(characters.read.allOf);
+  });
+
   it("allows bootstrap when any exact workspace predicate is satisfied", () => {
     expect(canReadAnyWorkspace(new Set(["ops.incident.read"]))).toBe(true);
     expect(canReadAnyWorkspace(new Set(["character.performance.read"]))).toBe(true);
@@ -221,6 +242,20 @@ describe("permission and work-mode navigation", () => {
     ]), "growth_analyst").flatMap((group) => group.items.map((item) => item.id));
     expect(growth).toEqual(expect.arrayContaining(["analytics", "insights", "experiments", "growth/characters"]));
     expect(growth).not.toContain("content/official");
+  });
+
+  // SPEC: 冷启动的侧栏至少要露出一整个分组，而不是只剩「今日工作」一条。
+  // INTENT: 默认全折叠时，全新运营看到的是 1 个目的地和 6 个不知道装了什么的标题。
+  it("opens the work mode's primary group and the current page's group on a cold start", () => {
+    expect(defaultOpenNavGroups("support", "Today")).toEqual(["Customer Operations"]);
+    expect(defaultOpenNavGroups("platform_ops", "Growth"))
+      .toEqual(["Platform Operations", "Growth"]);
+    expect(defaultOpenNavGroups("growth_analyst", "Growth")).toEqual(["Growth"]);
+    // Today 常驻在顶部且不带分组标题，展开它没有意义。
+    expect(defaultOpenNavGroups("admin", "Today")).toEqual(["Character Studio"]);
+    for (const mode of ["character_producer", "creative_operator", "moderator"] as WorkMode[]) {
+      expect(defaultOpenNavGroups(mode, "Today"), mode).not.toEqual([]);
+    }
   });
 
   it("derives conservative default modes from existing auth roles", () => {
