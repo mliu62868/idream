@@ -90,12 +90,14 @@ describe("admin shell keyboard and account menu", () => {
     await mountShell();
     const input = searchInput();
 
+    // 受控 input 必须走原生 value setter，否则 React 的 value tracker 认为没变，onChange 不触发。
     await act(async () => {
       input.focus();
-      input.value = "amy";
-      input.dispatchEvent(new window.Event("input", { bubbles: true }));
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, "amy");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
     });
     expect(searchInput().value).toBe("amy");
+    expect(document.querySelector('[role="listbox"]')).not.toBeNull();
 
     await act(async () => {
       searchInput().dispatchEvent(

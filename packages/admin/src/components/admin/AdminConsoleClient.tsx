@@ -24,6 +24,7 @@ import {
   parseAdminPath,
   defaultOpenNavGroups,
   defaultWorkModeForRole,
+  missingWorkspacePermissions,
   navGroupsForPermissions,
   type AdminPath,
   type NavItem,
@@ -405,7 +406,7 @@ function AdminConsoleContent({
                 />
               </div>
               <div className="flex w-full items-center gap-2 md:w-auto">
-                <div className="min-w-0 flex-1 md:flex-none"><GlobalAdminSearch /></div>
+                <div className="min-w-0 flex-1 md:flex-none"><GlobalAdminSearch permissions={permissions} /></div>
                 {/* SPEC: 刷新只广播事件；各工作台自取数、自报加载态。 */}
                 <button
                   className="inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-sm text-[var(--ad-text)] hover:bg-black/[0.04]"
@@ -431,19 +432,10 @@ function AdminConsoleContent({
 
           <div className="p-4 md:p-6">
             {!canAccessActiveSection ? (
-              <section
-                aria-labelledby="admin-section-denied-title"
-                className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6"
-                data-testid="admin-section-permission-denied"
-              >
-                <div className="flex items-center gap-3">
-                  <Ban className="h-5 w-5 text-[var(--ad-red-text)]" />
-                  <h2 className="text-base font-semibold" id="admin-section-denied-title">{t("No permission for this workspace")}</h2>
-                </div>
-                <p className="mt-2 text-sm text-[var(--ad-text-muted)]">
-                  {t("Your effective permission keys do not include this capability. Navigation updates after a permission change and refresh.")}
-                </p>
-              </section>
+              <PermissionDenied
+                canReachTeamAccess={permissions.has("user.read")}
+                missing={missingWorkspacePermissions(activeItem, permissions)}
+              />
             ) : (
               activeItem.render({
                 actorId: actor.id,
@@ -459,6 +451,64 @@ function AdminConsoleContent({
 
     </main>
     </>
+  );
+}
+
+// SPEC: 拒绝页要能让运营走下一步：缺哪几个键、在哪儿授予、授予者需要什么。
+// INTENT: 原来的文案（"你的有效权限键不包含此能力"）是一条死路——运营在这一页唯一能做的
+//         就是关掉它。这里只写能从代码里如实推出来的三件事：missingWorkspacePermissions()
+//         算出的键、授予面是「团队访问」（AccessWorkspace）、授予者需要 user.role.write
+//         （AccessWorkspace 自己就是这么判 managePermissions 的）。为什么被拒、该找哪位同事，
+//         前端推不出来，就不写。
+// INVARIANT: 「团队访问」的链接只在运营真读得进去时才出——否则只是把他们推向第二堵墙。
+function PermissionDenied({
+  canReachTeamAccess,
+  missing,
+}: {
+  canReachTeamAccess: boolean;
+  missing: readonly AdminPermissionKey[];
+}) {
+  const { t } = useAdminI18n();
+
+  return (
+    <section
+      aria-labelledby="admin-section-denied-title"
+      className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6"
+      data-testid="admin-section-permission-denied"
+    >
+      <div className="flex items-center gap-3">
+        <Ban className="h-5 w-5 text-[var(--ad-red-text)]" />
+        <h2 className="text-base font-semibold" id="admin-section-denied-title">{t("No permission for this workspace")}</h2>
+      </div>
+      <p className="mt-2 text-sm text-[var(--ad-text-muted)]">
+        {t("This workspace requires permission keys your account does not have.")}
+      </p>
+      <p className="mt-4 text-[11px] font-semibold uppercase text-[var(--ad-text-muted)]">
+        {t("Missing permission keys")}
+      </p>
+      <ul className="mt-1.5 flex flex-wrap gap-2" data-testid="admin-missing-permission-keys">
+        {missing.map((permission) => (
+          <li
+            className="rounded-md bg-[var(--ad-surface-subtle)] px-2 py-1 font-mono text-xs text-[var(--ad-ink)]"
+            key={permission}
+          >
+            {permission}
+          </li>
+        ))}
+      </ul>
+      <p className="mt-4 text-sm text-[var(--ad-text-muted)]">
+        {t("These keys are granted in Team Access by an operator holding {key}.", { key: "user.role.write" })}{" "}
+        {t("Navigation updates after the grant and a refresh.")}
+      </p>
+      {canReachTeamAccess ? (
+        <Link
+          className="mt-4 inline-flex min-h-11 items-center rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold text-[var(--ad-ink)] hover:bg-black/[0.04] focus-visible:border-[var(--ad-ink)] focus-visible:ring-2 focus-visible:ring-[var(--ad-ink)]/10"
+          href="/admin/system/access"
+        >
+          {t("Team Access")}
+        </Link>
+      ) : null}
+    </section>
   );
 }
 
@@ -572,7 +622,7 @@ function AccountMenu({
         aria-controls="admin-account-menu"
         aria-expanded={open}
         aria-label={t("Account and shell settings")}
-        className="inline-flex h-9 items-center gap-2 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-2.5 text-sm text-[var(--ad-text)] hover:bg-black/[0.04]"
+        className="inline-flex h-9 items-center gap-2 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-2.5 text-sm text-[var(--ad-text)] hover:bg-black/[0.04] focus-visible:border-[var(--ad-ink)] focus-visible:ring-2 focus-visible:ring-[var(--ad-ink)]/10"
         onClick={() => setOpen((previous) => !previous)}
         ref={triggerRef}
         type="button"
@@ -593,7 +643,7 @@ function AccountMenu({
 
           <label className="mt-3 grid gap-1 text-[11px] font-semibold text-[var(--ad-text-muted)]">
             {t("Language")}
-            <span className="inline-flex h-9 items-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-sm font-normal text-[var(--ad-text)]">
+            <span className="inline-flex h-9 items-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-sm font-normal text-[var(--ad-text)] focus-within:border-[var(--ad-ink)] focus-within:ring-2 focus-within:ring-[var(--ad-ink)]/10">
               <Languages className="h-4 w-4 text-[var(--ad-text-muted)]" />
               <select
                 aria-label={t("Language")}
@@ -613,7 +663,7 @@ function AccountMenu({
               {t("Work mode")}
               <select
                 aria-label={t("Work mode")}
-                className="h-9 rounded-md border border-[var(--ad-border)] bg-transparent px-3 text-sm font-normal text-[var(--ad-text)] outline-none"
+                className="h-9 rounded-md border border-[var(--ad-border)] bg-transparent px-3 text-sm font-normal text-[var(--ad-text)] outline-none focus-visible:border-[var(--ad-ink)] focus-visible:ring-2 focus-visible:ring-[var(--ad-ink)]/10"
                 onChange={(event) => setWorkMode(event.target.value as WorkMode)}
                 value={workMode}
               >
