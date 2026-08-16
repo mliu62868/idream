@@ -229,8 +229,7 @@ import {
 } from "./generation-job-read-model";
 import { createGenerationJobForUser } from "./generation-job-create";
 import {
-  assertGenerationJobIsRetryable,
-  resolveGenerationRetryAuthority,
+  quoteGenerationRetry,
   resolveGenerationRetryTarget,
   retryGenerationJobForUser,
 } from "./generation-job-retry";
@@ -2211,33 +2210,9 @@ async function generationRetryQuote(request: Request, id: string) {
   const user = requireUser(ctx);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
-  const job = await prisma.generationJob.findFirst({
-    where: { id, userId: user.id },
-  });
-  if (!job) throw Errors.notFound("Generation job not found");
-  assertGenerationJobIsRetryable(job);
-  const authority = await resolveGenerationRetryAuthority(user.id, job);
-  const balance = await dreamcoinBalance(user.id);
-  return ok({
-    quote: {
-      mode: job.mode,
-      generationJobId: job.id,
-      profileId: authority.profile.profileKey,
-      profileVersion: authority.profile.version,
-      routeFingerprint: authority.routeFingerprint,
-      pricing: {
-        ruleId: authority.pricingAuthority.id,
-        ruleKey: authority.pricingAuthority.ruleKey,
-        version: authority.pricingAuthority.version,
-        effectiveFrom:
-          authority.pricingAuthority.effectiveFrom?.toISOString() ?? null,
-        fingerprint: authority.pricingFingerprint,
-      },
-      outputCount: job.outputCount,
-      costDreamcoins: authority.cost,
-      balance,
-    },
-  });
+  return ok(
+    await quoteGenerationRetry({ userId: user.id, generationJobId: id }),
+  );
 }
 
 async function retryGenerationJob(request: Request, id: string) {

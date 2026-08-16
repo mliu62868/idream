@@ -12,10 +12,9 @@ import { generationJobSchema } from "./generation-request-schema";
 import { quoteAuthorityFor, quoteGeneration } from "./generation-quote";
 import { createGenerationJobForUser } from "./generation-job-create";
 import {
-  resolveGenerationRetryAuthority,
+  quoteGenerationRetry,
   resolveGenerationRetryTarget,
   retryGenerationJobForUser,
-  type RetryableGenerationJob,
 } from "./generation-job-retry";
 import { duplicateCharacterForUser } from "./character-duplicate";
 import { recordMediaIdentityFeedback } from "./media-feedback";
@@ -68,18 +67,13 @@ async function quotedFreeplayBody(userId: string, prompt: string) {
   return { ...body, quoteAuthority: quoteAuthority! };
 }
 
-// The retry handshake's client half: recompute the authority and project the six
-// fields the domain function re-verifies.
-async function exactRetryQuote(userId: string, job: RetryableGenerationJob) {
-  const authority = await resolveGenerationRetryAuthority(userId, job);
-  return {
-    profileId: authority.profile.profileKey,
-    profileVersion: authority.profile.version,
-    routeFingerprint: authority.routeFingerprint,
-    pricingFingerprint: authority.pricingFingerprint,
-    outputCount: job.outputCount,
-    costDreamcoins: authority.cost,
-  };
+// The retry handshake's client half, driven through the same two exports a real
+// caller uses: quote the retry, then project the six fields submit re-verifies.
+async function exactRetryQuote(userId: string, generationJobId: string) {
+  const { quote } = await quoteGenerationRetry({ userId, generationJobId });
+  const authority = quoteAuthorityFor(quote, quote.outputCount);
+  expect(authority).not.toBeNull();
+  return authority!;
 }
 
 async function expectAppError(promise: Promise<unknown>, status: number) {
@@ -216,7 +210,7 @@ describe("retryGenerationJobForUser", () => {
       userId,
       job: target.job,
       idempotencyKey: `${P}retry-key`,
-      quoteAuthority: await exactRetryQuote(userId, target.job),
+      quoteAuthority: await exactRetryQuote(userId, failed.id),
     });
 
     expect(retry.id).not.toBe(failed.id);
@@ -252,7 +246,7 @@ describe("retryGenerationJobForUser", () => {
       userId,
       job: first.job,
       idempotencyKey,
-      quoteAuthority: await exactRetryQuote(userId, first.job),
+      quoteAuthority: await exactRetryQuote(userId, failed.id),
     });
 
     const replay = await resolveGenerationRetryTarget({

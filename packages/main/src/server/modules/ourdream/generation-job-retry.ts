@@ -64,9 +64,9 @@ import {
 // INVARIANT: 重试永远新建一行 Job（derivedFromJobId 指回去），不复用、不改写原行；
 // 同一个 Idempotency-Key 第二次到达时解析回同一行重试，且必须仍指向同一个源 Job。
 
-export type RetryableGenerationJob = GenerationJobRow & { mode: "image" | "video" };
+type RetryableGenerationJob = GenerationJobRow & { mode: "image" | "video" };
 
-export function assertGenerationJobIsRetryable(
+function assertGenerationJobIsRetryable(
   job: GenerationJobRow,
 ): asserts job is RetryableGenerationJob {
   if (job.status === "blocked") {
@@ -118,7 +118,43 @@ export async function resolveGenerationRetryTarget(input: {
   return { kind: "retryable", job };
 }
 
-export async function resolveGenerationRetryAuthority(
+// SPEC: 重试报价 —— 重算一次权威，投影成客户端提交前要回传的那份令牌事实。
+// INVARIANT: 报价不落库、不预留额度；它的权威性由 retryGenerationJobForUser 里
+// 同源重算的 assertQuoteStillValid 兑现。
+export async function quoteGenerationRetry(input: {
+  readonly userId: string;
+  readonly generationJobId: string;
+}) {
+  const job = await prisma.generationJob.findFirst({
+    where: { id: input.generationJobId, userId: input.userId },
+  });
+  if (!job) throw Errors.notFound("Generation job not found");
+  assertGenerationJobIsRetryable(job);
+  const authority = await resolveGenerationRetryAuthority(input.userId, job);
+  const balance = await dreamcoinBalance(input.userId);
+  return {
+    quote: {
+      mode: job.mode,
+      generationJobId: job.id,
+      profileId: authority.profile.profileKey,
+      profileVersion: authority.profile.version,
+      routeFingerprint: authority.routeFingerprint,
+      pricing: {
+        ruleId: authority.pricingAuthority.id,
+        ruleKey: authority.pricingAuthority.ruleKey,
+        version: authority.pricingAuthority.version,
+        effectiveFrom:
+          authority.pricingAuthority.effectiveFrom?.toISOString() ?? null,
+        fingerprint: authority.pricingFingerprint,
+      },
+      outputCount: job.outputCount,
+      costDreamcoins: authority.cost,
+      balance,
+    },
+  };
+}
+
+async function resolveGenerationRetryAuthority(
   userId: string,
   job: RetryableGenerationJob,
 ) {
@@ -597,7 +633,7 @@ export async function retryGenerationJobForUser(input: {
   });
 }
 
-export function generationJobRequiresPinnedLegacyAuthority(job: {
+function generationJobRequiresPinnedLegacyAuthority(job: {
   readonly characterId: string | null;
   readonly controls: Prisma.JsonValue;
   readonly mode: string;
