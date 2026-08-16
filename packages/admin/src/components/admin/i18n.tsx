@@ -10,10 +10,11 @@ import { adminZhGrowth } from "./i18n-zh-growth";
 import { adminZhPlatformOps } from "./i18n-zh-platform-ops";
 import { adminZhShell } from "./i18n-zh-shell";
 import { adminZhSystem } from "./i18n-zh-system";
+import type { AdminLocale } from "./shell-preferences";
 
-export type AdminLocale = "en" | "zh";
-
-const ADMIN_LOCALE_STORAGE_KEY = "idream.admin.locale";
+// AdminLocale 的取值域住在 shell-preferences.ts（服务端也要按它校验 cookie）；这里转出去，
+// 既有引用方（today/*、jobs/*）不必改 import 路径。
+export type { AdminLocale };
 
 // SPEC: 中文文案按功能域分文件（域划分对应 nav-config.ts 的工作区分组），本文件只负责合并与查表。
 // INTENT: 改一个域的文案只碰那一个域文件；不再有"新 key 该扔进哪个字母分片"的问题。
@@ -80,6 +81,8 @@ const zhValues: Record<string, string> = {
   customer: "客户",
   detected: "已发现",
   development: "开发环境",
+  // AdminShellSignals.environment 的取值之一；顶栏的非生产环境提示直接把它 t() 出来。
+  local: "本地环境",
   delivered: "已交付",
   draft: "草稿",
   due: "到期",
@@ -230,20 +233,6 @@ function interpolate(template: string, values?: TranslationValues) {
     (text, [key, value]) => text.replaceAll(`{${key}}`, String(value)),
     template,
   );
-}
-
-export function isAdminLocale(value: string | null): value is AdminLocale {
-  return value === "en" || value === "zh";
-}
-
-export function getStoredAdminLocale(): AdminLocale {
-  if (typeof window === "undefined") return "en";
-  const value = window.localStorage.getItem(ADMIN_LOCALE_STORAGE_KEY);
-  return isAdminLocale(value) ? value : "en";
-}
-
-export function storeAdminLocale(locale: AdminLocale) {
-  window.localStorage.setItem(ADMIN_LOCALE_STORAGE_KEY, locale);
 }
 
 export function translateAdmin(

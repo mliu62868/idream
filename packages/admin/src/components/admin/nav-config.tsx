@@ -31,6 +31,7 @@ import {
   ADMIN_V2_WORKSPACE_ACCESS,
   type AdminV2WorkspaceAccessKey,
 } from "./workspace-access";
+import type { WorkMode } from "./shell-preferences";
 import type { AdminPermissionKey } from "@idream/shared/admin/permissions";
 import { BackendsView } from "@/components/admin/BackendsView";
 import { GenerationMetricsView } from "@/components/admin/GenerationMetricsView";
@@ -84,14 +85,9 @@ export const ADMIN_WORKSPACES = [
 ] as const;
 
 export type AdminWorkspace = (typeof ADMIN_WORKSPACES)[number];
-export type WorkMode =
-  | "character_producer"
-  | "creative_operator"
-  | "platform_ops"
-  | "support"
-  | "moderator"
-  | "growth_analyst"
-  | "admin";
+// WorkMode 的取值域住在 shell-preferences.ts —— 那是服务端也能安全 import 的叶子模块，
+// 读 cookie 时要按它校验。这里转出去，既有引用方（today/*）不必改 import 路径。
+export type { WorkMode };
 
 // SPEC: 一个 section 渲染自己所需的全部上下文；除此之外 shell 不再向下传任何东西。
 // INTENT: 权限只以 ReadonlySet 下发，section 自己 has() 出需要的写权限——曾经每加一个
@@ -115,14 +111,21 @@ export type NavItem = {
   read: { allOf: readonly AdminPermissionKey[] };
   apiWorkspace: AdminV2WorkspaceAccessKey | null;
   tier: "daily" | "folded";
+  // SPEC: 这一页需要外壳给多厚的外框。compact = 工作台自己画页面级标题，外壳只出面包屑。
+  // INTENT: 这以前是外壳里 `sectionId === "content/official"` 的硬编码特判，在副标题、全局搜索、
+  //         工作模式选择器、来源条四处各 null 一次——结果角色页成了全站唯一没有全局搜索的页面，
+  //         一个纯粹的孤岛。真正的差别只有一条：角色工作台顶着 96px 头像和角色名的大标题，
+  //         外壳再叠一个 h1 就是两层标题。让导航项自己声明这一条，特判从外壳里消失。
+  chrome: "default" | "compact";
   // SPEC: 导航项自带渲染方式，必填。
   // INVARIANT: 这是"新增导航项必须同时配好组件"的唯一强制点——漏了就是编译错误，
   //            而不是像过去那样在 renderSection 的 if 链末尾静默落到角色审核队列。
   render: (context: SectionContext) => ReactNode;
 };
 
-type ItemInput = Omit<NavItem, "apiWorkspace" | "legacyHref" | "tier"> & {
+type ItemInput = Omit<NavItem, "apiWorkspace" | "legacyHref" | "tier" | "chrome"> & {
   apiWorkspace?: AdminV2WorkspaceAccessKey;
+  chrome?: NavItem["chrome"];
 };
 
 function read(...allOf: AdminPermissionKey[]): NavItem["read"] {
@@ -133,6 +136,7 @@ function item(input: ItemInput): NavItem {
   return {
     ...input,
     apiWorkspace: input.apiWorkspace ?? null,
+    chrome: input.chrome ?? "default",
     legacyHref: input.id === "dashboard" ? "/admin" : `/admin/${input.id}`,
     tier: input.group === "Today" ? "daily" : "folded",
   };
@@ -142,6 +146,7 @@ function targetItem(input: ItemInput): NavItem {
   return {
     ...input,
     apiWorkspace: input.apiWorkspace ?? null,
+    chrome: input.chrome ?? "default",
     legacyHref: null,
     tier: input.group === "Today" ? "daily" : "folded",
   };
@@ -166,7 +171,7 @@ export const navItems: NavItem[] = [
   apiItem({ id: "dashboard", label: "Today", href: "/admin/today", icon: Gauge, group: "Today", apiWorkspace: "today",
     render: (ctx) => <TodayWorkspace workMode={ctx.workMode} /> }),
 
-  apiItem({ id: "content/official", label: "Characters", href: "/admin/characters", icon: ShieldCheck, group: "Character Studio", apiWorkspace: "character_workspace",
+  apiItem({ id: "content/official", label: "Characters", href: "/admin/characters", icon: ShieldCheck, group: "Character Studio", apiWorkspace: "character_workspace", chrome: "compact",
     render: (ctx) => <CharacterWorkspace actorId={ctx.actorId} permissions={ctx.permissions} view={ctx.view} /> }),
   item({ id: "content/review-queue", label: "Character Review", href: "/admin/characters/review", icon: ClipboardCheck, group: "Character Studio", read: read("safety.review.read"),
     render: () => <ReviewQueueView /> }),
@@ -313,6 +318,20 @@ const MODE_GROUP_ORDER: Record<WorkMode, readonly AdminWorkspace[]> = {
   growth_analyst: ["Today", "Growth", "Character Studio", "Creative Studio", "Customer Operations", "Platform Operations", "System"],
   admin: ADMIN_WORKSPACES,
 };
+
+// SPEC: 冷启动（还没有 openNavGroups cookie）时侧栏默认展开哪些折叠分组。
+// INTENT: 之前默认全折叠——新运营打开后台只看得见「今日工作」一条加六个不知道里面装什么的
+//         分组标题，34 个能力一个都不露，渐进披露用过了头。工作模式本来就声明了"这个人整天
+//         在干什么"，就按它展开首要分组，再加上当前页所在的分组：冷启动即可上手，侧栏又不至于
+//         长到必须滚动才能看全。剩下的分组仍是一次点击的距离。
+export function defaultOpenNavGroups(mode: WorkMode, activeGroup: AdminWorkspace): AdminWorkspace[] {
+  // "Today" 是固定在顶部、不带分组标题的常驻区，展开它没有意义。
+  const groups = new Set<AdminWorkspace>();
+  const primary = MODE_GROUP_ORDER[mode].find((group) => group !== "Today");
+  if (primary) groups.add(primary);
+  if (activeGroup !== "Today") groups.add(activeGroup);
+  return [...groups];
+}
 
 export function defaultWorkModeForRole(role: string | undefined): WorkMode {
   if (role === "support") return "support";
