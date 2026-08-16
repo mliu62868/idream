@@ -100,6 +100,9 @@ export const adminPageInfoSchema = z
   .object({
     endCursor: z.string().min(1).nullable(),
     hasNextPage: z.boolean(),
+    // startCursor 原样回传给该 operation 的 `before` 参数即可取上一页。只有实现了反向
+    // 分页的 operation 才接受 `before`，其余会被 .strict() 挡成 400 —— 宁可报错，也不要
+    // 静默把第一页当成上一页返回。
     startCursor: z.string().min(1).nullable().optional(),
     hasPreviousPage: z.boolean().optional(),
     // 筛选后的总行数，不是当页行数 —— 前端过去拿 items.length 当「共 N 条」显示。
@@ -139,8 +142,6 @@ export function adminListResponseSchema<
 export const adminCursorQuerySchema = z
   .object({
     cursor: z.string().trim().min(1).optional(),
-    // 反向翻页：把上一页响应里的 startCursor 原样回传。与 cursor 互斥。
-    before: z.string().trim().min(1).optional(),
     limit: z.coerce.number().int().min(1).max(200).default(50),
     search: z.string().trim().min(1).max(200).optional(),
     sort: z.string().trim().min(1).optional(),

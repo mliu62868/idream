@@ -376,6 +376,8 @@ export const characterPortfolioItemSchema = z
   .strict();
 
 export const characterPortfolioQuerySchema = adminCursorQuerySchema.extend({
+  // 反向翻页：把上一页响应里的 startCursor 原样回传。与 cursor 互斥。
+  before: z.string().trim().min(1).optional(),
   phase: characterProjectPhaseSchema.optional(),
   servingState: characterServingStateSchema.optional(),
   readiness: adminReadinessSchema.optional(),
