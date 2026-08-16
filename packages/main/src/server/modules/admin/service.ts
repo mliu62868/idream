@@ -53,12 +53,6 @@ import {
 } from "./content/placements";
 
 import { listCmsPages, getCmsPage, createCmsPage, patchCmsPage, publishCmsPage } from "./cms";
-import {
-  exportUserData,
-  eraseUser,
-  listAgeVerifications,
-  overrideAgeVerification,
-} from "./compliance";
 import { profileHealth, profileDryRun } from "./generation-health";
 import { generationMetrics } from "./generation-metrics";
 import {
@@ -92,7 +86,6 @@ import {
   publishPricingRule,
   rollbackPricingRule,
 } from "./pricing/service";
-export { DUAL_APPROVAL_FLAG, LEDGER_APPROVAL_THRESHOLD } from "./shared/legacy-approval";
 import {
   getUserDetail,
   listUserPermissions,
@@ -123,12 +116,6 @@ import {
   uploadModelImport,
 } from "./generation/config/service";
 import {
-  appealDecision,
-  mediaReviewDecision,
-  moderationDecision,
-  moderationQueue,
-} from "./moderation/service";
-import {
   escalateSupportRequest,
   listSupportRequests,
   patchSupportRequest,
@@ -140,12 +127,6 @@ import {
   listRedeemCodes,
   listReferrals,
 } from "./promo/service";
-import {
-  approveApproval,
-  createApproval,
-  listApprovals,
-  rejectApproval,
-} from "./approvals/service";
 import {
   chatOpsModerationEvents,
   chatOpsOverview,
@@ -162,11 +143,7 @@ import {
   setCharacterTags,
   setCharacterVisibility,
 } from "./content/merchandising";
-import {
-  abuseOverview,
-  analyticsOverview,
-  providerOps,
-} from "./overviews/service";
+import { analyticsOverview, providerOps } from "./overviews/service";
 import {
   createSavedView,
   deleteSavedView,
@@ -276,19 +253,6 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
     }
   }
 
-  if (resource === "moderation") {
-    if (id === "queue" && !action && method === "GET") return moderationQueue(request);
-    if (id === "media" && action && child === "decision" && method === "POST") {
-      return mediaReviewDecision(request, action);
-    }
-    if (id && action === "decision" && method === "POST") {
-      return moderationDecision(request, id);
-    }
-    if (id === "appeals" && action && !child && method === "PATCH") {
-      return appealDecision(request, action);
-    }
-  }
-
   if (resource === "billing") {
     if (id === "ledger" && !action && method === "GET") return billingLedger(request);
     if (id === "subscriptions" && !action && method === "GET") return listSubscriptions(request);
@@ -333,10 +297,6 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
 
   if (resource === "analytics" && id === "overview" && !action && method === "GET") {
     return analyticsOverview(request);
-  }
-
-  if (resource === "risk" && id === "abuse" && !action && method === "GET") {
-    return abuseOverview(request);
   }
 
   if (resource === "ops" && id === "providers" && !action && method === "GET") {
@@ -470,13 +430,6 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
     if (id === "referrals" && !action && method === "GET") return listReferrals(request);
   }
 
-  if (resource === "approvals") {
-    if (!id && method === "GET") return listApprovals(request);
-    if (!id && method === "POST") return createApproval(request);
-    if (id && action === "approve" && method === "POST") return approveApproval(request, id);
-    if (id && action === "reject" && method === "POST") return rejectApproval(request, id);
-  }
-
   if (resource === "chat") {
     if (id === "overview" && !action && method === "GET") return chatOpsOverview(request);
     if (id === "provider-health" && !action && method === "GET") return chatOpsProviderHealth(request);
@@ -495,22 +448,6 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
     if (!action && method === "POST") return createCmsPage(request);
     if (!action && method === "PATCH") return patchCmsPage(request);
     if (action === "publish" && method === "POST") return publishCmsPage(request);
-  }
-
-  // T2 合规（DSAR 导出/擦除 + 年龄验证复核）
-  if (resource === "compliance") {
-    if (id === "users" && action && child === "export" && method === "GET") {
-      return exportUserData(request, action);
-    }
-    if (id === "users" && action && child === "erase" && method === "POST") {
-      return eraseUser(request, action);
-    }
-    if (id === "age-verifications" && !action && method === "GET") {
-      return listAgeVerifications(request);
-    }
-    if (id === "age-verifications" && action && child === "override" && method === "POST") {
-      return overrideAgeVerification(request, action);
-    }
   }
 
   // T4 生成 profile 健康度 + dry-run（与既有 model-profiles publish/rollback 正交）

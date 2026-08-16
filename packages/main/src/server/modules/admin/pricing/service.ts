@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
-import { enforceApproval } from "@/server/modules/admin/shared/legacy-approval";
+import { enforceApproval } from "@/server/modules/admin-v2/approvals/enforcement";
 import {
   actorWithPermission,
   jsonBody,

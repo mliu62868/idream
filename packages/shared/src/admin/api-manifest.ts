@@ -368,6 +368,26 @@ export const ADMIN_V2_API_OPERATIONS = [
   operation("GET", "/api/v2/admin/users/:id/grant-bundles", allOf("user.role.write"), "path:id", "adminGrantBundleListSchema"),
   operation("POST", "/api/v2/admin/users/:id/grant-bundles", allOf("user.role.write"), "adminGrantBundleWriteSchema+idempotency-key", "adminGrantBundleMutationSchema"),
   operation("DELETE", "/api/v2/admin/users/:id/grant-bundles/:bundleKey", allOf("user.role.write"), "adminGrantBundleRevokeSchema+idempotency-key", "adminGrantBundleMutationSchema"),
+
+  // ---- trust: migrated from v1 ----
+  operation("GET", "/api/v2/admin/moderation/queue", allOf("safety.review.read"), "moderationQueueQuerySchema", "moderationQueueResponseSchema"),
+  operation("POST", "/api/v2/admin/moderation/media/:id/decision", allOf("safety.review.write"), "moderationMediaDecisionRequestSchema+idempotency-key", "moderationMediaDecisionResponseSchema", undefined, { commandType: "safety.media.review" }),
+  operation("POST", "/api/v2/admin/moderation/reports/:id/decision", allOf("safety.review.write"), "moderationReportDecisionRequestSchema+idempotency-key", "moderationReportDecisionResponseSchema", undefined, { commandType: "safety.review.decision" }),
+  operation("POST", "/api/v2/admin/moderation/appeals/:id/decision", allOf("safety.review.write"), "moderationAppealDecisionRequestSchema+idempotency-key", "moderationAppealDecisionResponseSchema", undefined, { commandType: "safety.appeal.decision" }),
+
+  operation("GET", "/api/v2/admin/compliance/users/:id/export", allOf("compliance.read"), "path:id", "complianceUserExportResponseSchema"),
+  operation("POST", "/api/v2/admin/compliance/users/:id/erase", allOf("compliance.write"), "complianceEraseRequestSchema", "complianceEraseResponseSchema"),
+  operation("GET", "/api/v2/admin/compliance/age-verifications", allOf("compliance.read"), "complianceAgeVerificationQuerySchema", "complianceAgeVerificationListResponseSchema"),
+  operation("POST", "/api/v2/admin/compliance/age-verifications/:id/override", allOf("compliance.write"), "complianceAgeVerificationOverrideRequestSchema", "complianceAgeVerificationOverrideResponseSchema"),
+
+  operation("GET", "/api/v2/admin/risk/abuse", allOf("billing.read"), "riskAbuseQuerySchema", "riskAbuseOverviewSchema"),
+
+  operation("GET", "/api/v2/admin/approvals", allOf("admin.approval.review"), "approvalListQuerySchema", "approvalListResponseSchema"),
+  // INTENT: 请求方的真正门槛是动态的「你自己得先持有你要申请的那把钥匙」，manifest 表达不了。
+  // 这里声明的是「进得了运营台」这条静态下限，动态那条仍由 createApproval 强制。
+  operation("POST", "/api/v2/admin/approvals", allOf("dashboard.read"), "approvalCreateRequestSchema", "approvalMutationResponseSchema"),
+  operation("POST", "/api/v2/admin/approvals/:id/approve", allOf("admin.approval.review"), "approvalDecisionRequestSchema", "approvalMutationResponseSchema"),
+  operation("POST", "/api/v2/admin/approvals/:id/reject", allOf("admin.approval.review"), "approvalDecisionRequestSchema", "approvalMutationResponseSchema"),
 ] as const satisfies readonly AdminV2ApiOperation[];
 
 /** One declared operation, literals intact. */

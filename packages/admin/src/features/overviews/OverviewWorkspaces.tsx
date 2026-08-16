@@ -143,7 +143,7 @@ export function RiskWorkspace({ canRead }: { canRead: boolean }) {
   return (
     <SingleOverview<RiskData>
       canRead={canRead}
-      endpoint="/api/v1/admin/risk/abuse"
+      endpoint="/api/v2/admin/risk/abuse"
       permission="billing.read"
       purpose="Inspect owner-scoped financial abuse signals while keeping response actions in their source domains."
       render={(data) => (

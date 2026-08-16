@@ -6,7 +6,7 @@ import { ok } from "@/server/lib/http";
 import { executeIdempotentDomainCommand } from "@/server/modules/admin/shared/domain-command";
 import { persistTransactionalAdminMutation } from "@/server/modules/admin/shared/transactional-mutation";
 import { postDreamcoinEntry } from "@/server/modules/billing/ledger";
-import { enforceApproval, LEDGER_APPROVAL_THRESHOLD } from "@/server/modules/admin/shared/legacy-approval";
+import { enforceApproval, LEDGER_APPROVAL_THRESHOLD } from "@/server/modules/admin-v2/approvals/enforcement";
 import {
   actorWithPermission,
   hashHeader,

@@ -594,7 +594,7 @@ test("flow 4/5/6: generation, billing, and moderation via the real server", asyn
   expect(report.ok(), JSON.stringify(reportBody)).toBeTruthy();
   const reportId = reportBody.data.report.id as string;
 
-  const queue = await ctx.get("/api/v1/admin/moderation/queue", {
+  const queue = await ctx.get("/api/v2/admin/moderation/queue", {
     headers: { "x-idream-user-id": "seed-admin-user", "x-idream-role": "admin" },
     params: { id: reportId },
   });

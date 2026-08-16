@@ -111,37 +111,27 @@ describe("Admin v2 architecture boundaries", () => {
     expect(deadLetterDomain).not.toContain(["@/server/modules/admin", "service"].join("/"));
   });
 
-  it("keeps moderation and access authorities out of the dispatcher monolith", async () => {
+  it("keeps the access authority out of the dispatcher monolith", async () => {
     const dispatcher = await readFile(path.join(process.cwd(), "src/server/modules/admin/service.ts"), "utf8");
-    const moderation = await readFile(path.join(process.cwd(), "src/server/modules/admin/moderation/service.ts"), "utf8").catch(() => "");
     const access = await readFile(path.join(process.cwd(), "src/server/modules/admin/users/service.ts"), "utf8");
 
-    expect(dispatcher).not.toContain("const adminDecisionSchema");
-    expect(dispatcher).not.toContain("async function moderationQueue");
-    expect(dispatcher).not.toContain("async function moderationDecision");
-    expect(moderation).toContain("export async function moderationQueue");
-    expect(moderation).not.toContain(["@/server/modules/admin", "service"].join("/"));
     expect(dispatcher).not.toContain("async function listUsers");
     expect(access).toContain("export async function listUsers");
   });
 
-  it("keeps support, promo, and approvals authorities out of the dispatcher monolith", async () => {
+  it("keeps support and promo authorities out of the dispatcher monolith", async () => {
     const root = path.join(process.cwd(), "src/server/modules/admin");
     const dispatcher = await readFile(path.join(root, "service.ts"), "utf8");
     const support = await readFile(path.join(root, "support/service.ts"), "utf8").catch(() => "");
     const promo = await readFile(path.join(root, "promo/service.ts"), "utf8").catch(() => "");
-    const approvals = await readFile(path.join(root, "approvals/service.ts"), "utf8").catch(() => "");
 
     expect(dispatcher).not.toContain("const supportRequestPatchSchema");
     expect(dispatcher).not.toContain("async function listSupportRequests");
     expect(dispatcher).not.toContain("async function viewPlaintext");
     expect(dispatcher).not.toContain("const redeemCodeCreateSchema");
     expect(dispatcher).not.toContain("async function listRedeemCodes");
-    expect(dispatcher).not.toContain("const approvalCreateSchema");
-    expect(dispatcher).not.toContain("async function listApprovals");
     expect(support).toContain("export async function listSupportRequests");
     expect(promo).toContain("export async function listRedeemCodes");
-    expect(approvals).toContain("export async function listApprovals");
   });
 
   it("keeps Chat Ops proxy authority out of the dispatcher monolith", async () => {
@@ -173,7 +163,6 @@ describe("Admin v2 architecture boundaries", () => {
     const overviews = await readFile(path.join(root, "overviews/service.ts"), "utf8").catch(() => "");
     const savedViews = await readFile(path.join(root, "saved-views/service.ts"), "utf8").catch(() => "");
     expect(dispatcher).not.toContain("async function analyticsOverview");
-    expect(dispatcher).not.toContain("async function abuseOverview");
     expect(dispatcher).not.toContain("async function providerOps");
     expect(dispatcher).not.toContain("async function listSavedViews");
     expect(dispatcher).not.toContain("const savedViewCreateSchema");

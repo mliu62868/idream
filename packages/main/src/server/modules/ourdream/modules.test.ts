@@ -26,6 +26,7 @@ import {
   purgeTestData,
 } from "@/server/test/helpers";
 import { legacyRedeemCodeHash } from "@/server/lib/redeem-codes";
+import { adminV2 } from "@/server/test/trust-safety-admin-v2";
 
 // SPEC: Remaining API surface (BackendFeatureSpec §5.1/5.6/5.7/5.9/5.10) —
 // age gate/verification, profile/preferences/language, redeem, referrals,
@@ -1042,7 +1043,7 @@ describe("tags, likes, duplicate", () => {
       imageReferenceInputsForGenerationJob(generationReferenceInput),
     ).resolves.toEqual([]);
 
-    const mediaQueue = await api("GET", "admin/moderation/queue", {
+    const mediaQueue = await adminV2("GET", "moderation/queue", {
       userId: reviewerId,
       role: "moderator",
       query: {
@@ -1061,9 +1062,9 @@ describe("tags, likes, duplicate", () => {
       }),
     ]);
 
-    const mediaDecision = await api(
+    const mediaDecision = await adminV2(
       "POST",
-      `admin/moderation/media/${duplicateMediaId}/decision`,
+      `moderation/media/${duplicateMediaId}/decision`,
       {
         userId: reviewerId,
         role: "moderator",
@@ -1249,7 +1250,7 @@ describe("tags, likes, duplicate", () => {
         data: { characterId: sourceCharacterId },
       });
 
-      let duplicateRequest: ReturnType<typeof api> | undefined;
+      let duplicateRequest: ReturnType<typeof adminV2> | undefined;
       await prisma.$transaction(async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`media-asset-authority:${sourceMediaId}`}))`;
         duplicateRequest = api("POST", `characters/${sourceCharacterId}/duplicate`, {
@@ -1340,7 +1341,7 @@ describe("tags, likes, duplicate", () => {
       ]),
     });
 
-    let archiveRequest: ReturnType<typeof api> | undefined;
+    let archiveRequest: ReturnType<typeof adminV2> | undefined;
     await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`media-asset-authority:${mediaId}`}))`;
       archiveRequest = api("DELETE", `characters/${characterId}`, {
@@ -1522,7 +1523,7 @@ describe("media bulk operations", () => {
     await createUser({ id: userId });
     await createMedia({ id: mediaId, ownerId: userId });
 
-    let deleteRequest: ReturnType<typeof api> | undefined;
+    let deleteRequest: ReturnType<typeof adminV2> | undefined;
     await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`media-asset-authority:${mediaId}`}))`;
       deleteRequest = api("DELETE", `media/${mediaId}`, {
@@ -1560,7 +1561,7 @@ describe("media bulk operations", () => {
     await createMedia({ id: firstId, ownerId: userId });
     await createMedia({ id: secondId, ownerId: userId });
 
-    let deleteRequest: ReturnType<typeof api> | undefined;
+    let deleteRequest: ReturnType<typeof adminV2> | undefined;
     await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`media-asset-authority:${secondId}`}))`;
       deleteRequest = api("POST", "media/bulk", {

@@ -135,7 +135,7 @@ describe("ModerationWorkspace media-review interaction", () => {
       await waitUntil(() => document.querySelector('[role="dialog"]') === null);
 
       expect(apiWrite).toHaveBeenCalledWith(
-        `/api/v1/admin/moderation/media/${mediaId}/decision`,
+        `/api/v2/admin/moderation/media/${mediaId}/decision`,
         "POST",
         {
           decision,
@@ -199,7 +199,7 @@ describe("ModerationWorkspace media-review interaction", () => {
     );
 
     expect(apiWrite).toHaveBeenCalledWith(
-      `/api/v1/admin/moderation/media/${mediaId}/decision`,
+      `/api/v2/admin/moderation/media/${mediaId}/decision`,
       "POST",
       {
         decision: "blocked",

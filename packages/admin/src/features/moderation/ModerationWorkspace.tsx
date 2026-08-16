@@ -37,11 +37,8 @@ type PageInfo = { endCursor: string | null; hasNextPage: boolean };
 type QueueResponse = {
   reports?: Row[];
   mediaReview?: Row[];
-  blockedMedia?: Row[];
   appeals?: Row[];
-  pageInfo?: Partial<
-    Record<ModerationScope | "mediaReview" | "blockedMedia", PageInfo>
-  >;
+  pageInfo?: Partial<Record<ModerationScope | "mediaReview", PageInfo>>;
 };
 type AuthorityState = {
   rows: Row[] | null;
@@ -94,11 +91,11 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
           scope === "reports"
             ? (response.reports ?? [])
             : scope === "media"
-              ? (response.mediaReview ?? response.blockedMedia ?? [])
+              ? (response.mediaReview ?? [])
               : (response.appeals ?? []);
         const pageInfo =
           scope === "media"
-            ? response.pageInfo?.mediaReview ?? response.pageInfo?.blockedMedia
+            ? response.pageInfo?.mediaReview
             : response.pageInfo?.[scope];
         setter({
           rows,
@@ -410,7 +407,7 @@ function mediaRows(
           confirm({
             kind,
             id,
-            endpoint: `/api/v1/admin/moderation/media/${id}/decision`,
+            endpoint: `/api/v2/admin/moderation/media/${id}/decision`,
             method: "POST",
             title: t("{action} Character image {id}", { action: label, id }),
             payload: () => ({ decision }),
@@ -502,7 +499,7 @@ function reportRows(
                 confirm({
                   kind: "action",
                   id,
-                  endpoint: `/api/v1/admin/moderation/${id}/decision`,
+                  endpoint: `/api/v2/admin/moderation/reports/${id}/decision`,
                   method: "POST",
                   title: `Action report ${id}`,
                   payload: () => ({
@@ -519,7 +516,7 @@ function reportRows(
                 confirm({
                   kind: "close",
                   id,
-                  endpoint: `/api/v1/admin/moderation/${id}/decision`,
+                  endpoint: `/api/v2/admin/moderation/reports/${id}/decision`,
                   method: "POST",
                   title: `Close report ${id}`,
                   payload: () => ({ decision: "no_violation" }),
@@ -554,8 +551,8 @@ function appealRows(
           confirm({
             kind,
             id,
-            endpoint: `/api/v1/admin/moderation/appeals/${id}`,
-            method: "PATCH",
+            endpoint: `/api/v2/admin/moderation/appeals/${id}/decision`,
+            method: "POST",
             title: `${label} appeal ${id}`,
             payload: (reason) => ({ outcome, notes: reason }),
           })

@@ -28,6 +28,7 @@ import {
   purgeTestData,
   runQueuedGenerationJobs,
 } from "@/server/test/helpers";
+import { adminV2 } from "@/server/test/trust-safety-admin-v2";
 
 const P = "zt-admin-";
 const seedPricingAuthorities = [
@@ -557,9 +558,9 @@ describe("admin appeal queue", () => {
       },
     });
 
-    const response = await api(
-      "PATCH",
-      `admin/moderation/appeals/${appeal.id}`,
+    const response = await adminV2(
+      "POST",
+      `moderation/appeals/${appeal.id}/decision`,
       {
         userId: admin,
         role: "admin",
@@ -616,7 +617,7 @@ describe("admin appeal queue", () => {
     });
 
     expectError(
-      await api("PATCH", `admin/moderation/appeals/${appeal.id}`, {
+      await adminV2("POST", `moderation/appeals/${appeal.id}/decision`, {
         userId: admin,
         role: "admin",
         body: {
@@ -657,7 +658,7 @@ describe("admin appeal queue", () => {
       },
     });
 
-    const queue = await api("GET", "admin/moderation/queue", {
+    const queue = await adminV2("GET", "moderation/queue", {
       userId: admin,
       role: "admin",
     });
@@ -667,18 +668,18 @@ describe("admin appeal queue", () => {
         expect.objectContaining({ id: appeal.id, status: "open", targetId: charId }),
       ]),
     );
-    const scopedQueue = await api("GET", "admin/moderation/queue", {
+    const scopedQueue = await adminV2("GET", "moderation/queue", {
       userId: admin,
       role: "admin",
       query: { scope: "appeals", limit: 25 },
     });
     expectOk(scopedQueue);
     expect(scopedQueue.data.reports).toEqual([]);
-    expect(scopedQueue.data.blockedMedia).toEqual([]);
+    expect(scopedQueue.data.mediaReview).toEqual([]);
     expect(scopedQueue.data.appeals).toEqual(expect.arrayContaining([expect.objectContaining({ id: appeal.id })]));
 
     expectError(
-      await api("PATCH", `admin/moderation/appeals/${appeal.id}`, {
+      await adminV2("POST", `moderation/appeals/${appeal.id}/decision`, {
         userId: support,
         role: "support",
         body: {
@@ -697,7 +698,7 @@ describe("admin appeal queue", () => {
       reason: "Appeal accepted after reviewer check",
       confirmation: "OVERTURN",
     } as const;
-    const resolved = await api("PATCH", `admin/moderation/appeals/${appeal.id}`, {
+    const resolved = await adminV2("POST", `moderation/appeals/${appeal.id}/decision`, {
       userId: admin,
       role: "admin",
       headers: { "idempotency-key": appealCommandKey },
@@ -712,7 +713,7 @@ describe("admin appeal queue", () => {
     });
     expect(resolved.data.appeal.resolvedAt).toEqual(expect.any(String));
     expect(resolved.data.target).toMatchObject({ targetRestored: true });
-    const replay = await api("PATCH", `admin/moderation/appeals/${appeal.id}`, {
+    const replay = await adminV2("POST", `moderation/appeals/${appeal.id}/decision`, {
       userId: admin,
       role: "admin",
       headers: { "idempotency-key": appealCommandKey },
@@ -724,7 +725,7 @@ describe("admin appeal queue", () => {
     const character = await prisma.character.findUniqueOrThrow({ where: { id: charId } });
     expect(character.status).toBe("approved");
 
-    const afterQueue = await api("GET", "admin/moderation/queue", {
+    const afterQueue = await adminV2("GET", "moderation/queue", {
       userId: admin,
       role: "admin",
     });
@@ -757,7 +758,7 @@ describe("admin appeal queue", () => {
     ).not.toBeNull();
 
     expectError(
-      await api("PATCH", `admin/moderation/appeals/${appeal.id}`, {
+      await adminV2("POST", `moderation/appeals/${appeal.id}/decision`, {
         userId: admin,
         role: "admin",
         body: {
@@ -795,12 +796,12 @@ describe("admin appeal queue", () => {
       },
     });
 
-    let appealRequest: ReturnType<typeof api> | undefined;
+    let appealRequest: ReturnType<typeof adminV2> | undefined;
     await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`media-asset-authority:${mediaId}`}))`;
-      const pendingAppeal = api(
-        "PATCH",
-        `admin/moderation/appeals/${appeal.id}`,
+      const pendingAppeal = adminV2(
+        "POST",
+        `moderation/appeals/${appeal.id}/decision`,
         {
           userId: admin,
           role: "admin",
@@ -3927,9 +3928,9 @@ describe("risk / abuse overview", () => {
     });
 
     // ops 无 billing.read。
-    expectError(await api("GET", "admin/risk/abuse", { userId: ops, role: "ops" }), 403);
+    expectError(await adminV2("GET", "risk/abuse", { userId: ops, role: "ops" }), 403);
 
-    const res = await api("GET", "admin/risk/abuse", { userId: support, role: "support" });
+    const res = await adminV2("GET", "risk/abuse", { userId: support, role: "support" });
     expectOk(res);
     expect(res.data.dataScope).toMatchObject({
       kind: "customer",
@@ -4691,7 +4692,7 @@ describe("admin dual-approval (F5)", () => {
 
     // Requester must hold the target key: support cannot request config.pricing.write.
     expectError(
-      await api("POST", "admin/approvals", {
+      await adminV2("POST", "approvals", {
         userId: support,
         role: "support",
         body: {
@@ -4707,7 +4708,7 @@ describe("admin dual-approval (F5)", () => {
       403,
     );
 
-    const genericRequest = await api("POST", "admin/approvals", {
+    const genericRequest = await adminV2("POST", "approvals", {
       userId: a1,
       role: "admin",
       body: {
@@ -4722,7 +4723,7 @@ describe("admin dual-approval (F5)", () => {
     });
     expectError(genericRequest, 400, "bad_request");
 
-    const created = await api("POST", "admin/approvals", {
+    const created = await adminV2("POST", "approvals", {
       userId: a1,
       role: "admin",
       body: {
@@ -4740,7 +4741,7 @@ describe("admin dual-approval (F5)", () => {
 
     // support lacks approval.review → 403.
     expectError(
-      await api("POST", `admin/approvals/${reqId}/approve`, {
+      await adminV2("POST", `approvals/${reqId}/approve`, {
         userId: support,
         role: "support",
         body: { reason: "ok", confirmation: reqId },
@@ -4750,7 +4751,7 @@ describe("admin dual-approval (F5)", () => {
 
     // Requester cannot self-approve.
     expectError(
-      await api("POST", `admin/approvals/${reqId}/approve`, {
+      await adminV2("POST", `approvals/${reqId}/approve`, {
         userId: a1,
         role: "admin",
         body: { reason: "self", confirmation: reqId },
@@ -4758,7 +4759,7 @@ describe("admin dual-approval (F5)", () => {
       400,
     );
 
-    const genericApprove = await api("POST", `admin/approvals/${reqId}/approve`, {
+    const genericApprove = await adminV2("POST", `approvals/${reqId}/approve`, {
       userId: a2,
       role: "admin",
       body: { reason: "looks right", confirmation: "APPROVE" },
@@ -4766,7 +4767,7 @@ describe("admin dual-approval (F5)", () => {
     expectError(genericApprove, 400, "bad_request");
 
     // A different admin approves.
-    const approved = await api("POST", `admin/approvals/${reqId}/approve`, {
+    const approved = await adminV2("POST", `approvals/${reqId}/approve`, {
       userId: a2,
       role: "admin",
       body: { reason: "looks right", confirmation: reqId },
@@ -4777,7 +4778,7 @@ describe("admin dual-approval (F5)", () => {
 
     // Cannot re-decide a settled request.
     expectError(
-      await api("POST", `admin/approvals/${reqId}/reject`, {
+      await adminV2("POST", `approvals/${reqId}/reject`, {
         userId: a2,
         role: "admin",
         body: { reason: "again", confirmation: reqId },
@@ -4785,7 +4786,7 @@ describe("admin dual-approval (F5)", () => {
       400,
     );
 
-    const pending = await api("GET", "admin/approvals", { userId: a1, role: "admin", query: { status: "pending" } });
+    const pending = await adminV2("GET", "approvals", { userId: a1, role: "admin", query: { status: "pending" } });
     expectOk(pending);
     expect(pending.data.items.some((r: { id: string }) => r.id === reqId)).toBe(false);
   });
@@ -5055,7 +5056,7 @@ describe("admin compliance: DSAR + age verification (T2)", () => {
     await createUser({ id: target });
 
     // export: support (read) ok; analyst-like ops would 403 but support has read.
-    const exported = await api("GET", `admin/compliance/users/${target}/export`, {
+    const exported = await adminV2("GET", `compliance/users/${target}/export`, {
       userId: support,
       role: "support",
     });
@@ -5064,7 +5065,7 @@ describe("admin compliance: DSAR + age verification (T2)", () => {
 
     // erase: support lacks compliance.write → 403
     expectError(
-      await api("POST", `admin/compliance/users/${target}/erase`, {
+      await adminV2("POST", `compliance/users/${target}/erase`, {
         userId: support,
         role: "support",
         body: { reason: "dsar request", confirmation: target },
@@ -5072,14 +5073,14 @@ describe("admin compliance: DSAR + age verification (T2)", () => {
       403,
     );
 
-    const genericErase = await api("POST", `admin/compliance/users/${target}/erase`, {
+    const genericErase = await adminV2("POST", `compliance/users/${target}/erase`, {
       userId: admin,
       role: "admin",
       body: { reason: "dsar erasure request", confirmation: "ERASE" },
     });
     expectError(genericErase, 400, "bad_request");
 
-    const erased = await api("POST", `admin/compliance/users/${target}/erase`, {
+    const erased = await adminV2("POST", `compliance/users/${target}/erase`, {
       userId: admin,
       role: "admin",
       body: { reason: "dsar erasure request", confirmation: target },
@@ -5103,7 +5104,7 @@ describe("admin compliance: DSAR + age verification (T2)", () => {
       nextRunAt: deletion.graceEndsAt,
     });
     // idempotent second erase
-    const again = await api("POST", `admin/compliance/users/${target}/erase`, {
+    const again = await adminV2("POST", `compliance/users/${target}/erase`, {
       userId: admin,
       role: "admin",
       body: { reason: "dsar erasure request retry", confirmation: target },
@@ -5117,20 +5118,20 @@ describe("admin compliance: DSAR + age verification (T2)", () => {
     const av = await prisma.ageVerification.create({
       data: { userId: avUser, provider: "mock", status: "pending", metadata: {} },
     });
-    const list = await api("GET", "admin/compliance/age-verifications", {
+    const list = await adminV2("GET", "compliance/age-verifications", {
       userId: admin,
       role: "admin",
       query: { status: "pending" },
     });
     expectOk(list);
-    const genericOverride = await api("POST", `admin/compliance/age-verifications/${av.id}/override`, {
+    const genericOverride = await adminV2("POST", `compliance/age-verifications/${av.id}/override`, {
       userId: admin,
       role: "admin",
       body: { status: "verified", reason: "manual appeal approved", confirmation: "OVERRIDE" },
     });
     expectError(genericOverride, 400, "bad_request");
 
-    const override = await api("POST", `admin/compliance/age-verifications/${av.id}/override`, {
+    const override = await adminV2("POST", `compliance/age-verifications/${av.id}/override`, {
       userId: admin,
       role: "admin",
       body: { status: "verified", reason: "manual appeal approved", confirmation: av.id },
@@ -5262,7 +5263,7 @@ describe("admin dual-approval hard enforcement (T4)", () => {
       expectError(await api("POST", "admin/billing/adjustments", { userId: a1, role: "admin", body: big }), 403);
 
       // create + approve a matching request
-      const req = await api("POST", "admin/approvals", {
+      const req = await adminV2("POST", "approvals", {
         userId: a1,
         role: "admin",
         body: {
@@ -5277,7 +5278,7 @@ describe("admin dual-approval hard enforcement (T4)", () => {
       });
       expectOk(req);
       expectOk(
-        await api("POST", `admin/approvals/${req.data.request.id}/approve`, {
+        await adminV2("POST", `approvals/${req.data.request.id}/approve`, {
           userId: a2,
           role: "admin",
           body: { reason: "approved ok", confirmation: req.data.request.id },
@@ -5290,7 +5291,7 @@ describe("admin dual-approval hard enforcement (T4)", () => {
       // reuse → credential consumed → 403
       expectError(await api("POST", "admin/billing/adjustments", { userId: a1, role: "admin", body: big }), 403);
 
-      const concurrentReq = await api("POST", "admin/approvals", {
+      const concurrentReq = await adminV2("POST", "approvals", {
         userId: a1,
         role: "admin",
         body: {
@@ -5305,7 +5306,7 @@ describe("admin dual-approval hard enforcement (T4)", () => {
       });
       expectOk(concurrentReq);
       expectOk(
-        await api("POST", `admin/approvals/${concurrentReq.data.request.id}/approve`, {
+        await adminV2("POST", `approvals/${concurrentReq.data.request.id}/approve`, {
           userId: a2,
           role: "admin",
           body: { reason: "approved once", confirmation: concurrentReq.data.request.id },

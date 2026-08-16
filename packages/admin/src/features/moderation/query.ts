@@ -31,7 +31,7 @@ export function moderationQueuePath(query: ModerationQuery, scope: ModerationSco
   if (scope === "reports") set(params, "reportCursor", query.reportCursor);
   if (scope === "media") set(params, "mediaCursor", query.mediaCursor);
   if (scope === "appeals") set(params, "appealCursor", query.appealCursor);
-  return `/api/v1/admin/moderation/queue?${params.toString()}`;
+  return `/api/v2/admin/moderation/queue?${params.toString()}`;
 }
 
 export function moderationWorkspaceUrl(pathname: string, search: string, query: ModerationQuery) {

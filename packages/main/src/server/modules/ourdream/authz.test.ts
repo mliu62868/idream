@@ -12,6 +12,7 @@ import {
   publishCharacterForPublicAudience,
   purgeTestData,
 } from "@/server/test/helpers";
+import { adminV2 } from "@/server/test/trust-safety-admin-v2";
 
 // SPEC (docs/architecture/11-testing.md §4 — authz/authorization):
 // - unauthenticated access to user endpoints → 401
@@ -424,7 +425,7 @@ describe("admin authorization", () => {
   it("rejects non-admin access to the moderation queue with 403", async () => {
     const userId = `${P}plain-user`;
     await createUser({ id: userId });
-    const result = await api("GET", "admin/moderation/queue", { userId });
+    const result = await adminV2("GET", "moderation/queue", { userId });
     expectError(result, 403, "forbidden");
   });
 });

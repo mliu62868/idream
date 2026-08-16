@@ -113,13 +113,13 @@ describe("remaining canonical admin list surfaces", () => {
       "?moderationSearch=asset&moderationStatus=open&moderationTargetType=media&reportCursor=R&mediaCursor=M&appealCursor=AP",
     );
     expect(moderationQueuePath(moderation, "reports")).toBe(
-      "/api/v1/admin/moderation/queue?scope=reports&limit=25&search=asset&status=open&targetType=media&reportCursor=R",
+      "/api/v2/admin/moderation/queue?scope=reports&limit=25&search=asset&status=open&targetType=media&reportCursor=R",
     );
     expect(moderationQueuePath(moderation, "media")).toBe(
-      "/api/v1/admin/moderation/queue?scope=media&limit=25&search=asset&status=open&targetType=media&mediaCursor=M",
+      "/api/v2/admin/moderation/queue?scope=media&limit=25&search=asset&status=open&targetType=media&mediaCursor=M",
     );
     expect(moderationQueuePath(moderation, "appeals")).toBe(
-      "/api/v1/admin/moderation/queue?scope=appeals&limit=25&search=asset&status=open&targetType=media&appealCursor=AP",
+      "/api/v2/admin/moderation/queue?scope=appeals&limit=25&search=asset&status=open&targetType=media&appealCursor=AP",
     );
 
     expect(auditListPath(auditQueryFromSearch(
@@ -145,7 +145,7 @@ describe("remaining canonical admin list surfaces", () => {
     expect(approvalListPath(approvalQueryFromSearch(
       "?approvalSearch=release&approvalStatus=pending&approvalCursor=AV",
     ))).toBe(
-      "/api/v1/admin/approvals?limit=25&search=release&status=pending&cursor=AV",
+      "/api/v2/admin/approvals?limit=25&search=release&status=pending&cursor=AV",
     );
 
     const config = generationConfigQueryFromSearch(

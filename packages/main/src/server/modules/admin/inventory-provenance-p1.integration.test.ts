@@ -6,8 +6,8 @@ import {
   getFeaturedCharacters,
   listContentCharacters,
 } from "@/server/modules/admin/content/merchandising";
-import { moderationQueue } from "@/server/modules/admin/moderation/service";
 import { listSupportRequests } from "@/server/modules/admin/support/service";
+import { adminV2 } from "@/server/test/trust-safety-admin-v2";
 
 describe("Admin P1 inventory provenance", () => {
   const suffix = randomUUID();
@@ -235,17 +235,19 @@ describe("Admin P1 inventory provenance", () => {
   });
 
   it("filters moderation queues while retaining system-origin reports", async () => {
-    const data = await call(
-      moderationQueue,
-      `/api/v1/admin/moderation/queue?search=${token}&limit=100`,
-    );
-    expect(ids(data.reports)).toEqual(
+    const queue = await adminV2("GET", "moderation/queue", {
+      userId: actorId,
+      role: "admin",
+      query: { search: token, limit: 100 },
+    });
+    expect(queue.status, JSON.stringify(queue.json)).toBe(200);
+    expect(ids(queue.data.reports)).toEqual(
       new Set([reportIds.customer, reportIds.internal, systemReportId]),
     );
-    expect(ids(data.blockedMedia)).toEqual(
+    expect(ids(queue.data.mediaReview)).toEqual(
       new Set([mediaIds.customer, mediaIds.internal]),
     );
-    expect(ids(data.appeals)).toEqual(
+    expect(ids(queue.data.appeals)).toEqual(
       new Set([appealIds.customer, appealIds.internal]),
     );
   });

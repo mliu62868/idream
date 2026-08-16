@@ -7,6 +7,7 @@ import {
   expectOk,
   purgeTestData,
 } from "@/server/test/helpers";
+import { adminV2 } from "@/server/test/trust-safety-admin-v2";
 
 const P = "zt-customer-history-";
 const CUSTOMER = `${P}customer`;
@@ -237,7 +238,7 @@ describe("GET /api/v1/support/history", () => {
     });
     expectOk(filed);
     const reportId = filed.data.report.id as string;
-    const decided = await api("POST", `admin/moderation/${reportId}/decision`, {
+    const decided = await adminV2("POST", `moderation/reports/${reportId}/decision`, {
       userId: ADMIN,
       role: "admin",
       body: {
@@ -314,7 +315,7 @@ describe("GET /api/v1/support/history", () => {
     });
     expectOk(appeal);
     const appealId = appeal.data.appeal.id as string;
-    expectOk(await api("PATCH", `admin/moderation/appeals/${appealId}`, {
+    expectOk(await adminV2("POST", `moderation/appeals/${appealId}/decision`, {
       userId: ADMIN,
       role: "admin",
       body: {

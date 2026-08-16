@@ -27,3 +27,8 @@ export * from "./jobs";
 export * from "./grant-bundles";
 export * from "./search";
 export * from "./chat-operations";
+// ---- trust: migrated from v1 ----
+export * from "./moderation";
+export * from "./compliance";
+export * from "./approvals";
+export * from "./risk";

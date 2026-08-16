@@ -121,7 +121,7 @@ describe("admin source boundary", () => {
 
     expect(catchAll).not.toContain("function UsersView");
     expect(catchAll).not.toContain("function ModerationView");
-    expect(catchAll).not.toContain("/api/v1/admin/moderation/");
+    expect(catchAll).not.toContain("/api/v2/admin/moderation/");
     expect(access).toContain("export function AccessWorkspace");
     expect(moderation).toContain("export function ModerationWorkspace");
   });
@@ -137,7 +137,7 @@ describe("admin source boundary", () => {
     expect(catchAll).not.toContain("function ApprovalsView");
     expect(catchAll).not.toContain("/api/v1/admin/support/requests");
     expect(catchAll).not.toContain("/api/v1/admin/promo/");
-    expect(catchAll).not.toContain("/api/v1/admin/approvals");
+    expect(catchAll).not.toContain("/api/v2/admin/approvals");
     expect(support).toContain("export function SupportWorkspace");
     expect(promo).toContain("export function PromoWorkspace");
     expect(approvals).toContain("export function ApprovalsWorkspace");
@@ -168,7 +168,7 @@ describe("admin source boundary", () => {
     expect(catchAll).not.toContain("function RiskView");
     expect(catchAll).not.toContain("function ProviderOpsView");
     expect(catchAll).not.toContain("/api/v1/admin/analytics/overview");
-    expect(catchAll).not.toContain("/api/v1/admin/risk/abuse");
+    expect(catchAll).not.toContain("/api/v2/admin/risk/abuse");
     expect(catchAll).not.toContain("/api/v1/admin/ops/providers");
     expect(overviews).toContain("export function AnalyticsWorkspace");
     expect(overviews).toContain("export function RiskWorkspace");

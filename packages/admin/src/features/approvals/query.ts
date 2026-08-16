@@ -24,7 +24,7 @@ export function approvalListPath(query: ApprovalQuery) {
   set(params, "search", query.search);
   set(params, "status", query.status);
   set(params, "cursor", query.cursor);
-  return `/api/v1/admin/approvals?${params.toString()}`;
+  return `/api/v2/admin/approvals?${params.toString()}`;
 }
 
 export function approvalWorkspaceUrl(

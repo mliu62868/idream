@@ -14,6 +14,7 @@ import {
   purgeTestData,
   runQueuedGenerationJobs,
 } from "@/server/test/helpers";
+import { adminV2 } from "@/server/test/trust-safety-admin-v2";
 
 // SPEC (highest-priority risk list, docs/architecture/11-testing.md §4):
 // - age gate must precede adult content / gated routes (403 otherwise)
@@ -348,7 +349,7 @@ describe("reports, queue, and reporter anonymity", () => {
     const mediaId = `${P}underage-media`;
     await createMedia({ id: mediaId, ownerId: owner });
 
-    let reportRequest: ReturnType<typeof api> | undefined;
+    let reportRequest: ReturnType<typeof adminV2> | undefined;
     await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`media-asset-authority:${mediaId}`}))`;
       const pendingReport = api("POST", "reports", {
@@ -407,7 +408,7 @@ describe("admin moderation queue + audit", () => {
       },
     });
 
-    const queue = await api("GET", "admin/moderation/queue", {
+    const queue = await adminV2("GET", "moderation/queue", {
       userId: admin,
       role: "admin",
       query: { targetType },
@@ -434,13 +435,13 @@ describe("admin moderation queue + audit", () => {
     const reportId = filed.data.report.id as string;
 
     // Non-admin cannot see the queue.
-    const forbidden = await api("GET", "admin/moderation/queue", { userId: reporter });
+    const forbidden = await adminV2("GET", "moderation/queue", { userId: reporter });
     expectError(forbidden, 403, "forbidden");
 
-    const queue = await api("GET", "admin/moderation/queue", { userId: admin, role: "admin" });
+    const queue = await adminV2("GET", "moderation/queue", { userId: admin, role: "admin" });
     expectOk(queue);
     expect((queue.data.reports as Array<{ id: string }>).some((r) => r.id === reportId)).toBe(true);
-    const filteredQueue = await api("GET", "admin/moderation/queue", {
+    const filteredQueue = await adminV2("GET", "moderation/queue", {
       userId: admin,
       role: "admin",
       query: { id: reportId },
@@ -450,7 +451,7 @@ describe("admin moderation queue + audit", () => {
       expect.objectContaining({ id: reportId }),
     ]);
 
-    const decision = await api("POST", `admin/moderation/${reportId}/decision`, {
+    const decision = await adminV2("POST", `moderation/reports/${reportId}/decision`, {
       userId: admin,
       role: "admin",
       body: {
@@ -536,9 +537,9 @@ describe("admin moderation queue + audit", () => {
       appealEvidence.caseId,
     );
 
-    const overturned = await api(
-      "PATCH",
-      `admin/moderation/appeals/${appeal.data.appeal.id as string}`,
+    const overturned = await adminV2(
+      "POST",
+      `moderation/appeals/${appeal.data.appeal.id as string}/decision`,
       {
         userId: admin,
         role: "admin",
@@ -576,12 +577,12 @@ describe("admin moderation queue + audit", () => {
       },
     });
 
-    let decisionRequest: ReturnType<typeof api> | undefined;
+    let decisionRequest: ReturnType<typeof adminV2> | undefined;
     await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`media-asset-authority:${mediaId}`}))`;
-      const pendingDecision = api(
+      const pendingDecision = adminV2(
         "POST",
-        `admin/moderation/${report.id}/decision`,
+        `moderation/reports/${report.id}/decision`,
         {
           userId: admin,
           role: "admin",

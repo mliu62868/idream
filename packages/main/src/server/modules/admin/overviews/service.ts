@@ -8,7 +8,6 @@ import {
   customerAnalyticsEventWhere,
   customerDreamcoinLedgerWhere,
   customerGenerationJobWhere,
-  customerReferralWhere,
   customerSubscriptionWhere,
   customerUserWhere,
   operationalGenerationJobWhere,
@@ -122,85 +121,6 @@ export async function analyticsOverview(request: Request) {
       .map((row) => ({ name: row.name, count: row._count._all }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 12),
-  });
-}
-
-export async function abuseOverview(request: Request) {
-  await actorWithPermission(request, "billing.read");
-  const { from, to, createdAt } = windowFromRequest(request, "risk");
-  const [signupGroups, referralGroups, adjustGroups] = await Promise.all([
-    prisma.analyticsEvent.groupBy({
-      by: ["anonymousId"],
-      where: customerAnalyticsEventWhere({
-        name: "signup",
-        anonymousId: { not: null },
-        createdAt,
-      }),
-      _count: { _all: true },
-    }),
-    prisma.referral.groupBy({
-      by: ["inviterId"],
-      where: customerReferralWhere({ createdAt }),
-      _count: { _all: true },
-    }),
-    prisma.dreamcoinLedger.groupBy({
-      by: ["userId"],
-      where: customerDreamcoinLedgerWhere({
-        reason: "admin_adjust",
-        createdAt,
-      }),
-      _sum: { delta: true },
-      _count: { _all: true },
-    }),
-  ]);
-  const flagged = signupGroups
-    .filter((group) => group._count._all >= 2)
-    .sort((a, b) => b._count._all - a._count._all)
-    .slice(0, 20)
-    .map((group) => group.anonymousId)
-    .filter((id): id is string => Boolean(id));
-  const events = flagged.length
-    ? await prisma.analyticsEvent.findMany({
-        where: customerAnalyticsEventWhere({
-          name: "signup",
-          anonymousId: { in: flagged },
-        }),
-        select: { anonymousId: true, userId: true },
-      })
-    : [];
-  const accounts = new Map<string, Set<string>>();
-  for (const event of events) {
-    if (!event.anonymousId || !event.userId) continue;
-    const users = accounts.get(event.anonymousId) ?? new Set<string>();
-    users.add(event.userId);
-    accounts.set(event.anonymousId, users);
-  }
-  return ok({
-    dataScope: CUSTOMER_METRIC_DATA_SCOPE,
-    window: { from: from.toISOString(), to: to.toISOString() },
-    deviceClusters: flagged
-      .map((anonymousId) => ({
-        anonymousId,
-        accountCount: accounts.get(anonymousId)?.size ?? 0,
-        userIds: [...(accounts.get(anonymousId) ?? [])].slice(0, 10),
-      }))
-      .filter((cluster) => cluster.accountCount >= 2),
-    referralAbuse: referralGroups
-      .filter((group) => group._count._all >= 3)
-      .map((group) => ({
-        inviterId: group.inviterId,
-        referralCount: group._count._all,
-      }))
-      .sort((a, b) => b.referralCount - a.referralCount)
-      .slice(0, 20),
-    adjustAnomalies: adjustGroups
-      .map((group) => ({
-        userId: group.userId,
-        totalDelta: group._sum.delta ?? 0,
-        count: group._count._all,
-      }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 20),
   });
 }
 

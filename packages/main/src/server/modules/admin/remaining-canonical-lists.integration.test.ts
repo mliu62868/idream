@@ -68,34 +68,6 @@ describe("remaining canonical admin lists", () => {
       errorCode: `${token}-failure`,
       updatedAt: new Date(Date.UTC(2026, 6, 11, 3, index)),
     })) });
-    await prisma.contentReport.createMany({ data: ids("report").map((id, index) => ({
-      id,
-      reporterId: actorId,
-      targetType: "character",
-      targetId: `${token}-target-${index}`,
-      category: token,
-      status: "open",
-      priority: 3,
-      createdAt: new Date(Date.UTC(2026, 6, 11, 4, index)),
-    })) });
-    await prisma.mediaAsset.createMany({ data: ids("media").map((id, index) => ({
-      id,
-      ownerId: actorId,
-      type: "image",
-      url: `memory://${id}`,
-      safetyStatus: "blocked",
-      metadata: { token },
-      createdAt: new Date(Date.UTC(2026, 6, 11, 5, index)),
-    })) });
-    await prisma.appeal.createMany({ data: ids("appeal").map((id, index) => ({
-      id,
-      userId: actorId,
-      targetType: "character",
-      targetId: `${token}-appeal-target-${index}`,
-      status: "open",
-      appealText: token,
-      createdAt: new Date(Date.UTC(2026, 6, 11, 6, index)),
-    })) });
     await prisma.character.createMany({ data: ids("character").map((id, index) => ({
       id,
       creatorId: actorId,
@@ -121,18 +93,6 @@ describe("remaining canonical admin lists", () => {
       code: `${token}-ref-${index}`,
       status: "pending",
       createdAt: new Date(Date.UTC(2026, 6, 11, 9, index)),
-    })) });
-    await prisma.adminActionRequest.createMany({ data: ids("approval").map((id, index) => ({
-      id,
-      requestedById: actorId,
-      permissionKey: "billing.read",
-      action: `${token}.approve`,
-      targetType: "test",
-      targetId: `${token}-approval-target-${index}`,
-      payload: {},
-      status: "pending",
-      reason: token,
-      createdAt: new Date(Date.UTC(2026, 6, 11, 10, index)),
     })) });
     await prisma.adminAuditLog.createMany({ data: ids("audit").map((id, index) => ({
       id,
@@ -167,13 +127,9 @@ describe("remaining canonical admin lists", () => {
     await prisma.featureFlag.deleteMany({ where: { key: { startsWith: token } } });
     await prisma.generationModelProfile.deleteMany({ where: { id: { in: ids("profile") } } });
     await prisma.adminAuditLog.deleteMany({ where: { id: { in: ids("audit") } } });
-    await prisma.adminActionRequest.deleteMany({ where: { id: { in: ids("approval") } } });
     await prisma.referral.deleteMany({ where: { id: { in: ids("referral") } } });
     await prisma.redeemCode.deleteMany({ where: { id: { in: ids("code") } } });
     await prisma.character.deleteMany({ where: { id: { in: ids("character") } } });
-    await prisma.appeal.deleteMany({ where: { id: { in: ids("appeal") } } });
-    await prisma.contentReport.deleteMany({ where: { id: { in: ids("report") } } });
-    await prisma.mediaAsset.deleteMany({ where: { id: { in: ids("media") } } });
     await prisma.generationJob.deleteMany({ where: { id: { in: ids("job") } } });
     await prisma.pricingRule.deleteMany({ where: { id: { in: ids("pricing") } } });
     await prisma.subscription.deleteMany({ where: { id: { in: ids("subscription") } } });
@@ -192,7 +148,6 @@ describe("remaining canonical admin lists", () => {
     { name: "merchandising characters without stats", segments: ["content", "characters"], query: `search=${token}&status=approved&sort=popular&limit=1` },
     { name: "redeem codes", segments: ["promo", "redeem-codes"], query: `search=${token}&status=active&limit=1` },
     { name: "referrals", segments: ["promo", "referrals"], query: `search=${token}&status=pending&limit=1` },
-    { name: "approvals", segments: ["approvals"], query: `search=${token}&status=pending&limit=1` },
     { name: "audit", segments: ["audit-log"], query: `search=${token}&limit=1` },
     { name: "generation profiles", segments: ["generation", "model-profiles"], query: `search=${token}&mode=image&limit=1` },
     { name: "feature flags", segments: ["feature-flags"], query: `search=${token}&enabled=false&limit=1` },
@@ -217,49 +172,6 @@ describe("remaining canonical admin lists", () => {
       expect(mismatch.response.status).toBe(400);
     });
   }
-
-  it("paginates all three moderation collections independently", async () => {
-    const first = await call(["moderation", "queue"], `search=${token}&limit=1`);
-    expect(first.response.status, JSON.stringify(first.body)).toBe(200);
-    const data = first.body.data as {
-      reports: Array<{ id: string }>;
-      blockedMedia: Array<{ id: string }>;
-      appeals: Array<{ id: string }>;
-      pageInfo: { reports: PageInfo; blockedMedia: PageInfo; appeals: PageInfo };
-    };
-    expect(data.reports).toHaveLength(1);
-    expect(data.blockedMedia).toHaveLength(1);
-    expect(data.appeals).toHaveLength(1);
-    expect(data.pageInfo.reports.hasNextPage).toBe(true);
-    expect(data.pageInfo.blockedMedia.hasNextPage).toBe(true);
-    expect(data.pageInfo.appeals.hasNextPage).toBe(true);
-
-    const second = await call(["moderation", "queue"], [
-      `search=${token}`,
-      "limit=1",
-      `reportCursor=${encodeURIComponent(data.pageInfo.reports.endCursor ?? "")}`,
-      `mediaCursor=${encodeURIComponent(data.pageInfo.blockedMedia.endCursor ?? "")}`,
-      `appealCursor=${encodeURIComponent(data.pageInfo.appeals.endCursor ?? "")}`,
-    ].join("&"));
-    expect(second.response.status, JSON.stringify(second.body)).toBe(200);
-    const secondData = second.body.data as typeof data;
-    expect(secondData.reports[0]?.id).not.toBe(data.reports[0]?.id);
-    expect(secondData.blockedMedia[0]?.id).not.toBe(data.blockedMedia[0]?.id);
-    expect(secondData.appeals[0]?.id).not.toBe(data.appeals[0]?.id);
-  });
-
-  it("isolates malformed moderation cursors to the requested authority", async () => {
-    const result = await call(
-      ["moderation", "queue"],
-      `scope=media&search=${token}&limit=1&reportCursor=not-a-report-cursor`,
-    );
-    expect(result.response.status, JSON.stringify(result.body)).toBe(200);
-    expect(result.body.data).toMatchObject({
-      reports: [],
-      blockedMedia: [{ id: ids("media")[0] }],
-      appeals: [],
-    });
-  });
 
   it("preserves unbounded V1 defaults while the Admin UI opts into pagination", async () => {
     for (const testCase of [

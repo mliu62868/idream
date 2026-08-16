@@ -14,6 +14,7 @@ import {
   expectOk,
   purgeTestData,
 } from "@/server/test/helpers";
+import { adminV2 } from "@/server/test/trust-safety-admin-v2";
 
 const P = "zt-moderation-restoration-";
 
@@ -48,9 +49,9 @@ async function setupActionedMedia(
       priority: 3,
     },
   });
-  const decision = await api(
+  const decision = await adminV2(
     "POST",
-    `admin/moderation/${report.id}/decision`,
+    `moderation/reports/${report.id}/decision`,
     {
       userId: adminId,
       role: "admin",
@@ -93,7 +94,7 @@ async function overturnMediaAppeal(input: {
   adminId: string;
   appealId: string;
 }) {
-  return api("PATCH", `admin/moderation/appeals/${input.appealId}`, {
+  return adminV2("POST", `moderation/appeals/${input.appealId}/decision`, {
     userId: input.adminId,
     role: "admin",
     body: {
@@ -119,9 +120,9 @@ async function actionTarget(input: {
       status: "open",
     },
   });
-  const response = await api(
+  const response = await adminV2(
     "POST",
-    `admin/moderation/${report.id}/decision`,
+    `moderation/reports/${report.id}/decision`,
     {
       userId: input.adminId,
       role: "admin",
@@ -175,9 +176,9 @@ describe("moderation appeal exact restoration authority", () => {
     });
 
     const appealId = appeal.data.appeal.id as string;
-    const response = await api(
-      "PATCH",
-      `admin/moderation/appeals/${appealId}`,
+    const response = await adminV2(
+      "POST",
+      `moderation/appeals/${appealId}/decision`,
       {
         userId: adminId,
         role: "admin",
@@ -246,9 +247,9 @@ describe("moderation appeal exact restoration authority", () => {
     );
 
     const appealId = appeal.data.appeal.id as string;
-    const response = await api(
-      "PATCH",
-      `admin/moderation/appeals/${appealId}`,
+    const response = await adminV2(
+      "POST",
+      `moderation/appeals/${appealId}/decision`,
       {
         userId: adminId,
         role: "admin",
@@ -328,7 +329,7 @@ describe("moderation appeal exact restoration authority", () => {
     const appealId = appeal.data.appeal.id as string;
 
     expectError(
-      await api("PATCH", `admin/moderation/appeals/${appealId}`, {
+      await adminV2("POST", `moderation/appeals/${appealId}/decision`, {
         userId: adminId,
         role: "admin",
         body: {
@@ -399,9 +400,9 @@ describe("moderation appeal exact restoration authority", () => {
         status: "open",
       },
     });
-    const decision = await api(
+    const decision = await adminV2(
       "POST",
-      `admin/moderation/${report.id}/decision`,
+      `moderation/reports/${report.id}/decision`,
       {
         userId: adminId,
         role: "admin",
@@ -450,7 +451,7 @@ describe("moderation appeal exact restoration authority", () => {
     });
     expectOk(appeal);
     const appealId = appeal.data.appeal.id as string;
-    expectOk(await api("PATCH", `admin/moderation/appeals/${appealId}`, {
+    expectOk(await adminV2("POST", `moderation/appeals/${appealId}/decision`, {
       userId: adminId,
       role: "admin",
       body: {

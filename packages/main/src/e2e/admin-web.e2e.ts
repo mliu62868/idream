@@ -1971,7 +1971,7 @@ test("admin API Phase 3: CMS write (admin) + compliance/analytics gating", async
   // support has compliance.read (export ok) but NOT compliance.write (erase 403).
   await startRoleSession(page, "support");
   const erase = await page.request.post(
-    `${adminURL}/api/v1/admin/compliance/users/none/erase`,
+    `${adminURL}/api/v2/admin/compliance/users/none/erase`,
     { data: { reason: "test erase", confirmation: "none" } },
   );
   expect(erase.status()).toBe(403);
@@ -1980,7 +1980,7 @@ test("admin API Phase 3: CMS write (admin) + compliance/analytics gating", async
   await startRoleSession(page, "analyst");
   const retention = await page.request.get(`${adminURL}/api/v1/admin/analytics/retention`);
   expect(retention.status()).toBe(200);
-  const ageList = await page.request.get(`${adminURL}/api/v1/admin/compliance/age-verifications`);
+  const ageList = await page.request.get(`${adminURL}/api/v2/admin/compliance/age-verifications`);
   expect(ageList.status()).toBe(403);
 });
 
@@ -2227,7 +2227,7 @@ test("admin compliance UI requires typed confirmations for destructive actions",
     const overrideResponse = page.waitForResponse(
       (response) =>
         response.request().method() === "POST" &&
-        response.url().includes(`/api/v1/admin/compliance/age-verifications/${ageVerification.id}/override`),
+        response.url().includes(`/api/v2/admin/compliance/age-verifications/${ageVerification.id}/override`),
     );
     await confirmOverride.click();
     await expect.poll(async () => (await overrideResponse).status()).toBe(200);

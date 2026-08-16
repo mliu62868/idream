@@ -112,7 +112,7 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
       submitLabel: "Confirm",
       onSubmit: async (reason) => {
         await apiWrite(
-          `/api/v1/admin/approvals/${id}/${decision}`,
+          `/api/v2/admin/approvals/${id}/${decision}`,
           "POST",
           { reason, confirmation: id },
           { "idempotency-key": idempotencyKey },
