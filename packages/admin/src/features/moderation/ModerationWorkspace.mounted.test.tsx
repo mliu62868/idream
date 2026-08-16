@@ -241,6 +241,168 @@ describe("ModerationWorkspace media-review interaction", () => {
   }
 });
 
+const longStatement =
+  "The character keeps steering every conversation back to the same off-policy scenario, " +
+  "and screenshots of three separate sessions are attached to this report.";
+
+describe("ModerationWorkspace decision evidence", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let reads: number;
+
+  beforeEach(() => {
+    window.history.replaceState(null, "", "/admin/moderation");
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    reads = 0;
+    apiGet.mockReset();
+    apiWrite.mockReset();
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  async function mount(input: { reports?: unknown[]; appeals?: unknown[] }) {
+    apiGet.mockImplementation(async (path) => {
+      reads += 1;
+      if (path.includes("scope=reports"))
+        return { reports: input.reports ?? [], pageInfo: { reports: pageInfo } };
+      if (path.includes("scope=media"))
+        return { mediaReview: [], pageInfo: { mediaReview: pageInfo } };
+      if (path.includes("scope=appeals"))
+        return { appeals: input.appeals ?? [], pageInfo: { appeals: pageInfo } };
+      throw new Error(`Unexpected moderation request: ${path}`);
+    });
+    await act(async () => {
+      root.render(
+        <ToastProvider>
+          <ModerationWorkspace canDecide />
+        </ToastProvider>,
+      );
+    });
+    await waitUntil(() => reads >= 3);
+  }
+
+  // 权威接口一直返回 description / reporterId；以前工作台两个都没画，
+  // 审核员只能看着 category 在「处置」和「无违规」之间二选一。
+  it("puts the reporter's own words and identity in the report row", async () => {
+    await mount({
+      reports: [
+        {
+          id: "report-1",
+          reporterId: "user-reporter-9",
+          targetType: "character",
+          targetId: "character-42",
+          category: "harassment",
+          description: "This one keeps ignoring the safe word.",
+          status: "open",
+          priority: 1,
+          createdAt: "2026-08-14T09:00:00.000Z",
+        },
+      ],
+    });
+    await waitUntil(() => container.textContent?.includes("report-1") === true);
+
+    expect(container.textContent).toContain(
+      "This one keeps ignoring the safe word.",
+    );
+    expect(container.textContent).toContain("user-reporter-9");
+    expect(
+      container.querySelector('a[href="/admin/characters/character-42"]'),
+    ).not.toBeNull();
+  });
+
+  it("collapses a long statement without losing a single word of it", async () => {
+    await mount({
+      reports: [
+        {
+          id: "report-2",
+          reporterId: "user-reporter-3",
+          targetType: "message",
+          targetId: "message-8",
+          category: "policy",
+          description: longStatement,
+          status: "open",
+          priority: 2,
+          createdAt: "2026-08-14T09:00:00.000Z",
+        },
+      ],
+    });
+    await waitUntil(() => container.textContent?.includes("report-2") === true);
+
+    const details = container.querySelector("details");
+    expect(details).not.toBeNull();
+    expect(details?.textContent).toContain(longStatement);
+    // message 目标在后台没有落地页，所以只标类型、不编一个会 404 的链接。
+    expect(container.querySelector('a[href*="message-8"]')).toBeNull();
+  });
+
+  it("says the statement is empty rather than leaving the cell blank", async () => {
+    await mount({
+      reports: [
+        {
+          id: "report-3",
+          reporterId: null,
+          targetType: "media",
+          targetId: "media-3",
+          category: "spam",
+          description: null,
+          status: "open",
+          priority: 3,
+          createdAt: "2026-08-14T09:00:00.000Z",
+        },
+      ],
+    });
+    await waitUntil(() => container.textContent?.includes("report-3") === true);
+    expect(container.textContent).toContain("Nothing written");
+  });
+
+  // 「维持」和「撤销」是把一次处置钉死或整个掀翻，而申诉正文以前根本没有画出来。
+  it("puts the appeal text and the original decision in the appeal row", async () => {
+    await mount({
+      appeals: [
+        {
+          id: "appeal-1",
+          userId: "user-12",
+          targetType: "character",
+          targetId: "character-9",
+          originalDecisionId: "review-77",
+          status: "open",
+          appealText: "The image was blocked but it matches the reference sheet.",
+          createdAt: "2026-08-14T09:00:00.000Z",
+        },
+      ],
+    });
+    await waitUntil(() => container.textContent?.includes("appeal-1") === true);
+
+    expect(container.textContent).toContain(
+      "The image was blocked but it matches the reference sheet.",
+    );
+    expect(container.textContent).toContain("review-77");
+  });
+
+  it("offers a way out when the filters matched nothing", async () => {
+    window.history.replaceState(
+      null,
+      "",
+      "/admin/moderation?moderationStatus=closed",
+    );
+    await mount({});
+    await waitUntil(() => reads >= 3);
+    expect(apiGet.mock.calls.at(-1)?.[0]).toContain("status=closed");
+
+    const clear = findButton("Clear filters", container);
+    expect(clear).not.toBeNull();
+    await click(clear);
+    await waitUntil(() => reads >= 6);
+    expect(apiGet.mock.calls.at(-1)?.[0].includes("status=closed")).toBe(false);
+  });
+});
+
 function findButton(label: string, root: ParentNode = document) {
   return (
     [...root.querySelectorAll<HTMLButtonElement>("button")].find(

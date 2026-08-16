@@ -99,4 +99,17 @@ export const adminZhSystem: Record<string, string> = {
     "下载 JSON",
   "{id} is now {status}. The queue below reflects the new state.":
     "{id} 现在是 {status}。下方队列已反映新状态。",
+  // 审批台：审批人看得见「自己在批准什么」所需的文案。
+  "Approval requests": "审批请求",
+  "Awaiting decision": "待裁决",
+  "Decided": "裁决",
+  "No parameters": "无参数",
+  "No reason given": "未填写原因",
+  "Parameters": "参数",
+  "Permission": "权限",
+  "Requested by": "发起人",
+  "Show pending approvals": "查看待审批队列",
+  "These filters match nothing right now. Clearing them returns to the pending queue.":
+    "当前筛选条件没有匹配到任何请求。清除后回到待审批队列。",
+  "{count} parameters": "{count} 项参数",
 };

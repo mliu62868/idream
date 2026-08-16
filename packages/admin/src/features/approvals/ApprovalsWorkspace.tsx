@@ -5,6 +5,7 @@ import { Check, Loader2, RefreshCcw, X } from "lucide-react";
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet, apiWrite } from "@/components/admin/api";
+import { GhostButton } from "@/components/admin/ui/buttons";
 import {
   ConfirmDialog,
   type ConfirmSpec,
@@ -29,6 +30,54 @@ import {
 type Row = Record<string, unknown>;
 type PageInfo = { endCursor: string | null; hasNextPage: boolean };
 type ListResponse = { items: Row[]; pageInfo?: PageInfo };
+
+/**
+ * SPEC: 一条待审批请求在审批人眼里的完整形状。
+ * INTENT: 审批台是双人确认的落点（ADMIN_CONSOLE_PLAN 设计原则 3）。第二个人要挡住的是
+ *         「动作对，参数错」——同样是 credit.adjust，+10 和 +1000000 在列表里长得一模一样。
+ *         权威接口一直在返回 payload，只是以前没人把它画出来；现在它是审批的主证据。
+ */
+type ApprovalCase = {
+  id: string;
+  action: string;
+  permissionKey: string;
+  targetType: string;
+  targetId: string;
+  requestedById: string;
+  approvedById: string | null;
+  reason: string | null;
+  payload: Array<[string, string]>;
+  createdAt: string;
+  decidedAt: string | null;
+};
+
+function toApprovalCase(row: Row, index: number): ApprovalCase {
+  return {
+    id: text(row.id) || `approval-${index}`,
+    action: text(row.action),
+    permissionKey: text(row.permissionKey),
+    targetType: text(row.targetType),
+    targetId: text(row.targetId),
+    requestedById: text(row.requestedById),
+    approvedById: text(row.approvedById) || null,
+    reason: text(row.reason) || null,
+    payload: payloadEntries(row.payload),
+    createdAt: text(row.createdAt),
+    decidedAt: text(row.decidedAt) || null,
+  };
+}
+
+/**
+ * INTENT: payload 的形状由发起动作自己决定，运营台无从把它翻成人话——硬编一套「参数名→说明」
+ *         的映射就是编造。所以逐字画出键值对：审批人看到的就是将要执行的东西本身。
+ */
+function payloadEntries(value: unknown): Array<[string, string]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  return Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
+    key,
+    typeof entry === "string" ? entry : JSON.stringify(entry) ?? "null",
+  ]);
+}
 
 export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
   const { t } = useAdminI18n();
@@ -107,12 +156,16 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
     navigate({ ...draft, cursor: "" });
   }
 
-  function confirmDecision(id: string, decision: "approve" | "reject") {
+  function confirmDecision(entry: ApprovalCase, decision: "approve" | "reject") {
     if (!canReview) return;
+    const id = entry.id;
     const idempotencyKey = crypto.randomUUID();
     const label = decision === "approve" ? "Approve" : "Reject";
     setConfirmation({
       title: t("{action} request {id}", { action: t(label), id }),
+      // INTENT: 审批人点「批准」那一刻必须看到自己在放行什么。以前弹窗里只有一个 ID，
+      //         要核对参数得先回列表、再横向翻十列——于是没人核对。现在证据跟着决定走。
+      summary: <ApprovalImpact entry={entry} />,
       destructive: { expectedName: id, inputLabel: "Confirmation" },
       // INTENT: 审批是终局裁决——后台没有「撤回审批」这条命令，请求方只能重新发起一条。
       consequence: {
@@ -212,24 +265,38 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
         </div>
       ) : data && !rows.length ? (
         <EmptyState
-          hint="The complete approval authority query returned no work."
+          action={
+            filtered ? (
+              <GhostButton onClick={() => navigate(defaultApprovalQuery)}>
+                {t("Show pending approvals")}
+              </GhostButton>
+            ) : null
+          }
+          hint={
+            filtered
+              ? t("These filters match nothing right now. Clearing them returns to the pending queue.")
+              : t("The complete approval authority query returned no work.")
+          }
           title={canonicalListEmptyTitle("approvals", filtered)}
         />
       ) : data ? (
         <DataTable
-          caption="Pending approvals"
+          caption="Approval requests"
           headers={[
             "ID",
             "Action",
             "Permission",
-            "Target type",
             "Target",
-            "Requester",
+            "Requested by",
             "Reason",
+            "Parameters",
             "Created",
+            "Decided",
             "Actions",
           ]}
+          minimumWidthClassName="min-w-[1500px]"
           rows={approvalRows(rows, canReview, confirmDecision)}
+          stickyLastColumn
         />
       ) : null}
       {data?.pageInfo?.hasNextPage && data.pageInfo.endCursor ? (
@@ -259,32 +326,37 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
 function approvalRows(
   rows: Row[],
   canReview: boolean,
-  decide: (id: string, decision: "approve" | "reject") => void,
+  decide: (entry: ApprovalCase, decision: "approve" | "reject") => void,
 ): DataTableRow[] {
   return rows.map((row, index) => {
-    const id = text(row.id);
+    const entry = toApprovalCase(row, index);
     return {
-      id: id || `approval-${index}`,
+      id: entry.id,
       cells: [
-        id,
+        entry.id,
         display(row.action),
         display(row.permissionKey),
-        display(row.targetType),
-        display(row.targetId),
+        <TargetCell key="target" id={entry.targetId} type={entry.targetType} />,
         display(row.requestedById),
         display(row.reason),
+        <PayloadCell entries={entry.payload} key="payload" />,
         date(row.createdAt),
+        <DecidedCell
+          at={entry.decidedAt}
+          by={entry.approvedById}
+          key="decided"
+        />,
         canReview ? (
           <div className="flex gap-1">
             <Action
               icon={<Check className="h-4 w-4" />}
               label="Approve"
-              onClick={() => decide(id, "approve")}
+              onClick={() => decide(entry, "approve")}
             />
             <Action
               icon={<X className="h-4 w-4" />}
               label="Reject"
-              onClick={() => decide(id, "reject")}
+              onClick={() => decide(entry, "reject")}
             />
           </div>
         ) : (
@@ -293,6 +365,108 @@ function approvalRows(
       ],
     };
   });
+}
+
+function TargetCell({ id, type }: { id: string; type: string }) {
+  const { value } = useAdminI18n();
+  if (!id && !type) return <>—</>;
+  return (
+    <span className="block">
+      <span className="block text-xs uppercase tracking-[0.05em] text-[var(--ad-text-muted)]">
+        {type ? value(type) : "—"}
+      </span>
+      <span className="block">{id || "—"}</span>
+    </span>
+  );
+}
+
+// SPEC: 列表里参数折起来，标题写「几项」；展开是逐字的键值对。
+// INTENT: 十列宽的表格塞不下任意形状的 JSON，但「有没有参数、几项」必须一眼可见——
+//         零参数和「有五项没人看」是两种完全不同的风险。
+function PayloadCell({ entries }: { entries: Array<[string, string]> }) {
+  const { t } = useAdminI18n();
+  if (!entries.length)
+    return (
+      <span className="text-[var(--ad-text-muted)]">
+        {t("No parameters")}
+      </span>
+    );
+  return (
+    <details className="max-w-xs">
+      <summary className="cursor-pointer rounded text-xs underline underline-offset-4 focus-visible:outline focus-visible:outline-2">
+        {t("{count} parameters", { count: entries.length })}
+      </summary>
+      <ParameterList entries={entries} />
+    </details>
+  );
+}
+
+function ParameterList({ entries }: { entries: Array<[string, string]> }) {
+  return (
+    <dl className="mt-2 grid gap-1 text-xs">
+      {entries.map(([key, value]) => (
+        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.6fr)] gap-2" key={key}>
+          <dt className="truncate font-semibold text-[var(--ad-text-muted)]">{key}</dt>
+          <dd className="break-words font-mono">{value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function DecidedCell({ at, by }: { at: string | null; by: string | null }) {
+  const { t } = useAdminI18n();
+  if (!at && !by) return <span className="text-[var(--ad-text-muted)]">{t("Awaiting decision")}</span>;
+  return (
+    <span className="block">
+      <span className="block">{by ?? "—"}</span>
+      <span className="block text-xs text-[var(--ad-text-muted)]">{date(at)}</span>
+    </span>
+  );
+}
+
+// SPEC: 确认框里的「你正在放行什么」。
+// INTENT: 参数在这里不折叠——审批人可以选择不看列表里的折叠项，但不能在没看见参数的情况下
+//         走完确认流程。
+function ApprovalImpact({ entry }: { entry: ApprovalCase }) {
+  const { t, value } = useAdminI18n();
+  return (
+    <div className="space-y-2">
+      <Line label={t("Action")} value={entry.action || "—"} />
+      <Line
+        label={t("Target")}
+        value={`${entry.targetType ? value(entry.targetType) : "—"} · ${entry.targetId || "—"}`}
+      />
+      <Line label={t("Permission")} value={entry.permissionKey || "—"} />
+      <Line label={t("Requested by")} value={entry.requestedById || "—"} />
+      <Line label={t("Reason")} value={entry.reason ?? t("No reason given")} />
+      <div>
+        <p className="text-xs font-semibold uppercase tracking-[0.05em]">
+          {t("Parameters")}
+        </p>
+        {entry.payload.length ? (
+          <div className="max-h-40 overflow-y-auto">
+            <ParameterList entries={entry.payload} />
+          </div>
+        ) : (
+          <p className="mt-1 text-xs">{t("No parameters")}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Line({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <span className="text-xs font-semibold uppercase tracking-[0.05em]">
+        {label}
+      </span>
+      <span className="mt-0.5 block break-words text-sm text-[var(--ad-ink)]">
+        {value}
+      </span>
+    </div>
+  );
 }
 
 function Action({
@@ -304,6 +478,7 @@ function Action({
   label: string;
   onClick: () => void;
 }) {
+  const { t } = useAdminI18n();
   return (
     <button
       className="inline-flex min-h-9 items-center gap-1 rounded border px-2"
@@ -311,7 +486,7 @@ function Action({
       type="button"
     >
       {icon}
-      {label}
+      {t(label)}
     </button>
   );
 }
@@ -325,9 +500,10 @@ function Field({
   onChange: (value: string) => void;
   value: string;
 }) {
+  const { t } = useAdminI18n();
   return (
     <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
-      {label}
+      {t(label)}
       <input
         className="min-h-11 rounded-md border bg-[var(--ad-surface)] px-3 text-sm"
         onChange={(event) => onChange(event.target.value)}
@@ -349,9 +525,10 @@ function Select({
   options: string[];
   value: string;
 }) {
+  const { t, value: enumLabel } = useAdminI18n();
   return (
     <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
-      {label}
+      {t(label)}
       <select
         className="min-h-11 rounded-md border bg-[var(--ad-surface)] px-3 text-sm"
         onChange={(event) => onChange(event.target.value)}
@@ -359,7 +536,7 @@ function Select({
       >
         {options.map((option) => (
           <option key={option} value={option}>
-            {option}
+            {enumLabel(option)}
           </option>
         ))}
       </select>
@@ -389,6 +566,8 @@ function freshness(
   return "loading…";
 }
 
+// MIGRATION: 这三个函数在 12 个工作台里逐字重复；统一版正在 `ui/format.ts` 建，
+// 合并时整批切过去，不要在这里再派生第四份。
 function text(value: unknown) {
   return typeof value === "string" ? value : "";
 }
