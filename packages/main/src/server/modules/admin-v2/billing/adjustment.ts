@@ -9,7 +9,7 @@ import {
 import {
   enforceApproval,
   LEDGER_APPROVAL_THRESHOLD,
-} from "@/server/modules/admin-v2/shared/dual-approval";
+} from "@/server/modules/admin-v2/approvals/enforcement";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 

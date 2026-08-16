@@ -19,7 +19,7 @@ import {
   queryParams,
   type AdminActor,
 } from "@/server/modules/admin-v2/shared/authority";
-import { enforceApproval } from "@/server/modules/admin-v2/shared/dual-approval";
+import { enforceApproval } from "@/server/modules/admin-v2/approvals/enforcement";
 import {
   decodeAdminListCursor,
   encodeAdminListCursor,
