@@ -11,6 +11,11 @@ export const adminZhSystem: Record<string, string> = {
     "执行后删除该覆盖，把决定权交回角色。",
   "Applying this takes the capability away.": "执行后收回这项能力。",
   "Checking what this user can do today…": "正在查询该用户当前的权限…",
+  // 生成配置：发布闸没达标时，把还差什么写出来，而不是只把按钮置灰。
+  "Enter how many of the {count} samples passed.": "请填写 {count} 个样本中有多少通过。",
+  "Publishing needs a consistency review of at least 20 samples.": "发布需要至少 20 个样本的一致性复核。",
+  "{passed} of {count} samples passed. Publishing needs at least 80%.":
+    "{count} 个样本中通过 {passed} 个。发布要求通过率至少 80%。",
   "Could not read this user's current permissions. The change below still applies as written.":
     "读取该用户当前权限失败。下面的变更仍会按原样执行。",
   "Enter a user ID to see what they can do today.": "输入用户 ID 即可查看其当前权限。",
