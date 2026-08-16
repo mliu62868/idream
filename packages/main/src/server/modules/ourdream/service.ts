@@ -18,7 +18,6 @@ import type { ChatImageRequestedPayload } from "@/server/ai/schemas";
 import {
   isProductionLtxVideoProfile,
 } from "@/server/modules/generation/production-video-profile";
-import { dispatchAdmin } from "@/server/modules/admin/service";
 import {
   generationQuoteAuthoritySchema,
   quoteGeneration,
@@ -494,9 +493,6 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
 
   if (!resource) return ok({ service: "idream-api", version: "v1" });
 
-  if (resource === "admin") {
-    return dispatchAdmin(request, segments.slice(1));
-  }
 
   if (resource === "auth") {
     if (id === "signup" && method === "POST") return signup(request);

@@ -28,7 +28,7 @@ export function contentListPath(query: ContentQuery) {
   set(params, "status", query.status);
   set(params, "visibility", query.visibility);
   set(params, "cursor", query.cursor);
-  return `/api/v1/admin/content/characters?${params.toString()}`;
+  return `/api/v2/admin/content/characters?${params.toString()}`;
 }
 
 export function contentWorkspaceUrl(

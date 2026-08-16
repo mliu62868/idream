@@ -27,6 +27,7 @@ import {
 } from "@/server/test/helpers";
 import { legacyRedeemCodeHash } from "@/server/lib/redeem-codes";
 import { adminV2 } from "@/server/test/admin-v2-http";
+import { adminV2 as adminV2Api } from "@/server/test/admin-v2-http";
 import type { ApiResult } from "@/server/test/helpers";
 
 // SPEC: Remaining API surface (BackendFeatureSpec §5.1/5.6/5.7/5.9/5.10) —
@@ -1103,11 +1104,11 @@ describe("tags, likes, duplicate", () => {
       },
       orderBy: { submittedAt: "desc" },
     });
-    const characterQueue = await api("GET", "admin/content/review-queue", {
-      userId: reviewerId,
-      role: "moderator",
-      query: { search: duplicateCharacterId },
-    });
+    const characterQueue = await adminV2Api(
+      "GET",
+      `/api/v2/admin/content/review-queue?search=${encodeURIComponent(duplicateCharacterId)}`,
+      { userId: reviewerId, role: "moderator" },
+    );
     expectOk(characterQueue);
     expect(characterQueue.data.items).toEqual([
       expect.objectContaining({
@@ -1119,9 +1120,9 @@ describe("tags, likes, duplicate", () => {
         }),
       }),
     ]);
-    const characterDecision = await api(
+    const characterDecision = await adminV2Api(
       "POST",
-      `admin/content/review-queue/${submission.id}/decision`,
+      `/api/v2/admin/content/review-queue/${submission.id}/decision`,
       {
         userId: reviewerId,
         role: "moderator",

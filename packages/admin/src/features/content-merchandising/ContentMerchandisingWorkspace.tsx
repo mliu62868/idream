@@ -145,7 +145,7 @@ export function ContentMerchandisingWorkspace({
   const loadFeatured = useCallback(async (
     options: { preserveInput?: boolean } = {},
   ) => {
-    const queryKey = "/api/v1/admin/content/featured";
+    const queryKey = "/api/v2/admin/content/featured";
     const request = featuredGate.current.begin();
     setFeatured((current) => authorityRequestStarted(current, queryKey));
     try {
@@ -222,7 +222,7 @@ export function ContentMerchandisingWorkspace({
     setSaveResult(null);
     try {
       const result = await apiWrite<FeaturedWriteResult>(
-        "/api/v1/admin/content/featured",
+        "/api/v2/admin/content/featured",
         "PUT",
         {
           characterIds: parseCsv(featuredInput),
@@ -262,7 +262,7 @@ export function ContentMerchandisingWorkspace({
       submitLabel: contentCommandLabel(field, value),
       onSubmit: async (commandReason) => {
         await apiWrite(
-          `/api/v1/admin/content/characters/${encodeURIComponent(id)}/${field}`,
+          `/api/v2/admin/content/characters/${encodeURIComponent(id)}/${field}`,
           "POST",
           { [field]: value, reason: commandReason, confirmation: expected },
           { "idempotency-key": key },

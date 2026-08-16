@@ -149,7 +149,13 @@ const contentAssetPlacementSchema = z.object({
   publishedAt: adminIsoDateTimeSchema.nullable(),
 }).strict();
 
-export const contentAssetSchema = z.object({
+/**
+ * SPEC: one MediaAsset row as the Admin wire sees it — the shape `mediaAssetDTO` produces.
+ * INTENT: the Image Library and the Placement editor both carry the same asset row. Declaring
+ * it once and composing it keeps a single answer to `customerPublishable` across both, which
+ * is the whole reason `mediaAssetDTO` exists on the server side.
+ */
+export const adminMediaAssetSchema = z.object({
   id: adminIdSchema,
   type: z.string().trim().min(1),
   url: z.string().trim().min(1),
@@ -165,6 +171,9 @@ export const contentAssetSchema = z.object({
   promptSummary: z.string().nullable(),
   metadata: adminJsonValueSchema,
   createdAt: adminIsoDateTimeSchema,
+});
+
+export const contentAssetSchema = adminMediaAssetSchema.extend({
   platformStatus: z.string().trim().min(1),
   purpose: z.string().trim().min(1).nullable(),
   targetType: z.string().trim().min(1).nullable(),
@@ -202,6 +211,7 @@ export type ContentAssetReviewStatus = z.infer<typeof contentAssetReviewStatusSc
 export type ContentAssetAuthorityDependency = z.infer<
   typeof contentAssetAuthorityDependencySchema
 >;
+export type AdminMediaAsset = z.infer<typeof adminMediaAssetSchema>;
 export type ContentAsset = z.infer<typeof contentAssetSchema>;
 export type ContentAssetListResponse = z.infer<typeof contentAssetListResponseSchema>;
 export type ContentAssetDetailResponse = z.infer<typeof contentAssetDetailResponseSchema>;

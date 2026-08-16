@@ -36,7 +36,7 @@ export type ApprovedAsset = {
   publishabilityReasons: string[];
 };
 
-export const PLACEMENTS_BASE = "/api/v1/admin/content/placements";
+export const PLACEMENTS_BASE = "/api/v2/admin/content/placements";
 export const PLACEMENTS_LIST = `${PLACEMENTS_BASE}?limit=25`;
 export const APPROVED_ASSETS_LIST = "/api/v2/admin/assets?status=approved&limit=100";
 

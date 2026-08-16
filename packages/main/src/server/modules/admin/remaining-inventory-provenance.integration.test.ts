@@ -17,22 +17,14 @@ import {
   getCreativeRunDetail,
   listCreativeRuns,
 } from "@/server/modules/admin-v2/creative/run-read";
-import {
-  getContentAsset,
-  listContentAssets,
-} from "@/server/modules/admin/content/assets";
-import {
-  getPlacement,
-  listPlacements,
-} from "@/server/modules/admin/content/placements";
-import {
-  listReviewQueue,
-  reviewSubmission,
-} from "@/server/modules/admin/characters/review";
-import {
-  getContentCharacter,
-  setCharacterVisibility,
-} from "@/server/modules/admin/content/merchandising";
+import { GET as listContentAssets } from "@/app/api/v2/admin/assets/route";
+import { GET as getContentAsset } from "@/app/api/v2/admin/assets/[id]/route";
+import { GET as listPlacements } from "@/app/api/v2/admin/content/placements/route";
+import { GET as getPlacement } from "@/app/api/v2/admin/content/placements/[id]/route";
+import { GET as listReviewQueue } from "@/app/api/v2/admin/content/review-queue/route";
+import { POST as reviewSubmission } from "@/app/api/v2/admin/content/review-queue/[id]/decision/route";
+import { GET as getContentCharacter } from "@/app/api/v2/admin/content/characters/[id]/route";
+import { POST as setCharacterVisibility } from "@/app/api/v2/admin/content/characters/[id]/visibility/route";
 import {
   createCharacter,
   createUser,
@@ -253,7 +245,7 @@ describe("remaining Admin inventory provenance", () => {
     ).resolves.toEqual({ version: 1 });
 
     const review = await responseData(
-      await listReviewQueue(adminRequest(`/api/v1/admin/content/review-queue?search=${prefix}&limit=100`)),
+      await listReviewQueue(adminRequest(`/api/v2/admin/content/review-queue?search=${prefix}&limit=100`)),
     );
     expect(
       new Set(
@@ -261,41 +253,35 @@ describe("remaining Admin inventory provenance", () => {
       ),
     ).toEqual(new Set([submissionIds.customer, submissionIds.internal]));
 
-    await expect(
-      reviewSubmission(
-        adminRequest(
-          `/api/v1/admin/content/review-queue/${submissionIds.fixture}`,
-          "POST",
-          {
-            decision: "reject",
-            reason: "fixture authority must stay isolated",
-            confirmation: submissionIds.fixture,
-          },
-        ),
-        submissionIds.fixture,
+    await expectNotFound(reviewSubmission(
+      adminRequest(
+        `/api/v2/admin/content/review-queue/${submissionIds.fixture}/decision`,
+        "POST",
+        {
+          decision: "reject",
+          reason: "fixture authority must stay isolated",
+          confirmation: submissionIds.fixture,
+        },
       ),
-    ).rejects.toMatchObject({ status: 404 });
+      { params: Promise.resolve({ id: submissionIds.fixture }) },
+    ));
 
-    await expect(
-      getContentCharacter(
-        adminRequest(`/api/v1/admin/content/characters/${characterIds.fixture}`),
-        characterIds.fixture,
+    await expectNotFound(getContentCharacter(
+      adminRequest(`/api/v2/admin/content/characters/${characterIds.fixture}`),
+      { params: Promise.resolve({ id: characterIds.fixture }) },
+    ));
+    await expectNotFound(setCharacterVisibility(
+      adminRequest(
+        `/api/v2/admin/content/characters/${characterIds.fixture}/visibility`,
+        "POST",
+        {
+          visibility: "unlisted",
+          reason: "fixture authority must stay isolated",
+          confirmation: `${characterIds.fixture}:visibility:unlisted`,
+        },
       ),
-    ).rejects.toMatchObject({ status: 404 });
-    await expect(
-      setCharacterVisibility(
-        adminRequest(
-          `/api/v1/admin/content/characters/${characterIds.fixture}/visibility`,
-          "POST",
-          {
-            visibility: "unlisted",
-            reason: "fixture authority must stay isolated",
-            confirmation: `${characterIds.fixture}:visibility:unlisted`,
-          },
-        ),
-        characterIds.fixture,
-      ),
-    ).rejects.toMatchObject({ status: 404 });
+      { params: Promise.resolve({ id: characterIds.fixture }) },
+    ));
   });
 
   it("keeps generation and Creative Run list, detail, and commands operational-only", async () => {
@@ -328,31 +314,27 @@ describe("remaining Admin inventory provenance", () => {
   it("keeps content assets and placements operational-only across list and detail", async () => {
     const assets = await responseData(
       await listContentAssets(
-        adminRequest(`/api/v1/admin/content/assets?search=${prefix}&limit=100`),
+        adminRequest(`/api/v2/admin/assets?search=${prefix}&limit=100`),
       ),
     );
     expect(ids(assets.items)).toEqual(new Set([mediaIds.customer, mediaIds.internal]));
-    await expect(
-      getContentAsset(
-        adminRequest(`/api/v1/admin/content/assets/${mediaIds.fixture}`),
-        mediaIds.fixture,
-      ),
-    ).rejects.toMatchObject({ status: 404 });
+    await expectNotFound(getContentAsset(
+      adminRequest(`/api/v2/admin/assets/${mediaIds.fixture}`),
+      { params: Promise.resolve({ id: mediaIds.fixture }) },
+    ));
 
     const placements = await responseData(
       await listPlacements(
-        adminRequest(`/api/v1/admin/content/placements?search=${prefix}&limit=100`),
+        adminRequest(`/api/v2/admin/content/placements?search=${prefix}&limit=100`),
       ),
     );
     expect(ids(placements.items)).toEqual(
       new Set([placementIds.customer, placementIds.internal]),
     );
-    await expect(
-      getPlacement(
-        adminRequest(`/api/v1/admin/content/placements/${placementIds.fixture}`),
-        placementIds.fixture,
-      ),
-    ).rejects.toMatchObject({ status: 404 });
+    await expectNotFound(getPlacement(
+      adminRequest(`/api/v2/admin/content/placements/${placementIds.fixture}`),
+      { params: Promise.resolve({ id: placementIds.fixture }) },
+    ));
   });
 
   function adminRequest(
@@ -376,6 +358,11 @@ describe("remaining Admin inventory provenance", () => {
     });
   }
 });
+
+async function expectNotFound(pending: Promise<Response> | Response) {
+  const response = await pending;
+  expect(response.status, await response.clone().text()).toBe(404);
+}
 
 async function responseData(response: Response) {
   expect(response.status).toBe(200);

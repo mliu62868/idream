@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 //
 // INTENT: 这里守的不是"某个符号别出现"，而是"这个方向上一共只有几条边"。
 // 真实事故：GET /v1/character-templates 的公开只读投影 listActiveTemplates 曾住在
-// modules/admin/characters/templates.ts 里，靠一行注释声明"公开只读，不要求 admin 权限"。
+// modules/admin-v2/content/templates.ts 里，靠一行注释声明"公开只读，不要求 admin 权限"。
 // 符号黑名单式的守卫抓不到它 —— 名字是合法的、文件是合法的、import 也编译得过。
 // 只有"这个方向的边必须恰好是这一条"才会在它出现时失败。
 //

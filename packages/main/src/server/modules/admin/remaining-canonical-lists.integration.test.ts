@@ -1,19 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { GET as auditLogRoute } from "@/app/api/v2/admin/audit-log/route";
-import { GET as featureFlagsRoute } from "@/app/api/v2/admin/feature-flags/route";
 import { prisma } from "@/server/lib/db";
-import { handle } from "@/server/lib/http";
-import { dispatchAdmin } from "./service";
+import { adminV2 as adminV2Api } from "@/server/test/admin-v2-http";
 
-// SPEC: 已迁到 v2 的清单经自己的 Route Handler 走，其余仍走 v1 dispatcher。
-// INTENT: 这个文件同时覆盖十几个域，迁移是分批的 —— 一张表把「谁已经搬走了」写明，
-//         比按域拆成十几个文件更容易看出还剩谁。
-const migratedListRoutes: Record<string, (request: Request) => Promise<Response>> = {
-  "audit-log": auditLogRoute,
-  "feature-flags": featureFlagsRoute,
-};
-
+// SPEC: 跨多个域抽查「服务端过滤 + 查询绑定游标」这一条清单契约。
+// INTENT: 断言的是共享分页原语（list-cursor 的 queryIdentity 绑定、queryParams 的边界 400）
+//         的性质，不是某个资源自己的性质 —— 所以它按契约聚在一起，而不是拆进各域的测试。
+//         v1 dispatcher 已经删除，这里全部经各自的 Admin v2 Route Handler。
 type PageInfo = { endCursor: string | null; hasNextPage: boolean };
 
 describe("remaining canonical admin lists", () => {
@@ -22,16 +15,14 @@ describe("remaining canonical admin lists", () => {
   const actorId = `remaining-admin-${suffix}`;
   const ids = (kind: string) => [0, 1].map((index) => `${token}-${kind}-${index}`);
 
-  async function call(segments: string[], query: string) {
-    const migrated = segments.length === 1 ? migratedListRoutes[segments[0]!] : undefined;
-    const request = new Request(
-      `http://test.local/api/${migrated ? "v2" : "v1"}/admin/${segments.join("/")}?${query}`,
-      { headers: { "x-idream-user-id": actorId, "x-idream-role": "admin" } },
-    );
-    const response = migrated
-      ? await migrated(request)
-      : await handle(() => dispatchAdmin(request, segments))(request);
-    return { response, body: await response.json() as { data?: Record<string, unknown>; error?: unknown } };
+  type ListEnvelope = { data?: Record<string, unknown>; error?: unknown };
+
+  async function call(path: string, query: string) {
+    const result = await adminV2Api("GET", `${path}?${query}`, {
+      userId: actorId,
+      role: "admin",
+    });
+    return { status: result.status, body: result.json as ListEnvelope };
   }
 
   beforeAll(async () => {
@@ -77,63 +68,59 @@ describe("remaining canonical admin lists", () => {
   });
 
   const cases = [
-    { name: "merchandising characters", segments: ["content", "characters"], query: `search=${token}&status=approved&limit=1` },
-    { name: "merchandising characters without stats", segments: ["content", "characters"], query: `search=${token}&status=approved&sort=popular&limit=1` },
-    { name: "audit", segments: ["audit-log"], query: `search=${token}&limit=1` },
-    { name: "feature flags", segments: ["feature-flags"], query: `search=${token}&enabled=false&limit=1` },
+    { name: "merchandising characters", path: "/api/v2/admin/content/characters", query: `search=${token}&status=approved&limit=1` },
+    { name: "merchandising characters without stats", path: "/api/v2/admin/content/characters", query: `search=${token}&status=approved&sort=popular&limit=1` },
+    { name: "audit", path: "/api/v2/admin/audit-log", query: `search=${token}&limit=1` },
+    { name: "feature flags", path: "/api/v2/admin/feature-flags", query: `search=${token}&enabled=false&limit=1` },
   ] as const;
 
   for (const testCase of cases) {
     it(`paginates ${testCase.name} with server filters and a query-bound cursor`, async () => {
-      const first = await call([...testCase.segments], testCase.query);
-      expect(first.response.status, JSON.stringify(first.body)).toBe(200);
+      const first = await call(testCase.path, testCase.query);
+      expect(first.status, JSON.stringify(first.body)).toBe(200);
       const firstData = first.body.data as { items: Array<{ id?: string; key?: string }>; pageInfo: PageInfo };
       expect(firstData.items).toHaveLength(1);
       expect(firstData.pageInfo).toMatchObject({ hasNextPage: true, endCursor: expect.any(String) });
 
       const cursor = firstData.pageInfo.endCursor ?? "";
-      const second = await call([...testCase.segments], `${testCase.query}&cursor=${encodeURIComponent(cursor)}`);
-      expect(second.response.status, JSON.stringify(second.body)).toBe(200);
+      const second = await call(testCase.path, `${testCase.query}&cursor=${encodeURIComponent(cursor)}`);
+      expect(second.status, JSON.stringify(second.body)).toBe(200);
       const secondData = second.body.data as { items: Array<{ id?: string; key?: string }>; pageInfo: PageInfo };
       expect(secondData.items).toHaveLength(1);
       expect(secondData.items[0]?.id ?? secondData.items[0]?.key).not.toBe(firstData.items[0]?.id ?? firstData.items[0]?.key);
 
-      const mismatch = await call([...testCase.segments], `${testCase.query.replace(token, "different")}&cursor=${encodeURIComponent(cursor)}`);
-      expect(mismatch.response.status).toBe(400);
+      const mismatch = await call(testCase.path, `${testCase.query.replace(token, "different")}&cursor=${encodeURIComponent(cursor)}`);
+      expect(mismatch.status).toBe(400);
     });
   }
 
-  it("preserves unbounded V1 defaults while the Admin UI opts into pagination", async () => {
-    for (const testCase of [
-      { segments: ["feature-flags"], query: `search=${token}` },
-    ]) {
-      const result = await call(testCase.segments, testCase.query);
-      expect(result.response.status, JSON.stringify(result.body)).toBe(200);
-      const data = result.body.data as { items: unknown[]; pageInfo: PageInfo };
-      expect(data.items).toHaveLength(2);
-      expect(data.pageInfo).toEqual({ endCursor: null, hasNextPage: false });
-    }
+  it("preserves unbounded list defaults while the Admin UI opts into pagination", async () => {
+    const result = await call("/api/v2/admin/feature-flags", `search=${token}`);
+    expect(result.status, JSON.stringify(result.body)).toBe(200);
+    const data = result.body.data as { items: unknown[]; pageInfo: PageInfo };
+    expect(data.items).toHaveLength(2);
+    expect(data.pageInfo).toEqual({ endCursor: null, hasNextPage: false });
   });
 
   it("rejects malformed canonical flag queries at the boundary", async () => {
-    await expect(call(["feature-flags"], "enabled=banana")).resolves.toMatchObject({ response: { status: 400 } });
+    await expect(call("/api/v2/admin/feature-flags", "enabled=banana")).resolves.toMatchObject({ status: 400 });
   });
 
   it("rejects malformed Audit queries at the boundary", async () => {
-    await expect(call(["audit-log"], "limit=1junk")).resolves.toMatchObject({ response: { status: 400 } });
-    await expect(call(["audit-log"], "unknown=value")).resolves.toMatchObject({ response: { status: 400 } });
+    await expect(call("/api/v2/admin/audit-log", "limit=1junk")).resolves.toMatchObject({ status: 400 });
+    await expect(call("/api/v2/admin/audit-log", "unknown=value")).resolves.toMatchObject({ status: 400 });
   });
 
   it("continues from encoded sort keys when the cursor row is deleted", async () => {
-    const first = await call(["audit-log"], `search=${token}&limit=1`);
+    const first = await call("/api/v2/admin/audit-log", `search=${token}&limit=1`);
     const firstData = first.body.data as { items: Array<{ id: string }>; pageInfo: PageInfo };
     await prisma.adminAuditLog.delete({ where: { id: firstData.items[0]!.id } });
 
     const second = await call(
-      ["audit-log"],
+      "/api/v2/admin/audit-log",
       `search=${token}&limit=1&cursor=${encodeURIComponent(firstData.pageInfo.endCursor ?? "")}`,
     );
-    expect(second.response.status, JSON.stringify(second.body)).toBe(200);
+    expect(second.status, JSON.stringify(second.body)).toBe(200);
     const secondData = second.body.data as { items: Array<{ id: string }> };
     expect(secondData.items).toHaveLength(1);
     expect(secondData.items[0]?.id).not.toBe(firstData.items[0]?.id);

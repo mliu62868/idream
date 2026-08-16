@@ -38,6 +38,8 @@ export type AdminV2CallOptions = {
   readonly headers?: Record<string, string>;
   readonly query?: Record<string, string | number | boolean | undefined>;
   readonly cookie?: string;
+  /** Overrides params derived from the pathname; the derived ones already cover every declared route. */
+  readonly params?: Record<string, string>;
 };
 
 /** Structurally the v1 suite's `ApiResult`, so `expectOk` / `expectError` accept both. */
@@ -108,7 +110,12 @@ export async function adminV2<T = any>(
       headers,
       body: options.form ?? (options.body === undefined ? undefined : JSON.stringify(options.body)),
     }),
-    { params: Promise.resolve(routeParams(operation.route, url.pathname)) },
+    {
+      params: Promise.resolve({
+        ...routeParams(operation.route, url.pathname),
+        ...options.params,
+      }),
+    },
   );
   const text = await response.text();
   const json = text ? (JSON.parse(text) as { ok?: boolean; data?: T; error?: AdminV2Result["error"] }) : null;

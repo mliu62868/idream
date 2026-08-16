@@ -40,7 +40,7 @@ export function StartersNewPage() {
         description: string;
         advancedDetails: { personality: string; speakingStyle: string; firstMessage: string; visualBrief: string };
       }>(
-        "/api/v1/admin/content/character-assist", "POST", { seed: seed.trim() },
+        "/api/v2/admin/content/character-assist", "POST", { seed: seed.trim() },
       );
       const summary = data.description.slice(0, 200);
       const traits = tagsFromText(data.advancedDetails?.personality ?? "");

@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
-import { handle } from "@/server/lib/http";
-import { dispatchAdmin } from "./service";
+import { adminV2 as adminV2Api } from "@/server/test/admin-v2-http";
 
 describe("server-backed compatibility lists", () => {
   const suffix = randomUUID();
@@ -13,12 +12,20 @@ describe("server-backed compatibility lists", () => {
   const placementIds = [0, 1, 2].map((index) => `list-placement-${index}-${suffix}`);
   const templateIds = [0, 1, 2].map((index) => `list-template-${index}-${suffix}`);
 
-  async function call(segments: string[], query: string) {
-    const request = new Request(`http://test.local/api/v1/admin/${segments.join("/")}?${query}`, {
-      headers: { "x-idream-user-id": actorId, "x-idream-role": "admin" },
+  type ListBody = {
+    data?: {
+      items: Array<{ id?: string; submissionId?: string }>;
+      pageInfo: { endCursor: string | null; hasNextPage: boolean };
+    };
+    error?: unknown;
+  };
+
+  async function call(testCase: ListCase, query: string) {
+    const result = await adminV2Api("GET", `${testCase.v2Path}?${query}`, {
+      userId: actorId,
+      role: "admin",
     });
-    const response = await handle(() => dispatchAdmin(request, segments))(request);
-    return { response, body: await response.json() as { data?: { items: Array<{ id?: string; submissionId?: string }>; pageInfo: { endCursor: string | null; hasNextPage: boolean } }; error?: unknown } };
+    return { status: result.status, body: result.json as ListBody };
   }
 
   beforeAll(async () => {
@@ -83,26 +90,34 @@ describe("server-backed compatibility lists", () => {
     await prisma.$disconnect();
   });
 
-  const cases = [
-    { segments: ["content", "assets"], query: `search=${token}&status=generated` },
-    { segments: ["content", "placements"], query: `search=${token}&status=draft` },
-    { segments: ["content", "templates"], query: `search=${token}&scope=built_in` },
-  ] as const;
+  type ListCase = {
+    readonly label: string;
+    readonly query: string;
+    readonly v2Path: string;
+  };
+
+  const cases: readonly ListCase[] = [
+    { label: "content/assets", query: `search=${token}&status=generated`, v2Path: "/api/v2/admin/assets" },
+    { label: "content/placements", query: `search=${token}&status=draft`, v2Path: "/api/v2/admin/content/placements" },
+    { label: "generation/recipes", query: `search=${token}&status=draft`, v2Path: "/api/v2/admin/generation/recipes" },
+    { label: "generation/presets", query: `search=${token}&type=background`, v2Path: "/api/v2/admin/generation/presets" },
+    { label: "content/templates", query: `search=${token}&scope=built_in`, v2Path: "/api/v2/admin/content/templates" },
+  ];
 
   for (const testCase of cases) {
-    it(`paginates ${testCase.segments.join("/")} on the server with a query-bound cursor`, async () => {
-      const first = await call([...testCase.segments], `${testCase.query}&limit=1`);
-      expect(first.response.status, JSON.stringify(first.body)).toBe(200);
+    it(`paginates ${testCase.label} on the server with a query-bound cursor`, async () => {
+      const first = await call(testCase, `${testCase.query}&limit=1`);
+      expect(first.status, JSON.stringify(first.body)).toBe(200);
       expect(first.body.data?.items).toHaveLength(1);
       expect(first.body.data?.pageInfo).toMatchObject({ hasNextPage: true, endCursor: expect.any(String) });
       const cursor = first.body.data?.pageInfo.endCursor ?? "";
-      const second = await call([...testCase.segments], `${testCase.query}&limit=1&cursor=${encodeURIComponent(cursor)}`);
-      expect(second.response.status, JSON.stringify(second.body)).toBe(200);
+      const second = await call(testCase, `${testCase.query}&limit=1&cursor=${encodeURIComponent(cursor)}`);
+      expect(second.status, JSON.stringify(second.body)).toBe(200);
       expect(second.body.data?.items).toHaveLength(1);
       expect(second.body.data?.items[0]?.id).not.toBe(first.body.data?.items[0]?.id);
       const mismatchQuery = testCase.query.replace(/search=[^&]+/, "search=different");
-      const mismatch = await call([...testCase.segments], `${mismatchQuery}&limit=1&cursor=${encodeURIComponent(cursor)}`);
-      expect(mismatch.response.status).toBe(400);
+      const mismatch = await call(testCase, `${mismatchQuery}&limit=1&cursor=${encodeURIComponent(cursor)}`);
+      expect(mismatch.status).toBe(400);
     });
   }
 });

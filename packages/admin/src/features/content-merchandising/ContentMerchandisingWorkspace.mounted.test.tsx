@@ -31,7 +31,7 @@ describe("ContentMerchandisingWorkspace Featured concurrency", () => {
       init?: RequestInit,
     ) => {
       const path = String(input);
-      if (path.includes("/api/v1/admin/content/characters")) {
+      if (path.includes("/api/v2/admin/content/characters")) {
         return Response.json({
           ok: true,
           data: {
@@ -41,7 +41,7 @@ describe("ContentMerchandisingWorkspace Featured concurrency", () => {
         });
       }
       if (
-        path.includes("/api/v1/admin/content/featured") &&
+        path.includes("/api/v2/admin/content/featured") &&
         (init?.method ?? "GET") === "GET"
       ) {
         featuredReads += 1;
@@ -61,7 +61,7 @@ describe("ContentMerchandisingWorkspace Featured concurrency", () => {
         });
       }
       if (
-        path.includes("/api/v1/admin/content/featured") &&
+        path.includes("/api/v2/admin/content/featured") &&
         init?.method === "PUT"
       ) {
         return Response.json({
@@ -135,7 +135,7 @@ describe("ContentMerchandisingWorkspace Featured concurrency", () => {
   it("surfaces dirty-history diagnostics from the canonical authority DTO", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
       const path = String(input);
-      if (path.includes("/api/v1/admin/content/characters")) {
+      if (path.includes("/api/v2/admin/content/characters")) {
         return Response.json({
           ok: true,
           data: {
