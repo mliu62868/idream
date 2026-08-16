@@ -278,6 +278,9 @@ function ProfileDetail({ canWrite, jobs, onConfirm, onTest, profile, review, set
     </div> : null}
     {mode === "image" && status !== "archived" ? <div className="grid gap-3 rounded-md border border-[var(--ad-border)] p-3 md:grid-cols-2"><Field label="Test image prompt" onChange={setTestPrompt} value={testPrompt} /><p className="self-end text-xs text-[var(--ad-text-muted)]">{relatedJobs.length}  {t("recent profile test job")}{relatedJobs.length === 1 ? "" : "s"}</p></div> : null}
     {mode === "image" && status === "draft" ? <div className="grid gap-3 rounded-md border border-[var(--ad-border)] p-3 md:grid-cols-3"><Field label="Consistency samples (≥20)" onChange={(sampleCount) => setReview({ ...review, sampleCount })} value={review.sampleCount} /><Field label="Consistency passes (≥80%)" onChange={(passCount) => setReview({ ...review, passCount })} value={review.passCount} /><Field label="Review evidence URL" onChange={(reviewUrl) => setReview({ ...review, reviewUrl })} value={review.reviewUrl} /></div> : null}
+    {/* INTENT: Publish 在一致性复核没达标时是灰的，而灰按钮不会说自己为什么灰——
+        运营只能猜是权限不够还是数字不对。把还差什么直接写出来。 */}
+    {canWrite && status === "draft" && !reviewReady ? <p className="text-xs text-[var(--ad-text-muted)]" role="status">{publishBlockedReason(sampleCount, passCount, t)}</p> : null}
     <details className="rounded-md border border-[var(--ad-border)] p-3"><summary className="cursor-pointer text-sm font-semibold">{t("Engineering details")}</summary><pre className="mt-3 overflow-x-auto text-xs text-[var(--ad-text-muted)]">{JSON.stringify(profile, null, 2)}</pre></details>
   </section>;
 }
@@ -290,6 +293,30 @@ function FlagsTable({ canWrite, confirmWrite, rows }: { canWrite: boolean; confi
     const expected = `${key}:${enabled ? "disabled" : "enabled"}`;
     return <tr className="border-b border-[var(--ad-border)] last:border-0" key={key}><td className="px-4 py-3 font-mono text-xs">{key}</td><td className="px-4 py-3">{String(enabled)}</td><td className="px-4 py-3">{display(row.rolloutPercent)}</td><td className="px-4 py-3">{display(row.version)}</td><td className="px-4 py-3">{display(row.hardPolicy)}</td><td className="px-4 py-3">{canWrite ? <Action icon={<Flag className="h-4 w-4" />} label={enabled ? "Disable" : "Enable"} onClick={() => confirmWrite({ title: enabled ? t("Disable feature flag {key}", { key }) : t("Enable feature flag {key}", { key }), completed: enabled ? t("Feature flag {key} disabled", { key }) : t("Feature flag {key} enabled", { key }), endpoint: `/api/v2/admin/feature-flags/${key}`, method: "PATCH", expected, consequence: { effect: t("The flag flips for live traffic on the next request. Flipping it back is one more click on this same row."), reversible: true }, payload: (reason) => ({ enabled: !enabled, reason }) })} /> : t("Read only")}</td></tr>;
   })}</tbody></table></div>;
+}
+
+/**
+ * SPEC: 说清楚 Publish 还差什么，按发布闸自己的顺序：先要样本数，再要通过率。
+ * INVARIANT: 判据必须和 reviewReady 用同一组数字，否则会出现「提示说达标了但按钮还是灰的」。
+ */
+export function publishBlockedReason(
+  sampleCount: number | null,
+  passCount: number | null,
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
+  if (sampleCount === null || sampleCount < 20) {
+    return t("Publishing needs a consistency review of at least 20 samples.");
+  }
+  if (passCount === null || passCount > sampleCount) {
+    return t("Enter how many of the {count} samples passed.", { count: sampleCount });
+  }
+  if (passCount / sampleCount < 0.8) {
+    return t("{passed} of {count} samples passed. Publishing needs at least 80%.", {
+      count: sampleCount,
+      passed: passCount,
+    });
+  }
+  return "";
 }
 
 function Freshness<T>({ label, state }: { label: string; state: AuthorityState<T> }) {

@@ -1,6 +1,7 @@
 "use client";
 
 import { AdminText, useAdminI18n } from "@/components/admin/i18n";
+import { dreamcoins } from "@/features/billing/money";
 import { Ban, Loader2, Plus, RefreshCcw, X } from "lucide-react";
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -49,7 +50,7 @@ const emptyAuthority = (): AuthorityState => ({
 });
 
 export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
-  const { t } = useAdminI18n();
+  const { t, value: valueLabel } = useAdminI18n();
   const { toast } = useToast();
   const [query, setQuery] = useState<PromoQuery>(() => currentQuery());
   const [draft, setDraft] = useState<PromoQuery>(() => currentQuery());
@@ -196,6 +197,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
         />
         <Select
           label="Code status"
+          optionLabel={valueLabel}
           onChange={(codeStatus) =>
             setDraft((value) => ({ ...value, codeStatus }))
           }
@@ -204,6 +206,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
         />
         <Select
           label="Referral status"
+          optionLabel={valueLabel}
           onChange={(referralStatus) =>
             setDraft((value) => ({ ...value, referralStatus }))
           }
@@ -246,7 +249,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
             : "No redeem codes exist yet"
         }
         loadingLabel="Loading redeem codes…"
-        rows={codeRows(codes.rows ?? [], canWrite, confirmDisable)}
+        rows={codeRows(codes.rows ?? [], canWrite, confirmDisable, t, valueLabel)}
         state={codes}
         title={t("Redeem codes")}
       />
@@ -269,7 +272,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
             : "No referrals exist yet"
         }
         loadingLabel="Loading referrals…"
-        rows={referralRows(referrals.rows ?? [])}
+        rows={referralRows(referrals.rows ?? [], valueLabel)}
         state={referrals}
         title={t("Referrals")}
       />
@@ -299,21 +302,24 @@ function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
   const { toast } = useToast();
   const failureToast = useFailureToast();
   const [code, setCode] = useState("");
-  const [dreamcoins, setDreamcoins] = useState("");
+  const [coins, setCoins] = useState("");
   const [maxRedemptions, setMaxRedemptions] = useState("");
+  const [expiresAt, setExpiresAt] = useState("");
   const [reason, setReason] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
   const idempotencyKey = useRef<string | null>(null);
   const trimmedCode = code.trim();
-  const dreamcoinValue = strictIntegerFromText(dreamcoins, 1, 1_000_000);
+  const dreamcoinValue = strictIntegerFromText(coins, 1, 1_000_000);
   const maxRedemptionsValue = maxRedemptions.trim()
     ? strictIntegerFromText(maxRedemptions, 1, 1_000_000)
     : null;
+  const expiryValue = isoFromLocalDateTime(expiresAt);
   const ready =
     trimmedCode.length >= 4 &&
     dreamcoinValue !== null &&
     (!maxRedemptions.trim() || maxRedemptionsValue !== null) &&
+    (!expiresAt.trim() || expiryValue !== null) &&
     reason.trim().length >= 3 &&
     confirmation.trim() === trimmedCode;
 
@@ -329,14 +335,16 @@ function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
           code: trimmedCode,
           reward: { dreamcoins: dreamcoinValue },
           maxRedemptions: maxRedemptionsValue,
+          ...(expiryValue ? { expiresAt: expiryValue } : {}),
           reason: reason.trim(),
           confirmation: confirmation.trim(),
         },
         { "idempotency-key": idempotencyKey.current },
       );
       setCode("");
-      setDreamcoins("");
+      setCoins("");
       setMaxRedemptions("");
+      setExpiresAt("");
       setReason("");
       setConfirmation("");
       idempotencyKey.current = null;
@@ -357,13 +365,21 @@ function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
 
         {t("Plaintext code is used only to derive its hash and is not returned by the authority.")}
       </p>
-      <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+      <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-7">
         <Input label="Code (≥4)" onChange={setCode} value={code} />
-        <Input label="Dreamcoins" onChange={setDreamcoins} value={dreamcoins} />
+        <Input label="Dreamcoins" onChange={setCoins} value={coins} />
         <Input
           label="Max uses (blank=∞)"
           onChange={setMaxRedemptions}
           value={maxRedemptions}
+        />
+        {/* INTENT: 契约一直收 expiresAt，表单却没这个格子——控制台发出去的每个码都是永久有效的，
+            而表里还有一列 Expires 永远显示 —。没有期限的码就是一笔没有截止日的负债。 */}
+        <Input
+          label="Expires (blank=never)"
+          onChange={setExpiresAt}
+          type="datetime-local"
+          value={expiresAt}
         />
         <Input label="Reason (≥3)" onChange={setReason} value={reason} />
         <Input
@@ -386,7 +402,7 @@ function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
           {t("Create")}
         </button>
       </div>
-      {dreamcoins.length > 0 && dreamcoinValue === null ? (
+      {coins.length > 0 && dreamcoinValue === null ? (
         <p className="mt-2 text-xs text-[var(--ad-red-text)]" role="alert">
 
           {t("Dreamcoins must be a whole number from 1 to 1,000,000.")}
@@ -398,14 +414,87 @@ function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
           {t("Max uses must be a whole number from 1 to 1,000,000.")}
         </p>
       ) : null}
+      {expiresAt.length > 0 && expiryValue === null ? (
+        <p className="mt-2 text-xs text-[var(--ad-red-text)]" role="alert">
+
+          {t("Expiry must be a valid date and time.")}
+        </p>
+      ) : null}
+      {dreamcoinValue !== null ? (
+        <CodeLiability
+          dreamcoinValue={dreamcoinValue}
+          expiryValue={expiryValue}
+          maxRedemptionsValue={maxRedemptionsValue}
+        />
+      ) : null}
     </section>
   );
+}
+
+/**
+ * SPEC: 建码之前，把这个码最多能发出去多少梦币摆出来。
+ *
+ * INTENT: 面额和次数是两个独立的小格子，乘出来才是真正的敞口。运营填 500 × 2000 的时候
+ * 心里想的是「500 的码」，实际是一百万梦币。次数留空更危险——那是一笔没有上限的负债，
+ * 而表单把它写成一个轻描淡写的 `blank=∞`。
+ * INVARIANT: 只做乘法，不换算成法币——梦币和法币之间的汇率不在这个契约里，估一个就是编。
+ */
+function CodeLiability({
+  dreamcoinValue,
+  expiryValue,
+  maxRedemptionsValue,
+}: {
+  dreamcoinValue: number;
+  expiryValue: string | null;
+  maxRedemptionsValue: number | null;
+}) {
+  const { t } = useAdminI18n();
+  const unbounded = maxRedemptionsValue === null;
+  return (
+    <p
+      className={`mt-3 rounded-md px-3 py-2 text-xs ${
+        unbounded
+          ? "bg-[var(--ad-yellow-bg)] text-[var(--ad-yellow-text)]"
+          : "bg-black/[0.04] text-[var(--ad-text-muted)]"
+      }`}
+      role="status"
+    >
+      {unbounded
+        ? t("Every redemption grants {each} Dreamcoins and nothing caps how many times. The total this code can pay out is unbounded.", {
+            each: dreamcoins(dreamcoinValue),
+          })
+        : t("At most {total} Dreamcoins in total: {each} each, up to {uses} redemptions.", {
+            each: dreamcoins(dreamcoinValue),
+            total: dreamcoins(dreamcoinValue * maxRedemptionsValue),
+            uses: dreamcoins(maxRedemptionsValue),
+          })}
+      {" "}
+      {/* INVARIANT: 期限和次数是两件独立的事。上面那句不许替这句下结论——
+          设了期限却没设次数的码，说「没有有效期」就是假话。 */}
+      {expiryValue
+        ? t("It stops working at {when}.", { when: new Date(expiryValue).toLocaleString() })
+        : t("It never expires.")}
+    </p>
+  );
+}
+
+/**
+ * INTENT: `datetime-local` 给的是不带时区的本地时间串，契约要 ISO。用 Date 解一遍，
+ * 解不出来就返回 null 让表单自己报错——不要把 `Invalid Date` 送到后端。
+ */
+export function isoFromLocalDateTime(value: string) {
+  const normalized = value.trim();
+  if (!normalized) return null;
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
 }
 
 function codeRows(
   rows: Row[],
   canWrite: boolean,
   disable: (id: string) => void,
+  t: (key: string, values?: Record<string, string | number>) => string,
+  valueLabel: (key: string) => string,
 ): DataTableRow[] {
   return rows.map((row, index) => {
     const id = text(row.id);
@@ -414,8 +503,8 @@ function codeRows(
       id: id || `code-${index}`,
       cells: [
         id,
-        display(row.status),
-        display(row.reward),
+        text(row.status) ? valueLabel(text(row.status)) : "—",
+        <RewardCell key="reward" reward={row.reward} t={t} />,
         display(row.maxRedemptions),
         display(row.redemptions),
         date(row.expiresAt),
@@ -438,18 +527,50 @@ function codeRows(
   });
 }
 
-function referralRows(rows: Row[]): DataTableRow[] {
+function referralRows(rows: Row[], valueLabel: (key: string) => string): DataTableRow[] {
   return rows.map((row, index) => ({
     id: text(row.id) || `referral-${index}`,
     cells: [
       display(row.id),
       display(row.inviterId),
       display(row.inviteeId),
-      display(row.status),
-      display(row.rewardStatus),
+      text(row.status) ? valueLabel(text(row.status)) : "—",
+      text(row.rewardStatus) ? valueLabel(text(row.rewardStatus)) : "—",
       date(row.createdAt),
     ],
   }));
+}
+
+/**
+ * SPEC: 兑换码的面额是钱，按梦币排版；认不出来的奖励形状才退回原始 JSON。
+ *
+ * INTENT: 这一格原来直接 `JSON.stringify(row.reward)`，运营在表里读到的是
+ * `{"dreamcoins":500}`。契约里 reward 是自由 JSON（历史遗留），但控制台建出来的码
+ * 只有 `{dreamcoins, note?}` 一种形状——认得出就好好印，认不出也不能假装认得。
+ */
+function RewardCell({
+  reward,
+  t,
+}: {
+  reward: unknown;
+  t: (key: string, values?: Record<string, string | number>) => string;
+}) {
+  if (!isRecord(reward) || typeof reward.dreamcoins !== "number") {
+    return <span className="font-mono text-xs">{display(reward)}</span>;
+  }
+  const note = typeof reward.note === "string" ? reward.note.trim() : "";
+  return (
+    <span>
+      <span className="font-semibold tabular-nums">
+        {t("{count} Dreamcoins", { count: dreamcoins(reward.dreamcoins) })}
+      </span>
+      {note ? <span className="block text-xs text-[var(--ad-text-muted)]">{note}</span> : null}
+    </span>
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function AuthoritySection({
@@ -547,6 +668,7 @@ function Freshness({ label, state }: { label: string; state: AuthorityState }) {
   return <span>{label}{t(": loading…")}</span>;
 }
 
+// MIGRATION: 只有「下一页」。ui/Pagination.tsx 已建（含上一页），合并后切过去。
 function Pager({
   label,
   loading,
@@ -592,11 +714,13 @@ function Input({
   label,
   onChange,
   search = false,
+  type,
   value,
 }: {
   label: string;
   onChange: (value: string) => void;
   search?: boolean;
+  type?: string;
   value: string;
 }) {
   return (
@@ -606,6 +730,7 @@ function Input({
         className="min-h-11 rounded-md border bg-[var(--ad-surface)] px-3 text-sm"
         onChange={(event) => onChange(event.target.value)}
         role={search ? "searchbox" : undefined}
+        type={type}
         value={value}
       />
     </label>
@@ -615,14 +740,17 @@ function Input({
 function Select({
   label,
   onChange,
+  optionLabel,
   options,
   value,
 }: {
   label: string;
   onChange: (value: string) => void;
+  optionLabel?: (option: string) => string;
   options: string[];
   value: string;
 }) {
+  const { t } = useAdminI18n();
   return (
     <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
       {label}
@@ -633,7 +761,7 @@ function Select({
       >
         {options.map((option) => (
           <option key={option || "all"} value={option}>
-            {option || "All"}
+            {option ? (optionLabel?.(option) ?? option) : t("All")}
           </option>
         ))}
       </select>
@@ -665,6 +793,7 @@ export function strictIntegerFromText(
   return parsed;
 }
 
+// MIGRATION: 与 billing/access/pricing 的同名三件套重复，等 ui/format.ts 统一后一起切。
 function text(value: unknown) {
   return typeof value === "string" ? value : "";
 }

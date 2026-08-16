@@ -3,6 +3,32 @@
 // INVARIANT: key 在所有 i18n-zh-*.ts 之间互斥——同一个 key 只能有一个域文件持有；
 // 由 i18n-zh-exclusivity.test.ts 强制。新增文案放它所属的域文件，不要另开「杂项」文件。
 export const adminZhSystem: Record<string, string> = {
+  // 权限覆盖面板：提交前把「这个人现在有什么、改完变成什么」讲清楚。
+  "An existing {effect} override is already recorded for this capability; applying a new one replaces it.":
+    "这个能力上已经有一条 {effect} 覆盖；再执行一次会替换掉它。",
+  "Applying this gives the user the capability.": "执行后该用户获得这项能力。",
+  "Applying this removes the override and hands the decision back to the role.":
+    "执行后删除该覆盖，把决定权交回角色。",
+  "Applying this takes the capability away.": "执行后收回这项能力。",
+  "Checking what this user can do today…": "正在查询该用户当前的权限…",
+  // 生成配置：发布闸没达标时，把还差什么写出来，而不是只把按钮置灰。
+  "Enter how many of the {count} samples passed.": "请填写 {count} 个样本中有多少通过。",
+  "Publishing needs a consistency review of at least 20 samples.": "发布需要至少 20 个样本的一致性复核。",
+  "{passed} of {count} samples passed. Publishing needs at least 80%.":
+    "{count} 个样本中通过 {passed} 个。发布要求通过率至少 80%。",
+  "Could not read this user's current permissions. The change below still applies as written.":
+    "读取该用户当前权限失败。下面的变更仍会按原样执行。",
+  "Enter a user ID to see what they can do today.": "输入用户 ID 即可查看其当前权限。",
+  "No override is recorded for this capability yet; the role decides it today.":
+    "这个能力上还没有覆盖，目前由角色决定。",
+  "There is no override to remove, so nothing changes.": "没有可删除的覆盖，执行后不会有任何变化。",
+  "This user can already do it. Applying this pins the capability on with an override that outlives any role change.":
+    "该用户已经有这项能力。执行后会加一条覆盖把它钉死，之后改角色也收不回。",
+  "This user cannot do it today, so applying this only pins it off.":
+    "该用户目前没有这项能力，执行后只是把它钉为禁止。",
+  "already has this capability": "已具备该能力",
+  "does not have this capability": "不具备该能力",
+  "{count} capabilities in total": "共 {count} 项能力",
   "Access authority refresh failed:": "访问权限权威刷新失败：",
   "Access restored for {user}": "已恢复 {user} 的访问",
   "Access suspended for {user}": "已封禁 {user} 的访问",
