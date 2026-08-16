@@ -1,0 +1,31 @@
+import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
+import { adminEntryRedirect, parseAdminPath } from "@/components/admin/nav-config";
+
+// SPEC: /admin 下认不出的路径回真的 404 —— 状态码，不只是页面内容。
+//
+// INTENT: renderAdminRoute 里的 notFound() 换得了 body，换不了状态码。app/admin/loading.tsx
+//         给整个 /admin 段挂了 Suspense 边界，页面一进入渲染 Next 就把 fallback 冲了出去；
+//         响应头（状态码在里面）此刻已经发走，后面到达的 notFound() 只能改剩下的 body。
+//         这不是 dev 特有的：production standalone build 实测同样是 200，把 loading.tsx
+//         拿掉同一个请求立刻变 404 —— 那个 Suspense 边界是唯一变量。
+//         状态码只能在渲染开始之前定，而请求进入渲染之前只剩这里。
+//
+// INVARIANT: 判定复用 nav-config 的 parseAdminPath，这里不另立第二张路由表。它是纯函数、
+//            不打网络，压在每个 /admin 请求前的代价可以忽略。
+export function proxy(request: NextRequest) {
+  const { pathname, search } = request.nextUrl;
+  const section = pathname.split("/").filter(Boolean).slice(1);
+
+  // /admin 和 /admin/inbox 本身不是工作台，由 page.tsx redirect 到 /admin/today；
+  // 它们过不了 parseAdminPath，得先放行。
+  if (adminEntryRedirect(section, {})) return NextResponse.next();
+  if (parseAdminPath(`${section.join("/")}${search}`)) return NextResponse.next();
+
+  // rewrite 到 Next 自己的 not-found 路由：它渲染 app/not-found.tsx 并把状态码定成 404，
+  // 而地址栏仍是运营输入的那个 URL —— 「你可能想去的是」正是靠它才有东西可猜。
+  // `_` 开头是 App Router 的私有目录约定，应用永远不会在这个路径上长出一个真页面。
+  return NextResponse.rewrite(new URL("/_not-found", request.url));
+}
+
+export const config = { matcher: "/admin/:path*" };
