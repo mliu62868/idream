@@ -231,4 +231,25 @@ export const adminZhCustomers: Record<string, string> = {
   "· Authorization:": "· 授权：",
   "· Owner:": "· 负责人：",
   "· signed delta": "· 有符号变更量",
+  // 审核台：把举报 / 申诉的原文摆到裁决现场所需的文案。
+  "Appeal": "申诉",
+  "Appeal statement": "申诉陈述",
+  "Nothing written": "未填写",
+  "Original decision": "原始处置",
+  "Reported content": "举报内容",
+  "Reporter": "举报人",
+  "Reporter statement": "举报人陈述",
+  "These filters match nothing right now. Clearing them shows the whole queue.":
+    "当前筛选条件没有匹配到任何内容。清除后可以看到完整队列。",
+  // 客服台：SLA 倒计时与「卡了多久」。
+  "Last update": "最近更新",
+  "Never updated": "从未更新",
+  "No reason recorded": "未记录原因",
+  "Not escalated": "未升级",
+  "Overdue by {hours}h": "已超时 {hours} 小时",
+  "Support description": "工单描述",
+  "These filters match nothing right now. Clearing them shows every request.":
+    "当前筛选条件没有匹配到任何工单。清除后可以看到全部工单。",
+  "{days}d ago": "{days} 天前",
+  "{hours}h left": "剩余 {hours} 小时",
 };

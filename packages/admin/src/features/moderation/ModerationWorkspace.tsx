@@ -13,6 +13,7 @@ import {
   X,
 } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
+import { GhostButton } from "@/components/admin/ui/buttons";
 import {
   ConfirmDialog,
   type ConfirmSpec,
@@ -216,6 +217,12 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
   }
 
   const filtered = Boolean(query.search || query.status || query.targetType);
+  // INTENT: 筛空了给一条出路。三块队列共用一个筛选器，所以清除也只有一个动作。
+  const clearFilters = filtered ? (
+    <GhostButton onClick={() => navigate(defaultModerationQuery)}>
+      {t("Clear filters")}
+    </GhostButton>
+  ) : null;
   return (
     <section className="space-y-5">
       <PageHeader
@@ -290,11 +297,17 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
         state={appeals}
       />
       <AuthoritySection
+        action={clearFilters}
         caption="Reports"
         empty={
           filtered
             ? "No reports match these filters"
             : "No reports require review"
+        }
+        hint={
+          filtered
+            ? t("These filters match nothing right now. Clearing them shows the whole queue.")
+            : t("The complete moderation authority query returned no work.")
         }
         loadingLabel="Loading reports…"
         state={reports}
@@ -309,11 +322,17 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
         query={query}
       />
       <AuthoritySection
+        action={clearFilters}
         caption="Media Review"
         empty={
           query.search
             ? "No media review items match this search"
             : "No Character images await independent review"
+        }
+        hint={
+          query.search
+            ? t("These filters match nothing right now. Clearing them shows the whole queue.")
+            : t("The complete moderation authority query returned no work.")
         }
         loadingLabel="Loading media review…"
         state={media}
@@ -328,11 +347,17 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
         query={query}
       />
       <AuthoritySection
+        action={clearFilters}
         caption="Appeals"
         empty={
           query.search
             ? "No appeals match this search"
             : "No appeals require review"
+        }
+        hint={
+          query.search
+            ? t("These filters match nothing right now. Clearing them shows the whole queue.")
+            : t("The complete moderation authority query returned no work.")
         }
         loadingLabel="Loading appeals…"
         state={appeals}
@@ -475,9 +500,21 @@ function reportRows(
       id: id || `report-${index}`,
       cells: [
         id,
-        display(row.targetType),
-        display(row.targetId),
+        <TargetCell
+          id={text(row.targetId)}
+          key="target"
+          type={text(row.targetType)}
+        />,
         display(row.category),
+        // SPEC: 举报人写的原文就是这条举报的证据本体。
+        // INTENT: 权威接口一直返回 description 与 reporterId，工作台以前两个都没画——
+        //         审核员只能看着 category 这个下拉框选项在「处置」和「无违规」之间二选一。
+        <CaseText
+          key="evidence"
+          label={t("Reporter statement")}
+          value={text(row.description)}
+        />,
+        display(row.reporterId),
         display(row.status),
         display(row.priority),
         date(row.createdAt),
@@ -556,8 +593,20 @@ function appealRows(
       cells: [
         id,
         display(row.userId),
-        display(row.targetType),
-        display(row.targetId),
+        <TargetCell
+          id={text(row.targetId)}
+          key="target"
+          type={text(row.targetType)}
+        />,
+        // SPEC: 申诉正文——用户为什么认为那次处置错了。
+        // INTENT: 「维持」和「撤销」是把一次处置钉死或整个掀翻，而以前这一列根本不存在：
+        //         审核员在没读过申诉理由的情况下就得二选一。appealText 一直在响应里。
+        <CaseText
+          key="appeal"
+          label={t("Appeal statement")}
+          value={text(row.appealText)}
+        />,
+        display(row.originalDecisionId),
         display(row.status),
         date(row.createdAt),
         canDecide ? (
@@ -589,27 +638,32 @@ function appealRows(
   });
 }
 function AuthoritySection({
+  action,
   caption,
   empty,
+  hint,
   loadingLabel,
   rows,
   state,
 }: {
+  action?: ReactNode;
   caption: string;
   empty: string;
+  hint: string;
   loadingLabel: string;
   rows: DataTableRow[];
   state: AuthorityState;
 }) {
+  const { t } = useAdminI18n();
   if (!state.rows && state.loading)
     return (
       <div
-        aria-label={loadingLabel}
+        aria-label={t(loadingLabel)}
         className="rounded-lg border p-4"
         role="status"
       >
         <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
-        {loadingLabel}
+        {t(loadingLabel)}
       </div>
     );
   if (!state.rows) return null;
@@ -620,9 +674,10 @@ function AuthoritySection({
         caption === "Reports"
           ? [
               "ID",
-              "Target type",
               "Target",
               "Category",
+              "Reported content",
+              "Reporter",
               "Status",
               "Priority",
               "Created",
@@ -632,8 +687,9 @@ function AuthoritySection({
             ? [
                 "ID",
                 "User",
-                "Target type",
                 "Target",
+                "Appeal",
+                "Original decision",
                 "Status",
                 "Created",
                 "Actions",
@@ -649,13 +705,57 @@ function AuthoritySection({
                 "Actions",
               ]
       }
+      minimumWidthClassName="min-w-[1400px]"
       rows={rows}
+      stickyLastColumn
     />
   ) : (
-    <EmptyState
-      hint="The complete moderation authority query returned no work."
-      title={empty}
-    />
+    <EmptyState action={action} hint={hint} title={empty} />
+  );
+}
+
+// SPEC: 举报 / 申诉的正文。短的直接摊开，长的折起来但保留开头。
+// INTENT: 审核员扫队列时需要「一眼看出这条大概在说什么」，做决定时需要「一个字不差的原文」。
+//         全文平铺会把行高撑到一屏一条，全折叠又让扫队列变成逐条点开——所以按长度分。
+function CaseText({ label, value }: { label: string; value: string }) {
+  const { t } = useAdminI18n();
+  if (!value.trim())
+    return (
+      <span className="text-[var(--ad-text-muted)]">{t("Nothing written")}</span>
+    );
+  if (value.length <= 90)
+    return <span className="block max-w-xs break-words">{value}</span>;
+  return (
+    <details className="max-w-xs">
+      <summary
+        aria-label={label}
+        className="cursor-pointer rounded break-words focus-visible:outline focus-visible:outline-2"
+      >
+        {`${value.slice(0, 90)}…`}
+      </summary>
+      <p className="mt-2 break-words whitespace-pre-wrap text-xs">{value}</p>
+    </details>
+  );
+}
+
+// INTENT: 举报的目标以前是一串裸 ID，审核员要看被举报的东西得自己复制去搜。角色有详情页就
+//         直接给链接；其它 target 类型后台还没有落地页，所以只把类型标出来，不编一个会 404 的链接。
+function TargetCell({ id, type }: { id: string; type: string }) {
+  const { value } = useAdminI18n();
+  if (!id) return <>—</>;
+  return (
+    <span className="block">
+      <span className="block text-xs uppercase tracking-[0.05em] text-[var(--ad-text-muted)]">
+        {type ? value(type) : "—"}
+      </span>
+      {type === "character" ? (
+        <a className="underline underline-offset-4" href={`/admin/characters/${id}`}>
+          {id}
+        </a>
+      ) : (
+        <span className="block break-words">{id}</span>
+      )}
+    </span>
   );
 }
 function Freshness({ label, state }: { label: string; state: AuthorityState }) {
@@ -737,15 +837,16 @@ function Action({
   label: string;
   onClick: () => void;
 }) {
+  const { t } = useAdminI18n();
   return (
     <button
-      aria-label={label}
+      aria-label={t(label)}
       className="inline-flex min-h-9 items-center gap-1 rounded border px-2"
       onClick={onClick}
       type="button"
     >
       {icon}
-      {label}
+      {t(label)}
     </button>
   );
 }
@@ -760,9 +861,10 @@ function Field({
   search?: boolean;
   value: string;
 }) {
+  const { t } = useAdminI18n();
   return (
     <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
-      {label}
+      {t(label)}
       <input
         className="min-h-11 rounded-md border bg-[var(--ad-surface)] px-3 text-sm"
         onChange={(event) => onChange(event.target.value)}
@@ -783,9 +885,10 @@ function Select({
   options: string[];
   value: string;
 }) {
+  const { t, value: enumLabel } = useAdminI18n();
   return (
     <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
-      {label}
+      {t(label)}
       <select
         className="min-h-11 rounded-md border bg-[var(--ad-surface)] px-3 text-sm"
         onChange={(event) => onChange(event.target.value)}
@@ -793,7 +896,7 @@ function Select({
       >
         {options.map((option) => (
           <option key={option || "all"} value={option}>
-            {option || "All"}
+            {option ? enumLabel(option) : enumLabel("all")}
           </option>
         ))}
       </select>
@@ -852,6 +955,8 @@ function currentQuery() {
     ? defaultModerationQuery
     : moderationQueryFromSearch(window.location.search);
 }
+// MIGRATION: 这三个函数在 12 个工作台里逐字重复；统一版正在 `ui/format.ts` 建，
+// 合并时整批切过去，不要在这里再派生第四份。
 function text(value: unknown) {
   return typeof value === "string" ? value : "";
 }

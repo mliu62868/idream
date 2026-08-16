@@ -23,6 +23,8 @@ import {
   type SavedView,
 } from "@idream/shared/admin";
 import { apiGet, apiWrite } from "@/components/admin/api";
+import { GhostButton } from "@/components/admin/ui/buttons";
+import { StatusPill } from "@/components/admin/ui/StatusPill";
 import { adminV2Request } from "@/lib/admin-v2-api";
 import {
   ConfirmDialog,
@@ -456,7 +458,18 @@ export function SupportWorkspace({
         </div>
       ) : data && !rows.length ? (
         <EmptyState
-          hint="The complete support authority query returned no requests."
+          action={
+            filtered ? (
+              <GhostButton onClick={() => navigate(defaultSupportQuery)}>
+                {t("Clear filters")}
+              </GhostButton>
+            ) : null
+          }
+          hint={
+            filtered
+              ? t("These filters match nothing right now. Clearing them shows every request.")
+              : t("The complete support authority query returned no requests.")
+          }
           title={
             filtered
               ? "No support requests match these filters"
@@ -475,15 +488,16 @@ export function SupportWorkspace({
             "Status",
             "Priority",
             "SLA",
-            "Due",
             "Escalation",
             "Assigned",
+            "Last update",
             "Resolution",
             "Created",
             "Actions",
           ]}
           minimumWidthClassName="min-w-[2000px]"
           rows={supportRows(rows, canWrite, confirmAction)}
+          stickyLastColumn
         />
       ) : null}
       {data?.pageInfo?.hasNextPage && data.pageInfo.endCursor ? (
@@ -716,21 +730,38 @@ function supportRows(
         display(row.userEmail),
         display(row.category),
         display(row.subject),
-        display(row.description),
+        <CaseText key="description" value={text(row.description)} />,
         status,
         display(row.priority),
-        sla,
-        date(row.slaDueAt),
-        display(row.slaEscalationReason),
+        <SlaCell
+          dueAt={text(row.slaDueAt)}
+          hoursRemaining={
+            typeof row.slaHoursRemaining === "number"
+              ? row.slaHoursRemaining
+              : null
+          }
+          key="sla"
+          state={sla}
+        />,
+        <EscalationCell
+          at={text(row.slaEscalatedAt)}
+          key="escalation"
+          reason={text(row.slaEscalationReason)}
+        />,
         display(row.assignedToEmail),
+        // SPEC: 工单上一次动过是什么时候。
+        // INTENT: 「卡了多久」是客服排队的首要依据，而权威接口一直返回 updatedAt，
+        //         工作台以前只画 createdAt——于是一条刚回过的工单和一条躺了两周的长得一样。
+        <LastUpdateCell key="updated" value={text(row.updatedAt)} />,
         display(row.resolutionNotes),
         date(row.createdAt),
         canWrite ? (
           <div className="flex flex-wrap gap-1">
             {actions.map((action) => (
-              <button
-                className="inline-flex min-h-9 items-center gap-1 rounded border px-2"
+              <TicketAction
+                icon={action.icon}
                 key={`${id}-${action.label}`}
+                label={action.label}
                 onClick={() =>
                   confirm({
                     id,
@@ -742,11 +773,7 @@ function supportRows(
                     includeResolution: action.resolution,
                   })
                 }
-                type="button"
-              >
-                {action.icon}
-                {action.label}
-              </button>
+              />
             ))}
           </div>
         ) : (
@@ -755,6 +782,122 @@ function supportRows(
       ],
     };
   });
+}
+
+function TicketAction({
+  icon,
+  label,
+  onClick,
+}: {
+  icon: ReactNode;
+  label: string;
+  onClick: () => void;
+}) {
+  const { t } = useAdminI18n();
+  return (
+    <button
+      className="inline-flex min-h-9 items-center gap-1 rounded border px-2"
+      onClick={onClick}
+      type="button"
+    >
+      {icon}
+      {t(label)}
+    </button>
+  );
+}
+
+// SPEC: SLA 一格说清三件事：状态、还剩/已逾期多久、截止时刻。
+// INTENT: 以前「SLA」列是一个状态词、「Due」列是一个绝对时间戳，客服要自己拿当前时间做减法
+//         才知道急不急。剩余小时数是服务端算好一起发过来的（priority→小时表），只是没人画。
+// INVARIANT: hoursRemaining 为 null 时不编一个倒计时——paused / closed 本来就没有截止。
+function SlaCell({
+  dueAt,
+  hoursRemaining,
+  state,
+}: {
+  dueAt: string;
+  hoursRemaining: number | null;
+  state: string;
+}) {
+  const { t, value } = useAdminI18n();
+  return (
+    <span className="block">
+      {/* 基调走 slaTone 映射，文字仍是 SLA 状态本身 —— 别让 pill 显示映射后的词。 */}
+      <StatusPill label={state ? value(state) : "—"} status={slaTone(state)} />
+      {hoursRemaining === null ? null : (
+        <span className="mt-1 block text-xs font-semibold">
+          {hoursRemaining < 0
+            ? t("Overdue by {hours}h", { hours: Math.abs(hoursRemaining) })
+            : t("{hours}h left", { hours: hoursRemaining })}
+        </span>
+      )}
+      {dueAt ? (
+        <span className="block text-xs text-[var(--ad-text-muted)]">
+          {date(dueAt)}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+// INTENT: SLA 状态词不在 status-tone 的表里（它认的是 approved/failed 这类），
+//         这里把四个 SLA 状态映射到已有的基调词，而不是再造一套颜色。
+function slaTone(state: string) {
+  if (state === "overdue") return "failed";
+  if (state === "due_soon") return "pending";
+  if (state === "on_track") return "active";
+  if (state === "paused") return "paused";
+  return state || "archived";
+}
+
+function EscalationCell({ at, reason }: { at: string; reason: string }) {
+  const { t } = useAdminI18n();
+  if (!at) return <span className="text-[var(--ad-text-muted)]">{t("Not escalated")}</span>;
+  return (
+    <span className="block">
+      <span className="block text-xs font-semibold">{date(at)}</span>
+      <span className="block max-w-[16rem] break-words text-xs text-[var(--ad-text-muted)]">
+        {reason || t("No reason recorded")}
+      </span>
+    </span>
+  );
+}
+
+function LastUpdateCell({ value }: { value: string }) {
+  const { t } = useAdminI18n();
+  if (!value) return <span className="text-[var(--ad-text-muted)]">{t("Never updated")}</span>;
+  const days = Math.floor((Date.now() - new Date(value).getTime()) / 86_400_000);
+  return (
+    <span className="block">
+      <span className="block">{date(value)}</span>
+      {Number.isFinite(days) && days >= 1 ? (
+        <span className="block text-xs text-[var(--ad-text-muted)]">
+          {t("{days}d ago", { days })}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+// SPEC: 工单正文。短的摊开，长的折起来但保留开头。
+// INTENT: 描述以前整段塞进单元格，一条长工单能把行高撑满一屏，扫队列变成了滚屏。
+function CaseText({ value }: { value: string }) {
+  const { t } = useAdminI18n();
+  if (!value.trim())
+    return <span className="text-[var(--ad-text-muted)]">{t("Nothing written")}</span>;
+  if (value.length <= 90)
+    return <span className="block max-w-xs break-words">{value}</span>;
+  return (
+    <details className="max-w-xs">
+      <summary
+        aria-label={t("Support description")}
+        className="cursor-pointer rounded break-words focus-visible:outline focus-visible:outline-2"
+      >
+        {`${value.slice(0, 90)}…`}
+      </summary>
+      <p className="mt-2 break-words whitespace-pre-wrap text-xs">{value}</p>
+    </details>
+  );
 }
 
 function sameQuery(left: SupportQuery, right: SupportQuery) {
@@ -776,9 +919,11 @@ function Field({
   onChange: (value: string) => void;
   value: string;
 }) {
+  const { t } = useAdminI18n();
   return (
     <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
-      {label}
+      {t(label)}
+      {/* aria-label 保持英文原串：mounted 测试与运营脚本按它定位控件，翻译后会一起断。 */}
       <input
         aria-label={label}
         className="min-h-10 rounded-md border px-3 text-sm"
@@ -800,9 +945,10 @@ function Select({
   options: string[];
   value: string;
 }) {
+  const { t, value: enumLabel } = useAdminI18n();
   return (
     <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
-      {label}
+      {t(label)}
       <select
         aria-label={label}
         className="min-h-10 rounded-md border px-3 text-sm"
@@ -811,7 +957,7 @@ function Select({
       >
         {options.map((option) => (
           <option key={option} value={option}>
-            {option}
+            {enumLabel(option)}
           </option>
         ))}
       </select>
@@ -841,6 +987,8 @@ function freshness(
   return "loading…";
 }
 
+// MIGRATION: 这三个函数在 12 个工作台里逐字重复；统一版正在 `ui/format.ts` 建，
+// 合并时整批切过去，不要在这里再派生第四份。
 function text(value: unknown) {
   return typeof value === "string" ? value : "";
 }
