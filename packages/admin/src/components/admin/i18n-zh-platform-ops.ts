@@ -860,4 +860,145 @@ export const adminZhPlatformOps: Record<string, string> = {
   // RELOCATE(续): 同属 i18n-zh-characters.ts —— 删除保存视图的后果说明。
   "Deleting is permanent — there is no undo. Pending submissions and past decisions are untouched.":
     "删除不可撤销，没有后悔药。待审提交与历史审核决定不受影响。",
+// --- Platform operations UX pass: incidents / dead-letter / chat ops / overviews ---
+  // 只追加，不改动上面已有的任何键（合并时保持纯追加）。
+
+  // Dead-letter：重放判定、命令结果与新增列
+  "A delivered artifact already exists": "已存在成功交付的产物",
+  "The authority recorded no failure": "权威未记录失败",
+  "The charge was already refunded": "该扣费已退款",
+  "The request no longer exists": "该请求已不存在",
+  "Only failed, blocked, or refunded requests can be discarded": "只有失败、被拦截或已退款的请求可以丢弃",
+  "Safe to requeue": "可安全重新排队",
+  "Not reported": "权威未给出判定",
+  "Reason not recognised": "未识别的理由",
+  "Dismiss result": "关闭结果提示",
+  "Requeue {count} requests": "重新排队 {count} 条请求",
+  "Discard {count} requests": "丢弃 {count} 条请求",
+  "Requeue {id}": "重新排队 {id}",
+  "Discard {id}": "丢弃 {id}",
+  "{count} requests re-enter the generation queue and are charged for a new attempt. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.":
+    "{count} 条请求将重新进入生成队列，并按新的一次尝试计费。在本对话框里重试复用同一个幂等键，不会重复执行。",
+  "{count} selected requests the authority will not retry are excluded.":
+    "已排除 {count} 条权威判定不可重试的选中请求。",
+  "Discard settles the customer: any charge that was never refunded is refunded now, and the request leaves the queue for good. {count} requests are affected. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.":
+    "丢弃会同时结清客户：尚未退款的扣费此刻退回，请求也永久离开队列。共影响 {count} 条请求。在本对话框里重试复用同一个幂等键，不会重复执行。",
+  "{count} selected requests the authority will not discard are excluded.":
+    "已排除 {count} 条权威判定不可丢弃的选中请求。",
+  "Requeued {id} as attempt {attemptNo}.": "已把 {id} 重新排队为第 {attemptNo} 次尝试。",
+  "Requeued {done} of {total} requests.": "已重新排队 {total} 条中的 {done} 条。",
+  "Discarded {done} of {total} requests · {refunded} refunded.":
+    "已丢弃 {total} 条中的 {done} 条 · 其中 {refunded} 条完成退款。",
+  "refreshing · as of {time}": "刷新中 · 数据截至 {time}",
+  "stale · last good {time}": "已过期 · 上次成功 {time}",
+  "as of {time}": "数据截至 {time}",
+  "loading…": "加载中…",
+
+  // Incidents：影响面、权威建议、冻结计划、拆分/合并确认
+  "Provider spend": "供应商花费",
+  "Started": "开始于",
+  "Refunded": "已退款",
+  "{count} DC": "{count} 币",
+  "SLA due": "SLA 到期",
+  "Authority guidance": "权威给出的处置建议",
+  "Cause confidence": "原因置信度",
+  "Last known good": "最后一次正常",
+  "Open runbook": "打开运行手册",
+  "Occurrences ({count})": "发生记录（{count}）",
+  "No frozen plan is currently valid. Preview an action to freeze its eligible scope.":
+    "当前没有有效的冻结计划。先预览一个动作，把符合条件的范围冻结下来。",
+  "expires": "过期于",
+  "Execute frozen {action} plan": "执行冻结的{action}计划",
+  "Execution confirmation": "执行确认串",
+  "This moves customer money across {count} occurrences and cannot be undone from this console. The frozen scope cannot be re-cut after this point. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.":
+    "这会动 {count} 条发生记录上的客户资金，且无法在后台撤销。冻结范围从这一步起不可再切。在本对话框里重试复用同一个幂等键，不会重复执行。",
+  "{count} occurrences are in the frozen scope; the scope cannot change after this point. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.":
+    "冻结范围内共 {count} 条发生记录；从这一步起范围不可再变。在本对话框里重试复用同一个幂等键，不会重复执行。",
+  "Split {count} occurrences into a new Incident": "把 {count} 条发生记录拆分成新事故",
+  "The occurrences leave this Incident for good. Assignment history is immutable, so a split is undone only by merging back. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.":
+    "这些发生记录会永久离开当前事故。归属历史不可变，拆分只能靠再合并回来撤销。在本对话框里重试复用同一个幂等键，不会重复执行。",
+  "Split confirmation": "拆分确认串",
+  "Split reason (≥3)": "拆分原因（≥3 字）",
+  "Merge {count} Incidents into this one": "把 {count} 个事故合并到当前事故",
+  "The source Incidents become terminal and their occurrences move here permanently. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.":
+    "来源事故会进入终态，其全部发生记录永久移动到这里。在本对话框里重试复用同一个幂等键，不会重复执行。",
+  "Merge confirmation": "合并确认串",
+  "Merge reason (≥3)": "合并原因（≥3 字）",
+  "Resolve reuses the Triage audit reason above.": "标记已解决会复用上方分诊里的审计原因。",
+  "Close audit reason": "关闭审计原因",
+  "Summary needs at least 10 characters": "摘要至少 10 个字",
+  "Root cause is required": "必须填写根因",
+  "At least one corrective action is required": "至少需要一条纠正措施",
+  "Evidence reference is required — it is the field in Recovery verification above":
+    "必须填写证据引用——就是上方「恢复验证」里的那一格",
+  "Audit reason needs at least 3 characters": "审计原因至少 3 个字",
+  "Type the close confirmation": "输入关闭确认串",
+  "Recorded postmortem": "已归档的复盘",
+  "Activity · most recent {count}": "操作记录 · 最近 {count} 条",
+  "No reason recorded": "未记录原因",
+  "Incident correlation failed delivery scrollable table": "事故关联投递失败（可横向滚动表格）",
+
+  // Chat Ops：连通性口径、数据源名与表头
+  "Chat Service state not established yet": "聊天服务状态尚未确定",
+  "Chat Service degraded · {degraded} of {total} authorities unavailable":
+    "聊天服务性能下降 · {total} 个数据源里有 {degraded} 个不可用",
+  "{authority} authority refresh failed:": "{authority} 数据源刷新失败：",
+  "Retry {authority}": "重试 {authority}",
+  "Loading {authority} authority": "正在加载 {authority} 数据源",
+  "Chat Service returned an upstream error ({status}).": "Chat Service 返回上游错误（{status}）。",
+  "Adapter": "适配器",
+  "Reachable": "可达",
+  "Latency (ms)": "延迟（毫秒）",
+  "Model listed": "模型已登记",
+  "Error": "错误",
+  "Model tier": "模型档位",
+  "Unlimited": "不限量",
+  "Messages used": "已用消息数",
+  "Free daily limit": "每日免费上限",
+  "Free remaining": "免费剩余",
+  "Quota status": "配额状态",
+  "Period start": "周期起点",
+  "Session": "会话",
+  "Memory": "记忆",
+  "Messages": "消息数",
+  "Last role": "最后发言方",
+  "Last message status": "最后一条消息状态",
+  "Last safety status": "最后一次审核状态",
+  "Last message": "最后消息时间",
+  "Layer": "层",
+
+  // Overviews：时间窗预设、处置出口与表头
+  "Window presets": "时间窗预设",
+  "Last hour": "最近 1 小时",
+  "Last 24 hours": "最近 24 小时",
+  "Last 7 days": "最近 7 天",
+  "Last 30 days": "最近 30 天",
+  "The authority returned no rows for this window.": "该时间窗内权威没有返回任何记录。",
+  "Where to act": "去哪里处置",
+  "Change provider routing in Profiles & Rollout": "去「配置与放量」调整供应商路由",
+  "Triage the failed requests in Dead-letter": "去「死信」处置失败请求",
+  "Triage the failed and blocked requests in Dead-letter": "去「死信」处置失败与被拦截的请求",
+  "Device": "设备",
+  "Accounts": "账号数",
+  "Inviter": "邀请人",
+  "Adjustments": "调整次数",
+  "Net delta": "净变动",
+  "Entries": "条目数",
+  "Success rate %": "成功率 %",
+  "Coins cost": "币消耗",
+  "Avg cost / request": "每条请求平均消耗",
+  "Latency p50 (ms)": "延迟 p50（毫秒）",
+  "Latency p95 (ms)": "延迟 p95（毫秒）",
+  "Latency samples": "延迟样本数",
+// 后果型文案（`ConfirmDialog.consequence` 落地后从 summary 平移过去）与截断如实标注
+  "The worker will retry the unchanged durable envelopes; no event is sent from this browser request. Retrying inside this dialog reuses the same idempotency key and cannot requeue twice.":
+    "工作进程会重投这些未改动的持久信封；本次浏览器请求本身不发送任何事件。在本对话框里重试复用同一个幂等键，不会重复入队。",
+  "This records that no user-visible Chat effect was applied and is terminal for Main. Main becomes terminal only after Chat stores the original envelope hash as a target-missing receipt. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.":
+    "这会记录「没有产生任何用户可见的 Chat 影响」，并对 Main 侧终结。只有 Chat 把原始信封哈希存为 target-missing 回执后，Main 才真正进入终态。在本对话框里重试复用同一个幂等键，不会重复执行。",
+  "The worker will retry the unchanged correlation payloads; this browser request does not correlate an Incident. Retrying inside this dialog reuses the same idempotency key and cannot requeue twice.":
+    "工作进程会重投这些未改动的关联负载；本次浏览器请求本身不会关联出事故。在本对话框里重试复用同一个幂等键，不会重复入队。",
+  "This preserves the failed carrier and records that its GenerationAttempt source authority is still absent; no user effect is applied. The disposition is terminal. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.":
+    "这会保留失败的载体，并记录它的 GenerationAttempt 源权威仍然缺失；不产生任何用户侧影响。该处置是终态。在本对话框里重试复用同一个幂等键，不会重复执行。",
+  "Ranked list · the authority returns at most {count} rows, so this is not the full set.":
+    "排名列表 · 权威最多只返回 {count} 行，这里不是全量。",
 };

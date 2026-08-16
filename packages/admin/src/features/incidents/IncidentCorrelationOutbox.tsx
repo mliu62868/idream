@@ -8,7 +8,7 @@ import {
 } from "@idream/shared/admin";
 import { AlertTriangle, Loader2, RefreshCcw, RotateCcw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useAdminI18n } from "@/components/admin/i18n";
+import { adminDateLocale, useAdminI18n } from "@/components/admin/i18n";
 import {
   ConfirmDialog,
   type ConfirmSpec,
@@ -80,7 +80,7 @@ export function IncidentCorrelationOutbox({
   readonly canRead: boolean;
   readonly canReplay: boolean;
 }) {
-  const { t } = useAdminI18n();
+  const { locale, t } = useAdminI18n();
   const [data, setData] =
     useState<IncidentCorrelationOutboxEventListResponse | null>(null);
   const [loading, setLoading] = useState(canRead);
@@ -152,8 +152,9 @@ export function IncidentCorrelationOutbox({
       title: t("Replay incident correlation failed events ({count})", {
         count: exactRevision.length,
       }),
+      // SEAM: `consequence` 字段落地后把这段从 summary 平移过去。
       summary: t(
-        "The worker will retry the unchanged correlation payloads; this browser request does not correlate an Incident.",
+        "The worker will retry the unchanged correlation payloads; this browser request does not correlate an Incident. Retrying inside this dialog reuses the same idempotency key and cannot requeue twice.",
       ),
       destructive: {
         expectedName: INCIDENT_CORRELATION_REPLAY_CONFIRMATION,
@@ -189,8 +190,9 @@ export function IncidentCorrelationOutbox({
     const idempotencyKey = crypto.randomUUID();
     setConfirmation({
       title: t("Record source authority missing"),
+      // SEAM: `consequence` 字段落地后把这段从 summary 平移过去。
       summary: t(
-        "This preserves the failed carrier and records that its GenerationAttempt source authority is still absent; no user effect is applied.",
+        "This preserves the failed carrier and records that its GenerationAttempt source authority is still absent; no user effect is applied. The disposition is terminal. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.",
       ),
       destructive: {
         expectedName:
@@ -242,6 +244,8 @@ export function IncidentCorrelationOutbox({
         </div>
       </div>
 
+      {/* SEAM: 单一反馈出口 —— 全局 toast 落地后换成 `useToast()`；错误分支走
+          `useFailureToast()` + `ui/request-error-copy.ts`。 */}
       {notice ? (
         <p className="rounded-md bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]" role="status">
           {notice}
@@ -291,17 +295,20 @@ export function IncidentCorrelationOutbox({
             </div>
           ) : null}
 
-          <div className="overflow-x-auto rounded-lg border border-[var(--ad-border)]">
+          {/* SEAM: 手写表——`DataTable` 目前不支持多选。多选能力落地后整表迁过去。 */}
+          <div
+            aria-label={t("Incident correlation failed delivery scrollable table")}
+            className="overflow-x-auto rounded-lg border border-[var(--ad-border)]"
+            role="region"
+            tabIndex={0}
+          >
             <table className="w-full min-w-[860px] text-left text-sm">
+              <caption className="sr-only">{t("Incident correlation failed delivery")}</caption>
               <thead className="bg-[var(--ad-surface-subtle)] text-xs text-[var(--ad-text-muted)]">
                 <tr>
-                  <th className="px-3 py-2">{t("Select")}</th>
-                  <th className="px-3 py-2">{t("Event")}</th>
-                  <th className="px-3 py-2">{t("Attempt")}</th>
-                  <th className="px-3 py-2">{t("Replay authority")}</th>
-                  <th className="px-3 py-2">{t("Last error")}</th>
-                  <th className="px-3 py-2">{t("Revision")}</th>
-                  <th className="px-3 py-2">{t("Terminal disposition")}</th>
+                  {["Select", "Event", "Attempt", "Replay authority", "Last error", "Revision", "Terminal disposition"].map((header) => (
+                    <th className="px-3 py-2 font-medium" key={header} scope="col">{t(header)}</th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
@@ -341,7 +348,7 @@ export function IncidentCorrelationOutbox({
                       <td className="px-3 py-3 text-xs text-[var(--ad-text-muted)]">
                         <p>{t("Attempts")}: {row.attempts}</p>
                         <p className="mt-1 font-mono" title={row.payloadHash}>{row.payloadHash.slice(0, 12)}</p>
-                        <time className="mt-1 block" dateTime={row.updatedAt}>{new Date(row.updatedAt).toLocaleString()}</time>
+                        <time className="mt-1 block" dateTime={row.updatedAt}>{new Date(row.updatedAt).toLocaleString(adminDateLocale(locale))}</time>
                       </td>
                       <td className="px-3 py-3">
                         {canDiscardAttemptMissing &&

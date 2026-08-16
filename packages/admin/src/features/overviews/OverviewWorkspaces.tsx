@@ -1,8 +1,8 @@
 "use client";
 
-import { useAdminI18n } from "@/components/admin/i18n";
+import { adminDateLocale, useAdminI18n } from "@/components/admin/i18n";
 import type { MetricDashboardResponse } from "@idream/shared/admin";
-import { RefreshCcw } from "lucide-react";
+import { ExternalLink, RefreshCcw } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet } from "@/components/admin/api";
@@ -112,7 +112,7 @@ export function AnalyticsWorkspace({
   return (
     <section className="space-y-5">
       <PageHeader
-        purpose="Compare certified product metrics with separately sourced legacy operational diagnostics."
+        purpose={t("Compare certified product metrics with separately sourced legacy operational diagnostics.")}
         title={t("Product Health")}
       />
       <FreshnessLine
@@ -150,19 +150,22 @@ export function RiskWorkspace({ canRead }: { canRead: boolean }) {
         <>
           <Window window={data.window} />
           <Rows
-            columns={["anonymousId", "accountCount", "userIds"]}
+            columns={[["anonymousId", "Device"], ["accountCount", "Accounts"], ["userIds", "Users"]]}
             rows={data.deviceClusters}
-            title={t("Multi-account device clusters")}
+            truncatedTo={20}
+            caption="Multi-account device clusters"
           />
           <Rows
-            columns={["inviterId", "referralCount"]}
+            columns={[["inviterId", "Inviter"], ["referralCount", "Referrals"]]}
             rows={data.referralAbuse}
-            title={t("Referral farming (≥3 invites)")}
+            truncatedTo={20}
+            caption="Referral farming (≥3 invites)"
           />
           <Rows
-            columns={["userId", "count", "totalDelta"]}
+            columns={[["userId", "User"], ["count", "Adjustments"], ["totalDelta", "Net delta"]]}
             rows={data.adjustAnomalies}
-            title={t("Manual adjust anomalies")}
+            truncatedTo={20}
+            caption="Manual adjust anomalies"
           />
         </>
       )}
@@ -179,26 +182,35 @@ export function ProviderOverviewWorkspace({ canRead }: { canRead: boolean }) {
       canRead={canRead}
       endpoint="/api/v2/admin/ops/providers"
       permission="ops.queue.read"
+      /* 只读总览必须给出口：改路由在 Profiles & Rollout，重放失败请求在 Dead-letter。 */
+      actions={
+        <WhereToAct
+          links={[
+            ["/admin/ops/profiles", "Change provider routing in Profiles & Rollout"],
+            ["/admin/ops/jobs?view=dead-letter", "Triage the failed requests in Dead-letter"],
+          ]}
+        />
+      }
       purpose="Compare provider success, cost, and completion latency over a server-defined time window."
       render={(data) => (
         <>
           <Window window={data.window} />
           <Rows
             columns={[
-              "provider",
-              "total",
-              "completed",
-              "failed",
-              "blocked",
-              "successRate",
-              "coinsCost",
-              "avgCostPerJob",
-              "latencyP50Ms",
-              "latencyP95Ms",
-              "latencySamples",
+              ["provider", "Provider"],
+              ["total", "Total"],
+              ["completed", "Completed"],
+              ["failed", "Failed"],
+              ["blocked", "Blocked"],
+              ["successRate", "Success rate %"],
+              ["coinsCost", "Coins cost"],
+              ["avgCostPerJob", "Avg cost / request"],
+              ["latencyP50Ms", "Latency p50 (ms)"],
+              ["latencyP95Ms", "Latency p95 (ms)"],
+              ["latencySamples", "Latency samples"],
             ]}
             rows={data.providers}
-            title={t("Provider health & cost")}
+            caption="Provider health & cost"
           />
         </>
       )}
@@ -210,6 +222,7 @@ export function ProviderOverviewWorkspace({ canRead }: { canRead: boolean }) {
 
 function SingleOverview<T>({
   canRead,
+  actions,
   endpoint,
   permission,
   purpose,
@@ -218,6 +231,8 @@ function SingleOverview<T>({
   title,
 }: {
   canRead: boolean;
+  /** 只读总览的出口：把运营送到真正能改东西的域。 */
+  actions?: ReactNode;
   endpoint: string;
   permission: string;
   purpose: string;
@@ -225,6 +240,7 @@ function SingleOverview<T>({
   scope: OverviewScope;
   title: string;
 }) {
+  const { t } = useAdminI18n();
   const [query, setQuery] = useState(() => currentQuery(scope));
   const [draft, setDraft] = useState(query);
   const [state, setState] = useState<State<T>>(initialState);
@@ -260,11 +276,12 @@ function SingleOverview<T>({
   if (!canRead) return <NoPermission permission={permission} title={title} />;
   return (
     <section className="space-y-5">
-      <PageHeader purpose={purpose} title={title} />
+      <PageHeader purpose={t(purpose)} title={title} />
       <FreshnessLine entries={[[title, state, true]]} />
       <WindowForm draft={draft} onChange={setDraft} onSubmit={navigate} />
       <AuthorityError error={state.error} onRetry={() => void load(query)} />
       {state.data ? render(state.data) : null}
+      {state.data ? actions : null}
     </section>
   );
 }
@@ -328,6 +345,16 @@ function useAuthorityLifecycle(
   void query;
 }
 
+// SPEC: 值班场景要的是"最近一小时"，不是"某一天"。
+// INTENT: 之前只有两个 type="date" 输入、服务端默认 30 天窗口——事故正在发生时，运营没有任何办法
+//         把这几张表收敛到事故窗口，30 天的均值会把一小时的崩盘完全抹平。
+const WINDOW_PRESETS: ReadonlyArray<readonly [label: string, ms: number]> = [
+  ["Last hour", 60 * 60 * 1000],
+  ["Last 24 hours", 24 * 60 * 60 * 1000],
+  ["Last 7 days", 7 * 24 * 60 * 60 * 1000],
+  ["Last 30 days", 30 * 24 * 60 * 60 * 1000],
+];
+
 function WindowForm({
   draft,
   onChange,
@@ -347,6 +374,18 @@ function WindowForm({
       className="flex flex-wrap items-end gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"
       onSubmit={submit}
     >
+      <div className="flex flex-wrap gap-2" role="group" aria-label={t("Window presets")}>
+        {WINDOW_PRESETS.map(([label, ms]) => (
+          <button
+            className="h-10 rounded-md border border-[var(--ad-border)] px-3 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
+            key={label}
+            onClick={() => onSubmit({ from: new Date(Date.now() - ms).toISOString(), to: "" })}
+            type="button"
+          >
+            {t(label)}
+          </button>
+        ))}
+      </div>
       <DateField
         label="From"
         onChange={(from) => onChange({ ...draft, from })}
@@ -358,7 +397,7 @@ function WindowForm({
         value={draft.to}
       />
       <button
-        className="h-10 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white"
+        className="h-10 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
         type="submit"
       >
 
@@ -385,27 +424,44 @@ function DateField({
   onChange: (value: string) => void;
   value: string;
 }) {
+  const { t } = useAdminI18n();
   return (
     <label className="grid gap-1 text-xs font-medium text-[var(--ad-text-muted)]">
-      {label}
+      {t(label)}
       <input
         className="h-10 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm"
-        onChange={(event) => onChange(event.target.value)}
-        type="date"
-        value={value}
+        onChange={(event) => onChange(localInputToIso(event.target.value))}
+        type="datetime-local"
+        value={isoToLocalInput(value)}
       />
     </label>
   );
 }
 
+// INVARIANT: URL / 请求里始终是绝对时刻（ISO）。输入框收的是本地时间字符串——转换只发生在这个边界，
+// 免得把"没有时区的本地串"直接送到服务端由 Node 按它自己的时区再解释一遍。
+function localInputToIso(value: string) {
+  if (!value) return "";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString();
+}
+
+function isoToLocalInput(value: string) {
+  if (!value) return "";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "";
+  const offset = parsed.getTimezoneOffset() * 60 * 1000;
+  return new Date(parsed.getTime() - offset).toISOString().slice(0, 16);
+}
+
 function CanonicalMetrics({ data }: { data: MetricDashboardResponse }) {
-  const { t } = useAdminI18n();
+  const { t, value } = useAdminI18n();
   return (
     <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <h2 className="text-sm font-semibold">{t("Canonical Metrics v2")}</h2>
       <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
 
-        {t("asOf")} {formatDate(data.asOf)} · {data.freshness}
+        {t("asOf")} <FormattedDate value={data.asOf} /> · {value(data.freshness)}
       </p>
       <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         {data.cards.map((card) => (
@@ -423,7 +479,7 @@ function CanonicalMetrics({ data }: { data: MetricDashboardResponse }) {
             </p>
             <p className="mt-2 text-xs text-[var(--ad-text-muted)]">
               v{card.definitionVersion}  {t("· sample")} {card.sampleSize} ·{" "}
-              {card.qualityState}
+              {value(card.qualityState)}
             </p>
           </div>
         ))}
@@ -433,7 +489,6 @@ function CanonicalMetrics({ data }: { data: MetricDashboardResponse }) {
 }
 
 function LegacyAnalytics({ data }: { data: AnalyticsData }) {
-  const { t } = useAdminI18n();
   return (
     <div className="space-y-4">
       <Window window={data.window} />
@@ -444,49 +499,68 @@ function LegacyAnalytics({ data }: { data: AnalyticsData }) {
         <Metric label="Coins net" value={data.economy.net} />
       </div>
       <Rows
-        columns={["reason", "totalDelta", "count"]}
+        columns={[["reason", "Reason"], ["totalDelta", "Net delta"], ["count", "Entries"]]}
         rows={data.economy.byReason}
-        title={t("Coin economy by reason")}
+        caption="Coin economy by reason"
       />
       <Rows
-        columns={["name", "count"]}
+        columns={[["name", "Event"], ["count", "Count"]]}
         rows={data.topEvents}
-        title={t("Top events")}
+        truncatedTo={20}
+        caption="Top events"
       />
+      {/* 失败与拦截数字就摆在这里，但处置它们的队列在另一个工作台，之前没有任何入口。 */}
+      {data.generation.failed > 0 || data.generation.blocked > 0 ? (
+        <WhereToAct links={[["/admin/ops/jobs?view=dead-letter", "Triage the failed and blocked requests in Dead-letter"]]} />
+      ) : null}
     </div>
   );
 }
 
 function Metric({ label, value }: { label: string; value: string | number }) {
+  const { t } = useAdminI18n();
   return (
     <div className="rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-      <p className="text-xs text-[var(--ad-text-muted)]">{label}</p>
+      <p className="text-xs text-[var(--ad-text-muted)]">{t(label)}</p>
       <p className="mt-2 text-2xl font-semibold">{value}</p>
     </div>
   );
 }
 
+// `title` 是未翻译的 key：DataTable 的 caption 与 EmptyState 各自过一次 t()。
+// INTENT: 之前 title 传的是已翻译文案，再被 DataTable t() 一次；空态还把 title.toLowerCase()
+//         当 key 喂给 t()——动态字符串进词表，中文永远查不中。
 function Rows({
+  caption,
   columns,
   rows,
-  title,
+  truncatedTo,
 }: {
-  columns: string[];
+  caption: string;
+  columns: readonly (readonly [field: string, header: string])[];
   rows: Row[];
-  title: string;
+  /** 服务端 slice/take 的上限。给了就如实标出来——满页时这不是全量。 */
+  truncatedTo?: number;
 }) {
   const { t } = useAdminI18n();
   const tableRows: DataTableRow[] = rows.map((row, index) => ({
-    id: stringValue(row.id) || `${title}-${index}`,
-    cells: columns.map((column) => cell(row[column])),
+    id: stringValue(row.id) || `${caption}-${index}`,
+    cells: columns.map(([field]) => cell(row[field], field)),
   }));
   return (
-    <DataTable
-      caption={title}
-      empty={<EmptyState title={t("No {title}", { title: t(title.toLowerCase()) })} />}
-      headers={columns}
-      rows={tableRows}
-    />
+    <>
+      <DataTable
+        caption={caption}
+        empty={<EmptyState hint={t("The authority returned no rows for this window.")} title={t(caption)} />}
+        headers={columns.map(([, header]) => header)}
+        rows={tableRows}
+      />
+      {truncatedTo !== undefined && rows.length >= truncatedTo ? (
+        <p className="mt-2 text-xs text-[var(--ad-text-muted)]">
+          {t("Ranked list · the authority returns at most {count} rows, so this is not the full set.", { count: truncatedTo })}
+        </p>
+      ) : null}
+    </>
   );
 }
 
@@ -505,7 +579,7 @@ function FreshnessLine({
         .filter(([, , enabled]) => enabled)
         .map(([label, state]) => (
           <span key={label}>
-            {label}:{" "}
+            {t(label)}:{" "}
             {state.loading
               ? t("refreshing")
               : state.error
@@ -517,6 +591,7 @@ function FreshnessLine({
   );
 }
 
+// SEAM: `error` 现在是后端原文。`ui/request-error-copy.ts` 落地后改走那套映射。
 function AuthorityError({
   error,
   onRetry,
@@ -552,10 +627,11 @@ function NoPermission({
   permission: string;
   title: string;
 }) {
+  const { t } = useAdminI18n();
   return (
     <section className="space-y-5">
       <PageHeader
-        purpose="This authority is not available to the current operator."
+        purpose={t("This authority is not available to the current operator.")}
         title={title}
       />
       <PermissionNote permission={permission} />
@@ -578,7 +654,7 @@ function Window({ window }: { window: { from: string; to: string } }) {
   return (
     <p className="text-xs text-[var(--ad-text-muted)]">
 
-      {t("Window")} {formatDate(window.from)} → {formatDate(window.to)}
+      {t("Window")} <FormattedDate value={window.from} /> → <FormattedDate value={window.to} />
     </p>
   );
 }
@@ -603,17 +679,63 @@ function pushQuery(scope: OverviewScope, query: OverviewQuery) {
   );
 }
 
-function formatDate(value: string) {
+// SEAM: `formatDate`/`stringValue`/`cell` 在 12 个工作台里几乎逐字重复；
+// 共享 `ui/format.ts` 正在建，落地后删掉本地这三个。
+function FormattedDate({ value }: { value: string }) {
+  const { locale } = useAdminI18n();
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  return <>{Number.isNaN(date.getTime()) ? value : date.toLocaleString(adminDateLocale(locale))}</>;
+}
+
+// SPEC: 只读总览的固定出口块——写权限属于别的域，这里只负责把人送过去。
+function WhereToAct({ links }: { links: ReadonlyArray<readonly [href: string, label: string]> }) {
+  const { t } = useAdminI18n();
+  return (
+    <nav aria-label={t("Where to act")} className="flex flex-wrap gap-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface-subtle)] p-4 text-sm">
+      {links.map(([href, label]) => (
+        <a
+          className="inline-flex items-center gap-2 font-semibold underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
+          href={href}
+          key={href}
+        >
+          <ExternalLink className="h-4 w-4" />{t(label)}
+        </a>
+      ))}
+    </nav>
+  );
 }
 
 function stringValue(value: unknown) {
   return typeof value === "string" ? value : "";
 }
 
-function cell(value: unknown) {
+// SPEC: 风险信号里的账号 id 直接进客户详情。
+// INTENT: 后端 abuse.ts 明确写了"处置动作留在各自的来源域"——它只报信号。既然如此，
+//         界面至少得把人送到能处置的地方，而不是让运营把 id 复制粘贴到另一个工作台。
+const CUSTOMER_ID_COLUMNS: ReadonlySet<string> = new Set(["userId", "inviterId", "userIds"]);
+
+function cell(value: unknown, column: string) {
   if (value === null || value === undefined) return "-";
+  if (CUSTOMER_ID_COLUMNS.has(column)) {
+    const ids = Array.isArray(value)
+      ? value.filter((item): item is string => typeof item === "string")
+      : typeof value === "string" && value ? [value] : [];
+    if (ids.length > 0) {
+      return (
+        <span className="flex flex-wrap gap-2">
+          {ids.map((id) => (
+            <a
+              className="font-mono underline decoration-dotted underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
+              href={`/admin/customers/${encodeURIComponent(id)}`}
+              key={id}
+            >
+              {id}
+            </a>
+          ))}
+        </span>
+      );
+    }
+  }
   if (typeof value === "string" || typeof value === "number")
     return String(value);
   return JSON.stringify(value);
