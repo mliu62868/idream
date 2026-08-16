@@ -2,11 +2,13 @@ import { z } from "zod";
 import { adminIdSchema, adminIsoDateTimeSchema } from "./common";
 
 /**
- * SPEC: 后台运营大盘（dashboard / analytics overview / risk abuse / provider ops /
- *   analytics export / retention / flag monitoring）的公开响应契约。
- * INTENT: 这七个端点在 v1 里没有任何机器可验证的出参声明，只有一串 `ok({...})`。
+ * SPEC: 后台运营大盘（dashboard / analytics overview / analytics export / retention /
+ *   flag monitoring）的公开响应契约。
+ * INTENT: 这五个端点在 v1 里没有任何机器可验证的出参声明，只有一串 `ok({...})`。
  *   它们共享同一套「窗口 + 数据口径 + 质量标注」结构，所以先把这三件公共物抽出来，
  *   剩下的每个面板只声明自己那一块。
+ * INTENT: risk/abuse 与 ops/providers 同住 v1 的 overviews/service.ts，但分属另外两路，
+ *   它们的契约不在这里。
  * INVARIANT: `qualityState: "invalid"` / `validForDecisions: false` 是 legacy 口径的
  *   既定事实（activation/conversion/retention 至今没有认证的 cohort 口径），因此写成
  *   literal 而不是枚举 —— 哪天真的认证了，改的是声明本身，不会被悄悄放行。
@@ -17,14 +19,6 @@ const nonNegativeInt = z.number().int().nonnegative();
 export const adminCustomerMetricDataScopeSchema = z
   .object({
     kind: z.literal("customer"),
-    includedDataClasses: z.array(z.string().min(1)).readonly(),
-    excludedDataClasses: z.array(z.string().min(1)).readonly(),
-  })
-  .strict();
-
-export const adminOperationalMetricDataScopeSchema = z
-  .object({
-    kind: z.literal("operational"),
     includedDataClasses: z.array(z.string().min(1)).readonly(),
     excludedDataClasses: z.array(z.string().min(1)).readonly(),
   })
@@ -141,72 +135,6 @@ export const analyticsOverviewResponseSchema = z
   })
   .strict();
 
-// ---- risk / abuse overview ----
-
-export const abuseOverviewResponseSchema = z
-  .object({
-    dataScope: adminCustomerMetricDataScopeSchema,
-    window: adminOverviewWindowSchema,
-    deviceClusters: z
-      .array(
-        z
-          .object({
-            anonymousId: adminIdSchema,
-            accountCount: nonNegativeInt,
-            userIds: z.array(adminIdSchema).readonly(),
-          })
-          .strict(),
-      )
-      .readonly(),
-    referralAbuse: z
-      .array(
-        z
-          .object({ inviterId: adminIdSchema, referralCount: nonNegativeInt })
-          .strict(),
-      )
-      .readonly(),
-    adjustAnomalies: z
-      .array(
-        z
-          .object({
-            userId: adminIdSchema,
-            totalDelta: z.number(),
-            count: nonNegativeInt,
-          })
-          .strict(),
-      )
-      .readonly(),
-  })
-  .strict();
-
-// ---- provider ops overview ----
-
-export const providerOpsResponseSchema = z
-  .object({
-    dataScope: adminOperationalMetricDataScopeSchema,
-    window: adminOverviewWindowSchema,
-    providers: z
-      .array(
-        z
-          .object({
-            provider: z.string().min(1),
-            total: nonNegativeInt,
-            completed: nonNegativeInt,
-            failed: nonNegativeInt,
-            blocked: nonNegativeInt,
-            coinsCost: z.number(),
-            successRate: z.number().int().min(0).max(100).nullable(),
-            avgCostPerJob: z.number(),
-            latencyP50Ms: z.number().nullable(),
-            latencyP95Ms: z.number().nullable(),
-            latencySamples: nonNegativeInt,
-          })
-          .strict(),
-      )
-      .readonly(),
-  })
-  .strict();
-
 // ---- analytics export + retention ----
 
 export const analyticsExportQuerySchema = z
@@ -270,8 +198,6 @@ export const experimentFlagMonitoringResponseSchema = z
 
 export type AdminDashboardResponse = z.infer<typeof adminDashboardResponseSchema>;
 export type AnalyticsOverviewResponse = z.infer<typeof analyticsOverviewResponseSchema>;
-export type AbuseOverviewResponse = z.infer<typeof abuseOverviewResponseSchema>;
-export type ProviderOpsResponse = z.infer<typeof providerOpsResponseSchema>;
 export type ExperimentFlagMonitoringResponse = z.infer<
   typeof experimentFlagMonitoringResponseSchema
 >;

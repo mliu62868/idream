@@ -397,8 +397,6 @@ export const ADMIN_V2_API_OPERATIONS = [
   // Flag 监控住在 analytics 下而不是 experiments 下：`/experiments/:id` 已声明在先，
   // manifest 是按声明顺序线性匹配的，`experiments/flag-monitoring` 会先撞上 `:id`。
   operation("GET", "/api/v2/admin/analytics/flag-monitoring", allOf("analytics.export"), "none", "experimentFlagMonitoringResponseSchema"),
-  operation("GET", "/api/v2/admin/risk/abuse", allOf("billing.read"), "adminOverviewWindowQuerySchema", "abuseOverviewResponseSchema"),
-  operation("GET", "/api/v2/admin/ops/providers", allOf("ops.queue.read"), "adminOverviewWindowQuerySchema", "providerOpsResponseSchema"),
 ] as const satisfies readonly AdminV2ApiOperation[];
 
 /** One declared operation, literals intact. */

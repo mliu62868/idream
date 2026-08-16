@@ -77,6 +77,10 @@ import {
 import { billingLedger, billingReconciliation, listSubscriptions } from "./billing/query";
 import { listFeatureFlags, patchFeatureFlag } from "./config/feature-flags";
 import {
+  abuseOverview,
+  providerOps,
+} from "./overviews/service";
+import {
   createPricingRule,
   listPricingRules,
   patchPricingRule,
@@ -305,6 +309,14 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
   if (resource === "feature-flags") {
     if (!id && method === "GET") return listFeatureFlags(request);
     if (id && !action && method === "PATCH") return patchFeatureFlag(request, id);
+  }
+
+  if (resource === "risk" && id === "abuse" && !action && method === "GET") {
+    return abuseOverview(request);
+  }
+
+  if (resource === "ops" && id === "providers" && !action && method === "GET") {
+    return providerOps(request);
   }
 
   if (resource === "audit-log" && !id && method === "GET") return auditLog(request);

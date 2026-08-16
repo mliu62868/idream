@@ -1,20 +1,18 @@
-// SPEC: 后台四张只读运营大盘 —— dashboard、analytics overview、risk/abuse、ops/providers。
-// INTENT: 三张窗口型大盘共用同一个 from/to 查询契约，但各自声明自己的响应契约；
-//         legacy 口径（activation / conversion）保留 `qualityState:"invalid"` 的诚实标注，
+// SPEC: 后台两张只读运营大盘 —— dashboard 与 analytics overview。
+// INTENT: legacy 口径（activation / conversion）保留 `qualityState:"invalid"` 的诚实标注，
 //         而不是把没认证的数字直接当结论发出去。
+// INVARIANT: 同住 v1 `admin/overviews/service.ts` 的 abuseOverview / providerOps 分属
+//         另外两路，不在这里 —— 那个文件由三方各挖各的，谁都不许重排。
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import {
   CUSTOMER_METRIC_DATA_SCOPE,
-  OPERATIONAL_METRIC_DATA_SCOPE,
   customerAnalyticsEventWhere,
   customerContentReportWhere,
   customerDreamcoinLedgerWhere,
   customerGenerationJobWhere,
-  customerReferralWhere,
   customerSubscriptionWhere,
   customerUserWhere,
-  operationalGenerationJobWhere,
 } from "@/server/modules/metric-data-scope";
 import { actorWithPermission, queryParams } from "@/server/modules/admin-v2/shared/authority";
 
@@ -211,169 +209,4 @@ export async function analyticsOverview(request: Request) {
       .sort((a, b) => b.count - a.count)
       .slice(0, 12),
   };
-}
-
-export async function abuseOverview(request: Request) {
-  await actorWithPermission(request, "billing.read");
-  const { from, to, createdAt } = resolveWindow(
-    queryParams(request, "GET /api/v2/admin/risk/abuse"),
-    "risk",
-  );
-  const [signupGroups, referralGroups, adjustGroups] = await Promise.all([
-    prisma.analyticsEvent.groupBy({
-      by: ["anonymousId"],
-      where: customerAnalyticsEventWhere({
-        name: "signup",
-        anonymousId: { not: null },
-        createdAt,
-      }),
-      _count: { _all: true },
-    }),
-    prisma.referral.groupBy({
-      by: ["inviterId"],
-      where: customerReferralWhere({ createdAt }),
-      _count: { _all: true },
-    }),
-    prisma.dreamcoinLedger.groupBy({
-      by: ["userId"],
-      where: customerDreamcoinLedgerWhere({ reason: "admin_adjust", createdAt }),
-      _sum: { delta: true },
-      _count: { _all: true },
-    }),
-  ]);
-  const flagged = signupGroups
-    .filter((group) => group._count._all >= 2)
-    .sort((a, b) => b._count._all - a._count._all)
-    .slice(0, 20)
-    .map((group) => group.anonymousId)
-    .filter((id): id is string => Boolean(id));
-  const events = flagged.length
-    ? await prisma.analyticsEvent.findMany({
-        where: customerAnalyticsEventWhere({
-          name: "signup",
-          anonymousId: { in: flagged },
-        }),
-        select: { anonymousId: true, userId: true },
-      })
-    : [];
-  const accounts = new Map<string, Set<string>>();
-  for (const event of events) {
-    if (!event.anonymousId || !event.userId) continue;
-    const users = accounts.get(event.anonymousId) ?? new Set<string>();
-    users.add(event.userId);
-    accounts.set(event.anonymousId, users);
-  }
-  return {
-    dataScope: CUSTOMER_METRIC_DATA_SCOPE,
-    window: { from: from.toISOString(), to: to.toISOString() },
-    deviceClusters: flagged
-      .map((anonymousId) => ({
-        anonymousId,
-        accountCount: accounts.get(anonymousId)?.size ?? 0,
-        userIds: [...(accounts.get(anonymousId) ?? [])].slice(0, 10),
-      }))
-      .filter((cluster) => cluster.accountCount >= 2),
-    referralAbuse: referralGroups
-      .filter((group) => group._count._all >= 3)
-      .map((group) => ({
-        inviterId: group.inviterId,
-        referralCount: group._count._all,
-      }))
-      .sort((a, b) => b.referralCount - a.referralCount)
-      .slice(0, 20),
-    adjustAnomalies: adjustGroups
-      .map((group) => ({
-        userId: group.userId,
-        totalDelta: group._sum.delta ?? 0,
-        count: group._count._all,
-      }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 20),
-  };
-}
-
-export async function providerOps(request: Request) {
-  await actorWithPermission(request, "ops.queue.read");
-  const { from, to, createdAt } = resolveWindow(
-    queryParams(request, "GET /api/v2/admin/ops/providers"),
-    "provider",
-  );
-  const [grouped, completedJobs] = await Promise.all([
-    prisma.generationJob.groupBy({
-      by: ["provider", "status"],
-      where: operationalGenerationJobWhere({ createdAt }),
-      _count: { _all: true },
-      _sum: { costDreamcoins: true },
-    }),
-    prisma.generationJob.findMany({
-      where: operationalGenerationJobWhere({
-        createdAt,
-        status: "completed",
-        completedAt: { not: null },
-      }),
-      select: { provider: true, createdAt: true, completedAt: true },
-      orderBy: { createdAt: "desc" },
-      take: 5000,
-    }),
-  ]);
-  const stats = new Map<
-    string,
-    {
-      total: number;
-      completed: number;
-      failed: number;
-      blocked: number;
-      coinsCost: number;
-    }
-  >();
-  for (const row of grouped) {
-    const provider = row.provider ?? "unknown";
-    const value = stats.get(provider) ??
-      { total: 0, completed: 0, failed: 0, blocked: 0, coinsCost: 0 };
-    value.total += row._count._all;
-    value.coinsCost += row._sum.costDreamcoins ?? 0;
-    if (row.status === "completed") value.completed += row._count._all;
-    if (row.status === "failed") value.failed += row._count._all;
-    if (row.status === "blocked") value.blocked += row._count._all;
-    stats.set(provider, value);
-  }
-  const latencies = new Map<string, number[]>();
-  for (const job of completedJobs) {
-    if (!job.completedAt) continue;
-    const ms = job.completedAt.getTime() - job.createdAt.getTime();
-    if (ms < 0) continue;
-    const provider = job.provider ?? "unknown";
-    latencies.set(provider, [...(latencies.get(provider) ?? []), ms]);
-  }
-  const providers = [...stats.entries()]
-    .map(([provider, value]) => {
-      const finished = value.completed + value.failed + value.blocked;
-      const sorted = (latencies.get(provider) ?? []).sort((a, b) => a - b);
-      return {
-        provider,
-        ...value,
-        successRate:
-          finished > 0 ? Math.round((value.completed / finished) * 100) : null,
-        avgCostPerJob:
-          value.total > 0 ? Math.round((value.coinsCost / value.total) * 10) / 10 : 0,
-        latencyP50Ms: percentile(sorted, 50),
-        latencyP95Ms: percentile(sorted, 95),
-        latencySamples: sorted.length,
-      };
-    })
-    .sort((a, b) => b.total - a.total);
-  return {
-    dataScope: OPERATIONAL_METRIC_DATA_SCOPE,
-    window: { from: from.toISOString(), to: to.toISOString() },
-    providers,
-  };
-}
-
-function percentile(sorted: number[], p: number): number | null {
-  if (sorted.length === 0) return null;
-  const index = Math.max(
-    0,
-    Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1),
-  );
-  return sorted[index] ?? null;
 }
