@@ -8,6 +8,7 @@ export const adminZhSystem: Record<string, string> = {
   "Approval authority refresh failed:": "审批权威刷新失败：",
   "Approval authority ·": "审批权威 ·",
   "Audit authority events": "审计权威事件",
+  "Auditable operator actions will appear after the first consequential command is recorded.": "第一条有后果的运营命令被记录后，可审计的操作会出现在这里。",
   "Clear access filters": "清除访问筛选",
   "Clear approval filters": "清除审批筛选",
   "Clear audit filters": "清除审计筛选",
@@ -22,6 +23,8 @@ export const adminZhSystem: Record<string, string> = {
   "Loading audit log…": "正在加载审计日志…",
   "Next approval page": "下一页审批",
   "Next user page": "下一页用户",
+  "No audit events exist yet": "还没有审计事件",
+  "No audit events match these filters": "没有符合筛选条件的审计事件",
   "Pending approvals": "待审批",
   "Permission effect": "权限操作",
   "Permission key": "权限键",
@@ -45,6 +48,7 @@ export const adminZhSystem: Record<string, string> = {
   "Status change unavailable · user.status.write is not granted":
     "状态变更不可用 · 尚未授予 user.status.write",
   "The complete approval authority query returned no work.": "完整的审批权威查询未返回待处理工作。",
+  "The complete server-side query returned no records. Clear filters to inspect the authority.": "完整的服务端查询没有返回任何记录。清除筛选可查看全部权威数据。",
   "Trace consequential operator decisions to the actor, target, reason, request, and command evidence that produced them.":
     "追溯重要运营决定对应的操作人、目标、原因、请求和命令证据。",
   "action, target, reason, or request": "操作、目标、原因或请求",
