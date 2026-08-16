@@ -4693,4 +4693,54 @@ describe("admin generation metrics rollup (P3)", () => {
     expect(engagementRow).toMatchObject({ slot: "campaign", impressions: 2, clicks: 1 });
     expect(metrics.data.remix.total).toBeGreaterThanOrEqual(2);
   });
+
+  it("splits the window into the current period and the previous equal-length one", async () => {
+    const admin = await setupActor("admin", "generation-metrics-periods");
+    const jobOwner = `${P}generation-metrics-periods-owner`;
+    await createUser({ id: jobOwner, dataClass: "internal" });
+    const base = {
+      userId: jobOwner,
+      mode: "image",
+      controls: {},
+      presetIds: [],
+      sourceType: "content_production_item",
+    } as const;
+    const day = 24 * 60 * 60 * 1000;
+    // profileId 留空：本期总量必须把它算进来，否则前端拿 profiles[] 求和会得出更小的本期。
+    await prisma.generationJob.create({
+      data: { ...base, id: `${P}periods-current`, sourceId: `${P}periods-src-1`, status: "failed", costDreamcoins: 3 },
+    });
+    await prisma.generationJob.create({
+      data: { ...base, id: `${P}periods-previous`, sourceId: `${P}periods-src-2`, status: "completed", costDreamcoins: 5 },
+    });
+    await prisma.generationJob.update({
+      where: { id: `${P}periods-previous` },
+      data: { createdAt: new Date(Date.now() - 9 * day) },
+    });
+    // 两期之外，两边都不该数进来。
+    await prisma.generationJob.create({
+      data: { ...base, id: `${P}periods-stale`, sourceId: `${P}periods-src-3`, status: "completed", costDreamcoins: 900 },
+    });
+    await prisma.generationJob.update({
+      where: { id: `${P}periods-stale` },
+      data: { createdAt: new Date(Date.now() - 30 * day) },
+    });
+
+    const metrics = await adminV2("GET", "/api/v2/admin/generation/metrics?days=7", {
+      userId: admin,
+      role: "admin",
+    });
+    expectOk(metrics);
+    const { current, previous } = metrics.data.periods;
+    expect(Date.parse(previous.to)).toBe(Date.parse(current.from));
+    expect(Date.parse(current.from) - Date.parse(previous.from)).toBe(7 * day);
+    // 本期口径与 sources[] 同源，所以恒等于逐行数据之和。
+    expect(current.total).toBe(
+      metrics.data.sources.reduce((sum: number, row: { total: number }) => sum + row.total, 0),
+    );
+    expect(current.failed).toBeGreaterThanOrEqual(1);
+    expect(previous.completed).toBeGreaterThanOrEqual(1);
+    expect(previous.costDreamcoins).toBeGreaterThanOrEqual(5);
+    expect(previous.costDreamcoins).toBeLessThan(900);
+  });
 });
