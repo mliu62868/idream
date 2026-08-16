@@ -128,9 +128,7 @@ export const adminZhDashboard: Record<string, string> = {
   "{count} results": "共 {count} 条",
   "No work matches these filters.": "没有符合当前筛选的工作。",
   "Loading work": "正在加载工作项",
-  "Previous page": "上一页",
   "Back to first page": "回到第一页",
-  "Page {page}": "第 {page} 页",
   "collaboration mention": "协作提及",
   // SPEC: 这些枚举值 zhValues 里没有（i18n.tsx 归 ui 平台维护），走 zh 字典 + t() 兜住。
   // t() 的查表顺序是 zh → zhValues，所以本页所有枚举一律 t()，两边的值都能翻出来。
