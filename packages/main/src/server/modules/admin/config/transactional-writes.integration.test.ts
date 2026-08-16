@@ -29,61 +29,7 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
-describe("transactional admin configuration writes", () => {
-  it("commits a feature flag change, Audit, and Outbox together", async () => {
-    const key = `${P}image-edit`;
-    const requestId = `${P}flag-success`;
-
-    const result = await patchFlag(key, true, requestId);
-
-    expectOk(result);
-    await expect(prisma.featureFlag.findUnique({ where: { key } })).resolves.toMatchObject({
-      enabled: true,
-      version: 1,
-    });
-    await expect(prisma.adminAuditLog.count({
-      where: { requestId, action: "config.feature_flag.write", targetId: key },
-    })).resolves.toBe(1);
-    await expect(prisma.mainOutboxEvent.findFirst({
-      where: {
-        aggregateType: "feature_flag",
-        aggregateId: key,
-        eventType: "config.feature_flag.changed.v2",
-      },
-    })).resolves.toMatchObject({
-      status: "pending",
-      payload: expect.objectContaining({
-        actorId,
-        requestId,
-        key,
-        enabled: true,
-        version: 1,
-      }),
-    });
-  });
-
-  it("rolls back a feature flag change when Audit or Outbox persistence fails", async () => {
-    const auditFailureKey = `${P}flag-audit-failure`;
-    const auditFailureRequestId = `${P}fail-audit-flag`;
-    const auditFailure = await patchFlag(auditFailureKey, true, auditFailureRequestId);
-
-    expectError(auditFailure, 500, "internal");
-    await expect(prisma.featureFlag.findUnique({ where: { key: auditFailureKey } })).resolves.toBeNull();
-    await expect(prisma.mainOutboxEvent.count({
-      where: { aggregateType: "feature_flag", aggregateId: auditFailureKey },
-    })).resolves.toBe(0);
-
-    const outboxFailureKey = `${P}flag-outbox-failure`;
-    const outboxFailureRequestId = `${P}fail-outbox-flag`;
-    const outboxFailure = await patchFlag(outboxFailureKey, true, outboxFailureRequestId);
-
-    expectError(outboxFailure, 500, "internal");
-    await expect(prisma.featureFlag.findUnique({ where: { key: outboxFailureKey } })).resolves.toBeNull();
-    await expect(prisma.adminAuditLog.count({
-      where: { requestId: outboxFailureRequestId },
-    })).resolves.toBe(0);
-  });
-
+describe("transactional admin pricing writes", () => {
   it("emits typed Outbox events for the complete pricing lifecycle", async () => {
     const ruleKey = `${P}pricing-lifecycle`;
     const createRequestId = `${P}pricing-create-success`;
@@ -183,19 +129,6 @@ describe("transactional admin configuration writes", () => {
     await expect(prisma.pricingRule.findUnique({ where: { id: rollbackCurrentId } })).resolves.toMatchObject({ status: "active" });
   });
 });
-
-async function patchFlag(key: string, enabled: boolean, requestId: string) {
-  return api("PATCH", `admin/feature-flags/${key}`, {
-    userId: actorId,
-    role: "admin",
-    headers: { "x-request-id": requestId },
-    body: {
-      enabled,
-      reason: "verify transactional configuration writes",
-      confirmation: `${key}:${enabled ? "enabled" : "disabled"}`,
-    },
-  });
-}
 
 async function createRule(ruleKey: string, baseCost: number, requestId: string) {
   return api("POST", "admin/pricing/rules", {

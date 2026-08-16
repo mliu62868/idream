@@ -254,7 +254,7 @@ function FlagsTable({ canWrite, confirmWrite, rows }: { canWrite: boolean; confi
     const key = text(row.key);
     const enabled = Boolean(row.enabled);
     const expected = `${key}:${enabled ? "disabled" : "enabled"}`;
-    return <tr className="border-b border-[var(--ad-border)] last:border-0" key={key}><td className="px-4 py-3 font-mono text-xs">{key}</td><td className="px-4 py-3">{String(enabled)}</td><td className="px-4 py-3">{display(row.rolloutPercent)}</td><td className="px-4 py-3">{display(row.version)}</td><td className="px-4 py-3">{display(row.hardPolicy)}</td><td className="px-4 py-3">{canWrite ? <Action icon={<Flag className="h-4 w-4" />} label={enabled ? "Disable" : "Enable"} onClick={() => confirmWrite({ title: `${enabled ? "Disable" : "Enable"} ${key}`, endpoint: `/api/v1/admin/feature-flags/${key}`, method: "PATCH", expected, payload: (reason) => ({ enabled: !enabled, reason }) })} /> : t("Read only")}</td></tr>;
+    return <tr className="border-b border-[var(--ad-border)] last:border-0" key={key}><td className="px-4 py-3 font-mono text-xs">{key}</td><td className="px-4 py-3">{String(enabled)}</td><td className="px-4 py-3">{display(row.rolloutPercent)}</td><td className="px-4 py-3">{display(row.version)}</td><td className="px-4 py-3">{display(row.hardPolicy)}</td><td className="px-4 py-3">{canWrite ? <Action icon={<Flag className="h-4 w-4" />} label={enabled ? "Disable" : "Enable"} onClick={() => confirmWrite({ title: `${enabled ? "Disable" : "Enable"} ${key}`, endpoint: `/api/v2/admin/feature-flags/${key}`, method: "PATCH", expected, payload: (reason) => ({ enabled: !enabled, reason }) })} /> : t("Read only")}</td></tr>;
   })}</tbody></table></div>;
 }
 

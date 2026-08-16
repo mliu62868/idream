@@ -35,10 +35,15 @@ describe("SupportWorkspace mounted URL state", () => {
 
   beforeEach(() => {
     apiGet.mockReset();
-    apiGet.mockImplementation(async (path) =>
-      path.includes("saved-views")
-        ? { items: [] }
-        : {
+    // Saved Views 走 `adminV2Request`（真 fetch），不再经 `apiGet` —— 桩住它，
+    // 否则 happy-dom 会真的发一次请求，然后在 teardown 时抛 AbortError。
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(JSON.stringify({ ok: true, data: { items: [] } }), {
+        headers: { "content-type": "application/json" },
+      }),
+    ));
+    apiGet.mockImplementation(async () =>
+      ({
             items: [
               {
                 ticketId: "SUP-R5E27H6PS9",
@@ -55,7 +60,7 @@ describe("SupportWorkspace mounted URL state", () => {
             pageInfo: { endCursor: null, hasNextPage: false },
             asOf: "2026-08-11T00:00:00.000Z",
             freshness: "fresh",
-          },
+      }),
     );
     window.history.replaceState(null, "", "/admin/support?search=SUP-R5E27H6PS9");
     container = document.createElement("div");
@@ -89,10 +94,10 @@ describe("SupportWorkspace mounted URL state", () => {
     });
 
     await waitUntil(() =>
-      apiGet.mock.calls.some(([path]) => path.includes("/api/v1/admin/support/requests?")),
+      apiGet.mock.calls.some(([path]) => path.includes("/api/v2/admin/support/requests?")),
     );
     expect(
-      apiGet.mock.calls.find(([path]) => path.includes("/api/v1/admin/support/requests?"))?.[0],
+      apiGet.mock.calls.find(([path]) => path.includes("/api/v2/admin/support/requests?"))?.[0],
     ).toContain("search=SUP-R5E27H6PS9");
     expect(container.querySelector<HTMLInputElement>('input[aria-label="Support search"]')?.value).toBe(
       "SUP-R5E27H6PS9",

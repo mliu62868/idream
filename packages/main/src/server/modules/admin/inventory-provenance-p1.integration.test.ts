@@ -7,7 +7,7 @@ import {
   listContentCharacters,
 } from "@/server/modules/admin/content/merchandising";
 import { moderationQueue } from "@/server/modules/admin/moderation/service";
-import { listSupportRequests } from "@/server/modules/admin/support/service";
+import { GET as supportRequestsRoute } from "@/app/api/v2/admin/support/requests/route";
 
 describe("Admin P1 inventory provenance", () => {
   const suffix = randomUUID();
@@ -252,8 +252,8 @@ describe("Admin P1 inventory provenance", () => {
 
   it("filters support requests by requester provenance", async () => {
     const data = await call(
-      listSupportRequests,
-      `/api/v1/admin/support/requests?search=${token}&limit=100`,
+      supportRequestsRoute,
+      `/api/v2/admin/support/requests?search=${token}&limit=100`,
     );
     expect(ids(data.items)).toEqual(
       new Set([supportIds.customer, supportIds.internal]),

@@ -24,7 +24,7 @@ describe("generation config query", () => {
   it("maps URL state one-to-one to server search, filters, and cursors", () => {
     const query = generationConfigQueryFromSearch("?configSearch=flux&profileMode=image&profileStatus=active&profileCursor=next");
     expect(generationProfilesPath(query)).toBe("/api/v1/admin/generation/model-profiles?search=flux&mode=image&status=active&cursor=next&limit=25");
-    expect(featureFlagsPath({ ...query, flagEnabled: "true", flagCursor: "flags" })).toBe("/api/v1/admin/feature-flags?search=flux&enabled=true&cursor=flags&limit=25");
+    expect(featureFlagsPath({ ...query, flagEnabled: "true", flagCursor: "flags" })).toBe("/api/v2/admin/feature-flags?search=flux&enabled=true&cursor=flags&limit=25");
   });
 
   it("preserves unrelated route state while clearing empty config values", () => {

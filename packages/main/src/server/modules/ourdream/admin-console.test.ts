@@ -13,11 +13,27 @@ import { env } from "@/server/lib/env";
 import { ACCOUNT_DELETION_GRACE_PERIOD_MS } from "@/server/account-deletion-authority";
 import { CHARACTER_RELEASE_POLICY_VERSION } from "@/server/modules/admin-v2/characters/release-validation";
 import { POST as createCreativeRunV2 } from "@/app/api/v2/admin/creative/runs/route";
+import { GET as adminAuditLogRoute } from "@/app/api/v2/admin/audit-log/route";
+import { PATCH as adminFeatureFlagRoute } from "@/app/api/v2/admin/feature-flags/[key]/route";
+import { GET as adminSavedViewsRoute, POST as adminSavedViewCreateRoute } from "@/app/api/v2/admin/saved-views/route";
+import { DELETE as adminSavedViewDeleteRoute } from "@/app/api/v2/admin/saved-views/[id]/route";
+import { GET as adminSupportRequestsRoute } from "@/app/api/v2/admin/support/requests/route";
+import { PATCH as adminSupportRequestPatchRoute } from "@/app/api/v2/admin/support/requests/[id]/route";
+import { POST as adminSupportEscalateRoute } from "@/app/api/v2/admin/support/requests/[id]/escalate/route";
+import { POST as adminSupportPlaintextRoute } from "@/app/api/v2/admin/support/plaintext/view/route";
+import { GET as adminUsersRoute } from "@/app/api/v2/admin/users/route";
+import { POST as adminUserStatusRoute } from "@/app/api/v2/admin/users/[id]/status/route";
+import { POST as adminUserRoleRoute } from "@/app/api/v2/admin/users/[id]/role/route";
+import {
+  GET as adminUserPermissionsReadRoute,
+  POST as adminUserPermissionsWriteRoute,
+} from "@/app/api/v2/admin/users/[id]/permissions/route";
 import {
   characterVisualProfileSnapshotHash,
   referenceSetSnapshotHash,
 } from "@/server/modules/admin-v2/characters/release-snapshot";
 import {
+  adminV2Api,
   api,
   createCharacter,
   createUser,
@@ -335,12 +351,12 @@ describe("admin permission keys", () => {
     const user = await setupActor("user", "matrix");
 
     expectOk(await api("GET", "admin/dashboard", { userId: analyst, role: "analyst" }));
-    expectOk(await api("GET", "admin/users", { userId: support, role: "support" }));
+    expectOk(await adminV2Api(adminUsersRoute, "GET", "/api/v2/admin/users", { userId: support, role: "support" }));
     expectOk(await api("GET", "admin/generation/model-profiles", { userId: ops, role: "ops" }));
     expectOk(await api("GET", "admin/billing/ledger", { userId: support, role: "support" }));
-    expectOk(await api("GET", "admin/audit-log", { userId: admin, role: "admin" }));
+    expectOk(await adminV2Api(adminAuditLogRoute, "GET", "/api/v2/admin/audit-log", { userId: admin, role: "admin" }));
 
-    expectError(await api("GET", "admin/users", { userId: analyst, role: "analyst" }), 403);
+    expectError(await adminV2Api(adminUsersRoute, "GET", "/api/v2/admin/users", { userId: analyst, role: "analyst" }), 403);
     expectError(await api("GET", "admin/generation/model-profiles", { userId: support, role: "support" }), 403);
     expectError(await api("GET", "admin/billing/ledger", { userId: ops, role: "ops" }), 403);
     expectError(await api("GET", "admin/dashboard", { userId: user, role: "user" }), 403);
@@ -367,7 +383,7 @@ describe("admin support request inbox", () => {
     });
     expectOk(submitted, 201);
 
-    const list = await api("GET", "admin/support/requests", {
+    const list = await adminV2Api(adminSupportRequestsRoute, "GET", "/api/v2/admin/support/requests", {
       userId: support,
       role: "support",
       query: { status: "received" },
@@ -385,9 +401,10 @@ describe("admin support request inbox", () => {
       ]),
     );
 
-    const patched = await api("PATCH", `admin/support/requests/${submitted.data.request.ticketId}`, {
+    const patched = await adminV2Api(adminSupportRequestPatchRoute, "PATCH", `/api/v2/admin/support/requests/${submitted.data.request.ticketId}`, {
       userId: support,
       role: "support",
+      params: { id: submitted.data.request.ticketId as string },
       body: {
         assignedToId: support,
         priority: 2,
@@ -407,7 +424,7 @@ describe("admin support request inbox", () => {
     });
     expect(patched.data.request.resolvedAt).toEqual(expect.any(String));
 
-    const defaultList = await api("GET", "admin/support/requests", {
+    const defaultList = await adminV2Api(adminSupportRequestsRoute, "GET", "/api/v2/admin/support/requests", {
       userId: support,
       role: "support",
     });
@@ -446,7 +463,7 @@ describe("admin support request inbox", () => {
         status: "open",
       },
     });
-    const overdueList = await api("GET", "admin/support/requests", {
+    const overdueList = await adminV2Api(adminSupportRequestsRoute, "GET", "/api/v2/admin/support/requests", {
       userId: support,
       role: "support",
       query: { status: "active", sla: "overdue" },
@@ -464,9 +481,10 @@ describe("admin support request inbox", () => {
       freshTicketId,
     );
 
-    const escalated = await api("POST", `admin/support/requests/${overdueTicketId}/escalate`, {
+    const escalated = await adminV2Api(adminSupportEscalateRoute, "POST", `/api/v2/admin/support/requests/${overdueTicketId}/escalate`, {
       userId: support,
       role: "support",
+      params: { id: overdueTicketId },
       body: {
         reason: "SLA breach needs support lead attention",
         confirmation: overdueTicketId,
@@ -482,9 +500,10 @@ describe("admin support request inbox", () => {
       ticketId: overdueTicketId,
     });
     expectError(
-      await api("POST", `admin/support/requests/${freshTicketId}/escalate`, {
+      await adminV2Api(adminSupportEscalateRoute, "POST", `/api/v2/admin/support/requests/${freshTicketId}/escalate`, {
         userId: support,
         role: "support",
+        params: { id: freshTicketId },
         body: {
           reason: "Fresh ticket should not escalate",
           confirmation: freshTicketId,
@@ -512,7 +531,7 @@ describe("admin support request inbox", () => {
     expect(escalationAudit).not.toBeNull();
 
     expectError(
-      await api("GET", "admin/support/requests", { userId: analyst, role: "analyst" }),
+      await adminV2Api(adminSupportRequestsRoute, "GET", "/api/v2/admin/support/requests", { userId: analyst, role: "analyst" }),
       403,
     );
   });
@@ -3144,32 +3163,36 @@ describe("admin writes are audited", () => {
     const target = `${P}target-user`;
     await createUser({ id: target });
 
-    const wrongStatusConfirmation = await api("POST", `admin/users/${target}/status`, {
+    const wrongStatusConfirmation = await adminV2Api(adminUserStatusRoute, "POST", `/api/v2/admin/users/${target}/status`, {
       userId: admin,
       role: "admin",
+      params: { id: target },
       body: { status: "suspended", reason: "chargeback risk", confirmation: "SUSPENDED" },
     });
     expectError(wrongStatusConfirmation, 400, "bad_request");
     expect((await prisma.user.findUniqueOrThrow({ where: { id: target } })).status).toBe("active");
 
-    const status = await api("POST", `admin/users/${target}/status`, {
+    const status = await adminV2Api(adminUserStatusRoute, "POST", `/api/v2/admin/users/${target}/status`, {
       userId: admin,
       role: "admin",
+      params: { id: target },
       body: { status: "suspended", reason: "chargeback risk", confirmation: `${target}:suspended` },
     });
     expectOk(status);
     expect(status.data.user.status).toBe("suspended");
 
-    const wrongRoleConfirmation = await api("POST", `admin/users/${target}/role`, {
+    const wrongRoleConfirmation = await adminV2Api(adminUserRoleRoute, "POST", `/api/v2/admin/users/${target}/role`, {
       userId: admin,
       role: "admin",
+      params: { id: target },
       body: { role: "support", reason: "support handoff", confirmation: "ROLE" },
     });
     expectError(wrongRoleConfirmation, 400, "bad_request");
 
-    const roleChange = await api("POST", `admin/users/${target}/role`, {
+    const roleChange = await adminV2Api(adminUserRoleRoute, "POST", `/api/v2/admin/users/${target}/role`, {
       userId: admin,
       role: "admin",
+      params: { id: target },
       body: { role: "support", reason: "support handoff", confirmation: `${target}:support` },
     });
     expectOk(roleChange);
@@ -3220,29 +3243,33 @@ describe("admin writes are audited", () => {
     });
     expectError(conflict, 409, "conflict");
 
-    const hardPolicy = await api("PATCH", "admin/feature-flags/age_gate_required", {
+    const hardPolicy = await adminV2Api(adminFeatureFlagRoute, "PATCH", "/api/v2/admin/feature-flags/age_gate_required", {
       userId: admin,
       role: "admin",
+      params: { key: "age_gate_required" },
       body: { enabled: false, reason: "test", confirmation: "FLAG" },
     });
     expectError(hardPolicy, 403, "forbidden");
-    const camelHardPolicy = await api("PATCH", "admin/feature-flags/minorSafetyBypass", {
+    const camelHardPolicy = await adminV2Api(adminFeatureFlagRoute, "PATCH", "/api/v2/admin/feature-flags/minorSafetyBypass", {
       userId: admin,
       role: "admin",
+      params: { key: "minorSafetyBypass" },
       body: { enabled: true, reason: "test", confirmation: "FLAG" },
     });
     expectError(camelHardPolicy, 403, "forbidden");
 
-    const wrongFlagConfirmation = await api("PATCH", "admin/feature-flags/image_edit", {
+    const wrongFlagConfirmation = await adminV2Api(adminFeatureFlagRoute, "PATCH", "/api/v2/admin/feature-flags/image_edit", {
       userId: admin,
       role: "admin",
+      params: { key: "image_edit" },
       body: { enabled: true, reason: "wrong flag confirmation", confirmation: "FLAG" },
     });
     expectError(wrongFlagConfirmation, 400, "bad_request");
 
-    const flag = await api("PATCH", "admin/feature-flags/image_edit", {
+    const flag = await adminV2Api(adminFeatureFlagRoute, "PATCH", "/api/v2/admin/feature-flags/image_edit", {
       userId: admin,
       role: "admin",
+      params: { key: "image_edit" },
       body: { enabled: true, reason: "rollout test", confirmation: "image_edit:enabled" },
     });
     expectOk(flag);
@@ -4061,7 +4088,8 @@ describe("user permission overrides", () => {
 
     // 管理 override 是 admin only：support 不能自授。
     expectError(
-      await api("POST", `admin/users/${support}/permissions`, {
+      await adminV2Api(adminUserPermissionsWriteRoute, "POST", `/api/v2/admin/users/${support}/permissions`, {
+        params: { id: support },
         userId: support,
         role: "support",
         body: {
@@ -4074,7 +4102,8 @@ describe("user permission overrides", () => {
       403,
     );
 
-    const wrongGrantConfirmation = await api("POST", `admin/users/${support}/permissions`, {
+    const wrongGrantConfirmation = await adminV2Api(adminUserPermissionsWriteRoute, "POST", `/api/v2/admin/users/${support}/permissions`, {
+      params: { id: support },
       userId: admin,
       role: "admin",
       body: {
@@ -4089,7 +4118,8 @@ describe("user permission overrides", () => {
 
     // admin 授予 support billing.ledger.adjust → 现在能调整 ledger。
     expectOk(
-      await api("POST", `admin/users/${support}/permissions`, {
+      await adminV2Api(adminUserPermissionsWriteRoute, "POST", `/api/v2/admin/users/${support}/permissions`, {
+        params: { id: support },
         userId: admin,
         role: "admin",
         body: {
@@ -4110,7 +4140,8 @@ describe("user permission overrides", () => {
 
     // revoke billing.read → support 看不了 ledger。
     expectOk(
-      await api("POST", `admin/users/${support}/permissions`, {
+      await adminV2Api(adminUserPermissionsWriteRoute, "POST", `/api/v2/admin/users/${support}/permissions`, {
+        params: { id: support },
         userId: admin,
         role: "admin",
         body: {
@@ -4123,9 +4154,10 @@ describe("user permission overrides", () => {
     );
     expectError(await api("GET", "admin/billing/ledger", { userId: support, role: "support" }), 403);
 
-    const list = await api("GET", `admin/users/${support}/permissions`, {
+    const list = await adminV2Api(adminUserPermissionsReadRoute, "GET", `/api/v2/admin/users/${support}/permissions`, {
       userId: admin,
       role: "admin",
+      params: { id: support },
     });
     expectOk(list);
     expect(list.data.effective).toContain("billing.ledger.adjust");
@@ -4133,7 +4165,8 @@ describe("user permission overrides", () => {
 
     // clear revoke → billing.read 恢复。
     expectOk(
-      await api("POST", `admin/users/${support}/permissions`, {
+      await adminV2Api(adminUserPermissionsWriteRoute, "POST", `/api/v2/admin/users/${support}/permissions`, {
+        params: { id: support },
         userId: admin,
         role: "admin",
         body: {
@@ -4148,7 +4181,8 @@ describe("user permission overrides", () => {
 
     // 未知 key 拒绝。
     expectError(
-      await api("POST", `admin/users/${support}/permissions`, {
+      await adminV2Api(adminUserPermissionsWriteRoute, "POST", `/api/v2/admin/users/${support}/permissions`, {
+        params: { id: support },
         userId: admin,
         role: "admin",
         body: {
@@ -4200,7 +4234,7 @@ describe("support plaintext gate", () => {
       },
     });
 
-    const denied = await api("POST", "admin/support/plaintext/view", {
+    const denied = await adminV2Api(adminSupportPlaintextRoute, "POST", "/api/v2/admin/support/plaintext/view", {
       userId: support,
       role: "support",
       body: {
@@ -4227,7 +4261,7 @@ describe("support plaintext gate", () => {
         createdById: support,
       },
     });
-    const wrongOwnerGrant = await api("POST", "admin/support/plaintext/view", {
+    const wrongOwnerGrant = await adminV2Api(adminSupportPlaintextRoute, "POST", "/api/v2/admin/support/plaintext/view", {
       userId: support,
       role: "support",
       body: {
@@ -4253,7 +4287,7 @@ describe("support plaintext gate", () => {
       },
     });
 
-    const genericView = await api("POST", "admin/support/plaintext/view", {
+    const genericView = await adminV2Api(adminSupportPlaintextRoute, "POST", "/api/v2/admin/support/plaintext/view", {
       userId: support,
       role: "support",
       body: {
@@ -4266,7 +4300,7 @@ describe("support plaintext gate", () => {
     });
     expectError(genericView, 400, "bad_request");
 
-    const allowed = await api("POST", "admin/support/plaintext/view", {
+    const allowed = await adminV2Api(adminSupportPlaintextRoute, "POST", "/api/v2/admin/support/plaintext/view", {
       userId: support,
       role: "support",
       body: {
@@ -4297,26 +4331,43 @@ describe("admin saved views (F1)", () => {
     const a = await setupActor("admin", "sv-a");
     const b = await setupActor("admin", "sv-b");
 
-    const created = await api("POST", "admin/saved-views", {
+    const queryState = {
+      search: "",
+      filters: { status: "open" },
+      sort: { field: "created_at", direction: "asc" },
+      pageSize: 25,
+    };
+    const created = await adminV2Api(adminSavedViewCreateRoute, "POST", "/api/v2/admin/saved-views", {
       userId: a,
       role: "admin",
-      body: { scope: "moderation", label: "My queue", filters: { status: "open" } },
+      body: { scope: "support_request", label: "My queue", queryState },
     });
-    expectOk(created);
+    expectOk(created, 201);
     const viewId = created.data.view.id as string;
+    const viewVersion = created.data.view.version as number;
 
-    const listA = await api("GET", "admin/saved-views", { userId: a, role: "admin", query: { scope: "moderation" } });
+    const listA = await adminV2Api(adminSavedViewsRoute, "GET", "/api/v2/admin/saved-views", {
+      userId: a, role: "admin", query: { scope: "support_request" },
+    });
     expectOk(listA);
     expect(listA.data.items).toHaveLength(1);
 
-    // B cannot see A's view, and cannot delete it (owner-scoped → 404).
-    const listB = await api("GET", "admin/saved-views", { userId: b, role: "admin", query: { scope: "moderation" } });
+    // B cannot see A's view, and cannot delete it (owner-scoped → 409 on the version guard).
+    const listB = await adminV2Api(adminSavedViewsRoute, "GET", "/api/v2/admin/saved-views", {
+      userId: b, role: "admin", query: { scope: "support_request" },
+    });
     expectOk(listB);
     expect(listB.data.items).toHaveLength(0);
-    expectError(await api("DELETE", `admin/saved-views/${viewId}`, { userId: b, role: "admin" }), 404);
+    expectError(await adminV2Api(adminSavedViewDeleteRoute, "DELETE", `/api/v2/admin/saved-views/${viewId}`, {
+      userId: b, role: "admin", params: { id: viewId }, headers: { "if-match": `"${viewVersion}"` },
+    }), 409);
 
-    expectOk(await api("DELETE", `admin/saved-views/${viewId}`, { userId: a, role: "admin" }));
-    const listAfter = await api("GET", "admin/saved-views", { userId: a, role: "admin", query: { scope: "moderation" } });
+    expectOk(await adminV2Api(adminSavedViewDeleteRoute, "DELETE", `/api/v2/admin/saved-views/${viewId}`, {
+      userId: a, role: "admin", params: { id: viewId }, headers: { "if-match": `"${viewVersion}"` },
+    }));
+    const listAfter = await adminV2Api(adminSavedViewsRoute, "GET", "/api/v2/admin/saved-views", {
+      userId: a, role: "admin", query: { scope: "support_request" },
+    });
     expect(listAfter.data.items).toHaveLength(0);
   });
 });

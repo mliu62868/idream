@@ -282,7 +282,7 @@ export function AccessWorkspace({
                 const userId = permissionDraft.userId.trim();
                 confirmCommand({
                   title: `${permissionDraft.effect} ${permissionDraft.permissionKey}`,
-                  endpoint: `/api/v1/admin/users/${userId}/permissions`,
+                  endpoint: `/api/v2/admin/users/${userId}/permissions`,
                   expected: accessPermissionConfirmation(
                     userId,
                     permissionDraft.permissionKey,
@@ -449,7 +449,7 @@ function userTableRows(
             onClick={() =>
               confirm({
                 title: `${next === "active" ? "Restore" : "Suspend"} ${id}`,
-                endpoint: `/api/v1/admin/users/${id}/status`,
+                endpoint: `/api/v2/admin/users/${id}/status`,
                 expected: accessStatusConfirmation(id, next),
                 payload: (reason) => ({ status: next, reason }),
               })

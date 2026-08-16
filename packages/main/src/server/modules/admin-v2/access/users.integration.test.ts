@@ -1,13 +1,14 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { prisma } from "@/server/lib/db";
-import { handle } from "@/server/lib/http";
-import { createUser, purgeTestData } from "@/server/test/helpers";
+import { GET as listUsersRoute } from "@/app/api/v2/admin/users/route";
+import { GET as userDetailRoute } from "@/app/api/v2/admin/users/[id]/route";
+import { POST as userStatusRoute } from "@/app/api/v2/admin/users/[id]/status/route";
+import { POST as userRoleRoute } from "@/app/api/v2/admin/users/[id]/role/route";
 import {
-  listUsers,
-  setUserPermission,
-  updateUserRole,
-  updateUserStatus,
-} from "./service";
+  GET as userPermissionsReadRoute,
+  POST as userPermissionsWriteRoute,
+} from "@/app/api/v2/admin/users/[id]/permissions/route";
+import { prisma } from "@/server/lib/db";
+import { createUser, purgeTestData } from "@/server/test/helpers";
 
 const P = "zt-admin-user-command-";
 const actorId = `${P}actor`;
@@ -48,15 +49,11 @@ describe("idempotent user authority commands", () => {
   it("returns every user data class and applies an explicit dataClass filter", async () => {
     const scopeToken = `${P}data-class`;
     const classes = ["customer", "internal", "fixture", "audit"] as const;
-    const users = classes.map((dataClass) => ({
-      id: `${scopeToken}-${dataClass}`,
-      dataClass,
-    }));
-    for (const user of users) {
+    for (const dataClass of classes) {
       await createUser({
-        id: user.id,
-        email: `${user.id}@idream.test`,
-        dataClass: user.dataClass,
+        id: `${scopeToken}-${dataClass}`,
+        email: `${scopeToken}-${dataClass}@idream.test`,
+        dataClass,
       });
     }
 
@@ -71,14 +68,31 @@ describe("idempotent user authority commands", () => {
       );
       expect(filtered.status).toBe(200);
       expect((await filtered.json()).data.items).toEqual([
-        expect.objectContaining({
-          id: `${scopeToken}-${dataClass}`,
-          dataClass,
-        }),
+        expect.objectContaining({ id: `${scopeToken}-${dataClass}`, dataClass }),
       ]);
     }
 
     expect((await callList(`q=${scopeToken}&dataClass=unknown&limit=10`)).status).toBe(400);
+  });
+
+  it("serves the user detail projection through the declared contract", async () => {
+    const targetId = `${P}detail-target`;
+    await createUser({ id: targetId });
+    const response = await userDetailRoute(
+      new Request(`http://localhost/api/v2/admin/users/${targetId}`, { headers: authHeaders() }),
+      { params: Promise.resolve({ id: targetId }) },
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.data.user).toMatchObject({ id: targetId, status: "active" });
+    expect(body.data.dreamcoins.balance).toBeTypeOf("number");
+    expect(Array.isArray(body.data.generationJobs)).toBe(true);
+
+    const missing = await userDetailRoute(
+      new Request(`http://localhost/api/v2/admin/users/${P}absent`, { headers: authHeaders() }),
+      { params: Promise.resolve({ id: `${P}absent` }) },
+    );
+    expect(missing.status).toBe(404);
   });
 
   it("replays an exact status request and conflicts on a changed canonical request", async () => {
@@ -139,20 +153,34 @@ describe("idempotent user authority commands", () => {
     await expect(prisma.adminAuditLog.count({ where: { actorId, targetId, action: { in: ["user.role.write", "admin.permission.grant"] } } })).resolves.toBe(2);
     await expect(prisma.mainOutboxEvent.count({ where: { aggregateId: targetId, eventType: { in: ["admin.user.role_changed.v2", "admin.user.permission_changed.v2"] } } })).resolves.toBe(2);
     await expect(prisma.adminUserPermission.count({ where: { userId: targetId, permissionKey: "billing.ledger.adjust" } })).resolves.toBe(1);
+
+    const effective = await userPermissionsReadRoute(
+      new Request(`http://localhost/api/v2/admin/users/${targetId}/permissions`, { headers: authHeaders() }),
+      { params: Promise.resolve({ id: targetId }) },
+    );
+    expect(effective.status).toBe(200);
+    const permissions = await effective.json();
+    expect(permissions.data.role).toBe("support");
+    expect(permissions.data.effective).toContain("billing.ledger.adjust");
+    expect(permissions.data.overrides).toEqual([
+      expect.objectContaining({ permissionKey: "billing.ledger.adjust", effect: "grant" }),
+    ]);
   });
 
+  // SPEC: 注入持久化失败时，命令回执 / 用户状态 / 审计 / Outbox 一起回滚。
+  // INTENT: v1 经 `handle()` 把未知错误折成 500 响应；`adminV2Route` 只折 AppError，其余原样抛给
+  // 框架（线上仍是 500）。所以这里断言的是「抛出」而不是「返回 500」—— 换成后者只会掩盖真实行为。
   it("rolls back receipt, user state, Audit, and Outbox on injected persistence failures", async () => {
     for (const failure of ["audit", "outbox"] as const) {
       const targetId = `${P}${failure}-failure-target`;
       const requestId = `${P}fail-${failure}-status`;
       await createUser({ id: targetId });
-      const response = await callStatus(targetId, {
+      await expect(callStatus(targetId, {
         status: "suspended",
         reason: `inject ${failure} persistence failure`,
         confirmation: `${targetId}:suspended`,
-      }, `${P}${failure}-failure-key`, requestId);
+      }, `${P}${failure}-failure-key`, requestId)).rejects.toThrow();
 
-      expect(response.status).toBe(500);
       await expect(prisma.user.findUnique({ where: { id: targetId } })).resolves.toMatchObject({ status: "active" });
       await expect(prisma.controlPlaneCommand.count({ where: { actorId, targetId } })).resolves.toBe(0);
       await expect(prisma.adminAuditLog.count({ where: { actorId, targetId } })).resolves.toBe(0);
@@ -173,40 +201,44 @@ describe("idempotent user authority commands", () => {
   });
 });
 
-function request(path: string, body: unknown, idempotencyKey: string | null, requestId: string) {
-  return new Request(`http://localhost/api/v1/admin/users/${path}`, {
+function authHeaders(extra: Record<string, string> = {}) {
+  return { "x-idream-user-id": actorId, "x-idream-role": "admin", ...extra };
+}
+
+function commandRequest(path: string, body: unknown, idempotencyKey: string | null, requestId: string) {
+  return new Request(`http://localhost/api/v2/admin/users/${path}`, {
     method: "POST",
-    headers: {
+    headers: authHeaders({
       "content-type": "application/json",
-      "x-idream-user-id": actorId,
-      "x-idream-role": "admin",
       "x-request-id": requestId,
       ...(idempotencyKey ? { "idempotency-key": idempotencyKey } : {}),
-    },
+    }),
     body: JSON.stringify(body),
   });
 }
 
 function callList(query: string) {
-  const req = new Request(`http://localhost/api/v1/admin/users?${query}`, {
-    headers: { "x-idream-user-id": actorId, "x-idream-role": "admin" },
-  });
-  return handle(() => listUsers(req))(req);
+  return listUsersRoute(
+    new Request(`http://localhost/api/v2/admin/users?${query}`, { headers: authHeaders() }),
+  );
 }
 
 function callStatus(targetId: string, body: unknown, key: string | null, requestId: string) {
-  const req = request(`${targetId}/status`, body, key, requestId);
-  return handle(() => updateUserStatus(req, targetId))(req);
+  return userStatusRoute(commandRequest(`${targetId}/status`, body, key, requestId), {
+    params: Promise.resolve({ id: targetId }),
+  });
 }
 
 function callRole(targetId: string, body: unknown, key: string, requestId: string) {
-  const req = request(`${targetId}/role`, body, key, requestId);
-  return handle(() => updateUserRole(req, targetId))(req);
+  return userRoleRoute(commandRequest(`${targetId}/role`, body, key, requestId), {
+    params: Promise.resolve({ id: targetId }),
+  });
 }
 
 function callPermission(targetId: string, body: unknown, key: string, requestId: string) {
-  const req = request(`${targetId}/permissions`, body, key, requestId);
-  return handle(() => setUserPermission(req, targetId))(req);
+  return userPermissionsWriteRoute(commandRequest(`${targetId}/permissions`, body, key, requestId), {
+    params: Promise.resolve({ id: targetId }),
+  });
 }
 
 async function installFaultInjectionTriggers() {

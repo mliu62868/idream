@@ -73,6 +73,67 @@ function buildUrl(path: string, query?: ApiOptions["query"]) {
   return url;
 }
 
+export type AdminV2RouteHandler<Params extends Record<string, string> = Record<string, string>> = (
+  request: Request,
+  context: { params: Promise<Params> },
+) => Promise<Response> | Response;
+
+/**
+ * SPEC: Admin v2 的集成客户端 —— 直接调 Route Handler，回同一个 `ApiResult`，
+ * 所以 `expectOk` / `expectError` 一字不用改。
+ * INTENT: v2 没有 dispatcher，路由就是文件本身，所以 handler 由调用方传进来 ——
+ *         这里不再维护第二份 v2 路由清单去和 manifest 对不上。
+ * INVARIANT: 写方法默认带 Idempotency-Key，和 `api()` 对 `admin/` 的约定一致；
+ *            manifest 声明要幂等键的操作缺了它会 400。
+ */
+export async function adminV2Api<Params extends Record<string, string>>(
+  handler: AdminV2RouteHandler<Params>,
+  method: string,
+  path: `/api/v2/admin/${string}`,
+  options: {
+    userId?: string;
+    role?: string;
+    body?: unknown;
+    params?: Params;
+    query?: Record<string, string | number | boolean | undefined>;
+    headers?: Record<string, string>;
+  } = {},
+): Promise<ApiResult> {
+  const url = new URL(`http://localhost${path}`);
+  for (const [key, value] of Object.entries(options.query ?? {})) {
+    if (value !== undefined) url.searchParams.set(key, String(value));
+  }
+  const headers: Record<string, string> = { ...options.headers };
+  if (options.body !== undefined) headers["content-type"] = "application/json";
+  if (options.userId) headers["x-idream-user-id"] = options.userId;
+  if (options.role) headers["x-idream-role"] = options.role;
+  if (
+    ["POST", "PATCH", "PUT", "DELETE"].includes(method) &&
+    !Object.keys(headers).some((name) => name.toLowerCase() === "idempotency-key")
+  ) {
+    headers["idempotency-key"] = crypto.randomUUID();
+  }
+  const response = await handler(
+    new Request(url, {
+      method,
+      headers,
+      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+    }),
+    { params: Promise.resolve((options.params ?? {}) as Params) },
+  );
+  const text = await response.text();
+  const json = text ? (JSON.parse(text) as any) : null;
+  return {
+    status: response.status,
+    ok: Boolean(json?.ok),
+    data: json?.data,
+    error: json?.error,
+    json,
+    headers: response.headers,
+    setCookies: response.headers.getSetCookie(),
+  };
+}
+
 /** Drive the API exactly as the Next route handler does: dispatchV1(request, segments). */
 export async function api(
   method: string,
