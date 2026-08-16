@@ -181,7 +181,96 @@ describe("content merchandising commands", () => {
       prisma.controlPlaneCommand.count({ where: { actorId, idempotencyKey } }),
     ).resolves.toBe(0);
   });
+
+  it("attaches curated tags to a character, including official ones", async () => {
+    // SPEC: 分类法链路此前缺「挂载」这一环——标签只能随创建写一次，且唯一入口没有前端。
+    // INTENT: 官方角色恰恰是需要打标签的那批（16 个目录角色都是 official），所以这条命令
+    //         刻意不像 visibility/status 那样 rejectOfficialCharacter。
+    const characterId = `${P}tags-official`;
+    await createCharacter({
+      id: characterId,
+      creatorId: actorId,
+      source: "official",
+      name: "Taggable official",
+      visibility: "public",
+      status: "approved",
+    });
+    const slow = await prisma.tag.create({
+      data: { slug: `${P}slow-burn`, label: "Slow Burn" },
+    });
+    const elf = await prisma.tag.create({
+      data: { slug: `${P}elf`, label: "Elf" },
+    });
+
+    const applied = await tagsCommand(characterId, `${P}tags-key-1`, {
+      tagIds: [slow.id, elf.id],
+      reason: "curate discovery taxonomy for the launch catalog",
+      confirmation: `${characterId}:tags`,
+    });
+    expectOk(applied);
+    expect(applied.data.character.tags).toEqual(["Elf", "Slow Burn"]);
+
+    // 整组替换：再发一次只留一个，另一个必须被摘掉。
+    const replaced = await tagsCommand(characterId, `${P}tags-key-2`, {
+      tagIds: [elf.id],
+      reason: "drop the mismatched pacing tag",
+      confirmation: `${characterId}:tags`,
+    });
+    expectOk(replaced);
+    const links = await prisma.characterTag.findMany({
+      where: { characterId },
+      include: { tag: true },
+    });
+    expect(links.map((link) => link.tag.label)).toEqual(["Elf"]);
+  });
+
+  it("refuses unknown tags and mismatched confirmation", async () => {
+    const characterId = `${P}tags-guard`;
+    await createCharacter({
+      id: characterId,
+      creatorId: actorId,
+      source: "user",
+      name: "Tag guards",
+      visibility: "public",
+      status: "approved",
+    });
+
+    // 不隐式建标签：造词是 Taxonomy 的治理动作，从角色页 upsert 出新标签是分类法失控的起点。
+    expectError(
+      await tagsCommand(characterId, `${P}tags-key-3`, {
+        tagIds: [`${P}does-not-exist`],
+        reason: "attempt to invent taxonomy from the character page",
+        confirmation: `${characterId}:tags`,
+      }),
+      400,
+    );
+    expect(
+      await prisma.characterTag.count({ where: { characterId } }),
+    ).toBe(0);
+
+    expectError(
+      await tagsCommand(characterId, `${P}tags-key-4`, {
+        tagIds: [],
+        reason: "confirmation does not match the tag target",
+        confirmation: `${characterId}:visibility:private`,
+      }),
+      400,
+    );
+  });
 });
+
+function tagsCommand(
+  characterId: string,
+  idempotencyKey: string,
+  body: Record<string, unknown>,
+) {
+  return api("PUT", `admin/content/characters/${characterId}/tags`, {
+    userId: actorId,
+    role: "admin",
+    headers: { "idempotency-key": idempotencyKey },
+    body,
+  });
+}
 
 function command(
   characterId: string,

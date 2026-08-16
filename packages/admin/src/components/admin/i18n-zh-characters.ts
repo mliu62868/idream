@@ -13,6 +13,8 @@ export const adminZhCharacters: Record<string, string> = {
   "First message (optional)": "开场白（选填）",
   "Give the character a name, a relationship, a promise, and either a personality or a tone.":
     "给角色取个名字，定下关系定位和角色承诺；性格与语气至少填一个。",
+  "Loading tags": "正在加载标签",
+  "No tags exist yet. Create them in Taxonomy first.": "还没有任何标签，请先到「分类法」里创建。",
   "Optional fields can be written now or later in Soul. Publishing checks the opening line and Soul quality separately.": "选填项现在写或之后在「灵魂」里写都行。开场白与灵魂质量由发布环节单独把关。",
   "Persona & conversation": "人格与对话",
   "Personality (optional)": "性格（选填）",
@@ -20,9 +22,15 @@ export const adminZhCharacters: Record<string, string> = {
   "Prepare the Project, immutable Revision, and inactive Serving workspace. This does not publish a Release or make the Character public.":
     "准备项目、不可变修订和未激活的 Serving 工作区。此操作不会发布 Release，也不会让角色公开可见。",
   "Promise": "角色承诺",
+  "Read only · content.tag.write is not granted": "只读 · 未授予 content.tag.write",
   "Review & create": "确认并创建",
   "Review the character before creating it.": "创建前先过一遍这个角色。",
+  "Save character tags": "保存角色标签",
+  "Save tags": "保存标签",
+  "Sensitive": "敏感",
   "Stable traits": "稳定特征",
+  "Tags drive discovery filters on the public catalog. This replaces the character's whole tag set.":
+    "标签驱动公开目录的发现筛选。本次保存会整组替换该角色的标签。",
   "This creates the Character Project, immutable Revision, and inactive Serving workspace.":
     "此操作会创建角色项目、不可变修订和未激活的 Serving 工作区。",
   "It does not create or publish a Release and does not make the Character visible in Explore or Community.":

@@ -7,6 +7,7 @@ import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
 import { RefreshCcw, Save, ShieldAlert } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CollaborationPanel } from "@/features/collaboration/CollaborationPanel";
+import { CharacterTagsPanel } from "./CharacterTagsPanel";
 import {
   WorkspaceButton,
   fieldClass,
@@ -335,6 +336,10 @@ export function ProjectEditor({
                 {t("No recent assets")}
               </p>
             )}
+            <CharacterTagsPanel
+              canWrite={permissions.writeProject}
+              characterId={data.character.id}
+            />
           </div>
         </div>
       </section>

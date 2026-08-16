@@ -79,7 +79,17 @@ describe("Character workspace details", () => {
     root = createRoot(container);
     window.history.replaceState(null, "", "/admin/characters/character-detail");
     adminV2Request.mockReset();
-    adminV2Request.mockResolvedValue(workspace);
+    // INTENT: 这份 mock 此前对所有路径一律返回 workspace，于是协作活动流拿到的 response.items
+    //         是 undefined，只是因为它的 promise 落在断言窗口之后才没炸。详情页每多一个自取数
+    //         面板都会改变 flush 顺序、把它掀出来。按路径给形状，别再让顺序决定成败。
+    adminV2Request.mockImplementation(async (path: string) => {
+      if (path.includes("/collaboration/")) {
+        return { items: [], actors: [], watcherIds: [], pageInfo: { endCursor: null, hasNextPage: false } };
+      }
+      if (path.includes("/admin/content/tags")) return { items: [] };
+      if (/\/admin\/content\/characters\/[^/]+$/.test(path)) return { character: { tags: [] } };
+      return workspace;
+    });
   });
 
   afterEach(() => {
