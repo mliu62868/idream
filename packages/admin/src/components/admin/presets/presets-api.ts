@@ -15,7 +15,7 @@ export type PresetRow = {
 
 export const PRESET_TYPES = ["background", "pose", "outfit", "mode"] as const;
 export const PRESET_VISIBILITY = ["public", "private", "unlisted"] as const;
-export const PRESETS_LIST = "/api/v1/admin/generation/presets";
+export const PRESETS_LIST = "/api/v2/admin/generation/presets";
 
 export type PresetDraft = {
   type: (typeof PRESET_TYPES)[number];

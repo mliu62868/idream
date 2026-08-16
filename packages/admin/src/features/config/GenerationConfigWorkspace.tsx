@@ -71,7 +71,7 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
     const request = requestGates.current.jobs.begin();
     setRecentJobs((current) => ({ ...current, error: null, loading: true }));
     try {
-      const data = await apiGet<ListResponse>("/api/v1/admin/generation/jobs?mode=image&limit=12");
+      const data = await apiGet<ListResponse>("/api/v2/admin/jobs?mode=image&limit=12");
       if (request.isCurrent()) setRecentJobs({ data, error: null, loading: false, refreshedAt: new Date().toISOString() });
     } catch (cause) {
       if (request.isCurrent()) setRecentJobs((current) => ({ ...current, error: errorMessage(cause, "Recent-job authority request failed"), loading: false }));
@@ -142,7 +142,7 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
     setTestBusy(true);
     setNotice(null);
     try {
-      const response = await apiWrite<{ job: RecordRow }>(`/api/v1/admin/generation/model-profiles/${selectedId}/test-job`, "POST", {
+      const response = await apiWrite<{ job: RecordRow }>(`/api/v2/admin/generation/model-profiles/${selectedId}/commands/test-job`, "POST", {
         prompt: testPrompt.trim() || undefined,
         orientation: firstOrientation(selectedProfile),
         outputCount: 1,
@@ -236,11 +236,11 @@ function ProfileDetail({ canWrite, jobs, onConfirm, onTest, profile, review, set
   return <section className="space-y-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
     <div><h2 className="text-lg font-semibold">{text(profile.label) || text(profile.profileKey) || id}</h2><p className="mt-1 text-sm text-[var(--ad-text-muted)]">{display(status)} · v{display(profile.version)} · {display(profile.runner)} · {display(profile.pipelineModel)}</p></div>
     {canWrite ? <div className="flex flex-wrap gap-2">
-      {status === "draft" ? <Action icon={<Activity className="h-4 w-4" />} label="Configuration check" onClick={() => onConfirm({ title: `Check profile configuration ${id}`, endpoint: `/api/v1/admin/generation/model-profiles/${id}/dry-run`, method: "POST", expected: id, payload: (reason) => ({ reason }) })} /> : null}
+      {status === "draft" ? <Action icon={<Activity className="h-4 w-4" />} label="Configuration check" onClick={() => onConfirm({ title: `Check profile configuration ${id}`, endpoint: `/api/v2/admin/generation/model-profiles/${id}/commands/dry-run`, method: "POST", expected: id, payload: (reason) => ({ reason }) })} /> : null}
       {mode === "image" && status !== "archived" ? <Action disabled={testBusy} icon={testBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />} label="Generate test image" onClick={onTest} /> : null}
-      {status === "draft" ? <Action disabled={!reviewReady} icon={<UploadCloud className="h-4 w-4" />} label="Publish" onClick={() => onConfirm({ title: `Publish profile ${id}`, endpoint: `/api/v1/admin/generation/model-profiles/${id}/publish`, method: "POST", expected: id, payload: (reason) => ({ reason, ...(mode === "image" ? { dryRunSummary: { reviewSource: "admin_console_manual_consistency_review", reviewStatus: "manual_passed", consistencySampleCount: sampleCount, consistencyPassCount: passCount, consistencyRate: sampleCount && passCount !== null ? passCount / sampleCount : 0, reviewUrl: review.reviewUrl.trim() || undefined } } : {}) }) })} /> : null}
-      {status === "active" ? <Action icon={<RotateCcw className="h-4 w-4" />} label="Rollback" onClick={() => onConfirm({ title: `Rollback profile ${id}`, endpoint: `/api/v1/admin/generation/model-profiles/${id}/rollback`, method: "POST", expected: id, payload: (reason) => ({ reason }) })} /> : null}
-      {status === "active" && Boolean(profile.enabled) ? <Action icon={<X className="h-4 w-4" />} label="Disable" onClick={() => onConfirm({ title: `Disable profile ${id}`, endpoint: `/api/v1/admin/generation/model-profiles/${id}`, method: "PATCH", expected: id, payload: (reason) => ({ reason, enabled: false }) })} /> : null}
+      {status === "draft" ? <Action disabled={!reviewReady} icon={<UploadCloud className="h-4 w-4" />} label="Publish" onClick={() => onConfirm({ title: `Publish profile ${id}`, endpoint: `/api/v2/admin/generation/model-profiles/${id}/commands/publish`, method: "POST", expected: id, payload: (reason) => ({ reason, ...(mode === "image" ? { dryRunSummary: { reviewSource: "admin_console_manual_consistency_review", reviewStatus: "manual_passed", consistencySampleCount: sampleCount, consistencyPassCount: passCount, consistencyRate: sampleCount && passCount !== null ? passCount / sampleCount : 0, reviewUrl: review.reviewUrl.trim() || undefined } } : {}) }) })} /> : null}
+      {status === "active" ? <Action icon={<RotateCcw className="h-4 w-4" />} label="Rollback" onClick={() => onConfirm({ title: `Rollback profile ${id}`, endpoint: `/api/v2/admin/generation/model-profiles/${id}/commands/rollback`, method: "POST", expected: id, payload: (reason) => ({ reason }) })} /> : null}
+      {status === "active" && Boolean(profile.enabled) ? <Action icon={<X className="h-4 w-4" />} label="Disable" onClick={() => onConfirm({ title: `Disable profile ${id}`, endpoint: `/api/v2/admin/generation/model-profiles/${id}`, method: "PATCH", expected: id, payload: (reason) => ({ reason, enabled: false }) })} /> : null}
     </div> : null}
     {mode === "image" && status !== "archived" ? <div className="grid gap-3 rounded-md border border-[var(--ad-border)] p-3 md:grid-cols-2"><Field label="Test image prompt" onChange={setTestPrompt} value={testPrompt} /><p className="self-end text-xs text-[var(--ad-text-muted)]">{relatedJobs.length}  {t("recent profile test job")}{relatedJobs.length === 1 ? "" : "s"}</p></div> : null}
     {mode === "image" && status === "draft" ? <div className="grid gap-3 rounded-md border border-[var(--ad-border)] p-3 md:grid-cols-3"><Field label="Consistency samples (≥20)" onChange={(sampleCount) => setReview({ ...review, sampleCount })} value={review.sampleCount} /><Field label="Consistency passes (≥80%)" onChange={(passCount) => setReview({ ...review, passCount })} value={review.passCount} /><Field label="Review evidence URL" onChange={(reviewUrl) => setReview({ ...review, reviewUrl })} value={review.reviewUrl} /></div> : null}

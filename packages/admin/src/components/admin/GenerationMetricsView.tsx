@@ -115,7 +115,7 @@ export function GenerationMetricsView() {
     setLoadingByWindow((current) => ({ ...current, [days]: true }));
     setErrorsByWindow((current) => ({ ...current, [days]: null }));
     try {
-      const data = await apiGet<MetricsResponse>(`/api/v1/admin/generation/metrics?days=${days}`);
+      const data = await apiGet<MetricsResponse>(`/api/v2/admin/generation/metrics?days=${days}`);
       if (data.windowDays !== days) {
         throw new Error(
           `Metrics authority returned ${data.windowDays} days for a ${days}-day request.`,

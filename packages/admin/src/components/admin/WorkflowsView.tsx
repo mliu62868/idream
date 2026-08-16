@@ -46,11 +46,11 @@ export function WorkflowsView() {
   const requestGate = useRef(createLatestRequestGate());
 
   const load = useCallback(async () => {
-    const queryKey = "/api/v1/admin/generation/workflows";
+    const queryKey = "/api/v2/admin/generation/workflows";
     const request = requestGate.current.begin();
     setAuthority((current) => authorityRequestStarted(current, queryKey));
     try {
-      const data = await apiGet<{ items: WorkflowRow[] }>("/api/v1/admin/generation/workflows");
+      const data = await apiGet<{ items: WorkflowRow[] }>("/api/v2/admin/generation/workflows");
       if (!request.isCurrent()) return;
       setAuthority(authorityRequestSucceeded(queryKey, data.items));
     } catch (err) {

@@ -107,7 +107,7 @@ export function RecipesDetailPage({ id }: { id: string }) {
     setSaving(true);
     setError(null);
     try {
-      await apiWrite(`${RECIPES_LIST}/${id}`, "PATCH", recipeDraftPayload(draft));
+      await apiWrite(`${RECIPES_LIST}/${id}`, "PATCH", recipeDraftPayload(draft), { "idempotency-key": crypto.randomUUID() });
       await reload();
       setMode("view");
       setDraft(null);
@@ -125,11 +125,11 @@ export function RecipesDetailPage({ id }: { id: string }) {
         title: t("Publish recipe"),
         submitLabel: t("Publish"),
         onSubmit: async (reason) => {
-          await apiWrite(`${RECIPES_LIST}/${id}/publish`, "POST", {
+          await apiWrite(`${RECIPES_LIST}/${id}/commands/publish`, "POST", {
             reason,
             confirmation: id,
             dryRunSummary: { source: "admin_console" },
-          });
+          }, { "idempotency-key": crypto.randomUUID() });
           await reload();
         },
       };
@@ -139,7 +139,7 @@ export function RecipesDetailPage({ id }: { id: string }) {
       destructive: { expectedName: row.label || id },
       submitLabel: t("Rollback"),
       onSubmit: async (reason) => {
-        await apiWrite(`${RECIPES_LIST}/${id}/rollback`, "POST", { reason, confirmation: id });
+        await apiWrite(`${RECIPES_LIST}/${id}/commands/rollback`, "POST", { reason, confirmation: id }, { "idempotency-key": crypto.randomUUID() });
         await reload();
       },
     };

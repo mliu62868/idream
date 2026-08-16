@@ -34,7 +34,7 @@ export function PresetsNewPage() {
     setError(null);
     try {
       const payload = presetPayload(draft);
-      const created = await apiWrite<{ preset?: { id?: string } }>(PRESETS_LIST, "POST", payload);
+      const created = await apiWrite<{ preset?: { id?: string } }>(PRESETS_LIST, "POST", payload, { "idempotency-key": crypto.randomUUID() });
       const newId = created.preset?.id;
       window.location.href = newId ? `/admin/generation/presets/${newId}` : "/admin/generation/presets";
     } catch (createError) {

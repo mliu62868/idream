@@ -116,7 +116,7 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
       reasonLabel: "Reason",
       submitLabel: "Confirm",
       onSubmit: async (reason) => {
-        const isBatch = input.endpoint.includes("/dead-letter/");
+        const isBatch = input.endpoint.includes("/dead-letter/commands/");
         await apiWrite(input.endpoint, "POST", isBatch
           ? { jobIds: input.ids, reason, confirmation: expected }
           : { ...(reason ? { reason } : {}), confirmation: expected }, {
@@ -167,8 +167,8 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
             </label>
             <span className="text-xs text-[var(--ad-text-muted)]">{selectedIds.length}  {t("selected")}</span>
             <div className="ml-auto flex gap-2">
-              {permissions.requeue ? <ActionButton disabled={selectedIds.length === 0} icon={<RefreshCcw className="h-4 w-4" />} label="Requeue selected" onClick={() => requestAction({ allowed: permissions.requeue, title: `Requeue ${selectedIds.length} jobs`, endpoint: "/api/v1/admin/generation/dead-letter/requeue", ids: selectedIds, reasonRequired: true, methodLabel: `Requeue ${selectedIds.length} jobs` })} /> : null}
-              {permissions.discard ? <ActionButton danger disabled={selectedIds.length === 0} icon={<Trash2 className="h-4 w-4" />} label="Discard selected" onClick={() => requestAction({ allowed: permissions.discard, title: `Discard ${selectedIds.length} jobs`, endpoint: "/api/v1/admin/generation/dead-letter/discard", ids: selectedIds, reasonRequired: true, methodLabel: `Discard ${selectedIds.length} jobs` })} /> : null}
+              {permissions.requeue ? <ActionButton disabled={selectedIds.length === 0} icon={<RefreshCcw className="h-4 w-4" />} label="Requeue selected" onClick={() => requestAction({ allowed: permissions.requeue, title: `Requeue ${selectedIds.length} jobs`, endpoint: "/api/v2/admin/generation/dead-letter/commands/requeue", ids: selectedIds, reasonRequired: true, methodLabel: `Requeue ${selectedIds.length} jobs` })} /> : null}
+              {permissions.discard ? <ActionButton danger disabled={selectedIds.length === 0} icon={<Trash2 className="h-4 w-4" />} label="Discard selected" onClick={() => requestAction({ allowed: permissions.discard, title: `Discard ${selectedIds.length} jobs`, endpoint: "/api/v2/admin/generation/dead-letter/commands/discard", ids: selectedIds, reasonRequired: true, methodLabel: `Discard ${selectedIds.length} jobs` })} /> : null}
             </div>
           </div>
           {rows.length === 0 ? <EmptyState action={filtered ? <button className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" onClick={() => navigate(defaultDeadLetterQuery)} type="button">{t("Clear filters")}</button> : undefined} hint={filtered ? "The complete dead-letter authority query returned no matches." : "No failed or blocked generation requests require triage."} title={canonicalListEmptyTitle("dead_letter", filtered)} /> : (
@@ -190,8 +190,8 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
                     <td className="px-3 py-3">{display(row.costDreamcoins)}</td>
                     <td className="px-3 py-3">{date(row.updatedAt)}</td>
                     <td className="px-3 py-3"><div className="flex gap-1">
-                      {permissions.requeue && status === "failed" ? <ActionButton icon={<RefreshCcw className="h-4 w-4" />} label="Requeue" onClick={() => requestAction({ allowed: permissions.requeue, title: `Requeue ${id}`, endpoint: `/api/v1/admin/generation/jobs/${id}/requeue`, ids: [id], reasonRequired: false, methodLabel: `Requeue ${id}` })} /> : null}
-                      {permissions.discard && (status === "failed" || status === "blocked") ? <ActionButton danger icon={<Trash2 className="h-4 w-4" />} label="Discard" onClick={() => requestAction({ allowed: permissions.discard, title: `Discard ${id}`, endpoint: `/api/v1/admin/generation/jobs/${id}/discard`, ids: [id], reasonRequired: true, methodLabel: `Discard ${id}` })} /> : null}
+                      {permissions.requeue && status === "failed" ? <ActionButton icon={<RefreshCcw className="h-4 w-4" />} label="Requeue" onClick={() => requestAction({ allowed: permissions.requeue, title: `Requeue ${id}`, endpoint: `/api/v2/admin/generation/dead-letter/${id}/commands/requeue`, ids: [id], reasonRequired: false, methodLabel: `Requeue ${id}` })} /> : null}
+                      {permissions.discard && (status === "failed" || status === "blocked") ? <ActionButton danger icon={<Trash2 className="h-4 w-4" />} label="Discard" onClick={() => requestAction({ allowed: permissions.discard, title: `Discard ${id}`, endpoint: `/api/v2/admin/generation/dead-letter/${id}/commands/discard`, ids: [id], reasonRequired: true, methodLabel: `Discard ${id}` })} /> : null}
                       {!permissions.requeue && !permissions.discard ? t("Read only") : null}
                     </div></td>
                   </tr>;

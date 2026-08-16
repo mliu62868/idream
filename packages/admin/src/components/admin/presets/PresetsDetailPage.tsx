@@ -109,7 +109,7 @@ export function PresetsDetailPage({ id }: { id: string }) {
     setError(null);
     try {
       const payload = presetPayload(draft);
-      await apiWrite(`${PRESETS_LIST}/${id}`, "PATCH", payload);
+      await apiWrite(`${PRESETS_LIST}/${id}`, "PATCH", payload, { "idempotency-key": crypto.randomUUID() });
       await reload();
       setMode("view");
       setDraft(null);
@@ -125,7 +125,7 @@ export function PresetsDetailPage({ id }: { id: string }) {
     setRestoring(true);
     setError(null);
     try {
-      await apiWrite(`${PRESETS_LIST}/${id}`, "PATCH", { status: "active" });
+      await apiWrite(`${PRESETS_LIST}/${id}`, "PATCH", { status: "active" }, { "idempotency-key": crypto.randomUUID() });
       await reload();
     } catch (restoreError) {
       setError(restoreError instanceof Error ? restoreError.message : t("Request failed"));
@@ -142,7 +142,7 @@ export function PresetsDetailPage({ id }: { id: string }) {
       requireReason: false,
       submitLabel: t("Archive preset"),
       onSubmit: async () => {
-        await apiWrite(`${PRESETS_LIST}/${id}`, "PATCH", { status: "archived" });
+        await apiWrite(`${PRESETS_LIST}/${id}`, "PATCH", { status: "archived" }, { "idempotency-key": crypto.randomUUID() });
         await reload();
       },
     };
