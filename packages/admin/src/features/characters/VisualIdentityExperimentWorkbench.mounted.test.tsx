@@ -12,6 +12,7 @@ vi.mock("@/lib/admin-v2-api", () => ({
   adminV2Request,
 }));
 
+import { AdminI18nProvider } from "@/components/admin/i18n";
 import { VisualIdentityExperimentWorkbench } from "./VisualIdentityExperimentWorkbench";
 import {
   characterWorkspaceDetail,
@@ -34,18 +35,18 @@ async function openFirstHistoryItem(container: HTMLElement) {
   await waitUntil(
     () =>
       container.querySelector<HTMLButtonElement>(
-        'button[aria-label^="查看第"]',
+        'button[aria-label^="View candidate"]',
       ) !== null ||
       [...container.querySelectorAll<HTMLButtonElement>("button")].some(
-        (button) => button.textContent?.includes("未产出图片"),
+        (button) => button.textContent?.includes("no images produced"),
       ),
   );
   const button =
     container.querySelector<HTMLButtonElement>(
-      'button[aria-label^="查看第"]',
+      'button[aria-label^="View candidate"]',
     ) ??
     [...container.querySelectorAll<HTMLButtonElement>("button")].find(
-      (candidate) => candidate.textContent?.includes("未产出图片"),
+      (candidate) => candidate.textContent?.includes("no images produced"),
     );
   await act(async () => button?.click());
 }
@@ -265,7 +266,7 @@ describe("Visual Identity experiment activation", () => {
     await waitUntil(
       () =>
         container.querySelector<HTMLSelectElement>(
-          'select[aria-label="生成方式"]',
+          'select[aria-label="Generation mode"]',
         ) !== null,
     );
 
@@ -275,12 +276,12 @@ describe("Visual Identity experiment activation", () => {
     expect(labels.every(Boolean)).toBe(true);
     expect(labels).toEqual(
       expect.arrayContaining([
-        "文生图模型",
-        "配置档位",
-        "种子策略",
-        "生成方式",
-        "高级构图比例",
-        "高级身份约束",
+        "Text to image model",
+        "Profile tier",
+        "Seed strategy",
+        "Generation mode",
+        "Advanced aspect ratio",
+        "Advanced identity constraint",
       ]),
     );
   });
@@ -301,34 +302,34 @@ describe("Visual Identity experiment activation", () => {
     await waitUntil(
       () =>
         container.querySelector<HTMLInputElement>(
-          'input[aria-label="种子"]',
+          'input[aria-label="Seed"]',
         ) !== null,
     );
 
     const prompt = container.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="描述这次想要的画面"]',
+      'textarea[aria-label="Describe the look you want"]',
     );
     const negativePrompt = container.querySelector<HTMLInputElement>(
-      'input[aria-label="负向提示词"]',
+      'input[aria-label="Negative prompt"]',
     );
     const seed = container.querySelector<HTMLInputElement>(
-      'input[aria-label="种子"]',
+      'input[aria-label="Seed"]',
     );
     const generate = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="生成 1 张候选图"]',
+      'button[aria-label="Generate 1 candidate image"]',
     );
     const advanced = [...container.querySelectorAll("summary")].find(
-      (summary) => summary.textContent === "高级设置",
+      (summary) => summary.textContent === "Advanced settings",
     )?.parentElement as HTMLDetailsElement | undefined;
 
-    expect(container.textContent).toContain("当前形象");
+    expect(container.textContent).toContain("Current look");
     expect(prompt?.value).toBe("");
     expect(negativePrompt?.value).toContain("different person");
     expect(seed?.value).not.toBe("");
-    expect(generate?.textContent).toBe("生成");
+    expect(generate?.textContent).toBe("Generate");
     expect(generate?.disabled).toBe(true);
-    expect(container.textContent).toContain("历史创作");
-    expect(container.textContent).toContain("打开任意图片");
+    expect(container.textContent).toContain("Creation history");
+    expect(container.textContent).toContain("Open any image");
     expect(advanced?.open).toBe(false);
 
     await act(async () => {
@@ -398,23 +399,23 @@ describe("Visual Identity experiment activation", () => {
     await waitUntil(
       () =>
         container.querySelectorAll<HTMLButtonElement>(
-          'button[aria-label^="查看第"]',
+          'button[aria-label^="View candidate"]',
         ).length === 2,
     );
 
     const older = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="查看第 1 次创作的候选图 1"]',
+      'button[aria-label="View candidate 1 from run 1"]',
     );
     await act(async () => older?.click());
 
     expect(
       container
-        .querySelector<HTMLImageElement>('img[alt="所选历史视觉身份候选"]')
+        .querySelector<HTMLImageElement>('img[alt="Selected visual identity candidate"]')
         ?.getAttribute("src"),
     ).toContain("identity-candidate-older.webp");
     expect(container.textContent).toContain("Older identity portrait");
     expect(container.textContent).toContain("99");
-    expect(container.textContent).toContain("从这张继续调整");
+    expect(container.textContent).toContain("Keep adjusting from this one");
   });
 
   it("summarizes the default model in a collapsed route disclosure and keeps model selection working", async () => {
@@ -456,21 +457,21 @@ describe("Visual Identity experiment activation", () => {
     await waitUntil(
       () =>
         container.querySelector<HTMLSelectElement>(
-          'select[aria-label="文生图模型"]',
+          'select[aria-label="Text to image model"]',
         ) !== null,
     );
 
     const model = container.querySelector<HTMLSelectElement>(
-      'select[aria-label="文生图模型"]',
+      'select[aria-label="Text to image model"]',
     );
     const profile = container.querySelector<HTMLSelectElement>(
-      'select[aria-label="配置档位"]',
+      'select[aria-label="Profile tier"]',
     );
     const routeSettings = model?.closest("details");
     expect(routeSettings).not.toBeNull();
     expect(routeSettings?.hasAttribute("open")).toBe(false);
     expect(model?.value).toBe("redcraft-krea2-redmix3-fp8");
-    expect(container.textContent).toContain("（默认）");
+    expect(container.textContent).toContain("(default)");
     expect(container.textContent).toContain("RedCraft Krea2");
     expect(
       model?.querySelector('option[value="redcraft-krea2-redmix3-fp8"]'),
@@ -521,7 +522,7 @@ describe("Visual Identity experiment activation", () => {
       ),
     );
     const mode = container.querySelector<HTMLSelectElement>(
-      'select[aria-label="生成方式"]',
+      'select[aria-label="Generation mode"]',
     );
     expect(mode).toBeDefined();
     await act(async () => {
@@ -535,12 +536,12 @@ describe("Visual Identity experiment activation", () => {
     );
 
     const sourceFieldset = [...container.querySelectorAll("fieldset")].find(
-      (fieldset) => fieldset.textContent?.includes("参考图"),
+      (fieldset) => fieldset.textContent?.includes("Reference images"),
     );
     expect(sourceFieldset).toBeDefined();
     expect(sourceFieldset?.querySelector("select")).toBeNull();
-    expect(sourceFieldset?.textContent).toContain("主角色肖像");
-    expect(sourceFieldset?.textContent).toContain("实验候选 1");
+    expect(sourceFieldset?.textContent).toContain("Primary portrait");
+    expect(sourceFieldset?.textContent).toContain("Experiment candidate 1");
 
     const extraReference = sourceFieldset?.querySelector<HTMLInputElement>(
       'input[value="identity-reference-extra"]',
@@ -556,14 +557,14 @@ describe("Visual Identity experiment activation", () => {
     ).toBe(false);
 
     const prompt = container.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="描述这次想要的画面"]',
+      'textarea[aria-label="Describe the look you want"]',
     );
     await act(async () => {
       if (prompt) setTextAreaValue(prompt, "A calm editorial portrait");
     });
 
     const generate = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="生成 1 张候选图"]',
+      'button[aria-label="Generate 1 candidate image"]',
     );
     expect(generate).toBeDefined();
     await act(async () => generate?.click());
@@ -639,7 +640,7 @@ describe("Visual Identity experiment activation", () => {
       ),
     );
     const mode = container.querySelector<HTMLSelectElement>(
-      'select[aria-label="生成方式"]',
+      'select[aria-label="Generation mode"]',
     );
     expect(mode).toBeDefined();
     await act(async () => {
@@ -684,14 +685,14 @@ describe("Visual Identity experiment activation", () => {
     expect(container.textContent).toContain("mira-local.png");
 
     const prompt = container.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="描述这次想要的画面"]',
+      'textarea[aria-label="Describe the look you want"]',
     );
     await act(async () => {
       if (prompt) setTextAreaValue(prompt, "A calm editorial portrait");
     });
 
     const generate = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="生成 1 张候选图"]',
+      'button[aria-label="Generate 1 candidate image"]',
     );
     await act(async () => generate?.click());
     await waitUntil(() =>
@@ -730,11 +731,11 @@ describe("Visual Identity experiment activation", () => {
     );
     await openFirstHistoryItem(container);
     await waitUntil(
-      () => container.textContent?.includes("设为当前形象") === true,
+      () => container.textContent?.includes("Set as current look") === true,
     );
     const open = [
       ...container.querySelectorAll<HTMLButtonElement>("button"),
-    ].find((button) => button.textContent === "设为当前形象");
+    ].find((button) => button.textContent === "Set as current look");
     await act(async () => open?.click());
 
     const activationPanel = container.querySelector<HTMLDivElement>(
@@ -743,20 +744,20 @@ describe("Visual Identity experiment activation", () => {
     expect(activationPanel).toBeDefined();
     const labels = [...activationPanel!.querySelectorAll("label")];
     const reason = labels
-      .find((label) => label.textContent?.includes("变更理由"))
+      .find((label) => label.textContent?.includes("Reason for change"))
       ?.querySelector<HTMLInputElement>("input");
     const faceTraits = labels
-      .find((label) => label.textContent?.includes("脸部特征"))
+      .find((label) => label.textContent?.includes("Face traits"))
       ?.querySelector<HTMLTextAreaElement>("textarea");
     const hairTraits = labels
-      .find((label) => label.textContent?.includes("头发特征"))
+      .find((label) => label.textContent?.includes("Hair traits"))
       ?.querySelector<HTMLTextAreaElement>("textarea");
     const bodyTraits = labels
-      .find((label) => label.textContent?.includes("身形特征"))
+      .find((label) => label.textContent?.includes("Body traits"))
       ?.querySelector<HTMLTextAreaElement>("textarea");
     const confirmed = labels
       .find((label) =>
-        label.textContent?.includes("我确认要创建新的视觉身份版本"),
+        label.textContent?.includes("I confirm creating a new visual identity version"),
       )
       ?.querySelector<HTMLInputElement>("input");
     expect(reason).toBeDefined();
@@ -777,7 +778,7 @@ describe("Visual Identity experiment activation", () => {
     });
     const confirm = [
       ...activationPanel!.querySelectorAll<HTMLButtonElement>("button"),
-    ].find((button) => button.textContent?.includes("确认设为当前形象"));
+    ].find((button) => button.textContent?.includes("Confirm current look"));
     expect(confirm).toBeDefined();
     expect(confirm?.disabled).toBe(false);
     await act(async () => confirm?.click());
@@ -846,19 +847,19 @@ describe("Visual Identity experiment activation", () => {
     );
     await openFirstHistoryItem(container);
     await waitUntil(
-      () => container.textContent?.includes("采用这张图") === true,
+      () => container.textContent?.includes("Adopt this image") === true,
     );
-    expect(container.textContent).toContain("实际种子");
+    expect(container.textContent).toContain("Actual seed");
     expect(container.textContent).toContain(
-      "我已确认人物、画面和图片质量，可将它作为视觉身份",
+      "I have checked the subject, framing, and image quality, and this image can serve as the visual identity",
     );
 
     const adopt = [
       ...container.querySelectorAll<HTMLButtonElement>("button"),
-    ].find((button) => button.textContent === "采用这张图");
+    ].find((button) => button.textContent === "Adopt this image");
     const qualityConfirmation = [...container.querySelectorAll("label")]
       .find((label) =>
-        label.textContent?.includes("我已确认人物、画面和图片质量"),
+        label.textContent?.includes("I have checked the subject, framing"),
       )
       ?.querySelector<HTMLInputElement>("input");
     expect(qualityConfirmation).toBeDefined();
@@ -873,7 +874,7 @@ describe("Visual Identity experiment activation", () => {
       ),
     );
     await waitUntil(
-      () => container.textContent?.includes("设为当前形象") === true,
+      () => container.textContent?.includes("Set as current look") === true,
     );
     expect(adminV2Request).toHaveBeenCalledWith(
       `/api/v2/admin/creative/runs/${run.id}/items/identity-item-1/decisions`,
@@ -935,16 +936,16 @@ describe("Visual Identity experiment activation", () => {
     await openFirstHistoryItem(container);
     await waitUntil(
       () =>
-        container.textContent?.includes("缺少可采用的构图检查记录") === true,
+        container.textContent?.includes("has no usable composition check on record") === true,
     );
 
     const adopt = [
       ...container.querySelectorAll<HTMLButtonElement>("button"),
-    ].find((button) => button.textContent === "采用这张图");
+    ].find((button) => button.textContent === "Adopt this image");
     expect(adopt).toBeUndefined();
     expect(
       [...container.querySelectorAll("label")].some((label) =>
-        label.textContent?.includes("我已确认人物、画面和图片质量"),
+        label.textContent?.includes("I have checked the subject, framing"),
       ),
     ).toBe(false);
   });
@@ -988,12 +989,12 @@ describe("Visual Identity experiment activation", () => {
     await openFirstHistoryItem(container);
     await waitUntil(
       () =>
-        container.textContent?.includes("缺少可采用的构图检查记录") === true,
+        container.textContent?.includes("has no usable composition check on record") === true,
     );
 
     const activate = [
       ...container.querySelectorAll<HTMLButtonElement>("button"),
-    ].find((button) => button.textContent === "设为当前形象");
+    ].find((button) => button.textContent === "Set as current look");
     expect(activate).toBeUndefined();
   });
 
@@ -1048,5 +1049,54 @@ describe("Visual Identity experiment activation", () => {
         ) === true,
     );
     expect(container.textContent).toContain("asset_quality_failed");
+  });
+
+  // SPEC: 这个工作台整页曾是硬编码中文，英文环境下打开「视觉」tab 第一屏全是中文。
+  // 锁住两件事：英文环境不再漏中文，中文环境每个键都真的查得到译文（漏键会回落成英文）。
+  it("renders locale-appropriate copy in both English and Chinese", async () => {
+    await act(async () =>
+      root.render(
+        <VisualIdentityExperimentWorkbench
+          canActivate
+          canCreate
+          canReview
+          canUploadSource
+          data={data}
+          onActivateCandidate={vi.fn(async () => undefined)}
+        />,
+      ),
+    );
+    await waitUntil(
+      () => container.textContent?.includes("Creation history") === true,
+    );
+    expect(container.textContent).not.toMatch(/[㐀-鿿]/u);
+    expect(
+      container.querySelector('textarea[aria-label="Describe the look you want"]'),
+    ).not.toBeNull();
+
+    await act(async () =>
+      root.render(
+        <AdminI18nProvider locale="zh">
+          <VisualIdentityExperimentWorkbench
+            canActivate
+            canCreate
+            canReview
+            canUploadSource
+            data={data}
+            onActivateCandidate={vi.fn(async () => undefined)}
+          />
+        </AdminI18nProvider>,
+      ),
+    );
+    await waitUntil(() => container.textContent?.includes("历史创作") === true);
+    expect(container.textContent).toContain("当前形象");
+    expect(container.textContent).toContain("想让 Mira 变成什么样？");
+    expect(container.textContent).toContain("高级设置");
+    expect(
+      container.querySelector('textarea[aria-label="描述这次想要的画面"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('button[aria-label="生成 1 张候选图"]'),
+    ).not.toBeNull();
   });
 });

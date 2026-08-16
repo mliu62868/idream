@@ -28,6 +28,7 @@ import {
   latestQaRunForCurrentWorkspaceAuthority,
   releasableQaRunForCurrentWorkspaceAuthority,
 } from "./character-qa-authority";
+import { cn } from "@/lib/utils";
 import { characterReleaseOrdinals } from "./character-workspace-format";
 import type {
   CharacterWorkspacePermissions,
@@ -137,15 +138,47 @@ function ReleaseSummary({
   );
 }
 
+// SPEC: 只要有任何一条要过确认闸的命令能点，确认闸就必须在页面上。
+// INTENT: 回滚下拉挂在恒渲染的 <details> 里，但确认勾选框藏在这个判定后面。角色
+//         retired/inactive 且无 candidate 时，回滚按钮可点 → 点了报「请先勾选确认」→
+//         页面上根本没有可勾的东西。hasRollbackSource 就是补上的那一条。
 export function characterReleaseConfirmationVisible(input: {
   readonly hasCandidate: boolean;
   readonly hasReleasableQaRun: boolean;
+  readonly hasRollbackSource: boolean;
   readonly servingState: string | null;
 }) {
   return input.hasCandidate ||
     input.hasReleasableQaRun ||
+    input.hasRollbackSource ||
     input.servingState === "live" ||
     input.servingState === "paused";
+}
+
+// SPEC: 发布是固定四步 —— 提案 → 审核 → 校验 → 发布。
+// INTENT: 四步的按钮按 candidate 状态条件渲染，同一时刻只出现一个，而每一步成功后确认框
+//         又会被清空重勾。运营看到的是"又冒出一个按钮"，不知道自己在第几步、还剩几步。
+export const CHARACTER_RELEASE_FLOW_STEPS = [
+  "Propose",
+  "Review",
+  "Validate",
+  "Publish",
+] as const;
+
+export function characterReleaseFlowStep(input: {
+  readonly hasCandidate: boolean;
+  readonly hasReleasableQaRun: boolean;
+  readonly candidateStatus: string | null;
+  readonly candidateReadiness: string | null;
+}): { readonly step: number; readonly label: string } | null {
+  if (!input.hasCandidate) {
+    return input.hasReleasableQaRun ? { step: 1, label: "Propose" } : null;
+  }
+  if (input.candidateStatus === "in_review") return { step: 2, label: "Review" };
+  if (input.candidateStatus !== "approved") return null;
+  return input.candidateReadiness === "ready"
+    ? { step: 4, label: "Publish" }
+    : { step: 3, label: "Validate" };
 }
 
 export function ReleasePanel({
@@ -209,12 +242,12 @@ export function ReleasePanel({
     if (writesLocked) return;
     const expectedConfirmation = `${data.character.id}:${releaseId}:${kind}`;
     if (!releaseConfirmed) {
-      setError("Tick the release confirmation before running this action.");
+      setError(t("Tick the release confirmation before running this action."));
       return;
     }
     const scheduledDate = kind === "schedule" ? new Date(scheduledAt) : null;
     if (scheduledDate && Number.isNaN(scheduledDate.getTime())) {
-      setError("Choose a valid schedule date and time.");
+      setError(t("Choose a valid schedule date and time."));
       return;
     }
     setBusy(kind);
@@ -251,7 +284,9 @@ export function ReleasePanel({
     } catch (cause) {
       journal.abortSubmission();
       setError(
-        cause instanceof Error ? cause.message : `Could not ${kind} release`,
+        cause instanceof Error
+          ? cause.message
+          : t("Release {kind} failed", { kind: t(kind) }),
       );
     } finally {
       setBusy(null);
@@ -280,9 +315,16 @@ export function ReleasePanel({
   const releasePreparationNeedsAssets =
     !data.project.draftAssetRouteAuthority.qaReady ||
     !data.preview.draft.assetPackReady;
+  const flowStep = characterReleaseFlowStep({
+    candidateReadiness: candidate?.release.readiness ?? null,
+    candidateStatus: candidate?.release.status ?? null,
+    hasCandidate: Boolean(candidate),
+    hasReleasableQaRun: Boolean(releasableQaRun),
+  });
   const confirmationVisible = characterReleaseConfirmationVisible({
     hasCandidate: Boolean(candidate),
     hasReleasableQaRun: Boolean(releasableQaRun),
+    hasRollbackSource: rollbackSources.length > 0,
     servingState: data.serving?.state ?? null,
   });
   const propose = async () => {
@@ -317,7 +359,7 @@ export function ReleasePanel({
       });
     } catch (cause) {
       setError(
-        cause instanceof Error ? cause.message : "Could not propose Release",
+        cause instanceof Error ? cause.message : t("Could not propose Release"),
       );
     } finally {
       setBusy(null);
@@ -359,7 +401,7 @@ export function ReleasePanel({
       });
     } catch (cause) {
       setError(
-        cause instanceof Error ? cause.message : "Could not review Release",
+        cause instanceof Error ? cause.message : t("Could not review Release"),
       );
     } finally {
       setBusy(null);
@@ -401,7 +443,7 @@ export function ReleasePanel({
       });
     } catch (cause) {
       setError(
-        cause instanceof Error ? cause.message : "Could not validate Release",
+        cause instanceof Error ? cause.message : t("Could not validate Release"),
       );
     } finally {
       setBusy(null);
@@ -442,7 +484,9 @@ export function ReleasePanel({
     } catch (cause) {
       journal.abortSubmission();
       setError(
-        cause instanceof Error ? cause.message : `Could not ${action} Character`,
+        cause instanceof Error
+          ? cause.message
+          : t("Serving {action} failed", { action: t(action) }),
       );
     } finally {
       setBusy(null);
@@ -519,6 +563,31 @@ export function ReleasePanel({
       </div>
       <aside className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <h3 className="font-semibold">{t("Release action")}</h3>
+        {flowStep ? (
+          <ol
+            aria-label={t("Release steps")}
+            className="mt-3 flex flex-wrap gap-1.5 text-[11px] font-semibold"
+          >
+            {CHARACTER_RELEASE_FLOW_STEPS.map((label, index) => (
+              <li
+                aria-current={
+                  index + 1 === flowStep.step ? "step" : undefined
+                }
+                className={cn(
+                  "rounded border px-2 py-1",
+                  index + 1 === flowStep.step
+                    ? "border-[var(--ad-ink)] bg-[var(--ad-ink)] text-white"
+                    : index + 1 < flowStep.step
+                      ? "border-[var(--ad-green-text)]/40 text-[var(--ad-green-text)]"
+                      : "border-[var(--ad-border)] text-[var(--ad-text-muted)]",
+                )}
+                key={label}
+              >
+                {index + 1}. {t(label)}
+              </li>
+            ))}
+          </ol>
+        ) : null}
         {!candidate && !releasableQaRun ? (
           <div className="mt-4 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]">
             <strong>{t("Release preparation is incomplete")}</strong>
@@ -674,7 +743,11 @@ export function ReleasePanel({
               {candidate?.release.status === "approved" &&
               candidate.release.readiness === "ready" ? (
                 <WorkspaceButton
-                  disabled={!permissions.publishRelease || Boolean(busy)}
+                  disabled={
+                    !permissions.publishRelease ||
+                    releaseConfirmed === false ||
+                    Boolean(busy)
+                  }
                   onClick={() =>
                     void command(
                       "publish",
@@ -707,6 +780,7 @@ export function ReleasePanel({
             <WorkspaceButton
               disabled={
                 !permissions.publishRelease ||
+                releaseConfirmed === false ||
                 !candidate ||
                 candidate.release.status !== "approved" ||
                 candidate.release.readiness !== "ready" ||
@@ -746,7 +820,10 @@ export function ReleasePanel({
           <div className="mt-3 grid gap-2">
             <WorkspaceButton
               disabled={
-                !permissions.publishRelease || !rollbackSource || Boolean(busy)
+                !permissions.publishRelease ||
+                releaseConfirmed === false ||
+                !rollbackSource ||
+                Boolean(busy)
               }
               onClick={() =>
                 rollbackSource &&

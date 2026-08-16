@@ -354,6 +354,43 @@ describe("CharacterVoicePanel Fish Audio controls", () => {
     ).toBe("/voice-active-1.mp3");
   });
 
+  // SPEC: 系统语音默认值是从单个角色页面能改到全站的唯一一处写操作。
+  // INTENT: 原先只有一个 reason 输入框加一个「保存」按钮，界面上没有任何一句说明这是全局的。
+  it("states the platform-wide blast radius before saving system voice defaults", async () => {
+    adminV2Request.mockResolvedValue({ replayed: false });
+    await render();
+
+    const save = button("Save system defaults");
+    expect(save).toBeTruthy();
+    await act(async () => save?.click());
+    expect(adminV2Request).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain(
+      "It changes new speech for every character that has no voice override",
+    );
+
+    const reason = document.body.querySelector<HTMLInputElement>(
+      'input[aria-label="System default change reason"]',
+    );
+    expect(reason).toBeTruthy();
+    await act(async () => {
+      setInputValue(reason!, "Rotate the shared default after provider change");
+    });
+    const submit = [...document.body.querySelectorAll("button")].find(
+      (candidate) =>
+        candidate.textContent?.includes("Save system defaults") &&
+        candidate !== save,
+    );
+    await act(async () => submit?.click());
+    expect(adminV2Request).toHaveBeenCalledWith(
+      "/api/v2/admin/voice-defaults",
+      expect.objectContaining({
+        body: expect.objectContaining({
+          reason: "Rotate the shared default after provider change",
+        }),
+      }),
+    );
+  });
+
   it("uses a localized file picker instead of browser-native English copy", async () => {
     await render();
     const audioInput = container.querySelector<HTMLInputElement>(
@@ -379,3 +416,13 @@ describe("CharacterVoicePanel Fish Audio controls", () => {
     expect(container.textContent).not.toContain("No audio selected");
   });
 });
+
+function setInputValue(input: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype,
+    "value",
+  )?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+}

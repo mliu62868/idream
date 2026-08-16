@@ -58,6 +58,10 @@ export function CharacterPortfolio({
   const [applied, setApplied] = useState<CharacterPortfolioUrlState>(
     () => ({ search: "" }),
   );
+  // SPEC: 走过的游标，用来还原"上一页"和当前页码。
+  // INTENT: keyset 分页没有 offset，也没有 total——不自己记一份就只能一直往前翻。
+  //         任何改查询的动作都清空它（applyQuery 默认参数），否则页码会挂在旧结果上。
+  const [cursorStack, setCursorStack] = useState<readonly string[]>([]);
 
   const portfolio = useAuthorityResource({
     key: characterPortfolioQuery(applied, true),
@@ -87,6 +91,7 @@ export function CharacterPortfolio({
     (
       next: CharacterPortfolioUrlState,
       historyMode: "none" | "push" | "replace",
+      nextCursorStack: readonly string[] = [],
     ) => {
       setSearch(next.search);
       setPhase(next.phase ?? "");
@@ -94,6 +99,7 @@ export function CharacterPortfolio({
       setReadiness(next.readiness ?? "");
       setAttention(next.attention ?? false);
       setApplied(next);
+      setCursorStack(nextCursorStack);
       if (historyMode !== "none") {
         const locationQuery = characterPortfolioQuery(next);
         window.history[historyMode === "push" ? "pushState" : "replaceState"](
@@ -118,7 +124,7 @@ export function CharacterPortfolio({
     return () => window.removeEventListener("popstate", onPopState);
   }, [applyQuery]);
 
-  function apply(nextCursor?: string) {
+  function apply(nextCursor?: string, nextCursorStack?: readonly string[]) {
     applyQuery(
       {
         search,
@@ -129,7 +135,20 @@ export function CharacterPortfolio({
         cursor: nextCursor,
       },
       "push",
+      nextCursorStack,
     );
+  }
+
+  function goToPage(direction: "next" | "previous") {
+    if (direction === "next") {
+      apply(pageInfo.endCursor ?? undefined, [
+        ...cursorStack,
+        applied.cursor ?? "",
+      ]);
+      return;
+    }
+    const previous = cursorStack.slice(0, -1);
+    apply(cursorStack.at(-1) || undefined, previous);
   }
 
   const activeStatusFilterCount = [phase, servingState, readiness].filter(
@@ -240,21 +259,21 @@ export function CharacterPortfolio({
         />
       </label>
       <WorkspaceButton type="submit">{t("Search")}</WorkspaceButton>
-      {performanceMode ? (
-        <button
-          aria-pressed={attention}
-          className={cn(
-            "min-h-11 shrink-0 rounded-lg border px-3 text-sm font-semibold",
-            attention
-              ? "border-[var(--ad-ink)] bg-[var(--ad-ink)] text-white"
-              : "border-[var(--ad-border)] text-[var(--ad-ink)]",
-          )}
-          onClick={toggleAttention}
-          type="button"
-        >
-          {t("Needs attention")}
-        </button>
-      ) : null}
+      {/* INTENT: 「需要处理」两种模式都要给。之前只在 performance 模式渲染，
+          studio 的运营只能手敲 ?attention=true —— URL 解析和空态一直都支持它。 */}
+      <button
+        aria-pressed={attention}
+        className={cn(
+          "min-h-11 shrink-0 rounded-lg border px-3 text-sm font-semibold",
+          attention
+            ? "border-[var(--ad-ink)] bg-[var(--ad-ink)] text-white"
+            : "border-[var(--ad-border)] text-[var(--ad-ink)]",
+        )}
+        onClick={toggleAttention}
+        type="button"
+      >
+        {t("Needs attention")}
+      </button>
       <details className="group shrink-0 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
         <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 text-sm font-semibold">
           <SlidersHorizontal aria-hidden="true" className="h-4 w-4" />
@@ -355,9 +374,15 @@ export function CharacterPortfolio({
           )
         ) : (
           <>
+            {/* SPEC: 只说"这一页有几个"，不说总数——投影不下发 total。
+                INTENT: 原文案是 "{count} characters"，第一页永远显示 25，运营会当成全部就这些。 */}
             {!performanceMode ? (
               <p className="mb-5 text-sm text-[var(--ad-text-muted)]">
-                {t("{count} characters", { count: items.length })}
+                {pageInfo.hasNextPage
+                  ? t("Showing {count} characters · more on the next page", {
+                      count: items.length,
+                    })
+                  : t("Showing {count} characters", { count: items.length })}
               </p>
             ) : null}
             <div
@@ -389,12 +414,23 @@ export function CharacterPortfolio({
               })
             : t("Not loaded yet")}
         </p>
-        <WorkspaceButton
-          disabled={loading || !pageInfo.hasNextPage || !pageInfo.endCursor}
-          onClick={() => apply(pageInfo.endCursor ?? undefined)}
-        >
-          {t("Next page")}
-        </WorkspaceButton>
+        <div className="flex shrink-0 items-center gap-3">
+          <span className="text-xs text-[var(--ad-text-muted)]">
+            {t("Page {page}", { page: cursorStack.length + 1 })}
+          </span>
+          <WorkspaceButton
+            disabled={loading || cursorStack.length === 0}
+            onClick={() => goToPage("previous")}
+          >
+            {t("Previous page")}
+          </WorkspaceButton>
+          <WorkspaceButton
+            disabled={loading || !pageInfo.hasNextPage || !pageInfo.endCursor}
+            onClick={() => goToPage("next")}
+          >
+            {t("Next page")}
+          </WorkspaceButton>
+        </div>
       </div>
     </section>
   );

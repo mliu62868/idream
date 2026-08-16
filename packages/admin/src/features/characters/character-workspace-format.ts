@@ -8,6 +8,15 @@ export function percent(value: number | null) {
   return value === null ? "N/A" : `${(value * 100).toFixed(1)}%`;
 }
 
+// SPEC: 毫秒 → 运营读的时长。视频生成预估和媒体操作证据表用的是同一条口径。
+// INTENT: 两边各写过一份实现，其中一份不夹 0（负数会渲染成 "-3s"）。
+export function formatDurationMs(durationMs: number) {
+  const totalSeconds = Math.max(0, Math.round(durationMs / 1_000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
 // SPEC: 发布卡片与回滚下拉必须让运营一眼分辨"哪个更新"。
 // INTENT: CharacterRelease.version 是行级乐观锁计数（每次改动 +1），不是发布序号——
 // 直接渲染成 "Release v{version}" 会出现"v2 比 v1 更早发布"这种读反的顺序。

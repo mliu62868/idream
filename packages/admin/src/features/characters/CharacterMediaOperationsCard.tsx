@@ -7,6 +7,7 @@ import type { CharacterMediaOperationsProjection } from "@idream/shared/admin";
 import { useState } from "react";
 import { StatusBadge } from "@/features/operations/WorkspaceUi";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
+import { formatDurationMs } from "./character-workspace-format";
 
 const mediaOperationLabels = {
   image: "Image",
@@ -21,12 +22,6 @@ const mediaRecoveryLabels = {
   not_recoverable: "Not retryable",
   unavailable: "Recovery unavailable",
 } as const;
-
-function mediaOperationDuration(durationMs: number) {
-  const totalSeconds = Math.round(durationMs / 1_000);
-  if (totalSeconds < 60) return `${totalSeconds}s`;
-  return `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s`;
-}
 
 /**
  * SPEC: 只有"运营真能去做点什么"的恢复态才让这张证据表默认展开。
@@ -142,7 +137,7 @@ export function CharacterMediaOperationsCard({
                   <span className="mt-1 block">
                     {t("Time")} {operation.timing?.latencyMs === null || operation.timing?.latencyMs === undefined
                       ? t("Unavailable")
-                      : mediaOperationDuration(operation.timing.latencyMs)}
+                      : formatDurationMs(operation.timing.latencyMs)}
                     {" · "}{operation.costDreamcoins === null
                       ? t("Cost unavailable")
                       : t("{cost} Dreamcoins", { cost: operation.costDreamcoins })}
@@ -192,6 +187,20 @@ export function CharacterMediaOperationsCard({
                           : "Reclaim Voice request",
                       )}
                     </button>
+                  ) : null}
+                  {/* SPEC: "Retry available" 必须带着一条真能重跑的去处。
+                      INTENT: 只有 voice 能就地重领——契约的 superRefine 明确禁止非 voice
+                      投递 actionHref。图片/视频的重跑在运维的作业队列里，所以这里给的是
+                      那条路，而不是一个点不动的按钮。 */}
+                  {operation.modality !== "voice" &&
+                  operation.recoverability.state === "retryable" &&
+                  operation.operationsHref ? (
+                    <Link
+                      className="mt-2 block font-semibold underline"
+                      href={operation.operationsHref}
+                    >
+                      {t("Requeue in operations")}
+                    </Link>
                   ) : null}
                 </td>
                 <td className="px-4 py-3 text-right">

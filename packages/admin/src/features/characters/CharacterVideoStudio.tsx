@@ -19,6 +19,8 @@ import {
   ThumbsDown,
   Video,
 } from "lucide-react";
+import Link from "next/link";
+import { formatDurationMs } from "./character-workspace-format";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { adminDateLocale, useAdminI18n } from "@/components/admin/i18n";
 import {
@@ -209,13 +211,6 @@ function createdRunProjectionMatches(
     detail.reviewContext.orientation === body.orientation &&
     detail.reviewContext.referenceAssetCount === body.referenceAssetIds.length &&
     detail.items.length === body.count;
-}
-
-export function formatGenerationEstimateDuration(durationMs: number) {
-  const totalSeconds = Math.max(0, Math.round(durationMs / 1_000));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
 }
 
 // SPEC: 播放器出问题必须说出问题，不能一直转圈。
@@ -901,9 +896,32 @@ export function CharacterVideoStudio({
                 <VideoPlayback key={selectedItem.asset.url} src={selectedItem.asset.url} />
               ) : (
                 <div className="grid min-h-96 place-items-center rounded-lg border border-[var(--ad-border)] bg-black/[0.02] text-center text-[var(--ad-text-muted)]">
-                  <div>
+                  <div className="max-w-md px-5">
                     {selectedItem.executionState === "failed" ? <Video className="mx-auto h-7 w-7" /> : <Loader2 className="mx-auto h-7 w-7 animate-spin" />}
                     <p className="mt-3 text-sm font-semibold">{t(videoExecutionLabel(selectedItem))}</p>
+                    {/* SPEC: 失败要说原因，并给出真正能重跑的去处。
+                        INTENT: 契约的 failure.operatorGuidance / errorCode 此前只有视觉实验台读；
+                        重试是 CreativeRunWorkspace 那台带幂等键的持久命令机，不在这里复制第二份。 */}
+                    {selectedItem.executionState === "failed" ? (
+                      <div className="mt-3 text-xs" role="alert">
+                        {selectedItem.failure ? (
+                          <>
+                            <p className="leading-5 text-[var(--ad-red-text)]">
+                              {selectedItem.failure.operatorGuidance}
+                            </p>
+                            <code className="mt-2 block font-mono text-[11px]">
+                              {selectedItem.failure.errorCode}
+                            </code>
+                          </>
+                        ) : null}
+                        <Link
+                          className="mt-3 inline-flex min-h-8 items-center font-semibold underline"
+                          href={`/admin/creative/runs/${encodeURIComponent(selectedRun.id)}`}
+                        >
+                          {t("Open run to retry")}
+                        </Link>
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               )}
@@ -1002,7 +1020,7 @@ export function CharacterVideoStudio({
                 {estimate?.averageDurationMs !== null &&
                 estimate?.averageDurationMs !== undefined
                   ? t("Estimated duration: {duration} · {days}-day average · {count} completed run", {
-                      duration: formatGenerationEstimateDuration(
+                      duration: formatDurationMs(
                         estimate.averageDurationMs,
                       ),
                       days: estimate.windowDays,

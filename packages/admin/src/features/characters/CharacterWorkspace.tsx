@@ -44,6 +44,7 @@ import { createLatestRequestGate } from "@/lib/latest-request";
 import { cn } from "@/lib/utils";
 import { characterWorkspacePermissions } from "./character-workspace-permissions";
 import { permissionDenied } from "./character-permission-denied";
+import { CharacterJourneyRail } from "./CharacterJourneyRail";
 import { CharacterPortfolio } from "./CharacterPortfolio";
 import { ProjectEditor } from "./ProjectEditor";
 import { VisualIdentityPanel } from "./VisualIdentityPanel";
@@ -703,6 +704,19 @@ function CharacterDetail({
       mode: "push",
     });
   };
+  // SPEC: 把服务端 journey 深链（/admin/characters/:id?tab=x#anchor）落到同页导航。
+  // INTENT: tab 是 React state，next/link 跳同一条路由只会改地址栏、不换面板；而整页
+  //         跳转会丢掉正在恢复的命令上下文。所以这里手工解析后走 selectTab + 滚锚点。
+  const openDeepLink = (deepLink: string) => {
+    const target = new URL(deepLink, window.location.origin);
+    const nextTab = characterWorkspaceTabFromSearch(target.search);
+    selectTab(nextTab);
+    const anchor = target.hash.slice(1);
+    if (!anchor) return;
+    window.requestAnimationFrame(() => {
+      document.getElementById(anchor)?.scrollIntoView({ block: "start" });
+    });
+  };
   const onTabKey = (
     event: KeyboardEvent<HTMLButtonElement>,
     current: number,
@@ -868,6 +882,7 @@ function CharacterDetail({
           </div>
         </div>
       ) : null}
+      <CharacterJourneyRail journey={data.journey} onOpenDeepLink={openDeepLink} />
       <CharacterMediaOperationsCard
         canReclaimVoice={guardedPermissions.writeProject}
         onReclaimVoice={reclaimVoiceRequest}

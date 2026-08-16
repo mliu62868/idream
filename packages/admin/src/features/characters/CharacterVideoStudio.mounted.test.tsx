@@ -399,6 +399,60 @@ describe("Character Video Studio", () => {
     expect(onCreateImage).toHaveBeenCalledOnce();
   });
 
+  // SPEC: 失败必须说原因，并给出一条真能重跑的去处。
+  // INTENT: 之前只有一句「Video generation failed」——契约的 failure.operatorGuidance /
+  // errorCode 全仓只有视觉实验台读，characters/ 下一个重试入口都没有。
+  it("names the failure cause and offers a route that can retry it", async () => {
+    const failedRun = {
+      ...pendingRun,
+      executionOutcome: "failed",
+      counts: { ...pendingRun.counts, failed: 1 },
+      items: [{
+        ...pendingRun.items[0],
+        status: "failed",
+        executionState: "failed",
+        failure: {
+          errorCode: "provider_capacity_exhausted",
+          operatorGuidance:
+            "The video provider ran out of capacity for this workflow. Retry the run once capacity recovers.",
+        },
+      }],
+    };
+    adminV2Request.mockImplementation(async (path: string) => {
+      if (path === "/api/v2/admin/creative/runs/video-run-1") return failedRun;
+      if (path.startsWith("/api/v2/admin/creative/runs")) {
+        return {
+          items: [failedRun],
+          pageInfo: { endCursor: null, hasNextPage: false },
+        };
+      }
+      return { items: [], pageInfo: { endCursor: null, hasNextPage: false } };
+    });
+
+    await act(async () => root.render(
+      <CharacterVideoStudio
+        actorId="actor-1"
+        data={data}
+        onCreateImage={vi.fn()}
+        permissions={{ create: true, read: true, review: true }}
+        runCommittedMutation={runCommittedMutation}
+      />,
+    ));
+    await waitUntil(() =>
+      container.textContent?.includes("provider_capacity_exhausted") === true
+    );
+
+    expect(container.textContent).toContain(
+      "The video provider ran out of capacity",
+    );
+    const retry = [...container.querySelectorAll("a")].find((link) =>
+      link.textContent?.includes("Open run to retry")
+    );
+    expect(retry?.getAttribute("href")).toBe(
+      "/admin/creative/runs/video-run-1",
+    );
+  });
+
   it("recovers a lost create response after remount with the exact same request key", async () => {
     let createAttempts = 0;
     adminV2Request.mockImplementation(async (path: string, options?: {
