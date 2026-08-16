@@ -64,6 +64,7 @@ export function GlobalAdminSearch() {
   const listboxId = useId();
   const requestId = useRef(0);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
   const [query, setQuery] = useState("");
   const [authority, setAuthority] = useState<GlobalAdminSearchAuthorityState>(
     INITIAL_GLOBAL_ADMIN_SEARCH_STATE,
@@ -116,6 +117,20 @@ export function GlobalAdminSearch() {
     return () => document.removeEventListener("pointerdown", closeOutside);
   }, []);
 
+  // SPEC: ⌘K / Ctrl+K 从后台任何位置聚焦全局搜索。
+  // INTENT: 后台此前没有任何键盘入口——搜索是运营最高频的动作，却必须先把手从键盘挪到鼠标。
+  //         两个修饰键都收：提示只写得下一个（写 ⌘K），但不该因此把非 mac 的运营挡在外面。
+  useEffect(() => {
+    function focusSearch(event: globalThis.KeyboardEvent) {
+      if (event.key !== "k" || event.altKey || !(event.metaKey || event.ctrlKey)) return;
+      event.preventDefault();
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }
+    document.addEventListener("keydown", focusSearch);
+    return () => document.removeEventListener("keydown", focusSearch);
+  }, []);
+
   return (
     <div className="relative" ref={rootRef}>
       <div className="flex h-9 min-w-0 items-center gap-2 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 lg:w-[320px]">
@@ -125,6 +140,7 @@ export function GlobalAdminSearch() {
           aria-autocomplete="list"
           aria-controls={listboxId}
           aria-expanded={open}
+          aria-keyshortcuts="Meta+K Control+K"
           aria-label={t("Global admin search")}
           className="h-full min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-[var(--ad-text-muted)]"
           onChange={(event) => {
@@ -151,15 +167,32 @@ export function GlobalAdminSearch() {
             }
           }}
           onKeyDown={(event) => {
-            if (event.key === "Escape") { setOpen(false); return; }
+            // Esc 清空并交还焦点——运营用 ⌘K 进来之后需要一个对称的出口。
+            if (event.key === "Escape") {
+              requestId.current += 1;
+              setQuery("");
+              setOpen(false);
+              setActiveIndex(-1);
+              setAuthority((state) => ({ ...state, availability: "idle" }));
+              setLoading(false);
+              event.currentTarget.blur();
+              return;
+            }
             if (event.key === "ArrowDown") { event.preventDefault(); setOpen(true); setActiveIndex((current) => items.length ? (current + 1) % items.length : -1); }
             if (event.key === "ArrowUp") { event.preventDefault(); setOpen(true); setActiveIndex((current) => items.length ? (current <= 0 ? items.length - 1 : current - 1) : -1); }
             if (event.key === "Enter" && activeIndex >= 0 && items[activeIndex]) { event.preventDefault(); window.location.assign(items[activeIndex].href); }
           }}
           placeholder={t("Search customers, characters, Cases, Incidents…")}
+          ref={inputRef}
           role="combobox"
           value={query}
         />
+        <kbd
+          aria-hidden="true"
+          className="pointer-events-none hidden shrink-0 rounded border border-[var(--ad-border)] px-1.5 text-[10px] font-medium text-[var(--ad-text-muted)] lg:inline"
+        >
+          ⌘K
+        </kbd>
       </div>
       {open ? (
         <div className="absolute right-0 z-50 mt-2 w-[min(92vw,520px)] overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] shadow-xl">

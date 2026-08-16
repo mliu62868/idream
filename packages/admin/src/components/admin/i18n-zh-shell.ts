@@ -4,6 +4,7 @@
 // 由 i18n-zh-exclusivity.test.ts 强制。新增文案放它所属的域文件，不要另开「杂项」文件。
 export const adminZhShell: Record<string, string> = {
   "Account Requests": "账号请求",
+  "Account and shell settings": "账号与控制台设置",
   "Activity is unavailable for this scoped record.": "此范围记录的协作动态不可用。",
   "Activity timeline": "协作动态时间线",
   "Activity type": "动态类型",
@@ -13,6 +14,7 @@ export const adminZhShell: Record<string, string> = {
   "Attachment evidence IDs": "附件证据 ID",
   "Backend Diagnostics": "后端诊断",
   "Billing Operations": "计费运营",
+  "Breadcrumb": "当前位置",
   "CMS & SEO": "CMS 与 SEO",
   "Character Review": "角色审核队列",
   "Character producer": "角色制作",
