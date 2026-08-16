@@ -27,6 +27,9 @@ describe("chat providers", () => {
       CHAT_MODEL_PROVIDER: "pipeline",
       CHAT_MODEL_BASE_URL: "https://pipeline.internal.example.com/v1",
       CHAT_MODEL_API_KEY: "pipeline-api-key",
+      // Pinned here rather than inherited: packages/chat/.env is gitignored, so
+      // asserting the machine's local ceiling would pass or fail per checkout.
+      CHAT_MODEL_MAX_TOKENS: "512",
       MODERATION_PROVIDER: "mock",
     };
 

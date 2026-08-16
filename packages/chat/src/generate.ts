@@ -11,7 +11,7 @@ import type { Prisma } from "../generated/client/client.js";
 import type { ChatPrismaClient } from "./db.js";
 import { chatPrisma, chatProjectorPrisma } from "./db.js";
 import { providers } from "./providers.js";
-import type { ChatToolCall, ModelMessage } from "./providers.js";
+import type { ChatChunk, ChatToolCall, ModelMessage } from "./providers.js";
 import type { BuiltContext } from "./context.js";
 import {
   prepareCompanionTurn,
@@ -278,21 +278,10 @@ export async function processGenerate(
     await appendStreamEvent(key, { type: "delta", attempt: payload.attempt, seq, delta });
   };
 
-  // ChatChunk does not declare `usage` yet, so read it structurally: a provider
-  // that reports it wins over the estimate, one that does not changes nothing.
-  const readChunkUsage = (part: unknown): void => {
-    const reported = (part as {
-      usage?: { promptTokens?: unknown; completionTokens?: unknown };
-    }).usage;
-    if (
-      typeof reported?.promptTokens === "number" &&
-      typeof reported.completionTokens === "number"
-    ) {
-      providerUsage = {
-        promptTokens: reported.promptTokens,
-        completionTokens: reported.completionTokens,
-      };
-    }
+  // A provider that reports usage wins over the estimate; one that does not
+  // leaves providerUsage null and changes nothing.
+  const readChunkUsage = (part: ChatChunk): void => {
+    if (part.usage) providerUsage = part.usage;
   };
 
   const streamPlain = async (): Promise<void> => {
