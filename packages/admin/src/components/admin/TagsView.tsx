@@ -54,11 +54,11 @@ export function TagsView() {
   const requestGate = useRef(createLatestRequestGate());
 
   const load = useCallback(async () => {
-    const queryKey = "/api/v1/admin/content/tags";
+    const queryKey = "/api/v2/admin/content/tags";
     const request = requestGate.current.begin();
     setAuthority((current) => authorityRequestStarted(current, queryKey));
     try {
-      const data = await apiGet<{ items: TagRow[] }>("/api/v1/admin/content/tags");
+      const data = await apiGet<{ items: TagRow[] }>("/api/v2/admin/content/tags");
       if (!request.isCurrent()) return;
       setAuthority(authorityRequestSucceeded(queryKey, data.items));
     } catch (err) {
@@ -97,7 +97,7 @@ export function TagsView() {
           title: t("Save changes"),
           submitLabel: t("Save changes"),
           onSubmit: async (reason) => {
-            await apiWrite(`/api/v1/admin/content/tags/${editingTag.id}`, "PATCH", {
+            await apiWrite(`/api/v2/admin/content/tags/${editingTag.id}`, "PATCH", {
               label: draft.label.trim(),
               category: draft.category.trim() ? draft.category.trim() : null,
               isSensitive: draft.isSensitive,
@@ -303,7 +303,7 @@ function MergeSection({ tags, reload }: { tags: TagRow[]; reload: () => void }) 
           submitLabel: t("Merge"),
           onSubmit: async (reason) => {
             const data = await apiWrite<{ merged: boolean; movedCount: number }>(
-              "/api/v1/admin/content/tags/merge",
+              "/api/v2/admin/content/tags/merge",
               "POST",
               { sourceId, targetId, reason, confirmation: `${sourceId}:${targetId}` },
             );

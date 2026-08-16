@@ -2,10 +2,8 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
-import {
-  getFeaturedCharacters,
-  listContentCharacters,
-} from "@/server/modules/admin/content/merchandising";
+import { GET as listContentCharacters } from "@/app/api/v2/admin/content/characters/route";
+import { GET as getFeaturedCharacters } from "@/app/api/v2/admin/content/featured/route";
 import { moderationQueue } from "@/server/modules/admin/moderation/service";
 import { listSupportRequests } from "@/server/modules/admin/support/service";
 
@@ -263,7 +261,7 @@ describe("Admin P1 inventory provenance", () => {
   it("filters content inventory while exposing configured and effective Featured truth separately", async () => {
     const content = await call(
       listContentCharacters,
-      `/api/v1/admin/content/characters?search=${token}&limit=100`,
+      `/api/v2/admin/content/characters?search=${token}&limit=100`,
     );
     expect(ids(content.items)).toEqual(
       new Set([
@@ -275,7 +273,7 @@ describe("Admin P1 inventory provenance", () => {
 
     const featured = await call(
       getFeaturedCharacters,
-      "/api/v1/admin/content/featured",
+      "/api/v2/admin/content/featured",
     );
     const configuredIds = strings(featured.configuredCharacterIds);
     expect(new Set(configuredIds)).toEqual(

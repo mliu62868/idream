@@ -156,15 +156,31 @@ describe("Admin v2 architecture boundaries", () => {
     expect(chat).not.toContain(["@/server/modules/admin", "service"].join("/"));
   });
 
-  it("keeps content merchandising authority out of the dispatcher monolith", async () => {
-    const root = path.join(process.cwd(), "src/server/modules/admin");
-    const dispatcher = await readFile(path.join(root, "service.ts"), "utf8");
-    const content = await readFile(path.join(root, "content/merchandising.ts"), "utf8").catch(() => "");
-    expect(dispatcher).not.toContain("const contentVisibilitySchema");
-    expect(dispatcher).not.toContain("async function listContentCharacters");
-    expect(dispatcher).not.toContain("async function putFeaturedCharacters");
-    expect(content).toContain("export async function listContentCharacters");
-    expect(content).toContain("executeIdempotentDomainCommand");
+  /**
+   * SPEC: the content domain answers only through Admin v2, and the v1 dispatcher no longer
+   * knows the resource exists.
+   * INTENT: the previous version of this guard asserted merchandising lived in the legacy
+   * `admin/content/` module rather than inside `service.ts`. That distinction died with the
+   * migration — the whole resource is gone from v1, so the guard now asserts the *absence* of
+   * a `content` branch in the dispatcher and the presence of the authority in `admin-v2`.
+   */
+  it("serves the content domain from Admin v2 only", async () => {
+    const dispatcher = await readFile(
+      path.join(process.cwd(), "src/server/modules/admin/service.ts"),
+      "utf8",
+    );
+    const merchandising = await readFile(
+      path.join(process.cwd(), "src/server/modules/admin-v2/content/merchandising.ts"),
+      "utf8",
+    ).catch(() => "");
+
+    expect(dispatcher).not.toContain('resource === "content"');
+    expect(dispatcher).not.toContain("listContentCharacters");
+    expect(dispatcher).not.toContain("putFeaturedCharacters");
+    expect(merchandising).toContain("export async function listContentCharacters");
+    expect(merchandising).toContain("export async function setCharacterVisibility");
+    // The legacy idempotency primitive does not cross into v2; `executeAdminMutation` owns it.
+    expect(merchandising).not.toContain("executeIdempotentDomainCommand");
   });
 
   it("keeps overview and generic saved-view authorities out of the dispatcher", async () => {

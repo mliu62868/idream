@@ -113,7 +113,7 @@ export function ReviewQueueView() {
       if (filters.query.trim()) params.set("search", filters.query.trim());
       if (filters.reportFilter !== "all") params.set("reportFilter", filters.reportFilter);
       if (nextCursor) params.set("cursor", nextCursor);
-      const data = await apiGet<{ items: ReviewItem[]; pageInfo: { endCursor: string | null; hasNextPage: boolean } }>(`/api/v1/admin/content/review-queue?${params}`);
+      const data = await apiGet<{ items: ReviewItem[]; pageInfo: { endCursor: string | null; hasNextPage: boolean } }>(`/api/v2/admin/content/review-queue?${params}`);
       setItems(data.items);
       setCursor(nextCursor);
       setPageInfo(data.pageInfo);
@@ -500,7 +500,7 @@ function DecisionDialog({
     idempotencyKey.current = requestKey;
     try {
       const result = await apiWrite<ReviewDecisionResult>(
-        `/api/v1/admin/content/review-queue/${item.submissionId}/decision`,
+        `/api/v2/admin/content/review-queue/${item.submissionId}/decision`,
         "POST",
         {
           decision,

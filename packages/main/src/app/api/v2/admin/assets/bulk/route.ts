@@ -1,5 +1,5 @@
 import type { AdminV2RequestBody } from "@/server/modules/admin-v2/shared/authority";
-import { bulkPatchContentAssetsV2 } from "@/server/modules/admin/content/assets";
+import { bulkPatchContentAssets } from "@/server/modules/admin-v2/content/assets";
 import { executeAdminMutation } from "@/server/modules/admin-v2/shared/admin-mutation";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 
@@ -22,7 +22,7 @@ export function POST(request: Request) {
           id: body.assetIds.join(","),
         }),
         reason: (body) => body.reason,
-        mutate: (tx, { actor, body, requestId }) => bulkPatchContentAssetsV2({
+        mutate: (tx, { actor, body, requestId }) => bulkPatchContentAssets({
           request,
           actor,
           body,

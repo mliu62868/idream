@@ -11,7 +11,7 @@ import {
 } from "@/server/modules/content-production-state";
 
 // SPEC: 一个 Creative Run（ContentProductionBatch 行 + items）对外的读投影。
-// INTENT: 创建路径（v2）和 legacy 兼容读路径（v1 /api/v1/admin/content/production）
+// INTENT: Creative Run 的创建路径与只读投影
 // 必须给出同一个 Run 形状。此前两者共用一个大杂烩文件里的私有 DTO，拆开后如果各留一份
 // 就会漂移，所以投影单独成模块，两边只 import。
 // INVARIANT: 结算事实（ledger）只在读路径装载 —— 创建/重放响应不代表任何扣费结论。

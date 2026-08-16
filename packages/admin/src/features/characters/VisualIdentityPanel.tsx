@@ -258,7 +258,7 @@ export function VisualIdentityPanel({
         action: "Visual Identity version",
         commit: () =>
           apiWrite(
-            `/api/v1/admin/content/characters/${data.character.id}/visual-profiles`,
+            `/api/v2/admin/content/characters/${data.character.id}/visual-profiles`,
             "POST",
             body,
             {
@@ -294,7 +294,7 @@ export function VisualIdentityPanel({
       action: "Identity candidate activation",
       commit: () =>
         apiWrite(
-          `/api/v1/admin/content/characters/${data.character.id}/visual-profiles`,
+          `/api/v2/admin/content/characters/${data.character.id}/visual-profiles`,
           "POST",
           body,
           {

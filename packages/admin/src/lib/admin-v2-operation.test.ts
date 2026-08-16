@@ -118,7 +118,7 @@ describe("admin v2 operation adapter", () => {
       "POST /api/v2/admin/characters/:id/commands/retire",
       { path: { id: "character-1" }, idempotencyKey: "retire-1", body: {} },
     ).catch((cause: unknown) => cause);
-    const legacyError = await apiWrite("/api/v1/admin/content/featured", "PUT", {})
+    const legacyError = await apiWrite("/api/v2/admin/content/featured", "PUT", {})
       .catch((cause: unknown) => cause);
 
     expect(operationError).toBeInstanceOf(AdminV2RequestError);

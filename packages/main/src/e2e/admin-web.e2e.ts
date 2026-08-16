@@ -421,7 +421,7 @@ test("admin content ops requires confirmation for standalone draft placement and
       }).then((asset) => platformStatusFromMetadata(asset.metadata)),
     ).resolves.toBe("archived");
 
-    const archivedPlacementAttempt = await page.request.post(`${adminURL}/api/v1/admin/content/placements`, {
+    const archivedPlacementAttempt = await page.request.post(`${adminURL}/api/v2/admin/content/placements`, {
       data: {
         mediaAssetId: archiveAssetId,
         slot: "feed_card",
@@ -1449,7 +1449,7 @@ test("admin API creates an official character and fails mock AI assist closed", 
   const name = `E2E Official ${Date.now()}`;
   let createdId: string | undefined;
   try {
-    const create = await page.request.post(`${adminURL}/api/v1/admin/content/official`, {
+    const create = await page.request.post(`${adminURL}/api/v2/admin/content/official`, {
       headers: { "idempotency-key": `e2e-official-create-${Date.now()}` },
       data: {
         name,
@@ -1467,7 +1467,7 @@ test("admin API creates an official character and fails mock AI assist closed", 
     expect(createdId).toBeTruthy();
 
     // A mock chat provider must never return operator-saveable creative fields.
-    const assist = await page.request.post(`${adminURL}/api/v1/admin/content/character-assist`, {
+    const assist = await page.request.post(`${adminURL}/api/v2/admin/content/character-assist`, {
       data: { seed: "shy bookish painter who loves rainy nights", gender: "female", style: "realistic" },
     });
     expect(assist.status(), await assist.text()).toBe(503);
@@ -1872,13 +1872,13 @@ test("admin API forbids under-privileged roles (403 on writes they lack)", async
   expect(pricing.status()).toBe(403);
 
   const takedown = await page.request.post(
-    `${adminURL}/api/v1/admin/content/characters/none/visibility`,
+    `${adminURL}/api/v2/admin/content/characters/none/visibility`,
     { data: { visibility: "private", reason: "test reason", confirmation: "none:visibility:private" } },
   );
   expect(takedown.status()).toBe(403);
 
   // support lacks content.official.write → official create + AI assist both 403.
-  const official = await page.request.post(`${adminURL}/api/v1/admin/content/official`, {
+  const official = await page.request.post(`${adminURL}/api/v2/admin/content/official`, {
     data: {
       name: "x",
       age: 24,
@@ -1891,14 +1891,14 @@ test("admin API forbids under-privileged roles (403 on writes they lack)", async
   });
   expect(official.status()).toBe(403);
 
-  const assist = await page.request.post(`${adminURL}/api/v1/admin/content/character-assist`, {
+  const assist = await page.request.post(`${adminURL}/api/v2/admin/content/character-assist`, {
     data: { seed: "a cheerful barista" },
   });
   expect(assist.status()).toBe(403);
 
   // analyst lacks content.read entirely → read also 403.
   await startRoleSession(page, "analyst");
-  const read = await page.request.get(`${adminURL}/api/v1/admin/content/characters`);
+  const read = await page.request.get(`${adminURL}/api/v2/admin/content/characters`);
   expect(read.status()).toBe(403);
 });
 

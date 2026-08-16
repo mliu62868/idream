@@ -14,6 +14,11 @@ import { ACCOUNT_DELETION_GRACE_PERIOD_MS } from "@/server/account-deletion-auth
 import { CHARACTER_RELEASE_POLICY_VERSION } from "@/server/modules/admin-v2/characters/release-validation";
 import { POST as createCreativeRunV2 } from "@/app/api/v2/admin/creative/runs/route";
 import {
+  creativeRunDTOs,
+  creativeRunInclude,
+} from "@/server/modules/admin-v2/creative/run-projection";
+import { adminV2Api } from "@/server/test/admin-v2-api";
+import {
   characterVisualProfileSnapshotHash,
   referenceSetSnapshotHash,
 } from "@/server/modules/admin-v2/characters/release-snapshot";
@@ -96,8 +101,10 @@ async function createCreativeRunThroughV2(input: {
   ));
   const json = await response.json() as {
     ok?: boolean;
-    data?: { batch?: { id?: string } };
-    error?: { code?: string; message?: string; details?: unknown };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    data?: any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    error?: { code?: string; message?: string; details?: any };
   };
   if (!response.ok || !json.data?.batch?.id) {
     return {
@@ -110,15 +117,30 @@ async function createCreativeRunThroughV2(input: {
       setCookies: [],
     };
   }
-  const detail = await api(
-    "GET",
-    `admin/content/production/batches/${json.data.batch.id}`,
-    { userId: input.userId, role: input.role },
-  );
   return {
-    ...detail,
     status: response.status,
+    ok: Boolean(json.ok),
+    data: { batch: await readCreativeRunProjection(json.data.batch.id) },
+    error: json.error,
+    json,
+    headers: response.headers,
+    setCookies: [],
   };
+}
+
+/**
+ * SPEC: the operator-visible Creative Run projection, read straight from its authority.
+ * INTENT: this used to arrive over the v1 production-batch detail endpoint, a
+ * read-only duplicate of `GET /api/v2/admin/creative/runs`. The endpoint is gone with v1; the
+ * projection it served is not, so the assertions below keep reading the same shape.
+ */
+async function readCreativeRunProjection(runId: string) {
+  const batch = await prisma.contentProductionBatch.findUniqueOrThrow({
+    where: { id: runId },
+    include: creativeRunInclude,
+  });
+  const [projection] = await creativeRunDTOs([batch]);
+  return projection!;
 }
 
 async function seedEditorialPublicCharacterAuthority(input: {
@@ -2155,7 +2177,7 @@ describe("generation config control plane", () => {
       where: { characterId: character.id },
     })).resolves.toBe(0);
 
-    const forbidden = await api("POST", "admin/content/production/batches", {
+    const forbidden = await createCreativeRunThroughV2({
       userId: support,
       role: "support",
       body: {
@@ -2163,34 +2185,11 @@ describe("generation config control plane", () => {
         targetType: "character",
         targetId: character.id,
         profileId: `${P}production-profile`,
-        recipeId: `${P}production-recipe`,
-        count: 1,
+        brief: "One cover candidate",
+        reason: "support may not create a Creative Run",
       },
     });
     expectError(forbidden, 403);
-
-    const retired = await api("POST", "admin/content/production/batches", {
-      userId: admin,
-      role: "admin",
-      body: {
-        title: `${P}production-batch`,
-        purpose: "character_chat",
-        targetType: "character",
-        targetId: character.id,
-        profileId: `${P}production-profile`,
-        recipeId: `${P}production-recipe`,
-        orientation: "4:5",
-        count: 1,
-        brief: "One cover candidate",
-        consistencyMode: "strict",
-        reason: "seed production batch",
-      },
-    });
-    expectError(retired, 410, "gone");
-    expect(retired.error?.details).toMatchObject({
-      replacementApi: "/api/v2/admin/creative/runs",
-      deepLink: "/admin/creative/runs",
-    });
 
     const created = await createCreativeRunThroughV2({
       userId: admin,
@@ -2324,22 +2323,14 @@ describe("generation config control plane", () => {
 
     await runQueuedGenerationJobs(12);
 
-    const detail = await api("GET", `admin/content/production/batches/${created.data.batch.id}`, {
-      userId: admin,
-      role: "admin",
-    });
-    expectOk(detail);
-    expect(detail.data.batch).toMatchObject({ completedItems: 1, status: "reviewing" });
-    const detailSecond = await api("GET", `admin/content/production/batches/${createdSecond.data.batch.id}`, {
-      userId: admin,
-      role: "admin",
-    });
-    expectOk(detailSecond);
-    expect(detailSecond.data.batch).toMatchObject({ completedItems: 1, status: "reviewing" });
+    const detailBatch = await readCreativeRunProjection(created.data.batch.id);
+    expect(detailBatch).toMatchObject({ completedItems: 1, status: "reviewing" });
+    const detailSecondBatch = await readCreativeRunProjection(createdSecond.data.batch.id);
+    expect(detailSecondBatch).toMatchObject({ completedItems: 1, status: "reviewing" });
     // 两个单图 Run 合起来提供「一个批准、一个拒绝」这两条评审路径。
     const generatedItems = [
-      ...detail.data.batch.items,
-      ...detailSecond.data.batch.items,
+      ...detailBatch.items,
+      ...detailSecondBatch.items,
     ] as Array<{
       id: string;
       asset: { id: string } | null;
@@ -2348,72 +2339,9 @@ describe("generation config control plane", () => {
     expect(generatedItems.every((item) => item.status === "generated" && item.asset?.id)).toBe(true);
 
     const approveItemId = generatedItems[0]?.id as string;
-    const rejectItemId = generatedItems[1]?.id as string;
-    const genericApprove = await api("POST", `admin/content/production/items/${approveItemId}/approve`, {
-      userId: admin,
-      role: "admin",
-      body: {
-        tags: ["cover", "winner"],
-        description: "Reusable sunset selfie for chat retrieval",
-        rating: 5,
-        reason: "best cover candidate",
-        confirmation: "APPROVE",
-      },
-    });
-    expectError(genericApprove, 400, "bad_request");
-
-    const approve = await api("POST", `admin/content/production/items/${approveItemId}/approve`, {
-      userId: admin,
-      role: "admin",
-      body: {
-        tags: ["cover", "winner"],
-        description: "Reusable sunset selfie for chat retrieval",
-        rating: 5,
-        reason: "best cover candidate",
-        confirmation: approveItemId,
-      },
-    });
-    expectError(approve, 409, "conflict");
-    expect(approve.error?.details).toMatchObject({
-      code: "creative_run_review_required",
-      repairPath: `/admin/creative/runs/${created.data.batch.id}`,
-    });
-    const reject = await api("POST", `admin/content/production/items/${rejectItemId}/reject`, {
-      userId: admin,
-      role: "admin",
-      body: {
-        tags: ["discard"],
-        reason: "weaker composition",
-        confirmation: rejectItemId,
-      },
-    });
-    expectError(reject, 409, "conflict");
-    expect(reject.error?.details).toMatchObject({
-      code: "creative_run_review_required",
-      // 被拒项来自第二个 Run，修复入口自然指向它所属的 Run。
-      repairPath: `/admin/creative/runs/${createdSecond.data.batch.id}`,
-    });
-    const legacyRetry = await api(
-      "POST",
-      `admin/content/production/items/${rejectItemId}/regenerate`,
-      {
-        userId: admin,
-        role: "admin",
-        body: {
-          reason: "attempt legacy regeneration",
-          confirmation: rejectItemId,
-        },
-      },
-    );
-    expectError(legacyRetry, 409, "conflict");
-    expect(legacyRetry.error?.details).toMatchObject({
-      code: "creative_run_command_required",
-      // 同上：该项属于第二个 Run。
-      repairPath: `/admin/creative/runs/${createdSecond.data.batch.id}`,
-    });
 
     const assetId = generatedItems[0]?.asset?.id as string;
-    const libraryApprove = await api("PATCH", `admin/content/assets/${assetId}`, {
+    const libraryApprove = await adminV2Api("PATCH", `/api/v2/admin/assets/${assetId}`, {
       userId: admin,
       role: "admin",
       body: {
@@ -2427,7 +2355,7 @@ describe("generation config control plane", () => {
       code: "creative_run_review_required",
       repairPath: `/admin/creative/runs/${created.data.batch.id}`,
     });
-    const libraryReject = await api("PATCH", `admin/content/assets/${assetId}`, {
+    const libraryReject = await adminV2Api("PATCH", `/api/v2/admin/assets/${assetId}`, {
       userId: admin,
       role: "admin",
       body: {
@@ -2438,7 +2366,7 @@ describe("generation config control plane", () => {
     });
     expectError(libraryReject, 409, "conflict");
 
-    const metadataSave = await api("PATCH", `admin/content/assets/${assetId}`, {
+    const metadataSave = await adminV2Api("PATCH", `/api/v2/admin/assets/${assetId}`, {
       userId: admin,
       role: "admin",
       body: {
@@ -2449,11 +2377,11 @@ describe("generation config control plane", () => {
       },
     });
     expectOk(metadataSave);
-    const assets = await api("GET", "admin/content/assets", {
-      userId: admin,
-      role: "admin",
-      query: { status: "generated", purpose: "character_chat" },
-    });
+    const assets = await adminV2Api(
+      "GET",
+      "/api/v2/admin/assets?status=generated&purpose=character_chat",
+      { userId: admin, role: "admin" },
+    );
     expectOk(assets);
     expect(assets.data.items).toEqual(
       expect.arrayContaining([
@@ -2467,7 +2395,7 @@ describe("generation config control plane", () => {
         }),
       ]),
     );
-    const assetDetail = await api("GET", `admin/content/assets/${assetId}`, { userId: admin, role: "admin" });
+    const assetDetail = await adminV2Api("GET", `/api/v2/admin/assets/${assetId}`, { userId: admin, role: "admin" });
     expectOk(assetDetail);
     expect(assetDetail.data.asset).toMatchObject({
       id: assetId,
@@ -2483,7 +2411,7 @@ describe("generation config control plane", () => {
       ],
     });
 
-    const placement = await api("POST", "admin/content/placements", {
+    const placement = await adminV2Api("POST", "/api/v2/admin/content/placements", {
       userId: admin,
       role: "admin",
       body: {
@@ -2496,7 +2424,7 @@ describe("generation config control plane", () => {
       },
     });
     expectError(placement, 400, "bad_request");
-    const draftPlacement = await api("POST", "admin/content/placements", {
+    const draftPlacement = await adminV2Api("POST", "/api/v2/admin/content/placements", {
       userId: admin,
       role: "admin",
       body: {
@@ -3632,13 +3560,9 @@ describe("generation and Creative Run truth containment", () => {
     ]);
     const expected = ["failed", "partially_succeeded", "succeeded"];
     for (const [index, batch] of fixtures.entries()) {
-      const detail = await api("GET", `admin/content/production/batches/${batch.id}`, {
-        userId: admin,
-        role: "admin",
-      });
-      expectOk(detail);
-      expect(detail.data.batch.status).toBe("completed");
-      expect(detail.data.batch.state).toMatchObject({
+      const detail = await readCreativeRunProjection(batch.id);
+      expect(detail.status).toBe("completed");
+      expect(detail.state).toMatchObject({
         executionOutcome: expected[index],
         legacyState: "completed",
         counts: {
@@ -4338,9 +4262,9 @@ describe("admin content/character governance (F2)", () => {
     });
 
     // ops lacks content.read → 403 on both read and write.
-    expectError(await api("GET", "admin/content/characters", { userId: ops, role: "ops" }), 403);
+    expectError(await adminV2Api("GET", "/api/v2/admin/content/characters", { userId: ops, role: "ops" }), 403);
     expectError(
-      await api("POST", `admin/content/characters/${charId}/visibility`, {
+      await adminV2Api("POST", `/api/v2/admin/content/characters/${charId}/visibility`, {
         userId: ops,
         role: "ops",
         body: { visibility: "private", reason: "test", confirmation: `${charId}:visibility:private` },
@@ -4348,19 +4272,19 @@ describe("admin content/character governance (F2)", () => {
       403,
     );
 
-    const list = await api("GET", "admin/content/characters", {
-      userId: admin,
-      role: "admin",
-      query: { search: "Governable" },
-    });
+    const list = await adminV2Api(
+      "GET",
+      "/api/v2/admin/content/characters?search=Governable",
+      { userId: admin, role: "admin" },
+    );
     expectOk(list);
     expect(list.data.items.some((c: { id: string }) => c.id === charId)).toBe(true);
 
-    const detail = await api("GET", `admin/content/characters/${charId}`, { userId: admin, role: "admin" });
+    const detail = await adminV2Api("GET", `/api/v2/admin/content/characters/${charId}`, { userId: admin, role: "admin" });
     expectOk(detail);
     expect(detail.data.character.id).toBe(charId);
 
-    const wrongVisibility = await api("POST", `admin/content/characters/${charId}/visibility`, {
+    const wrongVisibility = await adminV2Api("POST", `/api/v2/admin/content/characters/${charId}/visibility`, {
       userId: admin,
       role: "admin",
       body: { visibility: "private", reason: "valid reason", confirmation: "VISIBILITY" },
@@ -4368,7 +4292,7 @@ describe("admin content/character governance (F2)", () => {
     expectError(wrongVisibility, 400, "bad_request");
     expect((await prisma.character.findUniqueOrThrow({ where: { id: charId } })).visibility).toBe("public");
 
-    const privateVisibility = await api("POST", `admin/content/characters/${charId}/visibility`, {
+    const privateVisibility = await adminV2Api("POST", `/api/v2/admin/content/characters/${charId}/visibility`, {
       userId: admin,
       role: "admin",
       body: {
@@ -4385,7 +4309,7 @@ describe("admin content/character governance (F2)", () => {
     });
     expect(visibilityAudit).not.toBeNull();
 
-    const wrongStatus = await api("POST", `admin/content/characters/${charId}/status`, {
+    const wrongStatus = await adminV2Api("POST", `/api/v2/admin/content/characters/${charId}/status`, {
       userId: admin,
       role: "admin",
       body: { status: "removed", reason: "policy violation", confirmation: "STATUS" },
@@ -4394,7 +4318,7 @@ describe("admin content/character governance (F2)", () => {
     expect((await prisma.character.findUniqueOrThrow({ where: { id: charId } })).status).toBe("approved");
 
     // Takedown: set status=removed (typed+reason), audited.
-    const removed = await api("POST", `admin/content/characters/${charId}/status`, {
+    const removed = await adminV2Api("POST", `/api/v2/admin/content/characters/${charId}/status`, {
       userId: admin,
       role: "admin",
       body: { status: "removed", reason: "policy violation", confirmation: `${charId}:status:removed` },
@@ -4420,21 +4344,21 @@ describe("admin content/character chat image tool toggle (P4 Task 6)", () => {
       data: { advancedDetails: { personality: "shy", hobbies: ["reading"] } },
     });
 
-    const forbidden = await api("POST", `admin/content/characters/${charId}/chat-tools`, {
+    const forbidden = await adminV2Api("POST", `/api/v2/admin/content/characters/${charId}/chat-tools`, {
       userId: support,
       role: "support",
       body: { imageToolEnabled: false, reason: "toggle chat image tool" },
     });
     expectError(forbidden, 403);
 
-    const badBody = await api("POST", `admin/content/characters/${charId}/chat-tools`, {
+    const badBody = await adminV2Api("POST", `/api/v2/admin/content/characters/${charId}/chat-tools`, {
       userId: admin,
       role: "admin",
       body: { imageToolEnabled: false },
     });
     expectError(badBody, 400);
 
-    const disable = await api("POST", `admin/content/characters/${charId}/chat-tools`, {
+    const disable = await adminV2Api("POST", `/api/v2/admin/content/characters/${charId}/chat-tools`, {
       userId: admin,
       role: "admin",
       body: { imageToolEnabled: false, reason: "toggle chat image tool" },
@@ -4448,7 +4372,7 @@ describe("admin content/character chat image tool toggle (P4 Task 6)", () => {
       hobbies: ["reading"],
     });
 
-    const enable = await api("POST", `admin/content/characters/${charId}/chat-tools`, {
+    const enable = await adminV2Api("POST", `/api/v2/admin/content/characters/${charId}/chat-tools`, {
       userId: admin,
       role: "admin",
       body: { imageToolEnabled: true, reason: "toggle chat image tool" },
@@ -4468,7 +4392,7 @@ describe("admin content/character chat image tool toggle (P4 Task 6)", () => {
     });
     expect(audit).not.toBeNull();
 
-    const missing = await api("POST", `admin/content/characters/${P}nope/chat-tools`, {
+    const missing = await adminV2Api("POST", `/api/v2/admin/content/characters/${P}nope/chat-tools`, {
       userId: admin,
       role: "admin",
       body: { imageToolEnabled: false, reason: "toggle chat image tool" },
@@ -4502,12 +4426,12 @@ describe("admin featured curation (F3)", () => {
 
     // Save both the currently live Character and the temporarily ineligible
     // private draft. Runtime eligibility must not rewrite operator intent.
-    const beforePut = await api("GET", "admin/content/featured", {
+    const beforePut = await adminV2Api("GET", "/api/v2/admin/content/featured", {
       userId: admin,
       role: "admin",
     });
     expectOk(beforePut);
-    const put = await api("PUT", "admin/content/featured", {
+    const put = await adminV2Api("PUT", "/api/v2/admin/content/featured", {
       userId: admin,
       role: "admin",
       body: {
@@ -4524,7 +4448,7 @@ describe("admin featured curation (F3)", () => {
     expect(put.data.skipped).toEqual([]);
     expect(put.data.invalid).toEqual([]);
 
-    const wrongConfirmation = await api("PUT", "admin/content/featured", {
+    const wrongConfirmation = await adminV2Api("PUT", "/api/v2/admin/content/featured", {
       userId: admin,
       role: "admin",
       body: {

@@ -1,4 +1,4 @@
-import { listContentAssetsV2 } from "@/server/modules/admin/content/assets";
+import { listContentAssets } from "@/server/modules/admin-v2/content/assets";
 import {
   actorWithPermission,
   queryParams,
@@ -12,6 +12,6 @@ export function GET(request: Request) {
   return adminV2Route(request, async () => {
     await actorWithPermission(request, "creative.asset.read");
     const query = queryParams(request, "GET /api/v2/admin/assets");
-    return listContentAssetsV2(query);
+    return listContentAssets(query);
   });
 }

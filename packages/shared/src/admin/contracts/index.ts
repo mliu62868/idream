@@ -27,3 +27,5 @@ export * from "./jobs";
 export * from "./grant-bundles";
 export * from "./search";
 export * from "./chat-operations";
+// ---- content: migrated from v1 ----
+export * from "./content";

@@ -130,7 +130,7 @@ describe("remaining canonical admin list surfaces", () => {
     expect(contentListPath(contentQueryFromSearch(
       "?contentSearch=alex&contentStatus=approved&contentVisibility=public&contentCursor=C",
     ))).toBe(
-      "/api/v1/admin/content/characters?limit=25&search=alex&status=approved&visibility=public&cursor=C",
+      "/api/v2/admin/content/characters?limit=25&search=alex&status=approved&visibility=public&cursor=C",
     );
 
     const promo = promoQueryFromSearch(

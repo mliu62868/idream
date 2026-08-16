@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { handle } from "@/server/lib/http";
+import { adminV2Api } from "@/server/test/admin-v2-api";
 import { dispatchAdmin } from "./service";
 
 type PageInfo = { endCursor: string | null; hasNextPage: boolean };
@@ -13,12 +14,23 @@ describe("remaining canonical admin lists", () => {
   const planId = `remaining-plan-${suffix}`;
   const ids = (kind: string) => [0, 1].map((index) => `${token}-${kind}-${index}`);
 
+  type ListEnvelope = { data?: Record<string, unknown>; error?: unknown };
+
   async function call(segments: string[], query: string) {
     const request = new Request(`http://test.local/api/v1/admin/${segments.join("/")}?${query}`, {
       headers: { "x-idream-user-id": actorId, "x-idream-role": "admin" },
     });
     const response = await handle(() => dispatchAdmin(request, segments))(request);
-    return { response, body: await response.json() as { data?: Record<string, unknown>; error?: unknown } };
+    return { status: response.status, body: await response.json() as ListEnvelope };
+  }
+
+  /** The content domain answers on Admin v2; the pagination contract under test is the same. */
+  async function callV2(path: string, query: string) {
+    const result = await adminV2Api("GET", `${path}?${query}`, {
+      userId: actorId,
+      role: "admin",
+    });
+    return { status: result.status, body: result.json as ListEnvelope };
   }
 
   beforeAll(async () => {
@@ -188,8 +200,8 @@ describe("remaining canonical admin lists", () => {
     { name: "subscriptions", segments: ["billing", "subscriptions"], query: `search=${token}&status=active&limit=1` },
     { name: "pricing", segments: ["pricing", "rules"], query: `search=${token}&mode=image&limit=1` },
     { name: "dead-letter", segments: ["generation", "dead-letter"], query: `search=${token}&status=failed&limit=1` },
-    { name: "merchandising characters", segments: ["content", "characters"], query: `search=${token}&status=approved&limit=1` },
-    { name: "merchandising characters without stats", segments: ["content", "characters"], query: `search=${token}&status=approved&sort=popular&limit=1` },
+    { name: "merchandising characters", v2Path: "/api/v2/admin/content/characters", query: `search=${token}&status=approved&limit=1` },
+    { name: "merchandising characters without stats", v2Path: "/api/v2/admin/content/characters", query: `search=${token}&status=approved&sort=popular&limit=1` },
     { name: "redeem codes", segments: ["promo", "redeem-codes"], query: `search=${token}&status=active&limit=1` },
     { name: "referrals", segments: ["promo", "referrals"], query: `search=${token}&status=pending&limit=1` },
     { name: "approvals", segments: ["approvals"], query: `search=${token}&status=pending&limit=1` },
@@ -198,29 +210,36 @@ describe("remaining canonical admin lists", () => {
     { name: "feature flags", segments: ["feature-flags"], query: `search=${token}&enabled=false&limit=1` },
   ] as const;
 
+  const dispatch = (
+    testCase: { readonly segments?: readonly string[]; readonly v2Path?: string },
+    query: string,
+  ) => testCase.v2Path
+    ? callV2(testCase.v2Path, query)
+    : call([...(testCase.segments ?? [])], query);
+
   for (const testCase of cases) {
     it(`paginates ${testCase.name} with server filters and a query-bound cursor`, async () => {
-      const first = await call([...testCase.segments], testCase.query);
-      expect(first.response.status, JSON.stringify(first.body)).toBe(200);
+      const first = await dispatch(testCase, testCase.query);
+      expect(first.status, JSON.stringify(first.body)).toBe(200);
       const firstData = first.body.data as { items: Array<{ id?: string; key?: string }>; pageInfo: PageInfo };
       expect(firstData.items).toHaveLength(1);
       expect(firstData.pageInfo).toMatchObject({ hasNextPage: true, endCursor: expect.any(String) });
 
       const cursor = firstData.pageInfo.endCursor ?? "";
-      const second = await call([...testCase.segments], `${testCase.query}&cursor=${encodeURIComponent(cursor)}`);
-      expect(second.response.status, JSON.stringify(second.body)).toBe(200);
+      const second = await dispatch(testCase, `${testCase.query}&cursor=${encodeURIComponent(cursor)}`);
+      expect(second.status, JSON.stringify(second.body)).toBe(200);
       const secondData = second.body.data as { items: Array<{ id?: string; key?: string }>; pageInfo: PageInfo };
       expect(secondData.items).toHaveLength(1);
       expect(secondData.items[0]?.id ?? secondData.items[0]?.key).not.toBe(firstData.items[0]?.id ?? firstData.items[0]?.key);
 
-      const mismatch = await call([...testCase.segments], `${testCase.query.replace(token, "different")}&cursor=${encodeURIComponent(cursor)}`);
-      expect(mismatch.response.status).toBe(400);
+      const mismatch = await dispatch(testCase, `${testCase.query.replace(token, "different")}&cursor=${encodeURIComponent(cursor)}`);
+      expect(mismatch.status).toBe(400);
     });
   }
 
   it("paginates all three moderation collections independently", async () => {
     const first = await call(["moderation", "queue"], `search=${token}&limit=1`);
-    expect(first.response.status, JSON.stringify(first.body)).toBe(200);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
     const data = first.body.data as {
       reports: Array<{ id: string }>;
       blockedMedia: Array<{ id: string }>;
@@ -241,7 +260,7 @@ describe("remaining canonical admin lists", () => {
       `mediaCursor=${encodeURIComponent(data.pageInfo.blockedMedia.endCursor ?? "")}`,
       `appealCursor=${encodeURIComponent(data.pageInfo.appeals.endCursor ?? "")}`,
     ].join("&"));
-    expect(second.response.status, JSON.stringify(second.body)).toBe(200);
+    expect(second.status, JSON.stringify(second.body)).toBe(200);
     const secondData = second.body.data as typeof data;
     expect(secondData.reports[0]?.id).not.toBe(data.reports[0]?.id);
     expect(secondData.blockedMedia[0]?.id).not.toBe(data.blockedMedia[0]?.id);
@@ -253,7 +272,7 @@ describe("remaining canonical admin lists", () => {
       ["moderation", "queue"],
       `scope=media&search=${token}&limit=1&reportCursor=not-a-report-cursor`,
     );
-    expect(result.response.status, JSON.stringify(result.body)).toBe(200);
+    expect(result.status, JSON.stringify(result.body)).toBe(200);
     expect(result.body.data).toMatchObject({
       reports: [],
       blockedMedia: [{ id: ids("media")[0] }],
@@ -268,7 +287,7 @@ describe("remaining canonical admin lists", () => {
       { segments: ["feature-flags"], query: `search=${token}` },
     ]) {
       const result = await call(testCase.segments, testCase.query);
-      expect(result.response.status, JSON.stringify(result.body)).toBe(200);
+      expect(result.status, JSON.stringify(result.body)).toBe(200);
       const data = result.body.data as { items: unknown[]; pageInfo: PageInfo };
       expect(data.items).toHaveLength(2);
       expect(data.pageInfo).toEqual({ endCursor: null, hasNextPage: false });
@@ -276,24 +295,24 @@ describe("remaining canonical admin lists", () => {
   });
 
   it("rejects malformed canonical pricing, profile, and flag queries at the boundary", async () => {
-    await expect(call(["pricing", "rules"], "limit=1junk")).resolves.toMatchObject({ response: { status: 400 } });
-    await expect(call(["generation", "model-profiles"], "status=mystery")).resolves.toMatchObject({ response: { status: 400 } });
-    await expect(call(["feature-flags"], "enabled=banana")).resolves.toMatchObject({ response: { status: 400 } });
+    await expect(call(["pricing", "rules"], "limit=1junk")).resolves.toMatchObject({ status: 400 });
+    await expect(call(["generation", "model-profiles"], "status=mystery")).resolves.toMatchObject({ status: 400 });
+    await expect(call(["feature-flags"], "enabled=banana")).resolves.toMatchObject({ status: 400 });
   });
 
   it("rejects malformed Billing list and reconciliation queries at the boundary", async () => {
-    await expect(call(["billing", "ledger"], "limit=1junk")).resolves.toMatchObject({ response: { status: 400 } });
-    await expect(call(["billing", "subscriptions"], "status=mystery")).resolves.toMatchObject({ response: { status: 400 } });
-    await expect(call(["billing", "reconciliation"], "from=not-a-date")).resolves.toMatchObject({ response: { status: 400 } });
+    await expect(call(["billing", "ledger"], "limit=1junk")).resolves.toMatchObject({ status: 400 });
+    await expect(call(["billing", "subscriptions"], "status=mystery")).resolves.toMatchObject({ status: 400 });
+    await expect(call(["billing", "reconciliation"], "from=not-a-date")).resolves.toMatchObject({ status: 400 });
     await expect(call(
       ["billing", "reconciliation"],
       "from=2026-07-12T00%3A00%3A00.000Z&to=2026-07-11T00%3A00%3A00.000Z",
-    )).resolves.toMatchObject({ response: { status: 400 } });
+    )).resolves.toMatchObject({ status: 400 });
   });
 
   it("rejects malformed Audit queries at the boundary", async () => {
-    await expect(call(["audit-log"], "limit=1junk")).resolves.toMatchObject({ response: { status: 400 } });
-    await expect(call(["audit-log"], "unknown=value")).resolves.toMatchObject({ response: { status: 400 } });
+    await expect(call(["audit-log"], "limit=1junk")).resolves.toMatchObject({ status: 400 });
+    await expect(call(["audit-log"], "unknown=value")).resolves.toMatchObject({ status: 400 });
   });
 
   it("continues from encoded sort keys when the cursor row is deleted", async () => {
@@ -305,7 +324,7 @@ describe("remaining canonical admin lists", () => {
       ["audit-log"],
       `search=${token}&limit=1&cursor=${encodeURIComponent(firstData.pageInfo.endCursor ?? "")}`,
     );
-    expect(second.response.status, JSON.stringify(second.body)).toBe(200);
+    expect(second.status, JSON.stringify(second.body)).toBe(200);
     const secondData = second.body.data as { items: Array<{ id: string }> };
     expect(secondData.items).toHaveLength(1);
     expect(secondData.items[0]?.id).not.toBe(firstData.items[0]?.id);
