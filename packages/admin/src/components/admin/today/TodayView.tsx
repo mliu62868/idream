@@ -1,15 +1,30 @@
 "use client";
 
-import { todayAllWorkResponseSchema, type TodayAllWorkResponse, type TodayProjection, type TodayWorkItem } from "@idream/shared/admin";
+import { todayAllWorkResponseSchema, type TodayAllWorkResponse, type TodayProjection, type TodaySourceType } from "@idream/shared/admin";
+import { AlertTriangle, CheckCircle2, Clock3, Eye, Inbox, SlidersHorizontal, UserRound, X } from "lucide-react";
 import Link from "next/link";
-import { ArrowRight, Bell, CheckCircle2, Clock3, Eye, Inbox, Pin, UserPlus, UserRound } from "lucide-react";
 import { useEffect, useState } from "react";
-import { translateAdmin, useAdminI18n, type AdminLocale } from "@/components/admin/i18n";
+import { useAdminI18n } from "@/components/admin/i18n";
 import type { WorkMode } from "@/components/admin/nav-config";
 import { adminV2Request } from "@/lib/admin-v2-api";
-import { parseTodayUrl, todayAllWorkPath, todayBrowserPath, type TodayUrlState } from "./query";
+import { ActionFeedbackBar, useActionFeedback } from "./feedback";
+import { formatDateTime, formatElapsed } from "./format";
+import { focusWorkItem, formatCount, queueHealth, slaState, todayCounts, type QueueHealth, type TodayCounts } from "./health";
+import {
+  activeTodayFilters,
+  parseTodayUrl,
+  todayAllWorkPath,
+  todayBrowserPath,
+  todayStatusGroups,
+  withoutTodayFilters,
+  type TodayFilterKey,
+  type TodayUrlState,
+} from "./query";
+import { WorkQueue, type WorkDensity } from "./WorkQueue";
 
 type Row = Record<string, unknown>;
+
+const DENSITY_STORAGE_KEY = "idream.admin.today.density";
 
 export type TodayLegacyData = {
   metrics: {
@@ -31,16 +46,6 @@ export type TodayData = {
   projection: TodayProjection;
 };
 
-const modeContext: Record<WorkMode, string> = {
-  character_producer: "Character releases and verification blockers are ranked first when present.",
-  creative_operator: "Creative execution and placement blockers are ranked first when present.",
-  platform_ops: "Incidents and failed control-plane commands are ranked first.",
-  support: "Assigned support cases and their linked operational work are in scope.",
-  moderator: "Moderation cases and verification failures are ranked first.",
-  growth_analyst: "Only work authorized by your effective permissions is shown.",
-  admin: "All authorized operational domains participate in ranking.",
-};
-
 export function TodayView({ data, onPreferenceChanged, workMode }: { data: TodayData; onPreferenceChanged?: () => void | Promise<void>; workMode: WorkMode }) {
   const { locale, t } = useAdminI18n();
   const { projection } = data;
@@ -49,20 +54,44 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
   const [allWork, setAllWork] = useState<TodayAllWorkResponse | null>(null);
   const [allWorkError, setAllWorkError] = useState("");
   const [reloadVersion, setReloadVersion] = useState(0);
+  const [overdueTotal, setOverdueTotal] = useState<number | null>(null);
+  const [density, setDensity] = useState<WorkDensity>("compact");
+  const [pageCursors, setPageCursors] = useState<readonly string[]>([]);
+  const { dismiss, feedback, report } = useActionFeedback();
+  const now = new Date();
+  const counts = todayCounts(projection, overdueTotal, now);
+  const health = queueHealth(counts);
+  const focus = focusWorkItem(projection);
 
   useEffect(() => {
     const restore = () => {
       setAllWork(null);
       setAllWorkError("");
+      setPageCursors([]);
       setUrlState(parseTodayUrl(new URLSearchParams(window.location.search)));
     };
-    const initialRestore = window.setTimeout(restore, 0);
+    const initialRestore = window.setTimeout(() => {
+      restore();
+      const stored = window.localStorage.getItem(DENSITY_STORAGE_KEY);
+      if (stored === "comfortable" || stored === "compact") setDensity(stored);
+    }, 0);
     window.addEventListener("popstate", restore);
     return () => {
       window.clearTimeout(initialRestore);
       window.removeEventListener("popstate", restore);
     };
   }, []);
+
+  // SPEC: 精确的超时条数。
+  // INTENT: 投影每个队列只发前十条，第十一条起是否超时前端无从知道 —— 这是首屏唯一
+  //         算不出来的数字，用 all-work 的 totalCount 补齐（limit=1，只要那个计数）。
+  useEffect(() => {
+    let active = true;
+    void adminV2Request(todayAllWorkPath({ tab: "all", limit: 1, sla: "overdue" }, workMode), { schema: todayAllWorkResponseSchema })
+      .then((value) => { if (active) setOverdueTotal(value.totalCount); })
+      .catch(() => { if (active) setOverdueTotal(null); });
+    return () => { active = false; };
+  }, [projection, workMode]);
 
   useEffect(() => {
     if (urlState.tab !== "all") return;
@@ -81,394 +110,336 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
   }
 
   function updateFilter(patch: Partial<TodayUrlState>) {
+    setPageCursors([]);
     navigate({ ...urlState, ...patch, tab: "all", cursor: undefined });
   }
 
-  async function refreshAllWork() {
+  /** KPI 与横幅按钮进来的是"只看这一类"，不是在既有筛选上再叠一层。 */
+  function openAllWork(patch: Partial<TodayUrlState>) {
+    setPageCursors([]);
+    navigate({ tab: "all", limit: urlState.limit, ...patch });
+  }
+
+  function changeDensity(next: WorkDensity) {
+    setDensity(next);
+    window.localStorage.setItem(DENSITY_STORAGE_KEY, next);
+  }
+
+  async function refreshAll() {
     await refresh();
     setReloadVersion((value) => value + 1);
   }
 
-  return (
-    <div className="space-y-6" data-testid="today-view">
-      <section
-        aria-label={t("Today data status")}
-        className="rounded-lg border border-[var(--ad-green-text)]/25 bg-[var(--ad-green-bg)] px-4 py-3"
-        role="status"
-      >
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <CheckCircle2 className="h-4 w-4 text-[var(--ad-green-text)]" />
-          <p className="text-sm font-semibold text-[var(--ad-green-text)]">{t("Today's queue is up to date")}</p>
-          <span className="text-xs text-[var(--ad-text-muted)]">
-            {t("Fresh as of {time}", { time: formatDateTime(projection.asOf, locale) })}
-          </span>
-        </div>
-        {/* 排序策略版本（today-ranking-v1）对运营没有可执行含义，留在 API 响应里即可。 */}
-        <p className="mt-1 pl-7 text-xs text-[var(--ad-text-muted)]">{t(modeContext[workMode])}</p>
-      </section>
+  const queueProps = { density, onFeedback: report, onPreferenceChanged: refreshAll };
+  const filters = activeTodayFilters(urlState);
 
-      <div aria-label={t("Today view")} className="flex gap-1 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-1" role="tablist">
-        <button aria-selected={urlState.tab === "summary"} className="min-h-10 rounded-md px-4 text-sm font-semibold aria-selected:bg-[var(--ad-ink)] aria-selected:text-white" onClick={() => navigate({ tab: "summary", limit: 25 })} role="tab" type="button">{t("Summary")}</button>
-        <button aria-selected={urlState.tab === "all"} className="min-h-10 rounded-md px-4 text-sm font-semibold aria-selected:bg-[var(--ad-ink)] aria-selected:text-white" onClick={() => navigate({ ...urlState, tab: "all" })} role="tab" type="button">{t("All work")}</button>
+  return (
+    <div className="space-y-4" data-testid="today-view">
+      <HealthBanner
+        asOf={projection.asOf}
+        counts={counts}
+        focus={focus}
+        health={health}
+        now={now}
+        onFocus={(target) => openAllWork(target === "overdue" ? { sla: "overdue" } : { owner: "unassigned" })}
+      />
+
+      <KpiBand counts={counts} onSelect={openAllWork} />
+
+      <div className="flex flex-wrap items-center gap-2">
+        <div aria-label={t("Today view")} className="flex gap-1 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-1" role="tablist">
+          <button aria-selected={urlState.tab === "summary"} className="min-h-10 rounded-md px-4 text-sm font-semibold aria-selected:bg-[var(--ad-ink)] aria-selected:text-white" onClick={() => navigate({ tab: "summary", limit: 25 })} role="tab" type="button">{t("Summary")}</button>
+          <button aria-selected={urlState.tab === "all"} className="min-h-10 rounded-md px-4 text-sm font-semibold aria-selected:bg-[var(--ad-ink)] aria-selected:text-white" onClick={() => navigate({ ...urlState, tab: "all" })} role="tab" type="button">{t("All work")}</button>
+        </div>
+        <div aria-label={t("Row density")} className="ml-auto flex gap-1 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-1" role="group">
+          <button aria-pressed={density === "compact"} className="min-h-10 rounded-md px-3 text-xs font-semibold aria-pressed:bg-[var(--ad-ink)] aria-pressed:text-white" onClick={() => changeDensity("compact")} type="button">{t("Compact")}</button>
+          <button aria-pressed={density === "comfortable"} className="min-h-10 rounded-md px-3 text-xs font-semibold aria-pressed:bg-[var(--ad-ink)] aria-pressed:text-white" onClick={() => changeDensity("comfortable")} type="button">{t("Comfortable")}</button>
+        </div>
       </div>
 
       {urlState.tab === "summary" ? <>
-      <WorkQueue
-        description={t("Overdue or due-today work owned by you, plus commands awaiting completion or verification.")}
-        icon={UserRound}
-        queue={projection.myShift}
-        onPreferenceChanged={refresh}
-        title={t("My shift")}
-      />
-
-      <WorkQueue
-        description={t("The ten highest-ranked items you are authorized to work on.")}
-        groupRelatedCreativeRuns
-        icon={Clock3}
-        queue={projection.nextBestActions}
-        onPreferenceChanged={refresh}
-        title={t("Next best actions")}
-      />
-
-      <div className="grid items-start gap-3 xl:grid-cols-3">
         <WorkQueue
-          compact
-          description={t("Unowned work you are permitted to claim in its source domain.")}
-          icon={Inbox}
-          queue={projection.unassigned}
-          onPreferenceChanged={refresh}
-          title={t("Unassigned work")}
+          {...queueProps}
+          description={t("Overdue or due-today work owned by you, plus commands awaiting completion or verification.")}
+          icon={UserRound}
+          queue={projection.myShift}
+          queueName="My shift"
         />
-        <WorkQueue
-          compact
-          description={t("Items you explicitly watch.")}
-          icon={Eye}
-          queue={projection.watching}
-          onPreferenceChanged={refresh}
-          title={t("Watching")}
-        />
-        <WorkQueue
-          compact
-          description={t("Work completed and verified during the last 24 hours.")}
-          icon={CheckCircle2}
-          queue={projection.recentlyResolved}
-          onPreferenceChanged={refresh}
-          title={t("Recently resolved")}
-        />
-      </div>
 
-      <details className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
-        <summary className="cursor-pointer px-4 py-3 text-sm font-semibold">{t("Operational context")}</summary>
-        <div className="grid gap-px border-t border-[var(--ad-border)] bg-black/[0.05] sm:grid-cols-2 lg:grid-cols-4">
-          <ContextValue label={t("Active users")} value={data.legacy.metrics.users.active} />
-          <ContextValue label={t("Queued generation jobs")} value={data.legacy.metrics.generation.queued} />
-          <ContextValue label={t("Active subscriptions")} value={data.legacy.metrics.billing.activeSubscriptions} />
-          <ContextValue label={t("Feature flags")} value={data.legacy.featureFlags.length} />
+        <WorkQueue
+          {...queueProps}
+          description={t("The ten highest-ranked items you are authorized to work on.")}
+          groupRelatedCreativeRuns
+          icon={Clock3}
+          queue={projection.nextBestActions}
+          queueName="Next best actions"
+        />
+
+        <div className="grid items-start gap-3 xl:grid-cols-3">
+          <WorkQueue
+            {...queueProps}
+            description={t("Unowned work you are permitted to claim in its source domain.")}
+            icon={Inbox}
+            queue={projection.unassigned}
+            queueName="Unassigned work"
+          />
+          <WorkQueue
+            {...queueProps}
+            description={t("Items you explicitly watch.")}
+            icon={Eye}
+            queue={projection.watching}
+            queueName="Watching"
+            watchedQueue
+          />
+          <WorkQueue
+            {...queueProps}
+            actionable={false}
+            description={t("Work completed and verified during the last 24 hours.")}
+            icon={CheckCircle2}
+            queue={projection.recentlyResolved}
+            queueName="Recently resolved"
+          />
         </div>
-      </details>
-      </> : <section className="space-y-4" data-testid="today-all-work">
-        <div className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 sm:grid-cols-2 xl:grid-cols-6">
-          <TodayFilter label={t("Domain")} onChange={(value) => updateFilter({ domain: value as TodayUrlState["domain"] })} value={urlState.domain} values={["admin_case", "ops_incident", "control_plane_command", "collaboration_mention", "character_release", "creative_run"]} />
-          <TodayFilter label={t("Severity")} onChange={(value) => updateFilter({ severity: value as TodayUrlState["severity"] })} value={urlState.severity} values={["critical", "high", "medium", "low"]} />
-          <TodayFilter label={t("SLA")} onChange={(value) => updateFilter({ sla: value as TodayUrlState["sla"] })} value={urlState.sla} values={["overdue", "due_today", "upcoming", "none"]} />
-          <TodayFilter label={t("Owner")} onChange={(value) => updateFilter({ owner: value as TodayUrlState["owner"] })} value={urlState.owner} values={["mine", "unassigned", "any"]} />
-          <TodayFilter label={t("Status")} onChange={(value) => updateFilter({ status: value as TodayUrlState["status"] })} value={urlState.status} values={["active", "new", "triaged", "in_progress", "waiting", "detected", "mitigating", "monitoring", "accepted", "running", "verifying", "failed", "draft", "validating", "in_review", "approved"]} />
-          <TodayFilter label={t("Environment")} onChange={(value) => updateFilter({ environment: value as TodayUrlState["environment"] })} value={urlState.environment} values={["production", "staging", "development", "test"]} />
+
+        {/* 这四个数字不产生本页的任何动作，是平台背景 —— 保持折叠，也不再自称"运营上下文"。 */}
+        <details className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
+          <summary className="cursor-pointer px-4 py-3 text-sm font-semibold">{t("Platform background")}</summary>
+          <div className="grid gap-px border-t border-[var(--ad-border)] bg-black/[0.05] sm:grid-cols-2 lg:grid-cols-4">
+            <ContextValue label={t("Active users")} value={data.legacy.metrics.users.active} />
+            <ContextValue label={t("Queued generation jobs")} value={data.legacy.metrics.generation.queued} />
+            <ContextValue label={t("Active subscriptions")} value={data.legacy.metrics.billing.activeSubscriptions} />
+            <ContextValue label={t("Feature flags")} value={data.legacy.featureFlags.length} />
+          </div>
+        </details>
+      </> : <section className="space-y-3" data-testid="today-all-work">
+        <div className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
+          <details>
+            <summary className="flex min-h-11 cursor-pointer items-center gap-2 px-4 text-sm font-semibold">
+              <SlidersHorizontal aria-hidden className="h-4 w-4 text-[var(--ad-text-muted)]" />
+              {t("Filters")}
+              {allWork ? <span className="ml-auto text-xs font-normal tabular-nums text-[var(--ad-text-muted)]">{t("{count} results", { count: allWork.totalCount })}</span> : null}
+            </summary>
+            <div className="grid gap-3 border-t border-[var(--ad-border)] p-4 sm:grid-cols-2 xl:grid-cols-6">
+              <TodayFilter label="Domain" onChange={(value) => updateFilter({ domain: value as TodayUrlState["domain"], status: undefined })} value={urlState.domain} values={["admin_case", "ops_incident", "control_plane_command", "collaboration_mention", "character_release", "creative_run"]} />
+              <TodayFilter label="Severity" onChange={(value) => updateFilter({ severity: value as TodayUrlState["severity"] })} value={urlState.severity} values={["critical", "high", "medium", "low"]} />
+              <TodayFilter label="SLA" onChange={(value) => updateFilter({ sla: value as TodayUrlState["sla"] })} value={urlState.sla} values={["overdue", "due_today", "upcoming", "none"]} />
+              <TodayFilter label="Owner" onChange={(value) => updateFilter({ owner: value as TodayUrlState["owner"] })} value={urlState.owner} values={["mine", "unassigned", "any"]} />
+              <StatusFilter domain={urlState.domain} onChange={(value) => updateFilter({ status: value as TodayUrlState["status"] })} value={urlState.status} />
+              <TodayFilter label="Environment" onChange={(value) => updateFilter({ environment: value as TodayUrlState["environment"] })} value={urlState.environment} values={["production", "staging", "development", "test"]} />
+            </div>
+          </details>
+          {filters.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-2 border-t border-[var(--ad-border)] px-4 py-2">
+              {filters.map((filter) => (
+                <button
+                  className="inline-flex min-h-9 items-center gap-1 rounded-full bg-black/[0.05] px-2.5 text-xs"
+                  key={filter.key}
+                  onClick={() => updateFilter({ [filter.key]: undefined })}
+                  type="button"
+                >
+                  <FilterChipLabel filterKey={filter.key} value={filter.value} />
+                  <X aria-hidden className="h-3 w-3" />
+                </button>
+              ))}
+              <button className="min-h-9 text-xs text-[var(--ad-text-muted)] underline underline-offset-2" onClick={() => navigate(withoutTodayFilters(urlState))} type="button">
+                {t("Clear filters")}
+              </button>
+            </div>
+          ) : null}
         </div>
         {allWorkError ? <p className="rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">{t(allWorkError)}</p> : null}
-        {!allWork && !allWorkError ? <p className="p-4 text-sm text-[var(--ad-text-muted)]">{t("Loading…")}</p> : null}
+        {!allWork && !allWorkError ? (
+          <div aria-label={t("Loading work")} className="space-y-2 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" role="status">
+            {[0, 1, 2, 3, 4].map((row) => <div className="h-8 animate-pulse rounded bg-black/[0.05]" key={row} />)}
+          </div>
+        ) : null}
         {allWork ? <>
-          <WorkQueue description={t("Every item you are authorized to work on, filtered and ranked as in Summary.")} icon={Inbox} onPreferenceChanged={refreshAllWork} queue={{ totalCount: allWork.totalCount, items: allWork.items }} title={t("All work")} />
-          {allWork.pageInfo.hasNextPage && allWork.pageInfo.endCursor ? <button className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" onClick={() => navigate({ ...urlState, cursor: allWork.pageInfo.endCursor ?? undefined })} type="button">{t("Next page")}</button> : null}
+          <WorkQueue
+            {...queueProps}
+            description={t("Every item you are authorized to work on, filtered and ranked as in Summary.")}
+            emptyMessage={filters.length > 0 ? t("No work matches these filters.") : undefined}
+            icon={Inbox}
+            queue={{ totalCount: allWork.totalCount, items: allWork.items }}
+            queueName="All work"
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold disabled:opacity-40"
+              disabled={!urlState.cursor}
+              onClick={() => {
+                const previous = pageCursors.slice(0, -1);
+                setPageCursors(previous);
+                navigate({ ...urlState, cursor: previous.at(-1) });
+              }}
+              type="button"
+            >
+              {pageCursors.length > 0 ? t("Previous page") : t("Back to first page")}
+            </button>
+            <span className="text-xs tabular-nums text-[var(--ad-text-muted)]">
+              {pageCursors.length > 0 || !urlState.cursor ? t("Page {page}", { page: pageCursors.length + 1 }) : null}
+            </span>
+            {allWork.pageInfo.hasNextPage && allWork.pageInfo.endCursor ? (
+              <button
+                className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold"
+                onClick={() => {
+                  const cursor = allWork.pageInfo.endCursor ?? undefined;
+                  setPageCursors([...pageCursors, ...(cursor ? [cursor] : [])]);
+                  navigate({ ...urlState, cursor });
+                }}
+                type="button"
+              >
+                {t("Next page")}
+              </button>
+            ) : null}
+          </div>
         </> : null}
       </section>}
+
+      <ActionFeedbackBar feedback={feedback} onDismiss={dismiss} />
     </div>
   );
 }
 
-function TodayFilter({ label, onChange, value, values }: { label: string; onChange: (value: string | undefined) => void; value?: string; values: readonly string[] }) {
-  const { t } = useAdminI18n();
-  return <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t(label)}<select className="mt-1 min-h-10 w-full rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-2 text-sm text-[var(--ad-text)]" onChange={(event) => onChange(event.target.value || undefined)} value={value ?? ""}><option value="">{t("All")}</option>{values.map((option) => <option key={option} value={option}>{t(option.replaceAll("_", " "))}</option>)}</select></label>;
-}
+const BANNER_TONE = {
+  critical: { border: "border-[var(--ad-red-text)]/25", surface: "bg-[var(--ad-red-bg)]", text: "text-[var(--ad-red-text)]" },
+  warning: { border: "border-[var(--ad-yellow-text)]/25", surface: "bg-[var(--ad-yellow-bg)]", text: "text-[var(--ad-yellow-text)]" },
+  calm: { border: "border-[var(--ad-green-text)]/25", surface: "bg-[var(--ad-green-bg)]", text: "text-[var(--ad-green-text)]" },
+} as const;
 
-function WorkQueue({
-  compact = false,
-  description,
-  groupRelatedCreativeRuns = false,
-  icon: Icon,
-  queue,
-  onPreferenceChanged,
-  title,
+function HealthBanner({
+  asOf,
+  counts,
+  focus,
+  health,
+  now,
+  onFocus,
 }: {
-  compact?: boolean;
-  description: string;
-  groupRelatedCreativeRuns?: boolean;
-  icon: typeof Clock3;
-  queue: TodayProjection["myShift"];
-  onPreferenceChanged: () => void | Promise<void>;
-  title: string;
+  asOf: string;
+  counts: TodayCounts;
+  focus: ReturnType<typeof focusWorkItem>;
+  health: QueueHealth;
+  now: Date;
+  onFocus: (target: "overdue" | "unassigned") => void;
 }) {
-  const { t } = useAdminI18n();
-  const groups = groupRelatedCreativeRuns
-    ? groupTodayQueueItems(queue.items)
-    : queue.items.map((item) => ({ key: `${item.sourceType}:${item.sourceId}`, items: [item] }));
+  const { locale, t } = useAdminI18n();
+  const tone = BANNER_TONE[health.tone];
+  const overdueFocus = focus && slaState(focus.slaDueAt, now) === "overdue" ? focus.slaDueAt : null;
   return (
-    <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]" data-testid={`today-queue-${title.toLowerCase().replaceAll(" ", "-")}`}>
-      <div className="border-b border-[var(--ad-border)] p-4">
-        <div className="flex items-center gap-2">
-          <Icon className="h-4 w-4 text-[var(--ad-text-muted)]" />
-          <h2 className="text-sm font-semibold">{t(title)}</h2>
-          <span className="ml-auto rounded-full bg-black/[0.05] px-2 py-1 text-xs font-semibold tabular-nums">
-            {queue.totalCount}
-          </span>
-        </div>
-        <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">{t(description)}</p>
+    <section aria-label={t("Queue health")} className={`rounded-lg border ${tone.border} ${tone.surface} px-4 py-3`} data-testid="today-health" role="status">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        {health.tone === "calm"
+          ? <CheckCircle2 aria-hidden className={`h-4 w-4 ${tone.text}`} />
+          : <AlertTriangle aria-hidden className={`h-4 w-4 ${tone.text}`} />}
+        <p className={`text-sm font-semibold ${tone.text}`}>{t(health.headline, health.values)}</p>
+        <span className="text-xs text-[var(--ad-text-muted)]">{t("Fresh as of {time}", { time: formatDateTime(asOf, locale) })}</span>
+        {health.focus ? (
+          <button className={`ml-auto min-h-9 rounded-md border border-current px-3 text-xs font-semibold ${tone.text}`} onClick={() => onFocus(health.focus!)} type="button">
+            {health.focus === "overdue" ? t("Review overdue work") : t("Review unclaimed work")}
+          </button>
+        ) : null}
       </div>
-      {queue.items.length === 0 ? (
-        <p className="p-4 text-xs text-[var(--ad-text-muted)]">{t("No matching work right now.")}</p>
-      ) : (
-        <div className="divide-y divide-[var(--ad-border)]">
-          {groups.map((group) => group.items.length === 1 ? (
-            <WorkItem compact={compact} item={group.items[0]} key={group.key} onPreferenceChanged={onPreferenceChanged} watched={title === "Watching"} />
-          ) : (
-            <RelatedCreativeRuns
-              compact={compact}
-              items={group.items}
-              key={group.key}
-              onPreferenceChanged={onPreferenceChanged}
-            />
-          ))}
-        </div>
-      )}
-      {queue.totalCount > queue.items.length ? (
-        <p className="border-t border-[var(--ad-border)] px-4 py-2 text-[10px] text-[var(--ad-text-muted)]">
-          {t("Showing {shown} of {total}", { shown: queue.items.length, total: queue.totalCount })}
+      {focus ? (
+        <p className="mt-2 flex flex-wrap items-baseline gap-x-2 text-xs">
+          <span className="font-semibold text-[var(--ad-text-muted)]">{t("Start here")}</span>
+          <Link className="font-semibold underline underline-offset-2" href={focus.deepLink}>{t(focus.title)}</Link>
+          {overdueFocus ? <span className="text-[var(--ad-red-text)]">{t("SLA due {elapsed}", { elapsed: formatElapsed(overdueFocus, locale) })}</span> : null}
         </p>
+      ) : null}
+      {counts.mine === 0 && counts.unassigned > 0 ? (
+        <p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t("Your shift is empty while {count} items have no owner. Claim one to start.", { count: counts.unassigned })}</p>
       ) : null}
     </section>
   );
 }
 
-type TodayQueueItemGroup = {
-  key: string;
-  items: TodayWorkItem[];
-  creativeKey: string | null;
+function KpiBand({ counts, onSelect }: { counts: TodayCounts; onSelect: (patch: Partial<TodayUrlState>) => void }) {
+  const { t } = useAdminI18n();
+  return (
+    <div className="grid gap-3 sm:grid-cols-3 xl:grid-cols-5" data-testid="today-kpis">
+      <Kpi label={t("Open work")} onClick={() => onSelect({})} value={String(counts.pending)} />
+      <Kpi
+        alert={counts.overdue > 0}
+        label={t("SLA overdue")}
+        onClick={() => onSelect({ sla: "overdue" })}
+        title={counts.overdueExact ? undefined : t("At least this many — the authoritative count has not loaded")}
+        value={formatCount(counts.overdue, counts.overdueExact)}
+      />
+      <Kpi label={t("Unclaimed")} onClick={() => onSelect({ owner: "unassigned" })} value={String(counts.unassigned)} />
+      <Kpi label={t("Mine today")} onClick={() => onSelect({ owner: "mine" })} value={String(counts.mine)} />
+      {/* 已解决的工作不在 All Work（只返回活跃项）里，给不出可点的去处，就不假装可点。 */}
+      <Kpi label={t("Resolved in 24h")} value={String(counts.resolved24h)} />
+    </div>
+  );
+}
+
+function Kpi({ alert = false, label, onClick, title, value }: { alert?: boolean; label: string; onClick?: () => void; title?: string; value: string }) {
+  const className = `rounded-lg border px-4 py-3 text-left ${alert ? "border-[var(--ad-red-text)]/25 bg-[var(--ad-red-bg)]" : "border-[var(--ad-border)] bg-[var(--ad-surface)]"}`;
+  const body = (
+    <>
+      <p className={`text-xs ${alert ? "text-[var(--ad-red-text)]" : "text-[var(--ad-text-muted)]"}`}>{label}</p>
+      <p className={`mt-1 text-2xl font-semibold tabular-nums ${alert ? "text-[var(--ad-red-text)]" : ""}`}>{value}</p>
+    </>
+  );
+  if (!onClick) return <div className={className} title={title}>{body}</div>;
+  return (
+    <button className={`${className} transition-shadow hover:shadow-[var(--ad-shadow-hover)]`} onClick={onClick} title={title} type="button">
+      {body}
+    </button>
+  );
+}
+
+const FILTER_LABELS: Record<TodayFilterKey, string> = {
+  domain: "Domain",
+  severity: "Severity",
+  sla: "SLA",
+  owner: "Owner",
+  ownerId: "Owner",
+  status: "Status",
+  environment: "Environment",
 };
 
-function creativeRunGroupKey(item: TodayWorkItem) {
-  if (item.sourceType !== "creative_run") return null;
-  const { purpose, targetId, targetType } = item.impactSnapshot;
-  if (
-    typeof purpose !== "string" || !purpose ||
-    typeof targetId !== "string" || !targetId ||
-    typeof targetType !== "string" || !targetType
-  ) return null;
-  return `${targetType}:${targetId}:${purpose}`;
+function FilterChipLabel({ filterKey, value }: { filterKey: TodayFilterKey; value: string }) {
+  const { t } = useAdminI18n();
+  return <span>{t(FILTER_LABELS[filterKey])}: {t(value)}</span>;
 }
 
-// INTENT: Keep the server's rank order intact. Only adjacent runs can collapse;
-// grouping across another ranked item would visually move lower-priority work upward.
-export function groupTodayQueueItems(items: readonly TodayWorkItem[]): TodayQueueItemGroup[] {
-  const groups: TodayQueueItemGroup[] = [];
-  for (const item of items) {
-    const creativeKey = creativeRunGroupKey(item);
-    const previous = groups.at(-1);
-    if (creativeKey && previous?.creativeKey === creativeKey) {
-      previous.items.push(item);
-      continue;
-    }
-    groups.push({
-      key: creativeKey ? `creative:${creativeKey}:${item.sourceId}` : `${item.sourceType}:${item.sourceId}`,
-      items: [item],
-      creativeKey,
-    });
-  }
-  return groups;
-}
-
-function RelatedCreativeRuns({
-  compact,
-  items,
-  onPreferenceChanged,
-}: {
-  compact: boolean;
-  items: TodayWorkItem[];
-  onPreferenceChanged: () => void | Promise<void>;
-}) {
-  const { locale, t } = useAdminI18n();
-  const first = items[0];
-  const targetId = String(first.impactSnapshot.targetId).replaceAll("_", " ");
-  const purpose = todayOperationalText(
-    String(first.impactSnapshot.purpose).replaceAll("_", " "),
-    locale,
-  );
+function TodayFilter({ label, onChange, value, values }: { label: string; onChange: (value: string | undefined) => void; value?: string; values: readonly string[] }) {
+  const { t } = useAdminI18n();
   return (
-    <div data-testid="today-related-creative-runs">
-      <div className="border-b border-[var(--ad-border)] bg-black/[0.02] px-4 py-2">
-        <p className="text-xs font-semibold">
-          {t("{count} related Creative Runs", { count: items.length })}
-        </p>
-        <p className="mt-0.5 text-[10px] text-[var(--ad-text-muted)]">
-          {targetId} · {purpose}
-        </p>
-      </div>
-      <WorkItem compact={compact} item={first} onPreferenceChanged={onPreferenceChanged} watched={false} />
-      <details className="border-t border-[var(--ad-border)]">
-        <summary className="cursor-pointer px-4 py-3 text-xs font-semibold text-[var(--ad-text-muted)]">
-          {t("Review {count} more", { count: items.length - 1 })}
-        </summary>
-        <div className="divide-y divide-[var(--ad-border)] border-t border-[var(--ad-border)] bg-black/[0.015]">
-          {items.slice(1).map((item) => (
-            <WorkItem compact={compact} item={item} key={item.sourceId} onPreferenceChanged={onPreferenceChanged} watched={false} />
+    <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
+      {t(label)}
+      <select className="mt-1 min-h-10 w-full rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-2 text-sm text-[var(--ad-text)]" onChange={(event) => onChange(event.target.value || undefined)} value={value ?? ""}>
+        <option value="">{t("All")}</option>
+        {values.map((option) => <option key={option} value={option}>{t(option)}</option>)}
+      </select>
+    </label>
+  );
+}
+
+function StatusFilter({ domain, onChange, value }: { domain?: TodaySourceType; onChange: (value: string | undefined) => void; value?: string }) {
+  const { t } = useAdminI18n();
+  const groups = todayStatusGroups(domain);
+  return (
+    <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
+      {t("Status")}
+      <select className="mt-1 min-h-10 w-full rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-2 text-sm text-[var(--ad-text)]" onChange={(event) => onChange(event.target.value || undefined)} value={value ?? ""}>
+        <option value="">{t("All")}</option>
+        {domain
+          ? groups[0].statuses.map((status) => <option key={status} value={status}>{t(status)}</option>)
+          : groups.map((group) => (
+            <optgroup key={group.domain} label={t(group.domain)}>
+              {group.statuses.map((status) => <option key={`${group.domain}:${status}`} value={status}>{t(status)}</option>)}
+            </optgroup>
           ))}
-        </div>
-      </details>
-    </div>
+      </select>
+    </label>
   );
-}
-
-function WorkItem({ compact, item, onPreferenceChanged, watched }: { compact: boolean; item: TodayWorkItem; onPreferenceChanged: () => void | Promise<void>; watched: boolean }) {
-  const { locale, t } = useAdminI18n();
-  const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState("");
-  async function updatePreference(patch: { watching?: boolean; pinned?: boolean; snoozedUntil?: string | null }, label: string) {
-    setBusy(true);
-    setStatus("");
-    try {
-      await adminV2Request("/api/v2/admin/today/preferences", {
-        method: "PUT",
-        ifMatch: item.preferenceVersion,
-        body: { sourceType: item.sourceType, sourceId: item.sourceId, ...patch },
-      });
-      setStatus(label);
-      await onPreferenceChanged();
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Preference update failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-  async function claimItem() {
-    if (!item.claim) return;
-    setBusy(true);
-    setStatus("");
-    try {
-      await adminV2Request("/api/v2/admin/today/claim", {
-        method: "POST",
-        idempotencyKey: `today-claim:${item.sourceType}:${item.sourceId}:${item.claim.entityVersion}`,
-        body: {
-          sourceType: item.sourceType,
-          sourceId: item.sourceId,
-          entityVersion: item.claim.entityVersion,
-        },
-      });
-      setStatus("Claimed by you");
-      await onPreferenceChanged();
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Claim failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <div className="p-4 transition-colors hover:bg-black/[0.025]">
-      <div className="flex items-start gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded bg-black/[0.05] px-1.5 py-0.5 text-[10px] font-semibold uppercase">{t(item.severity)}</span>
-            <span className="text-[10px] uppercase text-[var(--ad-text-muted)]">{t(item.sourceType.replaceAll("_", " "))}</span>
-            {item.pinned ? <span className="text-[10px] font-semibold uppercase">{t("Pinned")}</span> : null}
-          </div>
-          <Link className="group mt-2 flex items-center gap-2 text-sm font-semibold" href={item.deepLink}><span className="truncate">{t(item.title)}</span><ArrowRight className="h-4 w-4 shrink-0 text-[var(--ad-text-muted)] transition-transform group-hover:translate-x-0.5" /></Link>
-          <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">{todayOperationalText(item.summary, locale)}</p>
-          {!compact ? <p className="mt-2 text-xs">{todayOperationalText(item.recommendedAction, locale)}</p> : null}
-          {/* SPEC: 每条事实只出现一次。
-              INTENT: 这一行曾印过第二遍严重度（上面已有色标）、第二遍 SLA（一次 ISO 一次
-              本地格式），外加每张卡都一样的 environment · dataClass —— 同屏重复三十遍，
-              却没有一条能改变运营的下一步。留下的是：归谁、什么时候到期、开了多久，
-              以及只有出结果时才有意义的验证态。 */}
-          <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-[var(--ad-text-muted)]">
-            <span>{t("Owner")}: {item.ownerId ?? t("Unassigned")}</span>
-            <span>{t("SLA")}: {item.slaDueAt ? formatDateTime(item.slaDueAt, locale) : t("No deadline")}</span>
-            <span>{t("Opened")} {formatElapsed(item.openedAt, locale)}</span>
-            {item.verificationState === "pending" ? null : <span>{t("Verification")}: {t(item.verificationState)}</span>}
-          </div>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <button className="inline-flex min-h-9 items-center gap-1 rounded border border-[var(--ad-border)] px-2 text-xs disabled:opacity-50" disabled={busy} onClick={() => void updatePreference({ watching: !watched }, watched ? "Removed from Watching" : "Added to Watching")} type="button"><Eye className="h-3.5 w-3.5" />{watched ? t("Unwatch") : t("Watch")}</button>
-            <button className="inline-flex min-h-9 items-center gap-1 rounded border border-[var(--ad-border)] px-2 text-xs disabled:opacity-50" disabled={busy} onClick={() => void updatePreference({ pinned: !item.pinned }, item.pinned ? "Unpinned" : "Pinned")} type="button"><Pin className="h-3.5 w-3.5" />{item.pinned ? t("Unpin") : t("Pin")}</button>
-            <button className="inline-flex min-h-9 items-center gap-1 rounded border border-[var(--ad-border)] px-2 text-xs disabled:opacity-50" disabled={busy} onClick={() => void updatePreference({ snoozedUntil: new Date(Date.now() + 60 * 60 * 1_000).toISOString() }, "Snoozed for one hour")} type="button"><Bell className="h-3.5 w-3.5" />{t("Snooze 1h")}</button>
-            {item.claim ? <button className="inline-flex min-h-9 items-center gap-1 rounded bg-[var(--ad-ink)] px-2 text-xs font-semibold text-white disabled:opacity-50" disabled={busy} onClick={() => void claimItem()} type="button"><UserPlus className="h-3.5 w-3.5" />{t("Claim")}</button> : null}
-          </div>
-          {status ? <p className="mt-2 text-xs text-[var(--ad-text-muted)]" role="status">{t(status)}</p> : null}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-export function todayOperationalText(text: string, locale: AdminLocale) {
-  if (locale === "en") return text;
-
-  const entityState = /^([a-z_]+) (.+) is ([a-z_]+)$/i.exec(text);
-  if (entityState) {
-    const [, entityType, entityId, state] = entityState;
-    const [targetType, ...targetId] = entityId.split(":");
-    const target = targetId.length
-      ? `${translateAdmin(locale, targetType)}:${targetId.join(":")}`
-      : entityId;
-    return `${translateAdmin(locale, entityType.replaceAll("_", " "))} ${target} · ${translateAdmin(locale, state)}`;
-  }
-
-  const incidentState = /^Incident is ([a-z_]+)$/i.exec(text);
-  if (incidentState) {
-    return `${translateAdmin(locale, "Incident")} · ${translateAdmin(locale, incidentState[1])}`;
-  }
-
-  if (text.includes(" · ")) {
-    return text.split(" · ").map((segment) => todayOperationalSegment(segment, locale)).join(" · ");
-  }
-  return translateAdmin(locale, text);
-}
-
-function todayOperationalSegment(segment: string, locale: AdminLocale) {
-  const readiness = /^readiness ([a-z_]+)$/i.exec(segment);
-  if (readiness) {
-    return `${translateAdmin(locale, "Readiness")}：${translateAdmin(locale, readiness[1])}`;
-  }
-  return translateAdmin(locale, segment);
-}
-
-// SPEC: 工作项已经开了多久 —— 取最大的整数单位，只给一位。
-// INTENT: 队列里唯一真正在变的量是"积压了多久"。绝对时间戳要读者自己做减法；
-//         "3 周"一眼就知道该不该急。
-function formatElapsed(value: string, locale: AdminLocale) {
-  const elapsedMs = Math.max(0, Date.now() - new Date(value).getTime());
-  const units: Array<[Intl.RelativeTimeFormatUnit, number]> = [
-    ["day", 86_400_000],
-    ["hour", 3_600_000],
-    ["minute", 60_000],
-  ];
-  const format = new Intl.RelativeTimeFormat(locale === "zh" ? "zh-CN" : "en", { numeric: "auto", style: "narrow" });
-  for (const [unit, ms] of units) {
-    const amount = Math.floor(elapsedMs / ms);
-    if (amount >= 1) return format.format(-amount, unit);
-  }
-  return format.format(0, "minute");
-}
-
-function formatDateTime(value: string, locale: "en" | "zh") {
-  return new Intl.DateTimeFormat(locale === "zh" ? "zh-CN" : "en", {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone: "UTC",
-  }).format(new Date(value));
 }
 
 function ContextValue({ label, value }: { label: string; value: number }) {
-  const { t } = useAdminI18n();
   return (
     <div className="bg-[var(--ad-surface)] p-4">
-      <p className="text-xs text-[var(--ad-text-muted)]">{t(label)}</p>
+      <p className="text-xs text-[var(--ad-text-muted)]">{label}</p>
       <p className="mt-1 text-lg font-semibold">{value}</p>
     </div>
   );
