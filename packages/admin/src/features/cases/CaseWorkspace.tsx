@@ -4,7 +4,7 @@ import { adminDateLocale, useAdminI18n } from "@/components/admin/i18n";
 import Link from "next/link";
 import type { FormEvent, KeyboardEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowRight, CheckCircle2, ChevronLeft, ChevronRight, ClipboardCheck, X } from "lucide-react";
+import { ArrowRight, CheckCircle2, ChevronRight, ClipboardCheck, X } from "lucide-react";
 import {
   APPEAL_CASE_DECISIONS,
   BILLING_CASE_ACTIONS,
@@ -65,9 +65,6 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  // SPEC: 走过的页游标栈 —— 服务端只回 endCursor，没有反向游标，"上一页"只能客户端记。
-  // INTENT: 总数与页码需要后端补 totalCount，这里只承诺"能退回去"。
-  const [pageCursors, setPageCursors] = useState<string[]>([]);
   const history = useRef(createWorkspaceHistoryController(initialUrlState));
   const listRequestId = useRef(0);
   const detailRequestId = useRef(0);
@@ -144,7 +141,6 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
     event?.preventDefault();
     const next = { ...query, cursor: undefined };
     setSelectedSavedViewId(null);
-    setPageCursors([]);
     setQuery(next);
     history.current.navigate({ query: next, selectedId, savedViewId: null }, writeCaseUrl);
     void loadList(next);
@@ -153,7 +149,6 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
   function selectView(view: string) {
     const next = { ...query, view, cursor: undefined };
     setSelectedSavedViewId(null);
-    setPageCursors([]);
     setQuery(next);
     history.current.navigate({ query: next, selectedId, savedViewId: null }, writeCaseUrl);
     void loadList(next);
@@ -162,15 +157,13 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
   function clearFilters() {
     const next = { ...defaultCaseQuery, view: query.view };
     setSelectedSavedViewId(null);
-    setPageCursors([]);
     setQuery(next);
     history.current.navigate({ query: next, selectedId, savedViewId: null }, writeCaseUrl);
     void loadList(next);
   }
 
-  function goToPage(cursor: string | undefined, cursors: string[]) {
+  function goToPage(cursor: string | undefined) {
     const next = { ...history.current.current().query, cursor };
-    setPageCursors(cursors);
     setQuery(next);
     history.current.navigate({ query: next, selectedId, savedViewId: selectedSavedViewId }, writeCaseUrl);
     void loadList(next);
@@ -187,7 +180,6 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
   const applySavedView = useCallback((view: SavedViewRecord) => {
     const next = caseQueryFromSavedState(view.queryState);
     setSelectedSavedViewId(view.id);
-    setPageCursors([]);
     setQuery(next);
     history.current.navigate({ query: next, selectedId, savedViewId: view.id }, writeCaseUrl);
     void loadList(next);
@@ -202,7 +194,6 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
   // 尤其关闭工单后那条工单还在原地，很容易被再点一次。
   async function refreshAfterMutation(label: string) {
     const next = { ...history.current.current().query, cursor: undefined };
-    setPageCursors([]);
     setQuery(next);
     history.current.replace({ query: next, selectedId, savedViewId: selectedSavedViewId }, writeCaseUrl);
     await Promise.all([loadList(next), selectedId ? loadDetail(selectedId) : Promise.resolve()]);
@@ -251,6 +242,8 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
         <div className="flex items-end gap-2"><WorkspaceButton tone="primary" type="submit">{t("Apply")}</WorkspaceButton>{filtered ? <WorkspaceButton onClick={clearFilters}>{t("Clear")}</WorkspaceButton> : null}</div>
       </form>
 
+      {/* 接缝：这是本工作台唯一的反馈出口。全局 ui/Toast.tsx 合并后整块换成 useToast() /
+          useFailureToast()（成功自动消失、失败常驻 + 复制给工程），error / notice 两个 state 一起删。 */}
       {error ? <div className="rounded-md bg-[var(--ad-red-bg)] px-4 py-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}</div> : null}
       {notice ? <div className="rounded-md bg-[var(--ad-green-bg)] px-4 py-3 text-sm text-[var(--ad-green-text)]" role="status">{notice}</div> : null}
 
@@ -258,14 +251,12 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
         <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,0.92fr)_minmax(460px,1.08fr)]">
           <div className="space-y-2" aria-label={t("Case results")}>
             {list?.items.map((adminCase) => <CaseRow adminCase={adminCase} active={selectedId === adminCase.id} key={adminCase.id} onSelect={() => selectCase(adminCase.id)} referenceTime={list.asOf} />)}
-            {/* 接缝：全站统一的 Pagination 原语正在另一个分支上做；接上后这块换成它。 */}
-            {list && (pageCursors.length > 0 || list.pageInfo.hasNextPage) ? (
+            {/* 接缝：authority 侧正在补 startCursor / hasPreviousPage / totalCount，之后这块整体换成
+                统一的 Pagination 原语。在那之前只说得出"本页有几条"——不谎称是总数，也不自造上一页。 */}
+            {list && list.items.length > 0 ? (
               <nav aria-label={t("Case pages")} className="flex flex-wrap items-center justify-between gap-3 pt-1">
-                <p className="text-xs text-[var(--ad-text-muted)]">{t("Page {page} · {count} shown", { page: pageCursors.length + 1, count: list.items.length })}</p>
-                <div className="flex gap-2">
-                  <WorkspaceButton disabled={loading || pageCursors.length === 0} onClick={() => goToPage(pageCursors.at(-1) || undefined, pageCursors.slice(0, -1))}><ChevronLeft className="h-4 w-4" />{t("Previous page")}</WorkspaceButton>
-                  <WorkspaceButton disabled={loading || !list.pageInfo.hasNextPage} onClick={() => goToPage(list.pageInfo.endCursor ?? undefined, [...pageCursors, query.cursor ?? ""])}>{t("Next page")}<ChevronRight className="h-4 w-4" /></WorkspaceButton>
-                </div>
+                <p className="text-xs text-[var(--ad-text-muted)]">{t("{count} on this page", { count: list.items.length })}</p>
+                {list.pageInfo.hasNextPage ? <WorkspaceButton disabled={loading} onClick={() => goToPage(list.pageInfo.endCursor ?? undefined)}>{t("Next page")}<ChevronRight className="h-4 w-4" /></WorkspaceButton> : null}
               </nav>
             ) : null}
           </div>
@@ -348,6 +339,8 @@ function CaseInspector({ busy, canAssign, canDecide, detail, onClose, onConfirme
     const idempotencyKey = crypto.randomUUID();
     setConfirmSpec({
       title: input.title,
+      // 接缝：ConfirmSpec 新增的 consequence 合并后，把这句后果描述从 summary 挪到 consequence，
+      // 让它以常驻红条 + DangerButton 出现在敲确认串之前。close 尤其需要（不可撤销）。
       summary: input.summary,
       destructive: { expectedName, inputLabel: t("Type confirmation") },
       submitLabel: input.submitLabel,
@@ -407,4 +400,6 @@ function stateFromLocation(initialCaseId: string | null): CaseWorkspaceUrlState 
   };
 }
 function writeCaseUrl(state: CaseWorkspaceUrlState, mode: "push" | "replace") { setWorkspaceUrl(buildCaseWorkspaceParams(state), { mode, pathname: caseWorkspacePath(state.selectedId) }); }
+// 接缝：ui/request-error-copy.ts 合并后改走统一的 AppErrorCode → 人话映射
+// （映射不到如实说"原因未能识别"，5xx / 网络故障不承诺"没有写入"）。
 function message(error: unknown) { return error instanceof Error ? error.message : "Case operation failed"; }

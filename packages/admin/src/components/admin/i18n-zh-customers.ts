@@ -86,8 +86,8 @@ export const adminZhCustomers: Record<string, string> = {
   "Escalate": "升级",
   "Every signed delta requires a reason, target confirmation, unique idempotency key, and server-side audit.":
     "每笔有符号变更都需要原因、目标确认、唯一幂等键和服务端审计。",
-  "Everyone using {label} sees this query the next time they open it. The stored v{version} query is replaced.":
-    "所有使用「{label}」的人下次打开时看到的就是这份查询，已存的 v{version} 查询会被替换。",
+  "Everyone using {label} sees this query the next time they open it. The stored v{version} query is replaced and cannot be recovered.":
+    "所有使用「{label}」的人下次打开时看到的就是这份查询。已存的 v{version} 查询会被直接替换，且无法恢复。",
   "Evidence IDs (comma separated)": "证据 ID（逗号分隔）",
   "Evidence, decision, downstream verification, and closure stay attached to the customer problem.":
     "证据、决策、下游验证与闭环始终关联到该客户问题。",
@@ -146,10 +146,8 @@ export const adminZhCustomers: Record<string, string> = {
   "Overwrite the shared Saved View": "覆盖共享的已保存视图",
   "Overwrite v": "覆盖 v",
   "Ownership transferred; the case was reloaded from authority.": "负责人已移交，工单已从权威数据重新加载。",
-  "Page {page} · {count} shown": "第 {page} 页 · 显示 {count} 条",
   "Park this case on a dependency": "挂起该工单等待依赖",
   "Paying": "付费",
-  "Previous page": "上一页",
   "Plaintext access": "明文访问",
   "Plaintext access failed.": "明文访问失败。",
   "Plaintext access logged.": "明文访问已写审计。",
@@ -264,6 +262,7 @@ export const adminZhCustomers: Record<string, string> = {
   "user, email, subscription, or source": "用户、邮箱、订阅或来源",
   "{action} Character image {id}": "{action}角色图片 {id}",
   "{count} ledger entries": "{count} 条账本记录",
+  "{count} on this page": "本页 {count} 条",
   "· Authorization:": "· 授权：",
   "· Owner:": "· 负责人：",
   "· signed delta": "· 有符号变更量",

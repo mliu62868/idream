@@ -140,7 +140,9 @@ export function SavedViewsControl({
   const confirmUpdate = (current: SavedViewRecord) => {
     setConfirmSpec({
       title: t("Overwrite the shared Saved View"),
-      summary: t("Everyone using {label} sees this query the next time they open it. The stored v{version} query is replaced.", { label: current.label, version: current.version }),
+      // 接缝：ConfirmSpec 新增的 consequence 合并后这句挪过去（常驻红条 + DangerButton）。
+      // 后端只存当前 queryState，没有版本历史，所以覆盖确实不可恢复——照实说。
+      summary: t("Everyone using {label} sees this query the next time they open it. The stored v{version} query is replaced and cannot be recovered.", { label: current.label, version: current.version }),
       requireReason: false,
       submitLabel: t("Overwrite"),
       onSubmit: () => updateSelected(current),
@@ -167,6 +169,7 @@ export function SavedViewsControl({
           <label className="grid min-w-0 flex-1 gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("View label")}<input className={fieldClass} maxLength={80} onChange={(event) => setLabel(event.target.value)} placeholder={t("e.g. Critical incidents I own")} value={label} /></label>
           <div className="flex flex-wrap gap-2"><WorkspaceButton disabled={busy || label.trim().length === 0} onClick={() => void saveNew()}><Save className="h-4 w-4" />{t("Save new")}</WorkspaceButton>{selected ? <WorkspaceButton aria-label={t("Overwrite shared view {label} (v{version})", { label: selected.label, version: selected.version })} disabled={busy || label.trim().length === 0} onClick={() => confirmUpdate(selected)}>{t("Overwrite v")}{selected.version}</WorkspaceButton> : null}<WorkspaceButton disabled={loading || busy} onClick={() => void load()}><RefreshCcw className="h-4 w-4" />{t("Reload")}</WorkspaceButton></div>
         </div>
+        {/* 接缝：本控件唯一的反馈出口，ui/Toast.tsx 合并后换成 useToast() / useFailureToast()。 */}
         <div aria-atomic="true" aria-live="polite" className="mt-2 min-h-5 text-xs">{error ? <p className="text-[var(--ad-red-text)]" role="alert">{error}</p> : notice ? <p className="text-[var(--ad-green-text)]" role="status">{notice}</p> : null}</div>
       </div>
       {confirmSpec ? <ConfirmDialog onClose={() => setConfirmSpec(null)} spec={confirmSpec} /> : null}
@@ -174,6 +177,7 @@ export function SavedViewsControl({
   );
 }
 
+// 接缝：ui/request-error-copy.ts 合并后改走统一的 AppErrorCode → 人话映射。
 function message(cause: unknown, fallback: string) {
   return cause instanceof Error ? cause.message : fallback;
 }

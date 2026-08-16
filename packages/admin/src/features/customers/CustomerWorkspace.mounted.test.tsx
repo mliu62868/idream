@@ -100,14 +100,13 @@ describe("CustomerWorkspace 360", () => {
     expect(container.textContent).toContain("12,345 DC");
   });
 
-  it("offers a previous page once the operator has paged forward", async () => {
+  // 双向分页要等 authority 侧补 startCursor / hasPreviousPage / totalCount。在那之前
+  // 这行只许声明"本页几条"——绝不能让运营把它读成总数。
+  it("reports the page size without claiming it is a total", async () => {
     await mount();
-    const previous = findButton("Previous page");
-    expect(previous?.disabled).toBe(true);
+    expect(container.querySelector('[aria-label="Customer pages"]')?.textContent).toContain("1 on this page");
     await act(async () => findButton("Next page")?.click());
     await waitUntil(() => adminV2Request.mock.calls.some(([path]) => path.includes("cursor=cursor-2")));
-    expect(findButton("Previous page")?.disabled).toBe(false);
-    expect(container.textContent).toContain("Page 2");
   });
 
   it("shows account standing, subscription end state, and operator history in the 360 panel", async () => {

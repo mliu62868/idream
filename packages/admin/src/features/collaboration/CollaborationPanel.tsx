@@ -230,6 +230,7 @@ export function CollaborationPanel({
         {watcherIds.length === 0 ? t("No watchers") : t("{count} watchers: {ids}", { count: watcherIds.length, ids: watcherIds.map(actorLabel).join(", ") })}
       </p>
 
+      {/* 接缝：本面板唯一的反馈出口，ui/Toast.tsx 合并后换成 useToast() / useFailureToast()。 */}
       <div aria-atomic="true" aria-live="polite" className="mt-3 min-h-5 text-xs">
         {error ? <p className="text-[var(--ad-red-text)]" role="alert">{error} <button className="underline" onClick={() => void load()} type="button">{t("Retry")}</button></p> : null}
         {notice ? <p className="text-[var(--ad-green-text)]" role="status">{notice}</p> : null}
@@ -281,6 +282,7 @@ export function parseChecklist(value: string) {
   })).filter((item) => item.label.length > 0);
 }
 
+// 接缝：ui/request-error-copy.ts 合并后改走统一的 AppErrorCode → 人话映射。
 function message(cause: unknown, fallback: string) {
   return cause instanceof Error ? cause.message : fallback;
 }

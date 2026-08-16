@@ -9,7 +9,7 @@ import {
   type Customer360,
   type CustomerListResponse,
 } from "@idream/shared/admin";
-import { ArrowLeft, ChevronLeft, ChevronRight, RefreshCcw, Search, UserRound } from "lucide-react";
+import { ArrowLeft, ChevronRight, RefreshCcw, Search, UserRound } from "lucide-react";
 import { adminV2Request, setWorkspaceUrl } from "@/lib/admin-v2-api";
 import { createWorkspaceHistoryController, observeWorkspacePopState, workspaceDetailId } from "@/lib/workspace-history";
 import {
@@ -39,9 +39,6 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // SPEC: 走过的页游标栈 —— 服务端只回 endCursor，没有反向游标，所以"上一页"只能由客户端记住。
-  // INTENT: 客服翻过一页发现看错了，此前唯一的退路是重新搜一遍。总数/页码要后端出 totalCount。
-  const [pageCursors, setPageCursors] = useState<string[]>([]);
   const firstQuery = useRef(query);
   const history = useRef(createWorkspaceHistoryController(initialUrlState));
   const listRequestId = useRef(0);
@@ -112,15 +109,13 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
 
   function applyQuery(next: CustomerQuery) {
     const normalized = { ...next, cursor: undefined };
-    setPageCursors([]);
     setQuery(normalized);
     history.current.navigate({ query: normalized, selectedId }, writeCustomerUrl);
     void loadList(normalized);
   }
 
-  function goToPage(cursor: string | undefined, cursors: string[]) {
+  function goToPage(cursor: string | undefined) {
     const next = { ...history.current.current().query, cursor };
-    setPageCursors(cursors);
     setQuery(next);
     history.current.navigate({ query: next, selectedId }, writeCustomerUrl);
     void loadList(next);
@@ -149,6 +144,7 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
         </WorkspaceButton>
       </header>
 
+      {/* 接缝：这是本工作台唯一的反馈出口，ui/Toast.tsx 合并后换成 useFailureToast()。 */}
       {error ? <div className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}</div> : null}
 
       <form className="grid gap-3 rounded-xl bg-[var(--ad-surface)] p-4 sm:grid-cols-[minmax(0,1fr)_180px_auto]" onSubmit={(event) => { event.preventDefault(); applyQuery(query); }}>
@@ -181,14 +177,12 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
               ))}
             </ul>
           ) : error ? null : <EmptyWorkspace filtered={Boolean(query.search || query.status)} onClear={() => applyQuery(defaultCustomerQuery)} />}
-          {/* 接缝：全站统一的 Pagination 原语正在另一个分支上做；接上后这块换成它。 */}
-          {list && list.items.length > 0 && (pageCursors.length > 0 || list.pageInfo.hasNextPage) ? (
+          {/* 接缝：authority 侧正在补 startCursor / hasPreviousPage / totalCount，之后这块整体换成
+              统一的 Pagination 原语。在那之前只说得出"本页有几条"——不谎称是总数，也不自造上一页。 */}
+          {list && list.items.length > 0 ? (
             <nav aria-label={t("Customer pages")} className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--ad-border)] p-4">
-              <p className="text-xs text-[var(--ad-text-muted)]">{t("Page {page} · {count} shown", { page: pageCursors.length + 1, count: list.items.length })}</p>
-              <div className="flex gap-2">
-                <WorkspaceButton disabled={loading || pageCursors.length === 0} onClick={() => goToPage(pageCursors.at(-1) || undefined, pageCursors.slice(0, -1))}><ChevronLeft className="h-4 w-4" />{t("Previous page")}</WorkspaceButton>
-                <WorkspaceButton disabled={loading || !list.pageInfo.hasNextPage} onClick={() => goToPage(list.pageInfo.endCursor ?? undefined, [...pageCursors, query.cursor ?? ""])}>{t("Next page")}<ChevronRight className="h-4 w-4" /></WorkspaceButton>
-              </div>
+              <p className="text-xs text-[var(--ad-text-muted)]">{t("{count} on this page", { count: list.items.length })}</p>
+              {list.pageInfo.hasNextPage ? <WorkspaceButton disabled={loading} onClick={() => goToPage(list.pageInfo.endCursor ?? undefined)}>{t("Next page")}<ChevronRight className="h-4 w-4" /></WorkspaceButton> : null}
             </nav>
           ) : null}
         </section>
@@ -234,4 +228,5 @@ function ListStat({ label, value }: { label: string; value: React.ReactNode }) {
 function coins(value: number, locale: AdminLocale) { return `${value.toLocaleString(adminDateLocale(locale) ?? "en-US")} DC`; }
 function stateFromLocation(initialCustomerId: string | null) { const parsed = typeof window === "undefined" ? { query: defaultCustomerQuery, selectedId: null } : parseCustomerWorkspaceParams(new URLSearchParams(window.location.search)); return { ...parsed, selectedId: initialCustomerId ?? parsed.selectedId ?? (typeof window === "undefined" ? null : workspaceDetailId(window.location.pathname, "/admin/customers")) }; }
 function writeCustomerUrl(state: CustomerWorkspaceUrlState, mode: "push" | "replace") { setWorkspaceUrl(buildCustomerWorkspaceParams(state), { mode, pathname: customerWorkspacePath(state.selectedId) }); }
+// 接缝：ui/request-error-copy.ts 合并后改走统一的 AppErrorCode → 人话映射。
 function message(cause: unknown) { return cause instanceof Error ? cause.message : "Customer workspace request failed"; }
