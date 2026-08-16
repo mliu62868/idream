@@ -27,16 +27,29 @@ const kindLabels: Record<ActivityKind, string> = {
   checklist: "Checklist update",
 };
 
+// INVARIANT: 成功文案必须是静态 key —— `t(\`${kindLabels[kind]} added…\`)` 那种拼接键
+// 在字典里查不到，中文界面会原样露出英文。
+export const kindNotices: Record<ActivityKind, string> = {
+  comment: "Comment added to the activity timeline.",
+  handoff: "Handoff added to the activity timeline.",
+  checklist: "Checklist update added to the activity timeline.",
+};
+
 export function CollaborationPanel({
   targetType,
   targetId,
   targetVersion,
   canWrite,
+  onAuthorityChange,
 }: {
   targetType: CollaborationTargetType;
   targetId: string;
   targetVersion: number;
   canWrite: boolean;
+  // SPEC: handoff 会在服务端改掉这条记录的 ownerId 并 +1 version（collaboration/service.ts）。
+  // INTENT: 交接完父级必须重新拉记录，否则详情页还挂着旧负责人，而且后续写操作会拿陈旧的
+  // entityVersion 去撞 409 —— 交接看着成功了，接手的人却什么都改不动。
+  onAuthorityChange?: () => void;
 }) {
   const { locale, t } = useAdminI18n();
   const [items, setItems] = useState<Activity[]>([]);
@@ -100,7 +113,7 @@ export function CollaborationPanel({
         setAccessRestricted(true);
         setItems([]);
       } else {
-        setError(message(cause, "Collaboration activity could not be loaded"));
+        setError(message(cause, t("Collaboration activity could not be loaded")));
       }
     } finally {
       if (currentRequest === requestId.current) {
@@ -108,7 +121,7 @@ export function CollaborationPanel({
         setLoadingOlder(false);
       }
     }
-  }, [targetId, targetType]);
+  }, [t, targetId, targetType]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0);
@@ -135,10 +148,10 @@ export function CollaborationPanel({
         },
       );
       setWatching(response.watching);
-      setNotice(response.watching ? "You are watching this record." : "Watch removed.");
+      setNotice(response.watching ? t("You are watching this record.") : t("Watch removed."));
       await load();
     } catch (cause) {
-      setError(message(cause, "Watch preference could not be saved"));
+      setError(message(cause, t("Watch preference could not be saved")));
     } finally {
       setSubmitting(false);
     }
@@ -181,11 +194,12 @@ export function CollaborationPanel({
       setChecklist("");
       setNotice(kind === "handoff"
         ? t("Ownership transferred and recorded in the activity timeline.")
-        : t(`${kindLabels[kind]} added to the activity timeline.`));
+        : t(kindNotices[kind]));
       await load();
+      if (kind === "handoff") onAuthorityChange?.();
       bodyRef.current?.focus();
     } catch (cause) {
-      setError(message(cause, "Activity could not be added"));
+      setError(message(cause, t("Activity could not be added")));
     } finally {
       setSubmitting(false);
     }
@@ -216,6 +230,7 @@ export function CollaborationPanel({
         {watcherIds.length === 0 ? t("No watchers") : t("{count} watchers: {ids}", { count: watcherIds.length, ids: watcherIds.map(actorLabel).join(", ") })}
       </p>
 
+      {/* 接缝：本面板唯一的反馈出口，ui/Toast.tsx 合并后换成 useToast() / useFailureToast()。 */}
       <div aria-atomic="true" aria-live="polite" className="mt-3 min-h-5 text-xs">
         {error ? <p className="text-[var(--ad-red-text)]" role="alert">{error} <button className="underline" onClick={() => void load()} type="button">{t("Retry")}</button></p> : null}
         {notice ? <p className="text-[var(--ad-green-text)]" role="status">{notice}</p> : null}
@@ -267,6 +282,7 @@ export function parseChecklist(value: string) {
   })).filter((item) => item.label.length > 0);
 }
 
+// 接缝：ui/request-error-copy.ts 合并后改走统一的 AppErrorCode → 人话映射。
 function message(cause: unknown, fallback: string) {
   return cause instanceof Error ? cause.message : fallback;
 }

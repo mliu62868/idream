@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { CollaborationPanel, parseAttachmentIds, parseChecklist, parseMentionIds } from "./CollaborationPanel";
+import { hasAdminZh } from "@/components/admin/i18n";
+import { CollaborationPanel, kindNotices, parseAttachmentIds, parseChecklist, parseMentionIds } from "./CollaborationPanel";
 import {
   applySavedView,
   caseQueryFromSavedState,
@@ -17,6 +18,14 @@ describe("Admin collaboration UI", () => {
     expect(html).toContain("Loading collaboration activity");
     expect(html).toContain("Read access only");
     expect(html).not.toContain("Add activity");
+  });
+
+  // 成功文案是按 kind 查表拿到的，i18n-completeness 只扫字面量参数，扫不到这里——
+  // 所以每个分支都必须显式锁一遍中文，否则中文界面下做完操作弹的是英文。
+  it("has a Chinese translation for every activity success notice", () => {
+    for (const notice of Object.values(kindNotices)) {
+      expect([notice, hasAdminZh(notice)]).toEqual([notice, true]);
+    }
   });
 
   it("deduplicates bounded mention IDs", () => {

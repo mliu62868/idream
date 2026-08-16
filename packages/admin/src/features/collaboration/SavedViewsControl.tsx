@@ -8,6 +8,7 @@ import {
 } from "@idream/shared/admin";
 import { Bookmark, RefreshCcw, Save } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { WorkspaceButton, fieldClass } from "@/features/operations/WorkspaceUi";
 import { AdminV2RequestError, adminV2Request, setWorkspaceUrl } from "@/lib/admin-v2-api";
 import {
@@ -38,6 +39,7 @@ export function SavedViewsControl({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [confirmSpec, setConfirmSpec] = useState<ConfirmSpec | null>(null);
 
   const clearSelection = useCallback(() => {
     onSelectedChange(null);
@@ -58,11 +60,11 @@ export function SavedViewsControl({
       if (selected) setLabel(selected.label);
       else if (selectedId) clearSelection();
     } catch (cause) {
-      setError(message(cause, "Saved Views could not be loaded"));
+      setError(message(cause, t("Saved Views could not be loaded")));
     } finally {
       setLoading(false);
     }
-  }, [clearSelection, scope, selectedId]);
+  }, [clearSelection, scope, selectedId, t]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0);
@@ -74,7 +76,7 @@ export function SavedViewsControl({
     if (view) {
       applySavedView(view, onSelectedChange, onApply);
       setLabel(view.label);
-      setNotice(`Applied ${view.label}.`);
+      setNotice(t("Applied saved view {label}.", { label: view.label }));
       setError(null);
     } else clearSelection();
   };
@@ -94,17 +96,16 @@ export function SavedViewsControl({
       await load();
       applySavedView(response.view, onSelectedChange, onApply);
       setLabel(response.view.label);
-      setNotice(`Saved ${response.view.label}.`);
+      setNotice(t("Saved view {label} created.", { label: response.view.label }));
     } catch (cause) {
-      setError(message(cause, "Current view could not be saved"));
+      setError(message(cause, t("Current view could not be saved")));
     } finally {
       setBusy(false);
     }
   };
 
-  const updateSelected = async () => {
-    const current = views.find((view) => view.id === selectedId);
-    if (!current || !label.trim()) return;
+  const updateSelected = async (current: SavedViewRecord) => {
+    if (!label.trim()) return;
     setBusy(true);
     setError(null);
     setNotice(null);
@@ -120,17 +121,32 @@ export function SavedViewsControl({
       });
       setViews((items) => items.map((item) => item.id === response.view.id ? response.view : item));
       applySavedView(response.view, onSelectedChange, onApply);
-      setNotice(`Updated ${response.view.label}.`);
+      setNotice(t("Saved view {label} updated.", { label: response.view.label }));
     } catch (cause) {
       if (cause instanceof AdminV2RequestError && cause.status === 409) {
         await load();
-        setError("Saved View changed on the server. Your local query was not written; reload before retrying.");
+        setError(t("Saved View changed on the server. Your local query was not written; reload before retrying."));
       } else {
-        setError(message(cause, "Saved View could not be updated"));
+        setError(message(cause, t("Saved View could not be updated")));
       }
     } finally {
       setBusy(false);
     }
+  };
+
+  // SPEC: 覆盖已保存视图前必须确认 —— 这是共享记录，别人下次打开看到的就是你写进去的查询。
+  // INTENT: 不要求打名字（不是删除级别的破坏性操作），但要求运营看到"覆盖的是共享的 v{n}"再点。
+  // 后端 PATCH 契约没有 reason 字段，所以 requireReason=false —— 不让运营填一个会被丢弃的原因。
+  const confirmUpdate = (current: SavedViewRecord) => {
+    setConfirmSpec({
+      title: t("Overwrite the shared Saved View"),
+      // 接缝：ConfirmSpec 新增的 consequence 合并后这句挪过去（常驻红条 + DangerButton）。
+      // 后端只存当前 queryState，没有版本历史，所以覆盖确实不可恢复——照实说。
+      summary: t("Everyone using {label} sees this query the next time they open it. The stored v{version} query is replaced and cannot be recovered.", { label: current.label, version: current.version }),
+      requireReason: false,
+      submitLabel: t("Overwrite"),
+      onSubmit: () => updateSelected(current),
+    });
   };
 
   const selected = views.find((view) => view.id === selectedId) ?? null;
@@ -151,14 +167,17 @@ export function SavedViewsControl({
         <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
           <label className="grid min-w-0 flex-1 gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Select a server view")}<select className={fieldClass} disabled={loading} onChange={(event) => select(event.target.value)} value={selectedId ?? ""}><option value="">{loading ? t("Loading views…") : views.length === 0 ? t("No saved views yet") : t("Choose a saved view")}</option>{views.map((view) => <option key={view.id} value={view.id}>{view.label} · v{view.version}</option>)}</select></label>
           <label className="grid min-w-0 flex-1 gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("View label")}<input className={fieldClass} maxLength={80} onChange={(event) => setLabel(event.target.value)} placeholder={t("e.g. Critical incidents I own")} value={label} /></label>
-          <div className="flex flex-wrap gap-2"><WorkspaceButton disabled={busy || label.trim().length === 0} onClick={() => void saveNew()}><Save className="h-4 w-4" />{t("Save new")}</WorkspaceButton>{selected ? <WorkspaceButton disabled={busy || label.trim().length === 0} onClick={() => void updateSelected()}>{t("Update v")}{selected.version}</WorkspaceButton> : null}<WorkspaceButton disabled={loading || busy} onClick={() => void load()}><RefreshCcw className="h-4 w-4" />{t("Reload")}</WorkspaceButton></div>
+          <div className="flex flex-wrap gap-2"><WorkspaceButton disabled={busy || label.trim().length === 0} onClick={() => void saveNew()}><Save className="h-4 w-4" />{t("Save new")}</WorkspaceButton>{selected ? <WorkspaceButton aria-label={t("Overwrite shared view {label} (v{version})", { label: selected.label, version: selected.version })} disabled={busy || label.trim().length === 0} onClick={() => confirmUpdate(selected)}>{t("Overwrite v")}{selected.version}</WorkspaceButton> : null}<WorkspaceButton disabled={loading || busy} onClick={() => void load()}><RefreshCcw className="h-4 w-4" />{t("Reload")}</WorkspaceButton></div>
         </div>
+        {/* 接缝：本控件唯一的反馈出口，ui/Toast.tsx 合并后换成 useToast() / useFailureToast()。 */}
         <div aria-atomic="true" aria-live="polite" className="mt-2 min-h-5 text-xs">{error ? <p className="text-[var(--ad-red-text)]" role="alert">{error}</p> : notice ? <p className="text-[var(--ad-green-text)]" role="status">{notice}</p> : null}</div>
       </div>
+      {confirmSpec ? <ConfirmDialog onClose={() => setConfirmSpec(null)} spec={confirmSpec} /> : null}
     </details>
   );
 }
 
+// 接缝：ui/request-error-copy.ts 合并后改走统一的 AppErrorCode → 人话映射。
 function message(cause: unknown, fallback: string) {
   return cause instanceof Error ? cause.message : fallback;
 }

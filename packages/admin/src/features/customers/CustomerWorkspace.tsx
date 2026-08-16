@@ -1,6 +1,6 @@
 "use client";
 
-import { useAdminI18n } from "@/components/admin/i18n";
+import { adminDateLocale, useAdminI18n, type AdminLocale } from "@/components/admin/i18n";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -9,7 +9,7 @@ import {
   type Customer360,
   type CustomerListResponse,
 } from "@idream/shared/admin";
-import { ArrowLeft, RefreshCcw, Search, UserRound } from "lucide-react";
+import { ArrowLeft, ChevronRight, RefreshCcw, Search, UserRound } from "lucide-react";
 import { adminV2Request, setWorkspaceUrl } from "@/lib/admin-v2-api";
 import { createWorkspaceHistoryController, observeWorkspacePopState, workspaceDetailId } from "@/lib/workspace-history";
 import {
@@ -30,7 +30,7 @@ import {
 } from "@/features/operations/WorkspaceUi";
 
 export function CustomerWorkspace({ initialCustomerId = null }: { initialCustomerId?: string | null }) {
-  const { t } = useAdminI18n();
+  const { locale, t } = useAdminI18n();
   const [initialUrlState] = useState(() => stateFromLocation(initialCustomerId));
   const [query, setQuery] = useState<CustomerQuery>(initialUrlState.query);
   const [list, setList] = useState<CustomerListResponse | null>(null);
@@ -114,6 +114,13 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
     void loadList(normalized);
   }
 
+  function goToPage(cursor: string | undefined) {
+    const next = { ...history.current.current().query, cursor };
+    setQuery(next);
+    history.current.navigate({ query: next, selectedId }, writeCustomerUrl);
+    void loadList(next);
+  }
+
   function selectCustomer(id: string | null) {
     detailRequestId.current += 1;
     setSelectedId(id);
@@ -130,12 +137,14 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
         <div>
           <h2 className="sr-only">{t("Customers")}</h2>
           <p className="max-w-2xl text-sm text-[var(--ad-text-muted)]">{t("One view of relationship activity, generations, billing, Cases, and operator history.")}</p>
+          {list ? <p className="mt-1 text-xs text-[var(--ad-text-muted)]" role="status">{t(list.freshness)} {t("· data as of")} <time dateTime={list.asOf}>{new Date(list.asOf).toLocaleTimeString(adminDateLocale(locale) ?? "en-US")}</time></p> : null}
         </div>
-        <WorkspaceButton onClick={() => void loadList(history.current.current().query)}>
-          <RefreshCcw className="h-4 w-4" />{t("Refresh")}
+        <WorkspaceButton disabled={loading} onClick={() => void loadList(history.current.current().query)}>
+          <RefreshCcw className="h-4 w-4" />{loading ? t("Refreshing…") : t("Refresh")}
         </WorkspaceButton>
       </header>
 
+      {/* 接缝：这是本工作台唯一的反馈出口，ui/Toast.tsx 合并后换成 useFailureToast()。 */}
       {error ? <div className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}</div> : null}
 
       <form className="grid gap-3 rounded-xl bg-[var(--ad-surface)] p-4 sm:grid-cols-[minmax(0,1fr)_180px_auto]" onSubmit={(event) => { event.preventDefault(); applyQuery(query); }}>
@@ -153,22 +162,29 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
       </form>
 
       <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(420px,0.9fr)]">
-        <section className="overflow-hidden rounded-xl bg-[var(--ad-surface)]">
+        <section aria-label={t("Customer results")} className="overflow-hidden rounded-xl bg-[var(--ad-surface)]">
           {list && list.items.length > 0 ? (
             <ul className="divide-y divide-[var(--ad-border)]">
               {list.items.map((customer) => (
                 <li key={customer.id}>
-                  <button className="grid min-h-24 w-full gap-3 p-4 text-left hover:bg-black/[0.025] sm:grid-cols-[minmax(0,1fr)_repeat(3,110px)]" onClick={() => selectCustomer(customer.id)} type="button">
+                  <button aria-current={selectedId === customer.id ? "true" : undefined} className={`grid min-h-24 w-full gap-3 p-4 text-left hover:bg-black/[0.025] focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--ad-ink)] sm:grid-cols-[minmax(0,1fr)_repeat(3,110px)] ${selectedId === customer.id ? "bg-black/[0.04]" : ""}`} onClick={() => selectCustomer(customer.id)} type="button">
                     <span className="min-w-0"><span className="flex items-center gap-2 font-semibold"><UserRound className="h-4 w-4" />{customer.displayName ?? customer.email}</span><span className="mt-1 block truncate text-xs text-[var(--ad-text-muted)]">{customer.email} · {customer.id}</span><span className="mt-2 flex gap-2"><StatusBadge value={customer.status} />{customer.subscriptionStatus ? <StatusBadge value={customer.subscriptionStatus} /> : null}</span></span>
-                    <ListStat label="Balance" value={`${customer.balanceDreamcoins} DC`} />
-                    <ListStat label="Active Cases" value={customer.activeCaseCount} />
-                    <ListStat label="Failed 30d" value={customer.failedGenerationCount30d} />
+                    <ListStat label={t("Balance")} value={coins(customer.balanceDreamcoins, locale)} />
+                    <ListStat label={t("Active Cases")} value={customer.activeCaseCount} />
+                    <ListStat label={t("Failed 30d")} value={customer.failedGenerationCount30d} />
                   </button>
                 </li>
               ))}
             </ul>
-          ) : <EmptyWorkspace filtered={Boolean(query.search || query.status)} onClear={() => applyQuery(defaultCustomerQuery)} />}
-          {list?.pageInfo.hasNextPage ? <div className="border-t border-[var(--ad-border)] p-4"><WorkspaceButton onClick={() => { const next = { ...history.current.current().query, cursor: list.pageInfo.endCursor ?? undefined }; setQuery(next); history.current.navigate({ query: next, selectedId }, writeCustomerUrl); void loadList(next); }}>{t("Next page")}</WorkspaceButton></div> : null}
+          ) : error ? null : <EmptyWorkspace filtered={Boolean(query.search || query.status)} onClear={() => applyQuery(defaultCustomerQuery)} />}
+          {/* 接缝：authority 侧正在补 startCursor / hasPreviousPage / totalCount，之后这块整体换成
+              统一的 Pagination 原语。在那之前只说得出"本页有几条"——不谎称是总数，也不自造上一页。 */}
+          {list && list.items.length > 0 ? (
+            <nav aria-label={t("Customer pages")} className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--ad-border)] p-4">
+              <p className="text-xs text-[var(--ad-text-muted)]">{t("{count} on this page", { count: list.items.length })}</p>
+              {list.pageInfo.hasNextPage ? <WorkspaceButton disabled={loading} onClick={() => goToPage(list.pageInfo.endCursor ?? undefined)}>{t("Next page")}<ChevronRight className="h-4 w-4" /></WorkspaceButton> : null}
+            </nav>
+          ) : null}
         </section>
 
         {selectedId ? (
@@ -180,22 +196,37 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
 }
 
 function CustomerInspector({ detail, onClose }: { detail: Customer360; onClose: () => void }) {
-  const { t } = useAdminI18n();
+  // INVARIANT: 枚举值走 value()（zhValues 通道），自由文案走 t()。billingPeriod / ledger.reason
+  // 目前 zhValues 里没有条目，会原样显示英文枚举——比编一个译名诚实，补词条即自动生效。
+  const { locale, t, value } = useAdminI18n();
+  const subscription = detail.subscription;
   return (
-    <aside className="space-y-5 rounded-xl bg-[var(--ad-surface)] p-5 xl:sticky xl:top-40">
-      <header className="flex items-start justify-between gap-4"><div><p className="font-mono text-xs text-[var(--ad-text-muted)]">{detail.customer.id}</p><h3 className="mt-1 text-lg font-semibold">{detail.customer.displayName ?? detail.customer.email}</h3><p className="text-xs text-[var(--ad-text-muted)]">{detail.customer.email}</p></div><button aria-label={t("Close customer detail")} className="grid min-h-11 min-w-11 place-items-center rounded-md hover:bg-black/[0.04]" onClick={onClose} type="button"><ArrowLeft className="h-4 w-4" /></button></header>
-      <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4"><ListStat label="Balance" value={`${detail.overview.balanceDreamcoins} DC`} /><ListStat label="Active Cases" value={detail.overview.activeCaseCount} /><ListStat label="Failed 30d" value={detail.overview.failedGenerationCount30d} /><ListStat label="Last active" value={detail.overview.lastActiveAt ? <RelativeTime referenceTime={detail.asOf} value={detail.overview.lastActiveAt} /> : "—"} /></dl>
-      <DetailSection title={t("Subscription")}>{detail.subscription ? <p className="text-sm"><strong>{detail.subscription.plan.name}</strong> · {detail.subscription.status} · {detail.subscription.plan.billingPeriod}</p> : <p className="text-sm text-[var(--ad-text-muted)]">{t("No subscription")}</p>}</DetailSection>
-      <DetailSection title={t("Relationships ({count})", { count: detail.relationships.length })}><ul className="space-y-2">{detail.relationships.slice(0, 8).map((row) => <li className="flex justify-between gap-3 text-xs" key={row.sessionId}><Link className="font-semibold underline" href={`/admin/characters/${encodeURIComponent(row.characterId)}`}>{row.characterName}</Link><span className="text-[var(--ad-text-muted)]">{row.lastMessageAt ? <RelativeTime referenceTime={detail.asOf} value={row.lastMessageAt} /> : "—"}</span></li>)}</ul></DetailSection>
-      <DetailSection title={t("Cases ({count})", { count: detail.cases.length })}><ul className="space-y-2">{detail.cases.slice(0, 10).map((row) => <li key={row.id}><Link className="flex justify-between gap-3 rounded-md bg-[var(--ad-surface-subtle)] p-2 text-xs" href={`/admin/cases/${encodeURIComponent(row.id)}`}><span>{t(row.type)}</span><StatusBadge value={row.status} /></Link></li>)}</ul></DetailSection>
-      <DetailSection title={t("Generations ({count})", { count: detail.generations.length })}><ul className="space-y-2">{detail.generations.slice(0, 8).map((row) => <li className="flex justify-between gap-3 text-xs" key={row.id}><Link className="truncate font-mono underline" href={`/admin/ops/jobs?job=${encodeURIComponent(row.id)}`}>{row.id}</Link><StatusBadge value={row.status} /></li>)}</ul></DetailSection>
-      <DetailSection title={t("Recent ledger")}><ul className="space-y-2">{detail.ledger.slice(0, 8).map((row) => <li className="grid grid-cols-[1fr_auto_auto] gap-3 text-xs" key={row.id}><span>{row.reason}</span><span className="font-mono">{row.delta > 0 ? "+" : ""}{row.delta}</span><span className="text-[var(--ad-text-muted)]">{row.balanceAfter}</span></li>)}</ul></DetailSection>
+    <aside aria-labelledby="customer-detail-title" className="space-y-5 rounded-xl bg-[var(--ad-surface)] p-5 xl:sticky xl:top-40">
+      {/* SPEC: 封禁 / 注销状态必须出现在详情头 —— 列表里有、详情里没有，等于客服点开一个已封禁
+          的客户后看不到他被封了，照常按正常流程答复。开户时间同理：是分辨"新号刷量"的第一眼依据。 */}
+      <header className="flex items-start justify-between gap-4"><div className="min-w-0"><p className="truncate font-mono text-xs text-[var(--ad-text-muted)]">{detail.customer.id}</p><h3 className="mt-1 text-lg font-semibold" id="customer-detail-title">{detail.customer.displayName ?? detail.customer.email}</h3><p className="break-all text-xs text-[var(--ad-text-muted)]">{detail.customer.email}</p><div className="mt-2 flex flex-wrap items-center gap-2"><StatusBadge value={detail.customer.status} /><span className="text-xs text-[var(--ad-text-muted)]">{t("Customer since")} <time dateTime={detail.customer.createdAt}>{new Date(detail.customer.createdAt).toLocaleDateString(adminDateLocale(locale) ?? "en-US")}</time></span></div></div><button aria-label={t("Close customer detail")} className="grid min-h-11 min-w-11 place-items-center rounded-md hover:bg-black/[0.04]" onClick={onClose} type="button"><ArrowLeft className="h-4 w-4" /></button></header>
+      <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4"><ListStat label={t("Balance")} value={coins(detail.overview.balanceDreamcoins, locale)} /><ListStat label={t("Active Cases")} value={detail.overview.activeCaseCount} /><ListStat label={t("Failed 30d")} value={detail.overview.failedGenerationCount30d} /><ListStat label={t("Last active")} value={detail.overview.lastActiveAt ? <RelativeTime referenceTime={detail.asOf} value={detail.overview.lastActiveAt} /> : "—"} /></dl>
+      <DetailSection title={t("Subscription")}>{subscription ? <div className="space-y-1 text-sm"><p className="flex flex-wrap items-center gap-2"><strong>{subscription.plan.name}</strong><StatusBadge value={subscription.status} /><span className="text-xs text-[var(--ad-text-muted)]">{value(subscription.plan.billingPeriod)}</span></p><p className="text-xs text-[var(--ad-text-muted)]">{subscription.currentPeriodEnd ? <>{subscription.cancelAtPeriodEnd ? t("Access ends") : t("Renews")} <time dateTime={subscription.currentPeriodEnd}>{new Date(subscription.currentPeriodEnd).toLocaleDateString(adminDateLocale(locale) ?? "en-US")}</time></> : t("No period end on record")}</p>{subscription.cancelAtPeriodEnd ? <p className="text-xs text-[var(--ad-yellow-text)]">{t("Cancellation is already scheduled; it will not renew.")}</p> : null}</div> : <p className="text-sm text-[var(--ad-text-muted)]">{t("No subscription")}</p>}</DetailSection>
+      <DetailSection title={t("Relationships ({count})", { count: detail.relationships.length })}>{detail.relationships.length === 0 ? <EmptyRows /> : <ul className="space-y-2">{detail.relationships.slice(0, 8).map((row) => <li className="flex justify-between gap-3 text-xs" key={row.sessionId}><Link className="truncate font-semibold underline" href={`/admin/characters/${encodeURIComponent(row.characterId)}`}>{row.characterName}</Link><span className="shrink-0 text-[var(--ad-text-muted)]">{row.lastMessageAt ? <RelativeTime referenceTime={detail.asOf} value={row.lastMessageAt} /> : "—"}</span></li>)}</ul>}</DetailSection>
+      {/* SPEC: 工单行要带优先级和 SLA —— 客服看客户历史是为了判断"这人是不是一直没被处理"，
+          光有类型和状态回答不了。超过 10 条时给出跳到工单队列的出口，而不是默默截断。 */}
+      <DetailSection title={t("Cases ({count})", { count: detail.cases.length })}>{detail.cases.length === 0 ? <EmptyRows /> : <ul className="space-y-2">{detail.cases.slice(0, 10).map((row) => <li key={row.id}><Link className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-[var(--ad-surface-subtle)] p-2 text-xs hover:bg-black/[0.04]" href={`/admin/cases/${encodeURIComponent(row.id)}`}><span className="font-semibold">{t(row.type.replaceAll("_", " "))}</span><span className="flex items-center gap-2"><StatusBadge value={row.priority} /><StatusBadge value={row.status} /><span className="text-[var(--ad-text-muted)]"><RelativeTime referenceTime={detail.asOf} value={row.slaDueAt} /></span></span></Link></li>)}</ul>}{detail.cases.length > 10 ? <p className="mt-2 text-xs"><Link className="underline" href={`/admin/cases?view=all&search=${encodeURIComponent(detail.customer.id)}`}>{t("Open all Cases for this customer")}</Link></p> : null}</DetailSection>
+      <DetailSection title={t("Generations ({count})", { count: detail.generations.length })}>{detail.generations.length === 0 ? <EmptyRows /> : <ul className="space-y-2">{detail.generations.slice(0, 8).map((row) => <li className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 text-xs" key={row.id}><Link className="truncate font-mono underline" href={`/admin/ops/jobs?job=${encodeURIComponent(row.id)}`} title={row.id}>{row.id}</Link><span className="text-[var(--ad-text-muted)]">{value(row.mode)} · {coins(row.costDreamcoins, locale)}</span><StatusBadge value={row.status} /></li>)}</ul>}</DetailSection>
+      <DetailSection title={t("Recent ledger")}>{detail.ledger.length === 0 ? <EmptyRows /> : <ul className="space-y-2">{detail.ledger.slice(0, 8).map((row) => <li className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-baseline gap-3 text-xs" key={row.id}><span className="truncate" title={row.reason}>{value(row.reason)}<time className="ml-2 text-[var(--ad-text-muted)]" dateTime={row.createdAt}>{new Date(row.createdAt).toLocaleDateString(adminDateLocale(locale) ?? "en-US")}</time></span><span className={`font-mono ${row.delta > 0 ? "text-[var(--ad-green-text)]" : ""}`}>{row.delta > 0 ? "+" : ""}{row.delta.toLocaleString(adminDateLocale(locale) ?? "en-US")}</span><span className="font-mono text-[var(--ad-text-muted)]">{row.balanceAfter.toLocaleString(adminDateLocale(locale) ?? "en-US")}</span></li>)}</ul>}</DetailSection>
+      {/* SPEC: 运营改过什么必须能在客户档案里看到 —— 这份 activity 一直在响应里，之前整段丢弃，
+          页面顶上却写着"operator history"。交接和申诉复核都要靠它回答"上一次是谁动的"。 */}
+      <DetailSection title={t("Operator history ({count})", { count: detail.activity.length })}>{detail.activity.length === 0 ? <EmptyRows /> : <ol className="space-y-2">{detail.activity.slice(0, 10).map((row) => <li className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 text-xs" key={row.id}><code className="truncate" title={`${row.targetType} ${row.targetId}`}>{row.action}</code><span className="shrink-0 text-[var(--ad-text-muted)]"><RelativeTime referenceTime={detail.asOf} value={row.createdAt} /></span></li>)}</ol>}</DetailSection>
     </aside>
   );
 }
 
 function DetailSection({ children, title }: { children: React.ReactNode; title: string }) { return <section className="border-t border-[var(--ad-border)] pt-4"><h4 className="mb-3 text-sm font-semibold">{title}</h4>{children}</section>; }
+function EmptyRows() { const { t } = useAdminI18n(); return <p className="text-xs text-[var(--ad-text-muted)]">{t("No records.")}</p>; }
 function ListStat({ label, value }: { label: string; value: React.ReactNode }) { return <span><span className="block text-[10px] font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">{label}</span><span className="mt-1 block font-mono text-sm">{value}</span></span>; }
+// 接缝：全站统一的 ui/format.ts 正在另一个分支上做；接上后这个本地格式化换成它。
+// SPEC: 金额一律带千分位，单位固定写 DC（全站另有 "Dreamcoins" 一种写法，以 DC 为准）。
+function coins(value: number, locale: AdminLocale) { return `${value.toLocaleString(adminDateLocale(locale) ?? "en-US")} DC`; }
 function stateFromLocation(initialCustomerId: string | null) { const parsed = typeof window === "undefined" ? { query: defaultCustomerQuery, selectedId: null } : parseCustomerWorkspaceParams(new URLSearchParams(window.location.search)); return { ...parsed, selectedId: initialCustomerId ?? parsed.selectedId ?? (typeof window === "undefined" ? null : workspaceDetailId(window.location.pathname, "/admin/customers")) }; }
 function writeCustomerUrl(state: CustomerWorkspaceUrlState, mode: "push" | "replace") { setWorkspaceUrl(buildCustomerWorkspaceParams(state), { mode, pathname: customerWorkspacePath(state.selectedId) }); }
+// 接缝：ui/request-error-copy.ts 合并后改走统一的 AppErrorCode → 人话映射。
 function message(cause: unknown) { return cause instanceof Error ? cause.message : "Customer workspace request failed"; }
