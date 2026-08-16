@@ -16,8 +16,11 @@ import {
   adminRequestUserAgent,
 } from "@/server/modules/admin-v2/shared/audit-request";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
-import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
-import { actorWithPermission, queryParams } from "@/server/modules/admin-v2/shared/authority";
+import {
+  actorWithPermission,
+  queryParams,
+  type AdminActor,
+} from "@/server/modules/admin-v2/shared/authority";
 import {
   decodeAdminListCursor,
   encodeAdminListCursor,
