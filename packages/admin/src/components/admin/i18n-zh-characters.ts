@@ -99,7 +99,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Optional fields can be written now or later in Soul. Publishing checks the opening line and Soul quality separately.": "选填项现在写或之后在「灵魂」里写都行。开场白与灵魂质量由发布环节单独把关。",
   // SEAM: "Page {page}" 与 "Previous page" 是通用分页词，本该和 "Next page" 一起放
   // i18n-zh-common.ts；这一轮不允许改那个文件，合并时请一起搬过去。
-  "Page {page}": "第 {page} 页",
   "Parameters are frozen and candidates are generating. The current visual identity will not change.":
     "本轮参数已冻结，正在生成候选图；当前视觉身份不会被改动。",
   "Persona & conversation": "人格与对话",
@@ -107,7 +106,6 @@ export const adminZhCharacters: Record<string, string> = {
   "Prepare publication workspace": "准备发布工作区",
   "Prepare the Project, immutable Revision, and inactive Serving workspace. This does not publish a Release or make the Character public.":
     "准备项目、不可变修订和未激活的 Serving 工作区。此操作不会发布 Release，也不会让角色公开可见。",
-  "Previous page": "上一页",
   "Production journey": "生产进度",
   "Production journey steps": "生产进度步骤",
   "Profile tier": "配置档位",

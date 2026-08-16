@@ -1,6 +1,6 @@
 "use client";
 import type { ReactNode } from "react";
-import { adminDateLocale, type AdminLocale, useAdminI18n } from "@/components/admin/i18n";
+import { adminDateLocale, translateAdmin, type AdminLocale, useAdminI18n } from "@/components/admin/i18n";
 
 // SPEC: 列表单元格的取值与格式化只有这一份。
 // INTENT: text / display / date 三件套在 features 下被逐字复制了 12 份，日期还长出四种口径：
@@ -79,6 +79,31 @@ export function formatCount(value: number, locale: AdminLocale): string {
   return value.toLocaleString(adminDateLocale(locale));
 }
 
+// INTENT: 不吃 locale —— 输出的是 m/s 单位符号，两种语言下都一样。负数 clamp 到 0：
+//         被它取代的两份手写副本没有 clamp，会把 -65s 渲染成 "-2m -5s"。
+export function formatDuration(durationMs: number): string {
+  const totalSeconds = Math.max(0, Math.round(durationMs / 1_000));
+  const minutes = Math.floor(totalSeconds / 60);
+  return minutes > 0 ? `${minutes}m ${totalSeconds % 60}s` : `${totalSeconds}s`;
+}
+
+// SPEC: 梦币金额。核心是千分位 + 正负号约定；单位走既有的 "{cost} DC" 词条，
+//       中文界面显示"梦币"而不是 "DC"。
+// INTENT: 之前是裸字符串拼接（`${x} DC` / String(x) / display(x)），无千分位、无正负号，
+//         单位一会儿 "DC" 一会儿 "Dreamcoins"。signed 留给账本流水（有借有贷，必须一眼
+//         看出正负）；余额与成本这类只会是正数的场景不加号，免得读起来像变化量。
+//         unit 可关 —— 列头已经写着 Dreamcoins 时，每个单元格再缀一遍是噪音。
+export function formatDreamcoins(
+  amount: number,
+  locale: AdminLocale,
+  options?: { signed?: boolean; unit?: boolean },
+): string {
+  const cost = new Intl.NumberFormat(adminDateLocale(locale), {
+    signDisplay: options?.signed ? "exceptZero" : "auto",
+  }).format(amount);
+  return options?.unit === false ? cost : translateAdmin(locale, "{cost} DC", { cost });
+}
+
 /** 组件里用这个：locale 已绑好，调用点不必再记得传。 */
 export function useAdminFormat() {
   const { locale, t } = useAdminI18n();
@@ -91,5 +116,8 @@ export function useAdminFormat() {
     relativeTime: (value: unknown, referenceTime: unknown) => formatRelativeTime(value, referenceTime, locale),
     money: (amountCents: number, currency: string) => formatMoney(amountCents, currency, locale),
     count: (value: number) => formatCount(value, locale),
+    duration: formatDuration,
+    dreamcoins: (amount: number, options?: { signed?: boolean; unit?: boolean }) =>
+      formatDreamcoins(amount, locale, options),
   };
 }

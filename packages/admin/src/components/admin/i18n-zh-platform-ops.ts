@@ -935,7 +935,6 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Type the close confirmation": "输入关闭确认串",
   "Recorded postmortem": "已归档的复盘",
   "Activity · most recent {count}": "操作记录 · 最近 {count} 条",
-  "No reason recorded": "未记录原因",
   "Incident correlation failed delivery scrollable table": "事故关联投递失败（可横向滚动表格）",
 
   // Chat Ops：连通性口径、数据源名与表头

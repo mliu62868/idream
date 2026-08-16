@@ -297,7 +297,6 @@ export const adminZhCustomers: Record<string, string> = {
   // 客服台：SLA 倒计时与「卡了多久」。
   "Last update": "最近更新",
   "Never updated": "从未更新",
-  "No reason recorded": "未记录原因",
   "Not escalated": "未升级",
   "Overdue by {hours}h": "已超时 {hours} 小时",
   "Support description": "工单描述",

@@ -768,6 +768,7 @@ export const adminZhCommon: Record<string, string> = {
   "{capability} is unavailable — ask an admin owner to grant it.": "{capability}不可用——请管理员为你开通这个权限。",
   "{caption} scrollable table": "{caption} 可滚动表格",
   "{completed}/{total} completed": "已完成 {completed}/{total}",
+  "No reason recorded": "未记录原因",
   "{cost} DC": "{cost} 梦币",
   "{cost} DC each": "每张 {cost} 梦币",
   "{count} active": "{count} 个启用",
