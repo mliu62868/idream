@@ -32,6 +32,15 @@ import {
   type AdminV2WorkspaceAccessKey,
 } from "./workspace-access";
 import type { WorkMode } from "./shell-preferences";
+import {
+  matchAdminRoute,
+  type AdminSectionId,
+  type AdminSubview,
+} from "./nav-routes";
+
+// 子视图与 section id 的定义住在 nav-routes.ts（proxy 也要用，那里不能碰 React）；
+// 这里转出去，各 section 的 import 路径不必改。
+export type { AdminSectionId, AdminSubview };
 import type { AdminPermissionKey } from "@idream/shared/admin/permissions";
 import { BackendsView } from "@/components/admin/BackendsView";
 import { GenerationMetricsView } from "@/components/admin/GenerationMetricsView";
@@ -102,7 +111,7 @@ export type SectionContext = {
 };
 
 export type NavItem = {
-  id: string;
+  id: AdminSectionId;
   label: string;
   href: string;
   legacyHref: string | null;
@@ -393,151 +402,22 @@ const HIDDEN_COMPATIBILITY_ITEMS: NavItem[] = [
 
 // 隐藏的兼容项仍是可直达的目的地，命名规则跟导航里的项一视同仁。
 export const ALL_SECTION_ITEMS = [...navItems, ...HIDDEN_COMPATIBILITY_ITEMS];
-const SECTION_BY_ID = new Map(ALL_SECTION_ITEMS.map((navItem) => [navItem.id, navItem]));
-const SECTION_ALIASES: Record<string, string> = {
-  "generation/models": "generation/config",
-};
-
-export type AdminSubview =
-  | { kind: "list" }
-  | { kind: "new" }
-  | { kind: "detail"; id: string };
+const SECTION_BY_ID: ReadonlyMap<string, NavItem> = new Map(
+  ALL_SECTION_ITEMS.map((navItem) => [navItem.id, navItem]),
+);
+function detailId(view: AdminSubview) {
+  return view.kind === "detail" ? view.id : null;
+}
 
 // SPEC: 解析结果直接携带 NavItem 本身，而不是一个还要再查一次表的 sectionId。
 // INTENT: 之前解析出字符串 id、再由 adminSectionItem() 查回导航项，查不到就 `?? navItems[0]`
 //         静默落到 Today。解析即解析成对象后，这个兜底无处可写，也就不可能再发生。
 export type AdminPath = { item: NavItem; view: AdminSubview };
 
-function detailId(view: AdminSubview) {
-  return view.kind === "detail" ? view.id : null;
-}
-
-const LEGACY_SUBVIEW_SECTIONS = new Set([
-  "content/official", "content/templates", "generation/recipes",
-  "generation/presets", "content/assets", "content/placements",
-]);
-
-const CANONICAL_LIST_SECTIONS: Record<string, string> = {
-  today: "dashboard",
-  characters: "content/official",
-  "characters/releases": "content/official",
-  "characters/calendar": "content/official",
-  "characters/review": "content/review-queue",
-  "characters/starters": "content/templates",
-  "characters/taxonomy": "content/tags",
-  "creative/runs": "content/production",
-  "creative/review": "content/production",
-  "creative/library": "content/assets",
-  "creative/placements": "content/placements",
-  customers: "users",
-  "customer-ops/billing": "billing",
-  "customer-ops/account-requests": "compliance",
-  "growth/health": "analytics",
-  "growth/funnels": "insights",
-  "growth/characters": "growth/characters",
-  "growth/experiments": "experiments",
-  "growth/content": "cms",
-  "ops/incidents": "ops/incidents",
-  "ops/jobs": "generation/jobs",
-  "ops/providers": "ops/providers",
-  "ops/profiles": "generation/config",
-  "ops/recipes": "generation/recipes",
-  "ops/chat": "chat",
-  "system/approvals": "approvals",
-  "system/access": "system/access",
-  "system/audit": "audit-log",
-  "system/config": "generation/config",
-};
-
-type SectionMatch = { sectionId: string; view: AdminSubview };
-
-function canonicalSection(path: string, query: URLSearchParams): SectionMatch | null {
-  if (path.startsWith("cases/") && path.split("/").length === 2) {
-    return { sectionId: "cases", view: { kind: "detail", id: path.slice("cases/".length) } };
-  }
-  if (path === "cases") {
-    return { sectionId: "cases", view: { kind: "list" } };
-  }
-  if (path.startsWith("customers/") && path.split("/").length === 2) {
-    return { sectionId: "users", view: { kind: "detail", id: path.slice("customers/".length) } };
-  }
-  if (path.startsWith("ops/incidents/") && path.split("/").length === 3) {
-    return { sectionId: "ops/incidents", view: { kind: "detail", id: path.slice("ops/incidents/".length) } };
-  }
-  if (path === "growth/merchandising") {
-    return {
-      sectionId: query.get("view") === "announcements" ? "announcements" : "content",
-      view: { kind: "list" },
-    };
-  }
-  if (path === "growth/offers") {
-    return { sectionId: query.get("view") === "promo" ? "promo" : "pricing", view: { kind: "list" } };
-  }
-  if (path === "ops/jobs" && query.get("view") === "dead-letter") {
-    return { sectionId: "generation/dead-letter", view: { kind: "list" } };
-  }
-  if (path === "ops/providers") {
-    const sectionId = query.get("view") === "backends"
-      ? "generation/backends"
-      : query.get("view") === "generation-metrics"
-        ? "generation/metrics"
-        : "ops/providers";
-    return { sectionId, view: { kind: "list" } };
-  }
-  if (path === "ops/recipes") {
-    const sectionId = query.get("view") === "presets"
-      ? "generation/presets"
-      : query.get("view") === "workflows"
-        ? "generation/workflows"
-        : "generation/recipes";
-    return { sectionId, view: { kind: "list" } };
-  }
-  const listSectionId = CANONICAL_LIST_SECTIONS[path];
-  if (listSectionId) return { sectionId: listSectionId, view: { kind: "list" } };
-  if (path === "characters/new") return { sectionId: "content/official", view: { kind: "new" } };
-  if (path.startsWith("characters/") && path.split("/").length === 2) {
-    return { sectionId: "content/official", view: { kind: "detail", id: path.slice("characters/".length) } };
-  }
-  if (path.startsWith("creative/runs/") && path.split("/").length === 3) {
-    return { sectionId: "content/production", view: { kind: "detail", id: path.slice("creative/runs/".length) } };
-  }
-  for (const [prefix, sectionId] of [
-    ["creative/library/", "content/assets"],
-    ["creative/placements/", "content/placements"],
-  ] as const) {
-    if (path === `${prefix}new`) return { sectionId, view: { kind: "new" } };
-    if (path.startsWith(prefix)) return { sectionId, view: { kind: "detail", id: path.slice(prefix.length) } };
-  }
-  return null;
-}
-
-function matchAdminPath(value: string): SectionMatch | null {
-  const [rawPath = "", rawQuery = ""] = value.split("?", 2);
-  const path = rawPath.replace(/^\/+|\/+$/g, "");
-  const canonical = canonicalSection(path, new URLSearchParams(rawQuery));
-  if (canonical) return canonical;
-
-  const mapped = SECTION_ALIASES[path] ?? path;
-  if (SECTION_BY_ID.has(mapped)) return { sectionId: mapped, view: { kind: "list" } };
-  const segments = mapped.split("/").filter(Boolean);
-  if (segments.length >= 2) {
-    const last = segments.at(-1) ?? "";
-    const prefixRaw = segments.slice(0, -1).join("/");
-    const prefix = SECTION_ALIASES[prefixRaw] ?? prefixRaw;
-    if (LEGACY_SUBVIEW_SECTIONS.has(prefix) && SECTION_BY_ID.has(prefix) && last) {
-      return last === "new"
-        ? { sectionId: prefix, view: { kind: "new" } }
-        : { sectionId: prefix, view: { kind: "detail", id: last } };
-    }
-  }
-  return null;
-}
-
-// SPEC: 认得的路径解析成 { 导航项, 子视图 }；认不得就是 null —— 由路由层 notFound()。
-// INTENT: 这里曾经 `return { sectionId: "dashboard" }` 兜底，于是任何拼错的 URL 都会
-//         安静地显示 Today，页面本身还回 200；not-found.tsx 写好了却永远到不了。
+// SPEC: 认得的路径解析成 { 导航项, 子视图 }；认不得就是 null —— 由路由层 notFound()，
+//       状态码则由 src/proxy.ts 在流式输出开始之前定成 404。
 export function parseAdminPath(value: string): AdminPath | null {
-  const match = matchAdminPath(value);
+  const match = matchAdminRoute(value);
   if (!match) return null;
   const navItem = SECTION_BY_ID.get(match.sectionId);
   return navItem ? { item: navItem, view: match.view } : null;
