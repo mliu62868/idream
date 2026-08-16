@@ -1,17 +1,18 @@
 // SPEC: Long-term memory retrieval (PLAN P1-2). `retrieveMemories` is the stable
-// boundary the context builder calls. Default = recency (small per-character
-// memory files; fast, deterministic, correct). When CHAT_MEMORY_RETRIEVAL=igrep,
-// rank the user's memory lines by semantic relevance to the current turn using
-// the igrep CLI, with a STRICT timeout that DEGRADES back to recency on
-// timeout/error/empty — so the hot path never depends on igrep (PLAN: "P0 热路径
-// 不依赖 igrep；P1 接入带超时 + 退化"). Boundaries are ALWAYS returned in full
-// (they are high-priority constraints, never subject to relevance pruning).
+// boundary the context builder calls. Default = PRIORITY + a recency reserve
+// (small per-character memory files; fast, deterministic, no deps). When
+// CHAT_MEMORY_RETRIEVAL=igrep, rank the user's memory lines by semantic
+// relevance to the current turn using the igrep CLI, with a STRICT timeout that
+// DEGRADES back to the default on timeout/error/empty — so the hot path never
+// depends on igrep (PLAN: "P0 热路径不依赖 igrep；P1 接入带超时 + 退化").
+// Boundaries are ALWAYS returned in full (they are high-priority constraints,
+// never subject to relevance pruning).
 // INTENT: caller interface unchanged — context.ts swaps its file read for this.
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { env } from "./env.js";
 import { chatFsPaths, readWhole } from "./chat-fs.js";
-import { parseLine } from "./memories.js";
+import { memoryPriority, parseLine, type MemoryItem } from "./memories.js";
 
 export interface RetrieveInput {
   userId: string;
@@ -30,41 +31,65 @@ export interface RetrieveInput {
  */
 export async function readBoundaries(userId: string): Promise<string[]> {
   const raw = await readWhole(chatFsPaths.boundaries(userId));
-  return parseTexts(raw, "global");
+  return parseItems(raw, "global").map((item) => item.text);
 }
 
 /** Retrieve the most relevant long-term memories (<= max). Degradable on the hot path. */
 export async function retrieveMemories(input: RetrieveInput): Promise<string[]> {
   const memoryRaw = await readWhole(chatFsPaths.memory(input.userId, input.characterId));
-  const all = parseTexts(memoryRaw, input.characterId);
+  const all = parseItems(memoryRaw, input.characterId);
   if (all.length === 0) return [];
 
+  let ranked: string[] = [];
   if (env.MEMORY_RETRIEVAL === "igrep" && input.query.trim()) {
-    const ranked = await igrepRank(input, all).catch(() => null);
-    if (ranked && ranked.length) {
-      // igrep surfaces relevant lines first; backfill with the most-recent
-      // remaining lines so igrep mode is NEVER worse than recency (small files
-      // chunk whole-file → no intra-chunk ranking; recency still matters).
-      const merged = [...ranked];
-      for (let i = all.length - 1; i >= 0 && merged.length < input.max; i--) {
-        if (!merged.includes(all[i])) merged.push(all[i]);
-      }
-      return merged.slice(0, input.max);
-    }
+    ranked = (await igrepRank(input, all.map((item) => item.text)).catch(() => null)) ?? [];
   }
-
-  // recency baseline: newest entries are appended last.
-  return all.slice(-input.max);
+  return selectMemories(all, ranked, input.max);
 }
 
-/** Parse a memory file into clean text lines (drops the inline src/mid tags). */
-function parseTexts(raw: string | null, charId: string): string[] {
+/**
+ * Fill the turn's memory quota from three sources, in order:
+ *   1. igrep relevance hits (igrep mode only) — they own the top slots, and the
+ *      timeout/error/empty degrade path simply arrives here with none.
+ *   2. PRIORITY — highest memoryPriority() first. This is the SAME ranking the
+ *      storage cap evicts by (memories.ts capItems), so what survives on disk is
+ *      exactly what can reach a prompt: the birthday learned on turn 3 is still
+ *      retrievable on turn 500 instead of being buried by small talk.
+ *   3. RECENCY — the newest lines fill a reserved ~1/3 of the quota, so "what
+ *      just happened" always has a seat and priority can't freeze the block.
+ * Output = igrep hits in relevance order, then the rest in file (chronological)
+ * order, so the injected block still reads as a timeline.
+ */
+function selectMemories(all: MemoryItem[], ranked: string[], max: number): string[] {
+  if (max <= 0) return [];
+  const picked = new Set(ranked.slice(0, max));
+  // With a single slot, priority takes it: forgetting the user's name is worse
+  // than forgetting this afternoon.
+  const recencyReserve = max > 1 ? Math.max(1, Math.floor(max / 3)) : 0;
+
+  // newest-first before a stable sort → equal-priority ties break toward newer.
+  const byPriority = [...all].reverse().sort((a, b) => memoryPriority(b) - memoryPriority(a));
+  for (const item of byPriority) {
+    if (picked.size >= max - recencyReserve) break;
+    picked.add(item.text);
+  }
+  for (let i = all.length - 1; i >= 0 && picked.size < max; i--) picked.add(all[i].text);
+
+  const out = ranked.filter((text) => picked.has(text));
+  for (const item of all) {
+    if (picked.has(item.text) && !out.includes(item.text)) out.push(item.text);
+  }
+  return out.slice(0, max);
+}
+
+/** Parse a memory file into items, oldest first (drops the inline src/mid tags). */
+function parseItems(raw: string | null, charId: string): MemoryItem[] {
   if (!raw) return [];
-  const out: string[] = [];
+  const out: MemoryItem[] = [];
   const lines = raw.split("\n");
   for (let i = 0; i < lines.length; i++) {
     const parsed = parseLine(charId, lines[i], i);
-    if (parsed) out.push(parsed.text);
+    if (parsed) out.push(parsed);
   }
   return out;
 }
