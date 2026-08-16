@@ -152,16 +152,19 @@ export function RiskWorkspace({ canRead }: { canRead: boolean }) {
           <Rows
             columns={[["anonymousId", "Device"], ["accountCount", "Accounts"], ["userIds", "Users"]]}
             rows={data.deviceClusters}
+            truncatedTo={20}
             caption="Multi-account device clusters"
           />
           <Rows
             columns={[["inviterId", "Inviter"], ["referralCount", "Referrals"]]}
             rows={data.referralAbuse}
+            truncatedTo={20}
             caption="Referral farming (≥3 invites)"
           />
           <Rows
             columns={[["userId", "User"], ["count", "Adjustments"], ["totalDelta", "Net delta"]]}
             rows={data.adjustAnomalies}
+            truncatedTo={20}
             caption="Manual adjust anomalies"
           />
         </>
@@ -503,6 +506,7 @@ function LegacyAnalytics({ data }: { data: AnalyticsData }) {
       <Rows
         columns={[["name", "Event"], ["count", "Count"]]}
         rows={data.topEvents}
+        truncatedTo={20}
         caption="Top events"
       />
       {/* 失败与拦截数字就摆在这里，但处置它们的队列在另一个工作台，之前没有任何入口。 */}
@@ -530,10 +534,13 @@ function Rows({
   caption,
   columns,
   rows,
+  truncatedTo,
 }: {
   caption: string;
   columns: readonly (readonly [field: string, header: string])[];
   rows: Row[];
+  /** 服务端 slice/take 的上限。给了就如实标出来——满页时这不是全量。 */
+  truncatedTo?: number;
 }) {
   const { t } = useAdminI18n();
   const tableRows: DataTableRow[] = rows.map((row, index) => ({
@@ -541,12 +548,19 @@ function Rows({
     cells: columns.map(([field]) => cell(row[field], field)),
   }));
   return (
-    <DataTable
-      caption={caption}
-      empty={<EmptyState hint={t("The authority returned no rows for this window.")} title={t(caption)} />}
-      headers={columns.map(([, header]) => header)}
-      rows={tableRows}
-    />
+    <>
+      <DataTable
+        caption={caption}
+        empty={<EmptyState hint={t("The authority returned no rows for this window.")} title={t(caption)} />}
+        headers={columns.map(([, header]) => header)}
+        rows={tableRows}
+      />
+      {truncatedTo !== undefined && rows.length >= truncatedTo ? (
+        <p className="mt-2 text-xs text-[var(--ad-text-muted)]">
+          {t("Ranked list · the authority returns at most {count} rows, so this is not the full set.", { count: truncatedTo })}
+        </p>
+      ) : null}
+    </>
   );
 }
 
@@ -577,6 +591,7 @@ function FreshnessLine({
   );
 }
 
+// SEAM: `error` 现在是后端原文。`ui/request-error-copy.ts` 落地后改走那套映射。
 function AuthorityError({
   error,
   onRetry,

@@ -686,12 +686,12 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Discard {count} requests": "丢弃 {count} 条请求",
   "Requeue {id}": "重新排队 {id}",
   "Discard {id}": "丢弃 {id}",
-  "{count} requests re-enter the generation queue and are charged for a new attempt.":
-    "{count} 条请求将重新进入生成队列，并按新的一次尝试计费。",
+  "{count} requests re-enter the generation queue and are charged for a new attempt. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.":
+    "{count} 条请求将重新进入生成队列，并按新的一次尝试计费。在本对话框里重试复用同一个幂等键，不会重复执行。",
   "{count} selected requests the authority will not retry are excluded.":
     "已排除 {count} 条权威判定不可重试的选中请求。",
-  "Discard settles the customer: any charge that was never refunded is refunded now. {count} requests are affected.":
-    "丢弃会同时结清客户：尚未退款的扣费此刻退回。共影响 {count} 条请求。",
+  "Discard settles the customer: any charge that was never refunded is refunded now, and the request leaves the queue for good. {count} requests are affected. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.":
+    "丢弃会同时结清客户：尚未退款的扣费此刻退回，请求也永久离开队列。共影响 {count} 条请求。在本对话框里重试复用同一个幂等键，不会重复执行。",
   "{count} selected requests the authority will not discard are excluded.":
     "已排除 {count} 条权威判定不可丢弃的选中请求。",
   "Requeued {id} as attempt {attemptNo}.": "已把 {id} 重新排队为第 {attemptNo} 次尝试。",
@@ -719,18 +719,18 @@ export const adminZhPlatformOps: Record<string, string> = {
   "expires": "过期于",
   "Execute frozen {action} plan": "执行冻结的{action}计划",
   "Execution confirmation": "执行确认串",
-  "This moves customer money. {count} occurrences are in the frozen scope; the scope cannot change after this point.":
-    "这会动客户的钱。冻结范围内共 {count} 条发生记录；从这一步起范围不可再变。",
-  "{count} occurrences are in the frozen scope; the scope cannot change after this point.":
-    "冻结范围内共 {count} 条发生记录；从这一步起范围不可再变。",
+  "This moves customer money across {count} occurrences and cannot be undone from this console. The frozen scope cannot be re-cut after this point. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.":
+    "这会动 {count} 条发生记录上的客户资金，且无法在后台撤销。冻结范围从这一步起不可再切。在本对话框里重试复用同一个幂等键，不会重复执行。",
+  "{count} occurrences are in the frozen scope; the scope cannot change after this point. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.":
+    "冻结范围内共 {count} 条发生记录；从这一步起范围不可再变。在本对话框里重试复用同一个幂等键，不会重复执行。",
   "Split {count} occurrences into a new Incident": "把 {count} 条发生记录拆分成新事故",
-  "The split preserves an immutable assignment history on every moved occurrence. Impact and mitigation scope are recalculated for both Incidents.":
-    "拆分会给每条移动的发生记录留下不可变的归属历史；两个事故的影响面与缓解范围都会重算。",
+  "The occurrences leave this Incident for good. Assignment history is immutable, so a split is undone only by merging back. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.":
+    "这些发生记录会永久离开当前事故。归属历史不可变，拆分只能靠再合并回来撤销。在本对话框里重试复用同一个幂等键，不会重复执行。",
   "Split confirmation": "拆分确认串",
   "Split reason (≥3)": "拆分原因（≥3 字）",
   "Merge {count} Incidents into this one": "把 {count} 个事故合并到当前事故",
-  "Every occurrence of the source Incidents moves here with an immutable assignment history. The sources become terminal.":
-    "来源事故的全部发生记录会带着不可变归属历史移动到这里，来源事故随即进入终态。",
+  "The source Incidents become terminal and their occurrences move here permanently. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.":
+    "来源事故会进入终态，其全部发生记录永久移动到这里。在本对话框里重试复用同一个幂等键，不会重复执行。",
   "Merge confirmation": "合并确认串",
   "Merge reason (≥3)": "合并原因（≥3 字）",
   "Resolve reuses the Triage audit reason above.": "标记已解决会复用上方分诊里的审计原因。",
@@ -743,7 +743,7 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Audit reason needs at least 3 characters": "审计原因至少 3 个字",
   "Type the close confirmation": "输入关闭确认串",
   "Recorded postmortem": "已归档的复盘",
-  "Activity ({count})": "操作记录（{count}）",
+  "Activity · most recent {count}": "操作记录 · 最近 {count} 条",
   "No reason recorded": "未记录原因",
   "Incident correlation failed delivery scrollable table": "事故关联投递失败（可横向滚动表格）",
 
@@ -799,4 +799,15 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Latency p50 (ms)": "延迟 p50（毫秒）",
   "Latency p95 (ms)": "延迟 p95（毫秒）",
   "Latency samples": "延迟样本数",
+// 后果型文案（`ConfirmDialog.consequence` 落地后从 summary 平移过去）与截断如实标注
+  "The worker will retry the unchanged durable envelopes; no event is sent from this browser request. Retrying inside this dialog reuses the same idempotency key and cannot requeue twice.":
+    "工作进程会重投这些未改动的持久信封；本次浏览器请求本身不发送任何事件。在本对话框里重试复用同一个幂等键，不会重复入队。",
+  "This records that no user-visible Chat effect was applied and is terminal for Main. Main becomes terminal only after Chat stores the original envelope hash as a target-missing receipt. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.":
+    "这会记录「没有产生任何用户可见的 Chat 影响」，并对 Main 侧终结。只有 Chat 把原始信封哈希存为 target-missing 回执后，Main 才真正进入终态。在本对话框里重试复用同一个幂等键，不会重复执行。",
+  "The worker will retry the unchanged correlation payloads; this browser request does not correlate an Incident. Retrying inside this dialog reuses the same idempotency key and cannot requeue twice.":
+    "工作进程会重投这些未改动的关联负载；本次浏览器请求本身不会关联出事故。在本对话框里重试复用同一个幂等键，不会重复入队。",
+  "This preserves the failed carrier and records that its GenerationAttempt source authority is still absent; no user effect is applied. The disposition is terminal. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.":
+    "这会保留失败的载体，并记录它的 GenerationAttempt 源权威仍然缺失；不产生任何用户侧影响。该处置是终态。在本对话框里重试复用同一个幂等键，不会重复执行。",
+  "Ranked list · the authority returns at most {count} rows, so this is not the full set.":
+    "排名列表 · 权威最多只返回 {count} 行，这里不是全量。",
 };

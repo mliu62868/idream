@@ -101,6 +101,42 @@ describe("DeadLetterWorkspace retry authority", () => {
     await waitUntil(() => container.textContent?.includes("Requeued 0 of 1 requests.") ?? false);
     expect(container.textContent).toContain("A delivered artifact already exists");
   });
+  it("reuses one idempotency key when the operator retries a failed command in place", async () => {
+    // 确认框向运营承诺「就地重试不会重复执行」——那这条就必须是真的：
+    // 幂等键在打开对话框时生成一次，失败后的重试走的是同一个闭包。
+    // 让 randomUUID 每次都吐不同的值，否则这条断言会因为公共 mock 恒等而空过。
+    let issued = 0;
+    vi.spyOn(globalThis.crypto, "randomUUID").mockImplementation(
+      () => `00000000-0000-4000-8000-00000000000${issued++}` as `${string}-${string}-${string}-${string}-${string}`,
+    );
+    apiGet.mockResolvedValue({ items: [retryable], pageInfo: { endCursor: null, hasNextPage: false } });
+    apiWrite
+      .mockRejectedValueOnce(new Error("Upstream authority is unavailable"))
+      .mockResolvedValueOnce({ requeued: [retryable.id], skipped: [] });
+
+    await act(async () => {
+      root.render(<DeadLetterWorkspace permissions={{ discard: false, requeue: true }} />);
+    });
+    await waitUntil(() => container.textContent?.includes(retryable.id) ?? false);
+    await click(container.querySelector<HTMLInputElement>(`input[aria-label="Select dead-letter job ${retryable.id}"]`));
+    await click(findButton("Requeue selected", container));
+
+    const dialog = await waitForDialog();
+    await enter(dialog.querySelector<HTMLInputElement>('input[aria-label="Reason (≥3)"]'), "Provider recovered");
+    await enter(dialog.querySelector<HTMLInputElement>('input[aria-label="Confirmation"]'), retryable.id);
+    await click(findButton("Confirm", dialog));
+
+    // 失败就地显示，对话框不关。
+    await waitUntil(() => dialog.textContent?.includes("Upstream authority is unavailable") ?? false);
+    await click(findButton("Confirm", dialog));
+    await waitUntil(() => apiWrite.mock.calls.length === 2);
+
+    const keys = apiWrite.mock.calls.map(([, , , headers]) => (headers as Record<string, string>)["idempotency-key"]);
+    expect(keys[0]).toBe(keys[1]);
+    // 两次提交只生成过一个键：不是 mock 恒等，是代码真的没有重新生成。
+    expect(issued).toBe(1);
+    await waitUntil(() => container.textContent?.includes("Requeued 1 of 1 requests.") ?? false);
+  });
 });
 
 function rowActions(root: ParentNode, id: string) {

@@ -621,10 +621,11 @@ function MainToChatFailedOutboxPanel({
       title: t("Replay Main → Chat failed events ({count})", {
         count: replayRevision.length,
       }),
+      // SEAM: `consequence` 字段落地后把这段从 summary 平移过去。
       summary: (
         <span>
           {t(
-            "The worker will retry the unchanged durable envelopes; no event is sent from this browser request.",
+            "The worker will retry the unchanged durable envelopes; no event is sent from this browser request. Retrying inside this dialog reuses the same idempotency key and cannot requeue twice.",
           )}
         </span>
       ),
@@ -663,10 +664,11 @@ function MainToChatFailedOutboxPanel({
       title: t("Record expected target missing ({count})", {
         count: missingRows.length,
       }),
+      // SEAM: `consequence` 字段落地后把这段从 summary 平移过去。
       summary: (
         <span>
           {t(
-            "This records that no user-visible Chat effect was applied. Main becomes terminal only after Chat stores the original envelope hash as a target-missing receipt.",
+            "This records that no user-visible Chat effect was applied and is terminal for Main. Main becomes terminal only after Chat stores the original envelope hash as a target-missing receipt. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.",
           )}
         </span>
       ),
@@ -719,6 +721,8 @@ function MainToChatFailedOutboxPanel({
           ) : null}
         </div>
       </div>
+      {/* SEAM: 单一反馈出口 —— 全局 toast 落地后换成 `useToast()`；错误分支走 `useFailureToast()`
+          + `ui/request-error-copy.ts`（5xx / 网络故障不能暗示"没有写入"）。 */}
       {notice ? (
         <p
           className="rounded-md bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]"
@@ -1138,6 +1142,7 @@ const AUTHORITY_LABELS: Record<ChatOpsAuthority, string> = {
   events: "Events",
 };
 
+// SEAM: `state.error` 现在是后端原文。`ui/request-error-copy.ts` 落地后改走那套映射。
 function AuthorityError({
   authority,
   query,

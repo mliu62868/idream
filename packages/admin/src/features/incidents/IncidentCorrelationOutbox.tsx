@@ -152,8 +152,9 @@ export function IncidentCorrelationOutbox({
       title: t("Replay incident correlation failed events ({count})", {
         count: exactRevision.length,
       }),
+      // SEAM: `consequence` 字段落地后把这段从 summary 平移过去。
       summary: t(
-        "The worker will retry the unchanged correlation payloads; this browser request does not correlate an Incident.",
+        "The worker will retry the unchanged correlation payloads; this browser request does not correlate an Incident. Retrying inside this dialog reuses the same idempotency key and cannot requeue twice.",
       ),
       destructive: {
         expectedName: INCIDENT_CORRELATION_REPLAY_CONFIRMATION,
@@ -189,8 +190,9 @@ export function IncidentCorrelationOutbox({
     const idempotencyKey = crypto.randomUUID();
     setConfirmation({
       title: t("Record source authority missing"),
+      // SEAM: `consequence` 字段落地后把这段从 summary 平移过去。
       summary: t(
-        "This preserves the failed carrier and records that its GenerationAttempt source authority is still absent; no user effect is applied.",
+        "This preserves the failed carrier and records that its GenerationAttempt source authority is still absent; no user effect is applied. The disposition is terminal. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.",
       ),
       destructive: {
         expectedName:
@@ -242,6 +244,8 @@ export function IncidentCorrelationOutbox({
         </div>
       </div>
 
+      {/* SEAM: 单一反馈出口 —— 全局 toast 落地后换成 `useToast()`；错误分支走
+          `useFailureToast()` + `ui/request-error-copy.ts`。 */}
       {notice ? (
         <p className="rounded-md bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]" role="status">
           {notice}

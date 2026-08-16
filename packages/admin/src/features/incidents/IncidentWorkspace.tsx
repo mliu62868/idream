@@ -262,6 +262,8 @@ export function IncidentWorkspace({
         <div className="flex items-end gap-2"><WorkspaceButton tone="primary" type="submit">{t("Apply")}</WorkspaceButton>{filtered ? <WorkspaceButton onClick={clearFilters}>{t("Clear")}</WorkspaceButton> : null}</div>
       </form>
 
+      {/* SEAM: 单一反馈出口。全局 toast（`useToast()` / `useFailureToast()`）落地后整体换掉，
+          错误文案改走 `ui/request-error-copy.ts`——尤其 5xx / 网络故障不能暗示"没有写入"。 */}
       {error ? <div className="rounded-md bg-[var(--ad-red-bg)] px-4 py-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}</div> : null}
       {notice ? <div className="rounded-md bg-[var(--ad-green-bg)] px-4 py-3 text-sm text-[var(--ad-green-text)]" role="status">{notice}</div> : null}
 
@@ -374,6 +376,8 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
     const expected = `${incident.id}:${plan.id}:${plan.action}`;
     setConfirm({
       title: t("Execute frozen {action} plan", { action: t(plan.action.replaceAll("_", " ")) }),
+      // SEAM: `ConfirmDialog` 正在加 `consequence`（不可撤销动作常驻红色横幅 + DangerButton）。
+      // 下面这段文案已经按"后果"写好，字段落地后从 summary 平移到 consequence 即可。
       summary: <PlanExecutionSummary plan={plan} />,
       destructive: { expectedName: expected, inputLabel: t("Execution confirmation") },
       // 契约 incidentActionPlanExecuteRequestSchema 只收 entityVersion + confirmation，没有 reason 字段。
@@ -391,7 +395,8 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
     const expected = `${incident.id}:split:${splitIds.join(",")}`;
     setConfirm({
       title: t("Split {count} occurrences into a new Incident", { count: splitIds.length }),
-      summary: t("The split preserves an immutable assignment history on every moved occurrence. Impact and mitigation scope are recalculated for both Incidents."),
+      // SEAM: 同上，`consequence` 落地后搬过去。
+      summary: t("The occurrences leave this Incident for good. Assignment history is immutable, so a split is undone only by merging back. Retrying inside this dialog reuses the same idempotency key and cannot apply twice."),
       destructive: { expectedName: expected, inputLabel: t("Split confirmation") },
       reasonLabel: t("Split reason (≥3)"),
       submitLabel: t("Split selected"),
@@ -407,7 +412,8 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
     const expected = `${incident.id}:merge:${mergeSourceIds.join(",")}`;
     setConfirm({
       title: t("Merge {count} Incidents into this one", { count: mergeSourceIds.length }),
-      summary: t("Every occurrence of the source Incidents moves here with an immutable assignment history. The sources become terminal."),
+      // SEAM: 同上，`consequence` 落地后搬过去。
+      summary: t("The source Incidents become terminal and their occurrences move here permanently. Retrying inside this dialog reuses the same idempotency key and cannot apply twice."),
       destructive: { expectedName: expected, inputLabel: t("Merge confirmation") },
       reasonLabel: t("Merge reason (≥3)"),
       submitLabel: t("Merge sources"),
@@ -669,7 +675,8 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
         {/* 事故上已经发生过什么——之前 detail.activity 取回来就丢了。 */}
         {detail.activity.length > 0 ? (
           <details className="rounded-lg bg-[var(--ad-surface-subtle)] p-4">
-            <summary className="cursor-pointer text-sm font-semibold">{t("Activity ({count})", { count: detail.activity.length })}</summary>
+            {/* 后端 take: 100——不能把它印成"总共有这么多条"。 */}
+            <summary className="cursor-pointer text-sm font-semibold">{t("Activity · most recent {count}", { count: detail.activity.length })}</summary>
             <ul className="mt-3 max-h-56 space-y-2 overflow-y-auto text-xs">
               {detail.activity.map((entry) => (
                 <li className="border-b border-[var(--ad-border)] pb-2 last:border-0" key={entry.id}>
@@ -716,8 +723,8 @@ function PlanExecutionSummary({ plan }: { plan: IncidentActionPlan }) {
   return (
     <span>
       {MONEY_MOVING_ACTIONS.has(plan.action)
-        ? t("This moves customer money. {count} occurrences are in the frozen scope; the scope cannot change after this point.", { count: plan.eligibleOccurrenceIds.length })
-        : t("{count} occurrences are in the frozen scope; the scope cannot change after this point.", { count: plan.eligibleOccurrenceIds.length })}
+        ? t("This moves customer money across {count} occurrences and cannot be undone from this console. The frozen scope cannot be re-cut after this point. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.", { count: plan.eligibleOccurrenceIds.length })
+        : t("{count} occurrences are in the frozen scope; the scope cannot change after this point. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.", { count: plan.eligibleOccurrenceIds.length })}
     </span>
   );
 }

@@ -143,6 +143,8 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
     const idempotencyKey = crypto.randomUUID();
     setConfirmation({
       title: input.title,
+      // SEAM: `ConfirmDialog` 正在加 `consequence`（不可撤销动作常驻红色横幅 + DangerButton）。
+      // RequeueSummary / DiscardSummary 的文案已经按"后果"写好，字段落地后平移过去。
       summary: input.summary,
       destructive: { expectedName: expected, inputLabel: t("Confirmation") },
       requireReason: input.reasonRequired,
@@ -232,6 +234,8 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
               /> : null}
             </div>
           </div>
+          {/* SEAM: 单一反馈出口。全局 toast（`useToast()` / `useFailureToast()`）落地后整体换掉，
+              连同下面 useEffect 里的移焦——那只是 toast 到位之前的定位兜底。 */}
           {notice ? <NoticeBanner notice={notice} onDismiss={() => setNotice(null)} ref={noticeRef} /> : null}
           {rows.length === 0 ? <EmptyState action={filtered ? <button className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" onClick={() => navigate(defaultDeadLetterQuery)} type="button">{t("Clear filters")}</button> : undefined} hint={t(filtered ? "The complete dead-letter authority query returned no matches." : "No failed or blocked generation requests require triage.")} title={t(canonicalListEmptyTitle("dead_letter", filtered))} /> : (
             // SEAM: 手写表——`DataTable` 目前不支持多选。多选能力落地后整表迁过去，
@@ -293,7 +297,7 @@ function RequeueSummary({ count, skipped }: { count: number; skipped: number }) 
   const { t } = useAdminI18n();
   return (
     <span>
-      {t("{count} requests re-enter the generation queue and are charged for a new attempt.", { count })}
+      {t("{count} requests re-enter the generation queue and are charged for a new attempt. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.", { count })}
       {skipped > 0 ? ` ${t("{count} selected requests the authority will not retry are excluded.", { count: skipped })}` : ""}
     </span>
   );
@@ -303,7 +307,7 @@ function DiscardSummary({ count, skipped }: { count: number; skipped: number }) 
   const { t } = useAdminI18n();
   return (
     <span>
-      {t("Discard settles the customer: any charge that was never refunded is refunded now. {count} requests are affected.", { count })}
+      {t("Discard settles the customer: any charge that was never refunded is refunded now, and the request leaves the queue for good. {count} requests are affected. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.", { count })}
       {skipped > 0 ? ` ${t("{count} selected requests the authority will not discard are excluded.", { count: skipped })}` : ""}
     </span>
   );
@@ -447,6 +451,8 @@ function freshnessLabel(
   return t("loading…");
 }
 
+// SEAM: `message` 现在是后端原文。`ui/request-error-copy.ts` 落地后改走那套映射——
+// 认不出的错误如实说"原因未能识别"，5xx 与网络故障不能暗示"没有写入"。
 function AuthorityError({ hasSnapshot, message, onRetry }: { hasSnapshot: boolean; message: string; onRetry: () => void }) {
   const { t } = useAdminI18n();
   return <div className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">{t("Dead-letter authority refresh failed:")} {message}<button className="ml-3 min-h-8 rounded border border-current px-2 font-semibold" onClick={onRetry} type="button">{t("Retry dead-letter")}</button>{hasSnapshot ? <span className="ml-2">{t("The last good snapshot remains visible.")}</span> : null}</div>;
