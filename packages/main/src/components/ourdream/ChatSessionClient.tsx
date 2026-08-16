@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import {
+  ArrowDown,
   ArrowLeft,
   Check,
   ExternalLink,
@@ -11,6 +12,7 @@ import {
   MessageCircle,
   RefreshCw,
   Send,
+  Square,
   WandSparkles,
   X,
 } from "lucide-react";
@@ -44,6 +46,8 @@ import {
   canSubmitChatMessage,
   chatMessageActionPaddingClass,
   isImmutableOpeningMessage,
+  isLocalChatMessageId,
+  LOCAL_CHAT_MESSAGE_ID_PREFIX,
 } from "./chat-message-actions";
 import {
   GenerationRequestError,
@@ -65,6 +69,20 @@ type VoiceClipRequestResult = {
 };
 
 const BLOCKED_ASSISTANT_NOTICE = "I can’t help with that request.";
+// SPEC: Client-only terminal status for a reply the reader stopped. Chat has no
+//       abort endpoint, so the turn keeps generating server-side; freezing the
+//       row here is what drops the typing indicator and unlocks Regenerate.
+const STOPPED_REPLY_STATUS = "stopped";
+// A reply is only auto-followed while the reader is parked within this many
+// pixels of the bottom; above that the viewport belongs to the reader.
+const STICK_TO_BOTTOM_SLACK_PX = 120;
+const COMPOSER_BUTTON_CLASS =
+  "inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-[linear-gradient(0deg,#ff1cac,#fd5fc2_50%,#ff79d1)] text-white disabled:opacity-70";
+
+type LocalStreamState = {
+  readonly content: string;
+  readonly stopped: boolean;
+};
 
 export function chatUpgradeLinkLabel(reason: ChatUpgradeReason) {
   if (reason === "voice") return "Upgrade for voice access";
@@ -98,6 +116,45 @@ function mergeCanonicalMessages(
   ];
 }
 
+// SPEC: Chat streams deltas through Redis and only writes the assistant row at
+//       finalize, so every read landing mid-stream returns content: "". Reapply
+//       the text this client has already received so the 1.5s poller can never
+//       blank a bubble the reader is watching.
+// INVARIANT: a row Chat reports as terminal always wins — including a shorter
+//            moderated rewrite of what streamed. Only the mid-stream hole is
+//            filled locally.
+export function applyLocalStreamState(
+  messages: ChatMessage[],
+  localState: ReadonlyMap<string, LocalStreamState>,
+): ChatMessage[] {
+  if (localState.size === 0) return messages;
+  return messages.map((message) => {
+    const local = localState.get(message.id);
+    if (!local) return message;
+    if (local.stopped) {
+      return { ...message, content: local.content, status: STOPPED_REPLY_STATUS };
+    }
+    if (chatStreamMessageIsTerminal(message)) return message;
+    return local.content.length > message.content.length
+      ? { ...message, content: local.content }
+      : message;
+  });
+}
+
+// SPEC: Follow the newest message only while the reader is parked at the bottom.
+// INTENT: a stream re-renders on every token; without this the reader is dragged
+//         back down and can never scroll up through the history mid-reply.
+export function chatViewIsPinnedToBottom(viewport: {
+  readonly innerHeight: number;
+  readonly scrollY: number;
+  readonly scrollHeight: number;
+}): boolean {
+  return (
+    viewport.scrollHeight - (viewport.scrollY + viewport.innerHeight) <=
+    STICK_TO_BOTTOM_SLACK_PX
+  );
+}
+
 export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [title, setTitle] = useState("Chat");
@@ -124,6 +181,9 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   const [deleteConfirmMessageId, setDeleteConfirmMessageId] = useState<string | null>(null);
   const [variationPendingMediaId, setVariationPendingMediaId] =
     useState<string | null>(null);
+  const [jumpToLatestVisible, setJumpToLatestVisible] = useState(false);
+  const localStreamStateRef = useRef<Map<string, LocalStreamState>>(new Map());
+  const pinnedToBottomRef = useRef(true);
   const sendIntentRef = useRef<{
     sessionId: string;
     content: string;
@@ -147,10 +207,31 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   const hasGeneratingReply = chatStreamMessagesNeedReconciliation(messages);
   const canSend = canSubmitChatMessage(content, pending, hasGeneratingReply);
 
+  useEffect(() => {
+    const onScroll = () => {
+      pinnedToBottomRef.current = chatViewIsPinnedToBottom(chatViewportMetrics());
+      if (pinnedToBottomRef.current) setJumpToLatestVisible(false);
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
   // SPEC: Keep the newest message (and its streaming deltas) in view; without this
   //       the reply renders below the fold and the input is pushed off-screen.
+  // INTENT: a reader who scrolled up keeps their place and gets a jump control
+  //         instead; smooth scrolling is dropped mid-stream because per-token
+  //         animations restart each other and never settle.
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    if (!pinnedToBottomRef.current) {
+      setJumpToLatestVisible(true);
+      return;
+    }
+    messagesEndRef.current?.scrollIntoView({
+      behavior: hasGeneratingReply ? "auto" : "smooth",
+      block: "end",
+    });
+    // Streaming state is derived from messages; re-running per token is the point.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages]);
 
   useEffect(() => {
@@ -160,6 +241,9 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     const timer = window.setTimeout(() => {
       for (const source of streamSources.current.values()) source.close();
       streamSources.current.clear();
+      localStreamStateRef.current.clear();
+      pinnedToBottomRef.current = true;
+      setJumpToLatestVisible(false);
       audioRef.current?.pause();
       audioRef.current = null;
       automaticVoiceAttemptIdsRef.current.clear();
@@ -445,6 +529,16 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     setContent("");
     setPending(true);
     sessionMutationEpochRef.current += 1;
+    // SPEC: Render the reader's own turn before the round-trip resolves — on a
+    //       phone the POST costs a full reply latency, and an input that empties
+    //       into nothing reads as a dropped message.
+    const localMessageId = `${LOCAL_CHAT_MESSAGE_ID_PREFIX}${crypto.randomUUID()}`;
+    const dropOptimisticMessage = (current: ChatMessage[]) =>
+      current.filter((message) => message.id !== localMessageId);
+    setMessages((current) => [
+      ...current,
+      { id: localMessageId, role: "user", content: text },
+    ]);
     const previousIntent = sendIntentRef.current;
     const intent =
       previousIntent?.sessionId === id && previousIntent.content === text
@@ -469,11 +563,13 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
         setUpgradeReason("messages");
         setStatus("Daily free message limit reached.");
         setContent(text);
+        setMessages(dropOptimisticMessage);
         return;
       }
       if (!response.ok) {
         setStatus("Message failed to send. Please try again.");
         setContent(text);
+        setMessages(dropOptimisticMessage);
         return;
       }
       const payload = parseChatSendResponse(await response.json());
@@ -486,14 +582,17 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       // stream. Render it in place; do NOT open an EventSource that would never fill.
       if (assistant.status === "blocked" || !streamUrl) {
         setMessages((current) =>
-          mergeCanonicalMessages(current, [userMessage, assistant]),
+          mergeCanonicalMessages(dropOptimisticMessage(current), [
+            userMessage,
+            assistant,
+          ]),
         );
         if (assistant.status === "blocked") {
           setStatus("That message was blocked by our safety policy.");
         }
       } else {
         setMessages((current) =>
-          mergeCanonicalMessages(current, [
+          mergeCanonicalMessages(dropOptimisticMessage(current), [
             userMessage,
             { ...assistant, content: "" },
           ]),
@@ -505,6 +604,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       // user's message is never silently lost (P0 — silent message loss).
       setStatus("Message failed to send. Please try again.");
       setContent(text);
+      setMessages(dropOptimisticMessage);
     } finally {
       setPending(false);
     }
@@ -618,7 +718,12 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     }
     if (recoveredStream) setStatus(null);
     setTitle(session.title ?? session.character.name);
-    setMessages(session.messages);
+    setMessages((current) => [
+      ...applyLocalStreamState(session.messages, localStreamStateRef.current),
+      // An optimistic turn is not in the session yet; a poll or a recovery read
+      // must not make the reader's own message disappear mid-send.
+      ...current.filter((message) => isLocalChatMessageId(message.id)),
+    ]);
     setDeleteConfirmMessageId(null);
     if (session.characterId) setCharacterId(session.characterId);
     setCanUpdateIdentity(Boolean(session.character.canUpdateIdentity));
@@ -820,10 +925,14 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     let finished = false;
     const source = new EventSource(streamUrl);
     streamSources.current.set(assistantId, source);
+    localStreamStateRef.current.set(assistantId, { content: "", stopped: false });
 
     const close = () => {
       source.close();
       streamSources.current.delete(assistantId);
+      if (!localStreamStateRef.current.get(assistantId)?.stopped) {
+        localStreamStateRef.current.delete(assistantId);
+      }
     };
 
     const finish = async () => {
@@ -847,6 +956,10 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       const data = parseStreamEvent(event);
       const delta = typeof data.delta === "string" ? data.delta : "";
       streamed += delta;
+      localStreamStateRef.current.set(assistantId, {
+        content: streamed,
+        stopped: false,
+      });
       setMessages((current) =>
         current.map((message) =>
           message.id === assistantId ? { ...message, content: streamed } : message,
@@ -873,6 +986,43 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
         close();
       });
     });
+  }
+
+  // SPEC: Stop is client-side — Chat exposes no abort, so the turn finishes on
+  //       the server. What the reader gets back is control: the bubble freezes at
+  //       the text that actually arrived, the composer unlocks, and Regenerate
+  //       becomes available without waiting the reply out.
+  function stopStreamingReply() {
+    const stoppedIds = new Set<string>();
+    for (const [messageId, source] of streamSources.current) {
+      source.close();
+      stoppedIds.add(messageId);
+    }
+    streamSources.current.clear();
+    for (const message of messages) {
+      if (chatStreamMessageIsInProgress(message)) stoppedIds.add(message.id);
+    }
+    if (stoppedIds.size === 0) return;
+    for (const messageId of stoppedIds) {
+      const streamedContent = localStreamStateRef.current.get(messageId)?.content;
+      localStreamStateRef.current.set(messageId, {
+        content:
+          streamedContent ??
+          messages.find((message) => message.id === messageId)?.content ??
+          "",
+        stopped: true,
+      });
+    }
+    setMessages((current) =>
+      applyLocalStreamState(current, localStreamStateRef.current),
+    );
+    setStatus("Reply stopped. Regenerate for a new one.");
+  }
+
+  function jumpToLatest() {
+    pinnedToBottomRef.current = true;
+    setJumpToLatestVisible(false);
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }
 
   async function recoverAssistantFromSession(assistantId: string) {
@@ -919,7 +1069,10 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                   const replyInProgress = chatStreamMessageIsInProgress(message);
                   const isEditing = editingMessageId === message.id;
                   const messageDeleteConfirm = deleteConfirmMessageId === message.id;
-                  const showMessageActions = !isEditing && !replyInProgress;
+                  const showMessageActions =
+                    !isEditing &&
+                    !replyInProgress &&
+                    !isLocalChatMessageId(message.id);
                   const canEditMessage =
                     isUser &&
                     message.id === latestUserMessageId &&
@@ -1013,7 +1166,9 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                         </>
                       ) : !isUser && !message.content.trim() ? (
                         <span aria-label="Assistant reply unavailable" role="status">
-                          Reply unavailable.
+                          {message.status === STOPPED_REPLY_STATUS
+                            ? "Reply stopped."
+                            : "Reply unavailable."}
                         </span>
                       ) : (
                         message.content
@@ -1091,6 +1246,17 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                 })}
                 <div ref={messagesEndRef} />
               </div>
+              {jumpToLatestVisible ? (
+                <button
+                  className="sticky bottom-36 z-10 self-center rounded-full bg-white px-3 py-2 text-[12px] font-bold text-[rgb(13,13,13)] shadow-[0_2px_12px_rgba(0,0,0,0.45)] md:bottom-16"
+                  data-testid="chat-jump-to-latest"
+                  onClick={jumpToLatest}
+                  type="button"
+                >
+                  <ArrowDown className="mr-1.5 inline h-3.5 w-3.5" />
+                  New messages
+                </button>
+              ) : null}
               <form
                 className="sticky bottom-20 z-10 mt-4 flex gap-2 bg-[rgb(13,13,13)] py-2 md:bottom-0"
                 onSubmit={submit}
@@ -1104,14 +1270,27 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                   placeholder="Message..."
                   value={content}
                 />
-                <button
-                  aria-label="Send message"
-                  className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-[linear-gradient(0deg,#ff1cac,#fd5fc2_50%,#ff79d1)] text-white disabled:opacity-70"
-                  disabled={!canSend}
-                  type="submit"
-                >
-                  <Send className="h-4 w-4" />
-                </button>
+                {hasGeneratingReply ? (
+                  <button
+                    aria-label="Stop reply"
+                    className={COMPOSER_BUTTON_CLASS}
+                    data-testid="chat-stop-reply"
+                    onClick={stopStreamingReply}
+                    title="Stop reply"
+                    type="button"
+                  >
+                    <Square className="h-4 w-4" />
+                  </button>
+                ) : (
+                  <button
+                    aria-label="Send message"
+                    className={COMPOSER_BUTTON_CLASS}
+                    disabled={!canSend}
+                    type="submit"
+                  >
+                    <Send className="h-4 w-4" />
+                  </button>
+                )}
               </form>
               {status ? (
                 <p
@@ -1233,6 +1412,14 @@ function ChatSessionUnavailablePanel({
       </div>
     </div>
   );
+}
+
+function chatViewportMetrics() {
+  return {
+    innerHeight: window.innerHeight,
+    scrollY: window.scrollY,
+    scrollHeight: document.documentElement.scrollHeight,
+  };
 }
 
 function chatSessionFetchError(status: number) {
