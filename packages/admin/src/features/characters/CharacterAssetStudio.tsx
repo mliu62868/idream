@@ -23,6 +23,7 @@ import {
   WandSparkles,
   X,
 } from "lucide-react";
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   StatusBadge,
@@ -527,6 +528,7 @@ export type CharacterCandidateVisualState =
   | "draft"
   | "approved"
   | "rejected"
+  | "failed"
   | "ready";
 
 export function resolveCharacterCandidateVisualState(input: {
@@ -534,12 +536,15 @@ export function resolveCharacterCandidateVisualState(input: {
   readonly comparison: boolean;
   readonly draft: boolean;
   readonly decision: "approved" | "rejected" | null;
+  readonly failed?: boolean;
 }): CharacterCandidateVisualState {
   if (input.active) return "active";
   if (input.comparison) return "comparison";
   if (input.draft) return "draft";
   if (input.decision === "approved") return "approved";
   if (input.decision === "rejected") return "rejected";
+  // INTENT: 失败候选原先落进 "ready" 兜底，缩略图和成功的候选长得一模一样、只是没图。
+  if (input.failed) return "failed";
   return "ready";
 }
 
@@ -766,6 +771,7 @@ function CandidateBatchGrid({
   items,
   onActivate,
   onCompare,
+  runId,
   selectedPackAssetId,
   subjectName,
 }: {
@@ -776,6 +782,7 @@ function CandidateBatchGrid({
   items: CreativeRunDetail["items"];
   onActivate: (index: number) => void;
   onCompare: (itemId: string) => void;
+  runId: string | null;
   selectedPackAssetId: string | null | undefined;
   subjectName: string;
 }) {
@@ -812,6 +819,7 @@ function CandidateBatchGrid({
             comparison,
             draft,
             decision: item.review?.decision ?? null,
+            failed: item.executionState === "failed",
           });
           return (
             <article
@@ -831,7 +839,9 @@ function CandidateBatchGrid({
                       ? "border-[var(--ad-blue-text)]"
                       : draft
                         ? "border-[var(--ad-green-text)]"
-                        : "border-[var(--ad-border)] hover:border-[var(--ad-text-muted)]",
+                        : visualState === "failed"
+                          ? "border-[var(--ad-red-text)]"
+                          : "border-[var(--ad-border)] hover:border-[var(--ad-text-muted)]",
                   item.review?.decision === "rejected" && "opacity-60",
                 )}
                 disabled={disabled}
@@ -876,6 +886,36 @@ function CandidateBatchGrid({
             {activeIsDraft ? t("Selected in draft") : t(purposeConfig[activePurpose].label)}
             {activeIndex >= 0 ? ` · ${activeIndex + 1}/${items.length}` : ""}
           </p>
+        </div>
+      ) : null}
+      {/* SPEC: 失败候选必须说清原因，并给出一条能真正重跑的去处。
+          INTENT: 之前失败只映射成 "Generation failed" 五个字，契约里的 failure.errorCode /
+          operatorGuidance 全仓只有视觉实验台读；重试入口在 characters/ 下一个都没有。
+          重试本身是一台带幂等键与本地落盘的持久命令机（CreativeRunWorkspace），不在这里
+          复制第二份 —— 直接把运营送到那台机器上。 */}
+      {activeItem?.executionState === "failed" ? (
+        <div
+          className="mt-3 rounded-lg bg-[var(--ad-red-bg)] p-3 text-xs text-[var(--ad-red-text)]"
+          role="alert"
+        >
+          <p className="font-semibold">
+            {activeItem.failure?.operatorGuidance ?? t("Generation failed")}
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-3">
+            {activeItem.failure ? (
+              <code className="font-mono text-[11px]">
+                {activeItem.failure.errorCode}
+              </code>
+            ) : null}
+            {runId ? (
+              <Link
+                className="font-semibold underline"
+                href={`/admin/creative/runs/${encodeURIComponent(runId)}`}
+              >
+                {t("Open run to retry")}
+              </Link>
+            ) : null}
+          </div>
         </div>
       ) : null}
     </div>
@@ -2853,6 +2893,7 @@ export function CharacterAssetStudio({
                 items={activeRunDetail.items}
                 onActivate={activateCandidate}
                 onCompare={toggleCandidateComparison}
+                runId={activeRunDetail.id}
                 selectedPackAssetId={selectedPackAssetId}
                 subjectName={subject.name}
               />

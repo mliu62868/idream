@@ -91,6 +91,7 @@ export const adminZhCharacters: Record<string, string> = {
   "Official identity and production settings": "正式身份与生产设置",
   "Open any image to keep adjusting it or set it as the current look again.":
     "打开任意图片，可继续调整或重新设为当前形象。",
+  "Open run to retry": "打开这次生成去重试",
   "Optional fields can be written now or later in Soul. Publishing checks the opening line and Soul quality separately.": "选填项现在写或之后在「灵魂」里写都行。开场白与灵魂质量由发布环节单独把关。",
   // SEAM: "Page {page}" 与 "Previous page" 是通用分页词，本该和 "Next page" 一起放
   // i18n-zh-common.ts；这一轮不允许改那个文件，合并时请一起搬过去。
@@ -115,6 +116,7 @@ export const adminZhCharacters: Record<string, string> = {
   "Reference image: {name}": "参考图：{name}",
   "Release steps": "发布步骤",
   "Release {kind} failed": "发布{kind}失败",
+  "Requeue in operations": "到运维队列重跑",
   "Restored this local reference image and set it as the source for this run.":
     "已恢复这张本地参考图，并设为本轮图生图来源。",
   "Reuse selected image seed": "沿用所选图",

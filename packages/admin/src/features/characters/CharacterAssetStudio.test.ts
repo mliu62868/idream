@@ -255,6 +255,32 @@ describe("Character Asset Studio flow", () => {
     })).toBe("rejected");
   });
 
+  // 失败候选此前落进 "ready" 兜底：缩略图跟成功的候选一模一样，只是没图。
+  it("distinguishes a failed candidate from one that is merely undecided", () => {
+    expect(resolveCharacterCandidateVisualState({
+      active: false,
+      comparison: false,
+      draft: false,
+      decision: null,
+      failed: true,
+    })).toBe("failed");
+    expect(resolveCharacterCandidateVisualState({
+      active: false,
+      comparison: false,
+      draft: false,
+      decision: null,
+      failed: false,
+    })).toBe("ready");
+    // 已经有人工判定的候选，判定优先于执行态。
+    expect(resolveCharacterCandidateVisualState({
+      active: false,
+      comparison: false,
+      draft: false,
+      decision: "rejected",
+      failed: true,
+    })).toBe("rejected");
+  });
+
   // SPEC: 「下一张该做的图」只读服务端 journey 投影，前端不再自己数 draftAssetPack。
   // INTENT: 前端那版只过滤 routeCurrent、不过滤资产可用性（软删/归属），资产被软删时
   // 服务端说缺 cover、前端却把运营带去 hero。这里盯住「读服务端答案」本身。
