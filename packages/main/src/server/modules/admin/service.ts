@@ -59,13 +59,6 @@ import {
   listAgeVerifications,
   overrideAgeVerification,
 } from "./compliance";
-import { profileHealth, profileDryRun } from "./generation-health";
-import { generationMetrics } from "./generation-metrics";
-import {
-  getGenerationWorkflow,
-  listGenerationBackends,
-  listGenerationWorkflows,
-} from "./generation/backends-and-workflows";
 import { analyticsExport, analyticsRetention } from "./analytics-extra";
 import {
   listAdminAnnouncements,
@@ -101,27 +94,6 @@ import {
   updateUserRole,
   updateUserStatus,
 } from "./users/service";
-import {
-  deadLetterQueue,
-  discardDeadLetterBatch,
-  discardGenerationJob,
-  getGenerationJobDetail,
-  listGenerationJobs,
-  requeueDeadLetterBatch,
-  requeueGenerationJob,
-} from "./generation/dead-letter/service";
-import {
-  createModelProfile,
-  createProfileTestJob,
-  listModelImports,
-  listModelProfiles,
-  modelDiagnosticsEnabled,
-  patchModelProfile,
-  publishModelProfile,
-  registerModelImport,
-  rollbackModelProfile,
-  uploadModelImport,
-} from "./generation/config/service";
 import {
   appealDecision,
   mediaReviewDecision,
@@ -162,29 +134,13 @@ import {
   setCharacterTags,
   setCharacterVisibility,
 } from "./content/merchandising";
-import {
-  abuseOverview,
-  analyticsOverview,
-  providerOps,
-} from "./overviews/service";
+import { abuseOverview, analyticsOverview } from "./overviews/service";
 import {
   createSavedView,
   deleteSavedView,
   listSavedViews,
 } from "./saved-views/service";
 import { adminDashboard } from "./dashboard/service";
-import {
-  createAdminPreset,
-  createRecipe,
-  getAdminPreset,
-  getRecipe,
-  listAdminPresets,
-  listRecipes,
-  patchAdminPreset,
-  patchRecipe,
-  publishRecipe,
-  rollbackRecipe,
-} from "./generation/catalog-admin";
 
 type ApiMethod = "GET" | "POST" | "PATCH" | "DELETE" | "PUT";
 
@@ -201,67 +157,6 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
     if (id && action === "role" && method === "POST") return updateUserRole(request, id);
     if (id && action === "permissions" && method === "GET") return listUserPermissions(request, id);
     if (id && action === "permissions" && method === "POST") return setUserPermission(request, id);
-  }
-
-  if (resource === "generation") {
-    if (id === "jobs" && !action && method === "GET") return listGenerationJobs(request);
-    if (id === "jobs" && action && !child && method === "GET") {
-      return getGenerationJobDetail(request, action);
-    }
-    if (id === "jobs" && action && child === "requeue" && method === "POST") {
-      return requeueGenerationJob(request, action);
-    }
-    if (id === "jobs" && action && child === "discard" && method === "POST") {
-      return discardGenerationJob(request, action);
-    }
-    if (id === "model-profiles") {
-      if (!action && method === "GET") return listModelProfiles(request);
-      if (!action && method === "POST") return createModelProfile(request);
-      if (action && !child && method === "PATCH") return patchModelProfile(request, action);
-      if (action && child === "publish" && method === "POST") {
-        return publishModelProfile(request, action);
-      }
-      if (action && child === "rollback" && method === "POST") {
-        return rollbackModelProfile(request, action);
-      }
-    }
-    if (id === "model-imports") {
-      if (!modelDiagnosticsEnabled()) throw Errors.notFound("Admin API route not found");
-      if (!action && method === "GET") return listModelImports(request);
-      if (action === "register" && method === "POST") return registerModelImport(request);
-      if (action === "upload" && method === "POST") return uploadModelImport(request);
-    }
-    if (id === "recipes") {
-      if (!action && method === "GET") return listRecipes(request);
-      if (action && !child && method === "GET") return getRecipe(request, action);
-      if (!action && method === "POST") return createRecipe(request);
-      if (action && !child && method === "PATCH") return patchRecipe(request, action);
-      if (action && child === "publish" && method === "POST") {
-        return publishRecipe(request, action);
-      }
-      if (action && child === "rollback" && method === "POST") {
-        return rollbackRecipe(request, action);
-      }
-    }
-    if (id === "presets") {
-      if (!action && method === "GET") return listAdminPresets(request);
-      if (action && !child && method === "GET") return getAdminPreset(request, action);
-      if (!action && method === "POST") return createAdminPreset(request);
-      if (action && !child && method === "PATCH") return patchAdminPreset(request, action);
-    }
-    if (id === "dead-letter") {
-      if (!action && method === "GET") return deadLetterQueue(request);
-      if (action === "requeue" && method === "POST") return requeueDeadLetterBatch(request);
-      if (action === "discard" && method === "POST") return discardDeadLetterBatch(request);
-    }
-    if (id === "backends") {
-      if (!action && method === "GET") return listGenerationBackends(request);
-    }
-    if (id === "workflows") {
-      if (!action && method === "GET") return listGenerationWorkflows(request);
-      if (action && !child && method === "GET") return getGenerationWorkflow(request, action);
-    }
-    if (id === "metrics" && !action && method === "GET") return generationMetrics(request);
   }
 
   if (resource === "pricing" && id === "rules") {
@@ -337,10 +232,6 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
 
   if (resource === "risk" && id === "abuse" && !action && method === "GET") {
     return abuseOverview(request);
-  }
-
-  if (resource === "ops" && id === "providers" && !action && method === "GET") {
-    return providerOps(request);
   }
 
   if (resource === "audit-log" && !id && method === "GET") return auditLog(request);
@@ -511,13 +402,6 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
     if (id === "age-verifications" && action && child === "override" && method === "POST") {
       return overrideAgeVerification(request, action);
     }
-  }
-
-  // T4 生成 profile 健康度 + dry-run（与既有 model-profiles publish/rollback 正交）
-  if (resource === "generation" && id === "model-profiles" && action) {
-    if (child === "health" && method === "GET") return profileHealth(request, action);
-    if (child === "dry-run" && method === "POST") return profileDryRun(request, action);
-    if (child === "test-job" && method === "POST") return createProfileTestJob(request, action);
   }
 
   // T4 analytics 导出 + 留存

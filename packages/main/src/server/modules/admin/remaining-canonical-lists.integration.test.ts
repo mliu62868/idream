@@ -58,16 +58,6 @@ describe("remaining canonical admin lists", () => {
       status: "draft",
       version: 1,
     })) });
-    await prisma.generationJob.createMany({ data: ids("job").map((id, index) => ({
-      id,
-      userId: actorId,
-      mode: "image",
-      controls: {},
-      presetIds: [],
-      status: "failed",
-      errorCode: `${token}-failure`,
-      updatedAt: new Date(Date.UTC(2026, 6, 11, 3, index)),
-    })) });
     await prisma.contentReport.createMany({ data: ids("report").map((id, index) => ({
       id,
       reporterId: actorId,
@@ -144,15 +134,6 @@ describe("remaining canonical admin lists", () => {
       reason: token,
       createdAt: new Date(Date.UTC(2026, 6, 11, 11, index)),
     })) });
-    await prisma.generationModelProfile.createMany({ data: ids("profile").map((id, index) => ({
-      id,
-      profileKey: `${token}-profile-${index}`,
-      label: `${token} profile ${index}`,
-      mode: "image",
-      pipelineModel: "test-model",
-      allowedOrientations: ["1:1"],
-      status: "draft",
-    })) });
     await prisma.featureFlag.createMany({ data: ids("flag").map((key) => ({
       key,
       label: `${token} flag`,
@@ -165,7 +146,6 @@ describe("remaining canonical admin lists", () => {
 
   afterAll(async () => {
     await prisma.featureFlag.deleteMany({ where: { key: { startsWith: token } } });
-    await prisma.generationModelProfile.deleteMany({ where: { id: { in: ids("profile") } } });
     await prisma.adminAuditLog.deleteMany({ where: { id: { in: ids("audit") } } });
     await prisma.adminActionRequest.deleteMany({ where: { id: { in: ids("approval") } } });
     await prisma.referral.deleteMany({ where: { id: { in: ids("referral") } } });
@@ -174,7 +154,6 @@ describe("remaining canonical admin lists", () => {
     await prisma.appeal.deleteMany({ where: { id: { in: ids("appeal") } } });
     await prisma.contentReport.deleteMany({ where: { id: { in: ids("report") } } });
     await prisma.mediaAsset.deleteMany({ where: { id: { in: ids("media") } } });
-    await prisma.generationJob.deleteMany({ where: { id: { in: ids("job") } } });
     await prisma.pricingRule.deleteMany({ where: { id: { in: ids("pricing") } } });
     await prisma.subscription.deleteMany({ where: { id: { in: ids("subscription") } } });
     await prisma.dreamcoinLedger.deleteMany({ where: { id: { in: ids("ledger") } } });
@@ -187,14 +166,12 @@ describe("remaining canonical admin lists", () => {
     { name: "billing ledger", segments: ["billing", "ledger"], query: `search=${token}&limit=1` },
     { name: "subscriptions", segments: ["billing", "subscriptions"], query: `search=${token}&status=active&limit=1` },
     { name: "pricing", segments: ["pricing", "rules"], query: `search=${token}&mode=image&limit=1` },
-    { name: "dead-letter", segments: ["generation", "dead-letter"], query: `search=${token}&status=failed&limit=1` },
     { name: "merchandising characters", segments: ["content", "characters"], query: `search=${token}&status=approved&limit=1` },
     { name: "merchandising characters without stats", segments: ["content", "characters"], query: `search=${token}&status=approved&sort=popular&limit=1` },
     { name: "redeem codes", segments: ["promo", "redeem-codes"], query: `search=${token}&status=active&limit=1` },
     { name: "referrals", segments: ["promo", "referrals"], query: `search=${token}&status=pending&limit=1` },
     { name: "approvals", segments: ["approvals"], query: `search=${token}&status=pending&limit=1` },
     { name: "audit", segments: ["audit-log"], query: `search=${token}&limit=1` },
-    { name: "generation profiles", segments: ["generation", "model-profiles"], query: `search=${token}&mode=image&limit=1` },
     { name: "feature flags", segments: ["feature-flags"], query: `search=${token}&enabled=false&limit=1` },
   ] as const;
 
@@ -264,7 +241,6 @@ describe("remaining canonical admin lists", () => {
   it("preserves unbounded V1 defaults while the Admin UI opts into pagination", async () => {
     for (const testCase of [
       { segments: ["pricing", "rules"], query: `search=${token}` },
-      { segments: ["generation", "model-profiles"], query: `search=${token}` },
       { segments: ["feature-flags"], query: `search=${token}` },
     ]) {
       const result = await call(testCase.segments, testCase.query);
@@ -275,9 +251,8 @@ describe("remaining canonical admin lists", () => {
     }
   });
 
-  it("rejects malformed canonical pricing, profile, and flag queries at the boundary", async () => {
+  it("rejects malformed canonical pricing and flag queries at the boundary", async () => {
     await expect(call(["pricing", "rules"], "limit=1junk")).resolves.toMatchObject({ response: { status: 400 } });
-    await expect(call(["generation", "model-profiles"], "status=mystery")).resolves.toMatchObject({ response: { status: 400 } });
     await expect(call(["feature-flags"], "enabled=banana")).resolves.toMatchObject({ response: { status: 400 } });
   });
 

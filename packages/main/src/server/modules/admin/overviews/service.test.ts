@@ -37,7 +37,7 @@ vi.mock("@/server/modules/admin/shared/legacy-primitives", () => ({
   actorWithPermission: mocks.actorWithPermission,
 }));
 
-import { analyticsOverview, providerOps } from "./service";
+import { analyticsOverview } from "./service";
 
 describe("legacy overview data scopes", () => {
   beforeEach(() => {
@@ -101,82 +101,4 @@ describe("legacy overview data scopes", () => {
     });
   });
 
-  it("excludes fixture and audit owners from provider operations", async () => {
-    const response = await providerOps(
-      new Request("http://localhost/api/v1/admin/ops/providers"),
-    );
-    const payload = (await response.json()) as {
-      data: { dataScope: Record<string, unknown> };
-    };
-
-    expect(payload.data.dataScope).toEqual({
-      kind: "operational",
-      includedDataClasses: ["customer", "internal", "operational"],
-      excludedDataClasses: ["fixture", "audit"],
-    });
-    for (const call of mocks.groupGenerationJobs.mock.calls) {
-      expect(call[0]).toMatchObject({
-        where: {
-          AND: [
-            {
-              user: {
-                is: {
-                  dataClass: { in: ["customer", "internal"] },
-                },
-              },
-            },
-            {},
-          ],
-        },
-      });
-    }
-    expect(mocks.listGenerationJobs.mock.calls[0]?.[0]).toMatchObject({
-      where: {
-        AND: [
-          {
-            user: {
-              is: {
-                dataClass: { in: ["customer", "internal"] },
-              },
-            },
-          },
-          { status: "completed", completedAt: { not: null } },
-        ],
-      },
-    });
-  });
-
-  it("reports unavailable provider latency when there are no completed samples", async () => {
-    mocks.groupGenerationJobs.mockResolvedValue([
-      {
-        provider: "backend",
-        status: "queued",
-        _count: { _all: 2 },
-        _sum: { costDreamcoins: 10 },
-      },
-    ]);
-
-    const response = await providerOps(
-      new Request("http://localhost/api/v1/admin/ops/providers"),
-    );
-    const payload = (await response.json()) as {
-      data: {
-        providers: Array<{
-          provider: string;
-          latencyP50Ms: number | null;
-          latencyP95Ms: number | null;
-          latencySamples: number;
-        }>;
-      };
-    };
-
-    expect(payload.data.providers).toEqual([
-      expect.objectContaining({
-        provider: "backend",
-        latencyP50Ms: null,
-        latencyP95Ms: null,
-        latencySamples: 0,
-      }),
-    ]);
-  });
 });

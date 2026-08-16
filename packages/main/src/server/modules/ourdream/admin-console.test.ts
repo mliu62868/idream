@@ -17,6 +17,7 @@ import {
   characterVisualProfileSnapshotHash,
   referenceSetSnapshotHash,
 } from "@/server/modules/admin-v2/characters/release-snapshot";
+import { adminV2 } from "@/server/test/admin-v2-http";
 import {
   api,
   createCharacter,
@@ -336,12 +337,12 @@ describe("admin permission keys", () => {
 
     expectOk(await api("GET", "admin/dashboard", { userId: analyst, role: "analyst" }));
     expectOk(await api("GET", "admin/users", { userId: support, role: "support" }));
-    expectOk(await api("GET", "admin/generation/model-profiles", { userId: ops, role: "ops" }));
+    expectOk(await adminV2("GET", "/api/v2/admin/generation/model-profiles", { userId: ops, role: "ops" }));
     expectOk(await api("GET", "admin/billing/ledger", { userId: support, role: "support" }));
     expectOk(await api("GET", "admin/audit-log", { userId: admin, role: "admin" }));
 
     expectError(await api("GET", "admin/users", { userId: analyst, role: "analyst" }), 403);
-    expectError(await api("GET", "admin/generation/model-profiles", { userId: support, role: "support" }), 403);
+    expectError(await adminV2("GET", "/api/v2/admin/generation/model-profiles", { userId: support, role: "support" }), 403);
     expectError(await api("GET", "admin/billing/ledger", { userId: ops, role: "ops" }), 403);
     expectError(await api("GET", "admin/dashboard", { userId: user, role: "user" }), 403);
   });
@@ -1228,7 +1229,7 @@ describe("generation config control plane", () => {
       },
     });
 
-    const draft = await api("POST", "admin/generation/model-profiles", {
+    const draft = await adminV2("POST", "/api/v2/admin/generation/model-profiles", {
       userId: admin,
       role: "admin",
       body: {
@@ -1244,7 +1245,7 @@ describe("generation config control plane", () => {
     expectOk(draft);
     expect(draft.data.profile).toMatchObject({ enabled: false, rolloutPercent: 0, status: "draft" });
 
-    const publish = await api("POST", `admin/generation/model-profiles/${draft.data.profile.id}/publish`, {
+    const publish = await adminV2("POST", `/api/v2/admin/generation/model-profiles/${draft.data.profile.id}/commands/publish`, {
       userId: admin,
       role: "admin",
       body: {
@@ -1254,7 +1255,7 @@ describe("generation config control plane", () => {
     });
     expectError(publish, 400, "bad_request");
 
-    const exactPublish = await api("POST", `admin/generation/model-profiles/${draft.data.profile.id}/publish`, {
+    const exactPublish = await adminV2("POST", `/api/v2/admin/generation/model-profiles/${draft.data.profile.id}/commands/publish`, {
       userId: admin,
       role: "admin",
       body: {
@@ -1282,7 +1283,7 @@ describe("generation config control plane", () => {
         finishedAt: new Date(),
       },
     });
-    const verifiedPublish = await api("POST", `admin/generation/model-profiles/${draft.data.profile.id}/publish`, {
+    const verifiedPublish = await adminV2("POST", `/api/v2/admin/generation/model-profiles/${draft.data.profile.id}/commands/publish`, {
       userId: admin,
       role: "admin",
       body: {
@@ -1305,14 +1306,14 @@ describe("generation config control plane", () => {
       status: "archived",
     });
 
-    const rollback = await api("POST", `admin/generation/model-profiles/${verifiedPublish.data.profile.id}/rollback`, {
+    const rollback = await adminV2("POST", `/api/v2/admin/generation/model-profiles/${verifiedPublish.data.profile.id}/commands/rollback`, {
       userId: admin,
       role: "admin",
       body: { reason: "regression detected", confirmation: "ROLLBACK" },
     });
     expectError(rollback, 400, "bad_request");
 
-    const exactRollback = await api("POST", `admin/generation/model-profiles/${verifiedPublish.data.profile.id}/rollback`, {
+    const exactRollback = await adminV2("POST", `/api/v2/admin/generation/model-profiles/${verifiedPublish.data.profile.id}/commands/rollback`, {
       userId: admin,
       role: "admin",
       body: { reason: "regression detected", confirmation: verifiedPublish.data.profile.id },
@@ -1336,7 +1337,7 @@ describe("generation config control plane", () => {
   it("validates workflowKey against known workflow descriptors on create and patch", async () => {
     const admin = await setupActor("admin", "workflow-key");
 
-    const unknownCreate = await api("POST", "admin/generation/model-profiles", {
+    const unknownCreate = await adminV2("POST", "/api/v2/admin/generation/model-profiles", {
       userId: admin,
       role: "admin",
       body: {
@@ -1351,7 +1352,7 @@ describe("generation config control plane", () => {
     });
     expectError(unknownCreate, 400, "bad_request");
 
-    const draft = await api("POST", "admin/generation/model-profiles", {
+    const draft = await adminV2("POST", "/api/v2/admin/generation/model-profiles", {
       userId: admin,
       role: "admin",
       body: {
@@ -1370,9 +1371,9 @@ describe("generation config control plane", () => {
       await prisma.generationModelProfile.findUnique({ where: { id: draft.data.profile.id } }),
     ).toMatchObject({ workflowKey: "redcraft-krea2-redmix3-txt2img" });
 
-    const unknownPatch = await api(
+    const unknownPatch = await adminV2(
       "PATCH",
-      `admin/generation/model-profiles/${draft.data.profile.id}`,
+      `/api/v2/admin/generation/model-profiles/${draft.data.profile.id}`,
       {
         userId: admin,
         role: "admin",
@@ -1381,9 +1382,9 @@ describe("generation config control plane", () => {
     );
     expectError(unknownPatch, 400, "bad_request");
 
-    const clearPatch = await api(
+    const clearPatch = await adminV2(
       "PATCH",
-      `admin/generation/model-profiles/${draft.data.profile.id}`,
+      `/api/v2/admin/generation/model-profiles/${draft.data.profile.id}`,
       { userId: admin, role: "admin", body: { workflowKey: null } },
     );
     expectOk(clearPatch);
@@ -1392,9 +1393,9 @@ describe("generation config control plane", () => {
       await prisma.generationModelProfile.findUnique({ where: { id: draft.data.profile.id } }),
     ).toMatchObject({ workflowKey: null });
 
-    const restorePatch = await api(
+    const restorePatch = await adminV2(
       "PATCH",
-      `admin/generation/model-profiles/${draft.data.profile.id}`,
+      `/api/v2/admin/generation/model-profiles/${draft.data.profile.id}`,
       {
         userId: admin,
         role: "admin",
@@ -1475,7 +1476,7 @@ describe("generation config control plane", () => {
       },
     });
 
-    const publish = await api("POST", `admin/generation/model-profiles/${draft.id}/publish`, {
+    const publish = await adminV2("POST", `/api/v2/admin/generation/model-profiles/${draft.id}/commands/publish`, {
       userId: admin,
       role: "admin",
       body: {
@@ -1516,7 +1517,7 @@ describe("generation config control plane", () => {
       },
     });
 
-    const smallSample = await api("POST", `admin/generation/model-profiles/${draft.id}/publish`, {
+    const smallSample = await adminV2("POST", `/api/v2/admin/generation/model-profiles/${draft.id}/commands/publish`, {
       userId: admin,
       role: "admin",
       body: {
@@ -1536,7 +1537,7 @@ describe("generation config control plane", () => {
         },
       },
     });
-    const missingConsistency = await api("POST", `admin/generation/model-profiles/${draft.id}/publish`, {
+    const missingConsistency = await adminV2("POST", `/api/v2/admin/generation/model-profiles/${draft.id}/commands/publish`, {
       userId: admin,
       role: "admin",
       body: {
@@ -1574,7 +1575,7 @@ describe("generation config control plane", () => {
       },
     });
 
-    const publish = await api("POST", `admin/generation/model-profiles/${draft.id}/publish`, {
+    const publish = await adminV2("POST", `/api/v2/admin/generation/model-profiles/${draft.id}/commands/publish`, {
       userId: admin,
       role: "admin",
       body: {
@@ -1618,7 +1619,7 @@ describe("generation config control plane", () => {
       },
     });
 
-    const publish = await api("POST", `admin/generation/model-profiles/${draft.id}/publish`, {
+    const publish = await adminV2("POST", `/api/v2/admin/generation/model-profiles/${draft.id}/commands/publish`, {
       userId: admin,
       role: "admin",
       body: {
@@ -1636,7 +1637,7 @@ describe("generation config control plane", () => {
 
   it("does not allow draft model profiles to be enabled without publish", async () => {
     const admin = await setupActor("admin", "profile-enable-draft");
-    const draft = await api("POST", "admin/generation/model-profiles", {
+    const draft = await adminV2("POST", "/api/v2/admin/generation/model-profiles", {
       userId: admin,
       role: "admin",
       body: {
@@ -1652,7 +1653,7 @@ describe("generation config control plane", () => {
     expectOk(draft);
     expect(draft.data.profile).toMatchObject({ enabled: false, rolloutPercent: 0, status: "draft" });
 
-    const patch = await api("PATCH", `admin/generation/model-profiles/${draft.data.profile.id}`, {
+    const patch = await adminV2("PATCH", `/api/v2/admin/generation/model-profiles/${draft.data.profile.id}`, {
       userId: admin,
       role: "admin",
       body: { enabled: true, reason: "try enable", confirmation: "ENABLE" },
@@ -1685,7 +1686,7 @@ describe("generation config control plane", () => {
       },
     });
 
-    const publish = await api("POST", `admin/generation/model-profiles/${draft.id}/publish`, {
+    const publish = await adminV2("POST", `/api/v2/admin/generation/model-profiles/${draft.id}/commands/publish`, {
       userId: admin,
       role: "admin",
       body: {
@@ -1731,7 +1732,7 @@ describe("generation config control plane", () => {
       },
     });
 
-    const publish = await api("POST", `admin/generation/model-profiles/${draft.id}/publish`, {
+    const publish = await adminV2("POST", `/api/v2/admin/generation/model-profiles/${draft.id}/commands/publish`, {
       userId: admin,
       role: "admin",
       body: {
@@ -1774,7 +1775,7 @@ describe("generation config control plane", () => {
       },
     });
 
-    const hijack = await api("PATCH", `admin/generation/model-profiles/${profileId}`, {
+    const hijack = await adminV2("PATCH", `/api/v2/admin/generation/model-profiles/${profileId}`, {
       userId: admin,
       role: "admin",
       body: {
@@ -1786,14 +1787,14 @@ describe("generation config control plane", () => {
     });
     expectError(hijack, 400, "bad_request");
 
-    const genericDisable = await api("PATCH", `admin/generation/model-profiles/${profileId}`, {
+    const genericDisable = await adminV2("PATCH", `/api/v2/admin/generation/model-profiles/${profileId}`, {
       userId: admin,
       role: "admin",
       body: { enabled: false, reason: "pause bad profile", confirmation: "DISABLE" },
     });
     expectError(genericDisable, 400, "bad_request");
 
-    const disabled = await api("PATCH", `admin/generation/model-profiles/${profileId}`, {
+    const disabled = await adminV2("PATCH", `/api/v2/admin/generation/model-profiles/${profileId}`, {
       userId: admin,
       role: "admin",
       body: { enabled: false, reason: "pause bad profile", confirmation: profileId },
@@ -1812,7 +1813,7 @@ describe("generation config control plane", () => {
     try {
       delete process.env.ADMIN_MODEL_DIAGNOSTICS_ENABLED;
 
-      const create = await api("POST", "admin/generation/model-profiles", {
+      const create = await adminV2("POST", "/api/v2/admin/generation/model-profiles", {
         userId: admin,
         role: "admin",
         body: {
@@ -1856,7 +1857,7 @@ describe("generation config control plane", () => {
         },
       });
 
-      const configPatch = await api("PATCH", `admin/generation/model-profiles/${profileId}`, {
+      const configPatch = await adminV2("PATCH", `/api/v2/admin/generation/model-profiles/${profileId}`, {
         userId: admin,
         role: "admin",
         body: {
@@ -1867,7 +1868,7 @@ describe("generation config control plane", () => {
       });
       expectError(configPatch, 404, "not_found");
 
-      const disabled = await api("PATCH", `admin/generation/model-profiles/${profileId}`, {
+      const disabled = await adminV2("PATCH", `/api/v2/admin/generation/model-profiles/${profileId}`, {
         userId: admin,
         role: "admin",
         body: {
@@ -1889,7 +1890,7 @@ describe("generation config control plane", () => {
 
   it("fails dry-run for candidates with missing runtime components", async () => {
     const admin = await setupActor("admin", "comfyui-component-dry-run");
-    const draft = await api("POST", "admin/generation/model-profiles", {
+    const draft = await adminV2("POST", "/api/v2/admin/generation/model-profiles", {
       userId: admin,
       role: "admin",
       body: {
@@ -1914,7 +1915,7 @@ describe("generation config control plane", () => {
     });
     expectOk(draft);
 
-    const dryRun = await api("POST", `admin/generation/model-profiles/${draft.data.profile.id}/dry-run`, {
+    const dryRun = await adminV2("POST", `/api/v2/admin/generation/model-profiles/${draft.data.profile.id}/commands/dry-run`, {
       userId: admin,
       role: "admin",
       body: { reason: "verify missing components", confirmation: draft.data.profile.id },
@@ -1947,7 +1948,7 @@ describe("generation config control plane", () => {
       data: { dataClass: "internal" },
     });
     const beforeBalance = await dreamcoinBalance(admin);
-    const draft = await api("POST", "admin/generation/model-profiles", {
+    const draft = await adminV2("POST", "/api/v2/admin/generation/model-profiles", {
       userId: admin,
       role: "admin",
       body: {
@@ -1967,7 +1968,7 @@ describe("generation config control plane", () => {
     });
     expectOk(draft);
 
-    const queued = await api("POST", `admin/generation/model-profiles/${draft.data.profile.id}/test-job`, {
+    const queued = await adminV2("POST", `/api/v2/admin/generation/model-profiles/${draft.data.profile.id}/commands/test-job`, {
       userId: admin,
       role: "admin",
       body: {
@@ -1980,7 +1981,7 @@ describe("generation config control plane", () => {
     });
     expectError(queued, 400, "bad_request");
 
-    const exactQueued = await api("POST", `admin/generation/model-profiles/${draft.data.profile.id}/test-job`, {
+    const exactQueued = await adminV2("POST", `/api/v2/admin/generation/model-profiles/${draft.data.profile.id}/commands/test-job`, {
       userId: admin,
       role: "admin",
       body: {
@@ -1994,7 +1995,6 @@ describe("generation config control plane", () => {
     expectOk(exactQueued, 202);
     expect(exactQueued.data.job).toMatchObject({
       status: "queued",
-      costDreamcoins: 0,
       profileId: `${P}comfyui-test-job`,
       profileVersion: draft.data.profile.version,
     });
@@ -2027,7 +2027,7 @@ describe("generation config control plane", () => {
     expect(completed.assets[0]?.url).toContain("/user-content/");
     expect(await dreamcoinBalance(admin)).toBe(beforeBalance);
 
-    const repeatedQueued = await api("POST", `admin/generation/model-profiles/${draft.data.profile.id}/test-job`, {
+    const repeatedQueued = await adminV2("POST", `/api/v2/admin/generation/model-profiles/${draft.data.profile.id}/commands/test-job`, {
       userId: admin,
       role: "admin",
       body: {
@@ -2042,18 +2042,14 @@ describe("generation config control plane", () => {
     expect(repeatedQueued.data.job.id).not.toBe(exactQueued.data.job.id);
     await runQueuedGenerationJobs(8);
 
-    const list = await api("GET", "admin/generation/jobs", {
+    const list = await adminV2("GET", "/api/v2/admin/jobs?mode=image&limit=5", {
       userId: admin,
       role: "admin",
-      query: { mode: "image", limit: 5 },
     });
     expectOk(list);
     expect(list.data.items).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({
-          id: exactQueued.data.job.id,
-          assets: [expect.objectContaining({ id: completed.assets[0]?.id })],
-        }),
+        expect.objectContaining({ id: exactQueued.data.job.id, assetCount: 1 }),
       ]),
     );
   });
@@ -2732,7 +2728,7 @@ describe("generation config control plane", () => {
     const previousDiagnostics = process.env.ADMIN_MODEL_DIAGNOSTICS_ENABLED;
     try {
       delete process.env.ADMIN_MODEL_DIAGNOSTICS_ENABLED;
-      const list = await api("GET", "admin/generation/model-imports", {
+      const list = await adminV2("GET", "/api/v2/admin/generation/model-imports", {
         userId: admin,
         role: "admin",
       });
@@ -2772,7 +2768,7 @@ describe("generation config control plane", () => {
       await writeFile(nestedDirectoryModelPath, "model");
       await writeFile(path.join(modelDir, "notes.txt"), "ignore");
 
-      const model = await api("POST", "admin/generation/model-imports/register", {
+      const model = await adminV2("POST", "/api/v2/admin/generation/model-imports/commands/register", {
         userId: admin,
         role: "admin",
         body: { kind: "model", path: modelPath, reason: "register local model" },
@@ -2790,7 +2786,7 @@ describe("generation config control plane", () => {
         }),
       });
 
-      const krea2Model = await api("POST", "admin/generation/model-imports/register", {
+      const krea2Model = await adminV2("POST", "/api/v2/admin/generation/model-imports/commands/register", {
         userId: admin,
         role: "admin",
         body: { kind: "model", path: krea2ModelPath, reason: "register local krea2 model" },
@@ -2811,7 +2807,7 @@ describe("generation config control plane", () => {
         }),
       });
 
-      const redcraftComfyuiModel = await api("POST", "admin/generation/model-imports/register", {
+      const redcraftComfyuiModel = await adminV2("POST", "/api/v2/admin/generation/model-imports/commands/register", {
         userId: admin,
         role: "admin",
         body: { kind: "model", path: redcraftComfyuiPath, reason: "register local redcraft comfyui model" },
@@ -2838,7 +2834,7 @@ describe("generation config control plane", () => {
         }),
       });
 
-      const lora = await api("POST", "admin/generation/model-imports/register", {
+      const lora = await adminV2("POST", "/api/v2/admin/generation/model-imports/commands/register", {
         userId: admin,
         role: "admin",
         body: { kind: "lora", path: loraPath, reason: "register local lora" },
@@ -2849,7 +2845,7 @@ describe("generation config control plane", () => {
         lora: expect.objectContaining({ key: "cinematic", path: loraPath, weight: 1 }),
       });
 
-      const directoryImport = await api("POST", "admin/generation/model-imports/register", {
+      const directoryImport = await adminV2("POST", "/api/v2/admin/generation/model-imports/commands/register", {
         userId: admin,
         role: "admin",
         body: { kind: "model", path: modelDir, reason: "register model directory" },
@@ -2862,7 +2858,7 @@ describe("generation config control plane", () => {
         ]),
       );
 
-      const list = await api("GET", "admin/generation/model-imports", {
+      const list = await adminV2("GET", "/api/v2/admin/generation/model-imports", {
         userId: admin,
         role: "admin",
       });
@@ -2902,7 +2898,7 @@ describe("generation config control plane", () => {
       await mkdir(path.dirname(modelPath), { recursive: true });
       await writeFile(modelPath, "model");
 
-      const list = await api("GET", "admin/generation/model-imports", {
+      const list = await adminV2("GET", "/api/v2/admin/generation/model-imports", {
         userId: admin,
         role: "admin",
       });
@@ -2942,7 +2938,7 @@ describe("generation config control plane", () => {
       },
     });
 
-    const draft = await api("POST", "admin/generation/recipes", {
+    const draft = await adminV2("POST", "/api/v2/admin/generation/recipes", {
       userId: admin,
       role: "admin",
       body: {
@@ -2959,20 +2955,20 @@ describe("generation config control plane", () => {
     });
     expectOk(draft);
 
-    const publish = await api("POST", `admin/generation/recipes/${draft.data.template.id}/publish`, {
+    const publish = await adminV2("POST", `/api/v2/admin/generation/recipes/${draft.data.recipe.id}/commands/publish`, {
       userId: admin,
       role: "admin",
       body: { reason: "sample matrix passed", confirmation: "PUBLISH" },
     });
     expectError(publish, 400, "bad_request");
 
-    const exactPublish = await api("POST", `admin/generation/recipes/${draft.data.template.id}/publish`, {
+    const exactPublish = await adminV2("POST", `/api/v2/admin/generation/recipes/${draft.data.recipe.id}/commands/publish`, {
       userId: admin,
       role: "admin",
-      body: { reason: "sample matrix passed", confirmation: draft.data.template.id },
+      body: { reason: "sample matrix passed", confirmation: draft.data.recipe.id },
     });
     expectOk(exactPublish);
-    expect(exactPublish.data.template).toMatchObject({ status: "active", version: 2 });
+    expect(exactPublish.data.recipe).toMatchObject({ status: "active", version: 2 });
     expect(await prisma.generationRecipe.findUnique({ where: { id: `${P}template-v1` } })).toMatchObject({
       status: "archived",
     });
@@ -3276,7 +3272,7 @@ describe("admin writes are audited", () => {
       },
     });
 
-    const discarded = await api("POST", `admin/generation/jobs/${P}completed-job/discard`, {
+    const discarded = await adminV2("POST", `/api/v2/admin/generation/dead-letter/${P}completed-job/commands/discard`, {
       userId: admin,
       role: "admin",
       body: { reason: "should not refund completed work", confirmation: `${P}completed-job` },
@@ -3315,11 +3311,11 @@ describe("dead-letter operations console", () => {
     await makeJob(`${P}dl-done`, owner, "completed", 10);
 
     expectError(
-      await api("GET", "admin/generation/dead-letter", { userId: analyst, role: "analyst" }),
+      await adminV2("GET", "/api/v2/admin/generation/dead-letter", { userId: analyst, role: "analyst" }),
       403,
     );
 
-    const list = await api("GET", "admin/generation/dead-letter", { userId: ops, role: "ops" });
+    const list = await adminV2("GET", "/api/v2/admin/generation/dead-letter", { userId: ops, role: "ops" });
     expectOk(list);
     const items = list.data.items as Array<{ id: string; ledgerState: string }>;
     const ids = items.map((item) => item.id);
@@ -3361,7 +3357,7 @@ describe("dead-letter operations console", () => {
     });
 
     const requeueIds = [`${P}dl-rq-failed`, `${P}dl-rq-refunded`, `${P}dl-rq-missing`];
-    const wrongConfirmation = await api("POST", "admin/generation/dead-letter/requeue", {
+    const wrongConfirmation = await adminV2("POST", "/api/v2/admin/generation/dead-letter/commands/requeue", {
       userId: admin,
       role: "admin",
       body: {
@@ -3375,7 +3371,7 @@ describe("dead-letter operations console", () => {
       status: "failed",
     });
 
-    const res = await api("POST", "admin/generation/dead-letter/requeue", {
+    const res = await adminV2("POST", "/api/v2/admin/generation/dead-letter/commands/requeue", {
       userId: admin,
       role: "admin",
       body: {
@@ -3435,7 +3431,7 @@ describe("dead-letter operations console", () => {
     });
 
     const discardIds = [`${P}dl-dc-failed`, `${P}dl-dc-refunded`];
-    const wrongConfirmation = await api("POST", "admin/generation/dead-letter/discard", {
+    const wrongConfirmation = await adminV2("POST", "/api/v2/admin/generation/dead-letter/commands/discard", {
       userId: admin,
       role: "admin",
       body: {
@@ -3449,7 +3445,7 @@ describe("dead-letter operations console", () => {
       await prisma.dreamcoinLedger.count({ where: { sourceId: `${P}dl-dc-failed`, reason: "refund" } }),
     ).toBe(0);
 
-    const res = await api("POST", "admin/generation/dead-letter/discard", {
+    const res = await adminV2("POST", "/api/v2/admin/generation/dead-letter/commands/discard", {
       userId: admin,
       role: "admin",
       body: {
@@ -3473,14 +3469,14 @@ describe("dead-letter operations console", () => {
     expect(
       await prisma.adminAuditLog.count({ where: { actorId: admin, action: "ops.deadletter.discard" } }),
     ).toBe(1);
-    const afterDiscard = await api("GET", "admin/generation/dead-letter", { userId: admin, role: "admin" });
+    const afterDiscard = await adminV2("GET", "/api/v2/admin/generation/dead-letter", { userId: admin, role: "admin" });
     expectOk(afterDiscard);
     expect((afterDiscard.data.items as Array<{ id: string }>).map((item) => item.id)).not.toContain(`${P}dl-dc-failed`);
   });
 });
 
 describe("generation and Creative Run truth containment", () => {
-  it("keeps failed legacy completedAt out of the success timeline and retry set", async () => {
+  it("keeps a failed legacy completedAt out of the retry set, and a delivered artifact out of it too", async () => {
     const admin = await setupActor("admin", "generation-truth");
     const owner = `${P}generation-truth-owner`;
     await createUser({ id: owner, dataClass: "customer" });
@@ -3506,17 +3502,14 @@ describe("generation and Creative Run truth containment", () => {
       },
     });
 
-    const detail = await api("GET", `admin/generation/jobs/${failedJob.id}`, {
+    const failedTriage = await adminV2("GET", `/api/v2/admin/generation/dead-letter?search=${failedJob.id}`, {
       userId: admin,
       role: "admin",
     });
-    expectOk(detail);
-    expect(detail.data.timeline.map((entry: { type: string }) => entry.type)).toEqual(["failed"]);
-    expect(detail.data.state).toMatchObject({
-      executionOutcome: "failed",
-      terminalSource: "event",
-      retryEligibility: { eligible: true },
-    });
+    expectOk(failedTriage);
+    expect(failedTriage.data.items).toMatchObject([
+      { id: failedJob.id, retryEligibility: { eligible: true, reason: "retryable_failure" } },
+    ]);
 
     const artifactJob = await prisma.generationJob.create({
       data: {
@@ -3541,17 +3534,19 @@ describe("generation and Creative Run truth containment", () => {
         metadata: {},
       },
     });
-    const artifactDetail = await api("GET", `admin/generation/jobs/${artifactJob.id}`, {
+    const artifactTriage = await adminV2("GET", `/api/v2/admin/generation/dead-letter?search=${artifactJob.id}`, {
       userId: admin,
       role: "admin",
     });
-    expectOk(artifactDetail);
-    expect(artifactDetail.data.state).toMatchObject({
-      executionOutcome: "succeeded",
-      retryEligibility: { eligible: false, reason: "successful_artifact_exists" },
-    });
+    expectOk(artifactTriage);
+    expect(artifactTriage.data.items).toMatchObject([
+      {
+        id: artifactJob.id,
+        retryEligibility: { eligible: false, reason: "successful_artifact_exists" },
+      },
+    ]);
     expectError(
-      await api("POST", `admin/generation/jobs/${artifactJob.id}/requeue`, {
+      await adminV2("POST", `/api/v2/admin/generation/dead-letter/${artifactJob.id}/commands/requeue`, {
         userId: admin,
         role: "admin",
         body: {
@@ -4021,9 +4016,9 @@ describe("provider ops dashboard", () => {
     });
 
     // analyst 无 ops.queue.read。
-    expectError(await api("GET", "admin/ops/providers", { userId: analyst, role: "analyst" }), 403);
+    expectError(await adminV2("GET", "/api/v2/admin/ops/providers", { userId: analyst, role: "analyst" }), 403);
 
-    const res = await api("GET", "admin/ops/providers", { userId: ops, role: "ops" });
+    const res = await adminV2("GET", "/api/v2/admin/ops/providers", { userId: ops, role: "ops" });
     expectOk(res);
     expect(res.data.dataScope).toMatchObject({
       kind: "operational",
@@ -5166,11 +5161,11 @@ describe("admin generation health + dry-run (T4)", () => {
     });
 
     expectError(
-      await api("GET", `admin/generation/model-profiles/${profile.id}/health`, { userId: support, role: "support" }),
+      await adminV2("GET", `/api/v2/admin/generation/model-profiles/${profile.id}/health`, { userId: support, role: "support" }),
       403,
     );
 
-    const health = await api("GET", `admin/generation/model-profiles/${profile.id}/health`, {
+    const health = await adminV2("GET", `/api/v2/admin/generation/model-profiles/${profile.id}/health`, {
       userId: admin,
       role: "admin",
     });
@@ -5182,14 +5177,14 @@ describe("admin generation health + dry-run (T4)", () => {
     expect(health.data.metrics.total).toBe(2);
     expect(health.data.metrics.successRate).toBeLessThanOrEqual(100);
 
-    const dryRun = await api("POST", `admin/generation/model-profiles/${profile.id}/dry-run`, {
+    const dryRun = await adminV2("POST", `/api/v2/admin/generation/model-profiles/${profile.id}/commands/dry-run`, {
       userId: admin,
       role: "admin",
       body: { reason: "pre-publish check", confirmation: "DRYRUN" },
     });
     expectError(dryRun, 400, "bad_request");
 
-    const exactDryRun = await api("POST", `admin/generation/model-profiles/${profile.id}/dry-run`, {
+    const exactDryRun = await adminV2("POST", `/api/v2/admin/generation/model-profiles/${profile.id}/commands/dry-run`, {
       userId: admin,
       role: "admin",
       body: { reason: "pre-publish check", confirmation: profile.id },
@@ -5218,7 +5213,7 @@ describe("admin generation health + dry-run (T4)", () => {
       },
     });
 
-    const dryRun = await api("POST", `admin/generation/model-profiles/${profile.id}/dry-run`, {
+    const dryRun = await adminV2("POST", `/api/v2/admin/generation/model-profiles/${profile.id}/commands/dry-run`, {
       userId: admin,
       role: "admin",
       body: { reason: "pre-publish check", confirmation: profile.id },
@@ -5548,16 +5543,15 @@ describe("admin generation metrics rollup (P3)", () => {
       },
     });
 
-    const forbidden = await api("GET", "admin/generation/metrics", {
+    const forbidden = await adminV2("GET", "/api/v2/admin/generation/metrics", {
       userId: support,
       role: "support",
     });
     expectError(forbidden, 403);
 
-    const metrics = await api("GET", "admin/generation/metrics", {
+    const metrics = await adminV2("GET", "/api/v2/admin/generation/metrics?days=7", {
       userId: admin,
       role: "admin",
-      query: { days: 7 },
     });
     expectOk(metrics);
     expect(metrics.data.dataScope).toMatchObject({
@@ -5636,10 +5630,9 @@ describe("admin generation metrics rollup (P3)", () => {
       },
     });
 
-    const metrics = await api("GET", "admin/generation/metrics", {
+    const metrics = await adminV2("GET", "/api/v2/admin/generation/metrics?days=7", {
       userId: admin,
       role: "admin",
-      query: { days: 7 },
     });
     expectOk(metrics);
     const engagementRow = metrics.data.placementEngagement.find(

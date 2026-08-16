@@ -626,7 +626,7 @@ test("flow 8: admin control-plane API routes respond", async ({ page }) => {
   expect(dashboard.ok()).toBeTruthy();
   expect((await dashboard.json()).data.metrics.generation).toBeTruthy();
 
-  const profiles = await page.request.get("/api/v1/admin/generation/model-profiles", { headers });
+  const profiles = await page.request.get("/api/v2/admin/generation/model-profiles", { headers });
   expect(profiles.ok()).toBeTruthy();
   expect((await profiles.json()).data.items).toEqual(
     expect.arrayContaining([
