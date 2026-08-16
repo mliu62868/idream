@@ -23,6 +23,10 @@ import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
  * 重放照样成功、金额只记一次。资金语义以账本为准，不为形式统一而改。
  *
  * INVARIANT: |delta| ≥ LEDGER_APPROVAL_THRESHOLD 时必须先消费一条已批准的双人复核请求。
+ * INTENT: 这道闸走的是 approvals 的 flag 化双人复核（`dual_approval_enforced` +
+ * AdminActionRequest），与 controlPlaneCommand 里绑定 approvalId 的那套是**两条独立机制**。
+ * money 沿用前者不是遗留残留：换成绑定式审批会改变运营侧的申请—批准流程，属产品决策，
+ * 不在这轮迁移范围内。定价发布（config.pricing.publish）走的是同一道闸。
  */
 export async function billingAdjustment(
   request: Request,
