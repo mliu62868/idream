@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 // SPEC: calls an Admin v2 Route Handler the way Next.js would — resolve the operation from
 //       (method, pathname), load that route module, hand it the request and its path params.
 // INTENT: the v1 suite reached every admin endpoint through one `dispatchV1(request, segments)`

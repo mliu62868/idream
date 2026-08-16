@@ -119,7 +119,12 @@ describe("generation diagnostics (v2, read-only)", () => {
       const result = await adminV2("GET", "/api/v2/admin/generation/backends", admin);
       expect(result.status, JSON.stringify(result.error)).toBe(200);
 
-      const items = result.data.items as Array<Record<string, any>>;
+      type BackendItem = {
+        id: string;
+        cliPath?: string | null;
+        health: { ok: boolean; detail?: string };
+      };
+      const items = result.data.items as BackendItem[];
       expect(items).toHaveLength(2);
       // gen has no sd.cpp backend left, so the catalogue must not advertise one.
       expect(items.map((item) => item.id)).not.toContain("sdcpp");
