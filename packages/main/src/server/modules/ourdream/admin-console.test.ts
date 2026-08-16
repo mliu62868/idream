@@ -30,10 +30,12 @@ import {
 } from "@/app/api/v2/admin/users/[id]/permissions/route";
 import { POST as adminBillingAdjustmentV2 } from "@/app/api/v2/admin/billing/adjustments/route";
 import { GET as adminBillingLedgerV2 } from "@/app/api/v2/admin/billing/ledger/route";
+import { GET as adminDashboardV2 } from "@/app/api/v2/admin/dashboard/route";
 import {
   characterVisualProfileSnapshotHash,
   referenceSetSnapshotHash,
 } from "@/server/modules/admin-v2/characters/release-snapshot";
+import { callAdminV2 } from "@/server/test/admin-v2-client";
 import {
   adminV2Api,
   api,
@@ -366,6 +368,14 @@ async function writeSafetensorsMetadata(filePath: string, metadata: Record<strin
   await writeFile(filePath, Buffer.concat([length, header]));
 }
 
+/** Dashboard now lives on Admin v2; the rest of this matrix is still dispatchV1. */
+function dashboardV2(userId: string, role: string) {
+  return callAdminV2(adminDashboardV2, {
+    url: "/api/v2/admin/dashboard",
+    actor: { userId, role },
+  });
+}
+
 describe("admin permission keys", () => {
   it("authorizes by permission key instead of coarse admin checks", async () => {
     const admin = await setupActor("admin", "matrix");
@@ -374,8 +384,8 @@ describe("admin permission keys", () => {
     const analyst = await setupActor("analyst", "matrix");
     const user = await setupActor("user", "matrix");
 
-    expectOk(await api("GET", "admin/dashboard", { userId: analyst, role: "analyst" }));
     expectOk(await adminV2Api(adminUsersRoute, "GET", "/api/v2/admin/users", { userId: support, role: "support" }));
+    expect((await dashboardV2(analyst, "analyst")).ok).toBe(true);
     expectOk(await api("GET", "admin/generation/model-profiles", { userId: ops, role: "ops" }));
     expectOk(await adminV2Api(adminAuditLogRoute, "GET", "/api/v2/admin/audit-log", { userId: admin, role: "admin" }));
     expectOk(await adminLedgerRead(support, "support"));
@@ -383,7 +393,7 @@ describe("admin permission keys", () => {
     expectError(await adminV2Api(adminUsersRoute, "GET", "/api/v2/admin/users", { userId: analyst, role: "analyst" }), 403);
     expectError(await api("GET", "admin/generation/model-profiles", { userId: support, role: "support" }), 403);
     expectError(await adminLedgerRead(ops, "ops"), 403);
-    expectError(await api("GET", "admin/dashboard", { userId: user, role: "user" }), 403);
+    expect((await dashboardV2(user, "user")).status).toBe(403);
   });
 });
 
@@ -3505,107 +3515,6 @@ describe("generation and Creative Run truth containment", () => {
   });
 });
 
-describe("analytics overview", () => {
-  it("aggregates funnel/economy and gates by analytics.export", async () => {
-    const analyst = await setupActor("analyst", "analytics");
-    const ops = await setupActor("ops", "analytics");
-    const owner = `${P}an-owner`;
-    await createUser({ id: owner, dataClass: "customer" });
-    const plan = await prisma.plan.findFirstOrThrow({ where: { slug: "premium" } });
-    await prisma.subscription.create({
-      data: { id: `${P}an-sub`, userId: owner, planId: plan.id, provider: "mock", status: "active" },
-    });
-    await prisma.generationJob.create({
-      data: {
-        id: `${P}an-job`,
-        userId: owner,
-        mode: "image",
-        controls: {},
-        presetIds: [],
-        status: "completed",
-        costDreamcoins: 5,
-      },
-    });
-    await prisma.dreamcoinLedger.create({
-      data: {
-        id: `${P}an-grant`,
-        userId: owner,
-        delta: 100,
-        balanceAfter: 100,
-        reason: "subscription_grant",
-        sourceId: `${P}an-grant`,
-      },
-    });
-    const fixtureOwner = `${P}an-fixture-owner`;
-    await createUser({ id: fixtureOwner, dataClass: "fixture" });
-    await prisma.generationJob.create({
-      data: {
-        id: `${P}an-fixture-job`,
-        userId: fixtureOwner,
-        mode: "image",
-        controls: {},
-        presetIds: [],
-        status: "completed",
-        costDreamcoins: 50_000,
-      },
-    });
-    await prisma.dreamcoinLedger.create({
-      data: {
-        id: `${P}an-fixture-grant`,
-        userId: fixtureOwner,
-        delta: 50_000,
-        balanceAfter: 50_000,
-        reason: "subscription_grant",
-        sourceId: `${P}an-fixture-grant`,
-      },
-    });
-    await prisma.dreamcoinLedger.create({
-      data: {
-        id: `${P}an-spend`,
-        userId: owner,
-        delta: -5,
-        balanceAfter: 95,
-        reason: "generation_spend",
-        sourceId: `${P}an-job`,
-      },
-    });
-
-    // ops 无 analytics.export。
-    expectError(await api("GET", "admin/analytics/overview", { userId: ops, role: "ops" }), 403);
-
-    const overview = await api("GET", "admin/analytics/overview", {
-      userId: analyst,
-      role: "analyst",
-    });
-    expectOk(overview);
-    expect(overview.data.dataScope).toMatchObject({
-      kind: "customer",
-      includedDataClasses: ["customer"],
-    });
-    // Phase 0 truth containment: exact signups remain visible, but the old
-    // generation-as-activation and cross-window conversion are invalid.
-    expect(overview.data.funnel.signups).toBeGreaterThanOrEqual(1);
-    expect(overview.data.funnel).toMatchObject({
-      activatedUsers: null,
-      payingUsers: null,
-      conversionRate: null,
-      qualityState: "invalid",
-      validForDecisions: false,
-    });
-    expect(overview.data.funnel.legacyObserved).toMatchObject({
-      activatedUsers: expect.any(Number),
-      payingUsers: expect.any(Number),
-      conversionRate: expect.any(Number),
-    });
-    expect(overview.data.generation.total).toBeGreaterThanOrEqual(1);
-    expect(overview.data.economy.coinsGranted).toBeGreaterThanOrEqual(100);
-    expect(overview.data.economy.coinsGranted).toBeLessThan(50_000);
-    expect(overview.data.economy.coinsSpent).toBeLessThanOrEqual(-5);
-    const eventNames = (overview.data.topEvents as Array<{ name: string }>).map((e) => e.name);
-    expect(Array.isArray(eventNames)).toBe(true);
-  });
-});
-
 describe("risk / abuse overview", () => {
   it("flags multi-account device clusters, referral farming, and adjust anomalies", async () => {
     const support = await setupActor("support", "abuse");
@@ -4431,261 +4340,7 @@ describe("admin dual-approval (F5)", () => {
   });
 });
 
-describe("admin chat ops proxy (F6)", () => {
-  it("gates on chat.ops.read and degrades when chat service is not configured", async () => {
-    const admin = await setupActor("admin", "chatops");
-    const analyst = await setupActor("analyst", "chatops"); // lacks chat.ops.read
-
-    expectError(await api("GET", "admin/chat/overview", { userId: analyst, role: "analyst" }), 403);
-
-    const overview = await api("GET", "admin/chat/overview", { userId: admin, role: "admin" });
-    expectOk(overview);
-    expect(typeof overview.data.configured).toBe("boolean");
-
-    const sessions = await api("GET", "admin/chat/sessions", { userId: admin, role: "admin" });
-    expectOk(sessions);
-    expect(Array.isArray(sessions.data.items)).toBe(true);
-
-    const usage = await api("GET", "admin/chat/usage", { userId: admin, role: "admin" });
-    expectOk(usage);
-    expect(Array.isArray(usage.data.items)).toBe(true);
-  });
-});
-
 // ───────────────────────── Phase 3: CMS · 合规 · 生成质量/流程 (ADMIN_PHASE3_DESIGN) ─────────────────────────
-
-describe("admin CMS / SEO (T1)", () => {
-  const path = `/${P}cms-landing`;
-  afterAll(async () => {
-    await prisma.routePage.deleteMany({ where: { path: { startsWith: `/${P}cms` } } });
-  });
-
-  it("CRUD + publish with permission gating and audit", async () => {
-    const admin = await setupActor("admin", "cms");
-    const analyst = await setupActor("analyst", "cms"); // lacks content.cms.write
-
-    expectError(
-      await api("POST", "admin/cms/pages", {
-        userId: analyst,
-        role: "analyst",
-        body: { path, title: "X", description: "d", reason: "x", confirmation: path },
-      }),
-      403,
-    );
-
-    expectError(
-      await api("POST", "admin/cms/pages", {
-        userId: admin,
-        role: "admin",
-        body: {
-          path,
-          title: "AI Girlfriend Guide",
-          description: "Everything about AI companions.",
-          reason: "seed cms page",
-          confirmation: "CMS",
-        },
-      }),
-      400,
-    );
-
-    const created = await api("POST", "admin/cms/pages", {
-      userId: admin,
-      role: "admin",
-      body: {
-        path,
-        title: "AI Girlfriend Guide",
-        description:
-          "A complete editorial guide to creating, reviewing, and publishing trustworthy AI companions.",
-        body: {
-          heading: "AI Girlfriend Guide",
-          intro:
-            "This guide explains how to define a companion clearly, validate the draft, and publish only a complete experience.",
-          sections: [
-            {
-              heading: "Define the companion",
-              paragraphs: [
-                "Start with a specific relationship promise, stable personality traits, and an opening message that sets expectations.",
-              ],
-            },
-            {
-              heading: "Validate before publishing",
-              paragraphs: [
-                "Review the complete draft and its public presentation so an incomplete or stale version never reaches customers.",
-              ],
-            },
-          ],
-        },
-        reason: "seed cms page",
-        confirmation: path,
-      },
-    });
-    expectOk(created);
-    expect(created.data.page).toMatchObject({
-      contentStatus: "draft",
-      contentSchemaVersion: null,
-      publishedAt: null,
-      editable: true,
-      publishability: "ready",
-    });
-    const createdUpdatedAt = created.data.page.updatedAt as string;
-
-    expectError(
-      await api("POST", "admin/cms/pages", {
-        userId: admin,
-        role: "admin",
-        body: {
-          path: `/${P}cms-direct-publish`,
-          title: "Direct publish is forbidden",
-          description:
-            "A complete description that still cannot bypass the CMS draft publication authority.",
-          contentStatus: "published",
-          reason: "attempt direct publish",
-          confirmation: `/${P}cms-direct-publish`,
-        },
-      }),
-      400,
-    );
-
-    // bad confirmation → 400
-    expectError(
-      await api("PATCH", "admin/cms/pages", {
-        userId: admin,
-        role: "admin",
-        body: {
-          path,
-          title: "Y",
-          expectedUpdatedAt: createdUpdatedAt,
-          reason: "valid edit reason",
-          confirmation: "CMS",
-        },
-      }),
-      400,
-    );
-
-    const patched = await api("PATCH", "admin/cms/pages", {
-      userId: admin,
-      role: "admin",
-      body: {
-        path,
-        title: "AI Girlfriend Guide Updated",
-        expectedUpdatedAt: createdUpdatedAt,
-        reason: "valid edit reason",
-        confirmation: path,
-      },
-    });
-    expectOk(patched);
-    expect(patched.data.page.title).toBe("AI Girlfriend Guide Updated");
-    const patchedUpdatedAt = patched.data.page.updatedAt as string;
-
-    expectError(
-      await api("PATCH", "admin/cms/pages", {
-        userId: admin,
-        role: "admin",
-        body: {
-          path,
-          title: "Stale overwrite",
-          expectedUpdatedAt: createdUpdatedAt,
-          reason: "stale edit attempt",
-          confirmation: path,
-        },
-      }),
-      409,
-    );
-
-    expectError(
-      await api("POST", "admin/cms/pages/publish", {
-        userId: admin,
-        role: "admin",
-        body: {
-          path,
-          contentStatus: "published",
-          expectedUpdatedAt: createdUpdatedAt,
-          reason: "stale publish attempt",
-          confirmation: path,
-        },
-      }),
-      409,
-    );
-
-    expectError(
-      await api("POST", "admin/cms/pages/publish", {
-        userId: admin,
-        role: "admin",
-        body: {
-          path,
-          contentStatus: "published",
-          expectedUpdatedAt: patchedUpdatedAt,
-          reason: "go live",
-          confirmation: "PUBLISH",
-        },
-      }),
-      400,
-    );
-
-    const published = await api("POST", "admin/cms/pages/publish", {
-      userId: admin,
-      role: "admin",
-      body: {
-        path,
-        contentStatus: "published",
-        expectedUpdatedAt: patchedUpdatedAt,
-        reason: "go live",
-        confirmation: path,
-      },
-    });
-    expectOk(published);
-    expect(published.data.page.contentStatus).toBe("published");
-    expect(published.data.page.contentSchemaVersion).toBe(1);
-    expect(published.data.page.publishedAt).toBeTruthy();
-    expect(published.data.page.editable).toBe(false);
-    const publishedUpdatedAt = published.data.page.updatedAt as string;
-
-    expectError(
-      await api("PATCH", "admin/cms/pages", {
-        userId: admin,
-        role: "admin",
-        body: {
-          path,
-          title: "Published pages cannot be edited",
-          expectedUpdatedAt: publishedUpdatedAt,
-          reason: "invalid published edit",
-          confirmation: path,
-        },
-      }),
-      409,
-    );
-
-    const got = await api("GET", "admin/cms/pages", { userId: admin, role: "admin", query: { path } });
-    expectOk(got);
-    expect(got.data.page.title).toBe("AI Girlfriend Guide Updated");
-    expect(got.data.page.publishability).toBe("ready");
-
-    const unpublished = await api("POST", "admin/cms/pages/publish", {
-      userId: admin,
-      role: "admin",
-      body: {
-        path,
-        contentStatus: "draft",
-        expectedUpdatedAt: publishedUpdatedAt,
-        reason: "return to draft",
-        confirmation: path,
-      },
-    });
-    expectOk(unpublished);
-    expect(unpublished.data.page).toMatchObject({
-      contentStatus: "draft",
-      contentSchemaVersion: null,
-      indexingStatus: "noindex",
-      publishedAt: null,
-      editable: true,
-    });
-
-    const audit = await prisma.adminAuditLog.findFirst({
-      where: { action: "cms.page.publish", targetId: path },
-    });
-    expect(audit).not.toBeNull();
-  });
-});
 
 describe("admin compliance: DSAR + age verification (T2)", () => {
   it("exports/erases users and overrides age verification with gating", async () => {
@@ -4964,172 +4619,7 @@ describe("admin dual-approval hard enforcement (T4)", () => {
   });
 });
 
-describe("admin analytics export + retention (T4)", () => {
-  it("returns CSV payload and retention cohorts", async () => {
-    const admin = await setupActor("admin", "axp");
-    const ops = await setupActor("ops", "axp"); // lacks analytics.export
-
-    expectError(await api("GET", "admin/analytics/export", { userId: ops, role: "ops" }), 403);
-
-    const csv = await api("GET", "admin/analytics/export", { userId: admin, role: "admin" });
-    expectOk(csv);
-    expect(csv.data.dataScope).toMatchObject({
-      kind: "customer",
-      includedDataClasses: ["customer"],
-    });
-    expect(typeof csv.data.csv).toBe("string");
-    expect(csv.data.csv).toContain("section");
-
-    const retention = await api("GET", "admin/analytics/retention", { userId: admin, role: "admin" });
-    expectOk(retention);
-    expect(retention.data).toMatchObject({ qualityState: "invalid", validForDecisions: false });
-    expect(Array.isArray(retention.data.items)).toBe(true);
-  });
-});
-
 // ───────────────────────── Phase 4: Growth Ops (公告 + 实验度量) ─────────────────────────
-
-describe("admin announcements (Phase 4)", () => {
-  afterAll(async () => {
-    await prisma.appSetting.deleteMany({ where: { key: "announcements" } });
-  });
-
-  it("CRUD + public read filters active, with permission gating", async () => {
-    const admin = await setupActor("admin", "ann");
-    const analyst = await setupActor("analyst", "ann"); // has growth.promo.read, not write
-    const ops = await setupActor("ops", "ann"); // lacks growth.promo.read
-
-    // ops lacks growth.promo.read → list 403
-    expectError(await api("GET", "admin/announcements", { userId: ops, role: "ops" }), 403);
-    // analyst can't write
-    expectError(
-      await api("POST", "admin/announcements", {
-        userId: analyst,
-        role: "analyst",
-        body: { title: "x", body: "y", reason: "test promo", confirmation: "ANNOUNCE" },
-      }),
-      403,
-    );
-    expectError(
-      await api("POST", "admin/announcements", {
-        userId: admin,
-        role: "admin",
-        body: {
-          title: "Unsafe link",
-          body: "bad protocol",
-          href: "javascript:alert(1)",
-          reason: "reject unsafe link",
-          confirmation: "Unsafe link",
-        },
-      }),
-      400,
-    );
-    expectError(
-      await api("POST", "admin/announcements", {
-        userId: admin,
-        role: "admin",
-        body: {
-          title: "Wrong confirmation",
-          body: "should not create",
-          reason: "reject wrong confirmation",
-          confirmation: "ANNOUNCE",
-        },
-      }),
-      400,
-    );
-
-    const created = await api("POST", "admin/announcements", {
-      userId: admin,
-      role: "admin",
-      body: {
-        title: "Launch sale",
-        body: "50% off this week",
-        href: "https://help.ourdream.ai/",
-        level: "promo",
-        active: true,
-        reason: "promo launch",
-        confirmation: "Launch sale",
-      },
-    });
-    expectOk(created);
-    const id = created.data.announcement.id as string;
-
-    // analyst can read (has growth.promo.read)
-    expectOk(await api("GET", "admin/announcements", { userId: analyst, role: "analyst" }));
-
-    // public read (no auth) includes the active one
-    const pub = await api("GET", "announcements", {});
-    expectOk(pub);
-    const publicItem = pub.data.items.find((a: { id: string }) => a.id === id) as
-      | { href?: string }
-      | undefined;
-    expect(publicItem?.href).toBe("https://help.ourdream.ai/");
-
-    const wrongUpdateConfirmation = await api("PATCH", `admin/announcements/${id}`, {
-      userId: admin,
-      role: "admin",
-      body: { active: false, reason: "pause promo wrong", confirmation: "ANNOUNCE" },
-    });
-    expectError(wrongUpdateConfirmation, 400, "bad_request");
-
-    // deactivate → public excludes
-    expectOk(
-      await api("PATCH", `admin/announcements/${id}`, {
-        userId: admin,
-        role: "admin",
-        body: { active: false, reason: "pause promo", confirmation: id },
-      }),
-    );
-    const pub2 = await api("GET", "announcements", {});
-    expect(pub2.data.items.some((a: { id: string }) => a.id === id)).toBe(false);
-
-    expectError(await api("DELETE", `admin/announcements/${id}`, { userId: admin, role: "admin" }), 400);
-    expectError(
-      await api("DELETE", `admin/announcements/${id}`, {
-        userId: admin,
-        role: "admin",
-        body: { reason: "wrong delete confirmation", confirmation: "DELETE" },
-      }),
-      400,
-      "bad_request",
-    );
-
-    // delete → gone
-    expectOk(
-      await api("DELETE", `admin/announcements/${id}`, {
-        userId: admin,
-        role: "admin",
-        body: { reason: "delete promo", confirmation: id },
-      }),
-    );
-    const list = await api("GET", "admin/announcements", { userId: admin, role: "admin" });
-    expect(list.data.items.some((a: { id: string }) => a.id === id)).toBe(false);
-
-    // audit (no plaintext concern) recorded
-    const audit = await prisma.adminAuditLog.findFirst({
-      where: { action: "growth.announcement.create", targetId: id },
-    });
-    expect(audit).not.toBeNull();
-  });
-});
-
-describe("admin experiments (Phase 4)", () => {
-  it("lists flags with directional metrics, gated by analytics.export", async () => {
-    const admin = await setupActor("admin", "exp");
-    const ops = await setupActor("ops", "exp"); // lacks analytics.export
-
-    expectError(await api("GET", "admin/experiments", { userId: ops, role: "ops" }), 403);
-
-    const res = await api("GET", "admin/experiments", { userId: admin, role: "admin" });
-    expectOk(res);
-    expect(res.data.dataScope).toMatchObject({
-      kind: "customer",
-      includedDataClasses: ["customer"],
-    });
-    expect(Array.isArray(res.data.items)).toBe(true);
-    expect(typeof res.data.note).toBe("string");
-  });
-});
 
 describe("admin generation metrics rollup (P3)", () => {
   it("aggregates generation metrics by profile, recipe, source and placements", async () => {

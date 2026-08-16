@@ -34,11 +34,11 @@ export const defaultChatOpsQuery: ChatOpsQuery = {
 };
 
 const paths: Record<ChatOpsAuthority, string> = {
-  overview: "/api/v1/admin/chat/overview",
-  providers: "/api/v1/admin/chat/provider-health",
-  sessions: "/api/v1/admin/chat/sessions",
-  usage: "/api/v1/admin/chat/usage",
-  events: "/api/v1/admin/chat/moderation-events",
+  overview: "/api/v2/admin/chat/overview",
+  providers: "/api/v2/admin/chat/provider-health",
+  sessions: "/api/v2/admin/chat/sessions",
+  usage: "/api/v2/admin/chat/usage",
+  events: "/api/v2/admin/chat/moderation-events",
 };
 
 export function chatOpsQueryFromSearch(search: string): ChatOpsQuery {

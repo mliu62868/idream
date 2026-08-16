@@ -38,3 +38,7 @@ export * from "./feature-flags";
 // ---- money: migrated from v1 ----
 export * from "./pricing";
 export * from "./promo";
+// ---- platform: migrated from v1 ----
+export * from "./cms";
+export * from "./announcements";
+export * from "./overviews";

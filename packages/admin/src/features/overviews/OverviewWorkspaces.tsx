@@ -80,7 +80,7 @@ export function AnalyticsWorkspace({
       await loadState(
         legacyGate.current,
         setLegacy,
-        overviewPath("/api/v1/admin/analytics/overview", next),
+        overviewPath("/api/v2/admin/analytics/overview", next),
         "Legacy analytics could not be loaded",
       );
     },

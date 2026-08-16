@@ -1,92 +1,95 @@
-// SPEC: CMS/SEO 内容管理服务层（ADMIN_PHASE3_DESIGN §3）。admin 凭 content.cms.write
-//       管理 RoutePage（页面正文 + SEO metadata + 发布状态），公开读路径混合 override。
-// INTENT: 复用既有 RoutePage 表（零迁移）；读用 content.read，写用 content.cms.write，
-//         reason+typed 确认 + AdminAuditLog，与既有控制面一致。
+// SPEC: CMS/SEO 页面权威。admin 凭 content.cms.write 管理 RoutePage（正文 + SEO
+//       metadata + 发布状态）；公开读经 server/cms 的同一份版本化契约。
+// INTENT: 传输契约（字段在不在）由 manifest 声明；「哪些 pathname 归 CMS 所有」「什么
+//         算可发布」仍由 server/cms/route-page-contract 说了算 —— 那份规则同时服务公开
+//         读路径，复制进 shared 就会变成第二份权威。
 // INVARIANTS:
-//   - template rows are an editing queue, never publishable as-is.
-//   - create/patch only produce drafts; draft→published is the sole publish path.
-//   - published content has passed the same versioned contract used by public reads.
-//   - writes use updatedAt CAS and commit the audit record in the same transaction.
+//   - template 行是编辑队列，永远不能原样发布。
+//   - create/patch 只产出 draft；draft→published 是唯一的发布通路。
+//   - 已发布内容一定过了公开读用的同一份版本化契约。
+//   - 写操作用 updatedAt CAS，并把审计行提交在同一个事务里。
 import { z } from "zod";
 import { revalidatePath, revalidateTag } from "next/cache";
+import type { RoutePage } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
-import { ok } from "@/server/lib/http";
 import { logger } from "@/server/lib/logger";
 import {
   CMS_CONTENT_SCHEMA_VERSION,
   cmsCacheTag,
   cmsCanonicalSchema,
   cmsContractIssues,
-  cmsIndexingStatusSchema,
   cmsPathSchema,
-  cmsTemplateSchema,
   inspectCmsPublication,
   validateCmsPublication,
   type CmsPublicationCandidate,
 } from "@/server/cms/route-page-contract";
 import {
-  adminAuditData,
   actorWithPermission,
-  clampInt,
   jsonBody,
-  toInputJson,
-} from "@/server/modules/admin/shared/legacy-primitives";
+  queryParams,
+  type AdminActor,
+} from "@/server/modules/admin-v2/shared/authority";
+import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 
 const CMS_WRITE = "content.cms.write" as const;
 const CONTENT_READ = "content.read" as const;
 
-const bodySchema = z.record(z.string(), z.unknown()).superRefine((body, ctx) => {
-  if (Buffer.byteLength(JSON.stringify(body), "utf8") > 128 * 1_024) {
-    ctx.addIssue({
-      code: "custom",
-      message: "CMS body must not exceed 128 KiB",
-    });
-  }
-});
-const expectedUpdatedAtSchema = z.string().datetime({ offset: true });
+function summaryDto(row: RoutePage) {
+  return {
+    path: row.path,
+    template: row.template,
+    title: row.title,
+    description: row.description,
+    canonical: row.canonical,
+    contentStatus: row.contentStatus,
+    contentSchemaVersion: row.contentSchemaVersion,
+    indexingStatus: row.indexingStatus,
+    publishedAt: row.publishedAt?.toISOString() ?? null,
+    updatedAt: row.updatedAt.toISOString(),
+    ...publicationReadiness(row),
+  };
+}
 
-const createSchema = z
-  .object({
-    path: cmsPathSchema,
-    template: cmsTemplateSchema.default("article"),
-    title: z.string().trim().min(1).max(200),
-    description: z.string().trim().max(320).default(""),
-    canonical: cmsCanonicalSchema.optional().default(null),
-    indexingStatus: cmsIndexingStatusSchema.default("noindex"),
-    body: bodySchema.default({}),
-    reason: z.string().trim().min(3).max(2_000),
-    confirmation: z.string().trim().min(1).max(512),
-  })
-  .strict();
+function detailDto(row: RoutePage) {
+  return { ...summaryDto(row), body: row.body };
+}
 
-const patchSchema = z
-  .object({
-    path: cmsPathSchema,
-    template: cmsTemplateSchema.optional(),
-    title: z.string().trim().min(1).max(200).optional(),
-    description: z.string().trim().max(320).optional(),
-    canonical: cmsCanonicalSchema.optional(),
-    indexingStatus: cmsIndexingStatusSchema.optional(),
-    body: bodySchema.optional(),
-    expectedUpdatedAt: expectedUpdatedAtSchema,
-    reason: z.string().trim().min(3).max(2_000),
-    confirmation: z.string().trim().min(1).max(512),
-  })
-  .strict();
-
-const publishSchema = z
-  .object({
-    path: cmsPathSchema,
-    contentStatus: z.enum(["draft", "published"]),
-    expectedUpdatedAt: expectedUpdatedAtSchema,
-    reason: z.string().trim().min(3).max(2_000),
-    confirmation: z.string().trim().min(1).max(512),
-  })
-  .strict();
+function auditRow(
+  request: Request,
+  actor: AdminActor,
+  input: {
+    action: string;
+    targetId: string;
+    reason: string;
+    before?: unknown;
+    after?: unknown;
+  },
+) {
+  return {
+    actorId: actor.id,
+    actorRole: actor.role,
+    action: input.action,
+    targetType: "route_page",
+    targetId: input.targetId,
+    reason: input.reason,
+    ...(input.before === undefined ? {} : { before: toInputJson(input.before) }),
+    ...(input.after === undefined ? {} : { after: toInputJson(input.after) }),
+    requestId: request.headers.get("x-request-id") ?? crypto.randomUUID(),
+  };
+}
 
 function assertPathConfirmation(value: string, path: string) {
   if (value !== path) throw Errors.badRequest("Confirmation did not match");
+}
+
+/** The wire contract only bounds the string; CMS path ownership lives in the domain contract. */
+function ownedCmsPath(value: string) {
+  return cmsPathSchema.parse(value);
+}
+
+function ownedCmsCanonical(value: string | null | undefined) {
+  return value === undefined ? undefined : cmsCanonicalSchema.parse(value);
 }
 
 function revalidateCmsPage(path: string) {
@@ -99,82 +102,53 @@ function revalidateCmsPage(path: string) {
   } catch (error) {
     // Direct service tests do not run inside a Next route revalidation context.
     logger.warn(
-      {
-        errorKind: error instanceof Error ? error.name : typeof error,
-        path,
-      },
+      { errorKind: error instanceof Error ? error.name : typeof error, path },
       "CMS cache revalidation did not complete",
     );
     return false;
   }
 }
 
-export async function listCmsPages(request: Request): Promise<Response> {
+export async function listCmsPages(request: Request) {
   await actorWithPermission(request, CONTENT_READ);
-  const url = new URL(request.url);
-  const status = url.searchParams.get("status") ?? undefined;
-  const q = url.searchParams.get("q")?.trim();
+  const query = queryParams(request, "GET /api/v2/admin/cms/pages");
   const rows = await prisma.routePage.findMany({
     where: {
-      contentStatus: status,
-      ...(q ? { OR: [{ path: { contains: q } }, { title: { contains: q } }] } : {}),
+      contentStatus: query.status,
+      ...(query.q
+        ? { OR: [{ path: { contains: query.q } }, { title: { contains: query.q } }] }
+        : {}),
     },
     orderBy: { updatedAt: "desc" },
-    take: clampInt(url.searchParams.get("limit"), 1, 200, 100),
-    select: {
-      path: true,
-      template: true,
-      title: true,
-      description: true,
-      canonical: true,
-      contentStatus: true,
-      contentSchemaVersion: true,
-      indexingStatus: true,
-      body: true,
-      publishedAt: true,
-      updatedAt: true,
-    },
+    take: query.limit,
   });
-  const items = rows.map((row) => ({
-    path: row.path,
-    template: row.template,
-    title: row.title,
-    description: row.description,
-    canonical: row.canonical,
-    contentStatus: row.contentStatus,
-    contentSchemaVersion: row.contentSchemaVersion,
-    indexingStatus: row.indexingStatus,
-    publishedAt: row.publishedAt,
-    updatedAt: row.updatedAt,
-    ...publicationReadiness(row),
-  }));
-  return ok({ items });
+  return { items: rows.map(summaryDto) };
 }
 
-export async function getCmsPage(request: Request): Promise<Response> {
+export async function getCmsPage(request: Request) {
   await actorWithPermission(request, CONTENT_READ);
-  const url = new URL(request.url);
-  const path = url.searchParams.get("path")?.trim();
-  if (!path) throw Errors.badRequest("path query param is required");
-  const page = await prisma.routePage.findUnique({ where: { path } });
+  const query = queryParams(request, "GET /api/v2/admin/cms/page");
+  const page = await prisma.routePage.findUnique({ where: { path: query.path.trim() } });
   if (!page) throw Errors.notFound("Route page not found");
-  return ok({ page: { ...page, ...publicationReadiness(page) } });
+  return { page: detailDto(page) };
 }
 
-export async function createCmsPage(request: Request): Promise<Response> {
+export async function createCmsPage(request: Request) {
   const actor = await actorWithPermission(request, CMS_WRITE);
-  const body = createSchema.parse(await jsonBody(request));
-  assertPathConfirmation(body.confirmation, body.path);
-  const existing = await prisma.routePage.findUnique({ where: { path: body.path } });
+  const body = await jsonBody(request, "cmsPageCreateRequestSchema");
+  const path = ownedCmsPath(body.path);
+  assertPathConfirmation(body.confirmation, path);
+  const canonical = ownedCmsCanonical(body.canonical) ?? null;
+  const existing = await prisma.routePage.findUnique({ where: { path } });
   if (existing) throw Errors.conflict("A page with this path already exists");
   const page = await prisma.$transaction(async (tx) => {
     const created = await tx.routePage.create({
       data: {
-        path: body.path,
+        path,
         template: body.template,
         title: body.title,
         description: body.description,
-        canonical: body.canonical,
+        canonical,
         contentStatus: "draft",
         contentSchemaVersion: null,
         indexingStatus: body.indexingStatus,
@@ -183,9 +157,8 @@ export async function createCmsPage(request: Request): Promise<Response> {
       },
     });
     await tx.adminAuditLog.create({
-      data: adminAuditData(request, actor, {
+      data: auditRow(request, actor, {
         action: "cms.page.create",
-        targetType: "route_page",
         targetId: created.path,
         reason: body.reason,
         after: {
@@ -198,15 +171,16 @@ export async function createCmsPage(request: Request): Promise<Response> {
     });
     return created;
   });
-  const cacheRevalidated = revalidateCmsPage(page.path);
-  return ok({ page: { ...page, ...publicationReadiness(page) }, cacheRevalidated });
+  return { page: detailDto(page), cacheRevalidated: revalidateCmsPage(page.path) };
 }
 
-export async function patchCmsPage(request: Request): Promise<Response> {
+export async function patchCmsPage(request: Request) {
   const actor = await actorWithPermission(request, CMS_WRITE);
-  const body = patchSchema.parse(await jsonBody(request));
-  assertPathConfirmation(body.confirmation, body.path);
-  const before = await prisma.routePage.findUnique({ where: { path: body.path } });
+  const body = await jsonBody(request, "cmsPagePatchRequestSchema");
+  const path = ownedCmsPath(body.path);
+  assertPathConfirmation(body.confirmation, path);
+  const canonical = ownedCmsCanonical(body.canonical);
+  const before = await prisma.routePage.findUnique({ where: { path } });
   if (!before) throw Errors.notFound("Route page not found");
   if (before.contentStatus === "published") {
     throw Errors.conflict("Unpublish the page before editing it");
@@ -215,7 +189,7 @@ export async function patchCmsPage(request: Request): Promise<Response> {
   const page = await prisma.$transaction(async (tx) => {
     const changed = await tx.routePage.updateMany({
       where: {
-        path: body.path,
+        path,
         updatedAt: before.updatedAt,
         contentStatus: { not: "published" },
       },
@@ -223,7 +197,7 @@ export async function patchCmsPage(request: Request): Promise<Response> {
         template: body.template,
         title: body.title,
         description: body.description,
-        canonical: body.canonical === undefined ? undefined : body.canonical,
+        canonical,
         indexingStatus: body.indexingStatus,
         contentStatus: "draft",
         contentSchemaVersion: null,
@@ -234,13 +208,10 @@ export async function patchCmsPage(request: Request): Promise<Response> {
     if (changed.count !== 1) {
       throw Errors.conflict("CMS page changed before the draft was saved");
     }
-    const updated = await tx.routePage.findUniqueOrThrow({
-      where: { path: body.path },
-    });
+    const updated = await tx.routePage.findUniqueOrThrow({ where: { path } });
     await tx.adminAuditLog.create({
-      data: adminAuditData(request, actor, {
+      data: auditRow(request, actor, {
         action: "cms.page.update",
-        targetType: "route_page",
         targetId: updated.path,
         reason: body.reason,
         before: {
@@ -258,15 +229,15 @@ export async function patchCmsPage(request: Request): Promise<Response> {
     });
     return updated;
   });
-  const cacheRevalidated = revalidateCmsPage(page.path);
-  return ok({ page: { ...page, ...publicationReadiness(page) }, cacheRevalidated });
+  return { page: detailDto(page), cacheRevalidated: revalidateCmsPage(page.path) };
 }
 
-export async function publishCmsPage(request: Request): Promise<Response> {
+export async function publishCmsPage(request: Request) {
   const actor = await actorWithPermission(request, CMS_WRITE);
-  const body = publishSchema.parse(await jsonBody(request));
-  assertPathConfirmation(body.confirmation, body.path);
-  const before = await prisma.routePage.findUnique({ where: { path: body.path } });
+  const body = await jsonBody(request, "cmsPagePublicationRequestSchema");
+  const path = ownedCmsPath(body.path);
+  assertPathConfirmation(body.confirmation, path);
+  const before = await prisma.routePage.findUnique({ where: { path } });
   if (!before) throw Errors.notFound("Route page not found");
   assertExpectedUpdatedAt(before.updatedAt, body.expectedUpdatedAt);
 
@@ -291,11 +262,7 @@ export async function publishCmsPage(request: Request): Promise<Response> {
   const page = await prisma.$transaction(async (tx) => {
     const now = new Date();
     const changed = await tx.routePage.updateMany({
-      where: {
-        path: body.path,
-        updatedAt: before.updatedAt,
-        contentStatus: before.contentStatus,
-      },
+      where: { path, updatedAt: before.updatedAt, contentStatus: before.contentStatus },
       data:
         body.contentStatus === "published"
           ? {
@@ -313,13 +280,10 @@ export async function publishCmsPage(request: Request): Promise<Response> {
     if (changed.count !== 1) {
       throw Errors.conflict("CMS page changed before the status update was applied");
     }
-    const updated = await tx.routePage.findUniqueOrThrow({
-      where: { path: body.path },
-    });
+    const updated = await tx.routePage.findUniqueOrThrow({ where: { path } });
     await tx.adminAuditLog.create({
-      data: adminAuditData(request, actor, {
+      data: auditRow(request, actor, {
         action: "cms.page.publish",
-        targetType: "route_page",
         targetId: updated.path,
         reason: body.reason,
         before: {
@@ -338,8 +302,7 @@ export async function publishCmsPage(request: Request): Promise<Response> {
     });
     return updated;
   });
-  const cacheRevalidated = revalidateCmsPage(page.path);
-  return ok({ page: { ...page, ...publicationReadiness(page) }, cacheRevalidated });
+  return { page: detailDto(page), cacheRevalidated: revalidateCmsPage(page.path) };
 }
 
 function publicationCandidate(page: CmsPublicationCandidate): CmsPublicationCandidate {

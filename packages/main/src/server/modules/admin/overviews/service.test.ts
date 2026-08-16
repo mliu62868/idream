@@ -37,7 +37,7 @@ vi.mock("@/server/modules/admin/shared/legacy-primitives", () => ({
   actorWithPermission: mocks.actorWithPermission,
 }));
 
-import { analyticsOverview, providerOps } from "./service";
+import { providerOps } from "./service";
 
 describe("legacy overview data scopes", () => {
   beforeEach(() => {
@@ -52,53 +52,6 @@ describe("legacy overview data scopes", () => {
     mocks.groupAnalyticsEvents.mockResolvedValue([]);
     mocks.groupReferrals.mockResolvedValue([]);
     mocks.listAnalyticsEvents.mockResolvedValue([]);
-  });
-
-  it("uses only customer records for business analytics", async () => {
-    const response = await analyticsOverview(
-      new Request("http://localhost/api/v1/admin/analytics/overview"),
-    );
-    const payload = (await response.json()) as {
-      data: { dataScope: Record<string, unknown> };
-    };
-
-    expect(payload.data.dataScope).toEqual({
-      kind: "customer",
-      includedDataClasses: ["customer"],
-      excludedDataClasses: ["internal", "operational", "fixture", "audit"],
-    });
-    expect(mocks.countUsers.mock.calls[0]?.[0]).toMatchObject({
-      where: {
-        AND: [
-          { dataClass: "customer" },
-          { deletedAt: null },
-        ],
-      },
-    });
-    expect(mocks.groupGenerationJobs.mock.calls[0]?.[0]).toMatchObject({
-      where: {
-        AND: [
-          { user: { is: { dataClass: "customer" } } },
-          {},
-        ],
-      },
-    });
-    expect(mocks.groupSubscriptions.mock.calls[0]?.[0]).toMatchObject({
-      where: {
-        AND: [
-          { user: { is: { dataClass: "customer" } } },
-          {},
-        ],
-      },
-    });
-    expect(mocks.groupAnalyticsEvents.mock.calls[0]?.[0]).toMatchObject({
-      where: {
-        AND: [
-          { dataClass: "customer" },
-          {},
-        ],
-      },
-    });
   });
 
   it("excludes fixture and audit owners from provider operations", async () => {

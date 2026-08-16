@@ -433,6 +433,34 @@ export const ADMIN_V2_API_OPERATIONS = [
   operation("POST", "/api/v2/admin/promo/redeem-codes", allOf("growth.promo.write"), "adminRedeemCodeCreateRequestSchema+idempotency-key", "adminRedeemCodeMutationResponseSchema", undefined, { commandType: "promo.redeem_code.create" }),
   operation("POST", "/api/v2/admin/promo/redeem-codes/:id/disable", allOf("growth.promo.write"), "adminRedeemCodeDisableRequestSchema+idempotency-key", "adminRedeemCodeMutationResponseSchema", undefined, { commandType: "promo.redeem_code.disable" }),
   operation("GET", "/api/v2/admin/promo/referrals", allOf("growth.promo.read"), "adminReferralQuerySchema", "adminReferralListResponseSchema"),
+  // ---- platform: migrated from v1 ----
+  // Chat 只读运营视图（Main 代理 Chat 服务的 /internal/admin/*）。
+  operation("GET", "/api/v2/admin/chat/overview", allOf("chat.ops.read"), "none", "chatOpsOverviewResponseSchema"),
+  operation("GET", "/api/v2/admin/chat/provider-health", allOf("chat.ops.read"), "none", "chatOpsProviderHealthResponseSchema"),
+  operation("GET", "/api/v2/admin/chat/sessions", allOf("chat.ops.read"), "chatOpsSessionQuerySchema", "chatOpsSessionListResponseSchema"),
+  operation("GET", "/api/v2/admin/chat/usage", allOf("chat.ops.read"), "chatOpsUsageQuerySchema", "chatOpsUsageListResponseSchema"),
+  operation("GET", "/api/v2/admin/chat/moderation-events", allOf("chat.ops.read"), "chatOpsModerationEventQuerySchema", "chatOpsModerationEventListResponseSchema"),
+
+  // CMS/SEO。写操作用 expectedUpdatedAt CAS，不声明幂等头（见 contracts/cms.ts）。
+  operation("GET", "/api/v2/admin/cms/pages", allOf("content.read"), "cmsPageListQuerySchema", "cmsPageListResponseSchema"),
+  operation("POST", "/api/v2/admin/cms/pages", allOf("content.cms.write"), "cmsPageCreateRequestSchema", "cmsPageMutationResponseSchema"),
+  operation("PATCH", "/api/v2/admin/cms/pages", allOf("content.cms.write"), "cmsPagePatchRequestSchema", "cmsPageMutationResponseSchema"),
+  operation("POST", "/api/v2/admin/cms/pages/publish", allOf("content.cms.write"), "cmsPagePublicationRequestSchema", "cmsPageMutationResponseSchema"),
+  // 单页读取用 ?path= 而非路径段：CMS path 含 "/"，塞不进一个 `:id`。
+  operation("GET", "/api/v2/admin/cms/page", allOf("content.read"), "cmsPageDetailQuerySchema", "cmsPageDetailResponseSchema"),
+
+  operation("GET", "/api/v2/admin/announcements", allOf("growth.promo.read"), "announcementListQuerySchema", "announcementListResponseSchema"),
+  operation("POST", "/api/v2/admin/announcements", allOf("growth.promo.write"), "announcementCreateRequestSchema", "announcementMutationResponseSchema"),
+  operation("PATCH", "/api/v2/admin/announcements/:id", allOf("growth.promo.write"), "announcementPatchRequestSchema", "announcementMutationResponseSchema"),
+  operation("DELETE", "/api/v2/admin/announcements/:id", allOf("growth.promo.write"), "announcementDeleteRequestSchema", "announcementDeleteResponseSchema"),
+
+  operation("GET", "/api/v2/admin/dashboard", allOf("dashboard.read"), "none", "adminDashboardResponseSchema"),
+  operation("GET", "/api/v2/admin/analytics/overview", allOf("analytics.export"), "adminOverviewWindowQuerySchema", "analyticsOverviewResponseSchema"),
+  operation("GET", "/api/v2/admin/analytics/export", allOf("analytics.export"), "analyticsExportQuerySchema", "analyticsExportResponseSchema"),
+  operation("GET", "/api/v2/admin/analytics/retention", allOf("analytics.export"), "analyticsRetentionQuerySchema", "analyticsRetentionResponseSchema"),
+  // Flag 监控住在 analytics 下而不是 experiments 下：`/experiments/:id` 已声明在先，
+  // manifest 是按声明顺序线性匹配的，`experiments/flag-monitoring` 会先撞上 `:id`。
+  operation("GET", "/api/v2/admin/analytics/flag-monitoring", allOf("analytics.export"), "none", "experimentFlagMonitoringResponseSchema"),
 ] as const satisfies readonly AdminV2ApiOperation[];
 
 /** One declared operation, literals intact. */

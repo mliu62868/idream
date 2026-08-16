@@ -33,7 +33,7 @@ export function ExperimentsView() {
       const managed = await apiGet<{ items: ManagedExperiment[] }>("/api/v2/admin/experiments?limit=100");
       setExperiments(managed.items);
       try {
-        const monitoring = await apiGet<{ items: FlagRow[] }>("/api/v1/admin/experiments");
+        const monitoring = await apiGet<{ items: FlagRow[] }>("/api/v2/admin/analytics/flag-monitoring");
         setFlags(monitoring.items);
         setMonitoringNote(null);
       } catch {

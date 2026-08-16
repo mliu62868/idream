@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ChevronRight, Loader2, Plus, RefreshCcw, Search, Trash2 } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
+import { adminV2Request } from "@/lib/admin-v2-api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import {
   announcementListPath,
@@ -33,14 +34,9 @@ type AnnouncementActionDraft = {
 const inputClass =
   "rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]";
 
-async function apiDelete(path: string, body: Record<string, unknown>): Promise<void> {
-  const response = await fetch(path, {
-    method: "DELETE",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const payload = (await response.json()) as { ok: boolean; error?: { message?: string } };
-  if (!payload.ok) throw new Error(payload.error?.message ?? "Delete failed");
+// SPEC: 删除带确认体，走与其余后台请求同一个信封解码与错误类。
+function apiDelete(path: string, body: Record<string, unknown>) {
+  return adminV2Request<{ deleted: true }>(path, { method: "DELETE", body });
 }
 
 export function AnnouncementsView() {
@@ -100,13 +96,13 @@ export function AnnouncementsView() {
     setActionBusy(true);
     try {
       if (actionDraft.kind === "toggle") {
-        await apiWrite(`/api/v1/admin/announcements/${actionDraft.item.id}`, "PATCH", {
+        await apiWrite(`/api/v2/admin/announcements/${actionDraft.item.id}`, "PATCH", {
           active: !actionDraft.item.active,
           reason: actionDraft.reason.trim(),
           confirmation: actionDraft.confirmation.trim(),
         });
       } else {
-        await apiDelete(`/api/v1/admin/announcements/${actionDraft.item.id}`, {
+        await apiDelete(`/api/v2/admin/announcements/${actionDraft.item.id}`, {
           reason: actionDraft.reason.trim(),
           confirmation: actionDraft.confirmation.trim(),
         });
@@ -276,7 +272,7 @@ function CreateAnnouncementForm({ reload }: { reload: () => void }) {
     setBusy(true);
     setErr(null);
     try {
-      await apiWrite("/api/v1/admin/announcements", "POST", {
+      await apiWrite("/api/v2/admin/announcements", "POST", {
         title: title.trim(),
         body: body.trim(),
         href: href.trim() || null,

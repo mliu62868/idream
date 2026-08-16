@@ -1045,7 +1045,7 @@ test("admin support inbox resolves a help desk request", async ({ page }) => {
 test("admin Chat Ops isolates authority failures and restores URL filters", async ({ page }) => {
   const consoleFailures = collectConsoleFailures(page);
   await startAdminSession(page);
-  await page.route("**/api/v1/admin/chat/usage**", async (route) => {
+  await page.route("**/api/v2/admin/chat/usage**", async (route) => {
     await route.fulfill({
       body: JSON.stringify({ ok: false, error: { code: "upstream_error", message: "usage unavailable" } }),
       contentType: "application/json",
@@ -1069,7 +1069,7 @@ test("admin Chat Ops isolates authority failures and restores URL filters", asyn
   await page.goBack();
   await expect(page.getByLabel("User ID", { exact: true })).toHaveValue("");
   await expect(page.getByRole("combobox", { name: /Session status/ })).toHaveValue("active");
-  expect(consoleFailures.filter((message) => !message.includes("/api/v1/admin/chat/usage"))).toEqual([]);
+  expect(consoleFailures.filter((message) => !message.includes("/api/v2/admin/chat/usage"))).toEqual([]);
 });
 
 test("admin support plaintext panel views consent-scoped generation prompt", async ({ page }) => {
@@ -1918,7 +1918,7 @@ test("admin API Phase 3: CMS write (admin) + compliance/analytics gating", async
   await startRoleSession(page, "admin");
   const path = `/e2e-cms-${Date.now()}`;
   try {
-    const create = await page.request.post(`${adminURL}/api/v1/admin/cms/pages`, {
+    const create = await page.request.post(`${adminURL}/api/v2/admin/cms/pages`, {
       data: {
         path,
         title: "E2E CMS page",
@@ -1955,7 +1955,7 @@ test("admin API Phase 3: CMS write (admin) + compliance/analytics gating", async
     const expectedUpdatedAt = createdPayload.data?.page?.updatedAt;
     expect(typeof expectedUpdatedAt).toBe("string");
 
-    const publish = await page.request.post(`${adminURL}/api/v1/admin/cms/pages/publish`, {
+    const publish = await page.request.post(`${adminURL}/api/v2/admin/cms/pages/publish`, {
       data: {
         path,
         contentStatus: "published",
@@ -1988,7 +1988,7 @@ test("admin API Phase 3: CMS write (admin) + compliance/analytics gating", async
 
   // analyst holds analytics.export → retention ok; lacks compliance.read → age list 403.
   await startRoleSession(page, "analyst");
-  const retention = await page.request.get(`${adminURL}/api/v1/admin/analytics/retention`);
+  const retention = await page.request.get(`${adminURL}/api/v2/admin/analytics/retention`);
   expect(retention.status()).toBe(200);
   const ageList = await page.request.get(`${adminURL}/api/v2/admin/compliance/age-verifications`);
   expect(ageList.status()).toBe(403);
@@ -2008,7 +2008,7 @@ test("admin CMS UI requires typed confirmation for publish changes", async ({ pa
   const routePath = `/e2e-cms-confirm-${suffix}`;
 
   try {
-    const create = await page.request.post(`${adminURL}/api/v1/admin/cms/pages`, {
+    const create = await page.request.post(`${adminURL}/api/v2/admin/cms/pages`, {
       data: {
         path: routePath,
         title: "E2E CMS confirmation page",
@@ -2353,7 +2353,7 @@ test("admin API Phase 4: announcement write (admin) + public read + growth gatin
   const adminURL = adminBaseURL();
   await startRoleSession(page, "admin");
   try {
-    const create = await page.request.post(`${adminURL}/api/v1/admin/announcements`, {
+    const create = await page.request.post(`${adminURL}/api/v2/admin/announcements`, {
       data: {
         title: "E2E banner",
         body: "hello from e2e",
@@ -2390,13 +2390,13 @@ test("admin API Phase 4: announcement write (admin) + public read + growth gatin
 
   // analyst lacks growth.promo.write → announcement create 403
   await startRoleSession(page, "analyst");
-  const annForbidden = await page.request.post(`${adminURL}/api/v1/admin/announcements`, {
+  const annForbidden = await page.request.post(`${adminURL}/api/v2/admin/announcements`, {
     data: { title: "x", body: "y", reason: "test reason", confirmation: "ANNOUNCE" },
   });
   expect(annForbidden.status()).toBe(403);
 
   // ops lacks analytics.export → experiments 403
   await startRoleSession(page, "ops");
-  const expForbidden = await page.request.get(`${adminURL}/api/v1/admin/experiments`);
+  const expForbidden = await page.request.get(`${adminURL}/api/v2/admin/analytics/flag-monitoring`);
   expect(expForbidden.status()).toBe(403);
 });

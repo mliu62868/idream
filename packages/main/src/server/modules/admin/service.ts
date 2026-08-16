@@ -52,7 +52,6 @@ import {
   patchPlacement,
 } from "./content/placements";
 
-import { listCmsPages, getCmsPage, createCmsPage, patchCmsPage, publishCmsPage } from "./cms";
 import { profileHealth, profileDryRun } from "./generation-health";
 import { generationMetrics } from "./generation-metrics";
 import {
@@ -60,14 +59,6 @@ import {
   listGenerationBackends,
   listGenerationWorkflows,
 } from "./generation/backends-and-workflows";
-import { analyticsExport, analyticsRetention } from "./analytics-extra";
-import {
-  listAdminAnnouncements,
-  createAnnouncement,
-  patchAnnouncement,
-  deleteAnnouncement,
-} from "./announcements";
-import { listExperiments } from "./experiments";
 import {
   deadLetterQueue,
   discardDeadLetterBatch,
@@ -90,13 +81,6 @@ import {
   uploadModelImport,
 } from "./generation/config/service";
 import {
-  chatOpsModerationEvents,
-  chatOpsOverview,
-  chatOpsProviderHealth,
-  chatOpsSessions,
-  chatOpsUsage,
-} from "./chat/service";
-import {
   getContentCharacter,
   getFeaturedCharacters,
   listContentCharacters,
@@ -105,8 +89,7 @@ import {
   setCharacterTags,
   setCharacterVisibility,
 } from "./content/merchandising";
-import { analyticsOverview, providerOps } from "./overviews/service";
-import { adminDashboard } from "./dashboard/service";
+import { providerOps } from "./overviews/service";
 import {
   createAdminPreset,
   createRecipe,
@@ -126,7 +109,6 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
   const method = request.method as ApiMethod;
   const [resource, id, action, child, grandchild] = segments;
 
-  if (resource === "dashboard" && !id && method === "GET") return adminDashboard(request);
 
   if (resource === "generation") {
     if (id === "jobs" && !action && method === "GET") return listGenerationJobs(request);
@@ -189,10 +171,6 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
     if (id === "metrics" && !action && method === "GET") return generationMetrics(request);
   }
 
-
-  if (resource === "analytics" && id === "overview" && !action && method === "GET") {
-    return analyticsOverview(request);
-  }
 
   if (resource === "ops" && id === "providers" && !action && method === "GET") {
     return providerOps(request);
@@ -297,49 +275,12 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
   }
 
 
-  if (resource === "chat") {
-    if (id === "overview" && !action && method === "GET") return chatOpsOverview(request);
-    if (id === "provider-health" && !action && method === "GET") return chatOpsProviderHealth(request);
-    if (id === "sessions" && !action && method === "GET") return chatOpsSessions(request);
-    if (id === "usage" && !action && method === "GET") return chatOpsUsage(request);
-    if (id === "moderation-events" && !action && method === "GET") {
-      return chatOpsModerationEvents(request);
-    }
-  }
-
-  // T1 CMS/SEO（path 含 "/"，作为 ?path= / body.path 传递，不放 URL 段）
-  if (resource === "cms" && id === "pages") {
-    if (!action && method === "GET") {
-      return new URL(request.url).searchParams.get("path") ? getCmsPage(request) : listCmsPages(request);
-    }
-    if (!action && method === "POST") return createCmsPage(request);
-    if (!action && method === "PATCH") return patchCmsPage(request);
-    if (action === "publish" && method === "POST") return publishCmsPage(request);
-  }
-
   // T4 生成 profile 健康度 + dry-run（与既有 model-profiles publish/rollback 正交）
   if (resource === "generation" && id === "model-profiles" && action) {
     if (child === "health" && method === "GET") return profileHealth(request, action);
     if (child === "dry-run" && method === "POST") return profileDryRun(request, action);
     if (child === "test-job" && method === "POST") return createProfileTestJob(request, action);
   }
-
-  // T4 analytics 导出 + 留存
-  if (resource === "analytics" && id === "export" && !action && method === "GET") {
-    return analyticsExport(request);
-  }
-  if (resource === "analytics" && id === "retention" && !action && method === "GET") {
-    return analyticsRetention(request);
-  }
-
-  // Phase 4 增长运营：公告 CRUD + 实验度量
-  if (resource === "announcements") {
-    if (!id && method === "GET") return listAdminAnnouncements(request);
-    if (!id && method === "POST") return createAnnouncement(request);
-    if (id && !action && method === "PATCH") return patchAnnouncement(request, id);
-    if (id && !action && method === "DELETE") return deleteAnnouncement(request, id);
-  }
-  if (resource === "experiments" && !id && method === "GET") return listExperiments(request);
 
   throw Errors.notFound("Admin API route not found", { path: `/admin/${segments.join("/")}` });
 }

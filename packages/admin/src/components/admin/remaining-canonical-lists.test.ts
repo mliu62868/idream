@@ -162,19 +162,19 @@ describe("remaining canonical admin list surfaces", () => {
       "?chatUserId=user&chatCharacterId=character&chatSessionStatus=active&chatEventStatus=open&chatEventLayer=policy&chatPolicyCode=P1&chatTargetId=T1&chatLimit=25&chatSessionCursor=CS&chatUsageCursor=CU&chatEventCursor=CE",
     );
     expect(chatOpsPath(chat, "sessions")).toBe(
-      "/api/v1/admin/chat/sessions?limit=25&userId=user&characterId=character&status=active&cursor=CS",
+      "/api/v2/admin/chat/sessions?limit=25&userId=user&characterId=character&status=active&cursor=CS",
     );
     expect(chatOpsPath(chat, "usage")).toBe(
-      "/api/v1/admin/chat/usage?limit=25&userId=user&cursor=CU",
+      "/api/v2/admin/chat/usage?limit=25&userId=user&cursor=CU",
     );
     expect(chatOpsPath(chat, "events")).toBe(
-      "/api/v1/admin/chat/moderation-events?limit=25&status=open&layer=policy&policyCode=P1&targetId=T1&cursor=CE",
+      "/api/v2/admin/chat/moderation-events?limit=25&status=open&layer=policy&policyCode=P1&targetId=T1&cursor=CE",
     );
 
     expect(announcementListPath(announcementQueryFromSearch(
       "?announcementSearch=launch&announcementLevel=promo&announcementActive=true&announcementCursor=AN",
     ))).toBe(
-      "/api/v1/admin/announcements?limit=25&search=launch&level=promo&active=true&cursor=AN",
+      "/api/v2/admin/announcements?limit=25&search=launch&level=promo&active=true&cursor=AN",
     );
   });
 

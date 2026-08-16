@@ -85,7 +85,7 @@ export function CmsView() {
     setError(null);
     try {
       const data = await apiGet<{ items: unknown }>(
-        "/api/v1/admin/cms/pages",
+        "/api/v2/admin/cms/pages",
       );
       if (!Array.isArray(data.items) || !data.items.every(isPageRow)) {
         throw new Error("CMS page list response was incomplete");
@@ -123,7 +123,7 @@ export function CmsView() {
     setPublishBusy(true);
     setError(null);
     try {
-      await apiWrite("/api/v1/admin/cms/pages/publish", "POST", {
+      await apiWrite("/api/v2/admin/cms/pages/publish", "POST", {
         path: publishDraft.path,
         contentStatus: publishDraft.nextStatus,
         expectedUpdatedAt: publishDraft.expectedUpdatedAt,
@@ -151,7 +151,7 @@ export function CmsView() {
     setEditLoadingPath(page.path);
     try {
       const data = await apiGet<{ page: unknown }>(
-        `/api/v1/admin/cms/pages?path=${encodeURIComponent(page.path)}`,
+        `/api/v2/admin/cms/page?path=${encodeURIComponent(page.path)}`,
       );
       if (!isPageDetail(data.page)) {
         throw new Error("CMS page response was incomplete");
@@ -180,7 +180,7 @@ export function CmsView() {
     setError(null);
     try {
       const body = parseBodyObject(editDraft.bodyJson);
-      await apiWrite("/api/v1/admin/cms/pages", "PATCH", {
+      await apiWrite("/api/v2/admin/cms/pages", "PATCH", {
         path: editDraft.path,
         template: "article",
         title: editDraft.title.trim(),
@@ -574,7 +574,7 @@ function CreatePageForm({ reload }: { reload: () => Promise<void> }) {
     setErr(null);
     try {
       const body = parseBodyObject(bodyJson);
-      await apiWrite("/api/v1/admin/cms/pages", "POST", {
+      await apiWrite("/api/v2/admin/cms/pages", "POST", {
         path: path.trim(),
         template: "article",
         title: title.trim(),
