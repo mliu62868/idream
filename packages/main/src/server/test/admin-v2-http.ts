@@ -80,9 +80,12 @@ export async function adminV2<T = any>(
   pathname: string,
   options: AdminV2CallOptions = {},
 ): Promise<AdminV2Result<T>> {
-  const absolute = pathname.startsWith("/api/v2/admin")
-    ? pathname
-    : `/api/v2/admin/${pathname.replace(/^\//, "")}`;
+  // 前导斜杠可有可无：`moderation/queue`、`/moderation/queue`、`api/v2/admin/...`、
+  // `/api/v2/admin/...` 四种写法都来自真实调用点，判前缀前先把斜杠归一。
+  const relative = pathname.replace(/^\//, "");
+  const absolute = relative.startsWith("api/v2/admin")
+    ? `/${relative}`
+    : `/api/v2/admin/${relative}`;
   const url = new URL(absolute, "http://localhost");
   for (const [key, value] of Object.entries(options.query ?? {})) {
     if (value !== undefined) url.searchParams.set(key, String(value));
@@ -98,9 +101,13 @@ export async function adminV2<T = any>(
   if (options.body !== undefined) headers["content-type"] = "application/json";
   if (options.ifMatch !== undefined) headers["if-match"] = `"${options.ifMatch}"`;
   if (options.cookie) headers["cookie"] = options.cookie;
+  // INVARIANT: 调用方自己给的键永远优先 —— 重放用例正是靠「两次调用同一个键」成立的，
+  // 在这里补一个随机键会把重放悄悄变成两条独立命令。
   const needsIdempotency = operation.mutation?.transport.includes("idempotency_key");
+  const hasIdempotencyHeader = Object.keys(headers)
+    .some((name) => name.toLowerCase() === "idempotency-key");
   if (options.idempotencyKey) headers["idempotency-key"] = options.idempotencyKey;
-  else if (needsIdempotency && options.idempotencyKey !== null) {
+  else if (needsIdempotency && !hasIdempotencyHeader && options.idempotencyKey !== null) {
     headers["idempotency-key"] = randomUUID();
   }
 
