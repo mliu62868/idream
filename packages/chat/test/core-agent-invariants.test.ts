@@ -341,14 +341,16 @@ describe("core context continuity invariants", () => {
     expect(loaded.messages.at(-1)?.content).toBe("assistant-100");
   });
 
-  it("keeps the newest turn when the rolling summary reaches its size cap", async () => {
+  it("drains a legacy rolling summary instead of re-injecting it forever", async () => {
     const session = await createSession(
       { userId: USERS.summary, characterId: CHARACTER },
       { prisma },
     );
+    // Rows written before the rolling summary was dropped still hold a value, and
+    // prompt assembly still reads the field — so a turn must clear it, not ignore it.
     await prisma.chatSession.update({
       where: { id: session.id },
-      data: { memorySummary: "old ".repeat(225) },
+      data: { memorySummary: "stale ".repeat(150) },
     });
     await sendMessage(
       { userId: USERS.summary, sessionId: session.id, content: "newest-summary-marker" },
@@ -359,7 +361,7 @@ describe("core context continuity invariants", () => {
     });
 
     const updated = await prisma.chatSession.findUnique({ where: { id: session.id } });
-    expect(updated?.memorySummary).toContain("newest-summary-marker");
+    expect(updated?.memorySummary).toBeNull();
   });
 
   it("derives relationship progress idempotently for a retried memory job", async () => {

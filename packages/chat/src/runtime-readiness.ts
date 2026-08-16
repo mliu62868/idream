@@ -30,6 +30,13 @@ export const RUNTIME_REDIS_PING_TIMEOUT_MS = 5_000;
 export const RUNTIME_RECOVERY_INITIAL_BACKOFF_MS = 5_000;
 export const RUNTIME_RECOVERY_MAX_BACKOFF_MS = 60_000;
 
+// SPEC: consecutive failed turns that count as provider-level evidence.
+// INTENT: invalidate() takes the WHOLE process out of rotation until a full
+// warmup succeeds, so one user's dropped stream must never reach it. A genuinely
+// dead provider fails every admitted turn, so a short streak is reached within
+// seconds; independent client-side flakes practically never line up three deep.
+export const RUNTIME_TURN_FAILURE_THRESHOLD = 3;
+
 type DependencyProbe = () => Promise<void>;
 type FullWarmup = () => Promise<void>;
 
@@ -56,6 +63,7 @@ export class RuntimeReadiness {
   private recoveryTimer: ReturnType<typeof setTimeout> | null = null;
   private recoveryInFlight: Promise<void> | null = null;
   private recoveryFailures = 0;
+  private consecutiveTurnFailures = 0;
 
   snapshot(): RuntimeReadinessSnapshot {
     return { ...this.state };
@@ -127,8 +135,27 @@ export class RuntimeReadiness {
     // only a full warmRuntime call may re-admit the process.
     this.invalidationEpoch += 1;
     this.invalidated = true;
+    this.consecutiveTurnFailures = 0;
     this.failed(error);
     this.scheduleFullWarmupRecovery();
+  }
+
+  /**
+   * SPEC: report one admitted turn that failed against the provider.
+   * INTENT: a failed turn is ambiguous evidence — the user's connection dropping
+   * looks the same here as the provider dying. Only a streak is process-wide
+   * evidence, so a single failure stays a local failure and everyone else keeps
+   * being served.
+   */
+  recordTurnFailure(error: unknown): void {
+    this.consecutiveTurnFailures += 1;
+    if (this.consecutiveTurnFailures < RUNTIME_TURN_FAILURE_THRESHOLD) return;
+    this.invalidate(error);
+  }
+
+  /** Any turn the provider actually answered disproves an in-progress streak. */
+  recordTurnSuccess(): void {
+    this.consecutiveTurnFailures = 0;
   }
 
   configureFullWarmupRecovery(fullWarmup: FullWarmup): void {

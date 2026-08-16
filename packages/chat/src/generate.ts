@@ -210,7 +210,7 @@ export async function processGenerate(
     ? null
     : noMemoryAuthorityReply(sourceTurn.content);
   await hooks.afterContextBuilt?.(context);
-  const runtimeTrace = JSON.parse(JSON.stringify({
+  const runtimeTraceFacts: Record<string, unknown> = {
     schemaVersion: 1,
     attempt: payload.attempt,
     assistantMessageId: payload.assistantMessageId,
@@ -222,7 +222,10 @@ export async function processGenerate(
     outputAuthority: authoritativeNoMemoryReply
       ? "no_memory_boundary"
       : "model",
-  })) as Prisma.InputJsonValue;
+  };
+  const runtimeTrace = JSON.parse(
+    JSON.stringify(runtimeTraceFacts),
+  ) as Prisma.InputJsonValue;
   const attemptVersionId = `mv:${payload.assistantMessageId}:${payload.attempt}`;
   // INVARIANT: every attempt that reaches PreparedTurn records its exact model
   // and immutable content authority even when file memory is disabled or the
@@ -254,6 +257,13 @@ export async function processGenerate(
   const modelMessages = prepared.messages;
   const chunks: string[] = [];
   let seq = 0;
+  // Set when the stream died after the user already watched text arrive; the
+  // ledger keeps the partial reply and the trace records why it is short.
+  let truncated = false;
+  // Real token counts, reported by the provider on the terminal chunk. Absent for
+  // every locally-authored reply (no-memory boundary, tool caption) and for any
+  // stream that never reached `done`, which is what estimateTokens covers.
+  let providerUsage: { promptTokens: number; completionTokens: number } | null = null;
   let imageToolCall: ImageAgentToolCall | null = null;
   // metadata.trigger for the attachment (finalize, below): "agent_fc" when the model's
   // native function call produced it, "agent_tool_call" for the legacy regex+planner path.
@@ -268,8 +278,26 @@ export async function processGenerate(
     await appendStreamEvent(key, { type: "delta", attempt: payload.attempt, seq, delta });
   };
 
+  // ChatChunk does not declare `usage` yet, so read it structurally: a provider
+  // that reports it wins over the estimate, one that does not changes nothing.
+  const readChunkUsage = (part: unknown): void => {
+    const reported = (part as {
+      usage?: { promptTokens?: unknown; completionTokens?: unknown };
+    }).usage;
+    if (
+      typeof reported?.promptTokens === "number" &&
+      typeof reported.completionTokens === "number"
+    ) {
+      providerUsage = {
+        promptTokens: reported.promptTokens,
+        completionTokens: reported.completionTokens,
+      };
+    }
+  };
+
   const streamPlain = async (): Promise<void> => {
     for await (const part of providers.chat.stream(prepared)) {
+      readChunkUsage(part);
       if (part.delta) await streamDelta(part.delta);
     }
   };
@@ -376,6 +404,7 @@ export async function processGenerate(
       let fellBackAlready = false;
       try {
         for await (const part of providers.chat.stream(prepared)) {
+          readChunkUsage(part);
           if (part.toolCalls) toolCalls = part.toolCalls;
           if (part.delta) await streamDelta(part.delta);
         }
@@ -412,26 +441,37 @@ export async function processGenerate(
   } catch (error) {
     const outputLimitReached = error instanceof ChatModelOutputLimitError;
     const retryable = seq === 0 && hasWorkerRetryRemaining(hooks.jobAttempt);
-    if (!outputLimitReached) runtimeReadiness.invalidate(error);
-    if (seq === 0 && !retryable) {
-      await failAssistant(prisma, payload.assistantMessageId);
+    if (!outputLimitReached) runtimeReadiness.recordTurnFailure(error);
+    // A stream that died after the user already watched text arrive keeps what
+    // was delivered: erasing a visibly-streamed reply is worse than a short one.
+    // An output limit is not that case — the model itself ran out of room, the
+    // tail is structurally missing, and the turn stays terminal (retry/regenerate).
+    if (seq > 0 && !outputLimitReached) {
+      truncated = true;
+      logger.warn(
+        { err: error, assistantMessageId: payload.assistantMessageId, seq },
+        "chat stream dropped mid-reply; finalizing the partial content",
+      );
+    } else {
+      if (!retryable) {
+        await failAssistant(prisma, payload.assistantMessageId);
+      }
+      await appendStreamEvent(key, {
+        type: "error",
+        attempt: payload.attempt,
+        code: outputLimitReached ? "provider_output_limit" : "provider_failed",
+        retryable,
+      });
+      if (seq === 0) throw error instanceof Error ? error : new Error(String(error));
+      return { status: "failed" };
     }
-    await appendStreamEvent(key, {
-      type: "error",
-      attempt: payload.attempt,
-      code: outputLimitReached ? "provider_output_limit" : "provider_failed",
-      retryable,
-    });
-    if (seq === 0) throw error instanceof Error ? error : new Error(String(error));
-    await failAssistant(prisma, payload.assistantMessageId);
-    return { status: "failed" };
   }
 
   let content = chunks.join("");
   if (!content.trim()) {
     const error = new Error("chat model returned an empty response");
     const retryable = hasWorkerRetryRemaining(hooks.jobAttempt);
-    runtimeReadiness.invalidate(error);
+    runtimeReadiness.recordTurnFailure(error);
     if (!retryable) {
       await failAssistant(prisma, payload.assistantMessageId);
     }
@@ -443,11 +483,23 @@ export async function processGenerate(
     });
     throw error;
   }
+  // The provider answered, so whatever knocked earlier turns over was not a
+  // process-wide outage. A locally-authored reply proves nothing about it, and a
+  // truncated one is exactly the failure the streak is counting.
+  if (!authoritativeNoMemoryReply && !truncated) runtimeReadiness.recordTurnSuccess();
+
   const model = prepared.model;
-  const usage = {
+  const usage = providerUsage ?? {
     promptTokens: prepared.budget.usedInputTokens,
     completionTokens: estimateTokens(content),
   };
+  // Ops must be able to tell a model that chose to stop from a stream that was
+  // cut, since only the second one is worth chasing.
+  const finalRuntimeTrace = truncated
+    ? (JSON.parse(
+        JSON.stringify({ ...runtimeTraceFacts, truncated: true }),
+      ) as Prisma.InputJsonValue)
+    : null;
 
   // Output moderation (design §3 step 10).
   const moderation = await providers.moderation.check({ targetType: "text", content });
@@ -490,6 +542,7 @@ export async function processGenerate(
     toolCallTrigger,
     traceEntry,
     projectorPrisma,
+    runtimeTrace: finalRuntimeTrace,
   });
   if (finalized === "stale") {
     await appendStreamEvent(key, {
@@ -551,12 +604,14 @@ interface FinalizeInput {
   toolCallTrigger: "agent_fc" | "agent_tool_call";
   traceEntry: Record<string, unknown> | null;
   projectorPrisma: ChatPrismaClient;
+  /** Non-null only when the pre-stream trace needs correcting (truncated reply). */
+  runtimeTrace: Prisma.InputJsonValue | null;
 }
 
 async function finalize(
   input: FinalizeInput,
 ): Promise<"finalized" | "stale" | "skipped"> {
-  const { prisma, payload, session, content, model, usage, moderation, blocked, context, imageToolCall, toolCallTrigger, traceEntry, projectorPrisma } = input;
+  const { prisma, payload, session, content, model, usage, moderation, blocked, context, imageToolCall, toolCallTrigger, traceEntry, projectorPrisma, runtimeTrace } = input;
 
   // Account/session/message privacy operations use the same lock. Re-read all
   // authority after acquiring it so a deleted user turn or session cannot be
@@ -647,6 +702,7 @@ async function finalize(
         model,
         tokenCount,
         safetyStatus: blocked ? "blocked" : moderation.status === "flagged" ? "flagged" : "passed",
+        ...(runtimeTrace ? { runtimeTrace } : {}),
       },
     });
     if (updated.count === 0) return "skipped";
@@ -678,19 +734,16 @@ async function finalize(
         },
       });
 
-      // lastMessageAt is ordinary session state. The rolling summary additionally
-      // requires both immutable turn authority and the current preference, so a
-      // disable that cleared the summary cannot be repopulated by an in-flight turn.
+      // memorySummary is cleared, not written. What used to live there was the
+      // newest turn clamped to 900 chars — a strict subset of the 12 recent
+      // messages the prompt already carries verbatim, so it only ever spent
+      // tokens restating them. Nulling it here (rather than just not writing)
+      // drains rows that still hold a value from before it was dropped;
+      // otherwise a frozen summary would be injected into every prompt forever.
       await tx.chatSession.update({
         where: { id: session.id },
-        data: { lastMessageAt: new Date() },
+        data: { lastMessageAt: new Date(), memorySummary: null },
       });
-      if (context.canUpdateSessionSummary) {
-        await tx.chatSession.updateMany({
-          where: { id: session.id, memoryEnabled: true },
-          data: { memorySummary: buildSummary(context, content) },
-        });
-      }
     }
 
     // moderation trail (always)
@@ -862,33 +915,11 @@ function hasWorkerRetryRemaining(
     jobAttempt.attemptsMade + 1 < jobAttempt.maxAttempts;
 }
 
-function buildSummary(context: BuiltContext, assistantContent: string): string {
-  const lastUser = [...context.recentMessages].reverse().find((m) => m.role === "user")?.content;
-  const newestTurn = [
-    lastUser ? `User: ${lastUser}` : null,
-    `Assistant: ${assistantContent}`,
-  ].filter(Boolean).join("\n");
-  // A rolling summary must never freeze once the old prefix fills the cap. Keep
-  // the newest turn intact and spend the remaining budget on the recent tail of
-  // the previous summary; durable long-term facts live in the memory layer.
-  const newest = clampTail(newestTurn, 900);
-  const previousBudget = Math.max(0, 900 - newest.length - 1);
-  const previous = context.sessionSummary && previousBudget > 0
-    ? clampTail(context.sessionSummary, previousBudget)
-    : "";
-  return [previous, newest].filter(Boolean).join("\n");
-}
-
 function estimateTokens(text: string): number {
   return Math.max(1, Math.ceil(text.length / 4));
 }
 function clamp(value: string, max: number): string {
   return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
-}
-function clampTail(value: string, max: number): string {
-  if (value.length <= max) return value;
-  if (max <= 1) return "…".slice(0, max);
-  return `…${value.slice(-(max - 1))}`;
 }
 function chunk(text: string, size: number): string[] {
   const out: string[] = [];

@@ -15,6 +15,8 @@ const runtime = vi.hoisted(() => ({
   processMemoryExtract: vi.fn(async () => ({ written: 0, skipped: null })),
   deliverPendingOutbox: vi.fn(async () => 0),
   consumeDurableInbox: vi.fn(async () => ({ acknowledged: true })),
+  reconcile: vi.fn(async () => ({})),
+  loggerInfo: vi.fn(),
 }));
 
 vi.mock("@idream/shared/contracts", () => ({
@@ -52,10 +54,10 @@ vi.mock("./inbox.js", () => ({
   consumeDurableInbox: runtime.consumeDurableInbox,
   reprocessPendingInbox: vi.fn(),
 }));
-vi.mock("./reconcile.js", () => ({ reconcile: vi.fn() }));
+vi.mock("./reconcile.js", () => ({ reconcile: runtime.reconcile }));
 vi.mock("./maintain.js", () => ({ pruneExpiredSegments: vi.fn() }));
 vi.mock("./logger.js", () => ({
-  logger: { info: vi.fn(), error: vi.fn() },
+  logger: { info: runtime.loggerInfo, warn: vi.fn(), error: vi.fn() },
 }));
 
 const { startWorker } = await import("./worker.js");
@@ -69,6 +71,27 @@ describe("chat worker readiness admission", () => {
     runtime.processMemoryExtract.mockClear();
     runtime.deliverPendingOutbox.mockClear();
     runtime.consumeDurableInbox.mockClear();
+    runtime.reconcile.mockClear();
+    runtime.loggerInfo.mockClear();
+  });
+
+  it("publishes reconcile counts so a convergence backlog is visible", async () => {
+    vi.useFakeTimers();
+    runtime.reconcile.mockResolvedValue({ requeuedPending: 4, pendingFileMutations: 11 });
+    const worker = startWorker();
+
+    try {
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(runtime.reconcile).toHaveBeenCalledOnce();
+      expect(runtime.loggerInfo).toHaveBeenCalledWith(
+        { requeuedPending: 4, pendingFileMutations: 11 },
+        "reconcile pass",
+      );
+    } finally {
+      await worker.close();
+      vi.useRealTimers();
+    }
   });
 
   it("does not admit a queued turn after runtime dependencies fail", async () => {

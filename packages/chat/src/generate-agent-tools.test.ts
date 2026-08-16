@@ -13,7 +13,8 @@ const enqueueMock = vi.hoisted(() => vi.fn(async () => {}));
 // re-mocking the whole providers module (mirrors CHAT_MOCK_SUPPORTS_TOOLS on the
 // real MockChatModel, see providers.ts).
 const supportsToolsState = vi.hoisted(() => ({ value: true }));
-const runtimeReadinessInvalidateMock = vi.hoisted(() => vi.fn());
+const recordTurnFailureMock = vi.hoisted(() => vi.fn());
+const recordTurnSuccessMock = vi.hoisted(() => vi.fn());
 
 vi.mock("./db.js", () => ({ chatPrisma: {} }));
 vi.mock("./providers.js", () => ({
@@ -47,12 +48,24 @@ vi.mock("./chat-fs.js", () => ({
 }));
 vi.mock("./queue.js", () => ({ enqueue: enqueueMock }));
 vi.mock("./runtime-readiness.js", () => ({
-  runtimeReadiness: { invalidate: runtimeReadinessInvalidateMock },
+  runtimeReadiness: {
+    recordTurnFailure: recordTurnFailureMock,
+    recordTurnSuccess: recordTurnSuccessMock,
+  },
 }));
 
 const { processGenerate, processGenerateJob } = await import("./generate.js");
 
 type CreateCall = { data: Record<string, unknown>; where?: Record<string, unknown> };
+
+/** The one in-transaction write that carries the turn's terminal ledger row. */
+function finalizedMessageUpdate(
+  messageUpdates: CreateCall[],
+): Record<string, unknown> | undefined {
+  return messageUpdates.find(
+    (call) => (call.data as { status?: string }).status === "sent",
+  )?.data;
+}
 
 // `completedSourceAttachment` seeds the edit_last_image lookup (generate.ts's
 // buildImageRequestFromPlan queries tx.messageAttachment.findFirst); undefined
@@ -296,7 +309,8 @@ describe("chat generate agent image tool", () => {
     appendStreamEventMock.mockClear();
     appendLineMock.mockClear();
     enqueueMock.mockClear();
-    runtimeReadinessInvalidateMock.mockClear();
+    recordTurnFailureMock.mockClear();
+    recordTurnSuccessMock.mockClear();
     buildContextMock.mockResolvedValue(context);
     moderationMock.mockResolvedValue({ status: "passed", confidence: 0.5 });
     supportsToolsState.value = true;
@@ -455,7 +469,7 @@ describe("chat generate agent image tool", () => {
     });
   });
 
-  it("marks the assistant failed when the provider dies after streaming has started", async () => {
+  it("keeps the already-streamed text when the provider dies mid-reply", async () => {
     buildContextMock.mockResolvedValue({
       ...context,
       recentMessages: [{ id: "msg_user", role: "user", content: "hello" }],
@@ -464,7 +478,7 @@ describe("chat generate agent image tool", () => {
       yield { delta: "partial", done: false };
       throw new Error("provider disconnected");
     });
-    const { prisma, rootMessageUpdates, messageUpdates } = fakePrisma();
+    const { prisma, messageUpdates } = fakePrisma();
 
     const result = await processGenerate(
       { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
@@ -472,18 +486,83 @@ describe("chat generate agent image tool", () => {
       { projectorPrisma: prisma },
     );
 
-    expect(result.status).toBe("failed");
-    expect(rootMessageUpdates.at(-1)?.data).toMatchObject({ status: "failed" });
-    expect(messageUpdates).toHaveLength(0);
-    expect(enqueueMock).not.toHaveBeenCalled();
-    expect(moderationMock).not.toHaveBeenCalled();
+    // The user watched "partial" arrive; blanking it is worse than a short reply.
+    expect(result.status).toBe("sent");
+    expect(finalizedMessageUpdate(messageUpdates)).toMatchObject({
+      status: "sent",
+      content: "partial",
+      runtimeTrace: expect.objectContaining({ truncated: true }),
+    });
     expect(appendStreamEventMock).toHaveBeenCalledWith(
       "chat:stream:msg_assistant",
-      expect.objectContaining({ type: "error", code: "provider_failed", retryable: false }),
+      expect.objectContaining({ type: "done" }),
     );
-    expect(runtimeReadinessInvalidateMock).toHaveBeenCalledWith(
+    expect(appendStreamEventMock).not.toHaveBeenCalledWith(
+      "chat:stream:msg_assistant",
+      expect.objectContaining({ type: "error" }),
+    );
+    // One dropped stream is a turn failure, never a truncated success, and never
+    // by itself grounds for pulling readiness out from under every other user.
+    expect(recordTurnFailureMock).toHaveBeenCalledWith(
       expect.objectContaining({ message: "provider disconnected" }),
     );
+    expect(recordTurnSuccessMock).not.toHaveBeenCalled();
+  });
+
+  it("uses the provider's reported token usage in place of the estimate", async () => {
+    supportsToolsState.value = false;
+    buildContextMock.mockResolvedValue({
+      ...context,
+      policy: { ...context.policy, imageToolEnabled: false },
+      recentMessages: [{ id: "msg_user", role: "user", content: "hello" }],
+    });
+    streamMock.mockImplementation(async function* metered() {
+      yield {
+        delta: "hello there",
+        done: true,
+        usage: { promptTokens: 812, completionTokens: 37 },
+      };
+    });
+    const { prisma, messageUpdates } = fakePrisma();
+
+    await expect(processGenerate(
+      { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+      prisma,
+      { projectorPrisma: prisma },
+    )).resolves.toEqual({ status: "sent" });
+
+    expect(finalizedMessageUpdate(messageUpdates)).toMatchObject({ tokenCount: 37 });
+    expect(appendStreamEventMock).toHaveBeenCalledWith(
+      "chat:stream:msg_assistant",
+      expect.objectContaining({
+        type: "done",
+        usage: { promptTokens: 812, completionTokens: 37 },
+      }),
+    );
+    expect(recordTurnSuccessMock).toHaveBeenCalledOnce();
+  });
+
+  it("falls back to the length estimate when the provider reports no usage", async () => {
+    supportsToolsState.value = false;
+    buildContextMock.mockResolvedValue({
+      ...context,
+      policy: { ...context.policy, imageToolEnabled: false },
+      recentMessages: [{ id: "msg_user", role: "user", content: "hello" }],
+    });
+    streamMock.mockImplementation(async function* unmetered() {
+      yield { delta: "hello there", done: true };
+    });
+    const { prisma, messageUpdates } = fakePrisma();
+
+    await expect(processGenerate(
+      { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+      prisma,
+      { projectorPrisma: prisma },
+    )).resolves.toEqual({ status: "sent" });
+
+    expect(finalizedMessageUpdate(messageUpdates)).toMatchObject({
+      tokenCount: Math.ceil("hello there".length / 4),
+    });
   });
 
   it("records an output-limit terminal instead of completing partial provider text", async () => {
@@ -519,7 +598,7 @@ describe("chat generate agent image tool", () => {
       "chat:stream:msg_assistant",
       expect.objectContaining({ type: "done" }),
     );
-    expect(runtimeReadinessInvalidateMock).not.toHaveBeenCalled();
+    expect(recordTurnFailureMock).not.toHaveBeenCalled();
   });
 
   it("keeps an empty provider response retryable without terminalizing the assistant", async () => {
@@ -551,8 +630,8 @@ describe("chat generate agent image tool", () => {
         retryable: true,
       }),
     );
-    expect(runtimeReadinessInvalidateMock).toHaveBeenCalledOnce();
-    expect(runtimeReadinessInvalidateMock).toHaveBeenCalledWith(
+    expect(recordTurnFailureMock).toHaveBeenCalledOnce();
+    expect(recordTurnFailureMock).toHaveBeenCalledWith(
       expect.objectContaining({ message: "chat model returned an empty response" }),
     );
   });
