@@ -175,6 +175,6 @@ describe("Creative Run list projection", () => {
 
     // INVARIANT: 首次取数失败必须与"查询成功但没有结果"区分开。
     expect(container.textContent).toContain("Creative projection unavailable");
-    expect(container.textContent).toContain("No successful query yet");
+    expect(container.textContent).toContain("Not loaded yet");
   });
 });

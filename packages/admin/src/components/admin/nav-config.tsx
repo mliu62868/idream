@@ -361,7 +361,8 @@ const HIDDEN_COMPATIBILITY_ITEMS: NavItem[] = [
     render: (ctx) => <RiskWorkspace canRead={ctx.permissions.has("billing.read")} /> }),
 ];
 
-const ALL_SECTION_ITEMS = [...navItems, ...HIDDEN_COMPATIBILITY_ITEMS];
+// 隐藏的兼容项仍是可直达的目的地，命名规则跟导航里的项一视同仁。
+export const ALL_SECTION_ITEMS = [...navItems, ...HIDDEN_COMPATIBILITY_ITEMS];
 const SECTION_BY_ID = new Map(ALL_SECTION_ITEMS.map((navItem) => [navItem.id, navItem]));
 const SECTION_ALIASES: Record<string, string> = {
   "generation/models": "generation/config",

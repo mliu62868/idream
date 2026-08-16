@@ -218,10 +218,6 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
         role="status"
       >
         <div className="flex flex-wrap gap-3">
-          <span>
-
-            {t("Legacy compatibility authority · source freshness watermark unavailable")}
-          </span>
           <Freshness label="Reports" state={reports} />
           <Freshness label="Media review" state={media} />
           <Freshness label="Appeals" state={appeals} />
@@ -306,7 +302,7 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
             ? "No reports match these filters"
             : "No reports require review"
         }
-        loadingLabel="Loading report authority"
+        loadingLabel="Loading reports…"
         state={reports}
         rows={reportRows(reports.rows ?? [], canDecide, confirmDecision)}
       />
@@ -325,7 +321,7 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
             ? "No media review items match this search"
             : "No Character images await independent review"
         }
-        loadingLabel="Loading media-review authority"
+        loadingLabel="Loading media review…"
         state={media}
         rows={mediaRows(media.rows ?? [], canDecide, confirmDecision, t)}
       />
@@ -344,7 +340,7 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
             ? "No appeals match this search"
             : "No appeals require review"
         }
-        loadingLabel="Loading appeal authority"
+        loadingLabel="Loading appeals…"
         state={appeals}
         rows={appealRows(appeals.rows ?? [], canDecide, confirmDecision)}
       />
@@ -674,7 +670,7 @@ function Freshness({ label, state }: { label: string; state: AuthorityState }) {
   if (state.loading && state.rows)
     return (
       <span>
-        {label}{t(": refreshing · showing snapshot from")} {time}
+        {label}{t(": refreshing · as of")} {time}
       </span>
     );
   if (state.error && state.rows)
@@ -687,10 +683,10 @@ function Freshness({ label, state }: { label: string; state: AuthorityState }) {
   if (state.rows)
     return (
       <span>
-        {label}{t(": current client snapshot ·")} {time}
+        {label}{t(": as of")} {time}
       </span>
     );
-  return <span>{label}{t(": refreshing · no snapshot yet")}</span>;
+  return <span>{label}{t(": loading…")}</span>;
 }
 function AuthorityError({
   label,

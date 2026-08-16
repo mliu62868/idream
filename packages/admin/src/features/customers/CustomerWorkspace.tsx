@@ -128,9 +128,8 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
     <div className="space-y-5">
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">{t("Customer Operations")}</p>
-          <h2 className="mt-1 text-2xl font-semibold">{t("Customers")}</h2>
-          <p className="mt-1 max-w-2xl text-sm text-[var(--ad-text-muted)]">{t("One authoritative view of relationship activity, generations, billing, Cases, and operator history.")}</p>
+          <h2 className="sr-only">{t("Customers")}</h2>
+          <p className="max-w-2xl text-sm text-[var(--ad-text-muted)]">{t("One view of relationship activity, generations, billing, Cases, and operator history.")}</p>
         </div>
         <WorkspaceButton onClick={() => void loadList(history.current.current().query)}>
           <RefreshCcw className="h-4 w-4" />{t("Refresh")}

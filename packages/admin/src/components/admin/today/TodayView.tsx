@@ -98,14 +98,13 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
       >
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <CheckCircle2 className="h-4 w-4 text-[var(--ad-green-text)]" />
-          <p className="text-sm font-semibold text-[var(--ad-green-text)]">{t("Authoritative Today projection")}</p>
+          <p className="text-sm font-semibold text-[var(--ad-green-text)]">{t("Today's queue is up to date")}</p>
           <span className="text-xs text-[var(--ad-text-muted)]">
             {t("Fresh as of {time}", { time: formatDateTime(projection.asOf, locale) })}
           </span>
         </div>
-        <p className="mt-1 pl-7 text-xs text-[var(--ad-text-muted)]">
-          {t(modeContext[workMode])} {t("Ranking policy: {version}", { version: projection.rankingPolicyVersion })}
-        </p>
+        {/* 排序策略版本（today-ranking-v1）对运营没有可执行含义，留在 API 响应里即可。 */}
+        <p className="mt-1 pl-7 text-xs text-[var(--ad-text-muted)]">{t(modeContext[workMode])}</p>
       </section>
 
       <div aria-label={t("Today view")} className="flex gap-1 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-1" role="tablist">
@@ -123,7 +122,7 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
       />
 
       <WorkQueue
-        description={t("The ten highest-ranked authorized items. The total is computed from complete server-side counts.")}
+        description={t("The ten highest-ranked items you are authorized to work on.")}
         groupRelatedCreativeRuns
         icon={Clock3}
         queue={projection.nextBestActions}
@@ -142,7 +141,7 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
         />
         <WorkQueue
           compact
-          description={t("Authoritative source objects you explicitly watch.")}
+          description={t("Items you explicitly watch.")}
           icon={Eye}
           queue={projection.watching}
           onPreferenceChanged={refresh}
@@ -177,9 +176,9 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
           <TodayFilter label={t("Environment")} onChange={(value) => updateFilter({ environment: value as TodayUrlState["environment"] })} value={urlState.environment} values={["production", "staging", "development", "test"]} />
         </div>
         {allWorkError ? <p className="rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">{t(allWorkError)}</p> : null}
-        {!allWork && !allWorkError ? <p className="p-4 text-sm text-[var(--ad-text-muted)]">{t("Loading All Work…")}</p> : null}
+        {!allWork && !allWorkError ? <p className="p-4 text-sm text-[var(--ad-text-muted)]">{t("Loading…")}</p> : null}
         {allWork ? <>
-          <WorkQueue description={t("Complete authorized work, filtered and ranked by the same authority as Summary.")} icon={Inbox} onPreferenceChanged={refreshAllWork} queue={{ totalCount: allWork.totalCount, items: allWork.items }} title={t("All work")} />
+          <WorkQueue description={t("Every item you are authorized to work on, filtered and ranked as in Summary.")} icon={Inbox} onPreferenceChanged={refreshAllWork} queue={{ totalCount: allWork.totalCount, items: allWork.items }} title={t("All work")} />
           {allWork.pageInfo.hasNextPage && allWork.pageInfo.endCursor ? <button className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" onClick={() => navigate({ ...urlState, cursor: allWork.pageInfo.endCursor ?? undefined })} type="button">{t("Next page")}</button> : null}
         </> : null}
       </section>}
@@ -243,7 +242,7 @@ function WorkQueue({
       )}
       {queue.totalCount > queue.items.length ? (
         <p className="border-t border-[var(--ad-border)] px-4 py-2 text-[10px] text-[var(--ad-text-muted)]">
-          {t("Showing {shown} of {total} authoritative items", { shown: queue.items.length, total: queue.totalCount })}
+          {t("Showing {shown} of {total}", { shown: queue.items.length, total: queue.totalCount })}
         </p>
       ) : null}
     </section>
@@ -383,12 +382,16 @@ function WorkItem({ compact, item, onPreferenceChanged, watched }: { compact: bo
           <Link className="group mt-2 flex items-center gap-2 text-sm font-semibold" href={item.deepLink}><span className="truncate">{t(item.title)}</span><ArrowRight className="h-4 w-4 shrink-0 text-[var(--ad-text-muted)] transition-transform group-hover:translate-x-0.5" /></Link>
           <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">{todayOperationalText(item.summary, locale)}</p>
           {!compact ? <p className="mt-2 text-xs">{todayOperationalText(item.recommendedAction, locale)}</p> : null}
-          <p className="mt-2 text-[10px] leading-4 text-[var(--ad-text-muted)]">{todayOperationalText(item.rankingReason, locale)}</p>
+          {/* SPEC: 每条事实只出现一次。
+              INTENT: 这一行曾印过第二遍严重度（上面已有色标）、第二遍 SLA（一次 ISO 一次
+              本地格式），外加每张卡都一样的 environment · dataClass —— 同屏重复三十遍，
+              却没有一条能改变运营的下一步。留下的是：归谁、什么时候到期、开了多久，
+              以及只有出结果时才有意义的验证态。 */}
           <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-[var(--ad-text-muted)]">
             <span>{t("Owner")}: {item.ownerId ?? t("Unassigned")}</span>
             <span>{t("SLA")}: {item.slaDueAt ? formatDateTime(item.slaDueAt, locale) : t("No deadline")}</span>
-            <span>{t("Verification")}: {t(item.verificationState)}</span>
-            <span>{t(item.environment)} · {t(item.dataClass)}</span>
+            <span>{t("Opened")} {formatElapsed(item.openedAt, locale)}</span>
+            {item.verificationState === "pending" ? null : <span>{t("Verification")}: {t(item.verificationState)}</span>}
           </div>
           <div className="mt-3 flex flex-wrap gap-2">
             <button className="inline-flex min-h-9 items-center gap-1 rounded border border-[var(--ad-border)] px-2 text-xs disabled:opacity-50" disabled={busy} onClick={() => void updatePreference({ watching: !watched }, watched ? "Removed from Watching" : "Added to Watching")} type="button"><Eye className="h-3.5 w-3.5" />{watched ? t("Unwatch") : t("Watch")}</button>
@@ -428,14 +431,6 @@ export function todayOperationalText(text: string, locale: AdminLocale) {
 }
 
 function todayOperationalSegment(segment: string, locale: AdminLocale) {
-  const severity = /^([a-z_]+) severity$/i.exec(segment);
-  if (severity) {
-    return `${translateAdmin(locale, "Severity")}：${translateAdmin(locale, severity[1])}`;
-  }
-  const sla = /^SLA (.+)$/i.exec(segment);
-  if (sla) return `SLA：${formatOperationalDate(sla[1], locale)}`;
-  const openSince = /^open since (.+)$/i.exec(segment);
-  if (openSince) return `开始于 ${formatOperationalDate(openSince[1], locale)}`;
   const readiness = /^readiness ([a-z_]+)$/i.exec(segment);
   if (readiness) {
     return `${translateAdmin(locale, "Readiness")}：${translateAdmin(locale, readiness[1])}`;
@@ -443,8 +438,22 @@ function todayOperationalSegment(segment: string, locale: AdminLocale) {
   return translateAdmin(locale, segment);
 }
 
-function formatOperationalDate(value: string, locale: AdminLocale) {
-  return Number.isNaN(new Date(value).getTime()) ? value : formatDateTime(value, locale);
+// SPEC: 工作项已经开了多久 —— 取最大的整数单位，只给一位。
+// INTENT: 队列里唯一真正在变的量是"积压了多久"。绝对时间戳要读者自己做减法；
+//         "3 周"一眼就知道该不该急。
+function formatElapsed(value: string, locale: AdminLocale) {
+  const elapsedMs = Math.max(0, Date.now() - new Date(value).getTime());
+  const units: Array<[Intl.RelativeTimeFormatUnit, number]> = [
+    ["day", 86_400_000],
+    ["hour", 3_600_000],
+    ["minute", 60_000],
+  ];
+  const format = new Intl.RelativeTimeFormat(locale === "zh" ? "zh-CN" : "en", { numeric: "auto", style: "narrow" });
+  for (const [unit, ms] of units) {
+    const amount = Math.floor(elapsedMs / ms);
+    if (amount >= 1) return format.format(-amount, unit);
+  }
+  return format.format(0, "minute");
 }
 
 function formatDateTime(value: string, locale: "en" | "zh") {

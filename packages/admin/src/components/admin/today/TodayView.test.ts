@@ -24,7 +24,7 @@ const item = {
   ownerId: "support-1",
   slaDueAt: "2026-07-11T14:00:00.000Z",
   recommendedAction: "Review and advance the case",
-  rankingReason: "high severity · SLA 2026-07-11T14:00:00.000Z",
+  openedAt: "2026-07-11T09:00:00.000Z",
   deepLink: "/admin/cases/case-1",
   verificationState: "pending" as const,
   lastChangedAt: "2026-07-11T12:00:00.000Z",
@@ -60,10 +60,6 @@ describe("Today authoritative projection", () => {
     expect(todayOperationalText("customer user-1 is waiting", "zh")).toBe("客户 user-1 · 等待中");
     expect(todayOperationalText("feed_item character:item-1 is new", "zh")).toBe("内容项 角色:item-1 · 新建");
     expect(todayOperationalText("Incident is detected", "zh")).toBe("事故 · 已发现");
-    expect(todayOperationalText("high severity · SLA 2026-07-11T14:00:00.000Z · open since 2026-07-11T12:00:00.000Z", "zh"))
-      .toBe("严重程度：高 · SLA：2026年7月11日 14:00 · 开始于 2026年7月11日 12:00");
-    expect(todayOperationalText("medium severity · open since 2026-07-20T12:16:55.757Z", "zh"))
-      .toBe("严重程度：中 · 开始于 2026年7月20日 12:16");
     expect(todayOperationalText("Operator-authored title", "zh")).toBe("Operator-authored title");
   });
 
@@ -71,15 +67,38 @@ describe("Today authoritative projection", () => {
     const html = renderToStaticMarkup(createElement(TodayView, { data: data(), workMode: "support" }));
 
     expect(html).toContain("data-testid=\"today-view\"");
-    expect(html).toContain("Authoritative Today projection");
-    expect(html).toContain("Ranking policy: today-ranking-v1");
+    expect(html).toContain("Today&#x27;s queue is up to date");
+    expect(html).not.toContain("today-ranking-v1");
     expect(html).toContain("Owner: support-1");
-    expect(html).toContain("Verification: pending");
     expect(html).toContain("href=\"/admin/cases/case-1\"");
-    expect(html).toContain("Showing 1 of 12 authoritative items");
+    expect(html).toContain("Showing 1 of 12");
     expect(html).toContain("aria-selected:bg-[var(--ad-ink)]");
     expect(html).not.toContain("Unavailable");
     expect(html).not.toContain("Degraded Today projection");
+  });
+
+  it("states each fact about a work item exactly once", () => {
+    const html = renderToStaticMarkup(createElement(TodayView, { data: data(), workMode: "support" }));
+    const card = html.slice(html.indexOf("today-queue-my-shift"), html.indexOf("today-queue-next-best-actions"));
+
+    // 严重度只由色标承担，不再在文字里复述；SLA 只有本地格式一处，没有裸 ISO。
+    expect(card.match(/high/g)).toHaveLength(1);
+    expect(card).toContain("SLA: Jul 11, 2026, 2:00 PM");
+    expect(card).not.toContain("2026-07-11T14:00:00.000Z");
+    // 每张卡都一样的运行环境与数据分级不占位。
+    expect(card).not.toContain("test · customer");
+    // pending 是未出结果时的常态，没有信息量；出了结果才说。
+    expect(card).not.toContain("Verification");
+    expect(card).toContain("Opened ");
+  });
+
+  it("surfaces verification only once it has an outcome", () => {
+    const html = renderToStaticMarkup(createElement(TodayView, {
+      data: data({ myShift: { totalCount: 1, items: [{ ...item, verificationState: "failed" as const }] } }),
+      workMode: "support",
+    }));
+
+    expect(html).toContain("Verification: failed");
   });
 
   it("uses a truthful empty state for zero-count queues", () => {

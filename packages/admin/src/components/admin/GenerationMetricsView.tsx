@@ -205,7 +205,7 @@ function MetricsAuthorityState({ loading, t }: { loading: boolean; t: Translate 
       {loading ? (
         <span className="inline-flex items-center gap-2">
           <Loader2 className="h-4 w-4 animate-spin" />
-          {t("Loading authoritative generation metrics...")}
+          {t("Loading generation metrics…")}
         </span>
       ) : (
         t("Generation metrics are unavailable. No values are shown until the authority request succeeds.")

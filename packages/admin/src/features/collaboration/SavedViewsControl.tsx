@@ -134,18 +134,28 @@ export function SavedViewsControl({
   };
 
   const selected = views.find((view) => view.id === selectedId) ?? null;
+  // SPEC: 有存好的视图才默认展开。
+  // INTENT: 这块面板过去恒定展开，于是队列页第一屏被一张写着「No saved views yet」的空卡
+  //         顶掉——在 1512×808 上，Cases 打开时一条工单都看不见。它是每周用一次的工具，
+  //         不该跟每天要读的队列抢首屏。
   return (
-    <section aria-labelledby={`${scope}-saved-views-title`} className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
-        <div className="min-w-0 flex-1">
-          <h3 className="flex items-center gap-2 text-sm font-semibold" id={`${scope}-saved-views-title`}><Bookmark className="h-4 w-4" />{t("Saved Views")}</h3>
-          <label className="mt-2 grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Select a server view")}<select className={fieldClass} disabled={loading} onChange={(event) => select(event.target.value)} value={selectedId ?? ""}><option value="">{loading ? t("Loading views…") : views.length === 0 ? t("No saved views yet") : t("Choose a saved view")}</option>{views.map((view) => <option key={view.id} value={view.id}>{view.label} · v{view.version}</option>)}</select></label>
+    <details className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)]" open={views.length > 0}>
+      <summary aria-labelledby={`${scope}-saved-views-title`} className="flex cursor-pointer items-center gap-2 px-4 py-3 text-sm font-semibold">
+        <Bookmark className="h-4 w-4" />
+        <span id={`${scope}-saved-views-title`}>{t("Saved Views")}</span>
+        <span className="text-xs font-normal text-[var(--ad-text-muted)]">
+          {loading ? t("Loading views…") : views.length === 0 ? t("No saved views yet") : `${views.length}`}
+        </span>
+      </summary>
+      <div className="border-t border-[var(--ad-border)] p-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
+          <label className="grid min-w-0 flex-1 gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Select a server view")}<select className={fieldClass} disabled={loading} onChange={(event) => select(event.target.value)} value={selectedId ?? ""}><option value="">{loading ? t("Loading views…") : views.length === 0 ? t("No saved views yet") : t("Choose a saved view")}</option>{views.map((view) => <option key={view.id} value={view.id}>{view.label} · v{view.version}</option>)}</select></label>
+          <label className="grid min-w-0 flex-1 gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("View label")}<input className={fieldClass} maxLength={80} onChange={(event) => setLabel(event.target.value)} placeholder={t("e.g. Critical incidents I own")} value={label} /></label>
+          <div className="flex flex-wrap gap-2"><WorkspaceButton disabled={busy || label.trim().length === 0} onClick={() => void saveNew()}><Save className="h-4 w-4" />{t("Save new")}</WorkspaceButton>{selected ? <WorkspaceButton disabled={busy || label.trim().length === 0} onClick={() => void updateSelected()}>{t("Update v")}{selected.version}</WorkspaceButton> : null}<WorkspaceButton disabled={loading || busy} onClick={() => void load()}><RefreshCcw className="h-4 w-4" />{t("Reload")}</WorkspaceButton></div>
         </div>
-        <label className="grid min-w-0 flex-1 gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("View label")}<input className={fieldClass} maxLength={80} onChange={(event) => setLabel(event.target.value)} placeholder={t("e.g. Critical incidents I own")} value={label} /></label>
-        <div className="flex flex-wrap gap-2"><WorkspaceButton disabled={busy || label.trim().length === 0} onClick={() => void saveNew()}><Save className="h-4 w-4" />{t("Save new")}</WorkspaceButton>{selected ? <WorkspaceButton disabled={busy || label.trim().length === 0} onClick={() => void updateSelected()}>{t("Update v")}{selected.version}</WorkspaceButton> : null}<WorkspaceButton disabled={loading || busy} onClick={() => void load()}><RefreshCcw className="h-4 w-4" />{t("Reload")}</WorkspaceButton></div>
+        <div aria-atomic="true" aria-live="polite" className="mt-2 min-h-5 text-xs">{error ? <p className="text-[var(--ad-red-text)]" role="alert">{error}</p> : notice ? <p className="text-[var(--ad-green-text)]" role="status">{notice}</p> : null}</div>
       </div>
-      <div aria-atomic="true" aria-live="polite" className="mt-2 min-h-5 text-xs">{error ? <p className="text-[var(--ad-red-text)]" role="alert">{error}</p> : notice ? <p className="text-[var(--ad-green-text)]" role="status">{notice}</p> : null}</div>
-    </section>
+    </details>
   );
 }
 

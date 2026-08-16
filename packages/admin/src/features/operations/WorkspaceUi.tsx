@@ -76,7 +76,7 @@ export function EmptyWorkspace({ filtered, onClear }: { filtered: boolean; onCle
       <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-[var(--ad-text-muted)]">
         {filtered
           ? t("The authority searched the full queue. Clear filters to return to the default operational view.")
-          : t("New work appears here when authoritative signals create an incident or case.")}
+          : t("New work appears here as incidents and cases are raised.")}
       </p>
       {filtered ? <div className="mt-5"><WorkspaceButton onClick={onClear}>{t("Clear filters")}</WorkspaceButton></div> : null}
     </section>

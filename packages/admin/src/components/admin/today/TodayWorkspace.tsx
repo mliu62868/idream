@@ -38,7 +38,7 @@ export function TodayRecoveryNotice({
           </p>
           {!hasData ? (
             <p className="mt-1 text-xs">
-              {t("Reconnect and retry to restore the authoritative queue.")}
+              {t("Reconnect and retry to restore the queue.")}
             </p>
           ) : null}
         </div>

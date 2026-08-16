@@ -303,7 +303,7 @@ export function ChatOpsWorkspace({
     <section className="space-y-5">
       <PageHeader
         purpose="Inspect Chat Service health, session metadata, quota usage, and moderation events without exposing message plaintext."
-        title={t("Chat Ops")}
+        title={t("Chat Operations")}
       />
       <div
         className="flex flex-wrap justify-between gap-3 text-xs text-[var(--ad-text-muted)]"
@@ -1171,7 +1171,7 @@ function Freshness({
     return (
       <span>
         {authority}
-        {t(": refreshing · showing snapshot from")} {time}
+        {t(": refreshing · as of")} {time}
       </span>
     );
   if (state.error && state.data)
@@ -1192,13 +1192,13 @@ function Freshness({
     return (
       <span>
         {authority}
-        {t(": current client snapshot ·")} {time}
+        {t(": as of")} {time}
       </span>
     );
   return (
     <span>
       {authority}
-      {t(": refreshing · no snapshot yet")}
+      {t(": loading…")}
     </span>
   );
 }

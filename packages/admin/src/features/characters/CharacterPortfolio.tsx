@@ -387,7 +387,7 @@ export function CharacterPortfolio({
             ? t("Fresh as of {time}", {
                 time: new Date(asOf).toLocaleString(adminDateLocale(locale)),
               })
-            : t("No successful query yet")}
+            : t("Not loaded yet")}
         </p>
         <WorkspaceButton
           disabled={loading || !pageInfo.hasNextPage || !pageInfo.endCursor}

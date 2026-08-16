@@ -16,13 +16,18 @@ export function adminRouteMetadata(label: string): Metadata {
   };
 }
 
-export function adminRouteLabel(section: readonly string[]) {
-  return section.length === 0
-    ? "Today"
-    : section
-        .map((part) => part.replaceAll("-", " "))
-        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-        .join(" · ");
+// SPEC: 浏览器标签页用的名字，就是这条路径在侧栏里的名字。
+// INTENT: 这里过去把 URL 段首字母大写拼起来，于是标签页写着「Ops · Providers」「System · Access」，
+//         侧栏却写着「Providers」「Team Access」。运营同时开七八个后台标签页时，标签页上的名字
+//         才是他找回某一页的唯一线索——它必须和点进去时看到的名字是同一个。
+// INVARIANT: 名字只来自 nav-config；认不出的路径由 renderAdminRoute 走 notFound()。
+// INVARIANT: query 必须一起传 —— 七个目的地靠 `?view=` 区分（ops/recipes?view=workflows
+//            是「Workflow Diagnostics」，不是「Prompt Recipes」），只看路径会认成同一页。
+export function adminRouteLabel(
+  section: readonly string[],
+  query: Readonly<Record<string, string | string[] | undefined>> = {},
+) {
+  return parseAdminPath(withSearchParams(section.join("/"), query))?.item.label ?? "Admin";
 }
 
 export async function renderAdminRoute(

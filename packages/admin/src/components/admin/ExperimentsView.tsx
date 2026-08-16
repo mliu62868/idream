@@ -38,7 +38,7 @@ export function ExperimentsView() {
         setMonitoringNote(null);
       } catch {
         setFlags([]);
-        setMonitoringNote("Flag monitoring is unavailable for this permission set; managed experiments remain authoritative.");
+        setMonitoringNote("Flag monitoring is unavailable for this permission set; managed experiments are still shown.");
       }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Load failed");

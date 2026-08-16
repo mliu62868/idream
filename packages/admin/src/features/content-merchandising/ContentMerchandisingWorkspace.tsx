@@ -366,7 +366,7 @@ export function ContentMerchandisingWorkspace({
       {featured.loading && featured.data === null ? (
         <p className="text-sm text-[var(--ad-text-muted)]" role="status">
 
-          {t("Loading featured authority…")}
+          {t("Loading featured content…")}
         </p>
       ) : null}
       {featured.data ? <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
@@ -549,7 +549,7 @@ export function ContentMerchandisingWorkspace({
       {characters.loading && characters.data === null ? (
         <p className="text-sm text-[var(--ad-text-muted)]" role="status">
 
-          {t("Loading character authority…")}
+          {t("Loading characters…")}
         </p>
       ) : null}
       {characters.data ? <DataTable

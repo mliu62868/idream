@@ -126,7 +126,7 @@ export function TagsView() {
           </button>
         }
         purpose={t("Manage the tag vocabulary for characters.")}
-        title={t("Tags")}
+        title={t("Taxonomy")}
       />
       {authority.error ? <AuthorityRequestError message={authority.error} onRetry={() => void load()} snapshotAt={authority.data ? authority.refreshedAt : null} /> : null}
 

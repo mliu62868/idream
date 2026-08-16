@@ -125,12 +125,11 @@ export function AuditWorkspace() {
       </div>
       <p className="text-xs text-[var(--ad-text-muted)]" role="status">
 
-        {t("Legacy compatibility authority · freshness watermark unavailable")}
-        {refreshedAt ? <>  {t("· refreshed")} <time dateTime={refreshedAt}>{new Date(refreshedAt).toLocaleTimeString()}</time></> : null}
+        {refreshedAt ? <>{t("Refreshed")} <time dateTime={refreshedAt}>{new Date(refreshedAt).toLocaleTimeString()}</time></> : null}
       </p>
 
       <form className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-2 xl:grid-cols-[minmax(220px,1fr)_repeat(3,minmax(150px,0.7fr))_auto]" onSubmit={apply}>
-        <AuditField label="Search audit authority" onChange={(search) => setDraft((current) => ({ ...current, search }))} placeholder={t("action, target, reason, or request")} value={draft.search} />
+        <AuditField label="Search audit log" onChange={(search) => setDraft((current) => ({ ...current, search }))} placeholder={t("action, target, reason, or request")} value={draft.search} />
         <AuditField label="Exact action" onChange={(action) => setDraft((current) => ({ ...current, action }))} placeholder={t("character.release.publish")} value={draft.action} />
         <AuditField label="Actor ID" onChange={(actorId) => setDraft((current) => ({ ...current, actorId }))} placeholder={t("operator ID")} value={draft.actorId} />
         <AuditField label="Target type" onChange={(targetType) => setDraft((current) => ({ ...current, targetType }))} placeholder={t("character_release")} value={draft.targetType} />
@@ -184,7 +183,7 @@ function AuditRecords({ rows }: { rows: AuditRecord[] }) {
 
 function AuditLoading() {
   const { t } = useAdminI18n();
-  return <div aria-label={t("Loading audit authority")} className="overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]" role="status"><span className="sr-only">{t("Loading audit authority")}</span>{[0, 1, 2, 3].map((row) => <div className="grid min-h-14 animate-pulse grid-cols-4 gap-4 border-b border-[var(--ad-border)] px-4 py-3 last:border-0" key={row}>{[0, 1, 2, 3].map((cell) => <span className="h-4 rounded bg-black/5" key={cell} />)}</div>)}</div>;
+  return <div aria-label={t("Loading audit log…")} className="overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]" role="status"><span className="sr-only">{t("Loading audit log…")}</span>{[0, 1, 2, 3].map((row) => <div className="grid min-h-14 animate-pulse grid-cols-4 gap-4 border-b border-[var(--ad-border)] px-4 py-3 last:border-0" key={row}>{[0, 1, 2, 3].map((cell) => <span className="h-4 rounded bg-black/5" key={cell} />)}</div>)}</div>;
 }
 
 function currentQuery() {

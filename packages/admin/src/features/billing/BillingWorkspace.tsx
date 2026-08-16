@@ -470,12 +470,11 @@ export function BillingWorkspace({
       <div id="billing-workspace-title">
         <PageHeader
           purpose={t("Reconcile subscription and Dreamcoin authority, then make tightly audited ledger corrections.")}
-          title={t("Billing & Ledger")}
+          title={t("Billing Operations")}
         />
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--ad-text-muted)]" role="status">
         <div className="flex flex-wrap gap-x-3 gap-y-1">
-          <span>{t("Customer business records · dataClass=customer only · source freshness watermark unavailable")}</span>
           <AuthorityFreshness label="Ledger" state={ledgerState} />
           <AuthorityFreshness label="Subscriptions" state={subscriptionState} />
           <AuthorityFreshness label="Reconciliation" state={reconciliationState} />
@@ -488,7 +487,7 @@ export function BillingWorkspace({
       </div>
 
       <form className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-2 xl:grid-cols-[minmax(260px,1fr)_200px_220px_auto]" onSubmit={apply}>
-        <Field label={t("Search billing authority")} onChange={(search) => setQueryDraft((current) => ({ ...current, search }))} placeholder={t("user, email, subscription, or source")} value={queryDraft.search} />
+        <Field label={t("Search billing records")} onChange={(search) => setQueryDraft((current) => ({ ...current, search }))} placeholder={t("user, email, subscription, or source")} value={queryDraft.search} />
         <Select label={t("Ledger reason")} onChange={(ledgerReason) => setQueryDraft((current) => ({ ...current, ledgerReason }))} options={["", "signup_bonus", "subscription_grant", "subscription_refund", "subscription_refund_restore", "generation_spend", "refund", "redeem", "referral", "admin_adjust"]} value={queryDraft.ledgerReason} />
         <Select label={t("Subscription status")} onChange={(subscriptionStatus) => setQueryDraft((current) => ({ ...current, subscriptionStatus }))} options={["", "checkout_created", "checkout_completed", "active", "past_due", "canceled", "expired", "refund_pending", "refunded"]} value={queryDraft.subscriptionStatus} />
         <div className="flex items-end gap-2">
@@ -592,20 +591,20 @@ export function BillingWorkspace({
 
 function BillingLoading() {
   const { t } = useAdminI18n();
-  return <div aria-label={t("Loading billing authority")} className="space-y-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" role="status"><span className="inline-flex items-center gap-2 text-sm text-[var(--ad-text-muted)]"><Loader2 className="h-4 w-4 animate-spin" />{t("Loading billing authority")}</span>{[0, 1, 2].map((row) => <span aria-hidden="true" className="block h-12 animate-pulse rounded bg-black/5" key={row} />)}</div>;
+  return <div aria-label={t("Loading billing records…")} className="space-y-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" role="status"><span className="inline-flex items-center gap-2 text-sm text-[var(--ad-text-muted)]"><Loader2 className="h-4 w-4 animate-spin" />{t("Loading billing records…")}</span>{[0, 1, 2].map((row) => <span aria-hidden="true" className="block h-12 animate-pulse rounded bg-black/5" key={row} />)}</div>;
 }
 
 function AuthorityFreshness<T>({ label, state }: { label: string; state: AuthorityState<T> }) {
   const { t } = useAdminI18n();
   if (state.loading && state.data) {
-    return <span>{label}{t(": refreshing · showing snapshot from")} <time dateTime={state.refreshedAt ?? undefined}>{freshnessTime(state.refreshedAt)}</time></span>;
+    return <span>{label}{t(": refreshing · as of")} <time dateTime={state.refreshedAt ?? undefined}>{freshnessTime(state.refreshedAt)}</time></span>;
   }
   if (state.error && state.data) {
     return <span>{label}{t(": stale · last good")} <time dateTime={state.refreshedAt ?? undefined}>{freshnessTime(state.refreshedAt)}</time></span>;
   }
   if (state.error) return <span>{label}{t(": unavailable")}</span>;
-  if (state.data) return <span>{label}{t(": current client snapshot ·")} <time dateTime={state.refreshedAt ?? undefined}>{freshnessTime(state.refreshedAt)}</time></span>;
-  return <span>{label}{t(": refreshing · no snapshot yet")}</span>;
+  if (state.data) return <span>{label}{t(": as of")} <time dateTime={state.refreshedAt ?? undefined}>{freshnessTime(state.refreshedAt)}</time></span>;
+  return <span>{label}{t(": loading…")}</span>;
 }
 
 function AuthorityError<T>({

@@ -246,7 +246,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
             ? "No redeem codes match these filters"
             : "No redeem codes exist yet"
         }
-        loadingLabel="Loading redeem-code authority"
+        loadingLabel="Loading redeem codes…"
         rows={codeRows(codes.rows ?? [], canWrite, confirmDisable)}
         state={codes}
         title={t("Redeem codes")}
@@ -270,7 +270,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
             ? "No referrals match these filters"
             : "No referrals exist yet"
         }
-        loadingLabel="Loading referral authority"
+        loadingLabel="Loading referrals…"
         rows={referralRows(referrals.rows ?? [])}
         state={referrals}
         title={t("Referrals")}
@@ -548,7 +548,7 @@ function Freshness({ label, state }: { label: string; state: AuthorityState }) {
   if (state.loading && state.rows)
     return (
       <span>
-        {label}{t(": refreshing · showing snapshot from")} {time}
+        {label}{t(": refreshing · as of")} {time}
       </span>
     );
   if (state.error && state.rows)
@@ -561,10 +561,10 @@ function Freshness({ label, state }: { label: string; state: AuthorityState }) {
   if (state.rows)
     return (
       <span>
-        {label}{t(": current client snapshot ·")} {time}
+        {label}{t(": as of")} {time}
       </span>
     );
-  return <span>{label}{t(": refreshing · no snapshot yet")}</span>;
+  return <span>{label}{t(": loading…")}</span>;
 }
 
 function Pager({

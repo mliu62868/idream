@@ -17,9 +17,9 @@ export const adminZhSystem: Record<string, string> = {
   "Filter users": "筛选用户",
   "Grant, revoke, or clear one effective permission without changing the user role.":
     "在不改变用户角色的情况下，授予、撤销或清除一项有效权限。",
-  "Loading access authority": "正在加载访问权限权威",
-  "Loading approval authority": "正在加载审批权威",
-  "Loading audit authority": "正在加载审计权威",
+  "Loading team access…": "正在加载团队权限…",
+  "Loading approvals…": "正在加载审批…",
+  "Loading audit log…": "正在加载审计日志…",
   "Next approval page": "下一页审批",
   "Next user page": "下一页用户",
   "Pending approvals": "待审批",
@@ -38,8 +38,8 @@ export const adminZhSystem: Record<string, string> = {
   "Retry approvals": "重试审批加载",
   "Review high-risk requests from the complete approval authority; requester separation and required permissions remain server-enforced.":
     "基于完整审批权威数据审核高风险请求；申请人隔离和所需权限继续由服务端强制执行。",
-  "Search audit authority": "搜索审计权威数据",
-  "Search the complete user authority, apply narrowly scoped permission overrides, and suspend or restore access through audited commands.":
+  "Search audit log": "搜索审计日志",
+  "Search users, apply narrowly scoped permission overrides, and suspend or restore access through audited commands.":
     "搜索完整用户权威数据，应用精确范围的权限覆盖，并通过审计命令暂停或恢复访问。",
   "Search users": "搜索用户",
   "Status change unavailable · user.status.write is not granted":

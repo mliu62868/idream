@@ -8,15 +8,13 @@ describe("Billing workspace permission surface", () => {
       <BillingWorkspace canAdjust={false} canReconcile={false} canRefund={false} />,
     );
 
-    expect(html).toContain("Billing &amp; Ledger");
-    expect(html).toContain("Customer business records");
-    expect(html).toContain("dataClass=customer only");
-    expect(html).toContain("Search billing authority");
+    expect(html).toContain("Billing Operations");
+    expect(html).toContain("Search billing records");
     expect(html).toContain("Ledger read only");
     expect(html).toContain("Reconciliation read only");
     expect(html).toContain("Subscription refund read only");
     expect(html).not.toContain("Adjust Ledger");
-    expect(html).toContain('aria-label="Loading billing authority"');
+    expect(html).toContain('aria-label="Loading billing records…"');
   });
 
   it("preserves the accessible compatibility controls when ledger adjustment is granted", () => {

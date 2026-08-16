@@ -215,7 +215,7 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
         <div className="rounded-lg border p-4" role="status">
           <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
 
-          {t("Loading approval authority")}
+          {t("Loading approvals…")}
         </div>
       ) : data && !rows.length ? (
         <EmptyState
@@ -389,11 +389,11 @@ function freshness(
   const time = refreshedAt
     ? new Date(refreshedAt).toLocaleTimeString()
     : "unknown";
-  if (loading && data) return `refreshing · showing snapshot from ${time}`;
+  if (loading && data) return `refreshing · as of ${time}`;
   if (error && data) return `stale · last good ${time}`;
   if (error) return "unavailable";
-  if (data) return `current client snapshot · ${time}`;
-  return "refreshing · no snapshot yet";
+  if (data) return `as of ${time}`;
+  return "loading…";
 }
 
 function text(value: unknown) {

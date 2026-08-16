@@ -13,8 +13,7 @@ export const adminZhDashboard: Record<string, string> = {
   "Apply window": "应用时间窗口",
   "Assigned support cases and their linked operational work are in scope.":
     "当前范围包含已分配的客服工单及其关联运营工作。",
-  "Authoritative Today projection": "今日工作权威投影",
-  "Authoritative source objects you explicitly watch.": "你明确关注的权威来源对象。",
+  "Items you explicitly watch.": "你关注的事项。",
   "Canonical Metrics v2": "标准指标 v2",
   "Character releases and verification blockers are ranked first when present.":
     "存在角色发布和验证阻塞项时，将优先排序。",
@@ -28,8 +27,8 @@ export const adminZhDashboard: Record<string, string> = {
     "对比经认证的产品指标和独立来源的旧版运营诊断数据。",
   "Compare provider success, cost, and completion latency over a server-defined time window.":
     "在服务端定义的时间窗口内比较提供方成功率、成本和完成延迟。",
-  "Complete authorized work, filtered and ranked by the same authority as Summary.":
-    "按照与摘要相同的权威规则筛选并排序全部已授权工作。",
+  "Every item you are authorized to work on, filtered and ranked as in Summary.":
+    "你有权处理的全部事项，筛选与排序规则同「摘要」。",
   "Creative execution and placement blockers are ranked first when present.":
     "存在创意执行和铺位阻塞项时，将优先排序。",
   "Domain": "领域",
@@ -38,7 +37,6 @@ export const adminZhDashboard: Record<string, string> = {
   "Investigate monitor evidence and keep or rollback": "检查监控证据，并决定保留或回滚",
   "Inspect owner-scoped financial abuse signals while keeping response actions in their source domains.":
     "检查负责人范围内的财务滥用信号，同时将处置操作保留在各自来源领域。",
-  "Loading All Work…": "正在加载全部工作…",
   "Manual adjust anomalies": "手动调整异常",
   "Moderation cases and verification failures are ranked first.": "审核工单和验证失败项将优先排序。",
   "Multi-account device clusters": "多账号设备聚类",
@@ -49,6 +47,7 @@ export const adminZhDashboard: Record<string, string> = {
   "No matching work right now.": "当前没有匹配的工作。",
   "No {title}": "暂无{title}",
   "Only work authorized by your effective permissions is shown.": "只显示当前有效权限已授权的工作。",
+  "Opened": "开始于",
   "Operational context": "运营上下文",
   "Open the mentioned context and respond or hand off": "打开被提及的上下文，并回复或转交",
   "Overdue or due-today work owned by you, plus commands awaiting completion or verification.":
@@ -57,8 +56,7 @@ export const adminZhDashboard: Record<string, string> = {
   "Preference update failed": "偏好更新失败",
   "Provider health & cost": "供应商健康与成本",
   "Queued generation jobs": "排队中的生成任务",
-  "Ranking policy: {version}": "排序策略：{version}",
-  "Reconnect and retry to restore the authoritative queue.": "网络恢复后请重试，以重新加载权威队列。",
+  "Reconnect and retry to restore the queue.": "网络恢复后请重试，以重新加载队列。",
   "Recently resolved": "最近解决",
   "Reconcile the uncertain downstream effect": "核对不确定的下游影响",
   "Reopen and verify the resolution": "重新打开并验证解决结果",
@@ -69,14 +67,14 @@ export const adminZhDashboard: Record<string, string> = {
   "Review {count} more": "查看另外 {count} 个批次",
   "Referral farming (≥3 invites)": "邀请套利（≥3 次邀请）",
   "Removed from Watching": "已取消关注",
-  "Showing {shown} of {total} authoritative items": "显示 {shown}/{total} 条权威项目",
+  "Showing {shown} of {total}": "显示 {shown}/{total}",
   "Signups": "注册",
   "Snooze 1h": "稍后 1 小时",
   "Snoozed for one hour": "已推迟一小时",
-  "The ten highest-ranked authorized items. The total is computed from complete server-side counts.":
-    "排名最高的十条已授权事项；总数由服务端完整统计。",
+  "The ten highest-ranked items you are authorized to work on.": "你有权处理的事项中排序最靠前的十条。",
   "This authority is not available to the current operator.": "当前操作员无权访问此权威数据。",
   "Today data status": "今日数据状态",
+  "Today's queue is up to date": "今日队列已是最新",
   "Today refresh failed. Showing the last loaded snapshot.": "今日工作刷新失败，当前显示上次加载的快照。",
   "Today view": "今日视图",
   "Today's work could not be loaded.": "今日工作加载失败。",

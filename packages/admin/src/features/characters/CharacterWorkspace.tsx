@@ -587,7 +587,7 @@ function CharacterDetail({
                   onClick={() => void refreshAuthoritativeWorkspace()}
                   type="button"
                 >
-                  {t("Retry authoritative workspace")}
+                  {t("Retry")}
                 </button>
               ) : null}
               {mutationNotice.kind === "command_reconfirmation_required" &&
@@ -650,7 +650,7 @@ function CharacterDetail({
           >
             {error ??
               (loading
-                ? t("Loading the authoritative Character workspace…")
+                ? t("Loading characters…")
                 : t("Character not found"))}
             <button
               className="ml-2 font-semibold underline"
@@ -844,7 +844,7 @@ function CharacterDetail({
                 onClick={() => void refreshAuthoritativeWorkspace()}
                 type="button"
               >
-                {t("Refresh authoritative workspace")}
+                {t("Refresh")}
               </button>
             ) : null}
             {mutationNotice.kind === "command_reconfirmation_required" &&

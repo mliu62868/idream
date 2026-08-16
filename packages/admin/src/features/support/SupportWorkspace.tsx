@@ -265,7 +265,7 @@ export function SupportWorkspace({
     <section className="space-y-5">
       <PageHeader
         purpose="Triage the complete support request authority with server filters, SLA state, saved views, and audited resolution commands."
-        title={t("Support Requests")}
+        title={t("Support Cases")}
       />
       <div
         className="flex flex-wrap justify-between gap-2 text-xs text-[var(--ad-text-muted)]"
@@ -447,7 +447,7 @@ export function SupportWorkspace({
         <div className="rounded-lg border p-4" role="status">
           <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
 
-          {t("Loading support authority")}
+          {t("Loading support requests…")}
         </div>
       ) : data && !rows.length ? (
         <EmptyState
@@ -849,11 +849,11 @@ function freshness(
   const time = refreshedAt
     ? new Date(refreshedAt).toLocaleTimeString()
     : "unknown";
-  if (loading && data) return `refreshing · showing snapshot from ${time}`;
+  if (loading && data) return `refreshing · as of ${time}`;
   if (error && data) return `stale · last good ${time}`;
   if (error) return "unavailable";
   if (data) return `current snapshot · ${time}`;
-  return "refreshing · no snapshot yet";
+  return "loading…";
 }
 
 function text(value: unknown) {

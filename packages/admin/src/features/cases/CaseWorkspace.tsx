@@ -212,7 +212,7 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
   return (
     <section aria-labelledby="case-workspace-title" className="space-y-5">
       <header className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-        <div><p className="text-xs font-semibold tracking-[0.16em] text-[var(--ad-text-muted)]">{t("CUSTOMER OPERATIONS")}</p><h2 className="mt-1 text-2xl font-semibold tracking-[-0.03em]" id="case-workspace-title">{t("Cases")}</h2><p className="mt-1 max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">{t("Evidence, decision, downstream verification, and closure stay attached to the customer problem.")}</p></div>
+        <div><h2 className="sr-only" id="case-workspace-title">{t("Cases")}</h2><p className="max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">{t("Evidence, decision, downstream verification, and closure stay attached to the customer problem.")}</p></div>
         {list ? <p className="text-xs text-[var(--ad-text-muted)]" role="status">{t(list.freshness)}  {t("· data as of")} <time dateTime={list.asOf}>{new Date(list.asOf).toLocaleTimeString(locale === "zh" ? "zh-CN" : "en-US")}</time></p> : null}
       </header>
 

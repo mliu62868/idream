@@ -15,11 +15,11 @@ import {
 describe("Chat Ops workspace permissions", () => {
   it("renders five independent authority states and explicit no-permission status", () => {
     const html = renderToStaticMarkup(<ChatOpsWorkspace canRead={false} />);
-    expect(html).toContain("Overview: refreshing");
-    expect(html).toContain("Provider health: refreshing");
-    expect(html).toContain("Sessions: refreshing");
-    expect(html).toContain("Usage: refreshing");
-    expect(html).toContain("Events: refreshing");
+    expect(html).toContain("Overview: loading");
+    expect(html).toContain("Provider health: loading");
+    expect(html).toContain("Sessions: loading");
+    expect(html).toContain("Usage: loading");
+    expect(html).toContain("Events: loading");
     expect(html).toContain("chat.ops.read is not granted");
   });
 

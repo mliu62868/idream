@@ -23,7 +23,7 @@ describe("GenerationMetricsView authority states", () => {
   it("does not render zero-valued business metrics before authority data loads", () => {
     const html = renderToStaticMarkup(<GenerationMetricsView />);
 
-    expect(html).toContain("Loading authoritative generation metrics");
+    expect(html).toContain("Loading generation metrics");
     expect(html).not.toContain("No generation records in window.");
     expect(html).not.toContain(">Remix<");
   });

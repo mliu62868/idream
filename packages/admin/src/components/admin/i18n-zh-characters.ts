@@ -506,7 +506,7 @@ export const adminZhCharacters: Record<string, string> = {
   "Loading characters": "正在加载角色",
   "Loading release-attributed portfolio": "正在加载发布版本归属的图片资产",
   "No draft changes detected.": "未检测到草稿变更。",
-  "Loading the authoritative Character workspace…": "正在加载权威角色工作区…",
+  "Loading characters…": "正在加载角色…",
   "Lock visual identity": "锁定视觉身份",
   "Long video jobs remain active while this page polls their exact Run.":
     "长耗时视频任务会持续运行，本页面将轮询对应的生产批次。",

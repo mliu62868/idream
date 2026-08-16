@@ -7,11 +7,10 @@ describe("Generation Config workspace permission surface", () => {
   it("renders server-query controls and explicit read-only capabilities", () => {
     const html = renderToStaticMarkup(<GenerationConfigWorkspace permissions={{ manageFlags: false, manageProfiles: false }} />);
 
-    expect(html).toContain("Test and publish generation profiles");
+    expect(html).toContain("Profiles &amp; Rollout");
     expect(html).toContain('role="searchbox"');
-    expect(html).toContain("Legacy compatibility authority");
-    expect(html).toContain("Profiles: refreshing");
-    expect(html).toContain('aria-label="Loading generation config authority"');
+    expect(html).toContain("Profiles: loading");
+    expect(html).toContain('aria-label="Loading profiles…"');
   });
 
   it("keeps independent profile and feature-flag permissions in the public contract", () => {

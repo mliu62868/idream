@@ -7,10 +7,9 @@ describe("Audit operator workspace", () => {
     const html = renderToStaticMarkup(<AuditWorkspace />);
 
     expect(html).toContain("Audit Log");
-    expect(html).toContain("Search audit authority");
+    expect(html).toContain("Search audit log");
     expect(html).toContain("Exact action");
     expect(html).toContain('role="status"');
-    expect(html).toContain('aria-label="Loading audit authority"');
-    expect(html).toContain("freshness watermark unavailable");
+    expect(html).toContain('aria-label="Loading audit log…"');
   });
 });

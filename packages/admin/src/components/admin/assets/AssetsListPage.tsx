@@ -211,7 +211,7 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
 
   return (
     <div aria-busy={loading}>
-      <PageHeader purpose={t("Browse and curate generated image assets.")} title={t("Image Library")} />
+      <PageHeader purpose={t("Browse and curate generated image assets.")} title={t("Library")} />
       {targetId ? (
         // SPEC: 收窄范围必须可见且可撤销。
         // INTENT: 从角色工作台"查看全部"跳进来时列表只剩该角色的图，不说明就像图库丢了数据。

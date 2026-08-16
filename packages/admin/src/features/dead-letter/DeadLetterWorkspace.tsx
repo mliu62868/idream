@@ -134,10 +134,10 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
   return (
     <section aria-labelledby="dead-letter-workspace-title" className="space-y-5">
       <div id="dead-letter-workspace-title">
-        <PageHeader purpose="Triage failed and blocked generation requests, then requeue or discard them through audited authority commands." title={t("Dead-letter Queue")} />
+        <PageHeader purpose="Triage failed and blocked generation requests, then requeue or discard them through audited authority commands." title={t("Dead-letter")} />
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--ad-text-muted)]" role="status">
-        <span>{t("Legacy compatibility authority · source freshness watermark unavailable ·")} {freshnessLabel(data, loading, error, refreshedAt)}</span>
+        <span>{freshnessLabel(data, loading, error, refreshedAt)}</span>
         <span className="flex gap-3 font-semibold">
           {!permissions.requeue ? <span>{t("Requeue unavailable · generation.job.requeue is not granted")}</span> : null}
           {!permissions.discard ? <span>{t("Discard unavailable · ops.deadletter.write is not granted")}</span> : null}
@@ -220,11 +220,11 @@ function currentQuery() {
 
 function freshnessLabel(data: ListResponse | null, loading: boolean, error: string | null, refreshedAt: string | null) {
   const time = refreshedAt ? new Date(refreshedAt).toLocaleTimeString() : "unknown";
-  if (loading && data) return `refreshing · showing snapshot from ${time}`;
+  if (loading && data) return `refreshing · as of ${time}`;
   if (error && data) return `stale · last good ${time}`;
   if (error) return "unavailable";
-  if (data) return `current client snapshot · ${time}`;
-  return "refreshing · no snapshot yet";
+  if (data) return `as of ${time}`;
+  return "loading…";
 }
 
 function AuthorityError({ hasSnapshot, message, onRetry }: { hasSnapshot: boolean; message: string; onRetry: () => void }) {
@@ -234,7 +234,7 @@ function AuthorityError({ hasSnapshot, message, onRetry }: { hasSnapshot: boolea
 
 function Loading() {
   const { t } = useAdminI18n();
-  return <div aria-label={t("Loading dead-letter authority")} className="space-y-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" role="status"><span className="inline-flex items-center gap-2 text-sm text-[var(--ad-text-muted)]"><Loader2 className="h-4 w-4 animate-spin" />{t("Loading dead-letter authority")}</span></div>;
+  return <div aria-label={t("Loading dead-letter queue…")} className="space-y-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" role="status"><span className="inline-flex items-center gap-2 text-sm text-[var(--ad-text-muted)]"><Loader2 className="h-4 w-4 animate-spin" />{t("Loading dead-letter queue…")}</span></div>;
 }
 
 function Field({ label, onChange, search = false, value }: { label: string; onChange: (value: string) => void; search?: boolean; value: string }) {

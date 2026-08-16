@@ -154,17 +154,15 @@ export function AccessWorkspace({
   return (
     <section className="space-y-5">
       <PageHeader
-        purpose="Search the complete user authority, apply narrowly scoped permission overrides, and suspend or restore access through audited commands."
+        purpose="Search users, apply narrowly scoped permission overrides, and suspend or restore access through audited commands."
         title={t("Team Access")}
       />
       <div
         className="flex flex-wrap justify-between gap-2 text-xs text-[var(--ad-text-muted)]"
         role="status"
       >
-        <span>
-
-          {t("Legacy compatibility authority · source freshness watermark unavailable ·")} {freshness(data, loading, error, refreshedAt)}
-        </span>
+        {/* 首次加载时下方的骨架屏已经在说"正在加载"，这里再说一遍就是两个加载态。 */}
+        <span>{data || error ? freshness(data, loading, error, refreshedAt) : ""}</span>
         <span className="flex gap-3 font-semibold">
           {!permissions.managePermissions ? (
             <span>
@@ -339,13 +337,13 @@ export function AccessWorkspace({
       ) : null}
       {!data && loading ? (
         <div
-          aria-label={t("Loading access authority")}
+          aria-label={t("Loading team access…")}
           className="rounded-lg border border-[var(--ad-border)] p-4"
           role="status"
         >
           <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
 
-          {t("Loading access authority")}
+          {t("Loading team access…")}
         </div>
       ) : data ? (
         users.length === 0 ? (
@@ -484,11 +482,11 @@ function freshness(
   const time = refreshedAt
     ? new Date(refreshedAt).toLocaleTimeString()
     : "unknown";
-  if (loading && data) return `refreshing · showing snapshot from ${time}`;
+  if (loading && data) return `refreshing · as of ${time}`;
   if (error && data) return `stale · last good ${time}`;
   if (error) return "unavailable";
-  if (data) return `current client snapshot · ${time}`;
-  return "refreshing · no snapshot yet";
+  if (data) return `as of ${time}`;
+  return "loading…";
 }
 function Field({
   label,

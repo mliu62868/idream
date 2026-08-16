@@ -216,9 +216,8 @@ export function IncidentWorkspace({
     <section aria-labelledby="incident-workspace-title" className="space-y-5">
       <header className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <p className="text-xs font-semibold tracking-[0.16em] text-[var(--ad-text-muted)]">{t("PLATFORM OPERATIONS")}</p>
-          <h2 className="mt-1 text-2xl font-semibold tracking-[-0.03em]" id="incident-workspace-title">{t("Incidents")}</h2>
-          <p className="mt-1 max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">
+          <h2 className="sr-only" id="incident-workspace-title">{t("Incidents")}</h2>
+          <p className="max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">
 
             {t("Correlated failures, frozen mitigation scope, and recovery evidence in one operational root.")}
           </p>
@@ -229,12 +228,6 @@ export function IncidentWorkspace({
           </p>
         ) : null}
       </header>
-
-      <IncidentCorrelationOutbox
-        canDiscardAttemptMissing={canDiscardAttemptMissingCorrelationOutbox}
-        canRead={canReadCorrelationOutbox}
-        canReplay={canReplayCorrelationOutbox}
-      />
 
       <SavedViewsControl
         currentState={incidentSavedState(query)}
@@ -298,6 +291,15 @@ export function IncidentWorkspace({
           )}
         </div>
       )}
+
+      {/* SPEC: 事故队列先，投递管道修复在后。
+          INTENT: 这块曾占着页面第一屏，把真正的事故列表挤到折叠线以下——它是"关联事件没投递
+          成功时才用"的恢复工具，不是每天要读的东西。 */}
+      <IncidentCorrelationOutbox
+        canDiscardAttemptMissing={canDiscardAttemptMissingCorrelationOutbox}
+        canRead={canReadCorrelationOutbox}
+        canReplay={canReplayCorrelationOutbox}
+      />
     </section>
   );
 }
