@@ -1,15 +1,22 @@
 "use client";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
 import type { ReactNode } from "react";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { EmptyState } from "./EmptyState";
 
 export type DataTableAlign = "left" | "center" | "right";
 
+// SPEC: 排序是一张表一个状态，不是每列各带一个回调。
+// INTENT: 旧签名是每列 onSort + sortDirection，全代码库 0 调用点 —— 14 个列表页一个都排不了序。
+//         页面持有排序键（多半直接是后端的 sort 参数），表头只负责点击与 aria-sort。
+export type DataTableSort = { key: string; direction: "asc" | "desc" };
+
 export type DataTableColumn = {
   label: string;
-  onSort?: () => void;
-  sortDirection?: "ascending" | "descending" | "none";
+  /** Set it to make the header clickable; the page maps the key onto its server-side sort. */
+  sortKey?: string;
   align?: DataTableAlign;
   /** CSS width hint, e.g. "12rem" — stops ID and date columns from stealing space from prose. */
   width?: string;
@@ -58,6 +65,8 @@ export function DataTable({
   error = null,
   onRetry,
   selection,
+  sort = null,
+  onSortChange,
 }: {
   headers: DataTableHeader[];
   rows: DataTableRow[];
@@ -76,6 +85,8 @@ export function DataTable({
   error?: string | null;
   onRetry?: () => void;
   selection?: DataTableSelection;
+  sort?: DataTableSort | null;
+  onSortChange?: (sort: DataTableSort) => void;
 }) {
   const { t } = useAdminI18n();
   const translatedCaption = t(caption);
@@ -94,7 +105,8 @@ export function DataTable({
     </div>
   ) : null;
   if (error && rows.length === 0) return errorBanner;
-  if (!loading && rows.length === 0 && empty) return <>{empty}</>;
+  // SPEC: 零行永远不渲染"只有表头的空表格" —— 调用方没给空态就给一个，别让运营对着一条表头发呆。
+  if (!loading && rows.length === 0) return <>{empty ?? <EmptyState title={t("No results")} />}</>;
 
   const selectableIds = rows.map((row) => row.id);
   const selectedOnPage = selection ? selectableIds.filter((id) => selection.selected.includes(id)) : [];
@@ -183,16 +195,28 @@ export function DataTable({
               ) : null}
               {columns.map((column, index) => {
                 const isSticky = stickyLastColumn && index === columns.length - 1;
+                const sorted = column.sortKey && sort?.key === column.sortKey ? sort.direction : null;
                 return (
                   <th
-                    aria-sort={column.sortDirection && column.sortDirection !== "none" ? column.sortDirection : undefined}
+                    aria-sort={sorted ? (sorted === "asc" ? "ascending" : "descending") : undefined}
                     className={`${padding} font-medium ${ALIGNMENT[column.align ?? "left"]} ${isSticky ? `z-[3] ${STICKY_CELL}` : ""}`}
                     key={column.label}
                     scope="col"
                     style={column.width ? { width: column.width } : undefined}
                   >
-                    {column.onSort ? (
-                      <button className="min-h-8 rounded px-1 text-left hover:text-[var(--ad-ink)] focus-visible:outline focus-visible:outline-2" onClick={column.onSort} type="button">{t(column.label)}</button>
+                    {column.sortKey && onSortChange ? (
+                      <button
+                        className="inline-flex min-h-8 items-center gap-1 rounded px-1 text-left uppercase hover:text-[var(--ad-ink)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
+                        // 再点一次翻转方向；换一列则从降序开始（运营找的几乎总是"最近的"）。
+                        onClick={() => onSortChange({
+                          key: column.sortKey as string,
+                          direction: sorted === "desc" ? "asc" : "desc",
+                        })}
+                        type="button"
+                      >
+                        {t(column.label)}
+                        {sorted === "asc" ? <ArrowUp className="h-3 w-3" /> : sorted === "desc" ? <ArrowDown className="h-3 w-3" /> : <ArrowUpDown className="h-3 w-3 opacity-40" />}
+                      </button>
                     ) : t(column.label)}
                   </th>
                 );
@@ -234,29 +258,24 @@ function renderCell(cell: ReactNode, column: DataTableColumn | undefined, row: D
   return <Link className="block font-medium text-[var(--ad-ink)]" href={row.href}>{clamped}</Link>;
 }
 
-// SPEC: 整行点击 / Enter / Space 进详情，走 App Router 客户端导航。
+// SPEC: 整行点击进详情，走 App Router 客户端导航。
 // INTENT: 原来是 window.location.assign —— 整页重载，SPA 状态丢光，外壳重渲染再闪一次。
 // INVARIANT: router 只在有 href 的行里取。没有链接的表格因此不需要 App Router 上下文，
 //            静态渲染（RSC / 单测的 renderToStaticMarkup）照样能渲染。
+// INVARIANT: 键盘与读屏走第一格里的真 <a>，不给 <tr> 加 tabIndex。<tr> 上没有任何 ARIA 能表达
+//            "整行可激活"；加 tabIndex 只会造出每行一个无名的 Tab 停靠点，读屏念到它时什么都不说。
+//            整行点击因此是纯鼠标便利，不是独立的操作入口。
 function LinkedRow({ href, className, children }: { href: string; className: string; children: ReactNode }) {
   const router = useRouter();
-
-  // 行内的链接、按钮、勾选框有自己的语义，不能被整行导航吞掉。
-  function navigate(target: EventTarget | null) {
-    if ((target as HTMLElement | null)?.closest("a,button,input,select,textarea,label")) return false;
-    router.push(href);
-    return true;
-  }
 
   return (
     <tr
       className={className}
-      onClick={(event) => { navigate(event.target); }}
-      onKeyDown={(event) => {
-        if (event.key !== "Enter" && event.key !== " ") return;
-        if (navigate(event.target)) event.preventDefault();
+      onClick={(event) => {
+        // 行内的链接、按钮、勾选框有自己的语义，不能被整行导航吞掉。
+        if ((event.target as HTMLElement | null)?.closest("a,button,input,select,textarea,label")) return;
+        router.push(href);
       }}
-      tabIndex={0}
     >
       {children}
     </tr>

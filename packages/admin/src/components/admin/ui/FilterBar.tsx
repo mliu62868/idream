@@ -25,8 +25,13 @@ export type FilterInput = {
 // INTENT: 芯片的清除语义（把哪个字段还原成什么、要不要重新查）只有页面知道，primitive 不猜。
 export type FilterChip = { key: string; label: string; value: string; onClear: () => void };
 
+// SPEC: 所有可聚焦控件都必须有可见焦点。
+// INTENT: 这些控件原来只写了 outline-none，没有任何补偿 —— 键盘用户完全看不到自己在哪个字段。
+//         原语层的这个缺陷已经扩散到 5 个列表页。
+const FOCUS_RING =
+  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]";
 const FIELD_CLASS =
-  "h-9 w-full rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none placeholder:text-[var(--ad-text-muted)] focus:border-[var(--ad-ink)]";
+  `h-9 w-full rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] placeholder:text-[var(--ad-text-muted)] focus:border-[var(--ad-ink)] ${FOCUS_RING}`;
 
 // SPEC: 列表页统一筛选条 —— 搜索框常驻；次级字段按需展开。
 // INTENT: jobs 的 8 字段面板常驻展开吃掉首屏 300px，运营要滚动才看得到第一行；
@@ -62,7 +67,7 @@ export function FilterBar({
   const [expanded, setExpanded] = useState(false);
 
   const searchBox = (
-    <div className="flex h-9 min-w-[220px] flex-1 items-center gap-2 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3">
+    <div className="flex h-9 min-w-[220px] flex-1 items-center gap-2 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 focus-within:border-[var(--ad-ink)] focus-within:ring-2 focus-within:ring-[var(--ad-ink)]/10">
       <Search className="h-4 w-4 shrink-0 text-[var(--ad-text-muted)]" />
       <input
         aria-label={searchPlaceholder}
@@ -77,7 +82,7 @@ export function FilterBar({
   const selectFields = selects.map((select) => (
     <select
       aria-label={select.name}
-      className={collapsible ? FIELD_CLASS : "h-9 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-2 text-sm text-[var(--ad-text)] outline-none"}
+      className={collapsible ? FIELD_CLASS : `h-9 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-2 text-sm text-[var(--ad-text)] ${FOCUS_RING}`}
       key={select.name}
       onChange={(event) => select.onChange(event.target.value)}
       value={select.value}
@@ -99,7 +104,7 @@ export function FilterBar({
         {searchBox}
         <button
           aria-expanded={expanded}
-          className="inline-flex h-9 items-center gap-1.5 rounded-md border border-[var(--ad-border)] px-3 text-sm font-semibold"
+          className={`inline-flex h-9 items-center gap-1.5 rounded-md border border-[var(--ad-border)] px-3 text-sm font-semibold ${FOCUS_RING}`}
           onClick={() => setExpanded((current) => !current)}
           type="button"
         >
@@ -107,7 +112,7 @@ export function FilterBar({
           {chips.length > 0 ? <span className="rounded-full bg-[var(--ad-ink)] px-1.5 text-[11px] tabular-nums text-white">{chips.length}</span> : null}
           {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
         </button>
-        <button className="inline-flex h-9 items-center rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white disabled:opacity-50" disabled={busy} type="submit">{t("Apply")}</button>
+        <button className={`inline-flex h-9 items-center rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white disabled:opacity-50 ${FOCUS_RING}`} disabled={busy} type="submit">{t("Apply")}</button>
         {busy ? <Loader2 aria-hidden className="h-4 w-4 animate-spin text-[var(--ad-text-muted)]" /> : null}
       </div>
 
@@ -119,7 +124,7 @@ export function FilterBar({
               <span className="font-medium text-[var(--ad-ink)]">{chip.value}</span>
               <button
                 aria-label={t("Clear filter {label}", { label: chip.label })}
-                className="grid h-5 w-5 place-items-center rounded-full text-[var(--ad-text-muted)] hover:bg-black/[0.06] hover:text-[var(--ad-ink)]"
+                className={`grid h-5 w-5 place-items-center rounded-full text-[var(--ad-text-muted)] hover:bg-black/[0.06] hover:text-[var(--ad-ink)] ${FOCUS_RING}`}
                 onClick={chip.onClear}
                 type="button"
               >
@@ -128,7 +133,7 @@ export function FilterBar({
             </span>
           ))}
           {onReset ? (
-            <button className="ml-1 min-h-7 rounded-md px-2 text-xs font-semibold text-[var(--ad-text-muted)] underline-offset-2 hover:text-[var(--ad-ink)] hover:underline" onClick={onReset} type="button">
+            <button className={`ml-1 min-h-7 rounded-md px-2 text-xs font-semibold text-[var(--ad-text-muted)] underline-offset-2 hover:text-[var(--ad-ink)] hover:underline ${FOCUS_RING}`} onClick={onReset} type="button">
               {t("Reset all")}
             </button>
           ) : null}

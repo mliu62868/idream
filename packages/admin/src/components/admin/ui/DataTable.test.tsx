@@ -45,6 +45,14 @@ describe("DataTable", () => {
     expect(html).not.toContain("No jobs");
   });
 
+  // SPEC: 零行永远不是"只有表头的空表格"。
+  it("falls back to an empty state when the caller forgot to pass one", () => {
+    const html = renderToStaticMarkup(<DataTable caption="Prices" headers={["ID", "Amount"]} rows={[]} />);
+
+    expect(html).toContain("No results");
+    expect(html).not.toContain("<table");
+  });
+
   it("shows the caller's empty state only once the authority has answered", () => {
     const html = renderToStaticMarkup(
       <DataTable caption="Generation Jobs" empty={<p>No jobs</p>} headers={["ID"]} rows={[]} />,
@@ -93,6 +101,33 @@ describe("DataTable", () => {
     expect(html).toContain('title="a very long operator reason"');
     expect(html).toContain("truncate");
     expect(html).toContain("text-right tabular-nums");
+  });
+
+  // SPEC: 排序是一张表一个状态。旧的每列 onSort/sortDirection 是 0 调用点的死 API。
+  it("marks only the sorted column and leaves the rest merely offerable", () => {
+    const html = renderToStaticMarkup(
+      <DataTable
+        caption="Ledger"
+        headers={[{ label: "Created", sortKey: "created" }, { label: "Amount", sortKey: "amount" }, "Actions"]}
+        onSortChange={() => {}}
+        rows={rows.map((row) => ({ ...row, cells: [...row.cells, "1"] }))}
+        sort={{ key: "created", direction: "desc" }}
+      />,
+    );
+
+    expect(html.match(/aria-sort="descending"/g)).toHaveLength(1);
+    expect(html).not.toContain('aria-sort="ascending"');
+    // 三列里两列可排序，第三列仍是纯文本表头。
+    expect(html.match(/<th[^>]*>\s*<button/g)).toHaveLength(2);
+  });
+
+  it("offers no sort affordance when the page cannot act on it", () => {
+    const html = renderToStaticMarkup(
+      <DataTable caption="Ledger" headers={[{ label: "Created", sortKey: "created" }, "Action"]} rows={rows} />,
+    );
+
+    expect(html).not.toContain("<button");
+    expect(html).not.toContain("aria-sort");
   });
 
   it("offers bulk actions only once rows are selected", () => {

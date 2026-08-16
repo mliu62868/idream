@@ -3,6 +3,13 @@ import { ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { useAdminI18n } from "@/components/admin/i18n";
 
+// SPEC: 全后台游标分页的响应形状。
+// INTENT: 这个类型在 features 下被逐字重复声明了 8 次；配套的「下一页」按钮手写了 9 遍。
+//         两者都收在这个原语里 —— 类型从这里 import，按钮用 <Pagination>。
+export type PageInfo = { endCursor: string | null; hasNextPage: boolean };
+
+export const emptyPageInfo: PageInfo = { endCursor: null, hasNextPage: false };
+
 export type PaginationPosition = {
   /** 1-based page the operator is looking at. */
   page: number;
