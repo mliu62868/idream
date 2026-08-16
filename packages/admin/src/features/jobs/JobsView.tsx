@@ -17,6 +17,7 @@ import { CopyableId } from "@/components/admin/ui/CopyableId";
 import { DataTable, type DataTableHeader, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { FilterBar, type FilterChip } from "@/components/admin/ui/FilterBar";
+import { useAdminFormat } from "@/components/admin/ui/format";
 import { Pagination } from "@/components/admin/ui/Pagination";
 import { useUrlFilters } from "@/components/admin/ui/useUrlFilters";
 import { adminV2Request } from "@/lib/admin-v2-api";
@@ -27,11 +28,7 @@ import {
   createAuthorityState,
 } from "@/lib/authority-state";
 import { createLatestRequestGate } from "@/lib/latest-request";
-import {
-  adminDateLocale,
-  type AdminLocale,
-  useAdminI18n,
-} from "@/components/admin/i18n";
+import { useAdminI18n } from "@/components/admin/i18n";
 import { FailureReason } from "@/components/admin/generation/FailureReason";
 import {
   buildGenerationJobQuery,
@@ -61,7 +58,8 @@ const FILTER_LABELS: Record<GenerationJobFilterKey, string> = {
 };
 
 export function JobsView() {
-  const { locale, t, value } = useAdminI18n();
+  const { t, value } = useAdminI18n();
+  const format = useAdminFormat();
   const [jobs, setJobs] = useState(() => createAuthorityState<GenerationJobListResponse>());
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [detail, setDetail] = useState<GenerationJobDetailResponse | null>(null);
@@ -171,7 +169,8 @@ export function JobsView() {
   const headers: DataTableHeader[] = [
     { label: "Job", width: "9rem" },
     { label: "User", width: "9rem" },
-    { label: "Created", width: "11rem" },
+    // 只有创建时间在后端两个方向都排得了序；其余排序口径（改动时间 / 花费）没有对应列，留在筛选条里。
+    { label: "Created", sortKey: "created", width: "11rem" },
     { label: "Request outcome", width: "8rem" },
     { label: "Settlement", width: "8rem" },
     { label: "Failure reason", width: "18rem" },
@@ -183,13 +182,13 @@ export function JobsView() {
     cells: [
       <CopyableId key="id" value={item.id} />,
       <CopyableId key="user" value={item.userId} />,
-      compactDate(item.createdAt, locale),
+      format.dateTime(item.createdAt),
       value(item.requestOutcome),
       value(item.settlement.view),
       item.requestOutcome === "failed"
         ? <FailureReason code={item.errorCode} key="failure" />
         : <span className="text-[var(--ad-text-muted)]" key="failure">—</span>,
-      ...(showsUnknownReview ? [<UnknownReviewCell item={item} key="review" locale={locale} />] : []),
+      ...(showsUnknownReview ? [<UnknownReviewCell item={item} key="review" />] : []),
       <div className="flex justify-end gap-1" key="actions">
         <IconAction
           icon={<FileText className="h-4 w-4" />}
@@ -312,13 +311,15 @@ export function JobsView() {
           ),
         }}
         skeletonRows={query.limit}
+        sort={query.sort === "created_asc" ? { key: "created", direction: "asc" } : query.sort === "created_desc" ? { key: "created", direction: "desc" } : null}
+        onSortChange={(next) => applyQuery({ ...query, sort: next.direction === "asc" ? "created_asc" : "created_desc", cursor: undefined })}
         stickyHeader
         stickyLastColumn
       />
 
       {jobs.data ? (
         <Pagination
-          detail={`${t("operational owners:")} ${jobs.data.dataScope.includedDataClasses.join(" + ")} · ${t("excluded:")} ${jobs.data.dataScope.excludedDataClasses.join(" + ")} · ${t("fresh as of")} ${compactDate(jobs.data.asOf, locale)}`}
+          detail={`${t("operational owners:")} ${jobs.data.dataScope.includedDataClasses.join(" + ")} · ${t("excluded:")} ${jobs.data.dataScope.excludedDataClasses.join(" + ")} · ${t("fresh as of")} ${format.dateTime(jobs.data.asOf)}`}
           hasNext={Boolean(jobs.data.pageInfo.hasNextPage && jobs.data.pageInfo.endCursor)}
           hasPrevious={cursorTrail.length > 0}
           loading={jobs.loading}
@@ -346,7 +347,6 @@ export function JobsView() {
           error={detailError}
           jobId={selectedJobId}
           loading={detailBusy}
-          locale={locale}
           onClose={closeJobDetail}
           onReconciled={async () => {
             await Promise.all([
@@ -361,27 +361,28 @@ export function JobsView() {
   );
 }
 
-function UnknownReviewCell({ item, locale }: { item: GenerationJobListItem; locale: AdminLocale }) {
+function UnknownReviewCell({ item }: { item: GenerationJobListItem }) {
   const { t } = useAdminI18n();
+  const format = useAdminFormat();
   const { nextReviewAt, status } = item.unknownReview;
   if (status === "not_applicable") return <span className="text-[var(--ad-text-muted)]">—</span>;
   return (
     <span className={status === "due" ? "font-semibold text-red-700" : "text-amber-700"}>
-      {t(status)}{nextReviewAt ? ` · ${compactDate(nextReviewAt, locale)}` : ""}
+      {t(status)}{nextReviewAt ? ` · ${format.dateTime(nextReviewAt)}` : ""}
     </span>
   );
 }
 
-function GenerationJobInspector({ detail, error, jobId, loading, locale, onClose, onReconciled }: {
+function GenerationJobInspector({ detail, error, jobId, loading, onClose, onReconciled }: {
   detail: GenerationJobDetailResponse | null;
   error: string | null;
   jobId: string;
   loading: boolean;
-  locale: AdminLocale;
   onClose: () => void;
   onReconciled: () => Promise<void>;
 }) {
   const { t, value } = useAdminI18n();
+  const format = useAdminFormat();
   const request = detail?.request ?? null;
   return (
     <section aria-labelledby="generation-job-detail-title" className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
@@ -397,7 +398,7 @@ function GenerationJobInspector({ detail, error, jobId, loading, locale, onClose
             <Metric label="Request outcome" value={value(request.requestOutcome)} meta={t("legacy projection: {status}", { status: value(request.legacyStatus) })} />
             <Metric label="Delivery" value={`${request.delivery.deliveredCount}/${request.delivery.expectedOutputCount}`} meta={t("{pending} pending · {failed} failed", { pending: request.delivery.pendingCount, failed: request.delivery.failedCount })} />
             <Metric label="Settlement" value={value(request.settlement.view)} meta={t("{captured} captured · {refunded} refunded", { captured: request.settlement.capturedDreamcoins, refunded: request.settlement.refundedDreamcoins })} />
-            <Metric label="Freshness" value={detail.freshness} meta={compactDate(detail.asOf, locale)} />
+            <Metric label="Freshness" value={detail.freshness} meta={format.dateTime(detail.asOf)} />
           </div>
           <UnknownGenerationReconciliationControls
             detail={detail}
@@ -411,7 +412,7 @@ function GenerationJobInspector({ detail, error, jobId, loading, locale, onClose
               value(attempt.status),
               [attempt.provider, attempt.profileKey, attempt.workflowKey].filter(Boolean).join(" · ") || "—",
               [attempt.errorClass, attempt.errorCode, attempt.retryability].filter(Boolean).join(" · ") || "—",
-              attempt.finishedAt ? compactDate(attempt.finishedAt, locale) : "—",
+              attempt.finishedAt ? format.dateTime(attempt.finishedAt) : "—",
             ])}
           />
           <AuthorityTable
@@ -421,9 +422,9 @@ function GenerationJobInspector({ detail, error, jobId, loading, locale, onClose
               `#${execution.transportAttemptNo} · ${shortId(execution.id)}`,
               `${shortId(execution.attemptId)} · ${execution.provider ?? "—"}`,
               value(execution.status),
-              execution.costMicros === null ? "Unavailable" : `${execution.costMicros.toLocaleString(locale)} μ`,
+              execution.costMicros === null ? "Unavailable" : `${format.count(execution.costMicros)} μ`,
               execution.terminalRecordRef ?? "—",
-              execution.finishedAt ? compactDate(execution.finishedAt, locale) : "—",
+              execution.finishedAt ? format.dateTime(execution.finishedAt) : "—",
             ])}
           />
           <div className="grid gap-5 xl:grid-cols-2">
@@ -435,18 +436,18 @@ function GenerationJobInspector({ detail, error, jobId, loading, locale, onClose
             <AuthorityTable
               caption="Delivery outcomes"
               headers={["Artifact", "Target", "Outcome", "Delivered"]}
-              rows={detail.deliveries.map((delivery) => [shortId(delivery.artifactId), `${delivery.targetType}:${shortId(delivery.targetId)}`, value(delivery.status), delivery.deliveredAt ? compactDate(delivery.deliveredAt, locale) : "—"])}
+              rows={detail.deliveries.map((delivery) => [shortId(delivery.artifactId), `${delivery.targetType}:${shortId(delivery.targetId)}`, value(delivery.status), delivery.deliveredAt ? format.dateTime(delivery.deliveredAt) : "—"])}
             />
           </div>
           <AuthorityTable
             caption="Immutable Attempt events"
             headers={["Sequence", "Attempt", "Typed event", "Outcome", "Occurred"]}
-            rows={detail.events.map((event) => [String(event.sequence), shortId(event.attemptId), event.eventType, event.outcome ? value(event.outcome) : "—", compactDate(event.occurredAt, locale)])}
+            rows={detail.events.map((event) => [String(event.sequence), shortId(event.attemptId), event.eventType, event.outcome ? value(event.outcome) : "—", format.dateTime(event.occurredAt)])}
           />
           <AuthorityTable
             caption="Append-only Settlement entries"
             headers={["Ledger entry", "Kind", "Reason", "Dreamcoins", "Occurred"]}
-            rows={detail.settlementEntries.map((entry) => [shortId(entry.ledgerEntryId), entry.kind, entry.reason, String(entry.deltaDreamcoins), compactDate(entry.createdAt, locale)])}
+            rows={detail.settlementEntries.map((entry) => [shortId(entry.ledgerEntryId), entry.kind, entry.reason, String(entry.deltaDreamcoins), format.dateTime(entry.createdAt)])}
           />
           <AuthorityTable
             caption="Unknown outcome reconciliation decisions"
@@ -457,11 +458,11 @@ function GenerationJobInspector({ detail, error, jobId, loading, locale, onClose
               decision.reason,
               decision.providerEvidenceRefs.join(" · ") || "—",
               decision.nextReviewAt
-                ? `${value(decision.reviewStatus)} · ${compactDate(decision.nextReviewAt, locale)}`
+                ? `${value(decision.reviewStatus)} · ${format.dateTime(decision.nextReviewAt)}`
                 : decision.deliveredCount > 0
                   ? `${decision.deliveredCount} delivered · ${decision.refundAmount} Dreamcoins refund`
                   : `${decision.refundAmount} Dreamcoins refund`,
-              compactDate(decision.occurredAt, locale),
+              format.dateTime(decision.occurredAt),
             ])}
           />
         </div>
@@ -499,7 +500,3 @@ function shortId(value: string) {
   return value.length > 12 ? `${value.slice(0, 8)}…` : value || "—";
 }
 
-function compactDate(value: string, locale: AdminLocale) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString(adminDateLocale(locale), { dateStyle: "medium", timeStyle: "short" });
-}

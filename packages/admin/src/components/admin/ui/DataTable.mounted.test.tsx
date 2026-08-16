@@ -45,17 +45,23 @@ describe("DataTable row navigation", () => {
     expect(routerPush).toHaveBeenCalledWith("/admin/billing/entry-1");
   });
 
-  it("navigates from the keyboard without swallowing the row's own controls", () => {
+  // SPEC: 键盘与读屏走第一格里的真 <a>；<tr> 不做 Tab 停靠点。
+  // INTENT: <tr> 上没有任何 ARIA 能表达"整行可激活"，加 tabIndex 只是造出每行一个无名停靠点。
+  it("leaves the keyboard path to the row's real link instead of a nameless tab stop", () => {
     render(<DataTable caption="Ledger" headers={["ID", "Action"]} rows={linkedRows} />);
 
     const row = container.querySelector("tbody tr") as HTMLElement;
-    expect(row.getAttribute("tabindex")).toBe("0");
-    act(() => { row.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" })); });
-    expect(routerPush).toHaveBeenCalledTimes(1);
+    expect(row.getAttribute("tabindex")).toBeNull();
+    expect(container.querySelector("tbody a")?.getAttribute("href")).toBe("/admin/billing/entry-1");
+  });
+
+  it("lets the row's own controls act without also navigating", () => {
+    render(<DataTable caption="Ledger" headers={["ID", "Action"]} rows={linkedRows} />);
 
     const action = container.querySelector("tbody button") as HTMLElement;
     act(() => { action.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
-    expect(routerPush).toHaveBeenCalledTimes(1);
+
+    expect(routerPush).not.toHaveBeenCalled();
   });
 });
 

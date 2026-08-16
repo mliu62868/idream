@@ -2,6 +2,9 @@ import { useAdminI18n } from "@/components/admin/i18n";
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { EmptyState } from "@/components/admin/ui/EmptyState";
+import { useAdminFormat } from "@/components/admin/ui/format";
+import { statusTone, STATUS_TONE_CLASS, type StatusTone } from "@/components/admin/ui/status-tone";
 
 export const fieldClass =
   "h-11 w-full rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-ink)] outline-none transition focus:border-[var(--ad-ink)] focus:ring-2 focus:ring-[var(--ad-ink)]/10";
@@ -35,19 +38,22 @@ export function WorkspaceButton({
   );
 }
 
+// SPEC: tone 省略时走 ui/status-tone.ts 的全站唯一词表；显式 tone 是调用方的刻意覆盖。
+// INTENT: 这里曾有一份私有的四档映射，neutral 渲染成**蓝色**，而且不认识 approved / active /
+//         succeeded —— 同一个 active，Placements 页绿、Cases 页蓝。现在两处逐字同色。
+const LEGACY_TONE: Record<"good" | "warn" | "bad", StatusTone> = {
+  good: "success",
+  warn: "pending",
+  bad: "danger",
+};
+
 export function StatusBadge({ value, tone }: { value: string; tone?: "good" | "warn" | "bad" | "neutral" }) {
   const { t } = useAdminI18n();
-  const resolvedTone = tone ?? statusTone(value);
+  const resolvedTone: StatusTone = tone
+    ? (tone === "neutral" ? "neutral" : LEGACY_TONE[tone])
+    : statusTone(value);
   return (
-    <span
-      className={cn(
-        "inline-flex min-h-7 items-center rounded-sm px-2 text-xs font-semibold",
-        resolvedTone === "good" && "bg-[var(--ad-green-bg)] text-[var(--ad-green-text)]",
-        resolvedTone === "warn" && "bg-[var(--ad-yellow-bg)] text-[var(--ad-yellow-text)]",
-        resolvedTone === "bad" && "bg-[var(--ad-red-bg)] text-[var(--ad-red-text)]",
-        resolvedTone === "neutral" && "bg-[var(--ad-blue-bg)] text-[var(--ad-blue-text)]",
-      )}
-    >
+    <span className={cn("inline-flex min-h-7 items-center rounded-sm px-2 text-xs font-semibold", STATUS_TONE_CLASS[resolvedTone])}>
       {t(value.replaceAll("_", " "))}
     </span>
   );
@@ -68,35 +74,25 @@ export function LoadingWorkspace({ label }: { label: string }) {
   );
 }
 
+// SPEC: 队列空态复用 ui/EmptyState —— 两种空（队列本来就是空 / 当前筛选没命中）各有出口。
 export function EmptyWorkspace({ filtered, onClear }: { filtered: boolean; onClear: () => void }) {
-  const { t } = useAdminI18n();
   return (
-    <section className="rounded-xl bg-[var(--ad-surface)] px-6 py-14 text-center">
-      <h3 className="text-base font-semibold">{filtered ? t("No work matches these filters") : t("The queue is clear")}</h3>
-      <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-[var(--ad-text-muted)]">
-        {filtered
-          ? t("The authority searched the full queue. Clear filters to return to the default operational view.")
-          : t("New work appears here as incidents and cases are raised.")}
-      </p>
-      {filtered ? <div className="mt-5"><WorkspaceButton onClick={onClear}>{t("Clear filters")}</WorkspaceButton></div> : null}
-    </section>
+    <EmptyState
+      hint={filtered
+        ? "The authority searched the full queue. Clear filters to return to the default operational view."
+        : "New work appears here as incidents and cases are raised."}
+      kind={filtered ? "filtered" : "empty"}
+      onClearFilters={filtered ? onClear : undefined}
+      title={filtered ? "No work matches these filters" : "The queue is clear"}
+    />
   );
 }
 
 export function RelativeTime({ referenceTime, value }: { referenceTime: string; value: string }) {
-  const { locale } = useAdminI18n();
-  const date = new Date(value);
-  const diffMinutes = Math.round((date.getTime() - new Date(referenceTime).getTime()) / 60_000);
-  const relative = new Intl.RelativeTimeFormat(locale === "zh" ? "zh-CN" : "en", { numeric: "auto" }).format(
-    Math.abs(diffMinutes) < 60 ? diffMinutes : Math.round(diffMinutes / 60),
-    Math.abs(diffMinutes) < 60 ? "minute" : "hour",
+  const format = useAdminFormat();
+  return (
+    <time dateTime={value} title={`${format.dateTime(value)} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`}>
+      {format.relativeTime(value, referenceTime)}
+    </time>
   );
-  return <time dateTime={value} title={`${date.toLocaleString()} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`}>{relative}</time>;
-}
-
-function statusTone(value: string): "good" | "warn" | "bad" | "neutral" {
-  if (["passed", "resolved", "closed"].includes(value)) return "good";
-  if (["critical", "urgent", "failed", "overridden"].includes(value)) return "bad";
-  if (["high", "detected", "overdue", "pending", "mitigating"].includes(value)) return "warn";
-  return "neutral";
 }
