@@ -6,7 +6,7 @@ import {
   type MainToChatOutboxEvent,
   type MainToChatOutboxEventListResponse,
 } from "@idream/shared/admin";
-import { useAdminI18n } from "@/components/admin/i18n";
+import { adminDateLocale, useAdminI18n } from "@/components/admin/i18n";
 import { Loader2, RefreshCcw, RotateCcw, Search } from "lucide-react";
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -295,14 +295,16 @@ export function ChatOpsWorkspace({
     navigate({ ...draft, sessionCursor: "", usageCursor: "", eventCursor: "" });
   }
 
-  const connected = authorities.some(
-    (authority) => states[authority].data?.configured,
-  );
+  // SPEC: 五个 authority 各自独立报 configured；顶栏必须说清"几个还活着"。
+  // INTENT: 旧口径是 .some(configured)——五个里活一个也照样显示"Chat Service connected"，
+  //         值班的人看一眼以为没事，实际四个authority已经拿不到数据了。
+  const answered = authorities.filter((authority) => states[authority].data !== null);
+  const degraded = answered.filter((authority) => !states[authority].data?.configured);
   const overview = states.overview.data?.overview ?? null;
   return (
     <section className="space-y-5">
       <PageHeader
-        purpose="Inspect Chat Service health, session metadata, quota usage, and moderation events without exposing message plaintext."
+        purpose={t("Inspect Chat Service health, session metadata, quota usage, and moderation events without exposing message plaintext.")}
         title={t("Chat Operations")}
       />
       <div
@@ -318,11 +320,16 @@ export function ChatOpsWorkspace({
         </div>
         {!canRead ? (
           <strong>{t("No access · chat.ops.read is not granted")}</strong>
+        ) : answered.length === 0 ? (
+          <strong>{t("Chat Service state not established yet")}</strong>
+        ) : degraded.length === 0 ? (
+          <strong>{t("Chat Service connected")}</strong>
         ) : (
-          <strong>
-            {connected
-              ? t("Chat Service connected")
-              : t("Chat Service degraded or disconnected")}
+          <strong className="text-[var(--ad-yellow-text)]">
+            {t("Chat Service degraded · {degraded} of {total} authorities unavailable", {
+              degraded: degraded.length,
+              total: authorities.length,
+            })}
           </strong>
         )}
       </div>
@@ -353,6 +360,7 @@ export function ChatOpsWorkspace({
         <Select
           label="Rows"
           onChange={(limit) => setDraft((value) => ({ ...value, limit }))}
+          numeric
           options={["25", "50", "100"]}
           value={draft.limit}
         />
@@ -422,7 +430,7 @@ export function ChatOpsWorkspace({
           {states.overview.data ? (
             <ChatOpsOverviewCards overview={overview} />
           ) : (
-            <Loading authority="overview" state={states.overview} />
+            <Loading authority={AUTHORITY_LABELS.overview} state={states.overview} />
           )}
 
           <AuthorityError
@@ -527,7 +535,7 @@ function MainToChatFailedOutboxPanel({
   canReplay: boolean;
   canDiscardMissing: boolean;
 }) {
-  const { t } = useAdminI18n();
+  const { locale, t } = useAdminI18n();
   const [data, setData] =
     useState<MainToChatOutboxEventListResponse | null>(null);
   const [loading, setLoading] = useState(canRead);
@@ -737,7 +745,7 @@ function MainToChatFailedOutboxPanel({
       ) : null}
       {!canRead ? null : loading && !data ? (
         <Loading
-          authority={t("Main → Chat failed delivery")}
+          authority="Main → Chat failed delivery"
           state={{ data: null, loading: true, error: null, refreshedAt: null }}
         />
       ) : rows.length === 0 ? (
@@ -799,6 +807,7 @@ function MainToChatFailedOutboxPanel({
               ) : null}
             </div>
           ) : null}
+          {/* SEAM: 手写表——`DataTable` 目前不支持多选。多选能力落地后整表迁过去。 */}
           <div
             aria-label={t("Failed Main to Chat delivery table")}
             className="overflow-x-auto rounded-lg border border-[var(--ad-border)]"
@@ -896,7 +905,7 @@ function MainToChatFailedOutboxPanel({
                       <td className="px-3 py-3">
                         <p>{row.attempts}</p>
                         <p className="text-xs text-[var(--ad-text-muted)]">
-                          {date(row.nextRunAt)}
+                          {date(row.nextRunAt, locale)}
                         </p>
                       </td>
                       <td className="max-w-80 px-3 py-3 text-xs">
@@ -910,7 +919,7 @@ function MainToChatFailedOutboxPanel({
                           </span>
                         )}
                       </td>
-                      <td className="px-3 py-3 text-xs">{date(row.updatedAt)}</td>
+                      <td className="px-3 py-3 text-xs">{date(row.updatedAt, locale)}</td>
                     </tr>
                   );
                 })}
@@ -941,6 +950,7 @@ function MainToChatFailedOutboxPanel({
 }
 
 export function ChatOpsOverviewCards({ overview }: { overview: Row | null }) {
+  const { t } = useAdminI18n();
   const cards = [
     ["Active sessions", overview?.activeSessions],
     ["Archived", overview?.archivedSessions],
@@ -955,7 +965,7 @@ export function ChatOpsOverviewCards({ overview }: { overview: Row | null }) {
     <div className="grid gap-px overflow-hidden rounded-lg border bg-black/[0.05] md:grid-cols-4">
       {cards.map(([label, value]) => (
         <div className="bg-[var(--ad-surface)] p-4" key={String(label)}>
-          <p className="text-xs text-[var(--ad-text-muted)]">{String(label)}</p>
+          <p className="text-xs text-[var(--ad-text-muted)]">{t(String(label))}</p>
           <p className="mt-2 text-2xl font-semibold">
             {typeof value === "number" ? value : "—"}
           </p>
@@ -965,55 +975,70 @@ export function ChatOpsOverviewCards({ overview }: { overview: Row | null }) {
   );
 }
 
-const tableColumns: Record<Exclude<ChatOpsAuthority, "overview">, string[]> = {
+// SPEC: [响应字段, 表头文案]。表头进 t()，字段名只用来取值。
+// INTENT: 之前表头直接印响应的 camelCase 字段名（latencyP50Ms / unlimitedMessages），
+//         中文环境下整张表的表头都是英文变量名——DataTable 会 t(header)，但 t("latencyMs") 没有译文。
+type ColumnSpec = readonly (readonly [field: string, header: string])[];
+const tableColumns: Record<Exclude<ChatOpsAuthority, "overview">, ColumnSpec> = {
   providers: [
-    "provider",
-    "adapter",
-    "status",
-    "ok",
-    "model",
-    "endpoint",
-    "latencyMs",
-    "httpStatus",
-    "modelListed",
-    "error",
+    ["provider", "Provider"],
+    ["adapter", "Adapter"],
+    ["status", "Status"],
+    ["ok", "Reachable"],
+    ["model", "Model"],
+    ["endpoint", "Endpoint"],
+    ["latencyMs", "Latency (ms)"],
+    ["httpStatus", "HTTP status"],
+    ["modelListed", "Model listed"],
+    ["error", "Error"],
   ],
   usage: [
-    "userId",
-    "modelTier",
-    "unlimitedMessages",
-    "messagesUsed",
-    "freeDailyLimit",
-    "freeRemaining",
-    "quotaStatus",
-    "activeSessions",
-    "messages24h",
-    "periodStart",
+    ["userId", "User"],
+    ["modelTier", "Model tier"],
+    ["unlimitedMessages", "Unlimited"],
+    ["messagesUsed", "Messages used"],
+    ["freeDailyLimit", "Free daily limit"],
+    ["freeRemaining", "Free remaining"],
+    ["quotaStatus", "Quota status"],
+    ["activeSessions", "Active sessions"],
+    ["messages24h", "Messages 24h"],
+    ["periodStart", "Period start"],
   ],
   sessions: [
-    "id",
-    "userId",
-    "characterId",
-    "title",
-    "status",
-    "memoryEnabled",
-    "messageCount",
-    "lastMessageRole",
-    "lastMessageStatus",
-    "lastSafetyStatus",
-    "lastMessageAt",
+    ["id", "Session"],
+    ["userId", "User"],
+    ["characterId", "Character"],
+    ["title", "Title"],
+    ["status", "Status"],
+    ["memoryEnabled", "Memory"],
+    ["messageCount", "Messages"],
+    ["lastMessageRole", "Last role"],
+    ["lastMessageStatus", "Last message status"],
+    ["lastSafetyStatus", "Last safety status"],
+    ["lastMessageAt", "Last message"],
   ],
   events: [
-    "id",
-    "targetType",
-    "targetId",
-    "layer",
-    "status",
-    "policyCode",
-    "confidence",
-    "createdAt",
+    ["id", "Event"],
+    ["targetType", "Target type"],
+    ["targetId", "Target"],
+    ["layer", "Layer"],
+    ["status", "Status"],
+    ["policyCode", "Policy code"],
+    ["confidence", "Confidence"],
+    ["createdAt", "Created"],
   ],
 };
+
+// 这些列装的是枚举，走 value()/zhValues 通道；其余列是自由文本或数字，原样呈现。
+const ENUM_COLUMNS: ReadonlySet<string> = new Set([
+  "status",
+  "quotaStatus",
+  "layer",
+  "lastMessageRole",
+  "lastMessageStatus",
+  "lastSafetyStatus",
+  "targetType",
+]);
 
 function AuthorityTable({
   authority,
@@ -1026,14 +1051,15 @@ function AuthorityTable({
   rows: Row[];
   state: AuthorityState;
 }) {
+  const { t, value: enumLabel } = useAdminI18n();
   if (!state.data && state.loading)
-    return <Loading authority={authority} state={state} />;
+    return <Loading authority={AUTHORITY_LABELS[authority]} state={state} />;
   if (!state.data) return null;
   if (!rows.length)
     return (
       <EmptyState
-        hint="The Chat Service authority returned no records."
-        title={empty}
+        hint={t("The Chat Service authority returned no records.")}
+        title={t(empty)}
       />
     );
   const columns = tableColumns[authority];
@@ -1048,20 +1074,26 @@ function AuthorityTable({
               ? "Recent chat sessions (no plaintext)"
               : "Chat moderation events"
       }
-      headers={columns}
-      rows={tableRows(rows, columns, authority)}
+      headers={columns.map(([, header]) => header)}
+      rows={tableRows(rows, columns, authority, enumLabel)}
     />
   );
 }
 
 function tableRows(
   rows: Row[],
-  columns: string[],
+  columns: ColumnSpec,
   prefix: string,
+  enumLabel: (key: string) => string,
 ): DataTableRow[] {
   return rows.map((row, index) => ({
     id: text(row.id) || `${prefix}-${index}`,
-    cells: columns.map((column) => display(row[column])),
+    cells: columns.map(([field]) => {
+      const raw = row[field];
+      return ENUM_COLUMNS.has(field) && typeof raw === "string" && raw
+        ? enumLabel(raw)
+        : display(raw);
+    }),
   }));
 }
 
@@ -1097,6 +1129,15 @@ function Pager({
   );
 }
 
+// authority 是内部代号；界面上要显示它的人话名字，也才能进 t() 词表。
+const AUTHORITY_LABELS: Record<ChatOpsAuthority, string> = {
+  overview: "Overview",
+  providers: "Provider health",
+  sessions: "Sessions",
+  usage: "Usage",
+  events: "Events",
+};
+
 function AuthorityError({
   authority,
   query,
@@ -1110,18 +1151,19 @@ function AuthorityError({
 }) {
   const { t } = useAdminI18n();
   if (!state.error) return null;
+  const label = t(AUTHORITY_LABELS[authority]);
   return (
     <div
       className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
       role="alert"
     >
-      {authority} {t("authority refresh failed:")} {state.error}
+      {t("{authority} authority refresh failed:", { authority: label })} {state.error}
       <button
         className="ml-3 min-h-8 rounded border border-current px-2"
         onClick={() => void retry(query, authority)}
         type="button"
       >
-        {t("Retry")} {authority}
+        {t("Retry {authority}", { authority: label })}
       </button>
       {state.data ? (
         <span className="ml-2">
@@ -1133,26 +1175,28 @@ function AuthorityError({
 }
 
 function DiagnosticsNotice({ data }: { data: ChatResponse | null }) {
+  const { t } = useAdminI18n();
   if (!data || data.configured) return null;
+  const diagnostics = data.diagnostics;
   return (
     <p
       className="rounded-md bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]"
       role="status"
     >
-      {diagnosticText(data.diagnostics)}
+      {diagnostics?.reason === "upstream_error"
+        ? t("Chat Service returned an upstream error ({status}).", { status: diagnostics.status ?? t("unknown") })
+        : t(diagnosticKey(diagnostics))}
     </p>
   );
 }
 
-function diagnosticText(diagnostics: Diagnostics | undefined) {
+function diagnosticKey(diagnostics: Diagnostics | undefined) {
   if (!diagnostics || diagnostics.reason === "missing_url")
     return "Chat Service is not connected: CHAT_SERVICE_URL is missing.";
   if (diagnostics.reason === "unauthorized")
     return "Chat Service rejected the internal admin token.";
   if (diagnostics.reason === "bad_json")
     return "Chat Service returned invalid JSON.";
-  if (diagnostics.reason === "upstream_error")
-    return `Chat Service returned an upstream error${diagnostics.status ? ` (${diagnostics.status})` : ""}.`;
   return "Chat Service is configured but unreachable.";
 }
 
@@ -1163,41 +1207,42 @@ function Freshness({
   authority: string;
   state: AuthorityState;
 }) {
-  const { t } = useAdminI18n();
+  const { locale, t } = useAdminI18n();
+  const label = t(authority);
   const time = state.refreshedAt
-    ? new Date(state.refreshedAt).toLocaleTimeString()
-    : "unknown";
+    ? new Date(state.refreshedAt).toLocaleTimeString(adminDateLocale(locale))
+    : t("unknown");
   if (state.loading && state.data)
     return (
       <span>
-        {authority}
+        {label}
         {t(": refreshing · as of")} {time}
       </span>
     );
   if (state.error && state.data)
     return (
       <span>
-        {authority}
+        {label}
         {t(": stale · last good")} {time}
       </span>
     );
   if (state.error)
     return (
       <span>
-        {authority}
+        {label}
         {t(": unavailable")}
       </span>
     );
   if (state.data)
     return (
       <span>
-        {authority}
+        {label}
         {t(": as of")} {time}
       </span>
     );
   return (
     <span>
-      {authority}
+      {label}
       {t(": loading…")}
     </span>
   );
@@ -1214,7 +1259,7 @@ function Loading({
   return !state.data && state.loading ? (
     <div className="rounded-lg border p-4" role="status">
       <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
-      {t("Loading")} {authority} {t("authority")}
+      {t("Loading {authority} authority", { authority: t(authority) })}
     </div>
   ) : null;
 }
@@ -1228,9 +1273,10 @@ function Field({
   onChange: (value: string) => void;
   value: string;
 }) {
+  const { t } = useAdminI18n();
   return (
     <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
-      {label}
+      {t(label)}
       <input
         className="min-h-11 rounded-md border px-3 text-sm"
         onChange={(event) => onChange(event.target.value)}
@@ -1242,18 +1288,22 @@ function Field({
 
 function Select({
   label,
+  numeric = false,
   onChange,
   options,
   value,
 }: {
   label: string;
+  /** 行数这类纯数字选项不进枚举词表。 */
+  numeric?: boolean;
   onChange: (value: string) => void;
   options: string[];
   value: string;
 }) {
+  const { t, value: enumLabel } = useAdminI18n();
   return (
     <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
-      {label}
+      {t(label)}
       <select
         className="min-h-11 rounded-md border px-3 text-sm"
         onChange={(event) => onChange(event.target.value)}
@@ -1261,7 +1311,7 @@ function Select({
       >
         {options.map((option) => (
           <option key={option} value={option}>
-            {option}
+            {numeric ? option : enumLabel(option)}
           </option>
         ))}
       </select>
@@ -1304,7 +1354,7 @@ function display(value: unknown) {
   return value === null || value === undefined ? "—" : JSON.stringify(value);
 }
 
-function date(value: unknown) {
+function date(value: unknown, locale: "en" | "zh") {
   const parsed = new Date(text(value));
-  return Number.isNaN(parsed.getTime()) ? "—" : parsed.toLocaleString();
+  return Number.isNaN(parsed.getTime()) ? "—" : parsed.toLocaleString(adminDateLocale(locale));
 }
