@@ -11,13 +11,13 @@ describe("Chat Ops query", () => {
       "?chatUserId=u1&chatCharacterId=c1&chatSessionStatus=active&chatEventStatus=blocked&chatEventLayer=output&chatPolicyCode=p1&chatTargetId=t1&chatLimit=25&chatSessionCursor=s&chatUsageCursor=u&chatEventCursor=e",
     );
     expect(chatOpsPath(query, "sessions")).toBe(
-      "/api/v1/admin/chat/sessions?limit=25&userId=u1&characterId=c1&status=active&cursor=s",
+      "/api/v2/admin/chat/sessions?limit=25&userId=u1&characterId=c1&status=active&cursor=s",
     );
     expect(chatOpsPath(query, "usage")).toBe(
-      "/api/v1/admin/chat/usage?limit=25&userId=u1&cursor=u",
+      "/api/v2/admin/chat/usage?limit=25&userId=u1&cursor=u",
     );
     expect(chatOpsPath(query, "events")).toBe(
-      "/api/v1/admin/chat/moderation-events?limit=25&status=blocked&layer=output&policyCode=p1&targetId=t1&cursor=e",
+      "/api/v2/admin/chat/moderation-events?limit=25&status=blocked&layer=output&policyCode=p1&targetId=t1&cursor=e",
     );
   });
 

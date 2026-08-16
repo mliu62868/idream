@@ -27,3 +27,21 @@ export * from "./jobs";
 export * from "./grant-bundles";
 export * from "./search";
 export * from "./chat-operations";
+// ---- trust: migrated from v1 ----
+export * from "./moderation";
+export * from "./compliance";
+export * from "./approvals";
+export * from "./risk";
+export * from "./support";
+export * from "./audit-log";
+export * from "./feature-flags";
+// ---- money: migrated from v1 ----
+export * from "./pricing";
+export * from "./promo";
+// ---- platform: migrated from v1 ----
+export * from "./cms";
+export * from "./announcements";
+export * from "./overviews";
+export * from "./generation-ops";
+// ---- content: migrated from v1 ----
+export * from "./content";

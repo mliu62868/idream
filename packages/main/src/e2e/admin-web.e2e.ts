@@ -421,7 +421,7 @@ test("admin content ops requires confirmation for standalone draft placement and
       }).then((asset) => platformStatusFromMetadata(asset.metadata)),
     ).resolves.toBe("archived");
 
-    const archivedPlacementAttempt = await page.request.post(`${adminURL}/api/v1/admin/content/placements`, {
+    const archivedPlacementAttempt = await page.request.post(`${adminURL}/api/v2/admin/content/placements`, {
       data: {
         mediaAssetId: archiveAssetId,
         slot: "feed_card",
@@ -629,7 +629,7 @@ test("admin users and billing actions write audit trail and clear adjustment for
         idempotencyKey: refreshLedgerId,
       },
     });
-    const subscriptionRoute = "**/api/v1/admin/billing/subscriptions**";
+    const subscriptionRoute = "**/api/v2/admin/billing/subscriptions**";
     await page.route(subscriptionRoute, (route) => route.fulfill({
       body: JSON.stringify({
         ok: false,
@@ -1045,7 +1045,7 @@ test("admin support inbox resolves a help desk request", async ({ page }) => {
 test("admin Chat Ops isolates authority failures and restores URL filters", async ({ page }) => {
   const consoleFailures = collectConsoleFailures(page);
   await startAdminSession(page);
-  await page.route("**/api/v1/admin/chat/usage**", async (route) => {
+  await page.route("**/api/v2/admin/chat/usage**", async (route) => {
     await route.fulfill({
       body: JSON.stringify({ ok: false, error: { code: "upstream_error", message: "usage unavailable" } }),
       contentType: "application/json",
@@ -1069,7 +1069,7 @@ test("admin Chat Ops isolates authority failures and restores URL filters", asyn
   await page.goBack();
   await expect(page.getByLabel("User ID", { exact: true })).toHaveValue("");
   await expect(page.getByRole("combobox", { name: /Session status/ })).toHaveValue("active");
-  expect(consoleFailures.filter((message) => !message.includes("/api/v1/admin/chat/usage"))).toEqual([]);
+  expect(consoleFailures.filter((message) => !message.includes("/api/v2/admin/chat/usage"))).toEqual([]);
 });
 
 test("admin support plaintext panel views consent-scoped generation prompt", async ({ page }) => {
@@ -1426,7 +1426,8 @@ test("admin API allows an authorized write (admin creates a pricing draft)", asy
   await startRoleSession(page, "admin");
   const ruleKey = `e2e_rule_${Date.now()}`;
   try {
-    const create = await page.request.post(`${adminURL}/api/v1/admin/pricing/rules`, {
+    const create = await page.request.post(`${adminURL}/api/v2/admin/pricing/rules`, {
+      headers: { "idempotency-key": crypto.randomUUID() },
       data: {
         ruleKey,
         label: "E2E rule",
@@ -1449,7 +1450,7 @@ test("admin API creates an official character and fails mock AI assist closed", 
   const name = `E2E Official ${Date.now()}`;
   let createdId: string | undefined;
   try {
-    const create = await page.request.post(`${adminURL}/api/v1/admin/content/official`, {
+    const create = await page.request.post(`${adminURL}/api/v2/admin/content/official`, {
       headers: { "idempotency-key": `e2e-official-create-${Date.now()}` },
       data: {
         name,
@@ -1467,7 +1468,7 @@ test("admin API creates an official character and fails mock AI assist closed", 
     expect(createdId).toBeTruthy();
 
     // A mock chat provider must never return operator-saveable creative fields.
-    const assist = await page.request.post(`${adminURL}/api/v1/admin/content/character-assist`, {
+    const assist = await page.request.post(`${adminURL}/api/v2/admin/content/character-assist`, {
       data: { seed: "shy bookish painter who loves rainy nights", gender: "female", style: "realistic" },
     });
     expect(assist.status(), await assist.text()).toBe(503);
@@ -1866,19 +1867,28 @@ test("admin API forbids under-privileged roles (403 on writes they lack)", async
   // support holds content.read but NOT content.takedown.write / config.pricing.write.
   await startRoleSession(page, "support");
 
-  const pricing = await page.request.post(`${adminURL}/api/v1/admin/pricing/rules`, {
-    data: { ruleKey: "e2e_forbidden", label: "x", mode: "image", baseCost: 5, multiplier: 1 },
+  const pricing = await page.request.post(`${adminURL}/api/v2/admin/pricing/rules`, {
+    headers: { "idempotency-key": crypto.randomUUID() },
+    data: {
+      ruleKey: "e2e_forbidden",
+      label: "x",
+      mode: "image",
+      baseCost: 5,
+      multiplier: 1,
+      reason: "E2E forbidden pricing write",
+      confirmation: "e2e_forbidden",
+    },
   });
   expect(pricing.status()).toBe(403);
 
   const takedown = await page.request.post(
-    `${adminURL}/api/v1/admin/content/characters/none/visibility`,
+    `${adminURL}/api/v2/admin/content/characters/none/visibility`,
     { data: { visibility: "private", reason: "test reason", confirmation: "none:visibility:private" } },
   );
   expect(takedown.status()).toBe(403);
 
   // support lacks content.official.write → official create + AI assist both 403.
-  const official = await page.request.post(`${adminURL}/api/v1/admin/content/official`, {
+  const official = await page.request.post(`${adminURL}/api/v2/admin/content/official`, {
     data: {
       name: "x",
       age: 24,
@@ -1891,14 +1901,14 @@ test("admin API forbids under-privileged roles (403 on writes they lack)", async
   });
   expect(official.status()).toBe(403);
 
-  const assist = await page.request.post(`${adminURL}/api/v1/admin/content/character-assist`, {
+  const assist = await page.request.post(`${adminURL}/api/v2/admin/content/character-assist`, {
     data: { seed: "a cheerful barista" },
   });
   expect(assist.status()).toBe(403);
 
   // analyst lacks content.read entirely → read also 403.
   await startRoleSession(page, "analyst");
-  const read = await page.request.get(`${adminURL}/api/v1/admin/content/characters`);
+  const read = await page.request.get(`${adminURL}/api/v2/admin/content/characters`);
   expect(read.status()).toBe(403);
 });
 
@@ -1908,7 +1918,7 @@ test("admin API Phase 3: CMS write (admin) + compliance/analytics gating", async
   await startRoleSession(page, "admin");
   const path = `/e2e-cms-${Date.now()}`;
   try {
-    const create = await page.request.post(`${adminURL}/api/v1/admin/cms/pages`, {
+    const create = await page.request.post(`${adminURL}/api/v2/admin/cms/pages`, {
       data: {
         path,
         title: "E2E CMS page",
@@ -1945,7 +1955,7 @@ test("admin API Phase 3: CMS write (admin) + compliance/analytics gating", async
     const expectedUpdatedAt = createdPayload.data?.page?.updatedAt;
     expect(typeof expectedUpdatedAt).toBe("string");
 
-    const publish = await page.request.post(`${adminURL}/api/v1/admin/cms/pages/publish`, {
+    const publish = await page.request.post(`${adminURL}/api/v2/admin/cms/pages/publish`, {
       data: {
         path,
         contentStatus: "published",
@@ -1971,16 +1981,16 @@ test("admin API Phase 3: CMS write (admin) + compliance/analytics gating", async
   // support has compliance.read (export ok) but NOT compliance.write (erase 403).
   await startRoleSession(page, "support");
   const erase = await page.request.post(
-    `${adminURL}/api/v1/admin/compliance/users/none/erase`,
+    `${adminURL}/api/v2/admin/compliance/users/none/erase`,
     { data: { reason: "test erase", confirmation: "none" } },
   );
   expect(erase.status()).toBe(403);
 
   // analyst holds analytics.export → retention ok; lacks compliance.read → age list 403.
   await startRoleSession(page, "analyst");
-  const retention = await page.request.get(`${adminURL}/api/v1/admin/analytics/retention`);
+  const retention = await page.request.get(`${adminURL}/api/v2/admin/analytics/retention`);
   expect(retention.status()).toBe(200);
-  const ageList = await page.request.get(`${adminURL}/api/v1/admin/compliance/age-verifications`);
+  const ageList = await page.request.get(`${adminURL}/api/v2/admin/compliance/age-verifications`);
   expect(ageList.status()).toBe(403);
 });
 
@@ -1998,7 +2008,7 @@ test("admin CMS UI requires typed confirmation for publish changes", async ({ pa
   const routePath = `/e2e-cms-confirm-${suffix}`;
 
   try {
-    const create = await page.request.post(`${adminURL}/api/v1/admin/cms/pages`, {
+    const create = await page.request.post(`${adminURL}/api/v2/admin/cms/pages`, {
       data: {
         path: routePath,
         title: "E2E CMS confirmation page",
@@ -2227,7 +2237,7 @@ test("admin compliance UI requires typed confirmations for destructive actions",
     const overrideResponse = page.waitForResponse(
       (response) =>
         response.request().method() === "POST" &&
-        response.url().includes(`/api/v1/admin/compliance/age-verifications/${ageVerification.id}/override`),
+        response.url().includes(`/api/v2/admin/compliance/age-verifications/${ageVerification.id}/override`),
     );
     await confirmOverride.click();
     await expect.poll(async () => (await overrideResponse).status()).toBe(200);
@@ -2343,7 +2353,7 @@ test("admin API Phase 4: announcement write (admin) + public read + growth gatin
   const adminURL = adminBaseURL();
   await startRoleSession(page, "admin");
   try {
-    const create = await page.request.post(`${adminURL}/api/v1/admin/announcements`, {
+    const create = await page.request.post(`${adminURL}/api/v2/admin/announcements`, {
       data: {
         title: "E2E banner",
         body: "hello from e2e",
@@ -2380,13 +2390,13 @@ test("admin API Phase 4: announcement write (admin) + public read + growth gatin
 
   // analyst lacks growth.promo.write → announcement create 403
   await startRoleSession(page, "analyst");
-  const annForbidden = await page.request.post(`${adminURL}/api/v1/admin/announcements`, {
+  const annForbidden = await page.request.post(`${adminURL}/api/v2/admin/announcements`, {
     data: { title: "x", body: "y", reason: "test reason", confirmation: "ANNOUNCE" },
   });
   expect(annForbidden.status()).toBe(403);
 
   // ops lacks analytics.export → experiments 403
   await startRoleSession(page, "ops");
-  const expForbidden = await page.request.get(`${adminURL}/api/v1/admin/experiments`);
+  const expForbidden = await page.request.get(`${adminURL}/api/v2/admin/analytics/flag-monitoring`);
   expect(expForbidden.status()).toBe(403);
 });

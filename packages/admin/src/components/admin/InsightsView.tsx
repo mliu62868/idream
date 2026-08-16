@@ -73,7 +73,7 @@ function ProfileHealthSection() {
     setNote(null);
     try {
       const data = await apiGet<Health>(
-        `/api/v1/admin/generation/model-profiles/${encodeURIComponent(profileId.trim())}/health`,
+        `/api/v2/admin/generation/model-profiles/${encodeURIComponent(profileId.trim())}/health`,
       );
       setHealth(data);
     } catch (error) {
@@ -98,12 +98,13 @@ function ProfileHealthSection() {
     setNote(null);
     try {
       const data = await apiWrite<{ dryRun: { status: string; passed: number; total: number } }>(
-        `/api/v1/admin/generation/model-profiles/${encodeURIComponent(dryRunDraft.profileId)}/dry-run`,
+        `/api/v2/admin/generation/model-profiles/${encodeURIComponent(dryRunDraft.profileId)}/commands/dry-run`,
         "POST",
         {
           reason: dryRunDraft.reason.trim(),
           confirmation: dryRunDraft.confirmation.trim(),
         },
+        { "idempotency-key": crypto.randomUUID() },
       );
       setDryRunDraft(null);
       setNote(

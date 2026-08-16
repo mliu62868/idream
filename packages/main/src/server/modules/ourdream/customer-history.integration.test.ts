@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { PATCH as supportRequestPatchRoute } from "@/app/api/v2/admin/support/requests/[id]/route";
 import { prisma } from "@/server/lib/db";
 import {
   api,
@@ -7,6 +8,7 @@ import {
   expectOk,
   purgeTestData,
 } from "@/server/test/helpers";
+import { adminV2 } from "@/server/test/admin-v2-http";
 
 const P = "zt-customer-history-";
 const CUSTOMER = `${P}customer`;
@@ -201,16 +203,26 @@ describe("GET /api/v1/support/history", () => {
     });
     expectOk(filed, 201);
     const ticketId = filed.data.request.ticketId as string;
-    expectOk(await api("PATCH", `admin/support/requests/${ticketId}`, {
-      userId: ADMIN,
-      role: "admin",
-      body: {
-        status: "resolved",
-        resolutionNotes: "private operator note with customer@example.test",
-        reason: "The issue was fixed and verified",
-        confirmation: ticketId,
-      },
-    }));
+    // 运营侧的工单解决已迁到 Admin v2，直接打它的 Route Handler。
+    const resolved = await supportRequestPatchRoute(
+      new Request(`http://localhost/api/v2/admin/support/requests/${ticketId}`, {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          "x-idream-user-id": ADMIN,
+          "x-idream-role": "admin",
+          "idempotency-key": `${P}resolve-${ticketId}`,
+        },
+        body: JSON.stringify({
+          status: "resolved",
+          resolutionNotes: "private operator note with customer@example.test",
+          reason: "The issue was fixed and verified",
+          confirmation: ticketId,
+        }),
+      }),
+      { params: Promise.resolve({ id: ticketId }) },
+    );
+    expect(resolved.status, JSON.stringify(await resolved.clone().json())).toBe(200);
 
     const history = await api("GET", "support/history", { userId: CUSTOMER });
     expectOk(history);
@@ -237,7 +249,7 @@ describe("GET /api/v1/support/history", () => {
     });
     expectOk(filed);
     const reportId = filed.data.report.id as string;
-    const decided = await api("POST", `admin/moderation/${reportId}/decision`, {
+    const decided = await adminV2("POST", `moderation/reports/${reportId}/decision`, {
       userId: ADMIN,
       role: "admin",
       body: {
@@ -314,7 +326,7 @@ describe("GET /api/v1/support/history", () => {
     });
     expectOk(appeal);
     const appealId = appeal.data.appeal.id as string;
-    expectOk(await api("PATCH", `admin/moderation/appeals/${appealId}`, {
+    expectOk(await adminV2("POST", `moderation/appeals/${appealId}/decision`, {
       userId: ADMIN,
       role: "admin",
       body: {

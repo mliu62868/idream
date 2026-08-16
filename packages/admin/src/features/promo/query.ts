@@ -9,8 +9,8 @@ export type PromoQuery = {
 export type PromoScope = "codes" | "referrals";
 
 const promoPaths: Record<PromoScope, string> = {
-  codes: "/api/v1/admin/promo/redeem-codes",
-  referrals: "/api/v1/admin/promo/referrals",
+  codes: "/api/v2/admin/promo/redeem-codes",
+  referrals: "/api/v2/admin/promo/referrals",
 };
 
 export const defaultPromoQuery: PromoQuery = {

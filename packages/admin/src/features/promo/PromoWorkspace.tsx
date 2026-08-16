@@ -142,7 +142,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
       submitLabel: "Disable",
       onSubmit: async (reason) => {
         await apiWrite(
-          `/api/v1/admin/promo/redeem-codes/${id}/disable`,
+          `/api/v2/admin/promo/redeem-codes/${id}/disable`,
           "POST",
           { reason, confirmation: id },
           { "idempotency-key": idempotencyKey },
@@ -325,7 +325,7 @@ function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
     idempotencyKey.current ??= crypto.randomUUID();
     try {
       await apiWrite(
-        "/api/v1/admin/promo/redeem-codes",
+        "/api/v2/admin/promo/redeem-codes",
         "POST",
         {
           code: trimmedCode,

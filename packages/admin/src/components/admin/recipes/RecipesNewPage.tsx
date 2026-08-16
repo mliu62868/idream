@@ -33,12 +33,13 @@ export function RecipesNewPage() {
     setCreating(true);
     setError(null);
     try {
-      const created = await apiWrite<{ template?: { id?: string } }>(
+      const created = await apiWrite<{ recipe?: { id?: string } }>(
         RECIPES_LIST,
         "POST",
         recipeDraftPayload(draft),
+        { "idempotency-key": crypto.randomUUID() },
       );
-      const newId = created.template?.id;
+      const newId = created.recipe?.id;
       window.location.href = newId ? `/admin/generation/recipes/${newId}` : "/admin/generation/recipes";
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : t("Request failed"));

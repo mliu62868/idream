@@ -87,94 +87,94 @@ describe("remaining canonical admin list surfaces", () => {
       "?billingSearch=alice&ledgerReason=bonus&subscriptionStatus=active&ledgerCursor=L&subscriptionCursor=S",
     );
     expect(billingLedgerPath(billing)).toBe(
-      "/api/v1/admin/billing/ledger?search=alice&reason=bonus&cursor=L&limit=25",
+      "/api/v2/admin/billing/ledger?search=alice&reason=bonus&cursor=L&limit=25",
     );
     expect(billingSubscriptionsPath(billing)).toBe(
-      "/api/v1/admin/billing/subscriptions?search=alice&status=active&cursor=S&limit=25",
+      "/api/v2/admin/billing/subscriptions?search=alice&status=active&cursor=S&limit=25",
     );
 
     expect(pricingListPath(pricingQueryFromSearch(
       "?pricingSearch=portrait&pricingMode=image&pricingStatus=active&pricingCursor=P",
     ))).toBe(
-      "/api/v1/admin/pricing/rules?search=portrait&mode=image&status=active&cursor=P&limit=25",
+      "/api/v2/admin/pricing/rules?search=portrait&mode=image&status=active&cursor=P&limit=25",
     );
     expect(deadLetterListPath(deadLetterQueryFromSearch(
       "?deadSearch=timeout&deadMode=image&deadStatus=failed&deadError=provider&deadCursor=D",
     ))).toBe(
-      "/api/v1/admin/generation/dead-letter?search=timeout&mode=image&status=failed&errorCode=provider&cursor=D&limit=25",
+      "/api/v2/admin/generation/dead-letter?search=timeout&mode=image&status=failed&errorCode=provider&cursor=D&limit=25",
     );
     expect(accessListPath(accessQueryFromSearch(
       "?accessSearch=kim&accessRole=admin&accessStatus=active&accessDataClass=internal&accessCursor=A",
     ))).toBe(
-      "/api/v1/admin/users?q=kim&role=admin&status=active&dataClass=internal&cursor=A&limit=25",
+      "/api/v2/admin/users?q=kim&role=admin&status=active&dataClass=internal&cursor=A&limit=25",
     );
 
     const moderation = moderationQueryFromSearch(
       "?moderationSearch=asset&moderationStatus=open&moderationTargetType=media&reportCursor=R&mediaCursor=M&appealCursor=AP",
     );
     expect(moderationQueuePath(moderation, "reports")).toBe(
-      "/api/v1/admin/moderation/queue?scope=reports&limit=25&search=asset&status=open&targetType=media&reportCursor=R",
+      "/api/v2/admin/moderation/queue?scope=reports&limit=25&search=asset&status=open&targetType=media&reportCursor=R",
     );
     expect(moderationQueuePath(moderation, "media")).toBe(
-      "/api/v1/admin/moderation/queue?scope=media&limit=25&search=asset&status=open&targetType=media&mediaCursor=M",
+      "/api/v2/admin/moderation/queue?scope=media&limit=25&search=asset&status=open&targetType=media&mediaCursor=M",
     );
     expect(moderationQueuePath(moderation, "appeals")).toBe(
-      "/api/v1/admin/moderation/queue?scope=appeals&limit=25&search=asset&status=open&targetType=media&appealCursor=AP",
+      "/api/v2/admin/moderation/queue?scope=appeals&limit=25&search=asset&status=open&targetType=media&appealCursor=AP",
     );
 
     expect(auditListPath(auditQueryFromSearch(
       "?auditSearch=publish&auditAction=release&auditActor=operator&auditTargetType=character&auditCursor=AU",
     ))).toBe(
-      "/api/v1/admin/audit-log?search=publish&action=release&actorId=operator&targetType=character&cursor=AU&limit=25",
+      "/api/v2/admin/audit-log?search=publish&action=release&actorId=operator&targetType=character&cursor=AU&limit=25",
     );
     expect(contentListPath(contentQueryFromSearch(
       "?contentSearch=alex&contentStatus=approved&contentVisibility=public&contentCursor=C",
     ))).toBe(
-      "/api/v1/admin/content/characters?limit=25&search=alex&status=approved&visibility=public&cursor=C",
+      "/api/v2/admin/content/characters?limit=25&search=alex&status=approved&visibility=public&cursor=C",
     );
 
     const promo = promoQueryFromSearch(
       "?promoSearch=summer&promoStatus=active&referralStatus=paid&promoCursor=PC&referralCursor=PR",
     );
     expect(promoListPath(promo, "codes")).toBe(
-      "/api/v1/admin/promo/redeem-codes?limit=25&search=summer&status=active&cursor=PC",
+      "/api/v2/admin/promo/redeem-codes?limit=25&search=summer&status=active&cursor=PC",
     );
     expect(promoListPath(promo, "referrals")).toBe(
-      "/api/v1/admin/promo/referrals?limit=25&search=summer&status=paid&cursor=PR",
+      "/api/v2/admin/promo/referrals?limit=25&search=summer&status=paid&cursor=PR",
     );
     expect(approvalListPath(approvalQueryFromSearch(
       "?approvalSearch=release&approvalStatus=pending&approvalCursor=AV",
     ))).toBe(
-      "/api/v1/admin/approvals?limit=25&search=release&status=pending&cursor=AV",
+      "/api/v2/admin/approvals?limit=25&search=release&status=pending&cursor=AV",
     );
 
     const config = generationConfigQueryFromSearch(
       "?configSearch=qwen&profileMode=image&profileStatus=active&flagEnabled=true&profileCursor=GP&flagCursor=GF",
     );
     expect(generationProfilesPath(config)).toBe(
-      "/api/v1/admin/generation/model-profiles?search=qwen&mode=image&status=active&cursor=GP&limit=25",
+      "/api/v2/admin/generation/model-profiles?search=qwen&mode=image&status=active&cursor=GP&limit=25",
     );
     expect(featureFlagsPath(config)).toBe(
-      "/api/v1/admin/feature-flags?search=qwen&enabled=true&cursor=GF&limit=25",
+      "/api/v2/admin/feature-flags?search=qwen&enabled=true&cursor=GF&limit=25",
     );
 
     const chat = chatOpsQueryFromSearch(
       "?chatUserId=user&chatCharacterId=character&chatSessionStatus=active&chatEventStatus=open&chatEventLayer=policy&chatPolicyCode=P1&chatTargetId=T1&chatLimit=25&chatSessionCursor=CS&chatUsageCursor=CU&chatEventCursor=CE",
     );
     expect(chatOpsPath(chat, "sessions")).toBe(
-      "/api/v1/admin/chat/sessions?limit=25&userId=user&characterId=character&status=active&cursor=CS",
+      "/api/v2/admin/chat/sessions?limit=25&userId=user&characterId=character&status=active&cursor=CS",
     );
     expect(chatOpsPath(chat, "usage")).toBe(
-      "/api/v1/admin/chat/usage?limit=25&userId=user&cursor=CU",
+      "/api/v2/admin/chat/usage?limit=25&userId=user&cursor=CU",
     );
     expect(chatOpsPath(chat, "events")).toBe(
-      "/api/v1/admin/chat/moderation-events?limit=25&status=open&layer=policy&policyCode=P1&targetId=T1&cursor=CE",
+      "/api/v2/admin/chat/moderation-events?limit=25&status=open&layer=policy&policyCode=P1&targetId=T1&cursor=CE",
     );
 
     expect(announcementListPath(announcementQueryFromSearch(
       "?announcementSearch=launch&announcementLevel=promo&announcementActive=true&announcementCursor=AN",
     ))).toBe(
-      "/api/v1/admin/announcements?limit=25&search=launch&level=promo&active=true&cursor=AN",
+      "/api/v2/admin/announcements?limit=25&search=launch&level=promo&active=true&cursor=AN",
     );
   });
 

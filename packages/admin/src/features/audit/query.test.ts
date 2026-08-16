@@ -22,7 +22,7 @@ describe("Audit workspace query contract", () => {
       commandId: "command-9",
     });
     expect(auditListPath(query)).toBe(
-      "/api/v1/admin/audit-log?search=release&action=character.release.publish&actorId=operator-1&targetType=character_release&cursor=cursor-2&limit=25",
+      "/api/v2/admin/audit-log?search=release&action=character.release.publish&actorId=operator-1&targetType=character_release&cursor=cursor-2&limit=25",
     );
     expect(auditCommandPath(query.commandId)).toBe("/api/v2/admin/commands/command-9");
   });

@@ -147,7 +147,7 @@ export function BillingWorkspace({
     const request = requestGates.current.reconciliation.begin();
     setReconciliationState((current) => ({ ...current, error: null, loading: true }));
     try {
-      const data = await apiGet<BillingReconciliation>("/api/v1/admin/billing/reconciliation");
+      const data = await apiGet<BillingReconciliation>("/api/v2/admin/billing/reconciliation");
       if (!request.isCurrent()) return;
       setReconciliationState({ data, error: null, loading: false, refreshedAt: new Date().toISOString() });
     } catch (cause) {
@@ -232,7 +232,7 @@ export function BillingWorkspace({
       submitLabel: "Confirm",
       onSubmit: async (reason) => {
         await apiWrite(
-          "/api/v1/admin/billing/adjustments",
+          "/api/v2/admin/billing/adjustments",
           "POST",
           { userId, delta, reason, confirmation: confirmationTarget },
           { "idempotency-key": idempotencyKey },
@@ -270,7 +270,7 @@ export function BillingWorkspace({
       submitLabel: "Acknowledge refund",
       onSubmit: async (reason) => {
         await apiWrite(
-          `/api/v1/admin/billing/reconciliation/${encodeURIComponent(checkoutId)}/resolve`,
+          `/api/v2/admin/billing/reconciliation/${encodeURIComponent(checkoutId)}/resolve`,
           "POST",
           {
             resolution: "refund_acknowledged",
@@ -316,7 +316,7 @@ export function BillingWorkspace({
       onSubmit: async (reason) => {
         const result = adminSubscriptionRefundCommandResponseSchema.parse(
           await apiWrite<unknown>(
-            `/api/v1/admin/billing/subscriptions/${encodeURIComponent(subscriptionId)}/refund`,
+            `/api/v2/admin/billing/subscriptions/${encodeURIComponent(subscriptionId)}/refund`,
             "POST",
             { reason, confirmation: confirmationTarget },
             { "idempotency-key": idempotencyKey },
@@ -356,7 +356,7 @@ export function BillingWorkspace({
       onSubmit: async (reason) => {
         const result = adminSubscriptionRefundCommandResponseSchema.parse(
           await apiWrite<unknown>(
-            `/api/v1/admin/billing/subscriptions/${encodeURIComponent(subscriptionId)}/refund/reconcile`,
+            `/api/v2/admin/billing/subscriptions/${encodeURIComponent(subscriptionId)}/refund/reconcile`,
             "POST",
             { reason, confirmation: confirmationTarget },
             { "idempotency-key": idempotencyKey },

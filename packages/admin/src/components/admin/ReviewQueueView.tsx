@@ -6,7 +6,15 @@
 import { type KeyboardEvent, useCallback, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Bookmark, Check, Filter, Loader2, Trash2, X } from "lucide-react";
-import { apiDelete, apiGet, apiWrite } from "@/components/admin/api";
+import {
+  savedViewDeleteSchema,
+  savedViewListResponseSchema,
+  savedViewMutationResponseSchema,
+  type SavedView,
+  type SavedViewQueryState,
+} from "@idream/shared/admin";
+import { apiGet, apiWrite } from "@/components/admin/api";
+import { adminV2Request } from "@/lib/admin-v2-api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { cn } from "@/lib/utils";
 
@@ -69,16 +77,7 @@ type SavedReviewQueueFilters = {
   reportFilter: ReportFilter;
 };
 
-type SavedView = {
-  id: string;
-  scope: string;
-  label: string;
-  filters: unknown;
-  createdAt: string;
-  updatedAt: string;
-};
-
-const REVIEW_QUEUE_SAVED_VIEW_SCOPE = "moderation.review_queue";
+const REVIEW_QUEUE_SAVED_VIEW_SCOPE = "moderation_review_queue";
 const DEFAULT_FILTERS: SavedReviewQueueFilters = { query: "", reportFilter: "all" };
 const REPORT_FILTER_OPTIONS: Array<{ value: ReportFilter; label: string }> = [
   { value: "all", label: "All" },
@@ -103,7 +102,6 @@ export function ReviewQueueView() {
   const [ready, setReady] = useState(false);
   const [success, setSuccess] = useState<{ message: string; href: string | null } | null>(null);
   const savedViewCreateKey = useRef<string | null>(null);
-  const savedViewDeleteKeys = useRef(new Map<string, string>());
 
   const load = useCallback(async (nextCursor?: string) => {
     setLoading(true);
@@ -113,7 +111,7 @@ export function ReviewQueueView() {
       if (filters.query.trim()) params.set("search", filters.query.trim());
       if (filters.reportFilter !== "all") params.set("reportFilter", filters.reportFilter);
       if (nextCursor) params.set("cursor", nextCursor);
-      const data = await apiGet<{ items: ReviewItem[]; pageInfo: { endCursor: string | null; hasNextPage: boolean } }>(`/api/v1/admin/content/review-queue?${params}`);
+      const data = await apiGet<{ items: ReviewItem[]; pageInfo: { endCursor: string | null; hasNextPage: boolean } }>(`/api/v2/admin/content/review-queue?${params}`);
       setItems(data.items);
       setCursor(nextCursor);
       setPageInfo(data.pageInfo);
@@ -129,10 +127,11 @@ export function ReviewQueueView() {
     setSavedViewsLoading(true);
     setSavedViewError(null);
     try {
-      const data = await apiGet<{ items: SavedView[] }>(
-        `/api/v1/admin/saved-views?scope=${encodeURIComponent(REVIEW_QUEUE_SAVED_VIEW_SCOPE)}`,
+      const data = await adminV2Request(
+        `/api/v2/admin/saved-views?scope=${REVIEW_QUEUE_SAVED_VIEW_SCOPE}`,
+        { schema: savedViewListResponseSchema },
       );
-      setSavedViews(data.items);
+      setSavedViews([...data.items]);
     } catch (err) {
       setSavedViewError(err instanceof Error ? err.message : "Saved views failed");
     } finally {
@@ -167,11 +166,16 @@ export function ReviewQueueView() {
     setSavedViewError(null);
     try {
       savedViewCreateKey.current ??= crypto.randomUUID();
-      await apiWrite<{ view: SavedView }>("/api/v1/admin/saved-views", "POST", {
-        scope: REVIEW_QUEUE_SAVED_VIEW_SCOPE,
-        label,
-        filters: normalizeFilters(filters),
-      }, { "idempotency-key": savedViewCreateKey.current });
+      await adminV2Request("/api/v2/admin/saved-views", {
+        method: "POST",
+        idempotencyKey: savedViewCreateKey.current,
+        body: {
+          scope: REVIEW_QUEUE_SAVED_VIEW_SCOPE,
+          label,
+          queryState: savedQueryState(filters),
+        },
+        schema: savedViewMutationResponseSchema,
+      });
       savedViewCreateKey.current = null;
       setSavedViewLabel("");
       await loadSavedViews();
@@ -185,12 +189,11 @@ export function ReviewQueueView() {
   async function deleteSavedView(view: SavedView) {
     setSavedViewError(null);
     try {
-      const key = savedViewDeleteKeys.current.get(view.id) ?? crypto.randomUUID();
-      savedViewDeleteKeys.current.set(view.id, key);
-      await apiDelete<{ deleted: true }>(`/api/v1/admin/saved-views/${view.id}`, {
-        "idempotency-key": key,
+      await adminV2Request(`/api/v2/admin/saved-views/${encodeURIComponent(view.id)}`, {
+        method: "DELETE",
+        ifMatch: view.version,
+        schema: savedViewDeleteSchema,
       });
-      savedViewDeleteKeys.current.delete(view.id);
       setSavedViews((current) => current.filter((item) => item.id !== view.id));
     } catch (err) {
       setSavedViewError(err instanceof Error ? err.message : "Delete failed");
@@ -199,7 +202,7 @@ export function ReviewQueueView() {
 
   function applySavedView(view: SavedView) {
     setSavedViewError(null);
-    setFilters(savedFiltersFromUnknown(view.filters));
+    setFilters(savedFiltersFromQueryState(view.queryState));
     setCursor(undefined);
   }
 
@@ -500,7 +503,7 @@ function DecisionDialog({
     idempotencyKey.current = requestKey;
     try {
       const result = await apiWrite<ReviewDecisionResult>(
-        `/api/v1/admin/content/review-queue/${item.submissionId}/decision`,
+        `/api/v2/admin/content/review-queue/${item.submissionId}/decision`,
         "POST",
         {
           decision,
@@ -593,19 +596,20 @@ function formatDate(value: string) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
-function normalizeFilters(filters: SavedReviewQueueFilters): SavedReviewQueueFilters {
+function savedQueryState(filters: SavedReviewQueueFilters): SavedViewQueryState {
   return {
-    query: filters.query.trim(),
-    reportFilter: filters.reportFilter,
+    search: filters.query.trim(),
+    filters: { reportFilter: filters.reportFilter },
+    sort: { field: "created_at", direction: "asc" },
+    pageSize: 25,
   };
 }
 
-function savedFiltersFromUnknown(value: unknown): SavedReviewQueueFilters {
-  if (typeof value !== "object" || value === null) return DEFAULT_FILTERS;
-  const record = value as Record<string, unknown>;
-  const query = typeof record.query === "string" ? record.query : "";
-  const reportFilter = isReportFilter(record.reportFilter) ? record.reportFilter : "all";
-  return { query, reportFilter };
+function savedFiltersFromQueryState(state: SavedViewQueryState): SavedReviewQueueFilters {
+  return {
+    query: state.search,
+    reportFilter: isReportFilter(state.filters.reportFilter) ? state.filters.reportFilter : "all",
+  };
 }
 
 function isReportFilter(value: unknown): value is ReportFilter {

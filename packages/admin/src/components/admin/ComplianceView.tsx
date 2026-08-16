@@ -63,7 +63,7 @@ function DsarSection() {
     setNote(null);
     try {
       const data = await apiGet<{ export: unknown }>(
-        `/api/v1/admin/compliance/users/${encodeURIComponent(userId.trim())}/export`,
+        `/api/v2/admin/compliance/users/${encodeURIComponent(userId.trim())}/export`,
       );
       setExported(data.export);
     } catch (error) {
@@ -80,7 +80,7 @@ function DsarSection() {
     setNote(null);
     try {
       const data = await apiWrite<{ erased: boolean; idempotent?: boolean }>(
-        `/api/v1/admin/compliance/users/${encodeURIComponent(userId.trim())}/erase`,
+        `/api/v2/admin/compliance/users/${encodeURIComponent(userId.trim())}/erase`,
         "POST",
         {
           reason: eraseDraft.reason.trim(),
@@ -199,7 +199,7 @@ function AgeVerificationSection() {
     setAuthority((current) => authorityRequestStarted(current, queryKey));
     try {
       const data = await apiGet<{ items: AgeRow[] }>(
-        `/api/v1/admin/compliance/age-verifications?${queryKey}`,
+        `/api/v2/admin/compliance/age-verifications?${queryKey}`,
       );
       if (!request.isCurrent()) return;
       setAuthority(authorityRequestSucceeded(queryKey, data.items));
@@ -228,7 +228,7 @@ function AgeVerificationSection() {
     setOverrideBusy(true);
     setOverrideError(null);
     try {
-      await apiWrite(`/api/v1/admin/compliance/age-verifications/${draft.id}/override`, "POST", {
+      await apiWrite(`/api/v2/admin/compliance/age-verifications/${draft.id}/override`, "POST", {
         status: draft.next,
         reason: draft.reason.trim(),
         confirmation: draft.confirmation.trim(),

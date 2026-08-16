@@ -8,6 +8,18 @@ export const collaborationTargetTypeSchema = z.enum([
   "incident",
 ]);
 
+/**
+ * SPEC: Saved View 的 scope 比协作目标多两个 —— 支持工单队列和角色人审队列。
+ * INTENT: 不把这两个塞进 `collaborationTargetTypeSchema`，因为那是评论 / 交接 / 关注的目标域，
+ *         多两个成员会让那三条链路凭空多出没有实体可解析的目标类型。Saved View 只需要一个
+ *         「这份筛选属于哪个列表」的命名空间，这是它自己的词表。
+ */
+export const savedViewScopeSchema = z.enum([
+  ...collaborationTargetTypeSchema.options,
+  "support_request",
+  "moderation_review_queue",
+]);
+
 export const savedViewQueryStateSchema = z.object({
   search: z.string().trim().max(200).default(""),
   filters: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.array(z.string()), z.null()])),
@@ -19,7 +31,7 @@ export const savedViewQueryStateSchema = z.object({
 }).strict();
 
 export const savedViewCreateSchema = z.object({
-  scope: collaborationTargetTypeSchema,
+  scope: savedViewScopeSchema,
   label: z.string().trim().min(1).max(80),
   queryState: savedViewQueryStateSchema,
 }).strict();
@@ -31,7 +43,7 @@ export const savedViewUpdateSchema = z.object({
 }).strict();
 
 export const savedViewListQuerySchema = z.object({
-  scope: collaborationTargetTypeSchema,
+  scope: savedViewScopeSchema,
 }).strict();
 
 export const savedViewDeleteSchema = z.object({ deleted: z.literal(true) }).strict();
@@ -104,7 +116,7 @@ export const collaborationQuerySchema = adminCursorQuerySchema.pick({ cursor: tr
 
 export const savedViewSchema = z.object({
   id: adminIdSchema,
-  scope: collaborationTargetTypeSchema,
+  scope: savedViewScopeSchema,
   label: z.string().trim().min(1).max(80),
   queryState: savedViewQueryStateSchema,
   version: z.number().int().positive(),
@@ -157,5 +169,6 @@ export const collaborationActivityMutationSchema = z.object({
 export type SavedViewQueryState = z.infer<typeof savedViewQueryStateSchema>;
 export type CollaborationTargetType = z.infer<typeof collaborationTargetTypeSchema>;
 export type SavedView = z.infer<typeof savedViewSchema>;
+export type SavedViewScope = z.infer<typeof savedViewScopeSchema>;
 export type CollaborationActivityListResponse = z.infer<typeof collaborationActivityListResponseSchema>;
 export type CollaborationActivityMutation = z.infer<typeof collaborationActivityMutationSchema>;

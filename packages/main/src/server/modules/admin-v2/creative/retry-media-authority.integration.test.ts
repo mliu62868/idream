@@ -2,8 +2,32 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { POST as retryFailed } from "@/app/api/v2/admin/creative/runs/[id]/commands/retry-failed/route";
 import { prisma } from "@/server/lib/db";
-import { patchContentAsset } from "@/server/modules/admin/content/assets";
+import { PATCH as patchContentAssetRoute } from "@/app/api/v2/admin/assets/[id]/route";
 import { executeCreativeRetryCommand } from "./retry-executor";
+
+/**
+ * SPEC: drive the Route Handler but keep the throw-on-failure shape these assertions use.
+ * INTENT: a Route Handler answers a 4xx envelope where the module used to throw an AppError.
+ * The authority decision is what is under test, not which shape carries it.
+ */
+async function viaRoute(pending: Promise<Response> | Response): Promise<Response> {
+  const response = await pending;
+  if (response.ok) return response;
+  const payload = await response.clone().json() as {
+    error?: { code?: string; message?: string; details?: unknown };
+  };
+  throw Object.assign(new Error(payload.error?.message ?? "Admin v2 request failed"), {
+    status: response.status,
+    code: payload.error?.code,
+    details: payload.error?.details,
+  });
+}
+
+/** SPEC: the Image Library PATCH as its Route Handler serves it, keyed by asset id. */
+function patchContentAsset(request: Request, id: string) {
+  return viaRoute(patchContentAssetRoute(request, { params: Promise.resolve({ id }) }));
+}
+
 
 describe("Creative retry media and dispatch authority", () => {
   const suffix = randomUUID();
@@ -378,7 +402,7 @@ describe("Creative retry media and dispatch authority", () => {
     const commandId = await acceptRetry(fixture);
     const archiveResponse = await patchContentAsset(
       new Request(
-        `http://localhost/admin/content/assets/${fixture.sourceAssetId}`,
+        `http://localhost/api/v2/admin/assets/${fixture.sourceAssetId}`,
         {
           method: "PATCH",
           headers: {

@@ -32,7 +32,7 @@ export function generationConfigQueryFromSearch(search: string): GenerationConfi
 }
 
 export function generationProfilesPath(query: GenerationConfigQuery) {
-  return withQuery("/api/v1/admin/generation/model-profiles", {
+  return withQuery("/api/v2/admin/generation/model-profiles", {
     search: query.search,
     mode: query.profileMode,
     status: query.profileStatus,
@@ -42,7 +42,7 @@ export function generationProfilesPath(query: GenerationConfigQuery) {
 }
 
 export function featureFlagsPath(query: GenerationConfigQuery) {
-  return withQuery("/api/v1/admin/feature-flags", {
+  return withQuery("/api/v2/admin/feature-flags", {
     search: query.search,
     enabled: query.flagEnabled,
     cursor: query.flagCursor,

@@ -32,7 +32,7 @@ export function accessQueryFromSearch(search: string): AccessQuery {
 }
 
 export function accessListPath(query: AccessQuery) {
-  return withQuery("/api/v1/admin/users", {
+  return withQuery("/api/v2/admin/users", {
     q: query.search,
     role: query.role,
     status: query.status,

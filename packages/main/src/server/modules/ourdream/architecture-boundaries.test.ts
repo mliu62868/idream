@@ -6,21 +6,22 @@ import { describe, expect, it } from "vitest";
 //
 // INTENT: 这里守的不是"某个符号别出现"，而是"这个方向上一共只有几条边"。
 // 真实事故：GET /v1/character-templates 的公开只读投影 listActiveTemplates 曾住在
-// modules/admin/characters/templates.ts 里，靠一行注释声明"公开只读，不要求 admin 权限"。
+// modules/admin-v2/content/templates.ts 里，靠一行注释声明"公开只读，不要求 admin 权限"。
 // 符号黑名单式的守卫抓不到它 —— 名字是合法的、文件是合法的、import 也编译得过。
 // 只有"这个方向的边必须恰好是这一条"才会在它出现时失败。
 //
-// INVARIANT: 白名单只有一条 —— v1 → admin 的 dispatch 接缝（service.ts 把 /v1/admin/**
-// 转交给 admin dispatcher）。任何别的 admin import 都是把后台实现拉进前台路径，
-// 应该改成把那段东西搬到 ourdream/ 下，而不是加进这个白名单。
-// 白名单条目消失也会失败（集合相等而非包含），所以接缝搬家时台账不会烂在这里。
+// INVARIANT: 白名单现在是**空的**。原本唯一那条是 v1 → admin 的 dispatch 接缝
+// （service.ts 把 /v1/admin/** 转交给 admin dispatcher）；admin v1 整体迁到 v2 之后
+// dispatcher 已删除，这个方向上不应再有任何一条边。任何 admin import 都是把后台实现
+// 拉进前台路径，应该把那段东西搬到 ourdream/ 下，而不是加进这个白名单。
+// 集合相等而非包含 —— 所以这条台账在接缝消失时同样会失败，不会烂在这里。
 //
 // NOTE: admin-v2/** 不在管辖范围内 —— 那边是两侧共用的基础设施（metric writer、
 // authority lock、idempotency…），不是后台实现。
 
 // 字面量拆开拼装：这个文件本身就在被扫描的目录里，写全了会扫到自己。
 const ADMIN_MODULE_PREFIX = ["@/server/modules", "admin/"].join("/");
-const ALLOWED_ADMIN_IMPORTS = [[ADMIN_MODULE_PREFIX, "service"].join("")];
+const ALLOWED_ADMIN_IMPORTS: readonly string[] = [];
 
 async function sourceFiles(root: string): Promise<string[]> {
   const entries = await readdir(root, { withFileTypes: true });

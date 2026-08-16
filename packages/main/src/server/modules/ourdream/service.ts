@@ -1,47 +1,26 @@
-import {
-  Prisma,
-  type GenerationJob as GenerationJobRow,
-} from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import {
   APPEAL_TARGET_TYPES,
   CHARACTER_STYLES,
   CHARACTER_VISIBILITY,
   GENDERS,
-  GENERATION_JOB_STATUSES,
   MEDIA_ASSET_VISIBILITY,
   PRODUCT_FEEDBACK_CATEGORIES,
   SUPPORT_REQUEST_CATEGORIES,
-  TERMINAL_GENERATION_JOB_STATUSES,
 } from "@idream/shared/catalog";
 import { parseCharacterReleaseAssetManifest } from "@idream/shared/admin";
 import { resolveLocalBlobPath, resolveLocalBlobRoot } from "@idream/shared/storage/local-blob";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import type { ChatImageRequestedPayload } from "@/server/ai/schemas";
 import {
-  assertPinnedLegacyCharacterGenerationAuthority,
-  legacyCharacterGenerationAuthorityFromControls,
-  loadLockedLiveEditorialLegacyGenerationAuthority,
-  type LegacyCharacterGenerationAuthority,
-} from "@/server/modules/generation/attempt-dispatch";
-import {
-  dispatchGenerationAttemptOutbox,
-  reserveInitialGenerationAttempt as reserveInitialGenerationAttemptAuthority,
-} from "@/server/modules/generation/generation-attempt-authority";
-import {
   isProductionLtxVideoProfile,
 } from "@/server/modules/generation/production-video-profile";
-import { dispatchAdmin } from "@/server/modules/admin/service";
-import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import {
-  assertQuoteStillValid,
-  generationPlanRouteFingerprint,
-  generationPricingFingerprint,
   generationQuoteAuthoritySchema,
   quoteGeneration,
-  resolveGenerationPlan,
   type GenerationProfileSelectionAuthority,
 } from "./generation-quote";
 import {
@@ -56,7 +35,6 @@ import {
   activeSubscriptionWhere,
   billingAccessDTO,
   entitlementMap,
-  lockUserLedger,
   publicSubscriptionDTO,
 } from "./subscription-lifecycle";
 import {
@@ -75,13 +53,6 @@ import {
 import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
 import { listActiveTemplates } from "./character-templates";
 import { isReusablePlatformAssetWhere } from "@/server/modules/ourdream/chat-image-reuse";
-import { referenceSetSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
-import {
-  UserCharacterSoulCompileError,
-  compileUserCharacterContent,
-  materializeUserCharacterContentVersion,
-  type UserCharacterSoulInput,
-} from "./character-soul";
 import {
   lockCharacterGenerationAuthority,
   lockCharacterMediaAssetAuthorities,
@@ -127,11 +98,7 @@ import {
 } from "@/server/lib/auth";
 import { prisma } from "@/server/lib/db";
 import { nameMatch } from "@/server/lib/db/search";
-import {
-  generationCostDreamcoins,
-  generationCostFromAuthority,
-  resolveGenerationPricingAuthority,
-} from "@/server/lib/generation-pricing";
+import { generationCostDreamcoins } from "@/server/lib/generation-pricing";
 import { env } from "@/server/lib/env";
 import { AppError, Errors } from "@/server/lib/errors";
 import {
@@ -140,7 +107,6 @@ import {
   isMediaAssetOperationalForAuthority,
   isSyntheticMediaAsset,
   resolveMediaAssetBlobLocator,
-  SHARED_IMMUTABLE_BLOB_LOCATOR_SCHEMA,
 } from "@/server/lib/media-asset-authority";
 import { mediaAssetAuthorityDependencies } from "@/server/modules/admin-v2/shared/media-asset-authority-dependencies";
 import { canonicalJsonHash } from "@/server/modules/admin-v2/shared/idempotency";
@@ -177,7 +143,6 @@ import {
 import { providers } from "@/server/providers";
 import type { OurdreamRoute, OurdreamRouteTemplate } from "@/types/ourdream";
 import {
-  dimensionsForImageOrientation,
   imageOrientations,
   normalizeImageOrientation,
 } from "./generation-dimensions";
@@ -188,7 +153,6 @@ import {
 import { createVoiceClip as createDurableVoiceClip } from "./voice-clip";
 import { trackEvent, trackEventBestEffort } from "./product-events";
 import { submitReport } from "./reports";
-import { moderateText } from "@/server/moderation/text-authority";
 import {
   generationJobSchema,
   type GenerationCreateBody,
@@ -196,12 +160,7 @@ import {
 } from "./generation-request-schema";
 import {
   assertCharacterIdentityAuthorityMutable,
-  characterVisualProfileCreateData,
   readableCharacter,
-  resolveGenerationLook,
-  resolveGenerationVisualProfile,
-  type GenerationPromptCharacter,
-  type GenerationVisualProfile,
 } from "./generation-character-authority";
 import {
   featureFlagEnabled,
@@ -215,15 +174,10 @@ import {
   publicOfferAvailability,
 } from "./offer-availability";
 import {
-  assertGenerationProfileCanDispatchReferences,
   filterPublicTextToImageGenerationProfiles,
   generationProfileReferenceIncompatibilities,
   generationReferenceRouteRequirements,
-  generationRequirementsFromManifest,
-  normalizedGenerationReferenceRole,
   projectPublicImageEditGenerationProfiles,
-  selectGenerationProfile,
-  selectRecipe,
 } from "./generation-profile-selection";
 import {
   isCustomerEngagementActor,
@@ -243,6 +197,55 @@ import {
   type CharacterWithPublicRelations,
 } from "./public-read-model";
 import { loadCharacterRendererPreview } from "@/server/modules/admin-v2/characters/renderer-preview";
+import {
+  booleanFromRecord,
+  jsonRecord,
+  jsonStringArray,
+  numberFromRecord,
+  pruneUndefined,
+  stringFromRecord,
+} from "./json-values";
+import { clampPrompt, cleanPromptText } from "./generation-prompt";
+import {
+  createReferenceSetRevision,
+  referenceManifestFromRevision,
+  referenceSnapshotInputs,
+  type ReferenceSetWithReferences,
+} from "./generation-reference-set";
+import {
+  activeGenerationStatuses,
+  findExistingGenerationJob,
+  generationWriteRequestFingerprint,
+  isUniqueConstraintError,
+  wakeQueuedGenerationDispatch,
+} from "./generation-job-authority";
+import {
+  generationJobDTO,
+  generationJobInclude,
+  generationRefundAmount,
+  latestGenerationAttemptStatuses,
+  type GenerationJobWithRelations,
+} from "./generation-job-read-model";
+import { createGenerationJobForUser } from "./generation-job-create";
+import {
+  quoteGenerationRetry,
+  resolveGenerationRetryTarget,
+  retryGenerationJobForUser,
+} from "./generation-job-retry";
+import {
+  assertIdentityImageMediaInTx,
+  assertMediaOwner,
+  assertNonSyntheticMediaAsset,
+  mediaMetadataWithQuality,
+} from "./customer-media-authority";
+import {
+  assertDraftOwner,
+  previewCharacterDraft,
+  submitCharacterDraft,
+} from "./character-draft-write";
+import { duplicateCharacterForUser } from "./character-duplicate";
+import { updateCharacterForUser } from "./character-update";
+import { recordMediaIdentityFeedback } from "./media-feedback";
 
 type ApiMethod = "GET" | "POST" | "PATCH" | "DELETE" | "PUT";
 type SearchRouteSuggestion = {
@@ -490,9 +493,6 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
 
   if (!resource) return ok({ service: "idream-api", version: "v1" });
 
-  if (resource === "admin") {
-    return dispatchAdmin(request, segments.slice(1));
-  }
 
   if (resource === "auth") {
     if (id === "signup" && method === "POST") return signup(request);
@@ -1708,174 +1708,13 @@ async function previewDraft(request: Request, id: string) {
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const idempotencyKey = requireGenerationWriteIdempotencyKey(request);
-  const draft = await assertDraftOwner(id, user.id);
-  const requestFingerprint = generationWriteRequestFingerprint(
-    "character.preview.create",
-    {},
-    draft.id,
-  );
-  const existingReservation = await findCharacterPreviewReservation(
-    user.id,
-    draft.id,
-    idempotencyKey,
-  );
-  if (existingReservation) {
-    await wakeQueuedGenerationDispatch(existingReservation.generationJob);
-    return ok({ previewJob: existingReservation.previewJob });
-  }
-  const moderation = await moderateText(
-    "character_draft",
-    id,
-    `${draft.name ?? ""} ${JSON.stringify(draft.advancedDetails)}`,
-    "input",
-  );
-  if (moderation.status === "blocked") {
-    throw Errors.forbidden("Draft failed safety checks", moderation);
-  }
-
-  const profile = await selectGenerationProfile({
-    mode: "image",
-    referenceRequirements: {
-      pinnedReferences: [],
-      sourceImageAssetId: null,
-      lookReferenceAssetId: null,
-    },
-    catalogScope: "public_text_to_image",
-    accessibleEntitlements: await entitlementMap(user.id),
-  });
-  const recipe = await selectRecipe("image", "character");
-  const allowedOrientations = jsonStringArray(profile.allowedOrientations);
-  const orientation = allowedOrientations.includes("4:5")
-    ? "4:5"
-    : (allowedOrientations[0] ?? "4:5");
-  const dimensions = dimensionsForImageOrientation({
-    orientation,
-    defaultWidth: profile.defaultWidth,
-    defaultHeight: profile.defaultHeight,
-  });
-  const prompt = [
-    recipe.body,
-    `${draft.style ?? "realistic"} portrait of an adult ${draft.gender ?? "female"} character`,
-    draft.name ? `Character name: ${draft.name}` : null,
-    `Appearance: ${JSON.stringify(draft.appearance ?? {})}`,
-    `Hair: ${JSON.stringify(draft.hair ?? {})}`,
-    `Body: ${JSON.stringify(draft.body ?? {})}`,
-    `Details: ${JSON.stringify(draft.advancedDetails ?? {})}`,
-    "single subject, clear face, identity reference portrait",
-  ]
-    .filter((part): part is string => Boolean(part))
-    .join(". ");
-
-  // INVARIANT: Preview business state, Generation Request, first Attempt and
-  // dispatch Outbox either all exist or none do. Gen consumes the same formal
-  // image envelope as every other image use case.
-  let reservation;
-  try {
-    reservation = await prisma.$transaction(async (tx) => {
-      const previewJob = await tx.characterPreviewJob.create({
-        data: {
-          draftId: id,
-          status: "queued",
-          provider: profile.runner,
-        },
-      });
-      const generationJob = await tx.generationJob.create({
-        data: {
-          userId: user.id,
-          idempotencyKey,
-          momentSpec: toInputJson({ requestFingerprint }),
-          mode: "image",
-          prompt,
-          negativePrompt: recipe.negativeBase,
-          controls: toInputJson(pruneUndefined({
-            width: dimensions.width,
-            height: dimensions.height,
-            orientation,
-            workflowKey: profile.workflowKey ?? undefined,
-          })),
-          presetIds: toInputJson([]),
-          model: profile.workflowKey ?? profile.pipelineModel,
-          profileId: profile.profileKey,
-          profileVersion: profile.version,
-          recipeId: recipe.recipeKey,
-          recipeVersion: recipe.version,
-          orientation,
-          outputCount: 1,
-          costDreamcoins: 0,
-          provider: profile.runner,
-          sourceType: "character_preview",
-          sourceId: previewJob.id,
-          sourceMeta: toInputJson({
-            draftId: id,
-            previewJobId: previewJob.id,
-          }),
-        },
-      });
-      await appendGenerationEvent(
-        tx,
-        generationJob.id,
-        "created",
-        "Character Preview Generation Request accepted",
-        { previewJobId: previewJob.id, draftId: id },
-      );
-      await appendGenerationEvent(
-        tx,
-        generationJob.id,
-        "queued",
-        "Character Preview Generation Request queued",
-        {},
-      );
-      const attempt = await reserveInitialGenerationAttempt(tx, generationJob);
-      return {
-        previewJob,
-        outboxId: attempt.outbox.id,
-      };
-    });
-  } catch (error) {
-    if (!isUniqueConstraintError(error)) throw error;
-    // A concurrent replay can lose the unique-key race after the first request
-    // committed. Resolve that same durable Preview/Generation pair instead of
-    // turning a safe retry into a second reservation.
-    const replay = await findCharacterPreviewReservation(
-      user.id,
-      draft.id,
+  return ok(
+    await previewCharacterDraft({
+      userId: user.id,
+      draftId: id,
       idempotencyKey,
-    );
-    if (!replay) throw error;
-    await wakeQueuedGenerationDispatch(replay.generationJob);
-    return ok({ previewJob: replay.previewJob });
-  }
-  await dispatchGenerationAttemptOutbox(prisma, {
-    outboxIds: [reservation.outboxId],
-  });
-  return ok({ previewJob: reservation.previewJob });
-}
-
-async function findCharacterPreviewReservation(
-  userId: string,
-  draftId: string,
-  idempotencyKey: string,
-) {
-  const generationJob = await prisma.generationJob.findFirst({
-    where: { userId, idempotencyKey },
-  });
-  if (!generationJob) return null;
-  if (generationJob.sourceType !== "character_preview" || !generationJob.sourceId) {
-    throw Errors.conflict(
-      "Idempotency-Key was already used for a different generation request",
-      { generationJobId: generationJob.id },
-    );
-  }
-  const previewJob = await prisma.characterPreviewJob.findFirst({
-    where: { id: generationJob.sourceId, draftId },
-  });
-  if (!previewJob) {
-    throw Errors.conflict(
-      "Idempotency-Key was already used for a different Character Preview request",
-      { generationJobId: generationJob.id },
-    );
-  }
-  return { generationJob, previewJob };
+    }),
+  );
 }
 
 // GET character-drafts/:id/preview — poll one async preview by durable identity.
@@ -1942,181 +1781,14 @@ async function submitDraft(request: Request, id: string) {
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const body = draftSubmitSchema.parse(await jsonBody(request));
-  const draft = await assertDraftOwner(id, user.id);
-  if (!draft.name) throw Errors.badRequest("Draft name is required before submit");
-  const draftName = draft.name;
-  const advancedDetails = jsonRecord(draft.advancedDetails);
-  const relationship =
-    jsonNonBlankString(advancedDetails.relationshipArchetype) ??
-    jsonNonBlankString(advancedDetails.relationship);
-
-  const personaDescription =
-    body.description ??
-    jsonNonBlankString(advancedDetails.description);
-  const description =
-    personaDescription ??
-    `Custom ${draft.style ?? "realistic"} companion created from the Ourdream creator.`;
-  const style = draft.style ?? "realistic";
-  const gender = draft.gender ?? "female";
-  const missingPersonaFields = requiredCharacterPersonaFields({
-    description: personaDescription,
-    relationship,
-    advancedDetails,
-  });
-  const moderation = await moderateText(
-    "character_draft",
-    id,
-    `${draft.name} ${description} ${JSON.stringify(draft.advancedDetails)}`,
-    "input",
-  );
-  if (moderation.status === "blocked") {
-    throw Errors.forbidden("Character failed safety checks", moderation);
-  }
-  const selectedPreview = draft.previewJobId
-    ? await prisma.characterPreviewJob.findFirst({
-        where: {
-          id: draft.previewJobId,
-          draftId: draft.id,
-          status: "completed",
-          resultAssetId: { not: null },
-        },
-      })
-    : null;
-  if (!selectedPreview?.resultAssetId) {
-    throw Errors.badRequest("Choose an identity image before publishing this character");
-  }
-  const anchorAssetId = selectedPreview.resultAssetId;
-  const anchorAsset = await prisma.mediaAsset.findFirst({
-    where: {
-      id: anchorAssetId,
-      ownerId: user.id,
-      deletedAt: null,
-      type: "image",
-    },
-  });
-  if (!anchorAsset) {
-    throw Errors.badRequest("The selected identity image is no longer available");
-  }
-  assertNonSyntheticMediaAsset(
-    anchorAsset,
-    "Demo preview images cannot be published as a character identity",
-  );
-  if (missingPersonaFields.length > 0) {
-    throw Errors.badRequest("Complete the character persona before publishing", {
-      missingFields: missingPersonaFields,
-    });
-  }
-  const userContent = compileUserSoulOrBadRequest({
-    name: draftName,
+  const { character } = await submitCharacterDraft({
+    userId: user.id,
+    draftId: id,
+    visibility: body.visibility,
+    description: body.description,
     age: body.age,
-    description,
-    relationship,
-    style,
-    gender,
-    appearance: draft.appearance,
-    advancedDetails: draft.advancedDetails,
   });
-
-  const character = await prisma.$transaction(async (tx) => {
-    await lockCharacterMediaAssetAuthorities(tx, [anchorAssetId]);
-    const lockedAnchorAsset = await assertIdentityImageMediaInTx(
-      tx,
-      anchorAssetId,
-      user.id,
-    );
-    if (lockedAnchorAsset.characterId !== null) {
-      throw Errors.conflict(
-        "The selected identity image already belongs to another Character. Choose an unassigned image or clone it first.",
-        {
-          mediaAssetId: lockedAnchorAsset.id,
-          mediaCharacterId: lockedAnchorAsset.characterId,
-        },
-      );
-    }
-
-    const created = await tx.character.create({
-      data: {
-        creatorId: user.id,
-        name: draftName,
-        age: body.age,
-        description,
-        systemPrompt: userContent.personaSnapshot.compiled.systemPrompt,
-        visibility: body.visibility,
-        status: body.visibility === "public" ? "pending_review" : "approved",
-        style,
-        gender,
-        relationship,
-        imageAssetId: anchorAssetId,
-        appearance: toInputJson(draft.appearance ?? {}),
-        advancedDetails: toInputJson(draft.advancedDetails ?? {}),
-      },
-    });
-
-    const contentVersion = await materializeUserCharacterContentVersion({
-      tx,
-      characterId: created.id,
-      sourceId: draft.id,
-      createdById: user.id,
-      content: userContent,
-    });
-    await tx.character.update({
-      where: { id: created.id },
-      data: { currentContentVersionId: contentVersion.id },
-    });
-
-    const claimedAnchor = await tx.mediaAsset.updateMany({
-      where: {
-        id: anchorAssetId,
-        ownerId: user.id,
-        deletedAt: null,
-        type: "image",
-        characterId: null,
-      },
-      data: { characterId: created.id },
-    });
-    if (claimedAnchor.count !== 1) {
-      throw Errors.conflict(
-        "The selected identity image changed while the Character was being created. Review the image and submit again.",
-        {
-          mediaAssetId: anchorAssetId,
-          targetCharacterId: created.id,
-        },
-      );
-    }
-    const visualProfile = await tx.characterVisualProfile.create({
-      data: characterVisualProfileCreateData({
-        characterId: created.id,
-        version: 1,
-        status: "active",
-        style,
-        name: draftName,
-        age: body.age,
-        description,
-        gender,
-        appearance: draft.appearance,
-        advancedDetails: draft.advancedDetails,
-        anchorAssetIds: [anchorAssetId],
-        createdFrom: "create_preview",
-      }),
-    });
-    await createReferenceSetRevision(
-      tx,
-      visualProfile,
-      "create_preview",
-    );
-    await tx.characterStats.create({ data: { characterId: created.id } });
-    await tx.characterSubmission.create({
-      data: {
-        characterId: created.id,
-        submitterId: user.id,
-        status: body.visibility === "public" ? "pending" : "approved",
-      },
-    });
-
-    return tx.character.findUniqueOrThrow({ where: { id: created.id } });
-  });
-
-  // Input moderation already ran synchronously above (moderateText); no async pass.
+  // Input moderation already ran synchronously inside the submit action; no async pass.
   await trackEvent("character_created", { characterId: character.id }, ctx);
   return ok({ character });
 }
@@ -2317,51 +1989,6 @@ async function generationQuoteForUser(
   return ok({ quote: quoted.quote });
 }
 
-// SPEC: turn selected mode/background/pose/outfit preset ids into a descriptive prompt fragment.
-// INTENT: presets are open to every tier (unlike custom prompt); only built-in or the user's
-// own active presets or public community presets resolve, so a stranger's private
-// id can't be injected. Empty when none selected.
-async function resolvePresetPromptFragment(
-  controls: {
-    modePresetId?: string;
-    backgroundPresetId?: string;
-    posePresetId?: string;
-    outfitPresetId?: string;
-  },
-  userId: string,
-): Promise<string> {
-  const ids = [
-    controls.modePresetId,
-    controls.backgroundPresetId,
-    controls.posePresetId,
-    controls.outfitPresetId,
-  ].filter((id): id is string => Boolean(id));
-  if (ids.length === 0) return "";
-  const presets = await prisma.generationPreset.findMany({
-    where: {
-      id: { in: ids },
-      status: "active",
-      OR: [
-        { scope: "built_in" },
-        { scope: "community", visibility: "public" },
-        { ownerId: userId },
-      ],
-    },
-  });
-  const fragments: string[] = [];
-  for (const id of ids) {
-    const preset = presets.find((item) => item.id === id);
-    if (!preset) continue;
-    const values = isRecord(preset.controls)
-      ? Object.values(preset.controls)
-          .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-          .map((value) => value.trim())
-      : [];
-    fragments.push(values.length ? values.join(", ") : preset.label);
-  }
-  return fragments.join(", ");
-}
-
 async function createGenerationJob(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
@@ -2413,46 +2040,6 @@ function requireGenerationWriteIdempotencyKey(request: Request) {
   return value;
 }
 
-function generationWriteRequestFingerprint(
-  commandType:
-    | "generation.create"
-    | "media.variation.create"
-    | "character.preview.create",
-  body: unknown,
-  targetId?: string,
-) {
-  const semanticBody = isRecord(body)
-    ? Object.fromEntries(
-        Object.entries(body).filter(([key]) => key !== "quoteAuthority"),
-      )
-    : body;
-  return canonicalJsonHash({
-    schemaVersion: "generation-write-request-v1",
-    commandType,
-    targetId: targetId ?? null,
-    body: semanticBody,
-  });
-}
-
-function assertGenerationJobRequestFingerprint(
-  job: Pick<GenerationJobRow, "id" | "momentSpec">,
-  requestFingerprint?: string,
-) {
-  if (!requestFingerprint) return;
-  const storedFingerprint = jsonRecord(job.momentSpec).requestFingerprint;
-  // Jobs created before fingerprint binding remain replayable by their durable
-  // user/idempotency tuple. Every new public generation write pins the hash.
-  if (
-    typeof storedFingerprint === "string" &&
-    storedFingerprint !== requestFingerprint
-  ) {
-    throw Errors.conflict(
-      "Idempotency-Key was already used for a different generation request",
-      { generationJobId: job.id },
-    );
-  }
-}
-
 async function resolveFeedRemixGenerationSource(
   userId: string,
   body: GenerationCreateBody,
@@ -2478,782 +2065,6 @@ async function resolveFeedRemixGenerationSource(
       sourceCharacterName: character.name,
     }),
   };
-}
-
-type ReferenceSetWithReferences = Prisma.ReferenceSetRevisionGetPayload<{
-  include: { references: true };
-}>;
-
-type CharacterVisualProfileSource = {
-  id: string;
-  name: string;
-  age: number;
-  description: string;
-  style: string | null;
-  gender: string | null;
-  appearance: Prisma.JsonValue;
-  advancedDetails: Prisma.JsonValue;
-  imageAssetId?: string | null;
-};
-
-export async function createActiveCharacterVisualProfileVersion(
-  tx: Prisma.TransactionClient,
-  character: CharacterVisualProfileSource,
-  input: { createdFrom: string },
-) {
-  await lockCharacterGenerationAuthority(tx, character.id);
-  await assertCharacterIdentityAuthorityMutable(tx, character.id);
-  const active = await tx.characterVisualProfile.findFirst({
-    where: { characterId: character.id, status: "active" },
-    orderBy: { version: "desc" },
-  });
-  const activeReferenceAuthority = active
-    ? await loadLockedGenerationReferenceAuthority(
-        tx,
-        character.id,
-        active,
-        "balanced",
-      )
-    : null;
-  const inheritedReferences =
-    activeReferenceAuthority?.referenceSetRevision?.references.map((reference) => ({
-      mediaAssetId: reference.mediaAssetId,
-      position: reference.position,
-      role: reference.role,
-      weight: reference.weight,
-      selectionReason: reference.selectionReason,
-    })) ?? [];
-  const anchorAssetIds = inheritedReferences
-    .filter((reference) =>
-      reference.role === "primary_face" || reference.role === "identity_anchor"
-    )
-    .map((reference) => reference.mediaAssetId);
-  if (active) {
-    await tx.characterVisualProfile.updateMany({
-      where: { characterId: character.id, status: "active" },
-      data: { status: "archived" },
-    });
-  }
-  const version = (active?.version ?? 0) + 1;
-  const createdFrom =
-    inheritedReferences.length === 0 &&
-    (!active || active.createdFrom.startsWith("generation_bootstrap"))
-      ? `generation_bootstrap:${input.createdFrom}`
-      : input.createdFrom;
-  const created = await tx.characterVisualProfile.create({
-    data: characterVisualProfileCreateData({
-      characterId: character.id,
-      version,
-      status: "active",
-      style: character.style ?? "realistic",
-      name: character.name,
-      age: character.age,
-      description: character.description,
-      gender: character.gender ?? "female",
-      appearance: character.appearance,
-      advancedDetails: character.advancedDetails,
-      anchorAssetIds,
-      createdFrom,
-    }),
-  });
-  if (inheritedReferences.length > 0) {
-    await createReferenceSetRevision(
-      tx,
-      created,
-      `visual_profile_version:${input.createdFrom}`,
-      inheritedReferences,
-    );
-  }
-  if (active) {
-    await tx.characterLook.updateMany({
-      where: { visualProfileId: active.id, status: "active" },
-      data: { status: "needs_rebase", activeKey: null },
-    });
-  }
-  await invalidateCharacterDraftAssetPack(tx, character.id);
-  return created;
-}
-
-// Dedup lookup for generation jobs: idempotencyKey first, then (sourceType, sourceId).
-// Shared by the cheap pre-check fast-path and the P2002 conflict fallback so both resolve
-// a duplicate request to the SAME existing job.
-async function findExistingGenerationJob(
-  userId: string,
-  options: {
-    idempotencyKey?: string | null;
-    requestFingerprint?: string;
-    source?: GenerationSource;
-  },
-) {
-  if (options.idempotencyKey) {
-    const existing = await prisma.generationJob.findFirst({
-      where: { userId, idempotencyKey: options.idempotencyKey },
-    });
-    if (existing) {
-      assertGenerationJobRequestFingerprint(
-        existing,
-        options.requestFingerprint,
-      );
-      return existing;
-    }
-  }
-  if (options.source) {
-    const existing = await prisma.generationJob.findFirst({
-      where: { sourceType: options.source.sourceType, sourceId: options.source.sourceId },
-    });
-    if (existing) {
-      assertGenerationJobRequestFingerprint(
-        existing,
-        options.requestFingerprint,
-      );
-      return existing;
-    }
-  }
-  return null;
-}
-
-function isUniqueConstraintError(error: unknown): boolean {
-  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
-}
-
-async function assertGenerationLookAuthorityInTx(
-  tx: Prisma.TransactionClient,
-  input: {
-    readonly look: Awaited<ReturnType<typeof resolveGenerationLook>>;
-    readonly userId: string;
-    readonly characterId: string;
-    readonly visualProfileId: string;
-  },
-) {
-  if (!input.look) return;
-  await lockCharacterMediaAssetAuthorities(
-    tx,
-    input.look.referenceAssetId ? [input.look.referenceAssetId] : [],
-  );
-  const current = await tx.characterLook.findFirst({
-    where: {
-      id: input.look.id,
-      ownerId: input.userId,
-      characterId: input.characterId,
-      visualProfileId: input.visualProfileId,
-      status: "active",
-      updatedAt: input.look.updatedAt,
-    },
-    include: {
-      referenceAsset: {
-        select: {
-          id: true,
-          ownerId: true,
-          characterId: true,
-          type: true,
-          deletedAt: true,
-          safetyStatus: true,
-          storageKey: true,
-          url: true,
-          metadata: true,
-        },
-      },
-    },
-  });
-  if (
-    !current ||
-    current.referenceAssetId !== input.look.referenceAssetId ||
-    (
-      current.referenceAssetId &&
-      (
-        !current.referenceAsset ||
-        current.referenceAsset.ownerId !== input.userId ||
-        current.referenceAsset.characterId !== input.characterId ||
-        current.referenceAsset.type !== "image" ||
-        current.referenceAsset.deletedAt !== null ||
-        current.referenceAsset.safetyStatus !== "passed" ||
-        !isMediaAssetOperationalForAuthority(current.referenceAsset.metadata) ||
-        !hasHydratableMediaBlobAuthority(current.referenceAsset)
-      )
-    )
-  ) {
-    throw Errors.conflict(
-      "Character Look authority changed or became unavailable before generation was pinned",
-      {
-        lookId: input.look.id,
-        referenceAssetId: input.look.referenceAssetId,
-      },
-    );
-  }
-}
-
-async function assertGenerationSourceImageAuthorityInTx(
-  tx: Prisma.TransactionClient,
-  input: {
-    readonly sourceImageAssetId: string;
-    readonly userId: string;
-    readonly characterId: string | null;
-  },
-) {
-  const source = await tx.mediaAsset.findFirst({
-    where: {
-      id: input.sourceImageAssetId,
-      type: "image",
-      deletedAt: null,
-      safetyStatus: "passed",
-      OR: [
-        { ownerId: input.userId },
-        ...(input.characterId ? [{ characterId: input.characterId }] : []),
-      ],
-    },
-    select: {
-      id: true,
-      storageKey: true,
-      url: true,
-      metadata: true,
-    },
-  });
-  if (
-    !source ||
-    !isMediaAssetOperationalForAuthority(source.metadata) ||
-    !hasHydratableMediaBlobAuthority(source)
-  ) {
-    throw Errors.conflict(
-      "Source image changed or became unavailable before generation was pinned",
-      { sourceImageAssetId: input.sourceImageAssetId },
-    );
-  }
-}
-
-async function assertRetryGenerationReferenceAuthoritiesInTx(
-  tx: Prisma.TransactionClient,
-  input: {
-    readonly referenceAssetIds: readonly string[];
-    readonly characterId: string | null;
-  },
-) {
-  if (input.referenceAssetIds.length === 0) return;
-  if (!input.characterId) {
-    throw Errors.conflict(
-      "Pinned Character references cannot be retried without their Character authority",
-      { referenceAssetIds: input.referenceAssetIds },
-    );
-  }
-  const references = await tx.mediaAsset.findMany({
-    where: {
-      id: { in: [...input.referenceAssetIds] },
-      characterId: input.characterId,
-      type: "image",
-      deletedAt: null,
-      safetyStatus: "passed",
-    },
-    select: {
-      id: true,
-      storageKey: true,
-      url: true,
-      metadata: true,
-    },
-  });
-  const usableReferenceIds = new Set(
-    references
-      .filter((reference) =>
-        isMediaAssetOperationalForAuthority(reference.metadata) &&
-        hasHydratableMediaBlobAuthority(reference)
-      )
-      .map((reference) => reference.id),
-  );
-  const unavailableReferenceAssetIds = input.referenceAssetIds.filter(
-    (assetId) => !usableReferenceIds.has(assetId),
-  );
-  if (unavailableReferenceAssetIds.length > 0) {
-    throw Errors.conflict(
-      "Pinned Character references changed or became unavailable before retry",
-      {
-        characterId: input.characterId,
-        unavailableReferenceAssetIds,
-      },
-    );
-  }
-}
-
-async function reserveInitialGenerationAttempt(
-  tx: Prisma.TransactionClient,
-  job: {
-    readonly id: string;
-    readonly provider: string | null;
-    readonly profileId: string | null;
-    readonly profileVersion: number | null;
-    readonly model: string | null;
-    readonly controls: Prisma.JsonValue;
-  },
-) {
-  return reserveInitialGenerationAttemptAuthority(tx, {
-    requestId: job.id,
-    dispatch: {
-      outboxId: `generation_initial_${job.id}`,
-      eventType: "generation.retry.dispatch.v2",
-    },
-  });
-}
-
-async function wakeQueuedGenerationDispatch(job: {
-  readonly id: string;
-  readonly status: string;
-  readonly provider: string | null;
-  readonly profileId: string | null;
-  readonly profileVersion: number | null;
-  readonly model: string | null;
-  readonly controls: Prisma.JsonValue;
-}) {
-  if (job.status !== "queued") return;
-  const reservation = await prisma.$transaction((tx) =>
-    reserveInitialGenerationAttempt(tx, job),
-  );
-  await dispatchGenerationAttemptOutbox(prisma, {
-    outboxIds: [reservation.outbox.id],
-  });
-}
-
-async function createGenerationJobForUser(
-  userId: string,
-  body: GenerationCreateBody,
-  options: {
-    idempotencyKey?: string | null;
-    requestFingerprint?: string;
-    source?: GenerationSource;
-    fallbackToActiveOnStaleVisualProfile?: boolean;
-    profileSelectionAuthority?: GenerationProfileSelectionAuthority;
-    requireQuoteAuthority?: boolean;
-  } = {},
-) {
-  const preexisting = await findExistingGenerationJob(userId, options);
-  if (preexisting) {
-    await wakeQueuedGenerationDispatch(preexisting);
-    return preexisting;
-  }
-  if (
-    (
-      options.profileSelectionAuthority === "public_generator" ||
-      options.requireQuoteAuthority
-    ) &&
-    !body.quoteAuthority
-  ) {
-    throw Errors.conflict(
-      "An exact generation quote is required before submitting.",
-    );
-  }
-
-  const plan = await resolveGenerationPlan(userId, body, {
-    source: options.source,
-    fallbackToActiveOnStaleVisualProfile:
-      options.fallbackToActiveOnStaleVisualProfile,
-    profileSelectionAuthority: options.profileSelectionAuthority,
-    // A public write validates route, price, count, orientation, and balance
-    // before a legacy Character bootstrap can create any row.
-    bootstrapVisualProfile:
-      options.profileSelectionAuthority !== "public_generator" &&
-      !options.requireQuoteAuthority,
-  });
-  const {
-    character,
-    consistencyMode,
-    entitlements,
-    profile,
-    recipe,
-    requestedLookReferenceAssetId,
-    requestedSourceImageAssetId,
-    selectedLook,
-    workflowDescriptor,
-  } = plan;
-  const lookSnapshot = selectedLook ? characterLookSnapshot(selectedLook) : null;
-  const allowedOrientations = jsonStringArray(profile.allowedOrientations);
-  const orientation =
-    body.orientation ??
-    body.controls.orientation ??
-    allowedOrientations[0] ??
-    "4:5";
-  const pricingAuthority = await resolveGenerationPricingAuthority(body.mode);
-  const pricingFingerprint = generationPricingFingerprint(pricingAuthority);
-  const cost = generationCostFromAuthority(
-    pricingAuthority,
-    body.outputCount,
-    profile.costMultiplier,
-  );
-  const routeFingerprint = generationPlanRouteFingerprint(plan);
-  if (body.quoteAuthority) {
-    assertQuoteStillValid(body.quoteAuthority, {
-      profileId: profile.profileKey,
-      profileVersion: profile.version,
-      routeFingerprint,
-      pricingFingerprint,
-      outputCount: body.outputCount,
-      costDreamcoins: cost,
-    });
-  }
-  if (body.outputCount > profile.maxCount) {
-    throw Errors.badRequest("Output count exceeds selected model limit", {
-      maxCount: profile.maxCount,
-      profileId: profile.profileKey,
-      profileVersion: profile.version,
-    });
-  }
-  if (!allowedOrientations.includes(orientation)) {
-    throw Errors.badRequest(
-      "Orientation is unavailable for the selected generation route",
-      {
-        orientation,
-        allowedOrientations,
-        profileId: profile.profileKey,
-        profileVersion: profile.version,
-      },
-    );
-  }
-  const availableBalance = await dreamcoinBalance(userId);
-  if (availableBalance < cost) {
-    throw Errors.paymentRequired("Insufficient DreamCoins", {
-      required: cost,
-      available: availableBalance,
-    });
-  }
-  const acceptedQuoteAuthority = body.quoteAuthority
-    ? {
-        schemaVersion: "generation-quote-authority-v1",
-        profileId: profile.profileKey,
-        profileVersion: profile.version,
-        routeFingerprint,
-        pricing: {
-          ruleId: pricingAuthority.id,
-          ruleKey: pricingAuthority.ruleKey,
-          version: pricingAuthority.version,
-          effectiveFrom:
-            pricingAuthority.effectiveFrom?.toISOString() ?? null,
-          fingerprint: pricingFingerprint,
-        },
-        outputCount: body.outputCount,
-        costDreamcoins: cost,
-      }
-    : null;
-
-  let visualProfile = plan.visualProfile;
-  if (
-    (
-      options.profileSelectionAuthority === "public_generator" ||
-      options.requireQuoteAuthority
-    ) &&
-    body.mode === "image" &&
-    character &&
-    !visualProfile
-  ) {
-    visualProfile = await resolveGenerationVisualProfile(
-      character,
-      body.visualProfileId,
-      { bootstrapIfMissing: true },
-    );
-  }
-  const dimensions =
-    body.mode === "image"
-      ? dimensionsForImageOrientation({
-          orientation,
-          defaultWidth: profile.defaultWidth,
-          defaultHeight: profile.defaultHeight,
-        })
-      : { width: profile.defaultWidth, height: profile.defaultHeight };
-  const momentSpec = buildMomentSpec(
-    body,
-    options.source,
-    options.requestFingerprint,
-  );
-  const seed = body.seed ?? visualProfile?.defaultSeed ?? null;
-  const presetFragment = await resolvePresetPromptFragment(body.controls, userId);
-  const prompt = buildGenerationPrompt({
-    mode: body.mode,
-    character,
-    visualProfile,
-    consistencyMode,
-    userPrompt: body.prompt,
-    presetFragment,
-    lookFragment: selectedLook ? JSON.stringify(selectedLook.appearanceDelta) : "",
-    sourceType: options.source?.sourceType,
-  });
-  const negativePrompt =
-    body.mode === "image"
-      ? imageNegativePrompt(
-          body.negativePrompt ?? defaultImageNegativePrompt(recipe.negativeBase, options.source?.sourceType),
-          visualProfile,
-        )
-      : (body.negativePrompt ?? null);
-
-  // Create in a tx; if a concurrent writer (or a redelivered chat.image.requested for the
-  // same attachment) committed the same idempotencyKey / (sourceType,sourceId) first, the
-  // unique constraint throws P2002 — resolve to that existing job rather than a 500 / a
-  // spurious chat.image.failed (handled below).
-  const runCreateTx = () => prisma.$transaction(async (tx) => {
-    let legacyReleaseAuthority:
-      LegacyCharacterGenerationAuthority | null = null;
-    if (options.source) {
-      const existing = await tx.generationJob.findFirst({
-        where: { sourceType: options.source.sourceType, sourceId: options.source.sourceId },
-      });
-      if (existing) {
-        assertGenerationJobRequestFingerprint(
-          existing,
-          options.requestFingerprint,
-        );
-        const reservation = existing.status === "queued"
-          ? await reserveInitialGenerationAttempt(tx, existing)
-          : null;
-        return {
-          job: existing,
-          outboxId: reservation?.outbox.id ?? null,
-        };
-      }
-    }
-    if (character) {
-      await lockCharacterGenerationAuthority(tx, character.id);
-      const lockedCharacter = await tx.character.findFirst({
-        where: {
-          AND: [
-            {
-              id: character.id,
-              deletedAt: null,
-              age: { gte: 18 },
-              status: "approved",
-            },
-            body.mode === "video"
-              ? publicCharacterAudienceWhere
-              : {
-                  OR: [
-                    { creatorId: userId },
-                    publicCharacterAudienceWhere,
-                  ],
-                },
-          ],
-        },
-        select: { id: true, imageAssetId: true },
-      });
-      if (!lockedCharacter) {
-        throw Errors.conflict(
-          "Character changed before generation authority could be reserved",
-          { characterId: character.id },
-        );
-      }
-      if (
-        body.mode === "video" &&
-        lockedCharacter.imageAssetId !== requestedSourceImageAssetId
-      ) {
-        throw Errors.conflict(
-          "Character primary image changed before video authority could be reserved",
-          {
-            characterId: character.id,
-            pinnedSourceImageAssetId: requestedSourceImageAssetId,
-            currentSourceImageAssetId: lockedCharacter.imageAssetId,
-          },
-        );
-      }
-      if (body.mode === "image") {
-        const lockedLegacyReleaseAuthority =
-          await loadLockedLiveEditorialLegacyGenerationAuthority(
-            tx,
-            character.id,
-          );
-        if (lockedLegacyReleaseAuthority && visualProfile) {
-          throw Errors.conflict(
-            "Character Release authority changed after generation identity was selected",
-            { characterId: character.id },
-          );
-        }
-        if (!lockedLegacyReleaseAuthority && !visualProfile) {
-          throw Errors.conflict(
-            "Legacy Character generation authority changed before the job could be queued",
-            { characterId: character.id },
-          );
-        }
-        legacyReleaseAuthority = lockedLegacyReleaseAuthority;
-      }
-    }
-    const sourceImageAssetId =
-      typeof requestedSourceImageAssetId === "string"
-        ? requestedSourceImageAssetId
-        : null;
-    const additionalMediaAssetIds = [
-      sourceImageAssetId,
-      requestedLookReferenceAssetId,
-    ].filter((assetId): assetId is string => Boolean(assetId));
-    const referenceAuthority =
-      visualProfile && character
-        ? await loadLockedGenerationReferenceAuthority(
-            tx,
-            character.id,
-            visualProfile,
-            consistencyMode,
-            additionalMediaAssetIds,
-          )
-        : null;
-    if (!referenceAuthority) {
-      await lockCharacterMediaAssetAuthorities(tx, additionalMediaAssetIds);
-    }
-    if (sourceImageAssetId) {
-      await assertGenerationSourceImageAuthorityInTx(tx, {
-        sourceImageAssetId,
-        userId,
-        characterId: character?.id ?? null,
-      });
-    }
-    const referenceAssetIds =
-      referenceAuthority?.referenceAssetIds ?? [];
-    const referenceSetRevision = referenceAuthority?.referenceSetRevision ?? null;
-    const referenceManifest =
-      referenceAuthority?.referenceManifest ?? [];
-    if (
-      referenceAssetIds.length > 0 ||
-      sourceImageAssetId ||
-      requestedLookReferenceAssetId
-    ) {
-      assertGenerationProfileCanDispatchReferences({
-        profile,
-        workflowDescriptor,
-        pinnedReferences: referenceManifest.map((reference) => ({
-          assetId: reference.mediaAssetId,
-          role: normalizedGenerationReferenceRole(reference.role),
-        })),
-        sourceImageAssetId,
-        lookReferenceAssetId: requestedLookReferenceAssetId,
-      });
-    }
-    if (selectedLook && character && visualProfile) {
-      await assertGenerationLookAuthorityInTx(tx, {
-        look: selectedLook,
-        userId,
-        characterId: character.id,
-        visualProfileId: visualProfile.id,
-      });
-    }
-    const controls = pruneUndefined({
-      ...body.controls,
-      orientation,
-      model: profile.profileKey,
-      profileId: profile.profileKey,
-      generationProfileKey: profile.profileKey,
-      generationProfileVersion: profile.version,
-      workflowKey: workflowDescriptor?.workflowKey,
-      workflowVersion: workflowDescriptor?.version,
-      width: dimensions.width,
-      height: dimensions.height,
-      sourceImageAssetId: sourceImageAssetId ?? undefined,
-      lookReferenceAssetId: requestedLookReferenceAssetId ?? undefined,
-      workflowIdentity: workflowDescriptor?.identity,
-      consistencyMode: visualProfile ? consistencyMode : undefined,
-      generationQuoteAuthority: acceptedQuoteAuthority ?? undefined,
-      legacyReleaseAuthority: legacyReleaseAuthority ?? undefined,
-      visualIdentity: visualProfile
-        ? {
-            visualProfileId: visualProfile.id,
-            visualProfileVersion: visualProfile.version,
-            consistencyMode,
-            referenceAssetIds,
-            referenceSetRevisionId: referenceSetRevision?.id,
-            referenceManifest,
-            anchorAssetIds: referenceAuthority?.anchorAssetIds ?? [],
-            seed,
-          }
-        : undefined,
-    });
-    await lockUserLedger(tx, userId);
-    const balance = await dreamcoinBalance(userId, tx);
-    if (balance < cost) {
-      throw Errors.paymentRequired("Insufficient dreamcoins", {
-        balance,
-        cost,
-        required: cost,
-      });
-    }
-    const active = await tx.generationJob.count({
-      where: { userId, status: { in: activeGenerationStatuses() } },
-    });
-    const max = maxInflightJobs(entitlements);
-    if (active >= max) {
-      throw Errors.rateLimited("Too many active generation jobs", { active, max });
-    }
-
-    const created = await tx.generationJob.create({
-      data: {
-        userId,
-        characterId: body.characterId,
-        visualProfileId: visualProfile?.id,
-        visualProfileVersion: visualProfile?.version,
-        consistencyMode: visualProfile ? consistencyMode : null,
-        seed,
-        referenceAssetIds: visualProfile ? toInputJson(referenceAssetIds) : undefined,
-        referenceSetRevisionId: referenceSetRevision?.id,
-        referenceManifest: referenceSetRevision ? toInputJson(referenceManifest) : undefined,
-        momentSpec: toInputJson(momentSpec),
-        lookId: selectedLook?.id,
-        lookSnapshot: lookSnapshot ? toInputJson(lookSnapshot) : undefined,
-        idempotencyKey: options.idempotencyKey,
-        mode: body.mode,
-        prompt,
-        negativePrompt,
-        controls: toInputJson(controls),
-        presetIds: toInputJson(body.presetIds),
-        model: profile.workflowKey ?? profile.pipelineModel,
-        profileId: profile.profileKey,
-        profileVersion: profile.version,
-        recipeId: recipe.recipeKey,
-        recipeVersion: recipe.version,
-        orientation,
-        outputCount: body.outputCount,
-        status: "queued",
-        costDreamcoins: cost,
-        provider: profile.runner,
-        sourceType: options.source?.sourceType ?? "generator",
-        sourceId: options.source?.sourceId,
-        sourceMeta: options.source?.sourceMeta,
-      },
-    });
-    await appendGenerationEvent(tx, created.id, "created", "Generation job accepted", {
-      mode: created.mode,
-      profileId: created.profileId,
-      recipeId: created.recipeId,
-      visualProfileId: created.visualProfileId,
-      visualProfileVersion: created.visualProfileVersion,
-      referenceSetRevisionId: created.referenceSetRevisionId,
-      consistencyMode: created.consistencyMode,
-      idempotencyKey: options.idempotencyKey ?? null,
-      sourceType: created.sourceType,
-      sourceId: created.sourceId,
-    });
-    await postDreamcoinEntry(tx, {
-      kind: "generation_spend",
-      userId,
-      amount: cost,
-      sourceId: created.id,
-      idempotencyKey: `generation:${created.id}:reserve`,
-    });
-    await appendGenerationEvent(tx, created.id, "reserved", "Dreamcoins reserved", {
-      amount: cost,
-    });
-    await appendGenerationEvent(tx, created.id, "queued", "Generation job queued", {});
-    const reservation = await reserveInitialGenerationAttempt(tx, created);
-    return { job: created, outboxId: reservation.outbox.id };
-  });
-
-  let reservation: Awaited<ReturnType<typeof runCreateTx>>;
-  try {
-    reservation = await runCreateTx();
-  } catch (error) {
-    if (isUniqueConstraintError(error)) {
-      const existing = await findExistingGenerationJob(userId, options);
-      if (existing) {
-        await wakeQueuedGenerationDispatch(existing);
-        return existing;
-      }
-    }
-    throw error;
-  }
-  const job = reservation.job;
-
-  if (job.status !== "queued") return job;
-  if (reservation.outboxId) {
-    await dispatchGenerationAttemptOutbox(prisma, {
-      outboxIds: [reservation.outboxId],
-    });
-  }
-  return job;
 }
 
 export async function createChatImageGenerationJob(payload: ChatImageRequestedPayload) {
@@ -3319,453 +2130,6 @@ function buildChatImagePrompt(payload: ChatImageRequestedPayload) {
   return hint ? cleanPromptText(hint, 500) : "candid in-character photo";
 }
 
-function buildGenerationPrompt(input: {
-  mode: "image" | "video";
-  character: GenerationPromptCharacter | null;
-  visualProfile: GenerationVisualProfile | null;
-  consistencyMode: "balanced" | "strict" | "creative";
-  userPrompt?: string;
-  presetFragment: string;
-  lookFragment: string;
-  sourceType?: string;
-}) {
-  const userPrompt = cleanPromptText(input.userPrompt, 900);
-  const base =
-    input.mode === "image"
-      ? buildImageGenerationPrompt({
-          character: input.character,
-          visualProfile: input.visualProfile,
-          consistencyMode: input.consistencyMode,
-          userPrompt,
-          sourceType: input.sourceType,
-        })
-      : buildVideoGenerationPrompt(input.character, userPrompt);
-  const preset = cleanPromptText(input.presetFragment, 500);
-  const look = cleanPromptText(input.lookFragment, 500);
-  return clampPrompt(
-    [base, look ? `Active look: ${look}` : null, preset ? `Scene details: ${preset}` : null]
-      .filter(Boolean)
-      .join(". "),
-    2_000,
-  );
-}
-
-function buildImageGenerationPrompt(input: {
-  character: GenerationPromptCharacter | null;
-  visualProfile: GenerationVisualProfile | null;
-  consistencyMode: "balanced" | "strict" | "creative";
-  userPrompt: string;
-  sourceType?: string;
-}) {
-  const request =
-    input.userPrompt ||
-    (input.sourceType === "chat_image"
-      ? "candid in-character portrait shared from the current moment"
-      : "natural in-character portrait");
-
-  if (!input.character) {
-    return clampPrompt(
-      [
-        "High quality original companion portrait",
-        `Requested scene: ${request}`,
-        "single coherent subject, expressive face, natural pose, well-lit face, properly exposed, sharp focus, detailed eyes, natural skin texture, clean composition",
-      ].join(". "),
-      2_000,
-    );
-  }
-
-  const character = input.character;
-  const visualProfile = input.visualProfile;
-  const details = [
-    cleanPromptText(character.description, 500),
-    ...promptDetails(character.appearance, "Appearance"),
-    ...promptDetails(character.advancedDetails, "Character detail"),
-  ].filter(Boolean);
-  const presentation = [
-    "adult",
-    cleanPromptText(character.gender, 80),
-    cleanPromptText(character.style, 80),
-  ].filter(Boolean);
-
-  return clampPrompt(
-    [
-      `High quality in-character portrait photo of ${cleanPromptText(character.name, 120)}`,
-      presentation.length ? `Subject: ${presentation.join(", ")}` : null,
-      visualProfile
-        ? `Locked identity: ${cleanPromptText(visualProfile.identityPrompt, 900)}`
-        : details.length
-          ? `Character: ${details.join("; ")}`
-          : null,
-      visualProfile ? consistencyPromptFragment(input.consistencyMode) : null,
-      visualProfile && details.length ? `Character notes: ${details.join("; ")}` : null,
-      `Requested scene: ${request}`,
-      "single coherent subject, face and body matching the character, expressive eyes, natural pose, well-lit visible face, properly exposed, sharp focus, detailed skin and hair, clean photographic composition",
-    ]
-      .filter(Boolean)
-      .join(". "),
-    2_000,
-  );
-}
-
-function consistencyPromptFragment(mode: "balanced" | "strict" | "creative") {
-  if (mode === "strict") {
-    return "Identity consistency: strict; preserve the same face, hairstyle, eye color, body type, and signature traits from the locked identity";
-  }
-  if (mode === "creative") {
-    return "Identity consistency: creative; allow scene and styling variation while preserving the core face, hair, and signature traits";
-  }
-  return "Identity consistency: balanced; preserve the character identity while allowing the requested scene, pose, outfit, and lighting";
-}
-
-function imageNegativePrompt(base: string | null, visualProfile: GenerationVisualProfile | null) {
-  const cleanBase = cleanPromptText(base, 900);
-  const identityNegative = cleanPromptText(visualProfile?.negativeIdentityPrompt, 400);
-  return [cleanBase, identityNegative].filter(Boolean).join(", ") || null;
-}
-
-// SPEC: 为还没有 active Reference Set 的身份建出首个参考集。
-// INTENT: 只用 anchorAssetIds（候选图池）——参考集本身的权威是 ReferenceSetRevision，
-// 「没有 revision」就等于「还没有参考集」，此时唯一可信的线索就是图池里的锚点。
-function referenceSnapshotInputs(profile: GenerationVisualProfile) {
-  return jsonStringArray(profile.anchorAssetIds).map((mediaAssetId, index) => ({
-    mediaAssetId,
-    position: index,
-    role: index === 0 ? "primary_face" : "identity_anchor",
-    weight: index === 0 ? 1 : 0.9,
-    selectionReason: index === 0 ? "primary_identity_anchor" : "supporting_identity_angle",
-  }));
-}
-
-async function loadLockedGenerationReferenceAuthority(
-  tx: Prisma.TransactionClient,
-  characterId: string,
-  expectedProfile: GenerationVisualProfile,
-  consistencyMode: "balanced" | "strict" | "creative",
-  additionalMediaAssetIds: readonly string[] = [],
-) {
-  await lockCharacterGenerationAuthority(tx, characterId);
-  const lockedCharacter = await tx.character.findFirst({
-    where: {
-      id: characterId,
-      deletedAt: null,
-    },
-    select: { id: true },
-  });
-  if (!lockedCharacter) {
-    throw Errors.conflict(
-      "Character was archived before generation authority could be pinned",
-      { characterId },
-    );
-  }
-  const activeProfile = await tx.characterVisualProfile.findFirst({
-    where: { characterId, status: "active" },
-    orderBy: { version: "desc" },
-  });
-  if (
-    !activeProfile ||
-    activeProfile.id !== expectedProfile.id ||
-    activeProfile.version !== expectedProfile.version
-  ) {
-    throw Errors.conflict(
-      "Character identity changed before the generation job could pin its authority",
-      { characterId },
-    );
-  }
-
-  // 「没有任何参考图」以 active Reference Set 为准（anchorAssetIds 是候选图池，非空只说明
-  // 有候选、不代表已发布参考集）。归一后无 active revision ⟺ 无参考图。
-  const bootstrapWithoutReferences =
-    activeProfile.createdFrom.startsWith("generation_bootstrap") &&
-    jsonStringArray(activeProfile.anchorAssetIds).length === 0 &&
-    (await tx.referenceSetRevision.count({
-      where: { visualProfileId: activeProfile.id, status: "active" },
-    })) === 0;
-  if (bootstrapWithoutReferences) {
-    await lockCharacterMediaAssetAuthorities(tx, additionalMediaAssetIds);
-    return {
-      anchorAssetIds: [] as string[],
-      referenceAssetIds: [] as string[],
-      referenceManifest: [] as ReturnType<typeof referenceManifestFromRevision>,
-      referenceSetRevision: null,
-    };
-  }
-
-  const candidate = await tx.referenceSetRevision.findFirst({
-    where: { visualProfileId: activeProfile.id, status: "active" },
-    include: { references: { orderBy: { position: "asc" } } },
-    orderBy: { revision: "desc" },
-  });
-  if (!candidate || candidate.references.length === 0) {
-    throw Errors.conflict(
-      "Character generation requires a complete active Reference Set",
-      {
-        characterId,
-        visualProfileId: activeProfile.id,
-      },
-    );
-  }
-  await lockCharacterMediaAssetAuthorities(
-    tx,
-    [
-      ...candidate.references.map((reference) => reference.mediaAssetId),
-      ...additionalMediaAssetIds,
-    ],
-  );
-  const referenceSetRevision = await tx.referenceSetRevision.findFirst({
-    where: {
-      visualProfileId: activeProfile.id,
-      status: "active",
-    },
-    include: {
-      references: {
-        include: { mediaAsset: true },
-        orderBy: { position: "asc" },
-      },
-    },
-    orderBy: { revision: "desc" },
-  });
-  if (!referenceSetRevision || referenceSetRevision.id !== candidate.id) {
-    throw Errors.conflict(
-      "Character Reference Set changed before generation authority was pinned",
-      { characterId, referenceSetRevisionId: candidate.id },
-    );
-  }
-  const referenceAssetIds = referenceSetRevision.references.map(
-    (reference) => reference.mediaAssetId,
-  );
-  if (
-    new Set(referenceAssetIds).size !== referenceAssetIds.length ||
-    referenceSetRevision.references.some(
-      (reference, index) =>
-        reference.position !== index ||
-        reference.mediaAsset.deletedAt !== null ||
-        reference.mediaAsset.type !== "image" ||
-        reference.mediaAsset.safetyStatus !== "passed" ||
-        !isMediaAssetOperationalForAuthority(reference.mediaAsset.metadata) ||
-        !hasHydratableMediaBlobAuthority(reference.mediaAsset) ||
-        reference.mediaAsset.characterId !== characterId,
-    )
-  ) {
-    throw Errors.conflict(
-      "Every Character reference must be unique, ordered, available, safety-passed, and owned by the exact Character",
-      {
-        characterId,
-        referenceSetRevisionId: referenceSetRevision.id,
-      },
-    );
-  }
-  const computedSnapshotHash = referenceSetSnapshotHash(referenceSetRevision);
-  if (
-    !referenceSetRevision.snapshotHash ||
-    referenceSetRevision.snapshotHash !== computedSnapshotHash
-  ) {
-    throw Errors.conflict(
-      "Character Reference Set snapshot is not sealed to its current references",
-      {
-        characterId,
-        referenceSetRevisionId: referenceSetRevision.id,
-      },
-    );
-  }
-  const referenceManifest = referenceManifestFromRevision(
-    referenceSetRevision,
-    consistencyMode,
-  );
-  return {
-    anchorAssetIds: referenceSetRevision.references
-      .filter((reference) =>
-        reference.role === "primary_face" || reference.role === "identity_anchor"
-      )
-      .map((reference) => reference.mediaAssetId),
-    referenceAssetIds,
-    referenceManifest,
-    referenceSetRevision,
-  };
-}
-
-async function createReferenceSetRevision(
-  tx: Prisma.TransactionClient,
-  profile: GenerationVisualProfile,
-  createdFrom: string,
-  references = referenceSnapshotInputs(profile),
-) {
-  const proposedReferences = references;
-  const existingAssets = await tx.mediaAsset.findMany({
-    where: {
-      id: { in: proposedReferences.map((reference) => reference.mediaAssetId) },
-      deletedAt: null,
-      type: "image",
-      safetyStatus: "passed",
-      characterId: profile.characterId,
-    },
-    select: { id: true, storageKey: true, url: true, metadata: true },
-  });
-  const existingAssetIds = new Set(existingAssets.map((asset) => asset.id));
-  if (
-    existingAssetIds.size !== proposedReferences.length ||
-    proposedReferences.some((reference) => !existingAssetIds.has(reference.mediaAssetId)) ||
-    existingAssets.some((asset) =>
-      !isMediaAssetOperationalForAuthority(asset.metadata) ||
-      !hasHydratableMediaBlobAuthority(asset)
-    )
-  ) {
-    throw Errors.conflict(
-      "Every Character reference must be available, safety-passed, and owned by the exact Character",
-      { characterId: profile.characterId },
-    );
-  }
-  const availableReferences = proposedReferences;
-  const latest = await tx.referenceSetRevision.aggregate({
-    where: { visualProfileId: profile.id },
-    _max: { revision: true },
-  });
-  await tx.referenceSetRevision.updateMany({
-    where: { visualProfileId: profile.id, status: "active" },
-    data: { status: "superseded" },
-  });
-  return tx.referenceSetRevision.create({
-    data: {
-      visualProfileId: profile.id,
-      revision: (latest._max.revision ?? 0) + 1,
-      status: "active",
-      selectorVersion: "v1",
-      createdFrom,
-      snapshotHash: referenceSetSnapshotHash({
-        visualProfileId: profile.id,
-        revision: (latest._max.revision ?? 0) + 1,
-        selectorVersion: "v1",
-        references: availableReferences,
-      }),
-      references: {
-        create: availableReferences.map((reference) => ({
-            ...reference,
-            selectorVersion: "v1",
-          })),
-      },
-    },
-    include: { references: { orderBy: { position: "asc" } } },
-  });
-}
-
-function referenceManifestFromRevision(
-  revision: ReferenceSetWithReferences,
-  consistencyMode?: "balanced" | "strict" | "creative",
-) {
-  return revision.references.map((reference) => ({
-    mediaAssetId: reference.mediaAssetId,
-    role: reference.role,
-    weight: resolvedReferenceWeight(reference.role, reference.weight, consistencyMode),
-    crop: reference.crop,
-    qualityScore: reference.qualityScore,
-    identityScore: reference.identityScore,
-    selectorVersion: reference.selectorVersion,
-    selectionReason: reference.selectionReason,
-  }));
-}
-
-function resolvedReferenceWeight(
-  role: string,
-  baseWeight: number,
-  mode?: "balanced" | "strict" | "creative",
-) {
-  if (!mode || mode === "balanced") return baseWeight;
-  const anchor = role === "primary_face" || role === "identity_anchor";
-  if (mode === "strict") return anchor ? 1.25 : 0.95;
-  return anchor ? 0.65 : 0.45;
-}
-
-function buildMomentSpec(
-  body: GenerationCreateBody,
-  source?: GenerationSource,
-  requestFingerprint?: string,
-) {
-  const controls = body.controls as Record<string, unknown>;
-  const rawInput = cleanPromptText(body.prompt, 2_000) || "A natural in-character moment";
-  const continuitySources: string[] = [];
-  if (source?.sourceType === "chat_image") continuitySources.push("chat_context");
-  if (body.prompt) continuitySources.push("user_prompt");
-  if (typeof controls.lookId === "string") continuitySources.push("character_look");
-  if (typeof controls.sourceImageAssetId === "string") continuitySources.push("source_image");
-  if (continuitySources.length === 0) continuitySources.push("product_default");
-
-  return pruneUndefined({
-    schemaVersion: "1",
-    parserVersion: "moment-direct-v1",
-    requestFingerprint,
-    rawInput,
-    scene: rawInput,
-    action: typeof controls.pose === "string" ? controls.pose : undefined,
-    expression: typeof controls.expression === "string" ? controls.expression : undefined,
-    outfitIntent: typeof controls.outfitPresetId === "string" ? "change" : "unspecified",
-    outfit: typeof controls.outfit === "string" ? controls.outfit : undefined,
-    locationContinuity:
-      source?.sourceType === "chat_image" ? "continue" : "unspecified",
-    camera: typeof controls.camera === "string" ? controls.camera : undefined,
-    lighting: typeof controls.lighting === "string" ? controls.lighting : undefined,
-    styleDelta: typeof controls.styleDelta === "string" ? controls.styleDelta : undefined,
-    confidence: 1,
-    continuitySources,
-    createdAt: new Date().toISOString(),
-  });
-}
-
-function buildVideoGenerationPrompt(character: GenerationPromptCharacter | null, userPrompt: string) {
-  const subject = character?.name ? cleanPromptText(character.name, 120) : "an original companion";
-  return clampPrompt(userPrompt || `Video generation for ${subject}`, 2_000);
-}
-
-function defaultImageNegativePrompt(templateNegative: string | null, sourceType?: string) {
-  const base =
-    cleanPromptText(templateNegative, 700) ||
-    "low quality, distorted anatomy, extra fingers, watermark, text";
-  const uiBlockers =
-    "logo, user interface, app screen, phone screenshot, chat bubbles, buttons, icons, blurry, underexposed, silhouette, overly dark";
-  return sourceType === "chat_image" ? `${base}, ${uiBlockers}` : `${base}, ${uiBlockers}`;
-}
-
-function promptDetails(value: Prisma.JsonValue, label: string) {
-  if (!isRecord(value)) return [];
-  return Object.entries(value)
-    .flatMap(([key, raw]) => promptDetailValue(`${label}.${key}`, raw))
-    .filter(Boolean)
-    .slice(0, 8);
-}
-
-function promptDetailValue(key: string, value: unknown): string[] {
-  const cleanKey = cleanPromptText(key.replace(/[_.]+/g, " "), 80);
-  if (!cleanKey || /source\s*image/i.test(cleanKey)) return [];
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    const cleanValue = cleanPromptText(String(value), 180);
-    if (!cleanValue || /^https?:\/\//i.test(cleanValue) || cleanValue.startsWith("/")) return [];
-    return [`${cleanKey}: ${cleanValue}`];
-  }
-  if (Array.isArray(value)) {
-    const values = value
-      .filter((item): item is string | number | boolean =>
-        ["string", "number", "boolean"].includes(typeof item),
-      )
-      .map((item) => cleanPromptText(String(item), 120))
-      .filter((item) => item && !/^https?:\/\//i.test(item) && !item.startsWith("/"))
-      .slice(0, 5);
-    return values.length ? [`${cleanKey}: ${values.join(", ")}`] : [];
-  }
-  if (isRecord(value)) {
-    return Object.entries(value)
-      .flatMap(([childKey, raw]) => promptDetailValue(`${key}.${childKey}`, raw))
-      .slice(0, 8);
-  }
-  return [];
-}
-
-function cleanPromptText(value: string | null | undefined, max = 2_000) {
-  const cleaned = value?.replace(/\s+/g, " ").trim() ?? "";
-  return clampPrompt(cleaned, max);
-}
-
-function clampPrompt(value: string, max: number) {
-  return value.length <= max ? value : `${value.slice(0, max - 3).trimEnd()}...`;
-}
-
 async function listGenerationJobs(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
@@ -3822,22 +2186,6 @@ async function getGenerationJob(request: Request, id: string) {
   return ok(generationJobResponse(job, latestAttempt?.status ?? null));
 }
 
-async function latestGenerationAttemptStatuses(requestIds: string[]) {
-  if (requestIds.length === 0) return new Map<string, string>();
-  const attempts = await prisma.generationAttempt.findMany({
-    where: { requestId: { in: requestIds } },
-    select: { requestId: true, status: true },
-    orderBy: [{ requestId: "asc" }, { attemptNo: "desc" }],
-  });
-  const latestStatuses = new Map<string, string>();
-  for (const attempt of attempts) {
-    if (!latestStatuses.has(attempt.requestId)) {
-      latestStatuses.set(attempt.requestId, attempt.status);
-    }
-  }
-  return latestStatuses;
-}
-
 function requireGenerationRetryIdempotencyKey(request: Request) {
   const value = request.headers.get("idempotency-key")?.trim();
   if (!value) {
@@ -3853,257 +2201,14 @@ function requireGenerationRetryIdempotencyKey(request: Request) {
   return value;
 }
 
-function assertGenerationJobIsRetryable(
-  job: GenerationJobRow,
-): asserts job is GenerationJobRow & { mode: "image" | "video" } {
-  if (job.status === "blocked") {
-    throw Errors.forbidden("Blocked generation jobs cannot be retried");
-  }
-  if (job.status !== "failed") {
-    throw Errors.badRequest("Only failed generation jobs can be retried");
-  }
-  if (job.mode !== "image" && job.mode !== "video") {
-    throw Errors.badRequest("Unsupported generation mode");
-  }
-}
-
-async function resolveGenerationRetryAuthority(
-  userId: string,
-  job: GenerationJobRow & { mode: "image" | "video" },
-) {
-  const entitlements = await entitlementMap(userId);
-  const controls = jsonRecord(job.controls);
-  const retrySourceImageAssetId = stringFromRecord(
-    controls,
-    "sourceImageAssetId",
-  );
-  const retryLookReferenceAssetId =
-    stringFromRecord(controls, "lookReferenceAssetId") ??
-    stringFromRecord(jsonRecord(job.lookSnapshot), "referenceAssetId");
-  const retryPinnedReferences = generationRequirementsFromManifest(
-    job.referenceManifest,
-  );
-  const retryReferenceRequirements =
-    job.mode === "image"
-      ? {
-          pinnedReferences: retryPinnedReferences,
-          sourceImageAssetId: retrySourceImageAssetId ?? null,
-          lookReferenceAssetId: retryLookReferenceAssetId ?? null,
-        }
-      : undefined;
-  const exactProfiles =
-    job.profileId && job.profileVersion !== null
-      ? await prisma.generationModelProfile.findMany({
-          where: {
-            mode: job.mode,
-            version: job.profileVersion,
-            status: "active",
-            enabled: true,
-            OR: [
-              { profileKey: job.profileId },
-              { id: job.profileId },
-            ],
-          },
-          take: 2,
-        })
-      : [];
-  const exactProfile =
-    exactProfiles.find(
-      (candidate) => candidate.profileKey === job.profileId,
-    ) ?? exactProfiles[0];
-  const profile =
-    exactProfile &&
-    isExecutableGenerationProfile(exactProfile) &&
-    (job.mode !== "video" || isProductionLtxVideoProfile(exactProfile))
-    ? exactProfile
-    : generationJobRequiresPinnedLegacyAuthority(job) &&
-        !job.profileId &&
-        job.profileVersion === null
-      ? await selectGenerationProfile({
-          mode: job.mode,
-          requested: job.model ?? undefined,
-          referenceRequirements: retryReferenceRequirements,
-          accessibleEntitlements: entitlements,
-        })
-      : null;
-  if (!profile) {
-    throw Errors.conflict(
-      "The failed generation job's pinned profile version is unavailable",
-      {
-        generationJobId: job.id,
-        pinnedProfileId: job.profileId,
-        pinnedProfileVersion: job.profileVersion,
-        resolvedProfileId: null,
-        resolvedProfileVersion: null,
-      },
-    );
-  }
-  if (generationJobRequiresPinnedLegacyAuthority(job)) {
-    await prisma.$transaction((tx) =>
-      assertPinnedLegacyCharacterGenerationAuthority(tx, {
-        generationJobId: job.id,
-        characterId: job.characterId!,
-        controls: job.controls,
-      })
-    );
-  }
-  const workflowDescriptor = await generationWorkflowDescriptor(
-    profile.workflowKey ?? profile.pipelineModel,
-  );
-  const pinnedWorkflowKey = stringFromRecord(controls, "workflowKey");
-  const pinnedWorkflowVersion = numberFromRecord(
-    controls,
-    "workflowVersion",
-  );
-  if (
-    (
-      pinnedWorkflowKey !== undefined ||
-      pinnedWorkflowVersion !== undefined
-    ) &&
-    (
-      pinnedWorkflowKey !== workflowDescriptor?.workflowKey ||
-      pinnedWorkflowVersion !== workflowDescriptor?.version
-    )
-  ) {
-    throw Errors.conflict(
-      "The failed generation job's pinned workflow version is unavailable",
-      {
-        generationJobId: job.id,
-        pinnedWorkflowKey: pinnedWorkflowKey ?? null,
-        pinnedWorkflowVersion: pinnedWorkflowVersion ?? null,
-        resolvedWorkflowKey: workflowDescriptor?.workflowKey ?? null,
-        resolvedWorkflowVersion: workflowDescriptor?.version ?? null,
-      },
-    );
-  }
-  if (
-    job.mode === "image" &&
-    (
-      retryPinnedReferences.length > 0 ||
-      retrySourceImageAssetId ||
-      retryLookReferenceAssetId
-    )
-  ) {
-    assertGenerationProfileCanDispatchReferences({
-      profile,
-      workflowDescriptor,
-      pinnedReferences: retryPinnedReferences,
-      sourceImageAssetId: retrySourceImageAssetId ?? null,
-      lookReferenceAssetId: retryLookReferenceAssetId ?? null,
-    });
-  }
-  if (
-    profile.requiredEntitlement &&
-    !entitlements[profile.requiredEntitlement]
-  ) {
-    throw Errors.paymentRequired("Selected model requires entitlement", {
-      entitlement: profile.requiredEntitlement,
-    });
-  }
-  const allowedOrientations = jsonStringArray(profile.allowedOrientations);
-  if (
-    job.outputCount > profile.maxCount ||
-    job.orientation === null ||
-    !allowedOrientations.includes(job.orientation)
-  ) {
-    throw Errors.conflict(
-      "The failed generation job no longer fits its pinned retry route",
-      {
-        generationJobId: job.id,
-        outputCount: job.outputCount,
-        maxCount: profile.maxCount,
-        orientation: job.orientation,
-        allowedOrientations,
-      },
-    );
-  }
-  const pricingAuthority = await resolveGenerationPricingAuthority(job.mode);
-  const pricingFingerprint =
-    generationPricingFingerprint(pricingAuthority);
-  const cost = generationCostFromAuthority(
-    pricingAuthority,
-    job.outputCount,
-    profile.costMultiplier,
-  );
-  const retryReferenceAssetIds = [
-    ...new Set([
-      ...jsonStringArray(job.referenceAssetIds),
-      ...retryPinnedReferences.map((reference) => reference.assetId),
-    ]),
-  ];
-  const routeFingerprint = createHash("sha256")
-    .update(JSON.stringify({
-      schemaVersion: "generation-retry-plan-v1",
-      generationJobId: job.id,
-      generationJobVersion: job.version,
-      mode: job.mode,
-      profileId: profile.profileKey,
-      profileVersion: profile.version,
-      workflowKey:
-        profile.workflowKey ?? profile.pipelineModel,
-      workflowVersion: workflowDescriptor?.version ?? null,
-      characterId: job.characterId,
-      visualProfileId: job.visualProfileId,
-      visualProfileVersion: job.visualProfileVersion,
-      referenceSetRevisionId: job.referenceSetRevisionId,
-      retryPinnedReferences,
-      sourceImageAssetId: retrySourceImageAssetId ?? null,
-      lookReferenceAssetId: retryLookReferenceAssetId ?? null,
-      orientation: job.orientation,
-      outputCount: job.outputCount,
-      costMultiplier: profile.costMultiplier,
-    }))
-    .digest("hex");
-
-  return {
-    allowedOrientations,
-    controls,
-    cost,
-    entitlements,
-    pricingAuthority,
-    pricingFingerprint,
-    profile,
-    retryLookReferenceAssetId,
-    retryPinnedReferences,
-    retryReferenceAssetIds,
-    retrySourceImageAssetId,
-    routeFingerprint,
-    workflowDescriptor,
-  };
-}
-
 async function generationRetryQuote(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
-  const job = await prisma.generationJob.findFirst({
-    where: { id, userId: user.id },
-  });
-  if (!job) throw Errors.notFound("Generation job not found");
-  assertGenerationJobIsRetryable(job);
-  const authority = await resolveGenerationRetryAuthority(user.id, job);
-  const balance = await dreamcoinBalance(user.id);
-  return ok({
-    quote: {
-      mode: job.mode,
-      generationJobId: job.id,
-      profileId: authority.profile.profileKey,
-      profileVersion: authority.profile.version,
-      routeFingerprint: authority.routeFingerprint,
-      pricing: {
-        ruleId: authority.pricingAuthority.id,
-        ruleKey: authority.pricingAuthority.ruleKey,
-        version: authority.pricingAuthority.version,
-        effectiveFrom:
-          authority.pricingAuthority.effectiveFrom?.toISOString() ?? null,
-        fingerprint: authority.pricingFingerprint,
-      },
-      outputCount: job.outputCount,
-      costDreamcoins: authority.cost,
-      balance,
-    },
-  });
+  return ok(
+    await quoteGenerationRetry({ userId: user.id, generationJobId: id }),
+  );
 }
 
 async function retryGenerationJob(request: Request, id: string) {
@@ -4112,318 +2217,29 @@ async function retryGenerationJob(request: Request, id: string) {
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const retryIdempotencyKey = requireGenerationRetryIdempotencyKey(request);
-  const job = await prisma.generationJob.findFirst({ where: { id, userId: user.id } });
-  if (!job) throw Errors.notFound("Generation job not found");
-  const replay = await prisma.generationJob.findFirst({
-    where: {
-      userId: user.id,
-      idempotencyKey: retryIdempotencyKey,
-    },
+  // INVARIANT: 重放判定必须发生在读 body 之前 —— 重放请求不带新的报价令牌，
+  // 先读 body 会把一次安全的重放变成 409。
+  const target = await resolveGenerationRetryTarget({
+    userId: user.id,
+    generationJobId: id,
+    idempotencyKey: retryIdempotencyKey,
   });
-  if (replay) {
-    if (replay.derivedFromJobId !== job.id) {
-      throw Errors.conflict(
-        "Idempotency-Key was already used for a different generation request",
-      );
-    }
-    const existing = await prisma.generationJob.findUniqueOrThrow({
-      where: { id: replay.id },
-      include: generationJobInclude(),
-    });
-    await wakeQueuedGenerationDispatch(existing);
-    return ok(generationJobResponse(existing), { status: 202 });
+  if (target.kind === "replay") {
+    return ok(generationJobResponse(target.job), { status: 202 });
   }
-  assertGenerationJobIsRetryable(job);
   const body = z
     .object({
       quoteAuthority: generationQuoteAuthoritySchema.optional(),
     })
     .strict()
     .parse(await jsonBody(request));
-  if (!body.quoteAuthority) {
-    throw Errors.conflict(
-      "An exact generation retry quote is required before retrying.",
-    );
-  }
-  const authority = await resolveGenerationRetryAuthority(user.id, job);
-  const {
-    controls,
-    cost,
-    entitlements,
-    pricingAuthority,
-    pricingFingerprint,
-    profile,
-    retryLookReferenceAssetId,
-    retryReferenceAssetIds,
-    retrySourceImageAssetId,
-    routeFingerprint,
-    workflowDescriptor,
-  } = authority;
-  // 重试走同一条 fail-closed 协议，只是路线指纹来自被重试的 job 而不是新计划。
-  assertQuoteStillValid(
-    body.quoteAuthority,
-    {
-      profileId: profile.profileKey,
-      profileVersion: profile.version,
-      routeFingerprint,
-      pricingFingerprint,
-      outputCount: job.outputCount,
-      costDreamcoins: cost,
-    },
-    "retry",
-  );
-  const availableBalance = await dreamcoinBalance(user.id);
-  if (availableBalance < cost) {
-    throw Errors.paymentRequired("Insufficient DreamCoins", {
-      required: cost,
-      available: availableBalance,
-    });
-  }
-  const acceptedRetryQuoteAuthority = {
-    schemaVersion: "generation-retry-quote-authority-v1",
-    generationJobId: job.id,
-    profileId: profile.profileKey,
-    profileVersion: profile.version,
-    routeFingerprint,
-    pricing: {
-      ruleId: pricingAuthority.id,
-      ruleKey: pricingAuthority.ruleKey,
-      version: pricingAuthority.version,
-      effectiveFrom:
-        pricingAuthority.effectiveFrom?.toISOString() ?? null,
-      fingerprint: pricingFingerprint,
-    },
-    outputCount: job.outputCount,
-    costDreamcoins: cost,
-  };
-  const reservation = await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`generation-retry-idempotency:${user.id}:${retryIdempotencyKey}`}))`;
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`generation-retry-authority:${job.id}`}))`;
-    const lockedJob = await tx.generationJob.findFirst({
-      where: { id: job.id, userId: user.id },
-    });
-    if (
-      !lockedJob ||
-      lockedJob.status !== "failed" ||
-      lockedJob.version !== job.version
-    ) {
-      throw Errors.conflict(
-        "Generation job changed before retry authority could be reserved",
-        { generationJobId: job.id },
-      );
-    }
-    const existingRetry = await tx.generationJob.findFirst({
-      where: {
-        userId: user.id,
-        idempotencyKey: retryIdempotencyKey,
-      },
-    });
-    if (existingRetry) {
-      if (existingRetry.derivedFromJobId !== job.id) {
-        throw Errors.conflict(
-          "Idempotency-Key was already used for a different generation request",
-        );
-      }
-      const dispatch = existingRetry.status === "queued"
-        ? await reserveInitialGenerationAttempt(tx, existingRetry)
-        : null;
-      return {
-        job: existingRetry,
-        created: false,
-        outboxId: dispatch?.outbox.id ?? null,
-      } as const;
-    }
-    const retryCount = await tx.generationJob.count({
-      where: { derivedFromJobId: job.id },
-    });
-    if (retryCount >= 3) {
-      throw Errors.rateLimited("Retry limit reached for this generation job", {
-        retries: retryCount,
-        max: 3,
-      });
-    }
-    if (job.characterId) {
-      await lockCharacterGenerationAuthority(tx, job.characterId);
-      const character = await tx.character.findFirst({
-        where: {
-          AND: [
-            {
-              id: job.characterId,
-              deletedAt: null,
-              age: { gte: 18 },
-              status: "approved",
-            },
-            job.mode === "video"
-              ? publicCharacterAudienceWhere
-              : {
-                  OR: [
-                    { creatorId: user.id },
-                    publicCharacterAudienceWhere,
-                  ],
-                },
-          ],
-        },
-        select: { id: true, imageAssetId: true },
-      });
-      if (!character) {
-        throw Errors.conflict(
-          "Character changed before retry authority could be reserved",
-          { characterId: job.characterId },
-        );
-      }
-      if (
-        job.mode === "video" &&
-        character.imageAssetId !== retrySourceImageAssetId
-      ) {
-        throw Errors.conflict(
-          "Character primary image changed before video retry authority could be reserved",
-          {
-            characterId: job.characterId,
-            pinnedSourceImageAssetId: retrySourceImageAssetId ?? null,
-            currentSourceImageAssetId: character.imageAssetId,
-          },
-        );
-      }
-      if (generationJobRequiresPinnedLegacyAuthority(lockedJob)) {
-        await assertPinnedLegacyCharacterGenerationAuthority(tx, {
-          generationJobId: lockedJob.id,
-          characterId: lockedJob.characterId!,
-          controls: lockedJob.controls,
-        });
-      }
-    }
-    await lockCharacterMediaAssetAuthorities(tx, [
-      ...retryReferenceAssetIds,
-      ...(retrySourceImageAssetId ? [retrySourceImageAssetId] : []),
-      ...(retryLookReferenceAssetId ? [retryLookReferenceAssetId] : []),
-    ]);
-    await assertRetryGenerationReferenceAuthoritiesInTx(tx, {
-      referenceAssetIds: retryReferenceAssetIds,
-      characterId: job.characterId,
-    });
-    if (retrySourceImageAssetId) {
-      await assertGenerationSourceImageAuthorityInTx(tx, {
-        sourceImageAssetId: retrySourceImageAssetId,
-        userId: user.id,
-        characterId: job.characterId,
-      });
-    }
-    if (retryLookReferenceAssetId) {
-      await assertGenerationSourceImageAuthorityInTx(tx, {
-        sourceImageAssetId: retryLookReferenceAssetId,
-        userId: user.id,
-        characterId: job.characterId,
-      });
-    }
-    await lockUserLedger(tx, user.id);
-    const balance = await dreamcoinBalance(user.id, tx);
-    if (balance < cost) {
-      throw Errors.paymentRequired("Insufficient dreamcoins", {
-        balance,
-        cost,
-        required: cost,
-      });
-    }
-    const active = await tx.generationJob.count({
-      where: { userId: user.id, status: { in: activeGenerationStatuses() } },
-    });
-    const max = maxInflightJobs(entitlements);
-    if (active >= max) {
-      throw Errors.rateLimited("Too many active generation jobs", { active, max });
-    }
-    const created = await tx.generationJob.create({
-      data: {
-        userId: user.id,
-        characterId: job.characterId,
-        visualProfileId: job.visualProfileId,
-        visualProfileVersion: job.visualProfileVersion,
-        consistencyMode: job.consistencyMode,
-        seed: job.seed,
-        referenceAssetIds: job.referenceAssetIds === null ? undefined : job.referenceAssetIds,
-        referenceSetRevisionId: job.referenceSetRevisionId,
-        referenceManifest: job.referenceManifest === null ? undefined : job.referenceManifest,
-        momentSpec: job.momentSpec === null ? undefined : job.momentSpec,
-        lookId: job.lookId,
-        lookSnapshot: job.lookSnapshot === null ? undefined : job.lookSnapshot,
-        derivedFromJobId: job.id,
-        idempotencyKey: retryIdempotencyKey,
-        mode: job.mode,
-        prompt: job.prompt,
-        negativePrompt: job.negativePrompt,
-        controls: toInputJson(pruneUndefined({
-          ...controls,
-          generationProfileKey: profile.profileKey,
-          generationProfileVersion: profile.version,
-          workflowKey: workflowDescriptor?.workflowKey,
-          workflowVersion: workflowDescriptor?.version,
-          workflowIdentity: workflowDescriptor?.identity,
-          lookReferenceAssetId: retryLookReferenceAssetId,
-          generationRetryQuoteAuthority:
-            acceptedRetryQuoteAuthority,
-        })),
-        presetIds: toInputJson(jsonStringArray(job.presetIds)),
-        model: profile.workflowKey ?? profile.pipelineModel,
-        profileId: profile.profileKey,
-        profileVersion: profile.version,
-        recipeId: job.recipeId,
-        recipeVersion: job.recipeVersion,
-        orientation: job.orientation,
-        outputCount: job.outputCount,
-        status: "queued",
-        costDreamcoins: cost,
-        provider: profile.runner,
-      },
-    });
-    await appendGenerationEvent(tx, created.id, "created", "Retry generation job accepted", {
-      derivedFromJobId: job.id,
-    });
-    await postDreamcoinEntry(tx, {
-      kind: "generation_spend",
-      userId: user.id,
-      amount: cost,
-      sourceId: created.id,
-      idempotencyKey: `generation:${created.id}:reserve`,
-    });
-    await appendGenerationEvent(tx, created.id, "reserved", "Dreamcoins reserved", {
-      amount: cost,
-    });
-    await appendGenerationEvent(tx, created.id, "queued", "Retry generation job queued", {});
-    const dispatch = await reserveInitialGenerationAttempt(tx, created);
-    return {
-      job: created,
-      created: true,
-      outboxId: dispatch.outbox.id,
-    } as const;
-  });
-  const retry = reservation.job;
-  if (reservation.outboxId) {
-    await dispatchGenerationAttemptOutbox(prisma, {
-      outboxIds: [reservation.outboxId],
-    });
-  }
-  const queued = await prisma.generationJob.findUniqueOrThrow({
-    where: { id: retry.id },
-    include: generationJobInclude(),
+  const queued = await retryGenerationJobForUser({
+    userId: user.id,
+    job: target.job,
+    idempotencyKey: retryIdempotencyKey,
+    quoteAuthority: body.quoteAuthority,
   });
   return ok(generationJobResponse(queued), { status: 202 });
-}
-
-function generationJobRequiresPinnedLegacyAuthority(job: {
-  readonly characterId: string | null;
-  readonly controls: Prisma.JsonValue;
-  readonly mode: string;
-  readonly sourceType: string | null;
-  readonly visualProfileId: string | null;
-}) {
-  return (
-    job.mode === "image" &&
-    job.characterId !== null &&
-    job.visualProfileId === null &&
-    (
-      job.sourceType !== "content_production_item" ||
-      legacyCharacterGenerationAuthorityFromControls(job.controls) !== null
-    )
-  );
 }
 
 async function listPresets(request: Request) {
@@ -4851,252 +2667,14 @@ async function recordMediaFeedback(request: Request, id: string) {
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const body = generationFeedbackSchema.parse(await jsonBody(request));
-  const asset = await assertMediaOwner(id, user.id);
-  if (asset.type !== "image") throw Errors.badRequest("Feedback is only supported for image media");
-  if (!asset.sourceJobId) throw Errors.badRequest("Generated image feedback requires a source job");
-  const job = await prisma.generationJob.findFirst({
-    where: { id: asset.sourceJobId, userId: user.id },
-    select: {
-      id: true,
-      characterId: true,
-      visualProfileId: true,
-      visualProfileVersion: true,
-    },
-  });
-  if (!job) throw Errors.notFound("Generation job not found for media feedback");
-  const visualProfile = await generationJobVisualProfileForFeedback(job);
-
-  const value = body.feedbackType === "identity_match" ? "match" : "mismatch";
-  const quality = jsonRecord(jsonRecord(asset.metadata).quality);
-  const current = mediaIdentityFeedback(quality.identityFeedback);
-  if (current?.value === value) {
-    const referenceCandidate = visualProfile
-      ? await prisma.referenceCandidate.findUnique({
-          where: {
-            visualProfileId_mediaAssetId: {
-              visualProfileId: visualProfile.id,
-              mediaAssetId: asset.id,
-            },
-          },
-        })
-      : null;
-    return ok({
-      feedback: current,
-      eventId: current.eventId,
-      referenceCandidate: referenceCandidate ? referenceCandidateDTO(referenceCandidate) : null,
-    });
-  }
-
-  const result = await prisma.$transaction(async (tx) => {
-    await lockMediaAssetAuthority(tx, asset.id);
-    const lockedAsset = await tx.mediaAsset.findFirst({
-      where: {
-        id: asset.id,
-        ownerId: user.id,
-        type: "image",
-        deletedAt: null,
-      },
-    });
-    if (!lockedAsset) {
-      throw Errors.conflict("Media asset changed before feedback was recorded");
-    }
-    const lockedVisualProfile = visualProfile
-      ? await tx.characterVisualProfile.findFirst({
-          where: {
-            id: visualProfile.id,
-            characterId: job.characterId!,
-            version: job.visualProfileVersion!,
-          },
-        })
-      : null;
-    if (visualProfile && !lockedVisualProfile) {
-      throw Errors.conflict(
-        "Generation job identity authority changed before feedback was recorded",
-        {
-          generationJobId: job.id,
-          visualProfileId: job.visualProfileId,
-          visualProfileVersion: job.visualProfileVersion,
-        },
-      );
-    }
-    const lockedQuality = jsonRecord(jsonRecord(lockedAsset.metadata).quality);
-    const lockedFeedback = mediaIdentityFeedback(
-      lockedQuality.identityFeedback,
-    );
-    const currentFeedbackRow = await tx.generationFeedback.findFirst({
-      where: {
-        actorId: user.id,
-        mediaAssetId: asset.id,
-        dimension: "identity",
-        active: true,
-      },
-      orderBy: { revision: "desc" },
-    });
-    if (lockedFeedback?.value === value) {
-      const referenceCandidate = lockedVisualProfile
-        ? await tx.referenceCandidate.findUnique({
-            where: {
-              visualProfileId_mediaAssetId: {
-                visualProfileId: lockedVisualProfile.id,
-                mediaAssetId: lockedAsset.id,
-              },
-            },
-          })
-        : null;
-      return {
-        storedFeedback: lockedFeedback,
-        referenceCandidate,
-      };
-    }
-    const revision =
-      Math.max(
-        currentFeedbackRow?.revision ?? 0,
-        lockedFeedback?.revision ?? 0,
-      ) + 1;
-    const feedback = {
-      id: `feedback:${user.id}:${asset.id}:identity`,
-      dimension: "identity",
-      value,
-      revision,
-      sourceSurface: body.sourceSurface,
-    } as const;
-    const event = await appendGenerationEvent(tx, job.id, "user_feedback", "User rated character identity", {
-      schemaVersion: 1,
-      actorId: user.id,
-      mediaAssetId: asset.id,
-      feedbackId: feedback.id,
+  return ok(
+    await recordMediaIdentityFeedback({
+      userId: user.id,
+      mediaAssetId: id,
       feedbackType: body.feedbackType,
-      feedbackDimension: feedback.dimension,
-      feedbackValue: feedback.value,
-      idempotencyKey: feedback.id,
-      revision,
       sourceSurface: body.sourceSurface,
-      supersedesEventId:
-        currentFeedbackRow?.eventId ?? lockedFeedback?.eventId ?? null,
-    });
-    await tx.generationFeedback.updateMany({
-      where: {
-        actorId: user.id,
-        mediaAssetId: asset.id,
-        dimension: feedback.dimension,
-        active: true,
-      },
-      data: { active: false },
-    });
-    await tx.generationFeedback.create({
-      data: {
-        feedbackKey: feedback.id,
-        actorId: user.id,
-        mediaAssetId: asset.id,
-        generationJobId: job.id,
-        dimension: feedback.dimension,
-        value: feedback.value,
-        revision,
-        sourceSurface: body.sourceSurface,
-        active: true,
-        supersedesId: currentFeedbackRow?.id,
-        eventId: event.id,
-      },
-    });
-    const storedFeedback = { ...feedback, eventId: event.id };
-    await tx.mediaAsset.update({
-      where: { id: asset.id },
-      data: {
-        metadata: mediaMetadataWithQuality(lockedAsset.metadata, {
-          identityFeedback: storedFeedback,
-        }),
-      },
-    });
-    const referenceCandidate = lockedVisualProfile
-      ? await tx.referenceCandidate.upsert({
-          where: {
-            visualProfileId_mediaAssetId: {
-              visualProfileId: lockedVisualProfile.id,
-              mediaAssetId: asset.id,
-            },
-          },
-          update: {
-            sourceJobId: job.id,
-            status: value === "match" ? "candidate" : "rejected",
-            rejectionReason: value === "mismatch" ? "user_identity_mismatch" : null,
-          },
-          create: {
-            visualProfileId: lockedVisualProfile.id,
-            mediaAssetId: asset.id,
-            sourceJobId: job.id,
-            proposedRole: "identity_reference",
-            source: "user_feedback",
-            status: value === "match" ? "candidate" : "rejected",
-            rejectionReason: value === "mismatch" ? "user_identity_mismatch" : null,
-          },
-        })
-      : null;
-    return { storedFeedback, referenceCandidate };
-  });
-  return ok({
-    feedback: result.storedFeedback,
-    eventId: result.storedFeedback.eventId,
-    referenceCandidate: result.referenceCandidate
-      ? referenceCandidateDTO(result.referenceCandidate)
-      : null,
-  });
-}
-
-async function generationJobVisualProfileForFeedback(job: {
-  readonly id: string;
-  readonly characterId: string | null;
-  readonly visualProfileId: string | null;
-  readonly visualProfileVersion: number | null;
-}): Promise<GenerationVisualProfile | null> {
-  if (
-    job.visualProfileId === null &&
-    job.visualProfileVersion === null
-  ) {
-    return null;
-  }
-  if (
-    !job.characterId ||
-    !job.visualProfileId ||
-    job.visualProfileVersion === null
-  ) {
-    throw Errors.conflict(
-      "Generation job has incomplete identity authority for feedback",
-      { generationJobId: job.id },
-    );
-  }
-  const profile = await prisma.characterVisualProfile.findFirst({
-    where: {
-      id: job.visualProfileId,
-      characterId: job.characterId,
-      version: job.visualProfileVersion,
-    },
-  });
-  if (!profile) {
-    throw Errors.conflict(
-      "Generation job identity authority is unavailable for feedback",
-      {
-        generationJobId: job.id,
-        visualProfileId: job.visualProfileId,
-        visualProfileVersion: job.visualProfileVersion,
-      },
-    );
-  }
-  return profile;
-}
-
-function mediaIdentityFeedback(value: unknown) {
-  if (!isRecord(value)) return null;
-  const id = typeof value.id === "string" ? value.id : null;
-  const dimension = value.dimension === "identity" ? "identity" as const : null;
-  const feedbackValue = value.value === "match" || value.value === "mismatch" ? value.value : null;
-  const revision = typeof value.revision === "number" && Number.isInteger(value.revision) ? value.revision : null;
-  const sourceSurface =
-    value.sourceSurface === "chat" || value.sourceSurface === "generator" || value.sourceSurface === "gallery"
-      ? value.sourceSurface
-      : null;
-  const eventId = typeof value.eventId === "string" ? value.eventId : null;
-  if (!id || !dimension || !feedbackValue || revision === null || !sourceSurface || !eventId) return null;
-  return { id, dimension, value: feedbackValue, revision, sourceSurface, eventId };
+    }),
+  );
 }
 
 async function setMediaAsCharacterImage(request: Request, id: string) {
@@ -6842,201 +4420,9 @@ async function duplicateCharacter(request: Request, id: string) {
   const user = requireUser(ctx);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
-  const duplicate = await prisma.$transaction(async (tx) => {
-    await lockCharacterGenerationAuthority(tx, id);
-    const source = await tx.character.findFirst({
-      where: {
-        id,
-        deletedAt: null,
-        OR: [
-          publicCharacterAudienceWhere,
-          { creatorId: user.id },
-        ],
-      },
-    });
-    if (!source) throw Errors.notFound("Character not found");
-
-    const sourceImageAssetId = source.imageAssetId;
-    if (sourceImageAssetId) {
-      await lockMediaAssetAuthority(tx, sourceImageAssetId);
-    }
-
-    // The Character authority lock stabilizes its primary-image pointer while
-    // the canonical MediaAsset authority lock serializes us with archive/delete.
-    // Re-read both only after those locks: the discovery read is never authority.
-    const lockedSource = await tx.character.findUnique({ where: { id } });
-    if (!lockedSource || lockedSource.deletedAt !== null) {
-      throw Errors.notFound("Character not found");
-    }
-    if (lockedSource.imageAssetId !== sourceImageAssetId) {
-      throw Errors.conflict("Character image changed while the duplicate was being created");
-    }
-
-    const sourceImageAsset = sourceImageAssetId
-      ? await tx.mediaAsset.findFirst({
-          where: {
-            id: sourceImageAssetId,
-            deletedAt: null,
-            type: "image",
-          },
-        })
-      : null;
-    if (
-      sourceImageAssetId &&
-      (
-        !sourceImageAsset ||
-        sourceImageAsset.safetyStatus !== "passed" ||
-        !sourceImageAsset.url.trim() ||
-        !isMediaAssetOperationalForAuthority(sourceImageAsset.metadata)
-      )
-    ) {
-      throw Errors.conflict("The source Character image is no longer available");
-    }
-    if (sourceImageAsset) {
-      assertNonSyntheticMediaAsset(
-        sourceImageAsset,
-        "Synthetic media cannot be copied as a character identity",
-      );
-    }
-
-    const name = `${lockedSource.name} Copy`;
-    const immutableContentSnapshot = await loadCurrentCharacterContentSnapshot(
-      tx,
-      lockedSource.id,
-      lockedSource.currentContentVersionId,
-    );
-    const userContent = compileUserSoulOrBadRequest({
-      name,
-      age: lockedSource.age,
-      description: lockedSource.description,
-      relationship: lockedSource.relationship,
-      style: lockedSource.style,
-      gender: lockedSource.gender,
-      appearance: lockedSource.appearance,
-      advancedDetails: lockedSource.advancedDetails,
-      immutableContentSnapshot,
-    });
-    const created = await tx.character.create({
-      data: {
-        creatorId: user.id,
-        name,
-        age: lockedSource.age,
-        description: lockedSource.description,
-        systemPrompt: userContent.personaSnapshot.compiled.systemPrompt,
-        visibility: "private",
-        status: "approved",
-        style: lockedSource.style,
-        gender: lockedSource.gender,
-        relationship: lockedSource.relationship,
-        imageAssetId: null,
-        appearance: toInputJson(lockedSource.appearance ?? {}),
-        advancedDetails: toInputJson(lockedSource.advancedDetails ?? {}),
-      },
-    });
-    const contentVersion = await materializeUserCharacterContentVersion({
-      tx,
-      characterId: created.id,
-      sourceId: lockedSource.id,
-      createdById: user.id,
-      content: userContent,
-    });
-    await tx.character.update({
-      where: { id: created.id },
-      data: { currentContentVersionId: contentVersion.id },
-    });
-
-    const sourceBlobLocator = sourceImageAsset
-      ? resolveMediaAssetBlobLocator(sourceImageAsset)
-      : null;
-    if (sourceImageAsset && sourceBlobLocator) {
-      const duplicateImageAssetId = `media_${cryptoRandomId("character_duplicate")}`;
-      const sourceMetadata = jsonRecord(sourceImageAsset.metadata);
-      const backingKey = sourceBlobLocator.key;
-      const duplicateRouteUrl = mediaViewUrl({
-        id: duplicateImageAssetId,
-        type: sourceImageAsset.type,
-        contentType: sourceImageAsset.contentType,
-        storageKey: null,
-        url: sourceImageAsset.url,
-      });
-      const duplicateUrl = duplicateRouteUrl;
-      const duplicateThumbnailUrl = duplicateRouteUrl;
-      const retainedTechnicalMetadata: Record<string, unknown> = {};
-      for (const key of [
-        "backend",
-        "consistencyMode",
-        "contentType",
-        "height",
-        "index",
-        "model",
-        "profileId",
-        "profileVersion",
-        "provider",
-        "recipeId",
-        "recipeVersion",
-        "referenceAssetIds",
-        "seconds",
-        "seed",
-        "usage",
-        "visualProfileId",
-        "visualProfileVersion",
-        "width",
-        "workflow",
-      ]) {
-        if (Object.hasOwn(sourceMetadata, key)) {
-          retainedTechnicalMetadata[key] = sourceMetadata[key];
-        }
-      }
-      await tx.mediaAsset.create({
-        data: {
-          id: duplicateImageAssetId,
-          ownerId: user.id,
-          characterId: created.id,
-          type: "image",
-          url: duplicateUrl,
-          thumbnailUrl: duplicateThumbnailUrl,
-          storageKey: null,
-          contentType: sourceImageAsset.contentType,
-          width: sourceImageAsset.width,
-          height: sourceImageAsset.height,
-          providerAssetId: sourceImageAsset.providerAssetId,
-          sourcePromptHash: sourceImageAsset.sourcePromptHash,
-          prompt: sourceImageAsset.prompt,
-          visibility: "private",
-          // A distinct asset must earn its own review decision. Reusing the
-          // source row's `passed`/platform approval would launder authority
-          // across owners even though the underlying bytes are shared.
-          safetyStatus: "unknown",
-          metadata: toInputJson({
-            ...retainedTechnicalMetadata,
-            source: "character_duplicate",
-            synthetic: false,
-            providerKey: backingKey,
-            blobLocator: {
-              schemaVersion: SHARED_IMMUTABLE_BLOB_LOCATOR_SCHEMA,
-              kind: "shared_immutable",
-              key: backingKey,
-              sourceAssetId: sourceImageAsset.id,
-            },
-            duplicateLineage: {
-              schemaVersion: 1,
-              sourceAssetId: sourceImageAsset.id,
-              sourceCharacterId: lockedSource.id,
-              sourceOwnerId: sourceImageAsset.ownerId,
-              duplicateCharacterId: created.id,
-              duplicatedByUserId: user.id,
-            },
-          }),
-        },
-      });
-      await tx.character.update({
-        where: { id: created.id },
-        data: { imageAssetId: duplicateImageAssetId },
-      });
-    }
-
-    await tx.characterStats.create({ data: { characterId: created.id } });
-    return tx.character.findUniqueOrThrow({ where: { id: created.id } });
+  const duplicate = await duplicateCharacterForUser({
+    userId: user.id,
+    characterId: id,
   });
   return ok({ character: duplicate });
 }
@@ -7053,179 +4439,10 @@ async function updateCharacter(request: Request, id: string) {
       visibility: z.enum(CHARACTER_VISIBILITY).optional(),
     })
     .parse(await jsonBody(request));
-  const shouldRebuildPrompt = body.name !== undefined || body.description !== undefined;
-  await prisma.$transaction(async (tx) => {
-    await lockCharacterGenerationAuthority(tx, id);
-    const existing = await tx.character.findFirst({
-      where: { id, creatorId: user.id, deletedAt: null },
-    });
-    if (!existing) throw Errors.notFound("Character not found");
-    const nextName = body.name ?? existing.name;
-    const nextDescription = body.description ?? existing.description;
-    const immutableContentSnapshot = shouldRebuildPrompt
-      ? await loadCurrentCharacterContentSnapshot(
-          tx,
-          existing.id,
-          existing.currentContentVersionId,
-        )
-      : null;
-    const userContent = shouldRebuildPrompt
-      ? compileUserSoulOrBadRequest({
-          name: nextName,
-          age: existing.age,
-          description: nextDescription,
-          relationship: existing.relationship,
-          style: existing.style,
-          gender: existing.gender,
-          appearance: existing.appearance,
-          advancedDetails: existing.advancedDetails,
-          immutableContentSnapshot: immutableContentSnapshot ?? undefined,
-        })
-      : null;
-    const activeProfile = shouldRebuildPrompt
-      ? await tx.characterVisualProfile.findFirst({
-          where: { characterId: id, status: "active" },
-          orderBy: { version: "desc" },
-          include: {
-            referenceSetRevisions: {
-              where: { status: "active" },
-              orderBy: { revision: "desc" },
-              take: 1,
-              select: { references: { select: { mediaAssetId: true } } },
-            },
-          },
-        })
-      : null;
-    await lockCharacterMediaAssetAuthorities(tx, [
-      ...(body.visibility === "public" && existing.imageAssetId
-        ? [existing.imageAssetId]
-        : []),
-      // anchorAssetIds 是候选图池仍要锁；参考集本身取 active Reference Set，不读影子副本。
-      ...jsonStringArray(activeProfile?.anchorAssetIds),
-      ...(activeProfile?.referenceSetRevisions[0]?.references
-        .map((reference) => reference.mediaAssetId) ?? []),
-    ]);
-    if (shouldRebuildPrompt) {
-      await assertCharacterIdentityAuthorityMutable(tx, id);
-    }
-    if (body.visibility === "public" && existing.imageAssetId) {
-      const imageAsset = await tx.mediaAsset.findFirst({
-        where: {
-          id: existing.imageAssetId,
-          deletedAt: null,
-          type: "image",
-        },
-        select: {
-          id: true,
-          characterId: true,
-          safetyStatus: true,
-          metadata: true,
-        },
-      });
-      if (
-        !imageAsset ||
-        imageAsset.characterId !== id ||
-        imageAsset.safetyStatus !== "passed" ||
-        !isMediaAssetOperationalForAuthority(imageAsset.metadata)
-      ) {
-        throw Errors.badRequest("The character identity image is no longer available");
-      }
-      assertNonSyntheticMediaAsset(
-        imageAsset,
-        "Synthetic media cannot be published as a character identity",
-      );
-    }
-    const contentVersion = userContent
-      ? await materializeUserCharacterContentVersion({
-          tx,
-          characterId: existing.id,
-          sourceId: existing.id,
-          createdById: user.id,
-          content: userContent,
-        })
-      : null;
-    if (body.visibility === "private") {
-      const serving = await tx.characterServing.findUnique({
-        where: { characterId: existing.id },
-      });
-      if (serving?.state === "live") {
-        // INVARIANT: private presentation and live Serving authority cannot coexist.
-        // Keep the immutable Release pinned so a later reviewed publication can resume it.
-        await transitionCharacterServing(tx, {
-          servingId: serving.id,
-          to: "paused",
-          expectedVersion: serving.version,
-          expectedCurrentReleaseId: serving.currentReleaseId,
-          data: {
-            scheduledReleaseId: null,
-            scheduledAt: null,
-          },
-        });
-      } else if (serving && (serving.scheduledReleaseId || serving.scheduledAt)) {
-        // INVARIANT: a private Character cannot retain a future publish command.
-        // Inactive and paused Serving remain non-live; only the mutable schedule is cancelled.
-        const cancelled = await tx.characterServing.updateMany({
-          where: {
-            id: serving.id,
-            state: serving.state,
-            version: serving.version,
-          },
-          data: {
-            scheduledReleaseId: null,
-            scheduledAt: null,
-            version: { increment: 1 },
-          },
-        });
-        if (cancelled.count !== 1) {
-          throw Errors.conflict("Character Serving changed before privacy update");
-        }
-      }
-    }
-    const updated = await tx.character.update({
-      where: { id: existing.id },
-      data: {
-        name: body.name,
-        description: body.description,
-        systemPrompt: userContent?.personaSnapshot.compiled.systemPrompt,
-        currentContentVersionId: contentVersion?.id,
-        visibility: body.visibility,
-        status: body.visibility === "public"
-          ? "pending_review"
-          : body.visibility && existing.status === "pending_review"
-            ? "approved"
-            : undefined,
-      },
-    });
-    if (body.visibility === "public") {
-      const pendingSubmission = await tx.characterSubmission.findFirst({
-        where: { characterId: updated.id, status: "pending" },
-        orderBy: [{ submittedAt: "desc" }, { id: "desc" }],
-        select: { id: true },
-      });
-      if (!pendingSubmission) {
-        await tx.characterSubmission.create({
-          data: {
-            characterId: updated.id,
-            submitterId: user.id,
-            status: "pending",
-          },
-        });
-      }
-    } else if (body.visibility && existing.status === "pending_review") {
-      await tx.characterSubmission.updateMany({
-        where: { characterId: updated.id, status: "pending" },
-        data: {
-          status: "rejected",
-          reviewReason: "withdrawn_by_submitter",
-          reviewedAt: new Date(),
-        },
-      });
-    }
-    if (shouldRebuildPrompt) {
-      await createActiveCharacterVisualProfileVersion(tx, updated, {
-        createdFrom: "character_update",
-      });
-    }
+  await updateCharacterForUser({
+    userId: user.id,
+    characterId: id,
+    patch: body,
   });
   return getCharacter(request, id);
 }
@@ -7527,72 +4744,6 @@ function mediaProvenanceDTO(sourceJob?: {
   };
 }
 
-function generationJobInclude() {
-  return {
-    assets: true,
-    events: { orderBy: { createdAt: "asc" as const } },
-  } satisfies Prisma.GenerationJobInclude;
-}
-
-type GenerationJobWithRelations = Prisma.GenerationJobGetPayload<{
-  include: ReturnType<typeof generationJobInclude>;
-}>;
-
-function effectiveGenerationJobStatus(
-  storedStatus: string,
-  latestAttemptStatus: string | null,
-) {
-  // INTENT: Attempt owns execution liveness, while Job remains authoritative
-  // for moderation phases and every business terminal state.
-  return storedStatus === "queued" && latestAttemptStatus === "running"
-    ? "running"
-    : storedStatus;
-}
-
-function generationJobDTO(
-  job: GenerationJobWithRelations,
-  latestAttemptStatus: string | null = null,
-) {
-  return {
-    id: job.id,
-    userId: job.userId,
-    characterId: job.characterId,
-    visualProfileId: job.visualProfileId,
-    visualProfileVersion: job.visualProfileVersion,
-    consistencyMode: job.consistencyMode,
-    seed: job.seed,
-    referenceAssetIds: job.referenceAssetIds,
-    referenceSetRevisionId: job.referenceSetRevisionId,
-    referenceManifest: job.referenceManifest,
-    momentSpec: job.momentSpec,
-    lookId: job.lookId,
-    lookSnapshot: job.lookSnapshot,
-    derivedFromJobId: job.derivedFromJobId,
-    mode: job.mode,
-    prompt: job.prompt,
-    negativePrompt: job.negativePrompt,
-    controls: job.controls,
-    presetIds: job.presetIds,
-    model: job.model,
-    profileId: job.profileId,
-    profileVersion: job.profileVersion,
-    recipeId: job.recipeId,
-    recipeVersion: job.recipeVersion,
-    orientation: job.orientation,
-    outputCount: job.outputCount,
-    status: effectiveGenerationJobStatus(job.status, latestAttemptStatus),
-    costDreamcoins: job.costDreamcoins,
-    provider: job.provider,
-    sourceType: job.sourceType,
-    sourceId: job.sourceId,
-    sourceMeta: job.sourceMeta,
-    errorCode: job.errorCode,
-    createdAt: job.createdAt,
-    updatedAt: job.updatedAt,
-    completedAt: job.completedAt,
-  };
-}
-
 function generationJobResponse(
   job: GenerationJobWithRelations,
   latestAttemptStatus: string | null = null,
@@ -7625,15 +4776,6 @@ function generationJobResponse(
   };
 }
 
-function generationRefundAmount(events: GenerationJobWithRelations["events"]) {
-  return events.reduce((total, event) => {
-    if (event.type !== "refunded") return total;
-    const metadata = isRecord(event.metadata) ? event.metadata : {};
-    const amount = metadata.amount;
-    return total + (typeof amount === "number" && Number.isFinite(amount) ? amount : 0);
-  }, 0);
-}
-
 function parseRequestCookies(request: Request) {
   const header = request.headers.get("cookie");
   const cookies = new Map<string, string>();
@@ -7643,90 +4785,6 @@ function parseRequestCookies(request: Request) {
     if (name) cookies.set(name, decodeURIComponent(value.join("=")));
   }
   return cookies;
-}
-
-function jsonRecord(value: unknown): Record<string, unknown> {
-  return isRecord(value) ? value : {};
-}
-
-function jsonNonBlankString(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const normalized = value.trim();
-  return normalized || null;
-}
-
-function jsonStringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string")
-    : [];
-}
-
-function compileUserSoulOrBadRequest(input: UserCharacterSoulInput) {
-  try {
-    return compileUserCharacterContent(input);
-  } catch (error) {
-    if (error instanceof UserCharacterSoulCompileError) {
-      throw Errors.badRequest("Complete the Character Soul before saving", {
-        diagnostics: error.diagnostics,
-      });
-    }
-    throw error;
-  }
-}
-
-async function loadCurrentCharacterContentSnapshot(
-  tx: Prisma.TransactionClient,
-  characterId: string,
-  currentContentVersionId: string | null,
-): Promise<{
-  personaSnapshot: unknown;
-  openingSnapshot: unknown;
-  appearanceSnapshot: unknown;
-} | undefined> {
-  let contentVersionId = currentContentVersionId;
-  if (!contentVersionId) {
-    const serving = await tx.characterServing.findUnique({
-      where: { characterId },
-      select: {
-        currentRelease: {
-          select: { characterContentVersionId: true },
-        },
-      },
-    });
-    contentVersionId = serving?.currentRelease?.characterContentVersionId ?? null;
-  }
-  if (!contentVersionId) return undefined;
-  const content = await tx.characterContentVersion.findFirst({
-    where: { id: contentVersionId, characterId },
-    select: {
-      personaSnapshot: true,
-      openingSnapshot: true,
-      appearanceSnapshot: true,
-    },
-  });
-  if (!content) {
-    throw Errors.conflict("The Character's immutable content version is unavailable");
-  }
-  return content;
-}
-
-function requiredCharacterPersonaFields(input: {
-  description: string | null;
-  relationship: string | null;
-  advancedDetails: Record<string, unknown>;
-}) {
-  const missingFields: string[] = [];
-  if (!input.description) missingFields.push("description");
-  if (!input.relationship) missingFields.push("relationship");
-  for (const field of ["personality", "tone", "backstory", "firstMessage"] as const) {
-    if (!jsonNonBlankString(input.advancedDetails[field])) missingFields.push(field);
-  }
-  const exampleDialogue = input.advancedDetails.exampleDialogue;
-  const hasExampleDialogue =
-    jsonNonBlankString(exampleDialogue) !== null ||
-    jsonStringArray(exampleDialogue).some((line) => line.trim().length > 0);
-  if (!hasExampleDialogue) missingFields.push("exampleDialogue");
-  return missingFields;
 }
 
 function normalizeMutedTags(values: readonly string[]) {
@@ -7854,22 +4912,6 @@ function decodeCursor(value: string | null) {
   return Number.isFinite(decoded) && decoded >= 0 ? decoded : 0;
 }
 
-async function assertDraftOwner(id: string, userId: string) {
-  const draft = await prisma.characterDraft.findFirst({
-    where: { id, ownerId: userId },
-  });
-  if (!draft) throw Errors.notFound("Character draft not found");
-  return draft;
-}
-
-async function assertMediaOwner(id: string, userId: string) {
-  const media = await prisma.mediaAsset.findFirst({
-    where: { id, ownerId: userId, deletedAt: null },
-  });
-  if (!media) throw Errors.notFound("Media not found");
-  return media;
-}
-
 async function findPublicReadableMediaAsset(id: string) {
   const media = await prisma.mediaAsset.findFirst({
     where: {
@@ -7921,31 +4963,6 @@ async function assertIdentityImageMedia(id: string, userId: string) {
   return asset;
 }
 
-async function assertIdentityImageMediaInTx(
-  tx: Prisma.TransactionClient,
-  id: string,
-  userId: string,
-) {
-  const asset = await tx.mediaAsset.findFirst({
-    where: { id, ownerId: userId, deletedAt: null },
-  });
-  if (!asset) throw Errors.notFound("Media not found");
-  if (asset.type !== "image") {
-    throw Errors.badRequest("Only image media can update character identity");
-  }
-  if (asset.safetyStatus !== "passed") {
-    throw Errors.conflict("Only safety-passed media can update Character authority");
-  }
-  if (!isMediaAssetOperationalForAuthority(asset.metadata)) {
-    throw Errors.conflict("Archived or rejected media cannot be used for Character authority");
-  }
-  assertNonSyntheticMediaAsset(
-    asset,
-    "Synthetic media cannot update character identity",
-  );
-  return asset;
-}
-
 async function assertIdentityImageMediaForCharacterInTx(
   tx: Prisma.TransactionClient,
   id: string,
@@ -7968,14 +4985,6 @@ async function assertIdentityImageMediaForCharacterInTx(
     );
   }
   return asset;
-}
-
-function assertNonSyntheticMediaAsset(
-  asset: { id: string; metadata: Prisma.JsonValue },
-  message: string,
-) {
-  if (!isSyntheticMediaAsset(asset.metadata)) return;
-  throw Errors.badRequest(message, { mediaAssetId: asset.id });
 }
 
 function assertPublicCollectionMediaAsset(asset: {
@@ -8067,21 +5076,6 @@ async function requireActiveVisualProfileInTx(
   return active;
 }
 
-function mediaMetadataWithQuality(
-  metadata: Prisma.JsonValue,
-  qualityPatch: Record<string, unknown>,
-) {
-  const record = jsonRecord(metadata);
-  const quality = jsonRecord(record.quality);
-  return toInputJson({
-    ...record,
-    quality: {
-      ...quality,
-      ...qualityPatch,
-    },
-  });
-}
-
 type CharacterLookDTOInput = {
   id: string;
   characterId: string;
@@ -8096,18 +5090,6 @@ type CharacterLookDTOInput = {
   updatedAt: Date;
 };
 
-function characterLookSnapshot(look: CharacterLookDTOInput) {
-  return {
-    schemaVersion: "1",
-    lookId: look.id,
-    label: look.label,
-    visualProfileId: look.visualProfileId,
-    appearanceDelta: look.appearanceDelta,
-    referenceAssetId: look.referenceAssetId,
-    capturedAt: new Date().toISOString(),
-  };
-}
-
 function characterLookDTO(look: CharacterLookDTOInput) {
   return {
     id: look.id,
@@ -8121,38 +5103,6 @@ function characterLookDTO(look: CharacterLookDTOInput) {
     rebasedFromLookId: look.rebasedFromLookId,
     createdAt: look.createdAt,
     updatedAt: look.updatedAt,
-  };
-}
-
-function referenceCandidateDTO(candidate: {
-  id: string;
-  visualProfileId: string;
-  mediaAssetId: string;
-  sourceJobId: string | null;
-  proposedRole: string;
-  qualityScore: number | null;
-  identityScore: number | null;
-  source: string;
-  status: string;
-  rejectionReason: string | null;
-  promotedRevisionId: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-}) {
-  return {
-    id: candidate.id,
-    visualProfileId: candidate.visualProfileId,
-    mediaAssetId: candidate.mediaAssetId,
-    sourceJobId: candidate.sourceJobId,
-    proposedRole: candidate.proposedRole,
-    qualityScore: candidate.qualityScore,
-    identityScore: candidate.identityScore,
-    source: candidate.source,
-    status: candidate.status,
-    rejectionReason: candidate.rejectionReason,
-    promotedRevisionId: candidate.promotedRevisionId,
-    createdAt: candidate.createdAt,
-    updatedAt: candidate.updatedAt,
   };
 }
 
@@ -8197,57 +5147,6 @@ async function currentAgeVerificationStatus(userId: string) {
     orderBy: { createdAt: "desc" },
   });
   return latest?.status ?? "not_required";
-}
-
-async function appendGenerationEvent(
-  tx: Prisma.TransactionClient,
-  jobId: string,
-  type: string,
-  message: string,
-  metadata: Record<string, unknown>,
-) {
-  return tx.generationJobEvent.create({
-    data: {
-      jobId,
-      type,
-      message,
-      metadata: toInputJson(metadata),
-    },
-  });
-}
-
-function stringFromRecord(value: Record<string, unknown>, key: string) {
-  const child = value[key];
-  return typeof child === "string" && child.trim() ? child.trim() : undefined;
-}
-
-function numberFromRecord(value: Record<string, unknown>, key: string) {
-  const child = value[key];
-  return typeof child === "number" && Number.isFinite(child) ? child : undefined;
-}
-
-function booleanFromRecord(value: Record<string, unknown>, key: string, fallback: boolean) {
-  const child = value[key];
-  return typeof child === "boolean" ? child : fallback;
-}
-
-function pruneUndefined(value: Record<string, unknown>) {
-  return Object.fromEntries(Object.entries(value).filter(([, child]) => child !== undefined));
-}
-
-// INTENT: 「活跃」= 非终态。以终态集合取反，新增一个状态时不会漏进这里。
-function activeGenerationStatuses() {
-  return GENERATION_JOB_STATUSES.filter(
-    (status) => !(TERMINAL_GENERATION_JOB_STATUSES as readonly string[]).includes(status),
-  );
-}
-
-function maxInflightJobs(entitlements: Record<string, Prisma.JsonValue>) {
-  const configured = Number.parseInt(process.env.MAX_INFLIGHT_JOBS_PER_USER ?? "3", 10);
-  const base = Number.isFinite(configured) && configured > 0 ? configured : 3;
-  const plan = entitlements.plan;
-  if (isRecord(plan) && plan.slug === "deluxe") return Math.max(base, 6);
-  return base;
 }
 
 function signedUrlTtlSeconds() {

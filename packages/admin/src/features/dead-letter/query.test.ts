@@ -15,7 +15,7 @@ describe("dead-letter query", () => {
 
   it("maps filters to the authority endpoint without client-side filtering", () => {
     expect(deadLetterListPath(deadLetterQueryFromSearch("?deadSearch=owner&deadMode=video&deadStatus=blocked&deadError=policy&deadCursor=c1")))
-      .toBe("/api/v1/admin/generation/dead-letter?search=owner&mode=video&status=blocked&errorCode=policy&cursor=c1&limit=25");
+      .toBe("/api/v2/admin/generation/dead-letter?search=owner&mode=video&status=blocked&errorCode=policy&cursor=c1&limit=25");
   });
 
   it("preserves canonical view state and uses the server confirmation contract", () => {

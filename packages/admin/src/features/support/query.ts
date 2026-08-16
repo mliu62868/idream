@@ -1,3 +1,5 @@
+import type { SavedViewQueryState } from "@idream/shared/admin";
+
 export type SupportQuery = {
   search: string;
   status: string;
@@ -32,7 +34,7 @@ export function supportListPath(query: SupportQuery) {
   set(params, "sla", query.sla === "all" ? "" : query.sla);
   set(params, "category", query.category);
   set(params, "cursor", query.cursor);
-  return `/api/v1/admin/support/requests?${params.toString()}`;
+  return `/api/v2/admin/support/requests?${params.toString()}`;
 }
 
 export function supportWorkspaceUrl(
@@ -48,6 +50,38 @@ export function supportWorkspaceUrl(
   set(params, "cursor", query.cursor);
   const value = params.toString();
   return value ? `${pathname}?${value}` : pathname;
+}
+
+/**
+ * SPEC: Saved View 存的是 v2 的 `queryState`，不是支持台自己的筛选对象。
+ * INTENT: 服务端契约只认 `{search, filters, sort, pageSize}` 这一种形状 —— 把翻译放在这里，
+ *         工作台就不用知道存储形态，反过来也一样。
+ */
+export function supportSavedState(query: SupportQuery): SavedViewQueryState {
+  return {
+    search: query.search.trim(),
+    filters: {
+      status: query.status,
+      sla: query.sla,
+      category: query.category.trim(),
+    },
+    sort: { field: "priority", direction: "asc" },
+    pageSize: 25,
+  };
+}
+
+export function supportQueryFromSavedState(state: SavedViewQueryState): SupportQuery {
+  return {
+    search: state.search,
+    status: filterValue(state.filters.status, "all"),
+    sla: filterValue(state.filters.sla, "all"),
+    category: filterValue(state.filters.category, ""),
+    cursor: "",
+  };
+}
+
+function filterValue(value: unknown, fallback: string) {
+  return typeof value === "string" && value ? value : fallback;
 }
 
 function set(params: URLSearchParams, key: string, value: string) {
