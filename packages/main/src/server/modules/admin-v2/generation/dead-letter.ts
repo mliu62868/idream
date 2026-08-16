@@ -27,8 +27,8 @@ import {
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 import {
-  decodeAdminListCursor,
-  encodeAdminListCursor,
+  type AdminKeysetPaging,
+  paginateAdminKeyset,
 } from "@/server/modules/admin-v2/shared/list-cursor";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { deriveGenerationJobState } from "./job-state";
@@ -45,44 +45,42 @@ export async function listGenerationDeadLetter(request: Request) {
   const mode = query.mode && query.mode !== "all" ? query.mode : undefined;
   const limit = query.limit ?? 100;
   const queryIdentity = { search: query.search, statuses, errorCode: query.errorCode, mode };
-  const cursorKeys = query.cursor
-    ? decodeAdminListCursor(query.cursor, "generation_dead_letter", queryIdentity)
-    : undefined;
-  const cursorWhere: Prisma.GenerationJobWhereInput | undefined = cursorKeys
-    ? (() => {
-        const updatedAt = cursorDate(cursorKeys, 0);
-        const id = cursorString(cursorKeys, 1);
-        return { OR: [{ updatedAt: { lt: updatedAt } }, { updatedAt, id: { lt: id } }] };
-      })()
-    : undefined;
-  const jobs = await prisma.generationJob.findMany({
-    where: operationalGenerationJobWhere({
-      status: { in: statuses },
-      errorCode: query.errorCode ? { contains: query.errorCode } : undefined,
-      mode,
-      events: { none: { type: "discarded" } },
-      AND: [
-        ...(cursorWhere ? [cursorWhere] : []),
-        ...(query.search
-          ? [{
-              OR: [
-                { id: { contains: query.search } },
-                { userId: { contains: query.search } },
-                { errorCode: { contains: query.search } },
-                { provider: { contains: query.search } },
-              ],
-            }]
-          : []),
-      ],
-    }),
-    include: { assets: true, events: { orderBy: { createdAt: "asc" } } },
-    orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
-    take: limit + 1,
+  const where: Prisma.GenerationJobWhereInput = operationalGenerationJobWhere({
+    status: { in: statuses },
+    errorCode: query.errorCode ? { contains: query.errorCode } : undefined,
+    mode,
+    events: { none: { type: "discarded" } },
+    AND: query.search
+      ? [{
+          OR: [
+            { id: { contains: query.search } },
+            { userId: { contains: query.search } },
+            { errorCode: { contains: query.search } },
+            { provider: { contains: query.search } },
+          ],
+        }]
+      : [],
   });
-  const page = jobs.slice(0, limit);
+  const { items: page, pageInfo } = await paginateAdminKeyset({
+    scope: "generation_dead_letter",
+    queryIdentity,
+    cursor: query.cursor,
+    before: query.before,
+    limit,
+    keys: [
+      { field: "updatedAt", direction: "desc", type: "datetime", value: (job) => job.updatedAt },
+      { field: "id", direction: "desc", value: (job) => job.id },
+    ],
+    fetch: (paging: AdminKeysetPaging<Prisma.GenerationJobOrderByWithRelationInput>) =>
+      prisma.generationJob.findMany({
+        where: { AND: [where, ...paging.cursorWhere] },
+        include: { assets: true, events: { orderBy: { createdAt: "asc" } } },
+        orderBy: paging.orderBy,
+        take: paging.take,
+      }),
+    count: () => prisma.generationJob.count({ where }),
+  });
   const refundedIds = await refundedJobIds(prisma, page.map((job) => job.id));
-  const hasNextPage = jobs.length > limit;
-  const last = page.at(-1);
   return {
     items: page.map((job) => ({
       id: job.id,
@@ -97,15 +95,7 @@ export async function listGenerationDeadLetter(request: Request) {
       createdAt: job.createdAt.toISOString(),
       updatedAt: job.updatedAt.toISOString(),
     })),
-    pageInfo: {
-      endCursor: hasNextPage && last
-        ? encodeAdminListCursor("generation_dead_letter", queryIdentity, [
-            last.updatedAt.toISOString(),
-            last.id,
-          ])
-        : null,
-      hasNextPage,
-    },
+    pageInfo,
     dataScope: OPERATIONAL_USER_DATA_SCOPE,
     asOf: new Date().toISOString(),
     freshness: "fresh" as const,
@@ -430,20 +420,4 @@ async function writeDeadLetterAudit(
       requestId,
     },
   });
-}
-
-function cursorString(keys: readonly unknown[], index: number) {
-  const value = keys[index];
-  if (typeof value !== "string" || !value) {
-    throw Errors.badRequest("generation_dead_letter cursor key is invalid");
-  }
-  return value;
-}
-
-function cursorDate(keys: readonly unknown[], index: number) {
-  const value = new Date(cursorString(keys, index));
-  if (Number.isNaN(value.getTime())) {
-    throw Errors.badRequest("generation_dead_letter cursor timestamp is invalid");
-  }
-  return value;
 }

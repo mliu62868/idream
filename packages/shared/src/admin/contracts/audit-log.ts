@@ -9,6 +9,7 @@ export const auditLogQuerySchema = z
     targetType: z.string().trim().min(1).max(160).optional(),
     limit: z.coerce.number().int().min(1).max(100).default(80),
     cursor: z.string().trim().min(1).optional(),
+    before: z.string().trim().min(1).optional(),
   })
   .strict();
 

@@ -192,6 +192,57 @@ describe("Admin v2 billing reads", () => {
     }
   });
 
+  it("pages backwards to the previous page and counts the whole filtered set", async () => {
+    const query = { search: token, limit: "1" } as const;
+    const first = await adminV2Route(ledgerRoute, { path: "billing/ledger", userId: actorId, role: "admin", query });
+    expectOk(first);
+    // totalCount 是过滤后的总数，不是当页条数 —— 两条 customer 账本命中 token。
+    expect(first.data.pageInfo).toMatchObject({ totalCount: 2, hasPreviousPage: false, startCursor: null });
+
+    const second = await adminV2Route(ledgerRoute, {
+      path: "billing/ledger",
+      userId: actorId,
+      role: "admin",
+      query: { ...query, cursor: first.data.pageInfo.endCursor as string },
+    });
+    expectOk(second);
+    expect(second.data.pageInfo).toMatchObject({ hasPreviousPage: true, startCursor: expect.any(String) });
+
+    const back = await adminV2Route(ledgerRoute, {
+      path: "billing/ledger",
+      userId: actorId,
+      role: "admin",
+      query: { ...query, before: second.data.pageInfo.startCursor as string },
+    });
+    expectOk(back);
+    expect(back.data.items.map((item: { id: string }) => item.id)).toEqual(
+      first.data.items.map((item: { id: string }) => item.id),
+    );
+    expect(back.data.pageInfo).toMatchObject({ hasNextPage: true, hasPreviousPage: false });
+  });
+
+  it("keeps the customer data scope while a cursor is applied", async () => {
+    const first = await adminV2Route(subscriptionsRoute, {
+      path: "billing/subscriptions",
+      userId: actorId,
+      role: "admin",
+      query: { limit: "1" },
+    });
+    expectOk(first);
+    const second = await adminV2Route(subscriptionsRoute, {
+      path: "billing/subscriptions",
+      userId: actorId,
+      role: "admin",
+      query: { limit: "50", cursor: first.data.pageInfo.endCursor as string },
+    });
+    expectOk(second);
+    const owners = await prisma.user.findMany({
+      where: { id: { in: second.data.items.map((item: { userId: string }) => item.userId) } },
+      select: { dataClass: true },
+    });
+    expect(owners.every((owner) => owner.dataClass === "customer")).toBe(true);
+  });
+
   it("rejects malformed billing list and reconciliation queries at the boundary", async () => {
     expectError(await adminV2Route(ledgerRoute, {
       path: "billing/ledger",

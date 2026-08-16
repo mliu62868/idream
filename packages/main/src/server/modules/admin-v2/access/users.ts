@@ -20,8 +20,9 @@ import {
 } from "@/server/modules/admin-v2/shared/authority";
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 import {
-  decodeAdminListCursor,
-  encodeAdminListCursor,
+  type AdminKeysetPaging,
+  CREATED_AT_DESC_KEYS,
+  paginateAdminKeyset,
 } from "@/server/modules/admin-v2/shared/list-cursor";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 
@@ -112,45 +113,40 @@ export async function listUsers(request: Request) {
     status: query.status,
     dataClass: query.dataClass,
   };
-  const cursorKeys = query.cursor
-    ? decodeAdminListCursor(query.cursor, "admin_users", queryIdentity)
-    : null;
-  const [cursorCreatedAt, cursorId] = cursorKeys
-    ? z.tuple([z.string().datetime(), z.string().min(1)]).parse(cursorKeys)
-    : [null, null];
-  const cursorWhere: Prisma.UserWhereInput | undefined = cursorCreatedAt && cursorId
-    ? {
-        OR: [
-          { createdAt: { lt: new Date(cursorCreatedAt) } },
-          { createdAt: new Date(cursorCreatedAt), id: { lt: cursorId } },
-        ],
-      }
-    : undefined;
-  const users = await prisma.user.findMany({
-    where: {
-      role: query.role,
-      status: query.status,
-      dataClass: query.dataClass,
-      OR: q
-        ? [
-            { id: { contains: q } },
-            { email: { contains: q } },
-            { displayName: { contains: q } },
-          ]
-        : undefined,
-      AND: cursorWhere,
-    },
-    include: {
-      subscriptions: {
-        include: { plan: true },
-        orderBy: { createdAt: "desc" },
-        take: 1,
-      },
-    },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    take: limit + 1,
+  const where: Prisma.UserWhereInput = {
+    role: query.role,
+    status: query.status,
+    dataClass: query.dataClass,
+    OR: q
+      ? [
+          { id: { contains: q } },
+          { email: { contains: q } },
+          { displayName: { contains: q } },
+        ]
+      : undefined,
+  };
+  const { items: page, pageInfo } = await paginateAdminKeyset({
+    scope: "admin_users",
+    queryIdentity,
+    cursor: query.cursor,
+    before: query.before,
+    limit,
+    keys: CREATED_AT_DESC_KEYS,
+    fetch: (paging: AdminKeysetPaging<Prisma.UserOrderByWithRelationInput>) =>
+      prisma.user.findMany({
+        where: { AND: [where, ...paging.cursorWhere] },
+        include: {
+          subscriptions: {
+            include: { plan: true },
+            orderBy: { createdAt: "desc" },
+            take: 1,
+          },
+        },
+        orderBy: paging.orderBy,
+        take: paging.take,
+      }),
+    count: () => prisma.user.count({ where }),
   });
-  const page = users.slice(0, limit);
   const items = await Promise.all(
     page.map(async (user) => ({
       id: user.id,
@@ -171,19 +167,7 @@ export async function listUsers(request: Request) {
     })),
   );
 
-  const last = page.at(-1);
-  return {
-    items,
-    pageInfo: {
-      endCursor: users.length > limit && last
-        ? encodeAdminListCursor("admin_users", queryIdentity, [
-            last.createdAt.toISOString(),
-            last.id,
-          ])
-        : null,
-      hasNextPage: users.length > limit,
-    },
-  };
+  return { items, pageInfo };
 }
 
 export async function getUserDetail(request: Request, userId: string) {

@@ -476,6 +476,7 @@ export const generationDeadLetterQuerySchema = z
     errorCode: z.string().trim().min(1).max(200).optional(),
     limit: z.coerce.number().int().min(1).max(100).optional(),
     cursor: z.string().min(1).optional(),
+    before: z.string().trim().min(1).optional(),
   })
   .strict();
 
@@ -673,6 +674,30 @@ const generationStatusBucketsSchema = {
   blocked: z.number().int().nonnegative(),
 };
 
+// SPEC: 一个观测窗口的整体汇总 —— 与 profiles / recipes / sources 逐行数据同源同窗口。
+// INTENT: current 也由权威给，不让前端把 profiles[] 加起来当本期总量：profileId / recipeId
+//         为空的作业在逐行数据里被跳过了，前端自算的本期会小于同样口径的上期，算出来的
+//         变化方向是错的。
+const generationMetricsPeriodSchema = z
+  .object({
+    from: adminIsoDateTimeSchema,
+    to: adminIsoDateTimeSchema,
+    ...generationStatusBucketsSchema,
+    costDreamcoins: z.number().int(),
+    impressions: z.number().int().nonnegative(),
+    clicks: z.number().int().nonnegative(),
+    remixTotal: z.number().int().nonnegative(),
+  })
+  .strict();
+
+// previous 是紧邻的、等长的上一个周期，前端据此算变化方向（失败率在升还是降）。
+export const generationMetricsPeriodsSchema = z
+  .object({
+    current: generationMetricsPeriodSchema,
+    previous: generationMetricsPeriodSchema,
+  })
+  .strict();
+
 export const generationMetricsResponseSchema = z
   .object({
     dataScope: generationMetricDataScopeSchema,
@@ -738,6 +763,8 @@ export const generationMetricsResponseSchema = z
       )
       .readonly(),
     remix: z.object({ total: z.number().int().nonnegative() }).strict(),
+    // 可选只是为了兼容还没读它的调用方；权威侧恒定返回。
+    periods: generationMetricsPeriodsSchema.optional(),
   })
   .strict();
 

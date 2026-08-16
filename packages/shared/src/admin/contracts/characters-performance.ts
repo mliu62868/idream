@@ -376,6 +376,8 @@ export const characterPortfolioItemSchema = z
   .strict();
 
 export const characterPortfolioQuerySchema = adminCursorQuerySchema.extend({
+  // 反向翻页：把上一页响应里的 startCursor 原样回传。与 cursor 互斥。
+  before: z.string().trim().min(1).optional(),
   phase: characterProjectPhaseSchema.optional(),
   servingState: characterServingStateSchema.optional(),
   readiness: adminReadinessSchema.optional(),
@@ -389,7 +391,12 @@ export const characterPortfolioQuerySchema = adminCursorQuerySchema.extend({
   attention: z
     .union([z.boolean(), z.enum(["true", "false"]).transform((value) => value === "true")])
     .optional(),
-  sort: z.enum(["project_id_asc"]).default("project_id_asc"),
+  // SPEC: 排序值必须落在 character_projects 的非空标量列上 —— keyset 分页要求排序键
+  // 可比较且不为 NULL。readiness / journey stage 都是跨表推导出来的，没有可排序的列，
+  // 想「先处理 blocked」用 readiness=blocked 或 attention=true 筛，再按 updated 排。
+  sort: z
+    .enum(["project_id_asc", "updated_desc", "updated_asc", "created_desc"])
+    .default("project_id_asc"),
 });
 
 export const characterPortfolioResponseSchema = adminListResponseSchema(characterPortfolioItemSchema);

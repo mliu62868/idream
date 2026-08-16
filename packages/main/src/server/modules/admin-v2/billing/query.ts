@@ -6,8 +6,9 @@ import {
   publicSubscriptionRefundDTO,
 } from "@/server/modules/billing/subscription-refund";
 import {
-  decodeAdminListCursor,
-  encodeAdminListCursor,
+  type AdminKeysetPaging,
+  CREATED_AT_DESC_KEYS,
+  paginateAdminKeyset,
 } from "@/server/modules/admin-v2/shared/list-cursor";
 import {
   actorWithPermission,
@@ -24,31 +25,34 @@ export async function billingLedger(request: Request) {
   const query = queryParams(request, "GET /api/v2/admin/billing/ledger");
   const { search, userId, reason, limit } = query;
   const queryIdentity = { search, userId, reason };
-  const cursorKeys = query.cursor
-    ? decodeAdminListCursor(query.cursor, "billing_ledger", queryIdentity)
-    : undefined;
-  const cursorWhere: Prisma.DreamcoinLedgerWhereInput | undefined = cursorKeys
-    ? descendingCursorWhere(cursorKeys, "billing_ledger")
-    : undefined;
-  const entries = await prisma.dreamcoinLedger.findMany({
-    where: customerDreamcoinLedgerWhere({
-      userId,
-      reason,
-      OR: search
-        ? [
-            { id: { contains: search } },
-            { userId: { contains: search } },
-            { sourceId: { contains: search } },
-            { user: { email: { contains: search } } },
-          ]
-        : undefined,
-      AND: cursorWhere,
-    }),
-    include: { user: true },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    take: limit + 1,
+  const where: Prisma.DreamcoinLedgerWhereInput = customerDreamcoinLedgerWhere({
+    userId,
+    reason,
+    OR: search
+      ? [
+          { id: { contains: search } },
+          { userId: { contains: search } },
+          { sourceId: { contains: search } },
+          { user: { email: { contains: search } } },
+        ]
+      : undefined,
   });
-  const page = entries.slice(0, limit);
+  const { items: page, pageInfo } = await paginateAdminKeyset({
+    scope: "billing_ledger",
+    queryIdentity,
+    cursor: query.cursor,
+    before: query.before,
+    limit,
+    keys: CREATED_AT_DESC_KEYS,
+    fetch: (paging: AdminKeysetPaging<Prisma.DreamcoinLedgerOrderByWithRelationInput>) =>
+      prisma.dreamcoinLedger.findMany({
+        where: { AND: [where, ...paging.cursorWhere] },
+        include: { user: true },
+        orderBy: paging.orderBy,
+        take: paging.take,
+      }),
+    count: () => prisma.dreamcoinLedger.count({ where }),
+  });
   return {
     dataScope: CUSTOMER_METRIC_DATA_SCOPE,
     items: page.map((entry) => ({
@@ -61,7 +65,7 @@ export async function billingLedger(request: Request) {
       sourceId: entry.sourceId,
       createdAt: entry.createdAt.toISOString(),
     })),
-    pageInfo: pageInfo("billing_ledger", queryIdentity, page, entries.length > limit),
+    pageInfo,
   };
 }
 
@@ -70,32 +74,35 @@ export async function listSubscriptions(request: Request) {
   const query = queryParams(request, "GET /api/v2/admin/billing/subscriptions");
   const { search, userId, status, limit } = query;
   const queryIdentity = { search, userId, status };
-  const cursorKeys = query.cursor
-    ? decodeAdminListCursor(query.cursor, "billing_subscriptions", queryIdentity)
-    : undefined;
-  const cursorWhere: Prisma.SubscriptionWhereInput | undefined = cursorKeys
-    ? descendingCursorWhere(cursorKeys, "billing_subscriptions")
-    : undefined;
-  const subscriptions = await prisma.subscription.findMany({
-    where: customerSubscriptionWhere({
-      userId,
-      status,
-      OR: search
-        ? [
-            { id: { contains: search } },
-            { userId: { contains: search } },
-            { providerSubscriptionId: { contains: search } },
-            { user: { email: { contains: search } } },
-            { plan: { slug: { contains: search } } },
-          ]
-        : undefined,
-      AND: cursorWhere,
-    }),
-    include: { plan: true, user: true },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    take: limit + 1,
+  const where: Prisma.SubscriptionWhereInput = customerSubscriptionWhere({
+    userId,
+    status,
+    OR: search
+      ? [
+          { id: { contains: search } },
+          { userId: { contains: search } },
+          { providerSubscriptionId: { contains: search } },
+          { user: { email: { contains: search } } },
+          { plan: { slug: { contains: search } } },
+        ]
+      : undefined,
   });
-  const page = subscriptions.slice(0, limit);
+  const { items: page, pageInfo } = await paginateAdminKeyset({
+    scope: "billing_subscriptions",
+    queryIdentity,
+    cursor: query.cursor,
+    before: query.before,
+    limit,
+    keys: CREATED_AT_DESC_KEYS,
+    fetch: (paging: AdminKeysetPaging<Prisma.SubscriptionOrderByWithRelationInput>) =>
+      prisma.subscription.findMany({
+        where: { AND: [where, ...paging.cursorWhere] },
+        include: { plan: true, user: true },
+        orderBy: paging.orderBy,
+        take: paging.take,
+      }),
+    count: () => prisma.subscription.count({ where }),
+  });
   const checkoutKeys = page.flatMap((subscription) =>
     subscription.providerSubscriptionId
       ? [{
@@ -151,7 +158,7 @@ export async function listSubscriptions(request: Request) {
         createdAt: subscription.createdAt.toISOString(),
       };
     }),
-    pageInfo: pageInfo("billing_subscriptions", queryIdentity, page, subscriptions.length > limit),
+    pageInfo,
   };
 }
 
@@ -236,30 +243,3 @@ export async function billingReconciliation(request: Request) {
   };
 }
 
-function descendingCursorWhere(keys: readonly unknown[], scope: string) {
-  const createdAt = new Date(cursorString(keys, 0, scope));
-  if (Number.isNaN(createdAt.getTime())) throw Errors.badRequest(`${scope} cursor timestamp is invalid`);
-  const id = cursorString(keys, 1, scope);
-  return { OR: [{ createdAt: { lt: createdAt } }, { createdAt, id: { lt: id } }] };
-}
-
-function cursorString(keys: readonly unknown[], index: number, scope: string) {
-  const value = keys[index];
-  if (typeof value !== "string" || !value) throw Errors.badRequest(`${scope} cursor key is invalid`);
-  return value;
-}
-
-function pageInfo<T extends { createdAt: Date; id: string }>(
-  scope: string,
-  queryIdentity: unknown,
-  page: readonly T[],
-  hasNextPage: boolean,
-) {
-  const last = page.at(-1);
-  return {
-    endCursor: hasNextPage && last
-      ? encodeAdminListCursor(scope, queryIdentity, [last.createdAt.toISOString(), last.id])
-      : null,
-    hasNextPage,
-  };
-}

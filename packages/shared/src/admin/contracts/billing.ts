@@ -21,6 +21,7 @@ export const adminBillingLedgerQuerySchema = z
     reason: z.string().trim().min(1).max(120).optional(),
     limit: z.coerce.number().int().min(1).max(100).default(50),
     cursor: z.string().trim().min(1).optional(),
+    before: z.string().trim().min(1).optional(),
   })
   .strict();
 
@@ -63,6 +64,7 @@ export const adminBillingSubscriptionQuerySchema = z
       .optional(),
     limit: z.coerce.number().int().min(1).max(100).default(50),
     cursor: z.string().trim().min(1).optional(),
+    before: z.string().trim().min(1).optional(),
   })
   .strict();
 
@@ -261,12 +263,7 @@ export const adminBillingSubscriptionListResponseSchema = z
       })
       .strict(),
     items: z.array(adminBillingSubscriptionListItemSchema),
-    pageInfo: z
-      .object({
-        endCursor: z.string().nullable(),
-        hasNextPage: z.boolean(),
-      })
-      .strict(),
+    pageInfo: adminPageInfoSchema,
   })
   .strict();
 
