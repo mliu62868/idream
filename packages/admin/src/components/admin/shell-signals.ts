@@ -8,6 +8,22 @@ export type AdminShellSignals = {
     | { state: "unavailable"; label: "No source watermark (legacy v1)" };
 };
 
+export type AdminShellSignalChip = { key: string; label: string; value: string };
+
+// SPEC: 只有真正携带信息的来源标记才占位。
+// INTENT: 五个 chip 常驻时通常有三个写着 unknown / legacy v1，占掉每一页最贵的那条横幅
+//         却什么都没说。环境和时区决定运营怎么读页面上的每个数字，永远保留；其余没配置
+//         就不渲染，配好了自然出现。
+export function adminShellSignalChips(signals: AdminShellSignals): AdminShellSignalChip[] {
+  return [
+    { key: "environment", label: "Environment", value: signals.environment },
+    { key: "data-class", label: "Data class", value: signals.dataClass === "unknown" ? null : signals.dataClass },
+    { key: "fixtures", label: "Fixtures", value: signals.fixtureState === "unknown" ? null : signals.fixtureState },
+    { key: "timezone", label: "Product timezone", value: signals.productTimezone },
+    { key: "freshness", label: "Freshness", value: signals.freshness.state === "reported" ? signals.freshness.label : null },
+  ].filter((chip): chip is AdminShellSignalChip => chip.value !== null);
+}
+
 type Environment = Readonly<Record<string, string | undefined>>;
 
 export function deriveAdminShellSignals(env: Environment): AdminShellSignals {

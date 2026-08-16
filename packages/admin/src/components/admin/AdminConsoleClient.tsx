@@ -29,7 +29,7 @@ import {
   type NavItem,
   type WorkMode,
 } from "@/components/admin/nav-config";
-import type { AdminShellSignals } from "@/components/admin/shell-signals";
+import { adminShellSignalChips, type AdminShellSignals } from "@/components/admin/shell-signals";
 import { GlobalAdminSearch } from "@/features/search/GlobalAdminSearch";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
@@ -513,13 +513,7 @@ function AdminConsoleContent({
 
 function ShellSignalBar({ signals }: { signals: AdminShellSignals }) {
   const { t } = useAdminI18n();
-  const signalItems = [
-    { key: "environment", label: "Environment", value: signals.environment },
-    { key: "data-class", label: "Data class", value: signals.dataClass },
-    { key: "fixtures", label: "Fixtures", value: signals.fixtureState },
-    { key: "timezone", label: "Product timezone", value: signals.productTimezone },
-    { key: "freshness", label: "Freshness", value: signals.freshness.label },
-  ];
+  const signalItems = adminShellSignalChips(signals);
 
   return (
     <div

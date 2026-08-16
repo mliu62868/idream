@@ -266,7 +266,7 @@ function tagsCommand(
   idempotencyKey: string,
   body: Record<string, unknown>,
 ) {
-  return api("PUT", `admin/content/characters/${characterId}/tags`, {
+  return adminV2Api("PUT", `/api/v2/admin/content/characters/${characterId}/tags`, {
     userId: actorId,
     role: "admin",
     headers: { "idempotency-key": idempotencyKey },

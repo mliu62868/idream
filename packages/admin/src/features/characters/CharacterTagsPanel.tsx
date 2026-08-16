@@ -26,7 +26,8 @@ type TagRow = {
   isSensitive: boolean;
 };
 
-type CharacterTagLink = { tagId: string; tag: { id: string; label: string } };
+// v2 的角色详情契约把标签投影成扁平行（id/slug/label/category），不再透出 CharacterTag 关联行。
+type CharacterTag = { id: string; label: string };
 
 export function characterTagSelectionChanged(
   saved: readonly string[],
@@ -55,12 +56,12 @@ export function CharacterTagsPanel({
     setError(null);
     try {
       const [tags, character] = await Promise.all([
-        apiGet<{ items: TagRow[] }>("/api/v1/admin/content/tags?limit=500"),
-        apiGet<{ character: { tags: CharacterTagLink[] } }>(
-          `/api/v1/admin/content/characters/${encodeURIComponent(characterId)}`,
+        apiGet<{ items: TagRow[] }>("/api/v2/admin/content/tags?limit=500"),
+        apiGet<{ character: { tags: CharacterTag[] } }>(
+          `/api/v2/admin/content/characters/${encodeURIComponent(characterId)}`,
         ),
       ]);
-      const current = character.character.tags.map((link) => link.tag.id);
+      const current = character.character.tags.map((tag) => tag.id);
       setVocabulary(tags.items);
       setSaved(current);
       setDraft(current);
@@ -107,7 +108,7 @@ export function CharacterTagsPanel({
       submitLabel: t("Save tags"),
       onSubmit: async (reason) => {
         await apiWrite(
-          `/api/v1/admin/content/characters/${encodeURIComponent(characterId)}/tags`,
+          `/api/v2/admin/content/characters/${encodeURIComponent(characterId)}/tags`,
           "PUT",
           { tagIds: draft, reason, confirmation: `${characterId}:tags` },
           { "idempotency-key": crypto.randomUUID() },
