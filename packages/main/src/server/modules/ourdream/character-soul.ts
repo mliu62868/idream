@@ -5,6 +5,7 @@ import {
   type SoulDiagnostic,
 } from "@idream/shared";
 import type { Prisma } from "@prisma/client";
+import { Errors } from "@/server/lib/errors";
 import { characterContentHash } from "@/server/modules/admin-v2/shared/character-content-identity";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 
@@ -137,6 +138,58 @@ export async function materializeUserCharacterContentVersion(input: {
     version: created.version,
     snapshot: input.content.personaSnapshot,
   };
+}
+
+// SPEC: 编译失败即 400，并把 Soul 诊断原样回给用户。
+// INTENT: 建角色 / 改角色 / 复制角色三条路径都要把 UserCharacterSoulCompileError 翻成
+// 同一个 400 —— 翻译只做一次，否则三份错误形状迟早不一样。
+export function compileUserSoulOrBadRequest(input: UserCharacterSoulInput) {
+  try {
+    return compileUserCharacterContent(input);
+  } catch (error) {
+    if (error instanceof UserCharacterSoulCompileError) {
+      throw Errors.badRequest("Complete the Character Soul before saving", {
+        diagnostics: error.diagnostics,
+      });
+    }
+    throw error;
+  }
+}
+
+export async function loadCurrentCharacterContentSnapshot(
+  tx: Prisma.TransactionClient,
+  characterId: string,
+  currentContentVersionId: string | null,
+): Promise<{
+  personaSnapshot: unknown;
+  openingSnapshot: unknown;
+  appearanceSnapshot: unknown;
+} | undefined> {
+  let contentVersionId = currentContentVersionId;
+  if (!contentVersionId) {
+    const serving = await tx.characterServing.findUnique({
+      where: { characterId },
+      select: {
+        currentRelease: {
+          select: { characterContentVersionId: true },
+        },
+      },
+    });
+    contentVersionId = serving?.currentRelease?.characterContentVersionId ?? null;
+  }
+  if (!contentVersionId) return undefined;
+  const content = await tx.characterContentVersion.findFirst({
+    where: { id: contentVersionId, characterId },
+    select: {
+      personaSnapshot: true,
+      openingSnapshot: true,
+      appearanceSnapshot: true,
+    },
+  });
+  if (!content) {
+    throw Errors.conflict("The Character's immutable content version is unavailable");
+  }
+  return content;
 }
 
 function record(value: unknown): Record<string, unknown> {
