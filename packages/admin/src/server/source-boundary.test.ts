@@ -105,9 +105,9 @@ describe("admin source boundary", () => {
       "utf8",
     ).catch(() => "");
 
-    expect(catchAll).not.toContain("/api/v1/admin/generation/model-profiles");
+    expect(catchAll).not.toContain("/api/v2/admin/generation/model-profiles");
     expect(catchAll).not.toContain("/api/v1/admin/feature-flags");
-    expect(catchAll).not.toContain("/api/v1/admin/generation/dead-letter");
+    expect(catchAll).not.toContain("/api/v2/admin/generation/dead-letter");
     expect(catchAll).not.toContain("function ConfigView");
     expect(catchAll).not.toContain("function DeadLetterView");
     expect(configFeature).toContain("export function GenerationConfigWorkspace");
@@ -172,6 +172,7 @@ describe("admin source boundary", () => {
     expect(catchAll).not.toContain("/api/v1/admin/risk/abuse");
     expect(catchAll).not.toContain("/api/v2/admin/risk/abuse");
     expect(catchAll).not.toContain("/api/v1/admin/ops/providers");
+    expect(catchAll).not.toContain("/api/v2/admin/ops/providers");
     expect(overviews).toContain("export function AnalyticsWorkspace");
     expect(overviews).toContain("export function RiskWorkspace");
     expect(overviews).toContain("export function ProviderOverviewWorkspace");

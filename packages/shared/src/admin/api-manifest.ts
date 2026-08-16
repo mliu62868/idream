@@ -461,6 +461,46 @@ export const ADMIN_V2_API_OPERATIONS = [
   // Flag 监控住在 analytics 下而不是 experiments 下：`/experiments/:id` 已声明在先，
   // manifest 是按声明顺序线性匹配的，`experiments/flag-monitoring` 会先撞上 `:id`。
   operation("GET", "/api/v2/admin/analytics/flag-monitoring", allOf("analytics.export"), "none", "experimentFlagMonitoringResponseSchema"),
+  // ---- generation: migrated from v1 `generation` / `ops` dispatcher resources ----
+  operation("GET", "/api/v2/admin/generation/model-profiles", allOf("generation.config.read"), "generationModelProfileQuerySchema", "generationModelProfileListResponseSchema"),
+  operation("POST", "/api/v2/admin/generation/model-profiles", allOf("generation.config.write"), "generationModelProfileCreateRequestSchema+idempotency-key", "generationModelProfileResponseSchema"),
+  operation("PATCH", "/api/v2/admin/generation/model-profiles/:id", allOf("generation.config.write"), "generationModelProfilePatchRequestSchema+idempotency-key", "generationModelProfileResponseSchema"),
+  operation("GET", "/api/v2/admin/generation/model-profiles/:id/health", allOf("generation.config.read"), "generationProfileHealthQuerySchema", "generationProfileHealthResponseSchema"),
+  operation("POST", "/api/v2/admin/generation/model-profiles/:id/commands/publish", allOf("generation.config.write"), "generationPublishCommandRequestSchema+idempotency-key", "generationModelProfilePublishResponseSchema"),
+  operation("POST", "/api/v2/admin/generation/model-profiles/:id/commands/rollback", allOf("generation.config.write"), "generationConfigCommandRequestSchema+idempotency-key", "generationModelProfileRollbackResponseSchema"),
+  operation("POST", "/api/v2/admin/generation/model-profiles/:id/commands/dry-run", allOf("generation.config.write"), "generationConfigCommandRequestSchema+idempotency-key", "generationProfileDryRunResponseSchema"),
+  operation("POST", "/api/v2/admin/generation/model-profiles/:id/commands/test-job", allOf("generation.config.write"), "generationProfileTestJobRequestSchema+idempotency-key", "generationProfileTestJobResponseSchema"),
+
+  // Model imports write to the local model library, not the database, so they carry no
+  // idempotency transport: replaying a register is already the identity it would buy.
+  operation("GET", "/api/v2/admin/generation/model-imports", allOf("generation.config.read"), "none", "generationModelImportListResponseSchema"),
+  operation("POST", "/api/v2/admin/generation/model-imports/commands/register", allOf("generation.config.write"), "generationModelImportRegisterRequestSchema", "generationModelImportRegisterResponseSchema"),
+  operation("POST", "/api/v2/admin/generation/model-imports/commands/upload", allOf("generation.config.write"), "none", "generationModelImportUploadResponseSchema"),
+
+  operation("GET", "/api/v2/admin/generation/recipes", allOf("generation.config.read"), "generationRecipeQuerySchema", "generationRecipeListResponseSchema"),
+  operation("POST", "/api/v2/admin/generation/recipes", allOf("generation.config.write"), "generationRecipeCreateRequestSchema+idempotency-key", "generationRecipeResponseSchema"),
+  operation("GET", "/api/v2/admin/generation/recipes/:id", allOf("generation.config.read"), "path:id", "generationRecipeResponseSchema"),
+  operation("PATCH", "/api/v2/admin/generation/recipes/:id", allOf("generation.config.write"), "generationRecipePatchRequestSchema+idempotency-key", "generationRecipeResponseSchema"),
+  operation("POST", "/api/v2/admin/generation/recipes/:id/commands/publish", allOf("generation.config.write"), "generationPublishCommandRequestSchema+idempotency-key", "generationRecipePublishResponseSchema"),
+  operation("POST", "/api/v2/admin/generation/recipes/:id/commands/rollback", allOf("generation.config.write"), "generationConfigCommandRequestSchema+idempotency-key", "generationRecipeRollbackResponseSchema"),
+
+  operation("GET", "/api/v2/admin/generation/presets", allOf("generation.config.read"), "generationPresetQuerySchema", "generationPresetListResponseSchema"),
+  operation("POST", "/api/v2/admin/generation/presets", allOf("generation.config.write"), "generationPresetCreateRequestSchema+idempotency-key", "generationPresetResponseSchema"),
+  operation("GET", "/api/v2/admin/generation/presets/:id", allOf("generation.config.read"), "path:id", "generationPresetResponseSchema"),
+  operation("PATCH", "/api/v2/admin/generation/presets/:id", allOf("generation.config.write"), "generationPresetPatchRequestSchema+idempotency-key", "generationPresetResponseSchema"),
+
+  operation("GET", "/api/v2/admin/generation/dead-letter", allOf("ops.queue.read"), "generationDeadLetterQuerySchema", "generationDeadLetterListResponseSchema"),
+  operation("POST", "/api/v2/admin/generation/dead-letter/commands/requeue", allOf("generation.job.requeue"), "generationDeadLetterBatchRequestSchema+idempotency-key", "generationDeadLetterRequeueBatchResultSchema"),
+  operation("POST", "/api/v2/admin/generation/dead-letter/commands/discard", allOf("ops.deadletter.write"), "generationDeadLetterBatchRequestSchema+idempotency-key", "generationDeadLetterDiscardBatchResultSchema"),
+  operation("POST", "/api/v2/admin/generation/dead-letter/:id/commands/requeue", allOf("generation.job.requeue"), "generationDeadLetterRequeueRequestSchema+idempotency-key", "generationDeadLetterRequeueResultSchema"),
+  operation("POST", "/api/v2/admin/generation/dead-letter/:id/commands/discard", allOf("ops.deadletter.write"), "generationConfigCommandRequestSchema+idempotency-key", "generationDeadLetterDiscardResultSchema"),
+
+  operation("GET", "/api/v2/admin/generation/backends", allOf("generation.config.read"), "none", "generationBackendListResponseSchema"),
+  operation("GET", "/api/v2/admin/generation/workflows", allOf("generation.config.read"), "none", "generationWorkflowListResponseSchema"),
+  operation("GET", "/api/v2/admin/generation/workflows/:id", allOf("generation.config.read"), "path:id", "generationWorkflowDetailResponseSchema"),
+  operation("GET", "/api/v2/admin/generation/metrics", allOf("generation.config.read"), "generationMetricsQuerySchema", "generationMetricsResponseSchema"),
+
+  operation("GET", "/api/v2/admin/ops/providers", allOf("ops.queue.read"), "generationProviderOpsQuerySchema", "generationProviderOpsResponseSchema"),
 ] as const satisfies readonly AdminV2ApiOperation[];
 
 /** One declared operation, literals intact. */

@@ -18,7 +18,7 @@ export type Recipe = {
 
 export const MODES = ["image", "video", "negative"] as const;
 export const USE_CASES = ["character", "freeplay", "negative"] as const;
-export const RECIPES_LIST = "/api/v1/admin/generation/recipes";
+export const RECIPES_LIST = "/api/v2/admin/generation/recipes";
 
 export type RecipeDraft = {
   recipeKey: string;

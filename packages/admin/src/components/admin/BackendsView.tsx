@@ -49,11 +49,11 @@ export function BackendsView() {
   const requestGate = useRef(createLatestRequestGate());
 
   const load = useCallback(async () => {
-    const queryKey = "/api/v1/admin/generation/backends";
+    const queryKey = "/api/v2/admin/generation/backends";
     const request = requestGate.current.begin();
     setAuthority((current) => authorityRequestStarted(current, queryKey));
     try {
-      const data = await apiGet<{ items: BackendItem[] }>("/api/v1/admin/generation/backends");
+      const data = await apiGet<{ items: BackendItem[] }>("/api/v2/admin/generation/backends");
       if (!request.isCurrent()) return;
       setAuthority(authorityRequestSucceeded(queryKey, data.items));
     } catch (err) {

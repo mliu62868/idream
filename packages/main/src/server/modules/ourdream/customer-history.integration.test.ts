@@ -8,7 +8,7 @@ import {
   expectOk,
   purgeTestData,
 } from "@/server/test/helpers";
-import { adminV2 } from "@/server/test/trust-safety-admin-v2";
+import { adminV2 } from "@/server/test/admin-v2-http";
 
 const P = "zt-customer-history-";
 const CUSTOMER = `${P}customer`;

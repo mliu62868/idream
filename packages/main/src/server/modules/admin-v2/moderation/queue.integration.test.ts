@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
-import { adminV2 } from "@/server/test/trust-safety-admin-v2";
+import { adminV2 } from "@/server/test/admin-v2-http";
 
 type PageInfo = { endCursor: string | null; hasNextPage: boolean };
 

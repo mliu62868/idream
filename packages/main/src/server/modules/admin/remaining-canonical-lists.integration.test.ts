@@ -36,16 +36,6 @@ describe("remaining canonical admin lists", () => {
 
   beforeAll(async () => {
     await prisma.user.create({ data: { id: actorId, email: `${token}@example.test`, role: "admin", status: "active" } });
-    await prisma.generationJob.createMany({ data: ids("job").map((id, index) => ({
-      id,
-      userId: actorId,
-      mode: "image",
-      controls: {},
-      presetIds: [],
-      status: "failed",
-      errorCode: `${token}-failure`,
-      updatedAt: new Date(Date.UTC(2026, 6, 11, 3, index)),
-    })) });
     await prisma.character.createMany({ data: ids("character").map((id, index) => ({
       id,
       creatorId: actorId,
@@ -68,15 +58,6 @@ describe("remaining canonical admin lists", () => {
       reason: token,
       createdAt: new Date(Date.UTC(2026, 6, 11, 11, index)),
     })) });
-    await prisma.generationModelProfile.createMany({ data: ids("profile").map((id, index) => ({
-      id,
-      profileKey: `${token}-profile-${index}`,
-      label: `${token} profile ${index}`,
-      mode: "image",
-      pipelineModel: "test-model",
-      allowedOrientations: ["1:1"],
-      status: "draft",
-    })) });
     await prisma.featureFlag.createMany({ data: ids("flag").map((key) => ({
       key,
       label: `${token} flag`,
@@ -89,20 +70,16 @@ describe("remaining canonical admin lists", () => {
 
   afterAll(async () => {
     await prisma.featureFlag.deleteMany({ where: { key: { startsWith: token } } });
-    await prisma.generationModelProfile.deleteMany({ where: { id: { in: ids("profile") } } });
     await prisma.adminAuditLog.deleteMany({ where: { id: { in: ids("audit") } } });
     await prisma.character.deleteMany({ where: { id: { in: ids("character") } } });
-    await prisma.generationJob.deleteMany({ where: { id: { in: ids("job") } } });
     await prisma.user.deleteMany({ where: { id: actorId } });
     await prisma.$disconnect();
   });
 
   const cases = [
-    { name: "dead-letter", segments: ["generation", "dead-letter"], query: `search=${token}&status=failed&limit=1` },
     { name: "merchandising characters", segments: ["content", "characters"], query: `search=${token}&status=approved&limit=1` },
     { name: "merchandising characters without stats", segments: ["content", "characters"], query: `search=${token}&status=approved&sort=popular&limit=1` },
     { name: "audit", segments: ["audit-log"], query: `search=${token}&limit=1` },
-    { name: "generation profiles", segments: ["generation", "model-profiles"], query: `search=${token}&mode=image&limit=1` },
     { name: "feature flags", segments: ["feature-flags"], query: `search=${token}&enabled=false&limit=1` },
   ] as const;
 
@@ -128,7 +105,6 @@ describe("remaining canonical admin lists", () => {
 
   it("preserves unbounded V1 defaults while the Admin UI opts into pagination", async () => {
     for (const testCase of [
-      { segments: ["generation", "model-profiles"], query: `search=${token}` },
       { segments: ["feature-flags"], query: `search=${token}` },
     ]) {
       const result = await call(testCase.segments, testCase.query);
@@ -139,8 +115,7 @@ describe("remaining canonical admin lists", () => {
     }
   });
 
-  it("rejects malformed canonical profile and flag queries at the boundary", async () => {
-    await expect(call(["generation", "model-profiles"], "status=mystery")).resolves.toMatchObject({ response: { status: 400 } });
+  it("rejects malformed canonical flag queries at the boundary", async () => {
     await expect(call(["feature-flags"], "enabled=banana")).resolves.toMatchObject({ response: { status: 400 } });
   });
 

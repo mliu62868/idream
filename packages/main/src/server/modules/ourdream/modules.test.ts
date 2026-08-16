@@ -26,7 +26,8 @@ import {
   purgeTestData,
 } from "@/server/test/helpers";
 import { legacyRedeemCodeHash } from "@/server/lib/redeem-codes";
-import { adminV2 } from "@/server/test/trust-safety-admin-v2";
+import { adminV2 } from "@/server/test/admin-v2-http";
+import type { ApiResult } from "@/server/test/helpers";
 
 // SPEC: Remaining API surface (BackendFeatureSpec §5.1/5.6/5.7/5.9/5.10) —
 // age gate/verification, profile/preferences/language, redeem, referrals,
@@ -1523,7 +1524,7 @@ describe("media bulk operations", () => {
     await createUser({ id: userId });
     await createMedia({ id: mediaId, ownerId: userId });
 
-    let deleteRequest: ReturnType<typeof adminV2> | undefined;
+    let deleteRequest: Promise<ApiResult> | undefined;
     await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`media-asset-authority:${mediaId}`}))`;
       deleteRequest = api("DELETE", `media/${mediaId}`, {
@@ -1561,7 +1562,7 @@ describe("media bulk operations", () => {
     await createMedia({ id: firstId, ownerId: userId });
     await createMedia({ id: secondId, ownerId: userId });
 
-    let deleteRequest: ReturnType<typeof adminV2> | undefined;
+    let deleteRequest: Promise<ApiResult> | undefined;
     await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`media-asset-authority:${secondId}`}))`;
       deleteRequest = api("POST", "media/bulk", {

@@ -69,26 +69,28 @@ describe("Admin v2 architecture boundaries", () => {
     expect(writers).toEqual(["modules/admin-v2/creative/run-create.ts"]);
   });
 
-  it("keeps generation config and dead-letter authorities out of the dispatcher monolith", async () => {
+  // The generation config and dead-letter authorities now live under admin-v2 and answer
+  // `/api/v2/admin/generation/*`; the dispatcher no longer routes to them at all.
+  it("keeps generation config and dead-letter authorities in the v2 authority tree", async () => {
     const dispatcher = await readFile(
       path.join(process.cwd(), "src/server/modules/admin/service.ts"),
       "utf8",
     );
     const configDomain = await readFile(
-      path.join(process.cwd(), "src/server/modules/admin/generation/config/service.ts"),
+      path.join(process.cwd(), "src/server/modules/admin-v2/generation/model-profiles.ts"),
       "utf8",
-    ).catch(() => "");
+    );
     const deadLetterDomain = await readFile(
-      path.join(process.cwd(), "src/server/modules/admin/generation/dead-letter/service.ts"),
+      path.join(process.cwd(), "src/server/modules/admin-v2/generation/dead-letter.ts"),
       "utf8",
-    ).catch(() => "");
+    );
 
-    expect(dispatcher).not.toContain("const modelProfileSchema");
-    expect(dispatcher).not.toContain("async function listModelProfiles");
-    expect(dispatcher).not.toContain("async function deadLetterQueue");
-    expect(dispatcher).not.toContain("async function requeueDeadLetterBatch");
-    expect(configDomain).toContain("export async function listModelProfiles");
-    expect(deadLetterDomain).toContain("export async function deadLetterQueue");
+    expect(dispatcher).not.toContain("generation/model-profiles");
+    expect(dispatcher).not.toContain("generation/dead-letter");
+    expect(dispatcher).not.toContain('resource === "generation"');
+    expect(dispatcher).not.toContain('resource === "ops"');
+    expect(configDomain).toContain("export async function listGenerationModelProfiles");
+    expect(deadLetterDomain).toContain("export async function listGenerationDeadLetter");
     expect(configDomain).not.toContain(["@/server/modules/admin", "service"].join("/"));
     expect(deadLetterDomain).not.toContain(["@/server/modules/admin", "service"].join("/"));
   });
@@ -121,13 +123,16 @@ describe("Admin v2 architecture boundaries", () => {
   it("leaves the legacy dispatcher as a route table and compatibility export surface", async () => {
     const root = path.join(process.cwd(), "src/server/modules/admin");
     const dispatcher = await readFile(path.join(root, "service.ts"), "utf8");
-    const generation = await readFile(path.join(root, "generation/catalog-admin.ts"), "utf8");
+    const catalog = await readFile(
+      path.join(process.cwd(), "src/server/modules/admin-v2/generation/catalog.ts"),
+      "utf8",
+    );
     expect(dispatcher.match(/(?:export )?async function /g)).toEqual([
       "export async function ",
     ]);
     expect(dispatcher).not.toContain("prisma.");
     expect(dispatcher).not.toContain("z.object(");
-    expect(generation).toContain("export async function listRecipes");
-    expect(generation).toContain("export async function listAdminPresets");
+    expect(catalog).toContain("export async function listGenerationRecipes");
+    expect(catalog).toContain("export async function listGenerationPresets");
   });
 });

@@ -14,7 +14,7 @@ import {
   purgeTestData,
   runQueuedGenerationJobs,
 } from "@/server/test/helpers";
-import { adminV2 } from "@/server/test/trust-safety-admin-v2";
+import { adminV2 } from "@/server/test/admin-v2-http";
 
 // SPEC (highest-priority risk list, docs/architecture/11-testing.md §4):
 // - age gate must precede adult content / gated routes (403 otherwise)

@@ -11,8 +11,6 @@ describe("server-backed compatibility lists", () => {
   const batchId = `list-batch-${suffix}`;
   const assetIds = [0, 1, 2].map((index) => `list-asset-${index}-${suffix}`);
   const placementIds = [0, 1, 2].map((index) => `list-placement-${index}-${suffix}`);
-  const recipeIds = [0, 1, 2].map((index) => `list-recipe-${index}-${suffix}`);
-  const presetIds = [0, 1, 2].map((index) => `list-preset-${index}-${suffix}`);
   const templateIds = [0, 1, 2].map((index) => `list-template-${index}-${suffix}`);
 
   async function call(segments: string[], query: string) {
@@ -63,27 +61,6 @@ describe("server-backed compatibility lists", () => {
       metadata: {},
       createdAt: new Date(Date.UTC(2026, 6, 11, 13, index)),
     })) });
-    await prisma.generationRecipe.createMany({ data: recipeIds.map((id, index) => ({
-      id,
-      recipeKey: `${token}-${index}`,
-      label: `${token} recipe ${index}`,
-      mode: "image",
-      useCase: "character",
-      body: "prompt",
-      presetOrder: [],
-      safetyHints: {},
-      sampleMatrix: [],
-      status: "draft",
-    })) });
-    await prisma.generationPreset.createMany({ data: presetIds.map((id, index) => ({
-      id,
-      scope: "built_in",
-      type: "background",
-      label: `${token} preset ${index}`,
-      controls: {},
-      visibility: "public",
-      status: "active",
-    })) });
     await prisma.characterTemplate.createMany({ data: templateIds.map((id, index) => ({
       id,
       scope: "built_in",
@@ -101,8 +78,6 @@ describe("server-backed compatibility lists", () => {
     await prisma.contentProductionItem.deleteMany({ where: { batchId } });
     await prisma.contentProductionBatch.deleteMany({ where: { id: batchId } });
     await prisma.mediaAsset.deleteMany({ where: { id: { in: assetIds } } });
-    await prisma.generationRecipe.deleteMany({ where: { id: { in: recipeIds } } });
-    await prisma.generationPreset.deleteMany({ where: { id: { in: presetIds } } });
     await prisma.characterTemplate.deleteMany({ where: { id: { in: templateIds } } });
     await prisma.user.deleteMany({ where: { id: actorId } });
     await prisma.$disconnect();
@@ -111,8 +86,6 @@ describe("server-backed compatibility lists", () => {
   const cases = [
     { segments: ["content", "assets"], query: `search=${token}&status=generated` },
     { segments: ["content", "placements"], query: `search=${token}&status=draft` },
-    { segments: ["generation", "recipes"], query: `search=${token}&status=draft` },
-    { segments: ["generation", "presets"], query: `search=${token}&type=background` },
     { segments: ["content", "templates"], query: `search=${token}&scope=built_in` },
   ] as const;
 

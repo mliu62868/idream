@@ -7,7 +7,7 @@ import {
   listContentCharacters,
 } from "@/server/modules/admin/content/merchandising";
 import { GET as supportRequestsRoute } from "@/app/api/v2/admin/support/requests/route";
-import { adminV2 } from "@/server/test/trust-safety-admin-v2";
+import { adminV2 } from "@/server/test/admin-v2-http";
 
 describe("Admin P1 inventory provenance", () => {
   const suffix = randomUUID();

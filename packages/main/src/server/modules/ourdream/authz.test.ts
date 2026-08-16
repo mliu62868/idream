@@ -12,7 +12,7 @@ import {
   publishCharacterForPublicAudience,
   purgeTestData,
 } from "@/server/test/helpers";
-import { adminV2 } from "@/server/test/trust-safety-admin-v2";
+import { adminV2 } from "@/server/test/admin-v2-http";
 
 // SPEC (docs/architecture/11-testing.md §4 — authz/authorization):
 // - unauthenticated access to user endpoints → 401

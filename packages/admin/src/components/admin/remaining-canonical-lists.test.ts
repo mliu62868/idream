@@ -101,7 +101,7 @@ describe("remaining canonical admin list surfaces", () => {
     expect(deadLetterListPath(deadLetterQueryFromSearch(
       "?deadSearch=timeout&deadMode=image&deadStatus=failed&deadError=provider&deadCursor=D",
     ))).toBe(
-      "/api/v1/admin/generation/dead-letter?search=timeout&mode=image&status=failed&errorCode=provider&cursor=D&limit=25",
+      "/api/v2/admin/generation/dead-letter?search=timeout&mode=image&status=failed&errorCode=provider&cursor=D&limit=25",
     );
     expect(accessListPath(accessQueryFromSearch(
       "?accessSearch=kim&accessRole=admin&accessStatus=active&accessDataClass=internal&accessCursor=A",
@@ -152,7 +152,7 @@ describe("remaining canonical admin list surfaces", () => {
       "?configSearch=qwen&profileMode=image&profileStatus=active&flagEnabled=true&profileCursor=GP&flagCursor=GF",
     );
     expect(generationProfilesPath(config)).toBe(
-      "/api/v1/admin/generation/model-profiles?search=qwen&mode=image&status=active&cursor=GP&limit=25",
+      "/api/v2/admin/generation/model-profiles?search=qwen&mode=image&status=active&cursor=GP&limit=25",
     );
     expect(featureFlagsPath(config)).toBe(
       "/api/v2/admin/feature-flags?search=qwen&enabled=true&cursor=GF&limit=25",
