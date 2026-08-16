@@ -15,6 +15,10 @@ export interface ChatChunk {
   done: boolean;
   /** Accumulated tool calls, present on the final (done) chunk once the SSE stream closes. */
   toolCalls?: ChatToolCall[];
+  // SPEC: real token counts the provider reported, on the final (done) chunk.
+  // INVARIANT: absent when the provider reports none (mock, or a server that
+  // ignores stream_options) — callers fall back to estimating from characters.
+  usage?: { promptTokens: number; completionTokens: number };
 }
 
 // SPEC: a function-calling tool description passed to the model, JSON-Schema
