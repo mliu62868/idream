@@ -33,7 +33,7 @@ export function billingLedgerPath(query: BillingQuery) {
   set(params, "reason", query.ledgerReason);
   set(params, "cursor", query.ledgerCursor);
   params.set("limit", "25");
-  return `/api/v1/admin/billing/ledger?${params.toString()}`;
+  return `/api/v2/admin/billing/ledger?${params.toString()}`;
 }
 
 export function billingSubscriptionsPath(query: BillingQuery) {
@@ -42,7 +42,7 @@ export function billingSubscriptionsPath(query: BillingQuery) {
   set(params, "status", query.subscriptionStatus);
   set(params, "cursor", query.subscriptionCursor);
   params.set("limit", "25");
-  return `/api/v1/admin/billing/subscriptions?${params.toString()}`;
+  return `/api/v2/admin/billing/subscriptions?${params.toString()}`;
 }
 
 export function billingWorkspaceUrl(

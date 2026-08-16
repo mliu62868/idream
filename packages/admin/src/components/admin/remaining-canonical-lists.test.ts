@@ -87,16 +87,16 @@ describe("remaining canonical admin list surfaces", () => {
       "?billingSearch=alice&ledgerReason=bonus&subscriptionStatus=active&ledgerCursor=L&subscriptionCursor=S",
     );
     expect(billingLedgerPath(billing)).toBe(
-      "/api/v1/admin/billing/ledger?search=alice&reason=bonus&cursor=L&limit=25",
+      "/api/v2/admin/billing/ledger?search=alice&reason=bonus&cursor=L&limit=25",
     );
     expect(billingSubscriptionsPath(billing)).toBe(
-      "/api/v1/admin/billing/subscriptions?search=alice&status=active&cursor=S&limit=25",
+      "/api/v2/admin/billing/subscriptions?search=alice&status=active&cursor=S&limit=25",
     );
 
     expect(pricingListPath(pricingQueryFromSearch(
       "?pricingSearch=portrait&pricingMode=image&pricingStatus=active&pricingCursor=P",
     ))).toBe(
-      "/api/v1/admin/pricing/rules?search=portrait&mode=image&status=active&cursor=P&limit=25",
+      "/api/v2/admin/pricing/rules?search=portrait&mode=image&status=active&cursor=P&limit=25",
     );
     expect(deadLetterListPath(deadLetterQueryFromSearch(
       "?deadSearch=timeout&deadMode=image&deadStatus=failed&deadError=provider&deadCursor=D",
@@ -137,10 +137,10 @@ describe("remaining canonical admin list surfaces", () => {
       "?promoSearch=summer&promoStatus=active&referralStatus=paid&promoCursor=PC&referralCursor=PR",
     );
     expect(promoListPath(promo, "codes")).toBe(
-      "/api/v1/admin/promo/redeem-codes?limit=25&search=summer&status=active&cursor=PC",
+      "/api/v2/admin/promo/redeem-codes?limit=25&search=summer&status=active&cursor=PC",
     );
     expect(promoListPath(promo, "referrals")).toBe(
-      "/api/v1/admin/promo/referrals?limit=25&search=summer&status=paid&cursor=PR",
+      "/api/v2/admin/promo/referrals?limit=25&search=summer&status=paid&cursor=PR",
     );
     expect(approvalListPath(approvalQueryFromSearch(
       "?approvalSearch=release&approvalStatus=pending&approvalCursor=AV",

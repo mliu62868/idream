@@ -1,11 +1,8 @@
-import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
-import { adminSubscriptionRefundCommandResponseSchema } from "@idream/shared/admin";
-import { z } from "zod";
+import type { AdminSubscriptionRefundRequest } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
-import { ok } from "@/server/lib/http";
 import { toInputJson } from "@/server/lib/request-json";
 import {
   acceptControlPlaneCommand,
@@ -13,13 +10,12 @@ import {
 } from "@/server/modules/admin-v2/shared/control-plane-command";
 import { transitionControlPlaneCommandAttempt } from "@/server/modules/admin-v2/shared/control-plane-command-attempt";
 import { transitionControlPlaneCommand } from "@/server/modules/admin-v2/shared/control-plane-command-transition";
-import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 import {
-  actorWithPermission,
-  jsonBody,
-  type AdminActor,
-} from "@/server/modules/admin/shared/legacy-primitives";
-import { persistTransactionalAdminMutation } from "@/server/modules/admin/shared/transactional-mutation";
+  adminRequestId,
+  adminRequestIpHash,
+  adminRequestUserAgent,
+} from "@/server/modules/admin-v2/shared/audit-request";
+import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { postDreamcoinEntry } from "@/server/modules/billing/ledger";
 import {
   parseSubscriptionRefundEvidence,
@@ -32,40 +28,26 @@ import {
 import { providers } from "@/server/providers";
 import type { PaymentRefund } from "@/server/providers/types";
 
-const requestSchema = z
-  .object({
-    reason: z.string().trim().min(3).max(2_000),
-    confirmation: z.string().trim().min(1).max(240),
-  })
-  .strict();
-
 export async function requestSubscriptionRefund(
   request: Request,
+  actor: AdminActor,
   subscriptionId: string,
+  body: AdminSubscriptionRefundRequest,
+  idempotencyKey: string,
 ) {
-  const actor = await actorWithPermission(
-    request,
-    "billing.subscription.refund",
-  );
-  const body = requestSchema.parse(await jsonBody(request));
   if (body.confirmation !== `${subscriptionId}:refund`) {
     throw Errors.badRequest("Confirmation did not match the subscription refund");
   }
   const command = await acceptRefundCommand({
     request,
     actor,
-    idempotencyKey: requireIdempotencyKey(request),
+    idempotencyKey,
     subscriptionId,
     commandType: "billing.subscription.refund",
     coordinationKey: `subscription-refund:${subscriptionId}`,
     reason: body.reason,
   });
-  if (command.result) {
-    return ok(adminSubscriptionRefundCommandResponseSchema.parse({
-      ...command.result,
-      replayed: true,
-    }));
-  }
+  if (command.result) return { ...command.result, replayed: true };
 
   let prepared: Awaited<ReturnType<typeof prepareRefund>>;
   try {
@@ -131,21 +113,16 @@ export async function requestSubscriptionRefund(
     providerRefund,
     reason: body.reason,
   });
-  return ok(adminSubscriptionRefundCommandResponseSchema.parse({
-    ...result,
-    replayed: false,
-  }));
+  return { ...result, replayed: false };
 }
 
 export async function reconcileSubscriptionRefund(
   request: Request,
+  actor: AdminActor,
   subscriptionId: string,
+  body: AdminSubscriptionRefundRequest,
+  idempotencyKey: string,
 ) {
-  const actor = await actorWithPermission(
-    request,
-    "billing.subscription.refund",
-  );
-  const body = requestSchema.parse(await jsonBody(request));
   if (body.confirmation !== `${subscriptionId}:refund_reconcile`) {
     throw Errors.badRequest(
       "Confirmation did not match the subscription refund reconciliation",
@@ -154,18 +131,13 @@ export async function reconcileSubscriptionRefund(
   const command = await acceptRefundCommand({
     request,
     actor,
-    idempotencyKey: requireIdempotencyKey(request),
+    idempotencyKey,
     subscriptionId,
     commandType: "billing.subscription.refund.reconcile",
     coordinationKey: `subscription-refund:${subscriptionId}`,
     reason: body.reason,
   });
-  if (command.result) {
-    return ok(adminSubscriptionRefundCommandResponseSchema.parse({
-      ...command.result,
-      replayed: true,
-    }));
-  }
+  if (command.result) return { ...command.result, replayed: true };
 
   let checkout: Awaited<ReturnType<typeof checkoutForSubscription>>;
   let evidence: SubscriptionRefundEvidence;
@@ -226,10 +198,7 @@ export async function reconcileSubscriptionRefund(
     providerRefund,
     reason: body.reason,
   });
-  return ok(adminSubscriptionRefundCommandResponseSchema.parse({
-    ...result,
-    replayed: false,
-  }));
+  return { ...result, replayed: false };
 }
 
 async function acceptRefundCommand(input: {
@@ -241,8 +210,6 @@ async function acceptRefundCommand(input: {
   coordinationKey: string;
   reason: string;
 }) {
-  const requestId =
-    input.request.headers.get("x-request-id")?.trim() || randomUUID();
   const accepted = await acceptControlPlaneCommand(prisma, {
     environment: env.APP_ENV,
     actor: input.actor,
@@ -253,7 +220,7 @@ async function acceptRefundCommand(input: {
     payload: { reason: input.reason },
     retryMode: "idempotent",
     reason: input.reason,
-    requestId,
+    requestId: adminRequestId(input.request),
     maxAttempts: 3,
   });
   const existing = await prisma.controlPlaneCommand.findUniqueOrThrow({
@@ -416,7 +383,7 @@ async function prepareRefund(input: {
         ),
       },
     });
-    await persistTransactionalAdminMutation(tx, input.request, input.actor, {
+    await persistRefundMutation(tx, input.request, input.actor, {
       audit: {
         action: "billing.subscription.refund_requested",
         targetType: "subscription",
@@ -506,7 +473,7 @@ async function convergeProviderRefund(input: {
       to: "succeeded",
       data: { finishedAt: new Date() },
     });
-    await persistTransactionalAdminMutation(tx, input.request, input.actor, {
+    await persistRefundMutation(tx, input.request, input.actor, {
       audit: {
         action:
           evidence.state === "completed"
@@ -544,6 +511,63 @@ async function convergeProviderRefund(input: {
     });
     return result;
   }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
+}
+
+/**
+ * SPEC: 一次退款状态迁移的 Audit 行与 Outbox 事件，与业务写同事务落库。
+ * INTENT: 退款链路有三个状态迁移点要写同一对记录，就地展开三遍只会让它们各自漂移；
+ * 这个函数不出本文件，所以它不是又一个跨领域的通用写原语。
+ */
+async function persistRefundMutation(
+  tx: Prisma.TransactionClient,
+  request: Request,
+  actor: AdminActor,
+  input: {
+    audit: {
+      action: string;
+      targetType: string;
+      targetId: string;
+      reason: string;
+      before: Record<string, unknown>;
+      after: Record<string, unknown>;
+    };
+    event: {
+      eventType: string;
+      aggregateType: string;
+      aggregateId: string;
+      payload: Record<string, unknown>;
+    };
+  },
+) {
+  const requestId = adminRequestId(request);
+  await tx.adminAuditLog.create({
+    data: {
+      actorId: actor.id,
+      actorRole: actor.role,
+      action: input.audit.action,
+      targetType: input.audit.targetType,
+      targetId: input.audit.targetId,
+      reason: input.audit.reason,
+      before: toInputJson(input.audit.before),
+      after: toInputJson(input.audit.after),
+      requestId,
+      ipHash: adminRequestIpHash(request),
+      userAgent: adminRequestUserAgent(request),
+    },
+  });
+  await tx.mainOutboxEvent.create({
+    data: {
+      eventType: input.event.eventType,
+      aggregateType: input.event.aggregateType,
+      aggregateId: input.event.aggregateId,
+      payload: toInputJson({
+        ...input.event.payload,
+        actorId: actor.id,
+        actorRole: actor.role,
+        requestId,
+      }),
+    },
+  });
 }
 
 async function failRefundCommand(

@@ -39,7 +39,7 @@ export function pricingListPath(query: PricingQuery) {
   set(params, "status", query.status);
   set(params, "cursor", query.cursor);
   params.set("limit", "25");
-  return `/api/v1/admin/pricing/rules?${params.toString()}`;
+  return `/api/v2/admin/pricing/rules?${params.toString()}`;
 }
 
 export function pricingWorkspaceUrl(pathname: string, search: string, updates: Readonly<Record<string, string | null>>) {

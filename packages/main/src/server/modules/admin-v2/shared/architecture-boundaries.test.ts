@@ -93,15 +93,6 @@ describe("Admin v2 architecture boundaries", () => {
     expect(deadLetterDomain).not.toContain(["@/server/modules/admin", "service"].join("/"));
   });
 
-  it("keeps the promo authority out of the dispatcher monolith", async () => {
-    const root = path.join(process.cwd(), "src/server/modules/admin");
-    const dispatcher = await readFile(path.join(root, "service.ts"), "utf8");
-    const promo = await readFile(path.join(root, "promo/service.ts"), "utf8").catch(() => "");
-
-    expect(dispatcher).not.toContain("const redeemCodeCreateSchema");
-    expect(dispatcher).not.toContain("async function listRedeemCodes");
-    expect(promo).toContain("export async function listRedeemCodes");
-  });
 
   it("keeps Chat Ops proxy authority out of the dispatcher monolith", async () => {
     const root = path.join(process.cwd(), "src/server/modules/admin");

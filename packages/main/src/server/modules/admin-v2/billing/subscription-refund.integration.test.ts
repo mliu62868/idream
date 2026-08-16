@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { POST as refundRoute } from "@/app/api/v2/admin/billing/subscriptions/[id]/refund/route";
+import { POST as refundReconcileRoute } from "@/app/api/v2/admin/billing/subscriptions/[id]/refund/reconcile/route";
 import { prisma } from "@/server/lib/db";
 import { postDreamcoinEntry } from "@/server/modules/billing/ledger";
 import { parseSubscriptionRefundEvidence } from "@/server/modules/billing/subscription-refund";
@@ -10,8 +12,45 @@ import {
   expectOk,
   purgeTestData,
 } from "@/server/test/helpers";
+import { adminV2Route } from "@/server/test/admin-v2-route-client";
 
 const P = "zt-subscription-refund-";
+
+function requestRefund(input: {
+  subscriptionId: string;
+  userId: string;
+  role: string;
+  idempotencyKey?: string;
+  body: Record<string, unknown>;
+}) {
+  return adminV2Route(refundRoute, {
+    method: "POST",
+    path: `billing/subscriptions/${input.subscriptionId}/refund`,
+    params: { id: input.subscriptionId },
+    userId: input.userId,
+    role: input.role,
+    idempotencyKey: input.idempotencyKey,
+    body: input.body,
+  });
+}
+
+function reconcileRefund(input: {
+  subscriptionId: string;
+  userId: string;
+  role: string;
+  idempotencyKey?: string;
+  body: Record<string, unknown>;
+}) {
+  return adminV2Route(refundReconcileRoute, {
+    method: "POST",
+    path: `billing/subscriptions/${input.subscriptionId}/refund/reconcile`,
+    params: { id: input.subscriptionId },
+    userId: input.userId,
+    role: input.role,
+    idempotencyKey: input.idempotencyKey,
+    body: input.body,
+  });
+}
 const actorId = `${P}actor`;
 const supportId = `${P}support`;
 const customerId = `${P}customer`;
@@ -140,20 +179,17 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
-describe.sequential("completed subscription refund authority", () => {
+describe.sequential("Admin v2 completed subscription refund authority", () => {
   it("requires the dedicated refund permission", async () => {
-    const denied = await api(
-      "POST",
-      `admin/billing/subscriptions/${subscriptionId}/refund`,
-      {
-        userId: supportId,
-        role: "support",
-        body: {
-          reason: "Customer requested a full refund.",
-          confirmation: `${subscriptionId}:refund`,
-        },
+    const denied = await requestRefund({
+      subscriptionId,
+      userId: supportId,
+      role: "support",
+      body: {
+        reason: "Customer requested a full refund.",
+        confirmation: `${subscriptionId}:refund`,
       },
-    );
+    });
 
     expect(denied.status).toBe(403);
     expect(denied.error?.details).toMatchObject({
@@ -167,16 +203,13 @@ describe.sequential("completed subscription refund authority", () => {
       reason: "Customer requested a full refund.",
       confirmation: `${subscriptionId}:refund`,
     };
-    const first = await api(
-      "POST",
-      `admin/billing/subscriptions/${subscriptionId}/refund`,
-      {
-        userId: actorId,
-        role: "admin",
-        headers: { "idempotency-key": idempotencyKey },
-        body,
-      },
-    );
+    const first = await requestRefund({
+      subscriptionId,
+      userId: actorId,
+      role: "admin",
+      idempotencyKey,
+      body,
+    });
     expectOk(first);
     primaryRefundReference = (
       first.data as { refund: { reference: string } }
@@ -199,16 +232,13 @@ describe.sequential("completed subscription refund authority", () => {
       },
     });
 
-    const replay = await api(
-      "POST",
-      `admin/billing/subscriptions/${subscriptionId}/refund`,
-      {
-        userId: actorId,
-        role: "admin",
-        headers: { "idempotency-key": idempotencyKey },
-        body,
-      },
-    );
+    const replay = await requestRefund({
+      subscriptionId,
+      userId: actorId,
+      role: "admin",
+      idempotencyKey,
+      body,
+    });
     expectOk(replay);
     expect(replay.data).toMatchObject({ replayed: true });
     expect(createRefund).toHaveBeenCalledTimes(1);
@@ -267,19 +297,16 @@ describe.sequential("completed subscription refund authority", () => {
       },
     });
 
-    const reconciled = await api(
-      "POST",
-      `admin/billing/subscriptions/${subscriptionId}/refund/reconcile`,
-      {
-        userId: actorId,
-        role: "admin",
-        headers: { "idempotency-key": `${P}reconcile-1` },
-        body: {
-          reason: "Provider payout completed.",
-          confirmation: `${subscriptionId}:refund_reconcile`,
-        },
+    const reconciled = await reconcileRefund({
+      subscriptionId,
+      userId: actorId,
+      role: "admin",
+      idempotencyKey: `${P}reconcile-1`,
+      body: {
+        reason: "Provider payout completed.",
+        confirmation: `${subscriptionId}:refund_reconcile`,
       },
-    );
+    });
     expectOk(reconciled);
     expect(reconciled.data).toMatchObject({
       subscriptionStatus: "refunded",
@@ -392,19 +419,16 @@ describe.sequential("completed subscription refund authority", () => {
       });
     });
 
-    const requested = await api(
-      "POST",
-      `admin/billing/subscriptions/${cancelSubscriptionId}/refund`,
-      {
-        userId: actorId,
-        role: "admin",
-        headers: { "idempotency-key": `${P}${suffix}-request` },
-        body: {
-          reason: "Customer requested a full refund.",
-          confirmation: `${cancelSubscriptionId}:refund`,
-        },
+    const requested = await requestRefund({
+      subscriptionId: cancelSubscriptionId,
+      userId: actorId,
+      role: "admin",
+      idempotencyKey: `${P}${suffix}-request`,
+      body: {
+        reason: "Customer requested a full refund.",
+        confirmation: `${cancelSubscriptionId}:refund`,
       },
-    );
+    });
     expectOk(requested);
     const refundId = `mock-refund-${cancelInvoiceId}`;
     const payoutId = `${P}${suffix}-payout`;
@@ -582,19 +606,16 @@ describe.sequential("completed subscription refund authority", () => {
     ]);
 
     vi.restoreAllMocks();
-    const retried = await api(
-      "POST",
-      `admin/billing/subscriptions/${cancelSubscriptionId}/refund`,
-      {
-        userId: actorId,
-        role: "admin",
-        headers: { "idempotency-key": `${P}${suffix}-retry` },
-        body: {
-          reason: "Customer retried the full refund after payout cancellation.",
-          confirmation: `${cancelSubscriptionId}:refund`,
-        },
+    const retried = await requestRefund({
+      subscriptionId: cancelSubscriptionId,
+      userId: actorId,
+      role: "admin",
+      idempotencyKey: `${P}${suffix}-retry`,
+      body: {
+        reason: "Customer retried the full refund after payout cancellation.",
+        confirmation: `${cancelSubscriptionId}:refund`,
       },
-    );
+    });
     expectOk(retried);
     expect(retried.data).toMatchObject({
       subscriptionStatus: "refund_pending",

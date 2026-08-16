@@ -414,6 +414,25 @@ export const ADMIN_V2_API_OPERATIONS = [
 
   operation("GET", "/api/v2/admin/feature-flags", allOf("ops.queue.read"), "featureFlagListQuerySchema", "featureFlagListResponseSchema"),
   operation("PATCH", "/api/v2/admin/feature-flags/:key", allOf("config.feature_flag.write"), "featureFlagPatchSchema+idempotency-key", "featureFlagMutationResponseSchema", undefined, { commandType: "config.feature_flag.write" }),
+  // ---- money: migrated from v1 ----
+  operation("GET", "/api/v2/admin/billing/ledger", allOf("billing.read"), "adminBillingLedgerQuerySchema", "adminBillingLedgerListResponseSchema"),
+  operation("POST", "/api/v2/admin/billing/adjustments", allOf("billing.ledger.adjust"), "adminBillingLedgerAdjustmentRequestSchema+idempotency-key", "adminBillingLedgerAdjustmentResponseSchema"),
+  operation("GET", "/api/v2/admin/billing/reconciliation", allOf("billing.read"), "adminBillingReconciliationQuerySchema", "adminBillingReconciliationResponseSchema"),
+  operation("POST", "/api/v2/admin/billing/reconciliation/:id/resolve", allOf("billing.checkout.reconcile"), "adminBillingCheckoutReconcileRequestSchema+idempotency-key", "adminBillingCheckoutReconcileResponseSchema", undefined, { commandType: "billing.checkout.reconcile_refund" }),
+  operation("GET", "/api/v2/admin/billing/subscriptions", allOf("billing.read"), "adminBillingSubscriptionQuerySchema", "adminBillingSubscriptionListResponseSchema"),
+  operation("POST", "/api/v2/admin/billing/subscriptions/:id/refund", allOf("billing.subscription.refund"), "adminSubscriptionRefundRequestSchema+idempotency-key", "adminSubscriptionRefundCommandResponseSchema", undefined, { commandType: "billing.subscription.refund" }),
+  operation("POST", "/api/v2/admin/billing/subscriptions/:id/refund/reconcile", allOf("billing.subscription.refund"), "adminSubscriptionRefundRequestSchema+idempotency-key", "adminSubscriptionRefundCommandResponseSchema", undefined, { commandType: "billing.subscription.refund.reconcile" }),
+
+  operation("GET", "/api/v2/admin/pricing/rules", allOf("billing.read"), "adminPricingRuleQuerySchema", "adminPricingRuleListResponseSchema"),
+  operation("POST", "/api/v2/admin/pricing/rules", allOf("config.pricing.write"), "adminPricingRuleCreateRequestSchema+idempotency-key", "adminPricingRuleMutationResponseSchema", undefined, { commandType: "config.pricing.create" }),
+  operation("PATCH", "/api/v2/admin/pricing/rules/:id", allOf("config.pricing.write"), "adminPricingRulePatchRequestSchema+idempotency-key", "adminPricingRuleMutationResponseSchema", undefined, { commandType: "config.pricing.update" }),
+  operation("POST", "/api/v2/admin/pricing/rules/:id/publish", allOf("config.pricing.write"), "adminPricingRulePublishRequestSchema+idempotency-key", "adminPricingRulePublishResponseSchema", undefined, { commandType: "config.pricing.publish" }),
+  operation("POST", "/api/v2/admin/pricing/rules/:id/rollback", allOf("config.pricing.write"), "adminPricingRuleRollbackRequestSchema+idempotency-key", "adminPricingRuleRollbackResponseSchema", undefined, { commandType: "config.pricing.rollback" }),
+
+  operation("GET", "/api/v2/admin/promo/redeem-codes", allOf("growth.promo.read"), "adminRedeemCodeQuerySchema", "adminRedeemCodeListResponseSchema"),
+  operation("POST", "/api/v2/admin/promo/redeem-codes", allOf("growth.promo.write"), "adminRedeemCodeCreateRequestSchema+idempotency-key", "adminRedeemCodeMutationResponseSchema", undefined, { commandType: "promo.redeem_code.create" }),
+  operation("POST", "/api/v2/admin/promo/redeem-codes/:id/disable", allOf("growth.promo.write"), "adminRedeemCodeDisableRequestSchema+idempotency-key", "adminRedeemCodeMutationResponseSchema", undefined, { commandType: "promo.redeem_code.disable" }),
+  operation("GET", "/api/v2/admin/promo/referrals", allOf("growth.promo.read"), "adminReferralQuerySchema", "adminReferralListResponseSchema"),
 ] as const satisfies readonly AdminV2ApiOperation[];
 
 /** One declared operation, literals intact. */

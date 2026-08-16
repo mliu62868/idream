@@ -69,22 +69,6 @@ import {
 } from "./announcements";
 import { listExperiments } from "./experiments";
 import {
-  billingAdjustment,
-  resolveCheckoutReconciliation,
-} from "./billing/command";
-import {
-  reconcileSubscriptionRefund,
-  requestSubscriptionRefund,
-} from "./billing/refund";
-import { billingLedger, billingReconciliation, listSubscriptions } from "./billing/query";
-import {
-  createPricingRule,
-  listPricingRules,
-  patchPricingRule,
-  publishPricingRule,
-  rollbackPricingRule,
-} from "./pricing/service";
-import {
   deadLetterQueue,
   discardDeadLetterBatch,
   discardGenerationJob,
@@ -105,12 +89,6 @@ import {
   rollbackModelProfile,
   uploadModelImport,
 } from "./generation/config/service";
-import {
-  createRedeemCode,
-  disableRedeemCode,
-  listRedeemCodes,
-  listReferrals,
-} from "./promo/service";
 import {
   chatOpsModerationEvents,
   chatOpsOverview,
@@ -211,54 +189,6 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
     if (id === "metrics" && !action && method === "GET") return generationMetrics(request);
   }
 
-  if (resource === "pricing" && id === "rules") {
-    if (!action && method === "GET") return listPricingRules(request);
-    if (!action && method === "POST") return createPricingRule(request);
-    if (action && !child && method === "PATCH") return patchPricingRule(request, action);
-    if (action && child === "publish" && method === "POST") {
-      return publishPricingRule(request, action);
-    }
-    if (action && child === "rollback" && method === "POST") {
-      return rollbackPricingRule(request, action);
-    }
-  }
-
-  if (resource === "billing") {
-    if (id === "ledger" && !action && method === "GET") return billingLedger(request);
-    if (id === "subscriptions" && !action && method === "GET") return listSubscriptions(request);
-    if (id === "reconciliation" && !action && method === "GET") {
-      return billingReconciliation(request);
-    }
-    if (
-      id === "reconciliation" &&
-      action &&
-      child === "resolve" &&
-      method === "POST"
-    ) {
-      return resolveCheckoutReconciliation(request, action);
-    }
-    if (id === "adjustments" && !action && method === "POST") {
-      return billingAdjustment(request);
-    }
-    if (
-      id === "subscriptions" &&
-      action &&
-      child === "refund" &&
-      !grandchild &&
-      method === "POST"
-    ) {
-      return requestSubscriptionRefund(request, action);
-    }
-    if (
-      id === "subscriptions" &&
-      action &&
-      child === "refund" &&
-      grandchild === "reconcile" &&
-      method === "POST"
-    ) {
-      return reconcileSubscriptionRefund(request, action);
-    }
-  }
 
   if (resource === "analytics" && id === "overview" && !action && method === "GET") {
     return analyticsOverview(request);
@@ -366,14 +296,6 @@ export async function dispatchAdmin(request: Request, segments: string[]) {
     return generateCharacterDraft(request);
   }
 
-  if (resource === "promo") {
-    if (id === "redeem-codes" && !action && method === "GET") return listRedeemCodes(request);
-    if (id === "redeem-codes" && !action && method === "POST") return createRedeemCode(request);
-    if (id === "redeem-codes" && action && child === "disable" && method === "POST") {
-      return disableRedeemCode(request, action);
-    }
-    if (id === "referrals" && !action && method === "GET") return listReferrals(request);
-  }
 
   if (resource === "chat") {
     if (id === "overview" && !action && method === "GET") return chatOpsOverview(request);

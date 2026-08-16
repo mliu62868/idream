@@ -35,3 +35,6 @@ export * from "./risk";
 export * from "./support";
 export * from "./audit-log";
 export * from "./feature-flags";
+// ---- money: migrated from v1 ----
+export * from "./pricing";
+export * from "./promo";

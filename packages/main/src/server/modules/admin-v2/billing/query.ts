@@ -1,45 +1,27 @@
 import type { Prisma } from "@prisma/client";
-import { adminBillingSubscriptionListResponseSchema } from "@idream/shared/admin";
-import { z } from "zod";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
-import { ok } from "@/server/lib/http";
 import {
   parseSubscriptionRefundEvidence,
   publicSubscriptionRefundDTO,
 } from "@/server/modules/billing/subscription-refund";
-import { decodeAdminListCursor, encodeAdminListCursor } from "@/server/modules/admin-v2/shared/list-cursor";
-import { actorWithPermission } from "@/server/modules/admin/shared/legacy-primitives";
+import {
+  decodeAdminListCursor,
+  encodeAdminListCursor,
+} from "@/server/modules/admin-v2/shared/list-cursor";
+import {
+  actorWithPermission,
+  queryParams,
+} from "@/server/modules/admin-v2/shared/authority";
 import {
   CUSTOMER_METRIC_DATA_SCOPE,
   customerDreamcoinLedgerWhere,
   customerSubscriptionWhere,
 } from "@/server/modules/metric-data-scope";
 
-const ledgerQuerySchema = z.object({
-  search: z.string().trim().min(1).max(200).optional(),
-  userId: z.string().trim().min(1).max(160).optional(),
-  reason: z.string().trim().min(1).max(120).optional(),
-  limit: z.coerce.number().int().min(1).max(100).default(50),
-  cursor: z.string().trim().min(1).optional(),
-}).strict();
-
-const subscriptionQuerySchema = z.object({
-  search: z.string().trim().min(1).max(200).optional(),
-  userId: z.string().trim().min(1).max(160).optional(),
-  status: z.enum(["checkout_created", "checkout_completed", "active", "past_due", "canceled", "expired", "refund_pending", "refunded"]).optional(),
-  limit: z.coerce.number().int().min(1).max(100).default(50),
-  cursor: z.string().trim().min(1).optional(),
-}).strict();
-
-const reconciliationQuerySchema = z.object({
-  from: z.string().datetime().optional(),
-  to: z.string().datetime().optional(),
-}).strict();
-
 export async function billingLedger(request: Request) {
   await actorWithPermission(request, "billing.read");
-  const query = ledgerQuerySchema.parse(Object.fromEntries(new URL(request.url).searchParams));
+  const query = queryParams(request, "GET /api/v2/admin/billing/ledger");
   const { search, userId, reason, limit } = query;
   const queryIdentity = { search, userId, reason };
   const cursorKeys = query.cursor
@@ -67,7 +49,7 @@ export async function billingLedger(request: Request) {
     take: limit + 1,
   });
   const page = entries.slice(0, limit);
-  return ok({
+  return {
     dataScope: CUSTOMER_METRIC_DATA_SCOPE,
     items: page.map((entry) => ({
       id: entry.id,
@@ -77,15 +59,15 @@ export async function billingLedger(request: Request) {
       balanceAfter: entry.balanceAfter,
       reason: entry.reason,
       sourceId: entry.sourceId,
-      createdAt: entry.createdAt,
+      createdAt: entry.createdAt.toISOString(),
     })),
     pageInfo: pageInfo("billing_ledger", queryIdentity, page, entries.length > limit),
-  });
+  };
 }
 
 export async function listSubscriptions(request: Request) {
   await actorWithPermission(request, "billing.read");
-  const query = subscriptionQuerySchema.parse(Object.fromEntries(new URL(request.url).searchParams));
+  const query = queryParams(request, "GET /api/v2/admin/billing/subscriptions");
   const { search, userId, status, limit } = query;
   const queryIdentity = { search, userId, status };
   const cursorKeys = query.cursor
@@ -133,7 +115,7 @@ export async function listSubscriptions(request: Request) {
       checkout,
     ]),
   );
-  return ok(adminBillingSubscriptionListResponseSchema.parse({
+  return {
     dataScope: CUSTOMER_METRIC_DATA_SCOPE,
     items: page.map((subscription) => {
       const checkout = subscription.providerSubscriptionId
@@ -170,12 +152,12 @@ export async function listSubscriptions(request: Request) {
       };
     }),
     pageInfo: pageInfo("billing_subscriptions", queryIdentity, page, subscriptions.length > limit),
-  }));
+  };
 }
 
 export async function billingReconciliation(request: Request) {
   await actorWithPermission(request, "billing.read");
-  const query = reconciliationQuerySchema.parse(Object.fromEntries(new URL(request.url).searchParams));
+  const query = queryParams(request, "GET /api/v2/admin/billing/reconciliation");
   const now = new Date();
   const to = query.to ? new Date(query.to) : now;
   const from = query.from ? new Date(query.from) : new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
@@ -226,7 +208,7 @@ export async function billingReconciliation(request: Request) {
     (acc, row) => ({ net: acc.net + row.totalDelta, entries: acc.entries + row.count }),
     { net: 0, entries: 0 },
   );
-  return ok({
+  return {
     dataScope: CUSTOMER_METRIC_DATA_SCOPE,
     window: { from: from.toISOString(), to: to.toISOString() },
     activeSubscriptions,
@@ -239,20 +221,19 @@ export async function billingReconciliation(request: Request) {
       provider: checkout.provider,
       providerSessionId: checkout.providerSessionId,
       providerInvoiceStatus: checkout.providerInvoiceStatus,
-      providerInvoiceAdditionalStatus:
-        checkout.providerInvoiceAdditionalStatus,
+      providerInvoiceAdditionalStatus: checkout.providerInvoiceAdditionalStatus,
       status: checkout.status,
       failureCode: checkout.failureCode,
       needsReconciliation: checkout.needsReconciliation,
       providerLookupMissCount: checkout.providerLookupMissCount,
-      providerAttemptedAt: checkout.providerAttemptedAt,
-      providerLastLookupAt: checkout.providerLastLookupAt,
-      createdAt: checkout.createdAt,
-      updatedAt: checkout.updatedAt,
+      providerAttemptedAt: checkout.providerAttemptedAt?.toISOString() ?? null,
+      providerLastLookupAt: checkout.providerLastLookupAt?.toISOString() ?? null,
+      createdAt: checkout.createdAt.toISOString(),
+      updatedAt: checkout.updatedAt.toISOString(),
     })),
     byReason,
     totals,
-  });
+  };
 }
 
 function descendingCursorWhere(keys: readonly unknown[], scope: string) {

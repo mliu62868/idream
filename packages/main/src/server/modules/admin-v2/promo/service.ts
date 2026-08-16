@@ -1,59 +1,40 @@
 import type { Prisma } from "@prisma/client";
-import { z } from "zod";
+import type {
+  AdminRedeemCodeCreateRequest,
+  AdminRedeemCodeDisableRequest,
+} from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
+import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
-import { ok } from "@/server/lib/http";
 import {
-  MAX_REDEEM_CODE_DREAMCOINS,
-  MIN_REDEEM_CODE_DREAMCOINS,
   redeemCodeHash,
   redeemCodeHashCandidates,
 } from "@/server/lib/redeem-codes";
 import {
-  adminAuditData,
+  adminRequestId,
+  adminRequestIpHash,
+  adminRequestUserAgent,
+} from "@/server/modules/admin-v2/shared/audit-request";
+import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
+import {
   actorWithPermission,
-  clampInt,
-  jsonBody,
-  toInputJson,
-} from "@/server/modules/admin/shared/legacy-primitives";
-import { executeIdempotentDomainCommand } from "@/server/modules/admin/shared/domain-command";
+  queryParams,
+  type AdminActor,
+} from "@/server/modules/admin-v2/shared/authority";
 import {
   decodeAdminListCursor,
   encodeAdminListCursor,
 } from "@/server/modules/admin-v2/shared/list-cursor";
-
-const redeemCodeCreateSchema = z.object({
-  code: z.string().trim().min(4).max(80),
-  reward: z
-    .object({
-      dreamcoins: z
-        .number()
-        .finite()
-        .int()
-        .min(MIN_REDEEM_CODE_DREAMCOINS)
-        .max(MAX_REDEEM_CODE_DREAMCOINS),
-      note: z.string().trim().max(200).optional(),
-    })
-    .passthrough(),
-  maxRedemptions: z.number().int().min(1).max(1_000_000).nullable().optional(),
-  expiresAt: z.string().datetime().nullable().optional(),
-  reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.string().trim().min(1).max(160),
-});
-
-const promoDisableSchema = z.object({
-  reason: z.string().trim().min(3).max(2_000),
-  confirmation: z.string().trim().min(1).max(160),
-});
+import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 
 export async function listRedeemCodes(request: Request) {
   await actorWithPermission(request, "growth.promo.read");
-  const url = new URL(request.url);
-  const search = url.searchParams.get("search")?.trim() || undefined;
-  const status = url.searchParams.get("status") ?? undefined;
-  const limit = clampInt(url.searchParams.get("limit"), 1, 100, 100);
+  const query = queryParams(request, "GET /api/v2/admin/promo/redeem-codes");
+  const { search, status, limit } = query;
   const queryIdentity = { search, status };
-  const cursorKeys = cursorKeysFor(url, "redeem_codes", queryIdentity);
+  const cursorKeys = query.cursor
+    ? decodeAdminListCursor(query.cursor, "redeem_codes", queryIdentity)
+    : undefined;
   const cursorWhere: Prisma.RedeemCodeWhereInput | undefined = cursorKeys
     ? (() => {
         const createdAt = cursorDate(cursorKeys, 0, "redeem_codes");
@@ -74,15 +55,15 @@ export async function listRedeemCodes(request: Request) {
     include: { _count: { select: { redemptions: true } } },
   });
   const page = codes.slice(0, limit);
-  return ok({
+  return {
     items: page.map((code) => ({
       id: code.id,
       reward: code.reward,
       status: code.status,
       maxRedemptions: code.maxRedemptions,
       redemptions: code._count.redemptions,
-      expiresAt: code.expiresAt,
-      createdAt: code.createdAt,
+      expiresAt: code.expiresAt?.toISOString() ?? null,
+      createdAt: code.createdAt.toISOString(),
     })),
     pageInfo: pageInfo(
       "redeem_codes",
@@ -91,28 +72,38 @@ export async function listRedeemCodes(request: Request) {
       codes.length > limit,
       (row) => [row.createdAt.toISOString(), row.id],
     ),
-  });
+  };
 }
 
-export async function createRedeemCode(request: Request) {
-  const actor = await actorWithPermission(request, "growth.promo.write");
-  const body = redeemCodeCreateSchema.parse(await jsonBody(request));
-  if (body.confirmation !== body.code)
+export async function createRedeemCode(
+  request: Request,
+  actor: AdminActor,
+  body: AdminRedeemCodeCreateRequest,
+  idempotencyKey: string,
+) {
+  if (body.confirmation !== body.code) {
     throw Errors.badRequest("Confirmation did not match");
+  }
   const codeHash = redeemCodeHash(body.code);
-  const result = await executeIdempotentDomainCommand({
-    request,
+  const requestId = adminRequestId(request);
+  return executeAtomicIdempotentMutation({
+    environment: env.APP_ENV,
     actor,
+    idempotencyKey,
+    requestId,
     commandType: "promo.redeem_code.create",
-    targetType: "redeem_code",
-    targetId: codeHash,
+    target: { type: "redeem_code", id: codeHash },
     payload: {
       codeHash,
       reward: body.reward,
       maxRedemptions: body.maxRedemptions ?? null,
       expiresAt: body.expiresAt ?? null,
     },
-    execute: async (tx, requestId) => {
+    decorateResult: (value, replayed) => ({
+      ...(value as Record<string, unknown>),
+      replayed,
+    }),
+    mutate: async (tx) => {
       const existing = await tx.redeemCode.findFirst({
         where: { codeHash: { in: redeemCodeHashCandidates(body.code) } },
       });
@@ -128,18 +119,16 @@ export async function createRedeemCode(request: Request) {
       });
       await tx.adminAuditLog.create({
         data: {
-          ...adminAuditData(request, actor, {
-            action: "promo.redeem_code.create",
-            targetType: "redeem_code",
-            targetId: code.id,
-            reason: body.reason,
-            after: {
-              reward: body.reward,
-              maxRedemptions: code.maxRedemptions,
-              expiresAt: code.expiresAt,
-            },
+          ...promoAuditIdentity(request, actor, requestId),
+          action: "promo.redeem_code.create",
+          targetType: "redeem_code",
+          targetId: code.id,
+          reason: body.reason,
+          after: toInputJson({
+            reward: body.reward,
+            maxRedemptions: code.maxRedemptions,
+            expiresAt: code.expiresAt,
           }),
-          requestId,
         },
       });
       await tx.mainOutboxEvent.create({
@@ -153,22 +142,32 @@ export async function createRedeemCode(request: Request) {
       return { id: code.id, status: code.status };
     },
   });
-  return ok(result);
 }
 
-export async function disableRedeemCode(request: Request, id: string) {
-  const actor = await actorWithPermission(request, "growth.promo.write");
-  const body = promoDisableSchema.parse(await jsonBody(request));
-  if (body.confirmation !== id)
+export async function disableRedeemCode(
+  request: Request,
+  actor: AdminActor,
+  id: string,
+  body: AdminRedeemCodeDisableRequest,
+  idempotencyKey: string,
+) {
+  if (body.confirmation !== id) {
     throw Errors.badRequest("Confirmation did not match target");
-  const result = await executeIdempotentDomainCommand({
-    request,
+  }
+  const requestId = adminRequestId(request);
+  return executeAtomicIdempotentMutation({
+    environment: env.APP_ENV,
     actor,
+    idempotencyKey,
+    requestId,
     commandType: "promo.redeem_code.disable",
-    targetType: "redeem_code",
-    targetId: id,
+    target: { type: "redeem_code", id },
     payload: body,
-    execute: async (tx, requestId) => {
+    decorateResult: (value, replayed) => ({
+      ...(value as Record<string, unknown>),
+      replayed,
+    }),
+    mutate: async (tx) => {
       const before = await tx.redeemCode.findUnique({ where: { id } });
       if (!before) throw Errors.notFound("Redeem code not found");
       const after = await tx.redeemCode.update({
@@ -177,15 +176,13 @@ export async function disableRedeemCode(request: Request, id: string) {
       });
       await tx.adminAuditLog.create({
         data: {
-          ...adminAuditData(request, actor, {
-            action: "promo.redeem_code.disable",
-            targetType: "redeem_code",
-            targetId: id,
-            reason: body.reason,
-            before: { status: before.status },
-            after: { status: after.status },
-          }),
-          requestId,
+          ...promoAuditIdentity(request, actor, requestId),
+          action: "promo.redeem_code.disable",
+          targetType: "redeem_code",
+          targetId: id,
+          reason: body.reason,
+          before: toInputJson({ status: before.status }),
+          after: toInputJson({ status: after.status }),
         },
       });
       await tx.mainOutboxEvent.create({
@@ -199,18 +196,16 @@ export async function disableRedeemCode(request: Request, id: string) {
       return { id: after.id, status: after.status };
     },
   });
-  return ok(result);
 }
 
 export async function listReferrals(request: Request) {
   await actorWithPermission(request, "growth.promo.read");
-  const url = new URL(request.url);
-  const search = url.searchParams.get("search")?.trim() || undefined;
-  const inviterId = url.searchParams.get("inviterId") ?? undefined;
-  const status = url.searchParams.get("status") ?? undefined;
-  const limit = clampInt(url.searchParams.get("limit"), 1, 100, 100);
+  const query = queryParams(request, "GET /api/v2/admin/promo/referrals");
+  const { search, inviterId, status, limit } = query;
   const queryIdentity = { search, inviterId, status };
-  const cursorKeys = cursorKeysFor(url, "referrals", queryIdentity);
+  const cursorKeys = query.cursor
+    ? decodeAdminListCursor(query.cursor, "referrals", queryIdentity)
+    : undefined;
   const cursorWhere: Prisma.ReferralWhereInput | undefined = cursorKeys
     ? (() => {
         const createdAt = cursorDate(cursorKeys, 0, "referrals");
@@ -238,8 +233,17 @@ export async function listReferrals(request: Request) {
     take: limit + 1,
   });
   const page = rows.slice(0, limit);
-  return ok({
-    items: page,
+  return {
+    items: page.map((row) => ({
+      id: row.id,
+      inviterId: row.inviterId,
+      inviteeId: row.inviteeId,
+      code: row.code,
+      status: row.status,
+      subscriptionId: row.subscriptionId,
+      rewardStatus: row.rewardStatus,
+      createdAt: row.createdAt.toISOString(),
+    })),
     pageInfo: pageInfo(
       "referrals",
       queryIdentity,
@@ -247,12 +251,17 @@ export async function listReferrals(request: Request) {
       rows.length > limit,
       (row) => [row.createdAt.toISOString(), row.id],
     ),
-  });
+  };
 }
 
-function cursorKeysFor(url: URL, scope: string, queryIdentity: unknown) {
-  const raw = url.searchParams.get("cursor");
-  return raw ? decodeAdminListCursor(raw, scope, queryIdentity) : undefined;
+function promoAuditIdentity(request: Request, actor: AdminActor, requestId: string) {
+  return {
+    actorId: actor.id,
+    actorRole: actor.role,
+    requestId,
+    ipHash: adminRequestIpHash(request),
+    userAgent: adminRequestUserAgent(request),
+  };
 }
 
 function cursorString(keys: readonly unknown[], index: number, scope: string) {
