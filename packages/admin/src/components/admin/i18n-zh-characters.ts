@@ -6,6 +6,8 @@
 // packages/main/src/server/modules/admin-v2/characters/{production-journey,readiness,renderer-preview}.ts。
 // 它们在 admin 源码里没有字面量，静态扫描判不出「在用」。删之前先查后端。
 export const adminZhCharacters: Record<string, string> = {
+  "28d QCE {value}": "28 天 QCE {value}",
+  "28d performance will appear after sufficient live traffic.": "28 天表现数据会在线上流量足够后出现。",
   "Activated a new immutable visual identity and Reference Set. The previous identity is kept as history and live images were not replaced.":
     "已激活新的不可变视觉身份和 Reference Set；旧身份保留为历史版本，线上图片未自动替换。",
   "Active visual identity baseline": "当前活动视觉身份基准",
@@ -34,8 +36,10 @@ export const adminZhCharacters: Record<string, string> = {
   "Creation history": "历史创作",
   "Creation history images": "历史创作图片",
   "Current look": "当前形象",
+  "D7 {value}": "D7 {value}",
   "Define the identity anchor, stable traits, style, and reference direction.": "定义身份锚点、稳定特征、风格与参考方向。",
   "Describe the look you want": "描述这次想要的画面",
+  "Draft {completed}/{total}": "草稿 {completed}/{total}",
   "Example dialogue (optional, one per line)": "对话示例（选填，每行一条）",
   "Experiment candidate {number}": "实验候选 {number}",
   "Experiment parameters are incomplete": "实验参数不完整",
@@ -63,6 +67,7 @@ export const adminZhCharacters: Record<string, string> = {
   "Image to image": "图生图",
   "In use": "当前使用",
   "Keep adjusting from this one": "从这张继续调整",
+  "Live {completed}/{total}": "线上 {completed}/{total}",
   "Loaded this run's parameter snapshot. Adjust it to create a new run.": "已载入这一轮的参数快照；修改后可创建新一轮。",
   "Loading creation history…": "正在读取历史创作…",
   "Loading tags": "正在加载标签",
@@ -79,6 +84,9 @@ export const adminZhCharacters: Record<string, string> = {
   "Open any image to keep adjusting it or set it as the current look again.":
     "打开任意图片，可继续调整或重新设为当前形象。",
   "Optional fields can be written now or later in Soul. Publishing checks the opening line and Soul quality separately.": "选填项现在写或之后在「灵魂」里写都行。开场白与灵魂质量由发布环节单独把关。",
+  // SEAM: "Page {page}" 与 "Previous page" 是通用分页词，本该和 "Next page" 一起放
+  // i18n-zh-common.ts；这一轮不允许改那个文件，合并时请一起搬过去。
+  "Page {page}": "第 {page} 页",
   "Parameters are frozen and candidates are generating. The current visual identity will not change.":
     "本轮参数已冻结，正在生成候选图；当前视觉身份不会被改动。",
   "Persona & conversation": "人格与对话",
@@ -86,6 +94,7 @@ export const adminZhCharacters: Record<string, string> = {
   "Prepare publication workspace": "准备发布工作区",
   "Prepare the Project, immutable Revision, and inactive Serving workspace. This does not publish a Release or make the Character public.":
     "准备项目、不可变修订和未激活的 Serving 工作区。此操作不会发布 Release，也不会让角色公开可见。",
+  "Previous page": "上一页",
   "Profile tier": "配置档位",
   "Promise": "角色承诺",
   "Random each run": "每轮随机",
@@ -109,6 +118,8 @@ export const adminZhCharacters: Record<string, string> = {
   "Selected visual identity candidate": "所选历史视觉身份候选",
   "Sensitive": "敏感",
   "Set as current look": "设为当前形象",
+  "Showing {count} characters": "本页 {count} 个角色",
+  "Showing {count} characters · more on the next page": "本页 {count} 个角色 · 下一页还有",
   "Signature traits (optional)": "标志特征（可留空）",
   "Stable traits": "稳定特征",
   "System generated": "系统生成",
@@ -1307,6 +1318,8 @@ export const adminZhCharacters: Record<string, string> = {
   "{label} not selected": "未选择{label}",
   "{label} real frontend renderer": "{label}真实前端渲染器",
   "{label} unavailable": "{label}不可用",
+  "{message} · +{count} more": "{message} · 另有 {count} 条",
+  "{metrics} · {maturity}": "{metrics} · {maturity}",
   "{mode} model": "{mode}模型",
   "{name} canonical portrait": "{name} 标准肖像",
   "{name} character hero preview": "{name} 角色大图预览",
