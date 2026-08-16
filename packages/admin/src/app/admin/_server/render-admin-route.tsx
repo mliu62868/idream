@@ -4,6 +4,7 @@ import { cookies, headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { AdminDevLogin } from "@/components/admin/AdminDevLogin";
 import { canReadAnyWorkspace, parseAdminPath } from "@/components/admin/nav-config";
+import { AdminAuthorityUnavailablePage } from "@/components/admin/AdminMessagePage";
 import { readAdminShellPreferences } from "@/components/admin/shell-preferences";
 import { proxyToMain } from "@/server/main-proxy";
 import { AdminConsoleClientOnly } from "../AdminConsoleClientOnly";
@@ -42,13 +43,13 @@ export async function renderAdminRoute(
   if (!parseAdminPath(initialSection)) notFound();
 
   const [headerList, cookieStore] = await Promise.all([headers(), cookies()]);
-  const bootstrap = await loadBootstrap(headerList);
-  if (!bootstrap) return <AdminAuthorityUnavailable />;
-
   // SPEC: 语言、工作模式、展开的分组在服务端就读出来，随首帧下发。
   // INTENT: 它们过去存 localStorage、挂载后才读，于是首帧必然是 English + 全折叠侧栏，
   //         几百毫秒后整页跳变一次。cookie 让首帧就是最终形态。
   const preferences = readAdminShellPreferences((name) => cookieStore.get(name)?.value);
+
+  const bootstrap = await loadAdminBootstrap(headerList);
+  if (!bootstrap) return <AdminAuthorityUnavailablePage locale={preferences.locale} />;
 
   const canReadAdmin = Boolean(bootstrap.actor)
     && canReadAnyWorkspace(new Set(bootstrap.permissions));
@@ -75,7 +76,8 @@ export async function renderAdminRoute(
   );
 }
 
-async function loadBootstrap(requestHeaders: Headers): Promise<AdminBootstrap | null> {
+// not-found.tsx 也要用它拿权限（只为了不建议运营打不开的页面），所以导出。
+export async function loadAdminBootstrap(requestHeaders: Headers): Promise<AdminBootstrap | null> {
   const response = await proxyToMain(
     new Request("http://admin.local/api/v2/admin/bootstrap", { headers: requestHeaders }),
     "/api/v2/admin/bootstrap",
@@ -84,19 +86,6 @@ async function loadBootstrap(requestHeaders: Headers): Promise<AdminBootstrap | 
   const envelope = await response.json() as { data?: { bootstrap?: unknown } };
   const parsed = adminBootstrapSchema.safeParse(envelope.data?.bootstrap);
   return parsed.success ? parsed.data : null;
-}
-
-function AdminAuthorityUnavailable() {
-  return (
-    <main className="grid min-h-screen place-items-center bg-[var(--ad-canvas)] p-6 text-[var(--ad-ink)]">
-      <section className="max-w-md rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6">
-        <h1 className="text-lg font-semibold">后台权威服务不可用</h1>
-        <p className="mt-2 text-sm text-[var(--ad-text-muted)]">
-          控制面当前无法验证身份、权限和数据来源。权威服务恢复前，后台数据与操作均不可用。
-        </p>
-      </section>
-    </main>
-  );
 }
 
 function withSearchParams(

@@ -13,6 +13,9 @@ describe("admin source boundary", () => {
     const loading = await readFile(path.join(packageRoot, "src/app/admin/loading.tsx"), "utf8");
     const error = await readFile(path.join(packageRoot, "src/app/admin/error.tsx"), "utf8");
     const notFound = await readFile(path.join(packageRoot, "src/app/admin/not-found.tsx"), "utf8");
+    // 404 页的可见 markup 搬进了 AdminMessagePage.tsx（要走 i18n，必须是客户端组件）；
+    // 这条守卫盯的是"恢复边界给得出一条回去的路"，跟着 markup 走。
+    const notFoundView = await readFile(path.join(packageRoot, "src/components/admin/AdminMessagePage.tsx"), "utf8");
 
     expect(clientEntry).not.toContain("ssr: false");
     expect(clientEntry).not.toContain("next/dynamic");
@@ -22,7 +25,8 @@ describe("admin source boundary", () => {
     expect(routeRenderer).toContain("<AdminConsoleClientOnly");
     expect(loading).toContain('aria-busy="true"');
     expect(error).toContain('role="alert"');
-    expect(notFound).toContain('href="/admin/today"');
+    expect(notFound).toContain("AdminNotFoundPage");
+    expect(notFoundView).toContain('href="/admin/today"');
   });
 
   it("resolves application source from the admin package only", async () => {
