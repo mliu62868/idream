@@ -519,6 +519,10 @@ export function ContentMerchandisingWorkspace({
             {t("Save featured")}
           </button>
         </div>
+        <FeaturedDiff
+          draftIds={parseCsv(featuredInput)}
+          savedIds={featured.data.configuredCharacterIds}
+        />
         {saveConflict ? (
           <div
             className="mt-3 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-xs text-[var(--ad-yellow-text)]"
@@ -585,6 +589,7 @@ export function ContentMerchandisingWorkspace({
         ]}
         rows={characterRows}
       /> : null}
+      {/* MIGRATION: 只有「下一页」。ui/Pagination.tsx 已建（含上一页），合并后切过去。 */}
       {characters.data?.pageInfo.hasNextPage &&
       characters.data.pageInfo.endCursor ? (
         <button
@@ -608,6 +613,66 @@ export function ContentMerchandisingWorkspace({
         />
       ) : null}
     </section>
+  );
+}
+
+/**
+ * SPEC: 保存前把「这一次到底改了什么」摆出来：加了谁、去掉了谁、有没有只是换了顺序。
+ *
+ * INTENT: 精选配置是一个逗号分隔的长字符串输入框。运营粘一版新的进去，屏幕上没有任何东西
+ * 告诉他这次动作的差异——要么自己逐个 ID 比对，要么保存完看结果。而这是直接改首页曝光的写操作。
+ * INVARIANT: 两边都是真实数据（已保存配置 vs 当前输入），不预测生效结果——
+ *            某个角色加进来能不能真的上首页由 audience authority 决定，保存后那张表才知道。
+ */
+export function featuredDiff(savedIds: readonly string[], draftIds: readonly string[]) {
+  const saved = new Set(savedIds);
+  const draft = new Set(draftIds);
+  const added = draftIds.filter((id) => !saved.has(id));
+  const removed = savedIds.filter((id) => !draft.has(id));
+  const reordered =
+    added.length === 0 &&
+    removed.length === 0 &&
+    savedIds.some((id, index) => draftIds[index] !== id);
+  return { added, removed, reordered };
+}
+
+function FeaturedDiff({
+  draftIds,
+  savedIds,
+}: {
+  draftIds: readonly string[];
+  savedIds: readonly string[];
+}) {
+  const { t } = useAdminI18n();
+  const { added, removed, reordered } = featuredDiff(savedIds, draftIds);
+  if (added.length === 0 && removed.length === 0 && !reordered) {
+    return (
+      <p className="mt-3 text-xs text-[var(--ad-text-muted)]" role="status">
+        {t("This matches the saved configuration. Nothing would change.")}
+      </p>
+    );
+  }
+  return (
+    <dl className="mt-3 space-y-1 rounded-md bg-black/[0.04] px-3 py-2 text-xs" role="status">
+      {added.length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          <dt className="font-semibold">{t("Adding")}</dt>
+          <dd className="font-mono break-all">{added.join(", ")}</dd>
+        </div>
+      ) : null}
+      {removed.length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          <dt className="font-semibold">{t("Removing")}</dt>
+          <dd className="font-mono break-all">{removed.join(", ")}</dd>
+        </div>
+      ) : null}
+      {reordered ? (
+        <div className="flex flex-wrap gap-2">
+          <dt className="font-semibold">{t("Reordering")}</dt>
+          <dd>{t("Same characters, new order.")}</dd>
+        </div>
+      ) : null}
+    </dl>
   );
 }
 

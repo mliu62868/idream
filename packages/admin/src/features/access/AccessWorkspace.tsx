@@ -4,6 +4,8 @@ import { useAdminI18n } from "@/components/admin/i18n";
 import {
   ADMIN_DATA_CLASSES,
   accessUserListResponseSchema,
+  accessUserPermissionListSchema,
+  type AccessPermissionOverride,
   type AccessUserListItem,
   type AccessUserListResponse,
 } from "@idream/shared/admin";
@@ -24,6 +26,7 @@ import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { permissionLabel } from "@/components/admin/ui/permission-copy";
 import { useToast } from "@/components/admin/ui/Toast";
 import { createLatestRequestGate } from "@/lib/latest-request";
+import { dreamcoins } from "@/features/billing/money";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import {
   accessListPath,
@@ -40,6 +43,23 @@ type PermissionDraft = {
   userId: string;
   permissionKey: AdminPermissionKey;
   effect: "grant" | "revoke" | "clear";
+};
+/**
+ * SPEC: 目标用户当前的角色、生效权限集合与已有覆盖。
+ * INTENT: `GET /users/:id/permissions` 一直都在（api-manifest 里和写命令同一个 user.role.write
+ *         门槛），但这个台面从来没查过它。管理员点「授予」之前看不到这个人现在有什么，
+ *         也就分不清自己是在补一个缺口，还是在给一个已经有的能力再盖一层覆盖。
+ */
+type PermissionAuthority = {
+  role: string;
+  overrides: readonly AccessPermissionOverride[];
+  effective: readonly string[];
+};
+type PermissionLookup = {
+  /** 这份结果属于哪个用户 ID —— 输入框还在变的时候，用它判断结果是不是已经过期。 */
+  userId: string;
+  data: PermissionAuthority | null;
+  failed: boolean;
 };
 const emptyPermission: PermissionDraft = {
   userId: "",
@@ -72,9 +92,12 @@ export function AccessWorkspace({
   const [errorCause, setErrorCause] = useState<unknown>(undefined);
   const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
   const [permissionDraft, setPermissionDraft] = useState(emptyPermission);
+  const [permissionLookup, setPermissionLookup] = useState<PermissionLookup | null>(null);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
   const gate = useRef(createLatestRequestGate());
+  const permissionGate = useRef(createLatestRequestGate());
   const initialQuery = useRef(query);
+  const targetUserId = permissionDraft.userId.trim();
 
   const load = useCallback(async (next: AccessQuery) => {
     const request = gate.current.begin();
@@ -119,6 +142,36 @@ export function AccessWorkspace({
       window.removeEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, restore);
     };
   }, [load]);
+
+  // INTENT: 输入框每敲一个字符都查一次是浪费；停手 400ms 再查。查失败不拦操作——
+  //         写命令自己会报错，这里只是「先看一眼」，看不到也不该把按钮锁死。
+  // INTENT: 不在这里把上一次的结果清空——渲染侧靠 lookup.userId 对不对得上来判断新鲜度，
+  //         在 effect 里同步 setState 只会多一轮级联渲染（react-hooks/set-state-in-effect）。
+  useEffect(() => {
+    if (!permissions.managePermissions || !targetUserId) return;
+    const requestGate = permissionGate.current;
+    const timer = window.setTimeout(async () => {
+      const request = requestGate.begin();
+      try {
+        const data = accessUserPermissionListSchema.parse(
+          await apiGet<unknown>(
+            `/api/v2/admin/users/${encodeURIComponent(targetUserId)}/permissions`,
+          ),
+        );
+        if (request.isCurrent()) {
+          setPermissionLookup({ userId: targetUserId, data, failed: false });
+        }
+      } catch {
+        if (request.isCurrent()) {
+          setPermissionLookup({ userId: targetUserId, data: null, failed: true });
+        }
+      }
+    }, 400);
+    return () => {
+      window.clearTimeout(timer);
+      requestGate.invalidate();
+    };
+  }, [permissions.managePermissions, targetUserId]);
 
   function navigate(next: AccessQuery, mode: "push" | "replace" = "push") {
     window.history[mode === "push" ? "pushState" : "replaceState"](
@@ -193,6 +246,7 @@ export function AccessWorkspace({
           value={draft.search}
         />
         <Select
+          optionLabel={valueLabel}
           label="Role"
           onChange={(role) => setDraft((value) => ({ ...value, role }))}
           options={[
@@ -207,12 +261,14 @@ export function AccessWorkspace({
           value={draft.role}
         />
         <Select
+          optionLabel={valueLabel}
           label="Status"
           onChange={(status) => setDraft((value) => ({ ...value, status }))}
           options={["", "active", "suspended", "deleted"]}
           value={draft.status}
         />
         <Select
+          optionLabel={valueLabel}
           label="Data class"
           onChange={(dataClass) =>
             setDraft((value) => ({
@@ -258,6 +314,8 @@ export function AccessWorkspace({
               }
               value={permissionDraft.userId}
             />
+            {/* INTENT: 下拉里原本是 62 个权限码。管理员不背这张表——按能力名选，
+                码本身留在下面的说明行里，需要核对时还看得到。 */}
             <Select
               label="Permission key"
               onChange={(permissionKey) =>
@@ -266,10 +324,12 @@ export function AccessWorkspace({
                   permissionKey: permissionKey as AdminPermissionKey,
                 }))
               }
+              optionLabel={(option) => t(permissionLabel(option as AdminPermissionKey))}
               options={[...ADMIN_PERMISSION_KEYS]}
               value={permissionDraft.permissionKey}
             />
             <Select
+              optionLabel={valueLabel}
               label="Permission effect"
               onChange={(effect) =>
                 setPermissionDraft((value) => ({
@@ -317,6 +377,11 @@ export function AccessWorkspace({
               {t("Apply")}
             </button>
           </div>
+          <PermissionImpact
+            draft={permissionDraft}
+            lookup={permissionLookup}
+            targetUserId={targetUserId}
+          />
         </section>
       ) : null}
       {error ? (
@@ -382,6 +447,7 @@ export function AccessWorkspace({
           />
         )
       ) : null}
+      {/* MIGRATION: 只有「下一页」。ui/Pagination.tsx 已建（含上一页），合并后切过去。 */}
       {data?.pageInfo?.hasNextPage && data.pageInfo.endCursor ? (
         <button
           className="inline-flex min-h-11 items-center gap-2 rounded-md border px-4 text-sm font-semibold"
@@ -406,6 +472,95 @@ export function AccessWorkspace({
   );
 }
 
+/**
+ * SPEC: 提交前把「这个权限是什么能力、这个人现在有没有、改完会变成什么」摆在按钮旁边。
+ *
+ * INTENT: 原来这里只有三个下拉。管理员看不到目标现在的状态，最常见的两种误操作没人拦：
+ * 给一个已经通过角色拿到该能力的人再发一条 grant（多一条永久覆盖，将来改角色也收不回），
+ * 以及对一条根本不存在的覆盖执行 clear（什么都没发生，但审计里多一条记录）。
+ * INVARIANT: 只讲 authority 真回给我们的东西。查不到就说查不到，不猜。
+ */
+function PermissionImpact({
+  draft,
+  lookup,
+  targetUserId,
+}: {
+  draft: PermissionDraft;
+  lookup: PermissionLookup | null;
+  targetUserId: string;
+}) {
+  const { t, value: valueLabel } = useAdminI18n();
+  const capability = t(permissionLabel(draft.permissionKey));
+  const fresh = lookup && lookup.userId === targetUserId ? lookup : null;
+  const authority = fresh?.data ?? null;
+  const alreadyEffective = authority?.effective.includes(draft.permissionKey) ?? null;
+  const existingOverride =
+    authority?.overrides.find((override) => override.permissionKey === draft.permissionKey) ?? null;
+  return (
+    <div className="mt-3 border-t border-[var(--ad-border)] pt-3 text-xs text-[var(--ad-text-muted)]">
+      <p>
+        <strong className="text-[var(--ad-text)]">{capability}</strong>
+        {" · "}
+        <code className="font-mono">{draft.permissionKey}</code>
+      </p>
+      {!targetUserId ? (
+        <p className="mt-1">{t("Enter a user ID to see what they can do today.")}</p>
+      ) : !fresh ? (
+        <p className="mt-1">{t("Checking what this user can do today…")}</p>
+      ) : fresh.failed ? (
+        <p className="mt-1">
+          {t("Could not read this user's current permissions. The change below still applies as written.")}
+        </p>
+      ) : authority ? (
+        <>
+          <p className="mt-1">
+            {t("Role")}: {valueLabel(authority.role)}
+            {" · "}
+            {alreadyEffective
+              ? t("already has this capability")
+              : t("does not have this capability")}
+            {" · "}
+            {t("{count} capabilities in total", { count: authority.effective.length })}
+          </p>
+          <p className="mt-1">
+            {existingOverride
+              ? t("An existing {effect} override is already recorded for this capability; applying a new one replaces it.", {
+                  effect: valueLabel(existingOverride.effect),
+                })
+              : t("No override is recorded for this capability yet; the role decides it today.")}
+          </p>
+          <p className="mt-1 text-[var(--ad-text)]">{outcome(draft, alreadyEffective, existingOverride, t)}</p>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * INTENT: 一句话说清「点下去之后这个人多了/少了什么」。clear 是最容易误解的一个——
+ * 它不是「收回权限」，是「删掉覆盖、把决定权还给角色」，结果取决于角色本身给不给。
+ */
+function outcome(
+  draft: PermissionDraft,
+  alreadyEffective: boolean | null,
+  existingOverride: AccessPermissionOverride | null,
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
+  if (draft.effect === "clear") {
+    return existingOverride
+      ? t("Applying this removes the override and hands the decision back to the role.")
+      : t("There is no override to remove, so nothing changes.");
+  }
+  if (draft.effect === "grant") {
+    return alreadyEffective
+      ? t("This user can already do it. Applying this pins the capability on with an override that outlives any role change.")
+      : t("Applying this gives the user the capability.");
+  }
+  return alreadyEffective
+    ? t("Applying this takes the capability away.")
+    : t("This user cannot do it today, so applying this only pins it off.");
+}
+
 function userTableRows(
   users: readonly AccessUserListItem[],
   canChangeStatus: boolean,
@@ -425,7 +580,7 @@ function userTableRows(
         display(user.role),
         display(user.status),
         display(user.dataClass),
-        display(user.dreamcoins),
+        <span className="tabular-nums" key="dreamcoins">{dreamcoins(user.dreamcoins)}</span>,
         date(user.createdAt),
         canChangeStatus ? (
           <button
@@ -515,14 +670,17 @@ function Field({
 function Select({
   label,
   onChange,
+  optionLabel,
   options,
   value,
 }: {
   label: string;
   onChange: (value: string) => void;
+  optionLabel?: (option: string) => string;
   options: string[];
   value: string;
 }) {
+  const { t } = useAdminI18n();
   return (
     <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
       {label}
@@ -533,13 +691,14 @@ function Select({
       >
         {options.map((option) => (
           <option key={option || "all"} value={option}>
-            {option || "All"}
+            {option ? (optionLabel?.(option) ?? option) : t("All")}
           </option>
         ))}
       </select>
     </label>
   );
 }
+// MIGRATION: 与 billing/pricing/promo 的同名三件套重复，等 ui/format.ts 统一后一起切。
 function text(value: unknown) {
   return typeof value === "string" ? value : "";
 }

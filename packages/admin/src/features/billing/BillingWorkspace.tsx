@@ -16,6 +16,7 @@ import {
   adminSubscriptionRefundCommandResponseSchema,
   type AdminBillingSubscriptionListItem,
   type AdminBillingSubscriptionListResponse,
+  type AdminSubscriptionRefundCommandResponse,
 } from "@idream/shared/admin";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
@@ -27,6 +28,7 @@ import { useToast } from "@/components/admin/ui/Toast";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { canonicalListEmptyTitle } from "@/features/compatibility-lists/empty-state";
+import { dreamcoins, fiat, signedDreamcoins } from "./money";
 import {
   billingAdjustmentConfirmation,
   billingLedgerPath,
@@ -105,6 +107,9 @@ export function BillingWorkspace({
   const [adjustment, setAdjustment] = useState<AdjustmentDraft>(emptyAdjustment);
   const [refundReference, setRefundReference] = useState("");
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
+  // INTENT: 退款结算数字（冲销多少、余额落到哪、有没有还回来）只在 toast 里闪一下就没了，
+  //         而这正是财务事后要核对的那几个数。留在页面上直到运营自己关掉。
+  const [refundOutcome, setRefundOutcome] = useState<AdminSubscriptionRefundCommandResponse | null>(null);
   const requestGates = useRef({
     ledger: createLatestRequestGate(),
     subscriptions: createLatestRequestGate(),
@@ -324,8 +329,15 @@ export function BillingWorkspace({
       summary: (
         <span>
           {t("Issue the full provider refund of {amount}. Access is frozen immediately and the exact {count} Dreamcoin subscription grant is reversed; coins already spent remain consumed.", {
-            amount: money(amountCents, subscription.currency ?? "usd"),
-            count: includedDreamcoins.toLocaleString(),
+            amount: fiat(amountCents, subscription.currency),
+            count: dreamcoins(includedDreamcoins),
+          })}
+          {" "}
+          {/* INTENT: 「退到哪」在加密支付里不是自动到账——provider 发一笔 payout，客户得自己去
+              claim。运营发起前就该知道点完之后还有一段不由自己控制的链路。 */}
+          {t("The money leaves as a {provider} payout that {email} claims; its claim link and payout state appear in this row once the provider accepts it.", {
+            provider: subscription.provider,
+            email: subscription.userEmail,
           })}
         </span>
       ),
@@ -348,11 +360,12 @@ export function BillingWorkspace({
             { "idempotency-key": idempotencyKey },
           ),
         );
+        setRefundOutcome(result);
         toast({
           tone: "success",
           title: t("Subscription {id} refund is {state}.", {
             id: subscriptionId,
-            state: result.refund.state,
+            state: t(REFUND_STATE_LABEL[result.refund.state]),
           }),
         });
         load(query);
@@ -396,11 +409,12 @@ export function BillingWorkspace({
             { "idempotency-key": idempotencyKey },
           ),
         );
+        setRefundOutcome(result);
         toast({
           tone: "success",
           title: t("Subscription {id} refund is {state}.", {
             id: subscriptionId,
-            state: result.refund.state,
+            state: t(REFUND_STATE_LABEL[result.refund.state]),
           }),
         });
         load(query);
@@ -434,8 +448,6 @@ export function BillingWorkspace({
           <button className="inline-flex min-h-9 items-center rounded-md border border-[var(--ad-border)] px-3 text-xs font-semibold" onClick={() => requestSubscriptionRefundReconciliation(row)} type="button">{t("Reconcile")}</button>
         ) : null}
       </div>
-    ) : refundState ? (
-      <span>{valueLabel(refundState)}{refund?.providerRefundId ? ` · ${refund.providerRefundId}` : ""}</span>
     ) : "—";
     return {
       id: row.id || `subscription-${index}`,
@@ -449,11 +461,26 @@ export function BillingWorkspace({
         valueLabel(row.status),
         display(row.currentPeriodEnd),
         display(row.cancelAtPeriodEnd),
-        refundState ? valueLabel(refundState) : "—",
+        refund ? <RefundDetail key="refund" refund={refund} /> : "—",
         action,
       ],
     };
   });
+  // INTENT: 账本这几列是钱：delta 带正负、balanceAfter 带千分位、reason 是枚举要走 value()。
+  //         走通用 display() 的话它们跟旁边的 ID 长得一模一样。
+  const ledgerRows: DataTableRow[] = ledger.map((row, index) => ({
+    id: text(row.id) || `ledger-${index}`,
+    cells: [
+      display(row.id),
+      display(row.userId),
+      display(row.userEmail),
+      <span className="font-semibold tabular-nums" key="delta">{coinCell(row.delta, signedDreamcoins)}</span>,
+      <span className="tabular-nums" key="balance">{coinCell(row.balanceAfter, dreamcoins)}</span>,
+      text(row.reason) ? valueLabel(text(row.reason)) : "—",
+      display(row.sourceId),
+      display(row.createdAt),
+    ],
+  }));
   const reconciliation = reconciliationState.data;
   const hasRefundCandidates =
     reconciliation?.checkoutExceptions.some(isRefundAcknowledgementCandidate) ??
@@ -573,6 +600,10 @@ export function BillingWorkspace({
         </section>
       ) : null}
 
+      {refundOutcome ? (
+        <RefundSettlementNotice onDismiss={() => setRefundOutcome(null)} result={refundOutcome} />
+      ) : null}
+
       <AuthorityError onRetry={() => void loadLedger(query)} state={ledgerState} />
       <AuthorityError onRetry={() => void loadSubscriptions(query)} state={subscriptionState} />
       <AuthorityError onRetry={() => void loadReconciliation()} state={reconciliationState} />
@@ -580,12 +611,19 @@ export function BillingWorkspace({
         <>
           {reconciliation ? <>
           <div className="grid gap-px overflow-hidden rounded-lg border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
-            <Metric label="Net coins (window)" meta={`${reconciliation.totals.entries} ledger entries`} value={String(reconciliation.totals.net)} />
+            <Metric label="Net coins (window)" meta={`${reconciliation.totals.entries} ledger entries`} value={signedDreamcoins(reconciliation.totals.net)} />
             <Metric label="Active subscriptions" meta="status = active" value={String(reconciliation.activeSubscriptions)} />
             <Metric label="Checkout exceptions" meta="provider reconciliation queue" value={String(reconciliation.checkoutExceptions.length)} />
             <Metric label="Window" meta={date(reconciliation.window.to)} value={`${date(reconciliation.window.from)} →`} />
           </div>
-          <DataTable caption="Reconciliation by reason" headers={["Reason", "Total delta", "Count"]} rows={tableRows(reconciliation.byReason, ["reason", "totalDelta", "count"], "reconciliation")} />
+          <DataTable caption="Reconciliation by reason" headers={["Reason", "Total delta", "Count"]} rows={reconciliation.byReason.map((row, index) => ({
+            id: text(row.reason) || `reconciliation-${index}`,
+            cells: [
+              text(row.reason) ? valueLabel(text(row.reason)) : "—",
+              <span className="font-semibold tabular-nums" key="delta">{coinCell(row.totalDelta, signedDreamcoins)}</span>,
+              display(row.count),
+            ],
+          }))} />
           <DataTable
             caption="Checkout reconciliation exceptions"
             empty={<EmptyState hint="No checkout intents currently require provider reconciliation." title={t("Checkout reconciliation is clear")} />}
@@ -615,13 +653,176 @@ export function BillingWorkspace({
           <NextPageButton label="Next subscription page" loading={subscriptionState.loading} onClick={() => navigate({ ...query, subscriptionCursor: subscriptionState.data?.pageInfo?.endCursor ?? "" })} pageInfo={subscriptionState.data.pageInfo ?? emptyPageInfo} />
           </> : null}
           {ledgerState.data ? <>
-          <DataTable caption="Customer ledger" empty={<BillingEmpty filtered={Boolean(query.search || query.ledgerReason)} kind="ledger entries" onClear={clearFilters} />} headers={["ID", "User", "Email", "Delta", "Balance after", "Reason", "Source", "Created"]} rows={tableRows(ledger, ["id", "userId", "userEmail", "delta", "balanceAfter", "reason", "sourceId", "createdAt"], "ledger")} />
+          <DataTable caption="Customer ledger" empty={<BillingEmpty filtered={Boolean(query.search || query.ledgerReason)} kind="ledger entries" onClear={clearFilters} />} headers={["ID", "User", "Email", "Delta", "Balance after", "Reason", "Source", "Created"]} rows={ledgerRows} />
           <NextPageButton label="Next ledger page" loading={ledgerState.loading} onClick={() => navigate({ ...query, ledgerCursor: ledgerState.data?.pageInfo?.endCursor ?? "" })} pageInfo={ledgerState.data.pageInfo ?? emptyPageInfo} />
           </> : null}
         </>
       )}
       {confirmation ? <ConfirmDialog onClose={() => setConfirmation(null)} spec={confirmation} /> : null}
     </section>
+  );
+}
+
+type SubscriptionRefund = NonNullable<AdminBillingSubscriptionListItem["refund"]>;
+
+/**
+ * SPEC: 退款状态与 payout 状态 → 运营看得懂的说法（i18n key）。
+ *
+ * INTENT: 这两组枚举走不了 `value()` —— 那条通道只查 zhValues，而 zhValues 里没有
+ * `provider_dispatching` / `awaiting_approval` 这些值，中文界面会把枚举码原样印出来。
+ * 走 t() 就能在本域的词条文件里给全译文；顺带英文也从 `awaiting_payment` 变成人话。
+ * INVARIANT: 键是契约里 adminSubscriptionRefundStateSchema 的全集；漏一个就编译不过。
+ */
+const REFUND_STATE_LABEL: Record<SubscriptionRefund["state"], string> = {
+  provider_dispatching: "Sending to provider",
+  provider_unknown: "Provider state unknown",
+  claimable: "Waiting for the customer to claim",
+  awaiting_approval: "Awaiting payout approval",
+  awaiting_payment: "Awaiting payout",
+  in_progress: "Payout in progress",
+  completed: "Paid out",
+  canceled: "Canceled",
+};
+
+const PAYOUT_STATE_LABEL: Record<SubscriptionRefund["payouts"][number]["state"], string> = {
+  awaiting_approval: "Awaiting payout approval",
+  awaiting_payment: "Awaiting payout",
+  in_progress: "Payout in progress",
+  completed: "Paid out",
+  canceled: "Canceled",
+};
+
+/**
+ * SPEC: 退款那一格要能独立回答「退了多少、客户余额落到哪、钱走到哪一步了」。
+ *
+ * INTENT: 这一格原本只印一个状态词。而契约里 amountCents / reversedDreamcoins /
+ * balanceAfter / payouts[] / restoredAt 全都在——运营想知道「钱到底出去没有」，
+ * 得去翻 provider 后台，或者干脆再点一次 Reconcile 看 toast。
+ * INVARIANT: 只印契约里真有的字段。没有的（比如客户实际收到的时间）就不印，不估。
+ */
+function RefundDetail({ refund }: { refund: SubscriptionRefund }) {
+  const { t } = useAdminI18n();
+  const owed = refund.balanceAfter < 0;
+  return (
+    <div className="min-w-56 space-y-1 text-xs">
+      <p className="font-semibold">{t(REFUND_STATE_LABEL[refund.state])}</p>
+      <p>
+        {fiat(refund.amountCents, refund.currency)}
+        {" · "}
+        {t("{count} Dreamcoin grant reversed", { count: dreamcoins(refund.reversedDreamcoins) })}
+      </p>
+      <p className={owed ? "font-semibold text-[var(--ad-red-text)]" : undefined}>
+        {t("Balance after reversal")}: {signedDreamcoins(refund.balanceAfter)}
+        {/* INTENT: 余额被冲成负数，说的就是「已消费的梦币不返还」这条规则真的生效了——
+            客户花掉的那部分现在挂在他账上。这句话必须由数字带出来，不能只写在确认框里。 */}
+        {owed ? ` · ${t("the customer had already spent part of the grant")}` : ""}
+      </p>
+      {refund.restoredAt ? (
+        <p>
+          {t("Grant restored")}
+          {refund.restoredBalanceAfter === null
+            ? ""
+            : ` · ${t("Balance after reversal")}: ${signedDreamcoins(refund.restoredBalanceAfter)}`}
+        </p>
+      ) : null}
+      {refund.payouts.length > 0 ? (
+        <p className="text-[var(--ad-text-muted)]">
+          {t("Provider payout")}:{" "}
+          {refund.payouts.map((payout) => t(PAYOUT_STATE_LABEL[payout.state])).join(" · ")}
+        </p>
+      ) : (
+        <p className="text-[var(--ad-text-muted)]">{t("No provider payout recorded yet")}</p>
+      )}
+      {refund.providerRefundId ? (
+        <p className="font-mono text-[11px] text-[var(--ad-text-muted)]">{refund.providerRefundId}</p>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * SPEC: 退款/对账命令返回的结算数字，留在页面上而不是随 toast 消失。
+ * INTENT: 这四个数（冲销、余额、还回、还回后余额）是财务事后对账要抄的东西。
+ *         replayed 也要说——重放意味着这次点击没有产生新的资金动作。
+ */
+function RefundSettlementNotice({
+  onDismiss,
+  result,
+}: {
+  onDismiss: () => void;
+  result: AdminSubscriptionRefundCommandResponse;
+}) {
+  const { t, value: valueLabel } = useAdminI18n();
+  const { settlement } = result;
+  return (
+    <section
+      className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 text-sm"
+      role="status"
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <h3 className="font-semibold">
+          {t("Refund settlement for {id}", { id: result.subscriptionId })}
+        </h3>
+        <button
+          aria-label={t("Dismiss refund settlement")}
+          className="grid min-h-9 min-w-9 place-items-center rounded-md border border-[var(--ad-border)]"
+          onClick={onDismiss}
+          type="button"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      {result.replayed ? (
+        <p className="mt-2 text-xs text-[var(--ad-text-muted)]">
+          {t("This repeated an earlier identical command. No new money moved.")}
+        </p>
+      ) : null}
+      <dl className="mt-3 grid gap-px overflow-hidden rounded-md border border-[var(--ad-border)] bg-[var(--ad-border)] sm:grid-cols-2 lg:grid-cols-4">
+        <SettlementFigure
+          label={t("Refund amount")}
+          value={fiat(result.refund.amountCents, result.refund.currency)}
+        />
+        <SettlementFigure
+          label={t("Dreamcoins reversed")}
+          value={signedDreamcoins(-settlement.reversedDreamcoins)}
+        />
+        <SettlementFigure
+          label={t("Balance after reversal")}
+          tone={settlement.balanceAfter < 0 ? "owed" : undefined}
+          value={signedDreamcoins(settlement.balanceAfter)}
+        />
+        <SettlementFigure
+          label={t("Subscription status")}
+          value={valueLabel(result.subscriptionStatus)}
+        />
+      </dl>
+      {settlement.restoredDreamcoins > 0 ? (
+        <p className="mt-2 text-xs">
+          {t("{count} Dreamcoins were put back because the provider refund did not complete.", {
+            count: dreamcoins(settlement.restoredDreamcoins),
+          })}
+          {settlement.restoredBalanceAfter === null
+            ? ""
+            : ` ${t("Balance after reversal")}: ${signedDreamcoins(settlement.restoredBalanceAfter)}`}
+        </p>
+      ) : null}
+      {settlement.balanceAfter < 0 ? (
+        <p className="mt-2 text-xs text-[var(--ad-red-text)]">
+          {t("The balance is negative: the customer had already spent part of the grant, and those coins are not returned.")}
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+function SettlementFigure({ label, tone, value }: { label: string; tone?: "owed"; value: string }) {
+  return (
+    <div className="bg-[var(--ad-surface)] px-3 py-2">
+      <dt className="text-[11px] font-medium text-[var(--ad-text-muted)]">{label}</dt>
+      <dd className={`mt-0.5 text-base font-semibold tabular-nums${tone === "owed" ? " text-[var(--ad-red-text)]" : ""}`}>
+        {value}
+      </dd>
+    </div>
   );
 }
 
@@ -674,6 +875,7 @@ function BillingEmpty({ filtered, kind, onClear }: { filtered: boolean; kind: st
   return <EmptyState action={filtered ? <button className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" onClick={onClear} type="button">{t("Clear filters")}</button> : undefined} hint={filtered ? `The complete authority query returned no ${kind}.` : `No ${kind} exist in the authority yet.`} title={title} />;
 }
 
+// MIGRATION: 只有「下一页」，没有上一页。ui/Pagination.tsx 已建（含上一页），合并后切过去。
 function NextPageButton({ label, loading, onClick, pageInfo }: { label: string; loading: boolean; onClick: () => void; pageInfo: BillingPageInfo }) {
   if (!pageInfo.hasNextPage || !pageInfo.endCursor) return null;
   return <button className="inline-flex min-h-11 items-center gap-2 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-4 text-sm font-semibold" disabled={loading} onClick={onClick} type="button"><RefreshCcw className="h-4 w-4" />{label}</button>;
@@ -692,11 +894,12 @@ function Select({ label, onChange, options, value }: { label: string; onChange: 
   return <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{label}<select className="min-h-11 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm" onChange={(event) => onChange(event.target.value)} value={value}>{options.map((option) => <option key={option || "all"} value={option}>{option ? valueLabel(option) : t("All")}</option>)}</select></label>;
 }
 
-function tableRows(rows: BillingRecord[], keys: readonly string[], prefix: string): DataTableRow[] {
-  return rows.map((row, index) => ({
-    id: text(row.id) || `${prefix}-${index}`,
-    cells: keys.map((key) => display(row[key])),
-  }));
+/**
+ * INTENT: 账本行是 unknown 进来的。是数字才按钱排版，不是数字就退回通用占位——
+ * 不把非数字硬塞进金额格式化器里，省得把脏数据印成一个看起来很正经的 0。
+ */
+function coinCell(value: unknown, format: (amount: number) => string): ReactNode {
+  return typeof value === "number" ? format(value) : display(value);
 }
 
 function canAdjustLedger(draft: AdjustmentDraft) {
@@ -707,19 +910,10 @@ function currentQuery() {
   return typeof window === "undefined" ? defaultBillingQuery : billingQueryFromSearch(window.location.search);
 }
 
+// MIGRATION: text/display/date 三件套在本簇里有四份近乎逐字相同的副本。
+// ui/format.ts 正在统一，合并时一起切；钱的排版归 ./money.ts，两者不要合并。
 function text(value: unknown) {
   return typeof value === "string" ? value : "";
-}
-
-function money(amountCents: number, currency: string) {
-  try {
-    return new Intl.NumberFormat("en", {
-      style: "currency",
-      currency: currency || "USD",
-    }).format(amountCents / 100);
-  } catch {
-    return `${amountCents} ${currency || "currency cents"}`;
-  }
 }
 
 function display(value: unknown): ReactNode {

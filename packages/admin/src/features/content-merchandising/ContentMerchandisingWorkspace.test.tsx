@@ -7,9 +7,46 @@ import {
   FeaturedWriteResultNotice,
   characterTableRow,
   contentCommandLabel,
+  featuredDiff,
   featuredTableRow,
   featuredVersionConflictFromError,
 } from "./ContentMerchandisingWorkspace";
+
+describe("featured curation diff", () => {
+  // SPEC: 保存前必须能看出这一次改了什么——输入框是一长串逗号分隔 ID，肉眼比不出来。
+  it("separates additions from removals", () => {
+    expect(featuredDiff(["a", "b", "c"], ["a", "c", "d"])).toEqual({
+      added: ["d"],
+      removed: ["b"],
+      reordered: false,
+    });
+  });
+
+  // INTENT: 只换顺序也是改首页曝光位次，不能显示成「没有变化」。
+  it("reports a pure reorder as a change", () => {
+    expect(featuredDiff(["a", "b"], ["b", "a"])).toEqual({
+      added: [],
+      removed: [],
+      reordered: true,
+    });
+  });
+
+  it("reports an identical configuration as no change at all", () => {
+    expect(featuredDiff(["a", "b"], ["a", "b"])).toEqual({
+      added: [],
+      removed: [],
+      reordered: false,
+    });
+  });
+
+  it("treats clearing the whole feed as a removal of every configured id", () => {
+    expect(featuredDiff(["a", "b"], [])).toEqual({
+      added: [],
+      removed: ["a", "b"],
+      reordered: false,
+    });
+  });
+});
 
 describe("Content merchandising takedown targets", () => {
   // SPEC: 可见性动作能产出 unlisted，不只是 private。

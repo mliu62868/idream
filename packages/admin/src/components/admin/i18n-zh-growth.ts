@@ -3,6 +3,55 @@
 // INVARIANT: key 在所有 i18n-zh-*.ts 之间互斥——同一个 key 只能有一个域文件持有；
 // 由 i18n-zh-exclusivity.test.ts 强制。新增文案放它所属的域文件，不要另开「杂项」文件。
 export const adminZhGrowth: Record<string, string> = {
+  // 钱与增长簇（定价 / 促销 / 编排 / 退款结算）。退款文案落在这里而不是 i18n-zh-customers.ts：
+  // 它属于「钱」这一簇，和定价、兑换码面额共用同一套梦币口径与措辞。
+  "Adding": "新增",
+  "At most {total} Dreamcoins in total: {each} each, up to {uses} redemptions.":
+    "总计最多 {total} 梦币：每次 {each}，最多兑换 {uses} 次。",
+  "Balance after reversal": "冲销后余额",
+  "Dismiss refund settlement": "关闭退款结算",
+  "Dreamcoins reversed": "已冲销梦币",
+  "Every redemption grants {each} Dreamcoins and nothing caps how many times. The total this code can pay out is unbounded.":
+    "每次兑换发放 {each} 梦币，且没有任何次数上限。这个码能发出去的总额没有上限。",
+  "Expires (blank=never)": "有效期（留空=永久）",
+  "Expiry must be a valid date and time.": "有效期必须是合法的日期时间。",
+  "Grant restored": "授予已还原",
+  "It never expires.": "它永不过期。",
+  "It stops working at {when}.": "它在 {when} 失效。",
+  "No active version of this rule key is loaded here, so the price it replaces is unknown.":
+    "当前页面里没有这个规则键的在售版本，因此它顶掉的价格未知。",
+  "No provider payout recorded yet": "尚无 provider 打款记录",
+  "Paid out": "已打款",
+  "Payout in progress": "打款进行中",
+  "Price: {base} base Dreamcoins × {multiplier}": "价格：基础 {base} 梦币 × {multiplier}",
+  "Provider payout": "Provider 打款",
+  "Provider state unknown": "Provider 状态未知",
+  "Refund amount": "退款金额",
+  "Refund settlement for {id}": "{id} 的退款结算",
+  "Removing": "移除",
+  "Reordering": "调整顺序",
+  "Replaces the live version {version}, priced at {base} base Dreamcoins × {multiplier}.":
+    "顶掉在售的版本 {version}（基础 {base} 梦币 × {multiplier}）。",
+  "Same characters, new order.": "角色不变，顺序改变。",
+  "Sending to provider": "正在发往 provider",
+  "The balance is negative: the customer had already spent part of the grant, and those coins are not returned.":
+    "余额为负：客户已经花掉了部分授予的梦币，这部分不返还。",
+  "The money leaves as a {provider} payout that {email} claims; its claim link and payout state appear in this row once the provider accepts it.":
+    "这笔钱以 {provider} payout 的形式发出，由 {email} 自行领取；provider 受理后，领取链接与打款状态会出现在这一行。",
+  "The version this restores is decided by the authority, not by this page.":
+    "回滚到哪一版由服务端权威决定，不由这个页面决定。",
+  "This matches the saved configuration. Nothing would change.": "与已保存的配置一致，不会有任何改动。",
+  "This repeated an earlier identical command. No new money moved.":
+    "这次重复了先前的同一条命令，没有产生新的资金动作。",
+  "Waiting for the customer to claim": "等待客户领取",
+  "Awaiting payout": "等待打款",
+  "Awaiting payout approval": "等待打款审批",
+  "{count} Dreamcoin grant reversed": "已冲销 {count} 梦币授予",
+  "{count} Dreamcoins": "{count} 梦币",
+  "{count} Dreamcoins were put back because the provider refund did not complete.":
+    "由于 provider 退款未完成，{count} 梦币已退回账户。",
+  "the customer had already spent part of the grant": "客户已花掉部分授予的梦币",
+  "· mode": "· 模式",
   ", lift=": "，提升幅度=",
   ", rate=": "，比例=",
   "/ max": "/ 最大值",
