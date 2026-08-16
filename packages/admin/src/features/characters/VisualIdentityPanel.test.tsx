@@ -176,14 +176,14 @@ describe("Visual Identity operator workbench", () => {
       />,
     );
     expect(html).toContain("Visual Identity authority");
-    expect(html).toContain("视觉身份");
-    expect(html).toContain("想让 Mira 变成什么样");
-    expect(html).toContain("高级设置");
-    expect(html).toContain("负向提示词");
-    expect(html).toContain("锁定种子");
-    expect(html).toContain("历史创作");
-    expect(html).toContain("打开任意图片");
-    expect(html).toContain("正式身份与生产设置");
+    expect(html).toContain("Visual identity");
+    expect(html).toContain("What should Mira look like?");
+    expect(html).toContain("Advanced settings");
+    expect(html).toContain("Negative prompt");
+    expect(html).toContain("Locked seed");
+    expect(html).toContain("Creation history");
+    expect(html).toContain("Open any image");
+    expect(html).toContain("Official identity and production settings");
     expect(html).toContain("Publish the approved identity references");
     // 服务端下发的 deepLink 原样透传，前端不再自建 code→锚点映射。
     expect(html).toContain(
@@ -207,8 +207,8 @@ describe("Visual Identity operator workbench", () => {
     expect(html).toContain("Operators create and review one image at a time");
     expect(html).not.toContain("Generate 40 route test images");
     expect(html).not.toContain("Batch IDs");
-    expect(html.indexOf("视觉身份")).toBeLessThan(
-      html.indexOf("正式身份与生产设置"),
+    expect(html.indexOf("Visual identity")).toBeLessThan(
+      html.indexOf("Official identity and production settings"),
     );
   });
 
@@ -220,7 +220,7 @@ describe("Visual Identity operator workbench", () => {
         runCommittedMutation={runCommittedMutation}
       />,
     );
-    const blockedSummary = blockedHtml.indexOf("正式身份与生产设置");
+    const blockedSummary = blockedHtml.indexOf("Official identity and production settings");
     expect(
       blockedHtml.slice(Math.max(0, blockedSummary - 260), blockedSummary),
     ).toContain('open=""');
@@ -249,7 +249,7 @@ describe("Visual Identity operator workbench", () => {
         runCommittedMutation={runCommittedMutation}
       />,
     );
-    const productionSettingsSummary = html.indexOf("正式身份与生产设置");
+    const productionSettingsSummary = html.indexOf("Official identity and production settings");
 
     expect(productionSettingsSummary).toBeGreaterThan(0);
     expect(

@@ -430,7 +430,7 @@ export function VisualIdentityPanel({
         open={productionSettingsOpen || !data.visual.readiness.ready}
       >
         <summary className="cursor-pointer px-4 py-4 text-sm font-semibold sm:px-5">
-          正式身份与生产设置
+          {t("Official identity and production settings")}
         </summary>
         <div className="grid gap-5 border-t border-[var(--ad-border)] p-4 xl:grid-cols-[minmax(0,1fr)_380px] sm:p-5">
           <div className="space-y-5">

@@ -19,6 +19,14 @@ import {
   useState,
   type ChangeEvent,
 } from "react";
+// INVARIANT: useCallback / useMemo / useEffect 里只用 translateAdmin(locale, …)。
+// INTENT: context 里的 t 每次 Provider 渲染都是新函数，放进依赖数组会让 usePollingTask
+//         每帧重新武装定时器（3s 轮询永远等不到触发）；locale 是字符串，稳定。
+import {
+  adminDateLocale,
+  translateAdmin,
+  useAdminI18n,
+} from "@/components/admin/i18n";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import {
   useAuthorityResource,
@@ -48,10 +56,11 @@ type SeedStrategy = "random" | "locked" | "reuse_source";
 // INVARIANT: 常量空数组，避免"资源尚未到达"每次渲染都产生新引用而触发下游重算。
 const EMPTY_SOURCE_OPTIONS: SourceOption[] = [];
 
+// SPEC: `label` 已是可直接渲染的文案——上传图用文件名，其余在构造处过 t()。
+// INTENT: 同一个字段混着「翻译键」和「用户文件名」时，渲染处没法判断该不该再 t() 一次。
 type SourceOption = {
   readonly id: string;
   readonly label: string;
-  readonly provenance: string;
   readonly url: string | null;
   readonly seed: string | null;
 };
@@ -60,7 +69,6 @@ function uploadedSourceOption(asset: CharacterImageSourceAsset): SourceOption {
   return {
     id: asset.id,
     label: asset.filename,
-    provenance: "本地上传",
     url: asset.thumbnailUrl ?? asset.url,
     seed: null,
   };
@@ -69,9 +77,9 @@ function uploadedSourceOption(asset: CharacterImageSourceAsset): SourceOption {
 function sourceRoleLabel(
   role: CharacterWorkspaceDetail["visual"]["anchors"][number]["role"],
 ) {
-  if (role === "primary_face") return "主角色肖像";
-  if (role === "identity_anchor") return "身份锚点";
-  return "身份参考图";
+  if (role === "primary_face") return "Primary portrait";
+  if (role === "identity_anchor") return "Identity anchor";
+  return "Identity reference";
 }
 
 function randomSeed() {
@@ -90,7 +98,7 @@ function itemImage(item: CreativeRunDetail["items"][number] | undefined) {
 }
 
 function modeLabel(mode: ExperimentMode) {
-  return mode === "text_to_image" ? "文生图" : "图生图";
+  return mode === "text_to_image" ? "Text to image" : "Image to image";
 }
 
 function generationModelLabel(modelId: string) {
@@ -102,17 +110,59 @@ function generationModelLabel(modelId: string) {
   return modelId;
 }
 
-function generationProfileLabel(label: string) {
-  if (label === "Default image") return "默认图片";
-  if (label === "Premium image") return "高级图片";
-  return label;
-}
-
 function identityTraitLines(value: string) {
   return value
     .split(/\r?\n|,/)
     .map((trait) => trait.trim())
     .filter(Boolean);
+}
+
+// SPEC: 状态里存的是提示「代号」，不是译好的句子。
+// INTENT: 「本轮已生成」在 run 落终态后要换成「已完成 N 张」，原实现靠 notice.startsWith(中文前缀)
+//         判断当前是哪一条——一接 i18n 就会因为 locale 不同而永远匹配不上。
+type ExperimentNotice =
+  | "generation_started"
+  | "source_restored"
+  | "source_uploaded"
+  | "continued_from_candidate"
+  | "parameters_reused"
+  | "candidate_adopted"
+  | "identity_activated";
+
+function experimentNoticeText(
+  t: (key: string) => string,
+  notice: ExperimentNotice,
+) {
+  switch (notice) {
+    case "generation_started":
+      return t(
+        "Parameters are frozen and candidates are generating. The current visual identity will not change.",
+      );
+    case "source_restored":
+      return t(
+        "Restored this local reference image and set it as the source for this run.",
+      );
+    case "source_uploaded":
+      return t(
+        "Local image uploaded and set as this run's source. The official reference set is unchanged.",
+      );
+    case "continued_from_candidate":
+      return t(
+        "The selected candidate is now the source for the next image-to-image run. Adjust the prompt before generating.",
+      );
+    case "parameters_reused":
+      return t(
+        "Loaded this run's parameter snapshot. Adjust it to create a new run.",
+      );
+    case "candidate_adopted":
+      return t(
+        "Candidate adopted. Complete the identity details and activate the new visual identity version.",
+      );
+    case "identity_activated":
+      return t(
+        "Activated a new immutable visual identity and Reference Set. The previous identity is kept as history and live images were not replaced.",
+      );
+  }
 }
 
 export function VisualIdentityExperimentWorkbench({
@@ -132,10 +182,11 @@ export function VisualIdentityExperimentWorkbench({
     input: ActivateIdentityCandidateInput,
   ) => Promise<void>;
 }) {
+  const { locale, t } = useAdminI18n();
   const identity = data.visual.activeIdentity;
   const calibration = data.visual.identityCalibration ?? {
     profiles: [],
-    blocker: "当前响应尚未提供视觉身份实验线路。",
+    blocker: t("This response does not include a visual identity experiment route yet."),
   };
   const profiles = calibration.profiles;
   const [mode, setMode] = useState<ExperimentMode>("text_to_image");
@@ -198,7 +249,7 @@ export function VisualIdentityExperimentWorkbench({
     null,
   );
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<ExperimentNotice | null>(null);
   const [candidateQualityConfirmed, setCandidateQualityConfirmed] =
     useState(false);
   const [activationOpen, setActivationOpen] = useState(false);
@@ -291,7 +342,12 @@ export function VisualIdentityExperimentWorkbench({
         .catch((cause) => {
           if (active) {
             setError(
-              cause instanceof Error ? cause.message : "无法读取视觉实验历史",
+              cause instanceof Error
+                ? cause.message
+                : translateAdmin(
+                    locale,
+                    "Visual experiment history could not be loaded",
+                  ),
             );
           }
         })
@@ -303,7 +359,7 @@ export function VisualIdentityExperimentWorkbench({
       active = false;
       window.clearTimeout(timer);
     };
-  }, [loadRuns]);
+  }, [loadRuns, locale]);
 
   // SPEC: 最近上传的本地参考图是一份独立资源，取数生命周期整个交给 useAuthorityResource。
   const uploadedSourcesResource = useAuthorityResource<SourceOption[]>({
@@ -330,10 +386,14 @@ export function VisualIdentityExperimentWorkbench({
       await loadRun(pollingRunId);
       return 3_000;
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "无法刷新生成结果");
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : translateAdmin(locale, "Generation results could not be refreshed"),
+      );
       return 6_000;
     }
-  }, [loadRun, pollingRunId]);
+  }, [loadRun, locale, pollingRunId]);
   usePollingTask(pollingRunId ? pollExperimentRun : null, 3_000);
 
   const selectedItem =
@@ -348,12 +408,18 @@ export function VisualIdentityExperimentWorkbench({
     selectedRun && runSettled(selectedRun)
       ? selectedRun.items.filter((item) => item.asset).length
       : null;
-  const displayedNotice =
-    notice?.startsWith("本轮参数已冻结") && settledReadyCount !== null
+  const displayedNotice = !notice
+    ? null
+    : notice === "generation_started" && settledReadyCount !== null
       ? settledReadyCount > 0
-        ? `本轮已完成 ${settledReadyCount} 张候选图；参数与实际种子已冻结，当前视觉身份未改动。`
-        : "本轮未产出可用候选图；参数快照仍已保留，可修改后重试。"
-      : notice;
+        ? t(
+            "This run produced {count} candidate images. Parameters and the actual seed are frozen; the current visual identity is unchanged.",
+            { count: settledReadyCount },
+          )
+        : t(
+            "This run produced no usable candidate. The parameter snapshot is kept, so you can adjust and retry.",
+          )
+      : experimentNoticeText(t, notice);
   const experiment = selectedRun?.reviewContext.experiment ?? null;
   const baselineUrl =
     data.character.imageUrl ??
@@ -368,33 +434,29 @@ export function VisualIdentityExperimentWorkbench({
     }
     const addAssets = (
       assets: CharacterWorkspaceDetail["visual"]["anchors"],
-      provenance: string,
     ) => {
       for (const asset of assets) {
         if (!asset.available || byId.has(asset.mediaAssetId)) continue;
         byId.set(asset.mediaAssetId, {
           id: asset.mediaAssetId,
-          label: sourceRoleLabel(asset.role),
-          provenance,
+          label: translateAdmin(locale, sourceRoleLabel(asset.role)),
           url: asset.thumbnailUrl ?? asset.url,
           seed: null,
         });
       }
     };
     if (data.visual.activeReferenceSet) {
-      addAssets(
-        data.visual.activeReferenceSet.references,
-        `正式参考集 R${data.visual.activeReferenceSet.revision}`,
-      );
+      addAssets(data.visual.activeReferenceSet.references);
     }
-    addAssets(data.visual.anchors, "视觉身份");
-    addAssets(data.visual.references, "可用参考图");
+    addAssets(data.visual.anchors);
+    addAssets(data.visual.references);
     for (const item of selectedRun?.items ?? []) {
       if (!item.asset || byId.has(item.asset.id)) continue;
       byId.set(item.asset.id, {
         id: item.asset.id,
-        label: `实验候选 ${(item.ordinal ?? 0) + 1}`,
-        provenance: "最近实验",
+        label: translateAdmin(locale, "Experiment candidate {number}", {
+          number: (item.ordinal ?? 0) + 1,
+        }),
         url: item.asset.thumbnailUrl ?? item.asset.url,
         seed: item.lineage.seed ?? null,
       });
@@ -404,6 +466,7 @@ export function VisualIdentityExperimentWorkbench({
     data.visual.activeReferenceSet,
     data.visual.anchors,
     data.visual.references,
+    locale,
     uploadedSources,
     selectedRun?.items,
   ]);
@@ -423,14 +486,14 @@ export function VisualIdentityExperimentWorkbench({
     if (!file || sourceUploadBusy || !canUploadSource) return;
     event.target.value = "";
     if (file.size > 15 * 1024 * 1024) {
-      setError("图片不能超过 15 MB");
+      setError(t("Image must be 15 MB or smaller"));
       return;
     }
     if (
       file.type &&
       !["image/jpeg", "image/png", "image/webp"].includes(file.type)
     ) {
-      setError("请选择 JPG、PNG 或 WebP 图片");
+      setError(t("Choose a JPG, PNG, or WebP image"));
       return;
     }
 
@@ -461,13 +524,11 @@ export function VisualIdentityExperimentWorkbench({
       ]);
       setSourceAssetId(uploaded.id);
       if (seedStrategy === "reuse_source") setSeedStrategy("random");
-      setNotice(
-        result.replayed
-          ? "已恢复这张本地参考图，并设为本轮图生图来源。"
-          : "本地图片已上传并设为本轮来源；正式参考集未改变。",
-      );
+      setNotice(result.replayed ? "source_restored" : "source_uploaded");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "本地图片上传失败");
+      setError(
+        cause instanceof Error ? cause.message : t("Local image upload failed"),
+      );
     } finally {
       if (previewUrl && typeof URL.revokeObjectURL === "function") {
         URL.revokeObjectURL(previewUrl);
@@ -508,7 +569,10 @@ export function VisualIdentityExperimentWorkbench({
     };
     const parsed = creativeRunCreateRequestSchema.safeParse(payload);
     if (!parsed.success) {
-      setError(parsed.error.issues[0]?.message ?? "实验参数不完整");
+      setError(
+        parsed.error.issues[0]?.message ??
+          t("Experiment parameters are incomplete"),
+      );
       return;
     }
     const signature = JSON.stringify(parsed.data);
@@ -527,13 +591,17 @@ export function VisualIdentityExperimentWorkbench({
       const detail = await loadRun(result.batch.id);
       await loadRuns();
       setResultOpen(true);
-      setNotice("本轮参数已冻结，正在生成候选图；当前视觉身份不会被改动。");
+      setNotice("generation_started");
       if (resolvedSeedStrategy === "random" && !result.replayed) {
         setBaseSeed(randomSeed());
       }
       return detail;
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "无法创建视觉身份实验");
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : t("Visual identity experiment could not be created"),
+      );
       return null;
     } finally {
       setBusy(null);
@@ -550,7 +618,7 @@ export function VisualIdentityExperimentWorkbench({
       setNegativePrompt(experiment.negativePrompt);
       setStrength(experiment.strength);
     }
-    setNotice("已把所选候选图设为下一轮图生图来源；请继续修改提示词后再生成。");
+    setNotice("continued_from_candidate");
     setResultOpen(false);
     window.requestAnimationFrame(() => {
       document.getElementById("identity-experiment-composer")?.scrollIntoView({
@@ -572,7 +640,7 @@ export function VisualIdentityExperimentWorkbench({
     if (selectedRun?.reviewContext.orientation) {
       setOrientation(selectedRun.reviewContext.orientation);
     }
-    setNotice("已载入这一轮的参数快照；修改后可创建新一轮。");
+    setNotice("parameters_reused");
     setResultOpen(false);
   };
 
@@ -619,7 +687,7 @@ export function VisualIdentityExperimentWorkbench({
       await loadRuns();
       setCandidateQualityConfirmed(false);
       setActivationOpen(true);
-      setNotice("已采用这张候选图；请完成身份信息并激活新的视觉身份版本。");
+      setNotice("candidate_adopted");
       window.requestAnimationFrame(() => {
         document
           .getElementById("identity-candidate-activation")
@@ -629,7 +697,11 @@ export function VisualIdentityExperimentWorkbench({
           });
       });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "候选身份采用失败");
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : t("Candidate could not be adopted"),
+      );
     } finally {
       setBusy(null);
     }
@@ -676,11 +748,13 @@ export function VisualIdentityExperimentWorkbench({
       setActivationOpen(false);
       setActivationConfirmed(false);
       setActivationReason("");
-      setNotice(
-        "已激活新的不可变视觉身份和 Reference Set；旧身份保留为历史版本，线上图片未自动替换。",
-      );
+      setNotice("identity_activated");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "候选身份激活失败");
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : t("Candidate could not be activated"),
+      );
     } finally {
       setBusy(null);
     }
@@ -728,24 +802,24 @@ export function VisualIdentityExperimentWorkbench({
   return (
     <section aria-labelledby="identity-experiment-title">
       <h2 className="sr-only" id="identity-experiment-title">
-        视觉身份
+        {t("Visual identity")}
       </h2>
 
       <div className="grid items-start gap-8 lg:grid-cols-[minmax(0,0.86fr)_minmax(420px,1.14fr)] xl:gap-12">
         <div className="min-w-0">
           <div className="flex items-center justify-between gap-3">
             <h3 className="text-xl font-semibold tracking-[-0.02em]">
-              当前形象
+              {t("Current look")}
             </h3>
             <span className="text-xs text-[var(--ad-text-muted)]">
-              {identity ? `v${identity.version}` : "尚未激活"}
+              {identity ? `v${identity.version}` : t("Not activated yet")}
             </span>
           </div>
           <figure className="mt-4 overflow-hidden rounded-lg border border-[var(--ad-border)] bg-black/[0.035]">
             <div className="relative aspect-[3/4]">
               {baselineUrl ? (
                 <Image
-                  alt="当前活动视觉身份基准"
+                  alt={t("Active visual identity baseline")}
                   className="object-cover"
                   fill
                   loading="eager"
@@ -755,7 +829,7 @@ export function VisualIdentityExperimentWorkbench({
                 />
               ) : (
                 <div className="grid h-full place-items-center p-6 text-center text-sm text-[var(--ad-text-muted)]">
-                  还没有当前形象
+                  {t("No current look yet")}
                 </div>
               )}
             </div>
@@ -764,23 +838,25 @@ export function VisualIdentityExperimentWorkbench({
 
         <aside className="min-w-0 lg:pt-1" id="identity-experiment-composer">
           <h3 className="text-xl font-semibold tracking-[-0.02em]">
-            想让 {data.character.name} 变成什么样？
+            {t("What should {name} look like?", { name: data.character.name })}
           </h3>
           <label className="mt-4 block">
-            <span className="sr-only">描述这次想要的画面</span>
+            <span className="sr-only">{t("Describe the look you want")}</span>
             <textarea
-              aria-label="描述这次想要的画面"
+              aria-label={t("Describe the look you want")}
               className={`${textAreaClass} min-h-48 resize-y px-4 py-4 text-base leading-7`}
               onChange={(event) => setPositivePrompt(event.target.value)}
-              placeholder="例如：让她看起来更成熟一些，换成长发，妆容更精致。"
+              placeholder={t(
+                "For example: make her look more mature, with long hair and more refined makeup.",
+              )}
               value={positivePrompt}
             />
           </label>
 
           <label className="mt-4 block text-sm font-medium">
-            负向提示词
+            {t("Negative prompt")}
             <input
-              aria-label="负向提示词"
+              aria-label={t("Negative prompt")}
               className={`${fieldClass} mt-2`}
               onChange={(event) => setNegativePrompt(event.target.value)}
               value={negativePrompt}
@@ -788,10 +864,10 @@ export function VisualIdentityExperimentWorkbench({
           </label>
 
           <label className="mt-4 block text-sm font-medium">
-            种子
+            {t("Seed")}
             <span className="mt-2 flex gap-3">
               <input
-                aria-label="种子"
+                aria-label={t("Seed")}
                 className={`${fieldClass} min-w-0 flex-1`}
                 disabled={resolvedSeedStrategy === "reuse_source"}
                 onChange={(event) => setBaseSeed(event.target.value)}
@@ -810,7 +886,7 @@ export function VisualIdentityExperimentWorkbench({
                 }}
                 type="button"
               >
-                随机
+                {t("Randomize")}
               </button>
             </span>
           </label>
@@ -826,7 +902,9 @@ export function VisualIdentityExperimentWorkbench({
           />
           {mode === "image_to_image" && (pendingSource || selectedSource) ? (
             <p className="mt-4 truncate text-xs text-[var(--ad-text-muted)]">
-              参考图：{pendingSource?.filename ?? selectedSource?.label}
+              {t("Reference image: {name}", {
+                name: pendingSource?.filename ?? selectedSource?.label ?? "",
+              })}
             </p>
           ) : null}
 
@@ -842,16 +920,16 @@ export function VisualIdentityExperimentWorkbench({
               }}
               type="button"
             >
-              {sourceUploadBusy ? "正在添加…" : "添加参考图"}
+              {sourceUploadBusy ? t("Adding…") : t("Add reference image")}
             </button>
             <button
-              aria-label="生成 1 张候选图"
+              aria-label={t("Generate 1 candidate image")}
               className="min-h-14 w-full rounded-md bg-[var(--ad-ink)] px-5 text-base font-semibold text-white transition hover:bg-[#333] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
               disabled={!canGenerate || busy !== null}
               onClick={() => void generate()}
               type="button"
             >
-              {busy === "generate" ? "正在生成…" : "生成"}
+              {busy === "generate" ? t("Generating…") : t("Generate")}
             </button>
           </div>
 
@@ -879,27 +957,27 @@ export function VisualIdentityExperimentWorkbench({
 
           <details className="mt-6 border-t border-[var(--ad-border)] pt-4">
             <summary className="cursor-pointer text-sm font-medium">
-              高级设置
+              {t("Advanced settings")}
             </summary>
             <div className="mt-4 grid gap-4 sm:grid-cols-2">
               <label className="text-xs font-medium text-[var(--ad-text-muted)]">
-                生成方式
+                {t("Generation mode")}
                 <select
-                  aria-label="生成方式"
+                  aria-label={t("Generation mode")}
                   className={`${fieldClass} mt-1`}
                   onChange={(event) =>
                     setMode(event.target.value as ExperimentMode)
                   }
                   value={mode}
                 >
-                  <option value="text_to_image">文生图</option>
-                  <option value="image_to_image">图生图</option>
+                  <option value="text_to_image">{t("Text to image")}</option>
+                  <option value="image_to_image">{t("Image to image")}</option>
                 </select>
               </label>
               <label className="text-xs font-medium text-[var(--ad-text-muted)]">
-                模型
+                {t("Model")}
                 <select
-                  aria-label={`${modeLabel(mode)}模型`}
+                  aria-label={t("{mode} model", { mode: t(modeLabel(mode)) })}
                   className={`${fieldClass} mt-1`}
                   disabled={modelOptions.length < 2}
                   onChange={(event) => {
@@ -915,16 +993,19 @@ export function VisualIdentityExperimentWorkbench({
                 >
                   {modelOptions.map((modelId) => (
                     <option key={modelId} value={modelId}>
-                      {generationModelLabel(modelId)}
-                      {modelId === preferredProfile?.modelId ? "（默认）" : ""}
+                      {modelId === preferredProfile?.modelId
+                        ? t("{label} (default)", {
+                            label: generationModelLabel(modelId),
+                          })
+                        : generationModelLabel(modelId)}
                     </option>
                   ))}
                 </select>
               </label>
               <label className="text-xs font-medium text-[var(--ad-text-muted)]">
-                配置档位
+                {t("Profile tier")}
                 <select
-                  aria-label="配置档位"
+                  aria-label={t("Profile tier")}
                   className={`${fieldClass} mt-1`}
                   disabled={selectedModelProfiles.length < 2}
                   onChange={(event) => {
@@ -936,24 +1017,25 @@ export function VisualIdentityExperimentWorkbench({
                   }}
                   value={selectedProfile?.profileKey ?? ""}
                 >
-                  {selectedModelProfiles.map((profile) => (
-                    <option
-                      key={`${profile.profileKey}:${profile.profileVersion}`}
-                      value={profile.profileKey}
-                    >
-                      {generationProfileLabel(profile.label)} v
-                      {profile.profileVersion}
-                      {profile.profileKey === preferredProfile?.profileKey
-                        ? "（默认）"
-                        : ""}
-                    </option>
-                  ))}
+                  {selectedModelProfiles.map((profile) => {
+                    const label = `${t(profile.label)} v${profile.profileVersion}`;
+                    return (
+                      <option
+                        key={`${profile.profileKey}:${profile.profileVersion}`}
+                        value={profile.profileKey}
+                      >
+                        {profile.profileKey === preferredProfile?.profileKey
+                          ? t("{label} (default)", { label })
+                          : label}
+                      </option>
+                    );
+                  })}
                 </select>
               </label>
               <label className="text-xs font-medium text-[var(--ad-text-muted)]">
-                构图比例
+                {t("Aspect ratio")}
                 <select
-                  aria-label="高级构图比例"
+                  aria-label={t("Advanced aspect ratio")}
                   className={`${fieldClass} mt-1`}
                   onChange={(event) => setOrientation(event.target.value)}
                   value={resolvedOrientation}
@@ -966,9 +1048,9 @@ export function VisualIdentityExperimentWorkbench({
                 </select>
               </label>
               <label className="text-xs font-medium text-[var(--ad-text-muted)]">
-                身份约束
+                {t("Identity constraint")}
                 <select
-                  aria-label="高级身份约束"
+                  aria-label={t("Advanced identity constraint")}
                   className={`${fieldClass} mt-1`}
                   onChange={(event) =>
                     setConsistencyMode(
@@ -977,31 +1059,33 @@ export function VisualIdentityExperimentWorkbench({
                   }
                   value={consistencyMode}
                 >
-                  <option value="strict">严格</option>
-                  <option value="balanced">平衡</option>
-                  <option value="creative">创意</option>
+                  <option value="strict">{t("Strict")}</option>
+                  <option value="balanced">{t("Balanced")}</option>
+                  <option value="creative">{t("Creative")}</option>
                 </select>
               </label>
               <label className="text-xs font-medium text-[var(--ad-text-muted)]">
-                种子策略
+                {t("Seed strategy")}
                 <select
-                  aria-label="种子策略"
+                  aria-label={t("Seed strategy")}
                   className={`${fieldClass} mt-1`}
                   onChange={(event) =>
                     setSeedStrategy(event.target.value as SeedStrategy)
                   }
                   value={resolvedSeedStrategy}
                 >
-                  <option value="random">每轮随机</option>
-                  <option value="locked">锁定种子</option>
+                  <option value="random">{t("Random each run")}</option>
+                  <option value="locked">{t("Locked seed")}</option>
                   <option disabled={!selectedSource?.seed} value="reuse_source">
-                    沿用所选图
+                    {t("Reuse selected image seed")}
                   </option>
                 </select>
               </label>
               {mode === "image_to_image" ? (
                 <label className="text-xs font-medium text-[var(--ad-text-muted)] sm:col-span-2">
-                  变化强度：{strength.toFixed(2)}
+                  {t("Variation strength: {value}", {
+                    value: strength.toFixed(2),
+                  })}
                   <input
                     className="mt-3 w-full accent-[var(--ad-ink)]"
                     max="0.95"
@@ -1019,7 +1103,9 @@ export function VisualIdentityExperimentWorkbench({
 
             {mode === "image_to_image" ? (
               <fieldset className="mt-5 border-t border-[var(--ad-border)] pt-4">
-                <legend className="text-sm font-medium">参考图</legend>
+                <legend className="text-sm font-medium">
+                  {t("Reference images")}
+                </legend>
                 <button
                   className="mt-3 inline-flex min-h-9 items-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-xs font-semibold"
                   disabled={!canUploadSource || sourceUploadBusy}
@@ -1027,7 +1113,7 @@ export function VisualIdentityExperimentWorkbench({
                   type="button"
                 >
                   <Upload aria-hidden="true" size={14} />
-                  上传图片
+                  {t("Upload image")}
                 </button>
                 {visualSources.length > 0 ? (
                   <div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-4">
@@ -1071,7 +1157,7 @@ export function VisualIdentityExperimentWorkbench({
                   </div>
                 ) : (
                   <p className="mt-3 text-xs text-[var(--ad-text-muted)]">
-                    还没有可用参考图
+                    {t("No reference images available yet")}
                   </p>
                 )}
               </fieldset>
@@ -1090,14 +1176,16 @@ export function VisualIdentityExperimentWorkbench({
               className="text-xl font-semibold tracking-[-0.02em]"
               id="identity-history-title"
             >
-              历史创作
+              {t("Creation history")}
             </h3>
             <p className="mt-1 text-sm text-[var(--ad-text-muted)]">
-              打开任意图片，可继续调整或重新设为当前形象。
+              {t(
+                "Open any image to keep adjusting it or set it as the current look again.",
+              )}
             </p>
           </div>
           <span className="shrink-0 text-xs text-[var(--ad-text-muted)]">
-            {historyCandidates.length} 张
+            {t("{count} images", { count: historyCandidates.length })}
           </span>
         </div>
 
@@ -1110,7 +1198,7 @@ export function VisualIdentityExperimentWorkbench({
               <div className="relative aspect-[4/5]">
                 {itemImage(selectedItem) ? (
                   <Image
-                    alt="所选历史视觉身份候选"
+                    alt={t("Selected visual identity candidate")}
                     className="object-cover"
                     fill
                     sizes="(min-width: 1024px) 32vw, 100vw"
@@ -1123,8 +1211,8 @@ export function VisualIdentityExperimentWorkbench({
                       <p>
                         {selectedItem.executionState === "failed"
                           ? (selectedItem.failure?.operatorGuidance ??
-                            "生成失败")
-                          : "正在生成"}
+                            t("Generation failed"))
+                          : t("Generating")}
                       </p>
                       {selectedItem.failure ? (
                         <p className="mt-2 font-mono text-[10px]">
@@ -1144,10 +1232,12 @@ export function VisualIdentityExperimentWorkbench({
                     className="text-lg font-semibold"
                     id="selected-history-candidate-title"
                   >
-                    所选图片
+                    {t("Selected image")}
                   </h4>
                   <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-                    {new Date(selectedRun.createdAt).toLocaleString("zh-CN")}
+                    {new Date(selectedRun.createdAt).toLocaleString(
+                      adminDateLocale(locale),
+                    )}
                   </p>
                 </div>
                 <button
@@ -1155,45 +1245,52 @@ export function VisualIdentityExperimentWorkbench({
                   onClick={() => setResultOpen(false)}
                   type="button"
                 >
-                  收起
+                  {t("Collapse")}
                 </button>
               </div>
 
               <dl className="mt-5 grid gap-4 text-sm sm:grid-cols-2">
                 <div>
                   <dt className="text-xs text-[var(--ad-text-muted)]">
-                    实际种子
+                    {t("Actual seed")}
                   </dt>
                   <dd className="mt-1 break-all font-mono text-xs">
                     {selectedItem.lineage.seed ??
                       experiment?.baseSeed ??
-                      "系统生成"}
+                      t("System generated")}
                   </dd>
                 </div>
                 <div>
                   <dt className="text-xs text-[var(--ad-text-muted)]">
-                    生成方式
+                    {t("Generation mode")}
                   </dt>
                   <dd className="mt-1">
-                    {modeLabel(experiment?.mode ?? "text_to_image")}
+                    {t(modeLabel(experiment?.mode ?? "text_to_image"))}
                   </dd>
                 </div>
               </dl>
               <details className="mt-5 border-t border-[var(--ad-border)] pt-4">
                 <summary className="cursor-pointer text-sm font-medium">
-                  查看提示词
+                  {t("View prompts")}
                 </summary>
                 <div className="mt-3 space-y-3 text-sm leading-6">
-                  <p>{experiment?.positivePrompt ?? "本轮没有提示词快照"}</p>
+                  <p>
+                    {experiment?.positivePrompt ??
+                      t("This run has no prompt snapshot")}
+                  </p>
                   <p className="text-[var(--ad-text-muted)]">
-                    负向提示词：{experiment?.negativePrompt || "无"}
+                    {t("Negative prompt: {value}", {
+                      value: experiment?.negativePrompt || t("None"),
+                    })}
                   </p>
                 </div>
               </details>
 
               {selectedItem.asset && !systemSingleFramePassed ? (
                 <p className="mt-5 text-sm text-[var(--ad-yellow-text)]">
-                  旧图片缺少可采用的构图检查记录。可以从这张继续调整，生成的新图仍可重新选择。
+                  {t(
+                    "This older image has no usable composition check on record. You can keep adjusting from it, and newly generated images can be selected again.",
+                  )}
                 </p>
               ) : null}
 
@@ -1210,7 +1307,9 @@ export function VisualIdentityExperimentWorkbench({
                     type="checkbox"
                   />
                   <span>
-                    我已确认人物、画面和图片质量，可将它作为视觉身份。
+                    {t(
+                      "I have checked the subject, framing, and image quality, and this image can serve as the visual identity.",
+                    )}
                   </span>
                 </label>
               ) : null}
@@ -1220,13 +1319,13 @@ export function VisualIdentityExperimentWorkbench({
                   disabled={!selectedItem.asset || busy !== null}
                   onClick={continueFromSelected}
                 >
-                  从这张继续调整
+                  {t("Keep adjusting from this one")}
                 </WorkspaceButton>
                 <WorkspaceButton
                   disabled={!experiment || busy !== null}
                   onClick={reuseRunParameters}
                 >
-                  沿用生成参数
+                  {t("Reuse these parameters")}
                 </WorkspaceButton>
                 {systemSingleFramePassed && selectedApproved ? (
                   <WorkspaceButton
@@ -1240,7 +1339,9 @@ export function VisualIdentityExperimentWorkbench({
                     onClick={() => setActivationOpen((current) => !current)}
                     tone="primary"
                   >
-                    {selectedIsActiveIdentity ? "当前形象" : "设为当前形象"}
+                    {selectedIsActiveIdentity
+                      ? t("Current look")
+                      : t("Set as current look")}
                   </WorkspaceButton>
                 ) : systemSingleFramePassed ? (
                   <WorkspaceButton
@@ -1254,7 +1355,7 @@ export function VisualIdentityExperimentWorkbench({
                     onClick={() => void submitCandidate()}
                     tone="primary"
                   >
-                    {busy === "review" ? "正在采用…" : "采用这张图"}
+                    {busy === "review" ? t("Adopting…") : t("Adopt this image")}
                   </WorkspaceButton>
                 ) : null}
               </div>
@@ -1267,10 +1368,12 @@ export function VisualIdentityExperimentWorkbench({
                   className="mt-6 scroll-mt-6 border-t border-[var(--ad-border)] pt-5"
                   id="identity-candidate-activation"
                 >
-                  <h4 className="text-sm font-semibold">设为当前形象</h4>
+                  <h4 className="text-sm font-semibold">
+                    {t("Set as current look")}
+                  </h4>
                   <div className="mt-4 grid gap-4 sm:grid-cols-2">
                     <label className="text-xs font-medium text-[var(--ad-text-muted)] sm:col-span-2">
-                      身份描述
+                      {t("Identity description")}
                       <textarea
                         className={`${textAreaClass} mt-1 min-h-24`}
                         onChange={(event) =>
@@ -1280,7 +1383,7 @@ export function VisualIdentityExperimentWorkbench({
                       />
                     </label>
                     <label className="text-xs font-medium text-[var(--ad-text-muted)]">
-                      脸部特征（每行一个）
+                      {t("Face traits (one per line)")}
                       <textarea
                         className={`${textAreaClass} mt-1 min-h-20`}
                         onChange={(event) =>
@@ -1290,7 +1393,7 @@ export function VisualIdentityExperimentWorkbench({
                       />
                     </label>
                     <label className="text-xs font-medium text-[var(--ad-text-muted)]">
-                      头发特征（每行一个）
+                      {t("Hair traits (one per line)")}
                       <textarea
                         className={`${textAreaClass} mt-1 min-h-20`}
                         onChange={(event) =>
@@ -1300,7 +1403,7 @@ export function VisualIdentityExperimentWorkbench({
                       />
                     </label>
                     <label className="text-xs font-medium text-[var(--ad-text-muted)]">
-                      身形特征（每行一个）
+                      {t("Body traits (one per line)")}
                       <textarea
                         className={`${textAreaClass} mt-1 min-h-20`}
                         onChange={(event) =>
@@ -1310,7 +1413,7 @@ export function VisualIdentityExperimentWorkbench({
                       />
                     </label>
                     <label className="text-xs font-medium text-[var(--ad-text-muted)]">
-                      标志特征（可留空）
+                      {t("Signature traits (optional)")}
                       <textarea
                         className={`${textAreaClass} mt-1 min-h-20`}
                         onChange={(event) =>
@@ -1320,7 +1423,7 @@ export function VisualIdentityExperimentWorkbench({
                       />
                     </label>
                     <label className="text-xs font-medium text-[var(--ad-text-muted)] sm:col-span-2">
-                      变更理由
+                      {t("Reason for change")}
                       <input
                         className={`${fieldClass} mt-1`}
                         onChange={(event) =>
@@ -1340,7 +1443,9 @@ export function VisualIdentityExperimentWorkbench({
                       type="checkbox"
                     />
                     <span>
-                      我确认要创建新的视觉身份版本。线上图片不会自动替换。
+                      {t(
+                        "I confirm creating a new visual identity version. Live images are not replaced automatically.",
+                      )}
                     </span>
                   </label>
                   <div className="mt-4 flex flex-wrap gap-2">
@@ -1357,13 +1462,15 @@ export function VisualIdentityExperimentWorkbench({
                       onClick={() => void activateCandidate()}
                       tone="primary"
                     >
-                      {busy === "activate" ? "正在设置…" : "确认设为当前形象"}
+                      {busy === "activate"
+                        ? t("Applying…")
+                        : t("Confirm current look")}
                     </WorkspaceButton>
                     <WorkspaceButton
                       disabled={busy !== null}
                       onClick={() => setActivationOpen(false)}
                     >
-                      取消
+                      {t("Cancel")}
                     </WorkspaceButton>
                   </div>
                 </div>
@@ -1374,19 +1481,19 @@ export function VisualIdentityExperimentWorkbench({
 
         {historyLoading ? (
           <p className="mt-6 text-sm text-[var(--ad-text-muted)]">
-            正在读取历史创作…
+            {t("Loading creation history…")}
           </p>
         ) : historyCandidates.length === 0 &&
           historyRunsWithoutImages.length === 0 ? (
           <div className="mt-6 border border-dashed border-[var(--ad-border)] px-5 py-10 text-center text-sm text-[var(--ad-text-muted)]">
-            生成后的图片会保存在这里
+            {t("Generated images are saved here")}
           </div>
         ) : (
           <>
             {historyCandidates.length > 0 ? (
               <div
                 className="mt-6 grid grid-cols-2 gap-x-3 gap-y-6 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
-                aria-label="历史创作图片"
+                aria-label={t("Creation history images")}
               >
                 {historyCandidates.map(
                   ({ run, runDetail, runNumber, item }) => {
@@ -1400,7 +1507,10 @@ export function VisualIdentityExperimentWorkbench({
                     );
                     return (
                       <button
-                        aria-label={`查看第 ${runNumber} 次创作的候选图 ${item.ordinal + 1}`}
+                        aria-label={t("View candidate {number} from run {run}", {
+                          number: item.ordinal + 1,
+                          run: runNumber,
+                        })}
                         aria-pressed={selected}
                         className="group min-w-0 text-left"
                         key={item.id}
@@ -1422,7 +1532,10 @@ export function VisualIdentityExperimentWorkbench({
                           )}
                         >
                           <Image
-                            alt={`第 ${runNumber} 次创作的候选图 ${item.ordinal + 1}`}
+                            alt={t("Candidate {number} from run {run}", {
+                              number: item.ordinal + 1,
+                              run: runNumber,
+                            })}
                             className="object-cover transition duration-200 group-hover:scale-[1.01]"
                             fill
                             sizes="(min-width: 1280px) 16vw, (min-width: 1024px) 20vw, (min-width: 640px) 30vw, 46vw"
@@ -1431,13 +1544,15 @@ export function VisualIdentityExperimentWorkbench({
                           />
                         </span>
                         <span className="mt-2 flex items-center justify-between gap-2 text-xs">
-                          <span className="truncate">第 {runNumber} 次</span>
+                          <span className="truncate">
+                            {t("Run {run}", { run: runNumber })}
+                          </span>
                           <span className="shrink-0 text-[var(--ad-text-muted)]">
                             {isCurrent
-                              ? "当前使用"
+                              ? t("In use")
                               : item.review?.decision === "approved"
-                                ? "已采用"
-                                : "候选"}
+                                ? t("Adopted")
+                                : t("Candidate")}
                           </span>
                         </span>
                       </button>
@@ -1449,7 +1564,7 @@ export function VisualIdentityExperimentWorkbench({
             {historyRunsWithoutImages.length > 0 ? (
               <div
                 className="mt-6 flex flex-wrap gap-2"
-                aria-label="未产出图片的历史创作"
+                aria-label={t("Runs with no images")}
               >
                 {historyRunsWithoutImages.map(
                   ({ run, runDetail, runNumber }) => (
@@ -1463,7 +1578,7 @@ export function VisualIdentityExperimentWorkbench({
                       }}
                       type="button"
                     >
-                      第 {runNumber} 次：未产出图片
+                      {t("Run {run}: no images produced", { run: runNumber })}
                     </button>
                   ),
                 )}
