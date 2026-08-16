@@ -12,6 +12,7 @@ import {
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import {
@@ -45,12 +46,12 @@ const emptyAuthority = (): AuthorityState => ({
 
 export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
   const { t } = useAdminI18n();
+  const { toast } = useToast();
   const [query, setQuery] = useState<PromoQuery>(() => currentQuery());
   const [draft, setDraft] = useState<PromoQuery>(() => currentQuery());
   const [codes, setCodes] = useState<AuthorityState>(emptyAuthority);
   const [referrals, setReferrals] = useState<AuthorityState>(emptyAuthority);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const gates = useRef({
     codes: createLatestRequestGate(),
     referrals: createLatestRequestGate(),
@@ -138,6 +139,11 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
     setConfirmation({
       title: `Disable ${id}`,
       destructive: { expectedName: id, inputLabel: "Confirmation" },
+      // INTENT: 后台只有 disable，没有 re-enable —— 停掉的码只能再发一个新的。
+      consequence: {
+        effect: t("Every future redemption of this code fails. There is no re-enable command; a replacement has to be issued as a new code."),
+        reversible: false,
+      },
       reasonLabel: "Reason",
       submitLabel: "Disable",
       onSubmit: async (reason) => {
@@ -147,7 +153,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
           { reason, confirmation: id },
           { "idempotency-key": idempotencyKey },
         );
-        setNotice(`Disable ${id} completed.`);
+        toast({ tone: "success", title: t("Redeem code {id} disabled", { id }) });
         navigate({ ...query, codeCursor: "" }, "replace");
       },
     });
@@ -225,16 +231,6 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
           onCreated={() => navigate({ ...query, codeCursor: "" }, "replace")}
         />
       ) : null}
-      {notice ? (
-        <p
-          aria-live="polite"
-          className="rounded-md bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]"
-          data-testid="admin-action-status"
-          role="status"
-        >
-          {notice}
-        </p>
-      ) : null}
       <AuthorityError
         label="redeem codes"
         onRetry={() => void loadScope(query, "codes")}
@@ -298,13 +294,14 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
 
 function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
   const { t } = useAdminI18n();
+  const { toast } = useToast();
+  const failureToast = useFailureToast();
   const [code, setCode] = useState("");
   const [dreamcoins, setDreamcoins] = useState("");
   const [maxRedemptions, setMaxRedemptions] = useState("");
   const [reason, setReason] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const idempotencyKey = useRef<string | null>(null);
   const trimmedCode = code.trim();
   const dreamcoinValue = strictIntegerFromText(dreamcoins, 1, 1_000_000);
@@ -321,7 +318,6 @@ function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
   async function create() {
     if (!ready || busy) return;
     setBusy(true);
-    setError(null);
     idempotencyKey.current ??= crypto.randomUUID();
     try {
       await apiWrite(
@@ -342,9 +338,11 @@ function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
       setReason("");
       setConfirmation("");
       idempotencyKey.current = null;
+      toast({ tone: "success", title: t("Redeem code {code} created", { code: trimmedCode }) });
       onCreated();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Create failed");
+      // INTENT: 失败时不清表单——码、面额、原因、确认串全留着，重试只差再点一次。
+      failureToast(cause);
     } finally {
       setBusy(false);
     }
@@ -386,11 +384,6 @@ function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
           {t("Create")}
         </button>
       </div>
-      {error ? (
-        <p className="mt-2 text-xs text-[var(--ad-red-text)]" role="alert">
-          {error}
-        </p>
-      ) : null}
       {dreamcoins.length > 0 && dreamcoinValue === null ? (
         <p className="mt-2 text-xs text-[var(--ad-red-text)]" role="alert">
 

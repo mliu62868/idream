@@ -1,16 +1,24 @@
 "use client";
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Loader2 } from "lucide-react";
+import { AlertTriangle, Loader2 } from "lucide-react";
 import { useAdminI18n } from "@/components/admin/i18n";
-import { GhostButton, PrimaryButton } from "./buttons";
+import { DangerButton, GhostButton, PrimaryButton } from "./buttons";
 import { INPUT_CLASS } from "./FormPage";
+import { RequestErrorDetails } from "./RequestErrorDetails";
+import { operatorErrorCopy, type OperatorErrorCopy } from "./request-error-copy";
 
 export type ConfirmSpec = {
   title: string;
   summary?: ReactNode;
   /** 破坏性操作：要求输入实体名称（不再敲内部 ID —— spec §7）。 */
   destructive?: { expectedName: string; inputLabel?: string };
+  /** SPEC: 这个动作会造成什么、能不能撤回。给了就在标题下方常驻一条红色横幅。
+   * INTENT: 退款、封禁、下架、永久删除点下去就没有回头路，而弹窗标题只写得下动词。
+   *         运营需要在敲确认串之前就读到后果，而不是事后从审计日志里发现。
+   * 约定: reversible: false 一定同时给 destructive —— 不可撤销的动作必须敲确认串，
+   *       不能只靠点一下。这条靠评审保证，类型系统表达不了跨字段依赖。 */
+  consequence?: { effect: string; reversible: boolean };
   /** 后端写操作是否收 reason（默认 true）。false 时不显示 reason 输入、不拿它门槛提交，
    * onSubmit 收到 ""——后端契约无 reason 字段的操作不该让运营填一个会被丢弃的原因（T14 评审规则）。 */
   requireReason?: boolean;
@@ -26,7 +34,7 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
   const [reason, setReason] = useState("");
   const [nameInput, setNameInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<OperatorErrorCopy | null>(null);
   const titleId = useId();
   const descriptionId = useId();
   const dialogRef = useRef<HTMLDivElement | null>(null);
@@ -93,7 +101,8 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
       await spec.onSubmit(requireReason ? reason.trim() : "");
       onClose();
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : t("Request failed"));
+      // INTENT: 就地显示、不关框——运营已经敲好的 reason 和确认串必须保住，重试只差再点一次。
+      setError(operatorErrorCopy(submitError));
     } finally {
       setBusy(false);
     }
@@ -114,6 +123,19 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
         {spec.summary ? (
           <div className="mt-2 text-sm text-[var(--ad-text-muted)]" id={descriptionId}>{spec.summary}</div>
         ) : null}
+        {spec.consequence ? (
+          <div
+            className={`mt-3 flex items-start gap-2 rounded-md p-3 text-sm ${spec.consequence.reversible ? "bg-black/[0.04] text-[var(--ad-text)]" : "bg-[var(--ad-red-bg)] text-[var(--ad-red-text)]"}`}
+          >
+            <AlertTriangle aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>
+              <span className="block font-semibold">
+                {spec.consequence.reversible ? t("This can be undone later.") : t("This cannot be undone.")}
+              </span>
+              <span className="mt-1 block">{spec.consequence.effect}</span>
+            </span>
+          </div>
+        ) : null}
         <div className="mt-4 space-y-3">
           {requireReason ? (
             <input
@@ -133,19 +155,46 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
               value={nameInput}
             />
           ) : null}
-          {error ? <p className="text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}
+          {error ? (
+            <div className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">
+              <span className="block font-semibold">{t(error.headline)}</span>
+              <span className="mt-1 block">{t(error.nextStep)}</span>
+              <RequestErrorDetails technical={error.technical} />
+            </div>
+          ) : null}
         </div>
         <div className="mt-5 flex justify-end gap-2">
           <GhostButton disabled={busy} onClick={onClose}>
             {t("Cancel")}
           </GhostButton>
-          <PrimaryButton disabled={!canSubmit} onClick={() => void submit()}>
+          <SubmitButton disabled={!canSubmit} irreversible={spec.consequence?.reversible === false} onClick={() => void submit()}>
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
             {spec.submitLabel}
-          </PrimaryButton>
+          </SubmitButton>
         </div>
       </div>
     </div>,
     document.body,
+  );
+}
+
+// INTENT: 不可撤销的动作用红按钮收尾——运营在敲完确认串、手已经移到按钮上的那一刻，
+//         最后一次看到「这一下没有回头路」。
+function SubmitButton({
+  children,
+  disabled,
+  irreversible,
+  onClick,
+}: {
+  children: ReactNode;
+  disabled: boolean;
+  irreversible: boolean;
+  onClick: () => void;
+}) {
+  const Button = irreversible ? DangerButton : PrimaryButton;
+  return (
+    <Button disabled={disabled} onClick={onClick}>
+      {children}
+    </Button>
   );
 }

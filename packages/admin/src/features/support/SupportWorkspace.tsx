@@ -31,6 +31,7 @@ import {
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import {
@@ -68,6 +69,8 @@ export function SupportWorkspace({
   canWrite: boolean;
 }) {
   const { t } = useAdminI18n();
+  const { toast } = useToast();
+  const failureToast = useFailureToast();
   // INVARIANT: the server render and first client render use the same state.
   // URL-owned filters are restored only after hydration.
   const [query, setQuery] = useState<SupportQuery>(defaultSupportQuery);
@@ -81,7 +84,7 @@ export function SupportWorkspace({
   const [savedViewLabel, setSavedViewLabel] = useState("");
   const [savedViewError, setSavedViewError] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [savingView, setSavingView] = useState(false);
   const gate = useRef(createLatestRequestGate());
   const savedViewCreateKey = useRef<string | null>(null);
 
@@ -182,8 +185,9 @@ export function SupportWorkspace({
   async function saveCurrentView(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const label = savedViewLabel.trim();
-    if (!label) return;
+    if (!label || savingView) return;
     setSavedViewError(null);
+    setSavingView(true);
     try {
       savedViewCreateKey.current ??= crypto.randomUUID();
       await adminV2Request("/api/v2/admin/saved-views", {
@@ -194,27 +198,40 @@ export function SupportWorkspace({
       });
       savedViewCreateKey.current = null;
       setSavedViewLabel("");
+      toast({ tone: "success", title: t("Saved view {label} created", { label }) });
       await loadSavedViews();
     } catch (cause) {
-      setSavedViewError(cause instanceof Error ? cause.message : "Save failed");
+      // INTENT: 失败时不清 savedViewLabel —— 运营刚敲的名字得留着，重试只差再点一次。
+      failureToast(cause);
+    } finally {
+      setSavingView(false);
     }
   }
 
-  async function deleteSavedView(view: SavedView) {
-    setSavedViewError(null);
-    try {
-      await adminV2Request(`/api/v2/admin/saved-views/${encodeURIComponent(view.id)}`, {
-        method: "DELETE",
-        // SPEC: 删除按版本号删 —— 服务端 If-Match 不匹配就 409。
-        ifMatch: view.version,
-        schema: savedViewDeleteSchema,
-      });
-      setSavedViews((items) => items.filter((item) => item.id !== view.id));
-    } catch (cause) {
-      setSavedViewError(
-        cause instanceof Error ? cause.message : "Delete failed",
-      );
-    }
+  // SPEC: 删除保存视图走确认框并要求敲出视图名。
+  // INTENT: 它以前是一个点了就删的垃圾桶图标，误点无法恢复——后台没有回收站。
+  function confirmDeleteSavedView(view: SavedView) {
+    setConfirmation({
+      title: t("Delete saved view {label}", { label: view.label }),
+      destructive: { expectedName: view.label, inputLabel: t("Saved view name") },
+      consequence: {
+        effect: t("The saved view is gone for everyone who uses it. There is no recycle bin."),
+        reversible: false,
+      },
+      // 后端 DELETE 契约没有 reason 字段。
+      requireReason: false,
+      submitLabel: t("Delete saved view"),
+      onSubmit: async () => {
+        await adminV2Request(`/api/v2/admin/saved-views/${encodeURIComponent(view.id)}`, {
+          method: "DELETE",
+          // SPEC: 删除按版本号删 —— 服务端 If-Match 不匹配就 409。
+          ifMatch: view.version,
+          schema: savedViewDeleteSchema,
+        });
+        setSavedViews((items) => items.filter((item) => item.id !== view.id));
+        toast({ tone: "success", title: t("Saved view {label} deleted", { label: view.label }) });
+      },
+    });
   }
 
   function applySavedView(view: SavedView) {
@@ -234,6 +251,14 @@ export function SupportWorkspace({
     setConfirmation({
       title: `${input.label} ${input.id}`,
       destructive: { expectedName: input.id, inputLabel: "Confirmation" },
+      // INTENT: 支持工单的状态可以再改回去，唯独升级会通知到值班——所以分开说。
+      consequence: {
+        effect:
+          input.label === "Escalate"
+            ? t("The on-call rotation is paged and the escalation timestamp is recorded for good.")
+            : t("The ticket moves to this status and its SLA clock is recalculated. Another status command moves it back."),
+        reversible: input.label !== "Escalate",
+      },
       reasonLabel: "Reason",
       submitLabel: "Confirm",
       onSubmit: async (reason) => {
@@ -248,7 +273,7 @@ export function SupportWorkspace({
           },
           { "idempotency-key": idempotencyKey },
         );
-        setNotice(`${input.label} ${input.id} completed.`);
+        toast({ tone: "success", title: t("{action} applied to {id}", { action: input.label, id: input.id }) });
         navigate({ ...query, cursor: "" }, "replace");
       },
     });
@@ -347,10 +372,10 @@ export function SupportWorkspace({
               />
               <button
                 className="inline-flex min-h-10 items-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white"
-                disabled={!savedViewLabel.trim()}
+                disabled={savingView || !savedViewLabel.trim()}
                 type="submit"
               >
-                <Bookmark className="h-4 w-4" />
+                {savingView ? <Loader2 className="h-4 w-4 animate-spin" /> : <Bookmark className="h-4 w-4" />}
 
                 {t("Save view")}
               </button>
@@ -373,7 +398,7 @@ export function SupportWorkspace({
               <button
                 aria-label={t("Delete saved view {label}", { label: view.label })}
                 className="grid h-8 w-8 place-items-center border-l"
-                onClick={() => void deleteSavedView(view)}
+                onClick={() => confirmDeleteSavedView(view)}
                 type="button"
               >
                 <Trash2 className="h-3.5 w-3.5" />
@@ -410,16 +435,6 @@ export function SupportWorkspace({
         ) : null}
       </section>
       {canViewPlaintext ? <PlaintextAccessPanel /> : null}
-      {notice ? (
-        <p
-          aria-live="polite"
-          className="rounded-md bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]"
-          data-testid="admin-action-status"
-          role="status"
-        >
-          {notice}
-        </p>
-      ) : null}
       {error ? (
         <div
           className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
@@ -507,6 +522,8 @@ export function SupportWorkspace({
 
 function PlaintextAccessPanel() {
   const { t } = useAdminI18n();
+  const { toast } = useToast();
+  const failureToast = useFailureToast();
   const [targetType, setTargetType] =
     useState<PlaintextTargetType>("generation_job");
   const [targetId, setTargetId] = useState("");
@@ -515,10 +532,6 @@ function PlaintextAccessPanel() {
   const [reason, setReason] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [result, setResult] = useState<PlaintextResult | null>(null);
-  const [status, setStatus] = useState<{
-    good: boolean;
-    message: string;
-  } | null>(null);
   const [loading, setLoading] = useState(false);
   const ready =
     targetId.trim() &&
@@ -530,7 +543,6 @@ function PlaintextAccessPanel() {
     event.preventDefault();
     if (!ready || loading) return;
     setLoading(true);
-    setStatus(null);
     setResult(null);
     try {
       const response = await apiWrite<PlaintextResult>(
@@ -547,13 +559,10 @@ function PlaintextAccessPanel() {
         { "idempotency-key": crypto.randomUUID() },
       );
       setResult(response);
-      setStatus({ good: true, message: "Plaintext access logged." });
+      toast({ tone: "success", title: t("Plaintext access logged.") });
     } catch (cause) {
-      setStatus({
-        good: false,
-        message:
-          cause instanceof Error ? cause.message : "Plaintext access failed.",
-      });
+      // INTENT: 失败时保留 targetId / reason / confirmation —— 重敲一遍确认串很费事。
+      failureToast(cause);
     } finally {
       setLoading(false);
     }
@@ -618,20 +627,6 @@ function PlaintextAccessPanel() {
 
           {t("View plaintext")}
         </button>
-        {status ? (
-          <span
-            aria-live="polite"
-            className={
-              status.good
-                ? "ml-3 text-xs text-[var(--ad-green-text)]"
-                : "ml-3 text-xs text-[var(--ad-red-text)]"
-            }
-            data-testid="admin-plaintext-status"
-            role="status"
-          >
-            {status.message}
-          </span>
-        ) : null}
       </form>
       {result ? (
         <div

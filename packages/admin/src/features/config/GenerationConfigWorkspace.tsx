@@ -8,6 +8,7 @@ import { apiGet, apiWrite } from "@/components/admin/api";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import {
@@ -28,9 +29,21 @@ type Permissions = { manageProfiles: boolean; manageFlags: boolean };
 type ReviewDraft = { sampleCount: string; passCount: string; reviewUrl: string };
 const emptyPageInfo: PageInfo = { endCursor: null, hasNextPage: false };
 const emptyAuthorityState = <T,>(): AuthorityState<T> => ({ data: null, error: null, loading: true, refreshedAt: null });
+type ConfigCommand = {
+  title: string;
+  /** 成功后 toast 的正文，调用处已经翻译好。 */
+  completed: string;
+  endpoint: string;
+  method: "POST" | "PATCH";
+  expected: string;
+  consequence: { effect: string; reversible: boolean };
+  payload: (reason: string) => Record<string, unknown>;
+};
 
 export function GenerationConfigWorkspace({ permissions }: { permissions: Permissions }) {
   const { t } = useAdminI18n();
+  const { toast } = useToast();
+  const failureToast = useFailureToast();
   const [query, setQuery] = useState<GenerationConfigQuery>(() => currentQuery());
   const [draft, setDraft] = useState<GenerationConfigQuery>(() => currentQuery());
   const [profiles, setProfiles] = useState<AuthorityState<ListResponse>>(emptyAuthorityState);
@@ -40,7 +53,6 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
   const [testPrompt, setTestPrompt] = useState("cinematic portrait, natural skin texture, soft studio lighting");
   const [review, setReview] = useState<ReviewDraft>({ sampleCount: "", passCount: "", reviewUrl: "" });
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const [testBusy, setTestBusy] = useState(false);
   const requestGates = useRef({ profiles: createLatestRequestGate(), flags: createLatestRequestGate(), jobs: createLatestRequestGate() });
   const initialQuery = useRef(query);
@@ -122,16 +134,17 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
   const selectedProfile = useMemo(() => profileRows.find((row) => text(row.id) === selectedProfileId) ?? profileRows[0] ?? null, [profileRows, selectedProfileId]);
   const selectedId = text(selectedProfile?.id);
 
-  function confirmWrite(input: { title: string; endpoint: string; method: "POST" | "PATCH"; expected: string; payload: (reason: string) => Record<string, unknown>; completed?: string }) {
+  function confirmWrite(input: ConfigCommand) {
     const idempotencyKey = crypto.randomUUID();
     setConfirmation({
       title: input.title,
       destructive: { expectedName: input.expected, inputLabel: "Confirmation" },
+      consequence: input.consequence,
       reasonLabel: "Reason",
       submitLabel: "Confirm",
       onSubmit: async (reason) => {
         await apiWrite(input.endpoint, input.method, { ...input.payload(reason), confirmation: input.expected }, { "idempotency-key": idempotencyKey });
-        setNotice(`${input.completed ?? input.title} completed.`);
+        toast({ tone: "success", title: input.completed });
         load(query);
       },
     });
@@ -140,7 +153,6 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
   async function createTestImage() {
     if (!permissions.manageProfiles || !selectedId) return;
     setTestBusy(true);
-    setNotice(null);
     try {
       const response = await apiWrite<{ job: RecordRow }>(`/api/v2/admin/generation/model-profiles/${selectedId}/commands/test-job`, "POST", {
         prompt: testPrompt.trim() || undefined,
@@ -149,10 +161,12 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
         reason: "Admin image test from Generation Config",
         confirmation: selectedId,
       }, { "idempotency-key": crypto.randomUUID() });
-      setNotice(`Test image queued${text(response.job.id) ? `: ${text(response.job.id)}` : ""}`);
+      // INTENT: 排队成功是 info 不是 success —— 图还没出来，运营要等下面的 recent jobs。
+      toast({ tone: "info", title: t("Test image queued as {id}", { id: text(response.job.id) || t("an unnamed job") }) });
       await loadJobs();
     } catch (cause) {
-      setNotice(errorMessage(cause, "Test image failed"));
+      // 这里以前把失败塞进绿色的成功横幅里。
+      failureToast(cause);
     } finally {
       setTestBusy(false);
     }
@@ -182,7 +196,6 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
         <div className="flex items-end gap-2"><button className="min-h-11 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white" type="submit">{t("Apply")}</button>{filtered ? <button aria-label={t("Clear generation config filters")} className="grid min-h-11 min-w-11 place-items-center rounded-md border border-[var(--ad-border)]" onClick={() => navigate({ ...defaultGenerationConfigQuery, tab: query.tab })} type="button"><X className="h-4 w-4" /></button> : null}</div>
       </form>
 
-      {notice ? <p className="rounded-md bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]" data-testid="admin-action-status" role="status">{notice}</p> : null}
       <AuthorityError label="profiles" onRetry={() => void loadProfiles(query)} state={profiles} />
       <AuthorityError label="feature flags" onRetry={() => void loadFlags(query)} state={flags} />
       <AuthorityError label="recent jobs" onRetry={() => void loadJobs()} state={recentJobs} />
@@ -215,7 +228,7 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
 function ProfileDetail({ canWrite, jobs, onConfirm, onTest, profile, review, setReview, setTestPrompt, testBusy, testPrompt }: {
   canWrite: boolean;
   jobs: RecordRow[];
-  onConfirm: (input: { title: string; endpoint: string; method: "POST" | "PATCH"; expected: string; payload: (reason: string) => Record<string, unknown>; completed?: string }) => void;
+  onConfirm: (input: ConfigCommand) => void;
   onTest: () => void;
   profile: RecordRow;
   review: ReviewDraft;
@@ -235,11 +248,11 @@ function ProfileDetail({ canWrite, jobs, onConfirm, onTest, profile, review, set
   return <section className="space-y-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
     <div><h2 className="text-lg font-semibold">{text(profile.label) || text(profile.profileKey) || id}</h2><p className="mt-1 text-sm text-[var(--ad-text-muted)]">{display(status)} · v{display(profile.version)} · {display(profile.runner)} · {display(profile.pipelineModel)}</p></div>
     {canWrite ? <div className="flex flex-wrap gap-2">
-      {status === "draft" ? <Action icon={<Activity className="h-4 w-4" />} label="Configuration check" onClick={() => onConfirm({ title: `Check profile configuration ${id}`, endpoint: `/api/v2/admin/generation/model-profiles/${id}/commands/dry-run`, method: "POST", expected: id, payload: (reason) => ({ reason }) })} /> : null}
+      {status === "draft" ? <Action icon={<Activity className="h-4 w-4" />} label="Configuration check" onClick={() => onConfirm({ title: `Check profile configuration ${id}`, completed: t("Configuration check finished for {id}", { id }), endpoint: `/api/v2/admin/generation/model-profiles/${id}/commands/dry-run`, method: "POST", expected: id, consequence: { effect: t("The profile is validated against the runtime. Nothing customer-facing changes."), reversible: true }, payload: (reason) => ({ reason }) })} /> : null}
       {mode === "image" && status !== "archived" ? <Action disabled={testBusy} icon={testBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />} label="Generate test image" onClick={onTest} /> : null}
-      {status === "draft" ? <Action disabled={!reviewReady} icon={<UploadCloud className="h-4 w-4" />} label="Publish" onClick={() => onConfirm({ title: `Publish profile ${id}`, endpoint: `/api/v2/admin/generation/model-profiles/${id}/commands/publish`, method: "POST", expected: id, payload: (reason) => ({ reason, ...(mode === "image" ? { dryRunSummary: { reviewSource: "admin_console_manual_consistency_review", reviewStatus: "manual_passed", consistencySampleCount: sampleCount, consistencyPassCount: passCount, consistencyRate: sampleCount && passCount !== null ? passCount / sampleCount : 0, reviewUrl: review.reviewUrl.trim() || undefined } } : {}) }) })} /> : null}
-      {status === "active" ? <Action icon={<RotateCcw className="h-4 w-4" />} label="Rollback" onClick={() => onConfirm({ title: `Rollback profile ${id}`, endpoint: `/api/v2/admin/generation/model-profiles/${id}/commands/rollback`, method: "POST", expected: id, payload: (reason) => ({ reason }) })} /> : null}
-      {status === "active" && Boolean(profile.enabled) ? <Action icon={<X className="h-4 w-4" />} label="Disable" onClick={() => onConfirm({ title: `Disable profile ${id}`, endpoint: `/api/v2/admin/generation/model-profiles/${id}`, method: "PATCH", expected: id, payload: (reason) => ({ reason, enabled: false }) })} /> : null}
+      {status === "draft" ? <Action disabled={!reviewReady} icon={<UploadCloud className="h-4 w-4" />} label="Publish" onClick={() => onConfirm({ title: `Publish profile ${id}`, completed: t("Profile {id} published", { id }), endpoint: `/api/v2/admin/generation/model-profiles/${id}/commands/publish`, method: "POST", expected: id, consequence: { effect: t("Every new customer generation runs on this profile from now on, and the previous active version is archived. A rollback restores it; images already produced are not regenerated."), reversible: true }, payload: (reason) => ({ reason, ...(mode === "image" ? { dryRunSummary: { reviewSource: "admin_console_manual_consistency_review", reviewStatus: "manual_passed", consistencySampleCount: sampleCount, consistencyPassCount: passCount, consistencyRate: sampleCount && passCount !== null ? passCount / sampleCount : 0, reviewUrl: review.reviewUrl.trim() || undefined } } : {}) }) })} /> : null}
+      {status === "active" ? <Action icon={<RotateCcw className="h-4 w-4" />} label="Rollback" onClick={() => onConfirm({ title: `Rollback profile ${id}`, completed: t("Profile {id} rolled back", { id }), endpoint: `/api/v2/admin/generation/model-profiles/${id}/commands/rollback`, method: "POST", expected: id, consequence: { effect: t("Customer generations go back to the previously active profile version from now on."), reversible: true }, payload: (reason) => ({ reason }) })} /> : null}
+      {status === "active" && Boolean(profile.enabled) ? <Action icon={<X className="h-4 w-4" />} label="Disable" onClick={() => onConfirm({ title: `Disable profile ${id}`, completed: t("Profile {id} disabled", { id }), endpoint: `/api/v2/admin/generation/model-profiles/${id}`, method: "PATCH", expected: id, consequence: { effect: t("Generations stop routing to this profile immediately. Re-enabling it is a second edit on this same profile."), reversible: true }, payload: (reason) => ({ reason, enabled: false }) })} /> : null}
     </div> : null}
     {mode === "image" && status !== "archived" ? <div className="grid gap-3 rounded-md border border-[var(--ad-border)] p-3 md:grid-cols-2"><Field label="Test image prompt" onChange={setTestPrompt} value={testPrompt} /><p className="self-end text-xs text-[var(--ad-text-muted)]">{relatedJobs.length}  {t("recent profile test job")}{relatedJobs.length === 1 ? "" : "s"}</p></div> : null}
     {mode === "image" && status === "draft" ? <div className="grid gap-3 rounded-md border border-[var(--ad-border)] p-3 md:grid-cols-3"><Field label="Consistency samples (≥20)" onChange={(sampleCount) => setReview({ ...review, sampleCount })} value={review.sampleCount} /><Field label="Consistency passes (≥80%)" onChange={(passCount) => setReview({ ...review, passCount })} value={review.passCount} /><Field label="Review evidence URL" onChange={(reviewUrl) => setReview({ ...review, reviewUrl })} value={review.reviewUrl} /></div> : null}
@@ -247,13 +260,13 @@ function ProfileDetail({ canWrite, jobs, onConfirm, onTest, profile, review, set
   </section>;
 }
 
-function FlagsTable({ canWrite, confirmWrite, rows }: { canWrite: boolean; confirmWrite: (input: { title: string; endpoint: string; method: "POST" | "PATCH"; expected: string; payload: (reason: string) => Record<string, unknown>; completed?: string }) => void; rows: RecordRow[] }) {
+function FlagsTable({ canWrite, confirmWrite, rows }: { canWrite: boolean; confirmWrite: (input: ConfigCommand) => void; rows: RecordRow[] }) {
   const { t } = useAdminI18n();
   return <div aria-label={t("Feature Flags scrollable table")} className="overflow-x-auto rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]" role="region" tabIndex={0}><table className="w-full min-w-[760px] text-left text-sm"><caption className="sr-only">{t("Feature Flags")}</caption><thead><tr className="border-b border-[var(--ad-border)] text-xs uppercase text-[var(--ad-text-muted)]">{["Key", "Enabled", "Rollout", "Version", "Hard policy", "Actions"].map((header) => <th className="px-4 py-3 font-medium" key={header} scope="col">{header}</th>)}</tr></thead><tbody>{rows.map((row) => {
     const key = text(row.key);
     const enabled = Boolean(row.enabled);
     const expected = `${key}:${enabled ? "disabled" : "enabled"}`;
-    return <tr className="border-b border-[var(--ad-border)] last:border-0" key={key}><td className="px-4 py-3 font-mono text-xs">{key}</td><td className="px-4 py-3">{String(enabled)}</td><td className="px-4 py-3">{display(row.rolloutPercent)}</td><td className="px-4 py-3">{display(row.version)}</td><td className="px-4 py-3">{display(row.hardPolicy)}</td><td className="px-4 py-3">{canWrite ? <Action icon={<Flag className="h-4 w-4" />} label={enabled ? "Disable" : "Enable"} onClick={() => confirmWrite({ title: `${enabled ? "Disable" : "Enable"} ${key}`, endpoint: `/api/v2/admin/feature-flags/${key}`, method: "PATCH", expected, payload: (reason) => ({ enabled: !enabled, reason }) })} /> : t("Read only")}</td></tr>;
+    return <tr className="border-b border-[var(--ad-border)] last:border-0" key={key}><td className="px-4 py-3 font-mono text-xs">{key}</td><td className="px-4 py-3">{String(enabled)}</td><td className="px-4 py-3">{display(row.rolloutPercent)}</td><td className="px-4 py-3">{display(row.version)}</td><td className="px-4 py-3">{display(row.hardPolicy)}</td><td className="px-4 py-3">{canWrite ? <Action icon={<Flag className="h-4 w-4" />} label={enabled ? "Disable" : "Enable"} onClick={() => confirmWrite({ title: `${enabled ? "Disable" : "Enable"} ${key}`, completed: enabled ? t("Feature flag {key} disabled", { key }) : t("Feature flag {key} enabled", { key }), endpoint: `/api/v2/admin/feature-flags/${key}`, method: "PATCH", expected, consequence: { effect: t("The flag flips for live traffic on the next request. Flipping it back is one more click on this same row."), reversible: true }, payload: (reason) => ({ enabled: !enabled, reason }) })} /> : t("Read only")}</td></tr>;
   })}</tbody></table></div>;
 }
 

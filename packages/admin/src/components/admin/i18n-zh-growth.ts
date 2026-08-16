@@ -61,6 +61,7 @@ export const adminZhGrowth: Record<string, string> = {
   "Current configured IDs": "当前已配置 ID",
   "Current version": "当前版本",
   "Currently featured": "当前推荐",
+  "Customers are charged this price from the next generation onwards and the previous active version is archived. A rollback restores it, but orders placed in between keep the new price.": "从下一次生成起客户按这个价格计费，上一个启用版本会被归档。回滚能把它请回来，但这期间已经下单的按新价结算。",
   "D1 / D7 retention · invalid for decisions": "D1 / D7 留存 · 不可用于决策",
   "Deactivate": "停用",
   "Delete announcement": "删除公告",
@@ -70,6 +71,7 @@ export const adminZhGrowth: Record<string, string> = {
   "Dreamcoins must be a whole number from 1 to 1,000,000.": "Dreamcoins 必须是 1 至 1,000,000 之间的整数。",
   "Edit CMS draft": "编辑 CMS 草稿",
   "Edit draft": "编辑草稿",
+  "Every future redemption of this code fails. There is no re-enable command; a replacement has to be issued as a new code.": "之后所有人兑换这个码都会失败。后台没有重新启用的命令；要补偿只能再发一个新码。",
   "Experiment definitions": "实验定义",
   "Experiment key": "实验键",
   "Feature flags remain rollout monitoring and never inherit managed experiment lift.":
@@ -114,8 +116,11 @@ export const adminZhGrowth: Record<string, string> = {
     "明文兑换码只用于派生哈希，权威接口不会返回明文。",
   "Pricing & Offers": "定价与优惠",
   "Pricing Rules": "定价规则",
+  "Pricing draft {key} created": "价格草稿 {key} 已创建",
   "Pricing estimate unavailable:": "定价估算不可用：",
   "Pricing rule versions": "定价规则版本",
+  "Pricing rule {name} published": "价格规则 {name} 已发布",
+  "Pricing rule {name} rolled back": "价格规则 {name} 已回滚",
   "Profile health + configuration check": "模型健康度 + 配置检查",
   "Publication readiness": "发布就绪度",
   "Quality & lift": "质量与提升",
@@ -124,6 +129,8 @@ export const adminZhGrowth: Record<string, string> = {
   "Read only · content.takedown.write is not granted": "只读 · 尚未授予 content.takedown.write",
   "Read only · growth.promo.write is not granted": "只读 · 尚未授予 growth.promo.write",
   "Redeem code confirmation": "兑换码确认文本",
+  "Redeem code {code} created": "兑换码 {code} 已创建",
+  "Redeem code {id} disabled": "兑换码 {id} 已停用",
   "Redeem codes": "兑换码",
   "Referral status": "推荐状态",
   "Referrals": "邀请",
@@ -146,6 +153,7 @@ export const adminZhGrowth: Record<string, string> = {
   "The complete server authority query returned no records.": "完整的服务端权威查询未返回记录。",
   "The configuration check validates deterministic profile and runtime fields only; it does not call a provider or generate media.":
     "配置检查仅验证确定性的模型配置与运行时字段；不会调用生成供应商，也不会生成媒体。",
+  "The previously active version becomes the customer-facing price again from the next generation onwards.": "从下一次生成起，上一个启用版本重新成为面向客户的价格。",
   "These characters were not found or cannot be configured, so they were not saved.":
     "这些角色不存在或不可配置，因此未保存。",
   "This order is the saved configuration. A character is live featured only while the public audience authority also passes, including its primary image, Character Release, qualification, and Serving state.":

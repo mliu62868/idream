@@ -27,6 +27,10 @@ export class AdminV2RequestError extends Error {
     readonly status: number,
     readonly code?: string,
     readonly details?: unknown,
+    /** SPEC: 本次请求发出去的 `x-request-id`。
+     * INTENT: 运营把失败转给工程时，唯一能让工程在日志里定位到这一次调用的东西就是它；
+     * 不带上，「技术详情」就只剩一句人人都会说的英文报错。 */
+    readonly requestId?: string,
   ) {
     super(message);
     this.name = "AdminV2RequestError";
@@ -53,6 +57,7 @@ export async function adminV2Request<T>(
 ): Promise<T> {
   const headers = new Headers(options.headers);
   if (!headers.has("x-request-id")) headers.set("x-request-id", crypto.randomUUID());
+  const requestId = headers.get("x-request-id") ?? undefined;
   if (options.body !== undefined) headers.set("content-type", "application/json");
   if (options.idempotencyKey) headers.set("idempotency-key", options.idempotencyKey);
   if (options.ifMatch !== undefined) headers.set("if-match", `"${options.ifMatch}"`);
@@ -76,6 +81,7 @@ export async function adminV2Request<T>(
       response.status,
       payload.error.code,
       payload.error.details,
+      requestId,
     );
   }
   return options.schema ? options.schema.parse(payload.data) : payload.data;

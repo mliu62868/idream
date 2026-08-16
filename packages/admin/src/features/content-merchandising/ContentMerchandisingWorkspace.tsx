@@ -24,6 +24,7 @@ import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestErr
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import {
   authorityRequestFailed,
@@ -102,6 +103,8 @@ export function ContentMerchandisingWorkspace({
   canWrite: boolean;
 }) {
   const { t } = useAdminI18n();
+  const { toast } = useToast();
+  const failureToast = useFailureToast();
   const [query, setQuery] = useState<ContentQuery>(() => currentQuery());
   const [draft, setDraft] = useState<ContentQuery>(() => currentQuery());
   const [characters, setCharacters] =
@@ -111,7 +114,6 @@ export function ContentMerchandisingWorkspace({
   const [featuredInput, setFeaturedInput] = useState("");
   const [reason, setReason] = useState("");
   const [confirmation, setConfirmation] = useState("");
-  const [saveError, setSaveError] = useState<string | null>(null);
   const [saveConflict, setSaveConflict] =
     useState<FeaturedVersionConflict | null>(null);
   const [saveResult, setSaveResult] = useState<FeaturedWriteResult | null>(
@@ -217,7 +219,6 @@ export function ContentMerchandisingWorkspace({
   async function saveFeatured() {
     featuredKey.current ??= crypto.randomUUID();
     setSaving(true);
-    setSaveError(null);
     setSaveConflict(null);
     setSaveResult(null);
     try {
@@ -244,7 +245,7 @@ export function ContentMerchandisingWorkspace({
         setSaveConflict(conflict);
         await loadFeatured({ preserveInput: true });
       } else {
-        setSaveError(errorMessage(cause, "Featured content could not be saved"));
+        failureToast(cause);
       }
     } finally {
       setSaving(false);
@@ -259,6 +260,18 @@ export function ContentMerchandisingWorkspace({
         ? `${contentCommandLabel(field, value)} ${id}`
         : `Remove ${id}`,
       destructive: { expectedName: expected, inputLabel: "Type confirmation" },
+      // INTENT: 改可见性还能改回来；下架（status=removed）在这个台面上没有反向入口，
+      //         而且会把角色从 Featured 里一并踢掉——按不可撤回处理。
+      consequence:
+        field === "visibility"
+          ? {
+              effect: t("The character leaves the public catalog at once. Setting visibility back to public restores it."),
+              reversible: true,
+            }
+          : {
+              effect: t("The character is taken down from every public surface and drops out of Featured. This console has no command to put it back."),
+              reversible: false,
+            },
       submitLabel: contentCommandLabel(field, value),
       onSubmit: async (commandReason) => {
         await apiWrite(
@@ -267,6 +280,13 @@ export function ContentMerchandisingWorkspace({
           { [field]: value, reason: commandReason, confirmation: expected },
           { "idempotency-key": key },
         );
+        toast({
+          tone: "success",
+          title:
+            field === "visibility"
+              ? t("Character {id} is now {visibility}", { id, visibility: value })
+              : t("Character {id} taken down", { id }),
+        });
         await loadCharacters(query);
         await loadFeatured();
       },
@@ -497,11 +517,6 @@ export function ContentMerchandisingWorkspace({
             {t("Save featured")}
           </button>
         </div>
-        {saveError ? (
-          <p className="mt-2 text-xs text-[var(--ad-red-text)]" role="alert">
-            {saveError}
-          </p>
-        ) : null}
         {saveConflict ? (
           <div
             className="mt-3 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-xs text-[var(--ad-yellow-text)]"

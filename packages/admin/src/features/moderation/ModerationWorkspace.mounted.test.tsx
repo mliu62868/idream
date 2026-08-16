@@ -18,6 +18,7 @@ const { apiGet, apiWrite } = vi.hoisted(() => ({
 
 vi.mock("@/components/admin/api", () => ({ apiGet, apiWrite }));
 
+import { ToastProvider } from "@/components/admin/ui/Toast";
 import { ModerationWorkspace } from "./ModerationWorkspace";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
@@ -92,7 +93,11 @@ describe("ModerationWorkspace media-review interaction", () => {
       apiWrite.mockResolvedValue({ id: mediaId, safetyStatus: decision });
 
       await act(async () => {
-        root.render(<ModerationWorkspace canDecide />);
+        root.render(
+          <ToastProvider>
+            <ModerationWorkspace canDecide />
+          </ToastProvider>,
+        );
       });
       await waitUntil(() => mediaPreview() !== null);
 
@@ -144,9 +149,10 @@ describe("ModerationWorkspace media-review interaction", () => {
         },
         { "idempotency-key": idempotencyKey },
       );
-      expect(container.textContent).toContain(
-        `${actionLabel} Character image ${mediaId} completed.`,
+      expect(actionToast()?.textContent).toContain(
+        `Decision recorded for ${mediaId}`,
       );
+      expect(actionToast()?.getAttribute("data-tone")).toBe("success");
       expect(mediaPreview()).toBeNull();
       expect(container.textContent).toContain(
         "No Character images await independent review",
@@ -176,7 +182,11 @@ describe("ModerationWorkspace media-review interaction", () => {
     );
 
     await act(async () => {
-      root.render(<ModerationWorkspace canDecide />);
+      root.render(
+        <ToastProvider>
+          <ModerationWorkspace canDecide />
+        </ToastProvider>,
+      );
     });
     await waitUntil(() => mediaPreview() !== null);
     await click(findButton("Block image", container));
@@ -192,10 +202,16 @@ describe("ModerationWorkspace media-review interaction", () => {
       mediaId,
     );
     await click(findButton("Confirm", dialog));
-    await waitUntil(
-      () =>
-        dialog.querySelector('[role="alert"]')?.textContent ===
-        "Media authority changed before this decision",
+    await waitUntil(() =>
+      Boolean(
+        dialog
+          .querySelector('[role="alert"]')
+          ?.textContent?.includes("This action did not complete."),
+      ),
+    );
+    // 原文一个字都不能丢——它折在「技术详情」里，工程要拿它对日志。
+    expect(dialog.querySelector('[role="alert"]')?.textContent).toContain(
+      "Media authority changed before this decision",
     );
 
     expect(apiWrite).toHaveBeenCalledWith(
@@ -211,8 +227,12 @@ describe("ModerationWorkspace media-review interaction", () => {
     expect(mediaReads).toBe(1);
     expect(mediaPreview()).not.toBeNull();
     expect(document.querySelector('[role="dialog"]')).toBe(dialog);
-    expect(container.querySelector('[data-testid="admin-action-status"]')).toBeNull();
+    expect(actionToast()).toBeNull();
   });
+
+  function actionToast() {
+    return document.body.querySelector('[data-testid="admin-action-status"]');
+  }
 
   function mediaPreview() {
     return container.querySelector<HTMLImageElement>(

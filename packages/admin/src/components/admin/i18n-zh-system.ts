@@ -4,6 +4,8 @@
 // 由 i18n-zh-exclusivity.test.ts 强制。新增文案放它所属的域文件，不要另开「杂项」文件。
 export const adminZhSystem: Record<string, string> = {
   "Access authority refresh failed:": "访问权限权威刷新失败：",
+  "Access restored for {user}": "已恢复 {user} 的访问",
+  "Access suspended for {user}": "已封禁 {user} 的访问",
   "Actor ID": "操作人 ID",
   "Approval authority refresh failed:": "审批权威刷新失败：",
   "Approval authority ·": "审批权威 ·",
@@ -12,9 +14,15 @@ export const adminZhSystem: Record<string, string> = {
   "Clear approval filters": "清除审批筛选",
   "Clear audit filters": "清除审计筛选",
   "Command context": "命令上下文",
+  "Configuration check finished for {id}": "{id} 的配置检查已完成",
+  "Customer generations go back to the previously active profile version from now on.": "从现在起客户生成回到上一个启用的配置版本。",
+  "Every new customer generation runs on this profile from now on, and the previous active version is archived. A rollback restores it; images already produced are not regenerated.": "从现在起客户的每一次新生成都走这个配置，上一个启用版本会被归档。回滚能把它请回来；已经出过的图不会重新生成。",
   "Exact action": "精确操作",
+  "Feature flag {key} disabled": "功能开关 {key} 已关闭",
+  "Feature flag {key} enabled": "功能开关 {key} 已开启",
   "Filter approvals": "筛选审批",
   "Filter users": "筛选用户",
+  "Generations stop routing to this profile immediately. Re-enabling it is a second edit on this same profile.": "生成会立即不再路由到这个配置。重新启用就是在同一个配置上再改一次。",
   "Grant, revoke, or clear one effective permission without changing the user role.":
     "在不改变用户角色的情况下，授予、撤销或清除一项有效权限。",
   "Loading team access…": "正在加载团队权限…",
@@ -26,9 +34,13 @@ export const adminZhSystem: Record<string, string> = {
   "Permission effect": "权限操作",
   "Permission key": "权限键",
   "Permission override": "权限覆盖",
+  "Permission override applied to {user}": "已为 {user} 应用权限覆盖",
   "Permission override unavailable · user.role.write is not granted":
     "权限覆盖不可用 · 尚未授予 user.role.write",
   "Permission user ID": "权限用户 ID",
+  "Profile {id} disabled": "配置 {id} 已停用",
+  "Profile {id} published": "配置 {id} 已发布",
+  "Profile {id} rolled back": "配置 {id} 已回滚",
   "Read only · admin.approval.review is not granted": "只读 · 尚未授予 admin.approval.review",
   "Reason (≥3, for audit)": "原因（≥3 字符，用于审计）",
   "Reason for audit": "审计原因",
@@ -44,9 +56,16 @@ export const adminZhSystem: Record<string, string> = {
   "Search users": "搜索用户",
   "Status change unavailable · user.status.write is not granted":
     "状态变更不可用 · 尚未授予 user.status.write",
+  "Test image queued as {id}": "测试出图已排队，任务 {id}",
+  "The account can sign in and spend again straight away.": "该账号可以立即重新登录和消费。",
+  "The account is signed out and blocked from spending straight away. Restoring it is one click from this same row.": "该账号会立即被登出并禁止消费。恢复只需在这一行再点一次。",
   "The complete approval authority query returned no work.": "完整的审批权威查询未返回待处理工作。",
+  "The flag flips for live traffic on the next request. Flipping it back is one more click on this same row.": "开关会在下一次线上请求时生效。改回去只需在这一行再点一次。",
+  "The override takes effect on the user's next request. Applying the opposite effect reverses it.": "覆盖会在该用户下一次请求时生效。再应用一次相反的效果就能改回去。",
+  "The profile is validated against the runtime. Nothing customer-facing changes.": "只是拿运行时校验一遍这个配置，不改变任何面向客户的东西。",
   "Trace consequential operator decisions to the actor, target, reason, request, and command evidence that produced them.":
     "追溯重要运营决定对应的操作人、目标、原因、请求和命令证据。",
   "action, target, reason, or request": "操作、目标、原因或请求",
+  "an unnamed job": "未命名任务",
   "operator ID": "运营人员 ID",
 };

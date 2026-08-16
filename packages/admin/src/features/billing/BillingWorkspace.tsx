@@ -21,6 +21,7 @@ import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDi
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { useToast } from "@/components/admin/ui/Toast";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { canonicalListEmptyTitle } from "@/features/compatibility-lists/empty-state";
@@ -88,6 +89,7 @@ export function BillingWorkspace({
   canRefund: boolean;
 }) {
   const { t, value: valueLabel } = useAdminI18n();
+  const { toast } = useToast();
   // INVARIANT: server and first browser render use identical state. URL-owned
   // filters are restored after hydration so bookmarked operator views stay safe.
   const [query, setQuery] = useState<BillingQuery>(defaultBillingQuery);
@@ -98,7 +100,6 @@ export function BillingWorkspace({
   const [adjustment, setAdjustment] = useState<AdjustmentDraft>(emptyAdjustment);
   const [refundReference, setRefundReference] = useState("");
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const requestGates = useRef({
     ledger: createLatestRequestGate(),
     subscriptions: createLatestRequestGate(),
@@ -228,6 +229,12 @@ export function BillingWorkspace({
       title: `Adjust ledger ${userId}`,
       summary: <span>{t("User")} {userId}  {t("· signed delta")} {delta}</span>,
       destructive: { expectedName: confirmationTarget, inputLabel: "Confirmation" },
+      // INTENT: 余额可以再发一笔反向调整改回来，所以标 reversible——但金额已经进了客户账，
+      //         「可撤回」不等于「客户看不到」，effect 里把这点说清楚。
+      consequence: {
+        effect: t("The customer's balance changes immediately. Correcting it needs a second, opposite adjustment."),
+        reversible: true,
+      },
       reasonLabel: "Reason",
       submitLabel: "Confirm",
       onSubmit: async (reason) => {
@@ -238,7 +245,7 @@ export function BillingWorkspace({
           { "idempotency-key": idempotencyKey },
         );
         setAdjustment(emptyAdjustment);
-        setNotice(`Adjust ledger ${userId} completed.`);
+        toast({ tone: "success", title: t("Ledger adjusted for {user}", { user: userId }) });
         const next = { ...query, ledgerCursor: "" };
         navigate(next, "replace");
       },
@@ -266,6 +273,10 @@ export function BillingWorkspace({
         expectedName: confirmationTarget,
         inputLabel: "Checkout refund acknowledgement",
       },
+      consequence: {
+        effect: t("The late-settlement exception closes and leaves the reconciliation queue. There is no command to reopen it."),
+        reversible: false,
+      },
       reasonLabel: "Reconciliation reason",
       submitLabel: "Acknowledge refund",
       onSubmit: async (reason) => {
@@ -281,7 +292,10 @@ export function BillingWorkspace({
           { "idempotency-key": idempotencyKey },
         );
         setRefundReference("");
-        setNotice(`Checkout ${checkoutId} refund acknowledgement recorded.`);
+        toast({
+          tone: "success",
+          title: t("Refund acknowledgement recorded for {id}", { id: checkoutId }),
+        });
         await loadReconciliation();
       },
     });
@@ -311,6 +325,10 @@ export function BillingWorkspace({
         expectedName: confirmationTarget,
         inputLabel: t("Subscription refund confirmation"),
       },
+      consequence: {
+        effect: t("Money leaves the provider account and access is frozen at once. There is no un-refund command; restoring the customer means selling the subscription again."),
+        reversible: false,
+      },
       reasonLabel: t("Refund reason"),
       submitLabel: t("Issue full refund"),
       onSubmit: async (reason) => {
@@ -322,10 +340,13 @@ export function BillingWorkspace({
             { "idempotency-key": idempotencyKey },
           ),
         );
-        setNotice(t("Subscription {id} refund is {state}.", {
-          id: subscriptionId,
-          state: result.refund.state,
-        }));
+        toast({
+          tone: "success",
+          title: t("Subscription {id} refund is {state}.", {
+            id: subscriptionId,
+            state: result.refund.state,
+          }),
+        });
         load(query);
       },
     });
@@ -351,6 +372,11 @@ export function BillingWorkspace({
         expectedName: confirmationTarget,
         inputLabel: t("Refund reconciliation confirmation"),
       },
+      // INTENT: 对账是把 provider 的当前状态投影过来，可以重复跑，所以标可撤回。
+      consequence: {
+        effect: t("Local subscription, entitlement, and Dreamcoin records are overwritten with the provider's current state. Running it again re-reads the provider."),
+        reversible: true,
+      },
       reasonLabel: t("Reconciliation reason"),
       submitLabel: t("Reconcile provider state"),
       onSubmit: async (reason) => {
@@ -362,10 +388,13 @@ export function BillingWorkspace({
             { "idempotency-key": idempotencyKey },
           ),
         );
-        setNotice(t("Subscription {id} refund is {state}.", {
-          id: subscriptionId,
-          state: result.refund.state,
-        }));
+        toast({
+          tone: "success",
+          title: t("Subscription {id} refund is {state}.", {
+            id: subscriptionId,
+            state: result.refund.state,
+          }),
+        });
         load(query);
       },
     });
@@ -536,7 +565,6 @@ export function BillingWorkspace({
         </section>
       ) : null}
 
-      {notice ? <p className="rounded-md bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]" data-testid="admin-action-status" role="status">{notice}</p> : null}
       <AuthorityError label="ledger" onRetry={() => void loadLedger(query)} state={ledgerState} />
       <AuthorityError label="subscriptions" onRetry={() => void loadSubscriptions(query)} state={subscriptionState} />
       <AuthorityError label="reconciliation" onRetry={() => void loadReconciliation()} state={reconciliationState} />

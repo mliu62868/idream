@@ -19,6 +19,7 @@ import {
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { useToast } from "@/components/admin/ui/Toast";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import {
@@ -43,12 +44,23 @@ const emptyPermission: PermissionDraft = {
   effect: "grant",
 };
 
+type AccessCommand = {
+  title: string;
+  /** 成功后 toast 的正文，调用处已经翻译好。 */
+  completed: string;
+  endpoint: string;
+  expected: string;
+  consequence: { effect: string; reversible: boolean };
+  payload: (reason: string) => Record<string, unknown>;
+};
+
 export function AccessWorkspace({
   permissions,
 }: {
   permissions: { changeStatus: boolean; managePermissions: boolean };
 }) {
   const { t } = useAdminI18n();
+  const { toast } = useToast();
   const [query, setQuery] = useState<AccessQuery>(() => currentQuery());
   const [draft, setDraft] = useState<AccessQuery>(() => currentQuery());
   const [data, setData] = useState<AccessUserListResponse | null>(null);
@@ -57,7 +69,6 @@ export function AccessWorkspace({
   const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
   const [permissionDraft, setPermissionDraft] = useState(emptyPermission);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const gate = useRef(createLatestRequestGate());
   const initialQuery = useRef(query);
 
@@ -122,16 +133,12 @@ export function AccessWorkspace({
     navigate({ ...draft, cursor: "" });
   }
 
-  function confirmCommand(input: {
-    title: string;
-    endpoint: string;
-    expected: string;
-    payload: (reason: string) => Record<string, unknown>;
-  }) {
+  function confirmCommand(input: AccessCommand) {
     const idempotencyKey = crypto.randomUUID();
     setConfirmation({
       title: input.title,
       destructive: { expectedName: input.expected, inputLabel: "Confirmation" },
+      consequence: input.consequence,
       reasonLabel: "Reason",
       submitLabel: "Confirm",
       onSubmit: async (reason) => {
@@ -141,7 +148,7 @@ export function AccessWorkspace({
           { ...input.payload(reason), confirmation: input.expected },
           { "idempotency-key": idempotencyKey },
         );
-        setNotice(`${input.title} completed.`);
+        toast({ tone: "success", title: input.completed });
         navigate({ ...query, cursor: "" }, "replace");
       },
     });
@@ -280,12 +287,18 @@ export function AccessWorkspace({
                 const userId = permissionDraft.userId.trim();
                 confirmCommand({
                   title: `${permissionDraft.effect} ${permissionDraft.permissionKey}`,
+                  completed: t("Permission override applied to {user}", { user: userId }),
                   endpoint: `/api/v2/admin/users/${userId}/permissions`,
                   expected: accessPermissionConfirmation(
                     userId,
                     permissionDraft.permissionKey,
                     permissionDraft.effect,
                   ),
+                  // INTENT: 覆盖立即生效但可以再改一次改回来，所以是可撤回的。
+                  consequence: {
+                    effect: t("The override takes effect on the user's next request. Applying the opposite effect reverses it."),
+                    reversible: true,
+                  },
                   payload: (reason) => ({
                     permissionKey: permissionDraft.permissionKey,
                     effect: permissionDraft.effect,
@@ -301,16 +314,6 @@ export function AccessWorkspace({
             </button>
           </div>
         </section>
-      ) : null}
-      {notice ? (
-        <p
-          aria-live="polite"
-          className="rounded-md bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]"
-          data-testid="admin-action-status"
-          role="status"
-        >
-          {notice}
-        </p>
       ) : null}
       {error ? (
         <div
@@ -417,13 +420,8 @@ export function AccessWorkspace({
 function userTableRows(
   users: readonly AccessUserListItem[],
   canChangeStatus: boolean,
-  confirm: (input: {
-    title: string;
-    endpoint: string;
-    expected: string;
-    payload: (reason: string) => Record<string, unknown>;
-  }) => void,
-  t: (key: string) => string,
+  confirm: (input: AccessCommand) => void,
+  t: (key: string, values?: Record<string, string | number>) => string,
 ): DataTableRow[] {
   return users.map((user, index) => {
     const id = text(user.id);
@@ -447,8 +445,19 @@ function userTableRows(
             onClick={() =>
               confirm({
                 title: `${next === "active" ? "Restore" : "Suspend"} ${id}`,
+                completed:
+                  next === "active"
+                    ? t("Access restored for {user}", { user: id })
+                    : t("Access suspended for {user}", { user: id }),
                 endpoint: `/api/v2/admin/users/${id}/status`,
                 expected: accessStatusConfirmation(id, next),
+                consequence: {
+                  effect:
+                    next === "active"
+                      ? t("The account can sign in and spend again straight away.")
+                      : t("The account is signed out and blocked from spending straight away. Restoring it is one click from this same row."),
+                  reversible: true,
+                },
                 payload: (reason) => ({ status: next, reason }),
               })
             }

@@ -3,6 +3,7 @@
 import type { AdminPermissionKey } from "@idream/shared/admin/permissions";
 import { AdminConsoleClient } from "@/components/admin/AdminConsoleClient";
 import type { AdminShellSignals } from "@/components/admin/shell-signals";
+import { ToastProvider } from "@/components/admin/ui/Toast";
 
 type AdminActor = {
   id: string;
@@ -19,5 +20,9 @@ type AdminConsoleClientOnlyProps = {
 };
 
 export function AdminConsoleClientOnly(props: AdminConsoleClientOnlyProps) {
-  return <AdminConsoleClient {...props} />;
+  return (
+    <ToastProvider>
+      <AdminConsoleClient {...props} />
+    </ToastProvider>
+  );
 }

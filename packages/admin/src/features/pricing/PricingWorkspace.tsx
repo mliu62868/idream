@@ -9,6 +9,7 @@ import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDi
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import {
   canCreatePricingRule,
@@ -30,6 +31,8 @@ const emptyPageInfo: PricingPageInfo = { endCursor: null, hasNextPage: false };
 
 export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
   const { t } = useAdminI18n();
+  const { toast } = useToast();
+  const failureToast = useFailureToast();
   const [query, setQuery] = useState<PricingQuery>(() => currentQuery());
   const [queryDraft, setQueryDraft] = useState<PricingQuery>(() => currentQuery());
   const [pricingDraft, setPricingDraft] = useState<PricingDraft>(defaultPricingDraft);
@@ -110,10 +113,13 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
         { "idempotency-key": crypto.randomUUID() },
       );
       setPricingDraft((current) => ({ ...current, reason: "", confirmation: "" }));
+      toast({ tone: "success", title: t("Pricing draft {key} created", { key: pricingDraft.ruleKey }) });
       const next = { ...query, cursor: "" };
       navigate(next, "replace");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Pricing rule draft could not be created");
+      // INTENT: 写失败不再灌进读错误横幅——那条横幅的 Retry 是重拉列表，救不了这次创建；
+      //         草稿字段也一并保留，运营不用把七个格子重敲一遍。
+      failureToast(cause);
     } finally {
       setWriting(false);
     }
@@ -127,6 +133,15 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
       title: `${capitalize(action)} pricing rule`,
       summary: <span>{name}  {t("· version")} {display(row.version)}</span>,
       destructive: { expectedName: name },
+      // INTENT: publish 立刻改客户看到的价格并归档上一版；rollback 是把上一版请回来，
+      //         两个都能被对方抵消，所以是可撤回的——但中间下单的客户按新价结算，说清楚。
+      consequence: {
+        effect:
+          action === "publish"
+            ? t("Customers are charged this price from the next generation onwards and the previous active version is archived. A rollback restores it, but orders placed in between keep the new price.")
+            : t("The previously active version becomes the customer-facing price again from the next generation onwards."),
+        reversible: true,
+      },
       submitLabel: capitalize(action),
       onSubmit: async (reason) => {
         await apiWrite(
@@ -135,6 +150,13 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
           { reason, confirmation: id },
           { "idempotency-key": idempotencyKey },
         );
+        toast({
+          tone: "success",
+          title:
+            action === "publish"
+              ? t("Pricing rule {name} published", { name })
+              : t("Pricing rule {name} rolled back", { name }),
+        });
         const next = { ...query, cursor: "" };
         navigate(next, "replace");
       },

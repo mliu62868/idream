@@ -20,6 +20,7 @@ import {
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { useToast } from "@/components/admin/ui/Toast";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import {
@@ -47,6 +48,14 @@ type AuthorityState = {
   loading: boolean;
   refreshedAt: string | null;
 };
+type ModerationDecisionKind =
+  | "action"
+  | "close"
+  | "uphold"
+  | "overturn"
+  | "modify"
+  | "media_pass"
+  | "media_block";
 const emptyPageInfo: PageInfo = { endCursor: null, hasNextPage: false };
 const emptyState = (): AuthorityState => ({
   rows: null,
@@ -58,13 +67,13 @@ const emptyState = (): AuthorityState => ({
 
 export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
   const { t } = useAdminI18n();
+  const { toast } = useToast();
   const [query, setQuery] = useState<ModerationQuery>(() => currentQuery());
   const [draft, setDraft] = useState<ModerationQuery>(() => currentQuery());
   const [reports, setReports] = useState<AuthorityState>(emptyState);
   const [media, setMedia] = useState<AuthorityState>(emptyState);
   const [appeals, setAppeals] = useState<AuthorityState>(emptyState);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const gates = useRef({
     reports: createLatestRequestGate(),
     media: createLatestRequestGate(),
@@ -168,14 +177,7 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
   }
 
   function confirmDecision(input: {
-    kind:
-      | "action"
-      | "close"
-      | "uphold"
-      | "overturn"
-      | "modify"
-      | "media_pass"
-      | "media_block";
+    kind: ModerationDecisionKind;
     id: string;
     endpoint: string;
     method: "POST" | "PATCH";
@@ -188,6 +190,7 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
     setConfirmation({
       title: input.title,
       destructive: { expectedName: expected, inputLabel: "Confirmation" },
+      consequence: moderationConsequence(input.kind, t),
       reasonLabel: "Reason",
       submitLabel: "Confirm",
       onSubmit: async (reason) => {
@@ -197,7 +200,7 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
           { ...input.payload(reason), reason, confirmation: expected },
           { "idempotency-key": idempotencyKey },
         );
-        setNotice(`${input.title} completed.`);
+        toast({ tone: "success", title: t("Decision recorded for {id}", { id: input.id }) });
         navigate(
           { ...query, reportCursor: "", mediaCursor: "", appealCursor: "" },
           "replace",
@@ -270,16 +273,6 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
           ) : null}
         </div>
       </form>
-      {notice ? (
-        <p
-          aria-live="polite"
-          className="rounded-md bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]"
-          data-testid="admin-action-status"
-          role="status"
-        >
-          {notice}
-        </p>
-      ) : null}
       <AuthorityError
         label="reports"
         onRetry={() => void loadScope(query, "reports")}
@@ -817,6 +810,53 @@ function Select({
     </label>
   );
 }
+// SPEC: 每一种审核裁决落地后会发生什么、能不能改。
+// INTENT: 「Block」和「Overturn」在按钮上只差两个词，但一个是把内容从用户面前撤走、
+//         一个是把已经撤走的放回去；运营敲确认串之前必须先读到这个区别。
+// INVARIANT: 七种 kind 全部有条目——漏一种就会退回没有后果说明的旧行为，由 mounted 测试守住。
+function moderationConsequence(
+  kind: ModerationDecisionKind,
+  t: (key: string) => string,
+): { effect: string; reversible: boolean } {
+  switch (kind) {
+    case "media_block":
+      return {
+        effect: t("The image disappears from every public surface at once. Passing it later puts it back."),
+        reversible: true,
+      };
+    case "media_pass":
+      return {
+        effect: t("The image becomes publicly visible at once. Blocking it later takes it down again."),
+        reversible: true,
+      };
+    case "action":
+      return {
+        effect: t("The enforcement lands on the reported target and the report moves to actioned."),
+        reversible: false,
+      };
+    case "close":
+      return {
+        effect: t("The report closes with no enforcement and leaves the queue. Reopening means filing a new report."),
+        reversible: false,
+      };
+    case "uphold":
+      return {
+        effect: t("The original decision stands and the appeal closes. The user cannot appeal the same decision again."),
+        reversible: false,
+      };
+    case "overturn":
+      return {
+        effect: t("The original enforcement is lifted and the appeal closes in the user's favour."),
+        reversible: false,
+      };
+    case "modify":
+      return {
+        effect: t("The original enforcement is replaced with the revised one and the appeal closes."),
+        reversible: false,
+      };
+  }
+}
+
 function currentQuery() {
   return typeof window === "undefined"
     ? defaultModerationQuery

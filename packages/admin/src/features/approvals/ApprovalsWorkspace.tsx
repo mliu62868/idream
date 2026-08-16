@@ -12,6 +12,7 @@ import {
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { useToast } from "@/components/admin/ui/Toast";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { canonicalListEmptyTitle } from "@/features/compatibility-lists/empty-state";
@@ -29,6 +30,7 @@ type ListResponse = { items: Row[]; pageInfo?: PageInfo };
 
 export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
   const { t } = useAdminI18n();
+  const { toast } = useToast();
   const [query, setQuery] = useState<ApprovalQuery>(() => currentQuery());
   const [draft, setDraft] = useState<ApprovalQuery>(() => currentQuery());
   const [data, setData] = useState<ListResponse | null>(null);
@@ -36,7 +38,6 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
   const [error, setError] = useState<string | null>(null);
   const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const gate = useRef(createLatestRequestGate());
   const initialQuery = useRef(query);
 
@@ -108,6 +109,14 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
     setConfirmation({
       title: `${label} ${id}`,
       destructive: { expectedName: id, inputLabel: "Confirmation" },
+      // INTENT: 审批是终局裁决——后台没有「撤回审批」这条命令，请求方只能重新发起一条。
+      consequence: {
+        effect:
+          decision === "approve"
+            ? t("The requested action is released to run and the request leaves this queue. There is no command to withdraw an approval.")
+            : t("The request is closed as rejected and leaves this queue. The requester has to raise a new one."),
+        reversible: false,
+      },
       reasonLabel: "Reason",
       submitLabel: "Confirm",
       onSubmit: async (reason) => {
@@ -117,7 +126,13 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
           { reason, confirmation: id },
           { "idempotency-key": idempotencyKey },
         );
-        setNotice(`${label} ${id} completed.`);
+        toast({
+          tone: "success",
+          title:
+            decision === "approve"
+              ? t("Approved {id}", { id })
+              : t("Rejected {id}", { id }),
+        });
         navigate({ ...query, cursor: "" }, "replace");
       },
     });
@@ -178,16 +193,6 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
           ) : null}
         </div>
       </form>
-      {notice ? (
-        <p
-          aria-live="polite"
-          className="rounded-md bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]"
-          data-testid="admin-action-status"
-          role="status"
-        >
-          {notice}
-        </p>
-      ) : null}
       {error ? (
         <div
           className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
