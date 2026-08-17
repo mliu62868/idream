@@ -145,7 +145,7 @@ export async function forgetByMessageIds(
 //   - boundary protection: boundaries live in boundaries.md and only ever match
 //     other boundaries, so a preference can never overwrite a boundary.
 //   - cap: character memory.md is trimmed to maxStored (Free baseline, Deluxe 3×),
-//     evicting the lowest-confidence (oldest on ties). Boundaries are never capped.
+//     evicting the lowest-PRIORITY line (oldest on ties). Boundaries never capped.
 
 export interface MemoryCandidateInput {
   scope: "global" | "character" | "session";
@@ -220,13 +220,42 @@ function mergeCandidate(items: MemoryItem[], c: MemoryCandidateInput, charId: st
   return false;
 }
 
-/** Evict lowest-confidence (oldest on ties) until within the storage cap. */
+// ---- priority (SSoT for eviction AND retrieval) -----------------------------
+// INTENT: storage and retrieval must agree on what matters. They used to be
+// orthogonal — the cap kept the highest-confidence lines while retrieval took
+// the newest — so a high-confidence fact could sit on disk forever and never
+// reach a prompt again. ONE ranking now drives both (see retrieval.ts).
+
+const TYPE_PRIORITY: Record<string, number> = {
+  boundary: 2, // only reachable via a hand-edited memory.md, but still outranks all
+  user_fact: 1, // identity — name, birthday, job: the "she remembers me" core
+  preference: 1,
+  shared_event: 0.5, // what happened; retrieval's recency reserve already covers these
+};
+const DEFAULT_TYPE_PRIORITY = 0.25; // note / unknown
+// A missing OR ZERO confidence means "unscored", not "certainly false": legacy
+// lines carry no conf tag and the LLM extractor passes an explicit 0 through
+// (extract.ts clampConfidence). Scoring those 0 would make every semantically
+// extracted memory both first-evicted and last-retrieved.
+const UNSCORED_CONFIDENCE = 0.5;
+
+/**
+ * Rank one memory. Higher = kept longer on disk AND retrieved first. Type tier
+ * dominates so a low-confidence name outranks a certain piece of small talk;
+ * confidence orders within a tier.
+ */
+export function memoryPriority(item: Pick<MemoryItem, "type" | "confidence">): number {
+  const confidence = item.confidence ? item.confidence : UNSCORED_CONFIDENCE;
+  return (TYPE_PRIORITY[item.type] ?? DEFAULT_TYPE_PRIORITY) + confidence;
+}
+
+/** Evict lowest-priority (oldest on ties) until within the storage cap. */
 function capItems(items: MemoryItem[], maxStored: number): void {
   if (maxStored <= 0) return;
   while (items.length > maxStored) {
     let evict = 0;
     for (let i = 1; i < items.length; i++) {
-      if ((items[i].confidence ?? 0) < (items[evict].confidence ?? 0)) evict = i;
+      if (memoryPriority(items[i]) < memoryPriority(items[evict])) evict = i;
     }
     items.splice(evict, 1);
   }

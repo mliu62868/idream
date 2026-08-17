@@ -5,7 +5,14 @@ export interface ChatChunk {
   delta: string;
   done: boolean;
   toolCalls?: ChatToolCall[];
+  /**
+   * Real provider token counts, carried on the final (done) chunk when the
+   * provider reports usage. Absent otherwise — callers estimate instead.
+   */
+  usage?: ChatUsage;
 }
+
+export type ChatUsage = { promptTokens: number; completionTokens: number };
 
 export type ChatToolDefinition = {
   name: string;
@@ -92,6 +99,12 @@ export class OpenAICompatibleChatModel implements OpenAICompatibleChatModelContr
           messages: input.messages,
           stream: true,
           max_tokens: this.profile.maxOutputTokens,
+          temperature: this.profile.temperature,
+          top_p: this.profile.topP,
+          repetition_penalty: this.profile.repetitionPenalty,
+          // INTENT: only source of real token counts — without it the caller can
+          // only estimate from characters, which badly undercounts CJK.
+          stream_options: { include_usage: true },
           chat_template_kwargs: { enable_thinking: false },
           ...(input.tools?.length
             ? {
@@ -109,6 +122,7 @@ export class OpenAICompatibleChatModel implements OpenAICompatibleChatModelContr
 
       const decoder = new TextDecoder();
       let buffer = "";
+      let usage: ChatUsage | undefined;
       const toolCallsByIndex = new Map<number, ChatToolCall>();
       for await (const bytes of response.body as unknown as AsyncIterable<Uint8Array>) {
         buffer += decoder.decode(bytes, { stream: true });
@@ -119,10 +133,14 @@ export class OpenAICompatibleChatModel implements OpenAICompatibleChatModelContr
           if (!line.startsWith("data:")) continue;
           const payload = line.slice(5).trim();
           if (payload === "[DONE]") {
-            yield { delta: "", done: true, toolCalls: flattenToolCalls(toolCallsByIndex) };
+            yield { delta: "", done: true, toolCalls: flattenToolCalls(toolCallsByIndex), usage };
             return;
           }
-          const choice = (JSON.parse(payload).choices?.[0] ?? {}) as {
+          // INVARIANT: the usage-bearing chunk carries an empty `choices`, so it
+          // must not short-circuit the delta path — it arrives after the last one.
+          const event = JSON.parse(payload) as { choices?: unknown[]; usage?: unknown };
+          usage = readUsage(event.usage) ?? usage;
+          const choice = (event.choices?.[0] ?? {}) as {
             finish_reason?: unknown;
             delta?: {
               content?: string;
@@ -143,7 +161,7 @@ export class OpenAICompatibleChatModel implements OpenAICompatibleChatModelContr
           assertOutputWasComplete(choice.finish_reason, this.profile.maxOutputTokens);
         }
       }
-      yield { delta: "", done: true, toolCalls: flattenToolCalls(toolCallsByIndex) };
+      yield { delta: "", done: true, toolCalls: flattenToolCalls(toolCallsByIndex), usage };
     } catch (error) {
       if (controller.signal.aborted) {
         const timeoutMs = timeoutPhase === "first_token"
@@ -176,6 +194,10 @@ export class OpenAICompatibleChatModel implements OpenAICompatibleChatModelContr
           messages: input.messages,
           stream: false,
           max_tokens: maxTokens,
+          // INTENT: this path plans tools and extracts JSON, so it wants the
+          // schema obeyed, not personality — no top_p/repetition_penalty either,
+          // both of which fight the repeated punctuation JSON legitimately needs.
+          temperature: this.profile.structuredTemperature,
           chat_template_kwargs: { enable_thinking: false },
         }),
       });
@@ -201,6 +223,14 @@ export class OpenAICompatibleChatModel implements OpenAICompatibleChatModelContr
       clearTimeout(timeout);
     }
   }
+}
+
+function readUsage(raw: unknown): ChatUsage | undefined {
+  const usage = raw as { prompt_tokens?: unknown; completion_tokens?: unknown } | null | undefined;
+  const promptTokens = usage?.prompt_tokens;
+  const completionTokens = usage?.completion_tokens;
+  if (typeof promptTokens !== "number" || typeof completionTokens !== "number") return undefined;
+  return { promptTokens, completionTokens };
 }
 
 function assertOutputWasComplete(finishReason: unknown, maxTokens: number): void {

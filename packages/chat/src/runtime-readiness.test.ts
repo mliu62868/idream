@@ -10,6 +10,7 @@ import {
   assertChatSchemaReady,
   RUNTIME_RECOVERY_INITIAL_BACKOFF_MS,
   RUNTIME_RECOVERY_MAX_BACKOFF_MS,
+  RUNTIME_TURN_FAILURE_THRESHOLD,
   RuntimeReadiness,
   warmRuntime,
 } from "./runtime-readiness.js";
@@ -93,6 +94,36 @@ describe("RuntimeReadiness", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("keeps serving everyone else while isolated turns fail", () => {
+    const state = new RuntimeReadiness();
+    state.warmed(["chat:model"]);
+
+    for (let i = 1; i < RUNTIME_TURN_FAILURE_THRESHOLD; i += 1) {
+      state.recordTurnFailure(new Error("client hung up"));
+      expect(state.canAcceptTurns()).toBe(true);
+      expect(state.snapshot().lastError).toBeNull();
+    }
+    // Any turn the provider actually answers disproves the streak, so scattered
+    // failures never accumulate their way into a process-wide outage.
+    state.recordTurnSuccess();
+    for (let i = 1; i < RUNTIME_TURN_FAILURE_THRESHOLD; i += 1) {
+      state.recordTurnFailure(new Error("client hung up"));
+    }
+    expect(state.canAcceptTurns()).toBe(true);
+  });
+
+  it("pulls readiness once turn failures become provider-level evidence", () => {
+    const state = new RuntimeReadiness();
+    state.warmed(["chat:model"]);
+
+    for (let i = 0; i < RUNTIME_TURN_FAILURE_THRESHOLD; i += 1) {
+      state.recordTurnFailure(new Error("chat model disconnected"));
+    }
+
+    expect(state.canAcceptTurns()).toBe(false);
+    expect(state.snapshot().lastError).toBe("chat model disconnected");
   });
 
   it("keeps model failure latched until a full warmup succeeds", async () => {

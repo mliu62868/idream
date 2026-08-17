@@ -4,6 +4,7 @@ import {
   canSubmitChatMessage,
   chatMessageActionPaddingClass,
   isImmutableOpeningMessage,
+  isLocalChatMessageId,
 } from "./chat-message-actions";
 
 const openingTrace = {
@@ -65,5 +66,10 @@ describe("chat message action authority", () => {
     expect(canRegenerateChatMessage(reply, false)).toBe(true);
     expect(canRegenerateChatMessage({ ...reply, status: "blocked" }, false)).toBe(false);
     expect(canRegenerateChatMessage({ ...reply, replyToMessageId: null }, false)).toBe(false);
+  });
+
+  it("separates optimistic turns from ids Chat can act on", () => {
+    expect(isLocalChatMessageId("local:0f1e2d3c")).toBe(true);
+    expect(isLocalChatMessageId("cmsg_0f1e2d3c")).toBe(false);
   });
 });

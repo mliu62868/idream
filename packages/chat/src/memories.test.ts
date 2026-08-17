@@ -132,7 +132,7 @@ describe("consolidateMemories (P1-C)", () => {
     expect(items.filter((m) => m.type === "preference")).toHaveLength(2);
   });
 
-  it("enforces the storage cap by evicting the lowest-confidence memory", async () => {
+  it("enforces the storage cap by evicting the lowest-priority memory", async () => {
     await consolidateMemories(
       "u1",
       "c1",
@@ -141,7 +141,25 @@ describe("consolidateMemories (P1-C)", () => {
     );
     const items = await listMemories("u1", "c1");
     expect(items).toHaveLength(2);
-    expect(items.map((m) => m.text)).not.toContain("Likes B."); // lowest conf evicted
+    expect(items.map((m) => m.text)).not.toContain("Likes B."); // within one type, confidence decides
+  });
+
+  it("caps by priority, not raw confidence: an unscored identity fact outlives confident notes", async () => {
+    // confidence 0 is what the LLM extractor writes when it declines to score —
+    // it must not make a user_fact the first thing evicted.
+    await consolidateMemories(
+      "u1",
+      "c1",
+      [
+        { scope: "character", type: "user_fact", text: "User's dog is named Pixel.", confidence: 0, sourceMessageIds: ["m1"] },
+        { scope: "character", type: "note", text: "Chatted about the weather.", confidence: 0.9, sourceMessageIds: ["m2"] },
+        { scope: "character", type: "note", text: "Chatted about the traffic.", confidence: 0.9, sourceMessageIds: ["m3"] },
+      ],
+      { maxStored: 2 },
+    );
+    const items = await listMemories("u1", "c1");
+    expect(items).toHaveLength(2);
+    expect(items.map((m) => m.text)).toContain("User's dog is named Pixel.");
   });
 
   it("routes boundaries to boundaries.md and never caps them", async () => {

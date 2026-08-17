@@ -11,6 +11,16 @@ export interface ChatModelProfile {
   idleTimeoutMs: number;
   completionTimeoutMs: number;
   supportsTools: boolean;
+  // SPEC: sampling ships with the code, not with the model server's own config.
+  // INTENT: the local oMLX defaults (temp 0.6, repetition_penalty 1.0) live in an
+  // unversioned machine-local file, so reply quality silently changed per host.
+  // INVARIANT: resolveChatModelProfile always fills all four; they are optional
+  // only so readiness/probe fixtures can build a profile without restating them.
+  temperature?: number;
+  topP?: number;
+  repetitionPenalty?: number;
+  /** complete() plans tools and extracts JSON — near-deterministic, not in-character. */
+  structuredTemperature?: number;
 }
 
 export interface ChatMemoryExtractProfile {
@@ -61,6 +71,18 @@ export function resolveChatModelProfile(
       source.PIPELINE_API_TOKEN ??
       "",
     maxOutputTokens: positiveInt(source.CHAT_MODEL_MAX_TOKENS, 8_000),
+    // 0.9/0.95: companion roleplay needs more variety than the 0.6 assistant
+    // default, while staying under the ~1.1 range where an 8-bit MoE starts
+    // losing track of persona details. 1.05 is deliberately mild — it damps the
+    // "she smiles softly" tic over a long session without punishing the repeated
+    // pet names and verbal habits that make a character recognisable.
+    temperature: positiveFloat(source.CHAT_MODEL_TEMPERATURE, 0.9),
+    topP: positiveFloat(source.CHAT_MODEL_TOP_P, 0.95),
+    repetitionPenalty: positiveFloat(source.CHAT_MODEL_REPETITION_PENALTY, 1.05),
+    structuredTemperature: positiveFloat(
+      source.CHAT_MODEL_STRUCTURED_TEMPERATURE,
+      0.2,
+    ),
     firstTokenTimeoutMs: positiveInt(
       source.CHAT_MODEL_FIRST_TOKEN_TIMEOUT_MS,
       legacyTimeout,
@@ -112,5 +134,10 @@ function parseProvider(value: string): ChatModelProvider {
 
 function positiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function positiveFloat(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseFloat(value ?? "");
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }

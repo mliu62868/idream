@@ -5,6 +5,16 @@ export type ChatMessageActionAuthority = {
   status?: string | null;
 };
 
+// SPEC: An optimistically rendered turn carries a client-minted id until the
+//       send response returns the canonical one.
+// INTENT: Chat cannot act on an id it has never seen, so every action (edit,
+//         delete, report, regenerate) stays hidden until the swap lands.
+export const LOCAL_CHAT_MESSAGE_ID_PREFIX = "local:";
+
+export function isLocalChatMessageId(id: string) {
+  return id.startsWith(LOCAL_CHAT_MESSAGE_ID_PREFIX);
+}
+
 export function canSubmitChatMessage(
   content: string,
   pending: boolean,

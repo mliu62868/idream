@@ -73,8 +73,14 @@ export function startWorker(): { close: () => Promise<void> } {
   ];
 
   // Periodic convergence + housekeeping (single-instance, so timers are safe).
+  // reconcile()'s counts are the only signal that convergence is falling behind:
+  // a projection backlog or a requeue loop looks identical to a healthy pass
+  // unless the numbers are published. Logged every pass so a rising trend is
+  // visible before the affected users start reporting 500s.
   const reconcileTimer = setInterval(() => {
-    reconcile().catch((err) => logger.error({ err }, "reconcile failed"));
+    reconcile()
+      .then((counts) => logger.info(counts, "reconcile pass"))
+      .catch((err) => logger.error({ err }, "reconcile failed"));
   }, RECONCILE_INTERVAL_MS);
   const maintainTimer = setInterval(() => {
     pruneExpiredSegments().catch((err) => logger.error({ err }, "maintain failed"));
