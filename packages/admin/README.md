@@ -61,7 +61,21 @@ cd packages/admin && bun run check && bun run test
 
 `check` = lint + typecheck + production build，`test` = vitest。
 
-**在 git worktree 里想跑 `build` / `dev` / 浏览器验证，会先撞上一堵墙。** Turbopack 直接拒绝：
+### 在 git worktree 里跑测试：先怀疑环境，再怀疑代码
+
+**gitignore 的文件不会跟着进 worktree**，缺什么就报什么，而症状全都长得像代码回归。本轮在这上面栽过三次：
+
+| 缺什么 | 症状 | 补上之后 |
+|---|---|---|
+| `packages/*/.env` | `packages/main` 的 admin-v2 chat outbox 集成测试报 **503**，4 条红 | 软链过去，13/13 通过 |
+| `packages/*/next-env.d.ts` | Playwright workspace lease / cleanup 测试报 `ENOENT`，3 条红 | 拷过去，8/8 通过 |
+| `node_modules`（软链到主仓库） | Turbopack panic，`build` / `dev` 起不来 | 见下 |
+
+**定性方法**（三步都做完才能下「不是回归」的结论）：先在主仓库跑同一个测试做对照 → 再查本轮有没有碰过相关文件 → 最后补齐环境重跑。
+
+### Turbopack 的软链 panic
+
+**想跑 `build` / `dev` / 浏览器验证，会先撞上一堵墙。** Turbopack 直接拒绝：
 
 ```
 Symlink [project]/packages/admin/node_modules is invalid, it points out of the filesystem root
