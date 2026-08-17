@@ -6,9 +6,10 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useAdminI18n } from "@/components/admin/i18n";
 import type { WorkMode } from "@/components/admin/nav-config";
+import { formatDateTime, formatRelativeTime } from "@/components/admin/ui/format";
+import { Pagination } from "@/components/admin/ui/Pagination";
 import { adminV2Request } from "@/lib/admin-v2-api";
-import { ActionFeedbackBar, useActionFeedback } from "./feedback";
-import { formatDateTime, formatElapsed } from "./format";
+import { useActionFeedback } from "./feedback";
 import { focusWorkItem, formatCount, queueHealth, slaState, todayCounts, type QueueHealth, type TodayCounts } from "./health";
 import {
   activeTodayFilters,
@@ -25,6 +26,17 @@ import { WorkQueue, type WorkDensity } from "./WorkQueue";
 type Row = Record<string, unknown>;
 
 const DENSITY_STORAGE_KEY = "idream.admin.today.density";
+
+// SPEC: 走过的游标挂在 history entry 上，不只挂在组件 state 里。
+// INTENT: 刷新和「后退」都会重建组件，只靠 state 就把页码清成 1 —— 地址栏还带着第 4 页的游标，
+//         分页条却说「第 1 页 · 第 1–25 条」，那是编出来的数字。history.state 跟着这条
+//         history entry 走，刷新和前进后退都还在。
+type TodayHistoryState = { pageCursors?: readonly string[] };
+
+function restoredPageCursors(): readonly string[] {
+  const state = window.history.state as TodayHistoryState | null;
+  return Array.isArray(state?.pageCursors) ? state.pageCursors : [];
+}
 
 export type TodayLegacyData = {
   metrics: {
@@ -47,7 +59,7 @@ export type TodayData = {
 };
 
 export function TodayView({ data, onPreferenceChanged, workMode }: { data: TodayData; onPreferenceChanged?: () => void | Promise<void>; workMode: WorkMode }) {
-  const { locale, t } = useAdminI18n();
+  const { t } = useAdminI18n();
   const { projection } = data;
   const refresh = onPreferenceChanged ?? (() => undefined);
   const [urlState, setUrlState] = useState<TodayUrlState>({ tab: "summary", limit: 25 });
@@ -57,7 +69,7 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
   const [overdueTotal, setOverdueTotal] = useState<number | null>(null);
   const [density, setDensity] = useState<WorkDensity>("compact");
   const [pageCursors, setPageCursors] = useState<readonly string[]>([]);
-  const { dismiss, feedback, report } = useActionFeedback();
+  const report = useActionFeedback();
   const now = new Date();
   const counts = todayCounts(projection, overdueTotal, now);
   const health = queueHealth(counts);
@@ -67,8 +79,12 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
     const restore = () => {
       setAllWork(null);
       setAllWorkError("");
-      setPageCursors([]);
-      setUrlState(parseTodayUrl(new URLSearchParams(window.location.search)));
+      const cursors = restoredPageCursors();
+      setPageCursors(cursors);
+      const next = parseTodayUrl(new URLSearchParams(window.location.search));
+      // 游标是别人分享过来的（history.state 不跟着 URL 走），我们放不下它在第几页 ——
+      // 与其显示一个猜出来的页码，不如带着同一组筛选回到第一页。
+      setUrlState(cursors.length === 0 ? { ...next, cursor: undefined } : next);
     };
     const initialRestore = window.setTimeout(() => {
       restore();
@@ -102,21 +118,21 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
     return () => { active = false; };
   }, [reloadVersion, urlState, workMode]);
 
-  function navigate(next: TodayUrlState) {
-    window.history.pushState(null, "", todayBrowserPath(next));
+  /** 任何改查询的动作都把游标栈清空（cursors 默认空），否则页码会挂在旧结果上。 */
+  function navigate(next: TodayUrlState, cursors: readonly string[] = []) {
+    window.history.pushState({ pageCursors: cursors } satisfies TodayHistoryState, "", todayBrowserPath(next));
+    setPageCursors(cursors);
     setAllWork(null);
     setAllWorkError("");
     setUrlState(next);
   }
 
   function updateFilter(patch: Partial<TodayUrlState>) {
-    setPageCursors([]);
     navigate({ ...urlState, ...patch, tab: "all", cursor: undefined });
   }
 
   /** KPI 与横幅按钮进来的是"只看这一类"，不是在既有筛选上再叠一层。 */
   function openAllWork(patch: Partial<TodayUrlState>) {
-    setPageCursors([]);
     navigate({ tab: "all", limit: urlState.limit, ...patch });
   }
 
@@ -262,40 +278,26 @@ export function TodayView({ data, onPreferenceChanged, workMode }: { data: Today
             queue={{ totalCount: allWork.totalCount, items: allWork.items }}
             queueName="All work"
           />
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold disabled:opacity-40"
-              disabled={!urlState.cursor}
-              onClick={() => {
-                const previous = pageCursors.slice(0, -1);
-                setPageCursors(previous);
-                navigate({ ...urlState, cursor: previous.at(-1) });
-              }}
-              type="button"
-            >
-              {pageCursors.length > 0 ? t("Previous page") : t("Back to first page")}
-            </button>
-            <span className="text-xs tabular-nums text-[var(--ad-text-muted)]">
-              {pageCursors.length > 0 || !urlState.cursor ? t("Page {page}", { page: pageCursors.length + 1 }) : null}
-            </span>
-            {allWork.pageInfo.hasNextPage && allWork.pageInfo.endCursor ? (
-              <button
-                className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold"
-                onClick={() => {
-                  const cursor = allWork.pageInfo.endCursor ?? undefined;
-                  setPageCursors([...pageCursors, ...(cursor ? [cursor] : [])]);
-                  navigate({ ...urlState, cursor });
-                }}
-                type="button"
-              >
-                {t("Next page")}
-              </button>
-            ) : null}
-          </div>
+          <Pagination
+            hasNext={Boolean(allWork.pageInfo.hasNextPage && allWork.pageInfo.endCursor)}
+            // 「上一页」走本地游标栈，不是 pageInfo.hasPreviousPage —— all-work 还是单向
+            // keyset，栈是我们自己走过来的路，比缺席的反向游标更可靠。
+            hasPrevious={pageCursors.length > 0}
+            onNext={() => {
+              const cursor = allWork.pageInfo.endCursor ?? undefined;
+              navigate({ ...urlState, cursor }, cursor ? [...pageCursors, cursor] : pageCursors);
+            }}
+            onPrevious={() => {
+              const previous = pageCursors.slice(0, -1);
+              navigate({ ...urlState, cursor: previous.at(-1) }, previous);
+            }}
+            page={pageCursors.length + 1}
+            pageSize={urlState.limit}
+            rowCount={allWork.items.length}
+            totalCount={allWork.totalCount}
+          />
         </> : null}
       </section>}
-
-      <ActionFeedbackBar feedback={feedback} onDismiss={dismiss} />
     </div>
   );
 }
@@ -342,7 +344,7 @@ function HealthBanner({
         <p className="mt-2 flex flex-wrap items-baseline gap-x-2 text-xs">
           <span className="font-semibold text-[var(--ad-text-muted)]">{t("Start here")}</span>
           <Link className="font-semibold underline underline-offset-2" href={focus.deepLink}>{t(focus.title)}</Link>
-          {overdueFocus ? <span className="text-[var(--ad-red-text)]">{t("SLA due {elapsed}", { elapsed: formatElapsed(overdueFocus, locale) })}</span> : null}
+          {overdueFocus ? <span className="text-[var(--ad-red-text)]">{t("SLA due {elapsed}", { elapsed: formatRelativeTime(overdueFocus, now.toISOString(), locale) })}</span> : null}
         </p>
       ) : null}
       {counts.mine === 0 && counts.unassigned > 0 ? (

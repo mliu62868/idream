@@ -11,13 +11,16 @@ import { Loader2, RefreshCcw, RotateCcw, Search } from "lucide-react";
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet } from "@/components/admin/api";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import {
   ConfirmDialog,
   type ConfirmSpec,
 } from "@/components/admin/ui/ConfirmDialog";
-import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
+import { DataTable, type DataTableHeader, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
+import { useAdminFormat } from "@/components/admin/ui/format";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { useToast } from "@/components/admin/ui/Toast";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
@@ -53,7 +56,8 @@ type ChatResponse = {
 type AuthorityState = {
   data: ChatResponse | null;
   loading: boolean;
-  error: string | null;
+  /** 原始异常，不是它的 message —— 错误文案由 ui/request-error-copy.ts 按错误码映射。 */
+  error: unknown;
   refreshedAt: string | null;
 };
 
@@ -234,14 +238,7 @@ export function ChatOpsWorkspace({
         if (!request.isCurrent()) return;
         setStates((current) => ({
           ...current,
-          [authority]: {
-            ...current[authority],
-            loading: false,
-            error:
-              cause instanceof Error
-                ? cause.message
-                : `${authority} authority request failed`,
-          },
+          [authority]: { ...current[authority], loading: false, error: cause },
         }));
       }
     },
@@ -535,14 +532,15 @@ function MainToChatFailedOutboxPanel({
   canReplay: boolean;
   canDiscardMissing: boolean;
 }) {
-  const { locale, t } = useAdminI18n();
+  const { t } = useAdminI18n();
+  const format = useAdminFormat();
+  const { toast } = useToast();
   const [data, setData] =
     useState<MainToChatOutboxEventListResponse | null>(null);
   const [loading, setLoading] = useState(canRead);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const gate = useRef(createLatestRequestGate());
 
   const load = useCallback(
@@ -563,11 +561,7 @@ function MainToChatFailedOutboxPanel({
         setSelected(new Set());
       } catch (cause) {
         if (!request.isCurrent()) return;
-        setError(
-          cause instanceof Error
-            ? cause.message
-            : "Main to Chat failed outbox request failed",
-        );
+        setError(cause);
       } finally {
         if (request.isCurrent()) setLoading(false);
       }
@@ -599,6 +593,7 @@ function MainToChatFailedOutboxPanel({
   const targetMissingRows = selectedRows.filter(targetMissingDiscardAllowed);
   const allSelected =
     selectableRows.length > 0 && selectedRows.length === selectableRows.length;
+  const selectable = canReplay || canDiscardMissing;
 
   function toggle(id: string) {
     setSelected((current) => {
@@ -621,14 +616,12 @@ function MainToChatFailedOutboxPanel({
       title: t("Replay Main → Chat failed events ({count})", {
         count: replayRevision.length,
       }),
-      // SEAM: `consequence` 字段落地后把这段从 summary 平移过去。
-      summary: (
-        <span>
-          {t(
-            "The worker will retry the unchanged durable envelopes; no event is sent from this browser request. Retrying inside this dialog reuses the same idempotency key and cannot requeue twice.",
-          )}
-        </span>
-      ),
+      consequence: {
+        effect: t(
+          "The worker will retry the unchanged durable envelopes; no event is sent from this browser request. Retrying inside this dialog reuses the same idempotency key and cannot requeue twice.",
+        ),
+        reversible: false,
+      },
       destructive: {
         expectedName: MAIN_TO_CHAT_REPLAY_CONFIRMATION,
         inputLabel: t("Replay confirmation"),
@@ -644,9 +637,14 @@ function MainToChatFailedOutboxPanel({
             idempotencyKey,
           },
         );
-        setNotice(t("Main → Chat replay result · {summary}.", {
-          summary: summarizeMainToChatReplay(result.results),
-        }));
+        toast({
+          // 不是每条都回到队列时用 error 语气 —— 只有 error toast 不会自己消失，
+          // 而「哪几条没进队列」正是运营必须读完的那句。
+          tone: result.requeuedCount === result.results.length ? "success" : "error",
+          title: t("Main → Chat replay result · {summary}.", {
+            summary: summarizeMainToChatReplay(result.results),
+          }),
+        });
         await load();
       },
     });
@@ -664,14 +662,12 @@ function MainToChatFailedOutboxPanel({
       title: t("Record expected target missing ({count})", {
         count: missingRows.length,
       }),
-      // SEAM: `consequence` 字段落地后把这段从 summary 平移过去。
-      summary: (
-        <span>
-          {t(
-            "This records that no user-visible Chat effect was applied and is terminal for Main. Main becomes terminal only after Chat stores the original envelope hash as a target-missing receipt. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.",
-          )}
-        </span>
-      ),
+      consequence: {
+        effect: t(
+          "This records that no user-visible Chat effect was applied and is terminal for Main. Main becomes terminal only after Chat stores the original envelope hash as a target-missing receipt. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.",
+        ),
+        reversible: false,
+      },
       destructive: {
         expectedName: MAIN_TO_CHAT_TARGET_MISSING_CONFIRMATION,
         inputLabel: t("Target-missing confirmation"),
@@ -687,13 +683,93 @@ function MainToChatFailedOutboxPanel({
             idempotencyKey,
           },
         );
-        setNotice(t("Main → Chat target-missing result · {summary}.", {
-          summary: summarizeMainToChatReplay(result.results),
-        }));
+        toast({
+          tone: result.discardedCount === result.results.length ? "success" : "error",
+          title: t("Main → Chat target-missing result · {summary}.", {
+            summary: summarizeMainToChatReplay(result.results),
+          }),
+        });
         await load();
       },
     });
   }
+
+  // SPEC: 勾选框留在单元格里，不用 DataTable 自带的多选列。
+  // INTENT: 收件方状态不安全的行必须是 disabled 的勾选框 + aria-describedby 说明原因；
+  // DataTable 的 selection 目前表达不了「这一行不可选、原因是什么」，静默不选中对读屏用户
+  // 等于没有反馈。能表达之后再把这一列交回去。
+  // INTENT: 列顺序按单元格重排过 —— 原先手写表头把 Aggregate 排在 Receiver authority 前面，
+  // 而单元格是反的，整张表有两列的表头对不上内容。
+  const headers: DataTableHeader[] = [
+    ...(selectable ? [{ label: "Select", width: "4rem" }] : []),
+    { label: "Event", width: "14rem" },
+    { label: "Receiver authority", width: "18rem" },
+    { label: "Aggregate", width: "12rem" },
+    { label: "Attempts / retry", width: "10rem" },
+    { label: "Last error", width: "18rem" },
+    { label: "Envelope hash", width: "16rem" },
+    { label: "Updated", width: "10rem" },
+  ];
+  const tableRows: DataTableRow[] = rows.map((row, index) => {
+    const disabledReasonId = `main-to-chat-replay-disabled-${index}`;
+    const actionable = rowActionable(row, canReplay, canDiscardMissing);
+    return {
+      id: row.id,
+      cells: [
+        ...(selectable ? [
+          <input
+            aria-describedby={actionable ? undefined : disabledReasonId}
+            aria-label={t("Select failed event {id}", { id: row.id })}
+            checked={selected.has(row.id)}
+            disabled={!actionable}
+            key="select"
+            onChange={() => toggle(row.id)}
+            type="checkbox"
+          />,
+        ] : []),
+        <span key="event">
+          <span className="block font-medium">{row.eventType}</span>
+          <span className="mt-1 block font-mono text-xs text-[var(--ad-text-muted)]">{row.id}</span>
+        </span>,
+        <span className="block text-xs" key="receiver">
+          <span className="block font-semibold">
+            {t(receiverAuthorityLabel(row.receiverAuthority.disposition))}
+          </span>
+          {row.receiverAuthority.target ? (
+            <span className="mt-1 block break-all font-mono text-[11px] text-[var(--ad-text-muted)]">
+              {row.receiverAuthority.target.kind}:{row.receiverAuthority.target.id}
+              {row.receiverAuthority.targetStatus
+                ? ` · ${row.receiverAuthority.targetStatus}`
+                : ""}
+            </span>
+          ) : null}
+          {row.envelopeHash !== null && !actionable ? (
+            <span className="sr-only" id={disabledReasonId}>
+              {t("No safe action is available for this receiver authority state")}
+            </span>
+          ) : null}
+        </span>,
+        <span key="aggregate">
+          <span className="block">{row.aggregateType}</span>
+          <span className="mt-1 block font-mono text-xs text-[var(--ad-text-muted)]">{row.aggregateId}</span>
+        </span>,
+        <span key="attempts">
+          <span className="block">{row.attempts}</span>
+          <span className="mt-1 block text-xs text-[var(--ad-text-muted)]">{format.dateTime(row.nextRunAt)}</span>
+        </span>,
+        <span className="block text-xs" key="error">{row.lastErrorMessage ?? "—"}</span>,
+        <span className="block break-all font-mono text-[11px]" key="envelope">
+          {row.envelopeHash ?? (
+            <span id={disabledReasonId}>
+              {t("Replay unavailable · invalid durable envelope")}
+              {` · ${row.storedEnvelopeHash}`}
+            </span>
+          )}
+        </span>,
+        <span className="text-xs" key="updated">{format.dateTime(row.updatedAt)}</span>,
+      ],
+    };
+  });
 
   return (
     <section
@@ -721,47 +797,16 @@ function MainToChatFailedOutboxPanel({
           ) : null}
         </div>
       </div>
-      {/* SEAM: 单一反馈出口 —— 全局 toast 落地后换成 `useToast()`；错误分支走 `useFailureToast()`
-          + `ui/request-error-copy.ts`（5xx / 网络故障不能暗示"没有写入"）。 */}
-      {notice ? (
-        <p
-          className="rounded-md bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]"
-          data-testid="main-to-chat-replay-status"
-          role="status"
-        >
-          {notice}
-        </p>
-      ) : null}
-      {error ? (
-        <p
-          className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
-          role="alert"
-        >
-          {t("Main → Chat failed delivery refresh failed:")} {error}
-          <button
-            className="ml-3 min-h-8 rounded border border-current px-2 font-semibold"
-            onClick={() => void load()}
-            type="button"
-          >
-            {t("Retry")}
-          </button>
-        </p>
-      ) : null}
-      {!canRead ? null : loading && !data ? (
-        <Loading
-          authority="Main → Chat failed delivery"
-          state={{ data: null, loading: true, error: null, refreshedAt: null }}
+      {error !== null && error !== undefined && data ? (
+        <AuthorityRequestError
+          cause={error}
+          message={authorityMessage(error, "Main → Chat failed delivery")}
+          onRetry={() => void load()}
         />
-      ) : rows.length === 0 ? (
-        <EmptyState
-          hint={t(
-            "Every Main → Chat durable event is pending, delivered, or explicitly terminalized.",
-          )}
-          title={t("No failed Main → Chat deliveries")}
-        />
-      ) : (
+      ) : null}
+      {!canRead ? null : (
         <>
-          {canReplay || canDiscardMissing ? (
+          {selectable && rows.length > 0 ? (
             <div className="flex flex-wrap items-center gap-3">
               <label className="flex items-center gap-2 text-xs text-[var(--ad-text-muted)]">
                 <input
@@ -779,7 +824,7 @@ function MainToChatFailedOutboxPanel({
                 {t("Select all")}
               </label>
               <span className="text-xs text-[var(--ad-text-muted)]">
-                {selectedRows.length} {t("selected")}
+                {t("{count} selected", { count: selectedRows.length })}
               </span>
               {canReplay ? (
                 <button
@@ -811,125 +856,24 @@ function MainToChatFailedOutboxPanel({
               ) : null}
             </div>
           ) : null}
-          {/* SEAM: 手写表——`DataTable` 目前不支持多选。多选能力落地后整表迁过去。 */}
-          <div
-            aria-label={t("Failed Main to Chat delivery table")}
-            className="overflow-x-auto rounded-lg border border-[var(--ad-border)]"
-            role="region"
-            tabIndex={0}
-          >
-            <table className="w-full min-w-[1080px] text-left text-sm">
-              <caption className="sr-only">
-                {t("Failed Main to Chat durable deliveries")}
-              </caption>
-              <thead>
-                <tr className="border-b border-[var(--ad-border)] text-xs uppercase text-[var(--ad-text-muted)]">
-                  {[
-                    ...(canReplay || canDiscardMissing ? [""] : []),
-                    "Event",
-                    "Aggregate",
-                    "Receiver authority",
-                    "Attempts / retry",
-                    "Last error",
-                    "Envelope hash",
-                    "Updated",
-                  ].map((header, index) => (
-                    <th
-                      className="px-3 py-3 font-medium"
-                      key={`${header}-${index}`}
-                      scope="col"
-                    >
-                      {header ? t(header) : header}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row, index) => {
-                  const disabledReasonId =
-                    `main-to-chat-replay-disabled-${index}`;
-                  return (
-                    <tr
-                      className="border-b border-[var(--ad-border)] last:border-0"
-                      key={row.id}
-                    >
-                      {canReplay || canDiscardMissing ? (
-                        <td className="px-3 py-3">
-                          <input
-                            aria-describedby={
-                              !rowActionable(row, canReplay, canDiscardMissing)
-                                ? disabledReasonId
-                                : undefined
-                            }
-                            aria-label={t("Select failed event {id}", {
-                              id: row.id,
-                            })}
-                            checked={selected.has(row.id)}
-                            disabled={!rowActionable(
-                              row,
-                              canReplay,
-                              canDiscardMissing,
-                            )}
-                            onChange={() => toggle(row.id)}
-                            type="checkbox"
-                          />
-                        </td>
-                      ) : null}
-                      <td className="px-3 py-3">
-                        <p className="font-medium">{row.eventType}</p>
-                        <p className="font-mono text-xs text-[var(--ad-text-muted)]">
-                          {row.id}
-                        </p>
-                      </td>
-                      <td className="max-w-80 px-3 py-3 text-xs">
-                        <p className="font-semibold">
-                          {t(receiverAuthorityLabel(row.receiverAuthority.disposition))}
-                        </p>
-                        {row.receiverAuthority.target ? (
-                          <p className="break-all font-mono text-[11px] text-[var(--ad-text-muted)]">
-                            {row.receiverAuthority.target.kind}:{row.receiverAuthority.target.id}
-                            {row.receiverAuthority.targetStatus
-                              ? ` · ${row.receiverAuthority.targetStatus}`
-                              : ""}
-                          </p>
-                        ) : null}
-                        {row.envelopeHash !== null &&
-                        !rowActionable(row, canReplay, canDiscardMissing) ? (
-                          <span className="sr-only" id={disabledReasonId}>
-                            {t("No safe action is available for this receiver authority state")}
-                          </span>
-                        ) : null}
-                      </td>
-                      <td className="px-3 py-3">
-                        <p>{row.aggregateType}</p>
-                        <p className="font-mono text-xs text-[var(--ad-text-muted)]">
-                          {row.aggregateId}
-                        </p>
-                      </td>
-                      <td className="px-3 py-3">
-                        <p>{row.attempts}</p>
-                        <p className="text-xs text-[var(--ad-text-muted)]">
-                          {date(row.nextRunAt, locale)}
-                        </p>
-                      </td>
-                      <td className="max-w-80 px-3 py-3 text-xs">
-                        {row.lastErrorMessage ?? "—"}
-                      </td>
-                      <td className="max-w-72 break-all px-3 py-3 font-mono text-[11px]">
-                        {row.envelopeHash ?? (
-                          <span id={disabledReasonId}>
-                            {t("Replay unavailable · invalid durable envelope")}
-                            {` · ${row.storedEnvelopeHash}`}
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-3 py-3 text-xs">{date(row.updatedAt, locale)}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <DataTable
+            caption="Failed Main to Chat durable deliveries"
+            empty={
+              <EmptyState
+                hint={t(
+                  "Every Main → Chat durable event is pending, delivered, or explicitly terminalized.",
+                )}
+                title={t("No failed Main → Chat deliveries")}
+              />
+            }
+            error={data ? null : error === null || error === undefined ? null : authorityMessage(error, "Main → Chat failed delivery")}
+            headers={headers}
+            loading={loading}
+            minimumWidthClassName="min-w-[1080px]"
+            onRetry={() => void load()}
+            rows={tableRows}
+            skeletonRows={5}
+          />
           {data?.pageInfo.hasNextPage && data.pageInfo.endCursor ? (
             <button
               className="inline-flex min-h-11 items-center gap-2 rounded border border-[var(--ad-border)] px-4 text-sm font-semibold"
@@ -1142,7 +1086,9 @@ const AUTHORITY_LABELS: Record<ChatOpsAuthority, string> = {
   events: "Events",
 };
 
-// SEAM: `state.error` 现在是后端原文。`ui/request-error-copy.ts` 落地后改走那套映射。
+// INTENT: 横幅不再重复 authority 的名字 —— 顶栏那行 Freshness 已经逐个报了
+// 「Usage: unavailable」，而它就贴在对应的那张表上方。文案与技术详情全部走
+// ui/request-error-copy.ts，认不出的错误如实说「原因未能识别」。
 function AuthorityError({
   authority,
   query,
@@ -1154,29 +1100,19 @@ function AuthorityError({
   retry: (query: ChatOpsQuery, authority: ChatOpsAuthority) => Promise<void>;
   state: AuthorityState;
 }) {
-  const { t } = useAdminI18n();
-  if (!state.error) return null;
-  const label = t(AUTHORITY_LABELS[authority]);
+  if (state.error === null || state.error === undefined) return null;
   return (
-    <div
-      className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
-      role="alert"
-    >
-      {t("{authority} authority refresh failed:", { authority: label })} {state.error}
-      <button
-        className="ml-3 min-h-8 rounded border border-current px-2"
-        onClick={() => void retry(query, authority)}
-        type="button"
-      >
-        {t("Retry {authority}", { authority: label })}
-      </button>
-      {state.data ? (
-        <span className="ml-2">
-          {t("The last good snapshot remains visible.")}
-        </span>
-      ) : null}
-    </div>
+    <AuthorityRequestError
+      cause={state.error}
+      message={authorityMessage(state.error, authority)}
+      onRetry={() => void retry(query, authority)}
+      snapshotAt={state.data ? state.refreshedAt : null}
+    />
   );
+}
+
+function authorityMessage(error: unknown, authority: string) {
+  return error instanceof Error ? error.message : `${authority} authority request failed`;
 }
 
 function DiagnosticsNotice({ data }: { data: ChatResponse | null }) {
@@ -1357,9 +1293,4 @@ function display(value: unknown) {
   )
     return String(value);
   return value === null || value === undefined ? "—" : JSON.stringify(value);
-}
-
-function date(value: unknown, locale: "en" | "zh") {
-  const parsed = new Date(text(value));
-  return Number.isNaN(parsed.getTime()) ? "—" : parsed.toLocaleString(adminDateLocale(locale));
 }

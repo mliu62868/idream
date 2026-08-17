@@ -471,6 +471,11 @@ function GenerationJobInspector({ detail, error, jobId, loading, onClose, onReco
   );
 }
 
+// SPEC: 详情面板里的七张只读证据表，故意不是 DataTable。
+// INTENT: DataTable 的 caption 是 sr-only、空态是一整块 EmptyState、每行还要一个稳定 id——
+// 七张表叠在一个抽屉里就变成七个大空块、七段看不见的标题，而这些行（事件序号、结算流水）
+// 本来就没有可点进去的实体。这里要的恰恰相反：可见的小标题 + 一行灰字说"还没有记录"。
+// 列表页那张真表已经在用 DataTable，这不是漏迁。
 function AuthorityTable({ caption, headers, rows }: { caption: string; headers: string[]; rows: string[][] }) {
   const { t } = useAdminI18n();
   const translatedCaption = t(caption);

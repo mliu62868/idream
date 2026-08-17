@@ -12,7 +12,7 @@ import {
 import { ADMIN_PERMISSION_KEYS, type AdminPermissionKey } from "@idream/shared/admin/permissions";
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Ban, Check, Loader2, RefreshCcw, ShieldCheck, X } from "lucide-react";
+import { Ban, Check, Loader2, ShieldCheck, X } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import {
   ConfirmDialog,
@@ -21,14 +21,16 @@ import {
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import { useAdminFormat, text } from "@/components/admin/ui/format";
+import { Pagination } from "@/components/admin/ui/Pagination";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { permissionLabel } from "@/components/admin/ui/permission-copy";
 import { useToast } from "@/components/admin/ui/Toast";
 import { createLatestRequestGate } from "@/lib/latest-request";
-import { dreamcoins } from "@/features/billing/money";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import {
+  ACCESS_PAGE_SIZE,
   accessListPath,
   accessPermissionConfirmation,
   accessQueryFromSearch,
@@ -83,10 +85,13 @@ export function AccessWorkspace({
   permissions: { changeStatus: boolean; managePermissions: boolean };
 }) {
   const { t, value: valueLabel } = useAdminI18n();
+  const format = useAdminFormat();
   const { toast } = useToast();
   const [query, setQuery] = useState<AccessQuery>(() => currentQuery());
   const [draft, setDraft] = useState<AccessQuery>(() => currentQuery());
   const [data, setData] = useState<AccessUserListResponse | null>(null);
+  // 游标分页没有页码，只有「上一页用的是哪个游标」。这条轨迹就是 Pagination 的第 N 页。
+  const [cursorTrail, setCursorTrail] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [errorCause, setErrorCause] = useState<unknown>(undefined);
@@ -132,6 +137,8 @@ export function AccessWorkspace({
       const next = currentQuery();
       setQuery(next);
       setDraft(next);
+      // 回退到的那一页是哪一页，历史条目里没记；不知道就说不知道，把「上一页」置灰。
+      setCursorTrail([]);
       void load(next);
     };
     window.addEventListener("popstate", restore);
@@ -173,7 +180,12 @@ export function AccessWorkspace({
     };
   }, [permissions.managePermissions, targetUserId]);
 
-  function navigate(next: AccessQuery, mode: "push" | "replace" = "push") {
+  // SPEC: 任何改变结果集的动作都回到第一页 —— 所以 trail 默认清空，只有翻页自己传轨迹。
+  function navigate(
+    next: AccessQuery,
+    mode: "push" | "replace" = "push",
+    trail: string[] = [],
+  ) {
     window.history[mode === "push" ? "pushState" : "replaceState"](
       null,
       "",
@@ -185,6 +197,7 @@ export function AccessWorkspace({
     );
     setQuery(next);
     setDraft(next);
+    setCursorTrail(trail);
     void load(next);
   }
 
@@ -229,7 +242,7 @@ export function AccessWorkspace({
         role="status"
       >
         {/* 首次加载时下方的骨架屏已经在说"正在加载"，这里再说一遍就是两个加载态。 */}
-        <span>{data || error ? freshness(data, loading, error, refreshedAt) : ""}</span>
+        <span>{data || error ? freshness(data, loading, error, refreshedAt, t, format) : ""}</span>
         <span className="flex gap-3 font-semibold">
           {!permissions.managePermissions ? <PermissionNotice permission="user.role.write" /> : null}
           {!permissions.changeStatus ? <PermissionNotice permission="user.status.write" /> : null}
@@ -443,24 +456,28 @@ export function AccessWorkspace({
               permissions.changeStatus,
               confirmCommand,
               t,
+              format,
             )}
           />
         )
       ) : null}
-      {/* MIGRATION: 只有「下一页」。ui/Pagination.tsx 已建（含上一页），合并后切过去。 */}
-      {data?.pageInfo?.hasNextPage && data.pageInfo.endCursor ? (
-        <button
-          className="inline-flex min-h-11 items-center gap-2 rounded-md border px-4 text-sm font-semibold"
-          disabled={loading}
-          onClick={() =>
-            navigate({ ...query, cursor: data.pageInfo?.endCursor ?? "" })
+      {data ? (
+        <Pagination
+          hasNext={Boolean(data.pageInfo.hasNextPage && data.pageInfo.endCursor)}
+          hasPrevious={cursorTrail.length > 0}
+          loading={loading}
+          onNext={() => {
+            const endCursor = data.pageInfo.endCursor;
+            if (!endCursor) return;
+            navigate({ ...query, cursor: endCursor }, "push", [...cursorTrail, query.cursor]);
+          }}
+          onPrevious={() =>
+            navigate({ ...query, cursor: cursorTrail.at(-1) ?? "" }, "push", cursorTrail.slice(0, -1))
           }
-          type="button"
-        >
-          <RefreshCcw className="h-4 w-4" />
-
-          {t("Next user page")}
-        </button>
+          page={cursorTrail.length + 1}
+          pageSize={ACCESS_PAGE_SIZE}
+          rowCount={users.length}
+        />
       ) : null}
       {confirmation ? (
         <ConfirmDialog
@@ -566,6 +583,7 @@ function userTableRows(
   canChangeStatus: boolean,
   confirm: (input: AccessCommand) => void,
   t: (key: string, values?: Record<string, string | number>) => string,
+  format: ReturnType<typeof useAdminFormat>,
 ): DataTableRow[] {
   return users.map((user, index) => {
     const id = text(user.id);
@@ -575,13 +593,14 @@ function userTableRows(
       id: id || `user-${index}`,
       cells: [
         id,
-        display(user.email),
-        display(user.displayName),
-        display(user.role),
-        display(user.status),
-        display(user.dataClass),
-        <span className="tabular-nums" key="dreamcoins">{dreamcoins(user.dreamcoins)}</span>,
-        date(user.createdAt),
+        format.display(user.email),
+        format.display(user.displayName),
+        format.display(user.role),
+        format.display(user.status),
+        format.display(user.dataClass),
+        // 列头已经写着 Dreamcoins，每格再缀一遍单位是噪音。
+        <span className="tabular-nums" key="dreamcoins">{format.dreamcoins(user.dreamcoins, { unit: false })}</span>,
+        format.dateTime(user.createdAt),
         canChangeStatus ? (
           <button
             aria-label={next === "active" ? "Restore" : "Suspend"}
@@ -629,20 +648,22 @@ function currentQuery() {
     ? defaultAccessQuery
     : accessQueryFromSearch(window.location.search);
 }
+// INTENT: 这四句原来是裸英文字符串，中文界面里照样印英文；时刻还走裸 toLocaleTimeString()，
+//         跟着浏览器语言漂。两件事一起收：文案过 t()，时刻过 ui/format。
 function freshness(
   data: AccessUserListResponse | null,
   loading: boolean,
   error: string | null,
   refreshedAt: string | null,
+  t: (key: string, values?: Record<string, string | number>) => string,
+  format: ReturnType<typeof useAdminFormat>,
 ) {
-  const time = refreshedAt
-    ? new Date(refreshedAt).toLocaleTimeString()
-    : "unknown";
-  if (loading && data) return `refreshing · as of ${time}`;
-  if (error && data) return `stale · last good ${time}`;
-  if (error) return "unavailable";
-  if (data) return `as of ${time}`;
-  return "loading…";
+  const time = refreshedAt ? format.time(refreshedAt) : t("unknown");
+  if (loading && data) return t("Refreshing · as of {time}", { time });
+  if (error && data) return t("Stale · last good {time}", { time });
+  if (error) return t("unavailable");
+  if (data) return t("As of {time}", { time });
+  return t("loading…");
 }
 function Field({
   label,
@@ -697,17 +718,4 @@ function Select({
       </select>
     </label>
   );
-}
-// MIGRATION: 与 billing/pricing/promo 的同名三件套重复，等 ui/format.ts 统一后一起切。
-function text(value: unknown) {
-  return typeof value === "string" ? value : "";
-}
-function display(value: unknown) {
-  return typeof value === "string" || typeof value === "number"
-    ? String(value)
-    : "—";
-}
-function date(value: unknown) {
-  const parsed = new Date(text(value));
-  return Number.isNaN(parsed.getTime()) ? "—" : parsed.toLocaleString();
 }

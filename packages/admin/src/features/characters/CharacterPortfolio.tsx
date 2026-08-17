@@ -1,10 +1,12 @@
 "use client";
 
-import { adminDateLocale, useAdminI18n } from "@/components/admin/i18n";
+import { useAdminI18n } from "@/components/admin/i18n";
 import Link from "next/link";
-import type { CharacterPortfolioItem } from "@idream/shared/admin";
+import type { AdminPageInfo, CharacterPortfolioItem } from "@idream/shared/admin";
 import { Plus, Search, SlidersHorizontal } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { useAdminFormat } from "@/components/admin/ui/format";
+import { Pagination } from "@/components/admin/ui/Pagination";
 import {
   LoadingWorkspace,
   WorkspaceButton,
@@ -14,11 +16,16 @@ import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { useAuthorityResource } from "@/lib/authority-resource";
 import { cn } from "@/lib/utils";
 import {
+  CHARACTER_PORTFOLIO_DEFAULT_SORT,
+  CHARACTER_PORTFOLIO_PAGE_SIZE,
   CHARACTER_PORTFOLIO_PHASES,
   CHARACTER_PORTFOLIO_READINESS_STATES,
   CHARACTER_PORTFOLIO_SERVING_STATES,
+  CHARACTER_PORTFOLIO_SORT_LABELS,
+  CHARACTER_PORTFOLIO_SORTS,
   characterPortfolioQuery,
   parseCharacterPortfolioUrl,
+  type CharacterPortfolioSort,
   type CharacterPortfolioUrlState,
 } from "./portfolio-query";
 import { permissionDenied } from "./character-permission-denied";
@@ -27,10 +34,22 @@ import { CharacterPortfolioCard } from "./CharacterPortfolioCard";
 
 // INTENT: 稳定引用，避免"投影还没到"时每次渲染都换一个新的空值。
 const EMPTY_PORTFOLIO_ITEMS: readonly CharacterPortfolioItem[] = [];
-const EMPTY_PORTFOLIO_PAGE_INFO = {
+const EMPTY_PORTFOLIO_PAGE_INFO: AdminPageInfo = {
   endCursor: null,
   hasNextPage: false,
-} as const;
+};
+
+// SPEC: 走过的游标存在 history entry 上，不只存在组件 state 里。
+// INTENT: 刷新和「后退」都会重建组件，只靠 state 就把栈清空 —— 地址栏还带着第 4 页的游标，
+//         分页条却报「第 1 页 · 第 1–25 条」。history.state 跟着这条 history entry 走，
+//         刷新和前进后退都还在；真的放不下它时（别人分享过来的链接），宁可回到第一页，
+//         也不显示一个猜出来的页码。
+type PortfolioHistoryState = { cursorStack?: readonly string[] };
+
+function restoredCursorStack(): readonly string[] {
+  const state = window.history.state as PortfolioHistoryState | null;
+  return Array.isArray(state?.cursorStack) ? state.cursorStack : [];
+}
 
 export function CharacterPortfolio({
   canOpenAssets,
@@ -45,13 +64,15 @@ export function CharacterPortfolio({
   canRead: boolean;
   mode: "studio" | "performance";
 }) {
-  const { locale, t } = useAdminI18n();
+  const { t } = useAdminI18n();
+  const format = useAdminFormat();
   const performanceMode = mode === "performance";
   const [search, setSearch] = useState("");
   const [phase, setPhase] = useState("");
   const [servingState, setServingState] = useState("");
   const [readiness, setReadiness] = useState("");
   const [attention, setAttention] = useState(false);
+  const [sort, setSort] = useState<CharacterPortfolioSort>(CHARACTER_PORTFOLIO_DEFAULT_SORT);
   // SPEC: 已生效的查询与筛选表单草稿分开保存。
   // INTENT: 上面六个 state 直接绑在输入框上，改一个下拉不该触发取数——只有 Apply /
   //         翻页 / 地址栏恢复才更新 applied，也就是 useAuthorityResource 的 query key。
@@ -98,12 +119,13 @@ export function CharacterPortfolio({
       setServingState(next.servingState ?? "");
       setReadiness(next.readiness ?? "");
       setAttention(next.attention ?? false);
+      setSort(next.sort ?? CHARACTER_PORTFOLIO_DEFAULT_SORT);
       setApplied(next);
       setCursorStack(nextCursorStack);
       if (historyMode !== "none") {
         const locationQuery = characterPortfolioQuery(next);
         window.history[historyMode === "push" ? "pushState" : "replaceState"](
-          null,
+          { cursorStack: nextCursorStack } satisfies PortfolioHistoryState,
           "",
           `${window.location.pathname}${locationQuery ? `?${locationQuery}` : ""}`,
         );
@@ -114,7 +136,9 @@ export function CharacterPortfolio({
 
   useEffect(() => {
     const restore = (historyMode: "none" | "replace") => {
-      applyQuery(parseCharacterPortfolioUrl(window.location.search), historyMode);
+      const stack = restoredCursorStack();
+      const next = parseCharacterPortfolioUrl(window.location.search);
+      applyQuery(stack.length === 0 ? { ...next, cursor: undefined } : next, historyMode, stack);
     };
     // INTENT: 挂载时同步恢复即可——resource 的首轮取数排在 setTimeout(…, 0) 里，
     //         这一句先落地，那一轮就直接带着地址栏里的查询发出去，不会先打一发空查询。
@@ -132,10 +156,28 @@ export function CharacterPortfolio({
         servingState: servingState || undefined,
         readiness: readiness || undefined,
         attention: attention || undefined,
+        sort,
         cursor: nextCursor,
       },
       "push",
       nextCursorStack,
+    );
+  }
+
+  // INTENT: 排序不进"表单草稿"—— 换排序键会让当前游标失去意义（keyset 分页的游标是排序键
+  //         的位置），所以它立即生效并回到第一页，而不是等运营再点一次 Search。
+  function changeSort(next: CharacterPortfolioSort) {
+    setSort(next);
+    applyQuery(
+      {
+        search,
+        phase: phase || undefined,
+        servingState: servingState || undefined,
+        readiness: readiness || undefined,
+        attention: attention || undefined,
+        sort: next,
+      },
+      "push",
     );
   }
 
@@ -165,13 +207,14 @@ export function CharacterPortfolio({
         servingState: servingState || undefined,
         readiness: readiness || undefined,
         attention: next || undefined,
+        sort,
       },
       "push",
     );
   }
 
   function clearStatusFilters() {
-    applyQuery({ search, attention: attention || undefined }, "push");
+    applyQuery({ search, attention: attention || undefined, sort }, "push");
   }
 
   const statusFilterControls = (
@@ -259,6 +302,21 @@ export function CharacterPortfolio({
         />
       </label>
       <WorkspaceButton type="submit">{t("Search")}</WorkspaceButton>
+      <label className="shrink-0 text-xs font-semibold text-[var(--ad-text-muted)]">
+        <span className="sr-only">{t("Sort")}</span>
+        <select
+          aria-label={t("Sort characters")}
+          className={fieldClass}
+          onChange={(event) => changeSort(event.target.value as CharacterPortfolioSort)}
+          value={sort}
+        >
+          {CHARACTER_PORTFOLIO_SORTS.map((value) => (
+            <option key={value} value={value}>
+              {t(CHARACTER_PORTFOLIO_SORT_LABELS[value])}
+            </option>
+          ))}
+        </select>
+      </label>
       {/* INTENT: 「需要处理」两种模式都要给。之前只在 performance 模式渲染，
           studio 的运营只能手敲 ?attention=true —— URL 解析和空态一直都支持它。 */}
       <button
@@ -374,17 +432,6 @@ export function CharacterPortfolio({
           )
         ) : (
           <>
-            {/* SPEC: 只说"这一页有几个"，不说总数——投影不下发 total。
-                INTENT: 原文案是 "{count} characters"，第一页永远显示 25，运营会当成全部就这些。 */}
-            {!performanceMode ? (
-              <p className="mb-5 text-sm text-[var(--ad-text-muted)]">
-                {pageInfo.hasNextPage
-                  ? t("Showing {count} characters · more on the next page", {
-                      count: items.length,
-                    })
-                  : t("Showing {count} characters", { count: items.length })}
-              </p>
-            ) : null}
             <div
               className={
                 performanceMode
@@ -406,31 +453,25 @@ export function CharacterPortfolio({
           </>
         )}
       </div>
-      <div className="mt-4 flex items-center justify-between gap-3">
-        <p className="text-xs text-[var(--ad-text-muted)]">
-          {asOf
-            ? t("Fresh as of {time}", {
-                time: new Date(asOf).toLocaleString(adminDateLocale(locale)),
-              })
-            : t("Not loaded yet")}
-        </p>
-        <div className="flex shrink-0 items-center gap-3">
-          <span className="text-xs text-[var(--ad-text-muted)]">
-            {t("Page {page}", { page: cursorStack.length + 1 })}
-          </span>
-          <WorkspaceButton
-            disabled={loading || cursorStack.length === 0}
-            onClick={() => goToPage("previous")}
-          >
-            {t("Previous page")}
-          </WorkspaceButton>
-          <WorkspaceButton
-            disabled={loading || !pageInfo.hasNextPage || !pageInfo.endCursor}
-            onClick={() => goToPage("next")}
-          >
-            {t("Next page")}
-          </WorkspaceButton>
-        </div>
+      <div className="mt-4">
+        <Pagination
+          detail={
+            asOf
+              ? t("Fresh as of {time}", { time: format.dateTime(asOf) })
+              : t("Not loaded yet")
+          }
+          hasNext={Boolean(pageInfo.hasNextPage && pageInfo.endCursor)}
+          // 「上一页」走本地走过的游标栈，不是 pageInfo.hasPreviousPage —— portfolio 的反向
+          // 游标可能缺席，而缺席只说明这个 operation 还是单向的，不代表运营在第一页。
+          hasPrevious={cursorStack.length > 0}
+          loading={loading}
+          onNext={() => goToPage("next")}
+          onPrevious={() => goToPage("previous")}
+          page={cursorStack.length + 1}
+          pageSize={CHARACTER_PORTFOLIO_PAGE_SIZE}
+          rowCount={items.length}
+          totalCount={pageInfo.totalCount ?? null}
+        />
       </div>
     </section>
   );

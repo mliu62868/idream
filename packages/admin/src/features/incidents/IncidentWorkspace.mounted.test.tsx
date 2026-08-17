@@ -123,6 +123,8 @@ describe("IncidentWorkspace mitigation safety", () => {
 
     await click(findButton("Execute frozen plan", container));
     const dialog = await waitForDialog();
+    // 后果是常驻红条，运营在敲确认串之前就读得到「没有回头路」。
+    expect(dialog.textContent).toContain("This cannot be undone.");
     expect(dialog.textContent).toContain("This moves customer money across 2 occurrences");
     // 幂等键在打开对话框时就固定下来，失败后就地重试不会重复退款——这句话必须是真的。
     expect(dialog.textContent).toContain("reuses the same idempotency key");

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  CHARACTER_PORTFOLIO_DEFAULT_SORT,
+  CHARACTER_PORTFOLIO_SORTS,
   characterPortfolioQuery,
   parseCharacterPortfolioUrl,
 } from "./portfolio-query";
@@ -33,6 +35,24 @@ describe("Character Portfolio URL authority", () => {
     expect(parseCharacterPortfolioUrl("?attention=true")).toMatchObject({ attention: true });
     expect(characterPortfolioQuery({ search: "", attention: true })).toBe("attention=true");
     expect(parseCharacterPortfolioUrl("?attention=1").attention).toBeUndefined();
+    expect(characterPortfolioQuery({ search: "" })).toBe("");
+  });
+
+  // SPEC: 排序键必须能分享和刷新 —— 它决定 keyset 游标的含义，跟筛选一样是查询的一部分。
+  it("round-trips every sort the authority accepts and rejects the rest", () => {
+    for (const sort of CHARACTER_PORTFOLIO_SORTS) {
+      expect(parseCharacterPortfolioUrl(`?sort=${sort}`)).toMatchObject({ sort });
+      expect(characterPortfolioQuery({ search: "", sort })).toBe(`sort=${sort}`);
+    }
+    // 契约会用 .strict() 挡下没见过的值；与其发出去换一个 400，不如在这里就退回默认。
+    expect(parseCharacterPortfolioUrl("?sort=qce_desc").sort).toBeUndefined();
+  });
+
+  it("sends the contract default when the operator has not chosen a sort", () => {
+    expect(characterPortfolioQuery({ search: "" }, true)).toBe(
+      `limit=25&sort=${CHARACTER_PORTFOLIO_DEFAULT_SORT}`,
+    );
+    // 默认值不写进地址栏 —— 分享出去的链接只带运营真的选过的东西。
     expect(characterPortfolioQuery({ search: "" })).toBe("");
   });
 });

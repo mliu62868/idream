@@ -3,11 +3,14 @@
 import { useAdminI18n } from "@/components/admin/i18n";
 import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Activity, Flag, Loader2, Play, RefreshCcw, RotateCcw, UploadCloud, X } from "lucide-react";
+import { Activity, Flag, Loader2, Play, RotateCcw, UploadCloud, X } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
+import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import { useAdminFormat, text } from "@/components/admin/ui/format";
+import { emptyPageInfo, Pagination, type PageInfo } from "@/components/admin/ui/Pagination";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { useToast } from "@/components/admin/ui/Toast";
@@ -16,6 +19,7 @@ import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import {
   defaultGenerationConfigQuery,
   featureFlagsPath,
+  GENERATION_CONFIG_PAGE_SIZE,
   generationConfigQueryFromSearch,
   generationConfigWorkspaceUrl,
   generationProfilesPath,
@@ -24,15 +28,16 @@ import {
 } from "./query";
 
 type RecordRow = Record<string, unknown>;
-type PageInfo = { endCursor: string | null; hasNextPage: boolean };
 type ListResponse = { items: RecordRow[]; pageInfo?: PageInfo };
 type AuthorityState<T> = { data: T | null; error: string | null; cause: unknown; loading: boolean; refreshedAt: string | null };
 type Permissions = { manageProfiles: boolean; manageFlags: boolean };
 type ReviewDraft = { sampleCount: string; passCount: string; reviewUrl: string };
 // SPEC: 一次测试出一张。同一个值既发给后端，也印在确认框的成本说明里。
 const TEST_IMAGE_OUTPUT_COUNT = 1;
-const emptyPageInfo: PageInfo = { endCursor: null, hasNextPage: false };
 const emptyAuthorityState = <T,>(): AuthorityState<T> => ({ data: null, error: null, cause: undefined, loading: true, refreshedAt: null });
+/** 两张表各自翻页，但一次 navigate 会把两边都重新拉一遍，所以轨迹要一起带着走。 */
+type ConfigTrails = { profiles: string[]; flags: string[] };
+const emptyTrails: ConfigTrails = { profiles: [], flags: [] };
 type ConfigCommand = {
   title: string;
   /** 成功后 toast 的正文，调用处已经翻译好。 */
@@ -46,6 +51,7 @@ type ConfigCommand = {
 
 export function GenerationConfigWorkspace({ permissions }: { permissions: Permissions }) {
   const { t } = useAdminI18n();
+  const format = useAdminFormat();
   const { toast } = useToast();
   const [query, setQuery] = useState<GenerationConfigQuery>(() => currentQuery());
   const [draft, setDraft] = useState<GenerationConfigQuery>(() => currentQuery());
@@ -57,6 +63,8 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
   const [review, setReview] = useState<ReviewDraft>({ sampleCount: "", passCount: "", reviewUrl: "" });
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
   const [testBusy, setTestBusy] = useState(false);
+  // 游标分页没有页码，只有「上一页用的是哪个游标」。这条轨迹就是 Pagination 的第 N 页。
+  const [trails, setTrails] = useState<ConfigTrails>(emptyTrails);
   const requestGates = useRef({ profiles: createLatestRequestGate(), flags: createLatestRequestGate(), jobs: createLatestRequestGate() });
   const initialQuery = useRef(query);
 
@@ -106,6 +114,8 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
       const restored = currentQuery();
       setQuery(restored);
       setDraft(restored);
+      // 回退到的那一页是哪一页，历史条目里没记；不知道就说不知道，把「上一页」置灰。
+      setTrails(emptyTrails);
       load(restored);
     };
     window.addEventListener("popstate", restore);
@@ -119,11 +129,13 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
     };
   }, [load]);
 
-  function navigate(next: GenerationConfigQuery, mode: "push" | "replace" = "push") {
+  // SPEC: 任何改变结果集的动作都回到第一页 —— 所以 trails 默认清空，只有翻页自己传轨迹。
+  function navigate(next: GenerationConfigQuery, mode: "push" | "replace" = "push", nextTrails: ConfigTrails = emptyTrails) {
     const url = generationConfigWorkspaceUrl(window.location.pathname, window.location.search, next);
     window.history[mode === "push" ? "pushState" : "replaceState"](null, "", url);
     setQuery(next);
     setDraft(next);
+    setTrails(nextTrails);
     load(next);
   }
 
@@ -167,7 +179,7 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
       consequence: {
         effect: t("This runs a real generation: {count} image on {runner}, queued behind customer work. It debits no Dreamcoins, and the queued job cannot be recalled once dispatched.", {
           count: TEST_IMAGE_OUTPUT_COUNT,
-          runner: display(selectedProfile?.runner),
+          runner: text(selectedProfile?.runner) || "—",
         }),
         reversible: false,
       },
@@ -228,18 +240,18 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
             <div className="grid gap-4 lg:grid-cols-[minmax(260px,0.8fr)_minmax(0,1.6fr)]">
               <div className="space-y-2 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3">{profileRows.map((profile) => {
                 const id = text(profile.id);
-                return <button aria-current={id === selectedId ? "true" : undefined} className={`w-full rounded-md border px-3 py-3 text-left ${id === selectedId ? "border-[var(--ad-ink)] bg-black/5" : "border-[var(--ad-border)]"}`} key={id} onClick={() => setSelectedProfileId(id)} type="button"><span className="block font-semibold">{text(profile.label) || text(profile.profileKey) || id}</span><span className="mt-1 block text-xs text-[var(--ad-text-muted)]">{display(profile.status)} · v{display(profile.version)} · {display(profile.mode)}</span></button>;
+                return <button aria-current={id === selectedId ? "true" : undefined} className={`w-full rounded-md border px-3 py-3 text-left ${id === selectedId ? "border-[var(--ad-ink)] bg-black/5" : "border-[var(--ad-border)]"}`} key={id} onClick={() => setSelectedProfileId(id)} type="button"><span className="block font-semibold">{text(profile.label) || text(profile.profileKey) || id}</span><span className="mt-1 block text-xs text-[var(--ad-text-muted)]">{format.display(profile.status)} · v{format.display(profile.version)} · {format.display(profile.mode)}</span></button>;
               })}</div>
               {selectedProfile ? <ProfileDetail canWrite={permissions.manageProfiles} jobs={recentJobs.data?.items ?? []} onConfirm={confirmWrite} onTest={confirmTestImage} profile={selectedProfile} review={review} setReview={setReview} setTestPrompt={setTestPrompt} testBusy={testBusy} testPrompt={testPrompt} /> : null}
             </div>
           ) : null}
-          <NextPage label="Next profile page" loading={profiles.loading} onClick={() => navigate({ ...query, profileCursor: profiles.data?.pageInfo?.endCursor ?? "" })} pageInfo={profiles.data?.pageInfo ?? emptyPageInfo} />
+          {profiles.data ? <ListPagination cursor={query.profileCursor} loading={profiles.loading} onNavigate={(profileCursor, trail) => navigate({ ...query, profileCursor }, "push", { ...trails, profiles: trail })} pageInfo={profiles.data.pageInfo ?? emptyPageInfo} rowCount={profileRows.length} trail={trails.profiles} /> : null}
         </>
       ) : (
         <>
           {!permissions.manageFlags ? <p className="text-xs"><PermissionNotice permission="config.feature_flag.write" /></p> : null}
           {flags.data ? flagRows.length === 0 ? <EmptyState hint={filtered ? "The complete flag authority query returned no matches." : "No feature flags exist in the authority."} title={filtered ? "No feature flags match these filters" : "No feature flags exist yet"} /> : <FlagsTable canWrite={permissions.manageFlags} confirmWrite={confirmWrite} rows={flagRows} /> : null}
-          <NextPage label="Next feature-flag page" loading={flags.loading} onClick={() => navigate({ ...query, flagCursor: flags.data?.pageInfo?.endCursor ?? "" })} pageInfo={flags.data?.pageInfo ?? emptyPageInfo} />
+          {flags.data ? <ListPagination cursor={query.flagCursor} loading={flags.loading} onNavigate={(flagCursor, trail) => navigate({ ...query, flagCursor }, "push", { ...trails, flags: trail })} pageInfo={flags.data.pageInfo ?? emptyPageInfo} rowCount={flagRows.length} trail={trails.flags} /> : null}
         </>
       )}
       {confirmation ? <ConfirmDialog onClose={() => setConfirmation(null)} spec={confirmation} /> : null}
@@ -260,6 +272,7 @@ function ProfileDetail({ canWrite, jobs, onConfirm, onTest, profile, review, set
   testPrompt: string;
 }) {
   const { t } = useAdminI18n();
+  const format = useAdminFormat();
   const id = text(profile.id);
   const status = text(profile.status);
   const mode = text(profile.mode);
@@ -268,7 +281,7 @@ function ProfileDetail({ canWrite, jobs, onConfirm, onTest, profile, review, set
   const passCount = integer(review.passCount);
   const reviewReady = mode !== "image" || (sampleCount !== null && passCount !== null && sampleCount >= 20 && passCount <= sampleCount && passCount / sampleCount >= 0.8);
   return <section className="space-y-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-    <div><h2 className="text-lg font-semibold">{text(profile.label) || text(profile.profileKey) || id}</h2><p className="mt-1 text-sm text-[var(--ad-text-muted)]">{display(status)} · v{display(profile.version)} · {display(profile.runner)} · {display(profile.pipelineModel)}</p></div>
+    <div><h2 className="text-lg font-semibold">{text(profile.label) || text(profile.profileKey) || id}</h2><p className="mt-1 text-sm text-[var(--ad-text-muted)]">{format.display(status)} · v{format.display(profile.version)} · {format.display(profile.runner)} · {format.display(profile.pipelineModel)}</p></div>
     {canWrite ? <div className="flex flex-wrap gap-2">
       {status === "draft" ? <Action icon={<Activity className="h-4 w-4" />} label="Configuration check" onClick={() => onConfirm({ title: t("Check profile configuration {id}", { id }), completed: t("Configuration check finished for {id}", { id }), endpoint: `/api/v2/admin/generation/model-profiles/${id}/commands/dry-run`, method: "POST", expected: id, consequence: { effect: t("The profile is validated against the runtime. Nothing customer-facing changes."), reversible: true }, payload: (reason) => ({ reason }) })} /> : null}
       {mode === "image" && status !== "archived" ? <Action disabled={testBusy} icon={testBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />} label="Generate test image" onClick={onTest} /> : null}
@@ -287,12 +300,24 @@ function ProfileDetail({ canWrite, jobs, onConfirm, onTest, profile, review, set
 
 function FlagsTable({ canWrite, confirmWrite, rows }: { canWrite: boolean; confirmWrite: (input: ConfigCommand) => void; rows: RecordRow[] }) {
   const { t } = useAdminI18n();
-  return <div aria-label={t("Feature Flags scrollable table")} className="overflow-x-auto rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]" role="region" tabIndex={0}><table className="w-full min-w-[760px] text-left text-sm"><caption className="sr-only">{t("Feature Flags")}</caption><thead><tr className="border-b border-[var(--ad-border)] text-xs uppercase text-[var(--ad-text-muted)]">{["Key", "Enabled", "Rollout", "Version", "Hard policy", "Actions"].map((header) => <th className="px-4 py-3 font-medium" key={header} scope="col">{header}</th>)}</tr></thead><tbody>{rows.map((row) => {
+  const format = useAdminFormat();
+  const tableRows: DataTableRow[] = rows.map((row, index) => {
     const key = text(row.key);
     const enabled = Boolean(row.enabled);
     const expected = `${key}:${enabled ? "disabled" : "enabled"}`;
-    return <tr className="border-b border-[var(--ad-border)] last:border-0" key={key}><td className="px-4 py-3 font-mono text-xs">{key}</td><td className="px-4 py-3">{String(enabled)}</td><td className="px-4 py-3">{display(row.rolloutPercent)}</td><td className="px-4 py-3">{display(row.version)}</td><td className="px-4 py-3">{display(row.hardPolicy)}</td><td className="px-4 py-3">{canWrite ? <Action icon={<Flag className="h-4 w-4" />} label={enabled ? "Disable" : "Enable"} onClick={() => confirmWrite({ title: enabled ? t("Disable feature flag {key}", { key }) : t("Enable feature flag {key}", { key }), completed: enabled ? t("Feature flag {key} disabled", { key }) : t("Feature flag {key} enabled", { key }), endpoint: `/api/v2/admin/feature-flags/${key}`, method: "PATCH", expected, consequence: { effect: t("The flag flips for live traffic on the next request. Flipping it back is one more click on this same row."), reversible: true }, payload: (reason) => ({ enabled: !enabled, reason }) })} /> : t("Read only")}</td></tr>;
-  })}</tbody></table></div>;
+    return {
+      id: key || `flag-${index}`,
+      cells: [
+        <code className="text-xs" key="key">{key || "—"}</code>,
+        format.display(enabled),
+        format.display(row.rolloutPercent),
+        format.display(row.version),
+        format.display(row.hardPolicy),
+        canWrite ? <Action icon={<Flag className="h-4 w-4" />} key="action" label={enabled ? "Disable" : "Enable"} onClick={() => confirmWrite({ title: enabled ? t("Disable feature flag {key}", { key }) : t("Enable feature flag {key}", { key }), completed: enabled ? t("Feature flag {key} disabled", { key }) : t("Feature flag {key} enabled", { key }), endpoint: `/api/v2/admin/feature-flags/${key}`, method: "PATCH", expected, consequence: { effect: t("The flag flips for live traffic on the next request. Flipping it back is one more click on this same row."), reversible: true }, payload: (reason) => ({ enabled: !enabled, reason }) })} /> : t("Read only"),
+      ],
+    };
+  });
+  return <DataTable caption="Feature flags" headers={["Key", "Enabled", "Rollout", "Version", "Hard policy", "Actions"]} minimumWidthClassName="min-w-[760px]" rows={tableRows} stickyLastColumn />;
 }
 
 /**
@@ -320,7 +345,7 @@ export function publishBlockedReason(
 }
 
 function Freshness<T>({ label, state }: { label: string; state: AuthorityState<T> }) {
-  const { t } = useAdminI18n(); const time = state.refreshedAt ? new Date(state.refreshedAt).toLocaleTimeString() : "unknown"; if (state.loading && state.data) return <span>{label}{t(": refreshing · as of")} {time}</span>; if (state.error && state.data) return <span>{label}{t(": stale · last good")} {time}</span>; if (state.error) return <span>{label}{t(": unavailable")}</span>; if (state.data) return <span>{label}{t(": as of")} {time}</span>; return <span>{label}{t(": loading…")}</span>; }
+  const { t } = useAdminI18n(); const format = useAdminFormat(); const time = state.refreshedAt ? format.time(state.refreshedAt) : t("unknown"); if (state.loading && state.data) return <span>{label}{t(": refreshing · as of")} {time}</span>; if (state.error && state.data) return <span>{label}{t(": stale · last good")} {time}</span>; if (state.error) return <span>{label}{t(": unavailable")}</span>; if (state.data) return <span>{label}{t(": as of")} {time}</span>; return <span>{label}{t(": loading…")}</span>; }
 function AuthorityError<T>({ onRetry, state }: { onRetry: () => void; state: AuthorityState<T> }) {
   return state.error ? <AuthorityRequestError cause={state.cause} message={state.error} onRetry={onRetry} snapshotAt={state.data ? state.refreshedAt : null} /> : null; }
 function Loading() {
@@ -329,10 +354,32 @@ function Tab({ active, count, label, meta, onClick }: { active: boolean; count: 
 function Field({ label, onChange, search = false, value }: { label: string; onChange: (value: string) => void; search?: boolean; value: string }) { return <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{label}<input className="min-h-11 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm" onChange={(event) => onChange(event.target.value)} role={search ? "searchbox" : undefined} value={value} /></label>; }
 function Select({ label, onChange, options, value }: { label: string; onChange: (value: string) => void; options: string[]; value: string }) { return <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{label}<select className="min-h-11 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm" onChange={(event) => onChange(event.target.value)} value={value}>{options.map((option) => <option key={option || "all"} value={option}>{option || "All"}</option>)}</select></label>; }
 function Action({ disabled = false, icon, label, onClick }: { disabled?: boolean; icon: ReactNode; label: string; onClick: () => void }) { return <button className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-sm disabled:opacity-40" disabled={disabled} onClick={onClick} type="button">{icon}{label}</button>; }
-function NextPage({ label, loading, onClick, pageInfo }: { label: string; loading: boolean; onClick: () => void; pageInfo: PageInfo }) { return pageInfo.hasNextPage && pageInfo.endCursor ? <button className="inline-flex min-h-11 items-center gap-2 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" disabled={loading} onClick={onClick} type="button"><RefreshCcw className="h-4 w-4" />{label}</button> : null; }
+// SPEC: 配置档案和功能开关两张表的分页条形状完全一样，只有游标属于哪一张不同。
+function ListPagination({ cursor, loading, onNavigate, pageInfo, rowCount, trail }: {
+  cursor: string;
+  loading: boolean;
+  onNavigate: (cursor: string, trail: string[]) => void;
+  pageInfo: PageInfo;
+  rowCount: number;
+  trail: string[];
+}) {
+  return (
+    <Pagination
+      hasNext={Boolean(pageInfo.hasNextPage && pageInfo.endCursor)}
+      hasPrevious={trail.length > 0}
+      loading={loading}
+      onNext={() => {
+        if (!pageInfo.endCursor) return;
+        onNavigate(pageInfo.endCursor, [...trail, cursor]);
+      }}
+      onPrevious={() => onNavigate(trail.at(-1) ?? "", trail.slice(0, -1))}
+      page={trail.length + 1}
+      pageSize={GENERATION_CONFIG_PAGE_SIZE}
+      rowCount={rowCount}
+    />
+  );
+}
 function currentQuery() { return typeof window === "undefined" ? defaultGenerationConfigQuery : generationConfigQueryFromSearch(window.location.search); }
-function text(value: unknown) { return typeof value === "string" ? value : ""; }
-function display(value: unknown) { return typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : "—"; }
 function integer(value: string) { const parsed = Number(value); return Number.isInteger(parsed) && parsed >= 0 ? parsed : null; }
 function firstOrientation(profile: RecordRow | null) { const values = profile && Array.isArray(profile.allowedOrientations) ? profile.allowedOrientations.filter((value): value is string => typeof value === "string") : []; return values[0] ?? "1:1"; }
 function errorMessage(cause: unknown, fallback: string) { return cause instanceof Error ? cause.message : fallback; }

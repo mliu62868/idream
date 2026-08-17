@@ -1,9 +1,10 @@
 "use client";
 
-import { adminDateLocale, useAdminI18n } from "@/components/admin/i18n";
+import { useAdminI18n } from "@/components/admin/i18n";
 import Link from "next/link";
 import type { CharacterPortfolioItem } from "@idream/shared/admin";
 import { ArrowRight } from "lucide-react";
+import { useAdminFormat } from "@/components/admin/ui/format";
 import { StatusBadge } from "@/features/operations/WorkspaceUi";
 import { cn } from "@/lib/utils";
 import { percent } from "./character-workspace-format";
@@ -159,7 +160,8 @@ export function CharacterPortfolioCard({
   item: CharacterPortfolioItem;
   mode: "studio" | "performance";
 }) {
-  const { locale, t } = useAdminI18n();
+  const { t } = useAdminI18n();
+  const format = useAdminFormat();
   const performanceMode = mode === "performance";
   const performance =
     item.performance.find(
@@ -308,11 +310,7 @@ export function CharacterPortfolioCard({
               completed: assetPack.live.completed,
               total: assetPack.live.total,
             }),
-            // SEAM: 全局 ui/format.ts 落地后，这条短日期换成它的共享实现。
-            new Date(item.project.updatedAt).toLocaleDateString(
-              adminDateLocale(locale),
-              { day: "numeric", month: "short" },
-            ),
+            format.date(item.project.updatedAt),
           ].join(" · ")}
         </p>
       </div>
