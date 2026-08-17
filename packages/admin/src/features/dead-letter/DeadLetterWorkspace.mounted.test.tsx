@@ -11,6 +11,7 @@ const { apiGet, apiWrite } = vi.hoisted(() => ({
 
 vi.mock("@/components/admin/api", () => ({ apiGet, apiWrite }));
 
+import { ToastProvider } from "@/components/admin/ui/Toast";
 import { DeadLetterWorkspace } from "./DeadLetterWorkspace";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -59,9 +60,7 @@ describe("DeadLetterWorkspace retry authority", () => {
   it("offers Requeue only where the authority says the request is retryable", async () => {
     apiGet.mockResolvedValue({ items: [retryable, alreadyRefunded], pageInfo: { endCursor: null, hasNextPage: false } });
 
-    await act(async () => {
-      root.render(<DeadLetterWorkspace permissions={{ discard: true, requeue: true }} />);
-    });
+    await render({ discard: true, requeue: true });
     await waitUntil(() => container.textContent?.includes(retryable.id) ?? false);
 
     expect(rowActions(container, retryable.id)).toContain("Requeue");
@@ -78,15 +77,16 @@ describe("DeadLetterWorkspace retry authority", () => {
       skipped: [{ id: retryable.id, reason: "successful_artifact_exists" }],
     });
 
-    await act(async () => {
-      root.render(<DeadLetterWorkspace permissions={{ discard: false, requeue: true }} />);
-    });
+    await render({ discard: false, requeue: true });
     await waitUntil(() => container.textContent?.includes(retryable.id) ?? false);
 
-    await click(container.querySelector<HTMLInputElement>(`input[aria-label="Select dead-letter job ${retryable.id}"]`));
+    await click(rowCheckbox(container, retryable.id));
     await click(findButton("Requeue selected", container));
 
     const dialog = await waitForDialog();
+    // 后果横幅是不可撤销动作的常驻红条，不是 summary 里的一句话。
+    expect(dialog.textContent).toContain("This cannot be undone.");
+    expect(dialog.textContent).toContain("re-enter the generation queue");
     await enter(dialog.querySelector<HTMLInputElement>('input[aria-label="Reason (≥3)"]'), "Provider recovered");
     await enter(dialog.querySelector<HTMLInputElement>('input[aria-label="Confirmation"]'), retryable.id);
     await click(findButton("Confirm", dialog));
@@ -98,8 +98,30 @@ describe("DeadLetterWorkspace retry authority", () => {
       { jobIds: [retryable.id], reason: "Provider recovered", confirmation: retryable.id },
       { "idempotency-key": idempotencyKey },
     );
-    await waitUntil(() => container.textContent?.includes("Requeued 0 of 1 requests.") ?? false);
-    expect(container.textContent).toContain("A delivered artifact already exists");
+    // 结果落在 toast 里（挂在 document.body 上），不再是表格上方那条会滚出视口的横幅。
+    await waitUntil(() => document.body.textContent?.includes("Requeued 0 of 1 requests.") ?? false);
+    expect(document.body.textContent).toContain("A delivered artifact already exists");
+    // 有跳过 → error 语气，因为 error toast 不会自己消失。
+    expect(document.querySelector('[data-testid="admin-action-status"]')?.getAttribute("data-tone")).toBe("error");
+  });
+
+  it("selects every row from the table header and scopes each bulk command to what the authority allows", async () => {
+    apiGet.mockResolvedValue({ items: [retryable, alreadyRefunded], pageInfo: { endCursor: null, hasNextPage: false } });
+
+    await render({ discard: true, requeue: true });
+    await waitUntil(() => container.textContent?.includes(alreadyRefunded.id) ?? false);
+
+    await click(container.querySelector<HTMLInputElement>('input[aria-label="Select all rows on this page"]'));
+    expect(rowCheckbox(container, retryable.id)?.checked).toBe(true);
+    expect(rowCheckbox(container, alreadyRefunded.id)?.checked).toBe(true);
+    expect(container.textContent).toContain("2 selected");
+    // 权威说 refunded 那条不能重放，批量重放就只带走 1 条；作废两条都收得下。
+    expect(findButton("Requeue selected", container)?.textContent).toContain("(1)");
+    expect(findButton("Discard selected", container)?.textContent).toContain("(2)");
+
+    await click(findButton("Clear selection", container));
+    expect(container.textContent).not.toContain("2 selected");
+    expect(rowCheckbox(container, retryable.id)?.checked).toBe(false);
   });
   it("reuses one idempotency key when the operator retries a failed command in place", async () => {
     // 确认框向运营承诺「就地重试不会重复执行」——那这条就必须是真的：
@@ -114,11 +136,9 @@ describe("DeadLetterWorkspace retry authority", () => {
       .mockRejectedValueOnce(new Error("Upstream authority is unavailable"))
       .mockResolvedValueOnce({ requeued: [retryable.id], skipped: [] });
 
-    await act(async () => {
-      root.render(<DeadLetterWorkspace permissions={{ discard: false, requeue: true }} />);
-    });
+    await render({ discard: false, requeue: true });
     await waitUntil(() => container.textContent?.includes(retryable.id) ?? false);
-    await click(container.querySelector<HTMLInputElement>(`input[aria-label="Select dead-letter job ${retryable.id}"]`));
+    await click(rowCheckbox(container, retryable.id));
     await click(findButton("Requeue selected", container));
 
     const dialog = await waitForDialog();
@@ -135,13 +155,26 @@ describe("DeadLetterWorkspace retry authority", () => {
     expect(keys[0]).toBe(keys[1]);
     // 两次提交只生成过一个键：不是 mock 恒等，是代码真的没有重新生成。
     expect(issued).toBe(1);
-    await waitUntil(() => container.textContent?.includes("Requeued 1 of 1 requests.") ?? false);
+    await waitUntil(() => document.body.textContent?.includes("Requeued 1 of 1 requests.") ?? false);
   });
+
+  async function render(permissions: { discard: boolean; requeue: boolean }) {
+    await act(async () => {
+      root.render(
+        <ToastProvider>
+          <DeadLetterWorkspace permissions={permissions} />
+        </ToastProvider>,
+      );
+    });
+  }
 });
 
+function rowCheckbox(root: ParentNode, id: string) {
+  return root.querySelector<HTMLInputElement>(`input[aria-label="Select row ${id}"]`);
+}
+
 function rowActions(root: ParentNode, id: string) {
-  const checkbox = root.querySelector(`input[aria-label="Select dead-letter job ${id}"]`);
-  return checkbox?.closest("tr")?.textContent ?? "";
+  return rowCheckbox(root, id)?.closest("tr")?.textContent ?? "";
 }
 
 function findButton(label: string, root: ParentNode = document) {

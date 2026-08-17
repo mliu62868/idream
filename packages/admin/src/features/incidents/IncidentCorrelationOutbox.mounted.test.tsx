@@ -17,6 +17,7 @@ const { adminV2Operation } = vi.hoisted(() => ({
 
 vi.mock("@/lib/admin-v2-operation", () => ({ adminV2Operation }));
 
+import { ToastProvider } from "@/components/admin/ui/Toast";
 import {
   IncidentCorrelationOutbox,
 } from "./IncidentCorrelationOutbox";
@@ -105,7 +106,11 @@ describe("IncidentCorrelationOutbox mounted operator flow", () => {
     });
 
     await act(async () => {
-      root.render(<IncidentCorrelationOutbox canRead canReplay />);
+      root.render(
+        <ToastProvider>
+          <IncidentCorrelationOutbox canRead canReplay />
+        </ToastProvider>,
+      );
     });
     await waitUntil(() =>
       container.querySelector<HTMLInputElement>(
@@ -152,9 +157,39 @@ describe("IncidentCorrelationOutbox mounted operator flow", () => {
         idempotencyKey,
       },
     );
-    expect(container.textContent).toContain("requeued: 1");
+    // 命令结果落在 toast 里（挂在 document.body 上），表格上方不再有横幅。
+    expect(document.body.textContent).toContain("requeued: 1");
     expect(container.textContent).toContain("No failed incident correlation deliveries");
   });
+
+  // 表格迁到 DataTable 之后，「不可重放的行不可勾选」必须还在：全选只收走 eligible 的那些。
+  it("keeps select-all scoped to the replay-eligible rows", async () => {
+    adminV2Operation.mockResolvedValue(initialResponse);
+
+    await act(async () => {
+      root.render(
+        <ToastProvider>
+          <IncidentCorrelationOutbox canRead canReplay />
+        </ToastProvider>,
+      );
+    });
+    await waitUntil(() => selectCheckbox(eligible.id) !== null);
+
+    await click(container.querySelector<HTMLInputElement>(
+      'input[aria-label="Select all replay-eligible incident correlation events"]',
+    ));
+
+    expect(selectCheckbox(eligible.id)?.checked).toBe(true);
+    expect(selectCheckbox(missingAttempt.id)?.checked).toBe(false);
+    expect(container.textContent).toContain("1 selected");
+    expect(findButton("Replay selected", container)?.disabled).toBe(false);
+  });
+
+  function selectCheckbox(id: string) {
+    return container.querySelector<HTMLInputElement>(
+      `input[aria-label="Select failed incident correlation event ${id}"]`,
+    );
+  }
 
   it("records attempt-missing separately and retries the same exact command", async () => {
     let reads = 0;
@@ -177,11 +212,13 @@ describe("IncidentCorrelationOutbox mounted operator flow", () => {
 
     await act(async () => {
       root.render(
-        <IncidentCorrelationOutbox
-          canDiscardAttemptMissing
-          canRead
-          canReplay
-        />,
+        <ToastProvider>
+          <IncidentCorrelationOutbox
+            canDiscardAttemptMissing
+            canRead
+            canReplay
+          />
+        </ToastProvider>,
       );
     });
     await waitUntil(() =>
@@ -228,7 +265,7 @@ describe("IncidentCorrelationOutbox mounted operator flow", () => {
       "POST /api/v2/admin/incidents/correlation-outbox/commands/discard-attempt-missing",
       expect.objectContaining({ idempotencyKey }),
     );
-    expect(container.textContent).toContain(
+    expect(document.body.textContent).toContain(
       "discarded_target_missing",
     );
     expect(container.textContent).toContain(

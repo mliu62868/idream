@@ -10,7 +10,9 @@ import {
   type IncidentActionPlan,
   type OpsIncident,
 } from "@idream/shared/admin";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
+import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { adminV2Request, setWorkspaceUrl } from "@/lib/admin-v2-api";
 import { createWorkspaceHistoryController, observeWorkspacePopState, workspaceDetailId } from "@/lib/workspace-history";
 import { CollaborationPanel } from "@/features/collaboration/CollaborationPanel";
@@ -80,6 +82,8 @@ export function IncidentWorkspace({
   initialIncidentId?: string | null;
 }) {
   const { locale, t } = useAdminI18n();
+  const { toast } = useToast();
+  const failureToast = useFailureToast();
   const [initialUrlState] = useState(() => stateFromLocation(initialIncidentId));
   const [query, setQuery] = useState<IncidentQueryDraft>(initialUrlState.query);
   const [list, setList] = useState<IncidentList | null>(null);
@@ -89,8 +93,8 @@ export function IncidentWorkspace({
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  // 只装读取失败：写操作的失败走 useFailureToast()（错误码映射 + 复制给工程）。
+  const [error, setError] = useState<unknown>(null);
   const firstQuery = useRef(query);
   const history = useRef(createWorkspaceHistoryController(initialUrlState));
   const listRequestId = useRef(0);
@@ -108,7 +112,7 @@ export function IncidentWorkspace({
       if (requestId !== listRequestId.current) return;
       setList(response);
     } catch (loadError) {
-      if (requestId === listRequestId.current) setError(message(loadError));
+      if (requestId === listRequestId.current) setError(loadError);
     } finally {
       if (requestId === listRequestId.current) setLoading(false);
     }
@@ -122,7 +126,7 @@ export function IncidentWorkspace({
       const response = await adminV2Request<IncidentDetail>(`/api/v2/admin/incidents/${encodeURIComponent(incidentId)}`);
       if (requestId === detailRequestId.current) setDetail(response);
     } catch (loadError) {
-      if (requestId === detailRequestId.current) setError(message(loadError));
+      if (requestId === detailRequestId.current) setError(loadError);
     } finally {
       if (requestId === detailRequestId.current) setDetailLoading(false);
     }
@@ -194,14 +198,13 @@ export function IncidentWorkspace({
   }, []);
 
   // SPEC: command 让失败抛出去——ConfirmDialog 要靠它就地显示错误并保持模态不关。
-  // mutate 是给页面内联按钮用的包装：同样的刷新，但把错误落到页面横幅上。
+  // mutate 是给页面内联按钮用的包装：同样的刷新，但把错误交给失败 toast。
   async function command(label: string, execute: () => Promise<unknown>) {
     setBusy(true);
     setError(null);
-    setNotice(null);
     try {
       await execute();
-      setNotice(label);
+      toast({ tone: "success", title: t(label) });
       const next = { ...history.current.current().query, cursor: undefined };
       setQuery(next);
       history.current.replace({ query: next, selectedId, savedViewId: selectedSavedViewId }, writeIncidentUrl);
@@ -215,8 +218,14 @@ export function IncidentWorkspace({
     try {
       await command(label, execute);
     } catch (mutationError) {
-      setError(message(mutationError));
+      failureToast(mutationError);
     }
+  }
+
+  function reload() {
+    const next = history.current.current().query;
+    void loadList(next);
+    if (selectedId) void loadDetail(selectedId);
   }
 
   const filtered = Boolean(query.search || query.status || query.severity || query.ownerId);
@@ -262,10 +271,10 @@ export function IncidentWorkspace({
         <div className="flex items-end gap-2"><WorkspaceButton tone="primary" type="submit">{t("Apply")}</WorkspaceButton>{filtered ? <WorkspaceButton onClick={clearFilters}>{t("Clear")}</WorkspaceButton> : null}</div>
       </form>
 
-      {/* SEAM: 单一反馈出口。全局 toast（`useToast()` / `useFailureToast()`）落地后整体换掉，
-          错误文案改走 `ui/request-error-copy.ts`——尤其 5xx / 网络故障不能暗示"没有写入"。 */}
-      {error ? <div className="rounded-md bg-[var(--ad-red-bg)] px-4 py-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}</div> : null}
-      {notice ? <div className="rounded-md bg-[var(--ad-green-bg)] px-4 py-3 text-sm text-[var(--ad-green-text)]" role="status">{notice}</div> : null}
+      {/* 读取失败留在页面上（它带着重试入口）；写操作的成功与失败都走 toast。 */}
+      {error !== null ? (
+        <AuthorityRequestError cause={error} message={message(error)} onRetry={reload} snapshotAt={list ? list.asOf : null} />
+      ) : null}
 
       {loading && !list ? <LoadingWorkspace label="Loading correlated incidents" /> : list && list.items.length === 0 ? (
         <EmptyWorkspace filtered={filtered} onClear={clearFilters} />
@@ -376,9 +385,7 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
     const expected = `${incident.id}:${plan.id}:${plan.action}`;
     setConfirm({
       title: t("Execute frozen {action} plan", { action: t(plan.action.replaceAll("_", " ")) }),
-      // SEAM: `ConfirmDialog` 正在加 `consequence`（不可撤销动作常驻红色横幅 + DangerButton）。
-      // 下面这段文案已经按"后果"写好，字段落地后从 summary 平移到 consequence 即可。
-      summary: <PlanExecutionSummary plan={plan} />,
+      consequence: { effect: planExecutionEffect(t, plan), reversible: false },
       destructive: { expectedName: expected, inputLabel: t("Execution confirmation") },
       // 契约 incidentActionPlanExecuteRequestSchema 只收 entityVersion + confirmation，没有 reason 字段。
       requireReason: false,
@@ -395,8 +402,10 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
     const expected = `${incident.id}:split:${splitIds.join(",")}`;
     setConfirm({
       title: t("Split {count} occurrences into a new Incident", { count: splitIds.length }),
-      // SEAM: 同上，`consequence` 落地后搬过去。
-      summary: t("The occurrences leave this Incident for good. Assignment history is immutable, so a split is undone only by merging back. Retrying inside this dialog reuses the same idempotency key and cannot apply twice."),
+      consequence: {
+        effect: t("The occurrences leave this Incident for good. Assignment history is immutable, so a split is undone only by merging back. Retrying inside this dialog reuses the same idempotency key and cannot apply twice."),
+        reversible: false,
+      },
       destructive: { expectedName: expected, inputLabel: t("Split confirmation") },
       reasonLabel: t("Split reason (≥3)"),
       submitLabel: t("Split selected"),
@@ -412,8 +421,10 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
     const expected = `${incident.id}:merge:${mergeSourceIds.join(",")}`;
     setConfirm({
       title: t("Merge {count} Incidents into this one", { count: mergeSourceIds.length }),
-      // SEAM: 同上，`consequence` 落地后搬过去。
-      summary: t("The source Incidents become terminal and their occurrences move here permanently. Retrying inside this dialog reuses the same idempotency key and cannot apply twice."),
+      consequence: {
+        effect: t("The source Incidents become terminal and their occurrences move here permanently. Retrying inside this dialog reuses the same idempotency key and cannot apply twice."),
+        reversible: false,
+      },
       destructive: { expectedName: expected, inputLabel: t("Merge confirmation") },
       reasonLabel: t("Merge reason (≥3)"),
       submitLabel: t("Merge sources"),
@@ -718,15 +729,15 @@ function PlanFacts({ asOf, plan }: { asOf: string; plan: IncidentActionPlan }) {
   );
 }
 
-function PlanExecutionSummary({ plan }: { plan: IncidentActionPlan }) {
-  const { t } = useAdminI18n();
-  return (
-    <span>
-      {MONEY_MOVING_ACTIONS.has(plan.action)
-        ? t("This moves customer money across {count} occurrences and cannot be undone from this console. The frozen scope cannot be re-cut after this point. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.", { count: plan.eligibleOccurrenceIds.length })
-        : t("{count} occurrences are in the frozen scope; the scope cannot change after this point. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.", { count: plan.eligibleOccurrenceIds.length })}
-    </span>
-  );
+// 退款 / 回滚说"动的是客户的钱"，其余只说"冻结范围就此定死"——两句都进不可撤销的红色横幅。
+function planExecutionEffect(
+  t: (key: string, values?: Record<string, string | number>) => string,
+  plan: IncidentActionPlan,
+) {
+  const count = plan.eligibleOccurrenceIds.length;
+  return MONEY_MOVING_ACTIONS.has(plan.action)
+    ? t("This moves customer money across {count} occurrences and cannot be undone from this console. The frozen scope cannot be re-cut after this point. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.", { count })
+    : t("{count} occurrences are in the frozen scope; the scope cannot change after this point. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.", { count });
 }
 
 function Select({ label, onChange, options, value }: { label: string; onChange: (value: string) => void; options: string[]; value: string }) {

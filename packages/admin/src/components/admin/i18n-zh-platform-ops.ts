@@ -235,6 +235,18 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Disposition confirmation": "处置确认",
   "Disposition reason (≥3)": "处置原因（≥3）",
   "Record terminal disposition": "记录终态处置",
+  // 死信批量命令的 toast：后端逐条报的跳过理由。
+  "Skipped · {details}": "已跳过 · {details}",
+  // 事故工作台写操作成功后的 toast 标题（过去是未翻译的英文横幅）。
+  "Authority recovery verification evaluated": "已执行权威恢复校验",
+  "Frozen mitigation preview created": "已创建冻结的止血范围预览",
+  "Incident resolve command accepted": "已受理事故解决命令",
+  "Incident triage saved": "事故分诊已保存",
+  "Incidents merged with assignment history": "事故已合并，归属历史已保留",
+  "Mitigation plan executed": "止血计划已执行",
+  "Postmortem recorded and Incident closed": "复盘已记录，事故已关闭",
+  "Recovery verification explicitly overridden": "恢复校验已显式覆盖",
+  "Selected occurrences split into a new Incident": "已将所选发生记录拆分为新事故",
   "Correlation corrections": "关联关系修正",
   "Cost/latency evidence reference": "成本/延迟证据引用",
   "Create 40-sample matrix": "创建 40 样本矩阵",
