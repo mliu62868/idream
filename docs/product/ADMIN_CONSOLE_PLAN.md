@@ -357,6 +357,8 @@ P0 页面：
 
 > 单条非破坏性操作（如 requeue 单个 job）可只用 `confirm`；批量、资金、发布、封号一律 `reason+typed`。前端通过一张 `confirmationPolicy` 配置表驱动弹窗，避免每个按钮各写一套。
 
+> **实现补注（2026-08-16）**：三级确认强度已落地，但**没有**采用上面设想的 `confirmationPolicy` 集中配置表——实际是每个调用点传一个 `ConfirmSpec` 给 `packages/admin/src/components/admin/ui/ConfirmDialog.tsx`，字段与三级的对应关系是：`confirm` = 只给 `title` / `summary` 并设 `requireReason: false`；`typed` = 给 `destructive: { expectedName }`（敲实体**名称**，不是内部 id）；`reason+typed` = 两者都给（reason 默认必填、≥3 字）。另外多了一个原方案没有的维度 `consequence: { effect, reversible }`：给了就在标题下常驻一条后果横幅，`reversible: false` 时显示「不可撤销」并把主按钮换成危险样式，约定是它必须与 `destructive` 同时出现。要加新的高危操作，改调用点的 `ConfirmSpec`，不要去找那张不存在的策略表。
+
 ## 11. 分期计划
 
 分期与 §4 上线期次的映射：**P0 = Phase 1 + Phase 2**（§4/§5 的六个必需模块，含生成配置发布/回滚），**P1 = Phase 3 + Phase 4**（运营增强、社区治理、双人审批、consent/legal hold、脱敏导出）。Phase ≠ P1，不要因 profile/template 落在 Phase 2 就误判为非 P0。
