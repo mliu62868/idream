@@ -575,6 +575,7 @@ function FreshnessLine({
   entries: Array<[string, State<unknown>, boolean]>;
 }) {
   const { t } = useAdminI18n();
+  const format = useAdminFormat();
   return (
     <div
       className="flex flex-wrap gap-3 text-xs text-[var(--ad-text-muted)]"
@@ -589,7 +590,7 @@ function FreshnessLine({
               ? t("refreshing")
               : state.error
                 ? t("stale · retry available")
-                : t("fresh {time}", { time: state.refreshedAt ? new Date(state.refreshedAt).toLocaleTimeString() : "" })}
+                : t("fresh {time}", { time: state.refreshedAt ? format.time(state.refreshedAt) : "" })}
           </span>
         ))}
     </div>

@@ -3,6 +3,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { useAdminFormat } from "@/components/admin/ui/format";
 import { DetailPage, DetailSection } from "@/components/admin/ui/DetailPage";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { DangerButton, GhostButton, PrimaryButton } from "@/components/admin/ui/buttons";
@@ -28,6 +29,7 @@ type PendingAction = (typeof PATCH_ACTIONS)[number] | null;
 
 export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; id: string }) {
   const { t, value } = useAdminI18n();
+  const format = useAdminFormat();
   const [rows, setRows] = useState<Placement[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -213,7 +215,7 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
             { label: t("Target type"), value: value(row.targetType) },
             { label: t("Target ID"), value: row.targetId },
             { label: t("Verification"), value: value(row.verificationState) },
-            { label: t("Published"), value: row.publishedAt ? new Date(row.publishedAt).toLocaleString() : "—" },
+            { label: t("Published"), value: row.publishedAt ? format.dateTime(row.publishedAt) : "—" },
           ]}
         />
       </DetailSection>
