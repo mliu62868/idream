@@ -1,8 +1,7 @@
 "use client";
 
 import { AdminText, useAdminI18n } from "@/components/admin/i18n";
-import { dreamcoins } from "@/features/billing/money";
-import { Ban, Loader2, Plus, RefreshCcw, X } from "lucide-react";
+import { Ban, Loader2, Plus, X } from "lucide-react";
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet, apiWrite } from "@/components/admin/api";
@@ -13,6 +12,8 @@ import {
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import { useAdminFormat, text } from "@/components/admin/ui/format";
+import { emptyPageInfo, Pagination, type PageInfo } from "@/components/admin/ui/Pagination";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
@@ -20,6 +21,7 @@ import { createLatestRequestGate } from "@/lib/latest-request";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import {
   defaultPromoQuery,
+  PROMO_PAGE_SIZE,
   promoListPath,
   promoQueryFromSearch,
   promoWorkspaceUrl,
@@ -28,7 +30,6 @@ import {
 } from "./query";
 
 type Row = Record<string, unknown>;
-type PageInfo = { endCursor: string | null; hasNextPage: boolean };
 type ListResponse = { items: Row[]; pageInfo?: PageInfo };
 type AuthorityState = {
   rows: Row[] | null;
@@ -39,7 +40,9 @@ type AuthorityState = {
   refreshedAt: string | null;
 };
 
-const emptyPageInfo: PageInfo = { endCursor: null, hasNextPage: false };
+/** 两张表各自翻页，但一次 navigate 会把两边都重新拉一遍，所以轨迹要一起带着走。 */
+type PromoTrails = Record<PromoScope, string[]>;
+const emptyTrails: PromoTrails = { codes: [], referrals: [] };
 const emptyAuthority = (): AuthorityState => ({
   rows: null,
   pageInfo: emptyPageInfo,
@@ -51,12 +54,15 @@ const emptyAuthority = (): AuthorityState => ({
 
 export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
   const { t, value: valueLabel } = useAdminI18n();
+  const format = useAdminFormat();
   const { toast } = useToast();
   const [query, setQuery] = useState<PromoQuery>(() => currentQuery());
   const [draft, setDraft] = useState<PromoQuery>(() => currentQuery());
   const [codes, setCodes] = useState<AuthorityState>(emptyAuthority);
   const [referrals, setReferrals] = useState<AuthorityState>(emptyAuthority);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
+  // 游标分页没有页码，只有「上一页用的是哪个游标」。这条轨迹就是 Pagination 的第 N 页。
+  const [trails, setTrails] = useState<PromoTrails>(emptyTrails);
   const gates = useRef({
     codes: createLatestRequestGate(),
     referrals: createLatestRequestGate(),
@@ -107,6 +113,8 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
       const next = currentQuery();
       setQuery(next);
       setDraft(next);
+      // 回退到的那一页是哪一页，历史条目里没记；不知道就说不知道，把「上一页」置灰。
+      setTrails(emptyTrails);
       load(next);
     };
     window.addEventListener("popstate", restore);
@@ -119,7 +127,12 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
     };
   }, [load]);
 
-  function navigate(next: PromoQuery, mode: "push" | "replace" = "push") {
+  // SPEC: 任何改变结果集的动作都回到第一页 —— 所以 trails 默认清空，只有翻页自己传轨迹。
+  function navigate(
+    next: PromoQuery,
+    mode: "push" | "replace" = "push",
+    nextTrails: PromoTrails = emptyTrails,
+  ) {
     const url = promoWorkspaceUrl(
       window.location.pathname,
       window.location.search,
@@ -132,6 +145,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
     );
     setQuery(next);
     setDraft(next);
+    setTrails(nextTrails);
     load(next);
   }
 
@@ -249,17 +263,17 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
             : "No redeem codes exist yet"
         }
         loadingLabel="Loading redeem codes…"
-        rows={codeRows(codes.rows ?? [], canWrite, confirmDisable, t, valueLabel)}
+        rows={codeRows(codes.rows ?? [], canWrite, confirmDisable, valueLabel, format)}
         state={codes}
         title={t("Redeem codes")}
       />
       <Pager
-        label="Next code page"
-        loading={codes.loading}
-        onClick={() =>
-          navigate({ ...query, codeCursor: codes.pageInfo.endCursor ?? "" })
+        cursor={query.codeCursor}
+        onNavigate={(codeCursor, trail) =>
+          navigate({ ...query, codeCursor }, "push", { ...trails, codes: trail })
         }
-        pageInfo={codes.pageInfo}
+        state={codes}
+        trail={trails.codes}
       />
       <AuthorityError
         onRetry={() => void loadScope(query, "referrals")}
@@ -272,20 +286,17 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
             : "No referrals exist yet"
         }
         loadingLabel="Loading referrals…"
-        rows={referralRows(referrals.rows ?? [], valueLabel)}
+        rows={referralRows(referrals.rows ?? [], valueLabel, format)}
         state={referrals}
         title={t("Referrals")}
       />
       <Pager
-        label="Next referral page"
-        loading={referrals.loading}
-        onClick={() =>
-          navigate({
-            ...query,
-            referralCursor: referrals.pageInfo.endCursor ?? "",
-          })
+        cursor={query.referralCursor}
+        onNavigate={(referralCursor, trail) =>
+          navigate({ ...query, referralCursor }, "push", { ...trails, referrals: trail })
         }
-        pageInfo={referrals.pageInfo}
+        state={referrals}
+        trail={trails.referrals}
       />
       {confirmation ? (
         <ConfirmDialog
@@ -449,6 +460,7 @@ function CodeLiability({
   maxRedemptionsValue: number | null;
 }) {
   const { t } = useAdminI18n();
+  const format = useAdminFormat();
   const unbounded = maxRedemptionsValue === null;
   return (
     <p
@@ -461,18 +473,19 @@ function CodeLiability({
     >
       {unbounded
         ? t("Every redemption grants {each} Dreamcoins and nothing caps how many times. The total this code can pay out is unbounded.", {
-            each: dreamcoins(dreamcoinValue),
+            each: format.dreamcoins(dreamcoinValue, { unit: false }),
           })
         : t("At most {total} Dreamcoins in total: {each} each, up to {uses} redemptions.", {
-            each: dreamcoins(dreamcoinValue),
-            total: dreamcoins(dreamcoinValue * maxRedemptionsValue),
-            uses: dreamcoins(maxRedemptionsValue),
+            each: format.dreamcoins(dreamcoinValue, { unit: false }),
+            total: format.dreamcoins(dreamcoinValue * maxRedemptionsValue, { unit: false }),
+            // 次数不是钱 —— 它只要千分位，不该走梦币口径。
+            uses: format.count(maxRedemptionsValue),
           })}
       {" "}
       {/* INVARIANT: 期限和次数是两件独立的事。上面那句不许替这句下结论——
           设了期限却没设次数的码，说「没有有效期」就是假话。 */}
       {expiryValue
-        ? t("It stops working at {when}.", { when: new Date(expiryValue).toLocaleString() })
+        ? t("It stops working at {when}.", { when: format.dateTime(expiryValue) })
         : t("It never expires.")}
     </p>
   );
@@ -493,8 +506,8 @@ function codeRows(
   rows: Row[],
   canWrite: boolean,
   disable: (id: string) => void,
-  t: (key: string, values?: Record<string, string | number>) => string,
   valueLabel: (key: string) => string,
+  format: ReturnType<typeof useAdminFormat>,
 ): DataTableRow[] {
   return rows.map((row, index) => {
     const id = text(row.id);
@@ -504,11 +517,11 @@ function codeRows(
       cells: [
         id,
         text(row.status) ? valueLabel(text(row.status)) : "—",
-        <RewardCell key="reward" reward={row.reward} t={t} />,
-        display(row.maxRedemptions),
-        display(row.redemptions),
-        date(row.expiresAt),
-        date(row.createdAt),
+        <RewardCell key="reward" reward={row.reward} />,
+        format.display(row.maxRedemptions),
+        format.display(row.redemptions),
+        format.dateTime(row.expiresAt),
+        format.dateTime(row.createdAt),
         canWrite && active ? (
           <button
             className="inline-flex min-h-9 items-center gap-1 rounded border px-2"
@@ -527,16 +540,20 @@ function codeRows(
   });
 }
 
-function referralRows(rows: Row[], valueLabel: (key: string) => string): DataTableRow[] {
+function referralRows(
+  rows: Row[],
+  valueLabel: (key: string) => string,
+  format: ReturnType<typeof useAdminFormat>,
+): DataTableRow[] {
   return rows.map((row, index) => ({
     id: text(row.id) || `referral-${index}`,
     cells: [
-      display(row.id),
-      display(row.inviterId),
-      display(row.inviteeId),
+      format.display(row.id),
+      format.display(row.inviterId),
+      format.display(row.inviteeId),
       text(row.status) ? valueLabel(text(row.status)) : "—",
       text(row.rewardStatus) ? valueLabel(text(row.rewardStatus)) : "—",
-      date(row.createdAt),
+      format.dateTime(row.createdAt),
     ],
   }));
 }
@@ -548,21 +565,17 @@ function referralRows(rows: Row[], valueLabel: (key: string) => string): DataTab
  * `{"dreamcoins":500}`。契约里 reward 是自由 JSON（历史遗留），但控制台建出来的码
  * 只有 `{dreamcoins, note?}` 一种形状——认得出就好好印，认不出也不能假装认得。
  */
-function RewardCell({
-  reward,
-  t,
-}: {
-  reward: unknown;
-  t: (key: string, values?: Record<string, string | number>) => string;
-}) {
+function RewardCell({ reward }: { reward: unknown }) {
+  const { t } = useAdminI18n();
+  const format = useAdminFormat();
   if (!isRecord(reward) || typeof reward.dreamcoins !== "number") {
-    return <span className="font-mono text-xs">{display(reward)}</span>;
+    return <span className="font-mono text-xs">{format.display(reward)}</span>;
   }
   const note = typeof reward.note === "string" ? reward.note.trim() : "";
   return (
     <span>
       <span className="font-semibold tabular-nums">
-        {t("{count} Dreamcoins", { count: dreamcoins(reward.dreamcoins) })}
+        {t("{count} Dreamcoins", { count: format.dreamcoins(reward.dreamcoins, { unit: false }) })}
       </span>
       {note ? <span className="block text-xs text-[var(--ad-text-muted)]">{note}</span> : null}
     </span>
@@ -643,9 +656,8 @@ function AuthorityError({
 }
 function Freshness({ label, state }: { label: string; state: AuthorityState }) {
   const { t } = useAdminI18n();
-  const time = state.refreshedAt
-    ? new Date(state.refreshedAt).toLocaleTimeString()
-    : "unknown";
+  const format = useAdminFormat();
+  const time = state.refreshedAt ? format.time(state.refreshedAt) : t("unknown");
   if (state.loading && state.rows)
     return (
       <span>
@@ -668,29 +680,34 @@ function Freshness({ label, state }: { label: string; state: AuthorityState }) {
   return <span>{label}{t(": loading…")}</span>;
 }
 
-// MIGRATION: 只有「下一页」。ui/Pagination.tsx 已建（含上一页），合并后切过去。
+// SPEC: 兑换码和推荐两张表的分页条形状完全一样，只有游标属于哪一张不同。
 function Pager({
-  label,
-  loading,
-  onClick,
-  pageInfo,
+  cursor,
+  onNavigate,
+  state,
+  trail,
 }: {
-  label: string;
-  loading: boolean;
-  onClick: () => void;
-  pageInfo: PageInfo;
+  cursor: string;
+  onNavigate: (cursor: string, trail: string[]) => void;
+  state: AuthorityState;
+  trail: string[];
 }) {
-  if (!pageInfo.hasNextPage || !pageInfo.endCursor) return null;
+  // 还没拿到过任何一页时不画分页条 —— 那时连「有没有下一页」都不知道。
+  if (!state.rows) return null;
   return (
-    <button
-      className="inline-flex min-h-11 items-center gap-2 rounded border px-4 text-sm font-semibold"
-      disabled={loading}
-      onClick={onClick}
-      type="button"
-    >
-      <RefreshCcw className="h-4 w-4" />
-      {label}
-    </button>
+    <Pagination
+      hasNext={Boolean(state.pageInfo.hasNextPage && state.pageInfo.endCursor)}
+      hasPrevious={trail.length > 0}
+      loading={state.loading}
+      onNext={() => {
+        if (!state.pageInfo.endCursor) return;
+        onNavigate(state.pageInfo.endCursor, [...trail, cursor]);
+      }}
+      onPrevious={() => onNavigate(trail.at(-1) ?? "", trail.slice(0, -1))}
+      page={trail.length + 1}
+      pageSize={PROMO_PAGE_SIZE}
+      rowCount={state.rows.length}
+    />
   );
 }
 
@@ -791,21 +808,4 @@ export function strictIntegerFromText(
     return null;
   }
   return parsed;
-}
-
-// MIGRATION: 与 billing/access/pricing 的同名三件套重复，等 ui/format.ts 统一后一起切。
-function text(value: unknown) {
-  return typeof value === "string" ? value : "";
-}
-
-function display(value: unknown) {
-  if (typeof value === "string" || typeof value === "number")
-    return String(value);
-  if (value && typeof value === "object") return JSON.stringify(value);
-  return "—";
-}
-
-function date(value: unknown) {
-  const parsed = new Date(text(value));
-  return Number.isNaN(parsed.getTime()) ? "—" : parsed.toLocaleString();
 }

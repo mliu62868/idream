@@ -125,4 +125,47 @@ describe("permission override impact", () => {
     expect(text).not.toContain("does not have this capability");
     expect(text).not.toContain("already has this capability");
   });
+
+  /**
+   * SPEC: 余额是钱，按梦币口径排版；分页条的「上一页」在第一页置灰而不是消失。
+   *
+   * INTENT: 余额以前走的是 billing/money.ts 这份本地实现，和 ui/format 的梦币口径各写一套；
+   * 分页条以前只有一个「下一页」，运营翻过去就回不来。
+   */
+  it("groups the balance and keeps a greyed-out Previous page on the first page", async () => {
+    apiGet.mockImplementation(async (path) => {
+      if (path.includes("/permissions")) throw new Error("not requested");
+      return {
+        items: [
+          {
+            id: "user-1",
+            email: "ledger@example.test",
+            displayName: "Ledger Tester",
+            role: "user",
+            status: "active",
+            dataClass: "fixture",
+            plan: null,
+            dreamcoins: 1_500_000,
+            createdAt: "2026-08-01T00:00:00.000Z",
+          },
+        ],
+        pageInfo: { endCursor: "cursor-2", hasNextPage: true },
+      };
+    });
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(
+        <AccessWorkspace permissions={{ changeStatus: true, managePermissions: true }} />,
+      );
+    });
+    await waitUntil(() => container.textContent?.includes("Ledger Tester") ?? false);
+
+    expect(container.textContent).toContain("1,500,000");
+    const buttons = [...container.querySelectorAll("button")];
+    const previous = buttons.find((button) => button.textContent?.trim() === "Previous page");
+    const next = buttons.find((button) => button.textContent?.trim() === "Next page");
+    expect(previous?.disabled).toBe(true);
+    expect(next?.disabled).toBe(false);
+  });
 });

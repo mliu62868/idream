@@ -3,12 +3,14 @@
 import { useAdminI18n } from "@/components/admin/i18n";
 import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, Plus, RefreshCcw, RotateCcw, UploadCloud, X } from "lucide-react";
+import { Loader2, Plus, RotateCcw, UploadCloud, X } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import { useAdminFormat, text } from "@/components/admin/ui/format";
+import { emptyPageInfo, Pagination, type PageInfo } from "@/components/admin/ui/Pagination";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
@@ -19,6 +21,7 @@ import {
   defaultPricingDraft,
   defaultPricingQuery,
   isPricingQueryFiltered,
+  PRICING_PAGE_SIZE,
   pricingDraftPayload,
   pricingListPath,
   pricingQueryFromSearch,
@@ -28,19 +31,20 @@ import {
 } from "./query";
 
 type PricingRecord = Record<string, unknown>;
-type PricingPageInfo = { endCursor: string | null; hasNextPage: boolean };
-type PricingListResponse = { items: PricingRecord[]; pageInfo?: PricingPageInfo };
-const emptyPageInfo: PricingPageInfo = { endCursor: null, hasNextPage: false };
+type PricingListResponse = { items: PricingRecord[]; pageInfo?: PageInfo };
 
 export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
   const { t, value: valueLabel } = useAdminI18n();
+  const format = useAdminFormat();
   const { toast } = useToast();
   const failureToast = useFailureToast();
   const [query, setQuery] = useState<PricingQuery>(() => currentQuery());
   const [queryDraft, setQueryDraft] = useState<PricingQuery>(() => currentQuery());
   const [pricingDraft, setPricingDraft] = useState<PricingDraft>(defaultPricingDraft);
   const [rows, setRows] = useState<PricingRecord[] | null>(null);
-  const [pageInfo, setPageInfo] = useState<PricingPageInfo>(emptyPageInfo);
+  const [pageInfo, setPageInfo] = useState<PageInfo>(emptyPageInfo);
+  // 游标分页没有页码，只有「上一页用的是哪个游标」。这条轨迹就是 Pagination 的第 N 页。
+  const [cursorTrail, setCursorTrail] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [writing, setWriting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -78,6 +82,8 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
       const restored = currentQuery();
       setQuery(restored);
       setQueryDraft(restored);
+      // 回退到的那一页是哪一页，历史条目里没记；不知道就说不知道，把「上一页」置灰。
+      setCursorTrail([]);
       void load(restored);
     };
     window.addEventListener("popstate", restore);
@@ -89,7 +95,8 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
     };
   }, [load]);
 
-  function navigate(next: PricingQuery, mode: "push" | "replace" = "push") {
+  // SPEC: 任何改变结果集的动作都回到第一页 —— 所以 trail 默认清空，只有翻页自己传轨迹。
+  function navigate(next: PricingQuery, mode: "push" | "replace" = "push", trail: string[] = []) {
     const url = pricingWorkspaceUrl(window.location.pathname, window.location.search, {
       pricingSearch: next.search || null,
       pricingMode: next.mode || null,
@@ -99,6 +106,7 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
     window.history[mode === "push" ? "pushState" : "replaceState"](null, "", url);
     setQuery(next);
     setQueryDraft(next);
+    setCursorTrail(trail);
     void load(next);
   }
 
@@ -145,11 +153,11 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
       //         是多少，也看不到它顶掉的是哪一版。定价页的整个意义就在这两个数上。
       summary: (
         <span>
-          {name}  {t("· version")} {display(row.version)}  {t("· mode")} {text(row.mode) ? valueLabel(text(row.mode)) : "—"}
+          {name}  {t("· version")} {format.display(row.version)}  {t("· mode")} {text(row.mode) ? valueLabel(text(row.mode)) : "—"}
           <span className="mt-1 block">
             {t("Price: {base} base Dreamcoins × {multiplier}", {
-              base: display(row.baseCost),
-              multiplier: display(row.multiplier),
+              base: slot(row.baseCost),
+              multiplier: slot(row.multiplier),
             })}
           </span>
           <span className="mt-1 block">{replacedVersionNote(rows, row, action, t)}</span>
@@ -190,7 +198,7 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
   return (
     <section aria-labelledby="pricing-workspace-title" className="space-y-5">
       <div id="pricing-workspace-title"><PageHeader purpose="Version, publish, and roll back customer-facing generation prices while keeping every decision auditable." title={t("Pricing")} /></div>
-      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--ad-text-muted)]" role="status"><span>{refreshedAt ? <>{t("Refreshed")} <time dateTime={refreshedAt}>{new Date(refreshedAt).toLocaleTimeString()}</time></> : null}</span>{!canWrite ? <PermissionNotice permission="config.pricing.write" /> : null}</div>
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--ad-text-muted)]" role="status"><span>{refreshedAt ? <>{t("Refreshed")} <time dateTime={refreshedAt}>{format.time(refreshedAt)}</time></> : null}</span>{!canWrite ? <PermissionNotice permission="config.pricing.write" /> : null}</div>
 
       <form className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-2 xl:grid-cols-[minmax(240px,1fr)_180px_180px_auto]" onSubmit={apply}>
         <Field label="Search prices" onChange={(search) => setQueryDraft((current) => ({ ...current, search }))} placeholder={t("rule key, label, or ID")} value={queryDraft.search} />
@@ -202,8 +210,21 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
       {canWrite ? <PricingDraftForm busy={writing} draft={pricingDraft} onChange={setPricingDraft} onCreate={createDraft} /> : null}
       {error ? <AuthorityRequestError cause={errorCause} message={error} onRetry={() => void load(query)} snapshotAt={rows ? refreshedAt : null} /> : null}
       {loading && rows === null ? <PricingLoading /> : rows?.length === 0 ? <EmptyState action={filtered ? <button className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" onClick={clearFilters} type="button">{t("Clear filters")}</button> : undefined} hint={filtered ? "The complete authority query returned no pricing versions." : "Create a versioned pricing draft before publishing a customer-facing price."} title={filtered ? "No pricing rules match these filters" : "No pricing rules exist yet"} /> : rows ? <PricingTable canWrite={canWrite} onAction={confirmVersionAction} rows={rows} /> : null}
-      {/* MIGRATION: 只有「下一页」。ui/Pagination.tsx 已建（含上一页），合并后切过去。 */}
-      {pageInfo.hasNextPage && pageInfo.endCursor ? <button className="inline-flex min-h-11 items-center gap-2 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-4 text-sm font-semibold" disabled={loading} onClick={() => navigate({ ...query, cursor: pageInfo.endCursor ?? "" })} type="button"><RefreshCcw className="h-4 w-4" />{t("Next page")}</button> : null}
+      {rows ? (
+        <Pagination
+          hasNext={Boolean(pageInfo.hasNextPage && pageInfo.endCursor)}
+          hasPrevious={cursorTrail.length > 0}
+          loading={loading}
+          onNext={() => {
+            if (!pageInfo.endCursor) return;
+            navigate({ ...query, cursor: pageInfo.endCursor }, "push", [...cursorTrail, query.cursor]);
+          }}
+          onPrevious={() => navigate({ ...query, cursor: cursorTrail.at(-1) ?? "" }, "push", cursorTrail.slice(0, -1))}
+          page={cursorTrail.length + 1}
+          pageSize={PRICING_PAGE_SIZE}
+          rowCount={rows.length}
+        />
+      ) : null}
       {confirmation ? <ConfirmDialog onClose={() => setConfirmation(null)} spec={confirmation} /> : null}
     </section>
   );
@@ -216,11 +237,12 @@ function PricingDraftForm({ busy, draft, onChange, onCreate }: { busy: boolean; 
 
 function PricingTable({ canWrite, onAction, rows }: { canWrite: boolean; onAction: (row: PricingRecord, action: "publish" | "rollback") => void; rows: PricingRecord[] }) {
   const { value: valueLabel } = useAdminI18n();
+  const format = useAdminFormat();
   const tableRows: DataTableRow[] = rows.map((row, index) => {
     const status = text(row.status);
     const actions = canWrite && status === "draft" ? <ActionButton icon={<UploadCloud className="h-4 w-4" />} label="Publish" onClick={() => onAction(row, "publish")} /> : canWrite && status === "active" ? <ActionButton icon={<RotateCcw className="h-4 w-4" />} label="Rollback" onClick={() => onAction(row, "rollback")} /> : "—";
     // INTENT: 「哪一版在售」是这张表唯一要一眼看出来的东西，所以在售那一行的状态加粗。
-    return { id: text(row.id) || `pricing-${index}`, cells: [<code key="id">{text(row.id) || "—"}</code>, text(row.ruleKey) || "—", text(row.label) || "—", text(row.mode) ? valueLabel(text(row.mode)) : "—", <span className="tabular-nums" key="base">{display(row.baseCost)}</span>, <span className="tabular-nums" key="multiplier">{display(row.multiplier)}</span>, status ? <span className={status === "active" ? "font-semibold" : undefined} key="status">{valueLabel(status)}</span> : "—", display(row.version), date(row.effectiveFrom), date(row.publishedAt), actions] };
+    return { id: text(row.id) || `pricing-${index}`, cells: [<code key="id">{text(row.id) || "—"}</code>, text(row.ruleKey) || "—", text(row.label) || "—", text(row.mode) ? valueLabel(text(row.mode)) : "—", <span className="tabular-nums" key="base">{format.display(row.baseCost)}</span>, <span className="tabular-nums" key="multiplier">{format.display(row.multiplier)}</span>, status ? <span className={status === "active" ? "font-semibold" : undefined} key="status">{valueLabel(status)}</span> : "—", format.display(row.version), format.dateTime(row.effectiveFrom), format.dateTime(row.publishedAt), actions] };
   });
   return <DataTable caption="Pricing rule versions" headers={["ID", "Rule key", "Label", "Mode", "Base cost", "Multiplier", "Status", "Version", "Effective", "Published", "Action"]} rows={tableRows} />;
 }
@@ -256,15 +278,15 @@ export function replacedVersionNote(
     return t("No active version of this rule key is loaded here, so the price it replaces is unknown.");
   }
   return t("Replaces the live version {version}, priced at {base} base Dreamcoins × {multiplier}.", {
-    base: display(active.baseCost),
-    multiplier: display(active.multiplier),
-    version: display(active.version),
+    base: slot(active.baseCost),
+    multiplier: slot(active.multiplier),
+    version: slot(active.version),
   });
 }
 
 function currentQuery() { return typeof window === "undefined" ? defaultPricingQuery : pricingQueryFromSearch(window.location.search); }
-// MIGRATION: 与 billing/access/promo 的同名三件套重复，等 ui/format.ts 统一后一起切。
-function text(value: unknown) { return typeof value === "string" ? value : ""; }
-function display(value: unknown) { return typeof value === "number" || typeof value === "string" ? String(value) : "—"; }
-function date(value: unknown) { const raw = text(value); if (!raw) return "—"; const parsed = new Date(raw); return <time dateTime={raw}>{Number.isNaN(parsed.getTime()) ? raw : parsed.toLocaleString()}</time>; }
+// SPEC: t() 插值槽里的标量取值。
+// INTENT: 不是 ui/format 的 display() —— 那个返回 ReactNode（对象要折成 <code>），
+//         而 t() 的插值只吃 string | number。确认框里的价格是句子的一部分，不是单元格。
+function slot(value: unknown): string | number { return typeof value === "number" || typeof value === "string" ? value : "—"; }
 function capitalize(value: string) { return `${value.slice(0, 1).toUpperCase()}${value.slice(1)}`; }

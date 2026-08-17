@@ -12,6 +12,9 @@ export type AccessQuery = {
   cursor: string;
 };
 
+/** 分页条要报「第 N–M 条」，算法需要每页条数，所以它不能只活在 URL 拼接里。 */
+export const ACCESS_PAGE_SIZE = 25;
+
 export const defaultAccessQuery: AccessQuery = {
   search: "",
   role: "",
@@ -38,7 +41,7 @@ export function accessListPath(query: AccessQuery) {
     status: query.status,
     dataClass: query.dataClass,
     cursor: query.cursor,
-    limit: "25",
+    limit: String(ACCESS_PAGE_SIZE),
   });
 }
 
