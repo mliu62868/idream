@@ -1,6 +1,7 @@
 "use client";
 
-import { useAdminI18n } from "@/components/admin/i18n";
+import { useAdminI18n, type AdminLocale } from "@/components/admin/i18n";
+import { formatDateTime } from "@/components/admin/ui/format";
 import { RefreshCcw } from "lucide-react";
 import { RequestErrorDetails } from "./RequestErrorDetails";
 import { operatorErrorCopy } from "./request-error-copy";
@@ -21,7 +22,7 @@ export function AuthorityRequestError({
   onRetry: () => void;
   snapshotAt?: string | null;
 }) {
-  const { t } = useAdminI18n();
+  const { locale, t } = useAdminI18n();
   const copy = cause === undefined ? null : operatorErrorCopy(cause);
   const headline = copy
     ? t(copy.headline)
@@ -42,7 +43,7 @@ export function AuthorityRequestError({
             <span className="mt-1 block text-xs">
 
               {t("Showing the last successful snapshot from")}{" "}
-              <time dateTime={snapshotAt}>{formatSnapshotTime(snapshotAt)}</time>.
+              <time dateTime={snapshotAt}>{formatSnapshotTime(snapshotAt, locale)}</time>.
             </span>
           ) : null}
         </span>
@@ -67,7 +68,7 @@ function fallbackTechnical(message: string) {
   return { code: null, status: null, requestId: null, message };
 }
 
-function formatSnapshotTime(value: string) {
+function formatSnapshotTime(value: string, locale: AdminLocale) {
   const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
+  return Number.isNaN(parsed.getTime()) ? value : formatDateTime(value, locale);
 }
