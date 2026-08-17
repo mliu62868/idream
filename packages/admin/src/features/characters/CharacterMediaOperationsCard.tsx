@@ -2,12 +2,13 @@
 
 import { useAdminI18n } from "@/components/admin/i18n";
 import { ConfirmDialog } from "@/components/admin/ui/ConfirmDialog";
+import { DataTable } from "@/components/admin/ui/DataTable";
+import { useAdminFormat } from "@/components/admin/ui/format";
 import Link from "next/link";
 import type { CharacterMediaOperationsProjection } from "@idream/shared/admin";
 import { useState } from "react";
 import { StatusBadge } from "@/features/operations/WorkspaceUi";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
-import { formatDurationMs } from "./character-workspace-format";
 
 const mediaOperationLabels = {
   image: "Image",
@@ -72,6 +73,7 @@ export function CharacterMediaOperationsCard({
   }) => Promise<void>;
 }) {
   const { t } = useAdminI18n();
+  const format = useAdminFormat();
   const needsAttention = characterMediaOperationsNeedAttention(projection);
   const [pendingReclaim, setPendingReclaim] = useState<{
     readonly requestId: string;
@@ -102,121 +104,116 @@ export function CharacterMediaOperationsCard({
           ))}
         </span>
       </summary>
-      <div className="overflow-x-auto border-t border-[var(--ad-border)]">
-        <table className="w-full min-w-[760px] text-left text-xs">
-          <thead className="text-[var(--ad-text-muted)]">
-            <tr className="border-b border-[var(--ad-border)]">
-              <th className="px-4 py-2 font-semibold" scope="col">{t("Media")}</th>
-              <th className="px-3 py-2 font-semibold" scope="col">{t("Latest run")}</th>
-              <th className="px-3 py-2 font-semibold" scope="col">{t("Evidence")}</th>
-              <th className="px-3 py-2 font-semibold" scope="col">{t("Recovery")}</th>
-              <th className="px-4 py-2 text-right font-semibold" scope="col">{t("Open")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {projection.operations.map((operation) => (
-              <tr
-                className="border-b border-[var(--ad-border)] last:border-b-0"
-                data-media-operation={operation.modality}
-                key={operation.modality}
-              >
-                <th className="px-4 py-3 text-sm font-semibold" scope="row">
-                  {t(mediaOperationLabels[operation.modality])}
-                </th>
-                <td className="px-3 py-3">
-                  {operation.status ? <StatusBadge value={operation.status} /> : t("No runs")}
-                  <span className="mt-1 block max-w-44 truncate font-mono text-[10px] text-[var(--ad-text-muted)]">
-                    {operation.requestId ?? t("Unavailable")}
+      <div className="border-t border-[var(--ad-border)] p-3">
+        <DataTable
+          caption="Recent media operations"
+          headers={[
+            { label: "Media", width: "8rem" },
+            { label: "Latest run" },
+            { label: "Evidence" },
+            { label: "Recovery", width: "16rem" },
+            { label: "Open", align: "right" },
+          ]}
+          minimumWidthClassName="min-w-[760px]"
+          rows={projection.operations.map((operation) => ({
+            id: operation.modality,
+            cells: [
+              <span className="text-sm font-semibold" key="media">
+                {t(mediaOperationLabels[operation.modality])}
+              </span>,
+              <div key="run">
+                {operation.status ? <StatusBadge value={operation.status} /> : t("No runs")}
+                <span className="mt-1 block max-w-44 truncate font-mono text-[10px] text-[var(--ad-text-muted)]">
+                  {operation.requestId ?? t("Unavailable")}
+                </span>
+              </div>,
+              <div className="text-xs text-[var(--ad-text-muted)]" key="evidence">
+                <span className="block">
+                  {operation.provider?.key ?? t("Provider unavailable")}
+                  {operation.attempt ? ` · ${t("Attempt")} ${operation.attempt.number}` : ""}
+                </span>
+                <span className="mt-1 block">
+                  {t("Time")} {operation.timing?.latencyMs === null || operation.timing?.latencyMs === undefined
+                    ? t("Unavailable")
+                    : format.duration(operation.timing.latencyMs)}
+                  {" · "}{operation.costDreamcoins === null
+                    ? t("Cost unavailable")
+                    : format.dreamcoins(operation.costDreamcoins)}
+                  {" · "}{operation.output
+                    ? t(operation.output.availability === "available"
+                        ? "Available"
+                        : operation.output.availability === "deleted"
+                          ? "Deleted"
+                          : "Unavailable")
+                    : t("No output")}
+                </span>
+              </div>,
+              <div className="text-xs" key="recovery">
+                <span className="font-semibold">
+                  {t(mediaRecoveryLabels[operation.recoverability.state])}
+                </span>
+                {operation.recoverability.reason ? (
+                  <span className="mt-1 block text-[var(--ad-text-muted)]">
+                    {t(operation.recoverability.reason)}
                   </span>
-                </td>
-                <td className="px-3 py-3 text-[var(--ad-text-muted)]">
-                  <span className="block">
-                    {operation.provider?.key ?? t("Provider unavailable")}
-                    {operation.attempt ? ` · ${t("Attempt")} ${operation.attempt.number}` : ""}
-                  </span>
-                  <span className="mt-1 block">
-                    {t("Time")} {operation.timing?.latencyMs === null || operation.timing?.latencyMs === undefined
-                      ? t("Unavailable")
-                      : formatDurationMs(operation.timing.latencyMs)}
-                    {" · "}{operation.costDreamcoins === null
-                      ? t("Cost unavailable")
-                      : t("{cost} Dreamcoins", { cost: operation.costDreamcoins })}
-                    {" · "}{operation.output
-                      ? t(operation.output.availability === "available"
-                          ? "Available"
-                          : operation.output.availability === "deleted"
-                            ? "Deleted"
-                            : "Unavailable")
-                      : t("No output")}
-                  </span>
-                </td>
-                <td className="max-w-64 px-3 py-3">
-                  <span className="font-semibold">
-                    {t(mediaRecoveryLabels[operation.recoverability.state])}
-                  </span>
-                  {operation.recoverability.reason ? (
-                    <span className="mt-1 block text-[var(--ad-text-muted)]">
-                      {t(operation.recoverability.reason)}
-                    </span>
-                  ) : null}
-                  {operation.modality === "voice" &&
-                  operation.requestId &&
-                  operation.recoverability.actionHref &&
-                  operation.recoverability.actionConfirmation ? (
-                    <button
-                      className="mt-2 block font-semibold underline disabled:cursor-not-allowed disabled:opacity-50"
-                      disabled={
-                        !canReclaimVoice ||
-                        !onReclaimVoice ||
-                        reclaimingVoiceRequestId === operation.requestId
-                      }
-                      onClick={() =>
-                        setPendingReclaim({
-                          requestId: operation.requestId!,
-                          confirmation:
-                            operation.recoverability.actionConfirmation!,
-                          attemptNo: operation.attempt?.number ?? 1,
-                          provider: operation.provider?.key ?? null,
-                        })
-                      }
-                      type="button"
-                    >
-                      {t(
-                        reclaimingVoiceRequestId === operation.requestId
-                          ? "Reclaiming Voice request…"
-                          : "Reclaim Voice request",
-                      )}
-                    </button>
-                  ) : null}
-                  {/* SPEC: "Retry available" 必须带着一条真能重跑的去处。
-                      INTENT: 只有 voice 能就地重领——契约的 superRefine 明确禁止非 voice
-                      投递 actionHref。图片/视频的重跑在运维的作业队列里，所以这里给的是
-                      那条路，而不是一个点不动的按钮。 */}
-                  {operation.modality !== "voice" &&
-                  operation.recoverability.state === "retryable" &&
-                  operation.operationsHref ? (
-                    <Link
-                      className="mt-2 block font-semibold underline"
-                      href={operation.operationsHref}
-                    >
-                      {t("Requeue in operations")}
-                    </Link>
-                  ) : null}
-                </td>
-                <td className="px-4 py-3 text-right">
-                  <Link className="font-semibold underline" href={operation.studioHref}>
-                    {t("Open Studio")}
+                ) : null}
+                {operation.modality === "voice" &&
+                operation.requestId &&
+                operation.recoverability.actionHref &&
+                operation.recoverability.actionConfirmation ? (
+                  <button
+                    className="mt-2 block font-semibold underline disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={
+                      !canReclaimVoice ||
+                      !onReclaimVoice ||
+                      reclaimingVoiceRequestId === operation.requestId
+                    }
+                    onClick={() =>
+                      setPendingReclaim({
+                        requestId: operation.requestId!,
+                        confirmation:
+                          operation.recoverability.actionConfirmation!,
+                        attemptNo: operation.attempt?.number ?? 1,
+                        provider: operation.provider?.key ?? null,
+                      })
+                    }
+                    type="button"
+                  >
+                    {t(
+                      reclaimingVoiceRequestId === operation.requestId
+                        ? "Reclaiming Voice request…"
+                        : "Reclaim Voice request",
+                    )}
+                  </button>
+                ) : null}
+                {/* SPEC: "Retry available" 必须带着一条真能重跑的去处。
+                    INTENT: 只有 voice 能就地重领——契约的 superRefine 明确禁止非 voice
+                    投递 actionHref。图片/视频的重跑在运维的作业队列里，所以这里给的是
+                    那条路，而不是一个点不动的按钮。 */}
+                {operation.modality !== "voice" &&
+                operation.recoverability.state === "retryable" &&
+                operation.operationsHref ? (
+                  <Link
+                    className="mt-2 block font-semibold underline"
+                    href={operation.operationsHref}
+                  >
+                    {t("Requeue in operations")}
                   </Link>
-                  {operation.operationsHref ? (
-                    <Link className="ml-3 font-semibold underline" href={operation.operationsHref}>
-                      {t("Open operations")}
-                    </Link>
-                  ) : null}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                ) : null}
+              </div>,
+              <span className="whitespace-nowrap text-xs" key="open">
+                <Link className="font-semibold underline" href={operation.studioHref}>
+                  {t("Open Studio")}
+                </Link>
+                {operation.operationsHref ? (
+                  <Link className="ml-3 font-semibold underline" href={operation.operationsHref}>
+                    {t("Open operations")}
+                  </Link>
+                ) : null}
+              </span>,
+            ],
+          }))}
+        />
       </div>
       <p className="border-t border-[var(--ad-border)] px-4 py-2 text-xs text-[var(--ad-text-muted)]">
         {t("Run completion does not approve or publish an asset.")} {t("Review and Release remain separate decisions.")}

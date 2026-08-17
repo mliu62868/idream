@@ -6,8 +6,9 @@ import Link from "next/link";
 import { useState } from "react";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { adminV2Request } from "@/lib/admin-v2-api";
+import { formatDateTime, formatRelativeTime } from "@/components/admin/ui/format";
 import { failureFeedback, type ActionFeedback } from "./feedback";
-import { formatDateTime, formatElapsed, formatTime, todayOperationalText } from "./format";
+import { formatTime, todayOperationalText } from "./format";
 import { severityTone, slaState, snoozeOptions, type WorkTone } from "./health";
 
 export type WorkDensity = "compact" | "comfortable";
@@ -434,7 +435,7 @@ function WorkItem({ density, item, locale, now, onFeedback, onPreferenceChanged,
           <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-[var(--ad-text-muted)]">
             <span>{t("Owner")}: {item.ownerId ?? t("Unassigned")}</span>
             <span>{t("SLA")}: {item.slaDueAt ? formatDateTime(item.slaDueAt, locale) : t("No deadline")}</span>
-            <span>{t("Opened")} {formatElapsed(item.openedAt, locale)}</span>
+            <span>{t("Opened")} {formatRelativeTime(item.openedAt, now.toISOString(), locale)}</span>
             {item.verificationState === "pending" ? null : <span>{t("Verification")}: {t(item.verificationState)}</span>}
           </div>
         </div>
@@ -501,7 +502,7 @@ function SlaChip({ item, locale, now }: { item: TodayWorkItem; locale: "en" | "z
   if (state === "overdue" && item.slaDueAt) {
     return (
       <span className="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-semibold text-[var(--ad-red-text)] bg-[var(--ad-red-bg)]">
-        {t("SLA due {elapsed}", { elapsed: formatElapsed(item.slaDueAt, locale) })}
+        {t("SLA due {elapsed}", { elapsed: formatRelativeTime(item.slaDueAt, now.toISOString(), locale) })}
       </span>
     );
   }

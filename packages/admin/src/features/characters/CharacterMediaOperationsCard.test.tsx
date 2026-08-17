@@ -90,7 +90,8 @@ describe("Character media operations card", () => {
       { projection },
     ));
 
-    expect((html.match(/data-media-operation=/g) ?? [])).toHaveLength(3);
+    // 一行表头 + 每个模态一行；行标记不再是本地手写的 data 属性，用行数直接数。
+    expect((html.match(/<tr/g) ?? [])).toHaveLength(4);
     expect(html).toContain("Image");
     expect(html).toContain("Video");
     expect(html).toContain("Voice");

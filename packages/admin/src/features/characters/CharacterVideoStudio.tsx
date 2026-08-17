@@ -20,9 +20,9 @@ import {
   Video,
 } from "lucide-react";
 import Link from "next/link";
-import { formatDurationMs } from "./character-workspace-format";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { adminDateLocale, useAdminI18n } from "@/components/admin/i18n";
+import { formatDreamcoins, formatDuration } from "@/components/admin/ui/format";
 import {
   StatusBadge,
   WorkspaceButton,
@@ -1011,8 +1011,8 @@ export function CharacterVideoStudio({
               <p>
                 {estimate?.estimatedCostDreamcoins !== null &&
                 estimate?.estimatedCostDreamcoins !== undefined
-                  ? t("Estimated cost: {cost} Dreamcoins", {
-                      cost: estimate.estimatedCostDreamcoins,
+                  ? t("Estimated cost: {cost}", {
+                      cost: formatDreamcoins(estimate.estimatedCostDreamcoins, locale),
                     })
                   : t("Estimated cost unavailable")}
               </p>
@@ -1020,9 +1020,7 @@ export function CharacterVideoStudio({
                 {estimate?.averageDurationMs !== null &&
                 estimate?.averageDurationMs !== undefined
                   ? t("Estimated duration: {duration} · {days}-day average · {count} completed run", {
-                      duration: formatDurationMs(
-                        estimate.averageDurationMs,
-                      ),
+                      duration: formatDuration(estimate.averageDurationMs),
                       days: estimate.windowDays,
                       count: estimate.completedSampleCount,
                     })

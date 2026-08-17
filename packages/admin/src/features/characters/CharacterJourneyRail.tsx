@@ -3,6 +3,7 @@
 import Link from "next/link";
 import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { statusTone, type StatusTone } from "@/components/admin/ui/status-tone";
 import { cn } from "@/lib/utils";
 
 /**
@@ -33,13 +34,14 @@ const STEP_STATE_LABEL: Record<JourneyStep["state"], string> = {
   blocked: "Blocked",
 };
 
-// SEAM: ui/status-tone.ts 只认 blocked，没有 complete/current/upcoming。
-// 等它覆盖这四个值再换过去，不在这里另起一份通用 tone 表。
-const STEP_TONE: Record<JourneyStep["state"], string> = {
-  complete: "border-[var(--ad-green-text)]/40 text-[var(--ad-green-text)]",
-  current: "border-[var(--ad-ink)] text-[var(--ad-ink)]",
-  upcoming: "border-[var(--ad-border)] text-[var(--ad-text-muted)]",
-  blocked: "border-[var(--ad-red-text)]/50 text-[var(--ad-red-text)]",
+// SPEC: 步进条是描边不是色块，所以形状类在这里；哪个状态算哪一档由 ui/status-tone.ts 说了算。
+// INTENT: 五步状态机的四个取值现在都在那张唯一色表里，本地不再复述一遍"complete 是绿的"。
+const STEP_TONE_CLASS: Record<StatusTone, string> = {
+  success: "border-[var(--ad-green-text)]/40 text-[var(--ad-green-text)]",
+  info: "border-[var(--ad-blue-text)]/50 text-[var(--ad-blue-text)]",
+  pending: "border-[var(--ad-yellow-text)]/50 text-[var(--ad-yellow-text)]",
+  danger: "border-[var(--ad-red-text)]/50 text-[var(--ad-red-text)]",
+  neutral: "border-[var(--ad-border)] text-[var(--ad-text-muted)]",
 };
 
 export function CharacterJourneyRail({
@@ -89,7 +91,7 @@ export function CharacterJourneyRail({
               aria-current={step.state === "current" ? "step" : undefined}
               className={cn(
                 "flex min-h-11 flex-col justify-center rounded-lg border px-3 py-2 transition-colors hover:bg-black/[0.03] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]",
-                STEP_TONE[step.state],
+                STEP_TONE_CLASS[statusTone(step.state)],
               )}
               href={step.deepLink}
               onClick={openInPage(step.deepLink)}
