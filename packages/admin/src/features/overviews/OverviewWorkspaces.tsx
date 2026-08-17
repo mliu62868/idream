@@ -1,13 +1,15 @@
 "use client";
 
-import { adminDateLocale, useAdminI18n } from "@/components/admin/i18n";
+import { useAdminI18n } from "@/components/admin/i18n";
 import type { MetricDashboardResponse } from "@idream/shared/admin";
-import { ExternalLink, RefreshCcw } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet } from "@/components/admin/api";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
+import { text, useAdminFormat } from "@/components/admin/ui/format";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { createLatestRequestGate } from "@/lib/latest-request";
@@ -45,7 +47,8 @@ type ProviderData = {
 type State<T> = {
   data: T | null;
   loading: boolean;
-  error: string | null;
+  /** 原始异常 —— 文案与技术详情都由 ui/request-error-copy.ts 从错误码推。 */
+  error: Error | null;
   refreshedAt: string | null;
 };
 
@@ -308,7 +311,8 @@ async function loadState<T>(
       setState((current) => ({
         ...current,
         loading: false,
-        error: cause instanceof Error ? cause.message : fallback,
+        // 非 Error 的抛出物没有错误码可映射，就用调用点的兜底句子当 authority 原文。
+        error: cause instanceof Error ? cause : new Error(fallback),
       }));
   }
 }
@@ -543,9 +547,10 @@ function Rows({
   truncatedTo?: number;
 }) {
   const { t } = useAdminI18n();
+  const format = useAdminFormat();
   const tableRows: DataTableRow[] = rows.map((row, index) => ({
-    id: stringValue(row.id) || `${caption}-${index}`,
-    cells: columns.map(([field]) => cell(row[field], field)),
+    id: text(row.id) || `${caption}-${index}`,
+    cells: columns.map(([field]) => customerLinks(row[field], field) ?? format.display(row[field])),
   }));
   return (
     <>
@@ -591,33 +596,16 @@ function FreshnessLine({
   );
 }
 
-// SEAM: `error` 现在是后端原文。`ui/request-error-copy.ts` 落地后改走那套映射。
+// 三个总览工作台都无条件渲染它，所以空值判断留在这里，别让每个调用点各写一次三元。
 function AuthorityError({
   error,
   onRetry,
 }: {
-  error: string | null;
+  error: Error | null;
   onRetry: () => void;
 }) {
-  const { t } = useAdminI18n();
   if (!error) return null;
-  return (
-    <div
-      className="flex items-center justify-between rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
-      role="alert"
-    >
-      <span>{error}</span>
-      <button
-        className="inline-flex min-h-9 items-center gap-2 rounded border px-3"
-        onClick={onRetry}
-        type="button"
-      >
-        <RefreshCcw className="h-4 w-4" />
-
-        {t("Retry")}
-      </button>
-    </div>
-  );
+  return <AuthorityRequestError cause={error} message={error.message} onRetry={onRetry} />;
 }
 
 function NoPermission({
@@ -679,12 +667,9 @@ function pushQuery(scope: OverviewScope, query: OverviewQuery) {
   );
 }
 
-// SEAM: `formatDate`/`stringValue`/`cell` 在 12 个工作台里几乎逐字重复；
-// 共享 `ui/format.ts` 正在建，落地后删掉本地这三个。
 function FormattedDate({ value }: { value: string }) {
-  const { locale } = useAdminI18n();
-  const date = new Date(value);
-  return <>{Number.isNaN(date.getTime()) ? value : date.toLocaleString(adminDateLocale(locale))}</>;
+  const format = useAdminFormat();
+  return <>{format.dateTime(value)}</>;
 }
 
 // SPEC: 只读总览的固定出口块——写权限属于别的域，这里只负责把人送过去。
@@ -705,40 +690,31 @@ function WhereToAct({ links }: { links: ReadonlyArray<readonly [href: string, la
   );
 }
 
-function stringValue(value: unknown) {
-  return typeof value === "string" ? value : "";
-}
-
 // SPEC: 风险信号里的账号 id 直接进客户详情。
 // INTENT: 后端 abuse.ts 明确写了"处置动作留在各自的来源域"——它只报信号。既然如此，
 //         界面至少得把人送到能处置的地方，而不是让运营把 id 复制粘贴到另一个工作台。
 const CUSTOMER_ID_COLUMNS: ReadonlySet<string> = new Set(["userId", "inviterId", "userIds"]);
 
-function cell(value: unknown, column: string) {
-  if (value === null || value === undefined) return "-";
-  if (CUSTOMER_ID_COLUMNS.has(column)) {
-    const ids = Array.isArray(value)
-      ? value.filter((item): item is string => typeof item === "string")
-      : typeof value === "string" && value ? [value] : [];
-    if (ids.length > 0) {
-      return (
-        <span className="flex flex-wrap gap-2">
-          {ids.map((id) => (
-            <a
-              className="font-mono underline decoration-dotted underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
-              href={`/admin/customers/${encodeURIComponent(id)}`}
-              key={id}
-            >
-              {id}
-            </a>
-          ))}
-        </span>
-      );
-    }
-  }
-  if (typeof value === "string" || typeof value === "number")
-    return String(value);
-  return JSON.stringify(value);
+// 只剩「账号 id 变成链接」这一条本地规则；其余取值与缺失显示交给 ui/format 的 display。
+function customerLinks(value: unknown, column: string) {
+  if (!CUSTOMER_ID_COLUMNS.has(column)) return null;
+  const ids = Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : typeof value === "string" && value ? [value] : [];
+  if (ids.length === 0) return null;
+  return (
+    <span className="flex flex-wrap gap-2">
+      {ids.map((id) => (
+        <a
+          className="font-mono underline decoration-dotted underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
+          href={`/admin/customers/${encodeURIComponent(id)}`}
+          key={id}
+        >
+          {id}
+        </a>
+      ))}
+    </span>
+  );
 }
 
 function initialState<T>(): State<T> {
