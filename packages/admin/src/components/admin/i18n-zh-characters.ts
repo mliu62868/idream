@@ -97,8 +97,6 @@ export const adminZhCharacters: Record<string, string> = {
     "打开任意图片，可继续调整或重新设为当前形象。",
   "Open run to retry": "打开这次生成去重试",
   "Optional fields can be written now or later in Soul. Publishing checks the opening line and Soul quality separately.": "选填项现在写或之后在「灵魂」里写都行。开场白与灵魂质量由发布环节单独把关。",
-  // SEAM: "Page {page}" 与 "Previous page" 是通用分页词，本该和 "Next page" 一起放
-  // i18n-zh-common.ts；这一轮不允许改那个文件，合并时请一起搬过去。
   "Parameters are frozen and candidates are generating. The current visual identity will not change.":
     "本轮参数已冻结，正在生成候选图；当前视觉身份不会被改动。",
   "Persona & conversation": "人格与对话",

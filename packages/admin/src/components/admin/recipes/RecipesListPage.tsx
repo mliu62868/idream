@@ -9,8 +9,10 @@ import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { FilterBar } from "@/components/admin/ui/FilterBar";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
+import { Pagination } from "@/components/admin/ui/Pagination";
 import { PrimaryButton } from "@/components/admin/ui/buttons";
 import { StatusPill } from "@/components/admin/ui/StatusPill";
+import type { AdminPageInfo } from "@idream/shared/admin";
 import {
   authorityRequestFailed,
   authorityRequestStarted,
@@ -18,11 +20,19 @@ import {
   createAuthorityState,
 } from "@/lib/authority-state";
 import { createLatestRequestGate } from "@/lib/latest-request";
-import { requestErrorMessage, useDebouncedReload, useUrlBootstrap } from "@/components/admin/section-kit";
+import {
+  canGoPrevious,
+  listPageFromParams,
+  requestErrorMessage,
+  syncListUrl,
+  useDebouncedReload,
+  useUrlBootstrap,
+} from "@/components/admin/section-kit";
 import { RECIPES_LIST, recipeStateLabelKey, type Recipe } from "./recipes-api";
 
 const STATUSES = ["draft", "active", "archived"] as const;
-type RecipesResponse = { items: Recipe[]; pageInfo: { endCursor: string | null; hasNextPage: boolean } };
+const PAGE_SIZE = 25;
+type RecipesResponse = { items: Recipe[]; pageInfo: AdminPageInfo };
 
 // SPEC: 提示词配方列表页 —— 名称/版本/状态/更新时间表格；搜索名称 + 状态筛选（spec §7 列表页）。
 // INTENT: 浏览页只浏览；创建在 /new，详情在 /<id>。
@@ -32,10 +42,11 @@ export function RecipesListPage() {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
   const [cursor, setCursor] = useState<string | undefined>();
+  const [page, setPage] = useState(1);
   const [ready, setReady] = useState(false);
   const requestGate = useRef(createLatestRequestGate());
 
-  const reload = useCallback(async (nextCursor?: string) => {
+  const reload = useCallback(async (nextCursor: string | undefined, nextPage: number) => {
     const queryKey = recipesQueryKey(search, status, nextCursor);
     const params = new URLSearchParams(queryKey);
     const request = requestGate.current.begin();
@@ -45,13 +56,14 @@ export function RecipesListPage() {
       if (!request.isCurrent()) return;
       setAuthority(authorityRequestSucceeded(queryKey, data));
       setCursor(nextCursor);
-      window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
+      syncListUrl(params, nextPage);
     } catch (loadError) {
       if (!request.isCurrent()) return;
       setAuthority((current) => authorityRequestFailed(
         current,
         queryKey,
         requestErrorMessage(loadError, t),
+        loadError,
       ));
     }
   }, [search, status, t]);
@@ -60,10 +72,19 @@ export function RecipesListPage() {
     setSearch(params.get("search") ?? "");
     setStatus(params.get("status") ?? "all");
     setCursor(params.get("cursor") ?? undefined);
+    setPage(listPageFromParams(params));
     setReady(true);
   }, []), requestGate.current);
 
-  useDebouncedReload({ cursor, ready, reload, search });
+  useDebouncedReload({ cursor, page, ready, reload, search });
+
+  // 换搜索词/筛选就回到第一页 —— 第 4 页的游标配上新条件是一段没有意义的偏移。
+  const restart = useCallback((apply: () => void) => {
+    requestGate.current.invalidate();
+    apply();
+    setCursor(undefined);
+    setPage(1);
+  }, []);
 
   const newAction = (
     <Link href="/admin/generation/recipes/new">
@@ -74,6 +95,8 @@ export function RecipesListPage() {
   );
 
   const rows = authority.data?.items ?? [];
+  const pageInfo = authority.data?.pageInfo;
+  const filtered = search.trim().length > 0 || status !== "all";
   const tableRows: DataTableRow[] = rows.map((row) => ({
     id: row.id,
     href: `/admin/generation/recipes/${row.id}`,
@@ -93,30 +116,26 @@ export function RecipesListPage() {
         title={t("Prompt Recipes")}
       />
       <FilterBar
-        onSearch={(nextSearch) => {
-          requestGate.current.invalidate();
+        onSearch={(nextSearch) => restart(() => {
           setSearch(nextSearch);
-          setCursor(undefined);
           setAuthority((current) => authorityRequestStarted(
             current,
             recipesQueryKey(nextSearch, status),
           ));
-        }}
+        })}
         search={search}
         searchPlaceholder={t("Search by name")}
         selects={[
           {
             name: t("Status"),
             value: status,
-            onChange: (nextStatus) => {
-              requestGate.current.invalidate();
+            onChange: (nextStatus) => restart(() => {
               setStatus(nextStatus);
-              setCursor(undefined);
               setAuthority((current) => authorityRequestStarted(
                 current,
                 recipesQueryKey(search, nextStatus),
               ));
-            },
+            }),
             options: [
               { value: "all", label: t("All") },
               ...STATUSES.map((s) => ({ value: s, label: t(recipeStateLabelKey({ status: s })) })),
@@ -124,31 +143,57 @@ export function RecipesListPage() {
           },
         ]}
       />
-      {authority.error ? <AuthorityRequestError message={authority.error} onRetry={() => void reload(cursor)} snapshotAt={authority.data ? authority.refreshedAt : null} /> : null}
-      {authority.loading && authority.data === null ? (
-        <p className="text-sm text-[var(--ad-text-muted)]">{t("Loading…")}</p>
-      ) : authority.data ? (
+      {/* INVARIANT: 出错文案走 AuthorityRequestError（按错误码出人话 + 技术详情），不进 DataTable
+          的 error —— 那条横幅只会把 authority 原文原样印出来。取不到数据时连表格都不渲染，
+          零行不能被说成「还没有配方」。 */}
+      {authority.error ? <AuthorityRequestError cause={authority.cause} message={authority.error} onRetry={() => void reload(cursor, page)} snapshotAt={authority.data ? authority.refreshedAt : null} /> : null}
+      {authority.error && authority.data === null ? null : (
         <DataTable
+          caption="Prompt recipes"
           empty={
             <EmptyState
-              action={newAction}
-              hint={t("Create the first prompt recipe to get started.")}
-              title={t("No prompt recipes yet.")}
+              action={filtered ? undefined : newAction}
+              hint={filtered
+                ? t("The authority searched every prompt recipe. Clear the filters to see them all.")
+                : t("Create the first prompt recipe to get started.")}
+              kind={filtered ? "filtered" : "empty"}
+              onClearFilters={filtered ? () => restart(() => {
+                setSearch("");
+                setStatus("all");
+                setAuthority((current) => authorityRequestStarted(current, recipesQueryKey("", "all")));
+              }) : undefined}
+              title={filtered ? t("No prompt recipes match these filters.") : t("No prompt recipes yet.")}
             />
           }
           headers={[t("Name"), t("Version"), t("Status"), t("Updated")]}
+          loading={authority.loading}
           rows={tableRows}
+          skeletonRows={PAGE_SIZE}
         />
-      ) : null}
-      <div className="mt-4 flex justify-end"><button className="min-h-10 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold disabled:opacity-50" disabled={authority.loading || !authority.data?.pageInfo.hasNextPage || !authority.data.pageInfo.endCursor} onClick={() => {
-        const nextCursor = authority.data?.pageInfo.endCursor ?? undefined;
-        requestGate.current.invalidate();
-        setCursor(nextCursor);
-        setAuthority((current) => authorityRequestStarted(
-          current,
-          recipesQueryKey(search, status, nextCursor),
-        ));
-      }} type="button">{t("Next page")}</button></div>
+      )}
+      <div className="mt-4">
+        <Pagination
+          hasNext={Boolean(pageInfo?.hasNextPage && pageInfo.endCursor)}
+          // 这个 operation 的查询契约没有 `before` —— 置灰，不假装已经在第一页（section-kit 有全部理由）。
+          hasPrevious={pageInfo ? canGoPrevious(pageInfo, false) : false}
+          loading={authority.loading}
+          onNext={() => {
+            const nextCursor = pageInfo?.endCursor ?? undefined;
+            requestGate.current.invalidate();
+            setCursor(nextCursor);
+            setPage(page + 1);
+            setAuthority((current) => authorityRequestStarted(
+              current,
+              recipesQueryKey(search, status, nextCursor),
+            ));
+          }}
+          onPrevious={() => undefined}
+          page={page}
+          pageSize={PAGE_SIZE}
+          rowCount={rows.length}
+          totalCount={pageInfo?.totalCount ?? null}
+        />
+      </div>
     </div>
   );
 }

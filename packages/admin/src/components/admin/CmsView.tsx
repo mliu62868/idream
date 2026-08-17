@@ -13,6 +13,9 @@ import {
 import { useEffect, useState } from "react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
+import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
 
 type ContentStatus = "template" | "draft" | "published";
@@ -74,7 +77,9 @@ export function CmsView() {
   const { t, value: valueLabel } = useAdminI18n();
   const [pages, setPages] = useState<PageRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // INVARIANT: 存异常对象而不只是它的 message —— AuthorityRequestError 要靠 cause 才能按错误码
+  // 出人话；只有 message 时运营读到的仍是 authority 的英文原文。
+  const [error, setError] = useState<{ message: string; cause: unknown } | null>(null);
   const [publishDraft, setPublishDraft] = useState<PublishDraft | null>(null);
   const [publishBusy, setPublishBusy] = useState(false);
   const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
@@ -94,7 +99,7 @@ export function CmsView() {
       }
       setPages(data.items);
     } catch (err) {
-      setError(requestErrorMessage(err, t));
+      setError({ message: requestErrorMessage(err, t), cause: err });
     } finally {
       setLoading(false);
     }
@@ -141,12 +146,11 @@ export function CmsView() {
           : t("{path} is unpublished and back to draft. It is no longer served.", { path }),
       );
     } catch (err) {
-      const message = requestErrorMessage(err, t);
       // A status command is a one-shot operation against the exact row version
       // displayed to the operator. Never retain a stale confirmation.
       setPublishDraft(null);
       await load();
-      setError(message);
+      setError({ message: requestErrorMessage(err, t), cause: err });
     } finally {
       setPublishBusy(false);
     }
@@ -176,7 +180,7 @@ export function CmsView() {
         confirmation: "",
       });
     } catch (err) {
-      setError(requestErrorMessage(err, t));
+      setError({ message: requestErrorMessage(err, t), cause: err });
     } finally {
       setEditLoadingPath(null);
     }
@@ -210,11 +214,80 @@ export function CmsView() {
         setEditDraft(null);
         await load();
       }
-      setError(message);
+      setError({ message, cause: err });
     } finally {
       setEditBusy(false);
     }
   }
+
+  const tableRows: DataTableRow[] = pages.map((page) => ({
+    id: page.path,
+    cells: [
+      <span className="font-mono text-xs" key="path">{page.path}</span>,
+      <div key="title">
+        <p>{page.title}</p>
+        <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
+          {t("Updated")} {formatTimestamp(page.updatedAt)}
+        </p>
+      </div>,
+      <div className="text-[var(--ad-text-muted)]" key="status">
+        {valueLabel(page.contentStatus)}
+        {page.publishedAt ? <p className="mt-1 text-xs">{formatTimestamp(page.publishedAt)}</p> : null}
+      </div>,
+      <div className="text-[var(--ad-text-muted)]" key="indexing">
+        {valueLabel(page.indexingStatus)}
+        {page.canonical ? <p className="mt-1 max-w-44 truncate font-mono text-xs">{page.canonical}</p> : null}
+      </div>,
+      <div key="readiness">
+        <p className={page.publishability === "ready" ? "text-[var(--ad-green-text)]" : "text-[var(--ad-yellow-text)]"}>
+          {valueLabel(page.publishability)}
+        </p>
+        {page.issues.slice(0, 3).map((issue) => (
+          <p className="mt-1 text-xs text-[var(--ad-text-muted)]" key={`${issue.path}-${issue.code}-${issue.message}`}>
+            {issue.path || "page"}: {issue.message}
+          </p>
+        ))}
+      </div>,
+      <div className="flex justify-end gap-2" key="actions">
+        {page.contentStatus !== "published" ? (
+          <button
+            className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs disabled:opacity-50"
+            disabled={!page.editable || editLoadingPath !== null || publishBusy}
+            onClick={() => void startEdit(page)}
+            title={page.editable ? t("Edit draft") : t("This route is application-owned")}
+            type="button"
+          >
+            {editLoadingPath === page.path ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <FilePenLine className="h-3.5 w-3.5" />
+            )}
+            {t("Edit")}
+          </button>
+        ) : null}
+        {page.contentStatus === "published" ? (
+          <button
+            className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
+            disabled={publishBusy}
+            onClick={() => startPublish(page, "draft")}
+            type="button"
+          >
+            {t("Unpublish")}
+          </button>
+        ) : page.contentStatus === "draft" ? (
+          <button
+            className="inline-flex h-8 items-center gap-1 bg-[var(--ad-ink)] px-2 text-xs font-semibold text-white disabled:opacity-50"
+            disabled={publishBusy || page.publishability !== "ready"}
+            onClick={() => startPublish(page, "published")}
+            type="button"
+          >
+            <UploadCloud className="h-3.5 w-3.5" />
+            {t("Publish")}
+          </button>
+        ) : null}
+      </div>,
+    ],
+  }));
 
   return (
     <div className="space-y-5">
@@ -238,9 +311,7 @@ export function CmsView() {
       </div>
       <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
       {error ? (
-        <p className="text-xs text-[var(--ad-red-text)]" role="alert">
-          {error}
-        </p>
+        <AuthorityRequestError cause={error.cause} message={error.message} onRetry={() => void load()} />
       ) : null}
 
       <CreatePageForm onCreated={reportSuccess} reload={load} />
@@ -309,145 +380,29 @@ export function CmsView() {
         </section>
       ) : null}
 
-      <section className="overflow-x-auto rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
-        <table className="w-full min-w-[920px] text-left text-sm">
-          <caption className="sr-only">{t("CMS pages")}</caption>
-          <thead className="border-b border-[var(--ad-border)] text-xs text-[var(--ad-text-muted)]">
-            <tr>
-              <th className="px-3 py-2 font-medium" scope="col">
-                {t("path")}
-              </th>
-              <th className="px-3 py-2 font-medium" scope="col">
-                {t("title")}
-              </th>
-              <th className="px-3 py-2 font-medium" scope="col">
-                {t("status")}
-              </th>
-              <th className="px-3 py-2 font-medium" scope="col">
-                {t("Indexing")}
-              </th>
-              <th className="px-3 py-2 font-medium" scope="col">
-                {t("Publication readiness")}
-              </th>
-              <th className="px-3 py-2 font-medium" scope="col">
-                <span className="sr-only">{t("Actions")}</span>
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {pages.map((page) => (
-              <tr
-                className="border-b border-[var(--ad-border)] align-top"
-                key={page.path}
-              >
-                <td className="px-3 py-3 font-mono text-xs">{page.path}</td>
-                <td className="px-3 py-3">
-                  <p>{page.title}</p>
-                  <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-
-                    {t("Updated")} {formatTimestamp(page.updatedAt)}
-                  </p>
-                </td>
-                <td className="px-3 py-3 text-[var(--ad-text-muted)]">
-                  {valueLabel(page.contentStatus)}
-                  {page.publishedAt ? (
-                    <p className="mt-1 text-xs">
-                      {formatTimestamp(page.publishedAt)}
-                    </p>
-                  ) : null}
-                </td>
-                <td className="px-3 py-3 text-[var(--ad-text-muted)]">
-                  {valueLabel(page.indexingStatus)}
-                  {page.canonical ? (
-                    <p className="mt-1 max-w-44 truncate font-mono text-xs">
-                      {page.canonical}
-                    </p>
-                  ) : null}
-                </td>
-                <td className="max-w-80 px-3 py-3">
-                  <p
-                    className={
-                      page.publishability === "ready"
-                        ? "text-[var(--ad-green-text)]"
-                        : "text-[var(--ad-yellow-text)]"
-                    }
-                  >
-                    {valueLabel(page.publishability)}
-                  </p>
-                  {page.issues.slice(0, 3).map((issue) => (
-                    <p
-                      className="mt-1 text-xs text-[var(--ad-text-muted)]"
-                      key={`${issue.path}-${issue.code}-${issue.message}`}
-                    >
-                      {issue.path || "page"}: {issue.message}
-                    </p>
-                  ))}
-                </td>
-                <td className="px-3 py-3 text-right">
-                  <div className="flex justify-end gap-2">
-                    {page.contentStatus !== "published" ? (
-                      <button
-                        className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs disabled:opacity-50"
-                        disabled={
-                          !page.editable ||
-                          editLoadingPath !== null ||
-                          publishBusy
-                        }
-                        onClick={() => void startEdit(page)}
-                        title={
-                          page.editable
-                            ? t("Edit draft")
-                            : t("This route is application-owned")
-                        }
-                        type="button"
-                      >
-                        {editLoadingPath === page.path ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        ) : (
-                          <FilePenLine className="h-3.5 w-3.5" />
-                        )}
-                        {t("Edit")}
-                      </button>
-                    ) : null}
-                    {page.contentStatus === "published" ? (
-                      <button
-                        className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
-                        disabled={publishBusy}
-                        onClick={() => startPublish(page, "draft")}
-                        type="button"
-                      >
-                        {t("Unpublish")}
-                      </button>
-                    ) : page.contentStatus === "draft" ? (
-                      <button
-                        className="inline-flex h-8 items-center gap-1 bg-[var(--ad-ink)] px-2 text-xs font-semibold text-white disabled:opacity-50"
-                        disabled={
-                          publishBusy || page.publishability !== "ready"
-                        }
-                        onClick={() => startPublish(page, "published")}
-                        type="button"
-                      >
-                        <UploadCloud className="h-3.5 w-3.5" />
-                        {t("Publish")}
-                      </button>
-                    ) : null}
-                  </div>
-                </td>
-              </tr>
-            ))}
-            {pages.length === 0 && !loading && !error ? (
-              <tr>
-                <td
-                  className="px-3 py-6 text-center text-xs text-[var(--ad-text-muted)]"
-                  colSpan={6}
-                >
-                  {t("No CMS pages yet.")}
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </section>
+      {error && pages.length === 0 ? null : (
+        <DataTable
+          caption="CMS pages"
+          empty={
+            <EmptyState
+              hint={t("Create a draft above; it is not served until you publish it.")}
+              title={t("No CMS pages yet.")}
+            />
+          }
+          headers={[
+            { label: t("Path"), width: "16rem" },
+            t("Title"),
+            t("Status"),
+            t("Indexing"),
+            { label: t("Publication readiness"), width: "20rem" },
+            { label: t("Actions"), align: "right" },
+          ]}
+          loading={loading}
+          minimumWidthClassName="min-w-[920px]"
+          rows={tableRows}
+          stickyLastColumn
+        />
+      )}
     </div>
   );
 }

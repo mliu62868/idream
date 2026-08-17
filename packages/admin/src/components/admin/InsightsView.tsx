@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, AlertTriangle, Loader2 } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
 import { createLatestRequestGate } from "@/lib/latest-request";
@@ -81,11 +82,11 @@ function RetentionSection() {
 function ProfileHealthSection() {
   const { t, value } = useAdminI18n();
   const [profiles, setProfiles] = useState<ProfileOption[] | null>(null);
-  const [profilesError, setProfilesError] = useState<string | null>(null);
+  const [profilesError, setProfilesError] = useState<unknown>(null);
   const [profileId, setProfileId] = useState("");
   const [health, setHealth] = useState<Health | null>(null);
   const [busy, setBusy] = useState<"health" | "dryrun" | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+  const [err, setErr] = useState<unknown>(null);
   const [confirmingDryRun, setConfirmingDryRun] = useState(false);
   const { feedback, reportSuccess, reportFailure, clearFeedback } = useWriteFeedback();
   const requestGate = useRef(createLatestRequestGate());
@@ -103,7 +104,7 @@ function ProfileHealthSection() {
     } catch (error) {
       if (!request.isCurrent()) return;
       setProfiles([]);
-      setProfilesError(requestErrorMessage(error, t));
+      setProfilesError(error);
     }
   }, [t]);
 
@@ -132,7 +133,7 @@ function ProfileHealthSection() {
       );
       setHealth(data);
     } catch (error) {
-      setErr(requestErrorMessage(error, t));
+      setErr(error);
     } finally {
       setBusy(null);
     }
@@ -222,17 +223,18 @@ function ProfileHealthSection() {
         </button>
       </div>
       {profilesError ? (
-        <p className="mt-2 text-xs text-[var(--ad-red-text)]" role="alert">
-          {profilesError}{" "}
-          <button className="font-semibold underline" onClick={() => void loadProfiles()} type="button">
-            {t("Retry")}
-          </button>
-        </p>
+        <div className="mt-2">
+          <AuthorityRequestError cause={profilesError} message={requestErrorMessage(profilesError, t)} onRetry={() => void loadProfiles()} />
+        </div>
       ) : null}
       <div className="mt-2">
         <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
       </div>
-      {err ? <p role="alert" className="mt-2 text-xs text-[var(--ad-red-text)]">{err}</p> : null}
+      {err ? (
+        <div className="mt-2">
+          <AuthorityRequestError cause={err} message={requestErrorMessage(err, t)} onRetry={() => void loadHealth()} />
+        </div>
+      ) : null}
       {health ? <ProfileHealthMetrics health={health} /> : null}
       {dryRunSpec ? <ConfirmDialog onClose={() => setConfirmingDryRun(false)} spec={dryRunSpec} /> : null}
     </section>

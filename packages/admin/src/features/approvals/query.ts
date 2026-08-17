@@ -10,6 +10,9 @@ export const defaultApprovalQuery: ApprovalQuery = {
   cursor: "",
 };
 
+/** 页大小是请求参数与分页条读数共用的同一个数，只允许有一份。 */
+export const APPROVAL_PAGE_SIZE = 25;
+
 export function approvalQueryFromSearch(search: string): ApprovalQuery {
   const params = new URLSearchParams(search);
   return {
@@ -20,7 +23,7 @@ export function approvalQueryFromSearch(search: string): ApprovalQuery {
 }
 
 export function approvalListPath(query: ApprovalQuery) {
-  const params = new URLSearchParams({ limit: "25" });
+  const params = new URLSearchParams({ limit: String(APPROVAL_PAGE_SIZE) });
   set(params, "search", query.search);
   set(params, "status", query.status);
   set(params, "cursor", query.cursor);

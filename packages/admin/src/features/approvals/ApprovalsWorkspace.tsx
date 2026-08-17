@@ -1,7 +1,7 @@
 "use client";
 
 import { useAdminI18n } from "@/components/admin/i18n";
-import { Check, Loader2, RefreshCcw, X } from "lucide-react";
+import { Check, Loader2, X } from "lucide-react";
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet, apiWrite } from "@/components/admin/api";
@@ -13,13 +13,16 @@ import {
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import { text, useAdminFormat } from "@/components/admin/ui/format";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { emptyPageInfo, Pagination, type PageInfo } from "@/components/admin/ui/Pagination";
 import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { useToast } from "@/components/admin/ui/Toast";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { canonicalListEmptyTitle } from "@/features/compatibility-lists/empty-state";
 import {
+  APPROVAL_PAGE_SIZE,
   approvalListPath,
   approvalQueryFromSearch,
   approvalWorkspaceUrl,
@@ -28,7 +31,7 @@ import {
 } from "./query";
 
 type Row = Record<string, unknown>;
-type PageInfo = { endCursor: string | null; hasNextPage: boolean };
+type AdminFormat = ReturnType<typeof useAdminFormat>;
 type ListResponse = { items: Row[]; pageInfo?: PageInfo };
 
 /**
@@ -81,6 +84,7 @@ function payloadEntries(value: unknown): Array<[string, string]> {
 
 export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
   const { t } = useAdminI18n();
+  const format = useAdminFormat();
   const { toast } = useToast();
   const [query, setQuery] = useState<ApprovalQuery>(() => currentQuery());
   const [draft, setDraft] = useState<ApprovalQuery>(() => currentQuery());
@@ -90,6 +94,10 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
   const [errorCause, setErrorCause] = useState<unknown>(undefined);
   const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
+  // SPEC: 「上一页」走自己走过的游标回头，不给后端发 `before`。
+  // INTENT: 审批列表还是单向 keyset（响应里没有 startCursor / hasPreviousPage）。
+  //         翻页栈是本地的，所以第一页时 hasPrevious 为假 —— 置灰而不是给一个会 400 的按钮。
+  const [cursorTrail, setCursorTrail] = useState<string[]>([]);
   const gate = useRef(createLatestRequestGate());
   const initialQuery = useRef(query);
 
@@ -124,6 +132,7 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
       const next = currentQuery();
       setQuery(next);
       setDraft(next);
+      setCursorTrail([]);
       void load(next);
     };
     window.addEventListener("popstate", restore);
@@ -135,7 +144,11 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
     };
   }, [load]);
 
-  function navigate(next: ApprovalQuery, mode: "push" | "replace" = "push") {
+  function navigate(
+    next: ApprovalQuery,
+    mode: "push" | "replace" = "push",
+    trail: string[] = [],
+  ) {
     const url = approvalWorkspaceUrl(
       window.location.pathname,
       window.location.search,
@@ -148,6 +161,7 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
     );
     setQuery(next);
     setDraft(next);
+    setCursorTrail(trail);
     void load(next);
   }
 
@@ -198,6 +212,7 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
 
   const filtered = Boolean(query.search || query.status !== "pending");
   const rows = data?.items ?? [];
+  const pageInfo = data?.pageInfo ?? emptyPageInfo;
   return (
     <section className="space-y-5">
       <PageHeader
@@ -210,7 +225,8 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
       >
         <span>
 
-          {t("Approval authority ·")} {freshness(data, loading, error, refreshedAt)}
+          {t("Approval authority ·")}{" "}
+          {freshness(data, loading, error, refreshedAt ? format.time(refreshedAt) : null)}
         </span>
         {!canReview ? <PermissionNotice permission="admin.approval.review" /> : null}
       </div>
@@ -295,23 +311,26 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
             "Actions",
           ]}
           minimumWidthClassName="min-w-[1500px]"
-          rows={approvalRows(rows, canReview, confirmDecision)}
+          rows={approvalRows(rows, canReview, confirmDecision, format)}
           stickyLastColumn
         />
       ) : null}
-      {data?.pageInfo?.hasNextPage && data.pageInfo.endCursor ? (
-        <button
-          className="inline-flex min-h-11 items-center gap-2 rounded border px-4 text-sm font-semibold"
-          disabled={loading}
-          onClick={() =>
-            navigate({ ...query, cursor: data.pageInfo?.endCursor ?? "" })
+      {data && rows.length > 0 ? (
+        <Pagination
+          hasNext={Boolean(pageInfo.hasNextPage && pageInfo.endCursor)}
+          hasPrevious={cursorTrail.length > 0}
+          loading={loading}
+          onNext={() => {
+            if (!pageInfo.endCursor) return;
+            navigate({ ...query, cursor: pageInfo.endCursor }, "push", [...cursorTrail, query.cursor]);
+          }}
+          onPrevious={() =>
+            navigate({ ...query, cursor: cursorTrail.at(-1) ?? "" }, "push", cursorTrail.slice(0, -1))
           }
-          type="button"
-        >
-          <RefreshCcw className="h-4 w-4" />
-
-          {t("Next approval page")}
-        </button>
+          page={cursorTrail.length + 1}
+          pageSize={APPROVAL_PAGE_SIZE}
+          rowCount={rows.length}
+        />
       ) : null}
       {confirmation ? (
         <ConfirmDialog
@@ -327,6 +346,7 @@ function approvalRows(
   rows: Row[],
   canReview: boolean,
   decide: (entry: ApprovalCase, decision: "approve" | "reject") => void,
+  format: AdminFormat,
 ): DataTableRow[] {
   return rows.map((row, index) => {
     const entry = toApprovalCase(row, index);
@@ -334,13 +354,13 @@ function approvalRows(
       id: entry.id,
       cells: [
         entry.id,
-        display(row.action),
-        display(row.permissionKey),
+        format.display(row.action),
+        format.display(row.permissionKey),
         <TargetCell key="target" id={entry.targetId} type={entry.targetType} />,
-        display(row.requestedById),
-        display(row.reason),
+        format.display(row.requestedById),
+        format.display(row.reason),
         <PayloadCell entries={entry.payload} key="payload" />,
-        date(row.createdAt),
+        format.dateTime(row.createdAt),
         <DecidedCell
           at={entry.decidedAt}
           by={entry.approvedById}
@@ -416,11 +436,12 @@ function ParameterList({ entries }: { entries: Array<[string, string]> }) {
 
 function DecidedCell({ at, by }: { at: string | null; by: string | null }) {
   const { t } = useAdminI18n();
+  const format = useAdminFormat();
   if (!at && !by) return <span className="text-[var(--ad-text-muted)]">{t("Awaiting decision")}</span>;
   return (
     <span className="block">
       <span className="block">{by ?? "—"}</span>
-      <span className="block text-xs text-[var(--ad-text-muted)]">{date(at)}</span>
+      <span className="block text-xs text-[var(--ad-text-muted)]">{format.dateTime(at)}</span>
     </span>
   );
 }
@@ -554,31 +575,11 @@ function freshness(
   data: ListResponse | null,
   loading: boolean,
   error: string | null,
-  refreshedAt: string | null,
+  time: string | null,
 ) {
-  const time = refreshedAt
-    ? new Date(refreshedAt).toLocaleTimeString()
-    : "unknown";
-  if (loading && data) return `refreshing · as of ${time}`;
-  if (error && data) return `stale · last good ${time}`;
+  if (loading && data) return `refreshing · as of ${time ?? "unknown"}`;
+  if (error && data) return `stale · last good ${time ?? "unknown"}`;
   if (error) return "unavailable";
-  if (data) return `as of ${time}`;
+  if (data) return `as of ${time ?? "unknown"}`;
   return "loading…";
-}
-
-// MIGRATION: 这三个函数在 12 个工作台里逐字重复；统一版正在 `ui/format.ts` 建，
-// 合并时整批切过去，不要在这里再派生第四份。
-function text(value: unknown) {
-  return typeof value === "string" ? value : "";
-}
-
-function display(value: unknown) {
-  return typeof value === "string" || typeof value === "number"
-    ? String(value)
-    : "—";
-}
-
-function date(value: unknown) {
-  const parsed = new Date(text(value));
-  return Number.isNaN(parsed.getTime()) ? "—" : parsed.toLocaleString();
 }

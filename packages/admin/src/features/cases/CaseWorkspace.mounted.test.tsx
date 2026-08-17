@@ -261,6 +261,19 @@ describe("CaseWorkspace decision loop", () => {
     expect(dialog?.textContent).toContain("Close case");
     expect(dialog?.querySelector('input[aria-label="Type confirmation"]')).not.toBeNull();
     expect(dialog?.querySelector('input[aria-label="Reason (≥3)"]')).not.toBeNull();
+    // 后果不再混在 summary 里当说明文字——它是敲确认串之前必须读到的那一条。
+    expect(dialog?.textContent).toContain("This cannot be undone.");
+    expect(dialog?.textContent).toContain("Closing is the end of this customer problem.");
+  });
+
+  // wait 是可逆的（有人恢复它就回来），不能跟 close 用同一句「不可撤销」吓运营。
+  it("marks a reversible lifecycle command as reversible", async () => {
+    await mount({ canAssign: true, canDecide: true });
+    const reopen = [...container.querySelectorAll("button")].find((button) => button.textContent === "Reopen / create recurrence");
+    await act(async () => reopen?.click());
+    const dialog = document.querySelector('[role="dialog"]');
+    expect(dialog?.textContent).toContain("This can be undone later.");
+    expect(dialog?.textContent).not.toContain("This cannot be undone.");
   });
 
   // 回归：wait / reopen 端点要求 Idempotency-Key，此前客户端一个都没发，后端一律 400

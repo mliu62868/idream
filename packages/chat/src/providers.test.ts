@@ -12,7 +12,12 @@ describe("chat providers", () => {
   it("uses the pipeline chat provider alias for OpenAI-compatible streaming", async () => {
     const fetchMock = vi.fn(async () =>
       new Response(
-        'data: {"choices":[{"delta":{"content":"Pipeline reply"}}]}\n\ndata: [DONE]\n\n',
+        [
+          'data: {"choices":[{"delta":{"content":"Pipeline reply"}}]}',
+          'data: {"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":3}}',
+          "data: [DONE]",
+          "",
+        ].join("\n\n"),
         { headers: { "content-type": "text/event-stream" } },
       ),
     );
@@ -22,6 +27,9 @@ describe("chat providers", () => {
       CHAT_MODEL_PROVIDER: "pipeline",
       CHAT_MODEL_BASE_URL: "https://pipeline.internal.example.com/v1",
       CHAT_MODEL_API_KEY: "pipeline-api-key",
+      // Pinned here rather than inherited: packages/chat/.env is gitignored, so
+      // asserting the machine's local ceiling would pass or fail per checkout.
+      CHAT_MODEL_MAX_TOKENS: "512",
       MODERATION_PROVIDER: "mock",
     };
 
@@ -36,9 +44,11 @@ describe("chat providers", () => {
       chunks.push(chunk);
     }
 
+    // The provider's own token counts reach the caller, which would otherwise
+    // have to estimate from characters (and badly undercount CJK).
     expect(chunks).toEqual([
       { delta: "Pipeline reply", done: false },
-      { delta: "", done: true, toolCalls: [] },
+      { delta: "", done: true, toolCalls: [], usage: { promptTokens: 11, completionTokens: 3 } },
     ]);
     expect(fetchMock).toHaveBeenCalledWith(
       new URL("https://pipeline.internal.example.com/v1/chat/completions"),
@@ -52,7 +62,15 @@ describe("chat providers", () => {
     const init = (fetchMock.mock.calls[0] as unknown[])[1] as { body: string };
     const body = JSON.parse(init.body);
     expect(body.model).toBe("Qwen3.5-14B-MLX-4bit");
-    expect(body.max_tokens).toBe(8000);
+    // Sampling and the output ceiling come from packages/chat/.env, not from the
+    // model server's machine-local defaults.
+    expect(body).toMatchObject({
+      max_tokens: 512,
+      temperature: 0.9,
+      top_p: 0.95,
+      repetition_penalty: 1.05,
+      stream_options: { include_usage: true },
+    });
   });
 
   it("sends tools in the request body and reports supportsTools per provider", async () => {
