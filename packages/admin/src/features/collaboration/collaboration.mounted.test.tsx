@@ -83,6 +83,9 @@ describe("collaboration write safety", () => {
     const dialog = document.querySelector('[role="dialog"]');
     expect(dialog?.textContent).toContain("Overwrite the shared Saved View");
     expect(dialog?.textContent).toContain("Overdue billing");
+    // 后端只存当前 queryState，没有版本历史 —— 覆盖不可恢复，所以要常驻红条 + 确认串。
+    expect(dialog?.textContent).toContain("This cannot be undone.");
+    expect(dialog?.querySelector('input[aria-label="Saved view name"]')).not.toBeNull();
   });
 
   // handoff 会在服务端换掉记录的 ownerId 并 +1 version；父级不重拉就会拿着陈旧 version 去撞 409。

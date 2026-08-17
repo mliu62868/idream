@@ -1,10 +1,10 @@
 "use client";
 
-import { adminDateLocale, useAdminI18n } from "@/components/admin/i18n";
+import { useAdminI18n } from "@/components/admin/i18n";
 import Link from "next/link";
 import type { FormEvent, KeyboardEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowRight, CheckCircle2, ChevronRight, ClipboardCheck, X } from "lucide-react";
+import { ArrowRight, CheckCircle2, ClipboardCheck, X } from "lucide-react";
 import {
   APPEAL_CASE_DECISIONS,
   BILLING_CASE_ACTIONS,
@@ -16,6 +16,9 @@ import {
   type OperationsCase,
 } from "@idream/shared/admin";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
+import { useAdminFormat } from "@/components/admin/ui/format";
+import { Pagination } from "@/components/admin/ui/Pagination";
+import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { adminV2Request, setWorkspaceUrl } from "@/lib/admin-v2-api";
 import { createWorkspaceHistoryController, observeWorkspacePopState, workspaceDetailId } from "@/lib/workspace-history";
 import { CollaborationPanel } from "@/features/collaboration/CollaborationPanel";
@@ -53,7 +56,10 @@ type CaseList = AdminListResponse<OperationsCase>;
 type CaseDetail = ReturnType<typeof operationsCaseDetailSchema.parse>;
 
 export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { canAssign: boolean; canDecide: boolean; initialCaseId?: string | null }) {
-  const { locale, t } = useAdminI18n();
+  const { t } = useAdminI18n();
+  const format = useAdminFormat();
+  const { toast } = useToast();
+  const failureToast = useFailureToast();
   const [initialUrlState] = useState(() => initialCaseWorkspaceState(initialCaseId));
   const [query, setQuery] = useState<CaseQueryDraft>(initialUrlState.query);
   const [list, setList] = useState<CaseList | null>(null);
@@ -63,8 +69,9 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  // SPEC: 「上一页」重发自己走过的那个游标；工单列表还是单向 keyset（没有 startCursor /
+  //       hasPreviousPage），栈空即第一页，置灰而不是给一个会 400 的按钮。
+  const [cursorTrail, setCursorTrail] = useState<string[]>([]);
   const history = useRef(createWorkspaceHistoryController(initialUrlState));
   const listRequestId = useRef(0);
   const detailRequestId = useRef(0);
@@ -72,7 +79,6 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
   const loadList = useCallback(async (next: CaseQueryDraft) => {
     const requestId = ++listRequestId.current;
     setLoading(true);
-    setError(null);
     try {
       const response = await adminV2Request<CaseList>(`/api/v2/admin/cases?${buildCaseQuery(next)}`, {
         schema: operationsCaseListResponseSchema,
@@ -80,27 +86,26 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
       if (requestId !== listRequestId.current) return;
       setList(response);
     } catch (loadError) {
-      if (requestId === listRequestId.current) setError(message(loadError));
+      if (requestId === listRequestId.current) failureToast(loadError);
     } finally {
       if (requestId === listRequestId.current) setLoading(false);
     }
-  }, []);
+  }, [failureToast]);
 
   const loadDetail = useCallback(async (caseId: string) => {
     const requestId = ++detailRequestId.current;
     setDetailLoading(true);
-    setError(null);
     try {
       const response = await adminV2Request<CaseDetail>(`/api/v2/admin/cases/${encodeURIComponent(caseId)}`, {
         schema: operationsCaseDetailSchema,
       });
       if (requestId === detailRequestId.current) setDetail(response);
     } catch (loadError) {
-      if (requestId === detailRequestId.current) setError(message(loadError));
+      if (requestId === detailRequestId.current) failureToast(loadError);
     } finally {
       if (requestId === detailRequestId.current) setDetailLoading(false);
     }
-  }, []);
+  }, [failureToast]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -142,6 +147,7 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
     const next = { ...query, cursor: undefined };
     setSelectedSavedViewId(null);
     setQuery(next);
+    setCursorTrail([]);
     history.current.navigate({ query: next, selectedId, savedViewId: null }, writeCaseUrl);
     void loadList(next);
   }
@@ -150,6 +156,7 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
     const next = { ...query, view, cursor: undefined };
     setSelectedSavedViewId(null);
     setQuery(next);
+    setCursorTrail([]);
     history.current.navigate({ query: next, selectedId, savedViewId: null }, writeCaseUrl);
     void loadList(next);
   }
@@ -158,13 +165,15 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
     const next = { ...defaultCaseQuery, view: query.view };
     setSelectedSavedViewId(null);
     setQuery(next);
+    setCursorTrail([]);
     history.current.navigate({ query: next, selectedId, savedViewId: null }, writeCaseUrl);
     void loadList(next);
   }
 
-  function goToPage(cursor: string | undefined) {
+  function goToPage(cursor: string | undefined, trail: string[]) {
     const next = { ...history.current.current().query, cursor };
     setQuery(next);
+    setCursorTrail(trail);
     history.current.navigate({ query: next, selectedId, savedViewId: selectedSavedViewId }, writeCaseUrl);
     void loadList(next);
   }
@@ -181,6 +190,7 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
     const next = caseQueryFromSavedState(view.queryState);
     setSelectedSavedViewId(view.id);
     setQuery(next);
+    setCursorTrail([]);
     history.current.navigate({ query: next, selectedId, savedViewId: view.id }, writeCaseUrl);
     void loadList(next);
   }, [loadList, selectedId]);
@@ -195,20 +205,21 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
   async function refreshAfterMutation(label: string) {
     const next = { ...history.current.current().query, cursor: undefined };
     setQuery(next);
+    setCursorTrail([]);
     history.current.replace({ query: next, selectedId, savedViewId: selectedSavedViewId }, writeCaseUrl);
     await Promise.all([loadList(next), selectedId ? loadDetail(selectedId) : Promise.resolve()]);
-    setNotice(label);
+    // INVARIANT: label 是词典 key，翻译收在这一处 —— 调用点散在十来个按钮上，
+    // 让它们各自 t() 就是让其中几个忘记（旧的 notice 出口正是这样露出英文的）。
+    toast({ tone: "success", title: t(label) });
   }
 
   async function mutate(label: string, execute: () => Promise<unknown>) {
     setBusy(true);
-    setError(null);
-    setNotice(null);
     try {
       await execute();
       await refreshAfterMutation(label);
     } catch (mutationError) {
-      setError(message(mutationError));
+      failureToast(mutationError);
     } finally {
       setBusy(false);
     }
@@ -220,7 +231,7 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
     <section aria-labelledby="case-workspace-title" className="space-y-5">
       <header className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div><h2 className="sr-only" id="case-workspace-title">{t("Cases")}</h2><p className="max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">{t("Evidence, decision, downstream verification, and closure stay attached to the customer problem.")}</p></div>
-        {list ? <p className="text-xs text-[var(--ad-text-muted)]" role="status">{t(list.freshness)}  {t("· data as of")} <time dateTime={list.asOf}>{new Date(list.asOf).toLocaleTimeString(adminDateLocale(locale) ?? "en-US")}</time></p> : null}
+        {list ? <p className="text-xs text-[var(--ad-text-muted)]" role="status">{t(list.freshness)}  {t("· data as of")} <time dateTime={list.asOf}>{format.time(list.asOf)}</time></p> : null}
       </header>
 
       <CaseTabs active={query.view} onChange={selectView} />
@@ -242,22 +253,26 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
         <div className="flex items-end gap-2"><WorkspaceButton tone="primary" type="submit">{t("Apply")}</WorkspaceButton>{filtered ? <WorkspaceButton onClick={clearFilters}>{t("Clear")}</WorkspaceButton> : null}</div>
       </form>
 
-      {/* 接缝：这是本工作台唯一的反馈出口。全局 ui/Toast.tsx 合并后整块换成 useToast() /
-          useFailureToast()（成功自动消失、失败常驻 + 复制给工程），error / notice 两个 state 一起删。 */}
-      {error ? <div className="rounded-md bg-[var(--ad-red-bg)] px-4 py-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}</div> : null}
-      {notice ? <div className="rounded-md bg-[var(--ad-green-bg)] px-4 py-3 text-sm text-[var(--ad-green-text)]" role="status">{notice}</div> : null}
-
       {loading && !list ? <LoadingWorkspace label="Loading cases" /> : list && list.items.length === 0 ? <EmptyWorkspace filtered={filtered} onClear={clearFilters} /> : (
         <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,0.92fr)_minmax(460px,1.08fr)]">
           <div className="space-y-2" aria-label={t("Case results")}>
             {list?.items.map((adminCase) => <CaseRow adminCase={adminCase} active={selectedId === adminCase.id} key={adminCase.id} onSelect={() => selectCase(adminCase.id)} referenceTime={list.asOf} />)}
-            {/* 接缝：authority 侧正在补 startCursor / hasPreviousPage / totalCount，之后这块整体换成
-                统一的 Pagination 原语。在那之前只说得出"本页有几条"——不谎称是总数，也不自造上一页。 */}
             {list && list.items.length > 0 ? (
-              <nav aria-label={t("Case pages")} className="flex flex-wrap items-center justify-between gap-3 pt-1">
-                <p className="text-xs text-[var(--ad-text-muted)]">{t("{count} on this page", { count: list.items.length })}</p>
-                {list.pageInfo.hasNextPage ? <WorkspaceButton disabled={loading} onClick={() => goToPage(list.pageInfo.endCursor ?? undefined)}>{t("Next page")}<ChevronRight className="h-4 w-4" /></WorkspaceButton> : null}
-              </nav>
+              <Pagination
+                hasNext={Boolean(list.pageInfo.hasNextPage && list.pageInfo.endCursor)}
+                hasPrevious={cursorTrail.length > 0}
+                loading={loading}
+                onNext={() => {
+                  if (!list.pageInfo.endCursor) return;
+                  goToPage(list.pageInfo.endCursor, [...cursorTrail, query.cursor ?? ""]);
+                }}
+                onPrevious={() => goToPage(cursorTrail.at(-1) || undefined, cursorTrail.slice(0, -1))}
+                page={cursorTrail.length + 1}
+                pageSize={query.limit}
+                rowCount={list.items.length}
+                // 工单列表的 pageInfo 只有 endCursor / hasNextPage —— 总数拿不到就不显示"共 N 条"。
+                totalCount={list.pageInfo.totalCount ?? null}
+              />
             ) : null}
           </div>
           {selectedId ? detailLoading && !detail ? <LoadingWorkspace label="Loading case detail" /> : detail ? <CaseInspector busy={busy} canAssign={canAssign} canDecide={canDecide} detail={detail} key={detail.case.id} onClose={() => selectCase(null)} onConfirmed={refreshAfterMutation} onMutate={mutate} referenceTime={list?.asOf ?? detail.case.updatedAt} /> : null : <aside className="hidden rounded-xl bg-[var(--ad-surface-subtle)] p-8 text-sm text-[var(--ad-text-muted)] xl:block">{t("Select a case to inspect evidence and complete the decision loop.")}</aside>}
@@ -293,7 +308,8 @@ function CaseRow({ active, adminCase, onSelect, referenceTime }: { active: boole
 // INTENT: 此前基准是这条工单自己的 updatedAt，于是同一屏上行里写「SLA 71 hours ago · overdue」、
 // 详情里写「SLA in 24 hours」——同一个字段两个答案，运营只能猜哪个是真的。
 function CaseInspector({ busy, canAssign, canDecide, detail, onClose, onConfirmed, onMutate, referenceTime }: { busy: boolean; canAssign: boolean; canDecide: boolean; detail: CaseDetail; onClose: () => void; onConfirmed: (label: string) => Promise<void>; onMutate: (label: string, execute: () => Promise<unknown>) => Promise<void>; referenceTime: string }) {
-  const { locale, t } = useAdminI18n();
+  const { t } = useAdminI18n();
+  const format = useAdminFormat();
   const adminCase = detail.case;
   const defaultEvidence = detail.evidence.map((item) => item.id).join(", ");
   const [ownerId, setOwnerId] = useState(adminCase.ownerId ?? "");
@@ -331,7 +347,7 @@ function CaseInspector({ busy, canAssign, canDecide, detail, onClose, onConfirme
   // INTENT: 此前这三个操作的确认串输入框散落在详情页里，而 reason 只在「分配」表单里存在——
   // 只有 case.decide 没有 case.assign 的运营，界面上根本没有能填 reason 的地方，
   // 于是关闭按钮永远是灰的且没有任何提示。ConfirmDialog 自带 reason≥3，一并修掉。
-  function confirmCommand(input: { command: "wait" | "reopen" | "close"; title: string; summary: string; submitLabel: string; notice: string; body: (reason: string) => Record<string, unknown> }) {
+  function confirmCommand(input: { command: "wait" | "reopen" | "close"; title: string; effect: string; submitLabel: string; notice: string; body: (reason: string) => Record<string, unknown> }) {
     const expectedName = `${adminCase.id}:${input.command}`;
     // INVARIANT: 三个 command 端点都要 Idempotency-Key —— wait / reopen 此前根本没发，
     // 后端一律 400「Idempotency-Key header is required」，也就是说这两个按钮从来没成功过。
@@ -339,9 +355,9 @@ function CaseInspector({ busy, canAssign, canDecide, detail, onClose, onConfirme
     const idempotencyKey = crypto.randomUUID();
     setConfirmSpec({
       title: input.title,
-      // 接缝：ConfirmSpec 新增的 consequence 合并后，把这句后果描述从 summary 挪到 consequence，
-      // 让它以常驻红条 + DangerButton 出现在敲确认串之前。close 尤其需要（不可撤销）。
-      summary: input.summary,
+      // SPEC: 后果以常驻横幅出现在敲确认串之前，不再混在 summary 里被当成说明文字读过去。
+      // close 不可撤销 —— 重开会新开一条生命周期记录，不是把这一条收回来。
+      consequence: { effect: input.effect, reversible: input.command !== "close" },
       destructive: { expectedName, inputLabel: t("Type confirmation") },
       submitLabel: input.submitLabel,
       onSubmit: async (confirmationReason) => {
@@ -369,19 +385,19 @@ function CaseInspector({ busy, canAssign, canDecide, detail, onClose, onConfirme
 
       {canAssign ? <form className="space-y-3 border-t border-[var(--ad-border)] pt-5" onSubmit={(event) => { event.preventDefault(); void onMutate("Case assignment saved", () => adminV2Request(`/api/v2/admin/cases/${encodeURIComponent(adminCase.id)}/assignment`, { method: "POST", body: { entityVersion: adminCase.version, ownerId: ownerId.trim() || null, priority, reason: reason.trim() } })); }}><h4 className="text-sm font-semibold">{t("Assignment")}</h4><div className="grid gap-3 sm:grid-cols-2"><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Owner ID")}<input className={fieldClass} onChange={(event) => setOwnerId(event.target.value)} value={ownerId} /></label><Select label="Priority" onChange={(value) => setPriority(value as OperationsCase["priority"])} options={["urgent", "high", "normal", "low"]} value={priority} /></div><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Audit reason")}<input className={fieldClass} onChange={(event) => setReason(event.target.value)} required value={reason} /></label><WorkspaceButton disabled={busy || reason.trim().length < 3} tone="primary" type="submit">{t("Save assignment")}</WorkspaceButton></form> : null}
 
-      {canAssign || canDecide ? <section className="space-y-3 border-t border-[var(--ad-border)] pt-5"><h4 className="text-sm font-semibold">{t("Lifecycle")}</h4>{canAssign && ["new", "triaged", "in_progress", "reopened"].includes(adminCase.status) ? <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Resume after (optional)")}<input className={fieldClass} onChange={(event) => setResumeAt(event.target.value)} type="datetime-local" value={resumeAt} /></label> : null}<div className="flex flex-wrap gap-2">{canAssign && ["new", "triaged", "in_progress", "reopened"].includes(adminCase.status) ? <WorkspaceButton disabled={busy} onClick={() => confirmCommand({ command: "wait", title: t("Park this case on a dependency"), summary: t("The case leaves the active queue until someone resumes it. SLA keeps running."), submitLabel: t("Wait for dependency"), notice: t("Case moved to waiting"), body: (waitReason) => ({ reason: waitReason, resumeAt: resumeAt ? new Date(resumeAt).toISOString() : undefined }) })}>{t("Wait for dependency")}</WorkspaceButton> : null}{canDecide && ["resolved", "closed"].includes(adminCase.status) ? <WorkspaceButton disabled={busy} onClick={() => confirmCommand({ command: "reopen", title: t("Reopen this case"), summary: t("A resolved case goes back to the active queue, or a recurrence is filed against it."), submitLabel: t("Reopen / create recurrence"), notice: t("Case reopened or recurrence created"), body: (reopenReason) => ({ reason: reopenReason }) })}>{t("Reopen / create recurrence")}</WorkspaceButton> : null}</div></section> : null}
+      {canAssign || canDecide ? <section className="space-y-3 border-t border-[var(--ad-border)] pt-5"><h4 className="text-sm font-semibold">{t("Lifecycle")}</h4>{canAssign && ["new", "triaged", "in_progress", "reopened"].includes(adminCase.status) ? <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Resume after (optional)")}<input className={fieldClass} onChange={(event) => setResumeAt(event.target.value)} type="datetime-local" value={resumeAt} /></label> : null}<div className="flex flex-wrap gap-2">{canAssign && ["new", "triaged", "in_progress", "reopened"].includes(adminCase.status) ? <WorkspaceButton disabled={busy} onClick={() => confirmCommand({ command: "wait", title: t("Park this case on a dependency"), effect: t("The case leaves the active queue until someone resumes it. SLA keeps running."), submitLabel: t("Wait for dependency"), notice: "Case moved to waiting", body: (waitReason) => ({ reason: waitReason, resumeAt: resumeAt ? new Date(resumeAt).toISOString() : undefined }) })}>{t("Wait for dependency")}</WorkspaceButton> : null}{canDecide && ["resolved", "closed"].includes(adminCase.status) ? <WorkspaceButton disabled={busy} onClick={() => confirmCommand({ command: "reopen", title: t("Reopen this case"), effect: t("A resolved case goes back to the active queue, or a recurrence is filed against it."), submitLabel: t("Reopen / create recurrence"), notice: "Case reopened or recurrence created", body: (reopenReason) => ({ reason: reopenReason }) })}>{t("Reopen / create recurrence")}</WorkspaceButton> : null}</div></section> : null}
 
       {canDecide ? <section className="space-y-4 border-t border-[var(--ad-border)] pt-5" aria-labelledby="case-decision-title"><h4 className="text-sm font-semibold" id="case-decision-title">{t("Decision and verification")}</h4><Select label={customerCase ? "Customer action" : "Decision"} onChange={setDecision} options={operationOptions} value={decision} />{customerCase ? <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Outcome reference")}<input className={fieldClass} onChange={(event) => setOutcomeRef(event.target.value)} placeholder={adminCase.type === "billing_dispute" ? "ledger:<id>, refund:<id>, subscription:<id>:<status>" : "incident:<id>"} value={outcomeRef} /></label> : null}<label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Resolution summary")}<textarea className={textAreaClass} onChange={(event) => setSummary(event.target.value)} value={summary} /></label><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Evidence IDs (comma separated)")}<input className={fieldClass} onChange={(event) => setEvidenceRefs(event.target.value)} value={evidenceRefs} /></label><div className="flex flex-wrap gap-2"><WorkspaceButton disabled={busy || !decision || !summary.trim() || refs.length === 0 || (customerCase && !outcomeRef.trim())} onClick={() => void onMutate(customerCase ? "Customer Case action recorded" : "Case decision recorded", async () => { const result = await adminV2Request(`/api/v2/admin/cases/${encodeURIComponent(adminCase.id)}/${customerCase ? "actions" : "decisions"}`, { method: "POST", idempotencyKey: decisionIdempotencyKey, body: customerCase ? { entityVersion: adminCase.version, action: decision, summary: summary.trim(), evidenceRefs: refs, outcomeRef: outcomeRef.trim() } : { entityVersion: adminCase.version, decision, summary: summary.trim(), evidenceRefs: refs } }); setDecisionIdempotencyKey(crypto.randomUUID()); return result; })}><ClipboardCheck className="h-4 w-4" />{customerCase ? t("Record action") : t("Record decision")}</WorkspaceButton><WorkspaceButton disabled={busy || !adminCase.resolutionSummary || refs.length === 0} onClick={() => void onMutate("Downstream outcome verified", async () => { const result = await adminV2Request(`/api/v2/admin/cases/${encodeURIComponent(adminCase.id)}/verification`, { method: "POST", idempotencyKey: verificationIdempotencyKey, body: { entityVersion: adminCase.version, state: "passed", evidenceRefs: refs } }); setVerificationIdempotencyKey(crypto.randomUUID()); return result; })}><CheckCircle2 className="h-4 w-4" />{t("Verify from authority")}</WorkspaceButton></div><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Override reason (only when automatic verification is unavailable)")}<textarea className={textAreaClass} onChange={(event) => setVerificationOverrideReason(event.target.value)} value={verificationOverrideReason} /></label><WorkspaceButton disabled={busy || !adminCase.resolutionSummary || refs.length === 0 || verificationOverrideReason.trim().length < 3} onClick={() => void onMutate("Case verification explicitly overridden", async () => { const result = await adminV2Request(`/api/v2/admin/cases/${encodeURIComponent(adminCase.id)}/verification`, { method: "POST", idempotencyKey: verificationOverrideIdempotencyKey, body: { entityVersion: adminCase.version, state: "overridden", evidenceRefs: refs, overrideReason: verificationOverrideReason.trim() } }); setVerificationOverrideIdempotencyKey(crypto.randomUUID()); return result; })}>{t("Override verification")}</WorkspaceButton>
-        <div className="rounded-md bg-[var(--ad-surface-subtle)] p-3">{closeBlockedBy ? <p className="text-xs text-[var(--ad-text-muted)]">{closeBlockedBy}</p> : null}<div className={closeBlockedBy ? "mt-3" : undefined}><WorkspaceButton disabled={busy || !canClose} tone="danger" onClick={() => confirmCommand({ command: "close", title: t("Close case"), summary: t("Closing is the end of this customer problem. Reopening it later files a new lifecycle entry."), submitLabel: t("Close case"), notice: t("Case close command accepted"), body: (closeReason) => ({ reason: { code: "outcome_verified", summary: closeReason } }) })}>{t("Close case")}</WorkspaceButton></div></div>
+        <div className="rounded-md bg-[var(--ad-surface-subtle)] p-3">{closeBlockedBy ? <p className="text-xs text-[var(--ad-text-muted)]">{closeBlockedBy}</p> : null}<div className={closeBlockedBy ? "mt-3" : undefined}><WorkspaceButton disabled={busy || !canClose} tone="danger" onClick={() => confirmCommand({ command: "close", title: t("Close case"), effect: t("Closing is the end of this customer problem. Reopening it later files a new lifecycle entry."), submitLabel: t("Close case"), notice: "Case close command accepted", body: (closeReason) => ({ reason: { code: "outcome_verified", summary: closeReason } }) })}>{t("Close case")}</WorkspaceButton></div></div>
       </section> : <p className="rounded-md bg-[var(--ad-surface-subtle)] p-3 text-sm text-[var(--ad-text-muted)]">{t("Read access only. Decisions require")} <code>{t("case.decide")}</code>.</p>}
 
       {/* SPEC: 决策记录与审计时间线 —— 这两段一直在详情响应里，之前整段丢弃。
           「上一步谁做的、为什么」是接手一条工单的第一个问题，此前界面上根本没有答案。 */}
-      {detail.decisions.length > 0 ? <section aria-labelledby="case-decisions-title" className="border-t border-[var(--ad-border)] pt-5"><h4 className="text-sm font-semibold" id="case-decisions-title">{t("Recorded decisions")}</h4><ol className="mt-3 space-y-2">{detail.decisions.map((item) => <li className="rounded-md bg-[var(--ad-surface-subtle)] p-3" key={item.id}><div className="flex flex-wrap items-center justify-between gap-2"><StatusBadge value={item.decision} /><time className="text-xs text-[var(--ad-text-muted)]" dateTime={item.createdAt}>{new Date(item.createdAt).toLocaleString(adminDateLocale(locale) ?? "en-US")}</time></div><p className="mt-2 text-sm leading-6">{item.question}</p><p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t("Owner")}: <span className="font-mono">{item.ownerId}</span> · {t("Evidence level")}: {item.evidenceLevel}</p></li>)}</ol></section> : null}
+      {detail.decisions.length > 0 ? <section aria-labelledby="case-decisions-title" className="border-t border-[var(--ad-border)] pt-5"><h4 className="text-sm font-semibold" id="case-decisions-title">{t("Recorded decisions")}</h4><ol className="mt-3 space-y-2">{detail.decisions.map((item) => <li className="rounded-md bg-[var(--ad-surface-subtle)] p-3" key={item.id}><div className="flex flex-wrap items-center justify-between gap-2"><StatusBadge value={item.decision} /><time className="text-xs text-[var(--ad-text-muted)]" dateTime={item.createdAt}>{format.dateTime(item.createdAt)}</time></div><p className="mt-2 text-sm leading-6">{item.question}</p><p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t("Owner")}: <span className="font-mono">{item.ownerId}</span> · {t("Evidence level")}: {item.evidenceLevel}</p></li>)}</ol></section> : null}
 
       <section aria-labelledby="case-audit-title" className="border-t border-[var(--ad-border)] pt-5"><h4 className="text-sm font-semibold" id="case-audit-title">{t("Audit trail")}</h4>{detail.activity.length === 0 ? <p className="mt-3 text-sm text-[var(--ad-text-muted)]">{t("No operator actions recorded on this case yet.")}</p> : <ol className="mt-3 space-y-2">{detail.activity.slice(0, 20).map((item) => <li className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-l-2 border-[var(--ad-border)] pl-3 text-xs" key={item.id}><span className="min-w-0"><code className="break-all font-semibold">{item.action}</code><span className="mt-0.5 block text-[var(--ad-text-muted)]">{item.actorId} · {item.actorRole}</span>{item.reason ? <span className="mt-0.5 block break-words leading-5">{item.reason}</span> : null}</span><span className="shrink-0 text-[var(--ad-text-muted)]"><RelativeTime referenceTime={referenceTime} value={item.createdAt} /></span></li>)}</ol>}</section>
 
-      <CollaborationPanel canWrite={canAssign} onAuthorityChange={() => void onConfirmed(t("Ownership transferred; the case was reloaded from authority."))} targetId={adminCase.id} targetType="case" targetVersion={adminCase.version} />
+      <CollaborationPanel canWrite={canAssign} onAuthorityChange={() => void onConfirmed("Ownership transferred; the case was reloaded from authority.")} targetId={adminCase.id} targetType="case" targetVersion={adminCase.version} />
       {confirmSpec ? <ConfirmDialog onClose={() => setConfirmSpec(null)} spec={confirmSpec} /> : null}
     </div></aside>;
 }
@@ -400,6 +416,3 @@ function stateFromLocation(initialCaseId: string | null): CaseWorkspaceUrlState 
   };
 }
 function writeCaseUrl(state: CaseWorkspaceUrlState, mode: "push" | "replace") { setWorkspaceUrl(buildCaseWorkspaceParams(state), { mode, pathname: caseWorkspacePath(state.selectedId) }); }
-// 接缝：ui/request-error-copy.ts 合并后改走统一的 AppErrorCode → 人话映射
-// （映射不到如实说"原因未能识别"，5xx / 网络故障不承诺"没有写入"）。
-function message(error: unknown) { return error instanceof Error ? error.message : "Case operation failed"; }
