@@ -12,7 +12,8 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { apiGet, apiWrite } from "@/components/admin/api";
-import { useAdminI18n } from "@/components/admin/i18n";
+import { useAdminI18n, type AdminLocale } from "@/components/admin/i18n";
+import { formatDateTime } from "@/components/admin/ui/format";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
@@ -74,7 +75,7 @@ const textAreaClass =
   "rounded-md min-h-44 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 font-mono text-xs outline-none focus:border-[var(--ad-ink)]";
 
 export function CmsView() {
-  const { t, value: valueLabel } = useAdminI18n();
+  const { locale, t, value: valueLabel } = useAdminI18n();
   const [pages, setPages] = useState<PageRow[]>([]);
   const [loading, setLoading] = useState(true);
   // INVARIANT: 存异常对象而不只是它的 message —— AuthorityRequestError 要靠 cause 才能按错误码
@@ -227,12 +228,12 @@ export function CmsView() {
       <div key="title">
         <p>{page.title}</p>
         <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-          {t("Updated")} {formatTimestamp(page.updatedAt)}
+          {t("Updated")} {formatTimestamp(page.updatedAt, locale)}
         </p>
       </div>,
       <div className="text-[var(--ad-text-muted)]" key="status">
         {valueLabel(page.contentStatus)}
-        {page.publishedAt ? <p className="mt-1 text-xs">{formatTimestamp(page.publishedAt)}</p> : null}
+        {page.publishedAt ? <p className="mt-1 text-xs">{formatTimestamp(page.publishedAt, locale)}</p> : null}
       </div>,
       <div className="text-[var(--ad-text-muted)]" key="indexing">
         {valueLabel(page.indexingStatus)}
@@ -732,7 +733,7 @@ function isPublicationIssue(value: unknown): value is PublicationIssue {
   );
 }
 
-function formatTimestamp(value: string) {
+function formatTimestamp(value: string, locale: AdminLocale) {
   const date = new Date(value);
-  return Number.isFinite(date.getTime()) ? date.toLocaleString() : value;
+  return Number.isFinite(date.getTime()) ? formatDateTime(value, locale) : value;
 }

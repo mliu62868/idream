@@ -11,6 +11,7 @@ import {
 } from "@idream/shared/admin";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { useAdminFormat } from "@/components/admin/ui/format";
 import { AdminV2RequestError, adminV2Request } from "@/lib/admin-v2-api";
 import {
   claimDurableMutationIntent,
@@ -55,6 +56,7 @@ export function UnknownGenerationReconciliationControls({
   ) => Promise<void> | void;
 }) {
   const { t } = useAdminI18n();
+  const format = useAdminFormat();
   const request = detail.request;
   const latestAttempt = detail.attempts.at(-1) ?? null;
   const latestDecision = detail.unknownReconciliations.at(-1) ?? null;
@@ -117,7 +119,7 @@ export function UnknownGenerationReconciliationControls({
               count: result.deliveredCount,
             })
           : t("Unknown outcome retained; next review {time}.", {
-              time: new Date(result.nextReviewAt).toLocaleString(),
+              time: format.dateTime(result.nextReviewAt),
             }));
       return result;
     } catch (cause) {
@@ -246,7 +248,7 @@ export function UnknownGenerationReconciliationControls({
                 ? t("Scheduled provider review is due now.")
                 : t("Next provider review is scheduled for {time}.", {
                     time: latestDecision.nextReviewAt
-                      ? new Date(latestDecision.nextReviewAt).toLocaleString()
+                      ? format.dateTime(latestDecision.nextReviewAt)
                       : "—",
                   })}
             </p>

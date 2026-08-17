@@ -16,7 +16,8 @@ import {
 } from "@idream/shared/admin";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { adminV2Request } from "@/lib/admin-v2-api";
-import { useAdminI18n } from "@/components/admin/i18n";
+import { useAdminI18n, type AdminLocale } from "@/components/admin/i18n";
+import { formatDateTime } from "@/components/admin/ui/format";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
@@ -101,7 +102,7 @@ const REPORT_FILTER_OPTIONS: Array<{ value: ReportFilter; label: string }> = [
 ];
 
 export function ReviewQueueView() {
-  const { t, value: valueLabel } = useAdminI18n();
+  const { locale, t, value: valueLabel } = useAdminI18n();
   const [items, setItems] = useState<ReviewItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<{ message: string; cause: unknown } | null>(null);
@@ -256,7 +257,7 @@ export function ReviewQueueView() {
       valueLabel(item.character.style),
       item.character.description,
       <span className={cn(item.reportCount > 0 && "text-[var(--ad-yellow-text)]")} key="reports">{item.reportCount}</span>,
-      <span className="text-[var(--ad-text-muted)]" key="submitted">{formatDate(item.submittedAt)}</span>,
+      <span className="text-[var(--ad-text-muted)]" key="submitted">{formatDate(item.submittedAt, locale)}</span>,
       <div className="flex justify-end gap-1" key="actions">
         <button
           className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs text-[var(--ad-text)] hover:border-[var(--ad-ink)]"
@@ -644,9 +645,9 @@ function truncate(value: string, max: number) {
   return `${value.slice(0, max)}…`;
 }
 
-function formatDate(value: string) {
+function formatDate(value: string, locale: AdminLocale) {
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? value : formatDateTime(value, locale);
 }
 
 function savedQueryState(filters: SavedReviewQueueFilters): SavedViewQueryState {
