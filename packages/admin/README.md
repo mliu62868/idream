@@ -72,3 +72,11 @@ Symlink [project]/packages/admin/node_modules is invalid, it points out of the f
 1. 回主仓库工作树做运行态验证；
 2. 在该 worktree 里跑一次真实 `bun install`（约 5 秒 / 1815 个包，装成实体目录）；
 3. APFS CoW clone（约 10 秒）——把各层 `node_modules` 软链换成 `cp -Rc` 的克隆，**并把 `node_modules/node_modules` 改成指向 `.` 的相对软链**（关键就是这一条）。用完记得还原成软链，别把约 1.3G 的克隆留在 worktree 里。
+
+**起服务前先确认端口是空的**，别只挑一个「看起来没人用」的号：
+
+```bash
+lsof -ti :<port>   # 期望无输出
+```
+
+多 agent 并行时很容易绑到别人留下的陈旧 `next-server` 上——两个进程都 listen 同一端口，你的 curl 打中的是旧那个。症状极具误导性：每个请求 500、而你自己的日志一片空白，看起来像自己的代码炸了。
