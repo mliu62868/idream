@@ -59,4 +59,12 @@ bun run dev:admin     # http://localhost:3001/admin
 cd packages/admin && bun run check && bun run test
 ```
 
-`check` = lint + typecheck + production build，`test` = vitest。注意：在 `.claude/worktrees/*` 这类 git worktree 里 `build` 和 `dev` 都跑不起来——Turbopack 拒绝 `packages/admin/node_modules` 这个指向主仓库的符号链接（`Symlink … is invalid, it points out of the filesystem root`）。要跑运行态验证就回主仓库工作树。
+`check` = lint + typecheck + production build，`test` = vitest。
+
+**在 git worktree 里想跑 `build` / `dev` / 浏览器验证，会先撞上一堵墙。** 建 worktree 时 `packages/admin/node_modules` 是软链回主仓库的，Turbopack 直接拒绝：
+
+```
+Symlink [project]/packages/admin/node_modules is invalid, it points out of the filesystem root
+```
+
+`vitest` 和 `tsc` 不受影响（照常跑），但 `next build` 和 `next dev` 都起不来。两个办法：在该 worktree 里跑一次真实 `bun install`（约 5 秒 / 1815 个包，装成实体目录），或者直接回主仓库工作树做运行态验证。
