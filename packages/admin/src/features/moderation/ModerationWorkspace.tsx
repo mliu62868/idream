@@ -8,7 +8,6 @@ import {
   Check,
   ClipboardCheck,
   Loader2,
-  RefreshCcw,
   RotateCcw,
   X,
 } from "lucide-react";
@@ -21,13 +20,16 @@ import {
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import { useAdminFormat } from "@/components/admin/ui/format";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { emptyPageInfo, Pagination, type PageInfo } from "@/components/admin/ui/Pagination";
 import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { useToast } from "@/components/admin/ui/Toast";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import {
   defaultModerationQuery,
+  MODERATION_PAGE_SIZE,
   moderationDecisionConfirmation,
   moderationQueryFromSearch,
   moderationQueuePath,
@@ -37,7 +39,7 @@ import {
 } from "./query";
 
 type Row = Record<string, unknown>;
-type PageInfo = { endCursor: string | null; hasNextPage: boolean };
+type AdminFormat = ReturnType<typeof useAdminFormat>;
 type QueueResponse = {
   reports?: Row[];
   mediaReview?: Row[];
@@ -60,7 +62,8 @@ type ModerationDecisionKind =
   | "modify"
   | "media_pass"
   | "media_block";
-const emptyPageInfo: PageInfo = { endCursor: null, hasNextPage: false };
+type CursorKey = "reportCursor" | "mediaCursor" | "appealCursor";
+const emptyTrails = (): Record<ModerationScope, string[]> => ({ reports: [], media: [], appeals: [] });
 const emptyState = (): AuthorityState => ({
   rows: null,
   pageInfo: emptyPageInfo,
@@ -72,12 +75,17 @@ const emptyState = (): AuthorityState => ({
 
 export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
   const { t } = useAdminI18n();
+  const format = useAdminFormat();
   const { toast } = useToast();
   const [query, setQuery] = useState<ModerationQuery>(() => currentQuery());
   const [draft, setDraft] = useState<ModerationQuery>(() => currentQuery());
   const [reports, setReports] = useState<AuthorityState>(emptyState);
   const [media, setMedia] = useState<AuthorityState>(emptyState);
   const [appeals, setAppeals] = useState<AuthorityState>(emptyState);
+  // SPEC: 三块队列各有自己的翻页栈 —— 「上一页」走自己走过的游标回头，不给后端发 `before`。
+  // INTENT: 审核队列还是单向 keyset（响应里没有 startCursor / hasPreviousPage），
+  //         第一页时 hasPrevious 为假 —— 置灰而不是给一个会 400 的按钮。
+  const [trails, setTrails] = useState<Record<ModerationScope, string[]>>(emptyTrails);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
   const gates = useRef({
     reports: createLatestRequestGate(),
@@ -151,6 +159,7 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
       const next = currentQuery();
       setQuery(next);
       setDraft(next);
+      setTrails(emptyTrails);
       load(next);
     };
     window.addEventListener("popstate", restore);
@@ -164,7 +173,11 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
     };
   }, [load]);
 
-  function navigate(next: ModerationQuery, mode: "push" | "replace" = "push") {
+  function navigate(
+    next: ModerationQuery,
+    mode: "push" | "replace" = "push",
+    nextTrails: Record<ModerationScope, string[]> = emptyTrails(),
+  ) {
     window.history[mode === "push" ? "pushState" : "replaceState"](
       null,
       "",
@@ -176,7 +189,24 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
     );
     setQuery(next);
     setDraft(next);
+    setTrails(nextTrails);
     load(next);
+  }
+
+  // SPEC: 翻某一块队列时另外两块原地不动 —— 三块共用一个 URL，但各自独立分页。
+  function goToPage(scope: ModerationScope, cursorKey: CursorKey, cursor: string) {
+    navigate({ ...query, [cursorKey]: cursor }, "push", {
+      ...trails,
+      [scope]: [...trails[scope], query[cursorKey]],
+    });
+  }
+
+  function goBack(scope: ModerationScope, cursorKey: CursorKey) {
+    const trail = trails[scope];
+    navigate({ ...query, [cursorKey]: trail.at(-1) ?? "" }, "push", {
+      ...trails,
+      [scope]: trail.slice(0, -1),
+    });
   }
   function apply(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -311,15 +341,13 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
         }
         loadingLabel="Loading reports…"
         state={reports}
-        rows={reportRows(reports.rows ?? [], canDecide, confirmDecision, t)}
+        rows={reportRows(reports.rows ?? [], canDecide, confirmDecision, t, format)}
       />
-      <Pager
-        cursor="reportCursor"
-        label="Next report page"
-        loading={reports.loading}
-        navigate={navigate}
-        pageInfo={reports.pageInfo}
-        query={query}
+      <QueuePagination
+        onNext={(cursor) => goToPage("reports", "reportCursor", cursor)}
+        onPrevious={() => goBack("reports", "reportCursor")}
+        state={reports}
+        trail={trails.reports}
       />
       <AuthoritySection
         action={clearFilters}
@@ -336,15 +364,13 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
         }
         loadingLabel="Loading media review…"
         state={media}
-        rows={mediaRows(media.rows ?? [], canDecide, confirmDecision, t)}
+        rows={mediaRows(media.rows ?? [], canDecide, confirmDecision, t, format)}
       />
-      <Pager
-        cursor="mediaCursor"
-        label="Next media-review page"
-        loading={media.loading}
-        navigate={navigate}
-        pageInfo={media.pageInfo}
-        query={query}
+      <QueuePagination
+        onNext={(cursor) => goToPage("media", "mediaCursor", cursor)}
+        onPrevious={() => goBack("media", "mediaCursor")}
+        state={media}
+        trail={trails.media}
       />
       <AuthoritySection
         action={clearFilters}
@@ -361,15 +387,13 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
         }
         loadingLabel="Loading appeals…"
         state={appeals}
-        rows={appealRows(appeals.rows ?? [], canDecide, confirmDecision, t)}
+        rows={appealRows(appeals.rows ?? [], canDecide, confirmDecision, t, format)}
       />
-      <Pager
-        cursor="appealCursor"
-        label="Next appeal page"
-        loading={appeals.loading}
-        navigate={navigate}
-        pageInfo={appeals.pageInfo}
-        query={query}
+      <QueuePagination
+        onNext={(cursor) => goToPage("appeals", "appealCursor", cursor)}
+        onPrevious={() => goBack("appeals", "appealCursor")}
+        state={appeals}
+        trail={trails.appeals}
       />
       {confirmation ? (
         <ConfirmDialog
@@ -402,13 +426,14 @@ function mediaRows(
   canDecide: boolean,
   confirm: ConfirmDecision,
   t: (key: string, values?: Record<string, string | number>) => string,
+  format: AdminFormat,
 ): DataTableRow[] {
   return rows.map((row, index) => {
-    const id = text(row.id);
-    const characterId = text(row.characterId);
-    const safetyStatus = text(row.safetyStatus);
+    const id = format.text(row.id);
+    const characterId = format.text(row.characterId);
+    const safetyStatus = format.text(row.safetyStatus);
     const pending = safetyStatus === "unknown" || safetyStatus === "flagged";
-    const preview = text(row.thumbnailUrl) || text(row.url);
+    const preview = format.text(row.thumbnailUrl) || format.text(row.url);
     const action = (
       kind: "media_pass" | "media_block",
       decision: "passed" | "blocked",
@@ -457,12 +482,12 @@ function mediaRows(
         ) : (
           "—"
         ),
-        display(row.ownerId),
+        format.display(row.ownerId),
         safetyStatus || "—",
-        text(row.sourceAssetId)
-          ? `Duplicate of ${text(row.sourceAssetId)}`
-          : display(row.reviewKind),
-        date(row.createdAt),
+        format.text(row.sourceAssetId)
+          ? t("Duplicate of {id}", { id: format.text(row.sourceAssetId) })
+          : format.display(row.reviewKind),
+        format.dateTime(row.createdAt),
         canDecide && pending ? (
           <div className="flex flex-wrap gap-1">
             {action(
@@ -493,31 +518,32 @@ function reportRows(
   canDecide: boolean,
   confirm: ConfirmDecision,
   t: (key: string, values?: Record<string, string | number>) => string,
+  format: AdminFormat,
 ): DataTableRow[] {
   return rows.map((row, index) => {
-    const id = text(row.id);
+    const id = format.text(row.id);
     return {
       id: id || `report-${index}`,
       cells: [
         id,
         <TargetCell
-          id={text(row.targetId)}
+          id={format.text(row.targetId)}
           key="target"
-          type={text(row.targetType)}
+          type={format.text(row.targetType)}
         />,
-        display(row.category),
+        format.display(row.category),
         // SPEC: 举报人写的原文就是这条举报的证据本体。
         // INTENT: 权威接口一直返回 description 与 reporterId，工作台以前两个都没画——
         //         审核员只能看着 category 这个下拉框选项在「处置」和「无违规」之间二选一。
         <CaseText
           key="evidence"
           label={t("Reporter statement")}
-          value={text(row.description)}
+          value={format.text(row.description)}
         />,
-        display(row.reporterId),
-        display(row.status),
-        display(row.priority),
-        date(row.createdAt),
+        format.display(row.reporterId),
+        format.display(row.status),
+        format.display(row.priority),
+        format.dateTime(row.createdAt),
         canDecide ? (
           <div className="flex gap-1">
             <Action
@@ -564,9 +590,10 @@ function appealRows(
   canDecide: boolean,
   confirm: ConfirmDecision,
   t: (key: string, values?: Record<string, string | number>) => string,
+  format: AdminFormat,
 ): DataTableRow[] {
   return rows.map((row, index) => {
-    const id = text(row.id);
+    const id = format.text(row.id);
     const action = (
       kind: "uphold" | "overturn" | "modify",
       outcome: string,
@@ -592,11 +619,11 @@ function appealRows(
       id: id || `appeal-${index}`,
       cells: [
         id,
-        display(row.userId),
+        format.display(row.userId),
         <TargetCell
-          id={text(row.targetId)}
+          id={format.text(row.targetId)}
           key="target"
-          type={text(row.targetType)}
+          type={format.text(row.targetType)}
         />,
         // SPEC: 申诉正文——用户为什么认为那次处置错了。
         // INTENT: 「维持」和「撤销」是把一次处置钉死或整个掀翻，而以前这一列根本不存在：
@@ -604,11 +631,11 @@ function appealRows(
         <CaseText
           key="appeal"
           label={t("Appeal statement")}
-          value={text(row.appealText)}
+          value={format.text(row.appealText)}
         />,
-        display(row.originalDecisionId),
-        display(row.status),
-        date(row.createdAt),
+        format.display(row.originalDecisionId),
+        format.display(row.status),
+        format.dateTime(row.createdAt),
         canDecide ? (
           <div className="flex gap-1">
             {action(
@@ -760,9 +787,8 @@ function TargetCell({ id, type }: { id: string; type: string }) {
 }
 function Freshness({ label, state }: { label: string; state: AuthorityState }) {
   const { t } = useAdminI18n();
-  const time = state.refreshedAt
-    ? new Date(state.refreshedAt).toLocaleTimeString()
-    : "unknown";
+  const format = useAdminFormat();
+  const time = state.refreshedAt ? format.time(state.refreshedAt) : "unknown";
   if (state.loading && state.rows)
     return (
       <span>
@@ -801,32 +827,31 @@ function AuthorityError({
     />
   );
 }
-function Pager({
-  cursor,
-  label,
-  loading,
-  navigate,
-  pageInfo,
-  query,
+function QueuePagination({
+  onNext,
+  onPrevious,
+  state,
+  trail,
 }: {
-  cursor: "reportCursor" | "mediaCursor" | "appealCursor";
-  label: string;
-  loading: boolean;
-  navigate: (query: ModerationQuery) => void;
-  pageInfo: PageInfo;
-  query: ModerationQuery;
+  onNext: (cursor: string) => void;
+  onPrevious: () => void;
+  state: AuthorityState;
+  trail: string[];
 }) {
-  return pageInfo.hasNextPage && pageInfo.endCursor ? (
-    <button
-      className="inline-flex min-h-11 items-center gap-2 rounded border px-4 text-sm font-semibold"
-      disabled={loading}
-      onClick={() => navigate({ ...query, [cursor]: pageInfo.endCursor ?? "" })}
-      type="button"
-    >
-      <RefreshCcw className="h-4 w-4" />
-      {label}
-    </button>
-  ) : null;
+  if (!state.rows?.length) return null;
+  const { endCursor, hasNextPage } = state.pageInfo;
+  return (
+    <Pagination
+      hasNext={Boolean(hasNextPage && endCursor)}
+      hasPrevious={trail.length > 0}
+      loading={state.loading}
+      onNext={() => endCursor && onNext(endCursor)}
+      onPrevious={onPrevious}
+      page={trail.length + 1}
+      pageSize={MODERATION_PAGE_SIZE}
+      rowCount={state.rows.length}
+    />
+  );
 }
 function Action({
   icon,
@@ -954,18 +979,4 @@ function currentQuery() {
   return typeof window === "undefined"
     ? defaultModerationQuery
     : moderationQueryFromSearch(window.location.search);
-}
-// MIGRATION: 这三个函数在 12 个工作台里逐字重复；统一版正在 `ui/format.ts` 建，
-// 合并时整批切过去，不要在这里再派生第四份。
-function text(value: unknown) {
-  return typeof value === "string" ? value : "";
-}
-function display(value: unknown) {
-  return typeof value === "string" || typeof value === "number"
-    ? String(value)
-    : "—";
-}
-function date(value: unknown) {
-  const parsed = new Date(text(value));
-  return Number.isNaN(parsed.getTime()) ? "—" : parsed.toLocaleString();
 }

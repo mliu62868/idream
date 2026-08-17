@@ -16,6 +16,9 @@ export const defaultSupportQuery: SupportQuery = {
   cursor: "",
 };
 
+/** 页大小是请求参数、分页条读数与 Saved View 存档共用的同一个数，只允许有一份。 */
+export const SUPPORT_PAGE_SIZE = 25;
+
 export function supportQueryFromSearch(search: string): SupportQuery {
   const params = new URLSearchParams(search);
   return {
@@ -28,7 +31,7 @@ export function supportQueryFromSearch(search: string): SupportQuery {
 }
 
 export function supportListPath(query: SupportQuery) {
-  const params = new URLSearchParams({ limit: "25" });
+  const params = new URLSearchParams({ limit: String(SUPPORT_PAGE_SIZE) });
   set(params, "search", query.search);
   set(params, "status", query.status === "all" ? "" : query.status);
   set(params, "sla", query.sla === "all" ? "" : query.sla);
@@ -66,7 +69,7 @@ export function supportSavedState(query: SupportQuery): SavedViewQueryState {
       category: query.category.trim(),
     },
     sort: { field: "priority", direction: "asc" },
-    pageSize: 25,
+    pageSize: SUPPORT_PAGE_SIZE,
   };
 }
 

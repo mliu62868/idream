@@ -238,6 +238,21 @@ describe("SupportWorkspace queue triage signals", () => {
     expect(container.textContent).toContain("3d ago");
   });
 
+  // 回归：分享出去的链接必须打开就是链接里那套筛选。此前只有 pushState 写出去，
+  // 刷新或别人点开都会退回默认筛选——链接看着能分享，打开是错的。
+  it("opens a shared link on the filters the link encodes, not the defaults", async () => {
+    window.history.replaceState(null, "", "/admin/support?status=waiting_on_user&sla=overdue&category=billing");
+    await mount([]);
+    const request = apiGet.mock.calls.at(-1)?.[0] ?? "";
+    expect(request).toContain("status=waiting_on_user");
+    expect(request).toContain("sla=overdue");
+    expect(request).toContain("category=billing");
+    expect(
+      container.querySelector<HTMLSelectElement>('select[aria-label="Support status"]')?.value,
+    ).toBe("waiting_on_user");
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Support SLA"]')?.value).toBe("overdue");
+  });
+
   it("offers a way out when the filters matched nothing", async () => {
     window.history.replaceState(null, "", "/admin/support?status=closed");
     await mount([]);
@@ -255,5 +270,42 @@ describe("SupportWorkspace queue triage signals", () => {
     });
     await waitUntil(() => reads >= 2);
     expect(apiGet.mock.calls.at(-1)?.[0].includes("status=closed")).toBe(false);
+  });
+
+  // 回归：以前只有「下一页」，翻过去就回不来，也看不出自己在第几页。
+  it("walks forward and back through the pages it visited", async () => {
+    apiGet.mockImplementation(async () => {
+      reads += 1;
+      return {
+        items: [{ ...baseTicket, slaState: "on_track", slaHoursRemaining: 4, slaDueAt: null, updatedAt: null }],
+        pageInfo: { endCursor: "support-cursor-2", hasNextPage: true },
+        asOf: "2026-08-16T00:00:00.000Z",
+        freshness: "fresh",
+      };
+    });
+    await act(async () => {
+      root.render(
+        <ToastProvider>
+          <SupportWorkspace canViewPlaintext={false} canWrite />
+        </ToastProvider>,
+      );
+    });
+    await waitUntil(() => container.textContent?.includes("SUP-CLOCK-1") === true);
+
+    const button = (label: string) =>
+      [...container.querySelectorAll("button")].find((node) => node.textContent?.trim() === label);
+    expect(button("Previous page")?.disabled).toBe(true);
+    expect(container.textContent).toContain("Page 1");
+
+    await act(async () => button("Next page")?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await waitUntil(() => apiGet.mock.calls.some(([path]) => path.includes("cursor=support-cursor-2")));
+    await waitUntil(() => container.textContent?.includes("Page 2") === true);
+    expect(button("Previous page")?.disabled).toBe(false);
+
+    await act(async () => button("Previous page")?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await waitUntil(() => container.textContent?.includes("Page 1") === true);
+    // 单向 operation 不接受 before；回上一页发的是自己走过的那个前向游标（第一页即无游标）。
+    expect(apiGet.mock.calls.at(-1)?.[0]).not.toContain("before=");
+    expect(apiGet.mock.calls.at(-1)?.[0]).not.toContain("cursor=");
   });
 });

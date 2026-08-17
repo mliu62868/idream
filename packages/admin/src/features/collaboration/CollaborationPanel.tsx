@@ -1,6 +1,6 @@
 "use client";
 
-import { adminDateLocale, useAdminI18n } from "@/components/admin/i18n";
+import { useAdminI18n } from "@/components/admin/i18n";
 import {
   collaborationActivityListResponseSchema,
   collaborationActivityMutationSchema,
@@ -12,6 +12,9 @@ import {
 } from "@idream/shared/admin";
 import { Bell, BellOff, MessageCircle, RefreshCcw, Send } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import { useAdminFormat } from "@/components/admin/ui/format";
+import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { AdminV2RequestError, adminV2Request } from "@/lib/admin-v2-api";
 import { WorkspaceButton, fieldClass, textAreaClass } from "@/features/operations/WorkspaceUi";
 
@@ -51,7 +54,10 @@ export function CollaborationPanel({
   // entityVersion 去撞 409 —— 交接看着成功了，接手的人却什么都改不动。
   onAuthorityChange?: () => void;
 }) {
-  const { locale, t } = useAdminI18n();
+  const { t } = useAdminI18n();
+  const format = useAdminFormat();
+  const { toast } = useToast();
+  const failureToast = useFailureToast();
   const [items, setItems] = useState<Activity[]>([]);
   const [watching, setWatching] = useState(false);
   const [watcherIds, setWatcherIds] = useState<readonly string[]>([]);
@@ -61,8 +67,9 @@ export function CollaborationPanel({
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [accessRestricted, setAccessRestricted] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  // SPEC: 只有「时间线读不出来」留在面板里（它带重试，而且面板此刻是空的）；
+  //       写操作的成败一律走 toast —— 成功自动消失，失败常驻并带上给工程的技术详情。
+  const [loadError, setLoadError] = useState<unknown>(null);
   // SPEC: 提及/交接的对象从本记录已知的人里选，不靠运营背 user ID。
   // INTENT: 关注者和时间线操作者就是这条记录上真实出现过的人，够覆盖绝大多数提及场景，
   // 且不需要新增人员检索接口。仍允许手输，避免把没出现过的人挡在外面。
@@ -89,7 +96,7 @@ export function CollaborationPanel({
     const currentRequest = ++requestId.current;
     if (cursor) setLoadingOlder(true);
     else setLoading(true);
-    setError(null);
+    setLoadError(null);
     try {
       const query = new URLSearchParams({ limit: "25" });
       if (cursor) query.set("cursor", cursor);
@@ -113,7 +120,7 @@ export function CollaborationPanel({
         setAccessRestricted(true);
         setItems([]);
       } else {
-        setError(message(cause, t("Collaboration activity could not be loaded")));
+        setLoadError(cause);
       }
     } finally {
       if (currentRequest === requestId.current) {
@@ -121,7 +128,7 @@ export function CollaborationPanel({
         setLoadingOlder(false);
       }
     }
-  }, [t, targetId, targetType]);
+  }, [targetId, targetType]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0);
@@ -135,8 +142,6 @@ export function CollaborationPanel({
   const toggleWatch = async () => {
     const next = !watching;
     setSubmitting(true);
-    setError(null);
-    setNotice(null);
     try {
       const response = await adminV2Request<{ watching: boolean }>(
         `/api/v2/admin/collaboration/${targetType}/${encodeURIComponent(targetId)}/watch`,
@@ -148,10 +153,13 @@ export function CollaborationPanel({
         },
       );
       setWatching(response.watching);
-      setNotice(response.watching ? t("You are watching this record.") : t("Watch removed."));
+      toast({
+        tone: "success",
+        title: response.watching ? t("You are watching this record.") : t("Watch removed."),
+      });
       await load();
     } catch (cause) {
-      setError(message(cause, t("Watch preference could not be saved")));
+      failureToast(cause);
     } finally {
       setSubmitting(false);
     }
@@ -161,8 +169,6 @@ export function CollaborationPanel({
     const normalizedBody = body.trim();
     if (!normalizedBody) return;
     setSubmitting(true);
-    setError(null);
-    setNotice(null);
     try {
       const checklistItems = parseChecklist(checklist);
       const response = await adminV2Request<CollaborationActivityMutation>(
@@ -192,14 +198,17 @@ export function CollaborationPanel({
       setAttachmentIds("");
       setHandoffActorId("");
       setChecklist("");
-      setNotice(kind === "handoff"
-        ? t("Ownership transferred and recorded in the activity timeline.")
-        : t(kindNotices[kind]));
+      toast({
+        tone: "success",
+        title: kind === "handoff"
+          ? t("Ownership transferred and recorded in the activity timeline.")
+          : t(kindNotices[kind]),
+      });
       await load();
       if (kind === "handoff") onAuthorityChange?.();
       bodyRef.current?.focus();
     } catch (cause) {
-      setError(message(cause, t("Activity could not be added")));
+      failureToast(cause);
     } finally {
       setSubmitting(false);
     }
@@ -230,11 +239,15 @@ export function CollaborationPanel({
         {watcherIds.length === 0 ? t("No watchers") : t("{count} watchers: {ids}", { count: watcherIds.length, ids: watcherIds.map(actorLabel).join(", ") })}
       </p>
 
-      {/* 接缝：本面板唯一的反馈出口，ui/Toast.tsx 合并后换成 useToast() / useFailureToast()。 */}
-      <div aria-atomic="true" aria-live="polite" className="mt-3 min-h-5 text-xs">
-        {error ? <p className="text-[var(--ad-red-text)]" role="alert">{error} <button className="underline" onClick={() => void load()} type="button">{t("Retry")}</button></p> : null}
-        {notice ? <p className="text-[var(--ad-green-text)]" role="status">{notice}</p> : null}
-      </div>
+      {loadError ? (
+        <div className="mt-3">
+          <AuthorityRequestError
+            cause={loadError}
+            message="Collaboration activity could not be loaded"
+            onRetry={() => void load()}
+          />
+        </div>
+      ) : null}
 
       {canWrite ? (
         <form className="mt-3 grid gap-3 rounded-lg bg-[var(--ad-surface-subtle)] p-3" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
@@ -257,7 +270,7 @@ export function CollaborationPanel({
         <h4 className="text-xs font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">{t("Activity timeline")}</h4>
         {loading && items.length === 0 ? <p className="mt-3 text-sm text-[var(--ad-text-muted)]" role="status">{t("Loading collaboration activity…")}</p> : items.length === 0 ? <p className="mt-3 rounded-md bg-[var(--ad-surface-subtle)] p-3 text-sm text-[var(--ad-text-muted)]">{t("No activity yet. The first comment or handoff will appear here.")}</p> : (
           <ol className="mt-3 space-y-3">
-            {items.map((activity) => <li className="border-l-2 border-[var(--ad-border)] pl-3" key={activity.id}><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs font-semibold">{t(activity.kind.replaceAll("_", " "))} · <span title={activity.actorId}>{actorLabel(activity.actorId)}</span></span><time className="text-xs text-[var(--ad-text-muted)]" dateTime={activity.createdAt}>{new Date(activity.createdAt).toLocaleString(adminDateLocale(locale))}</time></div>{activity.body ? <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6">{activity.body}</p> : null}{activity.mentionedIds.length > 0 ? <p className="mt-1 break-words text-xs text-[var(--ad-text-muted)]">{t("Mentions:")} {activity.mentionedIds.map((id) => `@${actorLabel(id)}`).join(", ")}</p> : null}{activity.metadata.handoffToActorId ? <p className="mt-1 text-xs">{t("Handoff to:")} <span title={activity.metadata.handoffToActorId}>{actorLabel(activity.metadata.handoffToActorId)}</span></p> : null}{activity.metadata.checklistItems.length > 0 ? <ul className="mt-2 space-y-1 text-xs">{activity.metadata.checklistItems.map((item) => <li key={item.id}>{item.completed ? "✓" : "○"} {item.label}{item.ownerId ? ` — ${actorLabel(item.ownerId)}` : ""}</li>)}</ul> : null}{activity.metadata.attachments.length > 0 ? <p className="mt-2 break-words text-xs text-[var(--ad-text-muted)]">{t("Evidence:")} {activity.metadata.attachments.map((item) => item.label).join(", ")}</p> : null}</li>)}
+            {items.map((activity) => <li className="border-l-2 border-[var(--ad-border)] pl-3" key={activity.id}><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs font-semibold">{t(activity.kind.replaceAll("_", " "))} · <span title={activity.actorId}>{actorLabel(activity.actorId)}</span></span><time className="text-xs text-[var(--ad-text-muted)]" dateTime={activity.createdAt}>{format.dateTime(activity.createdAt)}</time></div>{activity.body ? <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6">{activity.body}</p> : null}{activity.mentionedIds.length > 0 ? <p className="mt-1 break-words text-xs text-[var(--ad-text-muted)]">{t("Mentions:")} {activity.mentionedIds.map((id) => `@${actorLabel(id)}`).join(", ")}</p> : null}{activity.metadata.handoffToActorId ? <p className="mt-1 text-xs">{t("Handoff to:")} <span title={activity.metadata.handoffToActorId}>{actorLabel(activity.metadata.handoffToActorId)}</span></p> : null}{activity.metadata.checklistItems.length > 0 ? <ul className="mt-2 space-y-1 text-xs">{activity.metadata.checklistItems.map((item) => <li key={item.id}>{item.completed ? "✓" : "○"} {item.label}{item.ownerId ? ` — ${actorLabel(item.ownerId)}` : ""}</li>)}</ul> : null}{activity.metadata.attachments.length > 0 ? <p className="mt-2 break-words text-xs text-[var(--ad-text-muted)]">{t("Evidence:")} {activity.metadata.attachments.map((item) => item.label).join(", ")}</p> : null}</li>)}
           </ol>
         )}
         {pageInfo.hasNextPage && pageInfo.endCursor ? <div className="mt-3"><WorkspaceButton disabled={loadingOlder} onClick={() => void load(pageInfo.endCursor ?? undefined)}><RefreshCcw className="h-4 w-4" />{loadingOlder ? t("Loading…") : t("Load older activity")}</WorkspaceButton></div> : null}
@@ -280,9 +293,4 @@ export function parseChecklist(value: string) {
     completed: /^\[[xX]\]\s*/.test(line),
     label: line.replace(/^\[[xX ]\]\s*/, "").trim(),
   })).filter((item) => item.label.length > 0);
-}
-
-// 接缝：ui/request-error-copy.ts 合并后改走统一的 AppErrorCode → 人话映射。
-function message(cause: unknown, fallback: string) {
-  return cause instanceof Error ? cause.message : fallback;
 }

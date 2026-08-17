@@ -9,7 +9,6 @@ import {
   Inbox,
   Loader2,
   MessageSquare,
-  RefreshCcw,
   Search,
   ShieldCheck,
   Trash2,
@@ -33,13 +32,16 @@ import {
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import { useAdminFormat } from "@/components/admin/ui/format";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { emptyPageInfo, Pagination, type PageInfo } from "@/components/admin/ui/Pagination";
 import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import {
   defaultSupportQuery,
+  SUPPORT_PAGE_SIZE,
   supportListPath,
   supportQueryFromSavedState,
   supportQueryFromSearch,
@@ -49,7 +51,7 @@ import {
 } from "./query";
 
 type Row = Record<string, unknown>;
-type PageInfo = { endCursor: string | null; hasNextPage: boolean };
+type AdminFormat = ReturnType<typeof useAdminFormat>;
 type ListResponse = {
   items: Row[];
   pageInfo?: PageInfo;
@@ -73,10 +75,12 @@ export function SupportWorkspace({
   canWrite: boolean;
 }) {
   const { t } = useAdminI18n();
+  const format = useAdminFormat();
   const { toast } = useToast();
   const failureToast = useFailureToast();
   // INVARIANT: the server render and first client render use the same state.
-  // URL-owned filters are restored only after hydration.
+  // URL-owned filters are restored only after hydration (the mount effect below
+  // calls `restore()`, so a shared link opens on the filters it encodes).
   const [query, setQuery] = useState<SupportQuery>(defaultSupportQuery);
   const [draft, setDraft] = useState<SupportQuery>(defaultSupportQuery);
   const [data, setData] = useState<ListResponse | null>(null);
@@ -91,6 +95,11 @@ export function SupportWorkspace({
   const [savedViewErrorCause, setSavedViewErrorCause] = useState<unknown>(undefined);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
   const [savingView, setSavingView] = useState(false);
+  // SPEC: 「上一页」走自己走过的游标回头，不给后端发 `before`。
+  // INTENT: 支持工单列表还是单向 keyset（响应里没有 startCursor / hasPreviousPage），
+  //         把 startCursor 塞进 `before` 会被 .strict() 挡成 400。翻页栈是本地的，
+  //         所以第一页时 hasPrevious 为假 —— 置灰，而不是给一个点了会报错的按钮。
+  const [cursorTrail, setCursorTrail] = useState<string[]>([]);
   const gate = useRef(createLatestRequestGate());
   const savedViewCreateKey = useRef<string | null>(null);
 
@@ -144,6 +153,7 @@ export function SupportWorkspace({
       const next = currentQuery();
       setQuery(next);
       setDraft(next);
+      setCursorTrail([]);
       void load(next);
     };
     const timer = window.setTimeout(() => {
@@ -172,7 +182,11 @@ export function SupportWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft.search, draft.status, draft.sla, draft.category]);
 
-  function navigate(next: SupportQuery, mode: "push" | "replace" = "push") {
+  function navigate(
+    next: SupportQuery,
+    mode: "push" | "replace" = "push",
+    trail: string[] = [],
+  ) {
     const url = supportWorkspaceUrl(
       window.location.pathname,
       window.location.search,
@@ -185,6 +199,7 @@ export function SupportWorkspace({
     );
     setQuery(next);
     setDraft(next);
+    setCursorTrail(trail);
     void load(next);
   }
 
@@ -290,6 +305,7 @@ export function SupportWorkspace({
   }
 
   const rows = data?.items ?? [];
+  const pageInfo = data?.pageInfo ?? emptyPageInfo;
   const filtered = Boolean(
     query.search ||
       query.category ||
@@ -309,7 +325,7 @@ export function SupportWorkspace({
         <span>
 
           {t("Support authority ·")} {data?.freshness ?? t("source freshness pending")} ·{" "}
-          {freshness(data, loading, error, refreshedAt)}
+          {freshness(data, loading, error, refreshedAt ? format.time(refreshedAt) : null)}
         </span>
         <span className="flex gap-3 font-semibold">
           {!canWrite ? <PermissionNotice permission="support.request.write" /> : null}
@@ -496,23 +512,26 @@ export function SupportWorkspace({
             "Actions",
           ]}
           minimumWidthClassName="min-w-[2000px]"
-          rows={supportRows(rows, canWrite, confirmAction)}
+          rows={supportRows(rows, canWrite, confirmAction, format)}
           stickyLastColumn
         />
       ) : null}
-      {data?.pageInfo?.hasNextPage && data.pageInfo.endCursor ? (
-        <button
-          className="inline-flex min-h-11 items-center gap-2 rounded border px-4 text-sm font-semibold"
-          disabled={loading}
-          onClick={() =>
-            navigate({ ...query, cursor: data.pageInfo?.endCursor ?? "" })
+      {data && rows.length > 0 ? (
+        <Pagination
+          hasNext={Boolean(pageInfo.hasNextPage && pageInfo.endCursor)}
+          hasPrevious={cursorTrail.length > 0}
+          loading={loading}
+          onNext={() => {
+            if (!pageInfo.endCursor) return;
+            navigate({ ...query, cursor: pageInfo.endCursor }, "push", [...cursorTrail, query.cursor]);
+          }}
+          onPrevious={() =>
+            navigate({ ...query, cursor: cursorTrail.at(-1) ?? "" }, "push", cursorTrail.slice(0, -1))
           }
-          type="button"
-        >
-          <RefreshCcw className="h-4 w-4" />
-
-          {t("Next support page")}
-        </button>
+          page={cursorTrail.length + 1}
+          pageSize={SUPPORT_PAGE_SIZE}
+          rowCount={rows.length}
+        />
       ) : null}
       {confirmation ? (
         <ConfirmDialog
@@ -671,12 +690,13 @@ function supportRows(
   rows: Row[],
   canWrite: boolean,
   confirm: ConfirmAction,
+  format: AdminFormat,
 ): DataTableRow[] {
   return rows.map((row, index) => {
-    const id = text(row.ticketId);
-    const status = text(row.status);
-    const sla = text(row.slaState);
-    const escalated = Boolean(text(row.slaEscalatedAt));
+    const id = format.text(row.ticketId);
+    const status = format.text(row.status);
+    const sla = format.text(row.slaState);
+    const escalated = Boolean(format.text(row.slaEscalatedAt));
     const actions: Array<{
       label: string;
       icon: ReactNode;
@@ -727,14 +747,14 @@ function supportRows(
       id: id || `support-${index}`,
       cells: [
         id,
-        display(row.userEmail),
-        display(row.category),
-        display(row.subject),
-        <CaseText key="description" value={text(row.description)} />,
+        format.display(row.userEmail),
+        format.display(row.category),
+        format.display(row.subject),
+        <CaseText key="description" value={format.text(row.description)} />,
         status,
-        display(row.priority),
+        format.display(row.priority),
         <SlaCell
-          dueAt={text(row.slaDueAt)}
+          dueAt={format.text(row.slaDueAt)}
           hoursRemaining={
             typeof row.slaHoursRemaining === "number"
               ? row.slaHoursRemaining
@@ -744,17 +764,17 @@ function supportRows(
           state={sla}
         />,
         <EscalationCell
-          at={text(row.slaEscalatedAt)}
+          at={format.text(row.slaEscalatedAt)}
           key="escalation"
-          reason={text(row.slaEscalationReason)}
+          reason={format.text(row.slaEscalationReason)}
         />,
-        display(row.assignedToEmail),
+        format.display(row.assignedToEmail),
         // SPEC: 工单上一次动过是什么时候。
         // INTENT: 「卡了多久」是客服排队的首要依据，而权威接口一直返回 updatedAt，
         //         工作台以前只画 createdAt——于是一条刚回过的工单和一条躺了两周的长得一样。
-        <LastUpdateCell key="updated" value={text(row.updatedAt)} />,
-        display(row.resolutionNotes),
-        date(row.createdAt),
+        <LastUpdateCell key="updated" value={format.text(row.updatedAt)} />,
+        format.display(row.resolutionNotes),
+        format.dateTime(row.createdAt),
         canWrite ? (
           <div className="flex flex-wrap gap-1">
             {actions.map((action) => (
@@ -820,6 +840,7 @@ function SlaCell({
   state: string;
 }) {
   const { t, value } = useAdminI18n();
+  const format = useAdminFormat();
   return (
     <span className="block">
       {/* 基调走 slaTone 映射，文字仍是 SLA 状态本身 —— 别让 pill 显示映射后的词。 */}
@@ -833,7 +854,7 @@ function SlaCell({
       )}
       {dueAt ? (
         <span className="block text-xs text-[var(--ad-text-muted)]">
-          {date(dueAt)}
+          {format.dateTime(dueAt)}
         </span>
       ) : null}
     </span>
@@ -852,10 +873,11 @@ function slaTone(state: string) {
 
 function EscalationCell({ at, reason }: { at: string; reason: string }) {
   const { t } = useAdminI18n();
+  const format = useAdminFormat();
   if (!at) return <span className="text-[var(--ad-text-muted)]">{t("Not escalated")}</span>;
   return (
     <span className="block">
-      <span className="block text-xs font-semibold">{date(at)}</span>
+      <span className="block text-xs font-semibold">{format.dateTime(at)}</span>
       <span className="block max-w-[16rem] break-words text-xs text-[var(--ad-text-muted)]">
         {reason || t("No reason recorded")}
       </span>
@@ -865,11 +887,12 @@ function EscalationCell({ at, reason }: { at: string; reason: string }) {
 
 function LastUpdateCell({ value }: { value: string }) {
   const { t } = useAdminI18n();
+  const format = useAdminFormat();
   if (!value) return <span className="text-[var(--ad-text-muted)]">{t("Never updated")}</span>;
   const days = Math.floor((Date.now() - new Date(value).getTime()) / 86_400_000);
   return (
     <span className="block">
-      <span className="block">{date(value)}</span>
+      <span className="block">{format.dateTime(value)}</span>
       {Number.isFinite(days) && days >= 1 ? (
         <span className="block text-xs text-[var(--ad-text-muted)]">
           {t("{days}d ago", { days })}
@@ -975,31 +998,11 @@ function freshness(
   data: ListResponse | null,
   loading: boolean,
   error: string | null,
-  refreshedAt: string | null,
+  time: string | null,
 ) {
-  const time = refreshedAt
-    ? new Date(refreshedAt).toLocaleTimeString()
-    : "unknown";
-  if (loading && data) return `refreshing · as of ${time}`;
-  if (error && data) return `stale · last good ${time}`;
+  if (loading && data) return `refreshing · as of ${time ?? "unknown"}`;
+  if (error && data) return `stale · last good ${time ?? "unknown"}`;
   if (error) return "unavailable";
-  if (data) return `current snapshot · ${time}`;
+  if (data) return `current snapshot · ${time ?? "unknown"}`;
   return "loading…";
-}
-
-// MIGRATION: 这三个函数在 12 个工作台里逐字重复；统一版正在 `ui/format.ts` 建，
-// 合并时整批切过去，不要在这里再派生第四份。
-function text(value: unknown) {
-  return typeof value === "string" ? value : "";
-}
-
-function display(value: unknown) {
-  return typeof value === "string" || typeof value === "number"
-    ? String(value)
-    : "—";
-}
-
-function date(value: unknown) {
-  const parsed = new Date(text(value));
-  return Number.isNaN(parsed.getTime()) ? "—" : parsed.toLocaleString();
 }

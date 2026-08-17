@@ -385,6 +385,59 @@ describe("ModerationWorkspace decision evidence", () => {
     expect(container.textContent).toContain("review-77");
   });
 
+  // 回归：三块队列以前各挂一个「下一页」，翻过去就回不来。三块共用一个 URL，
+  // 所以翻其中一块时另外两块的页码不能被一起带走。
+  it("pages each queue on its own and keeps Previous greyed out on the first page", async () => {
+    apiGet.mockImplementation(async (path) => {
+      reads += 1;
+      if (path.includes("scope=reports")) {
+        return {
+          reports: [{
+            id: "report-page-1",
+            reporterId: "user-1",
+            targetType: "character",
+            targetId: "character-1",
+            category: "policy",
+            description: "Paged report",
+            status: "open",
+            priority: 1,
+            createdAt: "2026-08-14T09:00:00.000Z",
+          }],
+          pageInfo: { reports: { endCursor: "report-cursor-2", hasNextPage: true } },
+        };
+      }
+      if (path.includes("scope=media")) return { mediaReview: [], pageInfo: { mediaReview: pageInfo } };
+      if (path.includes("scope=appeals")) return { appeals: [], pageInfo: { appeals: pageInfo } };
+      throw new Error(`Unexpected moderation request: ${path}`);
+    });
+    await act(async () => {
+      root.render(
+        <ToastProvider>
+          <ModerationWorkspace canDecide />
+        </ToastProvider>,
+      );
+    });
+    await waitUntil(() => container.textContent?.includes("report-page-1") === true);
+
+    // 只有 reports 这块有下一页，所以整页只画得出一条分页条。
+    expect(findButton("Previous page", container)?.disabled).toBe(true);
+    expect(container.textContent).toContain("Page 1");
+
+    await click(findButton("Next page", container));
+    await waitUntil(() => apiGet.mock.calls.some(([path]) => path.includes("reportCursor=report-cursor-2")));
+    await waitUntil(() => container.textContent?.includes("Page 2") === true);
+    expect(findButton("Previous page", container)?.disabled).toBe(false);
+    // 另外两块队列没被这次翻页带走游标。
+    expect(apiGet.mock.calls.at(-1)?.[0]).not.toContain("mediaCursor=");
+    expect(apiGet.mock.calls.at(-1)?.[0]).not.toContain("appealCursor=");
+
+    await click(findButton("Previous page", container));
+    await waitUntil(() => container.textContent?.includes("Page 1") === true);
+    expect(
+      apiGet.mock.calls.filter(([path]) => path.includes("scope=reports")).at(-1)?.[0],
+    ).not.toContain("reportCursor=");
+  });
+
   it("offers a way out when the filters matched nothing", async () => {
     window.history.replaceState(
       null,
