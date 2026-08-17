@@ -12,9 +12,21 @@ import { PrimaryButton } from "@/components/admin/ui/buttons";
 import { StatusPill } from "@/components/admin/ui/StatusPill";
 import { AssetImage } from "@/components/admin/ui/AssetImage";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
-import { requestErrorMessage, useDebouncedReload, useUrlBootstrap } from "@/components/admin/section-kit";
+import { Pagination } from "@/components/admin/ui/Pagination";
+import type { AdminPageInfo } from "@idream/shared/admin";
+import {
+  canGoPrevious,
+  listPageFromParams,
+  requestErrorMessage,
+  syncListUrl,
+  useDebouncedReload,
+  useUrlBootstrap,
+} from "@/components/admin/section-kit";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { ALL_STATUSES, placementsListPath, type Placement } from "./placements-api";
+
+const PAGE_SIZE = 25;
+const EMPTY_PAGE_INFO: AdminPageInfo = { endCursor: null, hasNextPage: false };
 
 // SPEC: 铺位列表页 —— 缩略图 + slot/目标/状态表格；关键词搜索 + 状态筛选（spec §7 列表页）。
 // INTENT: 浏览页只浏览；创建在 /new，发布/暂停/归档在详情页。
@@ -22,21 +34,22 @@ export function PlacementsListPage({ canPublish }: { canPublish: boolean }) {
   const { t, value } = useAdminI18n();
   const [rows, setRows] = useState<Placement[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ message: string; cause: unknown } | null>(null);
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
   const [cursor, setCursor] = useState<string | undefined>();
-  const [pageInfo, setPageInfo] = useState({ endCursor: null as string | null, hasNextPage: false });
+  const [page, setPage] = useState(1);
+  const [pageInfo, setPageInfo] = useState<AdminPageInfo>(EMPTY_PAGE_INFO);
   const [ready, setReady] = useState(false);
   // INVARIANT: 慢响应不能覆盖新一轮筛选的结果——本页此前没有闸，是五个列表页里唯一漏掉的。
   const requestGate = useRef(createLatestRequestGate());
 
-  const reload = useCallback(async (nextCursor?: string) => {
+  const reload = useCallback(async (nextCursor: string | undefined, nextPage: number) => {
     const request = requestGate.current.begin();
     setLoading(true);
     setError(null);
     try {
-      const data = await apiGet<{ items: Placement[]; pageInfo: { endCursor: string | null; hasNextPage: boolean } }>(placementsListPath({ search, status, cursor: nextCursor }));
+      const data = await apiGet<{ items: Placement[]; pageInfo: AdminPageInfo }>(placementsListPath({ search, status, cursor: nextCursor }));
       if (!request.isCurrent()) return;
       setRows(data.items);
       setCursor(nextCursor);
@@ -45,10 +58,10 @@ export function PlacementsListPage({ canPublish }: { canPublish: boolean }) {
       if (search.trim()) params.set("search", search.trim());
       if (status !== "all") params.set("status", status);
       if (nextCursor) params.set("cursor", nextCursor);
-      window.history.replaceState(null, "", `${window.location.pathname}${params.size ? `?${params}` : ""}`);
+      syncListUrl(params, nextPage);
     } catch (loadError) {
       if (!request.isCurrent()) return;
-      setError(requestErrorMessage(loadError, t));
+      setError({ message: requestErrorMessage(loadError, t), cause: loadError });
     } finally {
       if (request.isCurrent()) setLoading(false);
     }
@@ -58,10 +71,19 @@ export function PlacementsListPage({ canPublish }: { canPublish: boolean }) {
     setSearch(params.get("search") ?? "");
     setStatus(params.get("status") ?? "all");
     setCursor(params.get("cursor") ?? undefined);
+    setPage(listPageFromParams(params));
     setReady(true);
   }, []), requestGate.current);
 
-  useDebouncedReload({ cursor, ready, reload, search });
+  useDebouncedReload({ cursor, page, ready, reload, search });
+
+  // 换搜索词/筛选就回到第一页 —— 第 4 页的游标配上新条件是一段没有意义的偏移。
+  const restart = useCallback((apply: () => void) => {
+    requestGate.current.invalidate();
+    apply();
+    setCursor(undefined);
+    setPage(1);
+  }, []);
 
   const newAction = canPublish ? (
     <Link href="/admin/content/placements/new">
@@ -71,6 +93,7 @@ export function PlacementsListPage({ canPublish }: { canPublish: boolean }) {
     </Link>
   ) : null;
 
+  const filtered = search.trim().length > 0 || status !== "all";
   const tableRows: DataTableRow[] = rows.map((row) => ({
     id: row.id,
     href: `/admin/content/placements/${row.id}`,
@@ -91,14 +114,14 @@ export function PlacementsListPage({ canPublish }: { canPublish: boolean }) {
         title={t("Placements")}
       />
       <FilterBar
-        onSearch={(nextSearch) => { requestGate.current.invalidate(); setSearch(nextSearch); setCursor(undefined); }}
+        onSearch={(nextSearch) => restart(() => setSearch(nextSearch))}
         search={search}
         searchPlaceholder={t("Search by slot, target, or asset ID")}
         selects={[
           {
             name: t("Status"),
             value: status,
-            onChange: (nextStatus) => { requestGate.current.invalidate(); setStatus(nextStatus); setCursor(undefined); },
+            onChange: (nextStatus) => restart(() => setStatus(nextStatus)),
             options: [
               { value: "all", label: t("All") },
               ...ALL_STATUSES.map((item) => ({ value: item, label: value(item) })),
@@ -106,23 +129,45 @@ export function PlacementsListPage({ canPublish }: { canPublish: boolean }) {
           },
         ]}
       />
-      {error ? <AuthorityRequestError message={error} onRetry={() => void reload(cursor)} snapshotAt={null} /> : null}
-      {loading && rows.length === 0 ? (
-        <p className="text-sm text-[var(--ad-text-muted)]">{t("Loading…")}</p>
-      ) : rows.length === 0 && error ? null : (
+      {error ? <AuthorityRequestError cause={error.cause} message={error.message} onRetry={() => void reload(cursor, page)} snapshotAt={null} /> : null}
+      {error && rows.length === 0 ? null : (
         <DataTable
+          caption="Placements"
           empty={
             <EmptyState
-              action={newAction}
-              hint={t("Create the first placement to get started.")}
-              title={t("No placements yet.")}
+              action={filtered ? undefined : newAction}
+              hint={filtered
+                ? t("The authority searched every placement. Clear the filters to see them all.")
+                : t("Create the first placement to get started.")}
+              kind={filtered ? "filtered" : "empty"}
+              onClearFilters={filtered ? () => restart(() => { setSearch(""); setStatus("all"); }) : undefined}
+              title={filtered ? t("No placements match these filters.") : t("No placements yet.")}
             />
           }
           headers={[t("Asset"), t("Slot"), t("Target"), t("Status"), t("Verification")]}
+          loading={loading}
           rows={tableRows}
+          skeletonRows={PAGE_SIZE}
         />
       )}
-      <div className="mt-4 flex justify-end"><button className="min-h-10 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold disabled:opacity-50" disabled={loading || !pageInfo.hasNextPage || !pageInfo.endCursor} onClick={() => setCursor(pageInfo.endCursor ?? undefined)} type="button">{t("Next page")}</button></div>
+      <div className="mt-4">
+        <Pagination
+          hasNext={Boolean(pageInfo.hasNextPage && pageInfo.endCursor)}
+          // 这个 operation 的查询契约没有 `before` —— 置灰，不假装已经在第一页（section-kit 有全部理由）。
+          hasPrevious={canGoPrevious(pageInfo, false)}
+          loading={loading}
+          onNext={() => {
+            requestGate.current.invalidate();
+            setCursor(pageInfo.endCursor ?? undefined);
+            setPage(page + 1);
+          }}
+          onPrevious={() => undefined}
+          page={page}
+          pageSize={PAGE_SIZE}
+          rowCount={rows.length}
+          totalCount={pageInfo.totalCount ?? null}
+        />
+      </div>
     </div>
   );
 }

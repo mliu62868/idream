@@ -14,6 +14,8 @@ import { GitMerge, Loader2, Pencil, RefreshCcw, Save, X } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
+import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { FilterBar } from "@/components/admin/ui/FilterBar";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
@@ -72,6 +74,7 @@ export function TagsView() {
         current,
         queryKey,
         requestErrorMessage(err, t),
+        err,
       ));
     }
   }, [t]);
@@ -110,7 +113,19 @@ export function TagsView() {
     setDraft(toDraft(tag));
   }
 
+  function resetFilters() {
+    setSearch("");
+    setCategory("all");
+  }
+
   const editingTag = tags.find((tag) => tag.id === editingId) ?? null;
+
+  const tableRows: DataTableRow[] = visibleTags.map((tag) => ({
+    id: tag.id,
+    cells: editingId === tag.id
+      ? editingCells(tag, draft, setDraft, () => setEditingId(null), () => setRenaming(true), t)
+      : readOnlyCells(tag, () => startEdit(tag), t),
+  }));
 
   const renameSpec: ConfirmSpec | null =
     renaming && editingTag
@@ -163,192 +178,150 @@ export function TagsView() {
         title={t("Taxonomy")}
       />
       <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
-      {authority.error ? <AuthorityRequestError message={authority.error} onRetry={() => void load()} snapshotAt={authority.data ? authority.refreshedAt : null} /> : null}
-
-      {authority.loading && authority.data === null ? (
-        <p className="text-sm text-[var(--ad-text-muted)]" role="status">{t("Loading…")}</p>
-      ) : null}
+      {authority.error ? <AuthorityRequestError cause={authority.cause} message={authority.error} onRetry={() => void load()} snapshotAt={authority.data ? authority.refreshedAt : null} /> : null}
 
       {authority.data ? <MergeSection onMerged={reportSuccess} reload={load} tags={tags} /> : null}
 
-      {authority.data ? <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
-        <div className="border-b border-[var(--ad-border)] px-3 py-2">
-          <h2 className="text-sm font-semibold">
-            {filtered
-              ? t("Tag taxonomy — {shown} of {total}", { shown: visibleTags.length, total: tags.length })
-              : t("Tag taxonomy — {total}", { total: tags.length })}
-          </h2>
-        </div>
-        <div className="px-3 pt-3">
-          <FilterBar
-            onSearch={setSearch}
-            search={search}
-            searchPlaceholder={t("Search by slug, label, or category")}
-            selects={[
-              {
-                name: t("Category"),
-                value: category,
-                onChange: setCategory,
-                options: [
-                  { value: "all", label: t("All categories") },
-                  { value: "", label: t("Uncategorised") },
-                  ...categories.map((item) => ({ value: item, label: item })),
-                ],
-              },
-            ]}
-          />
-        </div>
-        <table className="w-full text-left text-sm">
-          <caption className="sr-only">{t("Tag taxonomy")}</caption>
-          <thead className="border-b border-[var(--ad-border)] text-xs text-[var(--ad-text-muted)]">
-            <tr>
-              <th scope="col" className="px-3 py-2 font-medium">{t("slug")}</th>
-              <th scope="col" className="px-3 py-2 font-medium">{t("label")}</th>
-              <th scope="col" className="px-3 py-2 font-medium">{t("category")}</th>
-              <th scope="col" className="px-3 py-2 font-medium">{t("characters")}</th>
-              <th scope="col" className="px-3 py-2 font-medium">{t("sensitive")}</th>
-              <th scope="col" className="px-3 py-2 font-medium">{t("muted")}</th>
-              <th scope="col" className="px-3 py-2 font-medium"><span className="sr-only">{t("Actions")}</span></th>
-            </tr>
-          </thead>
-          <tbody>
-            {visibleTags.map((tag) => (
-              <TagRowItem
-                draft={editingId === tag.id ? draft : null}
-                key={tag.id}
-                onCancel={() => setEditingId(null)}
-                onChangeDraft={setDraft}
-                onSave={() => setRenaming(true)}
-                onStartEdit={() => startEdit(tag)}
-                tag={tag}
+      {authority.error && authority.data === null ? null : (
+        <section className="space-y-3">
+          {authority.data ? (
+            <h2 className="text-sm font-semibold">
+              {filtered
+                ? t("Tag taxonomy — {shown} of {total}", { shown: visibleTags.length, total: tags.length })
+                : t("Tag taxonomy — {total}", { total: tags.length })}
+            </h2>
+          ) : null}
+          {authority.data ? (
+            <FilterBar
+              onSearch={setSearch}
+              search={search}
+              searchPlaceholder={t("Search by slug, label, or category")}
+              selects={[
+                {
+                  name: t("Category"),
+                  value: category,
+                  onChange: setCategory,
+                  options: [
+                    { value: "all", label: t("All categories") },
+                    { value: "", label: t("Uncategorised") },
+                    ...categories.map((item) => ({ value: item, label: item })),
+                  ],
+                },
+              ]}
+            />
+          ) : null}
+          <DataTable
+            caption="Tag taxonomy"
+            empty={
+              <EmptyState
+                kind={filtered ? "filtered" : "empty"}
+                onClearFilters={filtered ? resetFilters : undefined}
+                title={filtered ? t("No tags match these filters.") : t("No tags.")}
               />
-            ))}
-            {visibleTags.length === 0 ? (
-              <tr>
-                <td className="px-3 py-6 text-center text-xs text-[var(--ad-text-muted)]" colSpan={7}>
-                  {filtered ? (
-                    <>
-                      {t("No tags match these filters.")}{" "}
-                      <button
-                        className="font-semibold underline underline-offset-4"
-                        onClick={() => { setSearch(""); setCategory("all"); }}
-                        type="button"
-                      >
-                        {t("Reset filters")}
-                      </button>
-                    </>
-                  ) : (
-                    t("No tags.")
-                  )}
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </section> : null}
+            }
+            headers={[
+              { label: t("slug"), width: "14rem" },
+              t("Label"),
+              t("Category"),
+              { label: t("Characters"), align: "right" },
+              t("Sensitive"),
+              t("muted"),
+              { label: t("Actions"), align: "right" },
+            ]}
+            loading={authority.loading}
+            rows={tableRows}
+            stickyHeader
+          />
+        </section>
+      )}
 
       {renameSpec ? <ConfirmDialog onClose={() => setRenaming(false)} spec={renameSpec} /> : null}
     </div>
   );
 }
 
-function TagRowItem({
-  draft,
-  onCancel,
-  onChangeDraft,
-  onSave,
-  onStartEdit,
-  tag,
-}: {
-  draft: EditDraft | null;
-  onCancel: () => void;
-  onChangeDraft: (draft: EditDraft) => void;
-  onSave: () => void;
-  onStartEdit: () => void;
-  tag: TagRow;
-}) {
-  const { t } = useAdminI18n();
+type Translate = ReturnType<typeof useAdminI18n>["t"];
 
-  if (!draft) {
-    return (
-      <tr className="border-b border-[var(--ad-border)]">
-        <td className="px-3 py-2 font-mono text-xs">{tag.slug}</td>
-        <td className="px-3 py-2">{tag.label}</td>
-        <td className="px-3 py-2 text-[var(--ad-text-muted)]">{tag.category ?? "—"}</td>
-        <td className="px-3 py-2">{tag.characterCount}</td>
-        <td className="px-3 py-2">{tag.isSensitive ? t("yes") : t("no")}</td>
-        <td className="px-3 py-2">{tag.isMutedByDefault ? t("yes") : t("no")}</td>
-        <td className="px-3 py-2 text-right">
-          <button
-            className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
-            onClick={onStartEdit}
-            type="button"
-          >
-            <Pencil className="h-3.5 w-3.5" />
-            {t("Edit")}
-          </button>
-        </td>
-      </tr>
-    );
-  }
+function readOnlyCells(tag: TagRow, onStartEdit: () => void, t: Translate) {
+  return [
+    <span className="font-mono text-xs" key="slug">{tag.slug}</span>,
+    tag.label,
+    <span className="text-[var(--ad-text-muted)]" key="category">{tag.category ?? "—"}</span>,
+    tag.characterCount,
+    tag.isSensitive ? t("yes") : t("no"),
+    tag.isMutedByDefault ? t("yes") : t("no"),
+    <button
+      className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
+      key="edit"
+      onClick={onStartEdit}
+      type="button"
+    >
+      <Pencil className="h-3.5 w-3.5" />
+      {t("Edit")}
+    </button>,
+  ];
+}
 
-  const canSave = draft.label.trim().length >= 1;
-
-  return (
-    <tr className="border-b border-[var(--ad-border)] bg-black/[0.03] align-top">
-      <td className="px-3 py-2 font-mono text-xs">{tag.slug}</td>
-      <td className="px-3 py-2">
-        <input
-          className={inputClass}
-          onChange={(event) => onChangeDraft({ ...draft, label: event.target.value })}
-          placeholder={t("Label")}
-          value={draft.label}
-        />
-      </td>
-      <td className="px-3 py-2">
-        <input
-          className={inputClass}
-          onChange={(event) => onChangeDraft({ ...draft, category: event.target.value })}
-          placeholder={t("Category (blank=none)")}
-          value={draft.category}
-        />
-      </td>
-      <td className="px-3 py-2">{tag.characterCount}</td>
-      <td className="px-3 py-2">
-        <ToggleButton
-          active={draft.isSensitive}
-          onClick={() => onChangeDraft({ ...draft, isSensitive: !draft.isSensitive })}
-        />
-      </td>
-      <td className="px-3 py-2">
-        <ToggleButton
-          active={draft.isMutedByDefault}
-          onClick={() => onChangeDraft({ ...draft, isMutedByDefault: !draft.isMutedByDefault })}
-        />
-      </td>
-      <td className="px-3 py-2">
-        <div className="flex justify-end gap-2">
-          <button
-            className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
-            onClick={onCancel}
-            type="button"
-          >
-            <X className="h-3.5 w-3.5" />
-            {t("Cancel")}
-          </button>
-          <button
-            className="inline-flex h-8 items-center gap-1 bg-[var(--ad-ink)] px-2 text-xs font-semibold text-white disabled:opacity-50"
-            disabled={!canSave}
-            onClick={onSave}
-            type="button"
-          >
-            <Save className="h-3.5 w-3.5" />
-            {t("Save changes")}
-          </button>
-        </div>
-      </td>
-    </tr>
-  );
+// SPEC: 改名就地进行——行还在原位，运营不用在弹窗和列表之间对照哪一行是哪一行。
+function editingCells(
+  tag: TagRow,
+  draft: EditDraft,
+  onChangeDraft: (draft: EditDraft) => void,
+  onCancel: () => void,
+  onSave: () => void,
+  t: Translate,
+) {
+  return [
+    <span className="font-mono text-xs" key="slug">{tag.slug}</span>,
+    <input
+      aria-label={t("Label")}
+      className={inputClass}
+      key="label"
+      onChange={(event) => onChangeDraft({ ...draft, label: event.target.value })}
+      placeholder={t("Label")}
+      value={draft.label}
+    />,
+    <input
+      aria-label={t("Category (blank=none)")}
+      className={inputClass}
+      key="category"
+      onChange={(event) => onChangeDraft({ ...draft, category: event.target.value })}
+      placeholder={t("Category (blank=none)")}
+      value={draft.category}
+    />,
+    tag.characterCount,
+    <ToggleButton
+      active={draft.isSensitive}
+      key="sensitive"
+      label={t("Sensitive")}
+      onClick={() => onChangeDraft({ ...draft, isSensitive: !draft.isSensitive })}
+    />,
+    <ToggleButton
+      active={draft.isMutedByDefault}
+      key="muted"
+      label={t("muted")}
+      onClick={() => onChangeDraft({ ...draft, isMutedByDefault: !draft.isMutedByDefault })}
+    />,
+    <div className="flex justify-end gap-2" key="actions">
+      <button
+        className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
+        onClick={onCancel}
+        type="button"
+      >
+        <X className="h-3.5 w-3.5" />
+        {t("Cancel")}
+      </button>
+      <button
+        className="inline-flex h-8 items-center gap-1 bg-[var(--ad-ink)] px-2 text-xs font-semibold text-white disabled:opacity-50"
+        disabled={draft.label.trim().length === 0}
+        onClick={onSave}
+        type="button"
+      >
+        <Save className="h-3.5 w-3.5" />
+        {t("Save changes")}
+      </button>
+    </div>,
+  ];
 }
 
 function MergeSection({
@@ -448,11 +421,14 @@ function MergeSection({
   );
 }
 
-function ToggleButton({ active, onClick }: { active: boolean; onClick: () => void }) {
+// INVARIANT: 开关按钮只印「yes / no」，光靠列位置读屏说不出它管的是哪一列——aria-label 补上列名。
+function ToggleButton({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) {
   const { t } = useAdminI18n();
 
   return (
     <button
+      aria-label={label}
+      aria-pressed={active}
       className={cn(
         "rounded-md inline-flex h-8 min-w-[3rem] items-center justify-center border px-2 text-xs",
         active ? "border-[var(--ad-ink)] bg-[var(--ad-ink)] text-white" : "border-[var(--ad-border)] text-[var(--ad-text-muted)]",

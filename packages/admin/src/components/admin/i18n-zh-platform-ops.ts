@@ -8,6 +8,30 @@
 // "Check backend health — needs engineering"、"Unknown error"、
 // "Share the error code with engineering"。改 failureReasons.ts 的 title/hint 时同步改这里。
 export const adminZhPlatformOps: Record<string, string> = {
+  // 表格/空态/加载态收口到共享原语时新增的文案。其中角色模板、待审队列、铺位、图片库四组
+  // 按域本该落在 i18n-zh-characters.ts / i18n-zh-creative.ts，本轮并行改造下那两个文件由别的
+  // 分支持有，先集中放这里；归位时整块搬走即可。
+  "Built-in presets": "内置预设",
+  "Loading starter templates…": "正在加载角色模板…",
+  "Loading the image library…": "正在加载图片库…",
+  "No built-in presets match these filters.": "没有内置预设符合当前筛选。",
+  "No placements match these filters.": "没有铺位符合当前筛选。",
+  "No prompt recipes match these filters.": "没有提示词配方符合当前筛选。",
+  "No starter templates match these filters.": "没有角色模板符合当前筛选。",
+  "Prompt recipes": "提示词配方",
+  "Submitted": "提交时间",
+  "The authority searched every built-in preset. Clear the filters to see them all.":
+    "已检索全部内置预设。清除筛选可看到全部。",
+  "The authority searched every placement. Clear the filters to see them all.":
+    "已检索全部铺位。清除筛选可看到全部。",
+  "The authority searched every prompt recipe. Clear the filters to see them all.":
+    "已检索全部提示词配方。清除筛选可看到全部。",
+  "The authority searched every starter template. Clear the filters to see them all.":
+    "已检索全部角色模板。清除筛选可看到全部。",
+  "The authority searched the whole pending queue. Clear the filters to see all of it.":
+    "已检索整个待审队列。清除筛选可看到全部。",
+  "Workflow descriptors are published by the generation backends.": "工作流描述符由生成后端发布。",
+  "{count} input slots": "{count} 个输入槽位",
   "(needs reference image — not for standard profiles)": "（需要参考图，标准配置不适用）",
   ", comma separated.": "，以逗号分隔。",
   "/Users/kk/Downloads/models or /path/model.safetensors":

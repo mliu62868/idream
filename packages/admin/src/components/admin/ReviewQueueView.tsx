@@ -10,14 +10,26 @@ import {
   savedViewDeleteSchema,
   savedViewListResponseSchema,
   savedViewMutationResponseSchema,
+  type AdminPageInfo,
   type SavedView,
   type SavedViewQueryState,
 } from "@idream/shared/admin";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { adminV2Request } from "@/lib/admin-v2-api";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
-import { WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
+import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
+import { EmptyState } from "@/components/admin/ui/EmptyState";
+import { Pagination } from "@/components/admin/ui/Pagination";
+import {
+  WriteFeedbackBanner,
+  canGoPrevious,
+  listPageFromParams,
+  requestErrorMessage,
+  syncListUrl,
+  useWriteFeedback,
+} from "@/components/admin/section-kit";
 import { cn } from "@/lib/utils";
 
 type ReviewCharacter = {
@@ -80,6 +92,7 @@ type SavedReviewQueueFilters = {
 };
 
 const REVIEW_QUEUE_SAVED_VIEW_SCOPE = "moderation_review_queue";
+const PAGE_SIZE = 25;
 const DEFAULT_FILTERS: SavedReviewQueueFilters = { query: "", reportFilter: "all" };
 const REPORT_FILTER_OPTIONS: Array<{ value: ReportFilter; label: string }> = [
   { value: "all", label: "All" },
@@ -91,7 +104,7 @@ export function ReviewQueueView() {
   const { t, value: valueLabel } = useAdminI18n();
   const [items, setItems] = useState<ReviewItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ message: string; cause: unknown } | null>(null);
   const [pending, setPending] = useState<PendingDecision | null>(null);
   const [filters, setFilters] = useState<SavedReviewQueueFilters>(DEFAULT_FILTERS);
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
@@ -99,28 +112,29 @@ export function ReviewQueueView() {
   const [savedViewLabel, setSavedViewLabel] = useState("");
   const [savingView, setSavingView] = useState(false);
   const [cursor, setCursor] = useState<string | undefined>();
-  const [pageInfo, setPageInfo] = useState({ endCursor: null as string | null, hasNextPage: false });
+  const [page, setPage] = useState(1);
+  const [pageInfo, setPageInfo] = useState<AdminPageInfo>({ endCursor: null, hasNextPage: false });
   const [ready, setReady] = useState(false);
   const [deletingView, setDeletingView] = useState<SavedView | null>(null);
   const [decisionLink, setDecisionLink] = useState<string | null>(null);
   const { feedback, reportSuccess, reportFailure, clearFeedback } = useWriteFeedback();
   const savedViewCreateKey = useRef<string | null>(null);
 
-  const load = useCallback(async (nextCursor?: string) => {
+  const load = useCallback(async (nextCursor: string | undefined, nextPage: number) => {
     setLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams({ limit: "25" });
+      const params = new URLSearchParams({ limit: String(PAGE_SIZE) });
       if (filters.query.trim()) params.set("search", filters.query.trim());
       if (filters.reportFilter !== "all") params.set("reportFilter", filters.reportFilter);
       if (nextCursor) params.set("cursor", nextCursor);
-      const data = await apiGet<{ items: ReviewItem[]; pageInfo: { endCursor: string | null; hasNextPage: boolean } }>(`/api/v2/admin/content/review-queue?${params}`);
+      const data = await apiGet<{ items: ReviewItem[]; pageInfo: AdminPageInfo }>(`/api/v2/admin/content/review-queue?${params}`);
       setItems(data.items);
       setCursor(nextCursor);
       setPageInfo(data.pageInfo);
-      window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
+      syncListUrl(params, nextPage);
     } catch (err) {
-      setError(requestErrorMessage(err, t));
+      setError({ message: requestErrorMessage(err, t), cause: err });
     } finally {
       setLoading(false);
     }
@@ -141,25 +155,44 @@ export function ReviewQueueView() {
     }
   }, [reportFailure, t]);
 
+  // SPEC: 从 URL 恢复筛选与游标；后退/前进也走同一条路径 —— 翻页写的是 pushState，
+  // 不接回 popstate 的话后退只会改地址栏，表格还停在原来那一页。
+  const applyUrl = useCallback((params: URLSearchParams) => {
+    setFilters({ query: params.get("search") ?? "", reportFilter: isReportFilter(params.get("reportFilter")) ? params.get("reportFilter") as ReportFilter : "all" });
+    setCursor(params.get("cursor") ?? undefined);
+    setPage(listPageFromParams(params));
+  }, []);
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const timer = window.setTimeout(() => {
-      setFilters({ query: params.get("search") ?? "", reportFilter: isReportFilter(params.get("reportFilter")) ? params.get("reportFilter") as ReportFilter : "all" });
-      setCursor(params.get("cursor") ?? undefined);
+      applyUrl(params);
       setReady(true);
       void loadSavedViews();
     }, 0);
-    return () => window.clearTimeout(timer);
-  }, [loadSavedViews]);
+    const onPopState = () => applyUrl(new URLSearchParams(window.location.search));
+    window.addEventListener("popstate", onPopState);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("popstate", onPopState);
+    };
+  }, [applyUrl, loadSavedViews]);
 
   useEffect(() => {
     if (!ready) return;
-    const timer = window.setTimeout(() => void load(cursor), filters.query.trim() ? 250 : 0);
+    const timer = window.setTimeout(() => void load(cursor, page), filters.query.trim() ? 250 : 0);
     return () => window.clearTimeout(timer);
-  }, [cursor, filters.query, load, ready]);
+  }, [cursor, filters.query, load, page, ready]);
   const activeFilterCount =
     (filters.query.trim() ? 1 : 0) + (filters.reportFilter === "all" ? 0 : 1);
   const queueCount = String(items.length);
+
+  // 换筛选就回到第一页 —— 第 4 页的游标配上新条件是一段没有意义的偏移。
+  function resetFilters() {
+    setFilters(DEFAULT_FILTERS);
+    setCursor(undefined);
+    setPage(1);
+  }
 
   async function saveCurrentView() {
     const label = savedViewLabel.trim();
@@ -192,14 +225,13 @@ export function ReviewQueueView() {
   // SPEC: 删除保存的视图必须先确认——这是本页唯一的破坏性写操作，且服务端不做软删除。
   // INTENT: DELETE 契约（collaboration.ts savedViewDeleteSchema）不收 reason，所以
   // requireReason:false——不让运营填一个会被丢弃的原因。双击防护由 ConfirmDialog 的 busy 守卫兜住。
-  // SEAM(consequence): 上游 ConfirmDialog 已加 consequence 字段（不可撤销动作常驻红条 +
-  //   DangerButton），本分支的 ConfirmSpec 还没有它。合并时把下面这句从 summary 移到
-  //   consequence 即可，文案不用改：
-  //   "Deleting is permanent — there is no undo. Pending submissions and past decisions are untouched."
   const deleteViewSpec: ConfirmSpec | null = deletingView
     ? {
         title: t("Delete saved view {label}", { label: deletingView.label }),
-        summary: t("Deleting is permanent — there is no undo. Pending submissions and past decisions are untouched."),
+        consequence: {
+          effect: t("Deleting is permanent — there is no undo. Pending submissions and past decisions are untouched."),
+          reversible: false,
+        },
         destructive: { expectedName: deletingView.label },
         requireReason: false,
         submitLabel: t("Delete"),
@@ -216,10 +248,43 @@ export function ReviewQueueView() {
       }
     : null;
 
+  const tableRows: DataTableRow[] = items.map((item) => ({
+    id: item.submissionId,
+    cells: [
+      item.character.name,
+      valueLabel(item.character.gender),
+      valueLabel(item.character.style),
+      item.character.description,
+      <span className={cn(item.reportCount > 0 && "text-[var(--ad-yellow-text)]")} key="reports">{item.reportCount}</span>,
+      <span className="text-[var(--ad-text-muted)]" key="submitted">{formatDate(item.submittedAt)}</span>,
+      <div className="flex justify-end gap-1" key="actions">
+        <button
+          className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs text-[var(--ad-text)] hover:border-[var(--ad-ink)]"
+          onClick={() => setPending({ item, decision: "approve" })}
+          title={t("Approve")}
+          type="button"
+        >
+          <Check className="h-4 w-4" />
+          {t("Approve")}
+        </button>
+        <button
+          className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs text-[var(--ad-text)] hover:border-[var(--ad-ink)]"
+          onClick={() => setPending({ item, decision: "reject" })}
+          title={t("Reject")}
+          type="button"
+        >
+          <X className="h-4 w-4" />
+          {t("Reject")}
+        </button>
+      </div>,
+    ],
+  }));
+
   function applySavedView(view: SavedView) {
     clearFeedback();
     setFilters(savedFiltersFromQueryState(view.queryState));
     setCursor(undefined);
+    setPage(1);
   }
 
   return (
@@ -235,7 +300,7 @@ export function ReviewQueueView() {
         </p>
       ) : null}
 
-      {error ? <p role="alert" className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
+      {error ? <AuthorityRequestError cause={error.cause} message={error.message} onRetry={() => void load(cursor, page)} /> : null}
 
       <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
         <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
@@ -245,7 +310,7 @@ export function ReviewQueueView() {
               aria-label={t("Search review queue")}
               className="rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)] outline-none focus:border-[var(--ad-ink)]"
               name="review-queue-search"
-              onChange={(event) => { setFilters((current) => ({ ...current, query: event.target.value })); setCursor(undefined); }}
+              onChange={(event) => { setFilters((current) => ({ ...current, query: event.target.value })); setCursor(undefined); setPage(1); }}
               placeholder={t("Name, description, or ID")}
               value={filters.query}
             />
@@ -264,7 +329,7 @@ export function ReviewQueueView() {
                     filters.reportFilter === option.value && "bg-[var(--ad-ink)] text-white hover:text-white",
                   )}
                   key={option.value}
-                  onClick={() => { setFilters((current) => ({ ...current, reportFilter: option.value })); setCursor(undefined); }}
+                  onClick={() => { setFilters((current) => ({ ...current, reportFilter: option.value })); setCursor(undefined); setPage(1); }}
                   type="button"
                 >
                   {t(option.label)}
@@ -338,7 +403,7 @@ export function ReviewQueueView() {
           {activeFilterCount > 0 ? (
             <button
               className="rounded-lg h-8 border border-[var(--ad-border)] px-3 text-xs text-[var(--ad-text)] hover:border-[var(--ad-ink)]"
-              onClick={() => { setFilters(DEFAULT_FILTERS); setCursor(undefined); }}
+              onClick={resetFilters}
               type="button"
             >
               {t("Reset filters")}
@@ -347,90 +412,53 @@ export function ReviewQueueView() {
         </div>
       </section>
 
-      <section className="rounded-lg overflow-hidden border border-[var(--ad-border)] bg-[var(--ad-surface)]">
-        <div className="flex h-11 items-center justify-between border-b border-[var(--ad-border)] px-4">
-          <h2 className="text-sm font-semibold">{t("Pending submissions")}</h2>
-          <span className="text-xs text-[var(--ad-text-muted)]">{queueCount}</span>
-        </div>
-        <div
-          aria-label={t("{caption} scrollable table", { caption: t("Pending character submissions") })}
-          className="overflow-x-auto"
-          role="region"
-          tabIndex={0}
-        >
-          <table className="w-full min-w-[860px] border-collapse text-left text-sm">
-            <caption className="sr-only">{t("Pending character submissions")}</caption>
-            <thead className="bg-black/[0.03] text-[11px] uppercase text-[var(--ad-text-muted)]">
-              <tr>
-                {["Name", "Gender", "Style", "Description", "Reports", "submittedAt"].map((column) => (
-                  <th key={column} className="border-b border-[var(--ad-border)] px-3 py-2 font-semibold" scope="col">
-                    {t(column)}
-                  </th>
-                ))}
-                <th className="sticky right-0 z-10 border-b border-l border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 font-semibold" scope="col">{t("Actions")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((item) => (
-                <tr key={item.submissionId} className="border-b border-[var(--ad-border)] last:border-0">
-                  <td className="px-3 py-2 align-top text-[var(--ad-text)]">{item.character.name}</td>
-                  <td className="px-3 py-2 align-top text-[var(--ad-text)]">{valueLabel(item.character.gender)}</td>
-                  <td className="px-3 py-2 align-top text-[var(--ad-text)]">{valueLabel(item.character.style)}</td>
-                  <td className="max-w-[260px] px-3 py-2 align-top text-[var(--ad-text)]">
-                    {truncate(item.character.description, 120)}
-                  </td>
-                  <td className="px-3 py-2 align-top text-[var(--ad-text)]">
-                    <span className={cn(item.reportCount > 0 && "text-[var(--ad-yellow-text)]")}>{item.reportCount}</span>
-                  </td>
-                  <td className="px-3 py-2 align-top text-[var(--ad-text-muted)]">{formatDate(item.submittedAt)}</td>
-                  <td className="sticky right-0 z-10 border-l border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 align-top">
-                    <div className="flex gap-1">
-                      <button
-                        className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs text-[var(--ad-text)] hover:border-[var(--ad-ink)]"
-                        onClick={() => setPending({ item, decision: "approve" })}
-                        title={t("Approve")}
-                        type="button"
-                      >
-                        <Check className="h-4 w-4" />
-                        {t("Approve")}
-                      </button>
-                      <button
-                        className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs text-[var(--ad-text)] hover:border-[var(--ad-ink)]"
-                        onClick={() => setPending({ item, decision: "reject" })}
-                        title={t("Reject")}
-                        type="button"
-                      >
-                        <X className="h-4 w-4" />
-                        {t("Reject")}
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              {items.length === 0 && !error ? (
-                <tr>
-                  <td className="px-3 py-10 text-center" colSpan={7}>
-                    {loading ? (
-                      <span className="text-sm text-[var(--ad-text-muted)]">{t("Loading…")}</span>
-                    ) : activeFilterCount > 0 ? (
-                      <div>
-                        <p className="text-sm font-semibold text-[var(--ad-ink)]">{t("No submissions match filters")}</p>
-                        <button className="mt-2 text-xs text-[var(--ad-text-muted)] underline underline-offset-4" onClick={() => { setFilters(DEFAULT_FILTERS); setCursor(undefined); }} type="button">{t("Reset filters")}</button>
-                      </div>
-                    ) : (
-                      <div>
-                        <p className="text-sm font-semibold text-[var(--ad-ink)]">{t("Review queue is clear")}</p>
-                        <p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t("New pending character submissions will appear here with their report context and decision actions.")}</p>
-                      </div>
-                    )}
-                  </td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
-      </section>
-      <div className="flex justify-end"><button className="min-h-10 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold disabled:opacity-50" disabled={loading || !pageInfo.hasNextPage || !pageInfo.endCursor} onClick={() => setCursor(pageInfo.endCursor ?? undefined)} type="button">{t("Next page")}</button></div>
+      <div className="flex h-11 items-center justify-between">
+        <h2 className="text-sm font-semibold">{t("Pending submissions")}</h2>
+        <span className="text-xs text-[var(--ad-text-muted)]">{queueCount}</span>
+      </div>
+      {/* WHY(stickyLastColumn): 决策按钮此前靠本页手搓的吸附单元格（表头和行各一份定位样式 +
+          自己配的边框和底色）钉在右侧。DataTable 早就有这个开关，两处手写删掉。 */}
+      {error && items.length === 0 ? null : (
+        <DataTable
+          caption="Pending character submissions"
+          empty={
+            <EmptyState
+              hint={activeFilterCount > 0
+                ? t("The authority searched the whole pending queue. Clear the filters to see all of it.")
+                : t("New pending character submissions will appear here with their report context and decision actions.")}
+              kind={activeFilterCount > 0 ? "filtered" : "empty"}
+              onClearFilters={activeFilterCount > 0 ? resetFilters : undefined}
+              title={activeFilterCount > 0 ? t("No submissions match filters") : t("Review queue is clear")}
+            />
+          }
+          headers={[
+            t("Name"),
+            t("Gender"),
+            t("Style"),
+            { label: t("Description"), width: "16rem", truncate: true },
+            { label: t("Reports"), align: "right" },
+            t("Submitted"),
+            { label: t("Actions"), align: "right" },
+          ]}
+          loading={loading}
+          minimumWidthClassName="min-w-[860px]"
+          rows={tableRows}
+          skeletonRows={PAGE_SIZE}
+          stickyLastColumn
+        />
+      )}
+      <Pagination
+        hasNext={Boolean(pageInfo.hasNextPage && pageInfo.endCursor)}
+        // 这个 operation 的查询契约没有 `before` —— 置灰，不假装已经在第一页（section-kit 有全部理由）。
+        hasPrevious={canGoPrevious(pageInfo, false)}
+        loading={loading}
+        onNext={() => { setCursor(pageInfo.endCursor ?? undefined); setPage(page + 1); }}
+        onPrevious={() => undefined}
+        page={page}
+        pageSize={PAGE_SIZE}
+        rowCount={items.length}
+        totalCount={pageInfo.totalCount ?? null}
+      />
 
       {pending ? (
         <DecisionDialog
@@ -441,7 +469,7 @@ export function ReviewQueueView() {
             setDecisionLink(outcome.href);
             reportSuccess(t(outcome.message));
             setPending(null);
-            await load(cursor);
+            await load(cursor, page);
           }}
         />
       ) : null}
@@ -466,7 +494,7 @@ function DecisionDialog({
   const [reason, setReason] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const idempotencyKey = useRef<string | null>(null);
   const titleId = useId();
@@ -534,7 +562,7 @@ function DecisionDialog({
       );
       await onDone(result);
     } catch (err) {
-      setError(requestErrorMessage(err, t));
+      setError(err);
       setBusy(false);
     }
   }
@@ -583,7 +611,9 @@ function DecisionDialog({
             placeholder={t("Type {token} to confirm", { token: item.submissionId })}
             value={confirmation}
           />
-          {error ? <p role="alert" className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
+          {error ? (
+            <AuthorityRequestError cause={error} message={requestErrorMessage(error, t)} onRetry={() => void submit()} />
+          ) : null}
         </div>
         <div className="mt-4 flex justify-end gap-2">
           <button
