@@ -16,6 +16,7 @@ vi.mock("@/lib/admin-v2-api", async (importOriginal) => {
 });
 
 vi.mock("@/components/admin/i18n", () => ({
+  adminDateLocale: () => undefined,
   useAdminI18n: () => ({ locale: "en" as const, t: translate, value: displayValue }),
 }));
 

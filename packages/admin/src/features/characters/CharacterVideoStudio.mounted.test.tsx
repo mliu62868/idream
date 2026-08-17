@@ -25,6 +25,15 @@ vi.mock("@/lib/admin-v2-api", async (importOriginal) => {
 });
 vi.mock("@/components/admin/i18n", () => ({
   adminDateLocale: () => undefined,
+  // ui/format 的 formatDreamcoins 走 translateAdmin 查 "{cost} DC"，不经过 useAdminI18n。
+  translateAdmin: (
+    _locale: string,
+    value: string,
+    values?: Readonly<Record<string, string | number>>,
+  ) => Object.entries(values ?? {}).reduce(
+    (text, [key, replacement]) => text.replaceAll(`{${key}}`, String(replacement)),
+    value,
+  ),
   useAdminI18n: () => ({
     locale: "en" as const,
     t: (
@@ -320,7 +329,8 @@ describe("Character Video Studio", () => {
 
     expect(container.textContent).toContain("LTX 2.3 GTAnimation");
     expect(container.textContent).toContain("4 seconds");
-    expect(container.textContent).toContain("100 Dreamcoins");
+    // 梦币金额走 ui/format 的 formatDreamcoins：千分位 + 统一单位（中文界面显示"梦币"）。
+    expect(container.textContent).toContain("Estimated cost: 100 DC");
     expect(container.textContent).toContain("13m 6s");
     expect(container.textContent).toContain("7-day average");
     await waitUntil(() => adminV2Request.mock.calls.some(

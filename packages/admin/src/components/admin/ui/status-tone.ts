@@ -16,6 +16,9 @@ const TONE_BY_STATUS: Record<string, StatusTone> = {
   approved: "success", active: "success", published: "success", succeeded: "success",
   ready: "success", enabled: "success", passed: "success", resolved: "success",
   closed: "success", completed: "success", live: "success", delivered: "success",
+  // characters-performance.ts characterProductionJourneySchema 的 steps[].state。
+  // 跟 completed 同义但拼写不同 —— 五步进度条用的是 complete。
+  complete: "success",
   // ReleasePanel.tsx 的 <StatusBadge tone="good" value="serving now" />：界面字面量，没有契约背书，
   // 但它确实会渲染。表里认下来，那个写死的 tone 才有机会拿掉。
   "serving now": "success",
@@ -50,6 +53,8 @@ const TONE_BY_STATUS: Record<string, StatusTone> = {
   // creative.ts creativeRunItemExecutionStateSchema（dispatching / finalizing）。
   running: "info", processing: "info", generating: "info", dispatching: "info",
   monitoring: "info", verifying: "info", validating: "info", finalizing: "info",
+  // characters-performance.ts 的 steps[].state：current = 运营此刻正站在这一步。
+  current: "info",
 
   // 终态，且没人需要为它做什么。来源：characters-release.ts characterReleaseStatusSchema、
   // jobs.ts generationJobStatusSchema + generationArtifactArchiveStateSchema、
@@ -61,6 +66,10 @@ const TONE_BY_STATUS: Record<string, StatusTone> = {
   archived: "neutral", disabled: "neutral", superseded: "neutral", withdrawn: "neutral",
   cancelled: "neutral", canceled: "neutral", expired: "neutral", inactive: "neutral",
   retired: "neutral", duplicate: "neutral", merged: "neutral", skipped: "neutral",
+  // characters-performance.ts 的 steps[].state：upcoming 还没轮到，没人需要为它做什么。
+  // 它跟兜底同为 neutral，但收进表里才分得清"认识它、判定为无事"和"不认识它"——
+  // 那正是这条 SEAM 要修的东西：五步状态机里三个值全部走的是后者。
+  upcoming: "neutral",
 };
 
 export function statusTone(status: string): StatusTone {

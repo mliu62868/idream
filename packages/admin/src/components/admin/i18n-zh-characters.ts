@@ -519,6 +519,7 @@ export const adminZhCharacters: Record<string, string> = {
   "Establish the face customers will recognize": "建立用户能够识别的角色面孔",
   "Estimated cost": "预计费用",
   "Estimated cost unavailable": "暂无费用预估",
+  "Estimated cost: {cost}": "预计消耗：{cost}",
   "Estimated cost: {cost} Dreamcoins": "预计消耗：{cost} 梦币",
   "Estimated duration unavailable until this profile has completed health samples":
     "此配置完成健康样本后才会显示预计耗时",
@@ -692,12 +693,14 @@ export const adminZhCharacters: Record<string, string> = {
   "Name (≥1)": "名称（≥1）",
   "Name, character or project ID": "名称、角色 ID 或项目 ID",
   "Name, description, or ID": "名称、描述或 ID",
+  "Least recently updated": "最久未更新",
   "Natural": "自然",
   "Natural, conversational moments for the relationship experience.": "用于关系体验、自然且有交流感的聊天场景。",
   "Navigation is locked so this page cannot silently create a second Character.":
     "导航已锁定，避免此页面静默创建第二个角色。",
   "Needs attention": "需要处理",
   "New Character video": "新建角色视频",
+  "Newest first": "最新创建在前",
   "New character project": "新建角色项目",
   "New chat speech uses this Pocket TTS voice. Existing cached clips remain unchanged.":
     "新的聊天语音将使用这个 Pocket TTS 声音；已缓存的历史语音不会改变。",
@@ -887,6 +890,7 @@ export const adminZhCharacters: Record<string, string> = {
   "Real user-surface renderer": "真实用户界面渲染器",
   "Realistic": "写实",
   "Reason for restoring system default": "恢复系统默认的原因",
+  "Recently updated": "最近更新在前",
   "Recent assets": "最近素材",
   "Recent media operations": "最近媒体生产",
   "Recent runs and technical lineage": "最近批次与技术链路",
@@ -1037,6 +1041,7 @@ export const adminZhCharacters: Record<string, string> = {
     "短时有效的签名快照会在主站渲染，不会更改上线状态、聊天或图片资产。",
   "Similar": "相似",
   "Soft, private, close-mic": "柔和、私密、贴耳近讲",
+  "Sort characters": "角色排序方式",
   "Sort order": "排序",
   "Source and target must differ.": "来源和目标必须不同。",
   "Source image": "源图片",
