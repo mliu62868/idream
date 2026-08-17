@@ -186,3 +186,128 @@ describe("BillingWorkspace hydration", () => {
     expect(text).not.toContain("Full refund");
   });
 });
+
+/**
+ * SPEC: 账本分页条 —— 第一页「上一页」置灰，翻过去之后能原路回来，全程不编造总数。
+ *
+ * INTENT: 这里以前只有一个「下一页」。运营翻到第 4 页就回不去了，只能清筛选重来。
+ * 契约没给 totalCount，所以页脚只报当页行数；把当页条数冒充成「共 N 条」是上一轮抓到的 bug。
+ */
+describe("BillingWorkspace ledger pagination", () => {
+  let container: HTMLDivElement;
+  let root: Root | null;
+
+  /** 每页一行，行的 id 就是这一页请求时用的 cursor —— 断言时一眼看出停在哪一页。 */
+  function ledgerPage(cursor: string) {
+    const pages: Record<string, { id: string; endCursor: string | null }> = {
+      "": { id: "ledger-page-1", endCursor: "cursor-2" },
+      "cursor-2": { id: "ledger-page-2", endCursor: "cursor-3" },
+      "cursor-3": { id: "ledger-page-3", endCursor: null },
+    };
+    const page = pages[cursor] ?? pages[""]!;
+    return {
+      dataScope,
+      items: [
+        {
+          id: page.id,
+          userId: "user-1",
+          userEmail: "ledger@example.test",
+          delta: -1_500,
+          balanceAfter: 2_400,
+          reason: "generation_spend",
+          sourceId: "job-1",
+          createdAt: "2026-08-15T00:00:00.000Z",
+        },
+      ],
+      pageInfo: { endCursor: page.endCursor, hasNextPage: page.endCursor !== null },
+    };
+  }
+
+  /** 页面上有两条分页条（订阅在前、账本在后）；账本那条永远是最后一条。 */
+  function pagerButton(label: string) {
+    return [...container.querySelectorAll("button")]
+      .filter((button) => button.textContent?.trim() === label)
+      .at(-1);
+  }
+
+  beforeEach(() => {
+    apiGet.mockReset();
+    apiWrite.mockReset();
+    apiGet.mockImplementation(async (path) => {
+      if (path.startsWith("/api/v2/admin/billing/ledger")) {
+        return ledgerPage(new URL(path, "http://admin.test").searchParams.get("cursor") ?? "");
+      }
+      if (path.startsWith("/api/v2/admin/billing/subscriptions")) {
+        return { dataScope, items: [], pageInfo: { endCursor: null, hasNextPage: false } };
+      }
+      return {
+        dataScope,
+        window: { from: "2026-08-01T00:00:00.000Z", to: "2026-08-15T00:00:00.000Z" },
+        activeSubscriptions: 0,
+        checkoutExceptions: [],
+        byReason: [],
+        totals: { net: 0, entries: 0 },
+      };
+    });
+    window.history.replaceState(null, "", "/admin/customer-ops/billing");
+    container = document.createElement("div");
+    document.body.append(container);
+    root = null;
+  });
+
+  afterEach(async () => {
+    await act(async () => root?.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  async function mount() {
+    await act(async () => {
+      root = hydrateRoot(container, <BillingWorkspace canAdjust canReconcile canRefund />);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await waitUntil(() => container.textContent?.includes("ledger-page-1") ?? false);
+  }
+
+  // INVARIANT: 第一页没有上一页，但按钮要在场且置灰——藏起来运营就不知道它存在。
+  it("greys out Previous page on the first page instead of hiding it", async () => {
+    await mount();
+    expect(pagerButton("Previous page")?.disabled).toBe(true);
+    expect(pagerButton("Next page")?.disabled).toBe(false);
+    expect(container.textContent).toContain("Page 1");
+  });
+
+  // INVARIANT: 契约没给 totalCount，就只报当页行数，绝不把它写成「共 N 条」。
+  it("reports the row count it actually has rather than inventing a total", async () => {
+    await mount();
+    const text = container.textContent ?? "";
+    expect(text).toContain("Showing 1 rows");
+    expect(text).not.toContain("of 1");
+    expect(text).not.toContain("Page 1 of");
+  });
+
+  it("walks forward on the authority cursor and back again to the same page", async () => {
+    await mount();
+
+    await act(async () => pagerButton("Next page")?.click());
+    await waitUntil(() => container.textContent?.includes("ledger-page-2") ?? false);
+    expect(apiGet.mock.calls.some(([path]) =>
+      path.startsWith("/api/v2/admin/billing/ledger") && path.includes("cursor=cursor-2"),
+    )).toBe(true);
+    expect(pagerButton("Previous page")?.disabled).toBe(false);
+    expect(container.textContent).toContain("Page 2");
+
+    await act(async () => pagerButton("Previous page")?.click());
+    await waitUntil(() => container.textContent?.includes("ledger-page-1") ?? false);
+    expect(pagerButton("Previous page")?.disabled).toBe(true);
+    expect(container.textContent).toContain("Page 1");
+  });
+
+  // SPEC: 账本那两列是钱：delta 带正负号，余额带千分位。裸 String(x) 会把 -1500 和 2400 排成一样。
+  it("signs the ledger delta and groups the balance", async () => {
+    await mount();
+    const text = container.textContent ?? "";
+    expect(text).toContain("-1,500");
+    expect(text).toContain("2,400");
+  });
+});

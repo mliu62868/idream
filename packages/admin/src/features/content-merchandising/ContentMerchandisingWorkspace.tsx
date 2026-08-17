@@ -23,6 +23,8 @@ import {
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
+import { useAdminFormat } from "@/components/admin/ui/format";
+import { Pagination, type PageInfo } from "@/components/admin/ui/Pagination";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
@@ -36,6 +38,7 @@ import {
 } from "@/lib/authority-state";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import {
+  CONTENT_PAGE_SIZE,
   contentListPath,
   contentQueryFromSearch,
   contentWorkspaceUrl,
@@ -43,7 +46,6 @@ import {
 } from "./query";
 
 type Row = Record<string, unknown>;
-type PageInfo = { endCursor: string | null; hasNextPage: boolean };
 type CharacterResponse = { items: Row[]; pageInfo: PageInfo };
 export type FeaturedRuntimeBlocker = {
   code: string;
@@ -122,6 +124,8 @@ export function ContentMerchandisingWorkspace({
   );
   const [saving, setSaving] = useState(false);
   const [confirmSpec, setConfirmSpec] = useState<ConfirmSpec | null>(null);
+  // 游标分页没有页码，只有「上一页用的是哪个游标」。这条轨迹就是 Pagination 的第 N 页。
+  const [cursorTrail, setCursorTrail] = useState<string[]>([]);
   const characterGate = useRef(createLatestRequestGate());
   const featuredGate = useRef(createLatestRequestGate());
   const featuredKey = useRef<string | null>(null);
@@ -185,6 +189,8 @@ export function ContentMerchandisingWorkspace({
       const next = currentQuery();
       setQuery(next);
       setDraft(next);
+      // 回退到的那一页是哪一页，历史条目里没记；不知道就说不知道，把「上一页」置灰。
+      setCursorTrail([]);
       load(next);
     };
     load(initialQuery.current);
@@ -198,7 +204,8 @@ export function ContentMerchandisingWorkspace({
     };
   }, [load]);
 
-  function navigate(next: ContentQuery) {
+  // SPEC: 任何改变结果集的动作都回到第一页 —— 所以 trail 默认清空，只有翻页自己传轨迹。
+  function navigate(next: ContentQuery, trail: string[] = []) {
     window.history.pushState(
       null,
       "",
@@ -210,6 +217,7 @@ export function ContentMerchandisingWorkspace({
     );
     setQuery(next);
     setDraft(next);
+    setCursorTrail(trail);
     void loadCharacters(next);
   }
 
@@ -589,22 +597,25 @@ export function ContentMerchandisingWorkspace({
         ]}
         rows={characterRows}
       /> : null}
-      {/* MIGRATION: 只有「下一页」。ui/Pagination.tsx 已建（含上一页），合并后切过去。 */}
-      {characters.data?.pageInfo.hasNextPage &&
-      characters.data.pageInfo.endCursor ? (
-        <button
-          className="inline-flex h-11 items-center gap-2 rounded-md border border-[var(--ad-border)] px-4 text-sm"
-          onClick={() =>
-            navigate({
-              ...query,
-              cursor: characters.data?.pageInfo.endCursor ?? "",
-            })
+      {characters.data ? (
+        <Pagination
+          hasNext={Boolean(
+            characters.data.pageInfo.hasNextPage && characters.data.pageInfo.endCursor,
+          )}
+          hasPrevious={cursorTrail.length > 0}
+          loading={characters.loading}
+          onNext={() => {
+            const endCursor = characters.data?.pageInfo.endCursor;
+            if (!endCursor) return;
+            navigate({ ...query, cursor: endCursor }, [...cursorTrail, query.cursor]);
+          }}
+          onPrevious={() =>
+            navigate({ ...query, cursor: cursorTrail.at(-1) ?? "" }, cursorTrail.slice(0, -1))
           }
-          type="button"
-        >
-
-          {t("Next page")}
-        </button>
+          page={cursorTrail.length + 1}
+          pageSize={CONTENT_PAGE_SIZE}
+          rowCount={characters.data.items.length}
+        />
       ) : null}
       {confirmSpec ? (
         <ConfirmDialog
@@ -684,6 +695,7 @@ function Freshness<T>({
   state: AuthorityState<T>;
 }) {
   const { t } = useAdminI18n();
+  const format = useAdminFormat();
   if (state.loading) return <span>{authority}{t(": refreshing")}</span>;
   if (state.error) {
     return (
@@ -695,9 +707,7 @@ function Freshness<T>({
   return (
     <span>
       {authority}{t(": fresh")}{" "}
-      {state.refreshedAt
-        ? new Date(state.refreshedAt).toLocaleTimeString()
-        : ""}
+      {state.refreshedAt ? format.time(state.refreshedAt) : ""}
     </span>
   );
 }

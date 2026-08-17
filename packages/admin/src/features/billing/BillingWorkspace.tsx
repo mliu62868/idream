@@ -3,13 +3,7 @@
 import { useAdminI18n } from "@/components/admin/i18n";
 import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  BadgeDollarSign,
-  Loader2,
-  ReceiptText,
-  RefreshCcw,
-  X,
-} from "lucide-react";
+import { BadgeDollarSign, Loader2, ReceiptText, X } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import {
   adminBillingSubscriptionListResponseSchema,
@@ -22,14 +16,16 @@ import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDi
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import { useAdminFormat, text } from "@/components/admin/ui/format";
+import { emptyPageInfo, Pagination, type PageInfo } from "@/components/admin/ui/Pagination";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
 import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { useToast } from "@/components/admin/ui/Toast";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { canonicalListEmptyTitle } from "@/features/compatibility-lists/empty-state";
-import { dreamcoins, fiat, signedDreamcoins } from "./money";
 import {
+  BILLING_PAGE_SIZE,
   billingAdjustmentConfirmation,
   billingLedgerPath,
   billingQueryFromSearch,
@@ -47,7 +43,6 @@ import {
 } from "./query";
 
 type BillingRecord = Record<string, unknown>;
-type BillingPageInfo = { endCursor: string | null; hasNextPage: boolean };
 type BillingDataScope = {
   kind: "customer";
   includedDataClasses: string[];
@@ -56,7 +51,7 @@ type BillingDataScope = {
 type BillingListResponse<T = BillingRecord> = {
   dataScope: BillingDataScope;
   items: T[];
-  pageInfo?: BillingPageInfo;
+  pageInfo?: PageInfo;
 };
 type BillingReconciliation = {
   dataScope: BillingDataScope;
@@ -76,8 +71,10 @@ type AuthorityState<T> = {
   refreshedAt: string | null;
 };
 
-const emptyPageInfo: BillingPageInfo = { endCursor: null, hasNextPage: false };
 const emptyAdjustment: AdjustmentDraft = { userId: "", delta: "" };
+/** 两张表各自翻页，但一次 navigate 会把两边都重新拉一遍，所以轨迹要一起带着走。 */
+type BillingTrails = { ledger: string[]; subscription: string[] };
+const emptyTrails: BillingTrails = { ledger: [], subscription: [] };
 const emptyAuthorityState = <T,>(): AuthorityState<T> => ({
   data: null,
   error: null,
@@ -96,6 +93,7 @@ export function BillingWorkspace({
   canRefund: boolean;
 }) {
   const { t, value: valueLabel } = useAdminI18n();
+  const format = useAdminFormat();
   const { toast } = useToast();
   // INVARIANT: server and first browser render use identical state. URL-owned
   // filters are restored after hydration so bookmarked operator views stay safe.
@@ -110,6 +108,8 @@ export function BillingWorkspace({
   // INTENT: 退款结算数字（冲销多少、余额落到哪、有没有还回来）只在 toast 里闪一下就没了，
   //         而这正是财务事后要核对的那几个数。留在页面上直到运营自己关掉。
   const [refundOutcome, setRefundOutcome] = useState<AdminSubscriptionRefundCommandResponse | null>(null);
+  // 游标分页没有页码，只有「上一页用的是哪个游标」。这条轨迹就是 Pagination 的第 N 页。
+  const [trails, setTrails] = useState<BillingTrails>(emptyTrails);
   const requestGates = useRef({
     ledger: createLatestRequestGate(),
     subscriptions: createLatestRequestGate(),
@@ -183,16 +183,19 @@ export function BillingWorkspace({
 
   useEffect(() => {
     const gates = requestGates.current;
+    // 回退到的那一页是哪一页，历史条目里没记；不知道就说不知道，把「上一页」置灰。
     const restore = () => {
       const restored = currentQuery();
       setQuery(restored);
       setQueryDraft(restored);
+      setTrails(emptyTrails);
       load(restored);
     };
     const refresh = () => {
       const refreshed = currentQuery();
       setQuery(refreshed);
       setQueryDraft(refreshed);
+      setTrails(emptyTrails);
       load(refreshed);
     };
     const timer = window.setTimeout(restore, 0);
@@ -208,7 +211,8 @@ export function BillingWorkspace({
     };
   }, [load]);
 
-  function navigate(next: BillingQuery, mode: "push" | "replace" = "push") {
+  // SPEC: 任何改变结果集的动作都回到第一页 —— 所以 trails 默认清空，只有翻页自己传轨迹。
+  function navigate(next: BillingQuery, mode: "push" | "replace" = "push", nextTrails: BillingTrails = emptyTrails) {
     const url = billingWorkspaceUrl(window.location.pathname, window.location.search, {
       billingSearch: next.search || null,
       ledgerReason: next.ledgerReason || null,
@@ -219,6 +223,7 @@ export function BillingWorkspace({
     window.history[mode === "push" ? "pushState" : "replaceState"](null, "", url);
     setQuery(next);
     setQueryDraft(next);
+    setTrails(nextTrails);
     load(next);
   }
 
@@ -329,8 +334,9 @@ export function BillingWorkspace({
       summary: (
         <span>
           {t("Issue the full provider refund of {amount}. Access is frozen immediately and the exact {count} Dreamcoin subscription grant is reversed; coins already spent remain consumed.", {
-            amount: fiat(amountCents, subscription.currency),
-            count: dreamcoins(includedDreamcoins),
+            // 币种是可空的自由字符串；空串交给 formatMoney 自己退回默认币种。
+            amount: format.money(amountCents, subscription.currency ?? ""),
+            count: format.dreamcoins(includedDreamcoins, { unit: false }),
           })}
           {" "}
           {/* INTENT: 「退到哪」在加密支付里不是自动到账——provider 发一笔 payout，客户得自己去
@@ -459,8 +465,8 @@ export function BillingWorkspace({
         row.billingPeriod,
         row.provider,
         valueLabel(row.status),
-        display(row.currentPeriodEnd),
-        display(row.cancelAtPeriodEnd),
+        format.dateTime(row.currentPeriodEnd),
+        format.display(row.cancelAtPeriodEnd),
         refund ? <RefundDetail key="refund" refund={refund} /> : "—",
         action,
       ],
@@ -471,14 +477,14 @@ export function BillingWorkspace({
   const ledgerRows: DataTableRow[] = ledger.map((row, index) => ({
     id: text(row.id) || `ledger-${index}`,
     cells: [
-      display(row.id),
-      display(row.userId),
-      display(row.userEmail),
-      <span className="font-semibold tabular-nums" key="delta">{coinCell(row.delta, signedDreamcoins)}</span>,
-      <span className="tabular-nums" key="balance">{coinCell(row.balanceAfter, dreamcoins)}</span>,
+      format.display(row.id),
+      format.display(row.userId),
+      format.display(row.userEmail),
+      <span className="font-semibold tabular-nums" key="delta">{coinCell(row.delta, format, { signed: true })}</span>,
+      <span className="tabular-nums" key="balance">{coinCell(row.balanceAfter, format)}</span>,
       text(row.reason) ? valueLabel(text(row.reason)) : "—",
-      display(row.sourceId),
-      display(row.createdAt),
+      format.display(row.sourceId),
+      format.dateTime(row.createdAt),
     ],
   }));
   const reconciliation = reconciliationState.data;
@@ -505,7 +511,7 @@ export function BillingWorkspace({
           "providerAttemptedAt",
           "providerLastLookupAt",
           "updatedAt",
-        ].map((key) => display(row[key])),
+        ].map((key) => format.display(row[key])),
         ...(canReconcile
           ? [
               isRefundAcknowledgementCandidate(row) ? (
@@ -611,17 +617,17 @@ export function BillingWorkspace({
         <>
           {reconciliation ? <>
           <div className="grid gap-px overflow-hidden rounded-lg border border-[var(--ad-border)] bg-black/[0.05] md:grid-cols-4">
-            <Metric label="Net coins (window)" meta={`${reconciliation.totals.entries} ledger entries`} value={signedDreamcoins(reconciliation.totals.net)} />
-            <Metric label="Active subscriptions" meta="status = active" value={String(reconciliation.activeSubscriptions)} />
-            <Metric label="Checkout exceptions" meta="provider reconciliation queue" value={String(reconciliation.checkoutExceptions.length)} />
-            <Metric label="Window" meta={date(reconciliation.window.to)} value={`${date(reconciliation.window.from)} →`} />
+            <Metric label="Net coins (window)" meta={t("{count} ledger entries", { count: format.count(reconciliation.totals.entries) })} value={format.dreamcoins(reconciliation.totals.net, { signed: true, unit: false })} />
+            <Metric label="Active subscriptions" meta="status = active" value={format.count(reconciliation.activeSubscriptions)} />
+            <Metric label="Checkout exceptions" meta="provider reconciliation queue" value={format.count(reconciliation.checkoutExceptions.length)} />
+            <Metric label="Window" meta={format.dateTime(reconciliation.window.to)} value={`${format.dateTime(reconciliation.window.from)} →`} />
           </div>
           <DataTable caption="Reconciliation by reason" headers={["Reason", "Total delta", "Count"]} rows={reconciliation.byReason.map((row, index) => ({
             id: text(row.reason) || `reconciliation-${index}`,
             cells: [
               text(row.reason) ? valueLabel(text(row.reason)) : "—",
-              <span className="font-semibold tabular-nums" key="delta">{coinCell(row.totalDelta, signedDreamcoins)}</span>,
-              display(row.count),
+              <span className="font-semibold tabular-nums" key="delta">{coinCell(row.totalDelta, format, { signed: true })}</span>,
+              format.display(row.count),
             ],
           }))} />
           <DataTable
@@ -650,11 +656,25 @@ export function BillingWorkspace({
           </> : null}
           {subscriptionState.data ? <>
           <DataTable caption="Customer subscriptions" empty={<BillingEmpty filtered={Boolean(query.search || query.subscriptionStatus)} kind="subscriptions" onClear={clearFilters} />} headers={["ID", "User", "Email", "Plan", "Period", "Provider", "Status", "Period end", "Cancel at end", "Refund state", "Action"]} rows={subscriptionRows} stickyLastColumn />
-          <NextPageButton label="Next subscription page" loading={subscriptionState.loading} onClick={() => navigate({ ...query, subscriptionCursor: subscriptionState.data?.pageInfo?.endCursor ?? "" })} pageInfo={subscriptionState.data.pageInfo ?? emptyPageInfo} />
+          <ListPagination
+            cursor={query.subscriptionCursor}
+            loading={subscriptionState.loading}
+            onNavigate={(cursor, trail) => navigate({ ...query, subscriptionCursor: cursor }, "push", { ...trails, subscription: trail })}
+            pageInfo={subscriptionState.data.pageInfo ?? emptyPageInfo}
+            rowCount={subscriptions.length}
+            trail={trails.subscription}
+          />
           </> : null}
           {ledgerState.data ? <>
           <DataTable caption="Customer ledger" empty={<BillingEmpty filtered={Boolean(query.search || query.ledgerReason)} kind="ledger entries" onClear={clearFilters} />} headers={["ID", "User", "Email", "Delta", "Balance after", "Reason", "Source", "Created"]} rows={ledgerRows} />
-          <NextPageButton label="Next ledger page" loading={ledgerState.loading} onClick={() => navigate({ ...query, ledgerCursor: ledgerState.data?.pageInfo?.endCursor ?? "" })} pageInfo={ledgerState.data.pageInfo ?? emptyPageInfo} />
+          <ListPagination
+            cursor={query.ledgerCursor}
+            loading={ledgerState.loading}
+            onNavigate={(cursor, trail) => navigate({ ...query, ledgerCursor: cursor }, "push", { ...trails, ledger: trail })}
+            pageInfo={ledgerState.data.pageInfo ?? emptyPageInfo}
+            rowCount={ledger.length}
+            trail={trails.ledger}
+          />
           </> : null}
         </>
       )}
@@ -702,17 +722,18 @@ const PAYOUT_STATE_LABEL: Record<SubscriptionRefund["payouts"][number]["state"],
  */
 function RefundDetail({ refund }: { refund: SubscriptionRefund }) {
   const { t } = useAdminI18n();
+  const format = useAdminFormat();
   const owed = refund.balanceAfter < 0;
   return (
     <div className="min-w-56 space-y-1 text-xs">
       <p className="font-semibold">{t(REFUND_STATE_LABEL[refund.state])}</p>
       <p>
-        {fiat(refund.amountCents, refund.currency)}
+        {format.money(refund.amountCents, refund.currency)}
         {" · "}
-        {t("{count} Dreamcoin grant reversed", { count: dreamcoins(refund.reversedDreamcoins) })}
+        {t("{count} Dreamcoin grant reversed", { count: format.dreamcoins(refund.reversedDreamcoins, { unit: false }) })}
       </p>
       <p className={owed ? "font-semibold text-[var(--ad-red-text)]" : undefined}>
-        {t("Balance after reversal")}: {signedDreamcoins(refund.balanceAfter)}
+        {t("Balance after reversal")}: {format.dreamcoins(refund.balanceAfter, { signed: true, unit: false })}
         {/* INTENT: 余额被冲成负数，说的就是「已消费的梦币不返还」这条规则真的生效了——
             客户花掉的那部分现在挂在他账上。这句话必须由数字带出来，不能只写在确认框里。 */}
         {owed ? ` · ${t("the customer had already spent part of the grant")}` : ""}
@@ -722,7 +743,7 @@ function RefundDetail({ refund }: { refund: SubscriptionRefund }) {
           {t("Grant restored")}
           {refund.restoredBalanceAfter === null
             ? ""
-            : ` · ${t("Balance after reversal")}: ${signedDreamcoins(refund.restoredBalanceAfter)}`}
+            : ` · ${t("Balance after reversal")}: ${format.dreamcoins(refund.restoredBalanceAfter, { signed: true, unit: false })}`}
         </p>
       ) : null}
       {refund.payouts.length > 0 ? (
@@ -753,6 +774,7 @@ function RefundSettlementNotice({
   result: AdminSubscriptionRefundCommandResponse;
 }) {
   const { t, value: valueLabel } = useAdminI18n();
+  const format = useAdminFormat();
   const { settlement } = result;
   return (
     <section
@@ -780,16 +802,16 @@ function RefundSettlementNotice({
       <dl className="mt-3 grid gap-px overflow-hidden rounded-md border border-[var(--ad-border)] bg-[var(--ad-border)] sm:grid-cols-2 lg:grid-cols-4">
         <SettlementFigure
           label={t("Refund amount")}
-          value={fiat(result.refund.amountCents, result.refund.currency)}
+          value={format.money(result.refund.amountCents, result.refund.currency)}
         />
         <SettlementFigure
           label={t("Dreamcoins reversed")}
-          value={signedDreamcoins(-settlement.reversedDreamcoins)}
+          value={format.dreamcoins(-settlement.reversedDreamcoins, { signed: true, unit: false })}
         />
         <SettlementFigure
           label={t("Balance after reversal")}
           tone={settlement.balanceAfter < 0 ? "owed" : undefined}
-          value={signedDreamcoins(settlement.balanceAfter)}
+          value={format.dreamcoins(settlement.balanceAfter, { signed: true, unit: false })}
         />
         <SettlementFigure
           label={t("Subscription status")}
@@ -799,11 +821,11 @@ function RefundSettlementNotice({
       {settlement.restoredDreamcoins > 0 ? (
         <p className="mt-2 text-xs">
           {t("{count} Dreamcoins were put back because the provider refund did not complete.", {
-            count: dreamcoins(settlement.restoredDreamcoins),
+            count: format.dreamcoins(settlement.restoredDreamcoins, { unit: false }),
           })}
           {settlement.restoredBalanceAfter === null
             ? ""
-            : ` ${t("Balance after reversal")}: ${signedDreamcoins(settlement.restoredBalanceAfter)}`}
+            : ` ${t("Balance after reversal")}: ${format.dreamcoins(settlement.restoredBalanceAfter, { signed: true, unit: false })}`}
         </p>
       ) : null}
       {settlement.balanceAfter < 0 ? (
@@ -833,14 +855,16 @@ function BillingLoading() {
 
 function AuthorityFreshness<T>({ label, state }: { label: string; state: AuthorityState<T> }) {
   const { t } = useAdminI18n();
+  const format = useAdminFormat();
+  const at = state.refreshedAt ? format.time(state.refreshedAt) : t("unknown");
   if (state.loading && state.data) {
-    return <span>{label}{t(": refreshing · as of")} <time dateTime={state.refreshedAt ?? undefined}>{freshnessTime(state.refreshedAt)}</time></span>;
+    return <span>{label}{t(": refreshing · as of")} <time dateTime={state.refreshedAt ?? undefined}>{at}</time></span>;
   }
   if (state.error && state.data) {
-    return <span>{label}{t(": stale · last good")} <time dateTime={state.refreshedAt ?? undefined}>{freshnessTime(state.refreshedAt)}</time></span>;
+    return <span>{label}{t(": stale · last good")} <time dateTime={state.refreshedAt ?? undefined}>{at}</time></span>;
   }
   if (state.error) return <span>{label}{t(": unavailable")}</span>;
-  if (state.data) return <span>{label}{t(": as of")} <time dateTime={state.refreshedAt ?? undefined}>{freshnessTime(state.refreshedAt)}</time></span>;
+  if (state.data) return <span>{label}{t(": as of")} <time dateTime={state.refreshedAt ?? undefined}>{at}</time></span>;
   return <span>{label}{t(": loading…")}</span>;
 }
 
@@ -862,10 +886,6 @@ function AuthorityError<T>({
   );
 }
 
-function freshnessTime(value: string | null) {
-  return value ? new Date(value).toLocaleTimeString() : "unknown";
-}
-
 function BillingEmpty({ filtered, kind, onClear }: { filtered: boolean; kind: string; onClear: () => void }) {
   const { t } = useAdminI18n();
   const title = canonicalListEmptyTitle(
@@ -875,10 +895,30 @@ function BillingEmpty({ filtered, kind, onClear }: { filtered: boolean; kind: st
   return <EmptyState action={filtered ? <button className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" onClick={onClear} type="button">{t("Clear filters")}</button> : undefined} hint={filtered ? `The complete authority query returned no ${kind}.` : `No ${kind} exist in the authority yet.`} title={title} />;
 }
 
-// MIGRATION: 只有「下一页」，没有上一页。ui/Pagination.tsx 已建（含上一页），合并后切过去。
-function NextPageButton({ label, loading, onClick, pageInfo }: { label: string; loading: boolean; onClick: () => void; pageInfo: BillingPageInfo }) {
-  if (!pageInfo.hasNextPage || !pageInfo.endCursor) return null;
-  return <button className="inline-flex min-h-11 items-center gap-2 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-4 text-sm font-semibold" disabled={loading} onClick={onClick} type="button"><RefreshCcw className="h-4 w-4" />{label}</button>;
+// SPEC: 账本和订阅两张表的分页条形状完全一样，只有游标属于哪一张不同。
+function ListPagination({ cursor, loading, onNavigate, pageInfo, rowCount, trail }: {
+  cursor: string;
+  loading: boolean;
+  onNavigate: (cursor: string, trail: string[]) => void;
+  pageInfo: PageInfo;
+  rowCount: number;
+  trail: string[];
+}) {
+  return (
+    <Pagination
+      hasNext={Boolean(pageInfo.hasNextPage && pageInfo.endCursor)}
+      hasPrevious={trail.length > 0}
+      loading={loading}
+      onNext={() => {
+        if (!pageInfo.endCursor) return;
+        onNavigate(pageInfo.endCursor, [...trail, cursor]);
+      }}
+      onPrevious={() => onNavigate(trail.at(-1) ?? "", trail.slice(0, -1))}
+      page={trail.length + 1}
+      pageSize={BILLING_PAGE_SIZE}
+      rowCount={rowCount}
+    />
+  );
 }
 
 function Metric({ label, meta, value }: { label: string; meta: string; value: string }) {
@@ -898,8 +938,15 @@ function Select({ label, onChange, options, value }: { label: string; onChange: 
  * INTENT: 账本行是 unknown 进来的。是数字才按钱排版，不是数字就退回通用占位——
  * 不把非数字硬塞进金额格式化器里，省得把脏数据印成一个看起来很正经的 0。
  */
-function coinCell(value: unknown, format: (amount: number) => string): ReactNode {
-  return typeof value === "number" ? format(value) : display(value);
+function coinCell(
+  value: unknown,
+  format: ReturnType<typeof useAdminFormat>,
+  options?: { signed?: boolean },
+): ReactNode {
+  // 列头已经写着 Delta / Balance after，每格再缀一遍单位是噪音。
+  return typeof value === "number"
+    ? format.dreamcoins(value, { ...options, unit: false })
+    : format.display(value);
 }
 
 function canAdjustLedger(draft: AdjustmentDraft) {
@@ -908,21 +955,4 @@ function canAdjustLedger(draft: AdjustmentDraft) {
 
 function currentQuery() {
   return typeof window === "undefined" ? defaultBillingQuery : billingQueryFromSearch(window.location.search);
-}
-
-// MIGRATION: text/display/date 三件套在本簇里有四份近乎逐字相同的副本。
-// ui/format.ts 正在统一，合并时一起切；钱的排版归 ./money.ts，两者不要合并。
-function text(value: unknown) {
-  return typeof value === "string" ? value : "";
-}
-
-function display(value: unknown): ReactNode {
-  if (typeof value === "boolean") return value ? "yes" : "no";
-  if (typeof value === "number" || typeof value === "string") return String(value);
-  return "—";
-}
-
-function date(value: string) {
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
 }

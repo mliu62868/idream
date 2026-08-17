@@ -8,6 +8,9 @@ export type BillingQuery = {
   subscriptionCursor: string;
 };
 
+/** 分页条要报「第 N–M 条」，算法需要每页条数，所以它不能只活在 URL 拼接里。 */
+export const BILLING_PAGE_SIZE = 25;
+
 export const defaultBillingQuery: BillingQuery = {
   search: "",
   ledgerReason: "",
@@ -32,7 +35,7 @@ export function billingLedgerPath(query: BillingQuery) {
   set(params, "search", query.search);
   set(params, "reason", query.ledgerReason);
   set(params, "cursor", query.ledgerCursor);
-  params.set("limit", "25");
+  params.set("limit", String(BILLING_PAGE_SIZE));
   return `/api/v2/admin/billing/ledger?${params.toString()}`;
 }
 
@@ -41,7 +44,7 @@ export function billingSubscriptionsPath(query: BillingQuery) {
   set(params, "search", query.search);
   set(params, "status", query.subscriptionStatus);
   set(params, "cursor", query.subscriptionCursor);
-  params.set("limit", "25");
+  params.set("limit", String(BILLING_PAGE_SIZE));
   return `/api/v2/admin/billing/subscriptions?${params.toString()}`;
 }
 
