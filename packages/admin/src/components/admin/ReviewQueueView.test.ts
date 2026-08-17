@@ -22,12 +22,19 @@ describe("review decision success", () => {
     });
   });
 
-  it("keeps review decisions visible and the narrow table keyboard-scrollable", () => {
-    expect(source).toContain('aria-label={t("{caption} scrollable table"');
-    expect(source).toContain('role="region"');
-    expect(source).toContain('tabIndex={0}');
-    expect(source).toContain('sticky right-0 z-10 border-b border-l');
-    expect(source).toContain('sticky right-0 z-10 border-l');
-    expect(source).toContain('["Name", "Gender", "Style", "Description", "Reports", "submittedAt"]');
+  // SPEC: 决策按钮在窄屏横滚时必须还在视野里，表格本身要能用键盘滚动。
+  // INVARIANT: 这两件事由 ui/DataTable 提供（stickyLastColumn + role="region" tabIndex 的滚动容器，
+  //   见 DataTable.test.tsx），本页只负责把开关打开——所以这里钉的是「用了原语并开了开关」，
+  //   不再逐字节钉一份本地手搓的 sticky 样式。
+  it("keeps review decisions reachable through the shared table primitive", () => {
+    expect(source).toContain("stickyLastColumn");
+    expect(source).toContain('minimumWidthClassName="min-w-[860px]"');
+    expect(source).not.toContain("sticky right-0");
+  });
+
+  // SPEC: 表头是运营读的中文文案，不是后端字段名。
+  it("never labels a column with a raw authority field name", () => {
+    expect(source).not.toContain('"submittedAt"');
+    expect(source).toContain('t("Submitted")');
   });
 });

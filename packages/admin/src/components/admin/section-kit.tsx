@@ -7,6 +7,8 @@
 // SEAM(toast): useWriteFeedback + WriteFeedbackBanner 是全局 toast 的唯一接缝。全局 toast
 //   （ui/Toast.tsx + useToast()）落地后，只需把 WriteFeedbackBanner 换成 toast 渲染、把
 //   reportSuccess/reportFailure 转发给 useToast().show()，26 个调用点一行都不用改。
+//   注意 reportFailure 目前收的是 requestErrorMessage() 的原文；换成 toast 时应改走
+//   useFailureToast(cause)，那条路径才有「下一步 + 复制给工程」。
 
 import {
   useCallback,
@@ -17,6 +19,7 @@ import {
   type ReactNode,
 } from "react";
 import { X } from "lucide-react";
+import type { AdminPageInfo } from "@idream/shared/admin";
 import { useAdminI18n } from "@/components/admin/i18n";
 import type { LatestRequestGate } from "@/lib/latest-request";
 import { cn } from "@/lib/utils";
@@ -24,13 +27,50 @@ import { cn } from "@/lib/utils";
 // INVARIANT: 成功提示自动消失，失败提示不会——运营没读到的失败等于没发生。
 const SUCCESS_DISMISS_MS = 8_000;
 
-// SPEC: 请求失败时给运营看什么。有 Error 就用它自己的话，否则一句通用兜底。
-// SEAM(request-error-copy): 上游已落地 ui/request-error-copy.ts —— 把 AppErrorCode 映射成人话 +
-//   下一步，映射不到就如实说「原因未能识别」，5xx 与网络故障一律不承诺"没有写入"。合并后只改
-//   这一个函数体（`return requestErrorCopy(error).message`），26 个调用点一行都不用动。
-// INTENT: 兜底刻意只有一句通用文案 —— 绝不在 26 处各编一句自己的中文，那正是要消灭的东西。
+// SPEC: authority 的原文，一个字不加工——它的去处是「技术详情」折叠区，不是运营的首屏。
+// INVARIANT: 运营读到的那两句（发生了什么 / 下一步）由 ui/request-error-copy.ts 在渲染边界产出，
+//   入口是 AuthorityRequestError 的 `cause`。所以失败时要把异常对象一起存下来
+//   （authority-state 的 authorityRequestFailed 收第四个参数 cause），只存 message 会让
+//   code / status / requestId 在这一层就丢光，横幅退回「读不到最新数据」的通用兜底。
 export function requestErrorMessage(error: unknown, t: (key: string) => string): string {
   return error instanceof Error ? error.message : t("Request failed");
+}
+
+// SPEC: 「上一页」是否可以点。
+// INVARIANT: hasPreviousPage 缺席 ≠「你在第一页」，而是「这个 operation 还是单向 keyset」——置灰。
+//   见 packages/shared/src/admin/contracts/common.ts 的 SPEC。
+// TRAP: 光信响应体不够。content/* 与 generation catalog 都经 paginateAdminKeyset 回了
+//   hasPreviousPage / startCursor，但它们的查询契约里根本没有 `before` 参数（shared/admin/contracts
+//   里只有 access / approvals / audit-log / billing / customers / promo / dead-letter 有），把
+//   startCursor 当 before 发过去会被 .strict() 挡成 400。所以「我这个 operation 收不收 before」
+//   必须由调用方交代，不能从 pageInfo 推断。
+export function canGoPrevious(pageInfo: AdminPageInfo, acceptsBefore: boolean): boolean {
+  return acceptsBefore && pageInfo.hasPreviousPage === true && Boolean(pageInfo.startCursor);
+}
+
+// SPEC: 列表页地址栏 = 该页的 API 查询参数 + page。page 只给 UI 用，永远不发给 authority。
+// INTENT: 页码进 URL 是为了后退能落回正确的「第 N 页」——不进 URL 的话后退只恢复游标，
+//   页码归零，运营会读到一个编出来的数字。
+export function listUrlSearch(apiParams: URLSearchParams, page: number): string {
+  const params = new URLSearchParams(apiParams);
+  if (page > 1) params.set("page", String(page));
+  return params.size ? `?${params}` : "";
+}
+
+// SPEC: 翻页写 pushState，改筛选/搜索写 replaceState。
+// INTENT: 翻页是运营心里的一次导航，后退必须回得来（这五个列表页此前一律 replaceState，
+//   后退连上一页都回不去）；而搜索框每敲一个字符就压一条历史，等于把后退键废掉。
+export function syncListUrl(apiParams: URLSearchParams, page: number): void {
+  const next = `${window.location.pathname}${listUrlSearch(apiParams, page)}`;
+  const current = new URLSearchParams(window.location.search);
+  const paged = apiParams.get("cursor") !== current.get("cursor")
+    || String(page) !== (current.get("page") ?? "1");
+  window.history[paged ? "pushState" : "replaceState"](null, "", next);
+}
+
+export function listPageFromParams(params: URLSearchParams): number {
+  const page = Number(params.get("page"));
+  return Number.isInteger(page) && page > 0 ? page : 1;
 }
 
 export type WriteFeedback = { tone: "success" | "failure"; message: string };
@@ -127,22 +167,25 @@ export function InfoGrid({ items }: { items: { label: string; value: ReactNode }
 }
 
 // SPEC: 列表页重载——有搜索词时防抖 250ms，其余（翻页/换筛选）立即发。
+// INVARIANT: page 一起传下去 —— reload 要拿它写地址栏（游标不携带页码，光看 cursor 说不出第几页）。
 export function useDebouncedReload({
   cursor,
+  page,
   ready,
   reload,
   search,
 }: {
   cursor: string | undefined;
+  page: number;
   ready: boolean;
-  reload: (cursor?: string) => void;
+  reload: (cursor: string | undefined, page: number) => void;
   search: string;
 }) {
   useEffect(() => {
     if (!ready) return;
-    const timer = window.setTimeout(() => reload(cursor), search.trim() ? 250 : 0);
+    const timer = window.setTimeout(() => reload(cursor, page), search.trim() ? 250 : 0);
     return () => window.clearTimeout(timer);
-  }, [cursor, ready, reload, search]);
+  }, [cursor, page, ready, reload, search]);
 }
 
 // SPEC: 挂载后从 URL 恢复筛选/游标，然后才允许首次取数。
@@ -160,4 +203,12 @@ export function useUrlBootstrap(
       window.clearTimeout(timer);
     };
   }, [apply, gate]);
+
+  // SPEC: 后退/前进要把列表带回那一页 —— pushState 只改地址栏，状态得自己接回来。
+  // INVARIANT: apply 与 bootstrap 用同一个回调，所以「从 URL 恢复」只有一套逻辑。
+  useEffect(() => {
+    const onPopState = () => apply(new URLSearchParams(window.location.search));
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [apply]);
 }

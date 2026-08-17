@@ -3,6 +3,12 @@
 // INVARIANT: key 在所有 i18n-zh-*.ts 之间互斥——同一个 key 只能有一个域文件持有；
 // 由 i18n-zh-exclusivity.test.ts 强制。新增文案放它所属的域文件，不要另开「杂项」文件。
 export const adminZhGrowth: Record<string, string> = {
+  // 表格/空态收口到共享原语时新增的文案。
+  "Create a draft above; it is not served until you publish it.": "在上方新建草稿；发布前不会对外提供。",
+  "Create one above to broadcast it site-wide.": "在上方新建一条，即可全站广播。",
+  "No announcements match these filters.": "没有公告符合当前筛选。",
+  "The authority searched every announcement. Clear the filters to see them all.":
+    "已检索全部公告。清除筛选可看到全部。",
   // 钱与增长簇（定价 / 促销 / 编排 / 退款结算）。退款文案落在这里而不是 i18n-zh-customers.ts：
   // 它属于「钱」这一簇，和定价、兑换码面额共用同一套梦币口径与措辞。
   "Adding": "新增",

@@ -11,6 +11,7 @@ import { Loader2, Play, RefreshCcw, Square } from "lucide-react";
 import type { ExperimentAnalysisResponse, ExperimentDefinition } from "@idream/shared/admin";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { StatusPill } from "@/components/admin/ui/StatusPill";
 import { WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
@@ -33,7 +34,9 @@ export function ExperimentsView() {
   const [hypothesis, setHypothesis] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // INVARIANT: 存异常对象 —— AuthorityRequestError 要靠 cause 才能按错误码出人话，
+  // 只有 message 时运营读到的仍是 authority 的英文原文。
+  const [error, setError] = useState<unknown>(null);
   const [monitoringUnavailable, setMonitoringUnavailable] = useState(false);
   const [pending, setPending] = useState<{ row: ManagedExperiment; command: LifecycleCommand } | null>(null);
   const { feedback, reportSuccess, reportFailure, clearFeedback } = useWriteFeedback();
@@ -53,7 +56,7 @@ export function ExperimentsView() {
         setMonitoringUnavailable(true);
       }
     } catch (reason) {
-      setError(requestErrorMessage(reason, t));
+      setError(reason);
     } finally {
       setLoading(false);
     }
@@ -90,16 +93,18 @@ export function ExperimentsView() {
   }
 
   // SPEC: 启停的 reason 由运营手写并进审计；确认框同时要求把实验 key 打对，防止在长列表里点错行。
-  // SEAM(consequence): 上游 ConfirmDialog 已加 consequence 字段（不可撤销动作常驻红条 +
-  //   DangerButton），本分支的 ConfirmSpec 还没有它。合并时把下面 summary 的两句原样移进
-  //   consequence 即可。stop 那句的「不能重启」是核对过后端的：management.ts:158 里 start 只
-  //   接受 draft，stopped 没有回到 running 的路径。
+  // INVARIANT: 后果进 consequence（标题下常驻红条 + DangerButton），运营在敲确认串之前就读到，
+  //   而不是事后从审计日志里发现。stop 那句的「不能重启」是核对过后端的：management.ts:158 里
+  //   start 只接受 draft，stopped 没有回到 running 的路径——所以 reversible: false。
   const lifecycleSpec: ConfirmSpec | null = pending
     ? {
         title: pending.command === "start" ? t("Start experiment") : t("Stop experiment"),
-        summary: pending.command === "start"
-          ? t("Real users start being assigned to {key} v{version} immediately. You can stop it later, but subjects already exposed stay exposed. Your reason goes to the audit log.", { key: pending.row.key, version: pending.row.version })
-          : t("Assignment ends for everyone immediately and {key} v{version} cannot be restarted — running this test again needs a new version. Your reason goes to the audit log.", { key: pending.row.key, version: pending.row.version }),
+        consequence: {
+          effect: pending.command === "start"
+            ? t("Real users start being assigned to {key} v{version} immediately. You can stop it later, but subjects already exposed stay exposed. Your reason goes to the audit log.", { key: pending.row.key, version: pending.row.version })
+            : t("Assignment ends for everyone immediately and {key} v{version} cannot be restarted — running this test again needs a new version. Your reason goes to the audit log.", { key: pending.row.key, version: pending.row.version }),
+          reversible: pending.command === "start",
+        },
         destructive: { expectedName: pending.row.key, inputLabel: t("Type the experiment key to confirm") },
         submitLabel: pending.command === "start" ? t("Start") : t("Stop"),
         onSubmit: async (reason) => {
@@ -140,7 +145,7 @@ export function ExperimentsView() {
         <button className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-sm disabled:opacity-50" disabled={loading} onClick={() => void load()} type="button">{loading ? <Loader2 aria-hidden className="h-4 w-4 animate-spin" /> : <RefreshCcw aria-hidden className="h-4 w-4" />}{t("Refresh")}</button>
       </header>
       <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
-      {error ? <p className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert" tabIndex={-1}>{error}</p> : null}
+      {error ? <AuthorityRequestError cause={error} message={requestErrorMessage(error, t)} onRetry={() => void load()} /> : null}
 
       <form className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-[1fr_2fr_auto]" onSubmit={(event) => void createDraft(event)}>
         <label className="grid gap-1 text-xs"><span>{t("Experiment key")}</span><input className="min-h-11 rounded-md border border-[var(--ad-border)] bg-transparent px-3" onChange={(event) => setKey(event.target.value)} pattern="[a-z0-9][a-z0-9._\-]*" placeholder={t("surface.what-changed.v1")} required value={key} /></label>

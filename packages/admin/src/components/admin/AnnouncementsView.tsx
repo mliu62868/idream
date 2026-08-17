@@ -3,18 +3,31 @@
 // SPEC: 公告/banner 后台面板（ADMIN_PHASE4_DESIGN §3）。新建 / 启停 / 删除，写后 refetch。
 // INTENT: 自取数、无 props；样式对齐 TagsView。启停/删除经 inline typed confirmation。
 import { useCallback, useEffect, useState } from "react";
-import { ChevronRight, Loader2, Plus, RefreshCcw, Search, Trash2 } from "lucide-react";
+import { Loader2, Plus, RefreshCcw, Search, Trash2 } from "lucide-react";
+import type { AdminPageInfo } from "@idream/shared/admin";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { adminV2Request } from "@/lib/admin-v2-api";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
+import { EmptyState } from "@/components/admin/ui/EmptyState";
+import { Pagination } from "@/components/admin/ui/Pagination";
 import { StatusPill } from "@/components/admin/ui/StatusPill";
-import { WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
+import {
+  WriteFeedbackBanner,
+  canGoPrevious,
+  listPageFromParams,
+  requestErrorMessage,
+  useWriteFeedback,
+} from "@/components/admin/section-kit";
 import {
   announcementListPath,
   announcementQueryFromSearch,
   announcementWorkspaceUrl,
   type AnnouncementQuery,
 } from "./announcements-query";
+
+const PAGE_SIZE = 25;
 
 type Announcement = {
   id: string;
@@ -45,12 +58,13 @@ export function AnnouncementsView() {
   const { t, value: valueLabel } = useAdminI18n();
   const [items, setItems] = useState<Announcement[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ message: string; cause: unknown } | null>(null);
   const [actionDraft, setActionDraft] = useState<AnnouncementActionDraft | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
   const [query, setQuery] = useState<AnnouncementQuery>({ announcementSearch: "", announcementLevel: "", announcementActive: "", announcementCursor: "" });
-  const [pageInfo, setPageInfo] = useState<{ endCursor: string | null; hasNextPage: boolean }>({ endCursor: null, hasNextPage: false });
+  const [pageInfo, setPageInfo] = useState<AdminPageInfo>({ endCursor: null, hasNextPage: false });
+  const [page, setPage] = useState(1);
 
   const load = useCallback(async (params = new URLSearchParams(window.location.search)) => {
     setLoading(true);
@@ -58,11 +72,12 @@ export function AnnouncementsView() {
     try {
       const restored = announcementQueryFromSearch(params.toString());
       setQuery(restored);
-      const data = await apiGet<{ items: Announcement[]; pageInfo: { endCursor: string | null; hasNextPage: boolean } }>(announcementListPath(restored));
+      setPage(listPageFromParams(params));
+      const data = await apiGet<{ items: Announcement[]; pageInfo: AdminPageInfo }>(announcementListPath(restored));
       setItems(data.items);
       setPageInfo(data.pageInfo);
     } catch (err) {
-      setError(requestErrorMessage(err, t));
+      setError({ message: requestErrorMessage(err, t), cause: err });
     } finally {
       setLoading(false);
     }
@@ -78,12 +93,14 @@ export function AnnouncementsView() {
     };
   }, [load]);
 
-  function navigate(updates: Record<string, string | null>, clearCursor = false) {
+  // INVARIANT: page 只进地址栏，不进 announcementListPath —— 游标分页的请求里没有页码这个概念，
+  // 但没有它，后退回上一页时页码就只能靠猜。
+  function navigate(updates: Record<string, string | null>, nextPage: number) {
     const next = announcementWorkspaceUrl(
       window.location.pathname,
       window.location.search,
-      updates,
-      clearCursor,
+      { ...updates, page: nextPage > 1 ? String(nextPage) : null },
+      nextPage === 1,
     );
     window.history.pushState(null, "", next);
     void load(new URLSearchParams(window.location.search));
@@ -122,17 +139,46 @@ export function AnnouncementsView() {
             : t("Activated “{title}”. It is visible site-wide now.", { title: item.title }),
       );
     } catch (err) {
-      setError(requestErrorMessage(err, t));
+      setError({ message: requestErrorMessage(err, t), cause: err });
     } finally {
       setActionBusy(false);
     }
   }
 
+  const filtered = Boolean(query.announcementSearch || query.announcementLevel || query.announcementActive);
+  const tableRows: DataTableRow[] = items.map((item) => ({
+    id: item.id,
+    cells: [
+      item.title,
+      <span className="text-[var(--ad-text-muted)]" key="level">{valueLabel(item.level)}</span>,
+      <StatusPill key="active" label={item.active ? t("Active") : t("Inactive")} status={item.active ? "active" : "disabled"} />,
+      <div className="flex justify-end gap-2" key="actions">
+        <button
+          className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
+          disabled={actionBusy}
+          onClick={() => startAction("toggle", item)}
+          type="button"
+        >
+          {item.active ? t("Deactivate") : t("Activate")}
+        </button>
+        <button
+          aria-label={t("Delete announcement")}
+          className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-red-text)]/20 px-2 text-xs text-[var(--ad-red-text)]"
+          disabled={actionBusy}
+          onClick={() => startAction("delete", item)}
+          type="button"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      </div>,
+    ],
+  }));
+
   return (
     <div className="space-y-5">
       <form className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-4" onSubmit={(event) => {
         event.preventDefault();
-        navigate({ announcementSearch: query.announcementSearch, announcementLevel: query.announcementLevel, announcementActive: query.announcementActive }, true);
+        navigate({ announcementSearch: query.announcementSearch, announcementLevel: query.announcementLevel, announcementActive: query.announcementActive }, 1);
       }}>
         <input aria-label={t("Search announcements")} className={inputClass} onChange={(event) => setQuery({ ...query, announcementSearch: event.target.value })} placeholder={t("Search")} type="search" value={query.announcementSearch} />
         <select className={inputClass} onChange={(event) => setQuery({ ...query, announcementLevel: event.target.value })} value={query.announcementLevel}>
@@ -156,7 +202,7 @@ export function AnnouncementsView() {
         </button>
       </div>
       <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
-      {error ? <p role="alert" className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
+      {error ? <AuthorityRequestError cause={error.cause} message={error.message} onRetry={() => void load()} /> : null}
 
       <CreateAnnouncementForm onCreated={reportSuccess} reload={load} />
 
@@ -206,59 +252,37 @@ export function AnnouncementsView() {
         </section>
       ) : null}
 
-      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
-        <table className="w-full text-left text-sm">
-          <caption className="sr-only">{t("Announcements")}</caption>
-          <thead className="border-b border-[var(--ad-border)] text-xs text-[var(--ad-text-muted)]">
-            <tr>
-              <th scope="col" className="px-3 py-2 font-medium">{t("title")}</th>
-              <th scope="col" className="px-3 py-2 font-medium">{t("level")}</th>
-              <th scope="col" className="px-3 py-2 font-medium">{t("active")}</th>
-              <th scope="col" className="px-3 py-2 font-medium"><span className="sr-only">{t("Actions")}</span></th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((item) => (
-              <tr key={item.id} className="border-b border-[var(--ad-border)]">
-                <td className="px-3 py-2">{item.title}</td>
-                <td className="px-3 py-2 text-[var(--ad-text-muted)]">{valueLabel(item.level)}</td>
-                <td className="px-3 py-2"><StatusPill label={item.active ? t("Active") : t("Inactive")} status={item.active ? "active" : "disabled"} /></td>
-                <td className="px-3 py-2 text-right">
-                  <div className="flex justify-end gap-2">
-                    <button
-                      className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
-                      disabled={actionBusy}
-                      onClick={() => startAction("toggle", item)}
-                      type="button"
-                    >
-                      {item.active ? t("Deactivate") : t("Activate")}
-                    </button>
-                    <button
-                      aria-label={t("Delete announcement")}
-                      className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-red-text)]/20 px-2 text-xs text-[var(--ad-red-text)]"
-                      disabled={actionBusy}
-                      onClick={() => startAction("delete", item)}
-                      type="button"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-            {items.length === 0 && !loading && !error ? (
-              <tr>
-                <td className="px-3 py-6 text-center text-xs text-[var(--ad-text-muted)]" colSpan={4}>
-                  {t(query.announcementSearch || query.announcementLevel || query.announcementActive ? "No announcements match these filters." : "No announcements.")}
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </section>
-      {pageInfo.hasNextPage && pageInfo.endCursor ? (
-        <button className="inline-flex h-11 items-center gap-2 rounded-md border border-[var(--ad-border)] px-4 text-sm" onClick={() => navigate({ announcementCursor: pageInfo.endCursor })} type="button">{t("Next page")}<ChevronRight className="h-4 w-4" /></button>
-      ) : null}
+      {error && items.length === 0 ? null : (
+        <DataTable
+          caption="Announcements"
+          empty={
+            <EmptyState
+              hint={filtered
+                ? t("The authority searched every announcement. Clear the filters to see them all.")
+                : t("Create one above to broadcast it site-wide.")}
+              kind={filtered ? "filtered" : "empty"}
+              onClearFilters={filtered ? () => navigate({ announcementSearch: null, announcementLevel: null, announcementActive: null }, 1) : undefined}
+              title={filtered ? t("No announcements match these filters.") : t("No announcements.")}
+            />
+          }
+          headers={[t("Title"), t("level"), t("Active"), { label: t("Actions"), align: "right" }]}
+          loading={loading}
+          rows={tableRows}
+          skeletonRows={PAGE_SIZE}
+        />
+      )}
+      <Pagination
+        hasNext={Boolean(pageInfo.hasNextPage && pageInfo.endCursor)}
+        // 这个 operation 的查询契约没有 `before` —— 置灰，不假装已经在第一页（section-kit 有全部理由）。
+        hasPrevious={canGoPrevious(pageInfo, false)}
+        loading={loading}
+        onNext={() => navigate({ announcementCursor: pageInfo.endCursor }, page + 1)}
+        onPrevious={() => undefined}
+        page={page}
+        pageSize={PAGE_SIZE}
+        rowCount={items.length}
+        totalCount={pageInfo.totalCount ?? null}
+      />
     </div>
   );
 }
