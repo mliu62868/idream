@@ -61,10 +61,14 @@ cd packages/admin && bun run check && bun run test
 
 `check` = lint + typecheck + production build，`test` = vitest。
 
-**在 git worktree 里想跑 `build` / `dev` / 浏览器验证，会先撞上一堵墙。** 建 worktree 时 `packages/admin/node_modules` 是软链回主仓库的，Turbopack 直接拒绝：
+**在 git worktree 里想跑 `build` / `dev` / 浏览器验证，会先撞上一堵墙。** Turbopack 直接拒绝：
 
 ```
 Symlink [project]/packages/admin/node_modules is invalid, it points out of the filesystem root
 ```
 
-`vitest` 和 `tsc` 不受影响（照常跑），但 `next build` 和 `next dev` 都起不来。两个办法：在该 worktree 里跑一次真实 `bun install`（约 5 秒 / 1815 个包，装成实体目录），或者直接回主仓库工作树做运行态验证。
+`vitest` 和 `tsc` 不受影响，照常跑；只有 `next build` / `next dev` 起不来。报错点名的是 `packages/admin/node_modules`，但**真正的元凶是 `node_modules/node_modules` 那条指向主仓库的绝对路径自引用软链**——别照着报错去猜「worktree 天生不能 build」。三个办法，按代价排序：
+
+1. 回主仓库工作树做运行态验证；
+2. 在该 worktree 里跑一次真实 `bun install`（约 5 秒 / 1815 个包，装成实体目录）；
+3. APFS CoW clone（约 10 秒）——把各层 `node_modules` 软链换成 `cp -Rc` 的克隆，**并把 `node_modules/node_modules` 改成指向 `.` 的相对软链**（关键就是这一条）。用完记得还原成软链，别把约 1.3G 的克隆留在 worktree 里。
