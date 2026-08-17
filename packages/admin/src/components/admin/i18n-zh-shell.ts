@@ -14,8 +14,8 @@ export const adminZhShell: Record<string, string> = {
   "Admin workspace not found": "未找到后台工作区",
   "Admin navigation": "后台导航",
   "Attachment evidence IDs": "附件证据 ID",
-  "Backend Diagnostics": "后端诊断",
   "Back to Today": "返回今日工作",
+  "Backend Diagnostics": "后端诊断",
   "Billing Operations": "计费运营",
   "Breadcrumb": "当前位置",
   "CMS & SEO": "CMS 与 SEO",
@@ -33,7 +33,6 @@ export const adminZhShell: Record<string, string> = {
   "Creative operator": "创意运营",
   "Data provenance": "数据来源",
   "Fixtures": "样例数据",
-  "Funnels & Retention": "漏斗与留存",
   "Generation Health": "生成健康",
   "Global admin search": "后台全局搜索",
   "Global search results": "全局搜索结果",
@@ -60,11 +59,14 @@ export const adminZhShell: Record<string, string> = {
   "No source watermark (legacy v1)": "无来源水印（旧版 v1）",
   "No watchers": "暂无关注者",
   "Navigation updates after the grant and a refresh.": "授予并刷新后，导航会自动更新。",
+  "Nothing in the control-plane information architecture answers this URL. It was most likely mistyped, or the page has moved.":
+    "当前控制面的信息架构里没有这个地址。多半是 URL 打错了，或者这一页搬了家。",
   "Open navigation": "打开导航",
   "Ownership transferred and recorded in the activity timeline.": "负责人已转交，并记入协作动态时间线。",
   "Platform Operations": "平台运营",
   "Platform ops": "平台运维",
   "Product timezone": "产品时区",
+  "Profile Diagnostics": "配置诊断",
   "Profiles & Rollout": "配置与灰度",
   "Read access only. Activity creation requires the target's write permission.":
     "当前仅可读取；创建协作动态需要目标记录的写权限。",
@@ -84,8 +86,12 @@ export const adminZhShell: Record<string, string> = {
     "控制面当前无法验证身份、权限和数据来源。权威服务恢复前，后台数据与操作均不可用。",
   "This route is not part of the current console information architecture.":
     "此路由不属于当前控制面的信息架构。",
+  "The admin authority service is unavailable.": "后台权威服务不可用。",
+  "The control plane cannot verify identity, permissions, or data provenance right now. Admin data and actions stay unavailable until it recovers.":
+    "控制面当前无法验证身份、权限和数据来源。权威服务恢复前，后台数据与操作均不可用。",
   "These keys are granted in Team Access by an operator holding {key}.":
     "这些权限键在「团队访问」里授予，授予者需要 {key} 权限。",
+  "This admin route does not exist.": "此后台路由不存在。",
   "This workspace requires permission keys your account does not have.":
     "此工作区需要你的账号尚未持有的权限键。",
   "Type the name to confirm": "输入名称以确认",
@@ -93,6 +99,7 @@ export const adminZhShell: Record<string, string> = {
   "View label": "视图名称",
   "Work mode": "工作模式",
   "Workflow Diagnostics": "工作流诊断",
+  "You may be looking for": "你可能想去的是",
   "[x] Provider disabled [ ] Verify recovery": "[x] 供应商已禁用 [ ] 验证恢复",
   "asset-id-1, asset-id-2": "图片资产 ID 1，图片资产 ID 2",
   "checklist": "检查清单",

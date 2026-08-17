@@ -225,8 +225,6 @@ export const navItems: NavItem[] = [
       canReadCanonical={ctx.canRead}
       canReadLegacy={ctx.permissions.has("analytics.export")}
     /> }),
-  apiItem({ id: "insights", label: "Funnels & Retention", href: "/admin/growth/funnels", icon: BarChart3, group: "Growth", apiWorkspace: "metrics",
-    render: () => <InsightsView /> }),
   apiTargetItem({ id: "growth/characters", label: "Character Performance", href: "/admin/growth/characters", icon: Activity, group: "Growth", apiWorkspace: "character_performance",
     render: (ctx) => <CharacterPerformanceWorkspace permissions={ctx.permissions} /> }),
   apiItem({ id: "experiments", label: "Experiments", href: "/admin/growth/experiments", icon: Flag, group: "Growth", apiWorkspace: "experiments",
@@ -273,6 +271,15 @@ export const navItems: NavItem[] = [
     render: () => <BackendsView /> }),
   item({ id: "generation/metrics", label: "Generation Health", href: "/admin/ops/providers?view=generation-metrics", icon: BarChart3, group: "Platform Operations", read: read("ops.queue.read"),
     render: () => <GenerationMetricsView /> }),
+  // SPEC: 这一页按 model-profile id 查健康度、跑不调 provider 的配置检查。
+  // INTENT: 它过去叫「Funnels & Retention」、挂在 Growth 下，但页面里既没有漏斗也没有 cohort
+  //         ——不是渲染缺口，是数据契约里就没有这两样。名字承诺了不存在的东西，增长分析师
+  //         点进去只会看到一条「retention unavailable」和一个要手敲 UUID 的运维工具。
+  //         按页面真正提供的能力改名，并归到它受众所在的分组：读它的是平台运维，不是增长。
+  //         和邻居 Backend / Workflow Diagnostics 是同一族命名。
+  // INVARIANT: href 保持 /admin/growth/funnels —— 换 URL 会废掉现有书签，而这一轮只改元数据。
+  apiItem({ id: "insights", label: "Profile Diagnostics", href: "/admin/growth/funnels", icon: BarChart3, group: "Platform Operations", apiWorkspace: "metrics",
+    render: () => <InsightsView /> }),
   item({ id: "generation/config", label: "Profiles & Rollout", href: "/admin/ops/profiles", icon: SlidersHorizontal, group: "Platform Operations", read: read("generation.config.read", "ops.queue.read", "generation.job.read"),
     render: (ctx) => <GenerationConfigWorkspace permissions={{
       manageProfiles: ctx.permissions.has("generation.config.write"),

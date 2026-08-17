@@ -55,6 +55,20 @@ describe("admin navigation information architecture", () => {
     expect(navItems.find((item) => item.id === "content/official")?.label).toBe("Characters");
   });
 
+  // SPEC: 导航项的名字只承诺页面真正提供的东西。
+  // INTENT: 这一项曾叫「Funnels & Retention」并挂在 Growth 下 —— 但页面里既没有漏斗也没有
+  //         cohort，数据契约里就没有这两样；它实际提供的是按 model-profile 查健康度加一个
+  //         不调 provider 的配置检查，读它的是平台运维而不是增长分析师。名字和分组都得跟着
+  //         页面走，否则运营点进去只会以为自己点错了。
+  it("names the profile-health workspace after what the page actually shows", () => {
+    const insights = navItems.find((item) => item.id === "insights");
+
+    expect(insights?.label).toBe("Profile Diagnostics");
+    expect(insights?.group).toBe("Platform Operations");
+    // 换 URL 会废掉现有书签，这一轮只改元数据。
+    expect(insights?.href).toBe("/admin/growth/funnels");
+  });
+
   // SPEC: 外壳给多少外框由导航项自己声明，外壳里不再有 `sectionId === "content/official"` 的特判。
   it("declares its own shell chrome instead of being special-cased by the shell", () => {
     for (const item of navItems) expect(["default", "compact"], item.id).toContain(item.chrome);

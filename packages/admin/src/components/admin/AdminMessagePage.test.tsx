@@ -47,6 +47,16 @@ describe("admin not-found page", () => {
     expect(markup).toContain("/admin/ops/deadletter");
   });
 
+  // SPEC: 半个页面名也要能猜中 —— 运营常常只记得一半就直接敲地址栏。
+  // INTENT: 从被取代的 app/admin/not-found.test.tsx 收编的用例；那份测试断言的是另一个
+  //         并行实现的组件 API，行为意图仍然成立，搬到真实实现这边继续锁住。
+  it("suggests destinations from a partial page name too", () => {
+    const markup = notFound({ attemptedPath: "taxonom", permissions: ["content.read"] });
+
+    expect(markup).toContain("Taxonomy");
+    expect(markup).toContain("/admin/characters/taxonomy");
+  });
+
   it("suggests in the operator's language too", () => {
     const markup = notFound({
       attemptedPath: "taxonomy",
