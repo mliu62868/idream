@@ -10,14 +10,23 @@ export const ADMIN_UNKNOWN_PATH_HEADER = "x-admin-unknown-path";
 //         写在文档里的行为（file-conventions/loading#status-codes），并指名 proxy 是"在响应体
 //         开始流式输出之前确认资源存在"的地方。实测：移走 loading.tsx 就是 404，放回就是 200——
 //         骨架屏值得留着，所以判定挪到这里。
+//         这不是 dev 假象：production standalone build 上停用本 proxy 的 matcher，同一个未知
+//         路径返回 200，body 里 notFound() 已经触发、admin 的 404 页也渲染了——教科书式 soft 404。
 // INTENT: 用 next({ status }) 而不是 rewrite()。next() 让路由照常渲染（notFound() 仍然渲出
 //         admin 段自己的 not-found.tsx），状态码则在流式输出开始之前就定好——Next 收到 proxy
 //         响应后无条件执行 res.statusCode = middlewareRes.status
 //         （dist/server/lib/router-utils/resolve-routes.js），然后才去渲染页面。
-// NOTE: rewrite() 这条路两位实现者的实测不一致——一方在真实 admin 应用的 production build 上
-//       看到它退化成 500（怀疑 rewrite 目标又被自己的 matcher 兜了一圈），另一方在最小复现
-//       应用上量到的是干净的 404。没有人在同一环境下同时跑过两者，所以这里只记录分歧，不下
-//       结论。选 next() 不依赖这个分歧：它无需把 not-found 页搬到应用根下，本身就是更小的改动。
+// NOTE: rewrite() 为什么不行，分两种情况——production standalone build 上三变体对照实测，
+//       唯一变量是本函数的返回语句（同一份源码、同一条 build 流水线、not-found 页原地不动）：
+//       · rewrite 到**同一个 URL**：Next 发出的是绝对 URL 的 x-middleware-rewrite，standalone
+//         server 把它当成一次打回自己的 HTTP 代理请求 → 500。具体错码随 hostname 绑定与 IPv6
+//         解析而变（bind 127.0.0.1 而 localhost 解析到 ::1 时是 ECONNREFUSED，也见过
+//         socket hang up）；变的是错码，不变的是"绝对 URL rewrite 会变成自代理"。
+//       · rewrite 到**另一个内部路径**（如 /_not-found）：状态码是干净的 404，但渲染的是 Next
+//         内置的 "This page could not be found"——admin 自己的 404 页（i18n + 最近目的地建议）
+//         被丢掉了，除非把它搬到应用根下。
+//       next() 两样代价都不用付：状态码在流式输出开始前定好，页面仍由 app/admin/not-found.tsx
+//       渲染。这也是它比 rewrite 更小的改动——不需要动 404 页的位置。
 // NOTE: 还有一条走不通的路，省得后人再试：在 app/admin/layout.tsx 里 notFound() 状态码确实是
 //       404（layout 在 Suspense 边界之外），但渲染出来的是 Next 内置的默认 404 页——layout
 //       抛出时用的是父级边界，同段的 not-found.tsx 在它下面，够不着。
