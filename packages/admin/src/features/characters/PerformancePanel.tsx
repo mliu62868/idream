@@ -1,6 +1,7 @@
 "use client";
 
 import { useAdminI18n } from "@/components/admin/i18n";
+import { useAdminFormat } from "@/components/admin/ui/format";
 import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
 import { useRef, useState } from "react";
 import {
@@ -59,6 +60,7 @@ function PerformanceMetricCard({
   metric: CharacterWorkspaceDetail["performance"][number];
 }) {
   const { t } = useAdminI18n();
+  const format = useAdminFormat();
   return (
     <article className="grid gap-3 border-b border-[var(--ad-border)] px-1 py-3 last:border-b-0 sm:grid-cols-[minmax(9rem,1.4fr)_repeat(4,minmax(4.5rem,.7fr))_auto] sm:items-center">
       <div>
@@ -71,7 +73,7 @@ function PerformanceMetricCard({
         <div><dt className="text-[var(--ad-text-muted)]">{t("QCE")}</dt><dd className="mt-0.5 font-semibold">{percent(metric.qceRate)}</dd></div>
         <div><dt className="text-[var(--ad-text-muted)]">{t("Same-character D7")}</dt><dd className="mt-0.5 font-semibold">{percent(metric.sameCharacterD7)}</dd></div>
         <div><dt className="text-[var(--ad-text-muted)]">{t("Sample")}</dt><dd className="mt-0.5 font-semibold">{metric.sampleSize}</dd></div>
-        <div><dt className="text-[var(--ad-text-muted)]">{t("Margin")}</dt><dd className="mt-0.5 font-semibold">{metric.contributionMargin.valueMicros === null ? t("Unavailable") : metric.contributionMargin.valueMicros.toLocaleString()}</dd></div>
+        <div><dt className="text-[var(--ad-text-muted)]">{t("Margin")}</dt><dd className="mt-0.5 font-semibold">{metric.contributionMargin.valueMicros === null ? t("Unavailable") : format.count(metric.contributionMargin.valueMicros)}</dd></div>
       </dl>
       <span className="justify-self-start">
         <StatusBadge value={metric.maturity} />
