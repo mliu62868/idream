@@ -16,6 +16,7 @@ vi.mock("@/components/admin/api", () => ({
 }));
 
 import { createRoot } from "react-dom/client";
+import { AdminI18nProvider } from "@/components/admin/i18n";
 import { ToastProvider } from "@/components/admin/ui/Toast";
 import { SupportWorkspace } from "./SupportWorkspace";
 
@@ -311,5 +312,75 @@ describe("SupportWorkspace queue triage signals", () => {
     // 单向 operation 不接受 before；回上一页发的是自己走过的那个前向游标（第一页即无游标）。
     expect(apiGet.mock.calls.at(-1)?.[0]).not.toContain("before=");
     expect(apiGet.mock.calls.at(-1)?.[0]).not.toContain("cursor=");
+  });
+});
+
+// SPEC: zh 下工单表格里不许出现英文枚举。
+// INTENT: 表格单元格是 supportRows() 拼出来的裸值，不经过任何会 t() 的接收方——
+//         状态、分类和「只读」占位以前直接把权威返回的英文串画进中文界面。
+//         这里只钉这三格：SLA / 升级 / 最近更新各自有组件，已被上面的用例覆盖。
+describe("SupportWorkspace queue cells under the zh locale", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+  let reads: number;
+
+  beforeEach(() => {
+    window.history.replaceState(null, "", "/admin/support");
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    reads = 0;
+    apiGet.mockReset();
+    apiGet.mockImplementation(async () => {
+      reads += 1;
+      return {
+        items: [{ ...baseTicket, slaState: "on_track", slaHoursRemaining: 20, slaDueAt: "2026-08-16T20:00:00.000Z", updatedAt: "2026-08-16T00:00:00.000Z" }],
+        pageInfo: { endCursor: null, hasNextPage: false },
+        asOf: "2026-08-16T00:00:00.000Z",
+        freshness: "fresh",
+      };
+    });
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  async function mountZh(canWrite: boolean) {
+    await act(async () => {
+      root.render(
+        <AdminI18nProvider locale="zh">
+          <ToastProvider>
+            <SupportWorkspace canViewPlaintext={false} canWrite={canWrite} />
+          </ToastProvider>
+        </AdminI18nProvider>,
+      );
+    });
+    await waitUntil(() => reads >= 1);
+    await waitUntil(() => container.textContent?.includes("SUP-CLOCK-1") === true);
+  }
+
+  it("translates the status and category cells instead of echoing the authority enum", async () => {
+    await mountZh(true);
+    // baseTicket 是 status=open / category=billing。
+    expect(container.textContent).toContain("账务问题");
+    expect(container.textContent).not.toContain("billing");
+    // 权威自报的新鲜度也是枚举，以前和整条 freshness 句子一起是英文。
+    expect(container.textContent).not.toContain("fresh");
+    expect(container.textContent).not.toContain("current snapshot");
+  });
+
+  // priority 在权威里是 1–5 的整数，不是枚举——不能顺手塞进 value()，否则整列变成破折号。
+  it("keeps the numeric priority visible", async () => {
+    await mountZh(true);
+    expect(container.querySelector("table")?.textContent).toContain("2");
+  });
+
+  it("translates the read-only placeholder when the operator cannot write", async () => {
+    await mountZh(false);
+    expect(container.textContent).toContain("只读");
+    expect(container.textContent).not.toContain("Read only");
   });
 });
