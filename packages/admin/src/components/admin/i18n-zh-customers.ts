@@ -44,7 +44,8 @@ export const adminZhCustomers: Record<string, string> = {
     "记录 QA 并发起发布前，检查用户看到的角色及各图片展示位。",
   "Check the customer-facing character and placements before recording QA.":
     "记录 QA 前，检查用户所见的角色与展示位。",
-  "Checkout exceptions": "结账异常",
+  // 它是一条待人工对账的队列，不是单次异常——列表下面跟着的就是队列长度。
+  "Checkout exceptions": "结算异常队列",
   "Checkout reconciliation exceptions": "结账对账异常",
   "Checkout reconciliation is clear": "支付对账无异常",
   "Choose one customer purpose and describe only what should change in this batch.":
@@ -133,7 +134,8 @@ export const adminZhCustomers: Record<string, string> = {
   "Media Review": "媒体审核",
   "Media review": "媒体审核",
   "Money leaves the provider account and access is frozen at once. There is no un-refund command; restoring the customer means selling the subscription again.": "钱会从支付账户划出，客户权益立即冻结。后台没有「撤销退款」这条命令；要恢复只能让客户重新购买订阅。",
-  "Net coins (window)": "窗口净金币",
+  // 币种沿用仓库既有口径「梦币」（见本文件其余条目与 ECONOMY_AND_PRICING.md），不是「金币」。
+  "Net coins (window)": "窗口内净梦币",
   "Next appeal page": "下一页申诉",
   "Next ledger page": "下一页账本",
   "Next media-review page": "下一页媒体审核",
@@ -280,7 +282,9 @@ export const adminZhCustomers: Record<string, string> = {
   "provider reconciliation queue": "提供方对账队列",
   "quota ledger": "额度账本",
   "source freshness pending": "数据源新鲜度待确认",
-  "status = active": "status = active",
+  // 这是「活跃订阅」那个数字的口径说明，本质是筛选谓词。保留谓词形态（说清楚在数什么），
+  // 但不能把英文原样抄进字典充数。
+  "status = active": "状态 = 活跃",
   "subscribed": "已订阅",
   "target or case key": "目标或工单键",
   "user, email, subscription, or source": "用户、邮箱、订阅或来源",
