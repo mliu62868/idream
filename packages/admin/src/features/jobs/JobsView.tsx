@@ -200,10 +200,12 @@ export function JobsView() {
             icon={<RefreshCcw className="h-4 w-4" />}
             label="Retry"
             onClick={() => setRetrySpec({
-              title: `Retry Generation Request ${shortId(item.id)}`,
-              summary: "Creates a new immutable Attempt only when no delivery has already succeeded.",
+              // ui/ConfirmDialog 直接渲染 spec 的 title/summary/submitLabel，不过 t()——
+              // 所以在调用点翻译，和本仓库其它 ConfirmSpec 调用点一致。
+              title: t("Retry Generation Request {id}", { id: shortId(item.id) }),
+              summary: t("Creates a new immutable Attempt only when no delivery has already succeeded."),
               destructive: { expectedName: `${item.id}:retry` },
-              submitLabel: "Create retry attempt",
+              submitLabel: t("Create retry attempt"),
               onSubmit: async (reason) => {
                 await adminV2Request(`/api/v2/admin/jobs/${encodeURIComponent(item.id)}/commands/retry`, {
                   method: "POST",

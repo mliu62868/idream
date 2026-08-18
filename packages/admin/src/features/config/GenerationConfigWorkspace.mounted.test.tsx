@@ -192,6 +192,18 @@ describe("Chinese locale: workspace chrome", () => {
     expect(text).not.toContain("Test and publish");
   });
 
+  // SPEC: 空态文案由 `hint={filtered ? "A" : "B"}` 这种三元喂给 ui/EmptyState 的 t()。
+  // INTENT: 这类 key 源码里没有一处 t("字面量")，i18n-completeness.test.ts 认不出来，
+  // 于是它们缺了中文词条也没人报警——这里用真挂载兜住。
+  it("translates the empty state fed through a conditional expression", async () => {
+    await mountZh();
+    const text = container.textContent ?? "";
+
+    expect(text).toContain("还没有任何功能开关");
+    expect(text).toContain("权威里还没有任何功能开关。");
+    expect(text).not.toContain("No feature flags exist");
+  });
+
   // SPEC: "开关状态"筛选的取值是查询串里的 true/false，不是领域枚举 —— 它们不进全局 zhValues，
   // 由 Select 的 booleanOptions 就地映射成开关语义。断言下拉里读到的是人话。
   it("renders the boolean flag filter as enabled/disabled wording", async () => {
