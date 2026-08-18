@@ -11,6 +11,7 @@ const { apiGet, apiWrite } = vi.hoisted(() => ({
 
 vi.mock("@/components/admin/api", () => ({ apiGet, apiWrite }));
 
+import { AdminI18nProvider } from "@/components/admin/i18n";
 import { GenerationConfigWorkspace } from "./GenerationConfigWorkspace";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -125,5 +126,81 @@ describe("feature flags table", () => {
     await waitUntil(() => container.textContent?.includes("flag-page-2") ?? false);
     expect(pagerButton("Previous page")?.disabled).toBe(false);
     expect(pagerButton("Next page")?.disabled).toBe(true);
+  });
+});
+
+/**
+ * SPEC: 中文 locale 下，页面外壳（筛选、分页签、时效行）不许露出英文源串。
+ *
+ * INTENT: 这一层的破口不是词典缺词，而是**接收方组件没过 t()** —— Field / Select / Tab /
+ * Freshness / Action 五个本地组件都直接渲染 {label}，于是调用点传的裸字符串原样打到屏幕上。
+ * i18n-completeness.test.ts 只验证"词典里有这个 key"，验证不到"渲染时查了词典"，所以它全绿
+ * 而中文后台照样印着 Profile mode / Flag state。这里用 zh locale 真挂载，堵住那条缝。
+ */
+describe("Chinese locale: workspace chrome", () => {
+  let container: HTMLDivElement;
+  let root: Root | null;
+
+  beforeEach(() => {
+    apiGet.mockReset();
+    apiWrite.mockReset();
+    apiGet.mockImplementation(async () => ({
+      items: [],
+      pageInfo: { endCursor: null, hasNextPage: false },
+    }));
+    window.history.replaceState(null, "", "/admin/system/config?tab=settings");
+    container = document.createElement("div");
+    document.body.append(container);
+    root = null;
+  });
+
+  afterEach(async () => {
+    await act(async () => root?.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  async function mountZh() {
+    await act(async () => {
+      root = createRoot(container);
+      root.render(
+        <AdminI18nProvider locale="zh">
+          <GenerationConfigWorkspace permissions={{ manageFlags: true, manageProfiles: true }} />
+        </AdminI18nProvider>,
+      );
+    });
+  }
+
+  it("translates the filter labels instead of printing the raw prop", async () => {
+    await mountZh();
+    const text = container.textContent ?? "";
+
+    expect(text).toContain("配置档案模式");
+    expect(text).toContain("配置档案状态");
+    expect(text).toContain("开关状态");
+    expect(text).not.toContain("Profile mode");
+    expect(text).not.toContain("Profile status");
+    expect(text).not.toContain("Flag state");
+  });
+
+  it("translates the tab label and its subtitle", async () => {
+    await mountZh();
+    const text = container.textContent ?? "";
+
+    expect(text).toContain("测试和发布");
+    expect(text).toContain("功能开关");
+    expect(text).not.toContain("Test and publish");
+  });
+
+  // SPEC: "开关状态"筛选的取值是查询串里的 true/false，不是领域枚举 —— 它们不进全局 zhValues，
+  // 由 Select 的 booleanOptions 就地映射成开关语义。断言下拉里读到的是人话。
+  it("renders the boolean flag filter as enabled/disabled wording", async () => {
+    await mountZh();
+    const options = [...container.querySelectorAll("option")].map((option) => option.textContent);
+
+    expect(options).toContain("已启用");
+    expect(options).toContain("已关闭");
+    expect(options).not.toContain("true");
+    expect(options).not.toContain("false");
   });
 });
