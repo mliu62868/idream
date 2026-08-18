@@ -74,7 +74,7 @@ export function SupportWorkspace({
   canViewPlaintext: boolean;
   canWrite: boolean;
 }) {
-  const { t } = useAdminI18n();
+  const { t, value } = useAdminI18n();
   const format = useAdminFormat();
   const { toast } = useToast();
   const failureToast = useFailureToast();
@@ -298,7 +298,7 @@ export function SupportWorkspace({
           },
           { "idempotency-key": idempotencyKey },
         );
-        toast({ tone: "success", title: t("{action} applied to {id}", { action: input.label, id: input.id }) });
+        toast({ tone: "success", title: t("{action} applied to {id}", { action: t(input.label), id: input.id }) });
         navigate({ ...query, cursor: "" }, "replace");
       },
     });
@@ -315,7 +315,7 @@ export function SupportWorkspace({
   return (
     <section className="space-y-5">
       <PageHeader
-        purpose="Triage the complete support request authority with server filters, SLA state, saved views, and audited resolution commands."
+        purpose={t("Triage the complete support request authority with server filters, SLA state, saved views, and audited resolution commands.")}
         title={t("Support Cases")}
       />
       <div
@@ -324,8 +324,8 @@ export function SupportWorkspace({
       >
         <span>
 
-          {t("Support authority ·")} {data?.freshness ?? t("source freshness pending")} ·{" "}
-          {freshness(data, loading, error, refreshedAt ? format.time(refreshedAt) : null)}
+          {t("Support authority ·")} {data?.freshness ? value(data.freshness) : t("source freshness pending")} ·{" "}
+          {freshness(t, data, loading, error, refreshedAt ? format.time(refreshedAt) : null)}
         </span>
         <span className="flex gap-3 font-semibold">
           {!canWrite ? <PermissionNotice permission="support.request.write" /> : null}
@@ -512,7 +512,7 @@ export function SupportWorkspace({
             "Actions",
           ]}
           minimumWidthClassName="min-w-[2000px]"
-          rows={supportRows(rows, canWrite, confirmAction, format, refreshedAt ?? "")}
+          rows={supportRows(rows, canWrite, confirmAction, t, value, format, refreshedAt ?? "")}
           stickyLastColumn
         />
       ) : null}
@@ -663,11 +663,11 @@ function PlaintextAccessPanel() {
               result.authorization.ticketId ??
               "—"}
           </p>
-          {Object.entries(result.plaintext).map(([field, value]) => (
+          {Object.entries(result.plaintext).map(([field, fieldValue]) => (
             <div key={field}>
               <p className="text-xs font-semibold">{field}</p>
               <pre className="mt-1 whitespace-pre-wrap text-xs">
-                {value || "(empty)"}
+                {fieldValue || t("(empty)")}
               </pre>
             </div>
           ))}
@@ -690,6 +690,8 @@ function supportRows(
   rows: Row[],
   canWrite: boolean,
   confirm: ConfirmAction,
+  t: (key: string, values?: Record<string, string | number>) => string,
+  value: (key: string) => string,
   format: AdminFormat,
   // 这批数据的抓取时刻——「多久没动过」相对它算，见 LastUpdateCell。
   referenceTime: string,
@@ -750,10 +752,10 @@ function supportRows(
       cells: [
         id,
         format.display(row.userEmail),
-        format.display(row.category),
+        value(format.text(row.category)) || "—",
         format.display(row.subject),
         <CaseText key="description" value={format.text(row.description)} />,
-        status,
+        status ? value(status) : "—",
         format.display(row.priority),
         <SlaCell
           dueAt={format.text(row.slaDueAt)}
@@ -799,7 +801,7 @@ function supportRows(
             ))}
           </div>
         ) : (
-          "Read only"
+          t("Read only")
         ),
       ],
     };
@@ -1000,15 +1002,19 @@ function currentQuery() {
     : supportQueryFromSearch(window.location.search);
 }
 
+// INVARIANT: 这里拼出来的句子直接进 DOM，所以必须在这里就过 t()。以前它返回英文模板串，
+// 调用点也没有再包一层——中文界面的新鲜度那一行整句都是英文。
 function freshness(
+  t: (key: string, values?: Record<string, string | number>) => string,
   data: ListResponse | null,
   loading: boolean,
   error: string | null,
   time: string | null,
 ) {
-  if (loading && data) return `refreshing · as of ${time ?? "unknown"}`;
-  if (error && data) return `stale · last good ${time ?? "unknown"}`;
-  if (error) return "unavailable";
-  if (data) return `current snapshot · ${time ?? "unknown"}`;
-  return "loading…";
+  const at = time ?? t("unknown");
+  if (loading && data) return t("refreshing · as of {time}", { time: at });
+  if (error && data) return t("stale · last good {time}", { time: at });
+  if (error) return t("unavailable");
+  if (data) return t("current snapshot · {time}", { time: at });
+  return t("loading…");
 }

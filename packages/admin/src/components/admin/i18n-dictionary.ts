@@ -267,6 +267,87 @@ const zhValues: Record<string, string> = {
   ops: "运维",
   analyst: "分析师",
   admin: "管理员",
+  // People workspaces (support / moderation / cases / customers) 的枚举值。走 zhValues 通道，
+  // 让 <option>、StatusPill 与详情页共用同一份译文；主表 zh 不重复收这些词。
+  // 工单类型 / 状态 / 排序（operationsCase* schema）
+  content_report: "内容举报",
+  support_request: "支持工单",
+  billing_dispute: "账务争议",
+  appeal: "申诉",
+  reopened: "已重开",
+  urgent: "紧急",
+  normal: "普通",
+  updated_desc: "最近更新在前",
+  updated_asc: "最早更新在前",
+  // 工单队列视图（operationsCaseQuerySchema.view）
+  unassigned: "未分配",
+  appeals: "申诉",
+  recently_resolved: "最近已解决",
+  // 裁决与客户侧动作（CONTENT_REPORT / APPEAL / SUPPORT / BILLING 四组常量）
+  no_violation: "无违规",
+  duplicate: "重复举报",
+  escalated: "已升级",
+  upheld: "维持原判",
+  overturned: "已撤销",
+  modified: "已改判",
+  diagnostic_reviewed: "已复核诊断",
+  reply_requested: "已请求补充信息",
+  incident_escalated: "已升级为事件",
+  account_guidance_provided: "已提供账号指引",
+  ledger_reconciled: "已对账",
+  refund_requested: "已发起退款",
+  subscription_corrected: "已修正订阅",
+  // 下游验证状态（adminVerificationStateSchema，pending/verifying/passed/failed 已在上方）
+  overridden: "已人工放行",
+  // 证据的访问级别与证据强度
+  full: "完整",
+  redacted: "已脱敏",
+  observational: "观察级",
+  attribution: "归因级",
+  causal: "因果级",
+  // 审计条目的操作者角色（adminAuditEntrySchema.actorRole）
+  operator: "运营",
+  admin: "管理员",
+  support: "客服",
+  system: "系统",
+  command_executor: "命令执行器",
+  command_verifier: "命令校验器",
+  verification_worker: "验证工作进程",
+  // 目标对象类型（adminEntityRefSchema.type / 明文调阅的 targetType）
+  user: "用户",
+  message: "消息",
+  media: "媒体",
+  generation_job: "生成任务",
+  // 举报分类与工单分类（两边都是自由字符串字段，取值来自各自的提交入口；
+  // 未收录的取值 value() 原样返回，不会把数据吃掉）
+  other_prohibited_content: "其他违禁内容",
+  underage_content: "未成年内容",
+  policy_violation: "违反政策",
+  prohibited: "违禁内容",
+  spam: "垃圾信息",
+  quality: "质量问题",
+  account: "账号问题",
+  billing: "账务问题",
+  technical: "技术问题",
+  // 媒体复核的触发原因（moderation mediaReviewKind；blocked 已在上方）
+  independent_duplicate: "独立复核重复图",
+  // 权威快照新鲜度（adminFreshnessSchema）
+  fresh: "最新",
+  stale: "已陈旧",
+  degraded: "降级",
+  // 订阅计费周期（Plan.billingPeriod）
+  monthly: "按月",
+  yearly: "按年",
+  // 币账本流水原因（CoinLedger.reason，取值见 schema.prisma 的注释）
+  signup_bonus: "注册赠币",
+  subscription_grant: "订阅发币",
+  subscription_refund: "订阅退币",
+  subscription_refund_restore: "订阅退币回补",
+  generation_spend: "生成消耗",
+  refund: "退款",
+  redeem: "兑换码",
+  referral: "邀请奖励",
+  admin_adjust: "人工调整",
 };
 
 export type TranslationValues = Record<string, string | number>;

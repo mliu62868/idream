@@ -18,6 +18,7 @@ const { apiGet, apiWrite } = vi.hoisted(() => ({
 
 vi.mock("@/components/admin/api", () => ({ apiGet, apiWrite }));
 
+import { AdminI18nProvider } from "@/components/admin/i18n";
 import { ToastProvider } from "@/components/admin/ui/Toast";
 import { ModerationWorkspace } from "./ModerationWorkspace";
 
@@ -504,3 +505,65 @@ async function waitUntil(predicate: () => boolean) {
     });
   }
 }
+
+// SPEC: zh 下审核队列的单元格不许出现英文。
+// INTENT: 这些格子由 *Rows() 直接拼裸值，不经过任何会 t() 的接收方——安全结论、举报状态、
+//         以及「无预览图 / 已终态 / 只读」三个占位以前一律是英文，夹在中文表头之间。
+describe("ModerationWorkspace queue cells under the zh locale", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    window.history.replaceState(null, "", "/admin/moderation");
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    apiGet.mockReset();
+    apiWrite.mockReset();
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  async function mountZh(row: Record<string, unknown>, canDecide: boolean) {
+    apiGet.mockImplementation(async (path) => {
+      if (path.includes("scope=media")) return { mediaReview: [row], pageInfo: { mediaReview: pageInfo } };
+      if (path.includes("scope=reports")) return { reports: [], pageInfo: { reports: pageInfo } };
+      if (path.includes("scope=appeals")) return { appeals: [], pageInfo: { appeals: pageInfo } };
+      throw new Error(`Unexpected moderation request: ${path}`);
+    });
+    await act(async () => {
+      root.render(
+        <AdminI18nProvider locale="zh">
+          <ToastProvider>
+            <ModerationWorkspace canDecide={canDecide} />
+          </ToastProvider>
+        </AdminI18nProvider>,
+      );
+    });
+    await waitUntil(() => container.textContent?.includes(mediaId) === true);
+  }
+
+  it("translates the safety verdict and the missing-preview placeholder", async () => {
+    await mountZh({ ...mediaRow, thumbnailUrl: null, url: null }, true);
+    expect(container.textContent).toContain("未知");
+    expect(container.textContent).toContain("无预览图");
+    expect(container.textContent).not.toContain("No preview");
+  });
+
+  // 已经裁决过的图片没有动作可给；那一格以前写死英文 "Terminal"。
+  it("translates the terminal placeholder for an already-decided image", async () => {
+    await mountZh({ ...mediaRow, safetyStatus: "blocked" }, true);
+    expect(container.textContent).toContain("已终态");
+    expect(container.textContent).not.toContain("Terminal");
+  });
+
+  it("translates the read-only placeholder without decide authority", async () => {
+    await mountZh(mediaRow, false);
+    expect(container.textContent).toContain("只读");
+    expect(container.textContent).not.toContain("Read only");
+  });
+});

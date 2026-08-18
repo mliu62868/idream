@@ -74,7 +74,7 @@ const emptyState = (): AuthorityState => ({
 });
 
 export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
-  const { t } = useAdminI18n();
+  const { t, value } = useAdminI18n();
   const format = useAdminFormat();
   const { toast } = useToast();
   const [query, setQuery] = useState<ModerationQuery>(() => currentQuery());
@@ -256,7 +256,7 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
   return (
     <section className="space-y-5">
       <PageHeader
-        purpose="Review reports, independently pending Character images, blocked media, and appeals from separate authority snapshots; every decision is confirmed, audited, and propagated."
+        purpose={t("Review reports, independently pending Character images, blocked media, and appeals from separate authority snapshots; every decision is confirmed, audited, and propagated.")}
         title={t("Moderation Cases")}
       />
       <div
@@ -341,7 +341,7 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
         }
         loadingLabel="Loading reports…"
         state={reports}
-        rows={reportRows(reports.rows ?? [], canDecide, confirmDecision, t, format)}
+        rows={reportRows(reports.rows ?? [], canDecide, confirmDecision, t, value, format)}
       />
       <QueuePagination
         onNext={(cursor) => goToPage("reports", "reportCursor", cursor)}
@@ -364,7 +364,7 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
         }
         loadingLabel="Loading media review…"
         state={media}
-        rows={mediaRows(media.rows ?? [], canDecide, confirmDecision, t, format)}
+        rows={mediaRows(media.rows ?? [], canDecide, confirmDecision, t, value, format)}
       />
       <QueuePagination
         onNext={(cursor) => goToPage("media", "mediaCursor", cursor)}
@@ -387,7 +387,7 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
         }
         loadingLabel="Loading appeals…"
         state={appeals}
-        rows={appealRows(appeals.rows ?? [], canDecide, confirmDecision, t, format)}
+        rows={appealRows(appeals.rows ?? [], canDecide, confirmDecision, t, value, format)}
       />
       <QueuePagination
         onNext={(cursor) => goToPage("appeals", "appealCursor", cursor)}
@@ -426,6 +426,7 @@ function mediaRows(
   canDecide: boolean,
   confirm: ConfirmDecision,
   t: (key: string, values?: Record<string, string | number>) => string,
+  value: (key: string) => string,
   format: AdminFormat,
 ): DataTableRow[] {
   return rows.map((row, index) => {
@@ -469,7 +470,7 @@ function mediaRows(
             width={56}
           />
         ) : (
-          "No preview"
+          t("No preview")
         ),
         id,
         characterId ? (
@@ -483,10 +484,10 @@ function mediaRows(
           "—"
         ),
         format.display(row.ownerId),
-        safetyStatus || "—",
+        safetyStatus ? value(safetyStatus) : "—",
         format.text(row.sourceAssetId)
           ? t("Duplicate of {id}", { id: format.text(row.sourceAssetId) })
-          : format.display(row.reviewKind),
+          : value(format.text(row.reviewKind)) || "—",
         format.dateTime(row.createdAt),
         canDecide && pending ? (
           <div className="flex flex-wrap gap-1">
@@ -504,9 +505,9 @@ function mediaRows(
             )}
           </div>
         ) : canDecide ? (
-          "Terminal"
+          t("Terminal")
         ) : (
-          "Read only"
+          t("Read only")
         ),
       ],
     };
@@ -518,6 +519,7 @@ function reportRows(
   canDecide: boolean,
   confirm: ConfirmDecision,
   t: (key: string, values?: Record<string, string | number>) => string,
+  value: (key: string) => string,
   format: AdminFormat,
 ): DataTableRow[] {
   return rows.map((row, index) => {
@@ -531,7 +533,7 @@ function reportRows(
           key="target"
           type={format.text(row.targetType)}
         />,
-        format.display(row.category),
+        value(format.text(row.category)) || "—",
         // SPEC: 举报人写的原文就是这条举报的证据本体。
         // INTENT: 权威接口一直返回 description 与 reporterId，工作台以前两个都没画——
         //         审核员只能看着 category 这个下拉框选项在「处置」和「无违规」之间二选一。
@@ -541,7 +543,7 @@ function reportRows(
           value={format.text(row.description)}
         />,
         format.display(row.reporterId),
-        format.display(row.status),
+        value(format.text(row.status)) || "—",
         format.display(row.priority),
         format.dateTime(row.createdAt),
         canDecide ? (
@@ -579,7 +581,7 @@ function reportRows(
             />
           </div>
         ) : (
-          "Read only"
+          t("Read only")
         ),
       ],
     };
@@ -590,6 +592,7 @@ function appealRows(
   canDecide: boolean,
   confirm: ConfirmDecision,
   t: (key: string, values?: Record<string, string | number>) => string,
+  value: (key: string) => string,
   format: AdminFormat,
 ): DataTableRow[] {
   return rows.map((row, index) => {
@@ -634,7 +637,7 @@ function appealRows(
           value={format.text(row.appealText)}
         />,
         format.display(row.originalDecisionId),
-        format.display(row.status),
+        value(format.text(row.status)) || "—",
         format.dateTime(row.createdAt),
         canDecide ? (
           <div className="flex gap-1">
@@ -658,7 +661,7 @@ function appealRows(
             )}
           </div>
         ) : (
-          "Read only"
+          t("Read only")
         ),
       ],
     };
@@ -785,30 +788,32 @@ function TargetCell({ id, type }: { id: string; type: string }) {
     </span>
   );
 }
+// INVARIANT: label 是队列名，必须过 t()。它以前裸渲染，于是中文界面上三条新鲜度提示的开头
+// 永远是 "Reports" / "Media review" / "Appeals"，后半截却是中文。
 function Freshness({ label, state }: { label: string; state: AuthorityState }) {
   const { t } = useAdminI18n();
   const format = useAdminFormat();
-  const time = state.refreshedAt ? format.time(state.refreshedAt) : "unknown";
+  const time = state.refreshedAt ? format.time(state.refreshedAt) : t("unknown");
   if (state.loading && state.rows)
     return (
       <span>
-        {label}{t(": refreshing · as of")} {time}
+        {t(label)}{t(": refreshing · as of")} {time}
       </span>
     );
   if (state.error && state.rows)
     return (
       <span>
-        {label}{t(": stale · last good")} {time}
+        {t(label)}{t(": stale · last good")} {time}
       </span>
     );
-  if (state.error) return <span>{label}{t(": unavailable")}</span>;
+  if (state.error) return <span>{t(label)}{t(": unavailable")}</span>;
   if (state.rows)
     return (
       <span>
-        {label}{t(": as of")} {time}
+        {t(label)}{t(": as of")} {time}
       </span>
     );
-  return <span>{label}{t(": loading…")}</span>;
+  return <span>{t(label)}{t(": loading…")}</span>;
 }
 function AuthorityError({
   onRetry,

@@ -315,6 +315,42 @@ export const adminZhCustomers: Record<string, string> = {
   "Support description": "工单描述",
   "These filters match nothing right now. Clearing them shows every request.":
     "当前筛选条件没有匹配到任何工单。清除后可以看到全部工单。",
+  // 产品健康总览的两路数据源标签与读取失败兜底句。
+  "Canonical": "标准口径",
+  "Canonical metrics could not be loaded": "标准指标读取失败",
+  "Legacy": "旧版诊断",
+  "Legacy analytics could not be loaded": "旧版分析读取失败",
+  // 客服工单表头与空态：这几列 / 这两句以前只有英文，DataTable 与 EmptyState 都过 t()，缺的是词条。
+  "Assigned": "受理人",
+  "Escalation": "升级记录",
+  "No support requests exist yet": "还没有任何工单",
+  "No support requests match these filters": "没有工单符合这些筛选条件",
+  "Resolution": "处理结论",
+  "Subject": "主题",
+  "Ticket": "工单号",
+  // 客服台新鲜度那一行：以前整句由 freshness() 拼英文后直接进 DOM。
+  "(empty)": "（空）",
+  // 另两句（refreshing · as of / stale · last good）已由 i18n-zh-platform-ops.ts 持有，直接复用。
+  "current snapshot · {time}": "当前快照 · {time}",
+  // 审核台三条队列的空态、媒体列与裁决按钮。
+  "Approve image": "通过图片",
+  "Block image": "拦截图片",
+  "Lineage": "来源脉络",
+  "Modify": "改判",
+  "No appeals match this search": "没有申诉符合这次搜索",
+  "No appeals require review": "没有待审的申诉",
+  "No Character images await independent review": "没有等待独立复核的角色图片",
+  "No media review items match this search": "没有媒体复核项符合这次搜索",
+  "No preview": "无预览图",
+  "No reports match these filters": "没有举报符合这些筛选条件",
+  "No reports require review": "没有待审的举报",
+  "Overturn": "撤销原判",
+  "Safety": "安全结论",
+  // 已裁决过、界面上不再给动作的那一格。
+  "Terminal": "已终态",
+  "Uphold": "维持原判",
+  // 工单详情：客户侧动作与运营裁决走两个不同的下拉，标签也要分开。
+  "Customer action": "客户侧动作",
   "{days}d ago": "{days} 天前",
   "{hours}h left": "剩余 {hours} 小时",
 };

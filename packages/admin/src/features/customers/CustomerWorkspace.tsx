@@ -227,8 +227,9 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
 }
 
 function CustomerInspector({ detail, onClose }: { detail: Customer360; onClose: () => void }) {
-  // INVARIANT: 枚举值走 value()（zhValues 通道），自由文案走 t()。billingPeriod / ledger.reason
-  // 目前 zhValues 里没有条目，会原样显示英文枚举——比编一个译名诚实，补词条即自动生效。
+  // INVARIANT: 枚举值走 value()（zhValues 通道），自由文案走 t()。billingPeriod（monthly/yearly）
+  // 与 ledger.reason（取值见 schema.prisma 上 CoinLedger.reason 的注释）的词条已补齐；
+  // 将来新增的取值没有词条时 value() 原样返回英文——比编一个译名诚实，补词条即自动生效。
   const { t, value } = useAdminI18n();
   const format = useAdminFormat();
   const subscription = detail.subscription;
