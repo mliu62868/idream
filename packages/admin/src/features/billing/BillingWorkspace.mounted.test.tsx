@@ -278,9 +278,13 @@ describe("BillingWorkspace ledger pagination", () => {
   });
 
   // INVARIANT: 契约没给 totalCount，就只报当页行数，绝不把它写成「共 N 条」。
+  // TRAP: 断言必须限定在分页条内。对整页文本做子串匹配时，页头的「as of 1:47 AM」里那个
+  //       "of 1" 会让这条用例在 1 点、10 点、11 点、12 点整段时间里假红。
   it("reports the row count it actually has rather than inventing a total", async () => {
     await mount();
-    const text = container.textContent ?? "";
+    const pagers = [...container.querySelectorAll('[data-testid="admin-pagination"]')];
+    expect(pagers.length).toBeGreaterThan(0);
+    const text = pagers.map((pager) => pager.textContent ?? "").join(" ");
     expect(text).toContain("Showing 1 rows");
     expect(text).not.toContain("of 1");
     expect(text).not.toContain("Page 1 of");

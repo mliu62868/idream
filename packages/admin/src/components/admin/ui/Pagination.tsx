@@ -61,7 +61,13 @@ export function Pagination({
   const buttonClass = "inline-flex min-h-9 items-center gap-1 rounded-md border border-[var(--ad-border)] px-3 text-sm font-semibold disabled:opacity-40";
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] px-4 py-3">
+    // SPEC: 稳定的测试锚点 —— 「不编造总数」这类断言必须指向分页条本身。
+    // INTENT: 少了它，测试只能对整页文本做子串匹配，于是页头的「as of 1:47 AM」里那个
+    //         "of 1" 就会把断言打红 —— 一天里有三分之一的钟点会中招。
+    <div
+      className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] px-4 py-3"
+      data-testid="admin-pagination"
+    >
       <div className="min-w-0 space-y-1">
         <p className="text-xs text-[var(--ad-text-muted)]">
           {totalCount === null

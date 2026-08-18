@@ -105,8 +105,14 @@ describe("CustomerWorkspace 360", () => {
   // authority 给了 totalCount 就照实显示总数；没给就只说"本页几条"，绝不拿当页条数冒充总数。
   it("shows the authority's total when it has one and only the page size when it does not", async () => {
     await mount();
-    expect(container.textContent).toContain("Showing 1 rows");
-    expect(container.textContent).not.toContain("of 1");
+    // TRAP: 断言限定在分页条内。对整页文本匹配 "of 1" 会被任何「as of 1:47 AM」式的
+    //       时间戳打红（1 点、10 点、11 点、12 点整段中招）；这一页现在恰好没渲染时刻，
+    //       属于侥幸，不是安全。
+    const pagers = [...container.querySelectorAll('[data-testid="admin-pagination"]')];
+    expect(pagers.length).toBeGreaterThan(0);
+    const pagerText = pagers.map((pager) => pager.textContent ?? "").join(" ");
+    expect(pagerText).toContain("Showing 1 rows");
+    expect(pagerText).not.toContain("of 1");
 
     adminV2Request.mockImplementation(async (path) => {
       if (path.startsWith("/api/v2/admin/customers/")) return customer360;
