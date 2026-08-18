@@ -512,7 +512,7 @@ export function SupportWorkspace({
             "Actions",
           ]}
           minimumWidthClassName="min-w-[2000px]"
-          rows={supportRows(rows, canWrite, confirmAction, format)}
+          rows={supportRows(rows, canWrite, confirmAction, format, refreshedAt ?? "")}
           stickyLastColumn
         />
       ) : null}
@@ -691,6 +691,8 @@ function supportRows(
   canWrite: boolean,
   confirm: ConfirmAction,
   format: AdminFormat,
+  // 这批数据的抓取时刻——「多久没动过」相对它算，见 LastUpdateCell。
+  referenceTime: string,
 ): DataTableRow[] {
   return rows.map((row, index) => {
     const id = format.text(row.ticketId);
@@ -772,7 +774,7 @@ function supportRows(
         // SPEC: 工单上一次动过是什么时候。
         // INTENT: 「卡了多久」是客服排队的首要依据，而权威接口一直返回 updatedAt，
         //         工作台以前只画 createdAt——于是一条刚回过的工单和一条躺了两周的长得一样。
-        <LastUpdateCell key="updated" value={format.text(row.updatedAt)} />,
+        <LastUpdateCell key="updated" referenceTime={referenceTime} value={format.text(row.updatedAt)} />,
         format.display(row.resolutionNotes),
         format.dateTime(row.createdAt),
         canWrite ? (
@@ -885,11 +887,15 @@ function EscalationCell({ at, reason }: { at: string; reason: string }) {
   );
 }
 
-function LastUpdateCell({ value }: { value: string }) {
+// SPEC: 「多久没动过」相对于**这批数据的抓取时刻**，不是相对于渲染的那一瞬。
+// INTENT: 这里原先在 render 里调 Date.now()——既被 react-hooks/purity 拦下，语义也不对：
+//         同一份未刷新的数据会因为组件重渲染而给出不同的天数。权威响应自带 asOf，
+//         用它才对得上运营看到的那句「数据新鲜至 …」。
+function LastUpdateCell({ referenceTime, value }: { referenceTime: string; value: string }) {
   const { t } = useAdminI18n();
   const format = useAdminFormat();
   if (!value) return <span className="text-[var(--ad-text-muted)]">{t("Never updated")}</span>;
-  const days = Math.floor((Date.now() - new Date(value).getTime()) / 86_400_000);
+  const days = Math.floor((new Date(referenceTime).getTime() - new Date(value).getTime()) / 86_400_000);
   return (
     <span className="block">
       <span className="block">{format.dateTime(value)}</span>

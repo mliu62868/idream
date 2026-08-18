@@ -73,7 +73,7 @@ export function PlacementsListPage({ canPublish }: { canPublish: boolean }) {
     setCursor(params.get("cursor") ?? undefined);
     setPage(listPageFromParams(params));
     setReady(true);
-  }, []), requestGate.current);
+  }, []), requestGate);
 
   useDebouncedReload({ cursor, page, ready, reload, search });
 

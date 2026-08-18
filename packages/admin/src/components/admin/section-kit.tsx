@@ -191,18 +191,23 @@ export function useDebouncedReload({
 // SPEC: 挂载后从 URL 恢复筛选/游标，然后才允许首次取数。
 // INVARIANT: 卸载时作废在途请求——否则慢响应会覆盖新一轮筛选的结果（Placements 曾漏掉这一条）。
 // INTENT: apply 必须是 useCallback([]) 稳定引用，否则每次渲染都会重跑 bootstrap。
+// SPEC: 收的是 ref 本身，不是 ref.current。
+// INTENT: 调用方过去传 `requestGate.current`，那是在 render 期间读 ref——React Compiler 的
+//         react-hooks/refs 会拦（render 必须是纯的，ref 的值随时可能变）。把解引用挪进
+//         effect，调用点就不必再碰 .current。
 export function useUrlBootstrap(
   apply: (params: URLSearchParams) => void,
-  gate: LatestRequestGate | null = null,
+  gateRef: { current: LatestRequestGate | null } | null = null,
 ) {
   useEffect(() => {
+    const gate = gateRef?.current ?? null;
     const params = new URLSearchParams(window.location.search);
     const timer = window.setTimeout(() => apply(params), 0);
     return () => {
       gate?.invalidate();
       window.clearTimeout(timer);
     };
-  }, [apply, gate]);
+  }, [apply, gateRef]);
 
   // SPEC: 后退/前进要把列表带回那一页 —— pushState 只改地址栏，状态得自己接回来。
   // INVARIANT: apply 与 bootstrap 用同一个回调，所以「从 URL 恢复」只有一套逻辑。

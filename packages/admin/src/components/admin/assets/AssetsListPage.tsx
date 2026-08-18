@@ -125,7 +125,7 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
     setCursor(params.get("cursor") ?? undefined);
     setPage(listPageFromParams(params));
     setReady(true);
-  }, []), requestGate.current);
+  }, []), requestGate);
   // 依赖预检有自己的在途请求，卸载时也要作废——它和列表请求不共用同一个闸。
   useEffect(() => {
     const preflightGate = preflightRequestGate.current;

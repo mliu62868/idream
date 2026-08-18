@@ -224,6 +224,10 @@ describe("SupportWorkspace queue triage signals", () => {
     expect(container.textContent).toContain("Not escalated");
   });
 
+  // SPEC: 「多久没动过」相对**这批数据的抓取时刻**（响应的 asOf），不是相对渲染那一瞬。
+  // INTENT: 这条用例原来用 Date.now() - 3d 造数据、靠真实时钟对齐——既依赖运行时刻，
+  //         也和组件的语义对不上：同一份未刷新的数据不该因为重渲染改变天数。
+  //         夹具 asOf 是 2026-08-16T00:00:00Z，所以 3 天前就是 08-13。
   it("says how long a ticket has been sitting since its last movement", async () => {
     await mount([
       {
@@ -231,7 +235,7 @@ describe("SupportWorkspace queue triage signals", () => {
         slaState: "on_track",
         slaHoursRemaining: 20,
         slaDueAt: "2026-08-16T20:00:00.000Z",
-        updatedAt: new Date(Date.now() - 3 * 86_400_000).toISOString(),
+        updatedAt: "2026-08-13T00:00:00.000Z",
       },
     ]);
     await waitUntil(() => container.textContent?.includes("SUP-CLOCK-1") === true);
