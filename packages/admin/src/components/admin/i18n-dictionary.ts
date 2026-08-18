@@ -335,6 +335,10 @@ const zhValues: Record<string, string> = {
   monthly: "按月",
   yearly: "按年",
   // 币账本流水原因（CoinLedger.reason，取值见 schema.prisma 的注释）
+  // —— 用户数据分级与账号状态（system/access）——
+  // 取自 packages/shared/src/admin/contracts 的真实枚举值。
+  deleted: "已删除",
+  fixture: "测试数据",
 };
 
 export type TranslationValues = Record<string, string | number>;

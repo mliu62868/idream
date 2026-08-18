@@ -457,6 +457,7 @@ export function AccessWorkspace({
               confirmCommand,
               t,
               format,
+              valueLabel,
             )}
           />
         )
@@ -584,6 +585,8 @@ function userTableRows(
   confirm: (input: AccessCommand) => void,
   t: (key: string, values?: Record<string, string | number>) => string,
   format: ReturnType<typeof useAdminFormat>,
+  // 枚举列专用：format.display 不查枚举译文，角色/状态/数据分级要走这个。
+  valueLabel: (key: string) => string,
 ): DataTableRow[] {
   return users.map((user, index) => {
     const id = text(user.id);
@@ -595,9 +598,13 @@ function userTableRows(
         id,
         format.display(user.email),
         format.display(user.displayName),
-        format.display(user.role),
-        format.display(user.status),
-        format.display(user.dataClass),
+        // SPEC: 角色 / 状态 / 数据分级是枚举，走 valueLabel 而不是 format.display。
+        // INTENT: format.display 只做取值与缺省处理，不查枚举译文，于是中文界面上这三列
+        //         一直印着 user / active / deleted / fixture / customer。同文件 :534 早就
+        //         用的是 valueLabel —— 同一份数据两处写法不一致，这里对齐过去。
+        valueLabel(format.text(user.role)),
+        valueLabel(format.text(user.status)),
+        valueLabel(format.text(user.dataClass)),
         // 列头已经写着 Dreamcoins，每格再缀一遍单位是噪音。
         <span className="tabular-nums" key="dreamcoins">{format.dreamcoins(user.dreamcoins, { unit: false })}</span>,
         format.dateTime(user.createdAt),
