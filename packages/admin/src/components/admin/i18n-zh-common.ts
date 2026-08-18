@@ -176,7 +176,8 @@ export const adminZhCommon: Record<string, string> = {
   "Draft": "草稿",
   "Draft can be created": "可创建草稿",
   "Draft is ready": "草稿已就绪",
-  "Dreamcoins": "Dreamcoins",
+  // 曾经是 "Dreamcoins": "Dreamcoins" —— 把英文抄进字典充数，界面上就是漏英文。
+  "Dreamcoins": "梦币",
   "Earlier decision": "之前的决定",
   "Edit": "编辑",
   "Edit profile": "编辑资料",

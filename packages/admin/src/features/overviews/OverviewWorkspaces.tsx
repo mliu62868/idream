@@ -477,6 +477,10 @@ function CanonicalMetrics({ data }: { data: MetricDashboardResponse }) {
             className="rounded-md border border-[var(--ad-border)] p-3"
             key={card.key}
           >
+            {/* SPEC: 指标名不翻译，原样显示 shared 指标注册表里的 name。
+                INTENT: 它们是指标的正式名称，和 PRD、埋点 key（north_star.wpcu 之类）以及
+                跨团队沟通用的是同一套。翻成中文等于造一套只在中文后台存在的别名，
+                运营拿着它去对报表反而对不上。这里露英文是对的，不是漏翻。 */}
             <p className="text-sm font-medium">{card.name}</p>
             <p className="mt-2 text-2xl font-semibold">
               {card.value === null
