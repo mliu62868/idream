@@ -220,6 +220,15 @@ const zhValues: Record<string, string> = {
   homepage_strip: "首页横条",
   seo_article: "SEO 文章",
   scheduled: "已排期",
+  // —— 工单 / 案件 / SLA 枚举（cases · support · moderation）——
+  // 全部取自 packages/shared/src/admin/contracts/*.ts 的真实枚举值，逐个核对过。
+  // 调用点写的是 t(value.replaceAll("_"," "))，由 underscoreEnumZh 回落到这里的下划线键。
+  content_report: "内容举报",
+  support_request: "支持请求",
+  billing_dispute: "账务争议",
+  no_violation: "未违规",
+  recently_resolved: "近期已解决",
+  escalated: "已升级",
 };
 
 export type TranslationValues = Record<string, string | number>;
@@ -245,9 +254,22 @@ export function translateAdmin(
 ) {
   const template =
     locale === "zh"
-      ? (zh[key] ?? zhValues[key] ?? translateDynamicAdminZh(key) ?? key)
+      ? (zh[key] ?? zhValues[key] ?? underscoreEnumZh(key) ?? translateDynamicAdminZh(key) ?? key)
       : key;
   return interpolate(template, values);
+}
+
+// SPEC: 空格形态的多词枚举回落到下划线键再查一次 zhValues。
+// INTENT: 22 个调用点写的是 t(value.replaceAll("_", " ")) —— 把 in_progress 变成
+//         "in progress" 再查表。但枚举译文按下划线形态存在 zhValues 里，而查表是精确匹配，
+//         空格形态永远命中不了。实测后果：中文界面的 Cases 页上直接渲染出
+//         content report / in progress / recently resolved / support request 四个英文徽章。
+// INTENT: 修在查表层而不是 22 个调用点 —— 调用点那个写法本身没错（它要的就是"人读的形态"），
+//         错的是字典只认一种形态。这样新调用点也自动受益。
+// INVARIANT: 只在精确匹配全部落空后才试，绝不覆盖已有的精确译文。
+function underscoreEnumZh(key: string) {
+  if (!key.includes(" ")) return undefined;
+  return zhValues[key.replaceAll(" ", "_")];
 }
 
 function translateDynamicAdminZh(key: string) {
