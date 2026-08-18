@@ -220,6 +220,24 @@ const zhValues: Record<string, string> = {
   homepage_strip: "首页横条",
   seo_article: "SEO 文章",
   scheduled: "已排期",
+  // creativeRunPurposeSchema 的最后两个取值。图片库的 purpose 下拉直接 value(item) 印整张
+  // 枚举，缺这两条时中文界面里就混着两行 character_video / identity_calibration。
+  // seo 不补——它在下拉里印成 "SEO"，那本来就是中文运营在用的写法。
+  character_video: "角色视频",
+  identity_calibration: "形象校准",
+  // CreativeRun 重试命令的结果三态：命令回执丢了就印 "outcome unknown"。它走 StatusBadge，
+  // 而 StatusBadge 是 t(value.replaceAll("_"," "))，所以键带空格。
+  "outcome unknown": "结果未知",
+  // 审核评分的第三态（passed/failed 已在上面）。ReviewForm 的"更早的决定"一行把它原样印出来。
+  unscored: "未评分",
+  // ActorRole 全集。dev 登录墙两处印它：无权限提示里的当前角色，和快捷账号按钮的角色名。
+  // （"user" 是前台用户，不是"用户名"；"admin"/"support" 等在别处也只以枚举形式出现。）
+  user: "前台用户",
+  moderator: "审核员",
+  support: "客服",
+  ops: "运维",
+  analyst: "分析师",
+  admin: "管理员",
 };
 
 export type TranslationValues = Record<string, string | number>;

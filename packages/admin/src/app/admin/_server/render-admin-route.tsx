@@ -69,6 +69,7 @@ export async function renderAdminRoute(
       <AdminDevLogin
         accounts={bootstrap.devLogin.accounts}
         actor={bootstrap.actor}
+        locale={preferences.locale}
       />
     );
   }

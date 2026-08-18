@@ -832,7 +832,9 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Saved view {label} deleted.":
     "已删除保存的视图“{label}”。",
   "Human review queue for pending character submissions only. Approve moves the character to approved and into publication prep; it only goes public after Release. Reject moves it to rejected. Both require a reason and are audited.":
-    "角色人审队列：只展示待审（pending）的提交。Approve 把角色置为已通过并进入发布准备；只有 Release 发布后才会公开。Reject 置为已拒绝。两者都需要理由并进审计。",
+    // 三个动作在界面上就叫「通过」「拒绝」「发布版本」（t("Approve")/t("Reject")/t("Release")）。
+    // 译文原本照抄英文按钮名，中文运营在这句话里找不到任何一个按得下去的按钮。
+    "角色人审队列：只展示待审（pending）的提交。「通过」把角色置为已通过并进入发布准备；只有在「发布版本」发布之后才会公开。「拒绝」置为已拒绝。两者都需要理由并进审计。",
   "On submit this character becomes {status}.":
     "提交后这个角色将变为 {status}。",
   "Approval only starts publication prep — Asset, QA and Release must still complete before it goes live.":
@@ -1036,4 +1038,20 @@ export const adminZhPlatformOps: Record<string, string> = {
     "这会保留失败的载体，并记录它的 GenerationAttempt 源权威仍然缺失；不产生任何用户侧影响。该处置是终态。在本对话框里重试复用同一个幂等键，不会重复执行。",
   "Ranked list · the authority returns at most {count} rows, so this is not the full set.":
     "排名列表 · 权威最多只返回 {count} 行，这里不是全量。",
+
+  // dev-only 登录墙（AdminDevLogin.tsx）。整页原先是硬编码中文，英文 locale 下反向露馅。
+  // 严格说它属于外壳文案，但本轮 i18n-zh-shell.ts 不归本分支改，先落在运营域里。
+  "Admin sign-in": "后台登录",
+  "Development only": "仅限开发环境",
+  "The signed-in role {role} has no admin access. Switch to an internal role account.":
+    "当前登录角色 {role} 无后台权限，请换内部角色账号。",
+  "Built-in development accounts, local only.": "内置开发账号，仅本地可用。",
+  "Username": "账号",
+  "Password": "密码",
+  "Sign in": "登录",
+  "Quick accounts": "快捷账号",
+  "Sign out of the current site session": "退出当前前台登录",
+  "Sign-in failed. Check the username and password.": "登录失败，请检查账号密码",
+  "Sign-out failed. Try again.": "退出失败，请重试",
+  "Network error. Try again.": "网络错误，请重试",
 };

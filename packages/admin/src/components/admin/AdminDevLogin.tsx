@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import { Loader2, LogIn, ShieldCheck, UserCog } from "lucide-react";
+import { AdminI18nProvider, useAdminI18n } from "@/components/admin/i18n";
+import type { AdminLocale } from "@/components/admin/shell-preferences";
 
 type DevAdminAccountHint = {
   username: string;
@@ -14,9 +16,22 @@ type AdminDevLoginProps = {
   accounts: DevAdminAccountHint[];
   // 已登录但角色无后台权限时传入，用于提示 + 登出切换账号。
   actor: { id: string; role: string } | null;
+  locale: AdminLocale;
 };
 
-export function AdminDevLogin({ accounts, actor }: AdminDevLoginProps) {
+// SPEC: dev-only 登录墙。整页文案原先是硬编码中文，英文 locale 下反向露馅；改走 i18n。
+// INTENT: 语言偏好是 cookie，服务端读得到，所以和 AdminMessagePage 一样由外面把 locale 传进来
+//         再自建 Provider —— 这堵墙挡在 AdminConsoleClient 之前，拿不到外壳的 Provider。
+export function AdminDevLogin({ accounts, actor, locale }: AdminDevLoginProps) {
+  return (
+    <AdminI18nProvider locale={locale}>
+      <DevLoginBody accounts={accounts} actor={actor} />
+    </AdminI18nProvider>
+  );
+}
+
+function DevLoginBody({ accounts, actor }: Omit<AdminDevLoginProps, "locale">) {
+  const { t, value } = useAdminI18n();
   const [username, setUsername] = useState(accounts[0]?.username ?? "");
   const [password, setPassword] = useState(accounts[0]?.password ?? "");
   const [busy, setBusy] = useState(false);
@@ -37,13 +52,14 @@ export function AdminDevLogin({ accounts, actor }: AdminDevLoginProps) {
         | { ok: false; error?: { message?: string } };
       if (!response.ok || !payload.ok) {
         setError(
-          (!payload.ok && payload.error?.message) || "登录失败，请检查账号密码",
+          (!payload.ok && payload.error?.message) ||
+            t("Sign-in failed. Check the username and password."),
         );
         return;
       }
       window.location.reload();
     } catch {
-      setError("网络错误，请重试");
+      setError(t("Network error. Try again."));
     } finally {
       setBusy(false);
     }
@@ -59,12 +75,12 @@ export function AdminDevLogin({ accounts, actor }: AdminDevLoginProps) {
         body: JSON.stringify({ includeUserSession: true }),
       });
       if (!response.ok) {
-        setError("退出失败，请重试");
+        setError(t("Sign-out failed. Try again."));
         return;
       }
       window.location.reload();
     } catch {
-      setError("网络错误，请重试");
+      setError(t("Network error. Try again."));
     } finally {
       setBusy(false);
     }
@@ -81,30 +97,31 @@ export function AdminDevLogin({ accounts, actor }: AdminDevLoginProps) {
       className="flex min-h-screen items-center justify-center bg-[var(--ad-canvas)] px-6 py-10 text-[var(--ad-ink)]"
       data-admin-auth-wall="dev-login-v1"
     >
-      <title>后台登录 | iDream Admin</title>
+      <title>{`${t("Admin sign-in")} | iDream Admin`}</title>
       <div className="rounded-lg w-full max-w-sm border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6">
         <div className="flex items-center gap-3">
           <ShieldCheck className="h-5 w-5 text-[var(--ad-green-text)]" />
-          <h1 className="text-lg font-semibold">后台登录</h1>
+          <h1 className="text-lg font-semibold">{t("Admin sign-in")}</h1>
           <span className="ml-auto rounded bg-[var(--ad-yellow-bg)] px-2 py-0.5 text-[10px] font-medium text-[var(--ad-yellow-text)]">
-            仅限开发环境
+            {t("Development only")}
           </span>
         </div>
 
         {actor ? (
           <div className="mt-3 rounded border border-[var(--ad-yellow-text)]/20 bg-[var(--ad-yellow-bg)] p-3 text-xs text-[var(--ad-yellow-text)]">
-            当前登录角色 <span className="font-semibold">{actor.role}</span>{" "}
-            无后台权限，请换内部角色账号。
+            {t("The signed-in role {role} has no admin access. Switch to an internal role account.", {
+              role: value(actor.role),
+            })}
           </div>
         ) : (
           <p className="mt-2 text-sm text-[var(--ad-text-muted)]">
-            内置开发账号，仅本地可用。
+            {t("Built-in development accounts, local only.")}
           </p>
         )}
 
         <form onSubmit={submit} className="mt-4 space-y-3">
           <label className="block text-xs text-[var(--ad-text-muted)]">
-            账号
+            {t("Username")}
             <input
               value={username}
               onChange={(event) => setUsername(event.target.value)}
@@ -113,7 +130,7 @@ export function AdminDevLogin({ accounts, actor }: AdminDevLoginProps) {
             />
           </label>
           <label className="block text-xs text-[var(--ad-text-muted)]">
-            密码
+            {t("Password")}
             <input
               type="password"
               value={password}
@@ -135,13 +152,13 @@ export function AdminDevLogin({ accounts, actor }: AdminDevLoginProps) {
             ) : (
               <LogIn className="h-4 w-4" />
             )}
-            登录
+            {t("Sign in")}
           </button>
         </form>
 
         <div className="mt-5 border-t border-[var(--ad-border)] pt-4">
           <p className="mb-2 text-[11px] uppercase tracking-wide text-[var(--ad-text-muted)]">
-            快捷账号
+            {t("Quick accounts")}
           </p>
           <div className="space-y-2">
             {accounts.map((account) => (
@@ -154,11 +171,10 @@ export function AdminDevLogin({ accounts, actor }: AdminDevLoginProps) {
                 <UserCog className="h-4 w-4 shrink-0 text-[var(--ad-text-muted)]" />
                 <span className="font-medium text-[var(--ad-ink)]">{account.username}</span>
                 <span className="text-[var(--ad-text-muted)]">/ {account.password}</span>
-                <span className="ml-auto text-[var(--ad-text-muted)]">
-                  {account.label
-                    .replace("Admin", "管理员")
-                    .replace("Support", "客服")}
-                </span>
+                {/* INTENT: 这里原本对 account.label 做 .replace("Admin","管理员")，等于在渲染层
+                    翻译一半服务端字符串——英文 locale 下反而印出中文。role 本来就是枚举，
+                    走 value() 两个语言都对，且这颗按钮要选的正是"用哪个内部角色登录"。 */}
+                <span className="ml-auto text-[var(--ad-text-muted)]">{value(account.role)}</span>
               </button>
             ))}
           </div>
@@ -171,7 +187,7 @@ export function AdminDevLogin({ accounts, actor }: AdminDevLoginProps) {
             disabled={busy}
             className="rounded-lg mt-4 w-full border border-[var(--ad-border)] py-2 text-xs text-[var(--ad-text-muted)] hover:border-[var(--ad-ink)] disabled:opacity-60"
           >
-            退出当前前台登录
+            {t("Sign out of the current site session")}
           </button>
         )}
       </div>

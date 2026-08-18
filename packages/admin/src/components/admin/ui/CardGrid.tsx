@@ -9,6 +9,9 @@ export function CardGrid({ children }: { children: ReactNode }) {
 
 // SPEC: 视觉实体卡片 —— 图（或姓名首字 monogram 兜底）+ 名 + 元信息 + 状态 pill。
 // INTENT: 角色/图片是视觉内容，浏览必须直接看到图（spec §1.2）。
+// INVARIANT: 卡片里只有 statusLabel 是文案，它转给 StatusPill，由 pill 统一过 value() 翻译——
+//            这里不要再翻一遍。title 是数据（角色名、模板名），meta 由调用方自己 t() 好再传进来；
+//            给 title 加 t() 会把角色名当 key 查表，是错的。
 export function EntityCard({
   href,
   title,
