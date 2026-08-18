@@ -1036,4 +1036,50 @@ export const adminZhPlatformOps: Record<string, string> = {
     "这会保留失败的载体，并记录它的 GenerationAttempt 源权威仍然缺失；不产生任何用户侧影响。该处置是终态。在本对话框里重试复用同一个幂等键，不会重复执行。",
   "Ranked list · the authority returns at most {count} rows, so this is not the full set.":
     "排名列表 · 权威最多只返回 {count} 行，这里不是全量。",
+
+  // TRAP: 以下这些键都**只经变量或三元表达式**到达 t()，源码里没有一处 t("字面量")：
+  //   - `caption={authority === "providers" ? "Chat provider health" : …}` → DataTable 的 t(caption)
+  //   - `empty={query.userId ? "…" : "…"}` → AuthorityTable 的 t(empty)
+  //   - `hint={filtered ? "…" : "…"}` / `title={…}` → ui/EmptyState 的 t(title) / t(hint)
+  //   - `[["successRateRecovered", "…"], …].map(([key, label]) => t(label))`
+  //   - `t(diagnosticKey(diagnostics))`、`cards.map(([label]) => t(String(label)))`
+  // i18n-completeness.test.ts 只认字面量实参，这些一个都看不见，所以漏了整整这一批而它全绿。
+  // 改上面那些三元/数组里的英文原串时，必须同步改这里的 key。
+
+  // Chat 运维：表格标题、空态、概览卡、诊断横幅
+  "Chat provider health": "Chat 供应器健康度",
+  "No chat usage matches this user": "没有该用户的 Chat 用量记录",
+  "No chat usage exists for the current product day": "当前产品日还没有 Chat 用量记录",
+  "No chat events match these filters": "没有 Chat 事件符合当前筛选",
+  "No chat events exist yet": "还没有任何 Chat 事件",
+  "Users at daily limit": "触达每日上限的用户",
+  "Blocked moderation 24h": "24 小时内拦截数",
+  "Chat Service returned invalid JSON.": "Chat 服务返回了非法 JSON。",
+
+  // 事故：恢复校验的五项权威检查
+  "Success rate recovered for the required window": "成功率已在要求的窗口内恢复",
+  "Failure signature stopped growing": "失败特征已停止增长",
+  "Backlog is recovering": "积压正在消化",
+  "Every failed request has a retry or terminal plan": "每个失败请求都有重试或终态处置",
+  "Spend and refunds are reconciled": "消耗与退款已对账",
+
+  // 配置档案与功能开关：两组空态（筛选后 / 本来就空）
+  "The complete profile authority query returned no matches.": "全量配置档案权威查询没有匹配结果。",
+  "No generation profiles match these filters.": "没有生成配置档案符合当前筛选。",
+  "The complete flag authority query returned no matches.": "全量功能开关权威查询没有匹配结果。",
+  "No feature flags exist in the authority.": "权威里还没有任何功能开关。",
+  "No feature flags match these filters": "没有功能开关符合当前筛选",
+  "No feature flags exist yet": "还没有任何功能开关",
+
+  // 死信队列：空态。title 由 compatibility-lists/empty-state.ts 的表按 (authority, filtered)
+  // 取值后过 t()，所以这里的 key 必须和那张表里的英文原串逐字一致。
+  "The complete dead-letter authority query returned no matches.": "全量死信权威查询没有匹配结果。",
+  "No failed or blocked generation requests require triage.": "没有需要处理的失败或受阻生成请求。",
+  "No dead-letter jobs match these filters": "没有死信任务符合当前筛选",
+
+  // 生成任务：重试确认对话框
+  "Retry Generation Request {id}": "重试生成请求 {id}",
+  "Creates a new immutable Attempt only when no delivery has already succeeded.":
+    "仅在尚无成功交付时创建一次新的不可变 Attempt。",
+  "Create retry attempt": "创建重试",
 };
