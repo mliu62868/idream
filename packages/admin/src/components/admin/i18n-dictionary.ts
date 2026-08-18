@@ -233,7 +233,7 @@ const zhValues: Record<string, string> = {
   support_request: "支持请求",
   billing_dispute: "账务争议",
   no_violation: "未违规",
-  recently_resolved: "近期已解决",
+  recently_resolved: "最近已解决",
   escalated: "已升级",
   // 账本原因（CoinLedger.reason）与订阅生命周期状态。走 zhValues 而不是 zh：它们是枚举，
   // 账本「原因」列、订阅「状态」列和两个筛选下拉共用同一份译文（value() / adminValueLabel）。
@@ -245,7 +245,6 @@ const zhValues: Record<string, string> = {
   // 支付方退款没走成时把已冲销的梦币还回去；与 "Grant restored" → 「授予已还原」同一套说法。
   subscription_refund_restore: "订阅退款还原",
   generation_spend: "生成消耗",
-  refund: "退款",
   redeem: "兑换码兑换",
   referral: "邀请奖励",
   admin_adjust: "管理员调整",
@@ -276,9 +275,6 @@ const zhValues: Record<string, string> = {
   // People workspaces (support / moderation / cases / customers) 的枚举值。走 zhValues 通道，
   // 让 <option>、StatusPill 与详情页共用同一份译文；主表 zh 不重复收这些词。
   // 工单类型 / 状态 / 排序（operationsCase* schema）
-  content_report: "内容举报",
-  support_request: "支持工单",
-  billing_dispute: "账务争议",
   appeal: "申诉",
   reopened: "已重开",
   urgent: "紧急",
@@ -288,11 +284,8 @@ const zhValues: Record<string, string> = {
   // 工单队列视图（operationsCaseQuerySchema.view）
   unassigned: "未分配",
   appeals: "申诉",
-  recently_resolved: "最近已解决",
   // 裁决与客户侧动作（CONTENT_REPORT / APPEAL / SUPPORT / BILLING 四组常量）
-  no_violation: "无违规",
   duplicate: "重复举报",
-  escalated: "已升级",
   upheld: "维持原判",
   overturned: "已撤销",
   modified: "已改判",
@@ -313,14 +306,11 @@ const zhValues: Record<string, string> = {
   causal: "因果级",
   // 审计条目的操作者角色（adminAuditEntrySchema.actorRole）
   operator: "运营",
-  admin: "管理员",
-  support: "客服",
   system: "系统",
   command_executor: "命令执行器",
   command_verifier: "命令校验器",
   verification_worker: "验证工作进程",
   // 目标对象类型（adminEntityRefSchema.type / 明文调阅的 targetType）
-  user: "用户",
   message: "消息",
   media: "媒体",
   generation_job: "生成任务",
@@ -345,15 +335,6 @@ const zhValues: Record<string, string> = {
   monthly: "按月",
   yearly: "按年",
   // 币账本流水原因（CoinLedger.reason，取值见 schema.prisma 的注释）
-  signup_bonus: "注册赠币",
-  subscription_grant: "订阅发币",
-  subscription_refund: "订阅退币",
-  subscription_refund_restore: "订阅退币回补",
-  generation_spend: "生成消耗",
-  refund: "退款",
-  redeem: "兑换码",
-  referral: "邀请奖励",
-  admin_adjust: "人工调整",
 };
 
 export type TranslationValues = Record<string, string | number>;

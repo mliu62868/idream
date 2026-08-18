@@ -14,7 +14,7 @@ describe("多词枚举的中英查表", () => {
     ["waiting_on_user", "等待用户"],
     ["content_report", "内容举报"],
     ["support_request", "支持请求"],
-    ["recently_resolved", "近期已解决"],
+    ["recently_resolved", "最近已解决"],
     ["billing_dispute", "账务争议"],
     ["no_violation", "未违规"],
   ] as const;
