@@ -246,15 +246,15 @@ export function BillingWorkspace({
     setConfirmation({
       title: t("Adjust ledger for {user}", { user: userId }),
       summary: <span>{t("User")} {userId}  {t("· signed delta")} {delta}</span>,
-      destructive: { expectedName: confirmationTarget, inputLabel: "Confirmation" },
+      destructive: { expectedName: confirmationTarget, inputLabel: t("Confirmation") },
       // INTENT: 余额可以再发一笔反向调整改回来，所以标 reversible——但金额已经进了客户账，
       //         「可撤回」不等于「客户看不到」，effect 里把这点说清楚。
       consequence: {
         effect: t("The customer's balance changes immediately. Correcting it needs a second, opposite adjustment."),
         reversible: true,
       },
-      reasonLabel: "Reason",
-      submitLabel: "Confirm",
+      reasonLabel: t("Reason"),
+      submitLabel: t("Confirm"),
       onSubmit: async (reason) => {
         await apiWrite(
           "/api/v2/admin/billing/adjustments",
@@ -289,14 +289,14 @@ export function BillingWorkspace({
       ),
       destructive: {
         expectedName: confirmationTarget,
-        inputLabel: "Checkout refund acknowledgement",
+        inputLabel: t("Checkout refund acknowledgement"),
       },
       consequence: {
         effect: t("The late-settlement exception closes and leaves the reconciliation queue. There is no command to reopen it."),
         reversible: false,
       },
-      reasonLabel: "Reconciliation reason",
-      submitLabel: "Acknowledge refund",
+      reasonLabel: t("Reconciliation reason"),
+      submitLabel: t("Acknowledge refund"),
       onSubmit: async (reason) => {
         await apiWrite(
           `/api/v2/admin/billing/reconciliation/${encodeURIComponent(checkoutId)}/resolve`,
@@ -620,7 +620,9 @@ export function BillingWorkspace({
             <Metric label="Net coins (window)" meta={t("{count} ledger entries", { count: format.count(reconciliation.totals.entries) })} value={format.dreamcoins(reconciliation.totals.net, { signed: true, unit: false })} />
             <Metric label="Active subscriptions" meta="status = active" value={format.count(reconciliation.activeSubscriptions)} />
             <Metric label="Checkout exceptions" meta="provider reconciliation queue" value={format.count(reconciliation.checkoutExceptions.length)} />
-            <Metric label="Window" meta={format.dateTime(reconciliation.window.to)} value={`${format.dateTime(reconciliation.window.from)} →`} />
+            {/* INTENT: 箭头跟着窗口结束时间走，不吊在开始时间后面 —— 卡片只有四分之一宽，
+                "起始时间 →" 换行后箭头会孤零零落到第二行。现在读作「起 / → 止」。 */}
+            <Metric label="Window" meta={`→ ${format.dateTime(reconciliation.window.to)}`} value={format.dateTime(reconciliation.window.from)} />
           </div>
           <DataTable caption="Reconciliation by reason" headers={["Reason", "Total delta", "Count"]} rows={reconciliation.byReason.map((row, index) => ({
             id: text(row.reason) || `reconciliation-${index}`,
@@ -651,11 +653,14 @@ export function BillingWorkspace({
               "Updated",
               ...(canReconcile ? ["Action"] : []),
             ]}
+            // 15–16 列挤进默认的 min-w-[640px] 会把每列压到两三个字换一行；给足宽度后
+            // 表格在自己的 overflow-x-auto 容器里横向滚动，不再把页面推出视口。
+            minimumWidthClassName="min-w-[1680px]"
             rows={reconciliationRows}
           />
           </> : null}
           {subscriptionState.data ? <>
-          <DataTable caption="Customer subscriptions" empty={<BillingEmpty filtered={Boolean(query.search || query.subscriptionStatus)} kind="subscriptions" onClear={clearFilters} />} headers={["ID", "User", "Email", "Plan", "Period", "Provider", "Status", "Period end", "Cancel at end", "Refund state", "Action"]} rows={subscriptionRows} stickyLastColumn />
+          <DataTable caption="Customer subscriptions" empty={<BillingEmpty filtered={Boolean(query.search || query.subscriptionStatus)} kind="subscriptions" onClear={clearFilters} />} headers={["ID", "User", "Email", "Plan", "Period", "Provider", "Status", "Period end", "Cancel at end", "Refund state", "Action"]} minimumWidthClassName="min-w-[1360px]" rows={subscriptionRows} stickyLastColumn />
           <ListPagination
             cursor={query.subscriptionCursor}
             loading={subscriptionState.loading}
@@ -666,7 +671,7 @@ export function BillingWorkspace({
           />
           </> : null}
           {ledgerState.data ? <>
-          <DataTable caption="Customer ledger" empty={<BillingEmpty filtered={Boolean(query.search || query.ledgerReason)} kind="ledger entries" onClear={clearFilters} />} headers={["ID", "User", "Email", "Delta", "Balance after", "Reason", "Source", "Created"]} rows={ledgerRows} />
+          <DataTable caption="Customer ledger" empty={<BillingEmpty filtered={Boolean(query.search || query.ledgerReason)} kind="ledger" onClear={clearFilters} />} headers={["ID", "User", "Email", "Delta", "Balance after", "Reason", "Source", "Created"]} minimumWidthClassName="min-w-[1040px]" rows={ledgerRows} />
           <ListPagination
             cursor={query.ledgerCursor}
             loading={ledgerState.loading}
@@ -857,15 +862,17 @@ function AuthorityFreshness<T>({ label, state }: { label: string; state: Authori
   const { t } = useAdminI18n();
   const format = useAdminFormat();
   const at = state.refreshedAt ? format.time(state.refreshedAt) : t("unknown");
+  // 后缀本来就过 t()，唯独数据源名字（Ledger / Subscriptions / Reconciliation）漏了。
+  const name = t(label);
   if (state.loading && state.data) {
-    return <span>{label}{t(": refreshing · as of")} <time dateTime={state.refreshedAt ?? undefined}>{at}</time></span>;
+    return <span>{name}{t(": refreshing · as of")} <time dateTime={state.refreshedAt ?? undefined}>{at}</time></span>;
   }
   if (state.error && state.data) {
-    return <span>{label}{t(": stale · last good")} <time dateTime={state.refreshedAt ?? undefined}>{at}</time></span>;
+    return <span>{name}{t(": stale · last good")} <time dateTime={state.refreshedAt ?? undefined}>{at}</time></span>;
   }
-  if (state.error) return <span>{label}{t(": unavailable")}</span>;
-  if (state.data) return <span>{label}{t(": as of")} <time dateTime={state.refreshedAt ?? undefined}>{at}</time></span>;
-  return <span>{label}{t(": loading…")}</span>;
+  if (state.error) return <span>{name}{t(": unavailable")}</span>;
+  if (state.data) return <span>{name}{t(": as of")} <time dateTime={state.refreshedAt ?? undefined}>{at}</time></span>;
+  return <span>{name}{t(": loading…")}</span>;
 }
 
 function AuthorityError<T>({
@@ -886,13 +893,23 @@ function AuthorityError<T>({
   );
 }
 
-function BillingEmpty({ filtered, kind, onClear }: { filtered: boolean; kind: string; onClear: () => void }) {
+// INTENT: hint 原来是模板串拼出来的英文（`…returned no ${kind}.`），运行时才成形，
+//         永远匹配不上字典 key —— 中文界面必然露英文。改成按 kind 选整句 key，
+//         翻译拿到的是完整句子而不是可拼接的碎片。
+const BILLING_EMPTY_HINT: Record<"ledger" | "subscriptions", readonly [string, string]> = {
+  ledger: [
+    "No ledger entries exist in the authority yet.",
+    "The complete authority query returned no ledger entries.",
+  ],
+  subscriptions: [
+    "No subscriptions exist in the authority yet.",
+    "The complete authority query returned no subscriptions.",
+  ],
+};
+
+function BillingEmpty({ filtered, kind, onClear }: { filtered: boolean; kind: "ledger" | "subscriptions"; onClear: () => void }) {
   const { t } = useAdminI18n();
-  const title = canonicalListEmptyTitle(
-    kind === "ledger entries" ? "ledger" : "subscriptions",
-    filtered,
-  );
-  return <EmptyState action={filtered ? <button className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" onClick={onClear} type="button">{t("Clear filters")}</button> : undefined} hint={filtered ? `The complete authority query returned no ${kind}.` : `No ${kind} exist in the authority yet.`} title={title} />;
+  return <EmptyState action={filtered ? <button className="min-h-11 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" onClick={onClear} type="button">{t("Clear filters")}</button> : undefined} hint={BILLING_EMPTY_HINT[kind][filtered ? 1 : 0]} kind={filtered ? "filtered" : "empty"} title={canonicalListEmptyTitle(kind, filtered)} />;
 }
 
 // SPEC: 账本和订阅两张表的分页条形状完全一样，只有游标属于哪一张不同。
@@ -921,12 +938,19 @@ function ListPagination({ cursor, loading, onNavigate, pageInfo, rowCount, trail
   );
 }
 
+// INTENT: label/meta 在接收方过 t()，不在每个调用点包一层 —— 四张指标卡曾经把
+//         "Net coins (window)"、"status = active" 这类裸串直接印在中文界面上。
+//         translateAdmin 幂等（中文不是 key，原样返回），所以调用点传已译文案也安全。
+// INTENT: min-w-0 让网格轨道能收窄到内容以下 —— 否则 grid item 的 min-width:auto 会被
+//         窗口卡里的长日期撑开，四列一起把表格区推出视口。
 function Metric({ label, meta, value }: { label: string; meta: string; value: string }) {
-  return <div className="bg-[var(--ad-surface)] p-4"><p className="text-xs font-semibold uppercase tracking-[0.05em] text-[var(--ad-text-muted)]">{label}</p><p className="mt-2 text-2xl font-semibold">{value}</p><p className="mt-1 text-xs text-[var(--ad-text-muted)]">{meta}</p></div>;
+  const { t } = useAdminI18n();
+  return <div className="min-w-0 bg-[var(--ad-surface)] p-4"><p className="text-xs font-semibold uppercase tracking-[0.05em] text-[var(--ad-text-muted)]">{t(label)}</p><p className="mt-2 text-2xl font-semibold">{value}</p><p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t(meta)}</p></div>;
 }
 
 function Field({ label, onChange, placeholder, value }: { label: string; onChange: (value: string) => void; placeholder?: string; value: string }) {
-  return <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{label}<input className="min-h-11 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus-visible:outline-2 focus-visible:outline-offset-2" onChange={(event) => onChange(event.target.value)} placeholder={placeholder} value={value} /></label>;
+  const { t } = useAdminI18n();
+  return <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t(label)}<input className="min-h-11 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus-visible:outline-2 focus-visible:outline-offset-2" onChange={(event) => onChange(event.target.value)} placeholder={placeholder} value={value} /></label>;
 }
 
 function Select({ label, onChange, options, value }: { label: string; onChange: (value: string) => void; options: readonly string[]; value: string }) {

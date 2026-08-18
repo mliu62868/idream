@@ -229,6 +229,26 @@ const zhValues: Record<string, string> = {
   no_violation: "未违规",
   recently_resolved: "近期已解决",
   escalated: "已升级",
+  // 账本原因（CoinLedger.reason）与订阅生命周期状态。走 zhValues 而不是 zh：它们是枚举，
+  // 账本「原因」列、订阅「状态」列和两个筛选下拉共用同一份译文（value() / adminValueLabel）。
+  // 少了它们，中文后台的账本页会把原始枚举码 admin_adjust / generation_spend 直接印给运营看。
+  // 口径对齐 docs/product/ECONOMY_AND_PRICING.md §1.3 扣费时点与 §5 退款/调整表。
+  signup_bonus: "注册赠币",
+  subscription_grant: "订阅发放",
+  subscription_refund: "订阅退款冲销",
+  // 支付方退款没走成时把已冲销的梦币还回去；与 "Grant restored" → 「授予已还原」同一套说法。
+  subscription_refund_restore: "订阅退款还原",
+  generation_spend: "生成消耗",
+  refund: "退款",
+  redeem: "兑换码兑换",
+  referral: "邀请奖励",
+  admin_adjust: "管理员调整",
+  checkout_created: "结账已创建",
+  checkout_completed: "结账已完成",
+  past_due: "逾期未付",
+  // 注意：上面已有拼作 cancelled 的「已取消」；契约里订阅状态是单 l 的 canceled，两个都要有。
+  canceled: "已取消",
+  refund_pending: "退款处理中",
 };
 
 export type TranslationValues = Record<string, string | number>;

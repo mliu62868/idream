@@ -145,4 +145,7 @@ export const adminZhSystem: Record<string, string> = {
   "These filters match nothing right now. Clearing them returns to the pending queue.":
     "当前筛选条件没有匹配到任何请求。清除后回到待审批队列。",
   "{count} parameters": "{count} 项参数",
+  // canonicalListEmptyTitle("approvals") 的两个标题 —— 审批队列空态此前直接印英文。
+  "No approval requests are pending": "当前没有待审批请求",
+  "No approval requests match these filters": "没有审批请求符合当前筛选",
 };

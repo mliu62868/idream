@@ -159,14 +159,14 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
     const idempotencyKey = crypto.randomUUID();
     setConfirmation({
       title: t("Disable redeem code {id}", { id }),
-      destructive: { expectedName: id, inputLabel: "Confirmation" },
+      destructive: { expectedName: id, inputLabel: t("Confirmation") },
       // INTENT: 后台只有 disable，没有 re-enable —— 停掉的码只能再发一个新的。
       consequence: {
         effect: t("Every future redemption of this code fails. There is no re-enable command; a replacement has to be issued as a new code."),
         reversible: false,
       },
-      reasonLabel: "Reason",
-      submitLabel: "Disable",
+      reasonLabel: t("Reason"),
+      submitLabel: t("Disable"),
       onSubmit: async (reason) => {
         await apiWrite(
           `/api/v2/admin/promo/redeem-codes/${id}/disable`,
@@ -186,7 +186,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
   return (
     <section className="space-y-5">
       <PageHeader
-        purpose="Operate redeem codes and inspect referral authority through independent, server-filtered snapshots."
+        purpose={t("Operate redeem codes and inspect referral authority through independent, server-filtered snapshots.")}
         title={t("Promotions")}
       />
       <div
@@ -533,7 +533,7 @@ function codeRows(
             <AdminText text="Disable" />
           </button>
         ) : (
-          "Read only"
+          <AdminText key="read-only" text="Read only" />
         ),
       ],
     };
@@ -658,26 +658,28 @@ function Freshness({ label, state }: { label: string; state: AuthorityState }) {
   const { t } = useAdminI18n();
   const format = useAdminFormat();
   const time = state.refreshedAt ? format.time(state.refreshedAt) : t("unknown");
+  // 后缀本来就过 t()，唯独数据源名字（Redeem codes / Referrals）漏了。
+  const name = t(label);
   if (state.loading && state.rows)
     return (
       <span>
-        {label}{t(": refreshing · as of")} {time}
+        {name}{t(": refreshing · as of")} {time}
       </span>
     );
   if (state.error && state.rows)
     return (
       <span>
-        {label}{t(": stale · last good")} {time}
+        {name}{t(": stale · last good")} {time}
       </span>
     );
-  if (state.error) return <span>{label}{t(": unavailable")}</span>;
+  if (state.error) return <span>{name}{t(": unavailable")}</span>;
   if (state.rows)
     return (
       <span>
-        {label}{t(": as of")} {time}
+        {name}{t(": as of")} {time}
       </span>
     );
-  return <span>{label}{t(": loading…")}</span>;
+  return <span>{name}{t(": loading…")}</span>;
 }
 
 // SPEC: 兑换码和推荐两张表的分页条形状完全一样，只有游标属于哪一张不同。
@@ -740,9 +742,11 @@ function Input({
   type?: string;
   value: string;
 }) {
+  // Field 只是转发到这里，所以 t() 只加在真正渲染 label 的这一处。
+  const { t } = useAdminI18n();
   return (
     <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
-      {label}
+      {t(label)}
       <input
         className="min-h-11 rounded-md border bg-[var(--ad-surface)] px-3 text-sm"
         onChange={(event) => onChange(event.target.value)}
@@ -770,7 +774,7 @@ function Select({
   const { t } = useAdminI18n();
   return (
     <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
-      {label}
+      {t(label)}
       <select
         className="min-h-11 rounded-md border bg-[var(--ad-surface)] px-3 text-sm"
         onChange={(event) => onChange(event.target.value)}

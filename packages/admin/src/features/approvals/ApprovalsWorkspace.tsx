@@ -1,6 +1,6 @@
 "use client";
 
-import { useAdminI18n } from "@/components/admin/i18n";
+import { AdminText, useAdminI18n } from "@/components/admin/i18n";
 import { Check, Loader2, X } from "lucide-react";
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -180,7 +180,7 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
       // INTENT: 审批人点「批准」那一刻必须看到自己在放行什么。以前弹窗里只有一个 ID，
       //         要核对参数得先回列表、再横向翻十列——于是没人核对。现在证据跟着决定走。
       summary: <ApprovalImpact entry={entry} />,
-      destructive: { expectedName: id, inputLabel: "Confirmation" },
+      destructive: { expectedName: id, inputLabel: t("Confirmation") },
       // INTENT: 审批是终局裁决——后台没有「撤回审批」这条命令，请求方只能重新发起一条。
       consequence: {
         effect:
@@ -189,8 +189,8 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
             : t("The request is closed as rejected and leaves this queue. The requester has to raise a new one."),
         reversible: false,
       },
-      reasonLabel: "Reason",
-      submitLabel: "Confirm",
+      reasonLabel: t("Reason"),
+      submitLabel: t("Confirm"),
       onSubmit: async (reason) => {
         await apiWrite(
           `/api/v2/admin/approvals/${id}/${decision}`,
@@ -216,7 +216,7 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
   return (
     <section className="space-y-5">
       <PageHeader
-        purpose="Review high-risk requests from the complete approval authority; requester separation and required permissions remain server-enforced."
+        purpose={t("Review high-risk requests from the complete approval authority; requester separation and required permissions remain server-enforced.")}
         title={t("Approvals")}
       />
       <div
@@ -380,7 +380,8 @@ function approvalRows(
             />
           </div>
         ) : (
-          "Read only"
+          // approvalRows 不是组件，取不到 hook；AdminText 是既有的 t() 包装。
+          <AdminText key="read-only" text="Read only" />
         ),
       ],
     };

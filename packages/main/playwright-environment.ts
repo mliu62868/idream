@@ -53,8 +53,13 @@ export type ManagedPlaywrightWebServer = {
 
 const TEST_DATABASE_TOKEN = /(^|[_-])test([_-]|$)/i;
 const PLAYWRIGHT_DATABASE_TOKEN = /(^|[_-])playwright([_-]|$)/i;
-const CHAT_SERVICE_PASSWORD = "chat_service_change_me";
-const CHAT_PROJECTOR_PASSWORD = "chat_projector_change_me";
+// SPEC: the run-owned Playwright database is created fresh, but chat_service /
+// chat_projector are cluster-wide login roles this harness must never rotate.
+// INTENT: a local cluster whose boundary roles already carry real passwords can
+// hand them in via PW_CHAT_*_PASSWORD; the disposable defaults stay for
+// throwaway clusters where the harness bootstraps the roles itself.
+const DEFAULT_CHAT_SERVICE_PASSWORD = "chat_service_change_me";
+const DEFAULT_CHAT_PROJECTOR_PASSWORD = "chat_projector_change_me";
 const DEFAULT_TEST_DATABASE_URL =
   "postgresql://postgres:postgres@localhost:5433/idream_test";
 
@@ -118,9 +123,19 @@ export function resolvePlaywrightEnvironment(
     mainPort,
     runId,
   );
-  const chatDatabaseURL = derivedPlaywrightChatDatabaseUrl(databaseURL);
-  const chatProjectorDatabaseURL =
-    derivedPlaywrightChatProjectorDatabaseUrl(databaseURL);
+  const chatServicePassword =
+    nonEmpty(input.PW_CHAT_SERVICE_PASSWORD) ?? DEFAULT_CHAT_SERVICE_PASSWORD;
+  const chatProjectorPassword =
+    nonEmpty(input.PW_CHAT_PROJECTOR_PASSWORD) ??
+    DEFAULT_CHAT_PROJECTOR_PASSWORD;
+  const chatDatabaseURL = derivedPlaywrightChatDatabaseUrl(
+    databaseURL,
+    chatServicePassword,
+  );
+  const chatProjectorDatabaseURL = derivedPlaywrightChatProjectorDatabaseUrl(
+    databaseURL,
+    chatProjectorPassword,
+  );
   const redisURL = assertPlaywrightRedisUrl(
     input.PW_REDIS_URL ?? "redis://127.0.0.1:6379/14",
   );
@@ -182,7 +197,8 @@ export function resolvePlaywrightEnvironment(
     MAIN_WEB_URL: mainBaseURL,
     CHAT_TEST_DB: databaseNameFromUrl(new URL(databaseURL)),
     CHAT_TEST_REQUIRE_PLAYWRIGHT: "1",
-    CHAT_SERVICE_PASSWORD,
+    CHAT_SERVICE_PASSWORD: chatServicePassword,
+    CHAT_PROJECTOR_PASSWORD: chatProjectorPassword,
     GEN_IMAGE_PROVIDER: input.PW_IMAGE_PROVIDER ?? "pipeline",
     PIPELINE_API_URL: pipelineBaseURL,
     GEN_VIDEO_PROVIDER: input.PW_VIDEO_PROVIDER ?? "mock",
@@ -400,10 +416,13 @@ export function assertPlaywrightChatProjectorDatabaseUrl(
   return parsed.toString();
 }
 
-function derivedPlaywrightChatDatabaseUrl(authorityDatabaseUrl: string) {
+function derivedPlaywrightChatDatabaseUrl(
+  authorityDatabaseUrl: string,
+  password: string = DEFAULT_CHAT_SERVICE_PASSWORD,
+) {
   const parsed = new URL(assertPlaywrightDatabaseUrl(authorityDatabaseUrl));
   parsed.username = "chat_service";
-  parsed.password = CHAT_SERVICE_PASSWORD;
+  parsed.password = password;
   parsed.searchParams.delete("schema");
   return assertPlaywrightChatDatabaseUrl(
     parsed.toString(),
@@ -413,10 +432,11 @@ function derivedPlaywrightChatDatabaseUrl(authorityDatabaseUrl: string) {
 
 function derivedPlaywrightChatProjectorDatabaseUrl(
   authorityDatabaseUrl: string,
+  password: string = DEFAULT_CHAT_PROJECTOR_PASSWORD,
 ) {
   const parsed = new URL(assertPlaywrightDatabaseUrl(authorityDatabaseUrl));
   parsed.username = "chat_projector";
-  parsed.password = CHAT_PROJECTOR_PASSWORD;
+  parsed.password = password;
   parsed.searchParams.delete("schema");
   return assertPlaywrightChatProjectorDatabaseUrl(
     parsed.toString(),
@@ -508,6 +528,11 @@ export function assertPlaywrightBlobRoot(value: string) {
     );
   }
   return resolved;
+}
+
+function nonEmpty(value: string | undefined) {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
 }
 
 function playwrightRunId(value: string | undefined) {

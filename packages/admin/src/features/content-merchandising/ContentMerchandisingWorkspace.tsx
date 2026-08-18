@@ -270,7 +270,7 @@ export function ContentMerchandisingWorkspace({
       title: field === "visibility"
         ? t("{action} character {id}", { action: t(contentCommandLabel(field, value)), id })
         : t("Take character {id} down", { id }),
-      destructive: { expectedName: expected, inputLabel: "Type confirmation" },
+      destructive: { expectedName: expected, inputLabel: t("Type confirmation") },
       // INTENT: 改可见性还能改回来；下架（status=removed）在这个台面上没有反向入口，
       //         而且会把角色从 Featured 里一并踢掉——按不可撤回处理。
       consequence:
@@ -319,7 +319,7 @@ export function ContentMerchandisingWorkspace({
   return (
     <section className="space-y-5">
       <PageHeader
-        purpose="Search the catalog, control visibility and lifecycle state, and curate the public featured feed."
+        purpose={t("Search the catalog, control visibility and lifecycle state, and curate the public featured feed.")}
         title={t("Featured Merchandising")}
       />
       <div
@@ -696,17 +696,19 @@ function Freshness<T>({
 }) {
   const { t } = useAdminI18n();
   const format = useAdminFormat();
-  if (state.loading) return <span>{authority}{t(": refreshing")}</span>;
+  // 后缀本来就过 t()，唯独数据源名字漏了。
+  const name = t(authority);
+  if (state.loading) return <span>{name}{t(": refreshing")}</span>;
   if (state.error) {
     return (
       <span>
-        {authority}: {state.data ? t("stale") : t("unavailable")}  {t("· retry available")}
+        {name}: {state.data ? t("stale") : t("unavailable")}  {t("· retry available")}
       </span>
     );
   }
   return (
     <span>
-      {authority}{t(": fresh")}{" "}
+      {name}{t(": fresh")}{" "}
       {state.refreshedAt ? format.time(state.refreshedAt) : ""}
     </span>
   );
@@ -721,9 +723,10 @@ function Field({
   value: string;
   onChange: (value: string) => void;
 }) {
+  const { t } = useAdminI18n();
   return (
     <label className="grid gap-1 text-xs font-medium text-[var(--ad-text-muted)]">
-      {label}
+      {t(label)}
       <input
         className="h-11 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)]"
         onChange={(event) => onChange(event.target.value)}
@@ -745,9 +748,12 @@ function Select({
   options: string[];
   onChange: (value: string) => void;
 }) {
+  // 选项是状态/可见性枚举，走 value() —— 和 StatusBadge 共用同一份译文；
+  // 空选项是「全部」，走 t()。原来两者都是裸串，中文界面直接印 All / published。
+  const { t, value: enumLabel } = useAdminI18n();
   return (
     <label className="grid gap-1 text-xs font-medium text-[var(--ad-text-muted)]">
-      {label}
+      {t(label)}
       <select
         className="h-11 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)]"
         onChange={(event) => onChange(event.target.value)}
@@ -755,7 +761,7 @@ function Select({
       >
         {options.map((option) => (
           <option key={option || "all"} value={option}>
-            {option || "All"}
+            {option ? enumLabel(option) : t("All")}
           </option>
         ))}
       </select>

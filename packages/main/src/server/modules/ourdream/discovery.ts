@@ -68,6 +68,7 @@ import {
   feedCollectionId,
 } from "./feed-item-id";
 import { trackEvent } from "./product-events";
+import { enforceRateLimit } from "@/server/lib/rate-limit";
 import { submitReport } from "./reports";
 
 // Prisma 的聚合计数在 PostgreSQL 上回 bigint，直接进 JSON 会抛 TypeError。
@@ -346,6 +347,7 @@ export async function feed(request: Request, segments: string[]) {
     return ok({ shareUrl: `/feed?item=${encodeURIComponent(canonicalItemId)}` });
   }
   if (request.method === "POST" && action === "items" && itemId && subAction === "report") {
+    await enforceRateLimit(request, "contentReport");
     return submitReport(request, {
       targetType: "feed_item",
       targetId: (await canonicalPublicFeedItemId(itemId)) ?? itemId,

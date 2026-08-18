@@ -318,4 +318,49 @@ export const adminZhGrowth: Record<string, string> = {
     "真实用户会立即开始被分配到 {key} v{version}。你之后可以停止它，但已经曝光过的用户仍然算曝光过。你填写的理由会进审计日志。",
   "Assignment ends for everyone immediately and {key} v{version} cannot be restarted — running this test again needs a new version. Your reason goes to the audit log.":
     "分流会对所有人立即终止，且 {key} v{version} 无法重启——要再跑这个实验必须新建一个版本。你填写的理由会进审计日志。",
+  // ---- 账单台的表头、指标与空态（中文后台曾整片印英文：TOTAL DELTA / Adjustment user ID …）----
+  // 口径跟随本文件既有的梦币簇：冲销=reversal、支付方=provider、账本=ledger。
+  "Total delta": "变更总额",
+  "Balance after": "变更后余额",
+  "Period end": "周期结束",
+  "Cancel at end": "到期时取消",
+  "Provider status": "支付方状态",
+  "Provider detail": "支付方明细",
+  "Local status": "本地状态",
+  "Failure": "失败原因",
+  // provider 侧查不到这笔单子的累计次数，运营据此判断是对方延迟还是这笔单子已经丢了。
+  "Misses": "查询未命中次数",
+  "Attempted": "发起时间",
+  "Last lookup": "最后查询时间",
+  "Checkout refund acknowledgement": "结账退款确认文本",
+  // 订阅计费口径：Plan 是订阅计划，Period 是计费周期（月付/年付），别译成「时期」。
+  "Plan": "计划",
+  "Period": "计费周期",
+  // NOTE: Email 是跨域通用词，本轮只有账单与团队访问两张表用到，暂由本文件持有；
+  //       若别的域也要用，合并时整条挪去 i18n-zh-common.ts（字典 key 全局互斥）。
+  "Email": "邮箱",
+  "Display name": "显示名称",
+  // 定价规则版本表。注意本文件已有大写 K 的 "Rule Key"（草稿表单），这条是表头的小写 k。
+  "Rule key": "规则键",
+  "Base cost": "基础费用",
+  "Effective": "生效时间",
+  // canonicalListEmptyTitle("ledger" / "subscriptions") 的四个标题，以及账单台自己的空态提示。
+  "No ledger entries exist yet": "暂无账本流水",
+  "No ledger entries match these filters": "没有账本流水符合当前筛选",
+  "No subscriptions exist yet": "暂无订阅",
+  "No subscriptions match these filters": "没有订阅符合当前筛选",
+  "No ledger entries exist in the authority yet.": "服务端权威里还没有任何账本流水。",
+  "The complete authority query returned no ledger entries.": "完整的权威查询没有返回任何账本流水。",
+  "No subscriptions exist in the authority yet.": "服务端权威里还没有任何订阅。",
+  "The complete authority query returned no subscriptions.": "完整的权威查询没有返回任何订阅。",
+  // ---- 兑换码与邀请两张表的表头 ----
+  // 用词跟随本文件既有的表单标签（"Max uses (blank=∞)" → 最大使用次数），别在同一页里
+  // 一处叫「使用」一处叫「兑换」。
+  "Reward": "奖励",
+  "Max uses": "最大使用次数",
+  "Redemptions": "已兑换次数",
+  "Expires": "过期时间",
+  // "Inviter"（邀请人）已由 i18n-zh-platform-ops.ts 持有，这里只补对侧的受邀人。
+  "Invitee": "受邀人",
+  "Reward status": "奖励状态",
 };

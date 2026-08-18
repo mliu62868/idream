@@ -1,6 +1,6 @@
 "use client";
 
-import { useAdminI18n } from "@/components/admin/i18n";
+import { AdminText, useAdminI18n } from "@/components/admin/i18n";
 import {
   ADMIN_DATA_CLASSES,
   accessUserListResponseSchema,
@@ -210,10 +210,10 @@ export function AccessWorkspace({
     const idempotencyKey = crypto.randomUUID();
     setConfirmation({
       title: input.title,
-      destructive: { expectedName: input.expected, inputLabel: "Confirmation" },
+      destructive: { expectedName: input.expected, inputLabel: t("Confirmation") },
       consequence: input.consequence,
-      reasonLabel: "Reason",
-      submitLabel: "Confirm",
+      reasonLabel: t("Reason"),
+      submitLabel: t("Confirm"),
       onSubmit: async (reason) => {
         await apiWrite(
           input.endpoint,
@@ -234,7 +234,7 @@ export function AccessWorkspace({
   return (
     <section className="space-y-5">
       <PageHeader
-        purpose="Search users, apply narrowly scoped permission overrides, and suspend or restore access through audited commands."
+        purpose={t("Search users, apply narrowly scoped permission overrides, and suspend or restore access through audited commands.")}
         title={t("Team Access")}
       />
       <div
@@ -637,7 +637,7 @@ function userTableRows(
             {next === "active" ? t("Restore") : t("Suspend")}
           </button>
         ) : (
-          "Read only"
+          <AdminText key="read-only" text="Read only" />
         ),
       ],
     };
@@ -676,9 +676,11 @@ function Field({
   search?: boolean;
   value: string;
 }) {
+  // label 在接收方过 t()，一处修好覆盖全部调用点（搜索框、权限用户 ID、权限键…）。
+  const { t } = useAdminI18n();
   return (
     <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
-      {label}
+      {t(label)}
       <input
         className="min-h-11 rounded-md border bg-[var(--ad-surface)] px-3 text-sm"
         onChange={(event) => onChange(event.target.value)}
@@ -704,7 +706,7 @@ function Select({
   const { t } = useAdminI18n();
   return (
     <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
-      {label}
+      {t(label)}
       <select
         className="min-h-11 rounded-md border bg-[var(--ad-surface)] px-3 text-sm"
         onChange={(event) => onChange(event.target.value)}

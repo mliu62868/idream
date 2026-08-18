@@ -152,6 +152,7 @@ import {
 } from "./exposure-context";
 import { createVoiceClip as createDurableVoiceClip } from "./voice-clip";
 import { trackEvent, trackEventBestEffort } from "./product-events";
+import { enforceRateLimit } from "@/server/lib/rate-limit";
 import { submitReport } from "./reports";
 import {
   generationJobSchema,
@@ -495,8 +496,15 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
 
 
   if (resource === "auth") {
-    if (id === "signup" && method === "POST") return signup(request);
-    if (id === "login" && method === "POST") return login(request);
+    // 凭据端点：便宜、可自动重复、失败无代价 —— 爆破与批量注册的入口。
+    if (id === "signup" && method === "POST") {
+      await enforceRateLimit(request, "authSignup");
+      return signup(request);
+    }
+    if (id === "login" && method === "POST") {
+      await enforceRateLimit(request, "authLogin");
+      return login(request);
+    }
     if (id === "logout" && method === "POST") return logout(request);
   }
 
@@ -537,6 +545,7 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
     if (id && action === "like" && method === "POST") return likeCharacter(request, id);
     if (id && action === "like" && method === "DELETE") return unlikeCharacter(request, id);
     if (id && action === "report" && method === "POST") {
+      await enforceRateLimit(request, "contentReport");
       return submitReport(request, { targetType: "character", targetId: id });
     }
     if (id && action === "duplicate" && method === "POST") return duplicateCharacter(request, id);
@@ -665,6 +674,8 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
   }
 
   if (resource === "redeem-codes" && id === "redeem" && method === "POST") {
+    // 码空间小且哈希弱，枚举收益高。
+    await enforceRateLimit(request, "redeemCode");
     return redeemCode(request);
   }
 
@@ -679,7 +690,11 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
   }
 
   if (resource === "reports") {
-    if (!id && method === "POST") return submitReport(request);
+    // 匿名可提交且无去重，会无界产生审核 Case。
+    if (!id && method === "POST") {
+      await enforceRateLimit(request, "contentReport");
+      return submitReport(request);
+    }
     if (id && method === "GET") return reportStatus(request, id);
   }
 
@@ -691,7 +706,11 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
     if (method === "DELETE") return unfollowUser(request, id);
   }
 
-  if (resource === "events" && id === "track" && method === "POST") return track(request);
+  if (resource === "events" && id === "track" && method === "POST") {
+    // 匿名开放写入口：正常会话打点不少，阈值放宽但不能无界。
+    await enforceRateLimit(request, "eventTrack");
+    return track(request);
+  }
   if (resource === "feedback" && id === "items") {
     if (!action && method === "GET") return listFeedbackItems(request);
     if (!action && method === "POST") return createFeedbackItem(request);
