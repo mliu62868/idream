@@ -60,7 +60,7 @@ export function AnalyticsWorkspace({
   canReadLegacy: boolean;
 }) {
   const { t } = useAdminI18n();
-  const [query, setQuery] = useState(() => currentQuery("analytics"));
+  const [query, setQuery] = useState(() => emptyQuery("analytics"));
   const [draft, setDraft] = useState(query);
   const [canonical, setCanonical] =
     useState<State<MetricDashboardResponse>>(initialState);
@@ -244,7 +244,7 @@ function SingleOverview<T>({
   title: string;
 }) {
   const { t } = useAdminI18n();
-  const [query, setQuery] = useState(() => currentQuery(scope));
+  const [query, setQuery] = useState(() => emptyQuery(scope));
   const [draft, setDraft] = useState(query);
   const [state, setState] = useState<State<T>>(initialState);
   const gate = useRef(createLatestRequestGate());
@@ -329,6 +329,10 @@ function useAuthorityLifecycle(
 ) {
   const initialLoad = useRef(load);
   useEffect(() => {
+    // 水合完成后才读地址栏，把 SSR 用的空查询换成真正生效的筛选条件。
+    const fromUrl = currentQuery(scope);
+    setQuery(fromUrl);
+    setDraft(fromUrl);
     initialLoad.current();
     const restore = () => {
       const next = currentQuery(scope);
@@ -648,6 +652,15 @@ function Window({ window }: { window: { from: string; to: string } }) {
   );
 }
 
+// INVARIANT: 服务端与客户端首帧必须得出同一个值，所以初值不许碰 window。
+// 之前用 `typeof window === "undefined" ? "" : window.location.search` 做初值：
+// 那个守卫防不住 hydration mismatch，恰恰制造了它 —— 服务端拿到空查询，
+// 客户端首帧拿到真实查询参数，两边分叉。地址栏只在挂载后读。
+function emptyQuery(scope: OverviewScope) {
+  return overviewQueryFromSearch("", scope);
+}
+
+/** 只允许在 effect / 事件回调里调用，绝不能进 useState 初值。 */
 function currentQuery(scope: OverviewScope) {
   return overviewQueryFromSearch(
     typeof window === "undefined" ? "" : window.location.search,

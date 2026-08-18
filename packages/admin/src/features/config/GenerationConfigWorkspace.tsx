@@ -53,8 +53,10 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
   const { t } = useAdminI18n();
   const format = useAdminFormat();
   const { toast } = useToast();
-  const [query, setQuery] = useState<GenerationConfigQuery>(() => currentQuery());
-  const [draft, setDraft] = useState<GenerationConfigQuery>(() => currentQuery());
+  // INVARIANT: 初值不许读地址栏 —— 服务端得出默认查询、客户端首帧得出真实查询，
+  // 两边分叉就是 hydration mismatch（浏览器里一次渲染报 56 条）。地址栏在挂载 effect 里读。
+  const [query, setQuery] = useState<GenerationConfigQuery>(defaultGenerationConfigQuery);
+  const [draft, setDraft] = useState<GenerationConfigQuery>(defaultGenerationConfigQuery);
   const [profiles, setProfiles] = useState<AuthorityState<ListResponse>>(emptyAuthorityState);
   const [flags, setFlags] = useState<AuthorityState<ListResponse>>(emptyAuthorityState);
   const [recentJobs, setRecentJobs] = useState<AuthorityState<ListResponse>>(emptyAuthorityState);
@@ -66,7 +68,6 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
   // 游标分页没有页码，只有「上一页用的是哪个游标」。这条轨迹就是 Pagination 的第 N 页。
   const [trails, setTrails] = useState<ConfigTrails>(emptyTrails);
   const requestGates = useRef({ profiles: createLatestRequestGate(), flags: createLatestRequestGate(), jobs: createLatestRequestGate() });
-  const initialQuery = useRef(query);
 
   const loadProfiles = useCallback(async (next: GenerationConfigQuery) => {
     const request = requestGates.current.profiles.begin();
@@ -109,7 +110,11 @@ export function GenerationConfigWorkspace({ permissions }: { permissions: Permis
 
   useEffect(() => {
     const gates = requestGates.current;
-    load(initialQuery.current);
+    // 水合完成后才读地址栏，把 SSR 用的默认查询换成真正生效的筛选条件。
+    const fromUrl = currentQuery();
+    setQuery(fromUrl);
+    setDraft(fromUrl);
+    load(fromUrl);
     const restore = () => {
       const restored = currentQuery();
       setQuery(restored);
@@ -379,6 +384,7 @@ function ListPagination({ cursor, loading, onNavigate, pageInfo, rowCount, trail
     />
   );
 }
+/** 只允许在 effect / 事件回调里调用，绝不能进 useState 初值。 */
 function currentQuery() { return typeof window === "undefined" ? defaultGenerationConfigQuery : generationConfigQueryFromSearch(window.location.search); }
 function integer(value: string) { const parsed = Number(value); return Number.isInteger(parsed) && parsed >= 0 ? parsed : null; }
 function firstOrientation(profile: RecordRow | null) { const values = profile && Array.isArray(profile.allowedOrientations) ? profile.allowedOrientations.filter((value): value is string => typeof value === "string") : []; return values[0] ?? "1:1"; }

@@ -175,7 +175,7 @@ export function AuditWorkspace() {
     <section aria-labelledby="audit-workspace-title" className="space-y-5">
       <div id="audit-workspace-title">
         <PageHeader
-          purpose="Trace consequential operator decisions to the actor, target, reason, request, and command evidence that produced them."
+          purpose={t("Trace consequential operator decisions to the actor, target, reason, request, and command evidence that produced them.")}
           title={t("Audit Log")}
         />
       </div>

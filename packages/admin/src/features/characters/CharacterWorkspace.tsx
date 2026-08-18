@@ -214,11 +214,9 @@ function CharacterDetail({
     journal.getSnapshot,
   );
   const requestGate = useRef(createLatestRequestGate());
-  const [tab, setTab] = useState<Tab>(() => {
-    if (typeof window === "undefined") return "project";
-    if (journal.hasPersistedCommand()) return "release";
-    return characterWorkspaceTabFromSearch(window.location.search);
-  });
+  // INVARIANT: 初值不许读地址栏或 journal 快照 —— 服务端得出 "project"、客户端首帧
+  // 得出 URL 里的 tab，两边分叉就是 hydration mismatch。真实 tab 在挂载 effect 里对齐。
+  const [tab, setTab] = useState<Tab>("project");
   const tabRef = useRef(tab);
   const load = useCallback(async () => {
     const request = requestGate.current.begin();
@@ -534,6 +532,19 @@ function CharacterDetail({
   useEffect(() => {
     tabRef.current = tab;
   }, [tab]);
+  useEffect(() => {
+    // 水合完成后把 tab 对齐到外部状态（地址栏 + 持久化命令）：初值必须与服务端一致，
+    // 真实 tab 只能在这里读。一次性对齐，之后由用户操作与 popstate 驱动。
+    /* eslint-disable react-hooks/set-state-in-effect -- one-shot hydration from the address bar */
+    setTab(
+      journal.hasPersistedCommand()
+        ? "release"
+        : characterWorkspaceTabFromSearch(window.location.search),
+    );
+    /* eslint-enable react-hooks/set-state-in-effect */
+    // 只在挂载时跑一次。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   useEffect(() => {
     if (tab !== "visual") return;
     const targetId = window.location.hash.replace(/^#/, "");

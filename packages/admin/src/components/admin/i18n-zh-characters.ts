@@ -1321,7 +1321,9 @@ export const adminZhCharacters: Record<string, string> = {
   "saved in Admin": "已保存到管理平台",
   "sensitive": "敏感",
   "serving now": "当前在线",
-  "slug": "Slug",
+  // 标签表的机器标识列（TagsView 唯一调用点）。译文原本写的就是 "Slug" —— 那是把英文抄进
+  // 字典充数，中文界面里这一列的表头于是仍是英文。
+  "slug": "标识",
   "sortOrder": "排序",
   "starter.id =": "模板 ID =",
   "submittedAt": "提交时间",
