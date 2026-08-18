@@ -266,7 +266,8 @@ function AdminConsoleContent({
 
   return (
     <>
-    <title>{`${t(activeItem.label)} | iDream Admin`}</title>
+    {/* 标签页标题由服务端 generateMetadata 出（读 locale cookie），首帧即终态。
+        这里曾经再渲染一个 <title> 覆盖它——那正是标题会先英文后中文闪一下的原因。 */}
     <a className="admin-skip-link" href="#admin-main-content" id="admin-skip-link">{t("Skip to admin content")}</a>
     <main className="min-h-screen overflow-x-hidden bg-[var(--ad-canvas)] text-[var(--ad-ink)]">
       <div className="flex min-h-screen" id="admin-shell-background">

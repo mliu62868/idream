@@ -2,7 +2,9 @@ import { adminRouteMetadata, renderAdminRoute, type AdminSearchParams } from "..
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-export const metadata = adminRouteMetadata("Incident Detail");
+export function generateMetadata() {
+  return adminRouteMetadata("Incident Detail");
+}
 
 export default async function IncidentDetailPage({ params, searchParams }: {
   params: Promise<{ id: string }>;

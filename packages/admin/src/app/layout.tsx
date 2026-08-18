@@ -4,7 +4,10 @@ import { readAdminShellPreferences } from "@/components/admin/shell-preferences"
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "iDream 管理后台",
+  // SPEC: 兜底标题只留品牌名，不带任何一种语言的词。
+  // INTENT: 这里原是硬编码中文，于是没有自己 metadata 的页面（404、权威不可用）在英文
+  //         locale 下会漏出中文。品牌名两种语言下都成立，比翻译它更省事也更对。
+  title: "iDream Admin",
   description: "iDream 内部控制面。",
   robots: {
     index: false,

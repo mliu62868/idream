@@ -2,7 +2,9 @@ import { adminRouteMetadata, renderAdminRoute, type AdminSearchParams } from "..
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-export const metadata = adminRouteMetadata("Generation Jobs");
+export function generateMetadata() {
+  return adminRouteMetadata("Generation Jobs");
+}
 
 export default function JobsPage({ searchParams }: { searchParams: AdminSearchParams }) {
   return renderAdminRoute(["ops", "jobs"], searchParams);

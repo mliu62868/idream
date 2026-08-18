@@ -2,7 +2,9 @@ import { adminRouteMetadata, renderAdminRoute, type AdminSearchParams } from "..
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-export const metadata = adminRouteMetadata("Taxonomy");
+export function generateMetadata() {
+  return adminRouteMetadata("Taxonomy");
+}
 
 export default function CharacterTaxonomyPage({ searchParams }: { searchParams: AdminSearchParams }) {
   return renderAdminRoute(["characters", "taxonomy"], searchParams);
