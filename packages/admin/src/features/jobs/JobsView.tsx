@@ -498,7 +498,7 @@ function IconAction({ disabled = false, icon, label, onClick }: { disabled?: boo
 
 function Metric({ label, meta, value }: { label: string; meta: string; value: ReactNode }) {
   const { t } = useAdminI18n();
-  return <div className="rounded-lg border border-[var(--ad-border)] p-3"><p className="text-xs text-[var(--ad-text-muted)]">{t(label)}</p><p className="mt-1 font-semibold">{value}</p><p className="mt-1 text-xs text-[var(--ad-text-muted)]">{meta}</p></div>;
+  return <div className="rounded-lg border border-[var(--ad-border)] p-3"><p className="text-xs text-[var(--ad-text-muted)]">{t(label)}</p><p className="mt-1 font-semibold">{value}</p><p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t(meta)}</p></div>;
 }
 
 function shortId(value: string) {

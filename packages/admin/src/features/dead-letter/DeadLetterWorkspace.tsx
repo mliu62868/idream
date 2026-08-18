@@ -454,5 +454,6 @@ function Select({ label, onChange, options, value }: { label: string; onChange: 
 }
 
 function ActionButton({ danger = false, icon, label, onClick }: { danger?: boolean; icon: ReactNode; label: string; onClick: () => void }) {
-  return <button className={`inline-flex min-h-9 items-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)] disabled:opacity-40 ${danger ? "text-[var(--ad-red-text)]" : "text-[var(--ad-text)]"}`} onClick={onClick} type="button">{icon}{label}</button>;
+  const { t } = useAdminI18n();
+  return <button className={`inline-flex min-h-9 items-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)] disabled:opacity-40 ${danger ? "text-[var(--ad-red-text)]" : "text-[var(--ad-text)]"}`} onClick={onClick} type="button">{icon}{t(label)}</button>;
 }

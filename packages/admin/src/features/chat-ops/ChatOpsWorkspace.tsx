@@ -1058,6 +1058,7 @@ function Pager({
   pageInfo: PageInfo;
   query: ChatOpsQuery;
 }) {
+  const { t } = useAdminI18n();
   if (!pageInfo.hasNextPage || !pageInfo.endCursor) return null;
   const cursor =
     authority === "sessions"
@@ -1072,7 +1073,7 @@ function Pager({
       type="button"
     >
       <RefreshCcw className="h-4 w-4" />
-      {label}
+      {t(label)}
     </button>
   );
 }

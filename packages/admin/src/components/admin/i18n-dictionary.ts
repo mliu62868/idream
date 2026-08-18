@@ -122,6 +122,12 @@ const zhValues: Record<string, string> = {
   new: "新建",
   negative: "负向",
   not_required: "无需验证",
+  // 事故处置计划的动作，以及恢复校验的未跑状态。StatusBadge 和筛选下拉都把枚举里的下划线换成
+  // 空格再查表（`t(value.replaceAll("_", " "))`），所以这里存的是空格拼写，不是 retry_eligible。
+  "retry eligible": "可重试",
+  refund: "退款",
+  "pause route": "暂停路由",
+  "not checked": "未验证",
   open: "打开",
   on_track: "正常",
   other: "其他",
