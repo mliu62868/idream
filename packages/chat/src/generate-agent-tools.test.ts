@@ -68,7 +68,13 @@ vi.mock("./companion-sidecar-readiness.js", () => ({
   verifiedCompanionProfileDigest: () => "d".repeat(64),
 }));
 
-const { processGenerate, processGenerateJob } = await import("./generate.js");
+const {
+  drainDshShadowExecutor,
+  persistShadowComparison,
+  processGenerate,
+  processGenerateJob,
+  terminalizeGenerateJobFailure,
+} = await import("./generate.js");
 
 type CreateCall = { data: Record<string, unknown>; where?: Record<string, unknown> };
 
@@ -96,6 +102,7 @@ function fakePrisma(
     memoryAuthority: "enabled" | "disabled";
   },
   assistantRuntimeTrace?: Record<string, unknown>,
+  terminalContextRevision: bigint = 0n,
 ) {
   const attachmentCreates: CreateCall[] = [];
   const outboxCreates: CreateCall[] = [];
@@ -167,7 +174,7 @@ function fakePrisma(
       },
     },
     messageVersion: {
-      updateMany: async () => ({}),
+      updateMany: async () => ({ count: 1 }),
       update: async () => ({}),
     },
     chatUsage: {
@@ -180,7 +187,7 @@ function fakePrisma(
         characterId: "char_1",
         status: "active",
         deletedAt: null,
-        contextRevision: 0n,
+        contextRevision: terminalContextRevision,
       }),
       update: async () => ({}),
       updateMany: async () => ({ count: 1 }),
@@ -450,6 +457,7 @@ describe("chat generate agent image tool", () => {
         prisma,
         { projectorPrisma: prisma },
       )).resolves.toEqual({ status: "sent" });
+      await drainDshShadowExecutor();
 
       expect(finalizedMessageUpdate(messageUpdates)).toMatchObject({
         status: "sent",
@@ -469,7 +477,7 @@ describe("chat generate agent image tool", () => {
         .filter((event) => event.type === "delta")
         .map((event) => event.delta);
       expect(deliveredDeltas).toEqual(["native delivery"]);
-      expect(rootMessageUpdates).toContainEqual(expect.objectContaining({
+      expect([...messageUpdates, ...rootMessageUpdates]).toContainEqual(expect.objectContaining({
         data: {
           runtimeTrace: expect.objectContaining({
             schemaVersion: 1,
@@ -482,6 +490,23 @@ describe("chat generate agent image tool", () => {
             companionRuntime: expect.objectContaining({ runtime: "native" }),
             scene: null,
             outputAuthority: "model",
+            primaryTelemetry: {
+              schemaVersion: 1,
+              runtime: "native",
+              startedAt: expect.any(String),
+              firstTokenMs: expect.any(Number),
+              totalMs: expect.any(Number),
+              terminalStatus: "sent",
+              truncated: false,
+              provider: "mock",
+              model: "local-model",
+              usage: { promptTokens: 12, completionTokens: 3 },
+              steps: 2,
+              toolCalls: 0,
+              retryCount: 0,
+              sseTerminal: "done",
+              memory: { outcome: "pending" },
+            },
             shadowComparison: expect.objectContaining({
               schemaVersion: 1,
               status: "completed",
@@ -524,12 +549,13 @@ describe("chat generate agent image tool", () => {
         prisma,
         { projectorPrisma: prisma },
       )).resolves.toEqual({ status: "sent" });
+      await drainDshShadowExecutor();
 
       expect(finalizedMessageUpdate(messageUpdates)).toMatchObject({
         status: "sent",
         content: "native survives",
       });
-      expect(rootMessageUpdates).toContainEqual(expect.objectContaining({
+      expect([...messageUpdates, ...rootMessageUpdates]).toContainEqual(expect.objectContaining({
         data: {
           runtimeTrace: expect.objectContaining({
             shadowComparison: expect.objectContaining({
@@ -550,6 +576,148 @@ describe("chat generate agent image tool", () => {
     } finally {
       restoreEnv();
     }
+  });
+
+  it("delivers native SSE without waiting for an unresolved DSH shadow", async () => {
+    const restoreEnv = installDshShadowEnv();
+    let releaseShadow!: () => void;
+    const unresolvedShadow = new Promise<void>((resolve) => { releaseShadow = resolve; });
+    try {
+      streamMock.mockImplementation(async function* nativeStream() {
+        yield { delta: "native is already done", done: true };
+      });
+      dshRunMock.mockImplementation(() => unresolvedShadow);
+      const { prisma } = fakePrisma();
+
+      const result = await Promise.race([
+        processGenerate(
+          { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+          prisma,
+          { projectorPrisma: prisma },
+        ),
+        new Promise<never>((_resolve, reject) => {
+          setTimeout(() => reject(new Error("primary waited for shadow")), 100);
+        }),
+      ]);
+
+      expect(result).toEqual({ status: "sent" });
+      expect(appendStreamEventMock).toHaveBeenCalledWith(
+        "chat:stream:msg_assistant",
+        expect.objectContaining({ type: "done" }),
+      );
+    } finally {
+      releaseShadow();
+      await drainDshShadowExecutor();
+      restoreEnv();
+    }
+  });
+
+  it("does not even enqueue shadow work for a no-memory turn", async () => {
+    const restoreEnv = installDshShadowEnv();
+    try {
+      streamMock.mockImplementation(async function* nativeStream() {
+        yield { delta: "private native reply", done: true };
+      });
+      const { prisma } = fakePrisma(
+        undefined,
+        undefined,
+        { content: "ordinary private turn", memoryAuthority: "disabled" },
+      );
+      const shadowExecutor = {
+        submit: vi.fn(() => true),
+        cancel: vi.fn(),
+        onIdle: vi.fn(async () => {}),
+      };
+
+      await expect(processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        prisma,
+        { projectorPrisma: prisma, shadowExecutor },
+      )).resolves.toEqual({ status: "sent" });
+
+      expect(shadowExecutor.submit).not.toHaveBeenCalled();
+      expect(dshRunMock).not.toHaveBeenCalled();
+    } finally {
+      restoreEnv();
+    }
+  });
+
+  it("records queue saturation without delaying native delivery", async () => {
+    const restoreEnv = installDshShadowEnv();
+    try {
+      streamMock.mockImplementation(async function* nativeStream() {
+        yield { delta: "native survives pressure", done: true };
+      });
+      const { prisma, messageUpdates, rootMessageUpdates } = fakePrisma();
+      const shadowExecutor = {
+        submit: vi.fn(() => false),
+        cancel: vi.fn(),
+        onIdle: vi.fn(async () => {}),
+      };
+
+      await expect(processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        prisma,
+        { projectorPrisma: prisma, shadowExecutor },
+      )).resolves.toEqual({ status: "sent" });
+      await drainDshShadowExecutor();
+
+      expect(dshRunMock).not.toHaveBeenCalled();
+      expect([...messageUpdates, ...rootMessageUpdates]).toContainEqual(expect.objectContaining({
+        data: {
+          runtimeTrace: expect.objectContaining({
+            shadowComparison: expect.objectContaining({
+              status: "error",
+              error: {
+                code: "shadow_queue_saturated",
+                message: "DSH shadow executor queue is saturated",
+              },
+            }),
+          }),
+        },
+      }));
+    } finally {
+      restoreEnv();
+    }
+  });
+
+  it("rolls back both shadow comparison traces when the version CAS misses", async () => {
+    const committed = { message: "before", version: "before" };
+    const prisma = {
+      $transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) => {
+        let pendingMessage = committed.message;
+        const tx = {
+          message: {
+            updateMany: vi.fn(async (call: CreateCall) => {
+              pendingMessage = JSON.stringify(call.data.runtimeTrace);
+              return { count: 1 };
+            }),
+          },
+          messageVersion: {
+            updateMany: vi.fn(async () => ({ count: 0 })),
+          },
+        };
+        const result = await callback(tx);
+        committed.message = pendingMessage;
+        return result;
+      }),
+    } as unknown as ChatPrismaClient;
+
+    await expect(persistShadowComparison({
+      prisma,
+      payload: {
+        sessionId: "sess_1",
+        assistantMessageId: "msg_assistant",
+        userMessageId: "msg_user",
+        attempt: 1,
+      },
+      terminalStatus: "sent",
+      runtimeTraceFacts: { schemaVersion: 1 },
+      truncated: false,
+      shadowComparison: { schemaVersion: 1, status: "completed" },
+    })).resolves.toBeUndefined();
+
+    expect(committed).toEqual({ message: "before", version: "before" });
   });
 
   it("routes a pinned DSH attempt through the Chat commit port before SSE done", async () => {
@@ -602,7 +770,7 @@ describe("chat generate agent image tool", () => {
         });
         await port.commit(candidate);
       });
-      const { prisma, messageUpdates, attachmentCreates } = fakePrisma();
+      const { prisma, messageUpdates, rootMessageUpdates, attachmentCreates } = fakePrisma();
 
       await expect(processGenerate(
         { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
@@ -651,6 +819,36 @@ describe("chat generate agent image tool", () => {
       expect(recordTurnSuccessMock).toHaveBeenCalledOnce();
       expect(recordMemoryPromotionSuccessMock).toHaveBeenCalledOnce();
       expect(recordMemoryPromotionFailureMock).not.toHaveBeenCalled();
+      expect(rootMessageUpdates).toContainEqual(expect.objectContaining({
+        data: {
+          runtimeTrace: expect.objectContaining({
+            primaryTelemetry: {
+              schemaVersion: 1,
+              runtime: "dsh",
+              startedAt: expect.any(String),
+              firstTokenMs: expect.any(Number),
+              totalMs: expect.any(Number),
+              terminalStatus: "sent",
+              truncated: false,
+              provider: "mock",
+              model: "local-model",
+              usage: {
+                promptTokens: 10,
+                completionTokens: 4,
+                reasoningTokens: 2,
+              },
+              steps: 2,
+              toolCalls: 1,
+              retryCount: 0,
+              sseTerminal: "done",
+              memory: {
+                outcome: "ingested",
+                settleLagMs: expect.any(Number),
+              },
+            },
+          }),
+        },
+      }));
       expect(attachmentCreates[0]?.data).toMatchObject({
         metadata: expect.objectContaining({
           toolCallIdentity: {
@@ -738,9 +936,21 @@ describe("chat generate agent image tool", () => {
       expect(streamMock).not.toHaveBeenCalled();
       expect(rootMessageUpdates).toContainEqual(expect.objectContaining({
         data: expect.objectContaining({
-          status: "generating",
           runtimeTrace: expect.objectContaining({
             companionRuntime: expect.objectContaining({ runtime: "dsh" }),
+            primaryTelemetry: expect.objectContaining({
+              runtime: "dsh",
+              terminalStatus: "failed",
+              truncated: false,
+              provider: "mock",
+              model: "local-model",
+              totalMs: expect.any(Number),
+              steps: 0,
+              toolCalls: 0,
+              memory: { outcome: "not_started" },
+              error: { category: "runtime", code: "dsh_runtime_error" },
+              sseTerminal: "error",
+            }),
           }),
         }),
       }));
@@ -776,6 +986,15 @@ describe("chat generate agent image tool", () => {
         content: "visible partial reply",
         runtimeTrace: expect.objectContaining({
           truncated: true,
+          primaryTelemetry: expect.objectContaining({
+            runtime: "dsh",
+            terminalStatus: "sent",
+            truncated: true,
+            firstTokenMs: expect.any(Number),
+            totalMs: expect.any(Number),
+            memory: { outcome: "discarded_truncated", settleLagMs: 0 },
+            error: { category: "runtime", code: "dsh_runtime_error" },
+          }),
           companion: expect.objectContaining({
             memoryIngestOutcome: "discarded_truncated",
           }),
@@ -1109,6 +1328,45 @@ describe("chat generate agent image tool", () => {
     expect(recordTurnSuccessMock).not.toHaveBeenCalled();
   });
 
+  it("records a native terminal context CAS rejection as failed telemetry", async () => {
+    supportsToolsState.value = false;
+    buildContextMock.mockResolvedValue({
+      ...context,
+      policy: { ...context.policy, imageToolEnabled: false },
+      recentMessages: [{ id: "msg_user", role: "user", content: "hello" }],
+    });
+    streamMock.mockImplementation(async function* nativeStream() {
+      yield { delta: "obsolete reply", done: true };
+    });
+    const { prisma, rootMessageUpdates } = fakePrisma(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      1n,
+    );
+
+    await expect(processGenerate(
+      { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+      prisma,
+      { projectorPrisma: prisma },
+    )).resolves.toEqual({ status: "failed" });
+
+    expect(rootMessageUpdates).toContainEqual(expect.objectContaining({
+      data: {
+        runtimeTrace: expect.objectContaining({
+          primaryTelemetry: expect.objectContaining({
+            runtime: "native",
+            terminalStatus: "failed",
+            sseTerminal: "error",
+            memory: { outcome: "not_started" },
+            error: { category: "cas", code: "context_changed" },
+          }),
+        }),
+      },
+    }));
+  });
+
   it("uses the provider's reported token usage in place of the estimate", async () => {
     supportsToolsState.value = false;
     buildContextMock.mockResolvedValue({
@@ -1184,7 +1442,29 @@ describe("chat generate agent image tool", () => {
     );
 
     expect(result).toEqual({ status: "failed" });
-    expect(rootMessageUpdates.at(-1)?.data).toMatchObject({ status: "failed" });
+    expect(rootMessageUpdates).toContainEqual(expect.objectContaining({
+      data: expect.objectContaining({ status: "failed" }),
+    }));
+    expect(rootMessageUpdates).toContainEqual(expect.objectContaining({
+      data: {
+        runtimeTrace: expect.objectContaining({
+          primaryTelemetry: expect.objectContaining({
+            runtime: "native",
+            terminalStatus: "failed",
+            truncated: false,
+            firstTokenMs: expect.any(Number),
+            totalMs: expect.any(Number),
+            provider: "mock",
+            model: "local-model",
+            steps: 1,
+            toolCalls: 0,
+            memory: { outcome: "not_started" },
+            error: { category: "provider", code: "provider_output_limit" },
+            sseTerminal: "error",
+          }),
+        }),
+      },
+    }));
     expect(messageUpdates).toHaveLength(0);
     expect(appendStreamEventMock).toHaveBeenCalledWith(
       "chat:stream:msg_assistant",
@@ -1274,6 +1554,62 @@ describe("chat generate agent image tool", () => {
     );
   });
 
+  it("keeps the original telemetry clock when the same durable attempt retries", async () => {
+    supportsToolsState.value = false;
+    buildContextMock.mockResolvedValue({
+      ...context,
+      policy: { ...context.policy, imageToolEnabled: false },
+      recentMessages: [{ id: "msg_user", role: "user", content: "hello" }],
+    });
+    streamMock.mockImplementation(async function* recoveredStream() {
+      yield { delta: "recovered reply", done: true };
+    });
+    const startedAt = new Date(Date.now() - 5_000).toISOString();
+    const { prisma, messageUpdates } = fakePrisma(undefined, undefined, undefined, {
+      schemaVersion: 1,
+      companionRuntime: {
+        runtime: "native",
+        memoryBackend: "legacy",
+        profile: "native",
+        private: false,
+      },
+      primaryTelemetry: {
+        schemaVersion: 1,
+        runtime: "native",
+        startedAt,
+        retryCount: 0,
+        terminalStatus: "failed",
+        error: { category: "provider", code: "empty_model_response" },
+      },
+    });
+
+    await expect(processGenerateJob(
+      {
+        payload: {
+          sessionId: "sess_1",
+          assistantMessageId: "msg_assistant",
+          userMessageId: "msg_user",
+          attempt: 1,
+        },
+        attemptsMade: 1,
+        maxAttempts: 2,
+      },
+      prisma,
+      { projectorPrisma: prisma },
+    )).resolves.toEqual({ status: "sent" });
+
+    expect(finalizedMessageUpdate(messageUpdates)).toMatchObject({
+      runtimeTrace: expect.objectContaining({
+        primaryTelemetry: expect.objectContaining({
+          startedAt,
+          retryCount: 1,
+          totalMs: expect.any(Number),
+          terminalStatus: "sent",
+        }),
+      }),
+    });
+  });
+
   it("terminalizes an empty provider response only on the final worker attempt", async () => {
     supportsToolsState.value = false;
     buildContextMock.mockResolvedValue({
@@ -1312,6 +1648,71 @@ describe("chat generate agent image tool", () => {
         retryable: false,
       }),
     );
+  });
+
+  it("terminalizes an unexpected exhausted worker failure without erasing admitted telemetry", async () => {
+    const startedAt = new Date(Date.now() - 50).toISOString();
+    const updates: CreateCall[] = [];
+    const versionUpdates: CreateCall[] = [];
+    const prismaImpl = {
+      message: {
+        findUnique: vi.fn(async () => ({
+          status: "generating",
+          attempt: 1,
+          runtimeTrace: {
+            primaryTelemetry: {
+              schemaVersion: 1,
+              runtime: "native",
+              startedAt,
+              retryCount: 2,
+              provider: "mock",
+              model: "local-model",
+            },
+          },
+        })),
+        updateMany: vi.fn(async (call: CreateCall) => {
+          updates.push(call);
+          return { count: 1 };
+        }),
+      },
+      messageVersion: {
+        upsert: vi.fn(async (call: CreateCall) => {
+          versionUpdates.push(call);
+          return {};
+        }),
+      },
+    };
+    const prisma = {
+      ...prismaImpl,
+      $transaction: vi.fn(async (callback: (tx: typeof prismaImpl) => Promise<unknown>) =>
+        callback(prismaImpl)),
+    } as unknown as ChatPrismaClient;
+
+    await expect(terminalizeGenerateJobFailure({
+      sessionId: "sess_1",
+      assistantMessageId: "msg_assistant",
+      userMessageId: "msg_user",
+      attempt: 1,
+    }, prisma)).resolves.toBe(true);
+
+    expect(updates).toContainEqual(expect.objectContaining({
+      data: {
+        status: "failed",
+        runtimeTrace: expect.objectContaining({
+          primaryTelemetry: expect.objectContaining({
+            runtime: "native",
+            startedAt,
+            retryCount: 2,
+            terminalStatus: "failed",
+            totalMs: expect.any(Number),
+            sseTerminal: "error",
+            memory: { outcome: "not_started" },
+            error: { category: "worker", code: "generation_retries_exhausted" },
+          }),
+        }),
+      },
+    }));
+    expect(versionUpdates).toHaveLength(1);
   });
 
   it("FC path: a legal native tool call coexists with the prose already streamed (text+image same turn)", async () => {

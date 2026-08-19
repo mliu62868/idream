@@ -11,6 +11,7 @@ import { chatPrisma } from "./db.js";
 import { env } from "./env.js";
 import { FREE_DAILY_MESSAGES } from "@idream/shared/chat/limits";
 import { pipelineEndpoint } from "@idream/shared/env";
+import { collectCompanionRolloutEvidence } from "./companion-rollout-evidence.js";
 
 export interface ChatAdminRequest {
   method: string;
@@ -33,6 +34,9 @@ export async function dispatchChatAdmin(req: ChatAdminRequest): Promise<ChatAdmi
   try {
     if (rest === "/overview") return { status: 200, body: await overview() };
     if (rest === "/provider-health") return { status: 200, body: await providerHealth() };
+    if (rest === "/companion-rollout-evidence") {
+      return { status: 200, body: await companionRolloutEvidence(req.query) };
+    }
     if (rest === "/sessions") return { status: 200, body: await sessions(req.query) };
     if (rest === "/usage") return { status: 200, body: await usage(req.query) };
     if (rest === "/moderation-events") {
@@ -411,6 +415,27 @@ const moderationEventsQuerySchema = z.object({
   limit: listLimitSchema,
   cursor: z.string().min(1).optional(),
 }).strict();
+const companionRolloutEvidenceQuerySchema = z.object({
+  from: z.string().datetime({ offset: true }).transform((value) => new Date(value)),
+  to: z.string().datetime({ offset: true }).transform((value) => new Date(value)),
+  userId: z.string().trim().min(1).max(200).optional(),
+}).strict().superRefine((query, context) => {
+  if (query.from >= query.to) {
+    context.addIssue({
+      code: "custom",
+      path: ["to"],
+      message: "to must be later than from",
+    });
+  }
+});
+
+async function companionRolloutEvidence(rawQuery?: Record<string, string>) {
+  const query = companionRolloutEvidenceQuerySchema.parse(rawQuery ?? {});
+  return collectCompanionRolloutEvidence({
+    window: { from: query.from, to: query.to },
+    ...(query.userId ? { userId: query.userId } : {}),
+  });
+}
 
 async function sessions(rawQuery?: Record<string, string>) {
   const query = sessionsQuerySchema.parse(rawQuery ?? {});

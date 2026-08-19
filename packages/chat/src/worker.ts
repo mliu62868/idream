@@ -10,6 +10,8 @@ import {
 import { runWorker } from "./queue.js";
 import { logger } from "./logger.js";
 import {
+  cancelDshShadowExecutor,
+  drainDshShadowExecutor,
   processGenerateJob,
   terminalizeGenerateJobFailure,
 } from "./generate.js";
@@ -93,6 +95,8 @@ export function startWorker(): { close: () => Promise<void> } {
       clearInterval(reconcileTimer);
       clearInterval(maintainTimer);
       await Promise.all(workers.map((w) => w.close()));
+      cancelDshShadowExecutor("shutdown");
+      await drainDshShadowExecutor();
     },
   };
 }

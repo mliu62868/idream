@@ -10,9 +10,12 @@ const AUTHORITY_USER = `${P}u1`;
 const ORPHAN_USER = `${P}u2`;
 const PAGINATION_USER = `${P}u3`;
 const AUDIT_USER = `${P}audit`;
+const EVIDENCE_BASE = new Date(Date.now() - 60_000);
 const superPool = new Pool({ connectionString: process.env.CHAT_TEST_SUPER_URL });
 
 async function purge() {
+  await chatPrisma.chatOutboxEvent.deleteMany({ where: { id: { startsWith: P } } });
+  await chatPrisma.messageVersion.deleteMany({ where: { id: { startsWith: P } } });
   await chatPrisma.chatModerationEvent.deleteMany({ where: { id: { startsWith: P } } });
   await chatPrisma.chatUsage.deleteMany({ where: { id: { startsWith: P } } });
   await chatPrisma.message.deleteMany({ where: { id: { startsWith: P } } });
@@ -84,6 +87,114 @@ beforeAll(async () => {
       status: "sent",
       safetyStatus: "ok",
       createdAt: new Date("2099-01-01T00:00:00.000Z"),
+    },
+  });
+  // Keep rollout fixtures outside the active session used by the existing
+  // metadata-list assertions. Archived sessions still represent valid turns
+  // in an explicit Gate R evidence window.
+  await chatPrisma.chatSession.create({
+    data: {
+      id: `${P}s-evidence`,
+      userId: AUTHORITY_USER,
+      characterId: `${P}c1`,
+      status: "archived",
+    },
+  });
+  for (const fixture of [
+    {
+      suffix: "native",
+      createdAt: EVIDENCE_BASE,
+      telemetry: {
+        schemaVersion: 1,
+        runtime: "native",
+        startedAt: EVIDENCE_BASE.toISOString(),
+        firstTokenMs: 100,
+        totalMs: 400,
+        terminalStatus: "sent",
+        truncated: false,
+        provider: "openrouter",
+        model: "deepseek/native",
+        usage: { promptTokens: 40, completionTokens: 10 },
+        steps: 1,
+        toolCalls: 0,
+        retryCount: 0,
+        sseTerminal: "done",
+        memory: { outcome: "pending" },
+      },
+      memoryExtractedAttempt: 1,
+    },
+    {
+      suffix: "dsh",
+      createdAt: new Date(EVIDENCE_BASE.getTime() + 1_000),
+      telemetry: {
+        schemaVersion: 1,
+        runtime: "dsh",
+        startedAt: new Date(EVIDENCE_BASE.getTime() + 1_000).toISOString(),
+        firstTokenMs: 150,
+        totalMs: 500,
+        terminalStatus: "sent",
+        truncated: false,
+        provider: "openrouter",
+        model: "deepseek/dsh",
+        usage: { promptTokens: 50, completionTokens: 12, reasoningTokens: 3 },
+        steps: 2,
+        toolCalls: 1,
+        retryCount: 0,
+        memory: { outcome: "failed", settleLagMs: 75 },
+      },
+      memoryExtractedAttempt: 0,
+    },
+  ] as const) {
+    const messageId = `${P}m-evidence-${fixture.suffix}`;
+    await chatPrisma.message.create({
+      data: {
+        id: messageId,
+        sessionId: `${P}s-evidence`,
+        role: "assistant",
+        content: SECRET,
+        status: "sent",
+        safetyStatus: "passed",
+        attempt: 1,
+        replyToMessageId: `${P}m1`,
+        memoryAuthority: "enabled",
+        memoryExtractedAttempt: fixture.memoryExtractedAttempt,
+        runtimeTrace: { primaryTelemetry: fixture.telemetry },
+        createdAt: fixture.createdAt,
+      },
+    });
+    await chatPrisma.messageVersion.create({
+      data: {
+        id: `${P}mv-evidence-${fixture.suffix}`,
+        messageId,
+        content: SECRET,
+        selected: true,
+        attempt: 1,
+        runtimeTrace: { primaryTelemetry: fixture.telemetry },
+        createdAt: fixture.createdAt,
+      },
+    });
+  }
+  await chatPrisma.chatOutboxEvent.create({
+    data: {
+      id: `${P}outbox-native`,
+      eventType: "chat.message.completed",
+      aggregateType: "message",
+      aggregateId: `${P}m-evidence-native`,
+      payload: { secret: SECRET },
+      status: "delivered",
+      createdAt: new Date(EVIDENCE_BASE.getTime() + 2_000),
+      deliveredAt: new Date(EVIDENCE_BASE.getTime() + 2_050),
+    },
+  });
+  await chatPrisma.chatOutboxEvent.create({
+    data: {
+      id: `${P}outbox-dsh`,
+      eventType: "chat.message.completed",
+      aggregateType: "message",
+      aggregateId: `${P}m-evidence-dsh`,
+      payload: { secret: SECRET },
+      status: "pending",
+      createdAt: new Date(EVIDENCE_BASE.getTime() + 3_000),
     },
   });
   await chatPrisma.message.create({
@@ -266,6 +377,67 @@ describe("chat internal admin api", () => {
     });
     expect(JSON.stringify(body)).not.toContain("API_KEY");
     expect(JSON.stringify(body)).not.toContain(SECRET);
+  });
+
+  it("returns read-only redacted Gate R evidence for an explicit time window", async () => {
+    const res = await dispatchChatAdmin({
+      method: "GET",
+      path: "/internal/admin/companion-rollout-evidence",
+      query: {
+        from: new Date(EVIDENCE_BASE.getTime() - 1_000).toISOString(),
+        to: new Date(EVIDENCE_BASE.getTime() + 60_000).toISOString(),
+        userId: AUTHORITY_USER,
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      comparisonStatus: "observed",
+      releaseDecision: { status: "not_evaluated" },
+      dataScope: {
+        userAuthority: "core.chat_user_view",
+        activeCustomersOnly: true,
+        userFilterApplied: true,
+        windowBasis: "message_versions.created_at",
+      },
+      runtimes: {
+        native: {
+          attempts: 1,
+          firstTokenMs: { samples: 1, p50: 100, p95: 100 },
+          memory: { outcomes: { extracted: 1 } },
+          outbox: {
+            events: 1,
+            delivered: 1,
+            deliveryLagMs: { samples: 1, p50: 50, p95: 50 },
+          },
+        },
+        dsh: {
+          attempts: 1,
+          firstTokenMs: { samples: 1, p50: 150, p95: 150 },
+          memory: {
+            outcomes: { failed: 1 },
+            settleLagMs: { samples: 1, p50: 75, p95: 75 },
+          },
+          sseIncomplete: 1,
+          outbox: { events: 1, pending: 1 },
+        },
+      },
+    });
+    const serialized = JSON.stringify(res.body);
+    expect(serialized).not.toContain(SECRET);
+    expect(serialized).not.toContain(AUTHORITY_USER);
+    expect(serialized).not.toContain(`${P}m-evidence`);
+  });
+
+  it("rejects an invalid Gate R evidence window", async () => {
+    await expect(dispatchChatAdmin({
+      method: "GET",
+      path: "/internal/admin/companion-rollout-evidence",
+      query: {
+        from: "2026-08-20T00:00:00.000Z",
+        to: "2026-08-19T00:00:00.000Z",
+      },
+    })).resolves.toMatchObject({ status: 400 });
   });
 
   it("sessions are metadata-only (no plaintext content) and filter by user", async () => {

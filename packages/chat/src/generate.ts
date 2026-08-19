@@ -62,6 +62,10 @@ import {
 import { DshCompanionRuntime } from "./companion-runtime.js";
 import { verifiedCompanionProfileDigest } from "./companion-sidecar-readiness.js";
 import {
+  BoundedShadowExecutor,
+  type ShadowExecutor,
+} from "./companion-shadow-executor.js";
+import {
   COMPANION_DSH_COMMIT,
   COMPANION_DSH_VERSION,
   COMPANION_IGREP_PLUGIN_VERSION,
@@ -92,6 +96,56 @@ export interface GenerateHooks {
   afterContextBuilt?: (context: BuiltContext) => Promise<void> | void;
   jobAttempt?: Pick<ChatJob, "attemptsMade" | "maxAttempts">;
   projectorPrisma?: ChatPrismaClient;
+  shadowExecutor?: ShadowExecutor;
+}
+
+const dshShadowExecutor = new BoundedShadowExecutor({ concurrency: 2, maxQueued: 16 });
+const detachedShadowPersistence = new Set<Promise<void>>();
+
+/** Waits for accepted shadow runs and queue-saturation evidence writes. */
+export async function drainDshShadowExecutor(): Promise<void> {
+  await dshShadowExecutor.onIdle();
+  while (detachedShadowPersistence.size > 0) {
+    await Promise.allSettled([...detachedShadowPersistence]);
+  }
+}
+
+export function cancelDshShadowExecutor(reason = "cancelled"): void {
+  dshShadowExecutor.cancel(reason);
+}
+
+function trackDetachedShadowPersistence(promise: Promise<void>): void {
+  detachedShadowPersistence.add(promise);
+  void promise.finally(() => detachedShadowPersistence.delete(promise));
+}
+
+interface PrimaryAttemptTelemetry {
+  schemaVersion: 1;
+  runtime: "native" | "dsh";
+  startedAt: string;
+  firstTokenMs?: number;
+  totalMs?: number;
+  terminalStatus?: "sent" | "blocked" | "failed" | "cancelled";
+  truncated?: boolean;
+  provider?: string;
+  model?: string;
+  usage?: {
+    promptTokens: number;
+    completionTokens: number;
+    reasoningTokens?: number;
+  };
+  steps?: number;
+  toolCalls?: number;
+  retryCount: number;
+  sseTerminal?: "done" | "error";
+  memory?: {
+    outcome: string;
+    settleLagMs?: number;
+  };
+  error?: {
+    category: string;
+    code: string;
+  };
 }
 
 export type GenerateWorkerJob = Pick<
@@ -118,10 +172,68 @@ export async function terminalizeGenerateJobFailure(
   payload: GeneratePayload,
   prisma: ChatPrismaClient = chatPrisma,
 ): Promise<boolean> {
-  const terminalized = await failAssistant(
-    prisma,
-    payload.assistantMessageId,
-  );
+  const current = await prisma.message.findUnique({
+    where: { id: payload.assistantMessageId },
+    select: { status: true, attempt: true, runtimeTrace: true },
+  });
+  if (
+    !current ||
+    current.attempt !== payload.attempt ||
+    !["pending", "generating"].includes(current.status)
+  ) return false;
+  const currentTrace = jsonObject(current.runtimeTrace);
+  const admittedTelemetry = jsonObject(currentTrace?.primaryTelemetry);
+  if (!currentTrace || !admittedTelemetry) {
+    const terminalizedWithoutTrace = await failAssistant(prisma, payload.assistantMessageId);
+    if (!terminalizedWithoutTrace) return false;
+    await appendStreamEvent(streamKey(payload.assistantMessageId), {
+      type: "error",
+      attempt: payload.attempt,
+      code: "generation_retries_exhausted",
+      retryable: false,
+    }).catch(() => {});
+    return true;
+  }
+  const startedAt = typeof admittedTelemetry.startedAt === "string"
+    ? Date.parse(admittedTelemetry.startedAt)
+    : Number.NaN;
+  const terminalTelemetry = {
+    ...admittedTelemetry,
+    ...(Number.isFinite(startedAt) ? { totalMs: Math.max(0, Date.now() - startedAt) } : {}),
+    terminalStatus: "failed",
+    truncated: admittedTelemetry.truncated === true,
+    sseTerminal: "error",
+    memory: jsonObject(admittedTelemetry.memory) ?? { outcome: "not_started" },
+    error: { category: "worker", code: "generation_retries_exhausted" },
+  };
+  const runtimeTrace = JSON.parse(JSON.stringify({
+    ...currentTrace,
+    primaryTelemetry: terminalTelemetry,
+  })) as Prisma.InputJsonValue;
+  const terminalized = await prisma.$transaction(async (tx) => {
+    const updated = await tx.message.updateMany({
+      where: {
+        id: payload.assistantMessageId,
+        status: { in: ["pending", "generating"] },
+        attempt: payload.attempt,
+      },
+      data: { status: "failed", runtimeTrace },
+    });
+    if (updated.count === 0) return false;
+    await tx.messageVersion.upsert({
+      where: { id: `mv:${payload.assistantMessageId}:${payload.attempt}` },
+      create: {
+        id: `mv:${payload.assistantMessageId}:${payload.attempt}`,
+        messageId: payload.assistantMessageId,
+        content: "",
+        selected: false,
+        attempt: payload.attempt,
+        runtimeTrace,
+      },
+      update: { runtimeTrace },
+    });
+    return true;
+  });
   if (!terminalized) return false;
   await appendStreamEvent(streamKey(payload.assistantMessageId), {
     type: "error",
@@ -130,6 +242,12 @@ export async function terminalizeGenerateJobFailure(
     retryable: false,
   }).catch(() => {});
   return true;
+}
+
+function jsonObject(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }
 
 export async function processGenerate(
@@ -206,6 +324,31 @@ export async function processGenerate(
     characterId: session.characterId,
     priorPin: priorRuntimeTrace?.companionRuntime,
   });
+  const priorPrimaryTelemetry = jsonObject(priorRuntimeTrace?.primaryTelemetry);
+  const priorPrimaryStartedAt =
+    priorPrimaryTelemetry?.schemaVersion === 1 &&
+    priorPrimaryTelemetry.runtime === attemptRuntime.runtime &&
+    typeof priorPrimaryTelemetry.startedAt === "string"
+      ? Date.parse(priorPrimaryTelemetry.startedAt)
+      : Number.NaN;
+  // INVARIANT: BullMQ retries are transport retries of one durable attempt.
+  // Gate R latency therefore keeps the first admission clock, not the latest
+  // worker invocation clock.
+  const primaryStartedAt = Number.isFinite(priorPrimaryStartedAt)
+    ? priorPrimaryStartedAt
+    : Date.now();
+  let primaryFirstTokenMs = typeof priorPrimaryTelemetry?.firstTokenMs === "number"
+    && Number.isFinite(priorPrimaryTelemetry.firstTokenMs)
+    && priorPrimaryTelemetry.firstTokenMs >= 0
+    ? priorPrimaryTelemetry.firstTokenMs
+    : undefined;
+  let primarySteps = 0;
+  const primaryTelemetryBase: PrimaryAttemptTelemetry = {
+    schemaVersion: 1,
+    runtime: attemptRuntime.runtime,
+    startedAt: new Date(primaryStartedAt).toISOString(),
+    retryCount: hooks.jobAttempt?.attemptsMade ?? 0,
+  };
   const companionRuntimePin = {
     runtime: attemptRuntime.runtime,
     memoryBackend: attemptRuntime.memoryBackend,
@@ -221,6 +364,7 @@ export async function processGenerate(
     assistantMessageId: payload.assistantMessageId,
     userMessageId: payload.userMessageId,
     companionRuntime: companionRuntimePin,
+    primaryTelemetry: primaryTelemetryBase,
   })) as Prisma.InputJsonValue;
 
   const claimed = await prisma.message.updateMany({
@@ -327,6 +471,11 @@ export async function processGenerate(
     outputAuthority: authoritativeNoMemoryReply
       ? "no_memory_boundary"
       : "model",
+    primaryTelemetry: {
+      ...primaryTelemetryBase,
+      provider: prepared.profile.provider,
+      model: prepared.model,
+    } satisfies PrimaryAttemptTelemetry,
   };
   const runtimeTrace = JSON.parse(
     JSON.stringify(runtimeTraceFacts),
@@ -357,18 +506,18 @@ export async function processGenerate(
     update: { runtimeTrace },
   });
 
-  const primaryStartedAt = Date.now();
-  const shadowExecution = companionRuntimeConfig.dshShadow.enabled &&
+  const shadowInput = companionRuntimeConfig.dshShadow.enabled &&
       attemptRuntime.runtime === "native" &&
+      turnMemoryEnabled &&
       !authoritativeNoMemoryReply
-    ? runDshShadowTurn({
-        payload,
-        session,
-        prepared,
-        sidecarUrl: companionRuntimeConfig.sidecarUrl,
-        sidecarToken: companionRuntimeConfig.sidecarToken,
-        deadlineMs: companionRuntimeConfig.deadlineMs,
-      })
+    ? {
+      payload,
+      session,
+      prepared,
+      sidecarUrl: companionRuntimeConfig.sidecarUrl,
+      sidecarToken: companionRuntimeConfig.sidecarToken,
+      deadlineMs: companionRuntimeConfig.deadlineMs,
+      }
     : null;
 
   await appendStreamEvent(key, { type: "start", attempt: payload.attempt });
@@ -396,6 +545,7 @@ export async function processGenerate(
   // Set when the stream died after the user already watched text arrive; the
   // ledger keeps the partial reply and the trace records why it is short.
   let truncated = false;
+  let nativeTerminalError: PrimaryAttemptTelemetry["error"] | null = null;
   // Real token counts, reported by the provider on the terminal chunk. Absent for
   // every locally-authored reply (no-memory boundary, tool caption) and for any
   // stream that never reached `done`, which is what estimateTokens covers.
@@ -407,8 +557,33 @@ export async function processGenerate(
 
   const fcEnabled = providers.chat.supportsTools === true && prepared.tools.length > 0;
 
+  const nativeFailureTrace = (
+    category: string,
+    code: string,
+  ): { trace: Record<string, unknown>; telemetry: PrimaryAttemptTelemetry } => {
+    const telemetry: PrimaryAttemptTelemetry = {
+      ...primaryTelemetryBase,
+      ...(primaryFirstTokenMs === undefined ? {} : { firstTokenMs: primaryFirstTokenMs }),
+      totalMs: Math.max(0, Date.now() - primaryStartedAt),
+      terminalStatus: "failed",
+      truncated: false,
+      provider: prepared.profile.provider,
+      model: prepared.model,
+      ...(providerUsage ? { usage: providerUsage } : {}),
+      steps: primarySteps,
+      toolCalls: imageToolCall ? 1 : 0,
+      memory: { outcome: "not_started" },
+      error: { category, code },
+    };
+    return {
+      telemetry,
+      trace: { ...runtimeTraceFacts, primaryTelemetry: telemetry },
+    };
+  };
+
   const streamDelta = async (delta: string): Promise<void> => {
     await heartbeat();
+    primaryFirstTokenMs ??= Math.max(0, Date.now() - primaryStartedAt);
     seq += 1;
     chunks.push(delta);
     await appendStreamEvent(key, { type: "delta", attempt: payload.attempt, seq, delta });
@@ -421,6 +596,7 @@ export async function processGenerate(
   };
 
   const streamPlain = async (): Promise<void> => {
+    primarySteps += 1;
     for await (const part of providers.chat.stream(prepared)) {
       readChunkUsage(part);
       if (part.delta) await streamDelta(part.delta);
@@ -453,6 +629,7 @@ export async function processGenerate(
     ];
     let reply = "";
     try {
+      primarySteps += 1;
       const completion = await providers.chat.complete({
         ...prepared,
         messages: followupMessages,
@@ -477,6 +654,7 @@ export async function processGenerate(
     if (prepared.tools.length === 0) return;
     if (!shouldPlanImageTool(prepared)) return;
     try {
+      primarySteps += 1;
       const toolPlan = await planAgentToolCall({
         chat: providers.chat,
         model: prepared.model,
@@ -528,6 +706,7 @@ export async function processGenerate(
       let toolCalls: ChatToolCall[] = [];
       let fellBackAlready = false;
       try {
+        primarySteps += 1;
         for await (const part of providers.chat.stream(prepared)) {
           readChunkUsage(part);
           if (part.toolCalls) toolCalls = part.toolCalls;
@@ -573,19 +752,36 @@ export async function processGenerate(
     // tail is structurally missing, and the turn stays terminal (retry/regenerate).
     if (seq > 0 && !outputLimitReached) {
       truncated = true;
+      nativeTerminalError = {
+        category: "provider",
+        code: "provider_stream_interrupted",
+      };
       logger.warn(
         { err: error, assistantMessageId: payload.assistantMessageId, seq },
         "chat stream dropped mid-reply; finalizing the partial content",
       );
     } else {
+      const errorCode = outputLimitReached ? "provider_output_limit" : "provider_failed";
+      const failure = nativeFailureTrace("provider", errorCode);
+      await persistFailedRuntimeTrace({
+        prisma,
+        payload,
+        runtimeTraceFacts: failure.trace,
+      });
       if (!retryable) {
         await failAssistant(prisma, payload.assistantMessageId);
       }
       await appendStreamEvent(key, {
         type: "error",
         attempt: payload.attempt,
-        code: outputLimitReached ? "provider_output_limit" : "provider_failed",
+        code: errorCode,
         retryable,
+      });
+      failure.telemetry.sseTerminal = "error";
+      await persistFailedRuntimeTrace({
+        prisma,
+        payload,
+        runtimeTraceFacts: failure.trace,
       });
       if (seq === 0) throw error instanceof Error ? error : new Error(String(error));
       return { status: "failed" };
@@ -597,6 +793,12 @@ export async function processGenerate(
     const error = new Error("chat model returned an empty response");
     const retryable = hasWorkerRetryRemaining(hooks.jobAttempt);
     runtimeReadiness.recordTurnFailure(error);
+    const failure = nativeFailureTrace("provider", "empty_model_response");
+    await persistFailedRuntimeTrace({
+      prisma,
+      payload,
+      runtimeTraceFacts: failure.trace,
+    });
     if (!retryable) {
       await failAssistant(prisma, payload.assistantMessageId);
     }
@@ -605,6 +807,12 @@ export async function processGenerate(
       attempt: payload.attempt,
       code: "empty_model_response",
       retryable,
+    });
+    failure.telemetry.sseTerminal = "error";
+    await persistFailedRuntimeTrace({
+      prisma,
+      payload,
+      runtimeTraceFacts: failure.trace,
     });
     throw error;
   }
@@ -618,17 +826,37 @@ export async function processGenerate(
     promptTokens: prepared.budget.usedInputTokens,
     completionTokens: estimateTokens(content),
   };
-  // Ops must be able to tell a model that chose to stop from a stream that was
-  // cut, since only the second one is worth chasing.
-  const finalRuntimeTrace = truncated
-    ? (JSON.parse(
-        JSON.stringify({ ...runtimeTraceFacts, truncated: true }),
-      ) as Prisma.InputJsonValue)
-    : null;
 
   // Output moderation (design §3 step 10).
   const moderation = await providers.moderation.check({ targetType: "text", content });
   const blocked = moderation.status === "blocked";
+  const nativeTelemetry: PrimaryAttemptTelemetry = {
+    ...primaryTelemetryBase,
+    provider: prepared.profile.provider,
+    model,
+    ...(primaryFirstTokenMs === undefined ? {} : { firstTokenMs: primaryFirstTokenMs }),
+    totalMs: Math.max(0, Date.now() - primaryStartedAt),
+    terminalStatus: blocked ? "blocked" : "sent",
+    truncated,
+    usage,
+    steps: primarySteps,
+    toolCalls: imageToolCall ? 1 : 0,
+    memory: {
+      outcome: blocked
+        ? "discarded_blocked"
+        : turnMemoryEnabled
+          ? "pending"
+          : "disabled",
+    },
+    ...(nativeTerminalError ? { error: nativeTerminalError } : {}),
+  };
+  runtimeTraceFacts.primaryTelemetry = nativeTelemetry;
+  // Ops must be able to tell a model that chose to stop from a stream that was
+  // cut, since only the second one is worth chasing.
+  const finalRuntimeTrace = JSON.parse(JSON.stringify({
+    ...runtimeTraceFacts,
+    ...(truncated ? { truncated: true } : {}),
+  })) as Prisma.InputJsonValue;
   const traceEntry: Record<string, unknown> | null = turnMemoryEnabled
     ? JSON.parse(JSON.stringify({
         ts: new Date().toISOString(),
@@ -670,17 +898,79 @@ export async function processGenerate(
     runtimeTrace: finalRuntimeTrace,
   });
   if (finalized === "stale") {
-    await appendStreamEvent(key, {
+    nativeTelemetry.terminalStatus = "failed";
+    nativeTelemetry.memory = { outcome: "not_started" };
+    nativeTelemetry.error = { category: "cas", code: "context_changed" };
+    runtimeTraceFacts.primaryTelemetry = nativeTelemetry;
+    await persistFailedRuntimeTrace({ prisma, payload, runtimeTraceFacts });
+    const sseErrorPublished = await appendStreamEvent(key, {
       type: "error",
       attempt: payload.attempt,
       code: "context_changed",
       retryable: true,
-    }).catch(() => {});
+    }).then(() => true).catch(() => false);
+    if (sseErrorPublished) {
+      nativeTelemetry.sseTerminal = "error";
+      await persistFailedRuntimeTrace({ prisma, payload, runtimeTraceFacts });
+    }
     return { status: "failed" };
   }
   if (finalized === "skipped") return { status: "skipped" };
 
   await appendStreamEvent(key, { type: "done", attempt: payload.attempt, usage });
+  nativeTelemetry.sseTerminal = "done";
+  runtimeTraceFacts.primaryTelemetry = nativeTelemetry;
+  await persistTerminalRuntimeTrace({
+    prisma,
+    payload,
+    messageStatus: blocked ? "blocked" : "sent",
+    runtimeTraceFacts,
+    truncated,
+  });
+
+  if (shadowInput) {
+    const primary = {
+      content,
+      provider: prepared.profile.provider,
+      model,
+      finishReason: truncated ? "truncated" as const : "stop" as const,
+      usage,
+      latencyMs: Math.max(0, Date.now() - primaryStartedAt),
+      toolCalls: imageToolCall ? 1 : 0,
+    };
+    const persistOutcome = async (shadow: DshShadowOutcome): Promise<void> => {
+      await persistShadowComparison({
+        prisma,
+        payload,
+        terminalStatus: blocked ? "blocked" : "sent",
+        runtimeTraceFacts,
+        truncated,
+        shadowComparison: buildShadowComparison({ shadow, primary }),
+      });
+    };
+    const executor = hooks.shadowExecutor ?? dshShadowExecutor;
+    const accepted = executor.submit(async (signal) => {
+      await persistOutcome(await runDshShadowTurn({ ...shadowInput, signal }));
+    });
+    if (!accepted) {
+      logger.warn(
+        { assistantMessageId: payload.assistantMessageId, code: "shadow_queue_saturated" },
+        "DSH shadow executor queue is saturated",
+      );
+      trackDetachedShadowPersistence(persistOutcome({
+        status: "error",
+        invocationId: `shadow:inv:${payload.assistantMessageId}:${payload.attempt}`,
+        attemptId: `shadow:${payload.assistantMessageId}:${payload.attempt}`,
+        latencyMs: 0,
+        candidate: null,
+        dryRunToolCalls: 0,
+        error: {
+          code: "shadow_queue_saturated",
+          message: "DSH shadow executor queue is saturated",
+        },
+      }));
+    }
+  }
 
   // Scene is ordinary session continuity and advances even for an incognito turn.
   // The worker independently gates file memory and relationship writes using the
@@ -702,29 +992,6 @@ export async function processGenerate(
   }
 
   await scheduleOutboxDelivery();
-  if (shadowExecution) {
-    const shadow = await shadowExecution;
-    const shadowComparison = buildShadowComparison({
-      shadow,
-      primary: {
-        content,
-        provider: prepared.profile.provider,
-        model,
-        finishReason: truncated ? "truncated" : "stop",
-        usage,
-        latencyMs: Date.now() - primaryStartedAt,
-        toolCalls: imageToolCall ? 1 : 0,
-      },
-    });
-    await persistShadowComparison({
-      prisma,
-      payload,
-      terminalStatus: blocked ? "blocked" : "sent",
-      runtimeTraceFacts,
-      truncated,
-      shadowComparison,
-    });
-  }
   return { status: blocked ? "blocked" : "sent" };
   } finally {
     clearInterval(heartbeatTimer);
@@ -748,6 +1015,7 @@ async function runDshShadowTurn(input: {
   sidecarUrl: string;
   sidecarToken: string;
   deadlineMs: number;
+  signal?: AbortSignal;
 }): Promise<DshShadowOutcome> {
   const startedAt = Date.now();
   const attemptId = `shadow:${input.payload.assistantMessageId}:${input.payload.attempt}`;
@@ -809,7 +1077,9 @@ async function runDshShadowTurn(input: {
           "shadow terminal is comparison-only and cannot commit",
         );
       },
-    }, AbortSignal.timeout(input.deadlineMs));
+    }, input.signal
+      ? AbortSignal.any([input.signal, AbortSignal.timeout(input.deadlineMs)])
+      : AbortSignal.timeout(input.deadlineMs));
   } catch (error) {
     eventError = {
       code: "shadow_runtime_error",
@@ -880,7 +1150,7 @@ function buildShadowComparison(input: {
   };
 }
 
-async function persistShadowComparison(input: {
+export async function persistShadowComparison(input: {
   prisma: ChatPrismaClient;
   payload: GeneratePayload;
   terminalStatus: "sent" | "blocked";
@@ -894,10 +1164,52 @@ async function persistShadowComparison(input: {
     shadowComparison: input.shadowComparison,
   })) as Prisma.InputJsonValue;
   try {
+    await input.prisma.$transaction(async (tx) => {
+      const updated = await tx.message.updateMany({
+        where: {
+          id: input.payload.assistantMessageId,
+          status: input.terminalStatus,
+          attempt: input.payload.attempt,
+        },
+        data: { runtimeTrace: trace },
+      });
+      if (updated.count === 0) return;
+      const versionUpdated = await tx.messageVersion.updateMany({
+        where: {
+          id: `mv:${input.payload.assistantMessageId}:${input.payload.attempt}`,
+          messageId: input.payload.assistantMessageId,
+          attempt: input.payload.attempt,
+        },
+        data: { runtimeTrace: trace },
+      });
+      if (versionUpdated.count !== 1) {
+        throw new Error("DSH shadow comparison version CAS failed");
+      }
+    });
+  } catch (error) {
+    logger.warn(
+      { err: error, assistantMessageId: input.payload.assistantMessageId },
+      "DSH shadow comparison persistence failed",
+    );
+  }
+}
+
+async function persistTerminalRuntimeTrace(input: {
+  prisma: ChatPrismaClient;
+  payload: GeneratePayload;
+  messageStatus: "generating" | "sent" | "blocked" | "failed";
+  runtimeTraceFacts: Record<string, unknown>;
+  truncated: boolean;
+}): Promise<void> {
+  const trace = JSON.parse(JSON.stringify({
+    ...input.runtimeTraceFacts,
+    ...(input.truncated ? { truncated: true } : {}),
+  })) as Prisma.InputJsonValue;
+  try {
     const updated = await input.prisma.message.updateMany({
       where: {
         id: input.payload.assistantMessageId,
-        status: input.terminalStatus,
+        status: input.messageStatus,
         attempt: input.payload.attempt,
       },
       data: { runtimeTrace: trace },
@@ -910,7 +1222,35 @@ async function persistShadowComparison(input: {
   } catch (error) {
     logger.warn(
       { err: error, assistantMessageId: input.payload.assistantMessageId },
-      "DSH shadow comparison persistence failed",
+      "primary telemetry persistence failed",
+    );
+  }
+}
+
+async function persistFailedRuntimeTrace(input: {
+  prisma: ChatPrismaClient;
+  payload: GeneratePayload;
+  runtimeTraceFacts: Record<string, unknown>;
+}): Promise<void> {
+  const trace = JSON.parse(JSON.stringify(input.runtimeTraceFacts)) as Prisma.InputJsonValue;
+  try {
+    const updated = await input.prisma.message.updateMany({
+      where: {
+        id: input.payload.assistantMessageId,
+        status: { in: ["generating", "failed"] },
+        attempt: input.payload.attempt,
+      },
+      data: { runtimeTrace: trace },
+    });
+    if (updated.count === 0) return;
+    await input.prisma.messageVersion.update({
+      where: { id: `mv:${input.payload.assistantMessageId}:${input.payload.attempt}` },
+      data: { runtimeTrace: trace },
+    });
+  } catch (error) {
+    logger.warn(
+      { err: error, assistantMessageId: input.payload.assistantMessageId },
+      "primary failure telemetry persistence failed",
     );
   }
 }
@@ -987,9 +1327,13 @@ async function processDshCompanionTurn(
   let terminalStatus: "sent" | "blocked" | "skipped" | null = null;
   let committedUsage: { promptTokens: number; completionTokens: number } | null = null;
   let committedTrace: Record<string, unknown> | null = null;
+  const primaryTelemetry = runtimeTraceFacts.primaryTelemetry as PrimaryAttemptTelemetry;
+  const primaryStartedAt = Date.parse(primaryTelemetry.startedAt);
+  let primaryFirstTokenMs: number | undefined;
 
   const emitDelta = async (delta: string): Promise<void> => {
     await heartbeat();
+    primaryFirstTokenMs ??= Math.max(0, Date.now() - primaryStartedAt);
     sequence += 1;
     chunks.push(delta);
     await appendStreamEvent(key, {
@@ -1177,8 +1521,29 @@ async function processDshCompanionTurn(
       completionTokens: candidate.usage.completionTokens,
     };
     const committedAt = new Date().toISOString();
+    const terminalAt = Date.now();
+    const terminalTelemetry: PrimaryAttemptTelemetry = {
+      ...primaryTelemetry,
+      ...(primaryFirstTokenMs === undefined ? {} : { firstTokenMs: primaryFirstTokenMs }),
+      totalMs: Math.max(0, terminalAt - primaryStartedAt),
+      terminalStatus: blocked ? "blocked" : "sent",
+      truncated: false,
+      provider: candidate.provider,
+      model: candidate.model,
+      usage: candidate.usage,
+      steps: candidate.execution.steps,
+      toolCalls: candidate.execution.toolCalls,
+      memory: {
+        outcome: blocked
+          ? "discarded_blocked"
+          : attemptRuntime.private
+            ? "disabled"
+            : "pending",
+      },
+    };
     const terminalTrace: Record<string, unknown> = {
       ...runtimeTraceFacts,
+      primaryTelemetry: terminalTelemetry,
       companion: {
         invocationId,
         attemptId,
@@ -1262,6 +1627,7 @@ async function processDshCompanionTurn(
   };
 
   let runError: unknown = null;
+  let runErrorTaxonomy: PrimaryAttemptTelemetry["error"] | null = null;
   const deadlineSignal = AbortSignal.timeout(attemptRuntime.deadlineMs);
   try {
     await runtime.run(invocation, {
@@ -1287,8 +1653,16 @@ async function processDshCompanionTurn(
             announcedCandidate = event.candidate;
             return;
           case "failed":
+            runErrorTaxonomy = {
+              category: "runtime",
+              code: event.error.code,
+            };
             throw new Error(`${event.error.code}: ${event.error.message}`);
           case "cancelled":
+            runErrorTaxonomy = {
+              category: "cancel",
+              code: `dsh_cancelled_${event.reason}`,
+            };
             throw new Error(`companion invocation cancelled: ${event.reason}`);
           default:
             return;
@@ -1300,7 +1674,13 @@ async function processDshCompanionTurn(
   } catch (error) {
     runError = error;
     if (deadlineSignal.aborted) {
+      runErrorTaxonomy = {
+        category: "deadline",
+        code: "dsh_deadline_exceeded",
+      };
       await runtime.cancel(invocationId, "timeout").catch(() => {});
+    } else {
+      runErrorTaxonomy ??= { category: "runtime", code: "dsh_runtime_error" };
     }
   }
 
@@ -1309,6 +1689,7 @@ async function processDshCompanionTurn(
   // Chat-authored truncated terminal, never an accepted sidecar commit, so the
   // isolated igrep attempt is still discarded.
   const observedCandidate = announcedCandidate as CompanionTerminalCandidate | null;
+  const observedUsage = usage as { promptTokens: number; completionTokens: number } | null;
   if (
     runError &&
     terminalStatus === null &&
@@ -1322,14 +1703,28 @@ async function processDshCompanionTurn(
       content,
     });
     const blocked = moderation.status === "blocked";
-    const partialUsage = usage ?? {
+    const partialUsage = observedUsage ?? {
       promptTokens: prepared.budget.usedInputTokens,
       completionTokens: estimateTokens(content),
     };
     const truncatedAt = new Date().toISOString();
+    const truncatedTelemetry: PrimaryAttemptTelemetry = {
+      ...primaryTelemetry,
+      ...(primaryFirstTokenMs === undefined ? {} : { firstTokenMs: primaryFirstTokenMs }),
+      totalMs: Math.max(0, Date.now() - primaryStartedAt),
+      terminalStatus: blocked ? "blocked" : "sent",
+      truncated: true,
+      provider: prepared.profile.provider,
+      model: prepared.model,
+      usage: { ...partialUsage, reasoningTokens },
+      toolCalls: toolResults.size,
+      memory: { outcome: "discarded_truncated", settleLagMs: 0 },
+      ...(runErrorTaxonomy ? { error: runErrorTaxonomy } : {}),
+    };
     const truncatedTrace: Record<string, unknown> = {
       ...runtimeTraceFacts,
       truncated: true,
+      primaryTelemetry: truncatedTelemetry,
       companion: {
         invocationId,
         attemptId,
@@ -1397,15 +1792,31 @@ async function processDshCompanionTurn(
             : "ingested";
     if (settledTrace) {
       const companion = settledTrace.companion as Record<string, unknown>;
-      const finalTrace = JSON.parse(JSON.stringify({
+      const settledAt = Date.now();
+      const settledTelemetry = {
+        ...(settledTrace.primaryTelemetry as PrimaryAttemptTelemetry),
+        memory: {
+          outcome: memoryIngestOutcome,
+          settleLagMs: Math.max(
+            0,
+            settledAt - (
+              primaryStartedAt +
+              ((settledTrace.primaryTelemetry as PrimaryAttemptTelemetry).totalMs ?? 0)
+            ),
+          ),
+        },
+      } satisfies PrimaryAttemptTelemetry;
+      const finalTraceFacts: Record<string, unknown> = {
         ...settledTrace,
+        primaryTelemetry: settledTelemetry,
         companion: {
           ...companion,
           memoryIngestOutcome,
-          memoryIngestSettledAt: new Date().toISOString(),
+          memoryIngestSettledAt: new Date(settledAt).toISOString(),
           reasoningTokens,
         },
-      })) as Prisma.InputJsonValue;
+      };
+      const finalTrace = JSON.parse(JSON.stringify(finalTraceFacts)) as Prisma.InputJsonValue;
       await prisma.message.updateMany({
         where: {
           id: payload.assistantMessageId,
@@ -1418,6 +1829,7 @@ async function processDshCompanionTurn(
         where: { id: `mv:${payload.assistantMessageId}:${payload.attempt}` },
         data: { runtimeTrace: finalTrace },
       });
+      committedTrace = finalTraceFacts;
     }
     if (runError && terminalStatus === "sent" && memoryIngestOutcome === "discarded_truncated") {
       logger.warn(
@@ -1447,6 +1859,18 @@ async function processDshCompanionTurn(
         completionTokens: estimateTokens(chunks.join("")),
       },
     });
+    const deliveredTrace = committedTrace as Record<string, unknown> | null;
+    if (deliveredTrace) {
+      const deliveredTelemetry = deliveredTrace.primaryTelemetry as PrimaryAttemptTelemetry;
+      deliveredTelemetry.sseTerminal = "done";
+      await persistTerminalRuntimeTrace({
+        prisma,
+        payload,
+        messageStatus: terminalStatus,
+        runtimeTraceFacts: deliveredTrace,
+        truncated: deliveredTelemetry.truncated === true,
+      });
+    }
     if (terminalStatus === "sent") {
       await enqueue({
         queue: CHAT_QUEUES.memoryExtract,
@@ -1473,14 +1897,48 @@ async function processDshCompanionTurn(
 
   if (terminalStatus === "skipped") return { status: "skipped" };
   const retryable = hasWorkerRetryRemaining(input.jobAttempt);
+  const rejectionError = settledAck && !settledAck.accepted
+    ? settledAck.error.code
+    : null;
+  const error = rejectionError
+    ? {
+        category: rejectionError === "terminal_cas_conflict" || rejectionError === "context_changed"
+          ? "cas"
+          : rejectionError === "provider_output_limit"
+            ? "provider"
+            : "runtime",
+        code: rejectionError,
+      }
+    : runErrorTaxonomy ?? { category: "runtime", code: "dsh_terminal_missing" };
+  const failureTelemetry: PrimaryAttemptTelemetry = {
+    ...primaryTelemetry,
+    ...(primaryFirstTokenMs === undefined ? {} : { firstTokenMs: primaryFirstTokenMs }),
+    totalMs: Math.max(0, Date.now() - primaryStartedAt),
+    terminalStatus: error.category === "cancel" ? "cancelled" : "failed",
+    truncated: false,
+    provider: prepared.profile.provider,
+    model: prepared.model,
+    ...(observedUsage ? { usage: { ...observedUsage, reasoningTokens } } : {}),
+    steps: observedCandidate?.execution.steps ?? 0,
+    toolCalls: toolResults.size,
+    memory: { outcome: "not_started" },
+    error,
+  };
+  const failureTrace = {
+    ...runtimeTraceFacts,
+    primaryTelemetry: failureTelemetry,
+  };
+  await persistFailedRuntimeTrace({ prisma, payload, runtimeTraceFacts: failureTrace });
   runtimeReadiness.recordTurnFailure(runError ?? new Error("DSH returned without a terminal commit"));
   if (!retryable) await failAssistant(prisma, payload.assistantMessageId);
   await appendStreamEvent(key, {
     type: "error",
     attempt: payload.attempt,
-    code: settledAck && !settledAck.accepted ? settledAck.error.code : "provider_failed",
+    code: rejectionError ?? "provider_failed",
     retryable,
   });
+  failureTelemetry.sseTerminal = "error";
+  await persistFailedRuntimeTrace({ prisma, payload, runtimeTraceFacts: failureTrace });
   throw runError instanceof Error
     ? runError
     : new Error("DSH returned without a terminal commit");
