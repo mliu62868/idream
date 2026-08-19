@@ -9,6 +9,7 @@ import {
   canonicalCompanionMessages,
   companionMemoryProjectionTimeoutMs,
 } from "./companion-memory-projection.js";
+import { recordChatFileMutation } from "./file-mutations.js";
 
 const ENV_KEYS = [
   "CHAT_COMPANION_RUNTIME",
@@ -145,20 +146,80 @@ describe("companion memory projection", () => {
     }));
   });
 
-  it("does not claim cleanup when no sidecar cleanup capability is configured", async () => {
+  it("uses an explicitly injected cleanup port even when deployment credentials are absent", async () => {
     nativeCleanupEnv("");
-    const purge = vi.fn();
+    process.env.CHAT_COMPANION_RUNTIME = "dsh";
+    process.env.CHAT_MEMORY_BACKEND = "igrep-dsh";
+    process.env.CHAT_COMPANION_DSH_ROLLOUT_SALT = "cleanup-test-salt";
+    const purge = vi.fn(async () => ({ purged: 1 }));
     const rebuild = vi.fn();
 
     await applyCompanionMemoryProjection(
       {} as Prisma.TransactionClient,
       "user-native",
-      { kind: "relationship_delete", characterId: "character-native" },
+      {
+        kind: "relationship_delete",
+        characterId: "character-native",
+        companionCleanupRequired: true,
+      },
       { purge, rebuild },
     );
 
-    expect(purge).not.toHaveBeenCalled();
+    expect(purge).toHaveBeenCalledWith({
+      scope: "relationship",
+      userId: "user-native",
+      characterId: "character-native",
+    });
     expect(rebuild).not.toHaveBeenCalled();
-    expect(companionMemoryProjectionTimeoutMs()).toBe(30_000);
+  });
+
+  it("keeps a durable cleanup intent pending when its required capability is missing", async () => {
+    nativeCleanupEnv("");
+
+    await expect(applyCompanionMemoryProjection(
+      {} as Prisma.TransactionClient,
+      "user-rollback",
+      {
+        kind: "relationship_delete",
+        characterId: "character-rollback",
+        companionCleanupRequired: true,
+      },
+    )).rejects.toThrow("DSH workspace cleanup is required but unavailable");
+  });
+
+  it("pins historical workspace authority into the durable privacy intent", async () => {
+    nativeCleanupEnv("");
+    const executeRaw = vi.fn(async (..._args: unknown[]) => 1);
+    const tx = {
+      $queryRaw: vi.fn(async () => [{ required: true }]),
+      $executeRaw: executeRaw,
+    } as unknown as Prisma.TransactionClient;
+
+    await recordChatFileMutation(tx, "user-rollback", {
+      kind: "relationship_delete",
+      characterId: "character-rollback",
+    });
+
+    const persistedPayload = executeRaw.mock.calls[0]?.[4];
+    expect(typeof persistedPayload).toBe("string");
+    expect(JSON.parse(String(persistedPayload))).toEqual({
+      kind: "relationship_delete",
+      characterId: "character-rollback",
+      companionCleanupRequired: true,
+    });
+  });
+
+  it("skips a persisted negative cleanup decision without requiring credentials", async () => {
+    nativeCleanupEnv("");
+
+    await expect(applyCompanionMemoryProjection(
+      {} as Prisma.TransactionClient,
+      "user-native",
+      {
+        kind: "relationship_delete",
+        characterId: "character-native",
+        companionCleanupRequired: false,
+      },
+    )).resolves.toBeUndefined();
   });
 });

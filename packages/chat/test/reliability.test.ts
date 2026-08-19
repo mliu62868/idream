@@ -50,6 +50,7 @@ const MODERATION_RESTORE_RACE_USER = "u_rel_moderation_restore_race";
 const MODERATION_RESTORE_STALE_USER = "u_rel_moderation_restore_stale";
 const CHAR = "c_rel";
 const MODERATION_RESTORE_CHAR = "c_rel_moderation_restore";
+const ORIGINAL_BULLMQ_PREFIX = process.env.BULLMQ_PREFIX;
 
 function restoreEnv(name: string, value: string | undefined): void {
   if (value === undefined) delete process.env[name];
@@ -99,6 +100,10 @@ async function acknowledgeRequestBoundCompletion(
 }
 
 beforeAll(async () => {
+  // This file deliberately creates and drains a global LIMIT-sized queue.
+  // Give it a worker-local namespace so parallel Vitest files cannot consume
+  // or obliterate part of that evidence while the assertion is running.
+  process.env.BULLMQ_PREFIX = `${ORIGINAL_BULLMQ_PREFIX ?? "idream:test"}:reliability:${process.pid}`;
   fsRoot = await mkdtemp(path.join(tmpdir(), "chat-rel-"));
   process.env.CHAT_FS_ROOT = fsRoot;
   await superPool.query(
@@ -146,6 +151,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  restoreEnv("BULLMQ_PREFIX", ORIGINAL_BULLMQ_PREFIX);
   await prisma.$disconnect();
   await projectorPrisma.$disconnect();
   await superPool.end();

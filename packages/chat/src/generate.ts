@@ -358,12 +358,21 @@ export async function processGenerate(
     deadlineMs: attemptRuntime.deadlineMs,
     assignment: attemptRuntime.assignment,
   };
+  const companionCleanupRequired = attemptRuntime.runtime === "dsh"
+    || (
+      companionRuntimeConfig.dshShadow.enabled
+      && attemptRuntime.runtime === "native"
+      && turnMemoryEnabled
+    );
   const admissionRuntimeTrace = JSON.parse(JSON.stringify({
     schemaVersion: 1,
     attempt: payload.attempt,
     assistantMessageId: payload.assistantMessageId,
     userMessageId: payload.userMessageId,
     companionRuntime: companionRuntimePin,
+    ...(companionCleanupRequired
+      ? { companionWorkspace: { cleanupRequired: true } }
+      : {}),
     primaryTelemetry: primaryTelemetryBase,
   })) as Prisma.InputJsonValue;
 
@@ -448,6 +457,9 @@ export async function processGenerate(
     trace: prepared.trace,
     budget: prepared.budget,
     companionRuntime: companionRuntimePin,
+    ...(companionCleanupRequired
+      ? { companionWorkspace: { cleanupRequired: true } }
+      : {}),
     ...(priorRuntimeTrace?.companionTool
       ? { companionTool: priorRuntimeTrace.companionTool }
       : {}),
