@@ -239,7 +239,10 @@ async function warmProvider(config: SidecarConfig, profile: PreparedTurnProfile)
   }
 }
 
-function bridgeInvocation(profile: PreparedTurnProfile): CompanionInvocation {
+function bridgeInvocation(
+  profile: PreparedTurnProfile,
+  expectedProfileDigest: string,
+): CompanionInvocation {
   const knowledgeAuthority = {
     characterId: "readiness-character",
     characterContentVersionId: "readiness-content",
@@ -257,6 +260,7 @@ function bridgeInvocation(profile: PreparedTurnProfile): CompanionInvocation {
     userId: "readiness-user",
     characterId: "readiness-character",
     memoryMode: "private",
+    expectedProfileDigest,
     deadlineAt: new Date(Date.now() + 60_000).toISOString(),
     preparedTurn: {
       version: 2,
@@ -384,7 +388,10 @@ export function createReadinessProbe(
     const verification = await (options.memoryLifecycleProbe ?? probeIgrepLifecycle)(
       options.config.igrepCommand,
     );
-    await (options.bridgeProbe ?? probeCompanionBridges)(bridgeInvocation(profile));
+    await (options.bridgeProbe ?? probeCompanionBridges)(bridgeInvocation(
+      profile,
+      companionCompositionDigest("private", privateProfile),
+    ));
     await options.workspaceRebuildProbe();
 
     return companionReadinessSchema.parse({

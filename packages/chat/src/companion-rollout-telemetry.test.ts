@@ -18,6 +18,7 @@ describe("companion operational telemetry", () => {
         id: "11111111-1111-4111-8111-111111111111",
         startedAt: "2026-08-19T11:59:00.000Z",
       },
+      profileDigest: "d".repeat(64),
     });
     recordCompanionOperationalEvent(telemetry, {
       ...common,
@@ -41,6 +42,7 @@ describe("companion operational telemetry", () => {
       sidecar: {
         instanceId: "11111111-1111-4111-8111-111111111111",
         startedAt: "2026-08-19T11:59:00.000Z",
+        profileDigest: "d".repeat(64),
       },
       igrep: {
         memory: {

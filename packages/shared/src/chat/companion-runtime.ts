@@ -419,6 +419,7 @@ export const companionInvocationSchema = z
     characterId: nonEmptyStringSchema,
     preparedTurn: preparedTurnWireSchema,
     memoryMode: companionMemoryModeSchema,
+    expectedProfileDigest: sha256Schema,
     deadlineAt: isoDateTimeSchema,
   })
   .strict()
@@ -583,6 +584,7 @@ export const companionEventSchema = z
         ...companionEventIdentity,
         type: z.literal("started"),
         instance: companionSidecarInstanceSchema,
+        profileDigest: sha256Schema,
       })
       .strict(),
     z

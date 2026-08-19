@@ -535,6 +535,10 @@ export async function processGenerate(
       prepared,
       sidecarUrl: companionRuntimeConfig.sidecarUrl,
       sidecarToken: companionRuntimeConfig.sidecarToken,
+      profileDigest: verifiedCompanionProfileDigest(
+        companionRuntimeConfig.sidecarUrl,
+        "normal",
+      ),
       deadlineMs: companionRuntimeConfig.deadlineMs,
       }
     : null;
@@ -568,6 +572,9 @@ export async function processGenerate(
   await appendStreamEvent(key, { type: "start", attempt: payload.attempt });
 
   if (attemptRuntime.runtime === "dsh" && !authoritativeNoMemoryReply) {
+    if (!dshProfileDigest) {
+      throw new Error("DSH attempt is missing its readiness-verified profile digest");
+    }
     return processDshCompanionTurn({
       prisma,
       projectorPrisma,
@@ -577,6 +584,7 @@ export async function processGenerate(
       context,
       runtimeTraceFacts,
       attemptRuntime,
+      profileDigest: dshProfileDigest,
       sidecarToken: companionRuntimeConfig.sidecarToken,
       heartbeat,
       key,
@@ -1051,6 +1059,7 @@ interface DshShadowOutcome {
   status: "completed" | "error" | "cancelled";
   invocationId: string;
   attemptId: string;
+  profileDigest: string;
   latencyMs: number;
   candidate: CompanionTerminalCandidate | null;
   dryRunToolCalls: number;
@@ -1063,6 +1072,7 @@ interface DshShadowRunInput {
   prepared: PreparedTurn;
   sidecarUrl: string;
   sidecarToken: string;
+  profileDigest: string;
   deadlineMs: number;
 }
 
@@ -1100,6 +1110,7 @@ async function runDshShadowTurn(input: DshShadowRunInput & {
     characterId: input.session.characterId,
     preparedTurn: toDshShadowPreparedTurnWire(input.prepared),
     memoryMode: "shadow",
+    expectedProfileDigest: input.profileDigest,
     deadlineAt: new Date(Date.now() + input.deadlineMs).toISOString(),
   };
   const runtime = new DshCompanionRuntime({
@@ -1123,6 +1134,9 @@ async function runDshShadowTurn(input: DshShadowRunInput & {
   try {
     await runtime.run(invocation, {
       emit(event) {
+        if (event.type === "started" && event.profileDigest !== input.profileDigest) {
+          throw new Error("shadow started profile digest differs from the pinned composition");
+        }
         if (event.type === "terminal_candidate") candidate = event.candidate;
         if (event.type === "failed") {
           eventError = {
@@ -1166,7 +1180,11 @@ async function runDshShadowTurn(input: DshShadowRunInput & {
   } catch (error) {
     if (input.signal?.aborted) {
       return {
-        ...shadowCancellationOutcome(input.payload, String(input.signal.reason ?? "cancelled")),
+        ...shadowCancellationOutcome(
+          input.payload,
+          String(input.signal.reason ?? "cancelled"),
+          input.profileDigest,
+        ),
         latencyMs: Math.max(0, Date.now() - startedAt),
       };
     }
@@ -1180,7 +1198,11 @@ async function runDshShadowTurn(input: DshShadowRunInput & {
   }
   if (input.signal?.aborted && candidate === null) {
     return {
-      ...shadowCancellationOutcome(input.payload, String(input.signal.reason ?? "cancelled")),
+      ...shadowCancellationOutcome(
+        input.payload,
+        String(input.signal.reason ?? "cancelled"),
+        input.profileDigest,
+      ),
       latencyMs: Math.max(0, Date.now() - startedAt),
       dryRunToolCalls,
     };
@@ -1190,6 +1212,7 @@ async function runDshShadowTurn(input: DshShadowRunInput & {
     status: observed ? "completed" : "error",
     invocationId,
     attemptId,
+    profileDigest: input.profileDigest,
     latencyMs: Math.max(0, Date.now() - startedAt),
     candidate: observed,
     dryRunToolCalls,
@@ -1210,6 +1233,7 @@ function buildShadowComparison(input: {
     status: input.shadow.status,
     invocationId: input.shadow.invocationId,
     attemptId: input.shadow.attemptId,
+    profileDigest: input.shadow.profileDigest,
     primary: {
       provider: input.primary.provider,
       model: input.primary.model,
@@ -1282,7 +1306,7 @@ function startDshShadowLifecycle(input: {
   trackDetachedShadowPersistence(persistence);
 
   const cancelQueued = (reason: string): Promise<void> => {
-    settleShadow(shadowCancellationOutcome(input.run.payload, reason));
+    settleShadow(shadowCancellationOutcome(input.run.payload, reason, input.run.profileDigest));
     return persistence;
   };
   const handle = input.executor.submit(async (signal) => {
@@ -1293,6 +1317,7 @@ function startDshShadowLifecycle(input: {
         status: "error",
         invocationId: `shadow:inv:${input.run.payload.assistantMessageId}:${input.run.payload.attempt}`,
         attemptId: `shadow:${input.run.payload.assistantMessageId}:${input.run.payload.attempt}`,
+        profileDigest: input.run.profileDigest,
         latencyMs: 0,
         candidate: null,
         dryRunToolCalls: 0,
@@ -1315,6 +1340,7 @@ function startDshShadowLifecycle(input: {
       status: "error",
       invocationId: `shadow:inv:${input.run.payload.assistantMessageId}:${input.run.payload.attempt}`,
       attemptId: `shadow:${input.run.payload.assistantMessageId}:${input.run.payload.attempt}`,
+      profileDigest: input.run.profileDigest,
       latencyMs: 0,
       candidate: null,
       dryRunToolCalls: 0,
@@ -1335,7 +1361,7 @@ function startDshShadowLifecycle(input: {
       // candidate after primary authority failed must not be reported as a
       // valid Phase-2 comparison.
       settlePrimary(primary);
-      settleShadow(shadowCancellationOutcome(input.run.payload, reason));
+      settleShadow(shadowCancellationOutcome(input.run.payload, reason, input.run.profileDigest));
       handle?.cancel(reason);
     },
   };
@@ -1344,6 +1370,7 @@ function startDshShadowLifecycle(input: {
 function shadowCancellationOutcome(
   payload: GeneratePayload,
   reason: string,
+  profileDigest: string,
 ): DshShadowOutcome {
   const evidence = reason === "shutdown"
     ? {
@@ -1373,6 +1400,7 @@ function shadowCancellationOutcome(
     status: "cancelled",
     invocationId: `shadow:inv:${payload.assistantMessageId}:${payload.attempt}`,
     attemptId: `shadow:${payload.assistantMessageId}:${payload.attempt}`,
+    profileDigest,
     latencyMs: 0,
     candidate: null,
     dryRunToolCalls: 0,
@@ -1563,6 +1591,7 @@ interface DshTurnInput {
   context: BuiltContext;
   runtimeTraceFacts: Record<string, unknown>;
   attemptRuntime: CompanionAttemptRuntime;
+  profileDigest: string;
   sidecarToken: string;
   heartbeat(force?: boolean): Promise<void>;
   key: string;
@@ -1594,6 +1623,7 @@ async function processDshCompanionTurn(
     characterId: session.characterId,
     preparedTurn: toPreparedTurnWire(prepared),
     memoryMode: attemptRuntime.private ? "private" : "normal",
+    expectedProfileDigest: input.profileDigest,
     deadlineAt: new Date(Date.now() + attemptRuntime.deadlineMs).toISOString(),
   };
   const runtime = new DshCompanionRuntime({
@@ -1925,6 +1955,11 @@ async function processDshCompanionTurn(
       async emit(event: CompanionEvent) {
         switch (event.type) {
           case "started":
+            if (event.profileDigest !== input.profileDigest) {
+              throw new Error("started profile digest differs from the pinned companion composition");
+            }
+            recordCompanionOperationalEvent(primaryTelemetry, event);
+            return;
           case "igrep_observation":
             recordCompanionOperationalEvent(primaryTelemetry, event);
             return;

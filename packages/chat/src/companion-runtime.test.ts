@@ -33,6 +33,7 @@ function invocation(): CompanionInvocation {
     userId: "user-1",
     characterId: "character-1",
     memoryMode: "normal",
+    expectedProfileDigest: "d".repeat(64),
     deadlineAt: "2026-08-19T12:05:00.000Z",
     preparedTurn: {
       version: 2,

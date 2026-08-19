@@ -69,6 +69,7 @@ describe("Gate R companion rollout evidence", () => {
             sidecar: {
               instanceId: "11111111-1111-4111-8111-111111111111",
               startedAt: "2026-08-19T02:59:00.000Z",
+              profileDigest: "d".repeat(64),
             },
             igrep: {
               search: {
@@ -110,6 +111,7 @@ describe("Gate R companion rollout evidence", () => {
             sidecar: {
               instanceId: "22222222-2222-4222-8222-222222222222",
               startedAt: "2026-08-19T03:59:00.000Z",
+              profileDigest: "e".repeat(64),
             },
             igrep: {
               search: {

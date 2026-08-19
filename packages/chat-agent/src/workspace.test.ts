@@ -18,6 +18,7 @@ import { LlmAdapter, type GenerateOptions, type StreamChunk } from "@deepseek-ai
 import type { CompanionInvocation } from "@idream/shared/chat/companion-runtime";
 import { afterEach, describe, expect, it } from "vitest";
 import { CompanionEngine } from "./engine";
+import { companionCompositionDigest, companionIgrepConfig } from "./composition";
 import { createCompanionServer, type CompanionServer } from "./server";
 import {
   AttemptWorkspaceStore,
@@ -92,6 +93,10 @@ function activeInvocation(): CompanionInvocation {
     userId: "user-active",
     characterId: "character-active",
     memoryMode: "normal",
+    expectedProfileDigest: companionCompositionDigest(
+      "normal",
+      companionIgrepConfig("normal", "igrep"),
+    ),
     deadlineAt: new Date(Date.now() + 30_000).toISOString(),
     preparedTurn: {
       version: 2,

@@ -82,11 +82,15 @@ const plugin = {
 
 describe("fail-closed companion readiness", () => {
   it("reports exact runtime identities, normalized profile digests and bridge capabilities", async () => {
+    let bridgeProfileDigest: string | undefined;
     const readiness = await createReadinessProbe({
       config,
       plugin: async () => plugin,
       resolveIgrepVersion: async () => "0.1.132",
       ...successfulRuntimeEvidence,
+      bridgeProbe: async (invocation) => {
+        bridgeProfileDigest = invocation.expectedProfileDigest;
+      },
     })();
     expect(readiness).toMatchObject({
       ready: true,
@@ -125,6 +129,7 @@ describe("fail-closed companion readiness", () => {
       .not.toBe(readiness.profiles.private.normalizedConfigDigest);
     expect(JSON.stringify(readiness)).not.toContain("maintenance-secret");
     expect(JSON.stringify(readiness)).not.toContain("IGREP_LLM");
+    expect(bridgeProfileDigest).toBe(readiness.profiles.private.normalizedConfigDigest);
   });
 
   it("fails closed when the executable version or normalized profile drifts", async () => {

@@ -31,7 +31,11 @@ import {
   type PreparedTurnProfile,
 } from "@idream/shared/chat/companion-runtime";
 import type { InvocationService } from "./server";
-import { applyCompanionComposition } from "./composition";
+import {
+  applyCompanionComposition,
+  companionCompositionDigest,
+  resolvedCompanionIgrepConfig,
+} from "./composition";
 import type {
   AttemptWorkspace,
   AttemptWorkspaceStore,
@@ -470,16 +474,24 @@ export class CompanionEngine implements InvocationService {
         return;
       }
       deadlineTimer = setTimeout(() => active.cancel("timeout"), deadlineMs);
-      workspace = await this.options.workspaces.prepare(invocation);
       const plugin = await this.options.plugin();
       if (plugin.name !== "igrep" || typeof plugin.apply !== "function") {
         throw new Error("DSH_IGREP_PLUGIN_URL did not load the official igrep module namespace");
       }
+      const mode = invocation.memoryMode === "private" ? "private" : "normal";
+      const profileDigest = companionCompositionDigest(
+        mode,
+        resolvedCompanionIgrepConfig(plugin, mode, this.options.igrepCommand),
+      );
+      if (profileDigest !== invocation.expectedProfileDigest) {
+        throw new Error("expected profile digest does not match the active companion composition");
+      }
+      workspace = await this.options.workspaces.prepare(invocation);
 
       ctx = new Context();
       await applyCompanionComposition(ctx, {
         plugin,
-        mode: invocation.memoryMode === "private" ? "private" : "normal",
+        mode,
         igrepCommand: this.options.igrepCommand,
       });
       const igrepStartedAt = new Map<string, number>();
@@ -656,7 +668,7 @@ export class CompanionEngine implements InvocationService {
         agent.cancel(reason === "user" ? { kind: "user" } : { kind: "hook", reason });
       };
       if (active.cancelReason) active.agentCancel(active.cancelReason);
-      event({ type: "started", instance: this.instance });
+      event({ type: "started", instance: this.instance, profileDigest });
       const current = invocation.preparedTurn.messages.find((message) => message.sourceKind === "current_user");
       if (!current || current.role !== "user") throw new Error("current user message is missing");
       agent.followup(freezeMessage({

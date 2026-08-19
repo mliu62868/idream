@@ -13,6 +13,7 @@ import {
 } from "@idream/shared/chat/companion-runtime";
 import { afterEach, describe, expect, it } from "vitest";
 import { CompanionEngine } from "./engine";
+import { companionCompositionDigest, companionIgrepConfig } from "./composition";
 import { createCompanionServer, type CompanionServer } from "./server";
 import { AttemptWorkspaceStore, relationshipWorkspacePath } from "./workspace";
 
@@ -136,6 +137,15 @@ class BlockingAdapter extends LlmAdapter {
   }
 }
 
+class ProviderMustNotRunAdapter extends LlmAdapter {
+  calls = 0;
+
+  async *stream(): AsyncIterable<StreamChunk> {
+    this.calls += 1;
+    throw new Error("provider must not execute");
+  }
+}
+
 function invocation(memoryMode: "normal" | "private" | "shadow" = "private"): CompanionInvocation {
   const knowledgeAuthority = {
     characterId: "character-1",
@@ -154,6 +164,10 @@ function invocation(memoryMode: "normal" | "private" | "shadow" = "private"): Co
     userId: "user-1",
     characterId: "character-1",
     memoryMode,
+    expectedProfileDigest: companionCompositionDigest(
+      memoryMode === "private" ? "private" : "normal",
+      companionIgrepConfig(memoryMode === "private" ? "private" : "normal", "igrep"),
+    ),
     deadlineAt: new Date(Date.now() + 30_000).toISOString(),
     preparedTurn: {
       version: 2,
@@ -305,6 +319,39 @@ function disposalWritingPlugin(configs: Record<string, unknown>[]) {
 }
 
 describe("programmatic DSH companion runtime", () => {
+  it.each(["normal", "private", "shadow"] as const)(
+    "rejects a stale %s profile before provider execution",
+    async (memoryMode) => {
+      const root = await mkdtemp(join(tmpdir(), "chat-agent-profile-drift-"));
+      temporary.push(root);
+      const adapter = new ProviderMustNotRunAdapter();
+      const engine = new CompanionEngine({
+        workspaces: new AttemptWorkspaceStore({
+          canonicalRoot: join(root, "canonical"),
+          privateRoot: join(root, "private"),
+          memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
+        }),
+        plugin: async () => ({ name: "igrep", apply() {} }),
+        adapter: () => adapter,
+        igrepCommand: "igrep",
+      });
+      const run = invocation(memoryMode);
+      run.expectedProfileDigest = "f".repeat(64);
+      const observed: CompanionRuntimeResponse[] = [];
+
+      await engine.run(run, (frame) => observed.push(frame));
+
+      expect(adapter.calls).toBe(0);
+      expect(observed).toContainEqual(expect.objectContaining({
+        type: "event",
+        event: expect.objectContaining({
+          type: "failed",
+          error: expect.objectContaining({ message: expect.stringMatching(/profile digest/i) }),
+        }),
+      }));
+    },
+  );
+
   it("emits content-free sidecar identity and authoritative igrep result metrics", async () => {
     const root = await mkdtemp(join(tmpdir(), "chat-agent-igrep-observation-"));
     temporary.push(root);
@@ -389,7 +436,10 @@ describe("programmatic DSH companion runtime", () => {
       });
     });
     const events = observed.flatMap((frame) => frame.type === "event" ? [frame.event] : []);
-    expect(events.find((event) => event.type === "started")).toMatchObject({ instance });
+    expect(events.find((event) => event.type === "started")).toMatchObject({
+      instance,
+      profileDigest: run.expectedProfileDigest,
+    });
     expect(events.find((event) => event.type === "igrep_observation")).toMatchObject({
       operation: "memory",
       outcome: "hit",

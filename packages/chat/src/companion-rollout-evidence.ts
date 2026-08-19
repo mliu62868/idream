@@ -90,6 +90,7 @@ const telemetrySchema = z.object({
   sidecar: z.object({
     instanceId: z.string().uuid(),
     startedAt: z.string().datetime({ offset: true }),
+    profileDigest: z.string().regex(/^[a-f0-9]{64}$/),
   }).strict().optional(),
   igrep: z.object({
     search: igrepAttemptMetricSchema.optional(),

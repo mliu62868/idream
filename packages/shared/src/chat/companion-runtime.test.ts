@@ -126,6 +126,7 @@ function invocation(memoryMode: "normal" | "private" | "shadow") {
     characterId: "character-1",
     preparedTurn,
     memoryMode,
+    expectedProfileDigest: "b".repeat(64),
     deadlineAt: "2026-08-19T12:01:00.000Z",
   };
 }
@@ -137,6 +138,7 @@ describe("companion runtime stable wire contract", () => {
       const parsed = companionInvocationSchema.parse(invocation(memoryMode));
       expect(JSON.parse(JSON.stringify(parsed))).toEqual(parsed);
       expect(parsed.memoryMode).toBe(memoryMode);
+      expect(parsed.expectedProfileDigest).toBe("b".repeat(64));
       expect(parsed.preparedTurn.messages.at(-1)).toMatchObject({
         id: "message:user-2",
         sourceKind: "current_user",
@@ -153,6 +155,11 @@ describe("companion runtime stable wire contract", () => {
     };
     expect(companionEventSchema.safeParse({ ...common, type: "assistant/chunk" }).success)
       .toBe(false);
+    expect(companionEventSchema.safeParse({
+      ...common,
+      type: "started",
+      instance: sidecarInstance,
+    }).success).toBe(false);
     expect(
       companionNdjsonFrameSchema.safeParse({
         protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
@@ -164,6 +171,12 @@ describe("companion runtime stable wire contract", () => {
   });
 
   it("rejects secrets and extra keys at every declared authority boundary", () => {
+    const { expectedProfileDigest: _missingDigest, ...unpinnedInvocation } = invocation("normal");
+    expect(companionInvocationSchema.safeParse(unpinnedInvocation).success).toBe(false);
+    expect(companionInvocationSchema.safeParse({
+      ...invocation("normal"),
+      expectedProfileDigest: "not-a-sha256",
+    }).success).toBe(false);
     expect(companionInvocationSchema.safeParse({
       ...invocation("normal"),
       capabilityToken: "must-stay-in-transport",
@@ -344,7 +357,12 @@ describe("companion runtime stable wire contract", () => {
       },
     };
     const fixtures = [
-      { ...common, type: "started", instance: sidecarInstance },
+      {
+        ...common,
+        type: "started",
+        instance: sidecarInstance,
+        profileDigest: "b".repeat(64),
+      },
       { ...common, type: "text_delta", delta: "The observatory" },
       { ...common, type: "reasoning_usage", reasoningTokens: 4 },
       { ...common, type: "tool_started", callId: "call-1", name: "generate_image_async" },

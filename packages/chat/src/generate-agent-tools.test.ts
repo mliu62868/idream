@@ -448,6 +448,7 @@ describe("chat generate agent image tool", () => {
           memoryMode: "shadow",
           attemptId: "shadow:msg_assistant:1",
           invocationId: "shadow:inv:msg_assistant:1",
+          expectedProfileDigest: "d".repeat(64),
         });
         shadowToolResult = await port.executeTool({
           attemptId: invocation.attemptId,
@@ -535,6 +536,7 @@ describe("chat generate agent image tool", () => {
             shadowComparison: expect.objectContaining({
               schemaVersion: 1,
               status: "completed",
+              profileDigest: "d".repeat(64),
               primary: expect.objectContaining({
                 textDigest: "851477efacde2d6eadbb48983aed7bd31d03def3f94ed7b06534cff9560f2bc4",
                 textLength: 15,
@@ -1088,6 +1090,7 @@ describe("chat generate agent image tool", () => {
             releasedKnowledgeDigest: context.releasedKnowledge.digest,
           },
         });
+        expect(invocation.expectedProfileDigest).toBe("d".repeat(64));
         await port.executeTool({
           attemptId: invocation.attemptId,
           callId: "call-1",
@@ -1107,6 +1110,7 @@ describe("chat generate agent image tool", () => {
             id: "11111111-1111-4111-8111-111111111111",
             startedAt: "2026-08-19T11:59:00.000Z",
           },
+          profileDigest: "d".repeat(64),
         });
         await port.emit({
           type: "igrep_observation",
@@ -1179,6 +1183,7 @@ describe("chat generate agent image tool", () => {
             version: "0.1.0-rc.7",
             igrepVersion: "0.1.132",
             memoryMode: "normal",
+            profileDigest: "d".repeat(64),
           }),
           companion: expect.objectContaining({
             memoryIngestOutcome: "pending",
@@ -1226,6 +1231,7 @@ describe("chat generate agent image tool", () => {
               sidecar: {
                 instanceId: "11111111-1111-4111-8111-111111111111",
                 startedAt: "2026-08-19T11:59:00.000Z",
+                profileDigest: "d".repeat(64),
               },
               igrep: {
                 memory: {
@@ -1454,6 +1460,40 @@ describe("chat generate agent image tool", () => {
           }),
         }),
       }));
+      expect(recordTurnFailureMock).toHaveBeenCalledOnce();
+      expect(recordTurnSuccessMock).not.toHaveBeenCalled();
+    } finally {
+      restoreEnv();
+    }
+  });
+
+  it("fails a selected DSH attempt when started truth differs from its pinned profile", async () => {
+    const restoreEnv = installDshRolloutEnv();
+    try {
+      dshRunMock.mockImplementation(async (invocation, port) => {
+        expect(invocation.expectedProfileDigest).toBe("d".repeat(64));
+        await port.emit({
+          type: "started",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 1,
+          occurredAt: new Date().toISOString(),
+          instance: {
+            id: "11111111-1111-4111-8111-111111111111",
+            startedAt: "2026-08-19T11:59:00.000Z",
+          },
+          profileDigest: "e".repeat(64),
+        });
+      });
+      const { prisma } = fakePrisma();
+
+      await expect(processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        prisma,
+        { projectorPrisma: prisma },
+      )).rejects.toThrow(/profile digest/i);
+
+      expect(streamMock).not.toHaveBeenCalled();
       expect(recordTurnFailureMock).toHaveBeenCalledOnce();
       expect(recordTurnSuccessMock).not.toHaveBeenCalled();
     } finally {

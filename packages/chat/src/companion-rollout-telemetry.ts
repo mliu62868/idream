@@ -13,6 +13,7 @@ export interface CompanionOperationalTelemetry {
   sidecar?: {
     instanceId: string;
     startedAt: string;
+    profileDigest: string;
   };
   igrep?: Partial<Record<"search" | "memory", CompanionIgrepAttemptMetric>>;
 }
@@ -26,6 +27,7 @@ export function recordCompanionOperationalEvent(
     telemetry.sidecar = {
       instanceId: event.instance.id,
       startedAt: event.instance.startedAt,
+      profileDigest: event.profileDigest,
     };
     return;
   }
