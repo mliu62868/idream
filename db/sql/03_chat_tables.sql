@@ -486,7 +486,10 @@ AS $$
       'attempt', mutation_payload -> 'attempt'
     )
     WHEN 'relationship_set' THEN mutation_payload
-    WHEN 'relationship_delete' THEN mutation_payload
+    WHEN 'relationship_delete' THEN jsonb_build_object(
+      'kind', mutation_kind,
+      'characterId', mutation_payload -> 'characterId'
+    )
     WHEN 'turn_forget' THEN jsonb_build_object(
       'kind', mutation_kind,
       'sessionId', mutation_payload -> 'sessionId',
