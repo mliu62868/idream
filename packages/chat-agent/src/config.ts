@@ -74,13 +74,15 @@ export function loadSidecarConfig(env: NodeJS.ProcessEnv = process.env): Sidecar
     "DSH_IGREP_SHADOW_ROOT",
   );
   if (
+    pathsOverlap(canonicalRoot, privateRoot) ||
+    pathsOverlap(privateRoot, canonicalRoot) ||
     pathsOverlap(canonicalRoot, shadowRoot) ||
     pathsOverlap(shadowRoot, canonicalRoot) ||
     pathsOverlap(privateRoot, shadowRoot) ||
     pathsOverlap(shadowRoot, privateRoot)
   ) {
     throw new Error(
-      "DSH_IGREP_SHADOW_ROOT must be disjoint from canonical and private roots",
+      "DSH igrep workspace roots must be pairwise disjoint",
     );
   }
   return {
