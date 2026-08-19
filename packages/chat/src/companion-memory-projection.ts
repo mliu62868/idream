@@ -138,14 +138,9 @@ export async function applyCompanionMemoryProjection(
       userId,
       characterId: mutation.characterId,
     });
-    // Purge first so private attempts, shadow attempts and every old canonical
-    // version cannot retain forgotten text. A failed rebuild leaves the durable
-    // mutation pending; its next projection recreates only retained DB rows.
-    await activePort.purge({
-      scope: "relationship",
-      userId,
-      characterId: mutation.characterId,
-    });
+    // The sidecar performs ephemeral cleanup and canonical replacement under
+    // one relationship fence; splitting purge/rebuild here would admit a turn
+    // between two control requests.
     await activePort.rebuild(request);
     return;
   }

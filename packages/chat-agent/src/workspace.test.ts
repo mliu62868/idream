@@ -366,6 +366,7 @@ describe("authenticated workspace privacy authority", () => {
     const root = await mkdtemp(join(tmpdir(), "chat-agent-rebuild-"));
     temporary.push(root);
     const canonicalRoot = join(root, "canonical");
+    const shadowRoot = join(root, "shadow");
     const relationship = relationshipWorkspacePath(canonicalRoot, "user-rebuild", "character-rebuild");
     const versions = join(relationship, ".igrep.versions");
     const oldVersion = join(versions, "old");
@@ -377,9 +378,25 @@ describe("authenticated workspace privacy authority", () => {
     await symlink(".igrep.versions/old", join(relationship, ".igrep"), "dir");
     const store = new AttemptWorkspaceStore({
       canonicalRoot,
+      shadowRoot,
       privateRoot: join(root, "private"),
       memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
     });
+    const privateAttempt = await store.prepare({
+      ...activeInvocation(),
+      invocationId: "invocation-private-rebuild",
+      attemptId: "attempt-private-rebuild",
+      userId: "user-rebuild",
+      characterId: "character-rebuild",
+      memoryMode: "private",
+    });
+    const shadowRelationship = relationshipWorkspacePath(
+      shadowRoot,
+      "user-rebuild",
+      "character-rebuild",
+    );
+    await mkdir(shadowRelationship, { recursive: true });
+    await writeFile(join(shadowRelationship, "shadow-deleted.txt"), "must be removed");
     const entered = Promise.withResolvers<void>();
     const finish = Promise.withResolvers<void>();
     const rebuilding = store.rebuildRelationship(
@@ -391,6 +408,8 @@ describe("authenticated workspace privacy authority", () => {
       },
     );
     await entered.promise;
+    expect(await present(privateAttempt.path)).toBe(false);
+    expect(await present(shadowRelationship)).toBe(false);
     expect(await readFile(join(relationship, ".igrep", "sentinel.txt"), "utf8")).toBe("old");
     finish.resolve();
     await rebuilding;

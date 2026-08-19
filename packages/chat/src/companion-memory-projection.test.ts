@@ -120,7 +120,7 @@ describe("companion memory projection", () => {
     expect(companionMemoryProjectionTimeoutMs()).toBe(37_000);
   });
 
-  it("purges private and shadow residue before rebuilding retained canonical rows", async () => {
+  it("delegates one fenced rebuild for retained canonical rows", async () => {
     nativeCleanupEnv();
     process.env.CHAT_COMPANION_DSH_SHADOW_ENABLED = "true";
     const purge = vi.fn(async () => ({ purged: 1 }));
@@ -136,19 +136,13 @@ describe("companion memory projection", () => {
       { purge, rebuild },
     );
 
-    expect(purge).toHaveBeenCalledWith({
-      scope: "relationship",
-      userId: "user-shadow",
-      characterId: "character-shadow",
-    });
+    expect(purge).not.toHaveBeenCalled();
     expect(rebuild).toHaveBeenCalledWith(expect.objectContaining({
       scope: "relationship",
       userId: "user-shadow",
       characterId: "character-shadow",
       messages: [],
     }));
-    expect(purge.mock.invocationCallOrder[0])
-      .toBeLessThan(rebuild.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY);
   });
 
   it("does not claim cleanup when no sidecar cleanup capability is configured", async () => {

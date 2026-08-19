@@ -260,9 +260,16 @@ export class AttemptWorkspaceStore {
     build: (workspace: string) => Promise<T>,
   ): Promise<T> {
     const release = await this.acquireRelationship(identity.userId, identity.characterId);
+    const releaseShadow = await this.acquireRelationship(
+      identity.userId,
+      identity.characterId,
+      this.options.shadowRoot,
+    );
     try {
+      await this.purgeEphemeralRelationship(identity);
       return await this.replaceRelationshipLocked(identity, build);
     } finally {
+      releaseShadow();
       release();
     }
   }
@@ -638,6 +645,33 @@ export class AttemptWorkspaceStore {
       // Do not swallow removal failures: the durable mutation must retry.
       await rm(target, { recursive: true, force: true });
     }
+  }
+
+  private async purgeEphemeralRelationship(
+    identity: { userId: string; characterId: string },
+  ): Promise<void> {
+    const privateTarget = privateRelationshipWorkspacePath(
+      this.options.privateRoot,
+      identity.userId,
+      identity.characterId,
+    );
+    const shadowTarget = relationshipWorkspacePath(
+      this.options.shadowRoot,
+      identity.userId,
+      identity.characterId,
+    );
+    assertWithin(this.options.privateRoot, privateTarget);
+    assertWithin(this.options.shadowRoot, shadowTarget);
+    await Promise.all([
+      rm(privateTarget, { recursive: true, force: true }),
+      rm(shadowTarget, { recursive: true, force: true }),
+    ]);
+    await Promise.all([
+      rmdir(privateUserWorkspacePath(this.options.privateRoot, identity.userId)),
+      rmdir(userWorkspacePath(this.options.shadowRoot, identity.userId)),
+    ].map((cleanup) => cleanup.catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT" && error.code !== "ENOTEMPTY") throw error;
+    })));
   }
 
   private async acquireRelationship(
