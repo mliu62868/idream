@@ -1099,4 +1099,11 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Creates a new immutable Attempt only when no delivery has already succeeded.":
     "仅在尚无成功交付时创建一次新的不可变 Attempt。",
   "Create retry attempt": "创建重试",
+  // —— 素材可发布性提示（creative/library）——
+  // authorityLabel() 整句返回，这里逐句登记；它拼出来的组合是穷举的，共五种。
+  "Demo or legacy test asset": "演示或历史测试素材",
+  "Not publishable": "不可发布",
+  "Not publishable: asset is archived": "不可发布：素材已归档",
+  "Not publishable: asset was rejected": "不可发布：素材已被驳回",
+  "Not publishable: generation authority is not trusted": "不可发布：生成来源不可信",
 };

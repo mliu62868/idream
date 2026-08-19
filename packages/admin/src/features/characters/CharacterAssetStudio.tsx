@@ -752,6 +752,10 @@ export function CharacterAssetStudio({
     ) return;
     const count = 1;
     const brief = briefs[purpose].trim();
+    // SPEC: 这个 title 会写进生成请求并存到后端，不是纯 UI 文案 —— 所以不翻译。
+    // INTENT: Today 页上出现的英文「… · Primary portrait」来自历史数据里存着的这个字段。
+    //         翻译它只影响新数据，旧数据仍是英文，同一列会变成两种语言并存，更糟。
+    //         要改得连同后端已有数据一起迁移，属另一件事。
     const title = `${subject.name} · ${purposeConfig[purpose].label}`;
     const body = recovered?.success
       ? recovered.data
