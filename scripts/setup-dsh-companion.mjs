@@ -356,11 +356,29 @@ function setupProfiles(discoveries, dependencies, dshHome) {
       ),
       dshEnvironment(dependencies.env, dshHome),
     );
+    writeOwnedMinimalProfileManifest(
+      discovery,
+      dependencies.fs,
+      dshHome,
+    );
     writeOwnedProfilePatch(
       discovery.memoryMode,
       discovery.profileName,
       dependencies.fs,
       dshHome,
+    );
+    runCommand(
+      dependencies,
+      `dsh plugin install for ${discovery.profileName}`,
+      "npm",
+      dshNpmArgs(
+        "dsh",
+        "plugin",
+        "--profile",
+        discovery.profileName,
+        "install",
+      ),
+      dshEnvironment(dependencies.env, dshHome),
     );
     const configDigest = dumpProfileConfigDigest(
       discovery,
@@ -456,11 +474,19 @@ function validateProfile(discovery, fs, dshHome) {
       `${discovery.profileName} does not point at the igrep-owned plugin package`,
     );
   }
-  if (!manifest.dsh?.profile?.bundles?.includes(PLUGIN_PACKAGE)) {
+  if (JSON.stringify(manifest.dsh?.profile?.bundles) !== JSON.stringify([PLUGIN_PACKAGE])) {
     throw new BootstrapError(
-      "PLUGIN_BUNDLE_MISSING",
-      `${discovery.profileName} does not load ${PLUGIN_PACKAGE}`,
+      "PROFILE_BUNDLE_MISMATCH",
+      `${discovery.profileName} must load only ${PLUGIN_PACKAGE}`,
     );
+  }
+  for (const peerPackage of PLUGIN_PEERS) {
+    if (manifest.dependencies?.[peerPackage] !== DSH_VERSION) {
+      throw new BootstrapError(
+        "PLUGIN_PEER_VERSION_MISMATCH",
+        `${discovery.profileName} must pin ${peerPackage} to ${DSH_VERSION}`,
+      );
+    }
   }
   const profilePatchPath = path.join(profileDir, "cordis.patch.yml");
   const expectedPatch = renderOwnedProfilePatch(discovery.memoryMode);
@@ -523,6 +549,32 @@ function validateProfile(discovery, fs, dshHome) {
   };
 }
 
+function writeOwnedMinimalProfileManifest(discovery, fs, dshHome) {
+  const manifestPath = path.join(
+    dshHome,
+    "profiles",
+    discovery.profileName,
+    "package.json",
+  );
+  const manifest = readJsonFile(fs, manifestPath, "PROFILE_MANIFEST_INVALID");
+  manifest.dependencies = {
+    ...(manifest.dependencies ?? {}),
+    ...Object.fromEntries(PLUGIN_PEERS.map((peerPackage) => [peerPackage, DSH_VERSION])),
+  };
+  manifest.dsh = {
+    ...(manifest.dsh ?? {}),
+    profile: {
+      ...(manifest.dsh?.profile ?? {}),
+      bundles: [PLUGIN_PACKAGE],
+    },
+  };
+  fs.writeFileSync(
+    manifestPath,
+    `${JSON.stringify(manifest, null, 2)}\n`,
+    { encoding: "utf8", mode: 0o600 },
+  );
+}
+
 function writeOwnedProfilePatch(memoryMode, profileName, fs, dshHome) {
   const profilePatchPath = path.join(
     dshHome,
@@ -567,6 +619,15 @@ function dumpProfileConfigDigest(discovery, dependencies, dshHome) {
     throw new BootstrapError(
       "DSH_CONFIG_DUMP_EMPTY",
       `DSH returned an empty config dump for ${discovery.profileName}`,
+    );
+  }
+  const entryIds = [...configDump.matchAll(/^\s*-\s+id:\s+([^\s#]+)\s*$/gm)]
+    .map((match) => match[1]);
+  const unexpectedEntries = entryIds.filter((id) => id !== "igrep");
+  if (!entryIds.includes("igrep") || unexpectedEntries.length > 0) {
+    throw new BootstrapError(
+      "PROFILE_FORBIDDEN_PLUGIN",
+      `${discovery.profileName} dump must contain only the igrep entry`,
     );
   }
   for (const [capability, enabled] of Object.entries(

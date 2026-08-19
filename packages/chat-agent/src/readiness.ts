@@ -192,6 +192,11 @@ async function verifyBootstrapRuntime(input: {
         throw new Error(`bootstrap ${mode} dump lacks ${name}:${enabled}`);
       }
     }
+    const entryIds = [...dump.matchAll(/^\s*-\s+id:\s+([^\s#]+)\s*$/gm)]
+      .map((match) => match[1]);
+    if (!entryIds.includes("igrep") || entryIds.some((id) => id !== "igrep")) {
+      throw new Error(`bootstrap ${mode} dump contains a non-companion plugin entry`);
+    }
     const actual = createHash("sha256").update(normalizedDump(dump)).digest("hex");
     if (actual !== profile.configDigest) {
       throw new Error(`bootstrap ${mode} dump digest drifted`);

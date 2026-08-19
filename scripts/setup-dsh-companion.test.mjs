@@ -130,6 +130,29 @@ test("setup materializes both official profiles, dumps with the same DSH_HOME, a
   assert.match(privatePatch, /memory: false/);
   assert.match(privatePatch, /ingest: false/);
   assert.match(privatePatch, /wake: false/);
+  for (const profileName of Object.values(PROFILE_NAMES)) {
+    const manifest = fixture.fs.readJson(path.join(
+      DSH_HOME,
+      "profiles",
+      profileName,
+      "package.json",
+    ));
+    assert.deepEqual(manifest.dsh.profile.bundles, ["@igrep/dsh-plugin"]);
+    assert.equal(manifest.dependencies["@deepseek-ai/dsh-llm"], DSH_VERSION);
+    assert.equal(manifest.dependencies["@deepseek-ai/dsh-tools"], DSH_VERSION);
+  }
+  assert.equal(
+    fixture.calls.filter((call) => identifyCall(call.command, call.args) === "dsh plugin install").length,
+    2,
+  );
+});
+
+test("setup rejects a profile dump that loads any non-igrep bundle entry", () => {
+  const fixture = createFixture({ forbiddenDump: true, materialized: false });
+  assert.throws(
+    () => runDshCompanionBootstrap({ check: false }, fixture.dependencies),
+    (error) => error?.code === "PROFILE_FORBIDDEN_PLUGIN",
+  );
 });
 
 test("--check is read-only and verifies the persisted dump/input digests", () => {
@@ -352,6 +375,7 @@ function createFixture(options = {}) {
         action: "installed",
       }));
     }
+    if (label === "dsh plugin install") return success("installed\n");
     if (label === "dsh dump") {
       const profile = readArg(args, "--profile");
       const capabilities = profile === PROFILE_NAMES.private
@@ -373,12 +397,13 @@ function createFixture(options = {}) {
           };
       return success([
         `# profile ${profile}`,
-        "- id: igrep-dsh",
+        "- id: igrep",
         "  config:",
         ...Object.entries(capabilities).map(
           ([name, enabled]) => `    ${name}: ${enabled}`,
         ),
         "    apiKey: super-secret-token",
+        ...(options.forbiddenDump ? ["- id: tool-bash", "  config: {}"] : []),
         ...(control.dumpDrift ? ["    drift: true"] : []),
         "",
       ].join("\n"));
@@ -410,6 +435,9 @@ function identifyCall(command, args) {
   if (command === "npm" && args.includes("-V")) return "dsh version";
   if (command === "igrep" && args.includes("--dry-run")) return "igrep dry-run";
   if (command === "npm" && args.includes("deepseek-harness")) return "igrep setup";
+  if (command === "npm" && args.includes("plugin") && args.includes("install")) {
+    return "dsh plugin install";
+  }
   if (command === "npm" && args.includes("--dump-config")) return "dsh dump";
   return "unknown";
 }
@@ -447,7 +475,7 @@ function materializeProfile(fs, profile, pluginPath, peerVersion = DSH_VERSION) 
     JSON.stringify({
       name: `dsh-profile-${profile}`,
       dependencies: { "@igrep/dsh-plugin": dependency },
-      dsh: { profile: { bundles: ["@igrep/dsh-plugin"] } },
+      dsh: { profile: { bundles: ["@deepseek-ai/dsh-base", "@igrep/dsh-plugin"] } },
     }),
   );
   fs.seed(path.join(profileDir, "pnpm-lock.yaml"), `plugin: ${dependency}\n`);
