@@ -365,6 +365,16 @@ export const companionLegacyMemoryImportEntrySchema = z
     }
   });
 
+export const companionLegacyRecallProbeSchema = z
+  .object({
+    // Operator-owned opaque labels make failures traceable without persisting
+    // the potentially personal query or legacy answer in the migration marker.
+    id: z.string().regex(/^[A-Za-z0-9._-]{1,64}$/),
+    query: nonEmptyStringSchema,
+    legacyExpected: nonEmptyStringSchema,
+  })
+  .strict();
+
 export const companionLegacyMemoryImportSchema = z
   .object({
     scope: z.literal("relationship"),
@@ -372,6 +382,7 @@ export const companionLegacyMemoryImportSchema = z
     characterId: nonEmptyStringSchema,
     checksum: sha256Schema,
     entries: z.array(companionLegacyMemoryImportEntrySchema).max(20_000),
+    recallProbes: z.array(companionLegacyRecallProbeSchema).min(1).max(100),
   })
   .strict()
   .superRefine((value, context) => {
@@ -381,6 +392,14 @@ export const companionLegacyMemoryImportSchema = z
         code: "custom",
         path: ["entries"],
         message: "legacy memory ids must be unique",
+      });
+    }
+    const probeIds = value.recallProbes.map((probe) => probe.id);
+    if (new Set(probeIds).size !== probeIds.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["recallProbes"],
+        message: "legacy recall probe ids must be unique",
       });
     }
   });
@@ -807,6 +826,9 @@ export type CompanionLegacyMemoryImport = z.infer<
 >;
 export type CompanionLegacyMemoryImportEntry = z.infer<
   typeof companionLegacyMemoryImportEntrySchema
+>;
+export type CompanionLegacyRecallProbe = z.infer<
+  typeof companionLegacyRecallProbeSchema
 >;
 export type CompanionInvocation = z.infer<typeof companionInvocationSchema>;
 export type CompanionToolName = z.infer<typeof companionToolNameSchema>;

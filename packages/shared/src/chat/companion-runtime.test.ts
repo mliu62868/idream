@@ -445,6 +445,11 @@ describe("companion runtime stable wire contract", () => {
         text: "User prefers jasmine tea.",
         sourceMessageIds: ["user-message-1"],
       }],
+      recallProbes: [{
+        id: "tea-preference",
+        query: "What tea does the user prefer?",
+        legacyExpected: "jasmine tea",
+      }],
     } as const;
     expect(companionLegacyMemoryImportSchema.parse(request)).toEqual(request);
     expect(companionLegacyMemoryImportSchema.safeParse({
@@ -458,6 +463,14 @@ describe("companion runtime stable wire contract", () => {
     expect(companionLegacyMemoryImportSchema.safeParse({
       ...request,
       arbitraryPath: "/tmp/escape",
+    }).success).toBe(false);
+    expect(companionLegacyMemoryImportSchema.safeParse({
+      ...request,
+      recallProbes: [],
+    }).success).toBe(false);
+    expect(companionLegacyMemoryImportSchema.safeParse({
+      ...request,
+      recallProbes: [request.recallProbes[0], request.recallProbes[0]],
     }).success).toBe(false);
   });
 

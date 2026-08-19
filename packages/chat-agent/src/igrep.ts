@@ -11,7 +11,11 @@ import {
   type CompanionLegacyMemoryImport,
   type CompanionWorkspaceRebuild,
 } from "@idream/shared/chat/companion-runtime";
-import type { MemoryProbe, MemoryStatus } from "./workspace";
+import type {
+  LegacyRecallParityEvidence,
+  MemoryProbe,
+  MemoryStatus,
+} from "./workspace";
 
 export const NORMAL_IGREP_CONFIG = Object.freeze({
   search: true,
@@ -251,6 +255,10 @@ export function verifyLegacyMemoryImport(
   return request;
 }
 
+export function legacyRecallProbeSetChecksum(input: CompanionLegacyMemoryImport): string {
+  return sha256(JSON.stringify(input.recallProbes));
+}
+
 export class IgrepLegacyMemoryImporter {
   constructor(
     private readonly command: string,
@@ -263,7 +271,12 @@ export class IgrepLegacyMemoryImporter {
     workspace: string,
     input: CompanionLegacyMemoryImport,
     signal?: AbortSignal,
-  ): Promise<{ entries: number; written: number; igrepVersion: string }> {
+  ): Promise<{
+    entries: number;
+    written: number;
+    igrepVersion: string;
+    recallParity: LegacyRecallParityEvidence;
+  }> {
     const request = verifyLegacyMemoryImport(input);
     const actualVersion = await this.resolveVersion(this.command);
     if (actualVersion !== this.version) {
@@ -331,12 +344,85 @@ export class IgrepLegacyMemoryImporter {
       throw new Error("igrep doctor did not certify the legacy memory candidate");
     }
 
+    const recallParity = await this.verifyRecallParity(workspace, request, signal);
+
     return {
       entries: request.entries.length,
       written,
       igrepVersion: this.version,
+      recallParity,
     };
   }
+
+  private async verifyRecallParity(
+    workspace: string,
+    request: CompanionLegacyMemoryImport,
+    signal?: AbortSignal,
+  ): Promise<LegacyRecallParityEvidence> {
+    const probes: LegacyRecallParityEvidence["probes"] = [];
+    for (const probe of request.recallProbes) {
+      throwIfAborted(signal);
+      let recalled: Record<string, unknown> | null;
+      try {
+        recalled = objectRecord(await this.run({
+          command: this.command,
+          args: [
+            "mem-api",
+            "memory-search",
+            "--payload",
+            "-",
+          ],
+          stdin: `${JSON.stringify({ workspace, query: probe.query })}\n`,
+          timeoutMs: 30_000,
+          signal,
+        }));
+      } catch {
+        throwIfAborted(signal);
+        // The generic command runner includes argv in its error. Replace it so
+        // operator queries cannot enter sidecar logs on a CLI failure.
+        throw new Error(`igrep recall command failed for ${probe.id}`);
+      }
+      const markdownContext = recalled?.markdownContext;
+      const results = recalled?.results;
+      const warnings = recalled?.warnings;
+      if (
+        recalled?.provider !== "igrep"
+        || recalled.strategy !== "shared-search"
+        || typeof recalled.workspaceRoot !== "string"
+        || resolve(recalled.workspaceRoot) !== resolve(workspace)
+        || typeof markdownContext !== "string"
+        || !Array.isArray(results)
+        || !Array.isArray(warnings)
+        || warnings.length !== 0
+      ) {
+        throw new Error(`igrep recall did not certify parity probe ${probe.id}`);
+      }
+      if (!normalized(markdownContext).includes(normalized(probe.legacyExpected))) {
+        throw new Error(`igrep recall parity failed for ${probe.id}`);
+      }
+      probes.push({
+        probeId: probe.id,
+        queryHash: sha256(probe.query),
+        legacyExpectedHash: sha256(probe.legacyExpected),
+        recallContextHash: sha256(markdownContext),
+        hitCount: results.length,
+      });
+    }
+    return {
+      probeSetChecksum: legacyRecallProbeSetChecksum(request),
+      total: request.recallProbes.length,
+      passed: probes.length,
+      probes,
+    };
+  }
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function normalized(value: string): string {
+  return value.normalize("NFKC").toLocaleLowerCase("en-US").replace(/\s+/g, " ").trim();
 }
 
 function throwIfAborted(signal?: AbortSignal): void {

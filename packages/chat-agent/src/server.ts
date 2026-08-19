@@ -13,7 +13,7 @@ import {
   type CompanionRuntimeResponse,
   type CompanionWorkspaceRebuild,
 } from "@idream/shared/chat/companion-runtime";
-import type { WorkspacePurgeRequest } from "./workspace";
+import type { LegacyRecallParityEvidence, WorkspacePurgeRequest } from "./workspace";
 
 const MAX_CONTROL_BODY_BYTES = 1_048_576;
 const MAX_REBUILD_BODY_BYTES = 16 * 1_048_576;
@@ -35,6 +35,8 @@ export interface InvocationService {
     written: number;
     checksum: string;
     igrepVersion: string;
+    status: "cutover_ready";
+    recallParity: LegacyRecallParityEvidence;
     completedAt: string;
   }>;
   shutdown(): Promise<void>;

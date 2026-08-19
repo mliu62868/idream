@@ -33,6 +33,23 @@ const companionLegacyMemoryImportResponseSchema = z.object({
     written: z.number().int().nonnegative(),
     checksum: z.string().regex(/^[a-f0-9]{64}$/),
     igrepVersion: z.literal(COMPANION_IGREP_VERSION),
+    status: z.literal("cutover_ready"),
+    recallParity: z.object({
+      probeSetChecksum: z.string().regex(/^[a-f0-9]{64}$/),
+      total: z.number().int().positive(),
+      passed: z.number().int().positive(),
+      probes: z.array(z.object({
+        probeId: z.string().regex(/^[A-Za-z0-9._-]{1,64}$/),
+        queryHash: z.string().regex(/^[a-f0-9]{64}$/),
+        legacyExpectedHash: z.string().regex(/^[a-f0-9]{64}$/),
+        recallContextHash: z.string().regex(/^[a-f0-9]{64}$/),
+        hitCount: z.number().int().nonnegative(),
+      }).strict()).min(1).max(100),
+    }).strict().superRefine((parity, context) => {
+      if (parity.passed !== parity.total || parity.probes.length !== parity.total) {
+        context.addIssue({ code: "custom", message: "recall parity is incomplete" });
+      }
+    }),
     completedAt: z.string().datetime({ offset: true }),
   }).strict(),
 }).strict();

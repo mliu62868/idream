@@ -34,10 +34,16 @@ import {
   type PreparedTurnProfile,
 } from "@idream/shared/chat/companion-runtime";
 import type { InvocationService } from "./server";
-import type { AttemptWorkspace, AttemptWorkspaceStore, WorkspacePurgeRequest } from "./workspace";
+import type {
+  AttemptWorkspace,
+  AttemptWorkspaceStore,
+  LegacyRecallParityEvidence,
+  WorkspacePurgeRequest,
+} from "./workspace";
 import {
   NORMAL_IGREP_CONFIG,
   PRIVATE_IGREP_CONFIG,
+  legacyRecallProbeSetChecksum,
   verifyLegacyMemoryImport,
   type IgrepPluginModule,
 } from "./igrep";
@@ -66,7 +72,12 @@ export interface CompanionEngineOptions {
       workspace: string,
       request: CompanionLegacyMemoryImport,
       signal?: AbortSignal,
-    ): Promise<{ entries: number; written: number; igrepVersion: string }>;
+    ): Promise<{
+      entries: number;
+      written: number;
+      igrepVersion: string;
+      recallParity: LegacyRecallParityEvidence;
+    }>;
   };
   maxSteps?: number;
   maxConcurrentAgents?: { normal: number; private: number };
@@ -748,6 +759,8 @@ export class CompanionEngine implements InvocationService {
     written: number;
     checksum: string;
     igrepVersion: string;
+    status: "cutover_ready";
+    recallParity: LegacyRecallParityEvidence;
     completedAt: string;
   }> {
     if (!this.options.legacyImporter) {
@@ -770,6 +783,7 @@ export class CompanionEngine implements InvocationService {
         const marker = {
           checksum: parsed.checksum,
           igrepVersion: this.options.legacyImporter!.version,
+          probeSetChecksum: legacyRecallProbeSetChecksum(parsed),
         };
         const imported = await this.options.workspaces.importLegacyMemory(
           parsed,
@@ -792,6 +806,8 @@ export class CompanionEngine implements InvocationService {
             written: 0,
             checksum: parsed.checksum,
             igrepVersion: imported.marker.igrepVersion,
+            status: imported.marker.status,
+            recallParity: imported.marker.recallParity,
             completedAt: imported.marker.completedAt,
           };
         }
@@ -804,6 +820,8 @@ export class CompanionEngine implements InvocationService {
           written: imported.result.written,
           checksum: parsed.checksum,
           igrepVersion: imported.result.igrepVersion,
+          status: imported.marker.status,
+          recallParity: imported.marker.recallParity,
           completedAt: imported.marker.completedAt,
         };
       });

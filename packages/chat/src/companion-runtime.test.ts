@@ -337,6 +337,19 @@ describe("DshCompanionRuntime", () => {
         written: 1,
         checksum: "d".repeat(64),
         igrepVersion: "0.1.132",
+        status: "cutover_ready",
+        recallParity: {
+          probeSetChecksum: "e".repeat(64),
+          total: 1,
+          passed: 1,
+          probes: [{
+            probeId: "tea-preference",
+            queryHash: "1".repeat(64),
+            legacyExpectedHash: "2".repeat(64),
+            recallContextHash: "3".repeat(64),
+            hitCount: 1,
+          }],
+        },
         completedAt: now,
       },
     }));
@@ -350,6 +363,11 @@ describe("DshCompanionRuntime", () => {
         type: "preference",
         text: "User prefers jasmine tea.",
         sourceMessageIds: ["user-message-1"],
+      }],
+      recallProbes: [{
+        id: "tea-preference",
+        query: "What tea does the user prefer?",
+        legacyExpected: "jasmine tea",
       }],
     };
 

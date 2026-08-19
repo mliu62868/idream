@@ -1,17 +1,27 @@
 // SPEC: ADR-19 §11.2 imports one legacy relationship at a time. PG canonical
 // turns decide eligibility; memory.md is only a candidate source.
-// INVARIANT: apply runs under the shared user authority lock, so edit/delete
+// INVARIANT: apply runs under the exclusive user authority lock, so edit/delete
 // projection cannot invalidate source evidence between planning and promotion.
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  COMPANION_IGREP_VERSION,
+  companionLegacyRecallProbeSchema,
   companionLegacyMemoryImportSchema,
   type CompanionLegacyMemoryImport,
   type CompanionLegacyMemoryImportEntry,
+  type CompanionLegacyRecallProbe,
   type CompanionWorkspaceRebuildMessage,
 } from "@idream/shared/chat/companion-runtime";
+import { z } from "zod";
+import type { Prisma } from "../generated/client/client.js";
 import { chatFsPaths, readWhole } from "./chat-fs.js";
+import {
+  assertNoPendingChatFileMutationsTx,
+  projectChatFileMutations,
+} from "./file-mutations.js";
 import {
   buildCompanionWorkspaceRebuild,
 } from "./companion-memory-projection.js";
@@ -23,8 +33,8 @@ import {
   chatProjectorPrisma,
   type ChatPrismaClient,
 } from "./db.js";
-import { withReadableChatFileSnapshot } from "./file-mutations.js";
 import { parseLine, type MemoryItem } from "./memories.js";
+import { lockUser } from "./turn-lock.js";
 
 export interface LegacyMemoryImportExclusions {
   boundary: number;
@@ -43,7 +53,22 @@ export interface LegacyMemoryImportPlan {
 export interface LegacyMemoryImportMarker {
   checksum: string;
   igrepVersion: string;
+  status: "cutover_ready";
+  recallParity: {
+    probeSetChecksum: string;
+    total: number;
+    passed: number;
+  };
   completedAt: string;
+}
+
+export interface LegacyWorkspaceCleanupFact {
+  cleanupRequired: true;
+  state: "import_pending" | "cutover_ready";
+  importChecksum: string;
+  recallProbeSetChecksum: string;
+  igrepVersion: string;
+  cutoverReadyAt: string | null;
 }
 
 export function buildLegacyMemoryImportPlan(input: {
@@ -51,6 +76,7 @@ export function buildLegacyMemoryImportPlan(input: {
   characterId: string;
   memories: readonly MemoryItem[];
   canonicalMessages: readonly CompanionWorkspaceRebuildMessage[];
+  recallProbes: readonly CompanionLegacyRecallProbe[];
 }): LegacyMemoryImportPlan {
   const canonicalIds = new Set(input.canonicalMessages.map((message) => message.id));
   const counts = new Map<string, number>();
@@ -106,8 +132,126 @@ export function buildLegacyMemoryImportPlan(input: {
       characterId: input.characterId,
       checksum,
       entries,
+      recallProbes: input.recallProbes,
     }),
   };
+}
+
+const legacyRecallProbeFileSchema = z
+  .object({
+    version: z.literal(1),
+    probes: z.array(companionLegacyRecallProbeSchema).min(1).max(100),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const ids = value.probes.map((probe) => probe.id);
+    if (new Set(ids).size !== ids.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["probes"],
+        message: "legacy recall probe ids must be unique",
+      });
+    }
+  });
+
+export function parseLegacyRecallProbeFile(raw: string): CompanionLegacyRecallProbe[] {
+  return legacyRecallProbeFileSchema.parse(JSON.parse(raw)).probes;
+}
+
+export function redactedLegacyRecallProbeSummary(
+  probes: readonly CompanionLegacyRecallProbe[],
+): {
+  count: number;
+  checksum: string;
+  probes: Array<{ id: string; queryHash: string; legacyExpectedHash: string }>;
+} {
+  const digest = (value: string) => createHash("sha256").update(value).digest("hex");
+  return {
+    count: probes.length,
+    checksum: digest(JSON.stringify(probes)),
+    probes: probes.map((probe) => ({
+      id: probe.id,
+      queryHash: digest(probe.query),
+      legacyExpectedHash: digest(probe.legacyExpected),
+    })),
+  };
+}
+
+export async function persistLegacyWorkspaceCleanupRequired(
+  tx: Prisma.TransactionClient,
+  assistantMessageId: string,
+  fact: LegacyWorkspaceCleanupFact,
+): Promise<void> {
+  const payload = JSON.stringify(fact);
+  // INVARIANT: one SQL statement merges the cleanup fact into both serving
+  // projections. A missing or ambiguous selected version rolls the surrounding
+  // import transaction back instead of leaving rollback cleanup unknowable.
+  const updated = await tx.$executeRaw`
+    WITH updated_message AS (
+      UPDATE chat.messages
+      SET runtime_trace = jsonb_set(
+        COALESCE(runtime_trace, '{}'::jsonb),
+        '{companionWorkspace}',
+        COALESCE(runtime_trace->'companionWorkspace', '{}'::jsonb) || ${payload}::jsonb,
+        true
+      )
+      WHERE id = ${assistantMessageId}
+        AND deleted_at IS NULL
+        AND (
+          runtime_trace IS NULL
+          OR (
+            jsonb_typeof(runtime_trace) = 'object'
+            AND (
+              runtime_trace->'companionWorkspace' IS NULL
+              OR jsonb_typeof(runtime_trace->'companionWorkspace') = 'object'
+            )
+          )
+        )
+      RETURNING id
+    )
+    UPDATE chat.message_versions AS version
+    SET runtime_trace = jsonb_set(
+      COALESCE(version.runtime_trace, '{}'::jsonb),
+      '{companionWorkspace}',
+      COALESCE(version.runtime_trace->'companionWorkspace', '{}'::jsonb) || ${payload}::jsonb,
+      true
+    )
+    FROM updated_message
+    WHERE version.message_id = updated_message.id
+      AND version.selected = true
+      AND (
+        version.runtime_trace IS NULL
+        OR (
+          jsonb_typeof(version.runtime_trace) = 'object'
+          AND (
+            version.runtime_trace->'companionWorkspace' IS NULL
+            OR jsonb_typeof(version.runtime_trace->'companionWorkspace') = 'object'
+          )
+        )
+      )
+  `;
+  if (updated !== 1) {
+    throw new Error("legacy import did not mark exactly one Message and selected Version");
+  }
+}
+
+async function withLegacyMemoryImportAuthority<T>(
+  userId: string,
+  run: (tx: Prisma.TransactionClient) => Promise<T>,
+  prisma: ChatPrismaClient,
+  projectorPrisma: ChatPrismaClient,
+  timeoutMs: number,
+): Promise<T> {
+  await projectChatFileMutations(userId, projectorPrisma);
+  return prisma.$transaction(async (tx) => {
+    // INVARIANT: one import owns the user's canonical snapshot through the
+    // remote promotion. The nested cleanup-intent transaction deliberately
+    // does not acquire this advisory lock, so it can commit before the remote
+    // side effect while every normal writer remains fenced.
+    await lockUser(tx, userId);
+    await assertNoPendingChatFileMutationsTx(tx, userId);
+    return run(tx);
+  }, { timeout: timeoutMs });
 }
 
 function parseLegacyMemoryFile(raw: string, characterId: string): MemoryItem[] {
@@ -154,7 +298,12 @@ function sidecarConfig(source: NodeJS.ProcessEnv): LegacyMemoryImportSidecarConf
 }
 
 export async function importLegacyMemoryRelationship(
-  input: { userId: string; characterId: string; dryRun: boolean },
+  input: {
+    userId: string;
+    characterId: string;
+    dryRun: boolean;
+    recallProbes: readonly CompanionLegacyRecallProbe[];
+  },
   dependencies: {
     prisma?: ChatPrismaClient;
     projectorPrisma?: ChatPrismaClient;
@@ -169,7 +318,7 @@ export async function importLegacyMemoryRelationship(
   const prisma = dependencies.prisma ?? chatPrisma;
   const projectorPrisma = dependencies.projectorPrisma ?? chatProjectorPrisma;
   const config = input.dryRun ? null : sidecarConfig(dependencies.env ?? process.env);
-  return withReadableChatFileSnapshot(
+  return withLegacyMemoryImportAuthority(
     input.userId,
     async (tx) => {
       const raw = await readWhole(chatFsPaths.memory(input.userId, input.characterId)) ?? "";
@@ -179,14 +328,44 @@ export async function importLegacyMemoryRelationship(
         ...identity,
         memories: parseLegacyMemoryFile(raw, input.characterId),
         canonicalMessages: canonical.messages,
+        recallProbes: input.recallProbes,
       });
       if (input.dryRun || !config) return { ...plan, mode: "dry-run" };
+      const anchor = [...canonical.messages].reverse()
+        .find((message) => message.role === "assistant");
+      if (!anchor) {
+        throw new Error("legacy import needs a canonical assistant anchor for cleanup authority");
+      }
+      // A timeout or process exit after the request reaches the sidecar is
+      // ambiguous: promotion may already have happened. Commit cleanupRequired
+      // first so rollback remains fail-closed even when this outer transaction
+      // never reaches its final cutover-ready write.
+      await prisma.$transaction(async (cleanupTx) => {
+        await persistLegacyWorkspaceCleanupRequired(cleanupTx, anchor.id, {
+          cleanupRequired: true,
+          state: "import_pending",
+          importChecksum: plan.request.checksum,
+          recallProbeSetChecksum: redactedLegacyRecallProbeSummary(
+            plan.request.recallProbes,
+          ).checksum,
+          igrepVersion: COMPANION_IGREP_VERSION,
+          cutoverReadyAt: null,
+        });
+      }, { timeout: 30_000 });
       const imported = await importLegacyCompanionMemory({
         baseUrl: config.baseUrl,
         token: config.token,
         request: plan.request,
         fetchImpl: dependencies.fetchImpl,
         timeoutMs: config.timeoutMs + 30_000,
+      });
+      await persistLegacyWorkspaceCleanupRequired(tx, anchor.id, {
+        cleanupRequired: true,
+        state: "cutover_ready",
+        importChecksum: imported.checksum,
+        recallProbeSetChecksum: imported.recallParity.probeSetChecksum,
+        igrepVersion: imported.igrepVersion,
+        cutoverReadyAt: imported.completedAt,
       });
       return {
         ...plan,
@@ -195,6 +374,12 @@ export async function importLegacyMemoryRelationship(
         marker: {
           checksum: imported.checksum,
           igrepVersion: imported.igrepVersion,
+          status: imported.status,
+          recallParity: {
+            probeSetChecksum: imported.recallParity.probeSetChecksum,
+            total: imported.recallParity.total,
+            passed: imported.recallParity.passed,
+          },
           completedAt: imported.completedAt,
         },
       };
@@ -208,19 +393,22 @@ export async function importLegacyMemoryRelationship(
 export function parseLegacyMemoryImportArgs(argv: readonly string[]): {
   userId: string;
   characterId: string;
+  probeFile: string;
   dryRun: boolean;
 } {
   let userId = "";
   let characterId = "";
+  let probeFile = "";
   let dryRun = true;
   let explicitDryRun = false;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
-    if (argument === "--user-id" || argument === "--character-id") {
+    if (argument === "--user-id" || argument === "--character-id" || argument === "--probe-file") {
       const value = argv[index + 1]?.trim();
       if (!value || value.startsWith("--")) throw new Error(`${argument} requires a value`);
       if (argument === "--user-id") userId = value;
-      else characterId = value;
+      else if (argument === "--character-id") characterId = value;
+      else probeFile = value;
       index += 1;
       continue;
     }
@@ -238,14 +426,22 @@ export function parseLegacyMemoryImportArgs(argv: readonly string[]): {
   }
   if (!userId) throw new Error("--user-id is required");
   if (!characterId) throw new Error("--character-id is required");
-  return { userId, characterId, dryRun };
+  if (!probeFile) throw new Error("--probe-file is required");
+  return { userId, characterId, probeFile, dryRun };
 }
 
 async function main(): Promise<void> {
   try {
     const input = parseLegacyMemoryImportArgs(process.argv.slice(2));
-    const result = await importLegacyMemoryRelationship(input);
-    process.stdout.write(`${JSON.stringify(result)}\n`);
+    const recallProbes = parseLegacyRecallProbeFile(await readFile(input.probeFile, "utf8"));
+    const result = await importLegacyMemoryRelationship({ ...input, recallProbes });
+    process.stdout.write(`${JSON.stringify({
+      ...result,
+      request: {
+        ...result.request,
+        recallProbes: redactedLegacyRecallProbeSummary(result.request.recallProbes),
+      },
+    })}\n`);
   } finally {
     await Promise.all([
       chatPrisma.$disconnect(),

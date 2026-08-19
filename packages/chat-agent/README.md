@@ -46,7 +46,8 @@ token variable. The default listener is `127.0.0.1:3101`, matching Chat's defaul
   purges the probe relationship afterward.
 - `POST /v1/workspaces/import-legacy-memory` records one strict, checksummed relationship
   through public `igrep mem record`, then requires `maintain --rebuild` and
-  `doctor --strict` before atomic promotion.
+  `doctor --strict` plus every operator recall-parity probe through public
+  `igrep mem-api memory-search` before atomic promotion.
 
 Normal memory is copied into an isolated attempt workspace. It is promoted atomically only
 after Chat accepts the terminal candidate and public `igrep memory-status` proves both
@@ -63,16 +64,42 @@ relationship memory.
 The operator command is deliberately single-relationship and defaults to dry-run:
 
 ```bash
-bun run --cwd packages/chat memory:import-legacy -- --user-id USER_ID --character-id CHARACTER_ID
-bun run --cwd packages/chat memory:import-legacy -- --user-id USER_ID --character-id CHARACTER_ID --apply
+bun run --cwd packages/chat memory:import-legacy -- --user-id USER_ID --character-id CHARACTER_ID --probe-file /secure/probes.json
+bun run --cwd packages/chat memory:import-legacy -- --user-id USER_ID --character-id CHARACTER_ID --probe-file /secure/probes.json --apply
+```
+
+The operator-owned probe file is strict JSON. `legacyExpected` is a literal,
+case-insensitive fragment that the old recall authority is known to return:
+
+```json
+{
+  "version": 1,
+  "probes": [
+    {
+      "id": "tea-preference",
+      "query": "What tea does the user prefer?",
+      "legacyExpected": "jasmine tea"
+    }
+  ]
+}
 ```
 
 Dry-run needs neither `DSH_AGENT_TOKEN` nor a reachable sidecar. It reports total legacy
 entries, every exclusion class, the exact eligible entries, and their checksum. Apply also
-reports the sidecar result and the durable external marker
-`{ checksum, igrepVersion, completedAt }`. Repeating the same checksum/version is a no-op.
+reports the sidecar result and the durable external marker. The marker becomes
+`status=cutover_ready` only after every probe passes and stores checksums, counts,
+opaque probe ids, hit counts, and completion time—not queries, expected text, or
+recalled context. Repeating the same import checksum, igrep version, and probe-set
+checksum is a no-op. Chat also atomically merges a cleanup-required fact into the
+anchor assistant `Message` and selected `MessageVersion`, so rollback cannot make a
+later privacy cleanup intent look unnecessary. Before the sidecar request, Chat commits
+that fact as `state=import_pending`; only a verified sidecar response advances it to
+`state=cutover_ready`. A timeout, process exit, or final database failure therefore leaves
+a conservative cleanup requirement instead of losing the fact that promotion may have
+happened. The external marker is bound to the exact promoted workspace version, so any
+later edit/delete rebuild invalidates the old parity evidence and forces revalidation.
 
-Apply is a bounded one-off operator operation: it holds Chat's shared per-user authority
+Apply is a bounded one-off operator operation: it holds Chat's exclusive per-user authority
 lock while it validates canonical turns and waits for the sidecar. That prevents an
 edit/delete projection from invalidating source evidence before promotion, while
 the sidecar hard-aborts at 300s, Chat aborts its request after
