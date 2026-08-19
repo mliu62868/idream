@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SidecarConfig } from "./config";
-import { createReadinessProbe } from "./readiness";
+import { createReadinessProbe, probeWorkspaceRebuild } from "./readiness";
 
 const config: SidecarConfig = {
   host: "127.0.0.1",
@@ -45,6 +45,7 @@ const successfulRuntimeEvidence = {
   providerWarmup: async () => {},
   memoryLifecycleProbe: async () => {},
   bridgeProbe: async () => {},
+  workspaceRebuildProbe: async () => {},
 };
 
 const plugin = {
@@ -122,6 +123,7 @@ describe("fail-closed companion readiness", () => {
       "providerWarmup",
       "memoryLifecycleProbe",
       "bridgeProbe",
+      "workspaceRebuildProbe",
     ] as const) {
       await expect(createReadinessProbe({
         config,
@@ -157,5 +159,39 @@ describe("fail-closed companion readiness", () => {
     expect(warmups).toBe(2);
     await probe(true);
     expect(warmups).toBe(3);
+  });
+
+  it("probes a disposable empty rebuild and always purges it", async () => {
+    const calls: string[] = [];
+    await expect(probeWorkspaceRebuild({
+      async rebuild(request) {
+        calls.push(`rebuild:${request.userId}:${request.messages.length}`);
+        return { sessions: 0, messages: 0 };
+      },
+      async purge(request) {
+        calls.push(`purge:${request.userId}`);
+        return 1;
+      },
+    }, () => "fixed-nonce")).resolves.toBeUndefined();
+    expect(calls).toEqual([
+      "rebuild:readiness-fixed-nonce:0",
+      "purge:readiness-fixed-nonce",
+    ]);
+
+    calls.length = 0;
+    await expect(probeWorkspaceRebuild({
+      async rebuild(request) {
+        calls.push(`rebuild:${request.userId}`);
+        throw new Error("candidate rebuild failed");
+      },
+      async purge(request) {
+        calls.push(`purge:${request.userId}`);
+        return 0;
+      },
+    }, () => "failed-nonce")).rejects.toThrow("candidate rebuild failed");
+    expect(calls).toEqual([
+      "rebuild:readiness-failed-nonce",
+      "purge:readiness-failed-nonce",
+    ]);
   });
 });

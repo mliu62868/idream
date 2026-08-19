@@ -76,6 +76,9 @@ describe("companion HTTP authority boundary", () => {
         async rebuild() {
           throw new Error("not used");
         },
+        async importLegacyMemory() {
+          throw new Error("not used");
+        },
         async shutdown() {},
       },
     });
@@ -111,6 +114,7 @@ describe("companion HTTP authority boundary", () => {
         async accept() { throw new Error("not used"); },
         async purge() { throw new Error("not used"); },
         async rebuild() { throw new Error("not used"); },
+        async importLegacyMemory() { throw new Error("not used"); },
         async shutdown() {},
       },
     });
@@ -135,6 +139,7 @@ describe("companion HTTP authority boundary", () => {
         async accept() { throw new Error("not used"); },
         async purge() { throw new Error("not used"); },
         rebuild,
+        async importLegacyMemory() { throw new Error("not used"); },
         async shutdown() {},
       },
     });
@@ -179,5 +184,109 @@ describe("companion HTTP authority boundary", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true, rebuilt: { sessions: 1, messages: 2 } });
     expect(rebuild).toHaveBeenCalledWith(body);
+  });
+
+  it("protects and strictly validates one relationship legacy memory import", async () => {
+    const importLegacyMemory = vi.fn(async () => ({
+      skipped: false,
+      entries: 1,
+      written: 1,
+      checksum: "d".repeat(64),
+      igrepVersion: "0.1.132",
+      completedAt: "2026-08-19T12:00:00.000Z",
+    }));
+    const server = createCompanionServer({
+      authToken: AUTH_TOKEN,
+      readiness: async () => readiness,
+      invocation: {
+        async run() { throw new Error("not used"); },
+        async accept() { throw new Error("not used"); },
+        async purge() { throw new Error("not used"); },
+        async rebuild() { throw new Error("not used"); },
+        importLegacyMemory,
+        async shutdown() {},
+      },
+    });
+    servers.push(server);
+    const baseUrl = await listen(server);
+    const body = {
+      scope: "relationship",
+      userId: "user-1",
+      characterId: "character-1",
+      checksum: "d".repeat(64),
+      entries: [{
+        legacyMemoryId: "memory-1",
+        type: "preference",
+        text: "User prefers jasmine tea.",
+        sourceMessageIds: ["user-message-1"],
+      }],
+    };
+    expect((await fetch(`${baseUrl}/v1/workspaces/import-legacy-memory`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    })).status).toBe(401);
+    expect((await fetch(`${baseUrl}/v1/workspaces/import-legacy-memory`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${AUTH_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({ ...body, workspace: "/tmp/escape" }),
+    })).status).toBe(400);
+    const response = await fetch(`${baseUrl}/v1/workspaces/import-legacy-memory`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${AUTH_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      imported: await importLegacyMemory.mock.results[0]?.value,
+    });
+    expect(importLegacyMemory).toHaveBeenCalledWith(body, expect.any(AbortSignal));
+  });
+
+  it("aborts a legacy import when its authenticated client disconnects", async () => {
+    const entered = Promise.withResolvers<AbortSignal>();
+    const server = createCompanionServer({
+      authToken: AUTH_TOKEN,
+      readiness: async () => readiness,
+      invocation: {
+        async run() { throw new Error("not used"); },
+        async accept() { throw new Error("not used"); },
+        async purge() { throw new Error("not used"); },
+        async rebuild() { throw new Error("not used"); },
+        async importLegacyMemory(_request, signal) {
+          if (!signal) throw new Error("missing import abort signal");
+          entered.resolve(signal);
+          return new Promise((resolve, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          });
+        },
+        async shutdown() {},
+      },
+    });
+    servers.push(server);
+    const baseUrl = await listen(server);
+    const client = new AbortController();
+    const response = fetch(`${baseUrl}/v1/workspaces/import-legacy-memory`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${AUTH_TOKEN}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        scope: "relationship",
+        userId: "disconnect-user",
+        characterId: "disconnect-character",
+        checksum: "a".repeat(64),
+        entries: [],
+      }),
+      signal: client.signal,
+    });
+    const sidecarSignal = await entered.promise;
+
+    client.abort();
+
+    await expect(response).rejects.toThrow();
+    await vi.waitFor(() => expect(sidecarSignal.aborted).toBe(true));
   });
 });

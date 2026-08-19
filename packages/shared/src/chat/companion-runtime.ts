@@ -340,6 +340,51 @@ export const companionWorkspaceRebuildSchema = z
     }
   });
 
+export const companionLegacyMemoryImportEntrySchema = z
+  .object({
+    legacyMemoryId: nonEmptyStringSchema,
+    type: nonEmptyStringSchema,
+    text: nonEmptyStringSchema,
+    sourceMessageIds: z.array(nonEmptyStringSchema).min(1),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.type.toLowerCase() === "boundary") {
+      context.addIssue({
+        code: "custom",
+        path: ["type"],
+        message: "global boundaries cannot enter relationship memory",
+      });
+    }
+    if (new Set(value.sourceMessageIds).size !== value.sourceMessageIds.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["sourceMessageIds"],
+        message: "legacy memory source ids must be unique",
+      });
+    }
+  });
+
+export const companionLegacyMemoryImportSchema = z
+  .object({
+    scope: z.literal("relationship"),
+    userId: nonEmptyStringSchema,
+    characterId: nonEmptyStringSchema,
+    checksum: sha256Schema,
+    entries: z.array(companionLegacyMemoryImportEntrySchema).max(20_000),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const ids = value.entries.map((entry) => entry.legacyMemoryId);
+    if (new Set(ids).size !== ids.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["entries"],
+        message: "legacy memory ids must be unique",
+      });
+    }
+  });
+
 export const companionInvocationSchema = z
   .object({
     invocationId: nonEmptyStringSchema,
@@ -756,6 +801,12 @@ export type CompanionWorkspaceRebuild = z.infer<
 >;
 export type CompanionWorkspaceRebuildMessage = z.infer<
   typeof companionWorkspaceRebuildMessageSchema
+>;
+export type CompanionLegacyMemoryImport = z.infer<
+  typeof companionLegacyMemoryImportSchema
+>;
+export type CompanionLegacyMemoryImportEntry = z.infer<
+  typeof companionLegacyMemoryImportEntrySchema
 >;
 export type CompanionInvocation = z.infer<typeof companionInvocationSchema>;
 export type CompanionToolName = z.infer<typeof companionToolNameSchema>;

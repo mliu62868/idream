@@ -1,5 +1,7 @@
 import {
   COMPANION_RUNTIME_PROTOCOL_VERSION,
+  COMPANION_IGREP_VERSION,
+  companionLegacyMemoryImportSchema,
   companionRuntimeResponseSchema,
   companionWorkspaceRebuildSchema,
   decodeCompanionNdjsonFrame,
@@ -7,6 +9,7 @@ import {
   type CompanionCommitAck,
   type CompanionEvent,
   type CompanionInvocation,
+  type CompanionLegacyMemoryImport,
   type CompanionTerminalCandidate,
   type CompanionToolCall,
   type CompanionToolResult,
@@ -19,6 +22,18 @@ const companionWorkspaceRebuildResponseSchema = z.object({
   rebuilt: z.object({
     sessions: z.number().int().nonnegative(),
     messages: z.number().int().nonnegative(),
+  }).strict(),
+}).strict();
+
+const companionLegacyMemoryImportResponseSchema = z.object({
+  ok: z.literal(true),
+  imported: z.object({
+    skipped: z.boolean(),
+    entries: z.number().int().nonnegative(),
+    written: z.number().int().nonnegative(),
+    checksum: z.string().regex(/^[a-f0-9]{64}$/),
+    igrepVersion: z.literal(COMPANION_IGREP_VERSION),
+    completedAt: z.string().datetime({ offset: true }),
   }).strict(),
 }).strict();
 
@@ -121,6 +136,33 @@ export async function rebuildCompanionWorkspace(input: {
     throw new Error(`companion workspace rebuild failed with HTTP ${response.status}`);
   }
   return companionWorkspaceRebuildResponseSchema.parse(await response.json()).rebuilt;
+}
+
+export async function importLegacyCompanionMemory(input: {
+  baseUrl: string;
+  token: string;
+  request: CompanionLegacyMemoryImport;
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+}): Promise<z.infer<typeof companionLegacyMemoryImportResponseSchema>["imported"]> {
+  const request = companionLegacyMemoryImportSchema.parse(input.request);
+  const response = await (input.fetchImpl ?? fetch)(
+    `${input.baseUrl.replace(/\/$/, "")}/v1/workspaces/import-legacy-memory`,
+    {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${input.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(request),
+      signal: AbortSignal.timeout(input.timeoutMs ?? 330_000),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`companion legacy memory import failed with HTTP ${response.status}`);
+  }
+  return companionLegacyMemoryImportResponseSchema.parse(await response.json()).imported;
 }
 
 export class DshCompanionRuntime implements CompanionRuntime {

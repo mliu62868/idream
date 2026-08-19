@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -15,6 +15,7 @@ import {
   type CompanionReadiness,
   type PreparedTurnProfile,
   type CompanionInvocation,
+  type CompanionWorkspaceRebuild,
 } from "@idream/shared/chat/companion-runtime";
 import type { SidecarConfig } from "./config";
 import {
@@ -297,6 +298,33 @@ export interface ReadinessOptions {
   providerWarmup?: (config: SidecarConfig, profile: PreparedTurnProfile) => Promise<void>;
   memoryLifecycleProbe?: (command: string) => Promise<void>;
   bridgeProbe?: (invocation: CompanionInvocation) => Promise<void>;
+  workspaceRebuildProbe(): Promise<void>;
+}
+
+export async function probeWorkspaceRebuild(
+  port: {
+    rebuild(request: CompanionWorkspaceRebuild): Promise<unknown>;
+    purge(request: {
+      scope: "relationship";
+      userId: string;
+      characterId: string;
+    }): Promise<unknown>;
+  },
+  nonce: () => string = randomUUID,
+): Promise<void> {
+  const identity = {
+    userId: `readiness-${nonce()}`,
+    characterId: "readiness-empty-rebuild",
+  };
+  try {
+    await port.rebuild({
+      scope: "relationship",
+      ...identity,
+      messages: [],
+    });
+  } finally {
+    await port.purge({ scope: "relationship", ...identity });
+  }
 }
 
 export function createReadinessProbe(
@@ -351,6 +379,7 @@ export function createReadinessProbe(
     await (options.providerWarmup ?? warmProvider)(options.config, profile);
     await (options.memoryLifecycleProbe ?? probeIgrepLifecycle)(options.config.igrepCommand);
     await (options.bridgeProbe ?? probeCompanionBridges)(bridgeInvocation(profile));
+    await options.workspaceRebuildProbe();
 
       return companionReadinessSchema.parse({
       protocolVersion: 1,

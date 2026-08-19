@@ -8,6 +8,7 @@ import {
 import {
   cancelActiveCompanionInvocations,
   DshCompanionRuntime,
+  importLegacyCompanionMemory,
   purgeCompanionWorkspace,
   rebuildCompanionWorkspace,
 } from "./companion-runtime.js";
@@ -322,6 +323,46 @@ describe("DshCompanionRuntime", () => {
     })).resolves.toEqual({ sessions: 1, messages: 2 });
     const calls = fetchImpl.mock.calls as unknown[][];
     expect(calls[0]?.[0]).toBe("http://127.0.0.1:3101/v1/workspaces/rebuild");
+    const init = calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toEqual(request);
+    expect(new Headers(init.headers).get("authorization")).toBe("Bearer secret");
+  });
+
+  it("imports one strict legacy relationship through the authenticated sidecar API", async () => {
+    const fetchImpl = vi.fn(async () => Response.json({
+      ok: true,
+      imported: {
+        skipped: false,
+        entries: 1,
+        written: 1,
+        checksum: "d".repeat(64),
+        igrepVersion: "0.1.132",
+        completedAt: now,
+      },
+    }));
+    const request = {
+      scope: "relationship" as const,
+      userId: "user-1",
+      characterId: "char-1",
+      checksum: "d".repeat(64),
+      entries: [{
+        legacyMemoryId: "memory-1",
+        type: "preference",
+        text: "User prefers jasmine tea.",
+        sourceMessageIds: ["user-message-1"],
+      }],
+    };
+
+    await expect(importLegacyCompanionMemory({
+      baseUrl: "http://127.0.0.1:3101/",
+      token: "secret",
+      request,
+      fetchImpl: fetchImpl as typeof fetch,
+    })).resolves.toMatchObject({ skipped: false, entries: 1, written: 1 });
+    const calls = fetchImpl.mock.calls as unknown[][];
+    expect(calls[0]?.[0]).toBe(
+      "http://127.0.0.1:3101/v1/workspaces/import-legacy-memory",
+    );
     const init = calls[0]?.[1] as RequestInit;
     expect(JSON.parse(String(init.body))).toEqual(request);
     expect(new Headers(init.headers).get("authorization")).toBe("Bearer secret");

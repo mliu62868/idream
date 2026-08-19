@@ -1,9 +1,15 @@
 import "dotenv/config";
+import { COMPANION_IGREP_VERSION } from "@idream/shared/chat/companion-runtime";
 import { CompanionEngine } from "./engine";
 import { loadSidecarConfig } from "./config";
-import { IgrepMemoryProbe, IgrepMemoryRebuilder, loadIgrepPlugin } from "./igrep";
+import {
+  IgrepLegacyMemoryImporter,
+  IgrepMemoryProbe,
+  IgrepMemoryRebuilder,
+  loadIgrepPlugin,
+} from "./igrep";
 import { OpenAiCompatibleAdapter } from "./openai-adapter";
-import { createReadinessProbe } from "./readiness";
+import { createReadinessProbe, probeWorkspaceRebuild } from "./readiness";
 import { createCompanionServer } from "./server";
 import { AttemptWorkspaceStore } from "./workspace";
 
@@ -25,11 +31,19 @@ const engine = new CompanionEngine({
   }),
   igrepCommand: config.igrepCommand,
   rebuilder: new IgrepMemoryRebuilder(config.igrepCommand),
+  legacyImporter: new IgrepLegacyMemoryImporter(
+    config.igrepCommand,
+    COMPANION_IGREP_VERSION,
+  ),
   maxSteps: config.maxSteps,
 });
 const server = createCompanionServer({
   authToken: config.authToken,
-  readiness: createReadinessProbe({ config, plugin: () => plugin }),
+  readiness: createReadinessProbe({
+    config,
+    plugin: () => plugin,
+    workspaceRebuildProbe: () => probeWorkspaceRebuild(engine),
+  }),
   invocation: engine,
 });
 

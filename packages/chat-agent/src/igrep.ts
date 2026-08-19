@@ -6,7 +6,9 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Context } from "@deepseek-ai/cordis";
 import {
+  companionLegacyMemoryImportSchema,
   companionWorkspaceRebuildSchema,
+  type CompanionLegacyMemoryImport,
   type CompanionWorkspaceRebuild,
 } from "@idream/shared/chat/companion-runtime";
 import type { MemoryProbe, MemoryStatus } from "./workspace";
@@ -72,15 +74,21 @@ export interface JsonCommandOptions {
   args: string[];
   stdin?: string;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 export type RunJsonCommand = (options: JsonCommandOptions) => Promise<unknown>;
 
 export async function runJsonCommand(options: JsonCommandOptions): Promise<unknown> {
+  throwIfAborted(options.signal);
   const child = spawn(options.command, options.args, {
     stdio: ["pipe", "pipe", "pipe"],
     env: process.env,
   });
+  const abort = () => child.kill("SIGKILL");
+  options.signal?.addEventListener("abort", abort, { once: true });
+  if (options.signal?.aborted) abort();
+  child.stdin.on("error", () => undefined);
   const stdout: Buffer[] = [];
   const stderr: Buffer[] = [];
   let stdoutBytes = 0;
@@ -95,7 +103,11 @@ export async function runJsonCommand(options: JsonCommandOptions): Promise<unkno
   const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveResult, reject) => {
     child.once("error", reject);
     child.once("close", (code, signal) => resolveResult({ code, signal }));
-  }).finally(() => clearTimeout(timeout));
+  }).finally(() => {
+    clearTimeout(timeout);
+    options.signal?.removeEventListener("abort", abort);
+  });
+  throwIfAborted(options.signal);
   if (result.code !== 0) {
     throw new Error(
       `${options.command} ${options.args.join(" ")} failed (${result.code ?? result.signal}): ${Buffer.concat(stderr).toString("utf8").trim()}`,
@@ -224,6 +236,120 @@ export class IgrepMemoryRebuilder {
     }
     return { sessions: bySession.size, messages: request.messages.length };
   }
+}
+
+export function verifyLegacyMemoryImport(
+  input: CompanionLegacyMemoryImport,
+): CompanionLegacyMemoryImport {
+  const request = companionLegacyMemoryImportSchema.parse(input);
+  const checksum = createHash("sha256")
+    .update(JSON.stringify(request.entries))
+    .digest("hex");
+  if (checksum !== request.checksum) {
+    throw new Error("legacy memory import checksum does not match its strict entries");
+  }
+  return request;
+}
+
+export class IgrepLegacyMemoryImporter {
+  constructor(
+    private readonly command: string,
+    readonly version: string,
+    private readonly run: RunJsonCommand = runJsonCommand,
+    private readonly resolveVersion: (command: string) => Promise<string> = igrepVersion,
+  ) {}
+
+  async import(
+    workspace: string,
+    input: CompanionLegacyMemoryImport,
+    signal?: AbortSignal,
+  ): Promise<{ entries: number; written: number; igrepVersion: string }> {
+    const request = verifyLegacyMemoryImport(input);
+    const actualVersion = await this.resolveVersion(this.command);
+    if (actualVersion !== this.version) {
+      throw new Error(`igrep legacy memory import version drifted to ${actualVersion}`);
+    }
+
+    let written = 0;
+    for (const entry of request.entries) {
+      throwIfAborted(signal);
+      const result = await this.run({
+        command: this.command,
+        args: [
+          "mem",
+          "record",
+          "--workspace",
+          workspace,
+          "--format",
+          "json",
+        ],
+        stdin: entry.text,
+        timeoutMs: 30_000,
+        signal,
+      });
+      const record = objectRecord(result);
+      if (
+        record?.provider !== "igrep"
+        || record.action !== "record"
+        || record.path !== ".igrep/mem/MEMORY.md"
+        || typeof record.written !== "boolean"
+        || typeof record.contentHash !== "string"
+        || !/^[a-f0-9]{64}$/.test(record.contentHash)
+      ) {
+        throw new Error(`igrep record did not verify legacy memory ${entry.legacyMemoryId}`);
+      }
+      if (record.written) written += 1;
+    }
+
+    const maintain = objectRecord(await this.run({
+      command: this.command,
+      args: ["mem", "maintain", "--workspace", workspace, "--rebuild"],
+      timeoutMs: 300_000,
+      signal,
+    }));
+    if (
+      maintain?.provider !== "igrep"
+      || maintain.action !== "maintain"
+      || !Number.isSafeInteger(maintain.pendingRows)
+      || Number(maintain.pendingRows) !== 0
+    ) {
+      throw new Error("igrep maintain did not certify the legacy memory candidate");
+    }
+
+    const doctor = objectRecord(await this.run({
+      command: this.command,
+      args: ["mem", "doctor", "--workspace", workspace, "--json", "--strict"],
+      timeoutMs: 30_000,
+      signal,
+    }));
+    if (
+      doctor?.provider !== "igrep"
+      || doctor.ok !== true
+      || !Array.isArray(doctor.warnings)
+      || doctor.warnings.length !== 0
+    ) {
+      throw new Error("igrep doctor did not certify the legacy memory candidate");
+    }
+
+    return {
+      entries: request.entries.length,
+      written,
+      igrepVersion: this.version,
+    };
+  }
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new Error("legacy memory import aborted");
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }
 
 export async function igrepVersion(command: string): Promise<string> {

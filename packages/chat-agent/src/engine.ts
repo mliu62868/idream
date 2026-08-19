@@ -23,6 +23,7 @@ import {
   type CompanionCommitAck,
   type CompanionEvent,
   type CompanionInvocation,
+  type CompanionLegacyMemoryImport,
   type CompanionRuntimeRequest,
   type CompanionRuntimeResponse,
   type CompanionTerminalCandidate,
@@ -34,7 +35,12 @@ import {
 } from "@idream/shared/chat/companion-runtime";
 import type { InvocationService } from "./server";
 import type { AttemptWorkspace, AttemptWorkspaceStore, WorkspacePurgeRequest } from "./workspace";
-import { NORMAL_IGREP_CONFIG, PRIVATE_IGREP_CONFIG, type IgrepPluginModule } from "./igrep";
+import {
+  NORMAL_IGREP_CONFIG,
+  PRIVATE_IGREP_CONFIG,
+  verifyLegacyMemoryImport,
+  type IgrepPluginModule,
+} from "./igrep";
 
 type ControlFrame = Exclude<CompanionRuntimeRequest, { type: "run" }>;
 type EventPayload = CompanionEvent extends infer Event
@@ -53,6 +59,14 @@ export interface CompanionEngineOptions {
       workspace: string,
       request: CompanionWorkspaceRebuild,
     ): Promise<{ sessions: number; messages: number }>;
+  };
+  legacyImporter?: {
+    readonly version: string;
+    import(
+      workspace: string,
+      request: CompanionLegacyMemoryImport,
+      signal?: AbortSignal,
+    ): Promise<{ entries: number; written: number; igrepVersion: string }>;
   };
   maxSteps?: number;
 }
@@ -714,6 +728,76 @@ export class CompanionEngine implements InvocationService {
           request,
           (workspace) => this.options.rebuilder!.rebuild(workspace, request),
         );
+      });
+    } finally {
+      this.removeFence(this.purgingRelationships, relationshipKey);
+    }
+  }
+
+  async importLegacyMemory(request: CompanionLegacyMemoryImport, signal?: AbortSignal): Promise<{
+    skipped: boolean;
+    entries: number;
+    written: number;
+    checksum: string;
+    igrepVersion: string;
+    completedAt: string;
+  }> {
+    if (!this.options.legacyImporter) {
+      throw new Error("igrep legacy memory import is not configured");
+    }
+    const parsed = verifyLegacyMemoryImport(request);
+    const relationshipKey = `${parsed.userId}\0${parsed.characterId}`;
+    if (this.hasFence(this.purgingUsers, parsed.userId)
+      || this.hasFence(this.purgingRelationships, relationshipKey)) {
+      throw new Error("invocation workspace is already being rebuilt or purged");
+    }
+    this.addFence(this.purgingRelationships, relationshipKey);
+    try {
+      return await this.withMaintenance(async () => {
+        const matches = () => [...this.active.values()].filter(({ invocation }) =>
+          invocation.userId === parsed.userId
+          && invocation.characterId === parsed.characterId);
+        for (const active of matches()) active.cancel("user");
+        while (matches().length > 0) await new Promise((resolve) => setTimeout(resolve, 10));
+        const marker = {
+          checksum: parsed.checksum,
+          igrepVersion: this.options.legacyImporter!.version,
+        };
+        const imported = await this.options.workspaces.importLegacyMemory(
+          parsed,
+          marker,
+          async (workspace) => {
+            const result = await this.options.legacyImporter!.import(workspace, parsed, signal);
+            if (signal?.aborted) {
+              throw signal.reason instanceof Error
+                ? signal.reason
+                : new Error("legacy memory import aborted");
+            }
+            return result;
+          },
+          signal,
+        );
+        if (imported.skipped) {
+          return {
+            skipped: true,
+            entries: parsed.entries.length,
+            written: 0,
+            checksum: parsed.checksum,
+            igrepVersion: imported.marker.igrepVersion,
+            completedAt: imported.marker.completedAt,
+          };
+        }
+        if (imported.result.igrepVersion !== marker.igrepVersion) {
+          throw new Error("igrep legacy memory import version drifted");
+        }
+        return {
+          skipped: false,
+          entries: imported.result.entries,
+          written: imported.result.written,
+          checksum: parsed.checksum,
+          igrepVersion: imported.result.igrepVersion,
+          completedAt: imported.marker.completedAt,
+        };
       });
     } finally {
       this.removeFence(this.purgingRelationships, relationshipKey);

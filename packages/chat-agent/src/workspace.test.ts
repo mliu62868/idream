@@ -1,6 +1,8 @@
 import { once } from "node:events";
+import { createHash } from "node:crypto";
 import {
   access,
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
@@ -19,7 +21,9 @@ import { CompanionEngine } from "./engine";
 import { createCompanionServer, type CompanionServer } from "./server";
 import {
   AttemptWorkspaceStore,
+  legacyMemoryImportMarkerPath,
   relationshipWorkspacePath,
+  userWorkspacePath,
 } from "./workspace";
 
 const AUTH_TOKEN = "purge-test-secret";
@@ -123,6 +127,214 @@ function activeInvocation(): CompanionInvocation {
 }
 
 describe("authenticated workspace privacy authority", () => {
+  it("promotes a verified legacy candidate with an external idempotency marker", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chat-agent-legacy-promote-"));
+    temporary.push(root);
+    const canonicalRoot = join(root, "canonical");
+    const identity = { userId: "legacy-user", characterId: "legacy-character" };
+    const relationship = relationshipWorkspacePath(
+      canonicalRoot,
+      identity.userId,
+      identity.characterId,
+    );
+    const oldVersion = join(relationship, ".igrep.versions", "old");
+    await mkdir(oldVersion, { recursive: true });
+    await writeFile(join(oldVersion, "sentinel.txt"), "old");
+    await symlink(".igrep.versions/old", join(relationship, ".igrep"), "dir");
+    const store = new AttemptWorkspaceStore({
+      canonicalRoot,
+      privateRoot: join(root, "private"),
+      memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
+    });
+    const marker = {
+      checksum: "d".repeat(64),
+      igrepVersion: "0.1.132",
+      completedAt: "2026-08-19T12:00:00.000Z",
+    };
+    let builds = 0;
+    const first = await store.importLegacyMemory(identity, marker, async (workspace) => {
+      builds += 1;
+      // igrep 0.1.132 resolves memory files and rejects a .igrep symlink whose
+      // target sits outside the workspace, so candidate construction is real.
+      expect((await lstat(join(workspace, ".igrep"))).isSymbolicLink()).toBe(false);
+      expect(await readFile(join(relationship, ".igrep", "sentinel.txt"), "utf8"))
+        .toBe("old");
+      await writeFile(join(workspace, ".igrep", "sentinel.txt"), "imported");
+      return { written: 2 };
+    });
+
+    expect(first).toEqual({ skipped: false, result: { written: 2 }, marker });
+    expect(await readFile(join(relationship, ".igrep", "sentinel.txt"), "utf8"))
+      .toBe("imported");
+    const markerPath = legacyMemoryImportMarkerPath(
+      canonicalRoot,
+      identity.userId,
+      identity.characterId,
+    );
+    expect(markerPath.startsWith(relationship)).toBe(false);
+    expect(JSON.parse(await readFile(markerPath, "utf8"))).toEqual(marker);
+
+    await expect(store.importLegacyMemory(identity, {
+      ...marker,
+      completedAt: "2026-08-19T13:00:00.000Z",
+    }, async () => {
+      builds += 1;
+      throw new Error("idempotent import must not rebuild");
+    })).resolves.toEqual({ skipped: true, marker });
+    expect(builds).toBe(1);
+  });
+
+  it("records completion only after candidate verification succeeds", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chat-agent-legacy-completed-at-"));
+    temporary.push(root);
+    const store = new AttemptWorkspaceStore({
+      canonicalRoot: join(root, "canonical"),
+      privateRoot: join(root, "private"),
+      memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
+    });
+    let verifiedAt = 0;
+    const imported = await store.importLegacyMemory(
+      { userId: "completed-user", characterId: "completed-character" },
+      { checksum: "e".repeat(64), igrepVersion: "0.1.132" },
+      async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        verifiedAt = Date.now();
+        return { written: 1 };
+      },
+    );
+
+    expect(imported.skipped).toBe(false);
+    expect(Date.parse(imported.marker.completedAt)).toBeGreaterThanOrEqual(verifiedAt);
+  });
+
+  it("keeps the prior authority and marker when legacy candidate verification fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chat-agent-legacy-failure-"));
+    temporary.push(root);
+    const canonicalRoot = join(root, "canonical");
+    const identity = { userId: "legacy-user", characterId: "legacy-character" };
+    const relationship = relationshipWorkspacePath(
+      canonicalRoot,
+      identity.userId,
+      identity.characterId,
+    );
+    const oldVersion = join(relationship, ".igrep.versions", "old");
+    await mkdir(oldVersion, { recursive: true });
+    await writeFile(join(oldVersion, "sentinel.txt"), "old");
+    await symlink(".igrep.versions/old", join(relationship, ".igrep"), "dir");
+    const store = new AttemptWorkspaceStore({
+      canonicalRoot,
+      privateRoot: join(root, "private"),
+      memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
+    });
+    const markerPath = legacyMemoryImportMarkerPath(
+      canonicalRoot,
+      identity.userId,
+      identity.characterId,
+    );
+
+    await expect(store.importLegacyMemory(identity, {
+      checksum: "e".repeat(64),
+      igrepVersion: "0.1.132",
+      completedAt: "2026-08-19T12:00:00.000Z",
+    }, async (workspace) => {
+      await writeFile(join(workspace, ".igrep", "sentinel.txt"), "unverified");
+      throw new Error("doctor failed");
+    })).rejects.toThrow("doctor failed");
+    expect(await readFile(join(relationship, ".igrep", "sentinel.txt"), "utf8"))
+      .toBe("old");
+    expect(await present(markerPath)).toBe(false);
+  });
+
+  it("discards a verified candidate when the bounded import is aborted before promotion", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chat-agent-legacy-abort-"));
+    temporary.push(root);
+    const canonicalRoot = join(root, "canonical");
+    const identity = { userId: "legacy-abort-user", characterId: "legacy-abort-character" };
+    const relationship = relationshipWorkspacePath(
+      canonicalRoot,
+      identity.userId,
+      identity.characterId,
+    );
+    const oldVersion = join(relationship, ".igrep.versions", "old");
+    await mkdir(oldVersion, { recursive: true });
+    await writeFile(join(oldVersion, "sentinel.txt"), "old");
+    await symlink(".igrep.versions/old", join(relationship, ".igrep"), "dir");
+    const store = new AttemptWorkspaceStore({
+      canonicalRoot,
+      privateRoot: join(root, "private"),
+      memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
+    });
+    const abort = new AbortController();
+
+    await expect(store.importLegacyMemory(identity, {
+      checksum: "f".repeat(64),
+      igrepVersion: "0.1.132",
+    }, async (workspace) => {
+      await writeFile(join(workspace, ".igrep", "sentinel.txt"), "verified-but-late");
+      abort.abort(new Error("operator deadline elapsed"));
+      return { written: 1 };
+    }, abort.signal)).rejects.toThrow("operator deadline elapsed");
+
+    expect(await readFile(join(relationship, ".igrep", "sentinel.txt"), "utf8"))
+      .toBe("old");
+    expect(await present(legacyMemoryImportMarkerPath(
+      canonicalRoot,
+      identity.userId,
+      identity.characterId,
+    ))).toBe(false);
+  });
+
+  it("fences and imports one strict relationship through the engine", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chat-agent-legacy-engine-"));
+    temporary.push(root);
+    const canonicalRoot = join(root, "canonical");
+    const entries = [{
+      legacyMemoryId: "memory-engine-1",
+      type: "preference",
+      text: "User prefers jasmine tea.",
+      sourceMessageIds: ["user-message-engine-1"],
+    }];
+    const checksum = createHash("sha256").update(JSON.stringify(entries)).digest("hex");
+    const engine = new CompanionEngine({
+      workspaces: new AttemptWorkspaceStore({
+        canonicalRoot,
+        privateRoot: join(root, "private"),
+        memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
+      }),
+      plugin: async () => ({ name: "igrep", apply() {} }),
+      adapter: () => new UnusedAdapter(),
+      igrepCommand: "igrep",
+      legacyImporter: {
+        version: "0.1.132",
+        async import(workspace) {
+          await writeFile(join(workspace, ".igrep", "imported.txt"), "verified");
+          return { entries: 1, written: 1, igrepVersion: "0.1.132" };
+        },
+      },
+    });
+
+    const imported = await engine.importLegacyMemory({
+      scope: "relationship",
+      userId: "engine-user",
+      characterId: "engine-character",
+      checksum,
+      entries,
+    });
+
+    expect(imported).toMatchObject({
+      skipped: false,
+      entries: 1,
+      written: 1,
+      checksum,
+      igrepVersion: "0.1.132",
+    });
+    expect(await readFile(join(
+      relationshipWorkspacePath(canonicalRoot, "engine-user", "engine-character"),
+      ".igrep",
+      "imported.txt",
+    ), "utf8")).toBe("verified");
+  });
+
   it("mounts released knowledge read-only for normal attempts and never for private attempts", async () => {
     const root = await mkdtemp(join(tmpdir(), "chat-agent-knowledge-"));
     temporary.push(root);
@@ -390,6 +602,7 @@ describe("authenticated workspace privacy authority", () => {
     expect(await purge()).toEqual({ ok: true, purged: 1 });
     expect(await purge()).toEqual({ ok: true, purged: 0 });
     expect(await present(victim)).toBe(false);
+    expect(await present(userWorkspacePath(canonicalRoot, victimUser))).toBe(false);
     expect(await present(neighbor)).toBe(true);
     expect(await present(outside)).toBe(true);
   });

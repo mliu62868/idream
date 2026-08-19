@@ -582,6 +582,7 @@ export async function withReadableChatFileSnapshot<T>(
   read: (tx: Prisma.TransactionClient) => Promise<T>,
   prisma: ChatPrismaClient = chatPrisma,
   authorityPrisma: ChatPrismaClient = chatProjectorPrisma,
+  timeoutMs = 30_000,
 ): Promise<T> {
   await projectChatFileMutations(userId, authorityPrisma);
   return prisma.$transaction(
@@ -600,7 +601,7 @@ export async function withReadableChatFileSnapshot<T>(
       // this seam and can interleave queries with a transaction client.
       return read(tx);
     },
-    { timeout: 30_000 },
+    { timeout: timeoutMs },
   );
 }
 

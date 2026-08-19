@@ -1,5 +1,19 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, cp, lstat, mkdir, mkdtemp, readdir, readlink, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  cp,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  readlink,
+  rename,
+  rm,
+  rmdir,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import {
@@ -64,6 +78,31 @@ export function relationshipWorkspacePath(
 ): string {
   return join(userWorkspacePath(canonicalRoot, userId), `relationship-${safeKey(userId, characterId)}`);
 }
+
+function legacyMemoryImportUserMetaPath(canonicalRoot: string, userId: string): string {
+  return join(resolve(canonicalRoot), "_meta", `user-${safeKey(userId)}`);
+}
+
+export function legacyMemoryImportMarkerPath(
+  canonicalRoot: string,
+  userId: string,
+  characterId: string,
+): string {
+  return join(
+    legacyMemoryImportUserMetaPath(canonicalRoot, userId),
+    `relationship-${safeKey(userId, characterId)}.json`,
+  );
+}
+
+export interface LegacyMemoryImportMarker {
+  checksum: string;
+  igrepVersion: string;
+  completedAt: string;
+}
+
+type LegacyMemoryImportMarkerInput = Omit<LegacyMemoryImportMarker, "completedAt"> & {
+  completedAt?: string;
+};
 
 function privateUserWorkspacePath(privateRoot: string, userId: string): string {
   return join(resolve(privateRoot), `user-${safeKey(userId)}`);
@@ -145,6 +184,11 @@ export class AttemptWorkspaceStore {
         request.userId,
         request.characterId,
       );
+      const markerTarget = legacyMemoryImportMarkerPath(
+        this.options.canonicalRoot,
+        request.userId,
+        request.characterId,
+      );
       try {
         const shadowTarget = relationshipWorkspacePath(
           this.options.shadowRoot,
@@ -152,18 +196,31 @@ export class AttemptWorkspaceStore {
           request.characterId,
         );
         assertWithin(this.options.canonicalRoot, canonicalTarget);
+        assertWithin(this.options.canonicalRoot, markerTarget);
         assertWithin(this.options.privateRoot, privateTarget);
         assertWithin(this.options.shadowRoot, shadowTarget);
         const found = await Promise.all([
           exists(canonicalTarget),
           exists(privateTarget),
           exists(shadowTarget),
+          exists(markerTarget),
         ]);
         await Promise.all([
           rm(canonicalTarget, { recursive: true, force: true }),
           rm(privateTarget, { recursive: true, force: true }),
           rm(shadowTarget, { recursive: true, force: true }),
+          rm(markerTarget, { force: true }),
         ]);
+        await rmdir(legacyMemoryImportUserMetaPath(this.options.canonicalRoot, request.userId))
+          .catch((error: NodeJS.ErrnoException) => {
+            if (error.code !== "ENOENT" && error.code !== "ENOTEMPTY") throw error;
+          });
+        await Promise.all([
+          rmdir(userWorkspacePath(this.options.canonicalRoot, request.userId)),
+          rmdir(privateUserWorkspacePath(this.options.privateRoot, request.userId)),
+        ].map((cleanup) => cleanup.catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT" && error.code !== "ENOTEMPTY") throw error;
+        })));
         return found.some(Boolean) ? 1 : 0;
       } finally {
         releaseShadow();
@@ -173,7 +230,9 @@ export class AttemptWorkspaceStore {
     const canonicalTarget = userWorkspacePath(this.options.canonicalRoot, request.userId);
     const privateTarget = privateUserWorkspacePath(this.options.privateRoot, request.userId);
     const shadowTarget = userWorkspacePath(this.options.shadowRoot, request.userId);
+    const markerTarget = legacyMemoryImportUserMetaPath(this.options.canonicalRoot, request.userId);
     assertWithin(this.options.canonicalRoot, canonicalTarget);
+    assertWithin(this.options.canonicalRoot, markerTarget);
     assertWithin(this.options.privateRoot, privateTarget);
     assertWithin(this.options.shadowRoot, shadowTarget);
     const relationshipNames = new Set<string>();
@@ -190,6 +249,7 @@ export class AttemptWorkspaceStore {
       rm(canonicalTarget, { recursive: true, force: true }),
       rm(privateTarget, { recursive: true, force: true }),
       rm(shadowTarget, { recursive: true, force: true }),
+      rm(markerTarget, { recursive: true, force: true }),
     ]);
     return relationshipNames.size;
   }
@@ -198,11 +258,83 @@ export class AttemptWorkspaceStore {
     identity: { userId: string; characterId: string },
     build: (workspace: string) => Promise<T>,
   ): Promise<T> {
-    const release = await this.acquireRelationship(
-      identity.userId,
-      identity.characterId,
-      this.options.canonicalRoot,
-    );
+    const release = await this.acquireRelationship(identity.userId, identity.characterId);
+    try {
+      return await this.replaceRelationshipLocked(identity, build);
+    } finally {
+      release();
+    }
+  }
+
+  async importLegacyMemory<T>(
+    identity: { userId: string; characterId: string },
+    marker: LegacyMemoryImportMarkerInput,
+    build: (workspace: string) => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<
+    | { skipped: true; marker: LegacyMemoryImportMarker }
+    | { skipped: false; result: T; marker: LegacyMemoryImportMarker }
+  > {
+    this.assertLegacyMemoryImportMarkerIdentity(marker);
+    if (marker.completedAt !== undefined) {
+      this.assertLegacyMemoryImportMarker({ ...marker, completedAt: marker.completedAt });
+    }
+    this.throwIfAborted(signal);
+    const release = await this.acquireRelationship(identity.userId, identity.characterId);
+    try {
+      this.throwIfAborted(signal);
+      const markerPath = legacyMemoryImportMarkerPath(
+        this.options.canonicalRoot,
+        identity.userId,
+        identity.characterId,
+      );
+      const current = await this.readLegacyMemoryImportMarker(markerPath);
+      const canonicalLink = join(
+        relationshipWorkspacePath(
+          this.options.canonicalRoot,
+          identity.userId,
+          identity.characterId,
+        ),
+        ".igrep",
+      );
+      if (
+        current?.checksum === marker.checksum
+        && current.igrepVersion === marker.igrepVersion
+        && await exists(canonicalLink)
+      ) {
+        return { skipped: true, marker: current };
+      }
+      let completedMarker: LegacyMemoryImportMarker | undefined;
+      const result = await this.replaceRelationshipLocked(identity, build, {
+        path: markerPath,
+        value: () => {
+          completedMarker = {
+            checksum: marker.checksum,
+            igrepVersion: marker.igrepVersion,
+            // INVARIANT: completion is recorded only after record, maintain,
+            // and strict doctor have all returned successfully from build().
+            completedAt: marker.completedAt ?? new Date().toISOString(),
+          };
+          this.assertLegacyMemoryImportMarker(completedMarker);
+          return completedMarker;
+        },
+      }, signal);
+      if (!completedMarker) throw new Error("legacy memory import marker was not completed");
+      return { skipped: false, result, marker: completedMarker };
+    } finally {
+      release();
+    }
+  }
+
+  private async replaceRelationshipLocked<T>(
+    identity: { userId: string; characterId: string },
+    build: (workspace: string) => Promise<T>,
+    marker?: {
+      path: string;
+      value: LegacyMemoryImportMarker | (() => LegacyMemoryImportMarker);
+    },
+    signal?: AbortSignal,
+  ): Promise<T> {
     const relationshipRoot = relationshipWorkspacePath(
       this.options.canonicalRoot,
       identity.userId,
@@ -213,36 +345,118 @@ export class AttemptWorkspaceStore {
     const canonicalLink = join(relationshipRoot, ".igrep");
     const rebuildRoot = join(rebuildsRoot, randomUUID());
     const workspace = join(rebuildRoot, "workspace");
+    const candidateMemory = join(workspace, ".igrep");
     const candidateVersion = join(versionsRoot, `rebuild-${Date.now()}-${randomUUID()}`);
     let promoted = false;
+    let canonicalChanged = false;
     let nextLink: string | undefined;
+    let nextMarker: string | undefined;
+    let priorVersion: string | undefined;
     let result!: T;
     try {
+      this.throwIfAborted(signal);
       await mkdir(versionsRoot, { recursive: true });
       await mkdir(workspace, { recursive: true });
-      await mkdir(candidateVersion);
+      await mkdir(candidateMemory);
       assertWithin(relationshipRoot, rebuildRoot);
       assertWithin(versionsRoot, candidateVersion);
-      await symlink(relative(workspace, candidateVersion), join(workspace, ".igrep"), "dir");
-      const priorVersion = await this.canonicalVersion(canonicalLink, versionsRoot);
+      priorVersion = await this.canonicalVersion(canonicalLink, versionsRoot);
       result = await build(workspace);
+      this.throwIfAborted(signal);
+      if (marker) {
+        const markerValue = typeof marker.value === "function"
+          ? marker.value()
+          : marker.value;
+        assertWithin(this.options.canonicalRoot, marker.path);
+        await mkdir(dirname(marker.path), { recursive: true });
+        nextMarker = `${marker.path}.next-${randomUUID()}`;
+        await writeFile(nextMarker, `${JSON.stringify(markerValue)}\n`, {
+          encoding: "utf8",
+          mode: 0o600,
+        });
+      }
+      // igrep 0.1.132 refuses a workspace whose .igrep resolves outside the
+      // workspace. Build and verify in a real directory, then move that exact
+      // certified directory into the version authority before pointer swap.
+      await rename(candidateMemory, candidateVersion);
+      this.throwIfAborted(signal);
       nextLink = join(relationshipRoot, `.igrep.next-${randomUUID()}`);
       await symlink(relative(relationshipRoot, candidateVersion), nextLink, "dir");
+      this.throwIfAborted(signal);
       await rename(nextLink, canonicalLink);
+      canonicalChanged = true;
+      this.throwIfAborted(signal);
+      if (marker && nextMarker) {
+        await rename(nextMarker, marker.path);
+        nextMarker = undefined;
+      }
       promoted = true;
-      await rm(rebuildRoot, { recursive: true, force: true });
+      await rm(rebuildRoot, { recursive: true, force: true }).catch(() => undefined);
       if (priorVersion && priorVersion !== candidateVersion) {
         await rm(priorVersion, { recursive: true, force: true }).catch(() => undefined);
       }
       return result;
     } finally {
       if (!promoted) {
+        if (canonicalChanged) {
+          if (priorVersion) {
+            const rollbackLink = join(relationshipRoot, `.igrep.rollback-${randomUUID()}`);
+            await symlink(relative(relationshipRoot, priorVersion), rollbackLink, "dir");
+            await rename(rollbackLink, canonicalLink);
+          } else {
+            await rm(canonicalLink, { force: true }).catch(() => undefined);
+          }
+        }
         if (nextLink) await rm(nextLink, { recursive: true, force: true }).catch(() => undefined);
+        if (nextMarker) await rm(nextMarker, { force: true }).catch(() => undefined);
         await rm(candidateVersion, { recursive: true, force: true }).catch(() => undefined);
         await rm(rebuildRoot, { recursive: true, force: true }).catch(() => undefined);
       }
-      release();
     }
+  }
+
+  private assertLegacyMemoryImportMarker(marker: LegacyMemoryImportMarker): void {
+    this.assertLegacyMemoryImportMarkerIdentity(marker);
+    if (!Number.isFinite(Date.parse(marker.completedAt))) {
+      throw new Error("legacy memory import marker completion time is invalid");
+    }
+  }
+
+  private throwIfAborted(signal?: AbortSignal): void {
+    if (!signal?.aborted) return;
+    throw signal.reason instanceof Error
+      ? signal.reason
+      : new Error("legacy memory import aborted");
+  }
+
+  private assertLegacyMemoryImportMarkerIdentity(
+    marker: Pick<LegacyMemoryImportMarker, "checksum" | "igrepVersion">,
+  ): void {
+    if (!/^[a-f0-9]{64}$/.test(marker.checksum)) {
+      throw new Error("legacy memory import marker checksum is invalid");
+    }
+    if (!/^\d+\.\d+\.\d+$/.test(marker.igrepVersion)) {
+      throw new Error("legacy memory import marker igrep version is invalid");
+    }
+  }
+
+  private async readLegacyMemoryImportMarker(
+    path: string,
+  ): Promise<LegacyMemoryImportMarker | null> {
+    let raw: string;
+    try {
+      raw = await readFile(path, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
+    const value = JSON.parse(raw) as Record<string, unknown>;
+    if (Object.keys(value).sort().join(",") !== "checksum,completedAt,igrepVersion") {
+      throw new Error("legacy memory import marker contains unexpected fields");
+    }
+    const marker = value as unknown as LegacyMemoryImportMarker;
+    this.assertLegacyMemoryImportMarker(marker);
+    return marker;
   }
 
   private async preparePrivate(invocation: CompanionInvocation): Promise<AttemptWorkspace> {
@@ -407,7 +621,7 @@ export class AttemptWorkspaceStore {
   private async acquireRelationship(
     userId: string,
     characterId: string,
-    authorityRoot: string,
+    authorityRoot = this.options.canonicalRoot,
   ): Promise<() => void> {
     const relationshipKey = safeKey(authorityRoot, userId, characterId);
     const previous = this.locks.get(relationshipKey) ?? Promise.resolve();

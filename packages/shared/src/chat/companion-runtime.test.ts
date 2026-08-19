@@ -8,6 +8,7 @@ import {
   companionCommitAckSchema,
   companionEventSchema,
   companionInvocationSchema,
+  companionLegacyMemoryImportSchema,
   companionNdjsonFrameSchema,
   companionReadinessSchema,
   companionTerminalCandidateSchema,
@@ -429,6 +430,34 @@ describe("companion runtime stable wire contract", () => {
     expect(companionWorkspaceRebuildSchema.safeParse({
       ...rebuild,
       messages: [{ ...rebuild.messages[0], secret: "must-not-cross-wire" }],
+    }).success).toBe(false);
+  });
+
+  it("accepts only source-traceable character facts for legacy memory import", () => {
+    const request = {
+      scope: "relationship",
+      userId: "user-1",
+      characterId: "character-1",
+      checksum: "d".repeat(64),
+      entries: [{
+        legacyMemoryId: "memory-1",
+        type: "preference",
+        text: "User prefers jasmine tea.",
+        sourceMessageIds: ["user-message-1"],
+      }],
+    } as const;
+    expect(companionLegacyMemoryImportSchema.parse(request)).toEqual(request);
+    expect(companionLegacyMemoryImportSchema.safeParse({
+      ...request,
+      entries: [{ ...request.entries[0], type: "boundary" }],
+    }).success).toBe(false);
+    expect(companionLegacyMemoryImportSchema.safeParse({
+      ...request,
+      entries: [{ ...request.entries[0], sourceMessageIds: [] }],
+    }).success).toBe(false);
+    expect(companionLegacyMemoryImportSchema.safeParse({
+      ...request,
+      arbitraryPath: "/tmp/escape",
     }).success).toBe(false);
   });
 
