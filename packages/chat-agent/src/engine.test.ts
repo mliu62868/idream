@@ -1,0 +1,660 @@
+import { once } from "node:events";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdtemp, readFile, readdir, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { LlmAdapter, type GenerateOptions, type StreamChunk } from "@deepseek-ai/dsh-llm";
+import {
+  companionNdjsonFrameSchema,
+  type CompanionInvocation,
+  type CompanionRuntimeResponse,
+} from "@idream/shared/chat/companion-runtime";
+import { afterEach, describe, expect, it } from "vitest";
+import { CompanionEngine } from "./engine";
+import { createCompanionServer, type CompanionServer } from "./server";
+import { AttemptWorkspaceStore, relationshipWorkspacePath } from "./workspace";
+
+const AUTH_TOKEN = "engine-test-secret";
+const temporary: string[] = [];
+const servers: CompanionServer[] = [];
+
+afterEach(async () => {
+  await Promise.all(servers.splice(0).map((server) => server.close()));
+  await Promise.all(temporary.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+});
+
+class OneStepAdapter extends LlmAdapter {
+  calls: GenerateOptions[] = [];
+
+  async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    this.calls.push(options);
+    yield { type: "block-start", index: 0, blockType: "text" };
+    yield { type: "text-delta", index: 0, text: "Tonight, every blue-lit window remembers us." };
+    yield {
+      type: "block-end",
+      index: 0,
+      block: { type: "text", text: "Tonight, every blue-lit window remembers us." },
+    };
+    yield { type: "usage", usage: { inputTokens: 21, outputTokens: 9, reasoningTokens: 2 } };
+    yield {
+      type: "finish",
+      reason: { kind: "stop" },
+      replayState: { response: { id: "provider-request-1", provider: "DeepSeek" } },
+    };
+  }
+}
+
+class ToolThenTextAdapter extends LlmAdapter {
+  calls: GenerateOptions[] = [];
+
+  async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    this.calls.push(options);
+    if (this.calls.length === 1) {
+      const args = JSON.stringify({ prompt: "Mira at the blue-lit observatory tonight" });
+      yield { type: "block-start", index: 0, blockType: "tool-call" };
+      yield {
+        type: "tool-call-delta",
+        index: 0,
+        id: "call-image-1" as never,
+        name: "generate_image_async",
+        argumentsDelta: args,
+      };
+      yield {
+        type: "block-end",
+        index: 0,
+        block: {
+          type: "tool-call",
+          id: "call-image-1" as never,
+          name: "generate_image_async",
+          arguments: args,
+        },
+      };
+      yield { type: "usage", usage: { inputTokens: 20, outputTokens: 5 } };
+      yield { type: "finish", reason: { kind: "tool-calls" } };
+      return;
+    }
+    yield { type: "block-start", index: 0, blockType: "text" };
+    yield { type: "text-delta", index: 0, text: "I sent the observatory view to the image studio." };
+    yield {
+      type: "block-end",
+      index: 0,
+      block: { type: "text", text: "I sent the observatory view to the image studio." },
+    };
+    yield { type: "usage", usage: { inputTokens: 31, outputTokens: 11 } };
+    yield { type: "finish", reason: { kind: "stop" } };
+  }
+}
+
+class BlockingAdapter extends LlmAdapter {
+  async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    await new Promise<never>((_resolve, reject) => {
+      const rejectAbort = () => reject(options.signal?.reason ?? new Error("aborted"));
+      if (options.signal?.aborted) rejectAbort();
+      else options.signal?.addEventListener("abort", rejectAbort, { once: true });
+    });
+  }
+}
+
+function invocation(memoryMode: "normal" | "private" = "private"): CompanionInvocation {
+  return {
+    invocationId: `inv-${memoryMode}`,
+    attemptId: `attempt-${memoryMode}`,
+    sessionId: "chat-session-1",
+    userId: "user-1",
+    characterId: "character-1",
+    memoryMode,
+    deadlineAt: new Date(Date.now() + 30_000).toISOString(),
+    preparedTurn: {
+      version: 1,
+      model: "deepseek/test",
+      characterName: "Mira",
+      messages: [
+        {
+          id: "system:soul",
+          sourceKind: "plugin",
+          role: "system",
+          content: "Pinned Mira Soul and Chat relationship boundary.",
+        },
+        {
+          id: "user:old",
+          sourceKind: "replay",
+          role: "user",
+          content: "Do you remember the observatory?",
+        },
+        {
+          id: "assistant:old",
+          sourceKind: "replay",
+          role: "assistant",
+          content: "Every blue-lit window.",
+        },
+        {
+          id: "user:current",
+          sourceKind: "current_user",
+          role: "user",
+          content: "What does it look like tonight?",
+        },
+      ],
+      tools: [],
+      profile: {
+        tier: "test",
+        adapter: "openai-compatible-v1",
+        provider: "openrouter",
+        baseUrl: "https://example.invalid/v1",
+        model: "deepseek/test",
+        supportsTools: true,
+        maxOutputTokens: 256,
+        timeout: { firstTokenMs: 1_000, idleMs: 1_000, completionMs: 5_000 },
+        sampling: {
+          temperature: 0.9,
+          topP: 0.95,
+          repetitionPenalty: 1.05,
+          structuredTemperature: 0.2,
+        },
+      },
+      budget: { maxInputTokens: 8_000, usedInputTokens: 120, dropped: [] },
+      trace: {
+        characterContentVersionId: "ccv-1",
+        characterReleaseId: "release-1",
+        soulFingerprint: "a".repeat(64),
+        compilerVersion: "soul-v1",
+        sceneVersion: 1,
+        relationshipVersion: 2,
+        fileContextRevision: "3",
+      },
+    },
+  };
+}
+
+async function listen(server: CompanionServer): Promise<string> {
+  server.http.listen(0, "127.0.0.1");
+  await once(server.http, "listening");
+  const address = server.http.address();
+  if (!address || typeof address === "string") throw new Error("missing test address");
+  return `http://127.0.0.1:${address.port}`;
+}
+
+async function frames(
+  response: Response,
+  onFrame?: (frame: CompanionRuntimeResponse) => Promise<void>,
+): Promise<CompanionRuntimeResponse[]> {
+  if (!response.body) throw new Error("response body is missing");
+  const output: CompanionRuntimeResponse[] = [];
+  let buffer = "";
+  for await (const chunk of response.body.pipeThrough(new TextDecoderStream())) {
+    buffer += chunk;
+    for (;;) {
+      const newline = buffer.indexOf("\n");
+      if (newline < 0) break;
+      const line = buffer.slice(0, newline);
+      buffer = buffer.slice(newline + 1);
+      if (!line) continue;
+      const frame = companionNdjsonFrameSchema.parse(JSON.parse(line));
+      if (frame.type === "run" || frame.type === "cancel" || frame.type === "tool_result" || frame.type === "commit_ack") {
+        throw new Error("response contained a request frame");
+      }
+      output.push(frame);
+      await onFrame?.(frame);
+    }
+  }
+  if (buffer) throw new Error("response ended with a partial frame");
+  return output;
+}
+
+async function dialogueCount(workspace: string): Promise<number> {
+  try {
+    return (await readdir(join(workspace, ".igrep", "mem", "memory", "dialogues"))).length;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    throw error;
+  }
+}
+
+function disposalWritingPlugin(configs: Record<string, unknown>[]) {
+  const rows = new Map<object, string[]>();
+  const persist = (session: { header?: { cwd?: string; id?: string } }) => {
+    const cwd = session.header?.cwd;
+    if (!cwd) return;
+    const directory = join(cwd, ".igrep", "mem", "memory", "dialogues");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+      join(directory, `${session.header?.id ?? "session"}.jsonl`),
+      `${(rows.get(session) ?? []).join("\n")}\n`,
+    );
+  };
+  return {
+    name: "igrep",
+    apply(ctx: { on(name: string, listener: (...args: never[]) => void): void }, config: Record<string, unknown>) {
+      configs.push(config);
+      if (config.ingest !== true) return;
+      ctx.on("session/event", ((session: object, event: { type: string; data: unknown }) => {
+        const list = rows.get(session) ?? [];
+        if (event.type === "user/message") {
+          const data = event.data as { source?: { kind?: string }; content?: Array<{ type: string; text?: string }> };
+          if (data.source?.kind === "user") {
+            list.push(data.content?.find((block) => block.type === "text")?.text ?? "");
+          }
+        } else if (event.type === "assistant/message") {
+          const data = event.data as { message?: { content?: Array<{ type: string; text?: string }> } };
+          list.push(data.message?.content?.find((block) => block.type === "text")?.text ?? "");
+        }
+        rows.set(session, list);
+      }) as never);
+      ctx.on("agent/turn-stopping", (({ agent }: { agent: { session: { header?: { cwd?: string; id?: string } } } }) => {
+        persist(agent.session);
+      }) as never);
+      // Mirrors @igrep/dsh-plugin@0.1.0: dispose writes even when a prepended
+      // Chat commit gate rejected the turn.
+      ctx.on("session/disposed", ((session: { header?: { cwd?: string; id?: string } }) => {
+        persist(session);
+      }) as never);
+    },
+  };
+}
+
+describe("programmatic DSH companion runtime", () => {
+  it("preserves replay roles, current-user authority and the Chat-owned system prompt", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chat-agent-engine-"));
+    temporary.push(root);
+    const adapter = new OneStepAdapter();
+    const engine = new CompanionEngine({
+      workspaces: new AttemptWorkspaceStore({
+        canonicalRoot: join(root, "canonical"),
+        privateRoot: join(root, "private"),
+        memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
+      }),
+      plugin: async () => ({ name: "igrep", apply() {} }),
+      adapter: () => adapter,
+      igrepCommand: "igrep",
+    });
+    const server = createCompanionServer({
+      authToken: AUTH_TOKEN,
+      readiness: async () => { throw new Error("not used"); },
+      invocation: engine,
+    });
+    servers.push(server);
+    const baseUrl = await listen(server);
+    const run = invocation();
+    const response = await fetch(`${baseUrl}/v1/invocations`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${AUTH_TOKEN}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ protocolVersion: 1, type: "run", invocation: run }),
+    });
+    expect(response.status).toBe(200);
+
+    const collectedPromise = frames(response);
+    for (;;) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const activeCall = adapter.calls[0];
+      if (!activeCall) continue;
+      const commitResponse = await fetch(`${baseUrl}/v1/invocations/${run.invocationId}/commit`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${AUTH_TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          protocolVersion: 1,
+          type: "commit_ack",
+          invocationId: run.invocationId,
+          ack: {
+            attemptId: run.attemptId,
+            accepted: true,
+            status: "committed",
+            terminalMessageId: "assistant-terminal-1",
+            committedAt: new Date().toISOString(),
+          },
+        }),
+      });
+      expect(commitResponse.status).toBe(200);
+      break;
+    }
+    const collected = await collectedPromise;
+
+    expect(collected.map((frame) => frame.type)).toContain("commit");
+    expect(collected.find((frame) => frame.type === "commit")).toMatchObject({
+      candidate: {
+        attribution: { requestId: "provider-request-1", actualProvider: "DeepSeek" },
+        execution: { steps: 1, toolCalls: 0 },
+      },
+    });
+    expect(collected.some((frame) => frame.type === "event" && frame.event.type === "terminal_candidate")).toBe(true);
+    expect(adapter.calls).toHaveLength(1);
+    expect(adapter.calls[0]?.system).toContain("Pinned Mira Soul and Chat relationship boundary.");
+    expect(adapter.calls[0]?.system).not.toContain("DeepSeek Harness");
+    expect(adapter.calls[0]?.messages.map((message) => [message.role, message.content[0]])).toEqual([
+      ["user", { type: "text", text: "Do you remember the observatory?" }],
+      ["assistant", { type: "text", text: "Every blue-lit window." }],
+      ["user", { type: "text", text: "What does it look like tonight?" }],
+    ]);
+    expect(await readdir(join(root, "private"))).toEqual([]);
+    await expect(readdir(join(root, "canonical"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("runs a real two-step DSH tool loop and reuses an identical tool result", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chat-agent-tool-"));
+    temporary.push(root);
+    const adapter = new ToolThenTextAdapter();
+    const run = invocation();
+    run.invocationId = "inv-tool";
+    run.attemptId = "attempt-tool";
+    run.preparedTurn.tools.push({
+      name: "generate_image_async",
+      description: "Generate a companion image asynchronously.",
+      parameters: {
+        type: "object",
+        properties: { prompt: { type: "string" } },
+        required: ["prompt"],
+      },
+    });
+    const engine = new CompanionEngine({
+      workspaces: new AttemptWorkspaceStore({
+        canonicalRoot: join(root, "canonical"),
+        privateRoot: join(root, "private"),
+        memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
+      }),
+      plugin: async () => ({ name: "igrep", apply() {} }),
+      adapter: () => adapter,
+      igrepCommand: "igrep",
+    });
+    const server = createCompanionServer({
+      authToken: AUTH_TOKEN,
+      readiness: async () => { throw new Error("not used"); },
+      invocation: engine,
+    });
+    servers.push(server);
+    const baseUrl = await listen(server);
+    const response = await fetch(`${baseUrl}/v1/invocations`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${AUTH_TOKEN}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ protocolVersion: 1, type: "run", invocation: run }),
+    });
+    const controls: number[] = [];
+    const collected = await frames(response, async (frame) => {
+      if (frame.type === "tool_call") {
+        const resultFrame = {
+          protocolVersion: 1 as const,
+          type: "tool_result" as const,
+          invocationId: run.invocationId,
+          result: {
+            attemptId: run.attemptId,
+            callId: frame.call.callId,
+            name: frame.call.name,
+            outcome: "succeeded" as const,
+            output: { artifactId: "artifact-1", status: "queued" },
+          },
+        };
+        for (let replay = 0; replay < 2; replay += 1) {
+          const control = await fetch(
+            `${baseUrl}/v1/invocations/${run.invocationId}/tool-result`,
+            {
+              method: "POST",
+              headers: {
+                authorization: `Bearer ${AUTH_TOKEN}`,
+                "content-type": "application/json",
+              },
+              body: JSON.stringify(resultFrame),
+            },
+          );
+          controls.push(control.status);
+        }
+      } else if (frame.type === "commit") {
+        const control = await fetch(`${baseUrl}/v1/invocations/${run.invocationId}/commit`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${AUTH_TOKEN}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            protocolVersion: 1,
+            type: "commit_ack",
+            invocationId: run.invocationId,
+            ack: {
+              attemptId: run.attemptId,
+              accepted: true,
+              status: "committed",
+              terminalMessageId: "assistant-tool-terminal",
+              committedAt: new Date().toISOString(),
+            },
+          }),
+        });
+        controls.push(control.status);
+      }
+    });
+
+    expect(controls).toEqual([200, 200, 200]);
+    expect(collected.filter((frame) => frame.type === "tool_call")).toHaveLength(1);
+    expect(collected.find((frame) => frame.type === "commit")).toMatchObject({
+      candidate: { execution: { steps: 2, toolCalls: 1 } },
+    });
+    expect(adapter.calls).toHaveLength(2);
+    expect(adapter.calls[1]?.messages.at(-1)).toMatchObject({
+      role: "user",
+      source: { kind: "tool", callId: "call-image-1" },
+    });
+    expect(collected.some((frame) => frame.type === "event" && frame.event.type === "tool_finished")).toBe(true);
+  });
+
+  it("does not promote a rejected turn even when the plugin writes on session disposal", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chat-agent-reject-"));
+    temporary.push(root);
+    const configs: Record<string, unknown>[] = [];
+    const run = invocation("normal");
+    run.invocationId = "inv-reject";
+    run.attemptId = "attempt-reject";
+    const engine = new CompanionEngine({
+      workspaces: new AttemptWorkspaceStore({
+        canonicalRoot: join(root, "canonical"),
+        privateRoot: join(root, "private"),
+        memoryProbe: { status: async (workspace) => ({ dialogueFiles: await dialogueCount(workspace) }) },
+      }),
+      plugin: async () => disposalWritingPlugin(configs),
+      adapter: () => new OneStepAdapter(),
+      igrepCommand: "igrep",
+    });
+    const server = createCompanionServer({
+      authToken: AUTH_TOKEN,
+      readiness: async () => { throw new Error("not used"); },
+      invocation: engine,
+    });
+    servers.push(server);
+    const baseUrl = await listen(server);
+    const response = await fetch(`${baseUrl}/v1/invocations`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${AUTH_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({ protocolVersion: 1, type: "run", invocation: run }),
+    });
+    const collected = await frames(response, async (frame) => {
+      if (frame.type !== "commit") return;
+      const control = await fetch(`${baseUrl}/v1/invocations/${run.invocationId}/commit`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${AUTH_TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          protocolVersion: 1,
+          type: "commit_ack",
+          invocationId: run.invocationId,
+          ack: {
+            attemptId: run.attemptId,
+            accepted: false,
+            status: "rejected",
+            error: { code: "terminal_cas_conflict", message: "lost authority" },
+          },
+        }),
+      });
+      expect(control.status).toBe(200);
+    });
+
+    const canonicalWorkspace = relationshipWorkspacePath(
+      join(root, "canonical"),
+      run.userId,
+      run.characterId,
+    );
+    expect(await dialogueCount(canonicalWorkspace)).toBe(0);
+    expect(configs).toContainEqual(expect.objectContaining({ ingest: true, wake: false }));
+    expect(collected.some((frame) => frame.type === "event" && frame.event.type === "failed")).toBe(true);
+  });
+
+  it("promotes normal memory only after commit acceptance and observable ingest", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chat-agent-promote-"));
+    temporary.push(root);
+    const run = invocation("normal");
+    run.invocationId = "inv-accept";
+    run.attemptId = "attempt-accept";
+    const engine = new CompanionEngine({
+      workspaces: new AttemptWorkspaceStore({
+        canonicalRoot: join(root, "canonical"),
+        privateRoot: join(root, "private"),
+        memoryProbe: { status: async (workspace) => ({ dialogueFiles: await dialogueCount(workspace) }) },
+      }),
+      plugin: async () => disposalWritingPlugin([]),
+      adapter: () => new OneStepAdapter(),
+      igrepCommand: "igrep",
+    });
+    const server = createCompanionServer({
+      authToken: AUTH_TOKEN,
+      readiness: async () => { throw new Error("not used"); },
+      invocation: engine,
+    });
+    servers.push(server);
+    const baseUrl = await listen(server);
+    const response = await fetch(`${baseUrl}/v1/invocations`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${AUTH_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({ protocolVersion: 1, type: "run", invocation: run }),
+    });
+    await frames(response, async (frame) => {
+      if (frame.type !== "commit") return;
+      const canonicalWorkspace = relationshipWorkspacePath(
+        join(root, "canonical"),
+        run.userId,
+        run.characterId,
+      );
+      expect(await dialogueCount(canonicalWorkspace)).toBe(0);
+      const control = await fetch(`${baseUrl}/v1/invocations/${run.invocationId}/commit`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${AUTH_TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          protocolVersion: 1,
+          type: "commit_ack",
+          invocationId: run.invocationId,
+          ack: {
+            attemptId: run.attemptId,
+            accepted: true,
+            status: "committed",
+            terminalMessageId: "assistant-accepted",
+            committedAt: new Date().toISOString(),
+          },
+        }),
+      });
+      expect(control.status).toBe(200);
+    });
+
+    const canonicalWorkspace = relationshipWorkspacePath(
+      join(root, "canonical"),
+      run.userId,
+      run.characterId,
+    );
+    expect(await dialogueCount(canonicalWorkspace)).toBe(1);
+    const canonicalTarget = await realpath(join(canonicalWorkspace, ".igrep"));
+    const dialogueFile = (await readdir(join(canonicalTarget, "mem", "memory", "dialogues")))[0];
+    const content = await readFile(join(canonicalTarget, "mem", "memory", "dialogues", dialogueFile ?? "missing"), "utf8");
+    expect(content).toContain("What does it look like tonight?");
+    expect(content).toContain("Tonight, every blue-lit window remembers us.");
+  });
+
+  it.each([
+    ["user", 30_000],
+    ["timeout", 40],
+  ] as const)("converges a %s cancellation and removes its private workspace", async (reason, deadlineMs) => {
+    const root = await mkdtemp(join(tmpdir(), `chat-agent-cancel-${reason}-`));
+    temporary.push(root);
+    const run = invocation("private");
+    run.invocationId = `inv-cancel-${reason}`;
+    run.attemptId = `attempt-cancel-${reason}`;
+    run.deadlineAt = new Date(Date.now() + deadlineMs).toISOString();
+    const engine = new CompanionEngine({
+      workspaces: new AttemptWorkspaceStore({
+        canonicalRoot: join(root, "canonical"),
+        privateRoot: join(root, "private"),
+        memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
+      }),
+      plugin: async () => ({ name: "igrep", apply() {} }),
+      adapter: () => new BlockingAdapter(),
+      igrepCommand: "igrep",
+    });
+    const server = createCompanionServer({
+      authToken: AUTH_TOKEN,
+      readiness: async () => { throw new Error("not used"); },
+      invocation: engine,
+    });
+    servers.push(server);
+    const baseUrl = await listen(server);
+    const response = await fetch(`${baseUrl}/v1/invocations`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${AUTH_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({ protocolVersion: 1, type: "run", invocation: run }),
+    });
+    let cancelSent = false;
+    const collected = await frames(response, async (frame) => {
+      if (reason !== "user" || cancelSent || frame.type !== "event" || frame.event.type !== "started") return;
+      cancelSent = true;
+      const control = await fetch(`${baseUrl}/v1/invocations/${run.invocationId}/cancel`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${AUTH_TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          protocolVersion: 1,
+          type: "cancel",
+          invocationId: run.invocationId,
+          reason: "user",
+        }),
+      });
+      expect(control.status).toBe(200);
+    });
+    expect(collected.filter((frame) => frame.type === "event" && frame.event.type === "cancelled"))
+      .toEqual([expect.objectContaining({ event: expect.objectContaining({ reason }) })]);
+    expect(await readdir(join(root, "private"))).toEqual([]);
+  });
+
+  it("cancels active DSH turns as shutdown before closing the HTTP server", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chat-agent-shutdown-"));
+    temporary.push(root);
+    const run = invocation("private");
+    run.invocationId = "inv-shutdown";
+    run.attemptId = "attempt-shutdown";
+    const engine = new CompanionEngine({
+      workspaces: new AttemptWorkspaceStore({
+        canonicalRoot: join(root, "canonical"),
+        privateRoot: join(root, "private"),
+        memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
+      }),
+      plugin: async () => ({ name: "igrep", apply() {} }),
+      adapter: () => new BlockingAdapter(),
+      igrepCommand: "igrep",
+    });
+    const server = createCompanionServer({
+      authToken: AUTH_TOKEN,
+      readiness: async () => { throw new Error("not used"); },
+      invocation: engine,
+    });
+    servers.push(server);
+    const baseUrl = await listen(server);
+    const response = await fetch(`${baseUrl}/v1/invocations`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${AUTH_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({ protocolVersion: 1, type: "run", invocation: run }),
+    });
+    const collectedPromise = frames(response);
+    await server.close();
+    servers.splice(servers.indexOf(server), 1);
+    const collected = await collectedPromise;
+    expect(collected.some((frame) => frame.type === "event"
+      && frame.event.type === "cancelled"
+      && frame.event.reason === "shutdown")).toBe(true);
+    expect(await readdir(join(root, "private"))).toEqual([]);
+  });
+});
