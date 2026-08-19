@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { Pool } from "pg";
 import type { Prisma } from "../generated/client/client.js";
+import { createChatPrisma, createChatProjectorPrisma } from "./db.js";
 import type {
   RelationshipLinkage,
   RelationshipMessage,
@@ -84,6 +86,79 @@ describe("companion memory projection", () => {
       "character-1",
     );
     expect(String(queryRaw.mock.calls[0]?.[0])).toContain("mutation.status = 'pending'");
+  });
+
+  it("recognizes a pending cleanup intent and forgets its applied SQL receipt", async () => {
+    nativeCleanupEnv("");
+    const prisma = createChatPrisma();
+    const projector = createChatProjectorPrisma();
+    const superPool = new Pool({ connectionString: process.env.CHAT_TEST_SUPER_URL });
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const mutationId = `cleanup-receipt-${suffix}`;
+    const userId = `cleanup-user-${suffix}`;
+    const characterId = `cleanup-character-${suffix}`;
+    try {
+      await superPool.query(
+        `INSERT INTO chat.chat_file_mutations (id, user_id, kind, payload)
+         VALUES ($1, $2, 'relationship_delete', $3::jsonb)`,
+        [mutationId, userId, JSON.stringify({
+          kind: "relationship_delete",
+          characterId,
+          companionCleanupRequired: true,
+        })],
+      );
+
+      await prisma.$transaction(async (tx) => {
+        expect(await companionWorkspaceCleanupRequired(tx, userId, characterId)).toBe(true);
+      });
+
+      const updated = await projector.$executeRaw`
+        UPDATE chat.chat_file_mutations
+        SET status = 'applied',
+            payload = chat.redact_file_mutation_payload(id, kind, payload),
+            attempts = attempts + 1,
+            applied_at = timezone('utc', now())
+        WHERE id = ${mutationId}
+          AND status = 'pending'
+      `;
+      expect(updated).toBe(1);
+      const rows = await projector.$queryRaw<Array<{ payload: unknown; status: string }>>`
+        SELECT status, payload
+        FROM chat.chat_file_mutations
+        WHERE id = ${mutationId}
+      `;
+      expect(rows).toEqual([{
+        status: "applied",
+        payload: { kind: "relationship_delete", characterId },
+      }]);
+      await prisma.$transaction(async (tx) => {
+        expect(await companionWorkspaceCleanupRequired(tx, userId, characterId)).toBe(false);
+      });
+    } finally {
+      const cleanup = await superPool.connect();
+      try {
+        await cleanup.query("BEGIN");
+        await cleanup.query(
+          "SELECT set_config('idream.account_erasure_file_mutation_user', $1, true)",
+          [userId],
+        );
+        await cleanup.query(
+          "DELETE FROM chat.chat_file_mutations WHERE id = $1",
+          [mutationId],
+        );
+        await cleanup.query("COMMIT");
+      } catch (error) {
+        await cleanup.query("ROLLBACK");
+        throw error;
+      } finally {
+        cleanup.release();
+        await Promise.all([
+          prisma.$disconnect(),
+          projector.$disconnect(),
+          superPool.end(),
+        ]);
+      }
+    }
   });
 
   it("replays only complete, unambiguous, memory-enabled canonical exchanges", () => {
