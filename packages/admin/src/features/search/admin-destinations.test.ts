@@ -81,3 +81,26 @@ describe("admin destination search", () => {
     expect(typeof deadLetter.icon).not.toBe("undefined");
   });
 });
+
+// SPEC: URL 段里漏掉连字符也要能猜中。
+// INTENT: 运营手敲地址最常漏的就是连字符。实测 /admin/ops/deadletter 落到 404 页时，
+//   「死信」排不进建议 —— 索引里写的是 dead-letter，子串包含永远对不上 deadletter，
+//   于是那一页给出的四条建议全是不相干的。归一化后它排在第一。
+// INVARIANT: 归一化命中排在精确子串命中之后 —— 别让模糊匹配挤掉精确匹配。
+describe("分隔符归一化", () => {
+  const all = everything;
+
+  it("漏掉连字符仍能命中", () => {
+    const hit = matchAdminDestinations("deadletter", all, 4);
+    expect(hit[0]?.label).toBe("Dead-letter");
+  });
+
+  it("不挤掉精确命中", () => {
+    const hit = matchAdminDestinations("taxonomy", all, 4);
+    expect(hit[0]?.label).toBe("Taxonomy");
+  });
+
+  it("完全不相干仍然不硬凑", () => {
+    expect(matchAdminDestinations("zzzzqqq", all, 4)).toEqual([]);
+  });
+});

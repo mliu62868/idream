@@ -34,11 +34,25 @@ function searchableFields(item: { label: string; group: string; href: string }) 
   ].map((value) => value.toLowerCase());
 }
 
+// SPEC: 比较前把分隔符抹平 —— 连字符、下划线、空格视为同一个词。
+// INTENT: 运营手敲 URL 最常漏的就是连字符。实测 /admin/ops/deadletter 走 404 页时，
+//         「死信」排不进建议 —— 索引里是 dead-letter，子串包含永远对不上 deadletter。
+//         归一化放在这里，命令面板与 404 建议共用同一套匹配，两边一起受益。
+function squash(value: string) {
+  return value.replace(/[-_\s]+/g, "");
+}
+
 function rank(fields: readonly string[], needle: string) {
   const names = fields.slice(0, 2);
   if (names.some((name) => name.startsWith(needle))) return 0;
   if (names.some((name) => name.includes(needle))) return 1;
-  return fields.some((field) => field.includes(needle)) ? 2 : -1;
+  if (fields.some((field) => field.includes(needle))) return 2;
+  // 抹平分隔符后再试一次，排在精确子串命中之后。
+  const squashed = squash(needle);
+  if (!squashed) return -1;
+  const squashedNames = names.map(squash);
+  if (squashedNames.some((name) => name.startsWith(squashed))) return 3;
+  return fields.some((field) => squash(field).includes(squashed)) ? 4 : -1;
 }
 
 // SPEC: 只返回运营真的读得进去的目的地。
