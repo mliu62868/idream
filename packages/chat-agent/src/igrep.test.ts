@@ -160,6 +160,39 @@ describe("igrep readiness isolation evidence", () => {
     expect(JSON.stringify(evidence)).not.toContain("fixed-nonce");
   });
 
+  it("accepts an igrep workspaceRoot alias that resolves to the probed workspace", async () => {
+    const run = async (options: JsonCommandOptions): Promise<unknown> => {
+      if (options.args[0] === "mem-api" && options.args[1] === "memory-search") {
+        const payload = JSON.parse(options.stdin ?? "{}") as { workspace: string };
+        const alias = `${payload.workspace}-alias`;
+        await symlink(payload.workspace, alias);
+        return {
+          provider: "igrep",
+          strategy: "shared-search",
+          workspaceRoot: alias,
+          results: [],
+          warnings: [],
+          markdownContext: "",
+        };
+      }
+      return { events: 2, dialoguePath: ".igrep/mem/memory/dialogues/readiness.jsonl" };
+    };
+
+    await expect(probeIgrepLifecycle("igrep", {
+      run,
+      status: async () => ({
+        dialogueFiles: 1,
+        pendingProfileRows: 0,
+        processedProfileRows: 2,
+        lastMaintainAt: "2026-08-19T12:00:02.000Z",
+      }),
+      nonce: () => "aliased-workspace",
+    })).resolves.toEqual({
+      duplicateIngest: { replayedSessions: 1, duplicateDialogueFiles: 0 },
+      crossScope: { probes: 2, leakedResults: 0 },
+    });
+  });
+
   it("fails closed when either workspace can recall the other scope sentinel", async () => {
     const run = async (options: JsonCommandOptions): Promise<unknown> => {
       if (options.args[0] === "mem-api" && options.args[1] === "memory-search") {

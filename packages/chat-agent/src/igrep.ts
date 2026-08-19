@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -545,11 +545,18 @@ export async function probeIgrepLifecycle(
         stdin: `${JSON.stringify({ workspace, query: foreignSentinel })}\n`,
         timeoutMs: 30_000,
       }));
+      let workspaceMatches = false;
+      if (typeof recalled?.workspaceRoot === "string") {
+        try {
+          workspaceMatches = await realpath(recalled.workspaceRoot) === await realpath(workspace);
+        } catch {
+          workspaceMatches = false;
+        }
+      }
       if (
         recalled?.provider !== "igrep"
         || recalled.strategy !== "shared-search"
-        || typeof recalled.workspaceRoot !== "string"
-        || resolve(recalled.workspaceRoot) !== resolve(workspace)
+        || !workspaceMatches
         || !Array.isArray(recalled.results)
         || !Array.isArray(recalled.warnings)
         || recalled.warnings.length !== 0
