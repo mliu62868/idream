@@ -1196,12 +1196,19 @@ async function processDshCompanionTurn(
         "DSH reply finalized as truncated; isolated runtime memory discarded",
       );
     } else if (runError && terminalStatus === "sent") {
+      // The provider already produced and Chat committed this candidate. Keep its
+      // health evidence independent from the failed post-commit memory promotion.
+      runtimeReadiness.recordTurnSuccess();
+      runtimeReadiness.recordMemoryPromotionFailure(runError);
       logger.warn(
         { err: runError, invocationId, assistantMessageId: payload.assistantMessageId },
         "DSH turn committed but isolated memory promotion failed",
       );
     } else if (terminalStatus === "sent") {
       runtimeReadiness.recordTurnSuccess();
+      if (memoryIngestOutcome === "ingested") {
+        runtimeReadiness.recordMemoryPromotionSuccess();
+      }
     }
     await appendStreamEvent(key, {
       type: "done",

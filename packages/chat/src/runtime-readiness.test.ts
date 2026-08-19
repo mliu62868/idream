@@ -10,6 +10,7 @@ import {
   assertChatSchemaReady,
   RUNTIME_RECOVERY_INITIAL_BACKOFF_MS,
   RUNTIME_RECOVERY_MAX_BACKOFF_MS,
+  RUNTIME_MEMORY_PROMOTION_FAILURE_THRESHOLD,
   RUNTIME_TURN_FAILURE_THRESHOLD,
   RuntimeReadiness,
   warmRuntime,
@@ -124,6 +125,98 @@ describe("RuntimeReadiness", () => {
 
     expect(state.canAcceptTurns()).toBe(false);
     expect(state.snapshot().lastError).toBe("chat model disconnected");
+  });
+
+  it("exposes memory promotion degradation separately without dropping readiness on one failure", async () => {
+    const state = new RuntimeReadiness();
+    state.warmed(["chat:model"]);
+
+    state.recordMemoryPromotionFailure(new Error("igrep maintain failed"));
+
+    expect(state.canAcceptTurns()).toBe(true);
+    expect(state.snapshot()).toMatchObject({
+      ready: true,
+      components: {
+        provider: { status: "healthy", consecutiveFailures: 0, lastError: null },
+        memory: {
+          status: "degraded",
+          consecutiveFailures: 1,
+          lastError: "igrep maintain failed",
+        },
+      },
+    });
+    const readyz = await dispatchRequest(createChatServer(state), "/readyz");
+    expect(readyz.status).toBe(200);
+    expect(JSON.parse(readyz.body)).toMatchObject({
+      ready: true,
+      components: {
+        provider: { status: "healthy" },
+        memory: {
+          status: "degraded",
+          consecutiveFailures: 1,
+          lastError: "igrep maintain failed",
+        },
+      },
+    });
+  });
+
+  it("clears only the memory failure streak after a successful promotion", () => {
+    const state = new RuntimeReadiness();
+    state.warmed(["chat:model"]);
+    for (let index = 1; index < RUNTIME_MEMORY_PROMOTION_FAILURE_THRESHOLD; index += 1) {
+      state.recordMemoryPromotionFailure(new Error("igrep promotion failed"));
+    }
+
+    state.recordMemoryPromotionSuccess();
+
+    expect(state.canAcceptTurns()).toBe(true);
+    expect(state.snapshot().components).toEqual({
+      provider: { status: "healthy", consecutiveFailures: 0, lastError: null },
+      memory: { status: "healthy", consecutiveFailures: 0, lastError: null },
+    });
+  });
+
+  it("pulls readiness and explicitly rewarms after consecutive memory promotion failures", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T18:00:00.000Z"));
+    const state = new RuntimeReadiness();
+    const fullWarmup = vi.fn(async () => {
+      state.beginWarmup();
+      state.warmed(["chat:model"]);
+    });
+    state.configureFullWarmupRecovery(fullWarmup);
+    state.warmed(["chat:model"]);
+
+    try {
+      for (let index = 1; index < RUNTIME_MEMORY_PROMOTION_FAILURE_THRESHOLD; index += 1) {
+        state.recordMemoryPromotionFailure(new Error("igrep promotion failed"));
+        expect(state.canAcceptTurns()).toBe(true);
+      }
+      state.recordMemoryPromotionFailure(new Error("igrep promotion failed"));
+
+      expect(state.canAcceptTurns()).toBe(false);
+      expect(state.snapshot()).toMatchObject({
+        lastError: "igrep promotion failed",
+        components: {
+          provider: { status: "healthy" },
+          memory: {
+            status: "unhealthy",
+            consecutiveFailures: RUNTIME_MEMORY_PROMOTION_FAILURE_THRESHOLD,
+          },
+        },
+      });
+
+      await vi.advanceTimersByTimeAsync(RUNTIME_RECOVERY_INITIAL_BACKOFF_MS);
+      expect(fullWarmup).toHaveBeenCalledOnce();
+      expect(state.canAcceptTurns()).toBe(true);
+      expect(state.snapshot().components.memory).toEqual({
+        status: "healthy",
+        consecutiveFailures: 0,
+        lastError: null,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps model failure latched until a full warmup succeeds", async () => {

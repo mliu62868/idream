@@ -25,6 +25,16 @@ export interface RuntimeReadinessSnapshot {
   warmedAt: string | null;
   dependencyCheckedAt: string | null;
   warmedProfiles: string[];
+  components: {
+    provider: RuntimeComponentHealth;
+    memory: RuntimeComponentHealth;
+  };
+}
+
+export interface RuntimeComponentHealth {
+  status: "unknown" | "healthy" | "degraded" | "unhealthy";
+  consecutiveFailures: number;
+  lastError: string | null;
 }
 
 export const RUNTIME_READINESS_FRESHNESS_MS = 5_000;
@@ -38,6 +48,19 @@ export const RUNTIME_RECOVERY_MAX_BACKOFF_MS = 60_000;
 // dead provider fails every admitted turn, so a short streak is reached within
 // seconds; independent client-side flakes practically never line up three deep.
 export const RUNTIME_TURN_FAILURE_THRESHOLD = 3;
+export const RUNTIME_MEMORY_PROMOTION_FAILURE_THRESHOLD = 3;
+
+const UNKNOWN_COMPONENT_HEALTH: RuntimeComponentHealth = {
+  status: "unknown",
+  consecutiveFailures: 0,
+  lastError: null,
+};
+
+const HEALTHY_COMPONENT: RuntimeComponentHealth = {
+  status: "healthy",
+  consecutiveFailures: 0,
+  lastError: null,
+};
 
 type DependencyProbe = () => Promise<void>;
 type FullWarmup = () => Promise<void>;
@@ -52,6 +75,10 @@ export class RuntimeReadiness {
     warmedAt: null,
     dependencyCheckedAt: null,
     warmedProfiles: [],
+    components: {
+      provider: UNKNOWN_COMPONENT_HEALTH,
+      memory: UNKNOWN_COMPONENT_HEALTH,
+    },
   };
   private dependencyProbe: DependencyProbe | null = null;
   private dependencyProbeInFlight: Promise<void> | null = null;
@@ -65,10 +92,15 @@ export class RuntimeReadiness {
   private recoveryTimer: ReturnType<typeof setTimeout> | null = null;
   private recoveryInFlight: Promise<void> | null = null;
   private recoveryFailures = 0;
-  private consecutiveTurnFailures = 0;
 
   snapshot(): RuntimeReadinessSnapshot {
-    return { ...this.state };
+    return {
+      ...this.state,
+      components: {
+        provider: { ...this.state.components.provider },
+        memory: { ...this.state.components.memory },
+      },
+    };
   }
 
   beginWarmup(): number {
@@ -118,6 +150,10 @@ export class RuntimeReadiness {
       warmedAt: checkedAt.toISOString(),
       dependencyCheckedAt: checkedAt.toISOString(),
       warmedProfiles: profiles,
+      components: {
+        provider: HEALTHY_COMPONENT,
+        memory: HEALTHY_COMPONENT,
+      },
     };
     return true;
   }
@@ -132,12 +168,31 @@ export class RuntimeReadiness {
   }
 
   invalidate(error: unknown): void {
+    this.invalidateComponent("provider", error);
+  }
+
+  private invalidateComponent(
+    component: keyof RuntimeReadinessSnapshot["components"],
+    error: unknown,
+  ): void {
     // INVARIANT: a real admitted turn observed the provider after warmup. Do not
     // let a cheaper DB/Redis probe overwrite that stronger negative evidence;
     // only a full warmRuntime call may re-admit the process.
     this.invalidationEpoch += 1;
     this.invalidated = true;
-    this.consecutiveTurnFailures = 0;
+    const message = error instanceof Error ? error.message : String(error);
+    const current = this.state.components[component];
+    this.state = {
+      ...this.state,
+      components: {
+        ...this.state.components,
+        [component]: {
+          status: "unhealthy",
+          consecutiveFailures: Math.max(1, current.consecutiveFailures),
+          lastError: message,
+        },
+      },
+    };
     this.failed(error);
     this.scheduleFullWarmupRecovery();
   }
@@ -150,14 +205,25 @@ export class RuntimeReadiness {
    * being served.
    */
   recordTurnFailure(error: unknown): void {
-    this.consecutiveTurnFailures += 1;
-    if (this.consecutiveTurnFailures < RUNTIME_TURN_FAILURE_THRESHOLD) return;
-    this.invalidate(error);
+    const failures = this.recordComponentFailure("provider", error);
+    if (failures < RUNTIME_TURN_FAILURE_THRESHOLD) return;
+    this.invalidateComponent("provider", error);
   }
 
   /** Any turn the provider actually answered disproves an in-progress streak. */
   recordTurnSuccess(): void {
-    this.consecutiveTurnFailures = 0;
+    this.recordComponentSuccess("provider");
+  }
+
+  /** Memory promotion has its own evidence streak and never poisons provider health. */
+  recordMemoryPromotionFailure(error: unknown): void {
+    const failures = this.recordComponentFailure("memory", error);
+    if (failures < RUNTIME_MEMORY_PROMOTION_FAILURE_THRESHOLD) return;
+    this.invalidateComponent("memory", error);
+  }
+
+  recordMemoryPromotionSuccess(): void {
+    this.recordComponentSuccess("memory");
   }
 
   configureFullWarmupRecovery(fullWarmup: FullWarmup): void {
@@ -173,6 +239,38 @@ export class RuntimeReadiness {
 
   canAcceptTurns(): boolean {
     return this.state.live && this.state.ready && this.state.accepting;
+  }
+
+  private recordComponentFailure(
+    component: keyof RuntimeReadinessSnapshot["components"],
+    error: unknown,
+  ): number {
+    const current = this.state.components[component];
+    const consecutiveFailures = current.consecutiveFailures + 1;
+    this.state = {
+      ...this.state,
+      components: {
+        ...this.state.components,
+        [component]: {
+          status: "degraded",
+          consecutiveFailures,
+          lastError: error instanceof Error ? error.message : String(error),
+        },
+      },
+    };
+    return consecutiveFailures;
+  }
+
+  private recordComponentSuccess(
+    component: keyof RuntimeReadinessSnapshot["components"],
+  ): void {
+    this.state = {
+      ...this.state,
+      components: {
+        ...this.state.components,
+        [component]: HEALTHY_COMPONENT,
+      },
+    };
   }
 
   async refreshDependencies(): Promise<boolean> {

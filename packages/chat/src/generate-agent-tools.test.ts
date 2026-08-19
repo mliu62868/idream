@@ -15,6 +15,8 @@ const enqueueMock = vi.hoisted(() => vi.fn(async () => {}));
 const supportsToolsState = vi.hoisted(() => ({ value: true }));
 const recordTurnFailureMock = vi.hoisted(() => vi.fn());
 const recordTurnSuccessMock = vi.hoisted(() => vi.fn());
+const recordMemoryPromotionFailureMock = vi.hoisted(() => vi.fn());
+const recordMemoryPromotionSuccessMock = vi.hoisted(() => vi.fn());
 const dshRunMock = vi.hoisted(() => vi.fn());
 
 vi.mock("./db.js", () => ({ chatPrisma: {} }));
@@ -52,6 +54,8 @@ vi.mock("./runtime-readiness.js", () => ({
   runtimeReadiness: {
     recordTurnFailure: recordTurnFailureMock,
     recordTurnSuccess: recordTurnSuccessMock,
+    recordMemoryPromotionFailure: recordMemoryPromotionFailureMock,
+    recordMemoryPromotionSuccess: recordMemoryPromotionSuccessMock,
   },
 }));
 vi.mock("./companion-runtime.js", () => ({
@@ -353,6 +357,8 @@ describe("chat generate agent image tool", () => {
     enqueueMock.mockClear();
     recordTurnFailureMock.mockClear();
     recordTurnSuccessMock.mockClear();
+    recordMemoryPromotionFailureMock.mockClear();
+    recordMemoryPromotionSuccessMock.mockClear();
     dshRunMock.mockReset();
     buildContextMock.mockResolvedValue(context);
     moderationMock.mockResolvedValue({ status: "passed", confidence: 0.5 });
@@ -443,6 +449,9 @@ describe("chat generate agent image tool", () => {
       expect(enqueueMock).toHaveBeenCalledWith(expect.objectContaining({
         queue: "chat.memory.extract",
       }));
+      expect(recordTurnSuccessMock).toHaveBeenCalledOnce();
+      expect(recordMemoryPromotionSuccessMock).toHaveBeenCalledOnce();
+      expect(recordMemoryPromotionFailureMock).not.toHaveBeenCalled();
       expect(attachmentCreates[0]?.data).toMatchObject({
         metadata: expect.objectContaining({
           toolCallIdentity: {
@@ -451,6 +460,65 @@ describe("chat generate agent image tool", () => {
           },
         }),
       });
+    } finally {
+      restoreEnv();
+    }
+  });
+
+  it("records post-commit memory promotion failure without misclassifying the provider", async () => {
+    const restoreEnv = installDshRolloutEnv();
+    try {
+      dshRunMock.mockImplementation(async (invocation, port) => {
+        await port.emit({
+          type: "text_delta",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 1,
+          occurredAt: new Date().toISOString(),
+          delta: "delivered reply",
+        });
+        const candidate = {
+          attemptId: invocation.attemptId,
+          content: "delivered reply",
+          finishReason: "stop" as const,
+          provider: "mock",
+          model: "local-model",
+          usage: { promptTokens: 10, completionTokens: 3, reasoningTokens: 0 },
+          execution: { steps: 1, toolCalls: 0 },
+          completedAt: new Date().toISOString(),
+        };
+        await port.emit({
+          type: "terminal_candidate",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 2,
+          occurredAt: new Date().toISOString(),
+          candidate,
+        });
+        await port.commit(candidate);
+        throw new Error("igrep promotion failed");
+      });
+      const { prisma, rootMessageUpdates } = fakePrisma();
+
+      await expect(processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        prisma,
+        { projectorPrisma: prisma },
+      )).resolves.toEqual({ status: "sent" });
+
+      expect(rootMessageUpdates).toContainEqual(expect.objectContaining({
+        data: expect.objectContaining({
+          runtimeTrace: expect.objectContaining({
+            companion: expect.objectContaining({ memoryIngestOutcome: "failed" }),
+          }),
+        }),
+      }));
+      expect(recordTurnSuccessMock).toHaveBeenCalledOnce();
+      expect(recordTurnFailureMock).not.toHaveBeenCalled();
+      expect(recordMemoryPromotionFailureMock).toHaveBeenCalledWith(
+        expect.objectContaining({ message: "igrep promotion failed" }),
+      );
+      expect(recordMemoryPromotionSuccessMock).not.toHaveBeenCalled();
     } finally {
       restoreEnv();
     }
