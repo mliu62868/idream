@@ -6,7 +6,10 @@ import {
   COMPANION_IGREP_VERSION,
   COMPANION_RUNTIME_PROTOCOL_VERSION,
 } from "@idream/shared/chat/companion-runtime";
-import { probeCompanionSidecar } from "./companion-sidecar-readiness.js";
+import {
+  probeCompanionSidecar,
+  verifiedCompanionProfileDigest,
+} from "./companion-sidecar-readiness.js";
 
 function ready() {
   return {
@@ -18,7 +21,12 @@ function ready() {
     dshCommit: COMPANION_DSH_COMMIT,
     igrepVersion: COMPANION_IGREP_VERSION,
     pluginVersion: COMPANION_IGREP_PLUGIN_VERSION,
-    provider: { name: "mock", model: "local-model", resolved: true as const },
+    provider: {
+      name: "mock",
+      baseUrl: "http://127.0.0.1:8061/v1",
+      model: "local-model",
+      resolved: true as const,
+    },
     profiles: {
       normal: {
         name: "normal" as const,
@@ -44,13 +52,18 @@ describe("companion sidecar readiness", () => {
       baseUrl: "http://127.0.0.1:3101",
       token: "probe-token",
       expectedProvider: "mock",
+      expectedBaseUrl: "http://127.0.0.1:8061/v1",
       expectedModel: "local-model",
+      full: true,
       fetchImpl: fetchImpl as typeof fetch,
     })).resolves.toMatchObject({ ready: true, dshCommit: COMPANION_DSH_COMMIT });
     const calls = fetchImpl.mock.calls as unknown[][];
     const init = calls[0]?.[1] as RequestInit | undefined;
+    expect(calls[0]?.[0]).toBe("http://127.0.0.1:3101/readyz?full=1");
     expect(new Headers(init?.headers).get("authorization"))
       .toBe("Bearer probe-token");
+    expect(verifiedCompanionProfileDigest("http://127.0.0.1:3101/", "normal"))
+      .toBe("a".repeat(64));
   });
 
   it("fails closed when the sidecar resolves a different model", async () => {
@@ -58,6 +71,7 @@ describe("companion sidecar readiness", () => {
       baseUrl: "http://127.0.0.1:3101",
       token: "probe-token",
       expectedProvider: "mock",
+      expectedBaseUrl: "http://127.0.0.1:8061/v1",
       expectedModel: "other-model",
       fetchImpl: async () => Response.json(ready()),
     })).rejects.toThrow(/provider profile/);

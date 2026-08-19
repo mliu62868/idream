@@ -59,6 +59,9 @@ vi.mock("./companion-runtime.js", () => ({
     run = dshRunMock;
   },
 }));
+vi.mock("./companion-sidecar-readiness.js", () => ({
+  verifiedCompanionProfileDigest: () => "d".repeat(64),
+}));
 
 const { processGenerate, processGenerateJob } = await import("./generate.js");
 
@@ -87,6 +90,7 @@ function fakePrisma(
     content: string;
     memoryAuthority: "enabled" | "disabled";
   },
+  assistantRuntimeTrace?: Record<string, unknown>,
 ) {
   const attachmentCreates: CreateCall[] = [];
   const outboxCreates: CreateCall[] = [];
@@ -207,6 +211,7 @@ function fakePrisma(
               attempt: 1,
               replyToMessageId: "msg_user",
               memoryAuthority: turnAuthority?.memoryAuthority ?? "enabled",
+              runtimeTrace: assistantRuntimeTrace ?? null,
             },
       updateMany: async (call: CreateCall) => {
         rootMessageUpdates.push(call);
@@ -416,6 +421,209 @@ describe("chat generate agent image tool", () => {
           },
         }),
       });
+    } finally {
+      if (previous.runtime === undefined) delete process.env.CHAT_COMPANION_RUNTIME;
+      else process.env.CHAT_COMPANION_RUNTIME = previous.runtime;
+      if (previous.memory === undefined) delete process.env.CHAT_MEMORY_BACKEND;
+      else process.env.CHAT_MEMORY_BACKEND = previous.memory;
+      if (previous.token === undefined) delete process.env.DSH_AGENT_TOKEN;
+      else process.env.DSH_AGENT_TOKEN = previous.token;
+    }
+  });
+
+  it("persists DSH text already delivered before a runtime disconnect as truncated", async () => {
+    const previous = {
+      runtime: process.env.CHAT_COMPANION_RUNTIME,
+      memory: process.env.CHAT_MEMORY_BACKEND,
+      token: process.env.DSH_AGENT_TOKEN,
+    };
+    process.env.CHAT_COMPANION_RUNTIME = "dsh";
+    process.env.CHAT_MEMORY_BACKEND = "igrep-dsh";
+    process.env.DSH_AGENT_TOKEN = "test-sidecar-token";
+    try {
+      dshRunMock.mockImplementation(async (invocation, port) => {
+        await port.emit({
+          type: "text_delta",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 1,
+          occurredAt: new Date().toISOString(),
+          delta: "visible partial reply",
+        });
+        throw new Error("sidecar disconnected");
+      });
+      const { prisma, messageUpdates } = fakePrisma();
+
+      await expect(processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        prisma,
+        { projectorPrisma: prisma },
+      )).resolves.toEqual({ status: "sent" });
+
+      expect(finalizedMessageUpdate(messageUpdates)).toMatchObject({
+        status: "sent",
+        content: "visible partial reply",
+        runtimeTrace: expect.objectContaining({
+          truncated: true,
+          companion: expect.objectContaining({
+            memoryIngestOutcome: "discarded_truncated",
+          }),
+        }),
+      });
+    } finally {
+      if (previous.runtime === undefined) delete process.env.CHAT_COMPANION_RUNTIME;
+      else process.env.CHAT_COMPANION_RUNTIME = previous.runtime;
+      if (previous.memory === undefined) delete process.env.CHAT_MEMORY_BACKEND;
+      else process.env.CHAT_MEMORY_BACKEND = previous.memory;
+      if (previous.token === undefined) delete process.env.DSH_AGENT_TOKEN;
+      else process.env.DSH_AGENT_TOKEN = previous.token;
+    }
+  });
+
+  it("never turns a rejected DSH terminal candidate into a truncated success", async () => {
+    const previous = {
+      runtime: process.env.CHAT_COMPANION_RUNTIME,
+      memory: process.env.CHAT_MEMORY_BACKEND,
+      token: process.env.DSH_AGENT_TOKEN,
+    };
+    process.env.CHAT_COMPANION_RUNTIME = "dsh";
+    process.env.CHAT_MEMORY_BACKEND = "igrep-dsh";
+    process.env.DSH_AGENT_TOKEN = "test-sidecar-token";
+    try {
+      dshRunMock.mockImplementation(async (invocation, port) => {
+        await port.emit({
+          type: "text_delta",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 1,
+          occurredAt: new Date().toISOString(),
+          delta: "visible bytes",
+        });
+        const candidate = {
+          attemptId: invocation.attemptId,
+          content: "different terminal bytes",
+          finishReason: "stop" as const,
+          provider: "mock",
+          model: "local-model",
+          usage: { promptTokens: 10, completionTokens: 4, reasoningTokens: 0 },
+          execution: { steps: 1, toolCalls: 0 },
+          completedAt: new Date().toISOString(),
+        };
+        await port.emit({
+          type: "terminal_candidate",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 2,
+          occurredAt: new Date().toISOString(),
+          candidate,
+        });
+        const ack = await port.commit(candidate);
+        if (!ack.accepted) throw new Error(ack.error.code);
+      });
+      const { prisma, messageUpdates } = fakePrisma();
+
+      await expect(processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        prisma,
+        { projectorPrisma: prisma },
+      )).rejects.toThrow("stream_candidate_mismatch");
+
+      expect(messageUpdates).not.toContainEqual(expect.objectContaining({
+        data: expect.objectContaining({ status: "sent" }),
+      }));
+    } finally {
+      if (previous.runtime === undefined) delete process.env.CHAT_COMPANION_RUNTIME;
+      else process.env.CHAT_COMPANION_RUNTIME = previous.runtime;
+      if (previous.memory === undefined) delete process.env.CHAT_MEMORY_BACKEND;
+      else process.env.CHAT_MEMORY_BACKEND = previous.memory;
+      if (previous.token === undefined) delete process.env.DSH_AGENT_TOKEN;
+      else process.env.DSH_AGENT_TOKEN = previous.token;
+    }
+  });
+
+  it("replays a durable DSH tool reservation without creating a second identity", async () => {
+    const previous = {
+      runtime: process.env.CHAT_COMPANION_RUNTIME,
+      memory: process.env.CHAT_MEMORY_BACKEND,
+      token: process.env.DSH_AGENT_TOKEN,
+    };
+    process.env.CHAT_COMPANION_RUNTIME = "dsh";
+    process.env.CHAT_MEMORY_BACKEND = "igrep-dsh";
+    process.env.DSH_AGENT_TOKEN = "test-sidecar-token";
+    const reservation = {
+      attemptId: "msg_assistant:1",
+      callId: "call-replayed",
+      name: "generate_image_async",
+      arguments: {
+        prompt: "Mira beside the observatory window",
+        caption: "Still the same view.",
+      },
+    };
+    try {
+      let replayResult: unknown;
+      dshRunMock.mockImplementation(async (invocation, port) => {
+        replayResult = await port.executeTool(reservation);
+        await port.emit({
+          type: "text_delta",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 1,
+          occurredAt: new Date().toISOString(),
+          delta: "the reserved image is queued",
+        });
+        const candidate = {
+          attemptId: invocation.attemptId,
+          content: "the reserved image is queued",
+          finishReason: "stop",
+          provider: "mock",
+          model: "local-model",
+          usage: { promptTokens: 10, completionTokens: 5, reasoningTokens: 0 },
+          execution: { steps: 2, toolCalls: 1 },
+          completedAt: new Date().toISOString(),
+        };
+        await port.emit({
+          type: "terminal_candidate",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 2,
+          occurredAt: new Date().toISOString(),
+          candidate,
+        });
+        await port.commit(candidate);
+      });
+      const { prisma, attachmentCreates, rootMessageUpdates } = fakePrisma(
+        undefined,
+        undefined,
+        undefined,
+        {
+          companionRuntime: {
+            runtime: "dsh",
+            memoryBackend: "igrep-dsh",
+            profile: "idream-companion-memory",
+            private: false,
+          },
+          companionTool: reservation,
+        },
+      );
+
+      await expect(processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        prisma,
+        { projectorPrisma: prisma },
+      )).resolves.toEqual({ status: "sent" });
+
+      expect(replayResult).toMatchObject({
+        outcome: "succeeded",
+        output: { effectId: "msg_assistant:1:call-replayed" },
+      });
+      expect(attachmentCreates).toHaveLength(1);
+      const persistedReservations = rootMessageUpdates
+        .map((call) => (call.data.runtimeTrace as { companionTool?: unknown } | undefined)?.companionTool)
+        .filter(Boolean);
+      expect(persistedReservations.length).toBeGreaterThan(0);
+      expect(persistedReservations).toEqual(
+        Array.from({ length: persistedReservations.length }, () => reservation),
+      );
     } finally {
       if (previous.runtime === undefined) delete process.env.CHAT_COMPANION_RUNTIME;
       else process.env.CHAT_COMPANION_RUNTIME = previous.runtime;

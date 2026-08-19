@@ -25,7 +25,7 @@ const COMMAND_TIMEOUT_MS = 120_000;
 const PROFILE_CAPABILITIES = Object.freeze({
   normal: Object.freeze({
     search: true,
-    webProvider: true,
+    webProvider: false,
     webTool: false,
     memory: true,
     ingest: true,

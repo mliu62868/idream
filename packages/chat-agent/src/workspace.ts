@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { cp, lstat, mkdir, mkdtemp, readdir, readlink, rename, rm, symlink } from "node:fs/promises";
+import { cp, lstat, mkdir, mkdtemp, readdir, readlink, rename, rm, rmdir, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import type { CompanionInvocation } from "@idream/shared/chat/companion-runtime";
@@ -20,6 +20,7 @@ export interface AttemptWorkspace {
   readonly mode: "normal" | "private";
   commit(): Promise<void>;
   discard(): Promise<void>;
+  settleAndDiscard(): Promise<void>;
 }
 
 export interface AttemptWorkspaceStoreOptions {
@@ -60,6 +61,21 @@ export function relationshipWorkspacePath(
   return join(userWorkspacePath(canonicalRoot, userId), `relationship-${safeKey(userId, characterId)}`);
 }
 
+function privateUserWorkspacePath(privateRoot: string, userId: string): string {
+  return join(resolve(privateRoot), `user-${safeKey(userId)}`);
+}
+
+function privateRelationshipWorkspacePath(
+  privateRoot: string,
+  userId: string,
+  characterId: string,
+): string {
+  return join(
+    privateUserWorkspacePath(privateRoot, userId),
+    `relationship-${safeKey(userId, characterId)}`,
+  );
+}
+
 function assertWithin(parent: string, child: string): void {
   const path = relative(resolve(parent), resolve(child));
   if (path === "" || (!path.startsWith(`..${sep}`) && path !== ".." && !path.startsWith(sep))) return;
@@ -92,41 +108,75 @@ export class AttemptWorkspaceStore {
   }
 
   async prepare(invocation: CompanionInvocation): Promise<AttemptWorkspace> {
-    if (invocation.memoryMode === "private") return this.preparePrivate();
+    if (invocation.memoryMode === "private") return this.preparePrivate(invocation);
     return this.prepareNormal(invocation);
   }
 
   async purge(request: WorkspacePurgeRequest): Promise<number> {
     if (request.scope === "relationship") {
-      const target = relationshipWorkspacePath(
+      const canonicalTarget = relationshipWorkspacePath(
         this.options.canonicalRoot,
         request.userId,
         request.characterId,
       );
-      assertWithin(this.options.canonicalRoot, target);
-      if (!(await exists(target))) return 0;
-      await rm(target, { recursive: true, force: true });
-      return 1;
+      const privateTarget = privateRelationshipWorkspacePath(
+        this.options.privateRoot,
+        request.userId,
+        request.characterId,
+      );
+      assertWithin(this.options.canonicalRoot, canonicalTarget);
+      assertWithin(this.options.privateRoot, privateTarget);
+      const found = await Promise.all([exists(canonicalTarget), exists(privateTarget)]);
+      await Promise.all([
+        rm(canonicalTarget, { recursive: true, force: true }),
+        rm(privateTarget, { recursive: true, force: true }),
+      ]);
+      return found.some(Boolean) ? 1 : 0;
     }
-    const target = userWorkspacePath(this.options.canonicalRoot, request.userId);
-    assertWithin(this.options.canonicalRoot, target);
-    if (!(await exists(target))) return 0;
-    const children = await readdir(target, { withFileTypes: true });
-    const count = children.filter((entry) => entry.isDirectory() && entry.name.startsWith("relationship-")).length;
-    await rm(target, { recursive: true, force: true });
-    return count;
+    const canonicalTarget = userWorkspacePath(this.options.canonicalRoot, request.userId);
+    const privateTarget = privateUserWorkspacePath(this.options.privateRoot, request.userId);
+    assertWithin(this.options.canonicalRoot, canonicalTarget);
+    assertWithin(this.options.privateRoot, privateTarget);
+    const relationshipNames = new Set<string>();
+    for (const target of [canonicalTarget, privateTarget]) {
+      if (!(await exists(target))) continue;
+      const children = await readdir(target, { withFileTypes: true });
+      for (const entry of children) {
+        if (entry.isDirectory() && entry.name.startsWith("relationship-")) {
+          relationshipNames.add(entry.name);
+        }
+      }
+    }
+    await Promise.all([
+      rm(canonicalTarget, { recursive: true, force: true }),
+      rm(privateTarget, { recursive: true, force: true }),
+    ]);
+    return relationshipNames.size;
   }
 
-  private async preparePrivate(): Promise<AttemptWorkspace> {
-    await mkdir(this.options.privateRoot, { recursive: true });
-    const path = await mkdtemp(join(this.options.privateRoot, "idream-private-"));
+  private async preparePrivate(invocation: CompanionInvocation): Promise<AttemptWorkspace> {
+    const relationshipRoot = privateRelationshipWorkspacePath(
+      this.options.privateRoot,
+      invocation.userId,
+      invocation.characterId,
+    );
+    assertWithin(this.options.privateRoot, relationshipRoot);
+    await mkdir(relationshipRoot, { recursive: true });
+    const path = await mkdtemp(join(relationshipRoot, "attempt-"));
     let finished = false;
     const discard = async () => {
       if (finished) return;
       finished = true;
       await rm(path, { recursive: true, force: true });
+      await rmdir(relationshipRoot).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT" && error.code !== "ENOTEMPTY") throw error;
+      });
+      await rmdir(privateUserWorkspacePath(this.options.privateRoot, invocation.userId))
+        .catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT" && error.code !== "ENOTEMPTY") throw error;
+        });
     };
-    return { path, mode: "private", commit: discard, discard };
+    return { path, mode: "private", commit: discard, discard, settleAndDiscard: discard };
   }
 
   private async prepareNormal(invocation: CompanionInvocation): Promise<AttemptWorkspace> {
@@ -172,14 +222,24 @@ export class AttemptWorkspaceStore {
           release();
         }
       };
+      const settleAndDiscard = async () => {
+        if (finished) return;
+        try {
+          await this.waitForMaintain(workspace, before);
+        } finally {
+          await discard();
+        }
+      };
       const commit = async () => {
         if (finished) throw new Error("attempt workspace is already finalized");
+        let nextVersion: string | undefined;
+        let nextLink: string | undefined;
         try {
           await this.waitForLifecycle(workspace, before);
           const versionName = `commit-${Date.now()}-${randomUUID()}`;
-          const nextVersion = join(versionsRoot, versionName);
+          nextVersion = join(versionsRoot, versionName);
           await rename(attemptMemory, nextVersion);
-          const nextLink = join(relationshipRoot, `.igrep.next-${randomUUID()}`);
+          nextLink = join(relationshipRoot, `.igrep.next-${randomUUID()}`);
           await symlink(relative(relationshipRoot, nextVersion), nextLink, "dir");
           await rename(nextLink, canonicalLink);
           finished = true;
@@ -188,11 +248,17 @@ export class AttemptWorkspaceStore {
             await rm(canonicalVersion, { recursive: true, force: true }).catch(() => undefined);
           }
         } finally {
-          if (!finished) await rm(ownedAttemptRoot, { recursive: true, force: true });
+          if (!finished) {
+            await Promise.all([
+              rm(ownedAttemptRoot, { recursive: true, force: true }),
+              ...(nextLink ? [rm(nextLink, { recursive: true, force: true })] : []),
+              ...(nextVersion ? [rm(nextVersion, { recursive: true, force: true })] : []),
+            ]);
+          }
           release();
         }
       };
-      return { path: workspace, mode: "normal", commit, discard };
+      return { path: workspace, mode: "normal", commit, discard, settleAndDiscard };
     } catch (error) {
       if (attemptRoot) await rm(attemptRoot, { recursive: true, force: true }).catch(() => undefined);
       release();
@@ -253,6 +319,23 @@ export class AttemptWorkspaceStore {
     } while (Date.now() < deadline);
     throw new Error(
       `igrep lifecycle was not observable through memory-status: dialogueFiles ${before.dialogueFiles} -> ${latest.dialogueFiles}, lastMaintain ${before.lastMaintainAt ?? "none"} -> ${latest.lastMaintainAt ?? "none"}`,
+    );
+  }
+
+  private async waitForMaintain(workspace: string, before: MemoryStatus): Promise<void> {
+    if (!Object.hasOwn(before, "lastMaintainAt")) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, this.options.verificationPollMs));
+      return;
+    }
+    const deadline = Date.now() + this.options.verificationTimeoutMs;
+    let latest = before;
+    while (Date.now() <= deadline) {
+      latest = await this.options.memoryProbe.status(workspace);
+      if (latest.lastMaintainAt && latest.lastMaintainAt !== before.lastMaintainAt) return;
+      await new Promise((resolveWait) => setTimeout(resolveWait, this.options.verificationPollMs));
+    }
+    throw new Error(
+      `igrep disposal maintain did not settle: lastMaintain ${before.lastMaintainAt ?? "none"} -> ${latest.lastMaintainAt ?? "none"}`,
     );
   }
 }

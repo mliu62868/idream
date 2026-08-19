@@ -354,7 +354,12 @@ describe("companion runtime stable wire contract", () => {
       dshCommit: COMPANION_DSH_COMMIT,
       igrepVersion: COMPANION_IGREP_VERSION,
       pluginVersion: COMPANION_IGREP_PLUGIN_VERSION,
-      provider: { name: "openrouter", model: profile.model, resolved: true as const },
+      provider: {
+        name: "openrouter",
+        baseUrl: profile.baseUrl,
+        model: profile.model,
+        resolved: true as const,
+      },
       profiles: {
         normal: {
           name: "normal" as const,

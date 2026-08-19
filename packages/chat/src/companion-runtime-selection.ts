@@ -22,7 +22,7 @@ export interface CompanionAttemptRuntime {
 
 export type CompanionRuntimePin = Pick<
   CompanionAttemptRuntime,
-  "runtime" | "memoryBackend" | "profile" | "private"
+  "runtime" | "memoryBackend" | "profile" | "private" | "sidecarUrl" | "deadlineMs"
 >;
 
 const RUNTIMES = new Set<CompanionRuntimeName>(["native", "dsh"]);
@@ -30,6 +30,8 @@ const MEMORY_BACKENDS = new Set<CompanionMemoryBackend>([
   "legacy",
   "igrep-dsh",
 ]);
+const NORMAL_PROFILE = "idream-companion-memory";
+const PRIVATE_PROFILE = "idream-companion-private";
 
 /**
  * INVARIANT: runtime and memory authority are one deployment decision. A typo
@@ -77,16 +79,8 @@ export function resolveCompanionRuntimeConfig(
     memoryBackend: memoryBackend as CompanionMemoryBackend,
     sidecarUrl: parsedUrl.toString().replace(/\/$/, ""),
     sidecarToken,
-    normalProfile: nonEmpty(
-      source.DSH_PROFILE_NORMAL,
-      "idream-companion-memory",
-      "DSH_PROFILE_NORMAL",
-    ),
-    privateProfile: nonEmpty(
-      source.DSH_PROFILE_PRIVATE,
-      "idream-companion-private",
-      "DSH_PROFILE_PRIVATE",
-    ),
+    normalProfile: canonicalProfile(source.DSH_PROFILE_NORMAL, NORMAL_PROFILE, "DSH_PROFILE_NORMAL"),
+    privateProfile: canonicalProfile(source.DSH_PROFILE_PRIVATE, PRIVATE_PROFILE, "DSH_PROFILE_PRIVATE"),
     deadlineMs,
   };
 }
@@ -112,7 +106,7 @@ export function selectCompanionRuntimeForAttempt(input: {
   };
 }
 
-/** A retried attempt may reuse its pin, but can never silently change it. */
+/** A retry follows its durable pin; deployment switches apply only to new attempts. */
 export function pinCompanionRuntimeForAttempt(input: {
   config: CompanionRuntimeConfig;
   memoryAuthority: "enabled" | "disabled";
@@ -120,27 +114,42 @@ export function pinCompanionRuntimeForAttempt(input: {
 }): CompanionAttemptRuntime {
   const selected = selectCompanionRuntimeForAttempt(input);
   if (input.priorPin === undefined || input.priorPin === null) return selected;
-  const expected: CompanionRuntimePin = {
-    runtime: selected.runtime,
-    memoryBackend: selected.memoryBackend,
-    profile: selected.profile,
-    private: selected.private,
-  };
-  if (!sameRuntimePin(input.priorPin, expected)) {
-    throw new Error(
-      "attempt pinned companion runtime differs from current deployment routing",
-    );
+  const prior = runtimePin(input.priorPin, input.config);
+  if (prior.private !== selected.private) {
+    throw new Error("attempt pinned companion runtime differs from immutable memory authority");
   }
-  return selected;
+  return prior;
 }
 
-function sameRuntimePin(value: unknown, expected: CompanionRuntimePin): boolean {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+function runtimePin(value: unknown, config: CompanionRuntimeConfig): CompanionRuntimePin {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("attempt companion runtime pin is invalid");
+  }
   const candidate = value as Record<string, unknown>;
-  return candidate.runtime === expected.runtime &&
-    candidate.memoryBackend === expected.memoryBackend &&
-    candidate.profile === expected.profile &&
-    candidate.private === expected.private;
+  if (!RUNTIMES.has(candidate.runtime as CompanionRuntimeName)
+    || !MEMORY_BACKENDS.has(candidate.memoryBackend as CompanionMemoryBackend)
+    || typeof candidate.profile !== "string" || !candidate.profile
+    || typeof candidate.private !== "boolean") {
+    throw new Error("attempt companion runtime pin is invalid");
+  }
+  if ((candidate.runtime === "dsh") !== (candidate.memoryBackend === "igrep-dsh")) {
+    throw new Error("attempt companion runtime pin is internally inconsistent");
+  }
+  const sidecarUrl = typeof candidate.sidecarUrl === "string" && candidate.sidecarUrl
+    ? new URL(candidate.sidecarUrl).toString().replace(/\/$/, "")
+    : config.sidecarUrl;
+  const deadlineMs = typeof candidate.deadlineMs === "number"
+    && Number.isSafeInteger(candidate.deadlineMs) && candidate.deadlineMs > 0
+    ? candidate.deadlineMs
+    : config.deadlineMs;
+  return {
+    runtime: candidate.runtime as CompanionRuntimeName,
+    memoryBackend: candidate.memoryBackend as CompanionMemoryBackend,
+    profile: candidate.profile,
+    private: candidate.private,
+    sidecarUrl,
+    deadlineMs,
+  };
 }
 
 /** Legacy extract/retrieval must stand down only for an explicit complete pin. */
@@ -159,14 +168,14 @@ export function genericMemoryOwnedByCompanionRuntime(
     typeof record.private === "boolean";
 }
 
-function nonEmpty(
+function canonicalProfile(
   value: string | undefined,
-  fallback: string,
+  expected: string,
   name: string,
 ): string {
-  const resolved = value?.trim() || fallback;
-  if (!resolved) throw new Error(`${name} must not be empty`);
-  return resolved;
+  const resolved = value?.trim() || expected;
+  if (resolved !== expected) throw new Error(`${name} must be ${expected}`);
+  return expected;
 }
 
 function parsePositiveInteger(

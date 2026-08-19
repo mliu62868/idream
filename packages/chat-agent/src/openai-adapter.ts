@@ -96,9 +96,20 @@ function openAiMessages(system: string | undefined, messages: readonly Message[]
 }
 
 function finishReason(value: string | undefined): FinishReason {
-  if (value === "length") return { kind: "max-tokens" };
-  if (value === "tool_calls" || value === "function_call") return { kind: "tool-calls" };
-  return { kind: "stop" };
+  switch (value) {
+    case "stop":
+      return { kind: "stop" };
+    case "length":
+      return { kind: "max-tokens" };
+    case "tool_calls":
+    case "function_call":
+      return { kind: "tool-calls" };
+    default:
+      throw new LlmError(
+        `provider returned unsupported finish_reason ${String(value)}`,
+        "INVALID_RESPONSE",
+      );
+  }
 }
 
 function usageOf(payload: OpenAiStreamPayload): TokenUsage | undefined {

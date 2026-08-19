@@ -8,6 +8,7 @@ export interface SidecarConfig {
   privateRoot: string;
   igrepCommand: string;
   igrepPluginUrl: string;
+  bootstrapStatePath: string;
   providerApiKey: string;
   readyProvider: string;
   readyModel: string;
@@ -65,6 +66,10 @@ export function loadSidecarConfig(env: NodeJS.ProcessEnv = process.env): Sidecar
     ),
     igrepCommand: env.DSH_IGREP_COMMAND?.trim() || "igrep",
     igrepPluginUrl: required(env, "DSH_IGREP_PLUGIN_URL"),
+    bootstrapStatePath: absolutePath(
+      required(env, "DSH_BOOTSTRAP_STATE_PATH"),
+      "DSH_BOOTSTRAP_STATE_PATH",
+    ),
     providerApiKey: required(env, "DSH_PROVIDER_API_KEY"),
     readyProvider,
     readyModel: required(env, "DSH_READY_MODEL"),

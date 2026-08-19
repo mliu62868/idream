@@ -5,6 +5,7 @@ function environment(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
     DSH_AGENT_TOKEN: "shared-chat-sidecar-token",
     DSH_IGREP_PLUGIN_URL: "/opt/igrep/profile/node_modules/@igrep/dsh-plugin/index.mjs",
+    DSH_BOOTSTRAP_STATE_PATH: "/opt/igrep/idream-companion-bootstrap.json",
     DSH_PROVIDER_API_KEY: "provider-secret",
     DSH_READY_PROVIDER: "openrouter",
     DSH_READY_MODEL: "deepseek/test",

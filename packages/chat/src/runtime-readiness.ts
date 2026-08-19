@@ -958,11 +958,27 @@ export async function warmRuntime(input: {
     const companion = env.COMPANION_RUNTIME_CONFIG;
     if (companion.runtime === "dsh") {
       const profile = profiles[0] ?? resolveChatModelProfile(process.env);
+      const profileIdentity = JSON.stringify({
+        provider: profile.provider,
+        baseUrl: profile.baseUrl,
+        model: profile.model,
+        supportsTools: profile.supportsTools,
+      });
+      if (!profile.supportsTools || profiles.some((candidate) => JSON.stringify({
+        provider: candidate.provider,
+        baseUrl: candidate.baseUrl,
+        model: candidate.model,
+        supportsTools: candidate.supportsTools,
+      }) !== profileIdentity)) {
+        throw new Error("DSH readiness requires one tool-capable provider profile across all tiers");
+      }
       const sidecar = await probeCompanionSidecar({
         baseUrl: companion.sidecarUrl,
         token: companion.sidecarToken,
         expectedProvider: profile.provider,
+        expectedBaseUrl: profile.baseUrl,
         expectedModel: profile.model,
+        full: true,
       });
       warmedProfiles.push(
         `dsh:${sidecar.dshVersion}:${sidecar.dshCommit}`,
@@ -980,6 +996,7 @@ export async function warmRuntime(input: {
             baseUrl: companion.sidecarUrl,
             token: companion.sidecarToken,
             expectedProvider: profile.provider,
+            expectedBaseUrl: profile.baseUrl,
             expectedModel: profile.model,
           });
         },

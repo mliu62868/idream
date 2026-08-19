@@ -495,7 +495,12 @@ describe("programmatic DSH companion runtime", () => {
       run.characterId,
     );
     expect(await dialogueCount(canonicalWorkspace)).toBe(0);
-    expect(configs).toContainEqual(expect.objectContaining({ ingest: true, wake: false }));
+    expect(configs).toContainEqual(expect.objectContaining({
+      ingest: true,
+      wake: true,
+      webProvider: false,
+      webTool: false,
+    }));
     expect(collected.some((frame) => frame.type === "event" && frame.event.type === "failed")).toBe(true);
   });
 

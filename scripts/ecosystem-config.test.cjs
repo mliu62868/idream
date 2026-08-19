@@ -359,6 +359,13 @@ test("production stop phases classify every non-voice app exactly once", () => {
     productionAdmissionTargets.includes("admin-command-worker"),
     true,
   );
+  if (productionAdmissionTargets.includes("chat-agent")) {
+    assert.ok(
+      productionAdmissionTargets.indexOf("chat") <
+        productionAdmissionTargets.indexOf("chat-agent"),
+      "Chat must stop before its companion sidecar",
+    );
+  }
   assert.equal(productionDrainWorkerTargets.at(-1), "gen-finalizer");
 });
 

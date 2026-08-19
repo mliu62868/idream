@@ -25,8 +25,10 @@ const supportedActions = new Set([
 const productionAdmissionTargets = [
   "main-web",
   "admin-web",
-  ...(companionSidecarEnabled ? ["chat-agent"] : []),
   "chat",
+  // Admission shutdown is ordered: Chat drains/cancels active invocations
+  // before the sidecar that owns them is allowed to stop.
+  ...(companionSidecarEnabled ? ["chat-agent"] : []),
   "main-event-consumer",
   "admin-command-worker",
 ];

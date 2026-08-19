@@ -38,8 +38,8 @@ describe("companion runtime selection", () => {
       CHAT_COMPANION_RUNTIME: "dsh",
       CHAT_MEMORY_BACKEND: "igrep-dsh",
       DSH_AGENT_TOKEN: "secret",
-      DSH_PROFILE_NORMAL: "relationship-profile",
-      DSH_PROFILE_PRIVATE: "private-profile",
+      DSH_PROFILE_NORMAL: "idream-companion-memory",
+      DSH_PROFILE_PRIVATE: "idream-companion-private",
     });
 
     expect(
@@ -47,13 +47,19 @@ describe("companion runtime selection", () => {
         config,
         memoryAuthority: "enabled",
       }),
-    ).toMatchObject({ runtime: "dsh", profile: "relationship-profile", private: false });
+    ).toMatchObject({ runtime: "dsh", profile: "idream-companion-memory", private: false });
     expect(
       selectCompanionRuntimeForAttempt({
         config,
         memoryAuthority: "disabled",
       }),
-    ).toMatchObject({ runtime: "dsh", profile: "private-profile", private: true });
+    ).toMatchObject({ runtime: "dsh", profile: "idream-companion-private", private: true });
+  });
+
+  it("rejects profile names the programmatic sidecar cannot load", () => {
+    expect(() => resolveCompanionRuntimeConfig({
+      DSH_PROFILE_NORMAL: "claimed-but-not-loaded",
+    })).toThrow(/DSH_PROFILE_NORMAL must be idream-companion-memory/);
   });
 
   it("rejects invalid enum values instead of silently changing authority", () => {
@@ -62,9 +68,9 @@ describe("companion runtime selection", () => {
     ).toThrow(/CHAT_COMPANION_RUNTIME/);
   });
 
-  it("fails a retry when deployment routing drifted after the attempt was pinned", () => {
+  it("keeps a retried attempt on its durable DSH route after a deployment rollback", () => {
     const native = resolveCompanionRuntimeConfig({});
-    expect(() =>
+    expect(
       pinCompanionRuntimeForAttempt({
         config: native,
         memoryAuthority: "enabled",
@@ -73,9 +79,30 @@ describe("companion runtime selection", () => {
           memoryBackend: "igrep-dsh",
           profile: "idream-companion-memory",
           private: false,
+          sidecarUrl: "http://127.0.0.1:3199",
+          deadlineMs: 42_000,
         },
       }),
-    ).toThrow(/pinned companion runtime/);
+    ).toMatchObject({
+      runtime: "dsh",
+      memoryBackend: "igrep-dsh",
+      profile: "idream-companion-memory",
+      sidecarUrl: "http://127.0.0.1:3199",
+      deadlineMs: 42_000,
+    });
+  });
+
+  it("still rejects a retry pin that conflicts with immutable no-memory authority", () => {
+    expect(() => pinCompanionRuntimeForAttempt({
+      config: resolveCompanionRuntimeConfig({}),
+      memoryAuthority: "disabled",
+      priorPin: {
+        runtime: "native",
+        memoryBackend: "legacy",
+        profile: "native",
+        private: false,
+      },
+    })).toThrow(/immutable memory authority/);
   });
 
   it("recognizes only a complete DSH runtime pin as the generic-memory owner", () => {

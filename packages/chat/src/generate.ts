@@ -60,11 +60,13 @@ import {
   type CompanionAttemptRuntime,
 } from "./companion-runtime-selection.js";
 import { DshCompanionRuntime } from "./companion-runtime.js";
+import { verifiedCompanionProfileDigest } from "./companion-sidecar-readiness.js";
 import {
   COMPANION_DSH_COMMIT,
   COMPANION_DSH_VERSION,
   COMPANION_IGREP_PLUGIN_VERSION,
   COMPANION_IGREP_VERSION,
+  companionToolCallSchema,
   type CompanionCommitAck,
   type CompanionEvent,
   type CompanionInvocation,
@@ -72,6 +74,17 @@ import {
   type CompanionToolCall,
   type CompanionToolResult,
 } from "@idream/shared/chat/companion-runtime";
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
 
 export type GeneratePayload = ChatGeneratePayload;
 
@@ -245,6 +258,19 @@ export async function processGenerate(
     ? null
     : noMemoryAuthorityReply(sourceTurn.content);
   await hooks.afterContextBuilt?.(context);
+  const priorDshTrace = priorRuntimeTrace?.dsh && typeof priorRuntimeTrace.dsh === "object"
+    && !Array.isArray(priorRuntimeTrace.dsh)
+    ? priorRuntimeTrace.dsh as Record<string, unknown>
+    : null;
+  const dshProfileDigest = attemptRuntime.runtime === "dsh"
+    ? typeof priorDshTrace?.profileDigest === "string"
+      && /^[a-f0-9]{64}$/.test(priorDshTrace.profileDigest)
+      ? priorDshTrace.profileDigest
+      : verifiedCompanionProfileDigest(
+          attemptRuntime.sidecarUrl,
+          attemptRuntime.private ? "private" : "normal",
+        )
+    : null;
   const runtimeTraceFacts: Record<string, unknown> = {
     schemaVersion: 1,
     attempt: payload.attempt,
@@ -258,7 +284,12 @@ export async function processGenerate(
       memoryBackend: attemptRuntime.memoryBackend,
       profile: attemptRuntime.profile,
       private: attemptRuntime.private,
+      sidecarUrl: attemptRuntime.sidecarUrl,
+      deadlineMs: attemptRuntime.deadlineMs,
     },
+    ...(priorRuntimeTrace?.companionTool
+      ? { companionTool: priorRuntimeTrace.companionTool }
+      : {}),
     ...(attemptRuntime.runtime === "dsh"
       ? {
           dsh: {
@@ -267,7 +298,7 @@ export async function processGenerate(
             sessionId: `${payload.assistantMessageId}:${payload.attempt}`,
             igrepVersion: COMPANION_IGREP_VERSION,
             pluginVersion: COMPANION_IGREP_PLUGIN_VERSION,
-            profileDigest: digestRuntimeProfile(attemptRuntime.profile, prepared.profile),
+            profileDigest: dshProfileDigest,
             workspaceKeyHash: digestWorkspaceKey(session.userId, session.characterId),
             memoryMode: attemptRuntime.private ? "private" : "normal",
             provider: prepared.profile.provider,
@@ -702,6 +733,9 @@ async function processDshCompanionTurn(
     string,
     { fingerprint: string; result: CompanionToolResult }
   >();
+  const durableToolReservation = companionToolCallSchema.safeParse(
+    runtimeTraceFacts.companionTool,
+  );
   let commitAck: CompanionCommitAck | null = null;
   let announcedCandidate: CompanionTerminalCandidate | null = null;
   let terminalStatus: "sent" | "blocked" | "skipped" | null = null;
@@ -723,7 +757,7 @@ async function processDshCompanionTurn(
   const executeTool = async (
     call: CompanionToolCall,
   ): Promise<CompanionToolResult> => {
-    const fingerprint = JSON.stringify(call);
+    const fingerprint = stableJson(call);
     const previous = toolResults.get(call.callId);
     if (previous) {
       if (previous.fingerprint === fingerprint) return previous.result;
@@ -738,6 +772,53 @@ async function processDshCompanionTurn(
           retryable: false,
         },
       };
+    }
+    if (durableToolReservation.success) {
+      const reserved = durableToolReservation.data;
+      if (reserved.callId !== call.callId || reserved.attemptId !== call.attemptId) {
+        return {
+          attemptId: call.attemptId,
+          callId: call.callId,
+          name: call.name,
+          outcome: "failed",
+          error: {
+            code: "tool_limit_reached",
+            message: "this attempt already has a durable image-tool reservation",
+            retryable: false,
+          },
+        };
+      }
+      if (stableJson(reserved) !== fingerprint) {
+        return {
+          attemptId: call.attemptId,
+          callId: call.callId,
+          name: call.name,
+          outcome: "unknown",
+          error: {
+            code: "tool_identity_conflict",
+            message: "the durable callId reservation has different arguments",
+            retryable: false,
+          },
+        };
+      }
+      const replayed = findAgentTool(reserved.name)?.parseCall(reserved.arguments);
+      if (!replayed) {
+        throw new Error("durable companion tool reservation failed Chat schema validation");
+      }
+      imageToolCall = toolCallFromPlan(replayed);
+      toolIdentity = { attemptId: reserved.attemptId, callId: reserved.callId };
+      const result: CompanionToolResult = {
+        attemptId: call.attemptId,
+        callId: call.callId,
+        name: call.name,
+        outcome: "succeeded",
+        output: {
+          status: "accepted_for_terminal_commit",
+          effectId: `${call.attemptId}:${call.callId}`,
+        },
+      };
+      toolResults.set(call.callId, { fingerprint, result });
+      return result;
     }
     const parsed = findAgentTool(call.name)?.parseCall(call.arguments);
     let result: CompanionToolResult;
@@ -977,18 +1058,97 @@ async function processDshCompanionTurn(
     }
   }
 
+  // Match the native persistence invariant: once the user has seen text, a
+  // transport/runtime failure may not erase it from the Chat ledger. This is a
+  // Chat-authored truncated terminal, never an accepted sidecar commit, so the
+  // isolated igrep attempt is still discarded.
+  const observedCandidate = announcedCandidate as CompanionTerminalCandidate | null;
+  if (
+    runError &&
+    terminalStatus === null &&
+    chunks.join("").trim() &&
+    observedCandidate === null &&
+    commitAck === null
+  ) {
+    const content = chunks.join("");
+    const moderation = await providers.moderation.check({
+      targetType: "text",
+      content,
+    });
+    const blocked = moderation.status === "blocked";
+    const partialUsage = usage ?? {
+      promptTokens: prepared.budget.usedInputTokens,
+      completionTokens: estimateTokens(content),
+    };
+    const truncatedAt = new Date().toISOString();
+    const truncatedTrace: Record<string, unknown> = {
+      ...runtimeTraceFacts,
+      truncated: true,
+      companion: {
+        invocationId,
+        attemptId,
+        profile: attemptRuntime.profile,
+        memoryIngestOutcome: "discarded_truncated",
+        memoryIngestSettledAt: truncatedAt,
+        execution: {
+          steps: 1,
+          toolCalls: toolResults.size,
+        },
+        usage: {
+          ...partialUsage,
+          reasoningTokens,
+        },
+        failure: runError instanceof Error ? runError.message : String(runError),
+      },
+    };
+    const finalized = await finalize({
+      prisma,
+      payload,
+      session,
+      content: blocked ? "" : content,
+      model: prepared.model,
+      usage: partialUsage,
+      moderation,
+      blocked,
+      context,
+      imageToolCall,
+      toolCallTrigger: "agent_fc",
+      toolCallIdentity: toolIdentity,
+      traceEntry: null,
+      projectorPrisma,
+      runtimeTrace: JSON.parse(JSON.stringify(truncatedTrace)) as Prisma.InputJsonValue,
+    });
+    if (finalized === "finalized") {
+      terminalStatus = blocked ? "blocked" : "sent";
+      committedUsage = partialUsage;
+      committedTrace = truncatedTrace;
+      runtimeReadiness.recordTurnFailure(
+        runError instanceof Error ? runError : new Error(String(runError)),
+      );
+    } else if (finalized === "skipped") {
+      terminalStatus = "skipped";
+    }
+  }
+
   // These are assigned by callbacks invoked inside runtime.run(); TypeScript's
   // local control-flow analysis cannot observe those writes across the port.
   const settledTrace = committedTrace as Record<string, unknown> | null;
   const settledAck = commitAck as CompanionCommitAck | null;
   if (terminalStatus === "sent" || terminalStatus === "blocked") {
-    const memoryIngestOutcome = terminalStatus === "blocked"
-      ? "discarded_blocked"
-      : attemptRuntime.private
-        ? "disabled"
-        : runError
-          ? "failed"
-          : "ingested";
+    const priorMemoryOutcome = settledTrace?.companion &&
+        typeof settledTrace.companion === "object" &&
+        !Array.isArray(settledTrace.companion)
+      ? (settledTrace.companion as Record<string, unknown>).memoryIngestOutcome
+      : undefined;
+    const memoryIngestOutcome = priorMemoryOutcome === "discarded_truncated"
+      ? priorMemoryOutcome
+      : terminalStatus === "blocked"
+        ? "discarded_blocked"
+        : attemptRuntime.private
+          ? "disabled"
+          : runError
+            ? "failed"
+            : "ingested";
     if (settledTrace) {
       const companion = settledTrace.companion as Record<string, unknown>;
       const finalTrace = JSON.parse(JSON.stringify({
@@ -1013,7 +1173,12 @@ async function processDshCompanionTurn(
         data: { runtimeTrace: finalTrace },
       });
     }
-    if (runError && terminalStatus === "sent") {
+    if (runError && terminalStatus === "sent" && memoryIngestOutcome === "discarded_truncated") {
+      logger.warn(
+        { err: runError, invocationId, assistantMessageId: payload.assistantMessageId },
+        "DSH reply finalized as truncated; isolated runtime memory discarded",
+      );
+    } else if (runError && terminalStatus === "sent") {
       logger.warn(
         { err: runError, invocationId, assistantMessageId: payload.assistantMessageId },
         "DSH turn committed but isolated memory promotion failed",
@@ -1422,14 +1587,6 @@ function hasWorkerRetryRemaining(
 
 function estimateTokens(text: string): number {
   return Math.max(1, Math.ceil(text.length / 4));
-}
-function digestRuntimeProfile(
-  profileName: string,
-  profile: PreparedTurn["profile"],
-): string {
-  return createHash("sha256")
-    .update(JSON.stringify({ profileName, profile }))
-    .digest("hex");
 }
 function digestWorkspaceKey(userId: string, characterId: string): string {
   return createHash("sha256")

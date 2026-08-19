@@ -348,6 +348,46 @@ class ActiveInvocation {
   }
 }
 
+/** Exercise the same bridge state machines used by live invocations. */
+export async function probeCompanionBridges(invocation: CompanionInvocation): Promise<void> {
+  const emitted: CompanionRuntimeResponse[] = [];
+  const events: EventPayload[] = [];
+  const bridge = new ToolBridge(invocation, (frame) => emitted.push(frame), (event) => events.push(event));
+  const controller = new AbortController();
+  const call: CompanionToolCall = {
+    attemptId: invocation.attemptId,
+    callId: "readiness-tool-call",
+    name: "generate_image_async",
+    arguments: { prompt: "readiness" },
+  };
+  const pendingTool = bridge.execute(call, controller.signal);
+  bridge.accept({
+    attemptId: invocation.attemptId,
+    callId: call.callId,
+    name: call.name,
+    outcome: "succeeded",
+    output: { status: "readiness" },
+  });
+  if ((await pendingTool).outcome !== "succeeded" || !emitted.some((frame) => frame.type === "tool_call")) {
+    throw new Error("tool bridge readiness probe did not round-trip");
+  }
+
+  const active = new ActiveInvocation(invocation);
+  active.commitAwaiting = true;
+  const ack: CompanionCommitAck = {
+    attemptId: invocation.attemptId,
+    accepted: true,
+    status: "committed",
+    terminalMessageId: "readiness-terminal",
+    committedAt: new Date().toISOString(),
+  };
+  active.acceptCommit(ack);
+  const accepted = await active.commit.promise;
+  if (!accepted.accepted || accepted.terminalMessageId !== ack.terminalMessageId) {
+    throw new Error("commit bridge readiness probe did not round-trip");
+  }
+}
+
 export class CompanionEngine implements InvocationService {
   private readonly active = new Map<string, ActiveInvocation>();
   private readonly purgingUsers = new Set<string>();
@@ -368,6 +408,7 @@ export class CompanionEngine implements InvocationService {
     let handle: Awaited<ReturnType<AgentRegistry["create"]>> | undefined;
     let ctx: Context | undefined;
     let deadlineTimer: NodeJS.Timeout | undefined;
+    let sessionCreated = false;
     const event = (payload: EventPayload) => {
       const value = companionEventSchema.parse({
         ...payload,
@@ -420,10 +461,16 @@ export class CompanionEngine implements InvocationService {
       let latestFinish: StreamChunk & { type: "finish" } | undefined;
       let turnEnd: TurnEndReason | undefined;
       let stepCount = 0;
+      const seenSessionEventSeqs = new Set<number>();
       const bridge = new ToolBridge(invocation, emit, event);
       active.toolBridge = bridge;
 
       ctx.on("session/event", (_session, sessionEvent) => {
+        // Cordis can surface the same durable Session event through more than
+        // one publication path when plugins observe the log. User-visible SSE
+        // is keyed by the Session seq, so one durable event is emitted once.
+        if (seenSessionEventSeqs.has(sessionEvent.seq)) return;
+        seenSessionEventSeqs.add(sessionEvent.seq);
         if (sessionEvent.type === "assistant/chunk") {
           const chunk = sessionEvent.data.chunk;
           if (chunk.type === "text-delta" && chunk.text) event({ type: "text_delta", delta: chunk.text });
@@ -539,6 +586,7 @@ export class CompanionEngine implements InvocationService {
           }, { prepend: true });
         },
       });
+      sessionCreated = true;
       const agent = handle.agent;
       active.agentCancel = (reason) => {
         agent.cancel(reason === "user" ? { kind: "user" } : { kind: "hook", reason });
@@ -557,6 +605,10 @@ export class CompanionEngine implements InvocationService {
 
       await handle.dispose();
       handle = undefined;
+      if (!terminalCommitted) {
+        await workspace.settleAndDiscard();
+        workspace = undefined;
+      }
       if (active.cancelReason) {
         event({ type: "cancelled", reason: active.cancelReason });
         return;
@@ -565,6 +617,7 @@ export class CompanionEngine implements InvocationService {
         const reason = turnEnd?.kind === "error" ? turnEnd.error : undefined;
         throw new Error(reason?.message ?? "turn ended without an accepted commit");
       }
+      if (!workspace) throw new Error("accepted turn lost its attempt workspace");
       await workspace.commit();
       workspace = undefined;
     } catch (error) {
@@ -584,7 +637,10 @@ export class CompanionEngine implements InvocationService {
       if (deadlineTimer) clearTimeout(deadlineTimer);
       if (handle) await handle.dispose().catch(() => undefined);
       if (ctx) await ctx.fiber.dispose().catch(() => undefined);
-      if (workspace) await workspace.discard().catch(() => undefined);
+      if (workspace) {
+        await (sessionCreated ? workspace.settleAndDiscard() : workspace.discard())
+          .catch(() => undefined);
+      }
       this.active.delete(invocation.invocationId);
     }
   }

@@ -607,6 +607,7 @@ export const companionReadinessSchema = z
     provider: z
       .object({
         name: nonEmptyStringSchema,
+        baseUrl: credentialFreeHttpUrlSchema,
         model: nonEmptyStringSchema,
         resolved: z.literal(true),
       })

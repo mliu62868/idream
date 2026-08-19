@@ -154,4 +154,50 @@ describe("OpenAI-compatible DSH adapter", () => {
       }
     })()).rejects.toThrow(/finish reason/);
   });
+
+  it("rejects provider-specific terminal reasons instead of treating them as complete", async () => {
+    const provider = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.end(`data: ${JSON.stringify({
+        id: "provider-request-filtered",
+        provider: "DeepSeek",
+        choices: [{ delta: {}, finish_reason: "content_filter" }],
+      })}\n\ndata: [DONE]\n\n`);
+    });
+    servers.push(provider);
+    provider.listen(0, "127.0.0.1");
+    await once(provider, "listening");
+    const address = provider.address();
+    if (!address || typeof address === "string") throw new Error("missing provider address");
+    const adapter = new OpenAiCompatibleAdapter({
+      profile: {
+        tier: "test",
+        adapter: "openai-compatible-v1",
+        provider: "openrouter",
+        baseUrl: `http://127.0.0.1:${address.port}/v1`,
+        model: "deepseek/test",
+        supportsTools: true,
+        maxOutputTokens: 16,
+        timeout: { firstTokenMs: 1_000, idleMs: 1_000, completionMs: 5_000 },
+        sampling: {
+          temperature: 0.9,
+          topP: 0.95,
+          repetitionPenalty: 1.05,
+          structuredTemperature: 0.2,
+        },
+      },
+      apiKey: "provider-secret",
+      openRouterProviderOnly: ["DeepSeek"],
+    });
+
+    await expect((async () => {
+      for await (const _chunk of adapter.stream({
+        provider: "openrouter",
+        model: "deepseek/test",
+        messages: [],
+      })) {
+        // Drain the stream so terminal validation runs.
+      }
+    })()).rejects.toThrow(/unsupported finish_reason content_filter/);
+  });
 });

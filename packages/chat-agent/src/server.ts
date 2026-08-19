@@ -27,7 +27,7 @@ export interface InvocationService {
 
 export interface CompanionServerOptions {
   authToken: string;
-  readiness(): Promise<CompanionReadiness>;
+  readiness(force?: boolean): Promise<CompanionReadiness>;
   invocation: InvocationService;
 }
 
@@ -130,7 +130,9 @@ export function createCompanionServer(options: CompanionServerOptions): Companio
           return;
         }
         try {
-          const ready = companionReadinessSchema.parse(await options.readiness());
+          const ready = companionReadinessSchema.parse(
+            await options.readiness(url.searchParams.get("full") === "1"),
+          );
           json(response, 200, ready);
         } catch (error) {
           failure(response, 503, "not_ready", error);

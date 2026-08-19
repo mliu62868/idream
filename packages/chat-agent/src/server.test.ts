@@ -13,7 +13,12 @@ const readiness = companionReadinessSchema.parse({
   dshCommit: "99f6f02fecdb7dff40c3fbc9470f5907c29f74ca",
   igrepVersion: "0.1.132",
   pluginVersion: "0.1.0",
-  provider: { name: "openrouter", model: "deepseek/test", resolved: true },
+  provider: {
+    name: "openrouter",
+    baseUrl: "https://openrouter.ai/api/v1",
+    model: "deepseek/test",
+    resolved: true,
+  },
   profiles: {
     normal: {
       name: "normal",
@@ -47,9 +52,13 @@ async function listen(server: CompanionServer): Promise<string> {
 
 describe("companion HTTP authority boundary", () => {
   it("keeps liveness public and protects strict readiness with bearer auth", async () => {
+    const forces: boolean[] = [];
     const server = createCompanionServer({
       authToken: AUTH_TOKEN,
-      readiness: async () => readiness,
+      readiness: async (force) => {
+        forces.push(force ?? false);
+        return readiness;
+      },
       invocation: {
         async run() {
           throw new Error("not used");
@@ -80,6 +89,10 @@ describe("companion HTTP authority boundary", () => {
     });
     expect(readyResponse.status).toBe(200);
     expect(companionReadinessSchema.parse(await readyResponse.json())).toEqual(readiness);
+    expect((await fetch(`${baseUrl}/readyz?full=1`, {
+      headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+    })).status).toBe(200);
+    expect(forces).toEqual([false, true]);
   });
 
   it("returns 503 instead of a partial readiness claim", async () => {

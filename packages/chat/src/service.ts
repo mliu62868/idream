@@ -850,14 +850,6 @@ export async function editUserMessage(
     throw new ChatError("message_generating", "reply is still generating", 409);
   }
 
-  // igrep has no public per-message forget seam. Over-forget this one
-  // relationship before rewriting PG; later committed turns rebuild memory.
-  await purgeRuntimeMemoryIfActive({
-    scope: "relationship",
-    userId: input.userId,
-    characterId: session.characterId,
-  });
-
   await assertEligible(prisma, input.userId, session.characterId);
   const entitlement = await prisma.chatEntitlementView.findUnique({ where: { userId: input.userId } });
   const policy = resolvePolicy(snapshotFromView(entitlement), { memoryEnabled: session.memoryEnabled });
@@ -962,6 +954,14 @@ export async function editUserMessage(
         409,
       );
     }
+    // igrep has no public per-message forget seam. Keep the purge under the
+    // same user advisory lock as the edit so no newly committed turn can
+    // repopulate the relationship in the gap.
+    await purgeRuntimeMemoryIfActive({
+      scope: "relationship",
+      userId: input.userId,
+      characterId: currentSession.characterId,
+    });
     if (moderation.status !== "blocked") {
       await assertTurnCapacity(tx, input.userId, session.id, policy, assistantMessageId);
     }

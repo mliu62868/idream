@@ -11,10 +11,16 @@ DSH profile, and copy one example environment file to `.env` in this package:
 
 ```bash
 uv tool install 'igrep-tme==0.1.132'
-igrep setup deepseek-harness --profile idream-companion-memory
+bun run dsh-companion:setup
+bun run dsh-companion:check
 cp .env.example .env
 bun run start
 ```
+
+Use the bootstrap report's `installedPluginPath` for `DSH_IGREP_PLUGIN_URL` and
+`statePath` for `DSH_BOOTSTRAP_STATE_PATH`. The root
+bootstrap is required because it pins the DSH CLI, materializes plugin peers, and writes
+the audited normal/private capability overlays; a bare `igrep setup` is insufficient.
 
 `dotenv` reads `packages/chat-agent/.env` when PM2 starts this package with the package as
 its working directory. `DSH_IGREP_PLUGIN_URL` must be the absolute `index.mjs` path under

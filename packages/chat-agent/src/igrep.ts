@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { readFile, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Context } from "@deepseek-ai/cordis";
@@ -11,7 +12,7 @@ export const NORMAL_IGREP_CONFIG = Object.freeze({
   webTool: false,
   memory: true,
   ingest: true,
-  wake: false,
+  wake: true,
 });
 
 export const PRIVATE_IGREP_CONFIG = Object.freeze({
@@ -151,4 +152,49 @@ export async function igrepVersion(command: string): Promise<string> {
   const match = /(?:^|\s)(\d+\.\d+\.\d+)(?:\s|$)/.exec(Buffer.concat(stdout).toString("utf8").trim());
   if (!match?.[1]) throw new Error("igrep --version did not return a semantic version");
   return match[1];
+}
+
+/**
+ * A disposable write/maintain/status cycle proves the executable can finish
+ * the exact lifecycle required before a canonical relationship promotion.
+ */
+export async function probeIgrepLifecycle(command: string): Promise<void> {
+  const workspace = await mkdtemp(join(tmpdir(), "idream-igrep-ready-"));
+  const transcript = join(workspace, "readiness.jsonl");
+  const nonce = `${process.pid}-${Date.now()}`;
+  try {
+    await writeFile(transcript, [
+      JSON.stringify({ role: "user", content: `readiness user ${nonce}` }),
+      JSON.stringify({ role: "assistant", content: `readiness assistant ${nonce}` }),
+      "",
+    ].join("\n"), { mode: 0o600 });
+    await runJsonCommand({
+      command,
+      args: [
+        "mem", "ingest",
+        "--workspace", workspace,
+        "--transcript", transcript,
+        "--agent", "idream-readiness",
+        "--session-id", `readiness-${nonce}`,
+        "--format", "json",
+      ],
+      timeoutMs: 30_000,
+    });
+    await runJsonCommand({
+      command,
+      args: ["mem", "maintain", "--workspace", workspace],
+      timeoutMs: 120_000,
+    });
+    const status = await new IgrepMemoryProbe(command).status(workspace);
+    if (status.dialogueFiles < 1) {
+      throw new Error("igrep readiness lifecycle did not persist dialogue evidence");
+    }
+    if ((status.pendingProfileRows ?? 0) !== 0 || !status.lastMaintainAt) {
+      throw new Error(
+        `igrep readiness lifecycle did not settle: pending=${status.pendingProfileRows ?? "missing"}`,
+      );
+    }
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
 }

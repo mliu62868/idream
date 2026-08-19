@@ -222,6 +222,38 @@ describe("DshCompanionRuntime", () => {
     );
   });
 
+  it("rejects a duplicate live invocation without losing shutdown ownership", async () => {
+    let close: (() => void) | undefined;
+    const calls: string[] = [];
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      calls.push(String(url));
+      if (String(url).endsWith("/cancel")) return Response.json({ ok: true });
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          close = () => controller.close();
+        },
+      }), { status: 200 });
+    });
+    const runtime = new DshCompanionRuntime({
+      baseUrl: "http://127.0.0.1:3101",
+      token: "secret",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+    const port = {
+      emit() {},
+      async executeTool() { throw new Error("unused"); },
+      async commit() { throw new Error("unused"); },
+    };
+    const running = runtime.run(invocation(), port);
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+
+    await expect(runtime.run(invocation(), port)).rejects.toThrow("already active");
+    await cancelActiveCompanionInvocations("shutdown");
+    expect(calls.at(-1)).toContain("/cancel");
+    close?.();
+    await running;
+  });
+
   it("purges a relationship workspace through the authenticated strict endpoint", async () => {
     const fetchImpl = vi.fn(async () => Response.json({ ok: true, purged: 2 }));
     await expect(purgeCompanionWorkspace({
@@ -238,5 +270,6 @@ describe("DshCompanionRuntime", () => {
       characterId: "char-1",
     });
     expect(new Headers(init.headers).get("authorization")).toBe("Bearer secret");
+    expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 });

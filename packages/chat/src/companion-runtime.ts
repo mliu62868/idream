@@ -33,6 +33,7 @@ const activeDshInvocations = new Map<
   string,
   { runtime: DshCompanionRuntime; invocationId: string }
 >();
+const COMPANION_CONTROL_TIMEOUT_MS = 10_000;
 
 export async function cancelActiveCompanionInvocations(
   reason: "user" | "timeout" | "shutdown",
@@ -53,6 +54,7 @@ export async function purgeCompanionWorkspace(input: {
   token: string;
   target: CompanionWorkspacePurgeTarget;
   fetchImpl?: typeof fetch;
+  timeoutMs?: number;
 }): Promise<{ purged: number }> {
   const response = await (input.fetchImpl ?? fetch)(
     `${input.baseUrl.replace(/\/$/, "")}/v1/workspaces/purge`,
@@ -64,6 +66,7 @@ export async function purgeCompanionWorkspace(input: {
         "content-type": "application/json",
       },
       body: JSON.stringify(input.target),
+      signal: AbortSignal.timeout(input.timeoutMs ?? COMPANION_CONTROL_TIMEOUT_MS),
     },
   );
   if (!response.ok) {
@@ -102,6 +105,9 @@ export class DshCompanionRuntime implements CompanionRuntime {
     port: CompanionRuntimePort,
     signal?: AbortSignal,
   ): Promise<void> {
+    if (activeDshInvocations.has(invocation.invocationId)) {
+      throw new Error("companion invocation is already active");
+    }
     activeDshInvocations.set(invocation.invocationId, {
       runtime: this,
       invocationId: invocation.invocationId,
@@ -195,6 +201,7 @@ export class DshCompanionRuntime implements CompanionRuntime {
         method: "POST",
         headers: this.headers("application/x-ndjson"),
         body: encodeCompanionNdjsonFrame(frame),
+        signal: AbortSignal.timeout(COMPANION_CONTROL_TIMEOUT_MS),
       },
     );
     if (!response.ok) {

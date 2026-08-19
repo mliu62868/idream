@@ -365,7 +365,7 @@ function createFixture(options = {}) {
           }
         : {
             search: true,
-            webProvider: true,
+            webProvider: false,
             webTool: false,
             memory: true,
             ingest: true,

@@ -123,11 +123,6 @@ export async function deleteMessage(
   if (!session || session.userId !== input.userId) {
     throw new Error("not your message");
   }
-  await purgeRuntimeMemoryIfActive({
-    scope: "relationship",
-    userId: input.userId,
-    characterId: session.characterId,
-  });
   await withTurnAuthority(
     {
       userId: input.userId,
@@ -149,6 +144,11 @@ export async function deleteMessage(
       if (currentMessage.status === "deleted" || currentMessage.deletedAt) {
         return;
       }
+      await purgeRuntimeMemoryIfActive({
+        scope: "relationship",
+        userId: input.userId,
+        characterId: currentSession.characterId,
+      });
       const { messages, linkage } = await loadSessionLinkage(
         tx,
         currentSession.id,
@@ -285,11 +285,6 @@ export async function deleteSession(
   if (!session || session.userId !== input.userId) {
     throw new Error("not your session");
   }
-  await purgeRuntimeMemoryIfActive({
-    scope: "relationship",
-    userId: input.userId,
-    characterId: session.characterId,
-  });
   await withTurnAuthority(
     {
       userId: input.userId,
@@ -310,6 +305,11 @@ export async function deleteSession(
       ) {
         return;
       }
+      await purgeRuntimeMemoryIfActive({
+        scope: "relationship",
+        userId: input.userId,
+        characterId: currentSession.characterId,
+      });
       const { messages, linkage } = await loadSessionLinkage(tx, session.id);
       const ids = messages.map((m) => m.id);
       await recordIntent({
@@ -390,7 +390,6 @@ export async function deleteAccount(
   prisma: ChatPrismaClient = chatPrisma,
   projectorPrisma: ChatPrismaClient = chatProjectorPrisma,
 ): Promise<void> {
-  await purgeRuntimeMemoryIfActive({ scope: "user", userId: input.userId });
   const completionEventType = input.requestBound
     ? CHAT_TO_MAIN_EVENTS.accountErasureCompletedV2
     : CHAT_TO_MAIN_EVENTS.accountErasureCompleted;
@@ -421,6 +420,8 @@ export async function deleteAccount(
       select: { id: true },
     });
     if (completedInsideLock) return false;
+
+    await purgeRuntimeMemoryIfActive({ scope: "user", userId: input.userId });
     // Account erasure supersedes every earlier pending/applied file intent.
     // Even a poisoned intent or partial prior file write cannot block the
     // terminal prefix deletion that follows this transaction.
