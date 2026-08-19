@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CHAT_TO_MAIN_EVENTS } from "@idream/shared/contracts";
+import { releasedKnowledgeDigest } from "@idream/shared/chat/companion-runtime";
 import type { ChatPrismaClient } from "./db.js";
 
 const completeMock = vi.hoisted(() => vi.fn());
@@ -314,6 +315,15 @@ const context = {
   canUpdateSessionSummary: true,
   sessionContextRevision: 0n,
   fileContextRevision: 0n,
+  releasedKnowledge: (() => {
+    const authority = {
+      characterId: "char_1",
+      characterContentVersionId: "content_v4",
+      characterReleaseId: "release_v3",
+      files: [] as [],
+    };
+    return { ...authority, digest: releasedKnowledgeDigest(authority) };
+  })(),
 };
 
 function installDshRolloutEnv(): () => void {
@@ -546,6 +556,14 @@ describe("chat generate agent image tool", () => {
     const restoreEnv = installDshRolloutEnv();
     try {
       dshRunMock.mockImplementation(async (invocation, port) => {
+        expect(invocation.preparedTurn).toMatchObject({
+          version: 2,
+          releasedKnowledge: context.releasedKnowledge,
+          trace: {
+            characterReleaseId: "release_v3",
+            releasedKnowledgeDigest: context.releasedKnowledge.digest,
+          },
+        });
         await port.executeTool({
           attemptId: invocation.attemptId,
           callId: "call-1",
@@ -599,6 +617,10 @@ describe("chat generate agent image tool", () => {
         status: "sent",
         content: "hello from DSH",
         runtimeTrace: expect.objectContaining({
+          trace: expect.objectContaining({
+            characterReleaseId: "release_v3",
+            releasedKnowledgeDigest: context.releasedKnowledge.digest,
+          }),
           companionRuntime: expect.objectContaining({
             runtime: "dsh",
             assignment: expect.objectContaining({

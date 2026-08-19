@@ -11,6 +11,7 @@ import {
   COMPANION_IGREP_PLUGIN_VERSION,
   COMPANION_IGREP_VERSION,
   companionReadinessSchema,
+  releasedKnowledgeDigest,
   type CompanionReadiness,
   type PreparedTurnProfile,
   type CompanionInvocation,
@@ -237,6 +238,16 @@ async function warmProvider(config: SidecarConfig, profile: PreparedTurnProfile)
 }
 
 function bridgeInvocation(profile: PreparedTurnProfile): CompanionInvocation {
+  const knowledgeAuthority = {
+    characterId: "readiness-character",
+    characterContentVersionId: "readiness-content",
+    characterReleaseId: null,
+    files: [] as [],
+  };
+  const releasedKnowledge = {
+    ...knowledgeAuthority,
+    digest: releasedKnowledgeDigest(knowledgeAuthority),
+  };
   return {
     invocationId: "readiness-bridge-invocation",
     attemptId: "readiness-bridge-attempt",
@@ -246,7 +257,7 @@ function bridgeInvocation(profile: PreparedTurnProfile): CompanionInvocation {
     memoryMode: "private",
     deadlineAt: new Date(Date.now() + 60_000).toISOString(),
     preparedTurn: {
-      version: 1,
+      version: 2,
       model: profile.model,
       characterName: "Readiness",
       messages: [{
@@ -258,6 +269,7 @@ function bridgeInvocation(profile: PreparedTurnProfile): CompanionInvocation {
       tools: [],
       profile,
       budget: { maxInputTokens: 16, usedInputTokens: 1, dropped: [] },
+      releasedKnowledge,
       trace: {
         characterContentVersionId: "readiness-content",
         characterReleaseId: null,
@@ -266,6 +278,7 @@ function bridgeInvocation(profile: PreparedTurnProfile): CompanionInvocation {
         sceneVersion: 0,
         relationshipVersion: 0,
         fileContextRevision: "0",
+        releasedKnowledgeDigest: releasedKnowledge.digest,
       },
     },
   };

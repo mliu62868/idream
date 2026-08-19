@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   COMPANION_RUNTIME_PROTOCOL_VERSION,
   encodeCompanionNdjsonFrame,
+  releasedKnowledgeDigest,
   type CompanionInvocation,
 } from "@idream/shared/chat/companion-runtime";
 import {
@@ -14,6 +15,16 @@ import {
 const now = "2026-08-19T12:00:00.000Z";
 
 function invocation(): CompanionInvocation {
+  const knowledgeAuthority = {
+    characterId: "character-1",
+    characterContentVersionId: "ccv-1",
+    characterReleaseId: "release-1",
+    files: [] as [],
+  };
+  const releasedKnowledge = {
+    ...knowledgeAuthority,
+    digest: releasedKnowledgeDigest(knowledgeAuthority),
+  };
   return {
     invocationId: "invocation-1",
     attemptId: "assistant-1:1",
@@ -23,7 +34,7 @@ function invocation(): CompanionInvocation {
     memoryMode: "normal",
     deadlineAt: "2026-08-19T12:05:00.000Z",
     preparedTurn: {
-      version: 1,
+      version: 2,
       model: "model-1",
       characterName: "Mira",
       messages: [{
@@ -50,6 +61,7 @@ function invocation(): CompanionInvocation {
         },
       },
       budget: { maxInputTokens: 2_000, usedInputTokens: 100, dropped: [] },
+      releasedKnowledge,
       trace: {
         characterContentVersionId: "ccv-1",
         characterReleaseId: "release-1",
@@ -58,6 +70,7 @@ function invocation(): CompanionInvocation {
         sceneVersion: 1,
         relationshipVersion: 2,
         fileContextRevision: "3",
+        releasedKnowledgeDigest: releasedKnowledge.digest,
       },
     },
   };

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { LlmAdapter, type GenerateOptions, type StreamChunk } from "@deepseek-ai/dsh-llm";
 import {
   companionNdjsonFrameSchema,
+  releasedKnowledgeDigest,
   type CompanionInvocation,
   type CompanionRuntimeResponse,
 } from "@idream/shared/chat/companion-runtime";
@@ -96,6 +97,16 @@ class BlockingAdapter extends LlmAdapter {
 }
 
 function invocation(memoryMode: "normal" | "private" | "shadow" = "private"): CompanionInvocation {
+  const knowledgeAuthority = {
+    characterId: "character-1",
+    characterContentVersionId: "ccv-1",
+    characterReleaseId: "release-1",
+    files: [] as [],
+  };
+  const releasedKnowledge = {
+    ...knowledgeAuthority,
+    digest: releasedKnowledgeDigest(knowledgeAuthority),
+  };
   return {
     invocationId: `inv-${memoryMode}`,
     attemptId: `attempt-${memoryMode}`,
@@ -105,7 +116,7 @@ function invocation(memoryMode: "normal" | "private" | "shadow" = "private"): Co
     memoryMode,
     deadlineAt: new Date(Date.now() + 30_000).toISOString(),
     preparedTurn: {
-      version: 1,
+      version: 2,
       model: "deepseek/test",
       characterName: "Mira",
       messages: [
@@ -152,6 +163,7 @@ function invocation(memoryMode: "normal" | "private" | "shadow" = "private"): Co
         },
       },
       budget: { maxInputTokens: 8_000, usedInputTokens: 120, dropped: [] },
+      releasedKnowledge,
       trace: {
         characterContentVersionId: "ccv-1",
         characterReleaseId: "release-1",
@@ -160,6 +172,7 @@ function invocation(memoryMode: "normal" | "private" | "shadow" = "private"): Co
         sceneVersion: 1,
         relationshipVersion: 2,
         fileContextRevision: "3",
+        releasedKnowledgeDigest: releasedKnowledge.digest,
       },
     },
   };

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { releasedKnowledgeDigest } from "@idream/shared/chat/companion-runtime";
 import {
   AGENT_TOOL_REGISTRY,
   EDIT_LAST_IMAGE_TOOL,
@@ -16,6 +17,17 @@ import type { BuiltContext } from "./context.js";
 import type { PreparedTurn } from "./prepared-turn.js";
 import { buildCompanionSystemPrompt } from "./prompt.js";
 import type { ChatModel } from "./providers.js";
+
+const emptyKnowledgeAuthority = {
+  characterId: "char_1",
+  characterContentVersionId: "legacy-unattributed",
+  characterReleaseId: null,
+  files: [] as [],
+};
+const emptyKnowledge = {
+  ...emptyKnowledgeAuthority,
+  digest: releasedKnowledgeDigest(emptyKnowledgeAuthority),
+};
 
 const context = {
   persona: {
@@ -88,6 +100,7 @@ const context = {
   canUpdateSessionSummary: true,
   sessionContextRevision: 0n,
   fileContextRevision: 0n,
+  releasedKnowledge: emptyKnowledge,
 } satisfies BuiltContext;
 
 function prepared(value: BuiltContext = context): PreparedTurn {
@@ -128,14 +141,16 @@ function prepared(value: BuiltContext = context): PreparedTurn {
       usedInputTokens: 100,
       dropped: [],
     },
+    releasedKnowledge: value.releasedKnowledge,
     trace: {
-      characterContentVersionId: "ccv_1",
-      characterReleaseId: null,
+      characterContentVersionId: value.releasedKnowledge.characterContentVersionId,
+      characterReleaseId: value.releasedKnowledge.characterReleaseId,
       soulFingerprint: "fingerprint",
       compilerVersion: "character-soul-1",
       sceneVersion: 0,
       relationshipVersion: null,
       fileContextRevision: "0",
+      releasedKnowledgeDigest: value.releasedKnowledge.digest,
       profile: {
         tier: value.policy.tier,
         adapter: value.policy.modelProfile.adapter,

@@ -1,8 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { cp, lstat, mkdir, mkdtemp, readdir, readlink, rename, rm, rmdir, symlink } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, mkdtemp, readdir, readlink, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import type { CompanionInvocation } from "@idream/shared/chat/companion-runtime";
+import {
+  releasedKnowledgeSnapshotSchema,
+  type CompanionInvocation,
+} from "@idream/shared/chat/companion-runtime";
 
 export interface MemoryStatus {
   dialogueFiles: number;
@@ -278,6 +281,7 @@ export class AttemptWorkspaceStore {
       authorityRoot,
     );
     let attemptRoot: string | undefined;
+    let knowledgeRoot: string | undefined;
     try {
       const relationshipRoot = relationshipWorkspacePath(
         authorityRoot,
@@ -297,6 +301,11 @@ export class AttemptWorkspaceStore {
       assertWithin(relationshipRoot, ownedAttemptRoot);
       await mkdir(workspace, { recursive: true });
       await cp(canonicalVersion, attemptMemory, { recursive: true, force: false });
+      const mountedKnowledgeRoot = await this.materializeReleasedKnowledge(
+        workspace,
+        invocation,
+      );
+      knowledgeRoot = mountedKnowledgeRoot;
       const before = await this.options.memoryProbe.status(workspace);
       let finished = false;
 
@@ -304,7 +313,7 @@ export class AttemptWorkspaceStore {
         if (finished) return;
         finished = true;
         try {
-          await rm(ownedAttemptRoot, { recursive: true, force: true });
+          await this.removeAttemptRoot(ownedAttemptRoot, mountedKnowledgeRoot);
         } finally {
           release();
         }
@@ -333,14 +342,14 @@ export class AttemptWorkspaceStore {
           await symlink(relative(relationshipRoot, nextVersion), nextLink, "dir");
           await rename(nextLink, canonicalLink);
           finished = true;
-          await rm(ownedAttemptRoot, { recursive: true, force: true }).catch(() => undefined);
+          await this.removeAttemptRoot(ownedAttemptRoot, mountedKnowledgeRoot).catch(() => undefined);
           if (canonicalVersion !== nextVersion) {
             await rm(canonicalVersion, { recursive: true, force: true }).catch(() => undefined);
           }
         } finally {
           if (!finished) {
             await Promise.all([
-              rm(ownedAttemptRoot, { recursive: true, force: true }),
+              this.removeAttemptRoot(ownedAttemptRoot, mountedKnowledgeRoot),
               ...(nextLink ? [rm(nextLink, { recursive: true, force: true })] : []),
               ...(nextVersion ? [rm(nextVersion, { recursive: true, force: true })] : []),
             ]);
@@ -350,10 +359,49 @@ export class AttemptWorkspaceStore {
       };
       return { path: workspace, mode, commit, discard, settleAndDiscard };
     } catch (error) {
-      if (attemptRoot) await rm(attemptRoot, { recursive: true, force: true }).catch(() => undefined);
+      if (attemptRoot) {
+        if (knowledgeRoot) {
+          await this.removeAttemptRoot(attemptRoot, knowledgeRoot).catch(() => undefined);
+        } else {
+          await rm(attemptRoot, { recursive: true, force: true }).catch(() => undefined);
+        }
+      }
       release();
       throw error;
     }
+  }
+
+  private async materializeReleasedKnowledge(
+    workspace: string,
+    invocation: CompanionInvocation,
+  ): Promise<string> {
+    const snapshot = releasedKnowledgeSnapshotSchema.parse(
+      invocation.preparedTurn.releasedKnowledge,
+    );
+    if (snapshot.characterId !== invocation.characterId) {
+      throw new Error("released knowledge character does not match invocation");
+    }
+    const knowledgeRoot = join(workspace, "knowledge");
+    assertWithin(workspace, knowledgeRoot);
+    await mkdir(knowledgeRoot, { mode: 0o700 });
+    for (const file of snapshot.files) {
+      const target = join(knowledgeRoot, file.path);
+      assertWithin(knowledgeRoot, target);
+      await writeFile(target, file.content, { encoding: "utf8", flag: "wx", mode: 0o400 });
+      await chmod(target, 0o400);
+    }
+    await chmod(knowledgeRoot, 0o500);
+    return knowledgeRoot;
+  }
+
+  private async removeAttemptRoot(
+    attemptRoot: string,
+    knowledgeRoot: string,
+  ): Promise<void> {
+    await chmod(knowledgeRoot, 0o700).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error;
+    });
+    await rm(attemptRoot, { recursive: true, force: true });
   }
 
   private async acquireRelationship(

@@ -6,6 +6,7 @@ import {
   readFile,
   readdir,
   rm,
+  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -74,7 +75,7 @@ function activeInvocation(): CompanionInvocation {
     memoryMode: "normal",
     deadlineAt: new Date(Date.now() + 30_000).toISOString(),
     preparedTurn: {
-      version: 1,
+      version: 2,
       model: "deepseek/test",
       characterName: "Mira",
       messages: [{
@@ -96,20 +97,59 @@ function activeInvocation(): CompanionInvocation {
         sampling: { temperature: 1, topP: 1, repetitionPenalty: 1, structuredTemperature: 0 },
       },
       budget: { maxInputTokens: 100, usedInputTokens: 10, dropped: [] },
+      releasedKnowledge: {
+        characterId: "character-active",
+        characterContentVersionId: "ccv-active",
+        characterReleaseId: "release-active",
+        digest: "535b3a772e9ac656e0feefc53a5923976d76541399437d70ea172f055c89d39d",
+        files: [{
+          path: "canon.md",
+          content: "# Canon facts\n\n- Mira keeps the observatory keys.\n",
+        }],
+      },
       trace: {
         characterContentVersionId: "ccv-active",
-        characterReleaseId: null,
+        characterReleaseId: "release-active",
         soulFingerprint: "active",
         compilerVersion: "test",
         sceneVersion: 0,
         relationshipVersion: 0,
         fileContextRevision: "0",
+        releasedKnowledgeDigest:
+          "535b3a772e9ac656e0feefc53a5923976d76541399437d70ea172f055c89d39d",
       },
     },
   };
 }
 
 describe("authenticated workspace privacy authority", () => {
+  it("mounts released knowledge read-only for normal attempts and never for private attempts", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chat-agent-knowledge-"));
+    temporary.push(root);
+    const store = new AttemptWorkspaceStore({
+      canonicalRoot: join(root, "canonical"),
+      privateRoot: join(root, "private"),
+      memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
+    });
+
+    const normal = await store.prepare(activeInvocation());
+    const normalFile = join(normal.path, "knowledge", "canon.md");
+    expect(await readFile(normalFile, "utf8"))
+      .toBe("# Canon facts\n\n- Mira keeps the observatory keys.\n");
+    expect((await stat(normalFile)).mode & 0o222).toBe(0);
+    expect((await stat(join(normal.path, "knowledge"))).mode & 0o222).toBe(0);
+    await normal.discard();
+
+    const privateAttempt = await store.prepare({
+      ...activeInvocation(),
+      invocationId: "invocation-private-knowledge",
+      attemptId: "attempt-private-knowledge",
+      memoryMode: "private",
+    });
+    expect(await present(join(privateAttempt.path, "knowledge"))).toBe(false);
+    await privateAttempt.discard();
+  });
+
   it("atomically replaces one relationship only after a rebuild succeeds", async () => {
     const root = await mkdtemp(join(tmpdir(), "chat-agent-rebuild-"));
     temporary.push(root);

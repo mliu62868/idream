@@ -67,6 +67,13 @@ function context(): BuiltContext {
     canUpdateSessionSummary: true,
     sessionContextRevision: 0n,
     fileContextRevision: 0n,
+    releasedKnowledge: {
+      characterId: "character-1",
+      characterContentVersionId: "content-1",
+      characterReleaseId: "release-1",
+      digest: "73f52f1247b5c2862b6a865ef06ca934cdda49c7af16c606dad118dbbe2eb3c2",
+      files: [],
+    },
   };
 }
 
@@ -108,6 +115,14 @@ describe("PreparedTurn budget", () => {
       adapter: source.policy.modelProfile.adapter,
       model: source.policy.modelProfile.model,
       maxOutputTokens: source.policy.modelProfile.maxOutputTokens,
+    });
+    expect(wire).toMatchObject({
+      version: 2,
+      releasedKnowledge: source.releasedKnowledge,
+      trace: {
+        characterReleaseId: "release-1",
+        releasedKnowledgeDigest: source.releasedKnowledge.digest,
+      },
     });
   });
 });

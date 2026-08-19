@@ -4,6 +4,7 @@
 // on timeout/error we degrade to "recent messages only" and never block the reply
 // (design §5 hot-path degradation). memory_enabled=false reads NO long-term memory.
 import { loadCharacterSoulSnapshot } from "@idream/shared";
+import type { ReleasedKnowledgeSnapshot } from "@idream/shared/chat/companion-runtime";
 import type { ChatPrismaClient, ChatCharacterView } from "./db.js";
 import type { Prisma } from "../generated/client/client.js";
 import { env } from "./env.js";
@@ -19,6 +20,7 @@ import {
   parseSceneState,
   type SceneState,
 } from "./scene.js";
+import { buildReleasedKnowledgeSnapshot } from "./released-knowledge.js";
 
 const MEMORY_READ_TIMEOUT_MS = 250;
 
@@ -53,6 +55,8 @@ export interface BuiltContext {
   /** Privacy/context fence revalidated after the model returns. */
   sessionContextRevision: bigint;
   fileContextRevision: bigint;
+  /** Release/content-pinned bytes eligible for the sidecar's read-only knowledge/. */
+  releasedKnowledge: ReleasedKnowledgeSnapshot;
 }
 
 export type ResolvedChatPersona = ChatCharacterView & {
@@ -144,6 +148,11 @@ async function buildContextSnapshot(
         where: { contentVersionId: pinnedContentVersionId },
       })
     : null;
+  const release = pinnedReleaseId
+    ? await prisma.chatCharacterReleaseView.findUnique({
+        where: { releaseId: pinnedReleaseId },
+      })
+    : null;
   if (
     pinnedContentVersionId &&
     (!contentVersion || contentVersion.characterId !== characterId)
@@ -152,6 +161,29 @@ async function buildContextSnapshot(
       `pinned content version ${pinnedContentVersionId} is unavailable for character ${characterId}`,
     );
   }
+  if (pinnedReleaseId && !release) {
+    throw new Error(
+      `pinned release ${pinnedReleaseId} is unavailable for character ${characterId}`,
+    );
+  }
+  const releasedKnowledge = buildReleasedKnowledgeSnapshot({
+    characterId,
+    contentVersion: contentVersion
+      ? {
+          contentVersionId: contentVersion.contentVersionId,
+          characterId: contentVersion.characterId,
+          personaSnapshot: contentVersion.personaSnapshot,
+        }
+      : null,
+    release: release
+      ? {
+          releaseId: release.releaseId,
+          characterId: release.characterId,
+          characterContentVersionId: release.characterContentVersionId,
+          status: release.status,
+        }
+      : null,
+  });
   const persona: ResolvedChatPersona = contentVersion
     ? personaFromImmutableContent(currentPersona, contentVersion.personaSnapshot, {
         characterContentVersionId: contentVersion.contentVersionId,
@@ -331,6 +363,7 @@ async function buildContextSnapshot(
     canUpdateSessionSummary: turnMemoryEnabled && anchoredToLatestTurn,
     sessionContextRevision: session?.contextRevision ?? 0n,
     fileContextRevision: latestInvalidatingMutation?.sequence ?? 0n,
+    releasedKnowledge,
   };
 }
 

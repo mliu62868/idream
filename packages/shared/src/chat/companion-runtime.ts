@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 
 // SPEC: This is the only product-facing wire vocabulary between Chat and the
@@ -73,6 +74,54 @@ const preparedMessageBase = {
   sourceKind: z.enum(["current_user", "replay", "plugin"]),
   content: z.string(),
 };
+
+interface ReleasedKnowledgeDigestInput {
+  characterId: string;
+  characterContentVersionId: string;
+  characterReleaseId: string | null;
+  files: ReadonlyArray<{ path: "canon.md"; content: string }>;
+}
+
+/** Digest the exact released bytes and authority pins carried over the wire. */
+export function releasedKnowledgeDigest(input: ReleasedKnowledgeDigestInput): string {
+  return createHash("sha256").update(JSON.stringify({
+    characterId: input.characterId,
+    characterContentVersionId: input.characterContentVersionId,
+    characterReleaseId: input.characterReleaseId,
+    files: input.files,
+  })).digest("hex");
+}
+
+export const releasedKnowledgeSnapshotSchema = z
+  .object({
+    characterId: nonEmptyStringSchema,
+    characterContentVersionId: nonEmptyStringSchema,
+    characterReleaseId: nonEmptyStringSchema.nullable(),
+    digest: sha256Schema,
+    // INTENT: Gate M publishes one canonical file. A literal relative name makes
+    // path traversal impossible instead of relying on path sanitization.
+    files: z.array(z.object({
+      path: z.literal("canon.md"),
+      content: z.string().min(1),
+    }).strict()).max(1),
+  })
+  .strict()
+  .superRefine((snapshot, context) => {
+    if (snapshot.characterReleaseId === null && snapshot.files.length > 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["files"],
+        message: "unreleased knowledge snapshots must be empty",
+      });
+    }
+    if (snapshot.digest !== releasedKnowledgeDigest(snapshot)) {
+      context.addIssue({
+        code: "custom",
+        path: ["digest"],
+        message: "released knowledge digest does not match its pinned bytes",
+      });
+    }
+  });
 
 export const preparedTurnMessageSchema = z.discriminatedUnion("role", [
   z.object({ ...preparedMessageBase, role: z.literal("system") }).strict(),
@@ -168,18 +217,20 @@ export const preparedTurnTraceSchema = z
     sceneVersion: nonNegativeIntegerSchema,
     relationshipVersion: nonNegativeIntegerSchema.nullable(),
     fileContextRevision: z.string().regex(/^\d+$/),
+    releasedKnowledgeDigest: sha256Schema,
   })
   .strict();
 
 export const preparedTurnWireSchema = z
   .object({
-    version: z.literal(1),
+    version: z.literal(2),
     model: nonEmptyStringSchema,
     characterName: nonEmptyStringSchema,
     messages: z.array(preparedTurnMessageSchema).min(1),
     tools: z.array(preparedTurnToolDefinitionSchema),
     profile: preparedTurnProfileSchema,
     budget: preparedTurnBudgetSchema,
+    releasedKnowledge: releasedKnowledgeSnapshotSchema,
     trace: preparedTurnTraceSchema,
   })
   .strict()
@@ -189,6 +240,18 @@ export const preparedTurnWireSchema = z
         code: "custom",
         path: ["model"],
         message: "prepared model must equal the pinned profile model",
+      });
+    }
+    if (
+      turn.releasedKnowledge.characterContentVersionId !==
+        turn.trace.characterContentVersionId ||
+      turn.releasedKnowledge.characterReleaseId !== turn.trace.characterReleaseId ||
+      turn.releasedKnowledge.digest !== turn.trace.releasedKnowledgeDigest
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["releasedKnowledge"],
+        message: "released knowledge must retain the prepared turn authority pins and digest",
       });
     }
     const currentMessages = turn.messages.filter(
@@ -288,7 +351,16 @@ export const companionInvocationSchema = z
     memoryMode: companionMemoryModeSchema,
     deadlineAt: isoDateTimeSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((invocation, context) => {
+    if (invocation.preparedTurn.releasedKnowledge.characterId !== invocation.characterId) {
+      context.addIssue({
+        code: "custom",
+        path: ["preparedTurn", "releasedKnowledge", "characterId"],
+        message: "released knowledge must belong to the invoked character",
+      });
+    }
+  });
 
 const generateImageArgumentsSchema = z
   .object({
@@ -675,6 +747,9 @@ export const companionReadinessSchema = z
 export type PreparedTurnMessage = z.infer<typeof preparedTurnMessageSchema>;
 export type PreparedTurnProfile = z.infer<typeof preparedTurnProfileSchema>;
 export type PreparedTurnWire = z.infer<typeof preparedTurnWireSchema>;
+export type ReleasedKnowledgeSnapshot = z.infer<
+  typeof releasedKnowledgeSnapshotSchema
+>;
 export type CompanionMemoryMode = z.infer<typeof companionMemoryModeSchema>;
 export type CompanionWorkspaceRebuild = z.infer<
   typeof companionWorkspaceRebuildSchema

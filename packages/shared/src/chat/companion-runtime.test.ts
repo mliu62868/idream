@@ -43,7 +43,7 @@ const profile = {
 };
 
 const preparedTurn = {
-  version: 1 as const,
+  version: 2 as const,
   model: profile.model,
   characterName: "Mira",
   messages: [
@@ -89,6 +89,16 @@ const preparedTurn = {
     usedInputTokens: 1_234,
     dropped: ["memory" as const],
   },
+  releasedKnowledge: {
+    characterId: "character-1",
+    characterContentVersionId: "ccv-1",
+    characterReleaseId: "release-1",
+    digest: "6868f5d7cc13655b3943d97dfe74e41d1da3fd8806721b3c19c7906e847b52ef",
+    files: [{
+      path: "canon.md" as const,
+      content: "# Canon\n\n- The observatory windows are blue.\n",
+    }],
+  },
   trace: {
     characterContentVersionId: "ccv-1",
     characterReleaseId: "release-1",
@@ -97,6 +107,8 @@ const preparedTurn = {
     sceneVersion: 4,
     relationshipVersion: 7,
     fileContextRevision: "12",
+    releasedKnowledgeDigest:
+      "6868f5d7cc13655b3943d97dfe74e41d1da3fd8806721b3c19c7906e847b52ef",
   },
 };
 
@@ -165,6 +177,65 @@ describe("companion runtime stable wire contract", () => {
         { ...preparedTurn.messages[0], dshSessionEvent: {} },
         ...preparedTurn.messages.slice(1),
       ],
+    }).success).toBe(false);
+  });
+
+  it("binds released knowledge to the exact character, release, content and bytes", () => {
+    expect(preparedTurnWireSchema.parse(preparedTurn).releasedKnowledge.files)
+      .toEqual([{
+        path: "canon.md",
+        content: "# Canon\n\n- The observatory windows are blue.\n",
+      }]);
+    expect(preparedTurnWireSchema.safeParse({
+      ...preparedTurn,
+      releasedKnowledge: {
+        ...preparedTurn.releasedKnowledge,
+        digest: "f".repeat(64),
+      },
+    }).success).toBe(false);
+    expect(preparedTurnWireSchema.safeParse({
+      ...preparedTurn,
+      releasedKnowledge: {
+        ...preparedTurn.releasedKnowledge,
+        files: [{ path: "../admin-draft.md", content: "draft" }],
+      },
+    }).success).toBe(false);
+    expect(companionInvocationSchema.safeParse({
+      ...invocation("normal"),
+      characterId: "character-2",
+    }).success).toBe(false);
+  });
+
+  it("carries an explicit digest for an empty unreleased knowledge snapshot", () => {
+    const empty = {
+      characterId: "character-1",
+      characterContentVersionId: "legacy-unattributed",
+      characterReleaseId: null,
+      digest: "105eeb3b7da80af178083cdcd5a37d702e64d0d2daa2ca51f531e11992de875f",
+      files: [],
+    };
+    expect(preparedTurnWireSchema.parse({
+      ...preparedTurn,
+      releasedKnowledge: empty,
+      trace: {
+        ...preparedTurn.trace,
+        characterContentVersionId: "legacy-unattributed",
+        characterReleaseId: null,
+        releasedKnowledgeDigest: empty.digest,
+      },
+    }).releasedKnowledge).toEqual(empty);
+    expect(preparedTurnWireSchema.safeParse({
+      ...preparedTurn,
+      releasedKnowledge: {
+        ...empty,
+        files: [{ path: "canon.md", content: "mutable fallback" }],
+      },
+      trace: {
+        ...preparedTurn.trace,
+        characterContentVersionId: "legacy-unattributed",
+        characterReleaseId: null,
+        releasedKnowledgeDigest: empty.digest,
+      },
     }).success).toBe(false);
   });
 

@@ -12,6 +12,7 @@ import { registryChatTools } from "./agent-tools.js";
 import {
   preparedTurnWireSchema,
   type PreparedTurnWire,
+  type ReleasedKnowledgeSnapshot,
 } from "@idream/shared/chat/companion-runtime";
 
 export interface PreparedTurn {
@@ -44,6 +45,7 @@ export interface PreparedTurn {
     usedInputTokens: number;
     dropped: Array<"memory" | "summary" | "transcript">;
   };
+  releasedKnowledge: ReleasedKnowledgeSnapshot;
   trace: {
     characterContentVersionId: string;
     characterReleaseId: string | null;
@@ -52,6 +54,7 @@ export interface PreparedTurn {
     sceneVersion: number;
     relationshipVersion: number | null;
     fileContextRevision: string;
+    releasedKnowledgeDigest: string;
     profile: PreparedTurn["profile"];
   };
 }
@@ -114,6 +117,7 @@ export function compilePreparedTurn(
     tools: fitted.tools,
     profile,
     budget: fitted.budget,
+    releasedKnowledge: fitted.context.releasedKnowledge,
     trace: {
       characterContentVersionId:
         fitted.context.persona.characterContentVersionId ?? "legacy-unattributed",
@@ -123,6 +127,7 @@ export function compilePreparedTurn(
       sceneVersion: fitted.context.sceneVersion,
       relationshipVersion: fitted.context.relationship?.version ?? null,
       fileContextRevision: fitted.context.fileContextRevision.toString(),
+      releasedKnowledgeDigest: fitted.context.releasedKnowledge.digest,
       profile,
     },
   };
@@ -182,13 +187,14 @@ export function toPreparedTurnWire(prepared: PreparedTurn): PreparedTurnWire {
   }
   const { profile: _runtimeProfile, ...wireTrace } = prepared.trace;
   return preparedTurnWireSchema.parse({
-    version: 1,
+    version: 2,
     model: prepared.model,
     characterName: prepared.characterName,
     messages,
     tools: prepared.tools,
     profile: prepared.profile,
     budget: prepared.budget,
+    releasedKnowledge: prepared.releasedKnowledge,
     trace: wireTrace,
   });
 }
