@@ -83,6 +83,14 @@ export interface JsonCommandOptions {
 
 export type RunJsonCommand = (options: JsonCommandOptions) => Promise<unknown>;
 
+async function sameRealPath(left: string, right: string): Promise<boolean> {
+  try {
+    return await realpath(left) === await realpath(right);
+  } catch {
+    return false;
+  }
+}
+
 export async function runJsonCommand(options: JsonCommandOptions): Promise<unknown> {
   throwIfAborted(options.signal);
   const child = spawn(options.command, options.args, {
@@ -385,11 +393,12 @@ export class IgrepLegacyMemoryImporter {
       const markdownContext = recalled?.markdownContext;
       const results = recalled?.results;
       const warnings = recalled?.warnings;
+      const workspaceMatches = typeof recalled?.workspaceRoot === "string"
+        && await sameRealPath(recalled.workspaceRoot, workspace);
       if (
         recalled?.provider !== "igrep"
         || recalled.strategy !== "shared-search"
-        || typeof recalled.workspaceRoot !== "string"
-        || resolve(recalled.workspaceRoot) !== resolve(workspace)
+        || !workspaceMatches
         || typeof markdownContext !== "string"
         || !Array.isArray(results)
         || !Array.isArray(warnings)
@@ -545,14 +554,8 @@ export async function probeIgrepLifecycle(
         stdin: `${JSON.stringify({ workspace, query: foreignSentinel })}\n`,
         timeoutMs: 30_000,
       }));
-      let workspaceMatches = false;
-      if (typeof recalled?.workspaceRoot === "string") {
-        try {
-          workspaceMatches = await realpath(recalled.workspaceRoot) === await realpath(workspace);
-        } catch {
-          workspaceMatches = false;
-        }
-      }
+      const workspaceMatches = typeof recalled?.workspaceRoot === "string"
+        && await sameRealPath(recalled.workspaceRoot, workspace);
       if (
         recalled?.provider !== "igrep"
         || recalled.strategy !== "shared-search"

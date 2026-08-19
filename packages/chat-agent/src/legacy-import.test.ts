@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CompanionLegacyMemoryImport } from "@idream/shared/chat/companion-runtime";
@@ -123,6 +123,8 @@ describe("official igrep legacy memory import", () => {
   });
 
   it("fails closed when official recall does not contain the legacy expected answer", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "chat-agent-legacy-import-miss-"));
+    temporary.push(workspace);
     const importer = new IgrepLegacyMemoryImporter(
       "igrep",
       "0.1.132",
@@ -141,7 +143,7 @@ describe("official igrep legacy memory import", () => {
             : {
                 provider: "igrep",
                 strategy: "shared-search",
-                workspaceRoot: "/tmp/not-used",
+                workspaceRoot: workspace,
                 markdownContext: "No relevant memory.",
                 results: [],
                 warnings: [],
@@ -149,8 +151,47 @@ describe("official igrep legacy memory import", () => {
       async () => "0.1.132",
     );
 
-    await expect(importer.import("/tmp/not-used", request()))
+    await expect(importer.import(workspace, request()))
       .rejects.toThrow(/recall parity failed for tea-preference/);
+  });
+
+  it("accepts an official recall workspace alias that resolves to the import candidate", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chat-agent-legacy-import-alias-"));
+    temporary.push(root);
+    const workspace = join(root, "workspace");
+    const alias = join(root, "workspace-alias");
+    await mkdir(join(workspace, ".igrep"), { recursive: true });
+    await symlink(workspace, alias);
+    const importer = new IgrepLegacyMemoryImporter(
+      "igrep",
+      "0.1.132",
+      async (options) => options.args[1] === "record"
+        ? {
+            provider: "igrep",
+            action: "record",
+            path: ".igrep/mem/MEMORY.md",
+            written: true,
+            contentHash: "d".repeat(64),
+          }
+        : options.args[1] === "maintain"
+          ? { provider: "igrep", action: "maintain", pendingRows: 0 }
+          : options.args[1] === "doctor"
+            ? { provider: "igrep", ok: true, warnings: [] }
+            : {
+                provider: "igrep",
+                strategy: "shared-search",
+                workspaceRoot: alias,
+                markdownContext: "User prefers jasmine tea.",
+                results: [{ citation: "MEMORY.md#L1-L1" }],
+                warnings: [],
+              },
+      async () => "0.1.132",
+    );
+
+    await expect(importer.import(workspace, request())).resolves.toMatchObject({
+      entries: 2,
+      recallParity: { total: 1, passed: 1 },
+    });
   });
 
   it("rejects a forged checksum before invoking igrep", async () => {
