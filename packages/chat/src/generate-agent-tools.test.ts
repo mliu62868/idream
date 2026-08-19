@@ -70,6 +70,7 @@ vi.mock("./companion-sidecar-readiness.js", () => ({
 
 const {
   drainDshShadowExecutor,
+  persistAttemptRuntimeTraceCas,
   persistShadowComparison,
   processGenerate,
   processGenerateJob,
@@ -720,6 +721,74 @@ describe("chat generate agent image tool", () => {
     expect(committed).toEqual({ message: "before", version: "before" });
   });
 
+  it("keeps terminal attempt traces atomic and exposes a retryable failed write", async () => {
+    const stored: {
+      status: string;
+      messageTrace: Record<string, unknown>;
+      versionTrace: Record<string, unknown>;
+    } = {
+      status: "sent",
+      messageTrace: { state: "terminal" },
+      versionTrace: { state: "terminal" },
+    };
+    let rejectVersionCas = true;
+    const prisma = {
+      $transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) => {
+        const pending = structuredClone(stored);
+        const tx = {
+          message: {
+            updateMany: vi.fn(async (call: CreateCall) => {
+              if (call.where?.status !== stored.status) return { count: 0 };
+              pending.messageTrace = call.data.runtimeTrace as Record<string, unknown>;
+              return { count: 1 };
+            }),
+          },
+          messageVersion: {
+            updateMany: vi.fn(async (call: CreateCall) => {
+              if (rejectVersionCas) return { count: 0 };
+              pending.versionTrace = call.data.runtimeTrace as Record<string, unknown>;
+              return { count: 1 };
+            }),
+          },
+        };
+        const result = await callback(tx);
+        Object.assign(stored, pending);
+        return result;
+      }),
+    } as unknown as ChatPrismaClient;
+    const payload = {
+      sessionId: "sess_1",
+      assistantMessageId: "msg_assistant",
+      userMessageId: "msg_user",
+      attempt: 1,
+    };
+    const trace = { state: "settled", primaryTelemetry: { memory: { outcome: "ingested" } } };
+
+    await expect(persistAttemptRuntimeTraceCas({
+      prisma,
+      payload,
+      expectedMessageStatus: "sent",
+      trace,
+      stage: "dsh_memory_settlement",
+    })).resolves.toBe("failed");
+    expect(stored).toEqual({
+      status: "sent",
+      messageTrace: { state: "terminal" },
+      versionTrace: { state: "terminal" },
+    });
+
+    rejectVersionCas = false;
+    await expect(persistAttemptRuntimeTraceCas({
+      prisma,
+      payload,
+      expectedMessageStatus: "sent",
+      trace,
+      stage: "dsh_memory_settlement",
+    })).resolves.toBe("updated");
+    expect(stored.messageTrace).toEqual(trace);
+    expect(stored.versionTrace).toEqual(trace);
+  });
+
   it("routes a pinned DSH attempt through the Chat commit port before SSE done", async () => {
     const restoreEnv = installDshRolloutEnv();
     try {
@@ -819,7 +888,7 @@ describe("chat generate agent image tool", () => {
       expect(recordTurnSuccessMock).toHaveBeenCalledOnce();
       expect(recordMemoryPromotionSuccessMock).toHaveBeenCalledOnce();
       expect(recordMemoryPromotionFailureMock).not.toHaveBeenCalled();
-      expect(rootMessageUpdates).toContainEqual(expect.objectContaining({
+      expect([...messageUpdates, ...rootMessageUpdates]).toContainEqual(expect.objectContaining({
         data: {
           runtimeTrace: expect.objectContaining({
             primaryTelemetry: {
@@ -895,7 +964,7 @@ describe("chat generate agent image tool", () => {
         await port.commit(candidate);
         throw new Error("igrep promotion failed");
       });
-      const { prisma, rootMessageUpdates } = fakePrisma();
+      const { prisma, messageUpdates, rootMessageUpdates } = fakePrisma();
 
       await expect(processGenerate(
         { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
@@ -903,7 +972,7 @@ describe("chat generate agent image tool", () => {
         { projectorPrisma: prisma },
       )).resolves.toEqual({ status: "sent" });
 
-      expect(rootMessageUpdates).toContainEqual(expect.objectContaining({
+      expect([...messageUpdates, ...rootMessageUpdates]).toContainEqual(expect.objectContaining({
         data: expect.objectContaining({
           runtimeTrace: expect.objectContaining({
             companion: expect.objectContaining({ memoryIngestOutcome: "failed" }),
@@ -925,7 +994,7 @@ describe("chat generate agent image tool", () => {
     const restoreEnv = installDshRolloutEnv();
     try {
       dshRunMock.mockRejectedValue(new Error("sidecar unavailable"));
-      const { prisma, rootMessageUpdates } = fakePrisma();
+      const { prisma, messageUpdates, rootMessageUpdates } = fakePrisma();
 
       await expect(processGenerate(
         { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
@@ -934,7 +1003,7 @@ describe("chat generate agent image tool", () => {
       )).rejects.toThrow("sidecar unavailable");
 
       expect(streamMock).not.toHaveBeenCalled();
-      expect(rootMessageUpdates).toContainEqual(expect.objectContaining({
+      expect([...messageUpdates, ...rootMessageUpdates]).toContainEqual(expect.objectContaining({
         data: expect.objectContaining({
           runtimeTrace: expect.objectContaining({
             companionRuntime: expect.objectContaining({ runtime: "dsh" }),
@@ -1338,7 +1407,7 @@ describe("chat generate agent image tool", () => {
     streamMock.mockImplementation(async function* nativeStream() {
       yield { delta: "obsolete reply", done: true };
     });
-    const { prisma, rootMessageUpdates } = fakePrisma(
+    const { prisma, messageUpdates, rootMessageUpdates } = fakePrisma(
       undefined,
       undefined,
       undefined,
@@ -1352,7 +1421,7 @@ describe("chat generate agent image tool", () => {
       { projectorPrisma: prisma },
     )).resolves.toEqual({ status: "failed" });
 
-    expect(rootMessageUpdates).toContainEqual(expect.objectContaining({
+    expect([...messageUpdates, ...rootMessageUpdates]).toContainEqual(expect.objectContaining({
       data: {
         runtimeTrace: expect.objectContaining({
           primaryTelemetry: expect.objectContaining({
@@ -1445,7 +1514,7 @@ describe("chat generate agent image tool", () => {
     expect(rootMessageUpdates).toContainEqual(expect.objectContaining({
       data: expect.objectContaining({ status: "failed" }),
     }));
-    expect(rootMessageUpdates).toContainEqual(expect.objectContaining({
+    expect([...messageUpdates, ...rootMessageUpdates]).toContainEqual(expect.objectContaining({
       data: {
         runtimeTrace: expect.objectContaining({
           primaryTelemetry: expect.objectContaining({
@@ -1465,7 +1534,7 @@ describe("chat generate agent image tool", () => {
         }),
       },
     }));
-    expect(messageUpdates).toHaveLength(0);
+    expect(finalizedMessageUpdate(messageUpdates)).toBeUndefined();
     expect(appendStreamEventMock).toHaveBeenCalledWith(
       "chat:stream:msg_assistant",
       expect.objectContaining({

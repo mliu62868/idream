@@ -1217,26 +1217,13 @@ async function persistTerminalRuntimeTrace(input: {
     ...input.runtimeTraceFacts,
     ...(input.truncated ? { truncated: true } : {}),
   })) as Prisma.InputJsonValue;
-  try {
-    const updated = await input.prisma.message.updateMany({
-      where: {
-        id: input.payload.assistantMessageId,
-        status: input.messageStatus,
-        attempt: input.payload.attempt,
-      },
-      data: { runtimeTrace: trace },
-    });
-    if (updated.count === 0) return;
-    await input.prisma.messageVersion.update({
-      where: { id: `mv:${input.payload.assistantMessageId}:${input.payload.attempt}` },
-      data: { runtimeTrace: trace },
-    });
-  } catch (error) {
-    logger.warn(
-      { err: error, assistantMessageId: input.payload.assistantMessageId },
-      "primary telemetry persistence failed",
-    );
-  }
+  await persistAttemptRuntimeTraceCas({
+    prisma: input.prisma,
+    payload: input.payload,
+    expectedMessageStatus: input.messageStatus,
+    trace,
+    stage: "primary_terminal",
+  });
 }
 
 async function persistFailedRuntimeTrace(input: {
@@ -1245,25 +1232,72 @@ async function persistFailedRuntimeTrace(input: {
   runtimeTraceFacts: Record<string, unknown>;
 }): Promise<void> {
   const trace = JSON.parse(JSON.stringify(input.runtimeTraceFacts)) as Prisma.InputJsonValue;
+  await persistAttemptRuntimeTraceCas({
+    prisma: input.prisma,
+    payload: input.payload,
+    expectedMessageStatus: ["generating", "failed"],
+    trace,
+    stage: "primary_failure",
+  });
+}
+
+type AttemptRuntimeTraceStage =
+  | "primary_terminal"
+  | "primary_failure"
+  | "dsh_memory_settlement";
+
+/**
+ * INVARIANT: Message and MessageVersion expose one attempt trace or neither.
+ * This write never owns the message terminal state. If it fails after finalize,
+ * the durable terminal fact remains; the prior trace plus structured warning are
+ * the retry/reconciliation signal.
+ */
+export async function persistAttemptRuntimeTraceCas(input: {
+  prisma: ChatPrismaClient;
+  payload: GeneratePayload;
+  expectedMessageStatus: string | readonly string[];
+  trace: Prisma.InputJsonValue;
+  stage: AttemptRuntimeTraceStage;
+}): Promise<"updated" | "stale" | "failed"> {
   try {
-    const updated = await input.prisma.message.updateMany({
-      where: {
-        id: input.payload.assistantMessageId,
-        status: { in: ["generating", "failed"] },
-        attempt: input.payload.attempt,
-      },
-      data: { runtimeTrace: trace },
-    });
-    if (updated.count === 0) return;
-    await input.prisma.messageVersion.update({
-      where: { id: `mv:${input.payload.assistantMessageId}:${input.payload.attempt}` },
-      data: { runtimeTrace: trace },
+    return await input.prisma.$transaction(async (tx) => {
+      const updated = await tx.message.updateMany({
+        where: {
+          id: input.payload.assistantMessageId,
+          status: typeof input.expectedMessageStatus === "string"
+            ? input.expectedMessageStatus
+            : { in: [...input.expectedMessageStatus] },
+          attempt: input.payload.attempt,
+        },
+        data: { runtimeTrace: input.trace },
+      });
+      if (updated.count === 0) return "stale" as const;
+      const versionUpdated = await tx.messageVersion.updateMany({
+        where: {
+          id: `mv:${input.payload.assistantMessageId}:${input.payload.attempt}`,
+          messageId: input.payload.assistantMessageId,
+          attempt: input.payload.attempt,
+        },
+        data: { runtimeTrace: input.trace },
+      });
+      if (versionUpdated.count !== 1) {
+        throw new Error("attempt runtime trace version CAS failed");
+      }
+      return "updated" as const;
     });
   } catch (error) {
     logger.warn(
-      { err: error, assistantMessageId: input.payload.assistantMessageId },
-      "primary failure telemetry persistence failed",
+      {
+        err: error,
+        assistantMessageId: input.payload.assistantMessageId,
+        attempt: input.payload.attempt,
+        stage: input.stage,
+        code: "attempt_runtime_trace_persistence_failed",
+        retryable: true,
+      },
+      "attempt runtime trace transaction failed",
     );
+    return "failed";
   }
 }
 
@@ -1829,17 +1863,12 @@ async function processDshCompanionTurn(
         },
       };
       const finalTrace = JSON.parse(JSON.stringify(finalTraceFacts)) as Prisma.InputJsonValue;
-      await prisma.message.updateMany({
-        where: {
-          id: payload.assistantMessageId,
-          status: terminalStatus,
-          attempt: payload.attempt,
-        },
-        data: { runtimeTrace: finalTrace },
-      });
-      await prisma.messageVersion.update({
-        where: { id: `mv:${payload.assistantMessageId}:${payload.attempt}` },
-        data: { runtimeTrace: finalTrace },
+      await persistAttemptRuntimeTraceCas({
+        prisma,
+        payload,
+        expectedMessageStatus: terminalStatus,
+        trace: finalTrace,
+        stage: "dsh_memory_settlement",
       });
       committedTrace = finalTraceFacts;
     }

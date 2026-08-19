@@ -429,6 +429,70 @@ describe("chat internal admin api", () => {
     expect(serialized).not.toContain(`${P}m-evidence`);
   });
 
+  it("does not apply the current extraction watermark to a historical attempt", async () => {
+    const messageId = `${P}m-evidence-native`;
+    const priorVersionId = `${P}mv-evidence-native`;
+    const currentVersionId = `${P}mv-evidence-native-current`;
+    const priorVersion = await chatPrisma.messageVersion.findUniqueOrThrow({
+      where: { id: priorVersionId },
+      select: { runtimeTrace: true },
+    });
+    await chatPrisma.$transaction([
+      chatPrisma.message.update({
+        where: { id: messageId },
+        data: { attempt: 2, memoryExtractedAttempt: 2 },
+      }),
+      chatPrisma.messageVersion.update({
+        where: { id: priorVersionId },
+        data: { selected: false },
+      }),
+      chatPrisma.messageVersion.create({
+        data: {
+          id: currentVersionId,
+          messageId,
+          content: SECRET,
+          selected: true,
+          attempt: 2,
+          runtimeTrace: priorVersion.runtimeTrace ?? undefined,
+          createdAt: new Date(EVIDENCE_BASE.getTime() + 500),
+        },
+      }),
+    ]);
+    try {
+      const res = await dispatchChatAdmin({
+        method: "GET",
+        path: "/internal/admin/companion-rollout-evidence",
+        query: {
+          from: new Date(EVIDENCE_BASE.getTime() - 1_000).toISOString(),
+          to: new Date(EVIDENCE_BASE.getTime() + 60_000).toISOString(),
+          userId: AUTHORITY_USER,
+        },
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        runtimes: {
+          native: {
+            attempts: 2,
+            memory: { outcomes: { unknown: 1, extracted: 1 } },
+          },
+        },
+      });
+    } finally {
+      await chatPrisma.$transaction([
+        chatPrisma.messageVersion.delete({ where: { id: currentVersionId } }),
+        chatPrisma.messageVersion.update({
+          where: { id: priorVersionId },
+          data: { selected: true },
+        }),
+        chatPrisma.message.update({
+          where: { id: messageId },
+          data: { attempt: 1, memoryExtractedAttempt: 1 },
+        }),
+      ]);
+    }
+  });
+
   it("rejects an invalid Gate R evidence window", async () => {
     await expect(dispatchChatAdmin({
       method: "GET",

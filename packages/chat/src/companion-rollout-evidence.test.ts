@@ -138,4 +138,28 @@ describe("Gate R companion rollout evidence", () => {
     expect(result.sampleEvidence).toEqual({ native: "no_samples", dsh: "no_samples" });
     expect(result.releaseDecision.status).toBe("not_evaluated");
   });
+
+  it("reports historical native memory extraction as unknown", () => {
+    const result = summarizeCompanionRolloutEvidence({
+      window: {
+        from: new Date("2026-08-19T00:00:00.000Z"),
+        to: new Date("2026-08-20T00:00:00.000Z"),
+      },
+      attempts: [
+        {
+          telemetry: {
+            schemaVersion: 1,
+            runtime: "native",
+            startedAt: "2026-08-19T01:00:00.000Z",
+            retryCount: 0,
+            memory: { outcome: "pending" },
+          },
+          memoryExtracted: null,
+        },
+      ],
+      outbox: [],
+    });
+
+    expect(result.runtimes.native.memory.outcomes).toEqual({ unknown: 1 });
+  });
 });

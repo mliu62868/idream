@@ -33,7 +33,7 @@ export interface EvidenceTelemetry {
 
 export interface AttemptEvidenceRow {
   telemetry: EvidenceTelemetry;
-  memoryExtracted: boolean;
+  memoryExtracted: boolean | null;
 }
 
 export interface OutboxEvidenceRow {
@@ -74,7 +74,7 @@ const telemetrySchema = z.object({
 
 interface RawAttemptEvidenceRow {
   telemetry: Prisma.JsonValue;
-  memoryExtracted: boolean;
+  memoryExtracted: boolean | null;
 }
 
 interface RawOutboxEvidenceRow {
@@ -94,10 +94,20 @@ export async function collectCompanionRolloutEvidence(
     ? Prisma.sql`AND s.user_id = ${input.userId}`
     : Prisma.empty;
   const primaryTelemetry = Prisma.sql`mv.runtime_trace -> 'primaryTelemetry'`;
+  // INVARIANT: memory_extracted_attempt is the current Message watermark, not
+  // a historical attempt ledger. Only the selected current sent attempt can be
+  // proven extracted; older versions remain unknown even when the watermark is newer.
   const attempts = await prisma.$queryRaw<RawAttemptEvidenceRow[]>(Prisma.sql`
     SELECT
       ${primaryTelemetry} AS telemetry,
-      (m.memory_extracted_attempt >= mv.attempt) AS "memoryExtracted"
+      CASE
+        WHEN m.status = 'sent'
+          AND m.memory_authority = 'enabled'
+          AND m.attempt = mv.attempt
+          AND mv.selected
+        THEN m.memory_extracted_attempt = mv.attempt
+        ELSE NULL
+      END AS "memoryExtracted"
     FROM chat.message_versions mv
     JOIN chat.messages m ON m.id = mv.message_id
     JOIN chat.chat_sessions s ON s.id = m.session_id
@@ -251,6 +261,8 @@ function summarizeRuntime(
   for (const row of attempts) {
     const observed = runtime === "native" && row.memoryExtracted
       ? "extracted"
+      : runtime === "native" && row.memoryExtracted === null
+        ? "unknown"
       : row.telemetry.memory?.outcome;
     if (observed) memoryOutcomes[observed] = (memoryOutcomes[observed] ?? 0) + 1;
   }
