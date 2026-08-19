@@ -202,8 +202,26 @@ export async function processGenerate(
   const attemptRuntime = pinCompanionRuntimeForAttempt({
     config: companionRuntimeConfig,
     memoryAuthority: turnMemoryEnabled ? "enabled" : "disabled",
+    userId: session.userId,
+    characterId: session.characterId,
     priorPin: priorRuntimeTrace?.companionRuntime,
   });
+  const companionRuntimePin = {
+    runtime: attemptRuntime.runtime,
+    memoryBackend: attemptRuntime.memoryBackend,
+    profile: attemptRuntime.profile,
+    private: attemptRuntime.private,
+    sidecarUrl: attemptRuntime.sidecarUrl,
+    deadlineMs: attemptRuntime.deadlineMs,
+    assignment: attemptRuntime.assignment,
+  };
+  const admissionRuntimeTrace = JSON.parse(JSON.stringify({
+    schemaVersion: 1,
+    attempt: payload.attempt,
+    assistantMessageId: payload.assistantMessageId,
+    userMessageId: payload.userMessageId,
+    companionRuntime: companionRuntimePin,
+  })) as Prisma.InputJsonValue;
 
   const claimed = await prisma.message.updateMany({
     where: {
@@ -212,7 +230,13 @@ export async function processGenerate(
       attempt: payload.attempt,
       deletedAt: null,
     },
-    data: { status: "generating", updatedAt: new Date() },
+    data: {
+      status: "generating",
+      updatedAt: new Date(),
+      // Persist the route in the same admission write. A crash before
+      // PreparedTurn is built must not let a retry observe a newer cohort.
+      ...(!priorRuntimeTrace ? { runtimeTrace: admissionRuntimeTrace } : {}),
+    },
   });
   if (claimed.count === 0) return { status: "skipped" };
   let lastHeartbeatAt = Date.now();
@@ -279,14 +303,7 @@ export async function processGenerate(
     profile: prepared.profile,
     trace: prepared.trace,
     budget: prepared.budget,
-    companionRuntime: {
-      runtime: attemptRuntime.runtime,
-      memoryBackend: attemptRuntime.memoryBackend,
-      profile: attemptRuntime.profile,
-      private: attemptRuntime.private,
-      sidecarUrl: attemptRuntime.sidecarUrl,
-      deadlineMs: attemptRuntime.deadlineMs,
-    },
+    companionRuntime: companionRuntimePin,
     ...(priorRuntimeTrace?.companionTool
       ? { companionTool: priorRuntimeTrace.companionTool }
       : {}),

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FREE_DAILY_MESSAGES } from "@idream/shared/chat/limits";
 import type { ChatPrismaClient } from "./db.js";
+import { Prisma } from "../generated/client/client.js";
 
 // service.ts value-imports ./db.js (constructs a real PrismaClient → needs a live
 // Postgres) and ./queue.js (BullMQ/Redis). Neither is exercised here: regenerate's
@@ -26,6 +27,7 @@ interface FakeData {
   entitlement?: unknown;
   usage?: unknown;
   lastUser?: unknown;
+  messageUpdates?: unknown[];
 }
 
 function fakePrisma(data: FakeData): ChatPrismaClient {
@@ -52,7 +54,10 @@ function fakePrisma(data: FakeData): ChatPrismaClient {
       findFirst: unique(sourceMessage),
       findMany: async () => messages,
       count: async () => 0,
-      update: async () => ({}),
+      update: async (call: { data: unknown }) => {
+        data.messageUpdates?.push(call.data);
+        return {};
+      },
     },
     chatSession: { findUnique: unique(data.session ?? null) },
     chatSendReceipt: { findMany: async () => [] },
@@ -149,14 +154,19 @@ describe("regenerate quota + eligibility guard (P0-C)", () => {
   });
 
   it("allows a free user under the cap and enqueues the new attempt", async () => {
+    const messageUpdates: unknown[] = [];
     const prisma = fakePrisma({
-      message: assistantMessage,
+      message: {
+        ...assistantMessage,
+        runtimeTrace: { companionRuntime: { runtime: "dsh" } },
+      },
       session,
       user: activeUser,
       character: approvedCharacter,
       eligibility: noRestriction,
       entitlement: freeEntitlement,
       usage: { messagesUsed: 5 },
+      messageUpdates,
     });
 
     const result = await regenerate(
@@ -166,6 +176,11 @@ describe("regenerate quota + eligibility guard (P0-C)", () => {
 
     expect(result.attempt).toBe(2);
     expect(result.assistantMessageId).toBe("msg_a");
+    expect(messageUpdates).toContainEqual(expect.objectContaining({
+      status: "pending",
+      attempt: 2,
+      runtimeTrace: Prisma.DbNull,
+    }));
     expect(enqueueMock).toHaveBeenCalledTimes(1);
   });
 

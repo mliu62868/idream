@@ -312,6 +312,36 @@ const context = {
   fileContextRevision: 0n,
 };
 
+function installDshRolloutEnv(): () => void {
+  const previous = {
+    runtime: process.env.CHAT_COMPANION_RUNTIME,
+    memory: process.env.CHAT_MEMORY_BACKEND,
+    token: process.env.DSH_AGENT_TOKEN,
+    rolloutSalt: process.env.CHAT_COMPANION_DSH_ROLLOUT_SALT,
+    rolloutBps: process.env.CHAT_COMPANION_DSH_ROLLOUT_BPS,
+    rolloutAllowlist: process.env.CHAT_COMPANION_DSH_ROLLOUT_ALLOWLIST,
+  };
+  process.env.CHAT_COMPANION_RUNTIME = "dsh";
+  process.env.CHAT_MEMORY_BACKEND = "igrep-dsh";
+  process.env.DSH_AGENT_TOKEN = "test-sidecar-token";
+  process.env.CHAT_COMPANION_DSH_ROLLOUT_SALT = "phase4-stable-salt";
+  process.env.CHAT_COMPANION_DSH_ROLLOUT_BPS = "10000";
+  delete process.env.CHAT_COMPANION_DSH_ROLLOUT_ALLOWLIST;
+  return () => {
+    for (const [name, value] of Object.entries({
+      CHAT_COMPANION_RUNTIME: previous.runtime,
+      CHAT_MEMORY_BACKEND: previous.memory,
+      DSH_AGENT_TOKEN: previous.token,
+      CHAT_COMPANION_DSH_ROLLOUT_SALT: previous.rolloutSalt,
+      CHAT_COMPANION_DSH_ROLLOUT_BPS: previous.rolloutBps,
+      CHAT_COMPANION_DSH_ROLLOUT_ALLOWLIST: previous.rolloutAllowlist,
+    })) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  };
+}
+
 describe("chat generate agent image tool", () => {
   beforeEach(() => {
     completeMock.mockReset();
@@ -330,14 +360,7 @@ describe("chat generate agent image tool", () => {
   });
 
   it("routes a pinned DSH attempt through the Chat commit port before SSE done", async () => {
-    const previous = {
-      runtime: process.env.CHAT_COMPANION_RUNTIME,
-      memory: process.env.CHAT_MEMORY_BACKEND,
-      token: process.env.DSH_AGENT_TOKEN,
-    };
-    process.env.CHAT_COMPANION_RUNTIME = "dsh";
-    process.env.CHAT_MEMORY_BACKEND = "igrep-dsh";
-    process.env.DSH_AGENT_TOKEN = "test-sidecar-token";
+    const restoreEnv = installDshRolloutEnv();
     try {
       dshRunMock.mockImplementation(async (invocation, port) => {
         await port.executeTool({
@@ -393,7 +416,14 @@ describe("chat generate agent image tool", () => {
         status: "sent",
         content: "hello from DSH",
         runtimeTrace: expect.objectContaining({
-          companionRuntime: expect.objectContaining({ runtime: "dsh" }),
+          companionRuntime: expect.objectContaining({
+            runtime: "dsh",
+            assignment: expect.objectContaining({
+              policyVersion: 1,
+              reason: "threshold",
+              thresholdBps: 10000,
+            }),
+          }),
           dsh: expect.objectContaining({
             version: "0.1.0-rc.7",
             igrepVersion: "0.1.132",
@@ -422,24 +452,38 @@ describe("chat generate agent image tool", () => {
         }),
       });
     } finally {
-      if (previous.runtime === undefined) delete process.env.CHAT_COMPANION_RUNTIME;
-      else process.env.CHAT_COMPANION_RUNTIME = previous.runtime;
-      if (previous.memory === undefined) delete process.env.CHAT_MEMORY_BACKEND;
-      else process.env.CHAT_MEMORY_BACKEND = previous.memory;
-      if (previous.token === undefined) delete process.env.DSH_AGENT_TOKEN;
-      else process.env.DSH_AGENT_TOKEN = previous.token;
+      restoreEnv();
+    }
+  });
+
+  it("fails a selected DSH attempt closed without invoking the native provider", async () => {
+    const restoreEnv = installDshRolloutEnv();
+    try {
+      dshRunMock.mockRejectedValue(new Error("sidecar unavailable"));
+      const { prisma, rootMessageUpdates } = fakePrisma();
+
+      await expect(processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        prisma,
+        { projectorPrisma: prisma },
+      )).rejects.toThrow("sidecar unavailable");
+
+      expect(streamMock).not.toHaveBeenCalled();
+      expect(rootMessageUpdates).toContainEqual(expect.objectContaining({
+        data: expect.objectContaining({
+          status: "generating",
+          runtimeTrace: expect.objectContaining({
+            companionRuntime: expect.objectContaining({ runtime: "dsh" }),
+          }),
+        }),
+      }));
+    } finally {
+      restoreEnv();
     }
   });
 
   it("persists DSH text already delivered before a runtime disconnect as truncated", async () => {
-    const previous = {
-      runtime: process.env.CHAT_COMPANION_RUNTIME,
-      memory: process.env.CHAT_MEMORY_BACKEND,
-      token: process.env.DSH_AGENT_TOKEN,
-    };
-    process.env.CHAT_COMPANION_RUNTIME = "dsh";
-    process.env.CHAT_MEMORY_BACKEND = "igrep-dsh";
-    process.env.DSH_AGENT_TOKEN = "test-sidecar-token";
+    const restoreEnv = installDshRolloutEnv();
     try {
       dshRunMock.mockImplementation(async (invocation, port) => {
         await port.emit({
@@ -471,24 +515,12 @@ describe("chat generate agent image tool", () => {
         }),
       });
     } finally {
-      if (previous.runtime === undefined) delete process.env.CHAT_COMPANION_RUNTIME;
-      else process.env.CHAT_COMPANION_RUNTIME = previous.runtime;
-      if (previous.memory === undefined) delete process.env.CHAT_MEMORY_BACKEND;
-      else process.env.CHAT_MEMORY_BACKEND = previous.memory;
-      if (previous.token === undefined) delete process.env.DSH_AGENT_TOKEN;
-      else process.env.DSH_AGENT_TOKEN = previous.token;
+      restoreEnv();
     }
   });
 
   it("never turns a rejected DSH terminal candidate into a truncated success", async () => {
-    const previous = {
-      runtime: process.env.CHAT_COMPANION_RUNTIME,
-      memory: process.env.CHAT_MEMORY_BACKEND,
-      token: process.env.DSH_AGENT_TOKEN,
-    };
-    process.env.CHAT_COMPANION_RUNTIME = "dsh";
-    process.env.CHAT_MEMORY_BACKEND = "igrep-dsh";
-    process.env.DSH_AGENT_TOKEN = "test-sidecar-token";
+    const restoreEnv = installDshRolloutEnv();
     try {
       dshRunMock.mockImplementation(async (invocation, port) => {
         await port.emit({
@@ -532,24 +564,12 @@ describe("chat generate agent image tool", () => {
         data: expect.objectContaining({ status: "sent" }),
       }));
     } finally {
-      if (previous.runtime === undefined) delete process.env.CHAT_COMPANION_RUNTIME;
-      else process.env.CHAT_COMPANION_RUNTIME = previous.runtime;
-      if (previous.memory === undefined) delete process.env.CHAT_MEMORY_BACKEND;
-      else process.env.CHAT_MEMORY_BACKEND = previous.memory;
-      if (previous.token === undefined) delete process.env.DSH_AGENT_TOKEN;
-      else process.env.DSH_AGENT_TOKEN = previous.token;
+      restoreEnv();
     }
   });
 
   it("replays a durable DSH tool reservation without creating a second identity", async () => {
-    const previous = {
-      runtime: process.env.CHAT_COMPANION_RUNTIME,
-      memory: process.env.CHAT_MEMORY_BACKEND,
-      token: process.env.DSH_AGENT_TOKEN,
-    };
-    process.env.CHAT_COMPANION_RUNTIME = "dsh";
-    process.env.CHAT_MEMORY_BACKEND = "igrep-dsh";
-    process.env.DSH_AGENT_TOKEN = "test-sidecar-token";
+    const restoreEnv = installDshRolloutEnv();
     const reservation = {
       attemptId: "msg_assistant:1",
       callId: "call-replayed",
@@ -625,12 +645,7 @@ describe("chat generate agent image tool", () => {
         Array.from({ length: persistedReservations.length }, () => reservation),
       );
     } finally {
-      if (previous.runtime === undefined) delete process.env.CHAT_COMPANION_RUNTIME;
-      else process.env.CHAT_COMPANION_RUNTIME = previous.runtime;
-      if (previous.memory === undefined) delete process.env.CHAT_MEMORY_BACKEND;
-      else process.env.CHAT_MEMORY_BACKEND = previous.memory;
-      if (previous.token === undefined) delete process.env.DSH_AGENT_TOKEN;
-      else process.env.DSH_AGENT_TOKEN = previous.token;
+      restoreEnv();
     }
   });
 

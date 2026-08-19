@@ -1,5 +1,22 @@
+import { createHash } from "node:crypto";
+
 export type CompanionRuntimeName = "native" | "dsh";
 export type CompanionMemoryBackend = "legacy" | "igrep-dsh";
+
+export type CompanionRuntimeAssignmentReason =
+  | "disabled"
+  | "allowlist"
+  | "threshold"
+  | "outside_cohort"
+  | "prior_attempt";
+
+export interface CompanionRuntimeAssignment {
+  policyVersion: 1;
+  cohortKeyHash: string;
+  bucketBps: number | null;
+  thresholdBps: number;
+  reason: CompanionRuntimeAssignmentReason;
+}
 
 export interface CompanionRuntimeConfig {
   runtime: CompanionRuntimeName;
@@ -9,6 +26,11 @@ export interface CompanionRuntimeConfig {
   normalProfile: string;
   privateProfile: string;
   deadlineMs: number;
+  dshRollout: {
+    salt: string;
+    thresholdBps: number;
+    allowlist: readonly string[];
+  };
 }
 
 export interface CompanionAttemptRuntime {
@@ -18,11 +40,18 @@ export interface CompanionAttemptRuntime {
   private: boolean;
   sidecarUrl: string;
   deadlineMs: number;
+  assignment: CompanionRuntimeAssignment;
 }
 
 export type CompanionRuntimePin = Pick<
   CompanionAttemptRuntime,
-  "runtime" | "memoryBackend" | "profile" | "private" | "sidecarUrl" | "deadlineMs"
+  | "runtime"
+  | "memoryBackend"
+  | "profile"
+  | "private"
+  | "sidecarUrl"
+  | "deadlineMs"
+  | "assignment"
 >;
 
 const RUNTIMES = new Set<CompanionRuntimeName>(["native", "dsh"]);
@@ -59,9 +88,30 @@ export function resolveCompanionRuntimeConfig(
     );
   }
 
+  const thresholdBps = parseIntegerInRange(
+    source.CHAT_COMPANION_DSH_ROLLOUT_BPS,
+    0,
+    0,
+    10_000,
+    "CHAT_COMPANION_DSH_ROLLOUT_BPS",
+  );
+  const rolloutAllowlist = parseRelationshipAllowlist(
+    source.CHAT_COMPANION_DSH_ROLLOUT_ALLOWLIST,
+  );
+  const rolloutSalt = source.CHAT_COMPANION_DSH_ROLLOUT_SALT?.trim() ?? "";
+  if (runtime === "native" && (thresholdBps !== 0 || rolloutAllowlist.length !== 0)) {
+    throw new Error(
+      "DSH rollout must be empty while CHAT_COMPANION_RUNTIME=native",
+    );
+  }
   const sidecarToken = source.DSH_AGENT_TOKEN?.trim() ?? "";
   if (runtime === "dsh" && !sidecarToken) {
     throw new Error("Missing required env var DSH_AGENT_TOKEN");
+  }
+  if (runtime === "dsh" && !rolloutSalt) {
+    throw new Error(
+      "Missing required env var CHAT_COMPANION_DSH_ROLLOUT_SALT",
+    );
   }
   const sidecarUrl = source.DSH_AGENT_URL ?? "http://127.0.0.1:3101";
   const parsedUrl = new URL(sidecarUrl);
@@ -82,6 +132,11 @@ export function resolveCompanionRuntimeConfig(
     normalProfile: canonicalProfile(source.DSH_PROFILE_NORMAL, NORMAL_PROFILE, "DSH_PROFILE_NORMAL"),
     privateProfile: canonicalProfile(source.DSH_PROFILE_PRIVATE, PRIVATE_PROFILE, "DSH_PROFILE_PRIVATE"),
     deadlineMs,
+    dshRollout: {
+      salt: rolloutSalt,
+      thresholdBps,
+      allowlist: rolloutAllowlist,
+    },
   };
 }
 
@@ -89,13 +144,19 @@ export function resolveCompanionRuntimeConfig(
 export function selectCompanionRuntimeForAttempt(input: {
   config: CompanionRuntimeConfig;
   memoryAuthority: "enabled" | "disabled";
+  userId: string;
+  characterId: string;
 }): CompanionAttemptRuntime {
   const isPrivate = input.memoryAuthority === "disabled";
+  const assignment = assignRelationshipCohort(input);
+  const runtime = assignment.reason === "allowlist" || assignment.reason === "threshold"
+    ? "dsh"
+    : "native";
   return {
-    runtime: input.config.runtime,
-    memoryBackend: input.config.memoryBackend,
+    runtime,
+    memoryBackend: runtime === "dsh" ? "igrep-dsh" : "legacy",
     profile:
-      input.config.runtime === "dsh"
+      runtime === "dsh"
         ? isPrivate
           ? input.config.privateProfile
           : input.config.normalProfile
@@ -103,53 +164,142 @@ export function selectCompanionRuntimeForAttempt(input: {
     private: isPrivate,
     sidecarUrl: input.config.sidecarUrl,
     deadlineMs: input.config.deadlineMs,
+    assignment,
   };
 }
 
-/** A retry follows its durable pin; deployment switches apply only to new attempts. */
+/** Existing attempts keep their recorded route; rollout changes affect only new attempts. */
 export function pinCompanionRuntimeForAttempt(input: {
   config: CompanionRuntimeConfig;
   memoryAuthority: "enabled" | "disabled";
+  userId: string;
+  characterId: string;
   priorPin?: unknown;
 }): CompanionAttemptRuntime {
-  const selected = selectCompanionRuntimeForAttempt(input);
-  if (input.priorPin === undefined || input.priorPin === null) return selected;
-  const prior = runtimePin(input.priorPin, input.config);
-  if (prior.private !== selected.private) {
-    throw new Error("attempt pinned companion runtime differs from immutable memory authority");
+  if (input.priorPin === undefined || input.priorPin === null) {
+    return selectCompanionRuntimeForAttempt(input);
   }
+  const prior = parsePriorPin(input.priorPin, input);
   return prior;
 }
 
-function runtimePin(value: unknown, config: CompanionRuntimeConfig): CompanionRuntimePin {
+function assignRelationshipCohort(input: {
+  config: CompanionRuntimeConfig;
+  userId: string;
+  characterId: string;
+}): CompanionRuntimeAssignment {
+  if (input.config.runtime === "native") {
+    return {
+      policyVersion: 1,
+      cohortKeyHash: relationshipDigest("native-disabled", input.userId, input.characterId),
+      bucketBps: null,
+      thresholdBps: 0,
+      reason: "disabled",
+    };
+  }
+  const cohortKeyHash = relationshipDigest(
+    input.config.dshRollout.salt,
+    input.userId,
+    input.characterId,
+  );
+  const bucketBps = Number.parseInt(cohortKeyHash.slice(0, 8), 16) % 10_000;
+  const allowlistKey = `${input.userId}:${input.characterId}`;
+  const reason: CompanionRuntimeAssignmentReason = input.config.dshRollout.allowlist.includes(allowlistKey)
+    ? "allowlist"
+    : bucketBps < input.config.dshRollout.thresholdBps
+      ? "threshold"
+      : "outside_cohort";
+  return {
+    policyVersion: 1,
+    cohortKeyHash,
+    bucketBps,
+    thresholdBps: input.config.dshRollout.thresholdBps,
+    reason,
+  };
+}
+
+function parsePriorPin(
+  value: unknown,
+  input: {
+    config: CompanionRuntimeConfig;
+    memoryAuthority: "enabled" | "disabled";
+    userId: string;
+    characterId: string;
+  },
+): CompanionRuntimePin {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("attempt companion runtime pin is invalid");
   }
   const candidate = value as Record<string, unknown>;
-  if (!RUNTIMES.has(candidate.runtime as CompanionRuntimeName)
-    || !MEMORY_BACKENDS.has(candidate.memoryBackend as CompanionMemoryBackend)
-    || typeof candidate.profile !== "string" || !candidate.profile
-    || typeof candidate.private !== "boolean") {
+  const isPrivate = input.memoryAuthority === "disabled";
+  if (candidate.private !== isPrivate || typeof candidate.profile !== "string") {
     throw new Error("attempt companion runtime pin is invalid");
   }
-  if ((candidate.runtime === "dsh") !== (candidate.memoryBackend === "igrep-dsh")) {
-    throw new Error("attempt companion runtime pin is internally inconsistent");
+  if (
+    !(
+      (candidate.runtime === "native" &&
+        candidate.memoryBackend === "legacy" &&
+        candidate.profile === "native") ||
+      (candidate.runtime === "dsh" &&
+        candidate.memoryBackend === "igrep-dsh" &&
+        candidate.profile === (isPrivate ? PRIVATE_PROFILE : NORMAL_PROFILE))
+    )
+  ) {
+    throw new Error("attempt companion runtime pin is invalid");
   }
   const sidecarUrl = typeof candidate.sidecarUrl === "string" && candidate.sidecarUrl
-    ? new URL(candidate.sidecarUrl).toString().replace(/\/$/, "")
-    : config.sidecarUrl;
+    ? canonicalSidecarUrl(candidate.sidecarUrl)
+    : input.config.sidecarUrl;
   const deadlineMs = typeof candidate.deadlineMs === "number"
     && Number.isSafeInteger(candidate.deadlineMs) && candidate.deadlineMs > 0
     ? candidate.deadlineMs
-    : config.deadlineMs;
+    : input.config.deadlineMs;
   return {
-    runtime: candidate.runtime as CompanionRuntimeName,
-    memoryBackend: candidate.memoryBackend as CompanionMemoryBackend,
+    runtime: candidate.runtime,
+    memoryBackend: candidate.memoryBackend,
     profile: candidate.profile,
-    private: candidate.private,
+    private: isPrivate,
     sidecarUrl,
     deadlineMs,
+    assignment: candidate.assignment === undefined
+      ? {
+          policyVersion: 1,
+          cohortKeyHash: relationshipDigest(
+            input.config.dshRollout.salt || "prior-attempt",
+            input.userId,
+            input.characterId,
+          ),
+          bucketBps: null,
+          thresholdBps: 0,
+          reason: "prior_attempt",
+        }
+      : parsePriorAssignment(candidate.assignment),
   };
+}
+
+function parsePriorAssignment(value: unknown): CompanionRuntimeAssignment {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("attempt companion runtime assignment is invalid");
+  }
+  const candidate = value as Record<string, unknown>;
+  const reasons = new Set<CompanionRuntimeAssignmentReason>([
+    "disabled",
+    "allowlist",
+    "threshold",
+    "outside_cohort",
+    "prior_attempt",
+  ]);
+  if (
+    candidate.policyVersion !== 1 ||
+    typeof candidate.cohortKeyHash !== "string" ||
+    !candidate.cohortKeyHash ||
+    !(candidate.bucketBps === null || isIntegerInRange(candidate.bucketBps, 0, 9_999)) ||
+    !isIntegerInRange(candidate.thresholdBps, 0, 10_000) ||
+    !reasons.has(candidate.reason as CompanionRuntimeAssignmentReason)
+  ) {
+    throw new Error("attempt companion runtime assignment is invalid");
+  }
+  return candidate as unknown as CompanionRuntimeAssignment;
 }
 
 /** Legacy extract/retrieval must stand down only for an explicit complete pin. */
@@ -178,6 +328,14 @@ function canonicalProfile(
   return expected;
 }
 
+function canonicalSidecarUrl(value: string): string {
+  const parsed = new URL(value);
+  if (!new Set(["http:", "https:"]).has(parsed.protocol)) {
+    throw new Error("attempt companion runtime sidecar URL is invalid");
+  }
+  return parsed.toString().replace(/\/$/, "");
+}
+
 function parsePositiveInteger(
   value: string | undefined,
   fallback: number,
@@ -189,4 +347,46 @@ function parsePositiveInteger(
     throw new Error(`${name} must be a positive integer`);
   }
   return parsed;
+}
+
+function parseIntegerInRange(
+  value: string | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+  name: string,
+): number {
+  if (value === undefined) return fallback;
+  if (!/^\d+$/.test(value)) {
+    throw new Error(`${name} must be an integer in ${min}..${max}`);
+  }
+  const parsed = Number(value);
+  if (!isIntegerInRange(parsed, min, max)) {
+    throw new Error(`${name} must be an integer in ${min}..${max}`);
+  }
+  return parsed;
+}
+
+function isIntegerInRange(value: unknown, min: number, max: number): value is number {
+  return typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= min &&
+    value <= max;
+}
+
+function parseRelationshipAllowlist(value: string | undefined): readonly string[] {
+  if (value === undefined || value.trim() === "") return [];
+  const entries = value.split(",").map((entry) => entry.trim());
+  if (entries.some((entry) => !/^[^:,\s]+:[^:,\s]+$/.test(entry))) {
+    throw new Error(
+      "CHAT_COMPANION_DSH_ROLLOUT_ALLOWLIST must contain comma-separated userId:characterId pairs",
+    );
+  }
+  return [...new Set(entries)].sort();
+}
+
+function relationshipDigest(salt: string, userId: string, characterId: string): string {
+  return createHash("sha256")
+    .update([salt, userId, characterId].join("\0"))
+    .digest("hex");
 }

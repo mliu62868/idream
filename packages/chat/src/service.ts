@@ -1210,6 +1210,9 @@ export async function regenerate(
         attempt: nextAttempt,
         content: "",
         replyToMessageId: lastUser.id,
+        // A regeneration is a new attempt, so rollout policy must assign it
+        // independently instead of inheriting the previous attempt's pin.
+        runtimeTrace: Prisma.DbNull,
       },
     });
     return nextAttempt;

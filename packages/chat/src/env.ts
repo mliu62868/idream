@@ -174,8 +174,9 @@ export const env = {
   get PORT() {
     return Number.parseInt(process.env.CHAT_PORT ?? "3100", 10);
   },
-  // Read as one validated snapshot before each attempt is recorded. The
-  // runtime, memory backend and private/normal profile must never drift apart.
+  // Read as one validated snapshot before each attempt is recorded. Runtime,
+  // memory backend, stable relationship cohort and private/normal profile must
+  // never drift apart inside that attempt.
   get COMPANION_RUNTIME_CONFIG() {
     return resolveCompanionRuntimeConfig(process.env);
   },
