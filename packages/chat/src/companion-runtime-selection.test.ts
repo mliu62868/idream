@@ -162,6 +162,23 @@ describe("companion runtime selection", () => {
     });
   });
 
+  it("rejects a persisted attempt route that escapes the loopback authority", () => {
+    expect(() => pinCompanionRuntimeForAttempt({
+      config: resolveCompanionRuntimeConfig({}),
+      memoryAuthority: "enabled",
+      userId: "user_1",
+      characterId: "char_1",
+      priorPin: {
+        runtime: "dsh",
+        memoryBackend: "igrep-dsh",
+        profile: "idream-companion-memory",
+        private: false,
+        sidecarUrl: "http://token@sidecar.example.com:3101/run?leak=1",
+        deadlineMs: 42_000,
+      },
+    })).toThrow(/sidecar URL.*loopback|sidecar URL.*credentials/);
+  });
+
   it("still rejects a retry pin that conflicts with immutable no-memory authority", () => {
     expect(() => pinCompanionRuntimeForAttempt({
       config: resolveCompanionRuntimeConfig({}),

@@ -28,6 +28,7 @@ import {
 import {
   importLegacyCompanionMemory,
 } from "./companion-runtime.js";
+import { canonicalCompanionSidecarUrl } from "./companion-runtime-selection.js";
 import {
   chatPrisma,
   chatProjectorPrisma,
@@ -275,13 +276,10 @@ interface LegacyMemoryImportSidecarConfig {
 function sidecarConfig(source: NodeJS.ProcessEnv): LegacyMemoryImportSidecarConfig {
   const token = source.DSH_AGENT_TOKEN?.trim();
   if (!token) throw new Error("DSH_AGENT_TOKEN is required to apply a legacy memory import");
-  const parsedUrl = new URL(source.DSH_AGENT_URL ?? "http://127.0.0.1:3101");
-  if (!new Set(["http:", "https:"]).has(parsedUrl.protocol)) {
-    throw new Error("DSH_AGENT_URL must use http or https");
-  }
-  if (parsedUrl.username || parsedUrl.password || parsedUrl.search || parsedUrl.hash) {
-    throw new Error("DSH_AGENT_URL must not contain credentials, query, or fragment");
-  }
+  const baseUrl = canonicalCompanionSidecarUrl(
+    source.DSH_AGENT_URL ?? "http://127.0.0.1:3101",
+    "DSH_AGENT_URL",
+  );
   const rawTimeout = source.DSH_AGENT_DEADLINE_MS ?? "300000";
   if (!/^\d+$/.test(rawTimeout)) {
     throw new Error("DSH_AGENT_DEADLINE_MS must be a positive integer");
@@ -291,7 +289,7 @@ function sidecarConfig(source: NodeJS.ProcessEnv): LegacyMemoryImportSidecarConf
     throw new Error("DSH_AGENT_DEADLINE_MS must be a positive integer");
   }
   return {
-    baseUrl: parsedUrl.toString().replace(/\/$/, ""),
+    baseUrl,
     token,
     timeoutMs,
   };

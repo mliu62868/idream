@@ -48,6 +48,20 @@ function memory(input: Partial<MemoryItem> & Pick<MemoryItem, "id" | "text">): M
 }
 
 describe("legacy memory importer authority", () => {
+  it("rejects a remote sidecar before reading or locking legacy memory", async () => {
+    await expect(importLegacyMemoryRelationship({
+      userId: "user-1",
+      characterId: "character-1",
+      dryRun: false,
+      recallProbes,
+    }, {
+      env: {
+        DSH_AGENT_TOKEN: "test-token",
+        DSH_AGENT_URL: "https://sidecar.example.com:3101",
+      },
+    })).rejects.toThrow(/DSH_AGENT_URL.*loopback/);
+  });
+
   it("imports only character facts backed by complete current memory-enabled turns", () => {
     const plan = buildLegacyMemoryImportPlan({
       userId: "user-1",
@@ -376,7 +390,7 @@ describe("legacy memory importer authority", () => {
         projectorPrisma: projector,
         env: {
           DSH_AGENT_TOKEN: "test-token",
-          DSH_AGENT_URL: "http://sidecar.test",
+          DSH_AGENT_URL: "http://127.0.0.1:3101",
           DSH_AGENT_DEADLINE_MS: "2000",
         },
         fetchImpl: async (_url, init) => {

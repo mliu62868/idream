@@ -149,7 +149,8 @@ describe("PreparedTurn budget", () => {
     expect(nativeWire.messages[0]?.content).toContain("The user prefers jasmine tea.");
     expect(nativeWire.messages[0]?.content).toContain("They trust each other deeply.");
     expect(shadowWire.messages[0]?.content).not.toContain("The user prefers jasmine tea.");
-    expect(shadowWire.messages[0]?.content).not.toContain("They trust each other deeply.");
+    expect(shadowWire.messages[0]?.content).toContain("They trust each other deeply.");
+    expect(shadowWire.trace.relationshipVersion).toBe(7);
     expect(shadowWire.messages[0]?.content).toContain("Stay specific and grounded.");
     expect(shadowWire.messages[0]?.content).toContain("the library");
     expect(shadowWire.messages[0]?.content).toContain("A session-local rolling summary.");

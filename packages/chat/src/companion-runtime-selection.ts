@@ -124,20 +124,10 @@ export function resolveCompanionRuntimeConfig(
       "Missing required env var CHAT_COMPANION_DSH_ROLLOUT_SALT",
     );
   }
-  const sidecarUrl = source.DSH_AGENT_URL ?? "http://127.0.0.1:3101";
-  const parsedUrl = new URL(sidecarUrl);
-  if (!new Set(["http:", "https:"]).has(parsedUrl.protocol)) {
-    throw new Error("DSH_AGENT_URL must use http or https");
-  }
-  if (parsedUrl.username || parsedUrl.password) {
-    throw new Error("DSH_AGENT_URL must not contain credentials");
-  }
-  if (parsedUrl.search || parsedUrl.hash) {
-    throw new Error("DSH_AGENT_URL must not contain query or fragment");
-  }
-  if (!new Set(["127.0.0.1", "[::1]", "localhost"]).has(parsedUrl.hostname.toLowerCase())) {
-    throw new Error("DSH_AGENT_URL must use a loopback host");
-  }
+  const sidecarUrl = canonicalCompanionSidecarUrl(
+    source.DSH_AGENT_URL ?? "http://127.0.0.1:3101",
+    "DSH_AGENT_URL",
+  );
   const deadlineMs = parsePositiveInteger(
     source.DSH_AGENT_DEADLINE_MS,
     5 * 60_000,
@@ -147,7 +137,7 @@ export function resolveCompanionRuntimeConfig(
   return {
     runtime: runtime as CompanionRuntimeName,
     memoryBackend: memoryBackend as CompanionMemoryBackend,
-    sidecarUrl: parsedUrl.toString().replace(/\/$/, ""),
+    sidecarUrl,
     sidecarToken,
     normalProfile: canonicalProfile(source.DSH_PROFILE_NORMAL, NORMAL_PROFILE, "DSH_PROFILE_NORMAL"),
     privateProfile: canonicalProfile(source.DSH_PROFILE_PRIVATE, PRIVATE_PROFILE, "DSH_PROFILE_PRIVATE"),
@@ -350,9 +340,26 @@ function canonicalProfile(
 }
 
 function canonicalSidecarUrl(value: string): string {
+  return canonicalCompanionSidecarUrl(
+    value,
+    "attempt companion runtime sidecar URL",
+  );
+}
+
+/** Bearer-authenticated companion RPC is intentionally local-only. */
+export function canonicalCompanionSidecarUrl(value: string, name: string): string {
   const parsed = new URL(value);
   if (!new Set(["http:", "https:"]).has(parsed.protocol)) {
-    throw new Error("attempt companion runtime sidecar URL is invalid");
+    throw new Error(`${name} must use http or https`);
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error(`${name} must not contain credentials`);
+  }
+  if (parsed.search || parsed.hash) {
+    throw new Error(`${name} must not contain query or fragment`);
+  }
+  if (!new Set(["127.0.0.1", "[::1]", "localhost"]).has(parsed.hostname.toLowerCase())) {
+    throw new Error(`${name} must use a loopback host`);
   }
   return parsed.toString().replace(/\/$/, "");
 }

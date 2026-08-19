@@ -202,7 +202,7 @@ export function toPreparedTurnWire(prepared: PreparedTurn): PreparedTurnWire {
 /**
  * Phase-2 comparison input: official igrep is the shadow recall authority, so
  * native legacy recall bytes must not make the shadow result look better. Soul,
- * Scene, boundaries, summary and the pinned transcript remain identical.
+ * Scene, relationship, boundaries, summary and the pinned transcript remain identical.
  */
 export function toDshShadowPreparedTurnWire(
   prepared: PreparedTurn,
@@ -213,7 +213,6 @@ export function toDshShadowPreparedTurnWire(
     {
       ...runtime.context,
       longTermMemories: [],
-      relationship: null,
     },
     runtime.currentUserMessageId,
   );
