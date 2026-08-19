@@ -369,8 +369,11 @@ describe("authenticated workspace privacy authority", () => {
     const relationship = relationshipWorkspacePath(canonicalRoot, "user-rebuild", "character-rebuild");
     const versions = join(relationship, ".igrep.versions");
     const oldVersion = join(versions, "old");
+    const orphanVersion = join(versions, "orphan-with-forgotten-text");
     await mkdir(oldVersion, { recursive: true });
+    await mkdir(orphanVersion, { recursive: true });
     await writeFile(join(oldVersion, "sentinel.txt"), "old");
+    await writeFile(join(orphanVersion, "deleted.txt"), "must be removed");
     await symlink(".igrep.versions/old", join(relationship, ".igrep"), "dir");
     const store = new AttemptWorkspaceStore({
       canonicalRoot,
@@ -393,6 +396,7 @@ describe("authenticated workspace privacy authority", () => {
     await rebuilding;
     expect(await readFile(join(relationship, ".igrep", "sentinel.txt"), "utf8")).toBe("new");
     expect(await readdir(join(relationship, ".rebuilds"))).toEqual([]);
+    expect(await readdir(versions)).toHaveLength(1);
 
     await expect(store.rebuildRelationship(
       { userId: "user-rebuild", characterId: "character-rebuild" },

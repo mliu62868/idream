@@ -218,6 +218,7 @@ export class AttemptWorkspaceStore {
         await Promise.all([
           rmdir(userWorkspacePath(this.options.canonicalRoot, request.userId)),
           rmdir(privateUserWorkspacePath(this.options.privateRoot, request.userId)),
+          rmdir(userWorkspacePath(this.options.shadowRoot, request.userId)),
         ].map((cleanup) => cleanup.catch((error: NodeJS.ErrnoException) => {
           if (error.code !== "ENOENT" && error.code !== "ENOTEMPTY") throw error;
         })));
@@ -356,6 +357,9 @@ export class AttemptWorkspaceStore {
     try {
       this.throwIfAborted(signal);
       await mkdir(versionsRoot, { recursive: true });
+      // A prior interrupted rebuild may have left transcripts outside .igrep.
+      // The relationship lock makes it safe to clear them before retrying.
+      await rm(rebuildsRoot, { recursive: true, force: true });
       await mkdir(workspace, { recursive: true });
       await mkdir(candidateMemory);
       assertWithin(relationshipRoot, rebuildRoot);
@@ -385,18 +389,18 @@ export class AttemptWorkspaceStore {
       this.throwIfAborted(signal);
       await rename(nextLink, canonicalLink);
       canonicalChanged = true;
+      promoted = true;
       this.throwIfAborted(signal);
+      await rm(rebuildRoot, { recursive: true, force: true });
+      await this.garbageCollectVersions(versionsRoot, candidateVersion);
       if (marker && nextMarker) {
         await rename(nextMarker, marker.path);
         nextMarker = undefined;
       }
-      promoted = true;
-      await rm(rebuildRoot, { recursive: true, force: true }).catch(() => undefined);
-      if (priorVersion && priorVersion !== candidateVersion) {
-        await rm(priorVersion, { recursive: true, force: true }).catch(() => undefined);
-      }
       return result;
     } finally {
+      if (nextLink) await rm(nextLink, { recursive: true, force: true }).catch(() => undefined);
+      if (nextMarker) await rm(nextMarker, { force: true }).catch(() => undefined);
       if (!promoted) {
         if (canonicalChanged) {
           if (priorVersion) {
@@ -407,9 +411,9 @@ export class AttemptWorkspaceStore {
             await rm(canonicalLink, { force: true }).catch(() => undefined);
           }
         }
-        if (nextLink) await rm(nextLink, { recursive: true, force: true }).catch(() => undefined);
-        if (nextMarker) await rm(nextMarker, { force: true }).catch(() => undefined);
         await rm(candidateVersion, { recursive: true, force: true }).catch(() => undefined);
+        await rm(rebuildRoot, { recursive: true, force: true }).catch(() => undefined);
+      } else {
         await rm(rebuildRoot, { recursive: true, force: true }).catch(() => undefined);
       }
     }
@@ -557,9 +561,7 @@ export class AttemptWorkspaceStore {
           await rename(nextLink, canonicalLink);
           finished = true;
           await this.removeAttemptRoot(ownedAttemptRoot, mountedKnowledgeRoot).catch(() => undefined);
-          if (canonicalVersion !== nextVersion) {
-            await rm(canonicalVersion, { recursive: true, force: true }).catch(() => undefined);
-          }
+          await this.garbageCollectVersions(versionsRoot, nextVersion);
         } finally {
           if (!finished) {
             await Promise.all([
@@ -616,6 +618,26 @@ export class AttemptWorkspaceStore {
       if (error.code !== "ENOENT") throw error;
     });
     await rm(attemptRoot, { recursive: true, force: true });
+  }
+
+  private async garbageCollectVersions(
+    versionsRoot: string,
+    currentVersion: string,
+  ): Promise<void> {
+    assertWithin(versionsRoot, currentVersion);
+    const currentName = relative(versionsRoot, currentVersion);
+    if (!currentName || currentName.includes(sep)) {
+      throw new Error("canonical igrep version must be a direct child");
+    }
+    const entries = await readdir(versionsRoot, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name === currentName) continue;
+      const target = join(versionsRoot, entry.name);
+      assertWithin(versionsRoot, target);
+      // Privacy rebuild is incomplete until every superseded version is gone.
+      // Do not swallow removal failures: the durable mutation must retry.
+      await rm(target, { recursive: true, force: true });
+    }
   }
 
   private async acquireRelationship(

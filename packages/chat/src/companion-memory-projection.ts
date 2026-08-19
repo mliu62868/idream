@@ -105,7 +105,7 @@ export async function buildCompanionWorkspaceRebuild(
 
 export function companionMemoryProjectionTimeoutMs(): number {
   const config = env.COMPANION_RUNTIME_CONFIG;
-  return config.runtime === "dsh" ? config.deadlineMs + 30_000 : 30_000;
+  return config.sidecarToken ? config.deadlineMs + 30_000 : 30_000;
 }
 
 export async function applyCompanionMemoryProjection(
@@ -115,7 +115,10 @@ export async function applyCompanionMemoryProjection(
   port?: CompanionMemoryProjectionPort,
 ): Promise<void> {
   const config = env.COMPANION_RUNTIME_CONFIG;
-  if (config.runtime !== "dsh") return;
+  // INVARIANT: cleanup authority outlives routing authority. During rollback,
+  // retained DSH credentials keep privacy intents projected even though new
+  // turns already use the native runtime.
+  if (!config.sidecarToken) return;
   const activePort = port ?? {
     rebuild: (request: CompanionWorkspaceRebuild) => rebuildCompanionWorkspace({
       baseUrl: config.sidecarUrl,
@@ -131,10 +134,19 @@ export async function applyCompanionMemoryProjection(
     }),
   };
   if (mutation.kind === "relationship_rebuild") {
-    await activePort.rebuild(await buildCompanionWorkspaceRebuild(tx, {
+    const request = await buildCompanionWorkspaceRebuild(tx, {
       userId,
       characterId: mutation.characterId,
-    }));
+    });
+    // Purge first so private attempts, shadow attempts and every old canonical
+    // version cannot retain forgotten text. A failed rebuild leaves the durable
+    // mutation pending; its next projection recreates only retained DB rows.
+    await activePort.purge({
+      scope: "relationship",
+      userId,
+      characterId: mutation.characterId,
+    });
+    await activePort.rebuild(request);
     return;
   }
   await activePort.purge(mutation.kind === "account_delete"
