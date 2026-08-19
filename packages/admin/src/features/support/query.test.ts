@@ -18,7 +18,7 @@ describe("support query", () => {
       cursor: "next",
     });
     expect(supportListPath(query)).toBe(
-      "/api/v1/admin/support/requests?limit=25&search=refund&status=active&sla=overdue&category=billing&cursor=next",
+      "/api/v2/admin/support/requests?limit=25&search=refund&status=active&sla=overdue&category=billing&cursor=next",
     );
   });
 

@@ -3,14 +3,23 @@ import { describe, expect, it } from "vitest";
 import { AuditWorkspace } from "./AuditWorkspace";
 
 describe("Audit operator workspace", () => {
-  it("renders authority-backed filters and a structure-matched accessible loading state", () => {
+  it("renders the shared filter bar and a structure-matched accessible loading state", () => {
     const html = renderToStaticMarkup(<AuditWorkspace />);
 
     expect(html).toContain("Audit Log");
-    expect(html).toContain("Search audit authority");
-    expect(html).toContain("Exact action");
+    // 搜索常驻，其余字段折在「Filters」后面 —— 首屏不再被一整块筛选面板顶掉。
+    expect(html).toContain('aria-label="action, target, reason, or request"');
+    expect(html).toContain(">Filters<");
+    expect(html).not.toContain("Exact action");
     expect(html).toContain('role="status"');
-    expect(html).toContain('aria-label="Loading audit authority"');
-    expect(html).toContain("freshness watermark unavailable");
+    expect(html).toContain("Loading Audit authority events…");
+  });
+
+  it("claims nothing about emptiness before the audit authority answers", () => {
+    const html = renderToStaticMarkup(<AuditWorkspace />);
+
+    expect(html).not.toContain("No audit events exist yet");
+    expect(html).not.toContain("No audit events match these filters");
+    expect(html).toContain("animate-pulse");
   });
 });

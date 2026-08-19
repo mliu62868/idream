@@ -4,6 +4,8 @@ import {
   auditListPath,
   auditQueryFromSearch,
   auditWorkspaceUrl,
+  changedAuditFilters,
+  defaultAuditQuery,
   isAuditQueryFiltered,
 } from "./query";
 
@@ -20,9 +22,10 @@ describe("Audit workspace query contract", () => {
       targetType: "character_release",
       cursor: "cursor-2",
       commandId: "command-9",
+      limit: 25,
     });
     expect(auditListPath(query)).toBe(
-      "/api/v1/admin/audit-log?search=release&action=character.release.publish&actorId=operator-1&targetType=character_release&cursor=cursor-2&limit=25",
+      "/api/v2/admin/audit-log?search=release&action=character.release.publish&actorId=operator-1&targetType=character_release&cursor=cursor-2&limit=25",
     );
     expect(auditCommandPath(query.commandId)).toBe("/api/v2/admin/commands/command-9");
   });
@@ -39,5 +42,23 @@ describe("Audit workspace query contract", () => {
   it("distinguishes filtered empty results from a true empty authority", () => {
     expect(isAuditQueryFiltered(auditQueryFromSearch("?auditCursor=page-2&commandId=command-9"))).toBe(false);
     expect(isAuditQueryFiltered(auditQueryFromSearch("?auditActor=operator-1"))).toBe(true);
+  });
+
+  it("takes the operator page size from the URL and fails closed to 25", () => {
+    expect(auditQueryFromSearch("?auditLimit=50").limit).toBe(50);
+    expect(auditQueryFromSearch("?auditLimit=999").limit).toBe(25);
+    expect(auditListPath(auditQueryFromSearch("?auditLimit=50")))
+      .toBe("/api/v2/admin/audit-log?limit=50");
+  });
+
+  it("names every active filter as a chip and hands back the patch that clears it", () => {
+    const query = auditQueryFromSearch("?auditActor=operator-1&auditTargetType=character_release&auditCursor=page-2");
+
+    expect(changedAuditFilters(query).map((filter) => [filter.key, filter.value])).toEqual([
+      ["actorId", "operator-1"],
+      ["targetType", "character_release"],
+    ]);
+    // 清一枚芯片只还原那一个字段，游标和 commandId 由调用方决定，不在补丁里。
+    expect(changedAuditFilters(query)[0].reset).toEqual({ actorId: defaultAuditQuery.actorId });
   });
 });

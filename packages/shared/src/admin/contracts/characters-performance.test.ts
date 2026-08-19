@@ -4,8 +4,10 @@ import {
   characterPerformanceSummarySchema,
   characterPortfolioItemSchema,
   characterPortfolioDecisionRequestSchema,
+  characterPortfolioQuerySchema,
   characterReleaseChangeMarkerSchema,
 } from "./characters-performance";
+import { adminCursorQuerySchema } from "./common";
 import {
   characterExposureRecordedV2Schema,
   chatExchangeCompletedV2Schema,
@@ -211,5 +213,11 @@ describe("Character Portfolio v2 contracts", () => {
       characterReleaseId: "release-1",
       entryExposureId: "detail-1",
     }).success).toBe(false);
+  });
+
+  it("accepts a backward cursor only on the operations whose authority honours it", () => {
+    expect(characterPortfolioQuerySchema.safeParse({ before: "cursor-1", sort: "updated_desc" }).success).toBe(true);
+    // 没实现反向分页的 operation 必须 400，而不是把 before 忽略掉、静默返回第一页。
+    expect(adminCursorQuerySchema.safeParse({ before: "cursor-1" }).success).toBe(false);
   });
 });

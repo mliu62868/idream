@@ -48,7 +48,7 @@ describe("admin API error formatting", () => {
     }, { status: 409 })));
     try {
       const error = await apiWrite(
-        "/api/v1/admin/content/featured",
+        "/api/v2/admin/content/featured",
         "PUT",
         {},
       ).catch((cause: unknown) => cause);

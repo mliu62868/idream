@@ -6,6 +6,7 @@ import {
   type CharacterWorkspaceDetail,
 } from "@idream/shared/admin";
 import { useRef, useState } from "react";
+import { ConfirmDialog } from "@/components/admin/ui/ConfirmDialog";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import {
@@ -34,7 +35,10 @@ export function CharacterSoulPanel({
   const { t } = useAdminI18n();
   const initialPersona = soulDraftFromWorkspace(data);
   const [persona, setPersonaDraft] = useState<CharacterDraftPersona | null>(initialPersona);
-  const [reason, setReason] = useState(() => t("Create reviewed Character Soul version"));
+  // SPEC: 新建 Soul 版本会成为角色人格的权威快照，确认走 ConfirmDialog（它自己收 reason ≥3）。
+  // INTENT: 原先只有一个 reason 输入框加一个按钮 —— 与同一工作台里"改个标签都要走对话框"
+  //         的门槛完全倒置。
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [dialogueError, setDialogueError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(() =>
@@ -72,7 +76,7 @@ export function CharacterSoulPanel({
     },
   });
 
-  const createVersion = async () => {
+  const createVersion = async (reason: string) => {
     setBusy(true);
     setError(null);
     try {
@@ -216,14 +220,10 @@ export function CharacterSoulPanel({
           />
           <Area label={t("Opening message")} value={persona.firstMessage} onChange={(value) => setPersona({ firstMessage: value })} />
         </div>
-        <label className="mt-5 block text-sm font-medium">
-          {t("Reason")}
-          <input className={`${fieldClass} mt-2`} onChange={(event) => setReason(event.target.value)} value={reason} />
-        </label>
         {dialogueError ? <p className="mt-3 text-sm text-[var(--ad-red-text)]" role="alert">{dialogueError}</p> : null}
         {error ? <p className="mt-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}
         <div className="mt-5">
-          <WorkspaceButton disabled={!canWrite || busy || Boolean(dialogueError) || reason.trim().length < 3} onClick={() => void createVersion()} tone="primary">
+          <WorkspaceButton disabled={!canWrite || busy || Boolean(dialogueError)} onClick={() => setConfirmOpen(true)} tone="primary">
             {busy ? t("Creating version…") : t("Create Soul version")}
           </WorkspaceButton>
         </div>
@@ -233,6 +233,35 @@ export function CharacterSoulPanel({
         <ReadOnlyArtifact title={t("Generated SOUL.md")} unavailableLabel={t("Unavailable until the Soul compiles.")} value={data.soul.current.markdown} />
         <ReadOnlyArtifact title={t("Compiled system prompt")} unavailableLabel={t("Unavailable until the Soul compiles.")} value={data.soul.current.systemPrompt} />
       </div>
+      {confirmOpen ? (
+        <ConfirmDialog
+          onClose={() => setConfirmOpen(false)}
+          spec={{
+            title: t("Create Soul version"),
+            summary: (
+              <div className="space-y-2">
+                <p>
+                  {t(
+                    "This becomes the authoritative persona for new chat. Version {version} is kept as history and is not deleted.",
+                    { version: data.soul.current.version },
+                  )}
+                </p>
+                <p>
+                  {t(
+                    "It does not publish a Release. Live chat keeps the released Soul until a Release ships this version.",
+                  )}
+                </p>
+              </div>
+            ),
+            reasonLabel: t("Reason"),
+            submitLabel: t("Create Soul version"),
+            onSubmit: async (reason) => {
+              await createVersion(reason);
+              setConfirmOpen(false);
+            },
+          }}
+        />
+      ) : null}
     </div>
   );
 }

@@ -3,11 +3,15 @@
 // SPEC: 合规运营面板（ADMIN_PHASE3_DESIGN §4）。DSAR 数据导出/账号擦除 + 年龄验证人工复核。
 // INTENT: 自取数、无 props；样式对齐 TagsView。导出展示脱敏 JSON；擦除/override 需 reason+typed。
 // INVARIANTS: erase confirmation=userId、override confirmation=verificationId，均 reason≥3。
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Download, Loader2, RefreshCcw, ShieldAlert, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { Download, FileDown, Loader2, RefreshCcw, ShieldAlert, Trash2 } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
+import { EmptyState } from "@/components/admin/ui/EmptyState";
+import { StatusPill } from "@/components/admin/ui/StatusPill";
+import { WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
 import {
   authorityRequestFailed,
   authorityRequestStarted,
@@ -16,8 +20,10 @@ import {
 } from "@/lib/authority-state";
 import { createLatestRequestGate } from "@/lib/latest-request";
 
+// INVARIANT: outline-none 必须配一个 focus-visible 补偿，否则键盘用户不知道焦点在哪；
+// 只换边框颜色在高对比度模式下会被系统主题覆盖掉。
 const inputClass =
-  "rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]";
+  "rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]";
 
 type AgeRow = {
   id: string;
@@ -53,34 +59,49 @@ function DsarSection() {
   const [userId, setUserId] = useState("");
   const [exported, setExported] = useState<unknown>(null);
   const [busy, setBusy] = useState<"export" | "erase" | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
+  // INVARIANT: 存异常对象而不只是它的 message —— AuthorityRequestError 要靠 cause 才能按错误码
+  // 出人话（只有 message 时它退回「读不到最新数据」的通用兜底，运营读到的仍是 authority 英文原文）。
+  const [err, setErr] = useState<{ message: string; cause: unknown; retry: () => void } | null>(null);
   const [eraseDraft, setEraseDraft] = useState<ConfirmDraft | null>(null);
+  const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
 
   async function exportData() {
     setBusy("export");
     setErr(null);
-    setNote(null);
+    clearFeedback();
     try {
       const data = await apiGet<{ export: unknown }>(
-        `/api/v1/admin/compliance/users/${encodeURIComponent(userId.trim())}/export`,
+        `/api/v2/admin/compliance/users/${encodeURIComponent(userId.trim())}/export`,
       );
       setExported(data.export);
     } catch (error) {
-      setErr(error instanceof Error ? error.message : "Export failed");
+      setErr({ message: requestErrorMessage(error, t), cause: error, retry: () => void exportData() });
     } finally {
       setBusy(null);
     }
+  }
+
+  // SPEC: DSAR 的交付物是一个可以发给用户/监管的文件，不是一段屏幕上的 JSON。
+  // INTENT: 不引下载库——Blob + objectURL 是原生的；用完立刻 revoke，不留悬挂引用。
+  function downloadExport() {
+    if (exported === null) return;
+    const blob = new Blob([JSON.stringify(exported, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `dsar-export-${userId.trim() || "user"}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
   }
 
   async function erase() {
     if (!eraseDraft || !canConfirm(eraseDraft, userId.trim())) return;
     setBusy("erase");
     setErr(null);
-    setNote(null);
+    clearFeedback();
     try {
       const data = await apiWrite<{ erased: boolean; idempotent?: boolean }>(
-        `/api/v1/admin/compliance/users/${encodeURIComponent(userId.trim())}/erase`,
+        `/api/v2/admin/compliance/users/${encodeURIComponent(userId.trim())}/erase`,
         "POST",
         {
           reason: eraseDraft.reason.trim(),
@@ -88,9 +109,13 @@ function DsarSection() {
         },
       );
       setEraseDraft(null);
-      setNote(data.idempotent ? t("Already erased (idempotent).") : t("Erasure requested."));
+      reportSuccess(
+        data.idempotent
+          ? t("{id} was already erased — nothing changed.", { id: userId.trim() })
+          : t("Erasure requested for {id}. The cross-service flow reports completion in the audit log.", { id: userId.trim() }),
+      );
     } catch (error) {
-      setErr(error instanceof Error ? error.message : "Erase failed");
+      setErr({ message: requestErrorMessage(error, t), cause: error, retry: () => void erase() });
     } finally {
       setBusy(null);
     }
@@ -100,7 +125,7 @@ function DsarSection() {
     <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <h2 className="text-sm font-semibold">{t("DSAR — export / erase")}</h2>
       <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-        导出为脱敏结构化数据（不含明文 prompt/chat）。擦除走 P0-F 跨服务流，需确认。
+        {t("The export is redacted structured data with no raw prompt or chat text. Erasure runs the P0-F cross-service flow and needs confirmation.")}
       </p>
       <div className="mt-3 grid gap-3 md:grid-cols-[1fr_auto_auto]">
         <input
@@ -124,7 +149,7 @@ function DsarSection() {
           disabled={busy !== null || !userId.trim()}
           onClick={() => {
             setErr(null);
-            setNote(null);
+            clearFeedback();
             setEraseDraft({ reason: "", confirmation: "" });
           }}
           type="button"
@@ -171,12 +196,31 @@ function DsarSection() {
           </div>
         </section>
       ) : null}
-      {err ? <p role="alert" className="mt-2 text-xs text-[var(--ad-red-text)]">{err}</p> : null}
-      {note ? <p className="mt-2 text-xs text-[var(--ad-green-text)]">{note}</p> : null}
+      {err ? (
+        <div className="mt-2">
+          <AuthorityRequestError cause={err.cause} message={err.message} onRetry={err.retry} />
+        </div>
+      ) : null}
+      <div className="mt-2">
+        <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
+      </div>
       {exported ? (
-        <pre className="rounded-lg mt-3 max-h-80 overflow-auto border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 text-xs">
-          {JSON.stringify(exported, null, 2)}
-        </pre>
+        <div className="mt-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-xs font-semibold">{t("Export preview")}</h3>
+            <button
+              className="rounded-md inline-flex h-9 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm"
+              onClick={downloadExport}
+              type="button"
+            >
+              <FileDown className="h-4 w-4" />
+              {t("Download JSON")}
+            </button>
+          </div>
+          <pre className="rounded-lg mt-2 max-h-80 overflow-auto border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 text-xs">
+            {JSON.stringify(exported, null, 2)}
+          </pre>
+        </div>
       ) : null}
     </section>
   );
@@ -186,12 +230,13 @@ function AgeVerificationSection() {
   const { t, value: valueLabel } = useAdminI18n();
   const [authority, setAuthority] = useState(() => createAuthorityState<AgeRow[]>());
   const [status, setStatus] = useState("pending");
-  const [notice, setNotice] = useState<string | null>(null);
   const [overrideDraft, setOverrideDraft] = useState<AgeOverrideDraft | null>(null);
   const [overrideBusy, setOverrideBusy] = useState(false);
   const [overrideError, setOverrideError] = useState<string | null>(null);
+  const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
   const requestGate = useRef(createLatestRequestGate());
   const initialStatus = useRef(status);
+  const statusFilterId = useId();
 
   const load = useCallback(async (nextStatus: string) => {
     const queryKey = `status=${encodeURIComponent(nextStatus)}`;
@@ -199,7 +244,7 @@ function AgeVerificationSection() {
     setAuthority((current) => authorityRequestStarted(current, queryKey));
     try {
       const data = await apiGet<{ items: AgeRow[] }>(
-        `/api/v1/admin/compliance/age-verifications?${queryKey}`,
+        `/api/v2/admin/compliance/age-verifications?${queryKey}`,
       );
       if (!request.isCurrent()) return;
       setAuthority(authorityRequestSucceeded(queryKey, data.items));
@@ -208,10 +253,11 @@ function AgeVerificationSection() {
       setAuthority((current) => authorityRequestFailed(
         current,
         queryKey,
-        err instanceof Error ? err.message : "Load failed",
+        requestErrorMessage(err, t),
+        err,
       ));
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     const gate = requestGate.current;
@@ -228,14 +274,17 @@ function AgeVerificationSection() {
     setOverrideBusy(true);
     setOverrideError(null);
     try {
-      await apiWrite(`/api/v1/admin/compliance/age-verifications/${draft.id}/override`, "POST", {
+      await apiWrite(`/api/v2/admin/compliance/age-verifications/${draft.id}/override`, "POST", {
         status: draft.next,
         reason: draft.reason.trim(),
         confirmation: draft.confirmation.trim(),
       });
       setOverrideDraft(null);
       setOverrideError(null);
-      setNotice(t("Age verification updated."));
+      reportSuccess(t("{id} is now {status}. The queue below reflects the new state.", {
+        id: draft.id,
+        status: valueLabel(draft.next),
+      }));
       setAuthority((current) => current.data ? {
         ...current,
         data: current.data.flatMap((row) =>
@@ -245,24 +294,64 @@ function AgeVerificationSection() {
       } : current);
       void load(status);
     } catch (err) {
-      setOverrideError(err instanceof Error ? err.message : "Override failed");
+      setOverrideError(requestErrorMessage(err, t));
     } finally {
       setOverrideBusy(false);
     }
   }
 
   const rows = authority.data ?? [];
+  const tableRows: DataTableRow[] = rows.map((row) => ({
+    id: row.id,
+    cells: [
+      <span className="font-mono text-xs" key="user">{row.userId}</span>,
+      row.provider,
+      <StatusPill key="status" status={row.status} />,
+      row.jurisdiction ?? "—",
+      <div className="flex justify-end gap-2" key="actions">
+        <button
+          className="inline-flex h-8 items-center gap-1 bg-[var(--ad-ink)] px-2 text-xs font-semibold text-white"
+          disabled={overrideBusy}
+          onClick={() => startOverride(row.id, "verified")}
+          type="button"
+        >
+          <ShieldAlert className="h-3.5 w-3.5" />
+          {t("Verify")}
+        </button>
+        <button
+          className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
+          disabled={overrideBusy}
+          onClick={() => startOverride(row.id, "failed")}
+          type="button"
+        >
+          {t("Fail")}
+        </button>
+      </div>,
+    ],
+  }));
+
+  function startOverride(id: string, next: AgeOverrideDraft["next"]) {
+    setAuthority((current) => ({ ...current, error: null }));
+    clearFeedback();
+    setOverrideError(null);
+    setOverrideDraft({ id, next, reason: "", confirmation: "" });
+  }
+
   return (
     <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
       <div className="flex items-center justify-between border-b border-[var(--ad-border)] p-3">
         <h2 className="text-sm font-semibold">{t("Age verification queue")}</h2>
         <div className="flex items-center gap-2">
+          <label className="text-xs text-[var(--ad-text-muted)]" htmlFor={statusFilterId}>
+            {t("Status")}
+          </label>
           <select
-            className="rounded-md h-9 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-2 text-sm outline-none"
+            className="rounded-md h-9 border border-[var(--ad-border)] bg-[var(--ad-surface)] px-2 text-sm outline-none focus:border-[var(--ad-ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
+            id={statusFilterId}
             onChange={(e) => {
               const nextStatus = e.target.value;
               setStatus(nextStatus);
-              setNotice(null);
+              clearFeedback();
               setOverrideDraft(null);
               setOverrideError(null);
               void load(nextStatus);
@@ -289,13 +378,14 @@ function AgeVerificationSection() {
       {authority.error ? (
         <div className="p-3">
           <AuthorityRequestError
+            cause={authority.cause}
             message={authority.error}
             onRetry={() => void load(status)}
             snapshotAt={authority.data ? authority.refreshedAt : null}
           />
         </div>
       ) : null}
-      {notice ? <p className="px-3 py-2 text-xs text-[var(--ad-green-text)]">{notice}</p> : null}
+      <div className="px-3 pt-2"><WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} /></div>
       {overrideDraft ? (
         <section className="rounded-lg m-3 border border-[var(--ad-yellow-text)]/20 bg-[var(--ad-yellow-bg)] p-3">
           <p className="text-xs font-semibold text-[var(--ad-yellow-text)]">
@@ -343,69 +433,29 @@ function AgeVerificationSection() {
           ) : null}
         </section>
       ) : null}
-      {authority.loading && authority.data === null ? (
-        <p className="px-3 py-6 text-sm text-[var(--ad-text-muted)]" role="status">{t("Loading…")}</p>
-      ) : null}
-      {authority.data ? <table className="w-full text-left text-sm">
-        <caption className="sr-only">{t("Compliance records")}</caption>
-        <thead className="border-b border-[var(--ad-border)] text-xs text-[var(--ad-text-muted)]">
-          <tr>
-            <th scope="col" className="px-3 py-2 font-medium">{t("user")}</th>
-            <th scope="col" className="px-3 py-2 font-medium">{t("provider")}</th>
-            <th scope="col" className="px-3 py-2 font-medium">{t("status")}</th>
-            <th scope="col" className="px-3 py-2 font-medium">{t("jurisdiction")}</th>
-            <th scope="col" className="px-3 py-2 font-medium"><span className="sr-only">{t("Actions")}</span></th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={row.id} className="border-b border-[var(--ad-border)]">
-              <td className="px-3 py-2 font-mono text-xs">{row.userId}</td>
-              <td className="px-3 py-2">{row.provider}</td>
-              <td className="px-3 py-2 text-[var(--ad-text-muted)]">{valueLabel(row.status)}</td>
-              <td className="px-3 py-2">{row.jurisdiction ?? "—"}</td>
-              <td className="px-3 py-2 text-right">
-                <div className="flex justify-end gap-2">
-                  <button
-                    className="inline-flex h-8 items-center gap-1 bg-[var(--ad-ink)] px-2 text-xs font-semibold text-white"
-                    disabled={overrideBusy}
-                    onClick={() => {
-                      setAuthority((current) => ({ ...current, error: null }));
-                      setNotice(null);
-                      setOverrideError(null);
-                      setOverrideDraft({ id: row.id, next: "verified", reason: "", confirmation: "" });
-                    }}
-                    type="button"
-                  >
-                    <ShieldAlert className="h-3.5 w-3.5" />
-                    {t("Verify")}
-                  </button>
-                  <button
-                    className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
-                    disabled={overrideBusy}
-                    onClick={() => {
-                      setAuthority((current) => ({ ...current, error: null }));
-                      setNotice(null);
-                      setOverrideError(null);
-                      setOverrideDraft({ id: row.id, next: "failed", reason: "", confirmation: "" });
-                    }}
-                    type="button"
-                  >
-                    {t("Fail")}
-                  </button>
-                </div>
-              </td>
-            </tr>
-          ))}
-          {rows.length === 0 ? (
-            <tr>
-              <td className="px-3 py-6 text-center text-xs text-[var(--ad-text-muted)]" colSpan={5}>
-                {t("No records.")}
-              </td>
-            </tr>
-          ) : null}
-        </tbody>
-      </table> : null}
+      {/* INVARIANT: userId 是 UUID，窄屏必须在表内横滚——DataTable 的 minimumWidthClassName
+          管这件事，否则整页被撑出横向滚动条。 */}
+      {authority.error && authority.data === null ? null : (
+        <div className="p-3">
+          <DataTable
+            caption="Compliance records"
+            empty={
+              <EmptyState title={t("No records.")} />
+            }
+            headers={[
+              { label: t("User"), width: "20rem", truncate: true },
+              t("Provider"),
+              t("Status"),
+              t("jurisdiction"),
+              { label: t("Actions"), align: "right" },
+            ]}
+            loading={authority.loading}
+            minimumWidthClassName="min-w-[720px]"
+            rows={tableRows}
+            stickyLastColumn
+          />
+        </div>
+      )}
     </section>
   );
 }

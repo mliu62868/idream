@@ -850,7 +850,7 @@ describe("Admin v2 finite-state authority inventory", () => {
     );
     expect(directWriters.sort()).toEqual([
       "src/server/ai/generation-request-transition.ts",
-      "src/server/modules/admin/generation/dead-letter/service.ts",
+      "src/server/modules/admin-v2/generation/dead-letter.ts",
     ]);
     const statusWriters = productionTypeScript.filter((path) =>
       mutationWritesField(path, "generationJob", "status"),
@@ -866,7 +866,7 @@ describe("Admin v2 finite-state authority inventory", () => {
     expect(authority).toContain("version: { increment: 1 }");
 
     expect(mutationWritesField(
-      "src/server/modules/admin/generation/dead-letter/service.ts",
+      "src/server/modules/admin-v2/generation/dead-letter.ts",
       "generationJob",
       "status",
     )).toBe(false);
@@ -921,8 +921,8 @@ describe("Admin v2 finite-state authority inventory", () => {
 
     const writers = scanned.filter((path) => mutation.test(source(path)));
     expect(writers.sort()).toEqual([
+      "src/server/modules/admin-v2/content/placements.ts",
       "src/server/modules/admin-v2/creative/placement.ts",
-      "src/server/modules/admin/content/placements.ts",
     ]);
     expect(source("src/server/modules/admin-v2/creative/placement.ts")).toContain(
       "isCreativePlacementVerificationTransitionAllowed",

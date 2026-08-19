@@ -33,7 +33,7 @@ export function deadLetterListPath(query: DeadLetterQuery) {
   setOrDelete(params, "errorCode", query.errorCode);
   setOrDelete(params, "cursor", query.cursor);
   params.set("limit", "25");
-  return `/api/v1/admin/generation/dead-letter?${params.toString()}`;
+  return `/api/v2/admin/generation/dead-letter?${params.toString()}`;
 }
 
 export function deadLetterWorkspaceUrl(pathname: string, search: string, query: DeadLetterQuery) {

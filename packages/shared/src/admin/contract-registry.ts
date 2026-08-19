@@ -86,6 +86,13 @@ const fixtureOverrides: Readonly<Record<string, unknown>> = {
     sourceId: "case-fixture",
     watching: true,
   },
+  // Every mutable field is optional and a cross-field rule demands at least one of them,
+  // so the structural fixture (required fields only) is a no-op patch the contract rejects.
+  contentTagPatchRequestSchema: {
+    label: "Fixture tag label",
+    reason: "Verify the tag patch contract",
+    confirmation: "tag-fixture",
+  },
 };
 
 export function resolveAdminV2Contract(ref: string): AdminV2ContractBinding | null {

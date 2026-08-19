@@ -29,10 +29,10 @@ describe("billing workspace query", () => {
       subscriptionCursor: "s-1",
     });
     expect(billingLedgerPath(query)).toBe(
-      "/api/v1/admin/billing/ledger?search=ada&reason=refund&cursor=l-1&limit=25",
+      "/api/v2/admin/billing/ledger?search=ada&reason=refund&cursor=l-1&limit=25",
     );
     expect(billingSubscriptionsPath(query)).toBe(
-      "/api/v1/admin/billing/subscriptions?search=ada&status=active&cursor=s-1&limit=25",
+      "/api/v2/admin/billing/subscriptions?search=ada&status=active&cursor=s-1&limit=25",
     );
   });
 

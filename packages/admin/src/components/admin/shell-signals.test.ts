@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveAdminShellSignals } from "./shell-signals";
+import { adminShellSignalChips, deriveAdminShellSignals } from "./shell-signals";
 
 describe("admin shell provenance signals", () => {
   it("does not infer production data class or fixture absence when provenance is unset", () => {
@@ -26,5 +26,28 @@ describe("admin shell provenance signals", () => {
       productTimezone: "America/Los_Angeles",
       freshness: { state: "reported", label: "2026-07-11T08:30:00.000Z" },
     });
+  });
+
+  it("keeps only environment and timezone when nothing else is provisioned", () => {
+    expect(adminShellSignalChips(deriveAdminShellSignals({ NODE_ENV: "development" }))).toEqual([
+      { key: "environment", label: "Environment", value: "local" },
+      { key: "timezone", label: "Product timezone", value: "UTC" },
+    ]);
+  });
+
+  it("adds each provenance chip once its input is provisioned", () => {
+    const chips = adminShellSignalChips(deriveAdminShellSignals({
+      ADMIN_ENVIRONMENT: "production",
+      ADMIN_DATA_CLASS: "customer",
+      ADMIN_FIXTURES_ENABLED: "false",
+      ADMIN_DATA_FRESHNESS_AT: "2026-07-11T08:30:00.000Z",
+    }));
+    expect(chips.map((chip) => chip.key)).toEqual([
+      "environment",
+      "data-class",
+      "fixtures",
+      "timezone",
+      "freshness",
+    ]);
   });
 });

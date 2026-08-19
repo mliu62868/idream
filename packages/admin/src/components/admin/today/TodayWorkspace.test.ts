@@ -16,7 +16,7 @@ describe("Today workspace recovery states", () => {
     }));
 
     expect(html).toContain("Today&#x27;s work could not be loaded.");
-    expect(html).toContain("Reconnect and retry to restore the authoritative queue.");
+    expect(html).toContain("Reconnect and retry to restore the queue.");
     expect(html).toContain(">Retry</button>");
     expect(html).toContain('role="alert"');
     expect(html).not.toContain("Failed to fetch");

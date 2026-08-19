@@ -8,6 +8,9 @@ export type GenerationConfigQuery = {
   tab: "profiles" | "settings";
 };
 
+/** 分页条要报「第 N–M 条」，算法需要每页条数，所以它不能只活在 URL 拼接里。 */
+export const GENERATION_CONFIG_PAGE_SIZE = 25;
+
 export const defaultGenerationConfigQuery: GenerationConfigQuery = {
   search: "",
   profileMode: "",
@@ -32,21 +35,21 @@ export function generationConfigQueryFromSearch(search: string): GenerationConfi
 }
 
 export function generationProfilesPath(query: GenerationConfigQuery) {
-  return withQuery("/api/v1/admin/generation/model-profiles", {
+  return withQuery("/api/v2/admin/generation/model-profiles", {
     search: query.search,
     mode: query.profileMode,
     status: query.profileStatus,
     cursor: query.profileCursor,
-    limit: "25",
+    limit: String(GENERATION_CONFIG_PAGE_SIZE),
   });
 }
 
 export function featureFlagsPath(query: GenerationConfigQuery) {
-  return withQuery("/api/v1/admin/feature-flags", {
+  return withQuery("/api/v2/admin/feature-flags", {
     search: query.search,
     enabled: query.flagEnabled,
     cursor: query.flagCursor,
-    limit: "25",
+    limit: String(GENERATION_CONFIG_PAGE_SIZE),
   });
 }
 

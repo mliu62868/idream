@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
@@ -10,6 +10,8 @@ import { FormSection, Field, INPUT_CLASS, TEXTAREA_CLASS } from "@/components/ad
 import { DangerButton, GhostButton, PrimaryButton } from "@/components/admin/ui/buttons";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
+import { LoadingWorkspace } from "@/features/operations/WorkspaceUi";
+import { InfoGrid, WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
 import {
   MODES,
   RECIPES_LIST,
@@ -40,19 +42,6 @@ function draftFromRow(row: Recipe): RecipeDraft {
   };
 }
 
-function InfoGrid({ items }: { items: { label: string; value: ReactNode }[] }) {
-  return (
-    <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3">
-      {items.map((item) => (
-        <div key={item.label}>
-          <dt className="text-xs text-[var(--ad-text-muted)]">{item.label}</dt>
-          <dd className="mt-0.5 text-sm text-[var(--ad-ink)]">{item.value}</dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
-
 export function RecipesDetailPage({ id }: { id: string }) {
   const { t, value } = useAdminI18n();
   const [rows, setRows] = useState<Recipe[]>([]);
@@ -62,6 +51,7 @@ export function RecipesDetailPage({ id }: { id: string }) {
   const [draft, setDraft] = useState<RecipeDraft | null>(null);
   const [pending, setPending] = useState<PendingAction>(null);
   const [saving, setSaving] = useState(false);
+  const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -70,7 +60,7 @@ export function RecipesDetailPage({ id }: { id: string }) {
       const data = await apiGet<{ recipe: Recipe }>(`${RECIPES_LIST}/${encodeURIComponent(id)}`);
       setRows([data.recipe]);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : t("Request failed"));
+      setError(requestErrorMessage(loadError, t));
     } finally {
       setLoading(false);
     }
@@ -107,12 +97,13 @@ export function RecipesDetailPage({ id }: { id: string }) {
     setSaving(true);
     setError(null);
     try {
-      await apiWrite(`${RECIPES_LIST}/${id}`, "PATCH", recipeDraftPayload(draft));
+      await apiWrite(`${RECIPES_LIST}/${id}`, "PATCH", recipeDraftPayload(draft), { "idempotency-key": crypto.randomUUID() });
       await reload();
       setMode("view");
       setDraft(null);
+      reportSuccess(t("Draft saved. {label} stays a draft until you publish it.", { label: draft.label }));
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : t("Request failed"));
+      setError(requestErrorMessage(saveError, t));
     } finally {
       setSaving(false);
     }
@@ -125,12 +116,13 @@ export function RecipesDetailPage({ id }: { id: string }) {
         title: t("Publish recipe"),
         submitLabel: t("Publish"),
         onSubmit: async (reason) => {
-          await apiWrite(`${RECIPES_LIST}/${id}/publish`, "POST", {
+          await apiWrite(`${RECIPES_LIST}/${id}/commands/publish`, "POST", {
             reason,
             confirmation: id,
             dryRunSummary: { source: "admin_console" },
-          });
+          }, { "idempotency-key": crypto.randomUUID() });
           await reload();
+          reportSuccess(t("{label} is published and now serves generation requests.", { label: row.label }));
         },
       };
     }
@@ -139,14 +131,15 @@ export function RecipesDetailPage({ id }: { id: string }) {
       destructive: { expectedName: row.label || id },
       submitLabel: t("Rollback"),
       onSubmit: async (reason) => {
-        await apiWrite(`${RECIPES_LIST}/${id}/rollback`, "POST", { reason, confirmation: id });
+        await apiWrite(`${RECIPES_LIST}/${id}/commands/rollback`, "POST", { reason, confirmation: id }, { "idempotency-key": crypto.randomUUID() });
         await reload();
+        reportSuccess(t("{label} is rolled back and no longer serves generation requests.", { label: row.label }));
       },
     };
-  }, [pending, row, id, t, reload]);
+  }, [pending, row, id, t, reload, reportSuccess]);
 
   if (loading) {
-    return <p className="text-sm text-[var(--ad-text-muted)]">{t("Loading…")}</p>;
+    return <LoadingWorkspace label="Loading…" />;
   }
 
   if (!row) {
@@ -201,6 +194,7 @@ export function RecipesDetailPage({ id }: { id: string }) {
       statusLabel={t(recipeStateLabelKey(row))}
       title={row.label}
     >
+      <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
       {error ? <p role="alert" className="text-sm text-[var(--ad-red-text)]">{error}</p> : null}
 
       {mode === "edit" && draft ? (

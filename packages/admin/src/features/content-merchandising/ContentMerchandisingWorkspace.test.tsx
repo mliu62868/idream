@@ -5,9 +5,83 @@ import {
   ContentMerchandisingWorkspace,
   type FeaturedItem,
   FeaturedWriteResultNotice,
+  characterTableRow,
+  contentCommandLabel,
+  featuredDiff,
   featuredTableRow,
   featuredVersionConflictFromError,
 } from "./ContentMerchandisingWorkspace";
+
+describe("featured curation diff", () => {
+  // SPEC: 保存前必须能看出这一次改了什么——输入框是一长串逗号分隔 ID，肉眼比不出来。
+  it("separates additions from removals", () => {
+    expect(featuredDiff(["a", "b", "c"], ["a", "c", "d"])).toEqual({
+      added: ["d"],
+      removed: ["b"],
+      reordered: false,
+    });
+  });
+
+  // INTENT: 只换顺序也是改首页曝光位次，不能显示成「没有变化」。
+  it("reports a pure reorder as a change", () => {
+    expect(featuredDiff(["a", "b"], ["b", "a"])).toEqual({
+      added: [],
+      removed: [],
+      reordered: true,
+    });
+  });
+
+  it("reports an identical configuration as no change at all", () => {
+    expect(featuredDiff(["a", "b"], ["a", "b"])).toEqual({
+      added: [],
+      removed: [],
+      reordered: false,
+    });
+  });
+
+  it("treats clearing the whole feed as a removal of every configured id", () => {
+    expect(featuredDiff(["a", "b"], [])).toEqual({
+      added: [],
+      removed: ["a", "b"],
+      reordered: false,
+    });
+  });
+});
+
+describe("Content merchandising takedown targets", () => {
+  // SPEC: 可见性动作能产出 unlisted，不只是 private。
+  // INTENT: 筛选器有三档、服务端 content.visibility.write 收三档、清理工具用 unlisted 表达
+  //         「从公开目录拿掉但保留直链」，此前动作按钮却只能打到 private —— 上线验证内容
+  //         正需要 unlisted 这一档。
+  it("labels each visibility target by its value", () => {
+    expect(contentCommandLabel("visibility", "unlisted")).toBe("Unlist");
+    expect(contentCommandLabel("visibility", "private")).toBe("Make private");
+    expect(contentCommandLabel("status", "removed")).toBe("Remove");
+  });
+
+  it("offers unlist alongside make-private on every character row", () => {
+    const issued: Array<[string, string, string]> = [];
+    const row = characterTableRow(
+      { id: "character-1", name: "Launch validation", visibility: "public" },
+      true,
+      (id, field, value) => issued.push([id, field, value]),
+    );
+    const html = renderToStaticMarkup(<div>{row.cells.at(-1)}</div>);
+    expect(html).toContain("Unlist");
+    expect(html).toContain("Make private");
+    expect(html).toContain("Remove");
+  });
+
+  it("disables every row action without content.takedown.write", () => {
+    const row = characterTableRow(
+      { id: "character-1", name: "Launch validation", visibility: "public" },
+      false,
+      () => undefined,
+    );
+    const html = renderToStaticMarkup(<div>{row.cells.at(-1)}</div>);
+    expect(html.match(/disabled=""/g) ?? []).toHaveLength(3);
+  });
+});
 
 describe("Content merchandising permissions", () => {
   it("renders independent authority freshness and read-only state", () => {
@@ -16,7 +90,8 @@ describe("Content merchandising permissions", () => {
     );
     expect(html).toContain("Characters: refreshing");
     expect(html).toContain("Featured: refreshing");
-    expect(html).toContain("content.takedown.write is not granted");
+    expect(html).toContain("Taking content down and changing its visibility is unavailable");
+    expect(html).not.toContain("is not granted");
   });
 
   it("labels a configured but runtime-ineligible item as not live", () => {

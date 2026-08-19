@@ -9,43 +9,54 @@ import {
   Inbox,
   Loader2,
   MessageSquare,
-  RefreshCcw,
   Search,
   ShieldCheck,
   Trash2,
 } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { apiDelete, apiGet, apiWrite } from "@/components/admin/api";
+import {
+  savedViewDeleteSchema,
+  savedViewListResponseSchema,
+  savedViewMutationResponseSchema,
+  type SavedView,
+} from "@idream/shared/admin";
+import { apiGet, apiWrite } from "@/components/admin/api";
+import { GhostButton } from "@/components/admin/ui/buttons";
+import { StatusPill } from "@/components/admin/ui/StatusPill";
+import { adminV2Request } from "@/lib/admin-v2-api";
 import {
   ConfirmDialog,
   type ConfirmSpec,
 } from "@/components/admin/ui/ConfirmDialog";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import { useAdminFormat } from "@/components/admin/ui/format";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { emptyPageInfo, Pagination, type PageInfo } from "@/components/admin/ui/Pagination";
+import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
+import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import {
   defaultSupportQuery,
+  SUPPORT_PAGE_SIZE,
   supportListPath,
+  supportQueryFromSavedState,
   supportQueryFromSearch,
+  supportSavedState,
   supportWorkspaceUrl,
   type SupportQuery,
 } from "./query";
 
 type Row = Record<string, unknown>;
-type PageInfo = { endCursor: string | null; hasNextPage: boolean };
+type AdminFormat = ReturnType<typeof useAdminFormat>;
 type ListResponse = {
   items: Row[];
   pageInfo?: PageInfo;
   asOf?: string;
   freshness?: string;
-};
-type SavedView = {
-  id: string;
-  label: string;
-  filters: unknown;
 };
 type PlaintextTargetType = "generation_job" | "media";
 type PlaintextResult = {
@@ -54,7 +65,7 @@ type PlaintextResult = {
   authorization: { ticketId: string | null; legalHoldId: string | null };
 };
 
-const savedViewScope = "support.requests";
+const savedViewScope = "support_request";
 
 export function SupportWorkspace({
   canViewPlaintext,
@@ -63,29 +74,40 @@ export function SupportWorkspace({
   canViewPlaintext: boolean;
   canWrite: boolean;
 }) {
-  const { t } = useAdminI18n();
+  const { t, value } = useAdminI18n();
+  const format = useAdminFormat();
+  const { toast } = useToast();
+  const failureToast = useFailureToast();
   // INVARIANT: the server render and first client render use the same state.
-  // URL-owned filters are restored only after hydration.
+  // URL-owned filters are restored only after hydration (the mount effect below
+  // calls `restore()`, so a shared link opens on the filters it encodes).
   const [query, setQuery] = useState<SupportQuery>(defaultSupportQuery);
   const [draft, setDraft] = useState<SupportQuery>(defaultSupportQuery);
   const [data, setData] = useState<ListResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [errorCause, setErrorCause] = useState<unknown>(undefined);
   const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
   const [savedViewsLoading, setSavedViewsLoading] = useState(true);
   const [savedViewLabel, setSavedViewLabel] = useState("");
   const [savedViewError, setSavedViewError] = useState<string | null>(null);
+  const [savedViewErrorCause, setSavedViewErrorCause] = useState<unknown>(undefined);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [savingView, setSavingView] = useState(false);
+  // SPEC: 「上一页」走自己走过的游标回头，不给后端发 `before`。
+  // INTENT: 支持工单列表还是单向 keyset（响应里没有 startCursor / hasPreviousPage），
+  //         把 startCursor 塞进 `before` 会被 .strict() 挡成 400。翻页栈是本地的，
+  //         所以第一页时 hasPrevious 为假 —— 置灰，而不是给一个点了会报错的按钮。
+  const [cursorTrail, setCursorTrail] = useState<string[]>([]);
   const gate = useRef(createLatestRequestGate());
   const savedViewCreateKey = useRef<string | null>(null);
-  const savedViewDeleteKeys = useRef(new Map<string, string>());
 
   const load = useCallback(async (next: SupportQuery) => {
     const request = gate.current.begin();
     setLoading(true);
     setError(null);
+    setErrorCause(undefined);
     try {
       const response = await apiGet<ListResponse>(supportListPath(next));
       if (!request.isCurrent()) return;
@@ -98,6 +120,7 @@ export function SupportWorkspace({
             ? cause.message
             : "Support authority request failed",
         );
+        setErrorCause(cause);
       }
     } finally {
       if (request.isCurrent()) setLoading(false);
@@ -107,15 +130,18 @@ export function SupportWorkspace({
   const loadSavedViews = useCallback(async () => {
     setSavedViewsLoading(true);
     setSavedViewError(null);
+    setSavedViewErrorCause(undefined);
     try {
-      const response = await apiGet<{ items: SavedView[] }>(
-        `/api/v1/admin/saved-views?scope=${encodeURIComponent(savedViewScope)}`,
+      const response = await adminV2Request(
+        `/api/v2/admin/saved-views?scope=${savedViewScope}`,
+        { schema: savedViewListResponseSchema },
       );
-      setSavedViews(response.items);
+      setSavedViews([...response.items]);
     } catch (cause) {
       setSavedViewError(
         cause instanceof Error ? cause.message : "Saved views failed",
       );
+      setSavedViewErrorCause(cause);
     } finally {
       setSavedViewsLoading(false);
     }
@@ -127,6 +153,7 @@ export function SupportWorkspace({
       const next = currentQuery();
       setQuery(next);
       setDraft(next);
+      setCursorTrail([]);
       void load(next);
     };
     const timer = window.setTimeout(() => {
@@ -155,7 +182,11 @@ export function SupportWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft.search, draft.status, draft.sla, draft.category]);
 
-  function navigate(next: SupportQuery, mode: "push" | "replace" = "push") {
+  function navigate(
+    next: SupportQuery,
+    mode: "push" | "replace" = "push",
+    trail: string[] = [],
+  ) {
     const url = supportWorkspaceUrl(
       window.location.pathname,
       window.location.search,
@@ -168,6 +199,7 @@ export function SupportWorkspace({
     );
     setQuery(next);
     setDraft(next);
+    setCursorTrail(trail);
     void load(next);
   }
 
@@ -178,53 +210,57 @@ export function SupportWorkspace({
   async function saveCurrentView(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const label = savedViewLabel.trim();
-    if (!label) return;
+    if (!label || savingView) return;
     setSavedViewError(null);
+    setSavingView(true);
     try {
       savedViewCreateKey.current ??= crypto.randomUUID();
-      await apiWrite(
-        "/api/v1/admin/saved-views",
-        "POST",
-        {
-          scope: savedViewScope,
-          label,
-          filters: {
-            query: draft.search.trim(),
-            status: draft.status,
-            sla: draft.sla,
-            category: draft.category.trim(),
-          },
-        },
-        { "idempotency-key": savedViewCreateKey.current },
-      );
+      await adminV2Request("/api/v2/admin/saved-views", {
+        method: "POST",
+        idempotencyKey: savedViewCreateKey.current,
+        body: { scope: savedViewScope, label, queryState: supportSavedState(draft) },
+        schema: savedViewMutationResponseSchema,
+      });
       savedViewCreateKey.current = null;
       setSavedViewLabel("");
+      toast({ tone: "success", title: t("Saved view {label} created", { label }) });
       await loadSavedViews();
     } catch (cause) {
-      setSavedViewError(cause instanceof Error ? cause.message : "Save failed");
+      // INTENT: 失败时不清 savedViewLabel —— 运营刚敲的名字得留着，重试只差再点一次。
+      failureToast(cause);
+    } finally {
+      setSavingView(false);
     }
   }
 
-  async function deleteSavedView(view: SavedView) {
-    setSavedViewError(null);
-    try {
-      const key = savedViewDeleteKeys.current.get(view.id) ?? crypto.randomUUID();
-      savedViewDeleteKeys.current.set(view.id, key);
-      await apiDelete(`/api/v1/admin/saved-views/${view.id}`, {
-        "idempotency-key": key,
-      });
-      savedViewDeleteKeys.current.delete(view.id);
-      setSavedViews((items) => items.filter((item) => item.id !== view.id));
-    } catch (cause) {
-      setSavedViewError(
-        cause instanceof Error ? cause.message : "Delete failed",
-      );
-    }
+  // SPEC: 删除保存视图走确认框并要求敲出视图名。
+  // INTENT: 它以前是一个点了就删的垃圾桶图标，误点无法恢复——后台没有回收站。
+  function confirmDeleteSavedView(view: SavedView) {
+    setConfirmation({
+      title: t("Delete saved view {label}", { label: view.label }),
+      destructive: { expectedName: view.label, inputLabel: t("Saved view name") },
+      consequence: {
+        effect: t("The saved view is gone for everyone who uses it. There is no recycle bin."),
+        reversible: false,
+      },
+      // 后端 DELETE 契约没有 reason 字段。
+      requireReason: false,
+      submitLabel: t("Delete saved view"),
+      onSubmit: async () => {
+        await adminV2Request(`/api/v2/admin/saved-views/${encodeURIComponent(view.id)}`, {
+          method: "DELETE",
+          // SPEC: 删除按版本号删 —— 服务端 If-Match 不匹配就 409。
+          ifMatch: view.version,
+          schema: savedViewDeleteSchema,
+        });
+        setSavedViews((items) => items.filter((item) => item.id !== view.id));
+        toast({ tone: "success", title: t("Saved view {label} deleted", { label: view.label }) });
+      },
+    });
   }
 
   function applySavedView(view: SavedView) {
-    const next = supportQueryFromSavedView(view.filters);
-    navigate(next);
+    navigate(supportQueryFromSavedState(view.queryState));
   }
 
   function confirmAction(input: {
@@ -238,8 +274,16 @@ export function SupportWorkspace({
     if (!canWrite) return;
     const idempotencyKey = crypto.randomUUID();
     setConfirmation({
-      title: `${input.label} ${input.id}`,
+      title: t("{action} support request {id}", { action: t(input.label), id: input.id }),
       destructive: { expectedName: input.id, inputLabel: "Confirmation" },
+      // INTENT: 支持工单的状态可以再改回去，唯独升级会通知到值班——所以分开说。
+      consequence: {
+        effect:
+          input.label === "Escalate"
+            ? t("The on-call rotation is paged and the escalation timestamp is recorded for good.")
+            : t("The ticket moves to this status and its SLA clock is recalculated. Another status command moves it back."),
+        reversible: input.label !== "Escalate",
+      },
       reasonLabel: "Reason",
       submitLabel: "Confirm",
       onSubmit: async (reason) => {
@@ -254,13 +298,14 @@ export function SupportWorkspace({
           },
           { "idempotency-key": idempotencyKey },
         );
-        setNotice(`${input.label} ${input.id} completed.`);
+        toast({ tone: "success", title: t("{action} applied to {id}", { action: t(input.label), id: input.id }) });
         navigate({ ...query, cursor: "" }, "replace");
       },
     });
   }
 
   const rows = data?.items ?? [];
+  const pageInfo = data?.pageInfo ?? emptyPageInfo;
   const filtered = Boolean(
     query.search ||
       query.category ||
@@ -270,8 +315,8 @@ export function SupportWorkspace({
   return (
     <section className="space-y-5">
       <PageHeader
-        purpose="Triage the complete support request authority with server filters, SLA state, saved views, and audited resolution commands."
-        title={t("Support Requests")}
+        purpose={t("Triage the complete support request authority with server filters, SLA state, saved views, and audited resolution commands.")}
+        title={t("Support Cases")}
       />
       <div
         className="flex flex-wrap justify-between gap-2 text-xs text-[var(--ad-text-muted)]"
@@ -279,19 +324,12 @@ export function SupportWorkspace({
       >
         <span>
 
-          {t("Support authority ·")} {data?.freshness ?? t("source freshness pending")} ·{" "}
-          {freshness(data, loading, error, refreshedAt)}
+          {t("Support authority ·")} {data?.freshness ? value(data.freshness) : t("source freshness pending")} ·{" "}
+          {freshness(t, data, loading, error, refreshedAt ? format.time(refreshedAt) : null)}
         </span>
         <span className="flex gap-3 font-semibold">
-          {!canWrite ? (
-            <span>{t("Read only · support.request.write is not granted")}</span>
-          ) : null}
-          {!canViewPlaintext ? (
-            <span>
-
-              {t("Plaintext unavailable · support.plaintext.view is not granted")}
-            </span>
-          ) : null}
+          {!canWrite ? <PermissionNotice permission="support.request.write" /> : null}
+          {!canViewPlaintext ? <PermissionNotice permission="support.plaintext.view" /> : null}
         </span>
       </div>
       <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
@@ -353,10 +391,10 @@ export function SupportWorkspace({
               />
               <button
                 className="inline-flex min-h-10 items-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white"
-                disabled={!savedViewLabel.trim()}
+                disabled={savingView || !savedViewLabel.trim()}
                 type="submit"
               >
-                <Bookmark className="h-4 w-4" />
+                {savingView ? <Loader2 className="h-4 w-4 animate-spin" /> : <Bookmark className="h-4 w-4" />}
 
                 {t("Save view")}
               </button>
@@ -379,7 +417,7 @@ export function SupportWorkspace({
               <button
                 aria-label={t("Delete saved view {label}", { label: view.label })}
                 className="grid h-8 w-8 place-items-center border-l"
-                onClick={() => void deleteSavedView(view)}
+                onClick={() => confirmDeleteSavedView(view)}
                 type="button"
               >
                 <Trash2 className="h-3.5 w-3.5" />
@@ -410,54 +448,44 @@ export function SupportWorkspace({
           ) : null}
         </div>
         {savedViewError ? (
-          <p className="mt-2 text-xs text-[var(--ad-red-text)]" role="alert">
-            {savedViewError}
-          </p>
+          <div className="mt-2">
+            <AuthorityRequestError
+              cause={savedViewErrorCause}
+              message={savedViewError}
+              onRetry={() => void loadSavedViews()}
+            />
+          </div>
         ) : null}
       </section>
       {canViewPlaintext ? <PlaintextAccessPanel /> : null}
-      {notice ? (
-        <p
-          aria-live="polite"
-          className="rounded-md bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]"
-          data-testid="admin-action-status"
-          role="status"
-        >
-          {notice}
-        </p>
-      ) : null}
       {error ? (
-        <div
-          className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
-          role="alert"
-        >
-
-          {t("Support authority refresh failed:")} {error}
-          <button
-            className="ml-3 min-h-8 rounded border border-current px-2"
-            onClick={() => void load(query)}
-            type="button"
-          >
-
-            {t("Retry support")}
-          </button>
-          {data ? (
-            <span className="ml-2">
-
-              {t("The last good snapshot remains visible.")}
-            </span>
-          ) : null}
-        </div>
+        <AuthorityRequestError
+          cause={errorCause}
+          message={error}
+          onRetry={() => void load(query)}
+          snapshotAt={data ? refreshedAt : null}
+        />
       ) : null}
       {!data && loading ? (
         <div className="rounded-lg border p-4" role="status">
           <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
 
-          {t("Loading support authority")}
+          {t("Loading support requests…")}
         </div>
       ) : data && !rows.length ? (
         <EmptyState
-          hint="The complete support authority query returned no requests."
+          action={
+            filtered ? (
+              <GhostButton onClick={() => navigate(defaultSupportQuery)}>
+                {t("Clear filters")}
+              </GhostButton>
+            ) : null
+          }
+          hint={
+            filtered
+              ? t("These filters match nothing right now. Clearing them shows every request.")
+              : t("The complete support authority query returned no requests.")
+          }
           title={
             filtered
               ? "No support requests match these filters"
@@ -476,30 +504,34 @@ export function SupportWorkspace({
             "Status",
             "Priority",
             "SLA",
-            "Due",
             "Escalation",
             "Assigned",
+            "Last update",
             "Resolution",
             "Created",
             "Actions",
           ]}
           minimumWidthClassName="min-w-[2000px]"
-          rows={supportRows(rows, canWrite, confirmAction)}
+          rows={supportRows(rows, canWrite, confirmAction, t, value, format, refreshedAt ?? "")}
+          stickyLastColumn
         />
       ) : null}
-      {data?.pageInfo?.hasNextPage && data.pageInfo.endCursor ? (
-        <button
-          className="inline-flex min-h-11 items-center gap-2 rounded border px-4 text-sm font-semibold"
-          disabled={loading}
-          onClick={() =>
-            navigate({ ...query, cursor: data.pageInfo?.endCursor ?? "" })
+      {data && rows.length > 0 ? (
+        <Pagination
+          hasNext={Boolean(pageInfo.hasNextPage && pageInfo.endCursor)}
+          hasPrevious={cursorTrail.length > 0}
+          loading={loading}
+          onNext={() => {
+            if (!pageInfo.endCursor) return;
+            navigate({ ...query, cursor: pageInfo.endCursor }, "push", [...cursorTrail, query.cursor]);
+          }}
+          onPrevious={() =>
+            navigate({ ...query, cursor: cursorTrail.at(-1) ?? "" }, "push", cursorTrail.slice(0, -1))
           }
-          type="button"
-        >
-          <RefreshCcw className="h-4 w-4" />
-
-          {t("Next support page")}
-        </button>
+          page={cursorTrail.length + 1}
+          pageSize={SUPPORT_PAGE_SIZE}
+          rowCount={rows.length}
+        />
       ) : null}
       {confirmation ? (
         <ConfirmDialog
@@ -513,6 +545,8 @@ export function SupportWorkspace({
 
 function PlaintextAccessPanel() {
   const { t } = useAdminI18n();
+  const { toast } = useToast();
+  const failureToast = useFailureToast();
   const [targetType, setTargetType] =
     useState<PlaintextTargetType>("generation_job");
   const [targetId, setTargetId] = useState("");
@@ -521,10 +555,6 @@ function PlaintextAccessPanel() {
   const [reason, setReason] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [result, setResult] = useState<PlaintextResult | null>(null);
-  const [status, setStatus] = useState<{
-    good: boolean;
-    message: string;
-  } | null>(null);
   const [loading, setLoading] = useState(false);
   const ready =
     targetId.trim() &&
@@ -536,11 +566,10 @@ function PlaintextAccessPanel() {
     event.preventDefault();
     if (!ready || loading) return;
     setLoading(true);
-    setStatus(null);
     setResult(null);
     try {
       const response = await apiWrite<PlaintextResult>(
-        "/api/v1/admin/support/plaintext/view",
+        "/api/v2/admin/support/plaintext/view",
         "POST",
         {
           targetType,
@@ -553,13 +582,10 @@ function PlaintextAccessPanel() {
         { "idempotency-key": crypto.randomUUID() },
       );
       setResult(response);
-      setStatus({ good: true, message: "Plaintext access logged." });
+      toast({ tone: "success", title: t("Plaintext access logged.") });
     } catch (cause) {
-      setStatus({
-        good: false,
-        message:
-          cause instanceof Error ? cause.message : "Plaintext access failed.",
-      });
+      // INTENT: 失败时保留 targetId / reason / confirmation —— 重敲一遍确认串很费事。
+      failureToast(cause);
     } finally {
       setLoading(false);
     }
@@ -624,20 +650,6 @@ function PlaintextAccessPanel() {
 
           {t("View plaintext")}
         </button>
-        {status ? (
-          <span
-            aria-live="polite"
-            className={
-              status.good
-                ? "ml-3 text-xs text-[var(--ad-green-text)]"
-                : "ml-3 text-xs text-[var(--ad-red-text)]"
-            }
-            data-testid="admin-plaintext-status"
-            role="status"
-          >
-            {status.message}
-          </span>
-        ) : null}
       </form>
       {result ? (
         <div
@@ -651,11 +663,11 @@ function PlaintextAccessPanel() {
               result.authorization.ticketId ??
               "—"}
           </p>
-          {Object.entries(result.plaintext).map(([field, value]) => (
+          {Object.entries(result.plaintext).map(([field, fieldValue]) => (
             <div key={field}>
               <p className="text-xs font-semibold">{field}</p>
               <pre className="mt-1 whitespace-pre-wrap text-xs">
-                {value || "(empty)"}
+                {fieldValue || t("(empty)")}
               </pre>
             </div>
           ))}
@@ -678,12 +690,17 @@ function supportRows(
   rows: Row[],
   canWrite: boolean,
   confirm: ConfirmAction,
+  t: (key: string, values?: Record<string, string | number>) => string,
+  value: (key: string) => string,
+  format: AdminFormat,
+  // 这批数据的抓取时刻——「多久没动过」相对它算，见 LastUpdateCell。
+  referenceTime: string,
 ): DataTableRow[] {
   return rows.map((row, index) => {
-    const id = text(row.ticketId);
-    const status = text(row.status);
-    const sla = text(row.slaState);
-    const escalated = Boolean(text(row.slaEscalatedAt));
+    const id = format.text(row.ticketId);
+    const status = format.text(row.status);
+    const sla = format.text(row.slaState);
+    const escalated = Boolean(format.text(row.slaEscalatedAt));
     const actions: Array<{
       label: string;
       icon: ReactNode;
@@ -701,7 +718,7 @@ function supportRows(
       actions.push({
         label: "Escalate",
         icon: <AlertTriangle className="h-4 w-4" />,
-        endpoint: `/api/v1/admin/support/requests/${id}/escalate`,
+        endpoint: `/api/v2/admin/support/requests/${id}/escalate`,
         method: "POST",
       });
     if (status === "received")
@@ -734,60 +751,184 @@ function supportRows(
       id: id || `support-${index}`,
       cells: [
         id,
-        display(row.userEmail),
-        display(row.category),
-        display(row.subject),
-        display(row.description),
-        status,
-        display(row.priority),
-        sla,
-        date(row.slaDueAt),
-        display(row.slaEscalationReason),
-        display(row.assignedToEmail),
-        display(row.resolutionNotes),
-        date(row.createdAt),
+        format.display(row.userEmail),
+        value(format.text(row.category)) || "—",
+        format.display(row.subject),
+        <CaseText key="description" value={format.text(row.description)} />,
+        status ? value(status) : "—",
+        format.display(row.priority),
+        <SlaCell
+          dueAt={format.text(row.slaDueAt)}
+          hoursRemaining={
+            typeof row.slaHoursRemaining === "number"
+              ? row.slaHoursRemaining
+              : null
+          }
+          key="sla"
+          state={sla}
+        />,
+        <EscalationCell
+          at={format.text(row.slaEscalatedAt)}
+          key="escalation"
+          reason={format.text(row.slaEscalationReason)}
+        />,
+        format.display(row.assignedToEmail),
+        // SPEC: 工单上一次动过是什么时候。
+        // INTENT: 「卡了多久」是客服排队的首要依据，而权威接口一直返回 updatedAt，
+        //         工作台以前只画 createdAt——于是一条刚回过的工单和一条躺了两周的长得一样。
+        <LastUpdateCell key="updated" referenceTime={referenceTime} value={format.text(row.updatedAt)} />,
+        format.display(row.resolutionNotes),
+        format.dateTime(row.createdAt),
         canWrite ? (
           <div className="flex flex-wrap gap-1">
             {actions.map((action) => (
-              <button
-                className="inline-flex min-h-9 items-center gap-1 rounded border px-2"
+              <TicketAction
+                icon={action.icon}
                 key={`${id}-${action.label}`}
+                label={action.label}
                 onClick={() =>
                   confirm({
                     id,
                     label: action.label,
                     endpoint:
-                      action.endpoint ?? `/api/v1/admin/support/requests/${id}`,
+                      action.endpoint ?? `/api/v2/admin/support/requests/${id}`,
                     method: action.method ?? "PATCH",
                     status: action.next,
                     includeResolution: action.resolution,
                   })
                 }
-                type="button"
-              >
-                {action.icon}
-                {action.label}
-              </button>
+              />
             ))}
           </div>
         ) : (
-          "Read only"
+          t("Read only")
         ),
       ],
     };
   });
 }
 
-function supportQueryFromSavedView(value: unknown): SupportQuery {
-  if (!value || typeof value !== "object") return defaultSupportQuery;
-  const record = value as Record<string, unknown>;
-  return {
-    search: typeof record.query === "string" ? record.query : "",
-    status: typeof record.status === "string" ? record.status : "all",
-    sla: typeof record.sla === "string" ? record.sla : "all",
-    category: typeof record.category === "string" ? record.category : "",
-    cursor: "",
-  };
+function TicketAction({
+  icon,
+  label,
+  onClick,
+}: {
+  icon: ReactNode;
+  label: string;
+  onClick: () => void;
+}) {
+  const { t } = useAdminI18n();
+  return (
+    <button
+      className="inline-flex min-h-9 items-center gap-1 rounded border px-2"
+      onClick={onClick}
+      type="button"
+    >
+      {icon}
+      {t(label)}
+    </button>
+  );
+}
+
+// SPEC: SLA 一格说清三件事：状态、还剩/已逾期多久、截止时刻。
+// INTENT: 以前「SLA」列是一个状态词、「Due」列是一个绝对时间戳，客服要自己拿当前时间做减法
+//         才知道急不急。剩余小时数是服务端算好一起发过来的（priority→小时表），只是没人画。
+// INVARIANT: hoursRemaining 为 null 时不编一个倒计时——paused / closed 本来就没有截止。
+function SlaCell({
+  dueAt,
+  hoursRemaining,
+  state,
+}: {
+  dueAt: string;
+  hoursRemaining: number | null;
+  state: string;
+}) {
+  const { t, value } = useAdminI18n();
+  const format = useAdminFormat();
+  return (
+    <span className="block">
+      {/* 基调走 slaTone 映射，文字仍是 SLA 状态本身 —— 别让 pill 显示映射后的词。 */}
+      <StatusPill label={state ? value(state) : "—"} status={slaTone(state)} />
+      {hoursRemaining === null ? null : (
+        <span className="mt-1 block text-xs font-semibold">
+          {hoursRemaining < 0
+            ? t("Overdue by {hours}h", { hours: Math.abs(hoursRemaining) })
+            : t("{hours}h left", { hours: hoursRemaining })}
+        </span>
+      )}
+      {dueAt ? (
+        <span className="block text-xs text-[var(--ad-text-muted)]">
+          {format.dateTime(dueAt)}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+// INTENT: SLA 状态词不在 status-tone 的表里（它认的是 approved/failed 这类），
+//         这里把四个 SLA 状态映射到已有的基调词，而不是再造一套颜色。
+function slaTone(state: string) {
+  if (state === "overdue") return "failed";
+  if (state === "due_soon") return "pending";
+  if (state === "on_track") return "active";
+  if (state === "paused") return "paused";
+  return state || "archived";
+}
+
+function EscalationCell({ at, reason }: { at: string; reason: string }) {
+  const { t } = useAdminI18n();
+  const format = useAdminFormat();
+  if (!at) return <span className="text-[var(--ad-text-muted)]">{t("Not escalated")}</span>;
+  return (
+    <span className="block">
+      <span className="block text-xs font-semibold">{format.dateTime(at)}</span>
+      <span className="block max-w-[16rem] break-words text-xs text-[var(--ad-text-muted)]">
+        {reason || t("No reason recorded")}
+      </span>
+    </span>
+  );
+}
+
+// SPEC: 「多久没动过」相对于**这批数据的抓取时刻**，不是相对于渲染的那一瞬。
+// INTENT: 这里原先在 render 里调 Date.now()——既被 react-hooks/purity 拦下，语义也不对：
+//         同一份未刷新的数据会因为组件重渲染而给出不同的天数。权威响应自带 asOf，
+//         用它才对得上运营看到的那句「数据新鲜至 …」。
+function LastUpdateCell({ referenceTime, value }: { referenceTime: string; value: string }) {
+  const { t } = useAdminI18n();
+  const format = useAdminFormat();
+  if (!value) return <span className="text-[var(--ad-text-muted)]">{t("Never updated")}</span>;
+  const days = Math.floor((new Date(referenceTime).getTime() - new Date(value).getTime()) / 86_400_000);
+  return (
+    <span className="block">
+      <span className="block">{format.dateTime(value)}</span>
+      {Number.isFinite(days) && days >= 1 ? (
+        <span className="block text-xs text-[var(--ad-text-muted)]">
+          {t("{days}d ago", { days })}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+// SPEC: 工单正文。短的摊开，长的折起来但保留开头。
+// INTENT: 描述以前整段塞进单元格，一条长工单能把行高撑满一屏，扫队列变成了滚屏。
+function CaseText({ value }: { value: string }) {
+  const { t } = useAdminI18n();
+  if (!value.trim())
+    return <span className="text-[var(--ad-text-muted)]">{t("Nothing written")}</span>;
+  if (value.length <= 90)
+    return <span className="block max-w-xs break-words">{value}</span>;
+  return (
+    <details className="max-w-xs">
+      <summary
+        aria-label={t("Support description")}
+        className="cursor-pointer rounded break-words focus-visible:outline focus-visible:outline-2"
+      >
+        {`${value.slice(0, 90)}…`}
+      </summary>
+      <p className="mt-2 break-words whitespace-pre-wrap text-xs">{value}</p>
+    </details>
+  );
 }
 
 function sameQuery(left: SupportQuery, right: SupportQuery) {
@@ -809,9 +950,11 @@ function Field({
   onChange: (value: string) => void;
   value: string;
 }) {
+  const { t } = useAdminI18n();
   return (
     <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
-      {label}
+      {t(label)}
+      {/* aria-label 保持英文原串：mounted 测试与运营脚本按它定位控件，翻译后会一起断。 */}
       <input
         aria-label={label}
         className="min-h-10 rounded-md border px-3 text-sm"
@@ -833,9 +976,10 @@ function Select({
   options: string[];
   value: string;
 }) {
+  const { t, value: enumLabel } = useAdminI18n();
   return (
     <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
-      {label}
+      {t(label)}
       <select
         aria-label={label}
         className="min-h-10 rounded-md border px-3 text-sm"
@@ -844,7 +988,7 @@ function Select({
       >
         {options.map((option) => (
           <option key={option} value={option}>
-            {option}
+            {enumLabel(option)}
           </option>
         ))}
       </select>
@@ -858,33 +1002,19 @@ function currentQuery() {
     : supportQueryFromSearch(window.location.search);
 }
 
+// INVARIANT: 这里拼出来的句子直接进 DOM，所以必须在这里就过 t()。以前它返回英文模板串，
+// 调用点也没有再包一层——中文界面的新鲜度那一行整句都是英文。
 function freshness(
+  t: (key: string, values?: Record<string, string | number>) => string,
   data: ListResponse | null,
   loading: boolean,
   error: string | null,
-  refreshedAt: string | null,
+  time: string | null,
 ) {
-  const time = refreshedAt
-    ? new Date(refreshedAt).toLocaleTimeString()
-    : "unknown";
-  if (loading && data) return `refreshing · showing snapshot from ${time}`;
-  if (error && data) return `stale · last good ${time}`;
-  if (error) return "unavailable";
-  if (data) return `current snapshot · ${time}`;
-  return "refreshing · no snapshot yet";
-}
-
-function text(value: unknown) {
-  return typeof value === "string" ? value : "";
-}
-
-function display(value: unknown) {
-  return typeof value === "string" || typeof value === "number"
-    ? String(value)
-    : "—";
-}
-
-function date(value: unknown) {
-  const parsed = new Date(text(value));
-  return Number.isNaN(parsed.getTime()) ? "—" : parsed.toLocaleString();
+  const at = time ?? t("unknown");
+  if (loading && data) return t("refreshing · as of {time}", { time: at });
+  if (error && data) return t("stale · last good {time}", { time: at });
+  if (error) return t("unavailable");
+  if (data) return t("current snapshot · {time}", { time: at });
+  return t("loading…");
 }

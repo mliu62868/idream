@@ -1,4 +1,4 @@
-import { preflightContentAssetArchiveV2 } from "@/server/modules/admin/content/assets";
+import { preflightContentAssetArchive } from "@/server/modules/admin-v2/content/assets";
 import {
   actorWithPermission,
   jsonBody,
@@ -15,6 +15,6 @@ export function POST(request: Request) {
       request,
       "contentAssetBulkPreflightRequestSchema",
     );
-    return preflightContentAssetArchiveV2(body);
+    return preflightContentAssetArchive(body);
   });
 }

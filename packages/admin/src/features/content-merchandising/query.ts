@@ -5,6 +5,9 @@ export type ContentQuery = {
   cursor: string;
 };
 
+/** 分页条要报「第 N–M 条」，算法需要每页条数，所以它不能只活在 URL 拼接里。 */
+export const CONTENT_PAGE_SIZE = 25;
+
 export const defaultContentQuery: ContentQuery = {
   search: "",
   status: "",
@@ -23,12 +26,12 @@ export function contentQueryFromSearch(search: string): ContentQuery {
 }
 
 export function contentListPath(query: ContentQuery) {
-  const params = new URLSearchParams({ limit: "25" });
+  const params = new URLSearchParams({ limit: String(CONTENT_PAGE_SIZE) });
   set(params, "search", query.search);
   set(params, "status", query.status);
   set(params, "visibility", query.visibility);
   set(params, "cursor", query.cursor);
-  return `/api/v1/admin/content/characters?${params.toString()}`;
+  return `/api/v2/admin/content/characters?${params.toString()}`;
 }
 
 export function contentWorkspaceUrl(

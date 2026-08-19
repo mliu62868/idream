@@ -11,6 +11,9 @@ export type ModerationScope = "reports" | "media" | "appeals";
 
 export const defaultModerationQuery: ModerationQuery = { search: "", status: "", targetType: "", reportCursor: "", mediaCursor: "", appealCursor: "" };
 
+/** 三块队列同一个页大小；请求参数与分页条读数共用，只允许有一份。 */
+export const MODERATION_PAGE_SIZE = 25;
+
 export function moderationQueryFromSearch(search: string): ModerationQuery {
   const params = new URLSearchParams(search);
   return {
@@ -24,14 +27,14 @@ export function moderationQueryFromSearch(search: string): ModerationQuery {
 }
 
 export function moderationQueuePath(query: ModerationQuery, scope: ModerationScope) {
-  const params = new URLSearchParams({ scope, limit: "25" });
+  const params = new URLSearchParams({ scope, limit: String(MODERATION_PAGE_SIZE) });
   set(params, "search", query.search);
   set(params, "status", query.status);
   set(params, "targetType", query.targetType);
   if (scope === "reports") set(params, "reportCursor", query.reportCursor);
   if (scope === "media") set(params, "mediaCursor", query.mediaCursor);
   if (scope === "appeals") set(params, "appealCursor", query.appealCursor);
-  return `/api/v1/admin/moderation/queue?${params.toString()}`;
+  return `/api/v2/admin/moderation/queue?${params.toString()}`;
 }
 
 export function moderationWorkspaceUrl(pathname: string, search: string, query: ModerationQuery) {

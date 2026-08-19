@@ -594,7 +594,7 @@ test("flow 4/5/6: generation, billing, and moderation via the real server", asyn
   expect(report.ok(), JSON.stringify(reportBody)).toBeTruthy();
   const reportId = reportBody.data.report.id as string;
 
-  const queue = await ctx.get("/api/v1/admin/moderation/queue", {
+  const queue = await ctx.get("/api/v2/admin/moderation/queue", {
     headers: { "x-idream-user-id": "seed-admin-user", "x-idream-role": "admin" },
     params: { id: reportId },
   });
@@ -622,11 +622,11 @@ test("flow 8: admin control-plane API routes respond", async ({ page }) => {
     "x-idream-role": "admin",
   };
 
-  const dashboard = await page.request.get("/api/v1/admin/dashboard", { headers });
+  const dashboard = await page.request.get("/api/v2/admin/dashboard", { headers });
   expect(dashboard.ok()).toBeTruthy();
   expect((await dashboard.json()).data.metrics.generation).toBeTruthy();
 
-  const profiles = await page.request.get("/api/v1/admin/generation/model-profiles", { headers });
+  const profiles = await page.request.get("/api/v2/admin/generation/model-profiles", { headers });
   expect(profiles.ok()).toBeTruthy();
   expect((await profiles.json()).data.items).toEqual(
     expect.arrayContaining([
@@ -634,7 +634,7 @@ test("flow 8: admin control-plane API routes respond", async ({ page }) => {
     ]),
   );
 
-  const audit = await page.request.get("/api/v1/admin/audit-log", { headers });
+  const audit = await page.request.get("/api/v2/admin/audit-log", { headers });
   expect(audit.ok()).toBeTruthy();
   expect(Array.isArray((await audit.json()).data.items)).toBe(true);
 });

@@ -3,15 +3,31 @@
 // SPEC: 公告/banner 后台面板（ADMIN_PHASE4_DESIGN §3）。新建 / 启停 / 删除，写后 refetch。
 // INTENT: 自取数、无 props；样式对齐 TagsView。启停/删除经 inline typed confirmation。
 import { useCallback, useEffect, useState } from "react";
-import { ChevronRight, Loader2, Plus, RefreshCcw, Search, Trash2 } from "lucide-react";
+import { Loader2, Plus, RefreshCcw, Search, Trash2 } from "lucide-react";
+import type { AdminPageInfo } from "@idream/shared/admin";
 import { apiGet, apiWrite } from "@/components/admin/api";
+import { adminV2Request } from "@/lib/admin-v2-api";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
+import { EmptyState } from "@/components/admin/ui/EmptyState";
+import { Pagination } from "@/components/admin/ui/Pagination";
+import { StatusPill } from "@/components/admin/ui/StatusPill";
+import {
+  WriteFeedbackBanner,
+  canGoPrevious,
+  listPageFromParams,
+  requestErrorMessage,
+  useWriteFeedback,
+} from "@/components/admin/section-kit";
 import {
   announcementListPath,
   announcementQueryFromSearch,
   announcementWorkspaceUrl,
   type AnnouncementQuery,
 } from "./announcements-query";
+
+const PAGE_SIZE = 25;
 
 type Announcement = {
   id: string;
@@ -33,25 +49,22 @@ type AnnouncementActionDraft = {
 const inputClass =
   "rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]";
 
-async function apiDelete(path: string, body: Record<string, unknown>): Promise<void> {
-  const response = await fetch(path, {
-    method: "DELETE",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const payload = (await response.json()) as { ok: boolean; error?: { message?: string } };
-  if (!payload.ok) throw new Error(payload.error?.message ?? "Delete failed");
+// SPEC: 删除带确认体，走与其余后台请求同一个信封解码与错误类。
+function apiDelete(path: string, body: Record<string, unknown>) {
+  return adminV2Request<{ deleted: true }>(path, { method: "DELETE", body });
 }
 
 export function AnnouncementsView() {
   const { t, value: valueLabel } = useAdminI18n();
   const [items, setItems] = useState<Announcement[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ message: string; cause: unknown } | null>(null);
   const [actionDraft, setActionDraft] = useState<AnnouncementActionDraft | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
+  const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
   const [query, setQuery] = useState<AnnouncementQuery>({ announcementSearch: "", announcementLevel: "", announcementActive: "", announcementCursor: "" });
-  const [pageInfo, setPageInfo] = useState<{ endCursor: string | null; hasNextPage: boolean }>({ endCursor: null, hasNextPage: false });
+  const [pageInfo, setPageInfo] = useState<AdminPageInfo>({ endCursor: null, hasNextPage: false });
+  const [page, setPage] = useState(1);
 
   const load = useCallback(async (params = new URLSearchParams(window.location.search)) => {
     setLoading(true);
@@ -59,15 +72,16 @@ export function AnnouncementsView() {
     try {
       const restored = announcementQueryFromSearch(params.toString());
       setQuery(restored);
-      const data = await apiGet<{ items: Announcement[]; pageInfo: { endCursor: string | null; hasNextPage: boolean } }>(announcementListPath(restored));
+      setPage(listPageFromParams(params));
+      const data = await apiGet<{ items: Announcement[]; pageInfo: AdminPageInfo }>(announcementListPath(restored));
       setItems(data.items);
       setPageInfo(data.pageInfo);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Load failed");
+      setError({ message: requestErrorMessage(err, t), cause: err });
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0);
@@ -79,12 +93,14 @@ export function AnnouncementsView() {
     };
   }, [load]);
 
-  function navigate(updates: Record<string, string | null>, clearCursor = false) {
+  // INVARIANT: page 只进地址栏，不进 announcementListPath —— 游标分页的请求里没有页码这个概念，
+  // 但没有它，后退回上一页时页码就只能靠猜。
+  function navigate(updates: Record<string, string | null>, nextPage: number) {
     const next = announcementWorkspaceUrl(
       window.location.pathname,
       window.location.search,
-      updates,
-      clearCursor,
+      { ...updates, page: nextPage > 1 ? String(nextPage) : null },
+      nextPage === 1,
     );
     window.history.pushState(null, "", next);
     void load(new URLSearchParams(window.location.search));
@@ -92,6 +108,7 @@ export function AnnouncementsView() {
 
   function startAction(kind: AnnouncementActionDraft["kind"], item: Announcement) {
     setError(null);
+    clearFeedback();
     setActionDraft({ kind, item, reason: "", confirmation: "" });
   }
 
@@ -100,31 +117,68 @@ export function AnnouncementsView() {
     setActionBusy(true);
     try {
       if (actionDraft.kind === "toggle") {
-        await apiWrite(`/api/v1/admin/announcements/${actionDraft.item.id}`, "PATCH", {
+        await apiWrite(`/api/v2/admin/announcements/${actionDraft.item.id}`, "PATCH", {
           active: !actionDraft.item.active,
           reason: actionDraft.reason.trim(),
           confirmation: actionDraft.confirmation.trim(),
         });
       } else {
-        await apiDelete(`/api/v1/admin/announcements/${actionDraft.item.id}`, {
+        await apiDelete(`/api/v2/admin/announcements/${actionDraft.item.id}`, {
           reason: actionDraft.reason.trim(),
           confirmation: actionDraft.confirmation.trim(),
         });
       }
+      const { kind, item } = actionDraft;
       setActionDraft(null);
       await load();
+      reportSuccess(
+        kind === "delete"
+          ? t("Deleted “{title}”. It no longer shows anywhere on the site.", { title: item.title })
+          : item.active
+            ? t("Deactivated “{title}”. It is hidden from the site now.", { title: item.title })
+            : t("Activated “{title}”. It is visible site-wide now.", { title: item.title }),
+      );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Announcement action failed");
+      setError({ message: requestErrorMessage(err, t), cause: err });
     } finally {
       setActionBusy(false);
     }
   }
 
+  const filtered = Boolean(query.announcementSearch || query.announcementLevel || query.announcementActive);
+  const tableRows: DataTableRow[] = items.map((item) => ({
+    id: item.id,
+    cells: [
+      item.title,
+      <span className="text-[var(--ad-text-muted)]" key="level">{valueLabel(item.level)}</span>,
+      <StatusPill key="active" label={item.active ? t("Active") : t("Inactive")} status={item.active ? "active" : "disabled"} />,
+      <div className="flex justify-end gap-2" key="actions">
+        <button
+          className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
+          disabled={actionBusy}
+          onClick={() => startAction("toggle", item)}
+          type="button"
+        >
+          {item.active ? t("Deactivate") : t("Activate")}
+        </button>
+        <button
+          aria-label={t("Delete announcement")}
+          className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-red-text)]/20 px-2 text-xs text-[var(--ad-red-text)]"
+          disabled={actionBusy}
+          onClick={() => startAction("delete", item)}
+          type="button"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      </div>,
+    ],
+  }));
+
   return (
     <div className="space-y-5">
       <form className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-4" onSubmit={(event) => {
         event.preventDefault();
-        navigate({ announcementSearch: query.announcementSearch, announcementLevel: query.announcementLevel, announcementActive: query.announcementActive }, true);
+        navigate({ announcementSearch: query.announcementSearch, announcementLevel: query.announcementLevel, announcementActive: query.announcementActive }, 1);
       }}>
         <input aria-label={t("Search announcements")} className={inputClass} onChange={(event) => setQuery({ ...query, announcementSearch: event.target.value })} placeholder={t("Search")} type="search" value={query.announcementSearch} />
         <select className={inputClass} onChange={(event) => setQuery({ ...query, announcementLevel: event.target.value })} value={query.announcementLevel}>
@@ -147,9 +201,10 @@ export function AnnouncementsView() {
           {t("Refresh")}
         </button>
       </div>
-      {error ? <p role="alert" className="text-xs text-[var(--ad-red-text)]">{error}</p> : null}
+      <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
+      {error ? <AuthorityRequestError cause={error.cause} message={error.message} onRetry={() => void load()} /> : null}
 
-      <CreateAnnouncementForm reload={load} />
+      <CreateAnnouncementForm onCreated={reportSuccess} reload={load} />
 
       {actionDraft ? (
         <section className="rounded-lg border border-[var(--ad-yellow-text)]/20 bg-[var(--ad-yellow-bg)] p-3">
@@ -197,59 +252,37 @@ export function AnnouncementsView() {
         </section>
       ) : null}
 
-      <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
-        <table className="w-full text-left text-sm">
-          <caption className="sr-only">{t("Announcements")}</caption>
-          <thead className="border-b border-[var(--ad-border)] text-xs text-[var(--ad-text-muted)]">
-            <tr>
-              <th scope="col" className="px-3 py-2 font-medium">{t("title")}</th>
-              <th scope="col" className="px-3 py-2 font-medium">{t("level")}</th>
-              <th scope="col" className="px-3 py-2 font-medium">{t("active")}</th>
-              <th scope="col" className="px-3 py-2 font-medium"><span className="sr-only">{t("Actions")}</span></th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((item) => (
-              <tr key={item.id} className="border-b border-[var(--ad-border)]">
-                <td className="px-3 py-2">{item.title}</td>
-                <td className="px-3 py-2 text-[var(--ad-text-muted)]">{valueLabel(item.level)}</td>
-                <td className="px-3 py-2">{item.active ? t("yes") : t("no")}</td>
-                <td className="px-3 py-2 text-right">
-                  <div className="flex justify-end gap-2">
-                    <button
-                      className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
-                      disabled={actionBusy}
-                      onClick={() => startAction("toggle", item)}
-                      type="button"
-                    >
-                      {item.active ? t("Deactivate") : t("Activate")}
-                    </button>
-                    <button
-                      aria-label={t("Delete announcement")}
-                      className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-red-text)]/20 px-2 text-xs text-[var(--ad-red-text)]"
-                      disabled={actionBusy}
-                      onClick={() => startAction("delete", item)}
-                      type="button"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-            {items.length === 0 && !loading && !error ? (
-              <tr>
-                <td className="px-3 py-6 text-center text-xs text-[var(--ad-text-muted)]" colSpan={4}>
-                  {t(query.announcementSearch || query.announcementLevel || query.announcementActive ? "No announcements match these filters." : "No announcements.")}
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </section>
-      {pageInfo.hasNextPage && pageInfo.endCursor ? (
-        <button className="inline-flex h-11 items-center gap-2 rounded-md border border-[var(--ad-border)] px-4 text-sm" onClick={() => navigate({ announcementCursor: pageInfo.endCursor })} type="button">{t("Next page")}<ChevronRight className="h-4 w-4" /></button>
-      ) : null}
+      {error && items.length === 0 ? null : (
+        <DataTable
+          caption="Announcements"
+          empty={
+            <EmptyState
+              hint={filtered
+                ? t("The authority searched every announcement. Clear the filters to see them all.")
+                : t("Create one above to broadcast it site-wide.")}
+              kind={filtered ? "filtered" : "empty"}
+              onClearFilters={filtered ? () => navigate({ announcementSearch: null, announcementLevel: null, announcementActive: null }, 1) : undefined}
+              title={filtered ? t("No announcements match these filters.") : t("No announcements.")}
+            />
+          }
+          headers={[t("Title"), t("level"), t("Active"), { label: t("Actions"), align: "right" }]}
+          loading={loading}
+          rows={tableRows}
+          skeletonRows={PAGE_SIZE}
+        />
+      )}
+      <Pagination
+        hasNext={Boolean(pageInfo.hasNextPage && pageInfo.endCursor)}
+        // 这个 operation 的查询契约没有 `before` —— 置灰，不假装已经在第一页（section-kit 有全部理由）。
+        hasPrevious={canGoPrevious(pageInfo, false)}
+        loading={loading}
+        onNext={() => navigate({ announcementCursor: pageInfo.endCursor }, page + 1)}
+        onPrevious={() => undefined}
+        page={page}
+        pageSize={PAGE_SIZE}
+        rowCount={items.length}
+        totalCount={pageInfo.totalCount ?? null}
+      />
     </div>
   );
 }
@@ -259,7 +292,7 @@ function canConfirmAnnouncementAction(draft: AnnouncementActionDraft) {
   return draft.reason.trim().length >= 3 && confirmation === draft.item.id;
 }
 
-function CreateAnnouncementForm({ reload }: { reload: () => void }) {
+function CreateAnnouncementForm({ onCreated, reload }: { onCreated: (message: string) => void; reload: () => void }) {
   const { t, value: valueLabel } = useAdminI18n();
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
@@ -276,7 +309,7 @@ function CreateAnnouncementForm({ reload }: { reload: () => void }) {
     setBusy(true);
     setErr(null);
     try {
-      await apiWrite("/api/v1/admin/announcements", "POST", {
+      await apiWrite("/api/v2/admin/announcements", "POST", {
         title: title.trim(),
         body: body.trim(),
         href: href.trim() || null,
@@ -291,8 +324,13 @@ function CreateAnnouncementForm({ reload }: { reload: () => void }) {
       setReason("");
       setConfirmation("");
       reload();
+      onCreated(
+        active
+          ? t("Created “{title}”. It is live site-wide now.", { title: trimmedTitle })
+          : t("Created “{title}”. Activate it when you want it on the site.", { title: trimmedTitle }),
+      );
     } catch (error) {
-      setErr(error instanceof Error ? error.message : "Create failed");
+      setErr(requestErrorMessage(error, t));
     } finally {
       setBusy(false);
     }
@@ -308,7 +346,7 @@ function CreateAnnouncementForm({ reload }: { reload: () => void }) {
   return (
     <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
       <h2 className="text-sm font-semibold">{t("Create announcement")}</h2>
-      <p className="mt-1 text-xs text-[var(--ad-text-muted)]">站内 banner（即站内广播渠道）。active 即对全站可见。</p>
+      <p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t("An in-product banner — this is the site-wide broadcast channel. Active means visible to everyone.")}</p>
       <div className="mt-3 grid gap-3 md:grid-cols-2">
         <input className={inputClass} onChange={(e) => setTitle(e.target.value)} placeholder={t("Title")} value={title} />
         <input className={inputClass} onChange={(e) => setBody(e.target.value)} placeholder={t("Body")} value={body} />

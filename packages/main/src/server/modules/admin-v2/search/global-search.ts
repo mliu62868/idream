@@ -30,25 +30,47 @@ export async function globalAdminSearch(request: Request) {
       ? prisma.character.findMany({ where: operationalCharacterWhere({ deletedAt: null, ...(characterScope === null ? {} : { id: { in: [...characterScope] } }), OR: [{ id: contains }, { name: contains }, { description: contains }] }), orderBy: [{ updatedAt: "desc" }, { id: "desc" }], take: query.limit })
       : [],
     permissions.has("creative.run.read")
-      ? prisma.contentProductionBatch.findMany({ where: operationalContentProductionBatchWhere({ OR: [{ id: contains }, { title: contains }, { targetId: contains }] }), orderBy: [{ updatedAt: "desc" }, { id: "desc" }], take: query.limit })
+      ? prisma.contentProductionBatch.findMany({ where: operationalContentProductionBatchWhere({ OR: [{ id: contains }, { title: contains }, { targetId: contains }, { purpose: contains }] }), orderBy: [{ updatedAt: "desc" }, { id: "desc" }], take: query.limit })
       : [],
     permissions.has("case.read")
-      ? prisma.adminCase.findMany({ where: { ...(actor.role === "support" ? { type: { in: ["support_request", "billing_dispute"] } } : {}), OR: [{ id: contains }, { targetId: contains }, { caseKey: contains }] }, orderBy: [{ updatedAt: "desc" }, { id: "desc" }], take: query.limit })
+      ? prisma.adminCase.findMany({ where: { ...(actor.role === "support" ? { type: { in: ["support_request", "billing_dispute"] } } : {}), OR: [{ id: contains }, { targetId: contains }, { caseKey: contains }, { type: contains }] }, orderBy: [{ updatedAt: "desc" }, { id: "desc" }], take: query.limit })
       : [],
     incidentScope
       ? prisma.opsIncident.findMany({ where: { AND: [incidentScope, { OR: [{ id: contains }, { signature: contains }, { suspectedCause: contains }] }] }, orderBy: [{ updatedAt: "desc" }, { id: "desc" }], take: query.limit })
       : [],
     permissions.has("generation.job.read")
-      ? prisma.generationJob.findMany({ where: operationalGenerationJobWhere({ OR: [{ id: contains }, { userId: contains }, { errorCode: contains }, { profileId: contains }] }), orderBy: [{ updatedAt: "desc" }, { id: "desc" }], take: query.limit })
+      ? prisma.generationJob.findMany({ where: operationalGenerationJobWhere({ OR: [{ id: contains }, { userId: contains }, { errorCode: contains }, { profileId: contains }, { mode: contains }] }), orderBy: [{ updatedAt: "desc" }, { id: "desc" }], take: query.limit })
       : [],
   ]);
-  const items = [
-    ...customers.map((row) => ({ kind: "customer", id: row.id, title: row.displayName ?? row.name ?? row.email, subtitle: row.email, href: `/admin/customers?customer=${encodeURIComponent(row.id)}`, status: row.status, updatedAt: row.updatedAt.toISOString() })),
-    ...characters.map((row) => ({ kind: "character", id: row.id, title: row.name, subtitle: row.description, href: `/admin/characters/${encodeURIComponent(row.id)}`, status: row.status, updatedAt: row.updatedAt.toISOString() })),
-    ...runs.map((row) => ({ kind: "creative_run", id: row.id, title: row.title, subtitle: `${row.purpose} · ${row.targetId ?? "unscoped"}`, href: `/admin/creative/runs/${encodeURIComponent(row.id)}`, status: row.status, updatedAt: row.updatedAt.toISOString() })),
-    ...cases.map((row) => ({ kind: "case", id: row.id, title: `${row.type} · ${row.caseKey}`, subtitle: row.targetId, href: `/admin/cases/${encodeURIComponent(row.id)}`, status: row.status, updatedAt: row.updatedAt.toISOString() })),
-    ...incidents.map((row) => ({ kind: "incident", id: row.id, title: row.suspectedCause ?? row.signature, subtitle: row.signature, href: `/admin/ops/incidents/${encodeURIComponent(row.id)}`, status: row.status, updatedAt: row.updatedAt.toISOString() })),
-    ...jobs.map((row) => ({ kind: "generation_job", id: row.id, title: `${row.mode} generation`, subtitle: `${row.userId} · ${row.errorCode ?? row.profileId ?? "no error"}`, href: `/admin/ops/jobs?job=${encodeURIComponent(row.id)}`, status: row.status, updatedAt: row.updatedAt.toISOString() })),
-  ].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.id.localeCompare(right.id)).slice(0, query.limit);
+  const items = fairShareAcrossKinds([
+    customers.map((row) => ({ kind: "customer", id: row.id, title: row.displayName ?? row.name ?? row.email, subtitle: row.email, href: `/admin/customers?customer=${encodeURIComponent(row.id)}`, status: row.status, updatedAt: row.updatedAt.toISOString() })),
+    characters.map((row) => ({ kind: "character", id: row.id, title: row.name, subtitle: row.description, href: `/admin/characters/${encodeURIComponent(row.id)}`, status: row.status, updatedAt: row.updatedAt.toISOString() })),
+    runs.map((row) => ({ kind: "creative_run", id: row.id, title: row.title, subtitle: `${row.purpose} · ${row.targetId ?? "unscoped"}`, href: `/admin/creative/runs/${encodeURIComponent(row.id)}`, status: row.status, updatedAt: row.updatedAt.toISOString() })),
+    cases.map((row) => ({ kind: "case", id: row.id, title: `${row.type} · ${row.caseKey}`, subtitle: row.targetId, href: `/admin/cases/${encodeURIComponent(row.id)}`, status: row.status, updatedAt: row.updatedAt.toISOString() })),
+    incidents.map((row) => ({ kind: "incident", id: row.id, title: row.suspectedCause ?? row.signature, subtitle: row.signature, href: `/admin/ops/incidents/${encodeURIComponent(row.id)}`, status: row.status, updatedAt: row.updatedAt.toISOString() })),
+    jobs.map((row) => ({ kind: "generation_job", id: row.id, title: `${row.mode} generation`, subtitle: `${row.userId} · ${row.errorCode ?? row.profileId ?? "no error"}`, href: `/admin/ops/jobs?job=${encodeURIComponent(row.id)}`, status: row.status, updatedAt: row.updatedAt.toISOString() })),
+  ], query.limit);
   return ok(globalAdminSearchResponseSchema.parse({ items, query: query.q, asOf: new Date().toISOString() }), { headers: { "Cache-Control": "no-store" } });
+}
+
+// SPEC: 每类先各取最新的一条，再一轮一轮补齐到 limit；最终仍按新鲜度展示。
+// INTENT: 改造前是六类拍平后按 updatedAt 排完直接截断 —— 客户表写得最勤，limit=8 时
+// 八条全是客户，搜角色 / 工单 / 事故 / 作业一条都出不来。跨类召回不该由某一类的写入
+// 频率决定。只有一类命中时轮转会自然退化成纯新鲜度排序，行为不变。
+function fairShareAcrossKinds<TItem extends { id: string; updatedAt: string }>(
+  groups: readonly (readonly TItem[])[],
+  limit: number,
+) {
+  const picked: TItem[] = [];
+  for (let rank = 0; picked.length < limit; rank += 1) {
+    const before = picked.length;
+    for (const group of groups) {
+      if (picked.length >= limit) break;
+      const item = group[rank];
+      if (item) picked.push(item);
+    }
+    if (picked.length === before) break;
+  }
+  return picked.sort((left, right) =>
+    right.updatedAt.localeCompare(left.updatedAt) || left.id.localeCompare(right.id));
 }

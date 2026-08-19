@@ -20,7 +20,7 @@ import {
   resolveCharacterCustomerPreviewAssets,
   resolveCharacterAssetReviewEvidence,
   resolveCharacterAssetSubject,
-} from "./CharacterAssetStudio";
+} from "./character-asset-studio-authority";
 
 // 只给 journey 投影里前端真正读的那部分；其余字段与本用例无关。
 function journey(
@@ -252,6 +252,32 @@ describe("Character Asset Studio flow", () => {
       comparison: false,
       draft: false,
       decision: "rejected",
+    })).toBe("rejected");
+  });
+
+  // 失败候选此前落进 "ready" 兜底：缩略图跟成功的候选一模一样，只是没图。
+  it("distinguishes a failed candidate from one that is merely undecided", () => {
+    expect(resolveCharacterCandidateVisualState({
+      active: false,
+      comparison: false,
+      draft: false,
+      decision: null,
+      failed: true,
+    })).toBe("failed");
+    expect(resolveCharacterCandidateVisualState({
+      active: false,
+      comparison: false,
+      draft: false,
+      decision: null,
+      failed: false,
+    })).toBe("ready");
+    // 已经有人工判定的候选，判定优先于执行态。
+    expect(resolveCharacterCandidateVisualState({
+      active: false,
+      comparison: false,
+      draft: false,
+      decision: "rejected",
+      failed: true,
     })).toBe("rejected");
   });
 

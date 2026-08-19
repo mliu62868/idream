@@ -44,6 +44,7 @@ import { createLatestRequestGate } from "@/lib/latest-request";
 import { cn } from "@/lib/utils";
 import { characterWorkspacePermissions } from "./character-workspace-permissions";
 import { permissionDenied } from "./character-permission-denied";
+import { CharacterJourneyRail } from "./CharacterJourneyRail";
 import { CharacterPortfolio } from "./CharacterPortfolio";
 import { ProjectEditor } from "./ProjectEditor";
 import { VisualIdentityPanel } from "./VisualIdentityPanel";
@@ -213,11 +214,9 @@ function CharacterDetail({
     journal.getSnapshot,
   );
   const requestGate = useRef(createLatestRequestGate());
-  const [tab, setTab] = useState<Tab>(() => {
-    if (typeof window === "undefined") return "project";
-    if (journal.hasPersistedCommand()) return "release";
-    return characterWorkspaceTabFromSearch(window.location.search);
-  });
+  // INVARIANT: 初值不许读地址栏或 journal 快照 —— 服务端得出 "project"、客户端首帧
+  // 得出 URL 里的 tab，两边分叉就是 hydration mismatch。真实 tab 在挂载 effect 里对齐。
+  const [tab, setTab] = useState<Tab>("project");
   const tabRef = useRef(tab);
   const load = useCallback(async () => {
     const request = requestGate.current.begin();
@@ -534,6 +533,19 @@ function CharacterDetail({
     tabRef.current = tab;
   }, [tab]);
   useEffect(() => {
+    // 水合完成后把 tab 对齐到外部状态（地址栏 + 持久化命令）：初值必须与服务端一致，
+    // 真实 tab 只能在这里读。一次性对齐，之后由用户操作与 popstate 驱动。
+    /* eslint-disable react-hooks/set-state-in-effect -- one-shot hydration from the address bar */
+    setTab(
+      journal.hasPersistedCommand()
+        ? "release"
+        : characterWorkspaceTabFromSearch(window.location.search),
+    );
+    /* eslint-enable react-hooks/set-state-in-effect */
+    // 只在挂载时跑一次。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
     if (tab !== "visual") return;
     const targetId = window.location.hash.replace(/^#/, "");
     if (
@@ -587,7 +599,7 @@ function CharacterDetail({
                   onClick={() => void refreshAuthoritativeWorkspace()}
                   type="button"
                 >
-                  {t("Retry authoritative workspace")}
+                  {t("Retry")}
                 </button>
               ) : null}
               {mutationNotice.kind === "command_reconfirmation_required" &&
@@ -650,7 +662,7 @@ function CharacterDetail({
           >
             {error ??
               (loading
-                ? t("Loading the authoritative Character workspace…")
+                ? t("Loading characters…")
                 : t("Character not found"))}
             <button
               className="ml-2 font-semibold underline"
@@ -701,6 +713,19 @@ function CharacterDetail({
     setTab(next);
     setWorkspaceUrl(new URLSearchParams({ tab: next }), {
       mode: "push",
+    });
+  };
+  // SPEC: 把服务端 journey 深链（/admin/characters/:id?tab=x#anchor）落到同页导航。
+  // INTENT: tab 是 React state，next/link 跳同一条路由只会改地址栏、不换面板；而整页
+  //         跳转会丢掉正在恢复的命令上下文。所以这里手工解析后走 selectTab + 滚锚点。
+  const openDeepLink = (deepLink: string) => {
+    const target = new URL(deepLink, window.location.origin);
+    const nextTab = characterWorkspaceTabFromSearch(target.search);
+    selectTab(nextTab);
+    const anchor = target.hash.slice(1);
+    if (!anchor) return;
+    window.requestAnimationFrame(() => {
+      document.getElementById(anchor)?.scrollIntoView({ block: "start" });
     });
   };
   const onTabKey = (
@@ -844,7 +869,7 @@ function CharacterDetail({
                 onClick={() => void refreshAuthoritativeWorkspace()}
                 type="button"
               >
-                {t("Refresh authoritative workspace")}
+                {t("Refresh")}
               </button>
             ) : null}
             {mutationNotice.kind === "command_reconfirmation_required" &&
@@ -868,6 +893,7 @@ function CharacterDetail({
           </div>
         </div>
       ) : null}
+      <CharacterJourneyRail journey={data.journey} onOpenDeepLink={openDeepLink} />
       <CharacterMediaOperationsCard
         canReclaimVoice={guardedPermissions.writeProject}
         onReclaimVoice={reclaimVoiceRequest}

@@ -9,11 +9,15 @@ import {
 import { AlertTriangle, Loader2, RefreshCcw, RotateCcw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import {
   ConfirmDialog,
   type ConfirmSpec,
 } from "@/components/admin/ui/ConfirmDialog";
+import { DataTable, type DataTableHeader, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
+import { useAdminFormat } from "@/components/admin/ui/format";
+import { useToast } from "@/components/admin/ui/Toast";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { createLatestRequestGate } from "@/lib/latest-request";
@@ -81,11 +85,12 @@ export function IncidentCorrelationOutbox({
   readonly canReplay: boolean;
 }) {
   const { t } = useAdminI18n();
+  const format = useAdminFormat();
+  const { toast } = useToast();
   const [data, setData] =
     useState<IncidentCorrelationOutboxEventListResponse | null>(null);
   const [loading, setLoading] = useState(canRead);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
   const gate = useRef(createLatestRequestGate());
@@ -107,7 +112,7 @@ export function IncidentCorrelationOutbox({
       setSelected(new Set());
     } catch (cause) {
       if (!request.isCurrent()) return;
-      setError(cause instanceof Error ? cause.message : "Incident correlation outbox request failed");
+      setError(cause);
     } finally {
       if (request.isCurrent()) setLoading(false);
     }
@@ -152,9 +157,12 @@ export function IncidentCorrelationOutbox({
       title: t("Replay incident correlation failed events ({count})", {
         count: exactRevision.length,
       }),
-      summary: t(
-        "The worker will retry the unchanged correlation payloads; this browser request does not correlate an Incident.",
-      ),
+      consequence: {
+        effect: t(
+          "The worker will retry the unchanged correlation payloads; this browser request does not correlate an Incident. Retrying inside this dialog reuses the same idempotency key and cannot requeue twice.",
+        ),
+        reversible: false,
+      },
       destructive: {
         expectedName: INCIDENT_CORRELATION_REPLAY_CONFIRMATION,
         inputLabel: t("Replay confirmation"),
@@ -169,9 +177,14 @@ export function IncidentCorrelationOutbox({
             idempotencyKey,
           },
         );
-        setNotice(t("Incident correlation replay result · {summary}.", {
-          summary: summarizeIncidentCorrelationReplay(result.results),
-        }));
+        toast({
+          // 不是每条都回到队列时用 error 语气——只有 error toast 不会自己消失，
+          // 而"哪几条没进队列"正是运营必须读完的那句。
+          tone: result.requeuedCount === result.results.length ? "success" : "error",
+          title: t("Incident correlation replay result · {summary}.", {
+            summary: summarizeIncidentCorrelationReplay(result.results),
+          }),
+        });
         await load();
       },
     });
@@ -189,9 +202,12 @@ export function IncidentCorrelationOutbox({
     const idempotencyKey = crypto.randomUUID();
     setConfirmation({
       title: t("Record source authority missing"),
-      summary: t(
-        "This preserves the failed carrier and records that its GenerationAttempt source authority is still absent; no user effect is applied.",
-      ),
+      consequence: {
+        effect: t(
+          "This preserves the failed carrier and records that its GenerationAttempt source authority is still absent; no user effect is applied. The disposition is terminal. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.",
+        ),
+        reversible: false,
+      },
       destructive: {
         expectedName:
           INCIDENT_CORRELATION_ATTEMPT_MISSING_DISCARD_CONFIRMATION,
@@ -210,14 +226,83 @@ export function IncidentCorrelationOutbox({
             idempotencyKey,
           },
         );
-        setNotice(t(
-          "Incident correlation attempt-missing disposition · {outcome}.",
-          { outcome: result.outcome },
-        ));
+        toast({
+          tone: "success",
+          title: t("Incident correlation attempt-missing disposition · {outcome}.", {
+            outcome: result.outcome,
+          }),
+        });
         await load();
       },
     });
   }
+
+  // SPEC: 勾选框留在单元格里，不用 DataTable 自带的多选列。
+  // INTENT: 只有 replayEligibility === "eligible" 的行能进批量命令，不能进的必须是 disabled
+  // 的勾选框（读屏用户按下去要有反应，而不是静默不选中）。DataTable 的 selection 目前
+  // 表达不了「这一行不可选、原因是什么」——能表达之后再把这一列交回去。
+  const headers: DataTableHeader[] = [
+    ...(canReplay ? [{ label: "Select", width: "4rem" }] : []),
+    { label: "Event", width: "16rem" },
+    { label: "Attempt", width: "12rem" },
+    { label: "Replay authority", width: "10rem" },
+    { label: "Last error", width: "18rem" },
+    { label: "Revision", width: "12rem" },
+    { label: "Terminal disposition", width: "12rem" },
+  ];
+  const tableRows: DataTableRow[] = rows.map((row) => {
+    const eligible = row.replayEligibility === "eligible";
+    return {
+      id: row.id,
+      cells: [
+        ...(canReplay ? [
+          <input
+            aria-label={t("Select failed incident correlation event {id}", { id: row.id })}
+            checked={selected.has(row.id)}
+            disabled={!eligible}
+            key="select"
+            onChange={() => toggle(row.id)}
+            type="checkbox"
+          />,
+        ] : []),
+        <span key="event">
+          <span className="block font-mono text-xs">{row.id}</span>
+          <span className="mt-1 block text-xs text-[var(--ad-text-muted)]">{row.aggregateType}:{row.aggregateId}</span>
+        </span>,
+        <span key="attempt">
+          <span className="block font-mono text-xs">{row.attemptId ?? "—"}</span>
+          <span className="mt-1 block text-xs text-[var(--ad-text-muted)]">{row.attemptStatus ?? "—"}</span>
+        </span>,
+        <span className={eligible ? "text-[var(--ad-green-text)]" : "text-[var(--ad-yellow-text)]"} key="eligibility">
+          {!eligible ? <AlertTriangle className="mr-1 inline h-3.5 w-3.5" /> : null}
+          {t(row.replayEligibility.replaceAll("_", " "))}
+        </span>,
+        <span className="block text-xs" key="error">
+          <span className="block font-mono">{row.lastErrorCode ?? "—"}</span>
+          <span className="mt-1 line-clamp-2 block text-[var(--ad-text-muted)]">{row.lastErrorMessage ?? "—"}</span>
+        </span>,
+        <span className="block text-xs text-[var(--ad-text-muted)]" key="revision">
+          <span className="block">{t("Attempts")}: {row.attempts}</span>
+          <span className="mt-1 block font-mono" title={row.payloadHash}>{row.payloadHash.slice(0, 12)}</span>
+          <time className="mt-1 block" dateTime={row.updatedAt}>{format.dateTime(row.updatedAt)}</time>
+        </span>,
+        canDiscardAttemptMissing &&
+        row.replayEligibility === "attempt_missing" &&
+        row.attemptId ? (
+          <button
+            className="min-h-9 rounded-md border border-[var(--ad-border)] px-3 text-xs font-semibold"
+            key="disposition"
+            onClick={() => requestAttemptMissingDisposition(row)}
+            type="button"
+          >
+            {t("Record source authority missing")}
+          </button>
+        ) : (
+          <span className="text-xs text-[var(--ad-text-muted)]" key="disposition">—</span>
+        ),
+      ],
+    };
+  });
 
   return (
     <section
@@ -242,18 +327,8 @@ export function IncidentCorrelationOutbox({
         </div>
       </div>
 
-      {notice ? (
-        <p className="rounded-md bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]" role="status">
-          {notice}
-        </p>
-      ) : null}
-      {error ? (
-        <p className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">
-          {t("Incident correlation failed delivery refresh failed:")} {error}
-          <button className="ml-3 min-h-8 rounded border border-current px-2 font-semibold" onClick={() => void load()} type="button">
-            {t("Retry")}
-          </button>
-        </p>
+      {error !== null && data ? (
+        <AuthorityRequestError cause={error} message={authorityMessage(error)} onRetry={() => void load()} />
       ) : null}
 
       {!canRead ? null : loading && !data ? (
@@ -261,14 +336,9 @@ export function IncidentCorrelationOutbox({
           <Loader2 className="h-4 w-4 animate-spin" />
           {t("Loading incident correlation failed delivery")}
         </p>
-      ) : rows.length === 0 ? (
-        <EmptyState
-          hint={t("Every incident correlation carrier is pending, delivered, or explicitly quarantined.")}
-          title={t("No failed incident correlation deliveries")}
-        />
       ) : (
         <>
-          {canReplay ? (
+          {canReplay && rows.length > 0 ? (
             <div className="flex flex-wrap items-center gap-3">
               <label className="flex items-center gap-2 text-xs text-[var(--ad-text-muted)]">
                 <input
@@ -279,6 +349,9 @@ export function IncidentCorrelationOutbox({
                 />
                 {t("Select replay-eligible")}
               </label>
+              <span className="text-xs text-[var(--ad-text-muted)]">
+                {t("{count} selected", { count: selectedRows.length })}
+              </span>
               <button
                 className="inline-flex min-h-10 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-[var(--ad-surface)] disabled:cursor-not-allowed disabled:opacity-50"
                 disabled={selectedRows.length === 0}
@@ -291,79 +364,21 @@ export function IncidentCorrelationOutbox({
             </div>
           ) : null}
 
-          <div className="overflow-x-auto rounded-lg border border-[var(--ad-border)]">
-            <table className="w-full min-w-[860px] text-left text-sm">
-              <thead className="bg-[var(--ad-surface-subtle)] text-xs text-[var(--ad-text-muted)]">
-                <tr>
-                  <th className="px-3 py-2">{t("Select")}</th>
-                  <th className="px-3 py-2">{t("Event")}</th>
-                  <th className="px-3 py-2">{t("Attempt")}</th>
-                  <th className="px-3 py-2">{t("Replay authority")}</th>
-                  <th className="px-3 py-2">{t("Last error")}</th>
-                  <th className="px-3 py-2">{t("Revision")}</th>
-                  <th className="px-3 py-2">{t("Terminal disposition")}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row) => {
-                  const eligible = row.replayEligibility === "eligible";
-                  return (
-                    <tr className="border-t border-[var(--ad-border)] align-top" key={row.id}>
-                      <td className="px-3 py-3">
-                        {canReplay ? (
-                          <input
-                            aria-label={t("Select failed incident correlation event {id}", { id: row.id })}
-                            checked={selected.has(row.id)}
-                            disabled={!eligible}
-                            onChange={() => toggle(row.id)}
-                            type="checkbox"
-                          />
-                        ) : null}
-                      </td>
-                      <td className="px-3 py-3">
-                        <p className="font-mono text-xs">{row.id}</p>
-                        <p className="mt-1 text-xs text-[var(--ad-text-muted)]">{row.aggregateType}:{row.aggregateId}</p>
-                      </td>
-                      <td className="px-3 py-3">
-                        <p className="font-mono text-xs">{row.attemptId ?? "—"}</p>
-                        <p className="mt-1 text-xs text-[var(--ad-text-muted)]">{row.attemptStatus ?? "—"}</p>
-                      </td>
-                      <td className="px-3 py-3">
-                        <span className={eligible ? "text-[var(--ad-green-text)]" : "text-[var(--ad-yellow-text)]"}>
-                          {!eligible ? <AlertTriangle className="mr-1 inline h-3.5 w-3.5" /> : null}
-                          {t(row.replayEligibility.replaceAll("_", " "))}
-                        </span>
-                      </td>
-                      <td className="max-w-xs px-3 py-3 text-xs">
-                        <p className="font-mono">{row.lastErrorCode ?? "—"}</p>
-                        <p className="mt-1 line-clamp-2 text-[var(--ad-text-muted)]">{row.lastErrorMessage ?? "—"}</p>
-                      </td>
-                      <td className="px-3 py-3 text-xs text-[var(--ad-text-muted)]">
-                        <p>{t("Attempts")}: {row.attempts}</p>
-                        <p className="mt-1 font-mono" title={row.payloadHash}>{row.payloadHash.slice(0, 12)}</p>
-                        <time className="mt-1 block" dateTime={row.updatedAt}>{new Date(row.updatedAt).toLocaleString()}</time>
-                      </td>
-                      <td className="px-3 py-3">
-                        {canDiscardAttemptMissing &&
-                        row.replayEligibility === "attempt_missing" &&
-                        row.attemptId ? (
-                          <button
-                            className="min-h-9 rounded-md border border-[var(--ad-border)] px-3 text-xs font-semibold"
-                            onClick={() => requestAttemptMissingDisposition(row)}
-                            type="button"
-                          >
-                            {t("Record source authority missing")}
-                          </button>
-                        ) : (
-                          <span className="text-xs text-[var(--ad-text-muted)]">—</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <DataTable
+            caption="Incident correlation failed delivery"
+            empty={
+              <EmptyState
+                hint={t("Every incident correlation carrier is pending, delivered, or explicitly quarantined.")}
+                title={t("No failed incident correlation deliveries")}
+              />
+            }
+            error={data ? null : error === null ? null : authorityMessage(error)}
+            headers={headers}
+            loading={loading}
+            minimumWidthClassName="min-w-[860px]"
+            onRetry={() => void load()}
+            rows={tableRows}
+          />
 
           {data?.pageInfo.hasNextPage && data.pageInfo.endCursor ? (
             <button
@@ -382,4 +397,8 @@ export function IncidentCorrelationOutbox({
       {confirmation ? <ConfirmDialog onClose={() => setConfirmation(null)} spec={confirmation} /> : null}
     </section>
   );
+}
+
+function authorityMessage(error: unknown) {
+  return error instanceof Error ? error.message : "Incident correlation outbox request failed";
 }

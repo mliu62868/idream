@@ -7,11 +7,19 @@ import {
   generationJobListResponseSchema,
   retryGenerationRequestResultSchema,
   type GenerationJobDetailResponse,
+  type GenerationJobListItem,
   type GenerationJobListResponse,
 } from "@idream/shared/admin";
 import { apiGet } from "@/components/admin/api";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import { CopyableId } from "@/components/admin/ui/CopyableId";
+import { DataTable, type DataTableHeader, type DataTableRow } from "@/components/admin/ui/DataTable";
+import { EmptyState } from "@/components/admin/ui/EmptyState";
+import { FilterBar, type FilterChip } from "@/components/admin/ui/FilterBar";
+import { useAdminFormat } from "@/components/admin/ui/format";
+import { Pagination } from "@/components/admin/ui/Pagination";
+import { useUrlFilters } from "@/components/admin/ui/useUrlFilters";
 import { adminV2Request } from "@/lib/admin-v2-api";
 import {
   authorityRequestFailed,
@@ -20,39 +28,47 @@ import {
   createAuthorityState,
 } from "@/lib/authority-state";
 import { createLatestRequestGate } from "@/lib/latest-request";
-import {
-  adminDateLocale,
-  type AdminLocale,
-  useAdminI18n,
-} from "@/components/admin/i18n";
+import { useAdminI18n } from "@/components/admin/i18n";
 import { FailureReason } from "@/components/admin/generation/FailureReason";
 import {
-  ReadonlyOpsView,
-  type OpsColumn,
-} from "@/components/admin/generation/ReadonlyOpsView";
-import {
   buildGenerationJobQuery,
+  changedGenerationJobFilters,
   defaultGenerationJobQuery,
-  GENERATION_JOBS_REFRESH_EVENT,
+  generationJobLimitOptions,
+  generationJobModeOptions,
+  generationJobSortOptions,
   generationJobStatusOptions,
+  GENERATION_JOBS_REFRESH_EVENT,
+  isGenerationJobQueryFiltered,
   parseGenerationJobQuery,
+  type GenerationJobFilterKey,
   type GenerationJobQueryDraft,
 } from "./query";
 import { UnknownGenerationReconciliationControls } from "./UnknownGenerationReconciliationControls";
 
-type Row = Record<string, unknown>;
-
-type HistoryMode = "push" | "replace";
+const FILTER_LABELS: Record<GenerationJobFilterKey, string> = {
+  search: "Search",
+  mode: "Mode",
+  legacyStatus: "Status",
+  provider: "Provider",
+  sourceType: "Source type",
+  userId: "User ID",
+  characterId: "Character ID",
+  sort: "Sort",
+};
 
 export function JobsView() {
-  const { locale, t, value } = useAdminI18n();
-  const [jobQuery, setJobQuery] = useState<GenerationJobQueryDraft>(defaultGenerationJobQuery);
+  const { t, value } = useAdminI18n();
+  const format = useAdminFormat();
   const [jobs, setJobs] = useState(() => createAuthorityState<GenerationJobListResponse>());
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [detail, setDetail] = useState<GenerationJobDetailResponse | null>(null);
   const [detailBusy, setDetailBusy] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [retrySpec, setRetrySpec] = useState<ConfirmSpec | null>(null);
+  const [selectedRows, setSelectedRows] = useState<string[]>([]);
+  // 游标分页没有页码，只有「上一页用的是哪个游标」。这条轨迹就是 Pagination 的第 N 页。
+  const [cursorTrail, setCursorTrail] = useState<string[]>([]);
   const detailTriggerRef = useRef<HTMLButtonElement | null>(null);
   const jobsGate = useRef(createLatestRequestGate());
 
@@ -76,10 +92,11 @@ export function JobsView() {
     }
   }, []);
 
-  const loadJobDetail = useCallback(async (id: string) => {
+  const showJobDetail = useCallback(async (id: string | null) => {
     setSelectedJobId(id);
     setDetail(null);
     setDetailError(null);
+    if (!id) return;
     setDetailBusy(true);
     try {
       setDetail(generationJobDetailResponseSchema.parse(
@@ -92,199 +109,168 @@ export function JobsView() {
     }
   }, [t]);
 
-  const writeUrl = useCallback((next: GenerationJobQueryDraft, mode: HistoryMode, jobId?: string | null) => {
-    const params = new URLSearchParams(buildGenerationJobQuery(next));
-    if (jobId) params.set("job", jobId);
-    const href = `${window.location.pathname}?${params.toString()}`;
-    window.history[mode === "push" ? "pushState" : "replaceState"](null, "", href);
-  }, []);
+  const filters = useUrlFilters<GenerationJobQueryDraft>({
+    initial: defaultGenerationJobQuery,
+    parse: parseGenerationJobQuery,
+    toUrl: (query, location) => `${location.pathname}?${buildGenerationJobQuery(query)}`,
+    load: (query, params) => {
+      void loadJobs(query);
+      void showJobDetail(params.get("job")?.trim() || null);
+    },
+  });
+  const { apply, draft, pushUrl, query, reload, setDraft, urlFor } = filters;
 
   useEffect(() => {
     const gate = jobsGate.current;
-    const params = new URLSearchParams(window.location.search);
-    const initial = parseGenerationJobQuery(params);
-    const initialJobId = params.get("job")?.trim() || null;
-    const timer = window.setTimeout(() => {
-      setJobQuery(initial);
-      writeUrl(initial, "replace", initialJobId);
-      void loadJobs(initial);
-      if (initialJobId) void loadJobDetail(initialJobId);
-    }, 0);
+    window.addEventListener(GENERATION_JOBS_REFRESH_EVENT, reload);
     return () => {
       gate.invalidate();
-      window.clearTimeout(timer);
+      window.removeEventListener(GENERATION_JOBS_REFRESH_EVENT, reload);
     };
-  }, [loadJobDetail, loadJobs, writeUrl]);
+  }, [reload]);
 
-  useEffect(() => {
-    const refresh = () => {
-      const current = parseGenerationJobQuery(new URLSearchParams(window.location.search));
-      setJobQuery(current);
-      void loadJobs(current);
-    };
-    const restoreFromHistory = () => {
-      const params = new URLSearchParams(window.location.search);
-      const current = parseGenerationJobQuery(params);
-      const jobId = params.get("job")?.trim() || null;
-      setJobQuery(current);
-      void loadJobs(current);
-      if (jobId) void loadJobDetail(jobId);
-      else {
-        setSelectedJobId(null);
-        setDetail(null);
-        setDetailError(null);
-      }
-    };
-    window.addEventListener(GENERATION_JOBS_REFRESH_EVENT, refresh);
-    window.addEventListener("popstate", restoreFromHistory);
-    return () => {
-      window.removeEventListener(GENERATION_JOBS_REFRESH_EVENT, refresh);
-      window.removeEventListener("popstate", restoreFromHistory);
-    };
-  }, [loadJobDetail, loadJobs]);
-
-  function updateJobQuery(patch: Partial<GenerationJobQueryDraft>) {
-    setJobQuery((current) => ({ ...current, ...patch, cursor: undefined }));
-  }
-
-  function applyJobQuery(next: GenerationJobQueryDraft = { ...jobQuery, cursor: undefined }) {
-    setJobQuery(next);
-    setSelectedJobId(null);
-    setDetail(null);
-    setDetailError(null);
-    writeUrl(next, "push");
-    void loadJobs(next);
+  // SPEC: 任何改变结果集的动作都回到第一页并清空勾选 —— 选中的行翻页后已经不在屏幕上了。
+  function applyQuery(next: GenerationJobQueryDraft, trail: string[] = []) {
+    setCursorTrail(trail);
+    setSelectedRows([]);
+    apply(next);
   }
 
   function openJobDetail(id: string, trigger: HTMLButtonElement) {
     if (!id) return;
     detailTriggerRef.current = trigger;
-    writeUrl(jobQuery, "push", id);
-    void loadJobDetail(id);
+    pushUrl(`${urlFor(query)}&job=${encodeURIComponent(id)}`);
+    void showJobDetail(id);
   }
 
   function closeJobDetail() {
-    setSelectedJobId(null);
-    setDetail(null);
-    setDetailError(null);
-    writeUrl(jobQuery, "replace");
+    pushUrl(urlFor(query), "replace");
+    void showJobDetail(null);
     window.requestAnimationFrame(() => detailTriggerRef.current?.focus());
   }
 
-  const columns: OpsColumn[] = [
-    {
-      key: "userId",
-      label: "User",
-      render: (row) => <span className="font-mono text-xs">{shortId(stringValue(row.userId))}</span>,
-    },
-    {
-      key: "createdAt",
-      label: "Created",
-      render: (row) => compactDate(stringValue(row.createdAt), locale),
-    },
-    { key: "requestOutcome", label: "Request outcome", render: (row) => value(stringValue(row.requestOutcome)) },
-    {
-      key: "unknownReview",
-      label: "Unknown review",
-      render: (row) => {
-        const review = row.unknownReview as Row | undefined;
-        const status = stringValue(review?.status);
-        const nextReviewAt = stringValue(review?.nextReviewAt);
-        if (!status || status === "not_applicable") {
-          return <span className="text-[var(--ad-text-muted)]">—</span>;
-        }
-        return (
-          <span className={status === "due" ? "font-semibold text-red-700" : "text-amber-700"}>
-            {t(status)}{nextReviewAt ? ` · ${compactDate(nextReviewAt, locale)}` : ""}
-          </span>
-        );
-      },
-    },
-    { key: "settlement", label: "Settlement", render: (row) => value(stringValue((row.settlement as Row | undefined)?.view)) },
-    {
-      key: "failure",
-      label: "Failure reason",
-      render: (row) => stringValue(row.requestOutcome) === "failed"
-        ? <FailureReason code={stringValue(row.errorCode)} />
-        : <span className="text-[var(--ad-text-muted)]">—</span>,
-    },
-    {
-      key: "actions",
-      label: "Actions",
-      render: (row) => {
-        const id = stringValue(row.id);
-        return (
-          <div className="flex flex-wrap gap-1">
-            <IconAction
-              icon={<FileText className="h-4 w-4" />}
-              label="Details"
-              onClick={(event) => void openJobDetail(id, event.currentTarget)}
-            />
-            {stringValue(row.requestOutcome) === "failed" ? (
-              <IconAction
-                icon={<RefreshCcw className="h-4 w-4" />}
-                label="Retry"
-                onClick={() => setRetrySpec({
-                  title: `Retry Generation Request ${shortId(id)}`,
-                  summary: "Creates a new immutable Attempt only when no delivery has already succeeded.",
-                  destructive: { expectedName: `${id}:retry` },
-                  submitLabel: "Create retry attempt",
-                  onSubmit: async (reason) => {
-                    await adminV2Request(`/api/v2/admin/jobs/${encodeURIComponent(id)}/commands/retry`, {
-                      method: "POST",
-                      idempotencyKey: crypto.randomUUID(),
-                      body: {
-                        entityVersion: numberValue(row.version),
-                        reason,
-                        confirmation: `${id}:retry`,
-                      },
-                      schema: retryGenerationRequestResultSchema,
-                    });
-                    await loadJobs(jobQuery);
-                  },
-                })}
-              />
-            ) : null}
-          </div>
-        );
-      },
-    },
+  function chipValue(key: GenerationJobFilterKey, raw: string) {
+    if (key === "mode") return t(generationJobModeOptions.find((option) => option.value === raw)?.label ?? raw);
+    if (key === "sort") return t(generationJobSortOptions.find((option) => option.value === raw)?.label ?? raw);
+    if (key === "legacyStatus") return value(raw);
+    return raw;
+  }
+
+  const chips: FilterChip[] = changedGenerationJobFilters(query).map((filter) => ({
+    key: filter.key,
+    label: t(FILTER_LABELS[filter.key]),
+    value: chipValue(filter.key, filter.value),
+    onClear: () => applyQuery({ ...query, ...filter.reset, cursor: undefined }),
+  }));
+
+  const items = jobs.data?.items ?? [];
+  // 「未知结果复核」大多数时候整列是 —— 。没有一行真的在复核时不占这条宽度。
+  const showsUnknownReview = items.some((item) => item.unknownReview.status !== "not_applicable");
+  const headers: DataTableHeader[] = [
+    { label: "Job", width: "9rem" },
+    { label: "User", width: "9rem" },
+    // 只有创建时间在后端两个方向都排得了序；其余排序口径（改动时间 / 花费）没有对应列，留在筛选条里。
+    { label: "Created", sortKey: "created", width: "11rem" },
+    { label: "Request outcome", width: "8rem" },
+    { label: "Settlement", width: "8rem" },
+    { label: "Failure reason", width: "18rem" },
+    ...(showsUnknownReview ? [{ label: "Unknown review", width: "11rem" }] : []),
+    { label: "Actions", align: "right" as const, width: "8rem" },
   ];
-  const rows: Row[] = jobs.data?.items.map((item) => ({ ...item })) ?? [];
-  const fieldClass = "h-10 w-full rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]";
+  const rows: DataTableRow[] = items.map((item) => ({
+    id: item.id,
+    cells: [
+      <CopyableId key="id" value={item.id} />,
+      <CopyableId key="user" value={item.userId} />,
+      format.dateTime(item.createdAt),
+      value(item.requestOutcome),
+      value(item.settlement.view),
+      item.requestOutcome === "failed"
+        ? <FailureReason code={item.errorCode} key="failure" />
+        : <span className="text-[var(--ad-text-muted)]" key="failure">—</span>,
+      ...(showsUnknownReview ? [<UnknownReviewCell item={item} key="review" />] : []),
+      <div className="flex justify-end gap-1" key="actions">
+        <IconAction
+          icon={<FileText className="h-4 w-4" />}
+          label="Details"
+          onClick={(event) => openJobDetail(item.id, event.currentTarget)}
+        />
+        {item.requestOutcome === "failed" ? (
+          <IconAction
+            icon={<RefreshCcw className="h-4 w-4" />}
+            label="Retry"
+            onClick={() => setRetrySpec({
+              // ui/ConfirmDialog 直接渲染 spec 的 title/summary/submitLabel，不过 t()——
+              // 所以在调用点翻译，和本仓库其它 ConfirmSpec 调用点一致。
+              title: t("Retry Generation Request {id}", { id: shortId(item.id) }),
+              summary: t("Creates a new immutable Attempt only when no delivery has already succeeded."),
+              destructive: { expectedName: `${item.id}:retry` },
+              submitLabel: t("Create retry attempt"),
+              onSubmit: async (reason) => {
+                await adminV2Request(`/api/v2/admin/jobs/${encodeURIComponent(item.id)}/commands/retry`, {
+                  method: "POST",
+                  idempotencyKey: crypto.randomUUID(),
+                  body: {
+                    entityVersion: item.version,
+                    reason,
+                    confirmation: `${item.id}:retry`,
+                  },
+                  schema: retryGenerationRequestResultSchema,
+                });
+                await loadJobs(query);
+              },
+            })}
+          />
+        ) : null}
+      </div>,
+    ],
+  }));
 
   return (
     <div className="space-y-4">
-      <form
-        className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"
-        onSubmit={(event) => {
-          event.preventDefault();
-          applyJobQuery();
-        }}
+      <FilterBar
+        busy={jobs.loading}
+        chips={chips}
+        collapsible
+        inputs={[
+          { name: t("Provider"), value: draft.provider, onChange: (provider) => setDraft({ provider }), list: "job-provider-facets" },
+          { name: t("Source type"), value: draft.sourceType, onChange: (sourceType) => setDraft({ sourceType }), list: "job-source-facets" },
+          { name: t("User ID"), value: draft.userId, onChange: (userId) => setDraft({ userId }) },
+          { name: t("Character ID"), value: draft.characterId, onChange: (characterId) => setDraft({ characterId }) },
+        ]}
+        onApply={() => applyQuery({ ...draft, cursor: undefined })}
+        onReset={() => applyQuery(defaultGenerationJobQuery)}
+        onSearch={(search) => setDraft({ search })}
+        search={draft.search}
+        searchPlaceholder={t("Job, user, character, model, error…")}
+        selects={[
+          {
+            name: t("Mode"),
+            value: draft.mode,
+            onChange: (mode) => setDraft({ mode: mode as GenerationJobQueryDraft["mode"] }),
+            options: generationJobModeOptions.map((option) => ({ value: option.value, label: t(option.label) })),
+          },
+          {
+            name: t("Status"),
+            value: draft.legacyStatus,
+            onChange: (legacyStatus) => setDraft({ legacyStatus }),
+            options: [{ value: "", label: t("All") }, ...generationJobStatusOptions.map((status) => ({ value: status, label: value(status) }))],
+          },
+          {
+            name: t("Sort"),
+            value: draft.sort,
+            onChange: (sort) => setDraft({ sort: sort as GenerationJobQueryDraft["sort"] }),
+            options: generationJobSortOptions.map((option) => ({ value: option.value, label: t(option.label) })),
+          },
+        ]}
       >
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)] sm:col-span-2">{t("Search authoritative fields")}<input className={`${fieldClass} mt-1`} onChange={(event) => updateJobQuery({ search: event.target.value })} placeholder={t("Job, user, character, model, error…")} value={jobQuery.search} /></label>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Mode")}<select className={`${fieldClass} mt-1`} onChange={(event) => updateJobQuery({ mode: event.target.value as GenerationJobQueryDraft["mode"] })} value={jobQuery.mode}><option value="all">{t("All historical records")}</option><option value="image">{t("Image")}</option><option value="video">{t("Video")}</option></select></label>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Legacy status filter")}<select className={`${fieldClass} mt-1`} onChange={(event) => updateJobQuery({ legacyStatus: event.target.value })} value={jobQuery.legacyStatus}><option value="">{t("All")}</option>{generationJobStatusOptions.map((status) => <option key={status} value={status}>{value(status)}</option>)}</select></label>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Provider")}<input className={`${fieldClass} mt-1`} list="job-provider-facets" onChange={(event) => updateJobQuery({ provider: event.target.value })} value={jobQuery.provider} /></label>
-          <datalist id="job-provider-facets">{jobs.data?.facets.providers.map((facet) => <option key={facet.value} value={facet.value}>{facet.count}</option>)}</datalist>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Source type")}<input className={`${fieldClass} mt-1`} list="job-source-facets" onChange={(event) => updateJobQuery({ sourceType: event.target.value })} value={jobQuery.sourceType} /></label>
-          <datalist id="job-source-facets">{jobs.data?.facets.sourceTypes.map((facet) => <option key={facet.value} value={facet.value}>{facet.count}</option>)}</datalist>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("User ID")}<input className={`${fieldClass} mt-1`} onChange={(event) => updateJobQuery({ userId: event.target.value })} value={jobQuery.userId} /></label>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Character ID")}<input className={`${fieldClass} mt-1`} onChange={(event) => updateJobQuery({ characterId: event.target.value })} value={jobQuery.characterId} /></label>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Sort")}<select className={`${fieldClass} mt-1`} onChange={(event) => updateJobQuery({ sort: event.target.value as GenerationJobQueryDraft["sort"] })} value={jobQuery.sort}><option value="created_desc">{t("Newest created")}</option><option value="created_asc">{t("Oldest created")}</option><option value="updated_desc">{t("Recently changed")}</option><option value="cost_desc">{t("Highest cost")}</option></select></label>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Page size")}<select className={`${fieldClass} mt-1`} onChange={(event) => updateJobQuery({ limit: Number(event.target.value) })} value={jobQuery.limit}>{[10, 25, 50, 100].map((limit) => <option key={limit} value={limit}>{limit}</option>)}</select></label>
-        </div>
-        <div className="mt-4 flex flex-wrap gap-2">
-          <button className="min-h-10 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-white disabled:opacity-50" disabled={jobs.loading} type="submit">{t("Apply server query")}</button>
-          <button className="min-h-10 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" disabled={jobs.loading} onClick={() => applyJobQuery(defaultGenerationJobQuery)} type="button">{t("Reset")}</button>
-          {jobs.loading ? <span className="inline-flex items-center gap-2 text-xs text-[var(--ad-text-muted)]" role="status"><Loader2 className="h-4 w-4 animate-spin" />  {t("Loading complete query")}</span> : null}
-        </div>
-      </form>
+        <datalist id="job-provider-facets">{jobs.data?.facets.providers.map((facet) => <option key={facet.value} value={facet.value}>{facet.count}</option>)}</datalist>
+        <datalist id="job-source-facets">{jobs.data?.facets.sourceTypes.map((facet) => <option key={facet.value} value={facet.value}>{facet.count}</option>)}</datalist>
+      </FilterBar>
 
-      {jobs.error ? <AuthorityRequestError message={jobs.error} onRetry={() => void loadJobs(jobQuery)} snapshotAt={jobs.data ? jobs.refreshedAt : null} /> : null}
+      {jobs.error && jobs.data ? <AuthorityRequestError message={jobs.error} onRetry={reload} snapshotAt={jobs.refreshedAt} /> : null}
       {jobs.data ? (
-        <section aria-label={t("Generation Job query summary")} className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+        <section aria-label={t("Generation Job totals")} className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
           {[
             ["Matching jobs", jobs.data.summary.totalCount],
             ["Dreamcoins cost", jobs.data.summary.totalCostDreamcoins],
@@ -294,45 +280,80 @@ export function JobsView() {
         </section>
       ) : null}
 
-      {jobs.loading && jobs.data === null ? (
-        <p className="text-sm text-[var(--ad-text-muted)]" role="status">{t("Loading authoritative jobs…")}</p>
-      ) : null}
-      {jobs.data ? <ReadonlyOpsView columns={columns} empty="No jobs match the server query." rows={rows} title={t("Generation Jobs")} /> : null}
+      <DataTable
+        caption="Generation Jobs"
+        density="compact"
+        empty={
+          <EmptyState
+            hint={isGenerationJobQueryFiltered(query)
+              ? "Widen the filters or clear them to inspect the whole authority."
+              : "Generation Requests appear here as soon as the first image or video job is submitted."}
+            kind={isGenerationJobQueryFiltered(query) ? "filtered" : "empty"}
+            onClearFilters={isGenerationJobQueryFiltered(query) ? () => applyQuery(defaultGenerationJobQuery) : undefined}
+            title={isGenerationJobQueryFiltered(query) ? "No jobs match these filters." : "No generation jobs recorded yet."}
+          />
+        }
+        error={jobs.data ? null : jobs.error}
+        headers={headers}
+        loading={jobs.loading}
+        minimumWidthClassName="min-w-[1080px]"
+        onRetry={reload}
+        rows={rows}
+        selection={{
+          selected: selectedRows,
+          onChange: setSelectedRows,
+          actions: (
+            <button
+              className="min-h-8 rounded-md border border-white/40 px-3 text-xs font-semibold"
+              onClick={() => { void navigator.clipboard?.writeText(selectedRows.join("\n")); }}
+              type="button"
+            >
+              {t("Copy selected IDs")}
+            </button>
+          ),
+        }}
+        skeletonRows={query.limit}
+        sort={query.sort === "created_asc" ? { key: "created", direction: "asc" } : query.sort === "created_desc" ? { key: "created", direction: "desc" } : null}
+        onSortChange={(next) => applyQuery({ ...query, sort: next.direction === "asc" ? "created_asc" : "created_desc", cursor: undefined })}
+        stickyHeader
+        stickyLastColumn
+      />
+
       {jobs.data ? (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] px-4 py-3">
-          <p className="text-xs text-[var(--ad-text-muted)]">
-
-            {t("Showing")} {rows.length}  {t("of")} {jobs.data.summary.totalCount}  {t("matching jobs")}
-            {" · "}{t("operational owners:")} {jobs.data.dataScope.includedDataClasses.join(" + ")}
-            {" · "}{t("excluded:")} {jobs.data.dataScope.excludedDataClasses.join(" + ")}
-            {" · "}{t("fresh as of")} {compactDate(jobs.data.asOf, locale)}
-          </p>
-          <button
-            className="min-h-10 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold disabled:opacity-50"
-            disabled={jobs.loading || !jobs.data.pageInfo.hasNextPage || !jobs.data.pageInfo.endCursor}
-            onClick={() => {
-              const next = { ...jobQuery, cursor: jobs.data?.pageInfo.endCursor ?? undefined };
-              applyJobQuery(next);
-            }}
-            type="button"
-          >
-
-            {t("Next page")}
-          </button>
-        </div>
+        <Pagination
+          detail={`${t("operational owners:")} ${jobs.data.dataScope.includedDataClasses.join(" + ")} · ${t("excluded:")} ${jobs.data.dataScope.excludedDataClasses.join(" + ")} · ${t("fresh as of")} ${format.dateTime(jobs.data.asOf)}`}
+          hasNext={Boolean(jobs.data.pageInfo.hasNextPage && jobs.data.pageInfo.endCursor)}
+          hasPrevious={cursorTrail.length > 0}
+          loading={jobs.loading}
+          onNext={() => {
+            const endCursor = jobs.data?.pageInfo.endCursor;
+            if (!endCursor) return;
+            applyQuery({ ...query, cursor: endCursor }, [...cursorTrail, query.cursor ?? ""]);
+          }}
+          onPageSizeChange={(limit) => applyQuery({ ...query, limit, cursor: undefined })}
+          onPrevious={() => {
+            const trail = cursorTrail.slice(0, -1);
+            applyQuery({ ...query, cursor: cursorTrail.at(-1) || undefined }, trail);
+          }}
+          page={cursorTrail.length + 1}
+          pageSize={query.limit}
+          pageSizeOptions={generationJobLimitOptions}
+          rowCount={rows.length}
+          totalCount={jobs.data.summary.totalCount}
+        />
       ) : null}
+
       {selectedJobId ? (
         <GenerationJobInspector
           detail={detail}
           error={detailError}
           jobId={selectedJobId}
           loading={detailBusy}
-          locale={locale}
           onClose={closeJobDetail}
           onReconciled={async () => {
             await Promise.all([
-              loadJobDetail(selectedJobId),
-              loadJobs(jobQuery),
+              showJobDetail(selectedJobId),
+              loadJobs(query),
             ]);
           }}
         />
@@ -342,16 +363,28 @@ export function JobsView() {
   );
 }
 
-function GenerationJobInspector({ detail, error, jobId, loading, locale, onClose, onReconciled }: {
+function UnknownReviewCell({ item }: { item: GenerationJobListItem }) {
+  const { t } = useAdminI18n();
+  const format = useAdminFormat();
+  const { nextReviewAt, status } = item.unknownReview;
+  if (status === "not_applicable") return <span className="text-[var(--ad-text-muted)]">—</span>;
+  return (
+    <span className={status === "due" ? "font-semibold text-red-700" : "text-amber-700"}>
+      {t(status)}{nextReviewAt ? ` · ${format.dateTime(nextReviewAt)}` : ""}
+    </span>
+  );
+}
+
+function GenerationJobInspector({ detail, error, jobId, loading, onClose, onReconciled }: {
   detail: GenerationJobDetailResponse | null;
   error: string | null;
   jobId: string;
   loading: boolean;
-  locale: AdminLocale;
   onClose: () => void;
   onReconciled: () => Promise<void>;
 }) {
   const { t, value } = useAdminI18n();
+  const format = useAdminFormat();
   const request = detail?.request ?? null;
   return (
     <section aria-labelledby="generation-job-detail-title" className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
@@ -367,7 +400,7 @@ function GenerationJobInspector({ detail, error, jobId, loading, locale, onClose
             <Metric label="Request outcome" value={value(request.requestOutcome)} meta={t("legacy projection: {status}", { status: value(request.legacyStatus) })} />
             <Metric label="Delivery" value={`${request.delivery.deliveredCount}/${request.delivery.expectedOutputCount}`} meta={t("{pending} pending · {failed} failed", { pending: request.delivery.pendingCount, failed: request.delivery.failedCount })} />
             <Metric label="Settlement" value={value(request.settlement.view)} meta={t("{captured} captured · {refunded} refunded", { captured: request.settlement.capturedDreamcoins, refunded: request.settlement.refundedDreamcoins })} />
-            <Metric label="Freshness" value={detail.freshness} meta={compactDate(detail.asOf, locale)} />
+            <Metric label="Freshness" value={detail.freshness} meta={format.dateTime(detail.asOf)} />
           </div>
           <UnknownGenerationReconciliationControls
             detail={detail}
@@ -381,7 +414,7 @@ function GenerationJobInspector({ detail, error, jobId, loading, locale, onClose
               value(attempt.status),
               [attempt.provider, attempt.profileKey, attempt.workflowKey].filter(Boolean).join(" · ") || "—",
               [attempt.errorClass, attempt.errorCode, attempt.retryability].filter(Boolean).join(" · ") || "—",
-              attempt.finishedAt ? compactDate(attempt.finishedAt, locale) : "—",
+              attempt.finishedAt ? format.dateTime(attempt.finishedAt) : "—",
             ])}
           />
           <AuthorityTable
@@ -391,9 +424,9 @@ function GenerationJobInspector({ detail, error, jobId, loading, locale, onClose
               `#${execution.transportAttemptNo} · ${shortId(execution.id)}`,
               `${shortId(execution.attemptId)} · ${execution.provider ?? "—"}`,
               value(execution.status),
-              execution.costMicros === null ? "Unavailable" : `${execution.costMicros.toLocaleString(locale)} μ`,
+              execution.costMicros === null ? "Unavailable" : `${format.count(execution.costMicros)} μ`,
               execution.terminalRecordRef ?? "—",
-              execution.finishedAt ? compactDate(execution.finishedAt, locale) : "—",
+              execution.finishedAt ? format.dateTime(execution.finishedAt) : "—",
             ])}
           />
           <div className="grid gap-5 xl:grid-cols-2">
@@ -405,18 +438,18 @@ function GenerationJobInspector({ detail, error, jobId, loading, locale, onClose
             <AuthorityTable
               caption="Delivery outcomes"
               headers={["Artifact", "Target", "Outcome", "Delivered"]}
-              rows={detail.deliveries.map((delivery) => [shortId(delivery.artifactId), `${delivery.targetType}:${shortId(delivery.targetId)}`, value(delivery.status), delivery.deliveredAt ? compactDate(delivery.deliveredAt, locale) : "—"])}
+              rows={detail.deliveries.map((delivery) => [shortId(delivery.artifactId), `${delivery.targetType}:${shortId(delivery.targetId)}`, value(delivery.status), delivery.deliveredAt ? format.dateTime(delivery.deliveredAt) : "—"])}
             />
           </div>
           <AuthorityTable
             caption="Immutable Attempt events"
             headers={["Sequence", "Attempt", "Typed event", "Outcome", "Occurred"]}
-            rows={detail.events.map((event) => [String(event.sequence), shortId(event.attemptId), event.eventType, event.outcome ? value(event.outcome) : "—", compactDate(event.occurredAt, locale)])}
+            rows={detail.events.map((event) => [String(event.sequence), shortId(event.attemptId), event.eventType, event.outcome ? value(event.outcome) : "—", format.dateTime(event.occurredAt)])}
           />
           <AuthorityTable
             caption="Append-only Settlement entries"
             headers={["Ledger entry", "Kind", "Reason", "Dreamcoins", "Occurred"]}
-            rows={detail.settlementEntries.map((entry) => [shortId(entry.ledgerEntryId), entry.kind, entry.reason, String(entry.deltaDreamcoins), compactDate(entry.createdAt, locale)])}
+            rows={detail.settlementEntries.map((entry) => [shortId(entry.ledgerEntryId), entry.kind, entry.reason, String(entry.deltaDreamcoins), format.dateTime(entry.createdAt)])}
           />
           <AuthorityTable
             caption="Unknown outcome reconciliation decisions"
@@ -427,11 +460,11 @@ function GenerationJobInspector({ detail, error, jobId, loading, locale, onClose
               decision.reason,
               decision.providerEvidenceRefs.join(" · ") || "—",
               decision.nextReviewAt
-                ? `${value(decision.reviewStatus)} · ${compactDate(decision.nextReviewAt, locale)}`
+                ? `${value(decision.reviewStatus)} · ${format.dateTime(decision.nextReviewAt)}`
                 : decision.deliveredCount > 0
                   ? `${decision.deliveredCount} delivered · ${decision.refundAmount} Dreamcoins refund`
                   : `${decision.refundAmount} Dreamcoins refund`,
-              compactDate(decision.occurredAt, locale),
+              format.dateTime(decision.occurredAt),
             ])}
           />
         </div>
@@ -440,6 +473,11 @@ function GenerationJobInspector({ detail, error, jobId, loading, locale, onClose
   );
 }
 
+// SPEC: 详情面板里的七张只读证据表，故意不是 DataTable。
+// INTENT: DataTable 的 caption 是 sr-only、空态是一整块 EmptyState、每行还要一个稳定 id——
+// 七张表叠在一个抽屉里就变成七个大空块、七段看不见的标题，而这些行（事件序号、结算流水）
+// 本来就没有可点进去的实体。这里要的恰恰相反：可见的小标题 + 一行灰字说"还没有记录"。
+// 列表页那张真表已经在用 DataTable，这不是漏迁。
 function AuthorityTable({ caption, headers, rows }: { caption: string; headers: string[]; rows: string[][] }) {
   const { t } = useAdminI18n();
   const translatedCaption = t(caption);
@@ -448,7 +486,7 @@ function AuthorityTable({ caption, headers, rows }: { caption: string; headers: 
       <table className="w-full min-w-[560px] text-left text-xs">
         <caption className="px-3 py-2 text-left text-sm font-semibold">{translatedCaption}</caption>
         <thead className="bg-black/[0.03] text-[var(--ad-text-muted)]"><tr>{headers.map((header) => <th className="px-3 py-2 font-semibold" key={header} scope="col">{t(header)}</th>)}</tr></thead>
-        <tbody>{rows.map((row, rowIndex) => <tr className="border-t border-[var(--ad-border)]" key={`${caption}-${rowIndex}`}>{row.map((cell, cellIndex) => <td className="px-3 py-2" key={`${rowIndex}-${cellIndex}`}>{cell}</td>)}</tr>)}{rows.length === 0 ? <tr><td className="px-3 py-5 text-[var(--ad-text-muted)]" colSpan={headers.length}>{t("No authoritative facts recorded.")}</td></tr> : null}</tbody>
+        <tbody>{rows.map((row, rowIndex) => <tr className="border-t border-[var(--ad-border)]" key={`${caption}-${rowIndex}`}>{row.map((cell, cellIndex) => <td className="px-3 py-2" key={`${rowIndex}-${cellIndex}`}>{cell}</td>)}</tr>)}{rows.length === 0 ? <tr><td className="px-3 py-5 text-[var(--ad-text-muted)]" colSpan={headers.length}>{t("Nothing recorded yet.")}</td></tr> : null}</tbody>
       </table>
     </div>
   );
@@ -462,22 +500,10 @@ function IconAction({ disabled = false, icon, label, onClick }: { disabled?: boo
 
 function Metric({ label, meta, value }: { label: string; meta: string; value: ReactNode }) {
   const { t } = useAdminI18n();
-  return <div className="rounded-lg border border-[var(--ad-border)] p-3"><p className="text-xs text-[var(--ad-text-muted)]">{t(label)}</p><p className="mt-1 font-semibold">{value}</p><p className="mt-1 text-xs text-[var(--ad-text-muted)]">{meta}</p></div>;
+  return <div className="rounded-lg border border-[var(--ad-border)] p-3"><p className="text-xs text-[var(--ad-text-muted)]">{t(label)}</p><p className="mt-1 font-semibold">{value}</p><p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t(meta)}</p></div>;
 }
 
 function shortId(value: string) {
   return value.length > 12 ? `${value.slice(0, 8)}…` : value || "—";
 }
 
-function stringValue(value: unknown) {
-  return typeof value === "string" ? value : value == null ? "" : String(value);
-}
-
-function numberValue(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? value : Number(value) || 0;
-}
-
-function compactDate(value: string, locale: AdminLocale) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString(adminDateLocale(locale), { dateStyle: "medium", timeStyle: "short" });
-}

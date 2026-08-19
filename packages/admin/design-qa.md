@@ -1,4 +1,12 @@
-# Character operations visual roster — design QA
+# Character operations visual roster — design QA（2026-07-29 历史记录）
+
+> **这是一次性比对的存档，不是当前状态。** 下面记录的是 2026-07-29 对 `/admin/characters` 角色列表页做的一次视觉稿比对，`Result: passed` 只对那一天的那一版实现成立。此后后台经历了 2026-07-31 的暗色→浅色 token 化重构，以及 2026-08-15–16 的信息架构与列表平台层重构，页面已经变过两轮。**当前后台的视觉层没有任何有效的浏览器复验记录**——2026-08-15–16 那一轮明确没有做真实浏览器验证，详见 `docs/product/CURRENT_FUNCTIONAL_COVERAGE.md` 同名小节的「验证边界」。
+>
+> 保留本文的理由是它记录的三条设计约束仍然有效，回归时能对照：卡片高度契约（媒体容器不得吃掉卡片高度）、featured 卡片在 1024px 以下堆叠、缺图角色渲染显式空态而不是一块空白。这三条在当前代码里都还在（`CharacterPortfolioVisual.tsx` 的 `variant: "featured"` 与 `No primary role portrait` 空态）。
+>
+> **已经失效、不要照着它验收的部分**：下面「Responsive and interaction checks」里的运营筛选轨（attention / setup / production / launch / live 五个子集切换）和 “More filters” 紧凑弹层都已不存在——2026-08-15–16 把「需要处理」提成了列表顶部的常驻开关，理由写在 `src/features/characters/CharacterPortfolio.tsx` 的 INTENT 注释里（藏进折叠等于没人会用）。截图仍在 `output/product-design/character-operations-visual-roster-2026-07-29/`。
+
+---
 
 ## Inputs
 

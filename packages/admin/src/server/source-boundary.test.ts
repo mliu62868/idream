@@ -13,6 +13,9 @@ describe("admin source boundary", () => {
     const loading = await readFile(path.join(packageRoot, "src/app/admin/loading.tsx"), "utf8");
     const error = await readFile(path.join(packageRoot, "src/app/admin/error.tsx"), "utf8");
     const notFound = await readFile(path.join(packageRoot, "src/app/admin/not-found.tsx"), "utf8");
+    // 404 页的可见 markup 搬进了 AdminMessagePage.tsx（要走 i18n，必须是客户端组件）；
+    // 这条守卫盯的是"恢复边界给得出一条回去的路"，跟着 markup 走。
+    const notFoundView = await readFile(path.join(packageRoot, "src/components/admin/AdminMessagePage.tsx"), "utf8");
 
     expect(clientEntry).not.toContain("ssr: false");
     expect(clientEntry).not.toContain("next/dynamic");
@@ -22,7 +25,8 @@ describe("admin source boundary", () => {
     expect(routeRenderer).toContain("<AdminConsoleClientOnly");
     expect(loading).toContain('aria-busy="true"');
     expect(error).toContain('role="alert"');
-    expect(notFound).toContain('href="/admin/today"');
+    expect(notFound).toContain("AdminNotFoundPage");
+    expect(notFoundView).toContain('href="/admin/today"');
   });
 
   it("resolves application source from the admin package only", async () => {
@@ -86,7 +90,7 @@ describe("admin source boundary", () => {
     expect(catchAll).not.toContain("/api/v1/admin/billing/");
     expect(catchAll).not.toContain("function BillingView");
     expect(billingFeature).toContain("export function BillingWorkspace");
-    expect(billingFeature).toContain("/api/v1/admin/billing/adjustments");
+    expect(billingFeature).toContain("/api/v2/admin/billing/adjustments");
     expect(catchAll).toContain("window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT))");
     expect(billingFeature).toContain("window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh)");
   });
@@ -105,9 +109,9 @@ describe("admin source boundary", () => {
       "utf8",
     ).catch(() => "");
 
-    expect(catchAll).not.toContain("/api/v1/admin/generation/model-profiles");
+    expect(catchAll).not.toContain("/api/v2/admin/generation/model-profiles");
     expect(catchAll).not.toContain("/api/v1/admin/feature-flags");
-    expect(catchAll).not.toContain("/api/v1/admin/generation/dead-letter");
+    expect(catchAll).not.toContain("/api/v2/admin/generation/dead-letter");
     expect(catchAll).not.toContain("function ConfigView");
     expect(catchAll).not.toContain("function DeadLetterView");
     expect(configFeature).toContain("export function GenerationConfigWorkspace");
@@ -121,7 +125,7 @@ describe("admin source boundary", () => {
 
     expect(catchAll).not.toContain("function UsersView");
     expect(catchAll).not.toContain("function ModerationView");
-    expect(catchAll).not.toContain("/api/v1/admin/moderation/");
+    expect(catchAll).not.toContain("/api/v2/admin/moderation/");
     expect(access).toContain("export function AccessWorkspace");
     expect(moderation).toContain("export function ModerationWorkspace");
   });
@@ -137,7 +141,7 @@ describe("admin source boundary", () => {
     expect(catchAll).not.toContain("function ApprovalsView");
     expect(catchAll).not.toContain("/api/v1/admin/support/requests");
     expect(catchAll).not.toContain("/api/v1/admin/promo/");
-    expect(catchAll).not.toContain("/api/v1/admin/approvals");
+    expect(catchAll).not.toContain("/api/v2/admin/approvals");
     expect(support).toContain("export function SupportWorkspace");
     expect(promo).toContain("export function PromoWorkspace");
     expect(approvals).toContain("export function ApprovalsWorkspace");
@@ -148,7 +152,7 @@ describe("admin source boundary", () => {
     const chat = await readFile(path.join(packageRoot, "src/features/chat-ops/ChatOpsWorkspace.tsx"), "utf8").catch(() => "");
 
     expect(catchAll).not.toContain("function ChatOpsView");
-    expect(catchAll).not.toContain("/api/v1/admin/chat/");
+    expect(catchAll).not.toContain("/api/v2/admin/chat/");
     expect(chat).toContain("export function ChatOpsWorkspace");
   });
 
@@ -156,8 +160,8 @@ describe("admin source boundary", () => {
     const catchAll = await readFile(path.join(packageRoot, "src/components/admin/AdminConsoleClient.tsx"), "utf8");
     const content = await readFile(path.join(packageRoot, "src/features/content-merchandising/ContentMerchandisingWorkspace.tsx"), "utf8").catch(() => "");
     expect(catchAll).not.toContain("function ContentView");
-    expect(catchAll).not.toContain("/api/v1/admin/content/characters");
-    expect(catchAll).not.toContain("/api/v1/admin/content/featured");
+    expect(catchAll).not.toContain("/api/v2/admin/content/characters");
+    expect(catchAll).not.toContain("/api/v2/admin/content/featured");
     expect(content).toContain("export function ContentMerchandisingWorkspace");
   });
 
@@ -168,8 +172,11 @@ describe("admin source boundary", () => {
     expect(catchAll).not.toContain("function RiskView");
     expect(catchAll).not.toContain("function ProviderOpsView");
     expect(catchAll).not.toContain("/api/v1/admin/analytics/overview");
+    expect(catchAll).not.toContain("/api/v2/admin/analytics/overview");
     expect(catchAll).not.toContain("/api/v1/admin/risk/abuse");
+    expect(catchAll).not.toContain("/api/v2/admin/risk/abuse");
     expect(catchAll).not.toContain("/api/v1/admin/ops/providers");
+    expect(catchAll).not.toContain("/api/v2/admin/ops/providers");
     expect(overviews).toContain("export function AnalyticsWorkspace");
     expect(overviews).toContain("export function RiskWorkspace");
     expect(overviews).toContain("export function ProviderOverviewWorkspace");

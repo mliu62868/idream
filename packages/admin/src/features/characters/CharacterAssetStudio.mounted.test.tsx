@@ -1192,12 +1192,15 @@ describe("Character Asset Studio bootstrap route projection", () => {
       onProjectReload={async () => undefined}
       permissions={{ read: true, create: true, review: true, selectDraft: true }}
     />));
-    await waitUntil(() => container.textContent?.includes("Regenerate under current route") === true);
+    // 按钮必须点名它要重跑哪一张：它只发一条 Run（recoveryPurpose），但旁边写着
+    // 「N selected assets…」，泛化的 "Regenerate under current route" 会被读成整包重跑。
+    await waitUntil(() => container.textContent?.includes("Regenerate Primary portrait") === true);
     expect(container.textContent).toContain("remain in history but cannot authorize QA");
     expect(container.textContent).toContain("New image");
+    expect(container.textContent).not.toContain("Regenerate under current route");
 
     const regenerate = [...container.querySelectorAll("button")]
-      .find((button) => button.textContent?.includes("Regenerate under current route"));
+      .find((button) => button.textContent?.includes("Regenerate Primary portrait"));
     await act(async () => {
       regenerate?.click();
       await Promise.resolve();

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { requestErrorMessage } from "@/components/admin/section-kit";
 import { FormPage, FormSection, Field, FormFooter, INPUT_CLASS } from "@/components/admin/ui/FormPage";
 import { PrimaryButton } from "@/components/admin/ui/buttons";
 import {
@@ -55,7 +56,7 @@ export function PlacementsNewPage() {
           "",
       }));
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : t("Request failed"));
+      setError(requestErrorMessage(loadError, t));
     } finally {
       setLoadingAssets(false);
     }
@@ -97,7 +98,7 @@ export function PlacementsNewPage() {
       const newId = created.placement?.id;
       window.location.href = newId ? `/admin/content/placements/${newId}` : "/admin/content/placements";
     } catch (createError) {
-      setError(createError instanceof Error ? createError.message : t("Request failed"));
+      setError(requestErrorMessage(createError, t));
       setCreating(false);
     }
   }
@@ -125,7 +126,7 @@ export function PlacementsNewPage() {
             <p className="mt-2 text-xs text-[var(--ad-yellow-text)]" role="status">
               {blockedAssets.length === 1
                 ? t("1 approved asset is hidden because generation authority is incomplete or untrusted.")
-                : t("{count} approved assets are hidden because generation authority is incomplete or untrusted.").replace("{count}", String(blockedAssets.length))}
+                : t("{count} approved assets are hidden because generation authority is incomplete or untrusted.", { count: blockedAssets.length })}
             </p>
           ) : null}
           {!loadingAssets && !error && assets.length === 0 ? (

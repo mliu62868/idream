@@ -9,9 +9,21 @@ import { CardGrid } from "@/components/admin/ui/CardGrid";
 import { StatusPill } from "@/components/admin/ui/StatusPill";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { AssetImage } from "@/components/admin/ui/AssetImage";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
-import { DangerButton, GhostButton } from "@/components/admin/ui/buttons";
+import { Pagination } from "@/components/admin/ui/Pagination";
+import { DangerButton, GhostButton, PrimaryButton } from "@/components/admin/ui/buttons";
+import { LoadingWorkspace } from "@/features/operations/WorkspaceUi";
+import type { AdminPageInfo } from "@idream/shared/admin";
 import { createLatestRequestGate } from "@/lib/latest-request";
+import {
+  canGoPrevious,
+  listPageFromParams,
+  requestErrorMessage,
+  syncListUrl,
+  useDebouncedReload,
+  useUrlBootstrap,
+} from "@/components/admin/section-kit";
 import {
   ASSET_PURPOSES,
   ASSET_STATUSES,
@@ -27,6 +39,9 @@ import {
 } from "./assets-api";
 import { MediaAssetAuthorityNotice } from "./MediaAssetAuthority";
 
+const PAGE_SIZE = 25;
+const EMPTY_PAGE_INFO: AdminPageInfo = { endCursor: null, hasNextPage: false };
+
 // SPEC: 图片库列表页 —— 状态/用途走服务端查询参数拼接（沿用 旧图片库视图 原有筛选方式，不改
 // 成客户端过滤——资产量可观，服务端筛更省），标签/描述/id 关键词走客户端二次过滤（新增，复用运营
 // 已经在维护的检索元数据，满足 FilterBar 必填 search 的同时不折损任何既有能力）。图片网格
@@ -38,13 +53,14 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
   const { t, value } = useAdminI18n();
   const [rows, setRows] = useState<ContentAsset[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ message: string; cause: unknown } | null>(null);
   const [status, setStatus] = useState("all");
   const [purpose, setPurpose] = useState("all");
   const [search, setSearch] = useState("");
   const [targetId, setTargetId] = useState("");
   const [cursor, setCursor] = useState<string | undefined>();
-  const [pageInfo, setPageInfo] = useState({ endCursor: null as string | null, hasNextPage: false });
+  const [page, setPage] = useState(1);
+  const [pageInfo, setPageInfo] = useState<AdminPageInfo>(EMPTY_PAGE_INFO);
   const [ready, setReady] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [preflightBusy, setPreflightBusy] = useState(false);
@@ -70,17 +86,18 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
     setRows([]);
     setSelectedIds(new Set());
     clearBulkFeedback();
-    setPageInfo({ endCursor: null, hasNextPage: false });
+    setPageInfo(EMPTY_PAGE_INFO);
     setLoading(true);
     setError(null);
+    setPage(1);
   }, [clearBulkFeedback]);
 
-  const reload = useCallback(async (nextCursor?: string) => {
+  const reload = useCallback(async (nextCursor: string | undefined, nextPage: number) => {
     const request = requestGate.current.begin();
     setLoading(true);
     setError(null);
     try {
-      const data = await apiGet<{ items: ContentAsset[]; pageInfo: { endCursor: string | null; hasNextPage: boolean } }>(assetsListPath({ status, purpose, search, targetId, cursor: nextCursor, limit: 25 }));
+      const data = await apiGet<{ items: ContentAsset[]; pageInfo: AdminPageInfo }>(assetsListPath({ status, purpose, search, targetId, cursor: nextCursor, limit: PAGE_SIZE }));
       if (!request.isCurrent()) return;
       setRows(data.items);
       setCursor(nextCursor);
@@ -91,39 +108,33 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
       if (search.trim()) params.set("search", search.trim());
       if (targetId.trim()) params.set("targetId", targetId.trim());
       if (nextCursor) params.set("cursor", nextCursor);
-      window.history.replaceState(null, "", `${window.location.pathname}${params.size ? `?${params}` : ""}`);
+      syncListUrl(params, nextPage);
     } catch (loadError) {
       if (!request.isCurrent()) return;
-      setError(loadError instanceof Error ? loadError.message : t("Request failed"));
+      setError({ message: requestErrorMessage(loadError, t), cause: loadError });
     } finally {
       if (request.isCurrent()) setLoading(false);
     }
   }, [purpose, search, status, targetId, t]);
 
+  useUrlBootstrap(useCallback((params: URLSearchParams) => {
+    setStatus(params.get("status") ?? "all");
+    setPurpose(params.get("purpose") ?? "all");
+    setSearch(params.get("search") ?? "");
+    setTargetId(params.get("targetId") ?? "");
+    setCursor(params.get("cursor") ?? undefined);
+    setPage(listPageFromParams(params));
+    setReady(true);
+  }, []), requestGate);
+  // 依赖预检有自己的在途请求，卸载时也要作废——它和列表请求不共用同一个闸。
   useEffect(() => {
-    const gate = requestGate.current;
     const preflightGate = preflightRequestGate.current;
-    const params = new URLSearchParams(window.location.search);
-    const timer = window.setTimeout(() => {
-      setStatus(params.get("status") ?? "all");
-      setPurpose(params.get("purpose") ?? "all");
-      setSearch(params.get("search") ?? "");
-      setTargetId(params.get("targetId") ?? "");
-      setCursor(params.get("cursor") ?? undefined);
-      setReady(true);
-    }, 0);
-    return () => {
-      gate.invalidate();
-      preflightGate.invalidate();
-      window.clearTimeout(timer);
-    };
+    return () => preflightGate.invalidate();
   }, []);
 
-  useEffect(() => {
-    if (!ready) return;
-    const timer = window.setTimeout(() => void reload(cursor), search.trim() ? 250 : 0);
-    return () => window.clearTimeout(timer);
-  }, [cursor, ready, reload, search]);
+  useDebouncedReload({ cursor, page, ready, reload, search });
+
+  const hasFilters = status !== "all" || purpose !== "all" || search.trim().length > 0 || targetId.trim().length > 0;
 
   const selectableIds = useMemo(
     () => rows.filter((asset) => asset.platformStatus !== "archived").map((asset) => asset.id),
@@ -152,7 +163,7 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
     setServerConflict(null);
     setBulkStatus(null);
     try {
-      const result = await preflightArchiveAssets(ids);
+      const result = await preflightArchiveAssets(ids, t("Request failed"));
       if (!request.isCurrent()) return;
       const blockers = result.blockers.flatMap((blocker) =>
         blocker.dependencies.map((dependency) => ({
@@ -191,7 +202,7 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
 
   const submitBulkArchive = useCallback(async (assetIds: readonly string[], reason: string) => {
     try {
-      const result = await bulkArchiveAssets({ assetIds, reason });
+      const result = await bulkArchiveAssets({ assetIds, reason, fallbackMessage: t("Request failed") });
       setSelectedIds(new Set());
       setPreflightBlockers([]);
       setServerConflict(null);
@@ -200,18 +211,18 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
           count: result.updatedIds.length,
         }),
       );
-      await reload(cursor);
+      await reload(cursor, page);
     } catch (submitError) {
       if (submitError instanceof AssetBulkArchiveError) {
         setServerConflict(submitError.details);
       }
       throw submitError;
     }
-  }, [cursor, reload, t]);
+  }, [cursor, page, reload, t]);
 
   return (
     <div aria-busy={loading}>
-      <PageHeader purpose={t("Browse and curate generated image assets.")} title={t("Image Library")} />
+      <PageHeader purpose={t("Browse and curate generated image assets.")} title={t("Library")} />
       {targetId ? (
         // SPEC: 收窄范围必须可见且可撤销。
         // INTENT: 从角色工作台"查看全部"跳进来时列表只剩该角色的图，不说明就像图库丢了数据。
@@ -310,7 +321,11 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
           </div>
         </section>
       ) : null}
-      {error ? <p role="alert" className="mb-4 text-sm text-[var(--ad-red-text)]">{error}</p> : null}
+      {error ? (
+        <div className="mb-4">
+          <AuthorityRequestError cause={error.cause} message={error.message} onRetry={() => void reload(cursor, page)} snapshotAt={null} />
+        </div>
+      ) : null}
       {preflightError ? (
         <p
           className="mb-4 rounded-lg bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
@@ -344,9 +359,38 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
         </p>
       ) : null}
       {loading && rows.length === 0 ? (
-        <p className="text-sm text-[var(--ad-text-muted)]">{t("Loading…")}</p>
+        <LoadingWorkspace label="Loading the image library…" />
       ) : rows.length === 0 && !error ? (
-        <EmptyState title={t("No platform assets match these filters.")} />
+        // SPEC: 空态要给出路。图库没有 /new——资产由 Creative Run 产出，所以出路是"放宽筛选"
+        // 或"去 Creative Run 生成"，不是一句灰字。
+        <EmptyState
+          action={
+            <div className="flex flex-wrap justify-center gap-2">
+              {hasFilters ? (
+                <GhostButton
+                  onClick={() => {
+                    clearForNextQuery();
+                    setStatus("all");
+                    setPurpose("all");
+                    setSearch("");
+                    setTargetId("");
+                    setCursor(undefined);
+                  }}
+                >
+                  {t("Reset filters")}
+                </GhostButton>
+              ) : null}
+              <Link href="/admin/creative/runs">
+                <PrimaryButton>{t("Go to Creative Runs")}</PrimaryButton>
+              </Link>
+            </div>
+          }
+          hint={hasFilters
+            ? t("Assets are produced by Creative Runs. Widen the filters, or start a run to create new ones.")
+            : t("Assets are produced by Creative Runs. Start a run to create the first one.")}
+          kind={hasFilters ? "filtered" : "empty"}
+          title={hasFilters ? t("No platform assets match these filters.") : t("No platform assets yet.")}
+        />
       ) : rows.length > 0 ? (
         <CardGrid>
           {rows.map((asset, index) => (
@@ -361,7 +405,26 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
           ))}
         </CardGrid>
       ) : null}
-      <div className="mt-4 flex justify-end"><button className="min-h-10 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold disabled:opacity-50" disabled={loading || !pageInfo.hasNextPage || !pageInfo.endCursor} onClick={() => { const next = pageInfo.endCursor ?? undefined; clearForNextQuery(); setCursor(next); }} type="button">{t("Next page")}</button></div>
+      <div className="mt-4">
+        <Pagination
+          hasNext={Boolean(pageInfo.hasNextPage && pageInfo.endCursor)}
+          // 这个 operation 的查询契约没有 `before` —— 置灰，不假装已经在第一页（section-kit 有全部理由）。
+          hasPrevious={canGoPrevious(pageInfo, false)}
+          loading={loading}
+          onNext={() => {
+            const next = pageInfo.endCursor ?? undefined;
+            const nextPage = page + 1;
+            clearForNextQuery();
+            setCursor(next);
+            setPage(nextPage);
+          }}
+          onPrevious={() => undefined}
+          page={page}
+          pageSize={PAGE_SIZE}
+          rowCount={rows.length}
+          totalCount={pageInfo.totalCount ?? null}
+        />
+      </div>
       {pendingArchiveIds ? (
         <BulkArchiveConfirmDialog
           assetIds={pendingArchiveIds}

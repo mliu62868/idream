@@ -2,8 +2,8 @@ import { Prisma } from "@prisma/client";
 import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
+import { POST as createRedeemCodeV2 } from "@/app/api/v2/admin/promo/redeem-codes/route";
 import { redeemCodeHash } from "@/server/lib/redeem-codes";
-import { dispatchV1 } from "@/server/modules/ourdream/service";
 import {
   api,
   createUser,
@@ -12,6 +12,7 @@ import {
   expectOk,
   purgeTestData,
 } from "@/server/test/helpers";
+import { adminV2Route } from "@/server/test/admin-v2-route-client";
 
 const P = "zt-promo-reward-authority-";
 const adminId = `${P}admin`;
@@ -59,7 +60,9 @@ describe("promo reward authority", () => {
   ])("rejects a %s dreamcoin reward at admin creation", async (label, reward) => {
     const code = `${P}CREATE-${label}`;
     adminCodeHashes.add(redeemCodeHash(code));
-    const response = await api("POST", "admin/promo/redeem-codes", {
+    const response = await adminV2Route(createRedeemCodeV2, {
+      method: "POST",
+      path: "promo/redeem-codes",
       userId: adminId,
       role: "admin",
       body: {
@@ -81,8 +84,9 @@ describe("promo reward authority", () => {
   it("rejects a non-finite dreamcoin reward at admin creation", async () => {
     const code = `${P}CREATE-INFINITE`;
     adminCodeHashes.add(redeemCodeHash(code));
-    const response = await dispatchV1(
-      new Request("http://localhost/api/v1/admin/promo/redeem-codes", {
+    // `1e999` 解析成 Infinity，只有原始文本请求体能把它送到 handler。
+    const response = await createRedeemCodeV2(
+      new Request("http://localhost/api/v2/admin/promo/redeem-codes", {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -92,7 +96,6 @@ describe("promo reward authority", () => {
         },
         body: `{"code":"${code}","reward":{"dreamcoins":1e999},"reason":"reject infinite reward","confirmation":"${code}"}`,
       }),
-      ["admin", "promo", "redeem-codes"],
     );
 
     expect(response.status).toBe(400);
@@ -104,7 +107,9 @@ describe("promo reward authority", () => {
   });
 
   it("keeps the minimum positive dreamcoin reward valid", async () => {
-    const response = await api("POST", "admin/promo/redeem-codes", {
+    const response = await adminV2Route(createRedeemCodeV2, {
+      method: "POST",
+      path: "promo/redeem-codes",
       userId: adminId,
       role: "admin",
       body: {

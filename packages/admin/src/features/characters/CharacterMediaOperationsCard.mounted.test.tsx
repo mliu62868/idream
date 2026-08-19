@@ -144,6 +144,41 @@ describe("Character Voice reclaim confirmation", () => {
       reason: "Recover after verified worker crash",
     });
   });
+
+  // 「Retry available」此前是一行没有去处的字：只有 voice 能就地回收（契约 superRefine
+  // 禁止非 voice 投递 actionHref），图片/视频的重跑在运维作业队列里。
+  it("points a retryable image run at the operations queue", async () => {
+    const retryable = characterMediaOperationsProjectionSchema.parse({
+      ...projection,
+      operations: [
+        {
+          ...projection.operations[0],
+          requestId: "image-job-1",
+          status: "failed",
+          recoverability: {
+            state: "retryable",
+            reason: "The provider rejected the request and the job is retryable.",
+            actionHref: null,
+            actionConfirmation: null,
+          },
+          operationsHref: "/admin/ops/jobs?view=dead-letter&search=image-job-1",
+        },
+        projection.operations[1],
+        projection.operations[2],
+      ],
+    });
+
+    await act(async () => {
+      root.render(<CharacterMediaOperationsCard projection={retryable} />);
+    });
+
+    const requeue = [...container.querySelectorAll("a")].find((link) =>
+      link.textContent?.includes("Requeue in operations")
+    );
+    expect(requeue?.getAttribute("href")).toBe(
+      "/admin/ops/jobs?view=dead-letter&search=image-job-1",
+    );
+  });
 });
 
 function setInput(input: HTMLInputElement, value: string) {

@@ -12,11 +12,14 @@ import {
   type CreativeRun,
   type CreativeRunDetail,
   type AdminCommandStatus,
+  type AdminPageInfo,
 } from "@idream/shared/admin";
 import { ArrowLeft, Check, ImageIcon, Plus, RefreshCcw, RotateCcw, Send, ShieldAlert, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { AdminSubview } from "@/components/admin/nav-config";
 import { AdminText, useAdminI18n } from "@/components/admin/i18n";
+import { formatDateTime } from "@/components/admin/ui/format";
+import { Pagination } from "@/components/admin/ui/Pagination";
 import { CollaborationPanel } from "@/features/collaboration/CollaborationPanel";
 import { creativeRetryFailedMutation } from "@/features/image-workflow-transport";
 import { EmptyWorkspace, LoadingWorkspace, StatusBadge, WorkspaceButton, fieldClass, textAreaClass } from "@/features/operations/WorkspaceUi";
@@ -743,11 +746,23 @@ type CreativeRunListQuery = {
 
 // INVARIANT: 常量空值，避免"资源尚未到达"每次渲染都产生新引用。
 const EMPTY_CREATIVE_RUNS: readonly CreativeRun[] = [];
-const EMPTY_PAGE_INFO = { endCursor: null, hasNextPage: false } as const;
+const EMPTY_PAGE_INFO: AdminPageInfo = { endCursor: null, hasNextPage: false };
+const CREATIVE_RUN_PAGE_SIZE = 25;
+
+// SPEC: 走过的游标存在 history entry 上，不只存在组件 state 里。
+// INTENT: 这个列表原先只有「下一页」—— 25 条一页翻到第四页就回不去了。补上「上一页」要一份
+//         走过的路；只存组件 state 的话，刷新和「后退」都会把它清空，页码就成了编的。
+//         history.state 跟着这条 history entry 走；真的放不下游标时宁可回到第一页。
+type RunListHistoryState = { cursorStack?: readonly string[] };
+
+function restoredCursorStack(): readonly string[] {
+  const state = window.history.state as RunListHistoryState | null;
+  return Array.isArray(state?.cursorStack) ? state.cursorStack : [];
+}
 
 // SPEC: 请求参数与写进地址栏的参数必须是同一份，刷新页面才能复现同一页。
 function creativeRunListParams(query: CreativeRunListQuery) {
-  const params = new URLSearchParams({ limit: "25" });
+  const params = new URLSearchParams({ limit: String(CREATIVE_RUN_PAGE_SIZE) });
   if (query.search.trim()) params.set("search", query.search.trim());
   if (query.outcome !== "all") params.set("executionOutcome", query.outcome);
   if (query.cursor) params.set("cursor", query.cursor);
@@ -770,6 +785,7 @@ function RunList({
   const [applied, setApplied] = useState<CreativeRunListQuery>(
     () => ({ search: "", outcome: "all" }),
   );
+  const [cursorStack, setCursorStack] = useState<readonly string[]>([]);
 
   const runs = useAuthorityResource({
     key: JSON.stringify(applied),
@@ -792,13 +808,15 @@ function RunList({
   const applyQuery = (
     next: CreativeRunListQuery,
     historyMode: "none" | "push" | "replace",
+    nextCursorStack: readonly string[] = [],
   ) => {
     setSearch(next.search);
     setOutcome(next.outcome);
     setApplied(next);
+    setCursorStack(nextCursorStack);
     if (historyMode !== "none") {
       window.history[historyMode === "push" ? "pushState" : "replaceState"](
-        null,
+        { cursorStack: nextCursorStack } satisfies RunListHistoryState,
         "",
         `${window.location.pathname}?${creativeRunListParams(next)}`,
       );
@@ -808,13 +826,15 @@ function RunList({
   useEffect(() => {
     const restore = (historyMode: "none" | "replace") => {
       const params = new URLSearchParams(window.location.search);
+      const stack = restoredCursorStack();
       applyQuery(
         {
           search: params.get("search") ?? "",
           outcome: params.get("executionOutcome") ?? "all",
-          cursor: params.get("cursor") ?? undefined,
+          cursor: stack.length === 0 ? undefined : params.get("cursor") ?? undefined,
         },
         historyMode,
+        stack,
       );
     };
     restore("replace");
@@ -825,8 +845,17 @@ function RunList({
     //         进依赖会让监听器反复重装。
   }, []);
 
-  function apply(nextCursor?: string) {
-    applyQuery({ search, outcome, cursor: nextCursor }, "push");
+  function apply(nextCursor?: string, nextCursorStack: readonly string[] = []) {
+    applyQuery({ search, outcome, cursor: nextCursor }, "push", nextCursorStack);
+  }
+
+  function goToPage(direction: "next" | "previous") {
+    if (direction === "next") {
+      apply(pageInfo.endCursor ?? undefined, [...cursorStack, applied.cursor ?? ""]);
+      return;
+    }
+    const previous = cursorStack.slice(0, -1);
+    apply(cursorStack.at(-1) || undefined, previous);
   }
 
   if (!permissions.read) return denied();
@@ -834,7 +863,7 @@ function RunList({
   return (
     <section aria-labelledby="creative-runs-title">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-        <div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">{t("Creative Studio")}</p><h2 className="mt-1 text-2xl font-semibold" id="creative-runs-title">{t("Creative Runs")}</h2><p className="mt-2 max-w-2xl text-sm text-[var(--ad-text-muted)]">{t("Execution, review, placement, and verification remain separate facts.")}</p></div>
+        <div><h2 className="sr-only" id="creative-runs-title">{t("Creative Runs")}</h2><p className="max-w-2xl text-sm text-[var(--ad-text-muted)]">{t("Execution, review, placement, and verification remain separate facts.")}</p></div>
         <form className="grid gap-2 sm:grid-cols-[minmax(220px,1fr)_180px_auto]" onSubmit={(event) => { event.preventDefault(); apply(); }}>
           <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Search")}<input className={`${fieldClass} mt-1`} onChange={(event) => setSearch(event.target.value)} placeholder={t("Run, title or purpose")} value={search} /></label>
           <label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Outcome")}<select className={`${fieldClass} mt-1`} onChange={(event) => setOutcome(event.target.value)} value={outcome}>{["all", "pending", "running", "succeeded", "partially_succeeded", "failed", "cancelled"].map((value) => <option key={value}>{t(value.replaceAll("_", " "))}</option>)}</select></label>
@@ -844,7 +873,22 @@ function RunList({
       <CreateRunForm actorId={actorId} enabled={permissions.write} />
       {error ? <div className="mt-5 rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">{error} <button className="ml-2 underline" onClick={() => void runs.refresh()} type="button">{t("Retry")}</button></div> : null}
       <div className="mt-6">{loading && items.length === 0 ? <LoadingWorkspace label="Loading Creative Run facts" /> : items.length === 0 ? error ? null : <EmptyWorkspace filtered={filtered} onClear={() => applyQuery({ search: "", outcome: "all" }, "push")} /> : <div className="grid gap-3">{items.map((run) => <Link className="grid gap-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 transition-colors hover:border-[var(--ad-ink)] focus-visible:outline focus-visible:outline-2 sm:grid-cols-[1fr_auto]" href={`/admin/creative/runs/${run.id}`} key={run.id}><div><div className="flex flex-wrap items-center gap-2"><strong>{t(run.purpose)}</strong><StatusBadge value={run.executionOutcome} /><StatusBadge value={run.reviewState} /><StatusBadge value={run.deploymentState} /><StatusBadge value={run.verificationState} /></div><p className="mt-2 text-xs text-[var(--ad-text-muted)]">{run.target.type === "none" ? t("Destination chosen after review") : `${run.target.type}:${run.target.id}`} · {t(run.workflowStage)}  {t("· owner")} {run.ownerId ?? t("unassigned")}</p><div className="mt-3 flex flex-wrap gap-3 text-xs tabular-nums"><span>{run.counts.generated}/{run.counts.total}  {t("generated")}</span><span>{run.counts.failed}  {t("failed")}</span><span>{run.counts.approved}  {t("approved")}</span><span>{run.counts.placed}  {t("placed")}</span></div></div><span className="self-center text-xs text-[var(--ad-text-muted)]">{t("Open operator flow →")}</span></Link>)}</div>}</div>
-      <div className="mt-4 flex items-center justify-between gap-3"><p className="text-xs text-[var(--ad-text-muted)]">{asOf ? t("Fresh as of {time}", { time: new Date(asOf).toLocaleString(locale === "zh" ? "zh-CN" : "en-US") }) : t("No successful query yet")}</p><WorkspaceButton disabled={loading || !pageInfo.hasNextPage || !pageInfo.endCursor} onClick={() => apply(pageInfo.endCursor ?? undefined)}>{t("Next page")}</WorkspaceButton></div>
+      <div className="mt-4">
+        <Pagination
+          detail={asOf ? t("Fresh as of {time}", { time: formatDateTime(asOf, locale) }) : t("Not loaded yet")}
+          hasNext={Boolean(pageInfo.hasNextPage && pageInfo.endCursor)}
+          // 「上一页」走本地走过的游标栈，不是 pageInfo.hasPreviousPage —— 反向游标缺席只说明
+          // 这个 operation 还是单向的，不代表运营在第一页。
+          hasPrevious={cursorStack.length > 0}
+          loading={loading}
+          onNext={() => goToPage("next")}
+          onPrevious={() => goToPage("previous")}
+          page={cursorStack.length + 1}
+          pageSize={CREATIVE_RUN_PAGE_SIZE}
+          rowCount={items.length}
+          totalCount={pageInfo.totalCount ?? null}
+        />
+      </div>
     </section>
   );
 }
@@ -908,7 +952,7 @@ function ReviewForm({
   reload: () => Promise<void>;
   onAdvance?: (index: number) => void;
 }) {
-  const { t } = useAdminI18n();
+  const { t, value: enumLabel } = useAdminI18n();
   const item = run.items[itemIndex];
   const identityReviewMode = item?.identityReviewMode ?? "not_applicable";
   const routeEvaluationReview = run.purpose === "model_eval";
@@ -1040,7 +1084,7 @@ function ReviewForm({
   if (immutableReview) {
     return <section className="mt-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" aria-labelledby="creative-review-title"><h3 className="font-semibold" id="creative-review-title">{t("Immutable review decision")}</h3><p className="mt-2 text-sm"><strong className="capitalize">{t(immutableReview.decision)}</strong> · {t("identity")} {t(immutableReview.identityConsistency)}{immutableReview.score !== null ? ` · ${immutableReview.score}/100` : ""}</p>{immutableReview.quality ? <ul className="mt-3 grid gap-2 text-xs sm:grid-cols-2">{reviewQualityChecks.map(([key, label]) => <li className="rounded-md bg-black/[0.035] px-3 py-2" key={key}>{t(immutableReview.quality?.[key] ? "Passed" : "Failed")} · {t(label)}</li>)}</ul> : null}<p className="mt-3 text-sm leading-6 text-[var(--ad-text-muted)]">{immutableReview.reason}</p>{immutableReview.supersedesDecisionId ? <p className="mt-2 break-all text-xs text-[var(--ad-text-muted)]">{t("Supersedes")} {immutableReview.supersedesDecisionId}</p> : null}{canWithdrawApproval ? <div className="mt-4 border-t border-[var(--ad-border)] pt-4"><h4 className="text-sm font-semibold">{t("Terminal disposition")}</h4><p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">{t("If this approved candidate will not be activated, record a superseding rejection so every candidate has an explicit terminal outcome and the Run can close.")}</p><p className="mt-2 text-xs text-[var(--ad-text-muted)]">{t("The original score, identity result and visible-quality evidence are preserved. If the asset is selected by a Character authority, replace or withdraw it there first.")}</p><label className="mt-3 block text-xs font-semibold text-[var(--ad-text-muted)]">{t("Withdrawal reason")}<textarea className={`${textAreaClass} mt-1`} onChange={(event) => setReason(event.target.value)} placeholder={t("Explain why this approved candidate will not be used")} value={reason} /></label>{error ? <p className="mt-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}{warning ? <p className="mt-3 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{warning}</p> : null}<div className="mt-3"><WorkspaceButton disabled={!permissions.review || busy || !validReason} onClick={() => void decide("rejected")} tone="danger"><X className="h-4 w-4" /> {characterAssetReview ? t("Record superseding rejection") : t("Withdraw approval")}</WorkspaceButton></div></div> : immutableReview.decision === "approved" && item.placement ? <p className="mt-4 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-xs text-[var(--ad-yellow-text)]">{item.placement.status === "scheduled" && item.placement.verificationState === "verifying" ? t("Use Withdraw staged placement below before superseding this approval.") : t("This candidate is already active. Replace its live placement before superseding the approval.")}</p> : null}</section>;
   }
-  return <section className="mt-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" aria-labelledby="creative-review-title"><h3 className="font-semibold" id="creative-review-title">{requiresEvidenceRepair ? t("Complete missing review evidence") : t("Review decision")}</h3><p className="mt-1 text-xs text-[var(--ad-text-muted)]">{requiresEvidenceRepair ? t("The earlier immutable decision is preserved, but it cannot authorize selection without the required visible evidence. This new decision will supersede it.") : routeEvaluationReview ? t("Score identity match against the sealed Character references. Every evaluation sample requires an explicit pass or fail and a 0–100 score.") : t("Record what you observed. Decision, identity consistency, score, and visible quality remain separate facts.")}</p>{requiresEvidenceRepair && item.review ? <p className="mt-3 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-xs text-[var(--ad-yellow-text)]">{t("Earlier decision:")} {item.review.decision} · {item.review.identityConsistency} · {item.review.reason}</p> : null}{characterAssetReview ? <fieldset className="mt-4 grid gap-2 sm:grid-cols-2"><legend className="sr-only">{t("Visible quality checks")}</legend>{reviewQualityChecks.map(([key, label]) => <label className="flex min-h-11 items-center gap-3 rounded-md border border-[var(--ad-border)] px-3 text-xs" key={key}><input checked={quality[key]} onChange={(event) => setQuality((current) => ({ ...current, [key]: event.target.checked }))} type="checkbox" /><span>{label}</span></label>)}</fieldset> : null}<div className="mt-4 grid gap-3 sm:grid-cols-[120px_180px_1fr]"><label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t(routeEvaluationReview ? "Identity match score" : "Score")}<input className={`${fieldClass} mt-1`} max={100} min={0} onChange={(event) => setScore(event.target.value)} placeholder={t(routeEvaluationReview ? "Required for every sample" : "Required to approve")} step={1} type="number" value={score} /></label><label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Identity consistency")}<select className={`${fieldClass} mt-1`} disabled={identityReviewMode === "defines_identity"} onChange={(event) => setIdentityConsistency(event.target.value as "passed" | "failed" | "unscored")} value={identityConsistency}><option value="passed">{t("Passed")}</option><option value="failed">{t("Failed")}</option>{!routeEvaluationReview ? <option value="unscored">{identityReviewMode === "defines_identity" ? t("Unscored · defines identity") : t("Unscored")}</option> : null}</select></label><label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Evidence and reason")}<textarea className={`${textAreaClass} mt-1`} onChange={(event) => setReason(event.target.value)} placeholder={t("Describe the visible evidence behind this decision")} value={reason} /></label></div>{error ? <p className="mt-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}{warning ? <p className="mt-3 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{warning}</p> : null}<div className="mt-4 flex flex-wrap gap-2"><WorkspaceButton disabled={!permissions.review || !item.asset || busy || !validReason || !validScore || (characterAssetReview && !allQualityPassed) || (identityReviewMode === "defines_identity" && identityConsistency !== "unscored") || (identityReviewMode === "preserves_identity" && identityConsistency !== "passed") || (routeEvaluationReview && identityConsistency === "unscored")} onClick={() => void decide("approved")} tone="primary"><Check className="h-4 w-4" /> {requiresEvidenceRepair ? t("Record superseding approval") : t("Approve")}</WorkspaceButton><WorkspaceButton disabled={!permissions.review || !item.asset || busy || !validReason || (routeEvaluationReview && (!validScore || identityConsistency === "unscored"))} onClick={() => void decide("rejected")} tone="danger"><X className="h-4 w-4" /> {requiresEvidenceRepair ? t("Record superseding rejection") : t("Reject")}</WorkspaceButton></div>{!permissions.review ? <p className="mt-3 text-xs text-[var(--ad-text-muted)]">{t("creative.run.review is not granted.")}</p> : null}</section>;
+  return <section className="mt-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" aria-labelledby="creative-review-title"><h3 className="font-semibold" id="creative-review-title">{requiresEvidenceRepair ? t("Complete missing review evidence") : t("Review decision")}</h3><p className="mt-1 text-xs text-[var(--ad-text-muted)]">{requiresEvidenceRepair ? t("The earlier immutable decision is preserved, but it cannot authorize selection without the required visible evidence. This new decision will supersede it.") : routeEvaluationReview ? t("Score identity match against the sealed Character references. Every evaluation sample requires an explicit pass or fail and a 0–100 score.") : t("Record what you observed. Decision, identity consistency, score, and visible quality remain separate facts.")}</p>{requiresEvidenceRepair && item.review ? <p className="mt-3 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-xs text-[var(--ad-yellow-text)]">{t("Earlier decision:")} {enumLabel(item.review.decision)} · {enumLabel(item.review.identityConsistency)} · {item.review.reason}</p> : null}{characterAssetReview ? <fieldset className="mt-4 grid gap-2 sm:grid-cols-2"><legend className="sr-only">{t("Visible quality checks")}</legend>{reviewQualityChecks.map(([key, label]) => <label className="flex min-h-11 items-center gap-3 rounded-md border border-[var(--ad-border)] px-3 text-xs" key={key}><input checked={quality[key]} onChange={(event) => setQuality((current) => ({ ...current, [key]: event.target.checked }))} type="checkbox" /><span>{t(label)}</span></label>)}</fieldset> : null}<div className="mt-4 grid gap-3 sm:grid-cols-[120px_180px_1fr]"><label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t(routeEvaluationReview ? "Identity match score" : "Score")}<input className={`${fieldClass} mt-1`} max={100} min={0} onChange={(event) => setScore(event.target.value)} placeholder={t(routeEvaluationReview ? "Required for every sample" : "Required to approve")} step={1} type="number" value={score} /></label><label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Identity consistency")}<select className={`${fieldClass} mt-1`} disabled={identityReviewMode === "defines_identity"} onChange={(event) => setIdentityConsistency(event.target.value as "passed" | "failed" | "unscored")} value={identityConsistency}><option value="passed">{t("Passed")}</option><option value="failed">{t("Failed")}</option>{!routeEvaluationReview ? <option value="unscored">{identityReviewMode === "defines_identity" ? t("Unscored · defines identity") : t("Unscored")}</option> : null}</select></label><label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Evidence and reason")}<textarea className={`${textAreaClass} mt-1`} onChange={(event) => setReason(event.target.value)} placeholder={t("Describe the visible evidence behind this decision")} value={reason} /></label></div>{error ? <p className="mt-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}{warning ? <p className="mt-3 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)]" role="status">{warning}</p> : null}<div className="mt-4 flex flex-wrap gap-2"><WorkspaceButton disabled={!permissions.review || !item.asset || busy || !validReason || !validScore || (characterAssetReview && !allQualityPassed) || (identityReviewMode === "defines_identity" && identityConsistency !== "unscored") || (identityReviewMode === "preserves_identity" && identityConsistency !== "passed") || (routeEvaluationReview && identityConsistency === "unscored")} onClick={() => void decide("approved")} tone="primary"><Check className="h-4 w-4" /> {requiresEvidenceRepair ? t("Record superseding approval") : t("Approve")}</WorkspaceButton><WorkspaceButton disabled={!permissions.review || !item.asset || busy || !validReason || (routeEvaluationReview && (!validScore || identityConsistency === "unscored"))} onClick={() => void decide("rejected")} tone="danger"><X className="h-4 w-4" /> {requiresEvidenceRepair ? t("Record superseding rejection") : t("Reject")}</WorkspaceButton></div>{!permissions.review ? <p className="mt-3 text-xs text-[var(--ad-text-muted)]">{t("creative.run.review is not granted.")}</p> : null}</section>;
 }
 
 function PlacementForm({ run, itemIndex, permissions, reload }: { run: CreativeRunDetail; itemIndex: number; permissions: Permissions; reload: () => Promise<void> }) {

@@ -1,9 +1,11 @@
 import {
   collaborationTargetTypeSchema,
   savedViewDeleteSchema,
+  savedViewScopeSchema,
   savedViewUpdateSchema,
   type AdminPermissionKey,
   type CollaborationTargetType,
+  type SavedViewScope,
 } from "@idream/shared/admin";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
@@ -18,6 +20,21 @@ const targetDescriptors: Record<CollaborationTargetType, { read: AdminPermission
   creative_run: { read: "creative.run.read", write: "creative.run.write", exists: (id) => prisma.contentProductionBatch.findUnique({ where: { id }, select: { id: true } }) },
   case: { read: "case.read", write: "case.assign", exists: (id) => prisma.adminCase.findUnique({ where: { id }, select: { id: true } }) },
   incident: { read: "ops.incident.read", write: "ops.incident.manage", exists: (id) => prisma.opsIncident.findUnique({ where: { id }, select: { id: true } }) },
+};
+
+/**
+ * SPEC: `saved_view_scope_read` 解析器的落地表 —— scope 决定这次读取该核哪一个权限。
+ * INTENT: 支持工单与角色人审队列有 Saved View 但没有协作时间线，所以它们进不了
+ *         `targetDescriptors`。两张表分开，是因为「这个 scope 归谁看」和「这个目标存不存在」
+ *         本来就是两个问题，合成一张会逼出四个没有实体可查的 `exists`。
+ */
+const savedViewScopeRead: Record<SavedViewScope, AdminPermissionKey> = {
+  character_project: "character.project.read",
+  creative_run: "creative.run.read",
+  case: "case.read",
+  incident: "ops.incident.read",
+  support_request: "support.request.read",
+  moderation_review_queue: "safety.review.read",
 };
 
 function asRecord(value: Prisma.JsonValue | null): Record<string, unknown> {
@@ -406,14 +423,14 @@ function viewDto(view: Awaited<ReturnType<typeof prisma.adminSavedView.findFirst
 
 export async function listSavedViewsV2(request: Request) {
   const { scope } = queryParams(request, "GET /api/v2/admin/saved-views");
-  const actor = await actorWithPermission(request, targetDescriptors[scope].read);
+  const actor = await actorWithPermission(request, savedViewScopeRead[scope]);
   const views = await prisma.adminSavedView.findMany({ where: { ownerId: actor.id, scope }, orderBy: [{ updatedAt: "desc" }, { id: "desc" }] });
   return ok({ items: views.map(viewDto) });
 }
 
 export async function createSavedViewV2(request: Request) {
   const input = await jsonBody(request, "POST /api/v2/admin/saved-views");
-  const actor = await actorWithPermission(request, targetDescriptors[input.scope].read);
+  const actor = await actorWithPermission(request, savedViewScopeRead[input.scope]);
   const key = requireIdempotencyKey(request);
   const existing = await prisma.adminSavedView.findUnique({ where: { ownerId_idempotencyKey: { ownerId: actor.id, idempotencyKey: key } } });
   if (existing) {
@@ -436,8 +453,8 @@ export async function updateSavedViewV2(request: Request, id: string) {
   const input = savedViewUpdateSchema.parse(await jsonBody(request));
   const current = await prisma.adminSavedView.findUnique({ where: { id } });
   if (!current) throw Errors.notFound("Saved view not found");
-  const scope = collaborationTargetTypeSchema.parse(current.scope);
-  const actor = await actorWithPermission(request, targetDescriptors[scope].read);
+  const scope = savedViewScopeSchema.parse(current.scope);
+  const actor = await actorWithPermission(request, savedViewScopeRead[scope]);
   if (current.ownerId !== actor.id) throw Errors.notFound("Saved view not found");
   const result = await prisma.adminSavedView.updateMany({
     where: { id, ownerId: actor.id, version: input.expectedVersion },
@@ -450,9 +467,11 @@ export async function updateSavedViewV2(request: Request, id: string) {
 export async function deleteSavedViewV2(request: Request, id: string) {
   const current = await prisma.adminSavedView.findUnique({ where: { id } });
   if (!current) throw Errors.notFound("Saved view not found");
-  const scope = collaborationTargetTypeSchema.parse(current.scope);
-  const actor = await actorWithPermission(request, targetDescriptors[scope].read);
-  const expectedVersion = Number(request.headers.get("if-match"));
+  const scope = savedViewScopeSchema.parse(current.scope);
+  const actor = await actorWithPermission(request, savedViewScopeRead[scope]);
+  // INTENT: If-Match 的线上形态是带引号的 ETag（`"3"`），`adminV2Request` 也是这么发的。
+  // 裸 `Number()` 只认不带引号的写法，所以浏览器里每一次删除都会 400，而集成测试发的是裸数字。
+  const expectedVersion = Number(request.headers.get("if-match")?.replace(/^W\//, "").replace(/^"|"$/g, ""));
   if (!Number.isInteger(expectedVersion) || expectedVersion < 1) throw Errors.badRequest("If-Match must contain the saved view version");
   const deleted = await prisma.adminSavedView.deleteMany({ where: { id, ownerId: actor.id, version: expectedVersion } });
   if (deleted.count !== 1) throw Errors.conflict("Saved view changed; reload before deleting");

@@ -27,8 +27,47 @@ export const generationJobStatusOptions = [
   "cancelled",
 ] as const;
 
-const sortOptions: GenerationJobSort[] = ["created_desc", "created_asc", "updated_desc", "cost_desc"];
-const limitOptions = [10, 25, 50, 100];
+// SPEC: 下拉选项与筛选芯片共用同一份标签 —— 芯片上写的就是运营刚才在下拉里选的那几个字。
+export const generationJobModeOptions = [
+  { value: "all", label: "All historical records" },
+  { value: "image", label: "Image" },
+  { value: "video", label: "Video" },
+] as const;
+
+export const generationJobSortOptions = [
+  { value: "created_desc", label: "Newest created" },
+  { value: "created_asc", label: "Oldest created" },
+  { value: "updated_desc", label: "Recently changed" },
+  { value: "cost_desc", label: "Highest cost" },
+] as const;
+
+const sortOptions: GenerationJobSort[] = generationJobSortOptions.map((option) => option.value);
+export const generationJobLimitOptions = [10, 25, 50, 100];
+const limitOptions = generationJobLimitOptions;
+
+export type GenerationJobFilterKey =
+  | "search" | "mode" | "legacyStatus" | "provider" | "sourceType" | "userId" | "characterId" | "sort";
+
+const filterKeys: GenerationJobFilterKey[] = [
+  "search", "mode", "legacyStatus", "provider", "sourceType", "userId", "characterId", "sort",
+];
+
+// SPEC: 相对默认查询「改了哪几项」—— 折叠筛选面板后，芯片就是这张表。
+// INTENT: 默认 mode=image 不是中性值，所以不能用「非空即生效」来判断；一律与默认查询逐项比。
+// `reset` 是清掉这枚芯片要打的补丁：键是联合类型，TS 推不出来，只在这一处收敛。
+export function changedGenerationJobFilters(query: GenerationJobQueryDraft) {
+  return filterKeys
+    .filter((key) => query[key] !== defaultGenerationJobQuery[key])
+    .map((key) => ({
+      key,
+      value: String(query[key]),
+      reset: { [key]: defaultGenerationJobQuery[key] } as Partial<GenerationJobQueryDraft>,
+    }));
+}
+
+export function isGenerationJobQueryFiltered(query: GenerationJobQueryDraft) {
+  return changedGenerationJobFilters(query).length > 0;
+}
 
 export const defaultGenerationJobQuery: GenerationJobQueryDraft = {
   search: "",

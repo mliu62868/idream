@@ -9,14 +9,45 @@ import { publishCharacterReferenceSet } from "./reference-set";
 import { getCharacterWorkspace } from "./workspace";
 import { issueCharacterPreviewToken } from "./preview-token";
 import { loadCharacterRendererPreview } from "./renderer-preview";
-import { createCharacterVisualProfile } from "@/server/modules/admin/characters/visual-profiles";
-import { patchContentAsset } from "@/server/modules/admin/content/assets";
+import { POST as createCharacterVisualProfileRoute } from "@/app/api/v2/admin/content/characters/[id]/visual-profiles/route";
+import { PATCH as patchContentAssetRoute } from "@/app/api/v2/admin/assets/[id]/route";
 import {
   characterVisualProfileSnapshotHash,
   referenceSetSnapshotHash,
 } from "./release-snapshot";
 import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-validation";
 import { toInputJson } from "../shared/prisma-json";
+
+/**
+ * SPEC: drive the Route Handler but keep the throw-on-failure shape these assertions use.
+ * INTENT: a Route Handler answers a 4xx envelope where the module used to throw an AppError.
+ * The authority decision is what is under test, not which shape carries it.
+ */
+async function viaRoute(pending: Promise<Response> | Response): Promise<Response> {
+  const response = await pending;
+  if (response.ok) return response;
+  const payload = await response.clone().json() as {
+    error?: { code?: string; message?: string; details?: unknown };
+  };
+  throw Object.assign(new Error(payload.error?.message ?? "Admin v2 request failed"), {
+    status: response.status,
+    code: payload.error?.code,
+    details: payload.error?.details,
+  });
+}
+
+/** SPEC: the Image Library PATCH as its Route Handler serves it, keyed by asset id. */
+function patchContentAsset(request: Request, id: string) {
+  return viaRoute(patchContentAssetRoute(request, { params: Promise.resolve({ id }) }));
+}
+
+/** SPEC: the Visual Identity POST as its Route Handler serves it, keyed by character id. */
+function createCharacterVisualProfile(request: Request, characterId: string) {
+  return viaRoute(createCharacterVisualProfileRoute(request, {
+    params: Promise.resolve({ id: characterId }),
+  }));
+}
+
 
 describe.sequential("Character Asset Studio draft image authority", () => {
   const suffix = randomUUID();
@@ -726,9 +757,10 @@ describe.sequential("Character Asset Studio draft image authority", () => {
 
     let libraryMutationSettled = false;
     const concurrentArchive = patchContentAsset(
-      new Request(`http://localhost/api/v1/admin/content/assets/${candidateAssetId}`, {
+      new Request(`http://localhost/api/v2/admin/assets/${candidateAssetId}`, {
         method: "PATCH",
         headers: {
+          "idempotency-key": `asset-studio-library-${suffix}-1`,
           "content-type": "application/json",
           "x-idream-user-id": actorId,
           "x-idream-role": "admin",
@@ -799,9 +831,10 @@ describe.sequential("Character Asset Studio draft image authority", () => {
 
     let libraryMutationSettled = false;
     const concurrentLibraryMutation = patchContentAsset(
-      new Request(`http://localhost/api/v1/admin/content/assets/${candidateAssetId}`, {
+      new Request(`http://localhost/api/v2/admin/assets/${candidateAssetId}`, {
         method: "PATCH",
         headers: {
+          "idempotency-key": `asset-studio-library-${suffix}-2`,
           "content-type": "application/json",
           "x-idream-user-id": actorId,
           "x-idream-role": "admin",
@@ -1150,7 +1183,7 @@ describe.sequential("Character Asset Studio draft image authority", () => {
       },
     });
     const visualProfileResponse = await createCharacterVisualProfile(new Request(
-      `http://localhost/api/v1/admin/content/characters/${characterId}/visual-profiles`,
+      `http://localhost/api/v2/admin/content/characters/${characterId}/visual-profiles`,
       {
         method: "POST",
         headers: {

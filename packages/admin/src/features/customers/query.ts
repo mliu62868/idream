@@ -11,6 +11,9 @@ export type CustomerWorkspaceUrlState = {
 
 export const defaultCustomerQuery: CustomerQuery = { search: "", status: "" };
 
+/** 页大小是请求参数与分页条读数共用的同一个数，只允许有一份。 */
+export const CUSTOMER_PAGE_SIZE = 30;
+
 export function buildCustomerWorkspaceParams(state: CustomerWorkspaceUrlState) {
   const params = new URLSearchParams();
   append(params, "search", state.query.search);

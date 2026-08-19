@@ -16,6 +16,7 @@ vi.mock("@/lib/admin-v2-api", async (importOriginal) => {
 });
 
 vi.mock("@/components/admin/i18n", () => ({
+  adminDateLocale: () => undefined,
   useAdminI18n: () => ({ locale: "en" as const, t: translate, value: displayValue }),
 }));
 
@@ -175,6 +176,6 @@ describe("Creative Run list projection", () => {
 
     // INVARIANT: 首次取数失败必须与"查询成功但没有结果"区分开。
     expect(container.textContent).toContain("Creative projection unavailable");
-    expect(container.textContent).toContain("No successful query yet");
+    expect(container.textContent).toContain("Not loaded yet");
   });
 });

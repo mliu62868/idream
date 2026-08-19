@@ -592,7 +592,7 @@ function projectRow(
       ownerId: row.target.ownerId,
       slaDueAt: row.target.slaDueAt?.toISOString() ?? null,
       recommendedAction: "Open the mentioned context and respond or hand off",
-      rankingReason: rankingReason(row.target.severity, row.target.slaDueAt, row.row.createdAt),
+      openedAt: row.row.createdAt.toISOString(),
       deepLink: row.target.deepLink,
       verificationState: row.target.verificationState,
       lastChangedAt: row.row.createdAt.toISOString(),
@@ -617,7 +617,7 @@ function projectRow(
       ownerId: item.ownerId,
       slaDueAt: item.slaDueAt?.toISOString() ?? null,
       recommendedAction: item.verificationState === "failed" ? "Reopen and verify the resolution" : "Review and advance the case",
-      rankingReason: rankingReason(CASE_SEVERITY.of(item), item.slaDueAt, item.createdAt),
+      openedAt: item.createdAt.toISOString(),
       deepLink: `/admin/cases/${encodeURIComponent(item.id)}`,
       verificationState: normalizeVerification(item.verificationState),
       lastChangedAt: item.updatedAt.toISOString(),
@@ -643,7 +643,7 @@ function projectRow(
       ownerId: item.ownerId,
       slaDueAt: item.slaDueAt?.toISOString() ?? null,
       recommendedAction: item.verificationState === "failed" ? "Resume mitigation and recovery verification" : "Follow the incident action plan",
-      rankingReason: rankingReason(severity, item.slaDueAt, item.firstSeen),
+      openedAt: item.firstSeen.toISOString(),
       deepLink: `/admin/ops/incidents/${encodeURIComponent(item.id)}`,
       verificationState: normalizeVerification(item.verificationState),
       lastChangedAt: item.updatedAt.toISOString(),
@@ -679,7 +679,7 @@ function projectRow(
       ownerId: row.project.ownerId,
       slaDueAt: row.project.plannedLaunchAt?.toISOString() ?? null,
       recommendedAction: row.monitorActionRequired ? "Investigate monitor evidence and keep or rollback" : item.readiness === "blocked" ? "Resolve release readiness blockers" : "Advance release checks",
-      rankingReason: rankingReason(severity, row.project.plannedLaunchAt, item.createdAt),
+      openedAt: item.createdAt.toISOString(),
       deepLink: `/admin/characters/${encodeURIComponent(row.project.characterId)}?tab=release&releaseId=${encodeURIComponent(item.id)}`,
       verificationState: row.monitorActionRequired || item.readiness === "blocked" ? "failed" : item.readiness === "ready" ? "passed" : "pending",
       lastChangedAt: item.updatedAt.toISOString(),
@@ -714,7 +714,7 @@ function projectRow(
       ownerId: item.ownerId,
       slaDueAt: item.dueAt?.toISOString() ?? null,
       recommendedAction: item.verificationState === "failed" ? "Reopen Creative verification" : "Advance the Creative Run",
-      rankingReason: rankingReason(severity, item.dueAt, item.createdAt),
+      openedAt: item.createdAt.toISOString(),
       deepLink: `/admin/creative/runs/${encodeURIComponent(item.id)}`,
       verificationState: normalizeVerification(item.verificationState),
       lastChangedAt: item.updatedAt.toISOString(),
@@ -746,7 +746,7 @@ function projectRow(
     ownerId: item.actorId,
     slaDueAt: item.leaseExpiresAt?.toISOString() ?? null,
     recommendedAction: item.needsReconciliation ? "Reconcile the uncertain downstream effect" : "Check command verification",
-    rankingReason: rankingReason(COMMAND_SEVERITY.of(item), item.leaseExpiresAt, item.createdAt),
+    openedAt: item.createdAt.toISOString(),
     deepLink: `/admin/system/audit?commandId=${encodeURIComponent(item.id)}`,
     verificationState,
     lastChangedAt: item.updatedAt.toISOString(),
@@ -761,13 +761,6 @@ function projectRow(
 /** 新增一种工作来源却没在 projectRow 里投影，是编译错误，不是静默落到最后一个分支。 */
 function absurd(row: never): never {
   throw new Error(`Unprojected Today work source: ${JSON.stringify(row)}`);
-}
-
-function rankingReason(severity: TodayWorkItem["severity"], dueAt: Date | null, createdAt: Date) {
-  const reasons = [`${severity} severity`];
-  if (dueAt) reasons.push(`SLA ${dueAt.toISOString()}`);
-  reasons.push(`open since ${createdAt.toISOString()}`);
-  return reasons.join(" · ");
 }
 
 const priorityScore = { urgent: 4, high: 3, normal: 2, low: 1 } as const;

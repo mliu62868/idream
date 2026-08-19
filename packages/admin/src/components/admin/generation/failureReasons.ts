@@ -14,6 +14,9 @@ export type FailureReason = {
 };
 
 // key = 机器码 / failureMode / verificationStatus（小写下划线）。title/hint 存 i18n key。
+// RULE: 只登记能在生产代码里查到发出点、且能读出含义的码。查不到就让它走兜底——
+//       一条编出来的原因比一句"把错误码给工程"更贵，运营会照着它做错误的动作。
+//       每条都注明出处，改后端时能顺着找回来。
 const TABLE: Record<string, Omit<FailureReason, "code">> = {
   missing_runtime_components: {
     title: "Model files not ready",
@@ -31,6 +34,120 @@ const TABLE: Record<string, Omit<FailureReason, "code">> = {
     hint: "Check backend health — needs engineering",
     severity: "engineering",
   },
+
+  // --- generation pipeline (packages/main/src/server/ai/*) ---
+  // INVARIANT: 这一段每个 key 都能在 main 的非测试代码里找到写入点。只映射真存在的码——
+  // 编一个不存在的码进来，等于给运营一个永远不会发生的解释。
+  provider_timeout: {
+    title: "Provider did not answer in time",
+    hint: "Safe to retry",
+    severity: "retry",
+  },
+  provider_failed: {
+    title: "Provider rejected the request",
+    hint: "Safe to retry; if it repeats, needs engineering",
+    severity: "retry",
+  },
+  provider_unavailable: {
+    title: "Provider is unavailable",
+    hint: "Wait for capacity, then retry",
+    severity: "retry",
+  },
+  provider_blocked: {
+    title: "Provider refused to run this request",
+    hint: "Adjust the request before retrying",
+    severity: "retry",
+  },
+  provider_policy_blocked: {
+    title: "Provider policy refused this request",
+    hint: "Adjust the request before retrying",
+    severity: "retry",
+  },
+  provider_outcome_unknown: {
+    title: "Provider outcome is unknown",
+    hint: "Reconcile before retrying — a duplicate may be produced",
+    severity: "engineering",
+  },
+  stale_provider_outcome: {
+    title: "Provider answered after this job was already closed",
+    hint: "No action needed — the late result was discarded",
+    severity: "waiting",
+  },
+  stale_timeout: {
+    title: "Job timed out while waiting for the provider",
+    hint: "Safe to retry",
+    severity: "retry",
+  },
+  late_worker_failure: {
+    title: "Worker reported failure after the job was closed",
+    hint: "No action needed — the late result was discarded",
+    severity: "waiting",
+  },
+  delivery_failed: {
+    title: "Image was produced but could not be delivered",
+    hint: "Check storage and delivery — needs engineering",
+    severity: "engineering",
+  },
+  terminal_record_persist_failed: {
+    title: "Final result could not be saved",
+    hint: "Check the database — needs engineering",
+    severity: "engineering",
+  },
+  serialization_failure: {
+    title: "Two writes collided on this job",
+    hint: "Safe to retry",
+    severity: "retry",
+  },
+  operator_cancelled: {
+    title: "An operator cancelled this job",
+    hint: "No action needed",
+    severity: "waiting",
+  },
+  preserve_on_replay: {
+    title: "Replay kept the earlier outcome",
+    hint: "No action needed",
+    severity: "waiting",
+  },
+
+  // --- voice + coin balance (modules/ourdream/voice-clip.ts, providers/voice/*) ---
+  voice_request_failed: {
+    title: "Voice provider rejected the request",
+    hint: "Safe to retry; if it repeats, needs engineering",
+    severity: "retry",
+  },
+  allowance_exhausted: {
+    title: "The customer's allowance is used up",
+    hint: "Waiting on a reset or a top-up — not a fault",
+    severity: "waiting",
+  },
+  insufficient_dreamcoins_after_synthesis: {
+    title: "The customer ran out of Dreamcoins mid-generation",
+    hint: "Waiting on a top-up — not a fault",
+    severity: "waiting",
+  },
+
+  // --- creative runs + character release ---
+  generation_failed: {
+    title: "The generation step failed",
+    hint: "Open the job for its own failure reason",
+    severity: "engineering",
+  },
+  unsupported_command: {
+    title: "This command is not supported here",
+    hint: "Needs engineering — the console offered an action the authority rejects",
+    severity: "engineering",
+  },
+  internal: {
+    title: "The authority hit an internal error",
+    hint: "Send the error code to engineering",
+    severity: "engineering",
+  },
+  // shared/media/generated-image-sanity.ts:20 —— 图片过不了完整性检查时抛的码。
+  asset_quality_failed: {
+    title: "Image failed the quality check",
+    hint: "Blank, collaged, or corrupt output is discarded — adjust the prompt and generate again",
+    severity: "retry",
+  },
 };
 
 const FALLBACK: Omit<FailureReason, "code"> = {
@@ -38,6 +155,14 @@ const FALLBACK: Omit<FailureReason, "code"> = {
   hint: "Share the error code with engineering",
   severity: "engineering",
 };
+
+/** 表里能产出的全部 i18n key —— 由 failureReasons.test.ts 逐个核对中文存在。
+ * TRAP: 它们只经 t(reason.title) / t(reason.hint) 动态取值，i18n-completeness 的字面量
+ *       扫描看不见，漏译不会有任何测试变红——除了那一个。 */
+export const FAILURE_REASON_COPY_KEYS: readonly string[] = [
+  ...Object.values(TABLE),
+  FALLBACK,
+].flatMap((reason) => [reason.title, reason.hint]);
 
 export function resolveFailureReason(code: string | null | undefined): FailureReason {
   const key = (code ?? "").trim().toLowerCase();

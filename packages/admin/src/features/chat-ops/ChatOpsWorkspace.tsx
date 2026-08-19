@@ -6,18 +6,21 @@ import {
   type MainToChatOutboxEvent,
   type MainToChatOutboxEventListResponse,
 } from "@idream/shared/admin";
-import { useAdminI18n } from "@/components/admin/i18n";
+import { adminDateLocale, useAdminI18n } from "@/components/admin/i18n";
 import { Loader2, RefreshCcw, RotateCcw, Search } from "lucide-react";
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet } from "@/components/admin/api";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import {
   ConfirmDialog,
   type ConfirmSpec,
 } from "@/components/admin/ui/ConfirmDialog";
-import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
+import { DataTable, type DataTableHeader, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
+import { useAdminFormat } from "@/components/admin/ui/format";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { useToast } from "@/components/admin/ui/Toast";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
@@ -53,7 +56,8 @@ type ChatResponse = {
 type AuthorityState = {
   data: ChatResponse | null;
   loading: boolean;
-  error: string | null;
+  /** 原始异常，不是它的 message —— 错误文案由 ui/request-error-copy.ts 按错误码映射。 */
+  error: unknown;
   refreshedAt: string | null;
 };
 
@@ -234,14 +238,7 @@ export function ChatOpsWorkspace({
         if (!request.isCurrent()) return;
         setStates((current) => ({
           ...current,
-          [authority]: {
-            ...current[authority],
-            loading: false,
-            error:
-              cause instanceof Error
-                ? cause.message
-                : `${authority} authority request failed`,
-          },
+          [authority]: { ...current[authority], loading: false, error: cause },
         }));
       }
     },
@@ -295,15 +292,17 @@ export function ChatOpsWorkspace({
     navigate({ ...draft, sessionCursor: "", usageCursor: "", eventCursor: "" });
   }
 
-  const connected = authorities.some(
-    (authority) => states[authority].data?.configured,
-  );
+  // SPEC: 五个 authority 各自独立报 configured；顶栏必须说清"几个还活着"。
+  // INTENT: 旧口径是 .some(configured)——五个里活一个也照样显示"Chat Service connected"，
+  //         值班的人看一眼以为没事，实际四个authority已经拿不到数据了。
+  const answered = authorities.filter((authority) => states[authority].data !== null);
+  const degraded = answered.filter((authority) => !states[authority].data?.configured);
   const overview = states.overview.data?.overview ?? null;
   return (
     <section className="space-y-5">
       <PageHeader
-        purpose="Inspect Chat Service health, session metadata, quota usage, and moderation events without exposing message plaintext."
-        title={t("Chat Ops")}
+        purpose={t("Inspect Chat Service health, session metadata, quota usage, and moderation events without exposing message plaintext.")}
+        title={t("Chat Operations")}
       />
       <div
         className="flex flex-wrap justify-between gap-3 text-xs text-[var(--ad-text-muted)]"
@@ -318,11 +317,16 @@ export function ChatOpsWorkspace({
         </div>
         {!canRead ? (
           <strong>{t("No access · chat.ops.read is not granted")}</strong>
+        ) : answered.length === 0 ? (
+          <strong>{t("Chat Service state not established yet")}</strong>
+        ) : degraded.length === 0 ? (
+          <strong>{t("Chat Service connected")}</strong>
         ) : (
-          <strong>
-            {connected
-              ? t("Chat Service connected")
-              : t("Chat Service degraded or disconnected")}
+          <strong className="text-[var(--ad-yellow-text)]">
+            {t("Chat Service degraded · {degraded} of {total} authorities unavailable", {
+              degraded: degraded.length,
+              total: authorities.length,
+            })}
           </strong>
         )}
       </div>
@@ -353,6 +357,7 @@ export function ChatOpsWorkspace({
         <Select
           label="Rows"
           onChange={(limit) => setDraft((value) => ({ ...value, limit }))}
+          numeric
           options={["25", "50", "100"]}
           value={draft.limit}
         />
@@ -422,7 +427,7 @@ export function ChatOpsWorkspace({
           {states.overview.data ? (
             <ChatOpsOverviewCards overview={overview} />
           ) : (
-            <Loading authority="overview" state={states.overview} />
+            <Loading authority={AUTHORITY_LABELS.overview} state={states.overview} />
           )}
 
           <AuthorityError
@@ -528,13 +533,14 @@ function MainToChatFailedOutboxPanel({
   canDiscardMissing: boolean;
 }) {
   const { t } = useAdminI18n();
+  const format = useAdminFormat();
+  const { toast } = useToast();
   const [data, setData] =
     useState<MainToChatOutboxEventListResponse | null>(null);
   const [loading, setLoading] = useState(canRead);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const gate = useRef(createLatestRequestGate());
 
   const load = useCallback(
@@ -555,11 +561,7 @@ function MainToChatFailedOutboxPanel({
         setSelected(new Set());
       } catch (cause) {
         if (!request.isCurrent()) return;
-        setError(
-          cause instanceof Error
-            ? cause.message
-            : "Main to Chat failed outbox request failed",
-        );
+        setError(cause);
       } finally {
         if (request.isCurrent()) setLoading(false);
       }
@@ -591,6 +593,7 @@ function MainToChatFailedOutboxPanel({
   const targetMissingRows = selectedRows.filter(targetMissingDiscardAllowed);
   const allSelected =
     selectableRows.length > 0 && selectedRows.length === selectableRows.length;
+  const selectable = canReplay || canDiscardMissing;
 
   function toggle(id: string) {
     setSelected((current) => {
@@ -613,13 +616,12 @@ function MainToChatFailedOutboxPanel({
       title: t("Replay Main → Chat failed events ({count})", {
         count: replayRevision.length,
       }),
-      summary: (
-        <span>
-          {t(
-            "The worker will retry the unchanged durable envelopes; no event is sent from this browser request.",
-          )}
-        </span>
-      ),
+      consequence: {
+        effect: t(
+          "The worker will retry the unchanged durable envelopes; no event is sent from this browser request. Retrying inside this dialog reuses the same idempotency key and cannot requeue twice.",
+        ),
+        reversible: false,
+      },
       destructive: {
         expectedName: MAIN_TO_CHAT_REPLAY_CONFIRMATION,
         inputLabel: t("Replay confirmation"),
@@ -635,9 +637,14 @@ function MainToChatFailedOutboxPanel({
             idempotencyKey,
           },
         );
-        setNotice(t("Main → Chat replay result · {summary}.", {
-          summary: summarizeMainToChatReplay(result.results),
-        }));
+        toast({
+          // 不是每条都回到队列时用 error 语气 —— 只有 error toast 不会自己消失，
+          // 而「哪几条没进队列」正是运营必须读完的那句。
+          tone: result.requeuedCount === result.results.length ? "success" : "error",
+          title: t("Main → Chat replay result · {summary}.", {
+            summary: summarizeMainToChatReplay(result.results),
+          }),
+        });
         await load();
       },
     });
@@ -655,13 +662,12 @@ function MainToChatFailedOutboxPanel({
       title: t("Record expected target missing ({count})", {
         count: missingRows.length,
       }),
-      summary: (
-        <span>
-          {t(
-            "This records that no user-visible Chat effect was applied. Main becomes terminal only after Chat stores the original envelope hash as a target-missing receipt.",
-          )}
-        </span>
-      ),
+      consequence: {
+        effect: t(
+          "This records that no user-visible Chat effect was applied and is terminal for Main. Main becomes terminal only after Chat stores the original envelope hash as a target-missing receipt. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.",
+        ),
+        reversible: false,
+      },
       destructive: {
         expectedName: MAIN_TO_CHAT_TARGET_MISSING_CONFIRMATION,
         inputLabel: t("Target-missing confirmation"),
@@ -677,13 +683,93 @@ function MainToChatFailedOutboxPanel({
             idempotencyKey,
           },
         );
-        setNotice(t("Main → Chat target-missing result · {summary}.", {
-          summary: summarizeMainToChatReplay(result.results),
-        }));
+        toast({
+          tone: result.discardedCount === result.results.length ? "success" : "error",
+          title: t("Main → Chat target-missing result · {summary}.", {
+            summary: summarizeMainToChatReplay(result.results),
+          }),
+        });
         await load();
       },
     });
   }
+
+  // SPEC: 勾选框留在单元格里，不用 DataTable 自带的多选列。
+  // INTENT: 收件方状态不安全的行必须是 disabled 的勾选框 + aria-describedby 说明原因；
+  // DataTable 的 selection 目前表达不了「这一行不可选、原因是什么」，静默不选中对读屏用户
+  // 等于没有反馈。能表达之后再把这一列交回去。
+  // INTENT: 列顺序按单元格重排过 —— 原先手写表头把 Aggregate 排在 Receiver authority 前面，
+  // 而单元格是反的，整张表有两列的表头对不上内容。
+  const headers: DataTableHeader[] = [
+    ...(selectable ? [{ label: "Select", width: "4rem" }] : []),
+    { label: "Event", width: "14rem" },
+    { label: "Receiver authority", width: "18rem" },
+    { label: "Aggregate", width: "12rem" },
+    { label: "Attempts / retry", width: "10rem" },
+    { label: "Last error", width: "18rem" },
+    { label: "Envelope hash", width: "16rem" },
+    { label: "Updated", width: "10rem" },
+  ];
+  const tableRows: DataTableRow[] = rows.map((row, index) => {
+    const disabledReasonId = `main-to-chat-replay-disabled-${index}`;
+    const actionable = rowActionable(row, canReplay, canDiscardMissing);
+    return {
+      id: row.id,
+      cells: [
+        ...(selectable ? [
+          <input
+            aria-describedby={actionable ? undefined : disabledReasonId}
+            aria-label={t("Select failed event {id}", { id: row.id })}
+            checked={selected.has(row.id)}
+            disabled={!actionable}
+            key="select"
+            onChange={() => toggle(row.id)}
+            type="checkbox"
+          />,
+        ] : []),
+        <span key="event">
+          <span className="block font-medium">{row.eventType}</span>
+          <span className="mt-1 block font-mono text-xs text-[var(--ad-text-muted)]">{row.id}</span>
+        </span>,
+        <span className="block text-xs" key="receiver">
+          <span className="block font-semibold">
+            {t(receiverAuthorityLabel(row.receiverAuthority.disposition))}
+          </span>
+          {row.receiverAuthority.target ? (
+            <span className="mt-1 block break-all font-mono text-[11px] text-[var(--ad-text-muted)]">
+              {row.receiverAuthority.target.kind}:{row.receiverAuthority.target.id}
+              {row.receiverAuthority.targetStatus
+                ? ` · ${row.receiverAuthority.targetStatus}`
+                : ""}
+            </span>
+          ) : null}
+          {row.envelopeHash !== null && !actionable ? (
+            <span className="sr-only" id={disabledReasonId}>
+              {t("No safe action is available for this receiver authority state")}
+            </span>
+          ) : null}
+        </span>,
+        <span key="aggregate">
+          <span className="block">{row.aggregateType}</span>
+          <span className="mt-1 block font-mono text-xs text-[var(--ad-text-muted)]">{row.aggregateId}</span>
+        </span>,
+        <span key="attempts">
+          <span className="block">{row.attempts}</span>
+          <span className="mt-1 block text-xs text-[var(--ad-text-muted)]">{format.dateTime(row.nextRunAt)}</span>
+        </span>,
+        <span className="block text-xs" key="error">{row.lastErrorMessage ?? "—"}</span>,
+        <span className="block break-all font-mono text-[11px]" key="envelope">
+          {row.envelopeHash ?? (
+            <span id={disabledReasonId}>
+              {t("Replay unavailable · invalid durable envelope")}
+              {` · ${row.storedEnvelopeHash}`}
+            </span>
+          )}
+        </span>,
+        <span className="text-xs" key="updated">{format.dateTime(row.updatedAt)}</span>,
+      ],
+    };
+  });
 
   return (
     <section
@@ -711,45 +797,16 @@ function MainToChatFailedOutboxPanel({
           ) : null}
         </div>
       </div>
-      {notice ? (
-        <p
-          className="rounded-md bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]"
-          data-testid="main-to-chat-replay-status"
-          role="status"
-        >
-          {notice}
-        </p>
-      ) : null}
-      {error ? (
-        <p
-          className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
-          role="alert"
-        >
-          {t("Main → Chat failed delivery refresh failed:")} {error}
-          <button
-            className="ml-3 min-h-8 rounded border border-current px-2 font-semibold"
-            onClick={() => void load()}
-            type="button"
-          >
-            {t("Retry")}
-          </button>
-        </p>
-      ) : null}
-      {!canRead ? null : loading && !data ? (
-        <Loading
-          authority={t("Main → Chat failed delivery")}
-          state={{ data: null, loading: true, error: null, refreshedAt: null }}
+      {error !== null && error !== undefined && data ? (
+        <AuthorityRequestError
+          cause={error}
+          message={authorityMessage(error, "Main → Chat failed delivery")}
+          onRetry={() => void load()}
         />
-      ) : rows.length === 0 ? (
-        <EmptyState
-          hint={t(
-            "Every Main → Chat durable event is pending, delivered, or explicitly terminalized.",
-          )}
-          title={t("No failed Main → Chat deliveries")}
-        />
-      ) : (
+      ) : null}
+      {!canRead ? null : (
         <>
-          {canReplay || canDiscardMissing ? (
+          {selectable && rows.length > 0 ? (
             <div className="flex flex-wrap items-center gap-3">
               <label className="flex items-center gap-2 text-xs text-[var(--ad-text-muted)]">
                 <input
@@ -767,7 +824,7 @@ function MainToChatFailedOutboxPanel({
                 {t("Select all")}
               </label>
               <span className="text-xs text-[var(--ad-text-muted)]">
-                {selectedRows.length} {t("selected")}
+                {t("{count} selected", { count: selectedRows.length })}
               </span>
               {canReplay ? (
                 <button
@@ -799,124 +856,24 @@ function MainToChatFailedOutboxPanel({
               ) : null}
             </div>
           ) : null}
-          <div
-            aria-label={t("Failed Main to Chat delivery table")}
-            className="overflow-x-auto rounded-lg border border-[var(--ad-border)]"
-            role="region"
-            tabIndex={0}
-          >
-            <table className="w-full min-w-[1080px] text-left text-sm">
-              <caption className="sr-only">
-                {t("Failed Main to Chat durable deliveries")}
-              </caption>
-              <thead>
-                <tr className="border-b border-[var(--ad-border)] text-xs uppercase text-[var(--ad-text-muted)]">
-                  {[
-                    ...(canReplay || canDiscardMissing ? [""] : []),
-                    "Event",
-                    "Aggregate",
-                    "Receiver authority",
-                    "Attempts / retry",
-                    "Last error",
-                    "Envelope hash",
-                    "Updated",
-                  ].map((header, index) => (
-                    <th
-                      className="px-3 py-3 font-medium"
-                      key={`${header}-${index}`}
-                      scope="col"
-                    >
-                      {header ? t(header) : header}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row, index) => {
-                  const disabledReasonId =
-                    `main-to-chat-replay-disabled-${index}`;
-                  return (
-                    <tr
-                      className="border-b border-[var(--ad-border)] last:border-0"
-                      key={row.id}
-                    >
-                      {canReplay || canDiscardMissing ? (
-                        <td className="px-3 py-3">
-                          <input
-                            aria-describedby={
-                              !rowActionable(row, canReplay, canDiscardMissing)
-                                ? disabledReasonId
-                                : undefined
-                            }
-                            aria-label={t("Select failed event {id}", {
-                              id: row.id,
-                            })}
-                            checked={selected.has(row.id)}
-                            disabled={!rowActionable(
-                              row,
-                              canReplay,
-                              canDiscardMissing,
-                            )}
-                            onChange={() => toggle(row.id)}
-                            type="checkbox"
-                          />
-                        </td>
-                      ) : null}
-                      <td className="px-3 py-3">
-                        <p className="font-medium">{row.eventType}</p>
-                        <p className="font-mono text-xs text-[var(--ad-text-muted)]">
-                          {row.id}
-                        </p>
-                      </td>
-                      <td className="max-w-80 px-3 py-3 text-xs">
-                        <p className="font-semibold">
-                          {t(receiverAuthorityLabel(row.receiverAuthority.disposition))}
-                        </p>
-                        {row.receiverAuthority.target ? (
-                          <p className="break-all font-mono text-[11px] text-[var(--ad-text-muted)]">
-                            {row.receiverAuthority.target.kind}:{row.receiverAuthority.target.id}
-                            {row.receiverAuthority.targetStatus
-                              ? ` · ${row.receiverAuthority.targetStatus}`
-                              : ""}
-                          </p>
-                        ) : null}
-                        {row.envelopeHash !== null &&
-                        !rowActionable(row, canReplay, canDiscardMissing) ? (
-                          <span className="sr-only" id={disabledReasonId}>
-                            {t("No safe action is available for this receiver authority state")}
-                          </span>
-                        ) : null}
-                      </td>
-                      <td className="px-3 py-3">
-                        <p>{row.aggregateType}</p>
-                        <p className="font-mono text-xs text-[var(--ad-text-muted)]">
-                          {row.aggregateId}
-                        </p>
-                      </td>
-                      <td className="px-3 py-3">
-                        <p>{row.attempts}</p>
-                        <p className="text-xs text-[var(--ad-text-muted)]">
-                          {date(row.nextRunAt)}
-                        </p>
-                      </td>
-                      <td className="max-w-80 px-3 py-3 text-xs">
-                        {row.lastErrorMessage ?? "—"}
-                      </td>
-                      <td className="max-w-72 break-all px-3 py-3 font-mono text-[11px]">
-                        {row.envelopeHash ?? (
-                          <span id={disabledReasonId}>
-                            {t("Replay unavailable · invalid durable envelope")}
-                            {` · ${row.storedEnvelopeHash}`}
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-3 py-3 text-xs">{date(row.updatedAt)}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <DataTable
+            caption="Failed Main to Chat durable deliveries"
+            empty={
+              <EmptyState
+                hint={t(
+                  "Every Main → Chat durable event is pending, delivered, or explicitly terminalized.",
+                )}
+                title={t("No failed Main → Chat deliveries")}
+              />
+            }
+            error={data ? null : error === null || error === undefined ? null : authorityMessage(error, "Main → Chat failed delivery")}
+            headers={headers}
+            loading={loading}
+            minimumWidthClassName="min-w-[1080px]"
+            onRetry={() => void load()}
+            rows={tableRows}
+            skeletonRows={5}
+          />
           {data?.pageInfo.hasNextPage && data.pageInfo.endCursor ? (
             <button
               className="inline-flex min-h-11 items-center gap-2 rounded border border-[var(--ad-border)] px-4 text-sm font-semibold"
@@ -941,6 +898,7 @@ function MainToChatFailedOutboxPanel({
 }
 
 export function ChatOpsOverviewCards({ overview }: { overview: Row | null }) {
+  const { t } = useAdminI18n();
   const cards = [
     ["Active sessions", overview?.activeSessions],
     ["Archived", overview?.archivedSessions],
@@ -955,7 +913,7 @@ export function ChatOpsOverviewCards({ overview }: { overview: Row | null }) {
     <div className="grid gap-px overflow-hidden rounded-lg border bg-black/[0.05] md:grid-cols-4">
       {cards.map(([label, value]) => (
         <div className="bg-[var(--ad-surface)] p-4" key={String(label)}>
-          <p className="text-xs text-[var(--ad-text-muted)]">{String(label)}</p>
+          <p className="text-xs text-[var(--ad-text-muted)]">{t(String(label))}</p>
           <p className="mt-2 text-2xl font-semibold">
             {typeof value === "number" ? value : "—"}
           </p>
@@ -965,55 +923,70 @@ export function ChatOpsOverviewCards({ overview }: { overview: Row | null }) {
   );
 }
 
-const tableColumns: Record<Exclude<ChatOpsAuthority, "overview">, string[]> = {
+// SPEC: [响应字段, 表头文案]。表头进 t()，字段名只用来取值。
+// INTENT: 之前表头直接印响应的 camelCase 字段名（latencyP50Ms / unlimitedMessages），
+//         中文环境下整张表的表头都是英文变量名——DataTable 会 t(header)，但 t("latencyMs") 没有译文。
+type ColumnSpec = readonly (readonly [field: string, header: string])[];
+const tableColumns: Record<Exclude<ChatOpsAuthority, "overview">, ColumnSpec> = {
   providers: [
-    "provider",
-    "adapter",
-    "status",
-    "ok",
-    "model",
-    "endpoint",
-    "latencyMs",
-    "httpStatus",
-    "modelListed",
-    "error",
+    ["provider", "Provider"],
+    ["adapter", "Adapter"],
+    ["status", "Status"],
+    ["ok", "Reachable"],
+    ["model", "Model"],
+    ["endpoint", "Endpoint"],
+    ["latencyMs", "Latency (ms)"],
+    ["httpStatus", "HTTP status"],
+    ["modelListed", "Model listed"],
+    ["error", "Error"],
   ],
   usage: [
-    "userId",
-    "modelTier",
-    "unlimitedMessages",
-    "messagesUsed",
-    "freeDailyLimit",
-    "freeRemaining",
-    "quotaStatus",
-    "activeSessions",
-    "messages24h",
-    "periodStart",
+    ["userId", "User"],
+    ["modelTier", "Model tier"],
+    ["unlimitedMessages", "Unlimited"],
+    ["messagesUsed", "Messages used"],
+    ["freeDailyLimit", "Free daily limit"],
+    ["freeRemaining", "Free remaining"],
+    ["quotaStatus", "Quota status"],
+    ["activeSessions", "Active sessions"],
+    ["messages24h", "Messages 24h"],
+    ["periodStart", "Period start"],
   ],
   sessions: [
-    "id",
-    "userId",
-    "characterId",
-    "title",
-    "status",
-    "memoryEnabled",
-    "messageCount",
-    "lastMessageRole",
-    "lastMessageStatus",
-    "lastSafetyStatus",
-    "lastMessageAt",
+    ["id", "Session"],
+    ["userId", "User"],
+    ["characterId", "Character"],
+    ["title", "Title"],
+    ["status", "Status"],
+    ["memoryEnabled", "Memory"],
+    ["messageCount", "Messages"],
+    ["lastMessageRole", "Last role"],
+    ["lastMessageStatus", "Last message status"],
+    ["lastSafetyStatus", "Last safety status"],
+    ["lastMessageAt", "Last message"],
   ],
   events: [
-    "id",
-    "targetType",
-    "targetId",
-    "layer",
-    "status",
-    "policyCode",
-    "confidence",
-    "createdAt",
+    ["id", "Event"],
+    ["targetType", "Target type"],
+    ["targetId", "Target"],
+    ["layer", "Layer"],
+    ["status", "Status"],
+    ["policyCode", "Policy code"],
+    ["confidence", "Confidence"],
+    ["createdAt", "Created"],
   ],
 };
+
+// 这些列装的是枚举，走 value()/zhValues 通道；其余列是自由文本或数字，原样呈现。
+const ENUM_COLUMNS: ReadonlySet<string> = new Set([
+  "status",
+  "quotaStatus",
+  "layer",
+  "lastMessageRole",
+  "lastMessageStatus",
+  "lastSafetyStatus",
+  "targetType",
+]);
 
 function AuthorityTable({
   authority,
@@ -1026,14 +999,15 @@ function AuthorityTable({
   rows: Row[];
   state: AuthorityState;
 }) {
+  const { t, value: enumLabel } = useAdminI18n();
   if (!state.data && state.loading)
-    return <Loading authority={authority} state={state} />;
+    return <Loading authority={AUTHORITY_LABELS[authority]} state={state} />;
   if (!state.data) return null;
   if (!rows.length)
     return (
       <EmptyState
-        hint="The Chat Service authority returned no records."
-        title={empty}
+        hint={t("The Chat Service authority returned no records.")}
+        title={t(empty)}
       />
     );
   const columns = tableColumns[authority];
@@ -1048,20 +1022,26 @@ function AuthorityTable({
               ? "Recent chat sessions (no plaintext)"
               : "Chat moderation events"
       }
-      headers={columns}
-      rows={tableRows(rows, columns, authority)}
+      headers={columns.map(([, header]) => header)}
+      rows={tableRows(rows, columns, authority, enumLabel)}
     />
   );
 }
 
 function tableRows(
   rows: Row[],
-  columns: string[],
+  columns: ColumnSpec,
   prefix: string,
+  enumLabel: (key: string) => string,
 ): DataTableRow[] {
   return rows.map((row, index) => ({
     id: text(row.id) || `${prefix}-${index}`,
-    cells: columns.map((column) => display(row[column])),
+    cells: columns.map(([field]) => {
+      const raw = row[field];
+      return ENUM_COLUMNS.has(field) && typeof raw === "string" && raw
+        ? enumLabel(raw)
+        : display(raw);
+    }),
   }));
 }
 
@@ -1078,6 +1058,7 @@ function Pager({
   pageInfo: PageInfo;
   query: ChatOpsQuery;
 }) {
+  const { t } = useAdminI18n();
   if (!pageInfo.hasNextPage || !pageInfo.endCursor) return null;
   const cursor =
     authority === "sessions"
@@ -1092,11 +1073,23 @@ function Pager({
       type="button"
     >
       <RefreshCcw className="h-4 w-4" />
-      {label}
+      {t(label)}
     </button>
   );
 }
 
+// authority 是内部代号；界面上要显示它的人话名字，也才能进 t() 词表。
+const AUTHORITY_LABELS: Record<ChatOpsAuthority, string> = {
+  overview: "Overview",
+  providers: "Provider health",
+  sessions: "Sessions",
+  usage: "Usage",
+  events: "Events",
+};
+
+// INTENT: 横幅不再重复 authority 的名字 —— 顶栏那行 Freshness 已经逐个报了
+// 「Usage: unavailable」，而它就贴在对应的那张表上方。文案与技术详情全部走
+// ui/request-error-copy.ts，认不出的错误如实说「原因未能识别」。
 function AuthorityError({
   authority,
   query,
@@ -1108,51 +1101,44 @@ function AuthorityError({
   retry: (query: ChatOpsQuery, authority: ChatOpsAuthority) => Promise<void>;
   state: AuthorityState;
 }) {
-  const { t } = useAdminI18n();
-  if (!state.error) return null;
+  if (state.error === null || state.error === undefined) return null;
   return (
-    <div
-      className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
-      role="alert"
-    >
-      {authority} {t("authority refresh failed:")} {state.error}
-      <button
-        className="ml-3 min-h-8 rounded border border-current px-2"
-        onClick={() => void retry(query, authority)}
-        type="button"
-      >
-        {t("Retry")} {authority}
-      </button>
-      {state.data ? (
-        <span className="ml-2">
-          {t("The last good snapshot remains visible.")}
-        </span>
-      ) : null}
-    </div>
+    <AuthorityRequestError
+      cause={state.error}
+      message={authorityMessage(state.error, authority)}
+      onRetry={() => void retry(query, authority)}
+      snapshotAt={state.data ? state.refreshedAt : null}
+    />
   );
 }
 
+function authorityMessage(error: unknown, authority: string) {
+  return error instanceof Error ? error.message : `${authority} authority request failed`;
+}
+
 function DiagnosticsNotice({ data }: { data: ChatResponse | null }) {
+  const { t } = useAdminI18n();
   if (!data || data.configured) return null;
+  const diagnostics = data.diagnostics;
   return (
     <p
       className="rounded-md bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]"
       role="status"
     >
-      {diagnosticText(data.diagnostics)}
+      {diagnostics?.reason === "upstream_error"
+        ? t("Chat Service returned an upstream error ({status}).", { status: diagnostics.status ?? t("unknown") })
+        : t(diagnosticKey(diagnostics))}
     </p>
   );
 }
 
-function diagnosticText(diagnostics: Diagnostics | undefined) {
+function diagnosticKey(diagnostics: Diagnostics | undefined) {
   if (!diagnostics || diagnostics.reason === "missing_url")
     return "Chat Service is not connected: CHAT_SERVICE_URL is missing.";
   if (diagnostics.reason === "unauthorized")
     return "Chat Service rejected the internal admin token.";
   if (diagnostics.reason === "bad_json")
     return "Chat Service returned invalid JSON.";
-  if (diagnostics.reason === "upstream_error")
-    return `Chat Service returned an upstream error${diagnostics.status ? ` (${diagnostics.status})` : ""}.`;
   return "Chat Service is configured but unreachable.";
 }
 
@@ -1163,42 +1149,43 @@ function Freshness({
   authority: string;
   state: AuthorityState;
 }) {
-  const { t } = useAdminI18n();
+  const { locale, t } = useAdminI18n();
+  const label = t(authority);
   const time = state.refreshedAt
-    ? new Date(state.refreshedAt).toLocaleTimeString()
-    : "unknown";
+    ? new Date(state.refreshedAt).toLocaleTimeString(adminDateLocale(locale))
+    : t("unknown");
   if (state.loading && state.data)
     return (
       <span>
-        {authority}
-        {t(": refreshing · showing snapshot from")} {time}
+        {label}
+        {t(": refreshing · as of")} {time}
       </span>
     );
   if (state.error && state.data)
     return (
       <span>
-        {authority}
+        {label}
         {t(": stale · last good")} {time}
       </span>
     );
   if (state.error)
     return (
       <span>
-        {authority}
+        {label}
         {t(": unavailable")}
       </span>
     );
   if (state.data)
     return (
       <span>
-        {authority}
-        {t(": current client snapshot ·")} {time}
+        {label}
+        {t(": as of")} {time}
       </span>
     );
   return (
     <span>
-      {authority}
-      {t(": refreshing · no snapshot yet")}
+      {label}
+      {t(": loading…")}
     </span>
   );
 }
@@ -1214,7 +1201,7 @@ function Loading({
   return !state.data && state.loading ? (
     <div className="rounded-lg border p-4" role="status">
       <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
-      {t("Loading")} {authority} {t("authority")}
+      {t("Loading {authority} authority", { authority: t(authority) })}
     </div>
   ) : null;
 }
@@ -1228,9 +1215,10 @@ function Field({
   onChange: (value: string) => void;
   value: string;
 }) {
+  const { t } = useAdminI18n();
   return (
     <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
-      {label}
+      {t(label)}
       <input
         className="min-h-11 rounded-md border px-3 text-sm"
         onChange={(event) => onChange(event.target.value)}
@@ -1242,18 +1230,22 @@ function Field({
 
 function Select({
   label,
+  numeric = false,
   onChange,
   options,
   value,
 }: {
   label: string;
+  /** 行数这类纯数字选项不进枚举词表。 */
+  numeric?: boolean;
   onChange: (value: string) => void;
   options: string[];
   value: string;
 }) {
+  const { t, value: enumLabel } = useAdminI18n();
   return (
     <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
-      {label}
+      {t(label)}
       <select
         className="min-h-11 rounded-md border px-3 text-sm"
         onChange={(event) => onChange(event.target.value)}
@@ -1261,7 +1253,7 @@ function Select({
       >
         {options.map((option) => (
           <option key={option} value={option}>
-            {option}
+            {numeric ? option : enumLabel(option)}
           </option>
         ))}
       </select>
@@ -1302,9 +1294,4 @@ function display(value: unknown) {
   )
     return String(value);
   return value === null || value === undefined ? "—" : JSON.stringify(value);
-}
-
-function date(value: unknown) {
-  const parsed = new Date(text(value));
-  return Number.isNaN(parsed.getTime()) ? "—" : parsed.toLocaleString();
 }

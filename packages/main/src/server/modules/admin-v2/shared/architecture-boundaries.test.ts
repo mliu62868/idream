@@ -1,4 +1,4 @@
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -13,34 +13,24 @@ async function sourceFiles(root: string): Promise<string[]> {
 }
 
 describe("Admin v2 architecture boundaries", () => {
-  it("does not depend on the legacy admin service monolith", async () => {
-    const roots = [
-      path.join(process.cwd(), "src/server/modules/admin-v2"),
-      path.join(process.cwd(), "src/app/api/v2/admin"),
-    ];
-    const files = (await Promise.all(roots.map(sourceFiles))).flat();
-    const offenders: string[] = [];
-    const forbiddenImport = ["@/server/modules/admin", "service"].join("/");
-    for (const file of files) {
-      const source = await readFile(file, "utf8");
-      if (source.includes(forbiddenImport)) {
-        offenders.push(path.relative(process.cwd(), file));
-      }
-    }
-    expect(offenders).toEqual([]);
-  });
+  /**
+   * SPEC: the v1 admin dispatcher does not exist, and nothing imports it.
+   * INTENT: this used to be a pair of "the dispatcher no longer contains X" string assertions,
+   * one per migrated domain. Those read the dispatcher through `.catch(() => "")`, so the day
+   * the file disappeared every one of them would have passed against an empty string — a guard
+   * that reports success precisely when it has stopped guarding. Absence is the actual claim,
+   * so assert absence.
+   */
+  it("has no v1 admin dispatcher left to import", async () => {
+    const dispatcher = path.join(process.cwd(), "src/server/modules/admin/service.ts");
+    await expect(stat(dispatcher)).rejects.toMatchObject({ code: "ENOENT" });
 
-  it("keeps legacy domain modules independent from the dispatcher monolith", async () => {
-    const root = path.join(process.cwd(), "src/server/modules/admin");
-    const dispatcher = path.join(root, "service.ts");
-    const files = (await sourceFiles(root)).filter((file) => file !== dispatcher);
-    const offenders: string[] = [];
+    const files = await sourceFiles(path.join(process.cwd(), "src/server"));
     const forbiddenImport = ["@/server/modules/admin", "service"].join("/");
+    const offenders: string[] = [];
     for (const file of files) {
       const source = await readFile(file, "utf8");
-      if (source.includes(forbiddenImport)) {
-        offenders.push(path.relative(process.cwd(), file));
-      }
+      if (source.includes(forbiddenImport)) offenders.push(path.relative(process.cwd(), file));
     }
     expect(offenders).toEqual([]);
   });
@@ -69,131 +59,35 @@ describe("Admin v2 architecture boundaries", () => {
     expect(writers).toEqual(["modules/admin-v2/creative/run-create.ts"]);
   });
 
-  it("keeps the legacy user domain implementation out of the dispatcher monolith", async () => {
-    const dispatcher = await readFile(
-      path.join(process.cwd(), "src/server/modules/admin/service.ts"),
-      "utf8",
-    );
-    const userDomain = await readFile(
-      path.join(process.cwd(), "src/server/modules/admin/users/service.ts"),
-      "utf8",
-    ).catch(() => "");
-
-    expect(dispatcher).not.toContain("const statusChangeSchema");
-    expect(dispatcher).not.toContain("async function listUsers");
-    expect(dispatcher).not.toContain("async function setUserPermission");
-    expect(userDomain).toContain("export async function listUsers");
-    expect(userDomain).toContain("export async function setUserPermission");
-    expect(userDomain).not.toContain(["@/server/modules/admin", "service"].join("/"));
-  });
-
-  it("keeps generation config and dead-letter authorities out of the dispatcher monolith", async () => {
-    const dispatcher = await readFile(
-      path.join(process.cwd(), "src/server/modules/admin/service.ts"),
-      "utf8",
-    );
+  it("serves generation config and dead-letter from the v2 authority tree", async () => {
     const configDomain = await readFile(
-      path.join(process.cwd(), "src/server/modules/admin/generation/config/service.ts"),
+      path.join(process.cwd(), "src/server/modules/admin-v2/generation/model-profiles.ts"),
       "utf8",
-    ).catch(() => "");
+    );
     const deadLetterDomain = await readFile(
-      path.join(process.cwd(), "src/server/modules/admin/generation/dead-letter/service.ts"),
+      path.join(process.cwd(), "src/server/modules/admin-v2/generation/dead-letter.ts"),
       "utf8",
-    ).catch(() => "");
+    );
+    const catalog = await readFile(
+      path.join(process.cwd(), "src/server/modules/admin-v2/generation/catalog.ts"),
+      "utf8",
+    );
 
-    expect(dispatcher).not.toContain("const modelProfileSchema");
-    expect(dispatcher).not.toContain("async function listModelProfiles");
-    expect(dispatcher).not.toContain("async function deadLetterQueue");
-    expect(dispatcher).not.toContain("async function requeueDeadLetterBatch");
-    expect(configDomain).toContain("export async function listModelProfiles");
-    expect(deadLetterDomain).toContain("export async function deadLetterQueue");
-    expect(configDomain).not.toContain(["@/server/modules/admin", "service"].join("/"));
-    expect(deadLetterDomain).not.toContain(["@/server/modules/admin", "service"].join("/"));
+    expect(configDomain).toContain("export async function listGenerationModelProfiles");
+    expect(deadLetterDomain).toContain("export async function listGenerationDeadLetter");
+    expect(catalog).toContain("export async function listGenerationRecipes");
+    expect(catalog).toContain("export async function listGenerationPresets");
   });
 
-  it("keeps moderation and access authorities out of the dispatcher monolith", async () => {
-    const dispatcher = await readFile(path.join(process.cwd(), "src/server/modules/admin/service.ts"), "utf8");
-    const moderation = await readFile(path.join(process.cwd(), "src/server/modules/admin/moderation/service.ts"), "utf8").catch(() => "");
-    const access = await readFile(path.join(process.cwd(), "src/server/modules/admin/users/service.ts"), "utf8");
+  it("serves the content domain from Admin v2 only", async () => {
+    const merchandising = await readFile(
+      path.join(process.cwd(), "src/server/modules/admin-v2/content/merchandising.ts"),
+      "utf8",
+    );
 
-    expect(dispatcher).not.toContain("const adminDecisionSchema");
-    expect(dispatcher).not.toContain("async function moderationQueue");
-    expect(dispatcher).not.toContain("async function moderationDecision");
-    expect(moderation).toContain("export async function moderationQueue");
-    expect(moderation).not.toContain(["@/server/modules/admin", "service"].join("/"));
-    expect(dispatcher).not.toContain("async function listUsers");
-    expect(access).toContain("export async function listUsers");
-  });
-
-  it("keeps support, promo, and approvals authorities out of the dispatcher monolith", async () => {
-    const root = path.join(process.cwd(), "src/server/modules/admin");
-    const dispatcher = await readFile(path.join(root, "service.ts"), "utf8");
-    const support = await readFile(path.join(root, "support/service.ts"), "utf8").catch(() => "");
-    const promo = await readFile(path.join(root, "promo/service.ts"), "utf8").catch(() => "");
-    const approvals = await readFile(path.join(root, "approvals/service.ts"), "utf8").catch(() => "");
-
-    expect(dispatcher).not.toContain("const supportRequestPatchSchema");
-    expect(dispatcher).not.toContain("async function listSupportRequests");
-    expect(dispatcher).not.toContain("async function viewPlaintext");
-    expect(dispatcher).not.toContain("const redeemCodeCreateSchema");
-    expect(dispatcher).not.toContain("async function listRedeemCodes");
-    expect(dispatcher).not.toContain("const approvalCreateSchema");
-    expect(dispatcher).not.toContain("async function listApprovals");
-    expect(support).toContain("export async function listSupportRequests");
-    expect(promo).toContain("export async function listRedeemCodes");
-    expect(approvals).toContain("export async function listApprovals");
-  });
-
-  it("keeps Chat Ops proxy authority out of the dispatcher monolith", async () => {
-    const root = path.join(process.cwd(), "src/server/modules/admin");
-    const dispatcher = await readFile(path.join(root, "service.ts"), "utf8");
-    const chat = await readFile(path.join(root, "chat/service.ts"), "utf8").catch(() => "");
-
-    expect(dispatcher).not.toContain("type ChatAdminProxyResult");
-    expect(dispatcher).not.toContain("async function proxyChatAdmin");
-    expect(dispatcher).not.toContain("async function chatOpsOverview");
-    expect(chat).toContain("export async function chatOpsOverview");
-    expect(chat).not.toContain(["@/server/modules/admin", "service"].join("/"));
-  });
-
-  it("keeps content merchandising authority out of the dispatcher monolith", async () => {
-    const root = path.join(process.cwd(), "src/server/modules/admin");
-    const dispatcher = await readFile(path.join(root, "service.ts"), "utf8");
-    const content = await readFile(path.join(root, "content/merchandising.ts"), "utf8").catch(() => "");
-    expect(dispatcher).not.toContain("const contentVisibilitySchema");
-    expect(dispatcher).not.toContain("async function listContentCharacters");
-    expect(dispatcher).not.toContain("async function putFeaturedCharacters");
-    expect(content).toContain("export async function listContentCharacters");
-    expect(content).toContain("executeIdempotentDomainCommand");
-  });
-
-  it("keeps overview and generic saved-view authorities out of the dispatcher", async () => {
-    const root = path.join(process.cwd(), "src/server/modules/admin");
-    const dispatcher = await readFile(path.join(root, "service.ts"), "utf8");
-    const overviews = await readFile(path.join(root, "overviews/service.ts"), "utf8").catch(() => "");
-    const savedViews = await readFile(path.join(root, "saved-views/service.ts"), "utf8").catch(() => "");
-    expect(dispatcher).not.toContain("async function analyticsOverview");
-    expect(dispatcher).not.toContain("async function abuseOverview");
-    expect(dispatcher).not.toContain("async function providerOps");
-    expect(dispatcher).not.toContain("async function listSavedViews");
-    expect(dispatcher).not.toContain("const savedViewCreateSchema");
-    expect(overviews).toContain("export async function analyticsOverview");
-    expect(savedViews).toContain("export async function createSavedView");
-    expect(savedViews).toContain("executeIdempotentDomainCommand");
-  });
-
-  it("leaves the legacy dispatcher as a route table and compatibility export surface", async () => {
-    const root = path.join(process.cwd(), "src/server/modules/admin");
-    const dispatcher = await readFile(path.join(root, "service.ts"), "utf8");
-    const dashboard = await readFile(path.join(root, "dashboard/service.ts"), "utf8");
-    const generation = await readFile(path.join(root, "generation/catalog-admin.ts"), "utf8");
-    expect(dispatcher.match(/(?:export )?async function /g)).toEqual([
-      "export async function ",
-    ]);
-    expect(dispatcher).not.toContain("prisma.");
-    expect(dispatcher).not.toContain("z.object(");
-    expect(dashboard).toContain("export async function adminDashboard");
-    expect(generation).toContain("export async function listRecipes");
-    expect(generation).toContain("export async function listAdminPresets");
+    expect(merchandising).toContain("export async function listContentCharacters");
+    expect(merchandising).toContain("export async function setCharacterVisibility");
+    // The legacy idempotency primitive does not cross into v2; `executeAdminMutation` owns it.
+    expect(merchandising).not.toContain("executeIdempotentDomainCommand");
   });
 });

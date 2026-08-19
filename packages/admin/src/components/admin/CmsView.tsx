@@ -12,7 +12,12 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { apiGet, apiWrite } from "@/components/admin/api";
-import { useAdminI18n } from "@/components/admin/i18n";
+import { useAdminI18n, type AdminLocale } from "@/components/admin/i18n";
+import { formatDateTime } from "@/components/admin/ui/format";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
+import { EmptyState } from "@/components/admin/ui/EmptyState";
+import { WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
 
 type ContentStatus = "template" | "draft" | "published";
 type IndexingStatus = "noindex" | "index";
@@ -70,29 +75,32 @@ const textAreaClass =
   "rounded-md min-h-44 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 py-2 font-mono text-xs outline-none focus:border-[var(--ad-ink)]";
 
 export function CmsView() {
-  const { t, value: valueLabel } = useAdminI18n();
+  const { locale, t, value: valueLabel } = useAdminI18n();
   const [pages, setPages] = useState<PageRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // INVARIANT: 存异常对象而不只是它的 message —— AuthorityRequestError 要靠 cause 才能按错误码
+  // 出人话；只有 message 时运营读到的仍是 authority 的英文原文。
+  const [error, setError] = useState<{ message: string; cause: unknown } | null>(null);
   const [publishDraft, setPublishDraft] = useState<PublishDraft | null>(null);
   const [publishBusy, setPublishBusy] = useState(false);
   const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
   const [editLoadingPath, setEditLoadingPath] = useState<string | null>(null);
   const [editBusy, setEditBusy] = useState(false);
+  const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
 
   async function load() {
     setLoading(true);
     setError(null);
     try {
       const data = await apiGet<{ items: unknown }>(
-        "/api/v1/admin/cms/pages",
+        "/api/v2/admin/cms/pages",
       );
       if (!Array.isArray(data.items) || !data.items.every(isPageRow)) {
-        throw new Error("CMS page list response was incomplete");
+        throw new Error(t("The CMS page list response was incomplete."));
       }
       setPages(data.items);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Load failed");
+      setError({ message: requestErrorMessage(err, t), cause: err });
     } finally {
       setLoading(false);
     }
@@ -123,22 +131,27 @@ export function CmsView() {
     setPublishBusy(true);
     setError(null);
     try {
-      await apiWrite("/api/v1/admin/cms/pages/publish", "POST", {
+      await apiWrite("/api/v2/admin/cms/pages/publish", "POST", {
         path: publishDraft.path,
         contentStatus: publishDraft.nextStatus,
         expectedUpdatedAt: publishDraft.expectedUpdatedAt,
         reason: publishDraft.reason.trim(),
         confirmation: publishDraft.confirmation.trim(),
       });
+      const { path, nextStatus } = publishDraft;
       setPublishDraft(null);
       await load();
+      reportSuccess(
+        nextStatus === "published"
+          ? t("{path} is published and indexable per its indexing status.", { path })
+          : t("{path} is unpublished and back to draft. It is no longer served.", { path }),
+      );
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Publish failed";
       // A status command is a one-shot operation against the exact row version
       // displayed to the operator. Never retain a stale confirmation.
       setPublishDraft(null);
       await load();
-      setError(message);
+      setError({ message: requestErrorMessage(err, t), cause: err });
     } finally {
       setPublishBusy(false);
     }
@@ -151,10 +164,10 @@ export function CmsView() {
     setEditLoadingPath(page.path);
     try {
       const data = await apiGet<{ page: unknown }>(
-        `/api/v1/admin/cms/pages?path=${encodeURIComponent(page.path)}`,
+        `/api/v2/admin/cms/page?path=${encodeURIComponent(page.path)}`,
       );
       if (!isPageDetail(data.page)) {
-        throw new Error("CMS page response was incomplete");
+        throw new Error(t("The CMS page response was incomplete."));
       }
       setEditDraft({
         path: data.page.path,
@@ -168,7 +181,7 @@ export function CmsView() {
         confirmation: "",
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Page load failed");
+      setError({ message: requestErrorMessage(err, t), cause: err });
     } finally {
       setEditLoadingPath(null);
     }
@@ -179,8 +192,8 @@ export function CmsView() {
     setEditBusy(true);
     setError(null);
     try {
-      const body = parseBodyObject(editDraft.bodyJson);
-      await apiWrite("/api/v1/admin/cms/pages", "PATCH", {
+      const body = parseBodyObject(editDraft.bodyJson, t("The article body must be a JSON object."));
+      await apiWrite("/api/v2/admin/cms/pages", "PATCH", {
         path: editDraft.path,
         template: "article",
         title: editDraft.title.trim(),
@@ -192,19 +205,90 @@ export function CmsView() {
         reason: editDraft.reason.trim(),
         confirmation: editDraft.confirmation.trim(),
       });
+      const savedPath = editDraft.path;
       setEditDraft(null);
       await load();
+      reportSuccess(t("Draft saved for {path}. Publishing is still a separate action.", { path: savedPath }));
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Save failed";
+      const message = requestErrorMessage(err, t);
       if (/changed|since it was loaded/i.test(message)) {
         setEditDraft(null);
         await load();
       }
-      setError(message);
+      setError({ message, cause: err });
     } finally {
       setEditBusy(false);
     }
   }
+
+  const tableRows: DataTableRow[] = pages.map((page) => ({
+    id: page.path,
+    cells: [
+      <span className="font-mono text-xs" key="path">{page.path}</span>,
+      <div key="title">
+        <p>{page.title}</p>
+        <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
+          {t("Updated")} {formatTimestamp(page.updatedAt, locale)}
+        </p>
+      </div>,
+      <div className="text-[var(--ad-text-muted)]" key="status">
+        {valueLabel(page.contentStatus)}
+        {page.publishedAt ? <p className="mt-1 text-xs">{formatTimestamp(page.publishedAt, locale)}</p> : null}
+      </div>,
+      <div className="text-[var(--ad-text-muted)]" key="indexing">
+        {valueLabel(page.indexingStatus)}
+        {page.canonical ? <p className="mt-1 max-w-44 truncate font-mono text-xs">{page.canonical}</p> : null}
+      </div>,
+      <div key="readiness">
+        <p className={page.publishability === "ready" ? "text-[var(--ad-green-text)]" : "text-[var(--ad-yellow-text)]"}>
+          {valueLabel(page.publishability)}
+        </p>
+        {page.issues.slice(0, 3).map((issue) => (
+          <p className="mt-1 text-xs text-[var(--ad-text-muted)]" key={`${issue.path}-${issue.code}-${issue.message}`}>
+            {issue.path || "page"}: {issue.message}
+          </p>
+        ))}
+      </div>,
+      <div className="flex justify-end gap-2" key="actions">
+        {page.contentStatus !== "published" ? (
+          <button
+            className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs disabled:opacity-50"
+            disabled={!page.editable || editLoadingPath !== null || publishBusy}
+            onClick={() => void startEdit(page)}
+            title={page.editable ? t("Edit draft") : t("This route is application-owned")}
+            type="button"
+          >
+            {editLoadingPath === page.path ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <FilePenLine className="h-3.5 w-3.5" />
+            )}
+            {t("Edit")}
+          </button>
+        ) : null}
+        {page.contentStatus === "published" ? (
+          <button
+            className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
+            disabled={publishBusy}
+            onClick={() => startPublish(page, "draft")}
+            type="button"
+          >
+            {t("Unpublish")}
+          </button>
+        ) : page.contentStatus === "draft" ? (
+          <button
+            className="inline-flex h-8 items-center gap-1 bg-[var(--ad-ink)] px-2 text-xs font-semibold text-white disabled:opacity-50"
+            disabled={publishBusy || page.publishability !== "ready"}
+            onClick={() => startPublish(page, "published")}
+            type="button"
+          >
+            <UploadCloud className="h-3.5 w-3.5" />
+            {t("Publish")}
+          </button>
+        ) : null}
+      </div>,
+    ],
+  }));
 
   return (
     <div className="space-y-5">
@@ -226,13 +310,12 @@ export function CmsView() {
           {t("Refresh")}
         </button>
       </div>
+      <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
       {error ? (
-        <p className="text-xs text-[var(--ad-red-text)]" role="alert">
-          {error}
-        </p>
+        <AuthorityRequestError cause={error.cause} message={error.message} onRetry={() => void load()} />
       ) : null}
 
-      <CreatePageForm reload={load} />
+      <CreatePageForm onCreated={reportSuccess} reload={load} />
 
       {editDraft ? (
         <EditPageForm
@@ -298,145 +381,29 @@ export function CmsView() {
         </section>
       ) : null}
 
-      <section className="overflow-x-auto rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
-        <table className="w-full min-w-[920px] text-left text-sm">
-          <caption className="sr-only">{t("CMS pages")}</caption>
-          <thead className="border-b border-[var(--ad-border)] text-xs text-[var(--ad-text-muted)]">
-            <tr>
-              <th className="px-3 py-2 font-medium" scope="col">
-                {t("path")}
-              </th>
-              <th className="px-3 py-2 font-medium" scope="col">
-                {t("title")}
-              </th>
-              <th className="px-3 py-2 font-medium" scope="col">
-                {t("status")}
-              </th>
-              <th className="px-3 py-2 font-medium" scope="col">
-                {t("Indexing")}
-              </th>
-              <th className="px-3 py-2 font-medium" scope="col">
-                {t("Publication readiness")}
-              </th>
-              <th className="px-3 py-2 font-medium" scope="col">
-                <span className="sr-only">{t("Actions")}</span>
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {pages.map((page) => (
-              <tr
-                className="border-b border-[var(--ad-border)] align-top"
-                key={page.path}
-              >
-                <td className="px-3 py-3 font-mono text-xs">{page.path}</td>
-                <td className="px-3 py-3">
-                  <p>{page.title}</p>
-                  <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
-
-                    {t("Updated")} {formatTimestamp(page.updatedAt)}
-                  </p>
-                </td>
-                <td className="px-3 py-3 text-[var(--ad-text-muted)]">
-                  {valueLabel(page.contentStatus)}
-                  {page.publishedAt ? (
-                    <p className="mt-1 text-xs">
-                      {formatTimestamp(page.publishedAt)}
-                    </p>
-                  ) : null}
-                </td>
-                <td className="px-3 py-3 text-[var(--ad-text-muted)]">
-                  {valueLabel(page.indexingStatus)}
-                  {page.canonical ? (
-                    <p className="mt-1 max-w-44 truncate font-mono text-xs">
-                      {page.canonical}
-                    </p>
-                  ) : null}
-                </td>
-                <td className="max-w-80 px-3 py-3">
-                  <p
-                    className={
-                      page.publishability === "ready"
-                        ? "text-[var(--ad-green-text)]"
-                        : "text-[var(--ad-yellow-text)]"
-                    }
-                  >
-                    {valueLabel(page.publishability)}
-                  </p>
-                  {page.issues.slice(0, 3).map((issue) => (
-                    <p
-                      className="mt-1 text-xs text-[var(--ad-text-muted)]"
-                      key={`${issue.path}-${issue.code}-${issue.message}`}
-                    >
-                      {issue.path || "page"}: {issue.message}
-                    </p>
-                  ))}
-                </td>
-                <td className="px-3 py-3 text-right">
-                  <div className="flex justify-end gap-2">
-                    {page.contentStatus !== "published" ? (
-                      <button
-                        className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs disabled:opacity-50"
-                        disabled={
-                          !page.editable ||
-                          editLoadingPath !== null ||
-                          publishBusy
-                        }
-                        onClick={() => void startEdit(page)}
-                        title={
-                          page.editable
-                            ? t("Edit draft")
-                            : t("This route is application-owned")
-                        }
-                        type="button"
-                      >
-                        {editLoadingPath === page.path ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        ) : (
-                          <FilePenLine className="h-3.5 w-3.5" />
-                        )}
-                        {t("Edit")}
-                      </button>
-                    ) : null}
-                    {page.contentStatus === "published" ? (
-                      <button
-                        className="rounded-md inline-flex h-8 items-center gap-1 border border-[var(--ad-border)] px-2 text-xs"
-                        disabled={publishBusy}
-                        onClick={() => startPublish(page, "draft")}
-                        type="button"
-                      >
-                        {t("Unpublish")}
-                      </button>
-                    ) : page.contentStatus === "draft" ? (
-                      <button
-                        className="inline-flex h-8 items-center gap-1 bg-[var(--ad-ink)] px-2 text-xs font-semibold text-white disabled:opacity-50"
-                        disabled={
-                          publishBusy || page.publishability !== "ready"
-                        }
-                        onClick={() => startPublish(page, "published")}
-                        type="button"
-                      >
-                        <UploadCloud className="h-3.5 w-3.5" />
-                        {t("Publish")}
-                      </button>
-                    ) : null}
-                  </div>
-                </td>
-              </tr>
-            ))}
-            {pages.length === 0 && !loading && !error ? (
-              <tr>
-                <td
-                  className="px-3 py-6 text-center text-xs text-[var(--ad-text-muted)]"
-                  colSpan={6}
-                >
-                  {t("No CMS pages yet.")}
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </section>
+      {error && pages.length === 0 ? null : (
+        <DataTable
+          caption="CMS pages"
+          empty={
+            <EmptyState
+              hint={t("Create a draft above; it is not served until you publish it.")}
+              title={t("No CMS pages yet.")}
+            />
+          }
+          headers={[
+            { label: t("Path"), width: "16rem" },
+            t("Title"),
+            t("Status"),
+            t("Indexing"),
+            { label: t("Publication readiness"), width: "20rem" },
+            { label: t("Actions"), align: "right" },
+          ]}
+          loading={loading}
+          minimumWidthClassName="min-w-[920px]"
+          rows={tableRows}
+          stickyLastColumn
+        />
+      )}
     </div>
   );
 }
@@ -555,7 +522,7 @@ function EditPageForm({
   );
 }
 
-function CreatePageForm({ reload }: { reload: () => Promise<void> }) {
+function CreatePageForm({ onCreated, reload }: { onCreated: (message: string) => void; reload: () => Promise<void> }) {
   const { t } = useAdminI18n();
   const [path, setPath] = useState("");
   const [title, setTitle] = useState("");
@@ -573,8 +540,8 @@ function CreatePageForm({ reload }: { reload: () => Promise<void> }) {
     setBusy(true);
     setErr(null);
     try {
-      const body = parseBodyObject(bodyJson);
-      await apiWrite("/api/v1/admin/cms/pages", "POST", {
+      const body = parseBodyObject(bodyJson, t("The article body must be a JSON object."));
+      await apiWrite("/api/v2/admin/cms/pages", "POST", {
         path: path.trim(),
         template: "article",
         title: title.trim(),
@@ -594,8 +561,9 @@ function CreatePageForm({ reload }: { reload: () => Promise<void> }) {
       setReason("");
       setConfirmation("");
       await reload();
+      onCreated(t("Created draft {path}. It is not served until you publish it.", { path: expectedPath }));
     } catch (error) {
-      setErr(error instanceof Error ? error.message : "Create failed");
+      setErr(requestErrorMessage(error, t));
     } finally {
       setBusy(false);
     }
@@ -710,10 +678,11 @@ function canSaveEdit(draft: EditDraft) {
   );
 }
 
-function parseBodyObject(value: string): Record<string, unknown> {
+// INTENT: 文案由调用方注入——这是个模块级纯函数，拿不到 t()，硬编码英文会在中文 locale 露馅。
+function parseBodyObject(value: string, invalidMessage: string): Record<string, unknown> {
   const parsed = JSON.parse(value) as unknown;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("body must be a JSON object");
+    throw new Error(invalidMessage);
   }
   return parsed as Record<string, unknown>;
 }
@@ -764,7 +733,7 @@ function isPublicationIssue(value: unknown): value is PublicationIssue {
   );
 }
 
-function formatTimestamp(value: string) {
+function formatTimestamp(value: string, locale: AdminLocale) {
   const date = new Date(value);
-  return Number.isFinite(date.getTime()) ? date.toLocaleString() : value;
+  return Number.isFinite(date.getTime()) ? formatDateTime(value, locale) : value;
 }

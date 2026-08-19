@@ -2,12 +2,19 @@
 
 // SPEC: 生成质量 + 增长洞察面板（ADMIN_PHASE3_DESIGN §5.1/§5.3 的 UI）。
 //   - Phase 0 hides invalid legacy retention values and export.
-//   - 按 profile id 查健康度 + 跑不调用 provider 的配置检查（兼容既有 dry-run API）。
+//   - 按 profile 查健康度 + 跑不调用 provider 的配置检查（兼容既有 dry-run API）。
 // INTENT: 自取数、无 props；样式对齐 TagsView。
-import { useState } from "react";
+// WHY(诚实化): 导航把本页叫「Funnels & Retention」，但本页两个响应类型里既没有漏斗也没有
+//   cohort——这不是渲染缺口，是数据契约里就没有。所以顶部直说"契约里还没有"，不编指标、
+//   不放占位图；页面实际提供的能力（profile 健康度 + 配置检查）如实说明。
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, AlertTriangle, Loader2 } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
+import { WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
+import { createLatestRequestGate } from "@/lib/latest-request";
 
 const inputClass =
   "rounded-md h-10 w-full border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus:border-[var(--ad-ink)]";
@@ -25,10 +32,13 @@ export type Health = {
     latencyP95Ms: number | null;
   };
 };
-type DryRunDraft = {
-  profileId: string;
-  reason: string;
-  confirmation: string;
+
+type ProfileOption = {
+  id: string;
+  label: string;
+  profileKey: string;
+  version: number;
+  status: string;
 };
 
 export function InsightsView() {
@@ -48,9 +58,20 @@ function RetentionSection() {
       <div className="flex items-start gap-3">
         <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--ad-yellow-text)]" />
         <div>
-          <h2 className="text-sm font-semibold text-[var(--ad-yellow-text)]">{t("D1 / D7 retention · invalid for decisions")}</h2>
+          <h2 className="text-sm font-semibold text-[var(--ad-yellow-text)]">
+            {t("No funnel or cohort series exists behind this page")}
+          </h2>
+          <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
+            {t("This is a contract gap, not a rendering gap: the authority this page reads returns generation health only. Nothing is being hidden from you — there is no funnel or retention series to show, and none is invented here.")}
+          </p>
+          <p className="mt-3 text-xs font-semibold text-[var(--ad-yellow-text)]">
+            {t("D1 / D7 retention · invalid for decisions")}
+          </p>
           <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">
             {t("Legacy v1 measures any activity inside cumulative 1/7-day windows, not exact calendar-day return. Values and export are unavailable until Metric Registry v2 is certified.")}
+          </p>
+          <p className="mt-3 text-xs leading-5 text-[var(--ad-text-muted)]">
+            {t("What this page can answer today is below: per-profile generation health, and a configuration check that never calls a provider.")}
           </p>
         </div>
       </div>
@@ -59,73 +80,90 @@ function RetentionSection() {
 }
 
 function ProfileHealthSection() {
-  const { t } = useAdminI18n();
+  const { t, value } = useAdminI18n();
+  const [profiles, setProfiles] = useState<ProfileOption[] | null>(null);
+  const [profilesError, setProfilesError] = useState<unknown>(null);
   const [profileId, setProfileId] = useState("");
   const [health, setHealth] = useState<Health | null>(null);
   const [busy, setBusy] = useState<"health" | "dryrun" | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
-  const [dryRunDraft, setDryRunDraft] = useState<DryRunDraft | null>(null);
+  const [err, setErr] = useState<unknown>(null);
+  const [confirmingDryRun, setConfirmingDryRun] = useState(false);
+  const { feedback, reportSuccess, reportFailure, clearFeedback } = useWriteFeedback();
+  const requestGate = useRef(createLatestRequestGate());
+
+  // SPEC: 运营不该手敲 UUID —— 没有选择器时，一个打错的字符和一个不存在的 profile 长得一样。
+  const loadProfiles = useCallback(async () => {
+    const request = requestGate.current.begin();
+    setProfilesError(null);
+    try {
+      const data = await apiGet<{ items: ProfileOption[] }>(
+        "/api/v2/admin/generation/model-profiles?limit=100",
+      );
+      if (!request.isCurrent()) return;
+      setProfiles(data.items);
+    } catch (error) {
+      if (!request.isCurrent()) return;
+      setProfiles([]);
+      setProfilesError(error);
+    }
+  }, [t]);
+
+  useEffect(() => {
+    const gate = requestGate.current;
+    const timer = window.setTimeout(() => void loadProfiles(), 0);
+    return () => {
+      gate.invalidate();
+      window.clearTimeout(timer);
+    };
+  }, [loadProfiles]);
+
+  const selected = useMemo(
+    () => profiles?.find((profile) => profile.id === profileId) ?? null,
+    [profiles, profileId],
+  );
 
   async function loadHealth() {
+    if (!selected) return;
     setBusy("health");
     setErr(null);
-    setNote(null);
+    clearFeedback();
     try {
       const data = await apiGet<Health>(
-        `/api/v1/admin/generation/model-profiles/${encodeURIComponent(profileId.trim())}/health`,
+        `/api/v2/admin/generation/model-profiles/${encodeURIComponent(selected.id)}/health`,
       );
       setHealth(data);
     } catch (error) {
-      setErr(error instanceof Error ? error.message : "Health load failed");
+      setErr(error);
     } finally {
       setBusy(null);
     }
   }
 
-  function startDryRun() {
-    const id = profileId.trim();
-    if (!id) return;
-    setErr(null);
-    setNote(null);
-    setDryRunDraft({ profileId: id, reason: "", confirmation: "" });
-  }
-
-  async function dryRun() {
-    if (!dryRunDraft || !canConfirmDryRun(dryRunDraft)) return;
-    setBusy("dryrun");
-    setErr(null);
-    setNote(null);
-    try {
-      const data = await apiWrite<{ dryRun: { status: string; passed: number; total: number } }>(
-        `/api/v1/admin/generation/model-profiles/${encodeURIComponent(dryRunDraft.profileId)}/dry-run`,
-        "POST",
-        {
-          reason: dryRunDraft.reason.trim(),
-          confirmation: dryRunDraft.confirmation.trim(),
+  // WHY(confirmation 自动填充): 后端要求 confirmation === profile.id，但 id 现在由选择器给出，
+  // 让运营再把 UUID 抄一遍不增加任何安全性。走 TagsView 改名同款约定：ConfirmDialog 采集
+  // reason，confirmation 由代码填 id，人读到的是 label。
+  const dryRunSpec: ConfirmSpec | null = confirmingDryRun && selected
+    ? {
+        title: t("Confirm configuration check"),
+        summary: t("Runs deterministic profile and runtime validation for {label}. No provider is called and no media is generated.", { label: selected.label }),
+        submitLabel: t("Confirm configuration check"),
+        onSubmit: async (reason) => {
+          const data = await apiWrite<{ dryRun: { status: string; passed: number; total: number } }>(
+            `/api/v2/admin/generation/model-profiles/${encodeURIComponent(selected.id)}/commands/dry-run`,
+            "POST",
+            { reason, confirmation: selected.id },
+            { "idempotency-key": crypto.randomUUID() },
+          );
+          reportSuccess(
+            t("Configuration check {status}: {passed}/{total} configuration cases passed. No provider call was made.", {
+              status: value(data.dryRun.status),
+              passed: data.dryRun.passed,
+              total: data.dryRun.total,
+            }),
+          );
         },
-      );
-      setDryRunDraft(null);
-      setNote(
-        t(
-          "Configuration check {status}: {passed}/{total} configuration cases passed. No provider call was made.",
-          {
-            status: data.dryRun.status,
-            passed: data.dryRun.passed,
-            total: data.dryRun.total,
-          },
-        ),
-      );
-    } catch (error) {
-      setErr(
-        error instanceof Error
-          ? error.message
-          : t("Configuration check failed"),
-      );
-    } finally {
-      setBusy(null);
-    }
-  }
+      }
+    : null;
 
   return (
     <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
@@ -138,16 +176,37 @@ function ProfileHealthSection() {
         )}
       </p>
       <div className="mt-3 grid gap-3 md:grid-cols-[1fr_auto_auto]">
-        <input
-          aria-label={t("Model profile id")}
-          className={inputClass}
-          onChange={(e) => setProfileId(e.target.value)}
-          placeholder={t("Model profile id")}
-          value={profileId}
-        />
+        <label className="grid gap-1">
+          <span className="sr-only">{t("Model profile")}</span>
+          <select
+            aria-label={t("Model profile")}
+            className={`${inputClass} appearance-none`}
+            disabled={profiles === null || profiles.length === 0}
+            onChange={(event) => {
+              setProfileId(event.target.value);
+              setHealth(null);
+              setErr(null);
+              clearFeedback();
+            }}
+            value={profileId}
+          >
+            <option value="">
+              {profiles === null
+                ? t("Loading…")
+                : profiles.length === 0
+                  ? t("No model profiles available.")
+                  : t("Select a model profile…")}
+            </option>
+            {(profiles ?? []).map((profile) => (
+              <option key={profile.id} value={profile.id}>
+                {profile.label} · {profile.profileKey} v{profile.version} · {value(profile.status)}
+              </option>
+            ))}
+          </select>
+        </label>
         <button
           className="rounded-md inline-flex h-10 items-center gap-2 border border-[var(--ad-border)] px-3 text-sm disabled:opacity-50"
-          disabled={busy !== null || !profileId.trim()}
+          disabled={busy !== null || !selected}
           onClick={() => void loadHealth()}
           type="button"
         >
@@ -156,57 +215,28 @@ function ProfileHealthSection() {
         </button>
         <button
           className="inline-flex h-10 items-center gap-2 bg-[var(--ad-ink)] px-3 text-sm font-semibold text-white disabled:opacity-50"
-          disabled={busy !== null || !profileId.trim()}
-          onClick={startDryRun}
+          disabled={busy !== null || !selected}
+          onClick={() => setConfirmingDryRun(true)}
           type="button"
         >
-          {busy === "dryrun" ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
           {t("Configuration check")}
         </button>
       </div>
-      {dryRunDraft ? (
-        <section className="rounded-lg mt-3 border border-[var(--ad-yellow-text)]/20 bg-[var(--ad-yellow-bg)] p-3">
-          <p className="text-xs font-semibold text-[var(--ad-yellow-text)]">
-            {t("Confirm configuration check")}{" "}
-            <span className="font-mono">{dryRunDraft.profileId}</span>
-          </p>
-          <div className="mt-3 grid gap-3 md:grid-cols-[1fr_260px_auto_auto]">
-            <input
-              aria-label={t("Configuration check reason")}
-              className={inputClass}
-              onChange={(event) => setDryRunDraft({ ...dryRunDraft, reason: event.target.value })}
-              placeholder={t("Reason (≥3)")}
-              value={dryRunDraft.reason}
-            />
-            <input
-              aria-label={t("Configuration check confirmation")}
-              className={`${inputClass} font-mono`}
-              onChange={(event) => setDryRunDraft({ ...dryRunDraft, confirmation: event.target.value })}
-              placeholder={t("Type profile ID")}
-              value={dryRunDraft.confirmation}
-            />
-            <button
-              className="rounded-md inline-flex h-10 items-center justify-center border border-[var(--ad-border)] px-3 text-sm"
-              onClick={() => setDryRunDraft(null)}
-              type="button"
-            >
-              {t("Cancel")}
-            </button>
-            <button
-              className="inline-flex h-10 items-center justify-center bg-[var(--ad-yellow-bg)] px-3 text-sm font-semibold text-[var(--ad-yellow-text)] disabled:opacity-50"
-              disabled={busy !== null || !canConfirmDryRun(dryRunDraft)}
-              onClick={() => void dryRun()}
-              type="button"
-            >
-              {busy === "dryrun" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              {t("Confirm configuration check")}
-            </button>
-          </div>
-        </section>
+      {profilesError ? (
+        <div className="mt-2">
+          <AuthorityRequestError cause={profilesError} message={requestErrorMessage(profilesError, t)} onRetry={() => void loadProfiles()} />
+        </div>
       ) : null}
-      {err ? <p role="alert" className="mt-2 text-xs text-[var(--ad-red-text)]">{err}</p> : null}
-      {note ? <p className="mt-2 text-xs text-[var(--ad-green-text)]">{note}</p> : null}
+      <div className="mt-2">
+        <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
+      </div>
+      {err ? (
+        <div className="mt-2">
+          <AuthorityRequestError cause={err} message={requestErrorMessage(err, t)} onRetry={() => void loadHealth()} />
+        </div>
+      ) : null}
       {health ? <ProfileHealthMetrics health={health} /> : null}
+      {dryRunSpec ? <ConfirmDialog onClose={() => setConfirmingDryRun(false)} spec={dryRunSpec} /> : null}
     </section>
   );
 }
@@ -239,11 +269,6 @@ function percent(value: number | null) {
 
 function milliseconds(value: number | null) {
   return value === null ? "—" : `${value}ms`;
-}
-
-function canConfirmDryRun(draft: DryRunDraft) {
-  const confirmation = draft.confirmation.trim();
-  return draft.reason.trim().length >= 3 && confirmation === draft.profileId;
 }
 
 function Metric({ label, value }: { label: string; value: string | number }) {

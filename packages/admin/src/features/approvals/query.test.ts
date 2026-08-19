@@ -16,7 +16,7 @@ describe("approval query", () => {
       cursor: "next",
     });
     expect(approvalListPath(query)).toBe(
-      "/api/v1/admin/approvals?limit=25&search=release&status=approved&cursor=next",
+      "/api/v2/admin/approvals?limit=25&search=release&status=approved&cursor=next",
     );
   });
 

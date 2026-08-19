@@ -1,14 +1,17 @@
 "use client";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { useAdminFormat } from "@/components/admin/ui/format";
 import { DetailPage, DetailSection } from "@/components/admin/ui/DetailPage";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { DangerButton, GhostButton, PrimaryButton } from "@/components/admin/ui/buttons";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { AssetImage } from "@/components/admin/ui/AssetImage";
 import { EngineeringDetails } from "@/components/admin/generation/EngineeringDetails";
+import { LoadingWorkspace } from "@/features/operations/WorkspaceUi";
+import { InfoGrid, WriteFeedbackBanner, requestErrorMessage, useWriteFeedback } from "@/components/admin/section-kit";
 import {
   PATCH_ACTIONS,
   PLACEMENTS_BASE,
@@ -24,27 +27,16 @@ import {
 // 铺位没有名字，用 slot 代替（T16 图片库同款例外）。
 type PendingAction = (typeof PATCH_ACTIONS)[number] | null;
 
-function InfoGrid({ items }: { items: { label: string; value: ReactNode }[] }) {
-  return (
-    <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3">
-      {items.map((item) => (
-        <div key={item.label}>
-          <dt className="text-xs text-[var(--ad-text-muted)]">{item.label}</dt>
-          <dd className="mt-0.5 text-sm text-[var(--ad-ink)]">{item.value}</dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
-
 export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; id: string }) {
   const { t, value } = useAdminI18n();
+  const format = useAdminFormat();
   const [rows, setRows] = useState<Placement[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshWarning, setRefreshWarning] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingAction>(null);
   const [transitionKeys, setTransitionKeys] = useState<Record<string, string>>({});
+  const { feedback, reportSuccess, clearFeedback } = useWriteFeedback();
 
   const reload = useCallback(async (propagateError = false) => {
     setLoading(true);
@@ -54,7 +46,7 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
       setRows([data.placement]);
       setRefreshWarning(null);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : t("Request failed"));
+      setError(requestErrorMessage(loadError, t));
       if (propagateError) throw loadError;
     } finally {
       setLoading(false);
@@ -97,13 +89,14 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
             delete next[signature];
             return next;
           });
+          reportSuccess(t("Paused. {slot} stops serving immediately.", { slot: value(row.slot) }));
           try {
             await reload(true);
           } catch (refreshError) {
             setError(null);
             setRefreshWarning(
               refreshError instanceof Error
-                ? `${t("Placement pause was committed, but the latest projection could not be refreshed:")} ${refreshError.message}. ${t("Use Refresh before another write.")}`
+                ? t("Placement pause was committed, but the latest projection could not be refreshed: {message}. Use Refresh before another write.", { message: refreshError.message })
                 : t("Placement pause was committed, but the latest projection could not be refreshed. Use Refresh before another write."),
             );
           }
@@ -135,22 +128,23 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
           delete next[signature];
           return next;
         });
+        reportSuccess(t("Archived. {slot} is retired and will not serve again.", { slot: value(row.slot) }));
         try {
           await reload(true);
           } catch (refreshError) {
             setError(null);
             setRefreshWarning(
               refreshError instanceof Error
-              ? `${t("Placement archival was committed, but the latest projection could not be refreshed:")} ${refreshError.message}. ${t("Use Refresh before another write.")}`
+              ? t("Placement archival was committed, but the latest projection could not be refreshed: {message}. Use Refresh before another write.", { message: refreshError.message })
               : t("Placement archival was committed, but the latest projection could not be refreshed. Use Refresh before another write."),
             );
         }
       },
     };
-  }, [pending, row, id, t, reload, transitionKeys]);
+  }, [pending, row, id, t, value, reload, reportSuccess, transitionKeys]);
 
   if (loading) {
-    return <p className="text-sm text-[var(--ad-text-muted)]">{t("Loading…")}</p>;
+    return <LoadingWorkspace label="Loading…" />;
   }
 
   if (!row) {
@@ -199,6 +193,7 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
       status={row.status}
       title={value(row.slot)}
     >
+      <WriteFeedbackBanner feedback={feedback} onDismiss={clearFeedback} />
       {error ? <p role="alert" className="text-sm text-[var(--ad-red-text)]">{error}</p> : null}
       {refreshWarning ? <p role="status" className="rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]">{refreshWarning}</p> : null}
 
@@ -220,7 +215,7 @@ export function PlacementsDetailPage({ canPublish, id }: { canPublish: boolean; 
             { label: t("Target type"), value: value(row.targetType) },
             { label: t("Target ID"), value: row.targetId },
             { label: t("Verification"), value: value(row.verificationState) },
-            { label: t("Published"), value: row.publishedAt ? new Date(row.publishedAt).toLocaleString() : "—" },
+            { label: t("Published"), value: row.publishedAt ? format.dateTime(row.publishedAt) : "—" },
           ]}
         />
       </DetailSection>

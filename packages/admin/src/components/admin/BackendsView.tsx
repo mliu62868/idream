@@ -16,6 +16,7 @@ import { EngineeringDetails } from "@/components/admin/generation/EngineeringDet
 import { FailureReason } from "@/components/admin/generation/FailureReason";
 import { ReadonlyOpsView, type OpsColumn } from "@/components/admin/generation/ReadonlyOpsView";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { requestErrorMessage } from "@/components/admin/section-kit";
 import {
   authorityRequestFailed,
   authorityRequestStarted,
@@ -49,11 +50,11 @@ export function BackendsView() {
   const requestGate = useRef(createLatestRequestGate());
 
   const load = useCallback(async () => {
-    const queryKey = "/api/v1/admin/generation/backends";
+    const queryKey = "/api/v2/admin/generation/backends";
     const request = requestGate.current.begin();
     setAuthority((current) => authorityRequestStarted(current, queryKey));
     try {
-      const data = await apiGet<{ items: BackendItem[] }>("/api/v1/admin/generation/backends");
+      const data = await apiGet<{ items: BackendItem[] }>("/api/v2/admin/generation/backends");
       if (!request.isCurrent()) return;
       setAuthority(authorityRequestSucceeded(queryKey, data.items));
     } catch (err) {
@@ -61,10 +62,11 @@ export function BackendsView() {
       setAuthority((current) => authorityRequestFailed(
         current,
         queryKey,
-        err instanceof Error ? err.message : "Load failed",
+        requestErrorMessage(err, t),
+        err,
       ));
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     const gate = requestGate.current;
@@ -157,7 +159,7 @@ export function BackendsView() {
           {t("Refresh")}
         </button>
       </div>
-      {authority.error ? <AuthorityRequestError message={authority.error} onRetry={() => void load()} snapshotAt={authority.data ? authority.refreshedAt : null} /> : null}
+      {authority.error ? <AuthorityRequestError cause={authority.cause} message={authority.error} onRetry={() => void load()} snapshotAt={authority.data ? authority.refreshedAt : null} /> : null}
 
       {authority.loading && authority.data === null ? (
         <p className="text-sm text-[var(--ad-text-muted)]" role="status">{t("Loading…")}</p>

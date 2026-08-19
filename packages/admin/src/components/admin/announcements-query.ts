@@ -30,7 +30,7 @@ export function announcementListPath(query: AnnouncementQuery) {
   set(params, "level", query.announcementLevel);
   set(params, "active", query.announcementActive);
   set(params, "cursor", query.announcementCursor);
-  return `/api/v1/admin/announcements?${params.toString()}`;
+  return `/api/v2/admin/announcements?${params.toString()}`;
 }
 
 export function announcementWorkspaceUrl(

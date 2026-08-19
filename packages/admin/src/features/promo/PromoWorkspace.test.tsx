@@ -2,15 +2,32 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
   PromoWorkspace,
+  isoFromLocalDateTime,
   strictIntegerFromText,
 } from "./PromoWorkspace";
+
+describe("redeem code expiry", () => {
+  // INTENT: 契约收 ISO，输入框给的是本地时间串；解不出来就得挡住，不能把 Invalid Date 发出去。
+  it("converts a local datetime-local value to an ISO instant", () => {
+    expect(isoFromLocalDateTime("2026-09-01T12:00")).toBe(
+      new Date("2026-09-01T12:00").toISOString(),
+    );
+  });
+
+  it("treats a blank or unparseable expiry as no expiry", () => {
+    expect(isoFromLocalDateTime("")).toBeNull();
+    expect(isoFromLocalDateTime("   ")).toBeNull();
+    expect(isoFromLocalDateTime("not a date")).toBeNull();
+  });
+});
 
 describe("Promo workspace permissions", () => {
   it("keeps independent authorities visible in read-only mode", () => {
     const html = renderToStaticMarkup(<PromoWorkspace canWrite={false} />);
-    expect(html).toContain("Redeem codes: refreshing");
-    expect(html).toContain("Referrals: refreshing");
-    expect(html).toContain("growth.promo.write is not granted");
+    expect(html).toContain("Redeem codes: loading");
+    expect(html).toContain("Referrals: loading");
+    expect(html).toContain("Creating and disabling redeem codes is unavailable");
+    expect(html).not.toContain("is not granted");
     expect(html).not.toContain("Create redeem code</h2>");
   });
 });

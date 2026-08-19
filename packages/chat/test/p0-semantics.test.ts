@@ -161,7 +161,7 @@ describe("P0-E: no-memory / incognito", () => {
     expect(msgs.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("clears and stops writing rolling summary after memory is disabled", async () => {
+  it("clears the rolling summary when memory is disabled", async () => {
     const user = "u_p0_nomem_summary";
     const session = await createSession({ userId: user, characterId: CHAR }, { prisma });
 
@@ -170,9 +170,12 @@ describe("P0-E: no-memory / incognito", () => {
       { prisma },
     );
     expect(await generateOnce()).toBe(1);
-    expect((await prisma.chatSession.findUnique({ where: { id: session.id } }))?.memorySummary).toContain(
-      "summary seed",
-    );
+    // Seeded directly: turns no longer write memorySummary, but disabling memory
+    // still has to clear whatever a pre-existing row is carrying.
+    await prisma.chatSession.update({
+      where: { id: session.id },
+      data: { memorySummary: "legacy summary seed" },
+    });
 
     await setNoMemory({ userId: user, sessionId: session.id, memoryEnabled: false }, { prisma });
     expect((await prisma.chatSession.findUnique({ where: { id: session.id } }))?.memorySummary).toBeNull();

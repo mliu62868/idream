@@ -18,7 +18,7 @@ export type Starter = {
 export const SCOPES = ["built_in", "community"] as const;
 export const STARTER_GENDERS = ["", "female", "male", "trans"] as const;
 export const STARTER_STYLES = ["", "realistic", "anime", "hybrid", "other"] as const;
-export const STARTERS_LIST = "/api/v1/admin/content/templates";
+export const STARTERS_LIST = "/api/v2/admin/content/templates";
 
 export type StarterDraft = {
   name: string;

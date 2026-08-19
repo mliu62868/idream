@@ -18,9 +18,9 @@ type AdminPageProps = {
   searchParams: AdminSearchParams;
 };
 
-export async function generateMetadata({ params }: Pick<AdminPageProps, "params">): Promise<Metadata> {
+export async function generateMetadata({ params, searchParams }: AdminPageProps): Promise<Metadata> {
   const { section = [] } = await params;
-  return adminRouteMetadata(adminRouteLabel(section));
+  return adminRouteMetadata(adminRouteLabel(section, await searchParams));
 }
 
 export default async function AdminPage({ params, searchParams }: AdminPageProps) {

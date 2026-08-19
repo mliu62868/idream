@@ -19,6 +19,7 @@ const { adminV2Operation, apiGet } = vi.hoisted(() => ({
 vi.mock("@/components/admin/api", () => ({ apiGet }));
 vi.mock("@/lib/admin-v2-operation", () => ({ adminV2Operation }));
 
+import { ToastProvider } from "@/components/admin/ui/Toast";
 import {
   ChatOpsWorkspace,
 } from "./ChatOpsWorkspace";
@@ -115,7 +116,7 @@ const idempotencyKey = "11111111-1111-4111-8111-111111111111";
 
 const chatReadFixtures = new Map<string, unknown>([
   [
-    "/api/v1/admin/chat/overview",
+    "/api/v2/admin/chat/overview",
     {
       configured: true,
       overview: {
@@ -131,7 +132,7 @@ const chatReadFixtures = new Map<string, unknown>([
     },
   ],
   [
-    "/api/v1/admin/chat/provider-health",
+    "/api/v2/admin/chat/provider-health",
     {
       configured: true,
       items: [
@@ -151,7 +152,7 @@ const chatReadFixtures = new Map<string, unknown>([
     },
   ],
   [
-    "/api/v1/admin/chat/sessions?limit=50&status=active",
+    "/api/v2/admin/chat/sessions?limit=50&status=active",
     {
       configured: true,
       items: [
@@ -173,7 +174,7 @@ const chatReadFixtures = new Map<string, unknown>([
     },
   ],
   [
-    "/api/v1/admin/chat/usage?limit=50",
+    "/api/v2/admin/chat/usage?limit=50",
     {
       configured: true,
       items: [
@@ -194,7 +195,7 @@ const chatReadFixtures = new Map<string, unknown>([
     },
   ],
   [
-    "/api/v1/admin/chat/moderation-events?limit=50",
+    "/api/v2/admin/chat/moderation-events?limit=50",
     {
       configured: true,
       items: [
@@ -253,11 +254,13 @@ describe("ChatOpsWorkspace Main to Chat failed-delivery operations", () => {
 
     await act(async () => {
       root.render(
-        <ChatOpsWorkspace
-          canRead
-          canReadMainOutbox
-          canReplayMainOutbox
-        />,
+        <ToastProvider>
+          <ChatOpsWorkspace
+            canRead
+            canReadMainOutbox
+            canReplayMainOutbox
+          />
+        </ToastProvider>,
       );
     });
     await waitUntil(
@@ -318,7 +321,8 @@ describe("ChatOpsWorkspace Main to Chat failed-delivery operations", () => {
         idempotencyKey,
       },
     );
-    expect(container.textContent).toContain("requeued: 1");
+    // 命令结果落在 toast 里（挂在 document.body 上），面板顶部不再有横幅。
+    expect(document.body.textContent).toContain("requeued: 1");
     expect(container.textContent).toContain(
       "No failed Main → Chat deliveries",
     );
@@ -344,12 +348,14 @@ describe("ChatOpsWorkspace Main to Chat failed-delivery operations", () => {
 
     await act(async () => {
       root.render(
-        <ChatOpsWorkspace
-          canRead
-          canReadMainOutbox
-          canReplayMainOutbox
-          canDiscardMissingMainOutbox
-        />,
+        <ToastProvider>
+          <ChatOpsWorkspace
+            canRead
+            canReadMainOutbox
+            canReplayMainOutbox
+            canDiscardMissingMainOutbox
+          />
+        </ToastProvider>,
       );
     });
     await waitUntil(() =>
@@ -401,7 +407,7 @@ describe("ChatOpsWorkspace Main to Chat failed-delivery operations", () => {
         idempotencyKey,
       },
     );
-    expect(container.textContent).toContain("discarded_target_missing: 1");
+    expect(document.body.textContent).toContain("discarded_target_missing: 1");
   });
 
   it("retries only the terminal command after Chat committed before Main", async () => {
@@ -437,6 +443,35 @@ describe("ChatOpsWorkspace Main to Chat failed-delivery operations", () => {
     const dialog = await waitForDialog();
     expect(dialog.textContent).toContain("no user-visible Chat effect was applied");
   });
+
+  // 表格迁到 DataTable 之后，「收件方状态不安全的行不可勾选」必须还在：全选只收走可动作的那些。
+  it("keeps select-all scoped to the rows a command can safely touch", async () => {
+    adminV2Operation.mockResolvedValue(outboxResponse([event, invalidEvent]));
+
+    await act(async () => {
+      root.render(
+        <ToastProvider>
+          <ChatOpsWorkspace canRead canReadMainOutbox canReplayMainOutbox />
+        </ToastProvider>,
+      );
+    });
+    await waitUntil(() => container.textContent?.includes(invalidEvent.id) ?? false);
+
+    await click(container.querySelector<HTMLInputElement>(
+      'input[aria-label="Select all failed Main to Chat events"]',
+    ));
+
+    expect(selectCheckbox(event.id)?.checked).toBe(true);
+    expect(selectCheckbox(invalidEvent.id)?.checked).toBe(false);
+    expect(container.textContent).toContain("1 selected");
+    expect(findButton("Replay selected", container)?.disabled).toBe(false);
+  });
+
+  function selectCheckbox(id: string) {
+    return container.querySelector<HTMLInputElement>(
+      `input[aria-label="Select failed event ${id}"]`,
+    );
+  }
 
   it("renders failed delivery evidence without selection controls for a read-only operator", async () => {
     adminV2Operation.mockResolvedValue(initialOutboxResponse);

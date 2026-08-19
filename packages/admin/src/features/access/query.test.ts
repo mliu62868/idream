@@ -11,7 +11,7 @@ describe("access query", () => {
       dataClass: "internal",
       cursor: "next",
     });
-    expect(accessListPath(query)).toBe("/api/v1/admin/users?q=amy&role=support&status=active&dataClass=internal&cursor=next&limit=25");
+    expect(accessListPath(query)).toBe("/api/v2/admin/users?q=amy&role=support&status=active&dataClass=internal&cursor=next&limit=25");
   });
 
   it("preserves unrelated canonical route state and exact confirmation contracts", () => {

@@ -11,6 +11,9 @@ export type PricingDraft = {
   confirmation: string;
 };
 
+/** 分页条要报「第 N–M 条」，算法需要每页条数，所以它不能只活在 URL 拼接里。 */
+export const PRICING_PAGE_SIZE = 25;
+
 export const defaultPricingQuery: PricingQuery = { search: "", mode: "", status: "", cursor: "" };
 export const defaultPricingDraft: PricingDraft = {
   ruleKey: "generation_image_default",
@@ -38,8 +41,8 @@ export function pricingListPath(query: PricingQuery) {
   set(params, "mode", query.mode);
   set(params, "status", query.status);
   set(params, "cursor", query.cursor);
-  params.set("limit", "25");
-  return `/api/v1/admin/pricing/rules?${params.toString()}`;
+  params.set("limit", String(PRICING_PAGE_SIZE));
+  return `/api/v2/admin/pricing/rules?${params.toString()}`;
 }
 
 export function pricingWorkspaceUrl(pathname: string, search: string, updates: Readonly<Record<string, string | null>>) {

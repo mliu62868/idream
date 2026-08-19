@@ -23,7 +23,11 @@ import {
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
+import { useAdminFormat } from "@/components/admin/ui/format";
+import { Pagination, type PageInfo } from "@/components/admin/ui/Pagination";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
+import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import {
   authorityRequestFailed,
@@ -34,6 +38,7 @@ import {
 } from "@/lib/authority-state";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import {
+  CONTENT_PAGE_SIZE,
   contentListPath,
   contentQueryFromSearch,
   contentWorkspaceUrl,
@@ -41,7 +46,6 @@ import {
 } from "./query";
 
 type Row = Record<string, unknown>;
-type PageInfo = { endCursor: string | null; hasNextPage: boolean };
 type CharacterResponse = { items: Row[]; pageInfo: PageInfo };
 export type FeaturedRuntimeBlocker = {
   code: string;
@@ -102,6 +106,8 @@ export function ContentMerchandisingWorkspace({
   canWrite: boolean;
 }) {
   const { t } = useAdminI18n();
+  const { toast } = useToast();
+  const failureToast = useFailureToast();
   const [query, setQuery] = useState<ContentQuery>(() => currentQuery());
   const [draft, setDraft] = useState<ContentQuery>(() => currentQuery());
   const [characters, setCharacters] =
@@ -111,7 +117,6 @@ export function ContentMerchandisingWorkspace({
   const [featuredInput, setFeaturedInput] = useState("");
   const [reason, setReason] = useState("");
   const [confirmation, setConfirmation] = useState("");
-  const [saveError, setSaveError] = useState<string | null>(null);
   const [saveConflict, setSaveConflict] =
     useState<FeaturedVersionConflict | null>(null);
   const [saveResult, setSaveResult] = useState<FeaturedWriteResult | null>(
@@ -119,6 +124,8 @@ export function ContentMerchandisingWorkspace({
   );
   const [saving, setSaving] = useState(false);
   const [confirmSpec, setConfirmSpec] = useState<ConfirmSpec | null>(null);
+  // 游标分页没有页码，只有「上一页用的是哪个游标」。这条轨迹就是 Pagination 的第 N 页。
+  const [cursorTrail, setCursorTrail] = useState<string[]>([]);
   const characterGate = useRef(createLatestRequestGate());
   const featuredGate = useRef(createLatestRequestGate());
   const featuredKey = useRef<string | null>(null);
@@ -138,6 +145,7 @@ export function ContentMerchandisingWorkspace({
         current,
         queryKey,
         errorMessage(cause, "Characters could not be loaded"),
+        cause,
       ));
     }
   }, []);
@@ -145,7 +153,7 @@ export function ContentMerchandisingWorkspace({
   const loadFeatured = useCallback(async (
     options: { preserveInput?: boolean } = {},
   ) => {
-    const queryKey = "/api/v1/admin/content/featured";
+    const queryKey = "/api/v2/admin/content/featured";
     const request = featuredGate.current.begin();
     setFeatured((current) => authorityRequestStarted(current, queryKey));
     try {
@@ -161,6 +169,7 @@ export function ContentMerchandisingWorkspace({
         current,
         queryKey,
         errorMessage(cause, "Featured content could not be loaded"),
+        cause,
       ));
     }
   }, []);
@@ -180,6 +189,8 @@ export function ContentMerchandisingWorkspace({
       const next = currentQuery();
       setQuery(next);
       setDraft(next);
+      // 回退到的那一页是哪一页，历史条目里没记；不知道就说不知道，把「上一页」置灰。
+      setCursorTrail([]);
       load(next);
     };
     load(initialQuery.current);
@@ -193,7 +204,8 @@ export function ContentMerchandisingWorkspace({
     };
   }, [load]);
 
-  function navigate(next: ContentQuery) {
+  // SPEC: 任何改变结果集的动作都回到第一页 —— 所以 trail 默认清空，只有翻页自己传轨迹。
+  function navigate(next: ContentQuery, trail: string[] = []) {
     window.history.pushState(
       null,
       "",
@@ -205,6 +217,7 @@ export function ContentMerchandisingWorkspace({
     );
     setQuery(next);
     setDraft(next);
+    setCursorTrail(trail);
     void loadCharacters(next);
   }
 
@@ -217,12 +230,11 @@ export function ContentMerchandisingWorkspace({
   async function saveFeatured() {
     featuredKey.current ??= crypto.randomUUID();
     setSaving(true);
-    setSaveError(null);
     setSaveConflict(null);
     setSaveResult(null);
     try {
       const result = await apiWrite<FeaturedWriteResult>(
-        "/api/v1/admin/content/featured",
+        "/api/v2/admin/content/featured",
         "PUT",
         {
           characterIds: parseCsv(featuredInput),
@@ -244,7 +256,7 @@ export function ContentMerchandisingWorkspace({
         setSaveConflict(conflict);
         await loadFeatured({ preserveInput: true });
       } else {
-        setSaveError(errorMessage(cause, "Featured content could not be saved"));
+        failureToast(cause);
       }
     } finally {
       setSaving(false);
@@ -255,16 +267,37 @@ export function ContentMerchandisingWorkspace({
     const expected = `${id}:${field}:${value}`;
     const key = crypto.randomUUID();
     setConfirmSpec({
-      title: field === "visibility" ? `Make ${id} private` : `Remove ${id}`,
-      destructive: { expectedName: expected, inputLabel: "Type confirmation" },
-      submitLabel: field === "visibility" ? "Make private" : "Remove",
+      title: field === "visibility"
+        ? t("{action} character {id}", { action: t(contentCommandLabel(field, value)), id })
+        : t("Take character {id} down", { id }),
+      destructive: { expectedName: expected, inputLabel: t("Type confirmation") },
+      // INTENT: 改可见性还能改回来；下架（status=removed）在这个台面上没有反向入口，
+      //         而且会把角色从 Featured 里一并踢掉——按不可撤回处理。
+      consequence:
+        field === "visibility"
+          ? {
+              effect: t("The character leaves the public catalog at once. Setting visibility back to public restores it."),
+              reversible: true,
+            }
+          : {
+              effect: t("The character is taken down from every public surface and drops out of Featured. This console has no command to put it back."),
+              reversible: false,
+            },
+      submitLabel: contentCommandLabel(field, value),
       onSubmit: async (commandReason) => {
         await apiWrite(
-          `/api/v1/admin/content/characters/${encodeURIComponent(id)}/${field}`,
+          `/api/v2/admin/content/characters/${encodeURIComponent(id)}/${field}`,
           "POST",
           { [field]: value, reason: commandReason, confirmation: expected },
           { "idempotency-key": key },
         );
+        toast({
+          tone: "success",
+          title:
+            field === "visibility"
+              ? t("Character {id} is now {visibility}", { id, visibility: value })
+              : t("Character {id} taken down", { id }),
+        });
         await loadCharacters(query);
         await loadFeatured();
       },
@@ -286,7 +319,7 @@ export function ContentMerchandisingWorkspace({
   return (
     <section className="space-y-5">
       <PageHeader
-        purpose="Search the catalog, control visibility and lifecycle state, and curate the public featured feed."
+        purpose={t("Search the catalog, control visibility and lifecycle state, and curate the public featured feed.")}
         title={t("Featured Merchandising")}
       />
       <div
@@ -297,9 +330,7 @@ export function ContentMerchandisingWorkspace({
           <Freshness authority="Characters" state={characters} />
           <Freshness authority="Featured" state={featured} />
         </div>
-        {!canWrite ? (
-          <strong>{t("Read only · content.takedown.write is not granted")}</strong>
-        ) : null}
+        {!canWrite ? <PermissionNotice permission="content.takedown.write" /> : null}
       </div>
       <form
         className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-4"
@@ -356,6 +387,7 @@ export function ContentMerchandisingWorkspace({
       </form>
       {featured.error ? (
         <AuthorityRequestError
+          cause={featured.cause}
           message={featured.error}
           onRetry={() => void loadFeatured()}
           snapshotAt={featured.data ? featured.refreshedAt : null}
@@ -364,7 +396,7 @@ export function ContentMerchandisingWorkspace({
       {featured.loading && featured.data === null ? (
         <p className="text-sm text-[var(--ad-text-muted)]" role="status">
 
-          {t("Loading featured authority…")}
+          {t("Loading featured content…")}
         </p>
       ) : null}
       {featured.data ? <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
@@ -495,11 +527,10 @@ export function ContentMerchandisingWorkspace({
             {t("Save featured")}
           </button>
         </div>
-        {saveError ? (
-          <p className="mt-2 text-xs text-[var(--ad-red-text)]" role="alert">
-            {saveError}
-          </p>
-        ) : null}
+        <FeaturedDiff
+          draftIds={parseCsv(featuredInput)}
+          savedIds={featured.data.configuredCharacterIds}
+        />
         {saveConflict ? (
           <div
             className="mt-3 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-xs text-[var(--ad-yellow-text)]"
@@ -539,6 +570,7 @@ export function ContentMerchandisingWorkspace({
       /> : null}
       {characters.error ? (
         <AuthorityRequestError
+          cause={characters.cause}
           message={characters.error}
           onRetry={() => void loadCharacters(query)}
           snapshotAt={characters.data ? characters.refreshedAt : null}
@@ -547,7 +579,7 @@ export function ContentMerchandisingWorkspace({
       {characters.loading && characters.data === null ? (
         <p className="text-sm text-[var(--ad-text-muted)]" role="status">
 
-          {t("Loading character authority…")}
+          {t("Loading characters…")}
         </p>
       ) : null}
       {characters.data ? <DataTable
@@ -565,21 +597,25 @@ export function ContentMerchandisingWorkspace({
         ]}
         rows={characterRows}
       /> : null}
-      {characters.data?.pageInfo.hasNextPage &&
-      characters.data.pageInfo.endCursor ? (
-        <button
-          className="inline-flex h-11 items-center gap-2 rounded-md border border-[var(--ad-border)] px-4 text-sm"
-          onClick={() =>
-            navigate({
-              ...query,
-              cursor: characters.data?.pageInfo.endCursor ?? "",
-            })
+      {characters.data ? (
+        <Pagination
+          hasNext={Boolean(
+            characters.data.pageInfo.hasNextPage && characters.data.pageInfo.endCursor,
+          )}
+          hasPrevious={cursorTrail.length > 0}
+          loading={characters.loading}
+          onNext={() => {
+            const endCursor = characters.data?.pageInfo.endCursor;
+            if (!endCursor) return;
+            navigate({ ...query, cursor: endCursor }, [...cursorTrail, query.cursor]);
+          }}
+          onPrevious={() =>
+            navigate({ ...query, cursor: cursorTrail.at(-1) ?? "" }, cursorTrail.slice(0, -1))
           }
-          type="button"
-        >
-
-          {t("Next page")}
-        </button>
+          page={cursorTrail.length + 1}
+          pageSize={CONTENT_PAGE_SIZE}
+          rowCount={characters.data.items.length}
+        />
       ) : null}
       {confirmSpec ? (
         <ConfirmDialog
@@ -591,6 +627,66 @@ export function ContentMerchandisingWorkspace({
   );
 }
 
+/**
+ * SPEC: 保存前把「这一次到底改了什么」摆出来：加了谁、去掉了谁、有没有只是换了顺序。
+ *
+ * INTENT: 精选配置是一个逗号分隔的长字符串输入框。运营粘一版新的进去，屏幕上没有任何东西
+ * 告诉他这次动作的差异——要么自己逐个 ID 比对，要么保存完看结果。而这是直接改首页曝光的写操作。
+ * INVARIANT: 两边都是真实数据（已保存配置 vs 当前输入），不预测生效结果——
+ *            某个角色加进来能不能真的上首页由 audience authority 决定，保存后那张表才知道。
+ */
+export function featuredDiff(savedIds: readonly string[], draftIds: readonly string[]) {
+  const saved = new Set(savedIds);
+  const draft = new Set(draftIds);
+  const added = draftIds.filter((id) => !saved.has(id));
+  const removed = savedIds.filter((id) => !draft.has(id));
+  const reordered =
+    added.length === 0 &&
+    removed.length === 0 &&
+    savedIds.some((id, index) => draftIds[index] !== id);
+  return { added, removed, reordered };
+}
+
+function FeaturedDiff({
+  draftIds,
+  savedIds,
+}: {
+  draftIds: readonly string[];
+  savedIds: readonly string[];
+}) {
+  const { t } = useAdminI18n();
+  const { added, removed, reordered } = featuredDiff(savedIds, draftIds);
+  if (added.length === 0 && removed.length === 0 && !reordered) {
+    return (
+      <p className="mt-3 text-xs text-[var(--ad-text-muted)]" role="status">
+        {t("This matches the saved configuration. Nothing would change.")}
+      </p>
+    );
+  }
+  return (
+    <dl className="mt-3 space-y-1 rounded-md bg-black/[0.04] px-3 py-2 text-xs" role="status">
+      {added.length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          <dt className="font-semibold">{t("Adding")}</dt>
+          <dd className="font-mono break-all">{added.join(", ")}</dd>
+        </div>
+      ) : null}
+      {removed.length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          <dt className="font-semibold">{t("Removing")}</dt>
+          <dd className="font-mono break-all">{removed.join(", ")}</dd>
+        </div>
+      ) : null}
+      {reordered ? (
+        <div className="flex flex-wrap gap-2">
+          <dt className="font-semibold">{t("Reordering")}</dt>
+          <dd>{t("Same characters, new order.")}</dd>
+        </div>
+      ) : null}
+    </dl>
+  );
+}
+
 function Freshness<T>({
   authority,
   state,
@@ -599,20 +695,21 @@ function Freshness<T>({
   state: AuthorityState<T>;
 }) {
   const { t } = useAdminI18n();
-  if (state.loading) return <span>{authority}{t(": refreshing")}</span>;
+  const format = useAdminFormat();
+  // 后缀本来就过 t()，唯独数据源名字漏了。
+  const name = t(authority);
+  if (state.loading) return <span>{name}{t(": refreshing")}</span>;
   if (state.error) {
     return (
       <span>
-        {authority}: {state.data ? t("stale") : t("unavailable")}  {t("· retry available")}
+        {name}: {state.data ? t("stale") : t("unavailable")}  {t("· retry available")}
       </span>
     );
   }
   return (
     <span>
-      {authority}{t(": fresh")}{" "}
-      {state.refreshedAt
-        ? new Date(state.refreshedAt).toLocaleTimeString()
-        : ""}
+      {name}{t(": fresh")}{" "}
+      {state.refreshedAt ? format.time(state.refreshedAt) : ""}
     </span>
   );
 }
@@ -626,9 +723,10 @@ function Field({
   value: string;
   onChange: (value: string) => void;
 }) {
+  const { t } = useAdminI18n();
   return (
     <label className="grid gap-1 text-xs font-medium text-[var(--ad-text-muted)]">
-      {label}
+      {t(label)}
       <input
         className="h-11 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)]"
         onChange={(event) => onChange(event.target.value)}
@@ -650,9 +748,12 @@ function Select({
   options: string[];
   onChange: (value: string) => void;
 }) {
+  // 选项是状态/可见性枚举，走 value() —— 和 StatusBadge 共用同一份译文；
+  // 空选项是「全部」，走 t()。原来两者都是裸串，中文界面直接印 All / published。
+  const { t, value: enumLabel } = useAdminI18n();
   return (
     <label className="grid gap-1 text-xs font-medium text-[var(--ad-text-muted)]">
-      {label}
+      {t(label)}
       <select
         className="h-11 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-text)]"
         onChange={(event) => onChange(event.target.value)}
@@ -660,7 +761,7 @@ function Select({
       >
         {options.map((option) => (
           <option key={option || "all"} value={option}>
-            {option || "All"}
+            {option ? enumLabel(option) : t("All")}
           </option>
         ))}
       </select>
@@ -792,7 +893,23 @@ export function featuredTableRow(
   };
 }
 
-function characterTableRow(
+/**
+ * SPEC: 下架动作的文案由目标值决定，不是写死的「Make private」。
+ *
+ * INTENT: 这张表的可见性筛选器有 private / unlisted / public 三档，但动作按钮只能把角色打到
+ * private —— 「从公开目录里拿掉、但保留直链」这个状态在后台无法产出，尽管服务端
+ * (content.visibility.write) 和清理工具 (applyPublicContentCleanup) 都用 unlisted 表达它。
+ * 上线验证内容正是这一类：不该占公开首位，也不该被收成 owner-only。
+ */
+export function contentCommandLabel(
+  field: "visibility" | "status",
+  value: string,
+) {
+  if (field === "status") return "Remove";
+  return value === "unlisted" ? "Unlist" : "Make private";
+}
+
+export function characterTableRow(
   row: Row,
   canWrite: boolean,
   command: (id: string, field: "visibility" | "status", value: string) => void,
@@ -800,6 +917,15 @@ function characterTableRow(
   const id = stringValue(row.id);
   const actions: ReactNode = (
     <div className="flex gap-2">
+      <button
+        className="rounded border border-[var(--ad-border)] px-2 py-1 text-xs disabled:opacity-50"
+        disabled={!canWrite}
+        onClick={() => command(id, "visibility", "unlisted")}
+        type="button"
+      >
+
+        <AdminText text="Unlist" />
+      </button>
       <button
         className="rounded border border-[var(--ad-border)] px-2 py-1 text-xs disabled:opacity-50"
         disabled={!canWrite}

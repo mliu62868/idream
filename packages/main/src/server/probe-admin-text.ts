@@ -6,7 +6,7 @@ import {
   probeReportPath,
   writeProbeReport,
 } from "./readiness/probe-report";
-import type { AdminTextRuntimeIdentity } from "./modules/admin/shared/admin-text-generation";
+import type { AdminTextRuntimeIdentity } from "./modules/admin-v2/content/text-generation";
 
 type FetchLike = (input: URL, init: RequestInit) => Promise<Response>;
 
@@ -179,7 +179,7 @@ async function probeCharacterAssist(
   try {
     const { response, envelope, adminSourceRevision } = await postJson(
       fetchImpl,
-      new URL("/api/v1/admin/content/character-assist", baseUrl),
+      new URL("/api/v2/admin/content/character-assist", baseUrl),
       {
         seed:
           "An adult portrait conservator who sketches rain-lit streets after work",
@@ -248,7 +248,7 @@ async function probeProductionDirections(
   try {
     const { response, envelope, adminSourceRevision } = await postJson(
       fetchImpl,
-      new URL("/api/v1/admin/content/production/directions", baseUrl),
+      new URL("/api/v2/admin/content/production/directions", baseUrl),
       {
         characterId,
         purpose: "model_eval",

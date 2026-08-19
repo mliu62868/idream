@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Loader2 } from "lucide-react";
 import { apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
+import { requestErrorMessage } from "@/components/admin/section-kit";
 import { FormPage, FormSection, Field, FormFooter, INPUT_CLASS, TEXTAREA_CLASS } from "@/components/admin/ui/FormPage";
 import { PrimaryButton } from "@/components/admin/ui/buttons";
 import {
@@ -34,11 +35,11 @@ export function PresetsNewPage() {
     setError(null);
     try {
       const payload = presetPayload(draft);
-      const created = await apiWrite<{ preset?: { id?: string } }>(PRESETS_LIST, "POST", payload);
+      const created = await apiWrite<{ preset?: { id?: string } }>(PRESETS_LIST, "POST", payload, { "idempotency-key": crypto.randomUUID() });
       const newId = created.preset?.id;
       window.location.href = newId ? `/admin/generation/presets/${newId}` : "/admin/generation/presets";
     } catch (createError) {
-      setError(createError instanceof Error ? createError.message : t("Request failed"));
+      setError(requestErrorMessage(createError, t));
       setCreating(false);
     }
   }

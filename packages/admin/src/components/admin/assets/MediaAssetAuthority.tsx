@@ -1,4 +1,5 @@
 import { CircleAlert } from "lucide-react";
+import { useAdminI18n } from "@/components/admin/i18n";
 import { cn } from "@/lib/utils";
 
 export const DEMO_OR_LEGACY_ASSET_LABEL = "Demo or legacy test asset";
@@ -54,8 +55,12 @@ export function MediaAssetAuthorityNotice({
   asset: MediaAssetAuthorityView | null | undefined;
   className?: string;
 }) {
+  // SPEC: authorityLabel 返回的是整句英文（模板拼出来的），这里整句过 t()。
+  // INTENT: 它原先直接渲染，中文界面上素材库就印着「Not publishable: asset is archived」。
+  //         不把它拆成片段再拼 —— 拼接会绕过 i18n 的语法，这一轮已经修过好几处同样的写法。
+  const { t } = useAdminI18n();
   if (!asset || asset.customerPublishable) return null;
-  const label = authorityLabel(asset);
+  const label = t(authorityLabel(asset));
   return (
     <p
       className={cn(

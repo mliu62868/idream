@@ -73,7 +73,12 @@ export const todayWorkItemSchema = z
     ownerId: adminIdSchema.nullable(),
     slaDueAt: adminIsoDateTimeSchema.nullable(),
     recommendedAction: z.string().trim().min(1),
-    rankingReason: z.string().trim().min(1),
+    // SPEC: 工作项进入队列的时刻。
+    // INTENT: 这里曾是 rankingReason —— 一句服务端拼好的英文（"critical severity ·
+    //         SLA <iso> · open since <iso>"）。严重度和 SLA 卡片上本来就各有一处，重复三遍；
+    //         而唯一独有的开始时间被埋在句子里，客户端只能用正则把它拆回来再翻译。
+    //         现在只发这一个时间戳，展示与本地化都交给客户端。
+    openedAt: adminIsoDateTimeSchema,
     deepLink: z.string().startsWith("/admin/"),
     verificationState: adminVerificationStateSchema,
     lastChangedAt: adminIsoDateTimeSchema,

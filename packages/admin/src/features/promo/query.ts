@@ -8,9 +8,12 @@ export type PromoQuery = {
 
 export type PromoScope = "codes" | "referrals";
 
+/** 分页条要报「第 N–M 条」，算法需要每页条数，所以它不能只活在 URL 拼接里。 */
+export const PROMO_PAGE_SIZE = 25;
+
 const promoPaths: Record<PromoScope, string> = {
-  codes: "/api/v1/admin/promo/redeem-codes",
-  referrals: "/api/v1/admin/promo/referrals",
+  codes: "/api/v2/admin/promo/redeem-codes",
+  referrals: "/api/v2/admin/promo/referrals",
 };
 
 export const defaultPromoQuery: PromoQuery = {
@@ -33,7 +36,7 @@ export function promoQueryFromSearch(search: string): PromoQuery {
 }
 
 export function promoListPath(query: PromoQuery, scope: PromoScope) {
-  const params = new URLSearchParams({ limit: "25" });
+  const params = new URLSearchParams({ limit: String(PROMO_PAGE_SIZE) });
   set(params, "search", query.search);
   set(
     params,

@@ -38,7 +38,7 @@ export function TodayRecoveryNotice({
           </p>
           {!hasData ? (
             <p className="mt-1 text-xs">
-              {t("Reconnect and retry to restore the authoritative queue.")}
+              {t("Reconnect and retry to restore the queue.")}
             </p>
           ) : null}
         </div>
@@ -82,7 +82,7 @@ export function TodayWorkspace({ workMode }: { workMode: WorkMode }) {
 
   const load = useCallback(async (): Promise<TodayData> => {
     const [legacy, projection] = await Promise.all([
-      apiGet<TodayLegacyData>("/api/v1/admin/dashboard"),
+      apiGet<TodayLegacyData>("/api/v2/admin/dashboard"),
       apiGet<TodayProjection>(`/api/v2/admin/today?workMode=${encodeURIComponent(workMode)}`),
     ]);
     return { legacy, projection };

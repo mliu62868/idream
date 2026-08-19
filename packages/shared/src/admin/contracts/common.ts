@@ -92,19 +92,28 @@ export const operationalStateViewSchema = z
   })
   .strict();
 
+// SPEC: 列表分页信息。endCursor / startCursor 为 null 表示该方向没有更多页。
+// INTENT: startCursor / hasPreviousPage / totalCount 是可选的 —— 只有已经支持反向
+// keyset 的 operation 会返回。缺席 ≠ 没有上一页，而是「这个列表还是单向的」，前端要
+// 把「上一页」置灰而不是当成已经在第一页。
 export const adminPageInfoSchema = z
   .object({
     endCursor: z.string().min(1).nullable(),
     hasNextPage: z.boolean(),
+    // startCursor 原样回传给该 operation 的 `before` 参数即可取上一页。只有实现了反向
+    // 分页的 operation 才接受 `before`，其余会被 .strict() 挡成 400 —— 宁可报错，也不要
+    // 静默把第一页当成上一页返回。
+    startCursor: z.string().min(1).nullable().optional(),
+    hasPreviousPage: z.boolean().optional(),
+    // 筛选后的总行数，不是当页行数 —— 前端过去拿 items.length 当「共 N 条」显示。
+    totalCount: z.number().int().nonnegative().optional(),
   })
   .strict();
+export type AdminPageInfo = z.infer<typeof adminPageInfoSchema>;
 
 export interface AdminListResponse<T, TFacet = unknown, TSummary = unknown> {
   items: readonly T[];
-  pageInfo: {
-    endCursor: string | null;
-    hasNextPage: boolean;
-  };
+  pageInfo: AdminPageInfo;
   facets?: TFacet;
   summary?: TSummary;
   asOf: string;

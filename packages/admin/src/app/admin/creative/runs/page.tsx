@@ -2,7 +2,9 @@ import { adminRouteMetadata, renderAdminRoute, type AdminSearchParams } from "..
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-export const metadata = adminRouteMetadata("Creative Runs");
+export function generateMetadata() {
+  return adminRouteMetadata("Creative Runs");
+}
 
 export default function CreativeRunsPage({ searchParams }: { searchParams: AdminSearchParams }) {
   return renderAdminRoute(["creative", "runs"], searchParams);

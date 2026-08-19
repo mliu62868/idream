@@ -73,6 +73,12 @@ function buildUrl(path: string, query?: ApiOptions["query"]) {
   return url;
 }
 
+export type AdminV2RouteHandler<Params extends Record<string, string> = Record<string, string>> = (
+  request: Request,
+  context: { params: Promise<Params> },
+) => Promise<Response> | Response;
+
+
 /** Drive the API exactly as the Next route handler does: dispatchV1(request, segments). */
 export async function api(
   method: string,

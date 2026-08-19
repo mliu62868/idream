@@ -18,6 +18,8 @@ const { apiGet, apiWrite } = vi.hoisted(() => ({
 
 vi.mock("@/components/admin/api", () => ({ apiGet, apiWrite }));
 
+import { AdminI18nProvider } from "@/components/admin/i18n";
+import { ToastProvider } from "@/components/admin/ui/Toast";
 import { ModerationWorkspace } from "./ModerationWorkspace";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
@@ -92,7 +94,11 @@ describe("ModerationWorkspace media-review interaction", () => {
       apiWrite.mockResolvedValue({ id: mediaId, safetyStatus: decision });
 
       await act(async () => {
-        root.render(<ModerationWorkspace canDecide />);
+        root.render(
+          <ToastProvider>
+            <ModerationWorkspace canDecide />
+          </ToastProvider>,
+        );
       });
       await waitUntil(() => mediaPreview() !== null);
 
@@ -135,7 +141,7 @@ describe("ModerationWorkspace media-review interaction", () => {
       await waitUntil(() => document.querySelector('[role="dialog"]') === null);
 
       expect(apiWrite).toHaveBeenCalledWith(
-        `/api/v1/admin/moderation/media/${mediaId}/decision`,
+        `/api/v2/admin/moderation/media/${mediaId}/decision`,
         "POST",
         {
           decision,
@@ -144,9 +150,10 @@ describe("ModerationWorkspace media-review interaction", () => {
         },
         { "idempotency-key": idempotencyKey },
       );
-      expect(container.textContent).toContain(
-        `${actionLabel} Character image ${mediaId} completed.`,
+      expect(actionToast()?.textContent).toContain(
+        `Decision recorded for ${mediaId}`,
       );
+      expect(actionToast()?.getAttribute("data-tone")).toBe("success");
       expect(mediaPreview()).toBeNull();
       expect(container.textContent).toContain(
         "No Character images await independent review",
@@ -176,7 +183,11 @@ describe("ModerationWorkspace media-review interaction", () => {
     );
 
     await act(async () => {
-      root.render(<ModerationWorkspace canDecide />);
+      root.render(
+        <ToastProvider>
+          <ModerationWorkspace canDecide />
+        </ToastProvider>,
+      );
     });
     await waitUntil(() => mediaPreview() !== null);
     await click(findButton("Block image", container));
@@ -192,14 +203,20 @@ describe("ModerationWorkspace media-review interaction", () => {
       mediaId,
     );
     await click(findButton("Confirm", dialog));
-    await waitUntil(
-      () =>
-        dialog.querySelector('[role="alert"]')?.textContent ===
-        "Media authority changed before this decision",
+    await waitUntil(() =>
+      Boolean(
+        dialog
+          .querySelector('[role="alert"]')
+          ?.textContent?.includes("This action did not complete."),
+      ),
+    );
+    // 原文一个字都不能丢——它折在「技术详情」里，工程要拿它对日志。
+    expect(dialog.querySelector('[role="alert"]')?.textContent).toContain(
+      "Media authority changed before this decision",
     );
 
     expect(apiWrite).toHaveBeenCalledWith(
-      `/api/v1/admin/moderation/media/${mediaId}/decision`,
+      `/api/v2/admin/moderation/media/${mediaId}/decision`,
       "POST",
       {
         decision: "blocked",
@@ -211,14 +228,233 @@ describe("ModerationWorkspace media-review interaction", () => {
     expect(mediaReads).toBe(1);
     expect(mediaPreview()).not.toBeNull();
     expect(document.querySelector('[role="dialog"]')).toBe(dialog);
-    expect(container.querySelector('[data-testid="admin-action-status"]')).toBeNull();
+    expect(actionToast()).toBeNull();
   });
+
+  function actionToast() {
+    return document.body.querySelector('[data-testid="admin-action-status"]');
+  }
 
   function mediaPreview() {
     return container.querySelector<HTMLImageElement>(
       `img[alt="Character image ${mediaId}"]`,
     );
   }
+});
+
+const longStatement =
+  "The character keeps steering every conversation back to the same off-policy scenario, " +
+  "and screenshots of three separate sessions are attached to this report.";
+
+describe("ModerationWorkspace decision evidence", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let reads: number;
+
+  beforeEach(() => {
+    window.history.replaceState(null, "", "/admin/moderation");
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    reads = 0;
+    apiGet.mockReset();
+    apiWrite.mockReset();
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  async function mount(input: { reports?: unknown[]; appeals?: unknown[] }) {
+    apiGet.mockImplementation(async (path) => {
+      reads += 1;
+      if (path.includes("scope=reports"))
+        return { reports: input.reports ?? [], pageInfo: { reports: pageInfo } };
+      if (path.includes("scope=media"))
+        return { mediaReview: [], pageInfo: { mediaReview: pageInfo } };
+      if (path.includes("scope=appeals"))
+        return { appeals: input.appeals ?? [], pageInfo: { appeals: pageInfo } };
+      throw new Error(`Unexpected moderation request: ${path}`);
+    });
+    await act(async () => {
+      root.render(
+        <ToastProvider>
+          <ModerationWorkspace canDecide />
+        </ToastProvider>,
+      );
+    });
+    await waitUntil(() => reads >= 3);
+  }
+
+  // 权威接口一直返回 description / reporterId；以前工作台两个都没画，
+  // 审核员只能看着 category 在「处置」和「无违规」之间二选一。
+  it("puts the reporter's own words and identity in the report row", async () => {
+    await mount({
+      reports: [
+        {
+          id: "report-1",
+          reporterId: "user-reporter-9",
+          targetType: "character",
+          targetId: "character-42",
+          category: "harassment",
+          description: "This one keeps ignoring the safe word.",
+          status: "open",
+          priority: 1,
+          createdAt: "2026-08-14T09:00:00.000Z",
+        },
+      ],
+    });
+    await waitUntil(() => container.textContent?.includes("report-1") === true);
+
+    expect(container.textContent).toContain(
+      "This one keeps ignoring the safe word.",
+    );
+    expect(container.textContent).toContain("user-reporter-9");
+    expect(
+      container.querySelector('a[href="/admin/characters/character-42"]'),
+    ).not.toBeNull();
+  });
+
+  it("collapses a long statement without losing a single word of it", async () => {
+    await mount({
+      reports: [
+        {
+          id: "report-2",
+          reporterId: "user-reporter-3",
+          targetType: "message",
+          targetId: "message-8",
+          category: "policy",
+          description: longStatement,
+          status: "open",
+          priority: 2,
+          createdAt: "2026-08-14T09:00:00.000Z",
+        },
+      ],
+    });
+    await waitUntil(() => container.textContent?.includes("report-2") === true);
+
+    const details = container.querySelector("details");
+    expect(details).not.toBeNull();
+    expect(details?.textContent).toContain(longStatement);
+    // message 目标在后台没有落地页，所以只标类型、不编一个会 404 的链接。
+    expect(container.querySelector('a[href*="message-8"]')).toBeNull();
+  });
+
+  it("says the statement is empty rather than leaving the cell blank", async () => {
+    await mount({
+      reports: [
+        {
+          id: "report-3",
+          reporterId: null,
+          targetType: "media",
+          targetId: "media-3",
+          category: "spam",
+          description: null,
+          status: "open",
+          priority: 3,
+          createdAt: "2026-08-14T09:00:00.000Z",
+        },
+      ],
+    });
+    await waitUntil(() => container.textContent?.includes("report-3") === true);
+    expect(container.textContent).toContain("Nothing written");
+  });
+
+  // 「维持」和「撤销」是把一次处置钉死或整个掀翻，而申诉正文以前根本没有画出来。
+  it("puts the appeal text and the original decision in the appeal row", async () => {
+    await mount({
+      appeals: [
+        {
+          id: "appeal-1",
+          userId: "user-12",
+          targetType: "character",
+          targetId: "character-9",
+          originalDecisionId: "review-77",
+          status: "open",
+          appealText: "The image was blocked but it matches the reference sheet.",
+          createdAt: "2026-08-14T09:00:00.000Z",
+        },
+      ],
+    });
+    await waitUntil(() => container.textContent?.includes("appeal-1") === true);
+
+    expect(container.textContent).toContain(
+      "The image was blocked but it matches the reference sheet.",
+    );
+    expect(container.textContent).toContain("review-77");
+  });
+
+  // 回归：三块队列以前各挂一个「下一页」，翻过去就回不来。三块共用一个 URL，
+  // 所以翻其中一块时另外两块的页码不能被一起带走。
+  it("pages each queue on its own and keeps Previous greyed out on the first page", async () => {
+    apiGet.mockImplementation(async (path) => {
+      reads += 1;
+      if (path.includes("scope=reports")) {
+        return {
+          reports: [{
+            id: "report-page-1",
+            reporterId: "user-1",
+            targetType: "character",
+            targetId: "character-1",
+            category: "policy",
+            description: "Paged report",
+            status: "open",
+            priority: 1,
+            createdAt: "2026-08-14T09:00:00.000Z",
+          }],
+          pageInfo: { reports: { endCursor: "report-cursor-2", hasNextPage: true } },
+        };
+      }
+      if (path.includes("scope=media")) return { mediaReview: [], pageInfo: { mediaReview: pageInfo } };
+      if (path.includes("scope=appeals")) return { appeals: [], pageInfo: { appeals: pageInfo } };
+      throw new Error(`Unexpected moderation request: ${path}`);
+    });
+    await act(async () => {
+      root.render(
+        <ToastProvider>
+          <ModerationWorkspace canDecide />
+        </ToastProvider>,
+      );
+    });
+    await waitUntil(() => container.textContent?.includes("report-page-1") === true);
+
+    // 只有 reports 这块有下一页，所以整页只画得出一条分页条。
+    expect(findButton("Previous page", container)?.disabled).toBe(true);
+    expect(container.textContent).toContain("Page 1");
+
+    await click(findButton("Next page", container));
+    await waitUntil(() => apiGet.mock.calls.some(([path]) => path.includes("reportCursor=report-cursor-2")));
+    await waitUntil(() => container.textContent?.includes("Page 2") === true);
+    expect(findButton("Previous page", container)?.disabled).toBe(false);
+    // 另外两块队列没被这次翻页带走游标。
+    expect(apiGet.mock.calls.at(-1)?.[0]).not.toContain("mediaCursor=");
+    expect(apiGet.mock.calls.at(-1)?.[0]).not.toContain("appealCursor=");
+
+    await click(findButton("Previous page", container));
+    await waitUntil(() => container.textContent?.includes("Page 1") === true);
+    expect(
+      apiGet.mock.calls.filter(([path]) => path.includes("scope=reports")).at(-1)?.[0],
+    ).not.toContain("reportCursor=");
+  });
+
+  it("offers a way out when the filters matched nothing", async () => {
+    window.history.replaceState(
+      null,
+      "",
+      "/admin/moderation?moderationStatus=closed",
+    );
+    await mount({});
+    await waitUntil(() => reads >= 3);
+    expect(apiGet.mock.calls.at(-1)?.[0]).toContain("status=closed");
+
+    const clear = findButton("Clear filters", container);
+    expect(clear).not.toBeNull();
+    await click(clear);
+    await waitUntil(() => reads >= 6);
+    expect(apiGet.mock.calls.at(-1)?.[0].includes("status=closed")).toBe(false);
+  });
 });
 
 function findButton(label: string, root: ParentNode = document) {
@@ -269,3 +505,65 @@ async function waitUntil(predicate: () => boolean) {
     });
   }
 }
+
+// SPEC: zh 下审核队列的单元格不许出现英文。
+// INTENT: 这些格子由 *Rows() 直接拼裸值，不经过任何会 t() 的接收方——安全结论、举报状态、
+//         以及「无预览图 / 已终态 / 只读」三个占位以前一律是英文，夹在中文表头之间。
+describe("ModerationWorkspace queue cells under the zh locale", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    window.history.replaceState(null, "", "/admin/moderation");
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    apiGet.mockReset();
+    apiWrite.mockReset();
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  async function mountZh(row: Record<string, unknown>, canDecide: boolean) {
+    apiGet.mockImplementation(async (path) => {
+      if (path.includes("scope=media")) return { mediaReview: [row], pageInfo: { mediaReview: pageInfo } };
+      if (path.includes("scope=reports")) return { reports: [], pageInfo: { reports: pageInfo } };
+      if (path.includes("scope=appeals")) return { appeals: [], pageInfo: { appeals: pageInfo } };
+      throw new Error(`Unexpected moderation request: ${path}`);
+    });
+    await act(async () => {
+      root.render(
+        <AdminI18nProvider locale="zh">
+          <ToastProvider>
+            <ModerationWorkspace canDecide={canDecide} />
+          </ToastProvider>
+        </AdminI18nProvider>,
+      );
+    });
+    await waitUntil(() => container.textContent?.includes(mediaId) === true);
+  }
+
+  it("translates the safety verdict and the missing-preview placeholder", async () => {
+    await mountZh({ ...mediaRow, thumbnailUrl: null, url: null }, true);
+    expect(container.textContent).toContain("未知");
+    expect(container.textContent).toContain("无预览图");
+    expect(container.textContent).not.toContain("No preview");
+  });
+
+  // 已经裁决过的图片没有动作可给；那一格以前写死英文 "Terminal"。
+  it("translates the terminal placeholder for an already-decided image", async () => {
+    await mountZh({ ...mediaRow, safetyStatus: "blocked" }, true);
+    expect(container.textContent).toContain("已终态");
+    expect(container.textContent).not.toContain("Terminal");
+  });
+
+  it("translates the read-only placeholder without decide authority", async () => {
+    await mountZh(mediaRow, false);
+    expect(container.textContent).toContain("只读");
+    expect(container.textContent).not.toContain("Read only");
+  });
+});

@@ -237,9 +237,12 @@ export function assetBulkArchivePayload(params: {
   };
 }
 
+// INTENT: fallbackMessage 由调用方注入 —— 这是模块级函数，拿不到 t()；服务端连 message 和
+// code 都没给时，硬编码的英文兜底会在中文 locale 直接露馅。
 export async function bulkArchiveAssets(params: {
   assetIds: readonly string[];
   reason: string;
+  fallbackMessage?: string;
 }): Promise<{ updatedIds: string[] }> {
   const response = await fetch(ASSETS_BULK, {
     method: "POST",
@@ -252,7 +255,7 @@ export async function bulkArchiveAssets(params: {
   const payload = await response.json() as ApiEnvelope<ContentAssetBulkMutationResponse>;
   if (!payload.ok) {
     throw new AssetBulkArchiveError(
-      payload.error.message ?? payload.error.code ?? "Bulk archive failed",
+      payload.error.message ?? payload.error.code ?? params.fallbackMessage ?? "Bulk archive failed",
       payload.error.details,
     );
   }
@@ -261,6 +264,7 @@ export async function bulkArchiveAssets(params: {
 
 export async function preflightArchiveAssets(
   assetIds: readonly string[],
+  fallbackMessage?: string,
 ): Promise<AssetArchivePreflight> {
   const canonicalIds = canonicalAssetIds(assetIds);
   const response = await fetch(ASSETS_BULK_PREFLIGHT, {
@@ -271,7 +275,7 @@ export async function preflightArchiveAssets(
   const payload = await response.json() as ApiEnvelope<ContentAssetBulkPreflightResponse>;
   if (!payload.ok) {
     throw new AssetBulkArchiveError(
-      payload.error.message ?? payload.error.code ?? "Bulk archive preflight failed",
+      payload.error.message ?? payload.error.code ?? fallbackMessage ?? "Bulk archive preflight failed",
       payload.error.details,
     );
   }

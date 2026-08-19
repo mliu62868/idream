@@ -8,15 +8,14 @@ describe("Billing workspace permission surface", () => {
       <BillingWorkspace canAdjust={false} canReconcile={false} canRefund={false} />,
     );
 
-    expect(html).toContain("Billing &amp; Ledger");
-    expect(html).toContain("Customer business records");
-    expect(html).toContain("dataClass=customer only");
-    expect(html).toContain("Search billing authority");
-    expect(html).toContain("Ledger read only");
-    expect(html).toContain("Reconciliation read only");
-    expect(html).toContain("Subscription refund read only");
+    expect(html).toContain("Billing Operations");
+    expect(html).toContain("Search billing records");
+    expect(html).toContain("Adjusting customer Dreamcoin balances is unavailable");
+    expect(html).toContain("Reconciling checkout exceptions is unavailable");
+    expect(html).toContain("Refunding subscriptions is unavailable");
+    expect(html).not.toContain("is not granted");
     expect(html).not.toContain("Adjust Ledger");
-    expect(html).toContain('aria-label="Loading billing authority"');
+    expect(html).toContain('aria-label="Loading billing records…"');
   });
 
   it("preserves the accessible compatibility controls when ledger adjustment is granted", () => {
@@ -34,7 +33,7 @@ describe("Billing workspace permission surface", () => {
       <BillingWorkspace canAdjust={false} canReconcile canRefund={false} />,
     );
 
-    expect(html).toContain("Ledger read only");
-    expect(html).not.toContain("Reconciliation read only");
+    expect(html).toContain("Adjusting customer Dreamcoin balances is unavailable");
+    expect(html).not.toContain("Reconciling checkout exceptions is unavailable");
   });
 });

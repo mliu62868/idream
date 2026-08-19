@@ -63,6 +63,39 @@ function exportedConstName(sourceFile: ts.SourceFile): string | null {
   return found;
 }
 
+/**
+ * 合并点 = 展开了域常量的那个源文件。不写死文件名：i18n.tsx / i18n-dictionary.ts
+ * 之间搬过一次，将来还可能再搬。
+ */
+function mergeEntrySource(): ts.SourceFile {
+  const candidates = readdirSync(DIRECTORY).filter(
+    (name) =>
+      /\.tsx?$/.test(name) &&
+      !name.includes(".test.") &&
+      !name.startsWith("i18n-zh-"),
+  );
+  const domainConstNames = new Set(
+    domainFiles()
+      .map((name) => exportedConstName(parse(name)))
+      .filter((name): name is string => Boolean(name)),
+  );
+
+  for (const name of candidates) {
+    const text = readFileSync(join(DIRECTORY, name), "utf8");
+    if (![...domainConstNames].some((constName) => text.includes(constName))) continue;
+    return ts.createSourceFile(
+      join(DIRECTORY, name),
+      text,
+      ts.ScriptTarget.Latest,
+      true,
+      name.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+    );
+  }
+  throw new Error(
+    `No source in ${DIRECTORY} spreads the zh domain dictionaries; the merge point is missing.`,
+  );
+}
+
 describe("admin zh domain dictionaries", () => {
   it("never assigns the same key in two domain files", () => {
     const owner = new Map<string, string>();
@@ -94,14 +127,11 @@ describe("admin zh domain dictionaries", () => {
   });
 
   // SPEC: 新建一个域文件却忘了接线，界面会静默退回英文而其它测试全绿——所以在这里拦住。
+  // INTENT: 合并点原先在 i18n.tsx，后来搬进 i18n-dictionary.ts，而这条断言把文件名写死了，
+  //         于是 9 个域文件明明接线正常却全被报成「未合并」。改成按「谁展开了域常量」去找，
+  //         合并点再搬一次也不会假红。
   it("merges every domain file into the zh dictionary", () => {
-    const entry = ts.createSourceFile(
-      join(DIRECTORY, "i18n.tsx"),
-      readFileSync(join(DIRECTORY, "i18n.tsx"), "utf8"),
-      ts.ScriptTarget.Latest,
-      true,
-      ts.ScriptKind.TSX,
-    );
+    const entry = mergeEntrySource();
 
     const spreadNames = new Set<string>();
     function visit(node: ts.Node) {

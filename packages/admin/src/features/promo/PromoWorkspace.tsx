@@ -1,7 +1,7 @@
 "use client";
 
 import { AdminText, useAdminI18n } from "@/components/admin/i18n";
-import { Ban, Loader2, Plus, RefreshCcw, X } from "lucide-react";
+import { Ban, Loader2, Plus, X } from "lucide-react";
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet, apiWrite } from "@/components/admin/api";
@@ -11,11 +11,17 @@ import {
 } from "@/components/admin/ui/ConfirmDialog";
 import { DataTable, type DataTableRow } from "@/components/admin/ui/DataTable";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
+import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
+import { useAdminFormat, text } from "@/components/admin/ui/format";
+import { emptyPageInfo, Pagination, type PageInfo } from "@/components/admin/ui/Pagination";
 import { PageHeader } from "@/components/admin/ui/PageHeader";
+import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
+import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import {
   defaultPromoQuery,
+  PROMO_PAGE_SIZE,
   promoListPath,
   promoQueryFromSearch,
   promoWorkspaceUrl,
@@ -24,33 +30,39 @@ import {
 } from "./query";
 
 type Row = Record<string, unknown>;
-type PageInfo = { endCursor: string | null; hasNextPage: boolean };
 type ListResponse = { items: Row[]; pageInfo?: PageInfo };
 type AuthorityState = {
   rows: Row[] | null;
   pageInfo: PageInfo;
   loading: boolean;
   error: string | null;
+  cause: unknown;
   refreshedAt: string | null;
 };
 
-const emptyPageInfo: PageInfo = { endCursor: null, hasNextPage: false };
+/** 两张表各自翻页，但一次 navigate 会把两边都重新拉一遍，所以轨迹要一起带着走。 */
+type PromoTrails = Record<PromoScope, string[]>;
+const emptyTrails: PromoTrails = { codes: [], referrals: [] };
 const emptyAuthority = (): AuthorityState => ({
   rows: null,
   pageInfo: emptyPageInfo,
   loading: true,
   error: null,
+  cause: undefined,
   refreshedAt: null,
 });
 
 export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
-  const { t } = useAdminI18n();
+  const { t, value: valueLabel } = useAdminI18n();
+  const format = useAdminFormat();
+  const { toast } = useToast();
   const [query, setQuery] = useState<PromoQuery>(() => currentQuery());
   const [draft, setDraft] = useState<PromoQuery>(() => currentQuery());
   const [codes, setCodes] = useState<AuthorityState>(emptyAuthority);
   const [referrals, setReferrals] = useState<AuthorityState>(emptyAuthority);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  // 游标分页没有页码，只有「上一页用的是哪个游标」。这条轨迹就是 Pagination 的第 N 页。
+  const [trails, setTrails] = useState<PromoTrails>(emptyTrails);
   const gates = useRef({
     codes: createLatestRequestGate(),
     referrals: createLatestRequestGate(),
@@ -69,6 +81,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
         pageInfo: response.pageInfo ?? emptyPageInfo,
         loading: false,
         error: null,
+        cause: undefined,
         refreshedAt: new Date().toISOString(),
       });
     } catch (cause) {
@@ -80,6 +93,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
           cause instanceof Error
             ? cause.message
             : `${scope} authority request failed`,
+        cause,
       }));
     }
   }, []);
@@ -99,6 +113,8 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
       const next = currentQuery();
       setQuery(next);
       setDraft(next);
+      // 回退到的那一页是哪一页，历史条目里没记；不知道就说不知道，把「上一页」置灰。
+      setTrails(emptyTrails);
       load(next);
     };
     window.addEventListener("popstate", restore);
@@ -111,7 +127,12 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
     };
   }, [load]);
 
-  function navigate(next: PromoQuery, mode: "push" | "replace" = "push") {
+  // SPEC: 任何改变结果集的动作都回到第一页 —— 所以 trails 默认清空，只有翻页自己传轨迹。
+  function navigate(
+    next: PromoQuery,
+    mode: "push" | "replace" = "push",
+    nextTrails: PromoTrails = emptyTrails,
+  ) {
     const url = promoWorkspaceUrl(
       window.location.pathname,
       window.location.search,
@@ -124,6 +145,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
     );
     setQuery(next);
     setDraft(next);
+    setTrails(nextTrails);
     load(next);
   }
 
@@ -136,18 +158,23 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
     if (!canWrite) return;
     const idempotencyKey = crypto.randomUUID();
     setConfirmation({
-      title: `Disable ${id}`,
-      destructive: { expectedName: id, inputLabel: "Confirmation" },
-      reasonLabel: "Reason",
-      submitLabel: "Disable",
+      title: t("Disable redeem code {id}", { id }),
+      destructive: { expectedName: id, inputLabel: t("Confirmation") },
+      // INTENT: 后台只有 disable，没有 re-enable —— 停掉的码只能再发一个新的。
+      consequence: {
+        effect: t("Every future redemption of this code fails. There is no re-enable command; a replacement has to be issued as a new code."),
+        reversible: false,
+      },
+      reasonLabel: t("Reason"),
+      submitLabel: t("Disable"),
       onSubmit: async (reason) => {
         await apiWrite(
-          `/api/v1/admin/promo/redeem-codes/${id}/disable`,
+          `/api/v2/admin/promo/redeem-codes/${id}/disable`,
           "POST",
           { reason, confirmation: id },
           { "idempotency-key": idempotencyKey },
         );
-        setNotice(`Disable ${id} completed.`);
+        toast({ tone: "success", title: t("Redeem code {id} disabled", { id }) });
         navigate({ ...query, codeCursor: "" }, "replace");
       },
     });
@@ -159,7 +186,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
   return (
     <section className="space-y-5">
       <PageHeader
-        purpose="Operate redeem codes and inspect referral authority through independent, server-filtered snapshots."
+        purpose={t("Operate redeem codes and inspect referral authority through independent, server-filtered snapshots.")}
         title={t("Promotions")}
       />
       <div
@@ -170,9 +197,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
           <Freshness label="Redeem codes" state={codes} />
           <Freshness label="Referrals" state={referrals} />
         </div>
-        {!canWrite ? (
-          <strong>{t("Read only · growth.promo.write is not granted")}</strong>
-        ) : null}
+        {!canWrite ? <PermissionNotice permission="growth.promo.write" /> : null}
       </div>
       <form
         className="grid gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 md:grid-cols-2 xl:grid-cols-[minmax(280px,1fr)_200px_200px_auto]"
@@ -186,6 +211,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
         />
         <Select
           label="Code status"
+          optionLabel={valueLabel}
           onChange={(codeStatus) =>
             setDraft((value) => ({ ...value, codeStatus }))
           }
@@ -194,6 +220,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
         />
         <Select
           label="Referral status"
+          optionLabel={valueLabel}
           onChange={(referralStatus) =>
             setDraft((value) => ({ ...value, referralStatus }))
           }
@@ -225,18 +252,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
           onCreated={() => navigate({ ...query, codeCursor: "" }, "replace")}
         />
       ) : null}
-      {notice ? (
-        <p
-          aria-live="polite"
-          className="rounded-md bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]"
-          data-testid="admin-action-status"
-          role="status"
-        >
-          {notice}
-        </p>
-      ) : null}
       <AuthorityError
-        label="redeem codes"
         onRetry={() => void loadScope(query, "codes")}
         state={codes}
       />
@@ -246,21 +262,20 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
             ? "No redeem codes match these filters"
             : "No redeem codes exist yet"
         }
-        loadingLabel="Loading redeem-code authority"
-        rows={codeRows(codes.rows ?? [], canWrite, confirmDisable)}
+        loadingLabel="Loading redeem codes…"
+        rows={codeRows(codes.rows ?? [], canWrite, confirmDisable, valueLabel, format)}
         state={codes}
         title={t("Redeem codes")}
       />
       <Pager
-        label="Next code page"
-        loading={codes.loading}
-        onClick={() =>
-          navigate({ ...query, codeCursor: codes.pageInfo.endCursor ?? "" })
+        cursor={query.codeCursor}
+        onNavigate={(codeCursor, trail) =>
+          navigate({ ...query, codeCursor }, "push", { ...trails, codes: trail })
         }
-        pageInfo={codes.pageInfo}
+        state={codes}
+        trail={trails.codes}
       />
       <AuthorityError
-        label="referrals"
         onRetry={() => void loadScope(query, "referrals")}
         state={referrals}
       />
@@ -270,21 +285,18 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
             ? "No referrals match these filters"
             : "No referrals exist yet"
         }
-        loadingLabel="Loading referral authority"
-        rows={referralRows(referrals.rows ?? [])}
+        loadingLabel="Loading referrals…"
+        rows={referralRows(referrals.rows ?? [], valueLabel, format)}
         state={referrals}
         title={t("Referrals")}
       />
       <Pager
-        label="Next referral page"
-        loading={referrals.loading}
-        onClick={() =>
-          navigate({
-            ...query,
-            referralCursor: referrals.pageInfo.endCursor ?? "",
-          })
+        cursor={query.referralCursor}
+        onNavigate={(referralCursor, trail) =>
+          navigate({ ...query, referralCursor }, "push", { ...trails, referrals: trail })
         }
-        pageInfo={referrals.pageInfo}
+        state={referrals}
+        trail={trails.referrals}
       />
       {confirmation ? (
         <ConfirmDialog
@@ -298,53 +310,60 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
 
 function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
   const { t } = useAdminI18n();
+  const { toast } = useToast();
+  const failureToast = useFailureToast();
   const [code, setCode] = useState("");
-  const [dreamcoins, setDreamcoins] = useState("");
+  const [coins, setCoins] = useState("");
   const [maxRedemptions, setMaxRedemptions] = useState("");
+  const [expiresAt, setExpiresAt] = useState("");
   const [reason, setReason] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const idempotencyKey = useRef<string | null>(null);
   const trimmedCode = code.trim();
-  const dreamcoinValue = strictIntegerFromText(dreamcoins, 1, 1_000_000);
+  const dreamcoinValue = strictIntegerFromText(coins, 1, 1_000_000);
   const maxRedemptionsValue = maxRedemptions.trim()
     ? strictIntegerFromText(maxRedemptions, 1, 1_000_000)
     : null;
+  const expiryValue = isoFromLocalDateTime(expiresAt);
   const ready =
     trimmedCode.length >= 4 &&
     dreamcoinValue !== null &&
     (!maxRedemptions.trim() || maxRedemptionsValue !== null) &&
+    (!expiresAt.trim() || expiryValue !== null) &&
     reason.trim().length >= 3 &&
     confirmation.trim() === trimmedCode;
 
   async function create() {
     if (!ready || busy) return;
     setBusy(true);
-    setError(null);
     idempotencyKey.current ??= crypto.randomUUID();
     try {
       await apiWrite(
-        "/api/v1/admin/promo/redeem-codes",
+        "/api/v2/admin/promo/redeem-codes",
         "POST",
         {
           code: trimmedCode,
           reward: { dreamcoins: dreamcoinValue },
           maxRedemptions: maxRedemptionsValue,
+          ...(expiryValue ? { expiresAt: expiryValue } : {}),
           reason: reason.trim(),
           confirmation: confirmation.trim(),
         },
         { "idempotency-key": idempotencyKey.current },
       );
       setCode("");
-      setDreamcoins("");
+      setCoins("");
       setMaxRedemptions("");
+      setExpiresAt("");
       setReason("");
       setConfirmation("");
       idempotencyKey.current = null;
+      toast({ tone: "success", title: t("Redeem code {code} created", { code: trimmedCode }) });
       onCreated();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Create failed");
+      // INTENT: 失败时不清表单——码、面额、原因、确认串全留着，重试只差再点一次。
+      failureToast(cause);
     } finally {
       setBusy(false);
     }
@@ -357,13 +376,21 @@ function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
 
         {t("Plaintext code is used only to derive its hash and is not returned by the authority.")}
       </p>
-      <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+      <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-7">
         <Input label="Code (≥4)" onChange={setCode} value={code} />
-        <Input label="Dreamcoins" onChange={setDreamcoins} value={dreamcoins} />
+        <Input label="Dreamcoins" onChange={setCoins} value={coins} />
         <Input
           label="Max uses (blank=∞)"
           onChange={setMaxRedemptions}
           value={maxRedemptions}
+        />
+        {/* INTENT: 契约一直收 expiresAt，表单却没这个格子——控制台发出去的每个码都是永久有效的，
+            而表里还有一列 Expires 永远显示 —。没有期限的码就是一笔没有截止日的负债。 */}
+        <Input
+          label="Expires (blank=never)"
+          onChange={setExpiresAt}
+          type="datetime-local"
+          value={expiresAt}
         />
         <Input label="Reason (≥3)" onChange={setReason} value={reason} />
         <Input
@@ -386,12 +413,7 @@ function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
           {t("Create")}
         </button>
       </div>
-      {error ? (
-        <p className="mt-2 text-xs text-[var(--ad-red-text)]" role="alert">
-          {error}
-        </p>
-      ) : null}
-      {dreamcoins.length > 0 && dreamcoinValue === null ? (
+      {coins.length > 0 && dreamcoinValue === null ? (
         <p className="mt-2 text-xs text-[var(--ad-red-text)]" role="alert">
 
           {t("Dreamcoins must be a whole number from 1 to 1,000,000.")}
@@ -403,14 +425,89 @@ function RedeemCodeForm({ onCreated }: { onCreated: () => void }) {
           {t("Max uses must be a whole number from 1 to 1,000,000.")}
         </p>
       ) : null}
+      {expiresAt.length > 0 && expiryValue === null ? (
+        <p className="mt-2 text-xs text-[var(--ad-red-text)]" role="alert">
+
+          {t("Expiry must be a valid date and time.")}
+        </p>
+      ) : null}
+      {dreamcoinValue !== null ? (
+        <CodeLiability
+          dreamcoinValue={dreamcoinValue}
+          expiryValue={expiryValue}
+          maxRedemptionsValue={maxRedemptionsValue}
+        />
+      ) : null}
     </section>
   );
+}
+
+/**
+ * SPEC: 建码之前，把这个码最多能发出去多少梦币摆出来。
+ *
+ * INTENT: 面额和次数是两个独立的小格子，乘出来才是真正的敞口。运营填 500 × 2000 的时候
+ * 心里想的是「500 的码」，实际是一百万梦币。次数留空更危险——那是一笔没有上限的负债，
+ * 而表单把它写成一个轻描淡写的 `blank=∞`。
+ * INVARIANT: 只做乘法，不换算成法币——梦币和法币之间的汇率不在这个契约里，估一个就是编。
+ */
+function CodeLiability({
+  dreamcoinValue,
+  expiryValue,
+  maxRedemptionsValue,
+}: {
+  dreamcoinValue: number;
+  expiryValue: string | null;
+  maxRedemptionsValue: number | null;
+}) {
+  const { t } = useAdminI18n();
+  const format = useAdminFormat();
+  const unbounded = maxRedemptionsValue === null;
+  return (
+    <p
+      className={`mt-3 rounded-md px-3 py-2 text-xs ${
+        unbounded
+          ? "bg-[var(--ad-yellow-bg)] text-[var(--ad-yellow-text)]"
+          : "bg-black/[0.04] text-[var(--ad-text-muted)]"
+      }`}
+      role="status"
+    >
+      {unbounded
+        ? t("Every redemption grants {each} Dreamcoins and nothing caps how many times. The total this code can pay out is unbounded.", {
+            each: format.dreamcoins(dreamcoinValue, { unit: false }),
+          })
+        : t("At most {total} Dreamcoins in total: {each} each, up to {uses} redemptions.", {
+            each: format.dreamcoins(dreamcoinValue, { unit: false }),
+            total: format.dreamcoins(dreamcoinValue * maxRedemptionsValue, { unit: false }),
+            // 次数不是钱 —— 它只要千分位，不该走梦币口径。
+            uses: format.count(maxRedemptionsValue),
+          })}
+      {" "}
+      {/* INVARIANT: 期限和次数是两件独立的事。上面那句不许替这句下结论——
+          设了期限却没设次数的码，说「没有有效期」就是假话。 */}
+      {expiryValue
+        ? t("It stops working at {when}.", { when: format.dateTime(expiryValue) })
+        : t("It never expires.")}
+    </p>
+  );
+}
+
+/**
+ * INTENT: `datetime-local` 给的是不带时区的本地时间串，契约要 ISO。用 Date 解一遍，
+ * 解不出来就返回 null 让表单自己报错——不要把 `Invalid Date` 送到后端。
+ */
+export function isoFromLocalDateTime(value: string) {
+  const normalized = value.trim();
+  if (!normalized) return null;
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
 }
 
 function codeRows(
   rows: Row[],
   canWrite: boolean,
   disable: (id: string) => void,
+  valueLabel: (key: string) => string,
+  format: ReturnType<typeof useAdminFormat>,
 ): DataTableRow[] {
   return rows.map((row, index) => {
     const id = text(row.id);
@@ -419,12 +516,12 @@ function codeRows(
       id: id || `code-${index}`,
       cells: [
         id,
-        display(row.status),
-        display(row.reward),
-        display(row.maxRedemptions),
-        display(row.redemptions),
-        date(row.expiresAt),
-        date(row.createdAt),
+        text(row.status) ? valueLabel(text(row.status)) : "—",
+        <RewardCell key="reward" reward={row.reward} />,
+        format.display(row.maxRedemptions),
+        format.display(row.redemptions),
+        format.dateTime(row.expiresAt),
+        format.dateTime(row.createdAt),
         canWrite && active ? (
           <button
             className="inline-flex min-h-9 items-center gap-1 rounded border px-2"
@@ -436,25 +533,57 @@ function codeRows(
             <AdminText text="Disable" />
           </button>
         ) : (
-          "Read only"
+          <AdminText key="read-only" text="Read only" />
         ),
       ],
     };
   });
 }
 
-function referralRows(rows: Row[]): DataTableRow[] {
+function referralRows(
+  rows: Row[],
+  valueLabel: (key: string) => string,
+  format: ReturnType<typeof useAdminFormat>,
+): DataTableRow[] {
   return rows.map((row, index) => ({
     id: text(row.id) || `referral-${index}`,
     cells: [
-      display(row.id),
-      display(row.inviterId),
-      display(row.inviteeId),
-      display(row.status),
-      display(row.rewardStatus),
-      date(row.createdAt),
+      format.display(row.id),
+      format.display(row.inviterId),
+      format.display(row.inviteeId),
+      text(row.status) ? valueLabel(text(row.status)) : "—",
+      text(row.rewardStatus) ? valueLabel(text(row.rewardStatus)) : "—",
+      format.dateTime(row.createdAt),
     ],
   }));
+}
+
+/**
+ * SPEC: 兑换码的面额是钱，按梦币排版；认不出来的奖励形状才退回原始 JSON。
+ *
+ * INTENT: 这一格原来直接 `JSON.stringify(row.reward)`，运营在表里读到的是
+ * `{"dreamcoins":500}`。契约里 reward 是自由 JSON（历史遗留），但控制台建出来的码
+ * 只有 `{dreamcoins, note?}` 一种形状——认得出就好好印，认不出也不能假装认得。
+ */
+function RewardCell({ reward }: { reward: unknown }) {
+  const { t } = useAdminI18n();
+  const format = useAdminFormat();
+  if (!isRecord(reward) || typeof reward.dreamcoins !== "number") {
+    return <span className="font-mono text-xs">{format.display(reward)}</span>;
+  }
+  const note = typeof reward.note === "string" ? reward.note.trim() : "";
+  return (
+    <span>
+      <span className="font-semibold tabular-nums">
+        {t("{count} Dreamcoins", { count: format.dreamcoins(reward.dreamcoins, { unit: false }) })}
+      </span>
+      {note ? <span className="block text-xs text-[var(--ad-text-muted)]">{note}</span> : null}
+    </span>
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function AuthoritySection({
@@ -509,86 +638,78 @@ function AuthoritySection({
 }
 
 function AuthorityError({
-  label,
   onRetry,
   state,
 }: {
-  label: string;
   onRetry: () => void;
   state: AuthorityState;
 }) {
-  const { t } = useAdminI18n();
   if (!state.error) return null;
   return (
-    <div
-      className="rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]"
-      role="alert"
-    >
-      {label}  {t("authority refresh failed:")} {state.error}
-      <button
-        className="ml-3 min-h-8 rounded border border-current px-2"
-        onClick={onRetry}
-        type="button"
-      >
-
-        {t("Retry")} {label}
-      </button>
-      {state.rows ? (
-        <span className="ml-2">{t("The last good snapshot remains visible.")}</span>
-      ) : null}
-    </div>
+    <AuthorityRequestError
+      cause={state.cause}
+      message={state.error}
+      onRetry={onRetry}
+      snapshotAt={state.rows ? state.refreshedAt : null}
+    />
   );
 }
-
 function Freshness({ label, state }: { label: string; state: AuthorityState }) {
   const { t } = useAdminI18n();
-  const time = state.refreshedAt
-    ? new Date(state.refreshedAt).toLocaleTimeString()
-    : "unknown";
+  const format = useAdminFormat();
+  const time = state.refreshedAt ? format.time(state.refreshedAt) : t("unknown");
+  // 后缀本来就过 t()，唯独数据源名字（Redeem codes / Referrals）漏了。
+  const name = t(label);
   if (state.loading && state.rows)
     return (
       <span>
-        {label}{t(": refreshing · showing snapshot from")} {time}
+        {name}{t(": refreshing · as of")} {time}
       </span>
     );
   if (state.error && state.rows)
     return (
       <span>
-        {label}{t(": stale · last good")} {time}
+        {name}{t(": stale · last good")} {time}
       </span>
     );
-  if (state.error) return <span>{label}{t(": unavailable")}</span>;
+  if (state.error) return <span>{name}{t(": unavailable")}</span>;
   if (state.rows)
     return (
       <span>
-        {label}{t(": current client snapshot ·")} {time}
+        {name}{t(": as of")} {time}
       </span>
     );
-  return <span>{label}{t(": refreshing · no snapshot yet")}</span>;
+  return <span>{name}{t(": loading…")}</span>;
 }
 
+// SPEC: 兑换码和推荐两张表的分页条形状完全一样，只有游标属于哪一张不同。
 function Pager({
-  label,
-  loading,
-  onClick,
-  pageInfo,
+  cursor,
+  onNavigate,
+  state,
+  trail,
 }: {
-  label: string;
-  loading: boolean;
-  onClick: () => void;
-  pageInfo: PageInfo;
+  cursor: string;
+  onNavigate: (cursor: string, trail: string[]) => void;
+  state: AuthorityState;
+  trail: string[];
 }) {
-  if (!pageInfo.hasNextPage || !pageInfo.endCursor) return null;
+  // 还没拿到过任何一页时不画分页条 —— 那时连「有没有下一页」都不知道。
+  if (!state.rows) return null;
   return (
-    <button
-      className="inline-flex min-h-11 items-center gap-2 rounded border px-4 text-sm font-semibold"
-      disabled={loading}
-      onClick={onClick}
-      type="button"
-    >
-      <RefreshCcw className="h-4 w-4" />
-      {label}
-    </button>
+    <Pagination
+      hasNext={Boolean(state.pageInfo.hasNextPage && state.pageInfo.endCursor)}
+      hasPrevious={trail.length > 0}
+      loading={state.loading}
+      onNext={() => {
+        if (!state.pageInfo.endCursor) return;
+        onNavigate(state.pageInfo.endCursor, [...trail, cursor]);
+      }}
+      onPrevious={() => onNavigate(trail.at(-1) ?? "", trail.slice(0, -1))}
+      page={trail.length + 1}
+      pageSize={PROMO_PAGE_SIZE}
+      rowCount={state.rows.length}
+    />
   );
 }
 
@@ -612,20 +733,25 @@ function Input({
   label,
   onChange,
   search = false,
+  type,
   value,
 }: {
   label: string;
   onChange: (value: string) => void;
   search?: boolean;
+  type?: string;
   value: string;
 }) {
+  // Field 只是转发到这里，所以 t() 只加在真正渲染 label 的这一处。
+  const { t } = useAdminI18n();
   return (
     <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
-      {label}
+      {t(label)}
       <input
         className="min-h-11 rounded-md border bg-[var(--ad-surface)] px-3 text-sm"
         onChange={(event) => onChange(event.target.value)}
         role={search ? "searchbox" : undefined}
+        type={type}
         value={value}
       />
     </label>
@@ -635,17 +761,20 @@ function Input({
 function Select({
   label,
   onChange,
+  optionLabel,
   options,
   value,
 }: {
   label: string;
   onChange: (value: string) => void;
+  optionLabel?: (option: string) => string;
   options: string[];
   value: string;
 }) {
+  const { t } = useAdminI18n();
   return (
     <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
-      {label}
+      {t(label)}
       <select
         className="min-h-11 rounded-md border bg-[var(--ad-surface)] px-3 text-sm"
         onChange={(event) => onChange(event.target.value)}
@@ -653,7 +782,7 @@ function Select({
       >
         {options.map((option) => (
           <option key={option || "all"} value={option}>
-            {option || "All"}
+            {option ? (optionLabel?.(option) ?? option) : t("All")}
           </option>
         ))}
       </select>
@@ -683,20 +812,4 @@ export function strictIntegerFromText(
     return null;
   }
   return parsed;
-}
-
-function text(value: unknown) {
-  return typeof value === "string" ? value : "";
-}
-
-function display(value: unknown) {
-  if (typeof value === "string" || typeof value === "number")
-    return String(value);
-  if (value && typeof value === "object") return JSON.stringify(value);
-  return "—";
-}
-
-function date(value: unknown) {
-  const parsed = new Date(text(value));
-  return Number.isNaN(parsed.getTime()) ? "—" : parsed.toLocaleString();
 }

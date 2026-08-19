@@ -8,6 +8,30 @@
 // "Check backend health — needs engineering"、"Unknown error"、
 // "Share the error code with engineering"。改 failureReasons.ts 的 title/hint 时同步改这里。
 export const adminZhPlatformOps: Record<string, string> = {
+  // 表格/空态/加载态收口到共享原语时新增的文案。其中角色模板、待审队列、铺位、图片库四组
+  // 按域本该落在 i18n-zh-characters.ts / i18n-zh-creative.ts，本轮并行改造下那两个文件由别的
+  // 分支持有，先集中放这里；归位时整块搬走即可。
+  "Built-in presets": "内置预设",
+  "Loading starter templates…": "正在加载角色模板…",
+  "Loading the image library…": "正在加载图片库…",
+  "No built-in presets match these filters.": "没有内置预设符合当前筛选。",
+  "No placements match these filters.": "没有铺位符合当前筛选。",
+  "No prompt recipes match these filters.": "没有提示词配方符合当前筛选。",
+  "No starter templates match these filters.": "没有角色模板符合当前筛选。",
+  "Prompt recipes": "提示词配方",
+  "Submitted": "提交时间",
+  "The authority searched every built-in preset. Clear the filters to see them all.":
+    "已检索全部内置预设。清除筛选可看到全部。",
+  "The authority searched every placement. Clear the filters to see them all.":
+    "已检索全部铺位。清除筛选可看到全部。",
+  "The authority searched every prompt recipe. Clear the filters to see them all.":
+    "已检索全部提示词配方。清除筛选可看到全部。",
+  "The authority searched every starter template. Clear the filters to see them all.":
+    "已检索全部角色模板。清除筛选可看到全部。",
+  "The authority searched the whole pending queue. Clear the filters to see all of it.":
+    "已检索整个待审队列。清除筛选可看到全部。",
+  "Workflow descriptors are published by the generation backends.": "工作流描述符由生成后端发布。",
+  "{count} input slots": "{count} 个输入槽位",
   "(needs reference image — not for standard profiles)": "（需要参考图，标准配置不适用）",
   ", comma separated.": "，以逗号分隔。",
   "/Users/kk/Downloads/models or /path/model.safetensors":
@@ -15,9 +39,11 @@ export const adminZhPlatformOps: Record<string, string> = {
   "1. Create evaluation matrix": "1. 创建评测矩阵",
   "1. Generate route test images": "1. 生成线路测试图",
   "A durable reconciliation command is saved with status {status}.": "已持久保存对账命令，当前状态：{status}。",
+  "Action report {id}": "处置举报 {id}",
   "Active sessions": "活跃会话",
   "Active workflow": "当前工作流",
   "Add LoRA": "添加 LoRA",
+  "Adjust the request before retrying": "调整请求内容后再重试",
   "Adopt recovered provider success": "采用已恢复的供应器成功结果",
   "Adopt recovered success": "采用已恢复的成功结果",
   "Adopt success and deliver": "采用成功结果并交付",
@@ -25,11 +51,13 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Advanced runner details": "高级运行器细节",
   "After creation, run Dry Run from Model Profiles before publishing.": "创建后先在模型配置列表执行试运行，再发布。",
   "All historical records": "全部历史记录",
+  "An operator cancelled this job": "有运营取消了这个任务",
   "Another unknown-outcome decision is already saved in this browser. Resume it before choosing a different resolution.":
     "此浏览器已保存另一条未知结果处理决定；请先恢复它，再选择其他处理方式。",
   "Append-only Settlement entries": "仅追加的结算记录",
   "Apply Civitai config": "应用 Civitai 配置",
   "Apply server query": "应用服务端查询",
+  "Approved {id}": "已通过 {id}",
   "Archive preset": "归档预设",
   "Artifacts and validation": "产物与验证",
   "Attach LoRA": "挂载 LoRA",
@@ -53,6 +81,8 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Candidate image route": "候选图片路线",
   "Cause not yet established": "原因尚未确定",
   "Character production workflow": "角色生产流程",
+  "Character {id} is now {visibility}": "角色 {id} 的可见性已改为 {visibility}",
+  "Character {id} taken down": "角色 {id} 已下架",
   "Chat Ops": "聊天运维",
   "Chat Service connected": "聊天服务已连接",
   "Chat Service degraded or disconnected": "聊天服务性能下降或已断开",
@@ -67,6 +97,10 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Chat Service status": "Chat Service 状态",
   "Chat moderation events": "聊天审核事件",
   "Chat usage and quota": "聊天用量与额度",
+  "Check storage and delivery — needs engineering": "检查存储与交付链路——需要工程介入",
+  "Check the database — needs engineering": "检查数据库——需要工程介入",
+  "Close report {id}": "关闭举报 {id}",
+  "Decision recorded for {id}": "已记录 {id} 的裁决",
   "Every Main → Chat durable event is either pending or delivered.":
     "每个 Main → Chat 持久化事件都处于待处理或已交付状态。",
   "Every Main → Chat durable event is pending, delivered, or explicitly terminalized.":
@@ -74,6 +108,24 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Failed Main to Chat delivery table": "Main → Chat 交付失败表格",
   "Failed Main to Chat durable deliveries": "Main → Chat 持久化交付失败记录",
   "Aggregate": "聚合目标",
+  "Final result could not be saved": "最终结果没能落库",
+  "Generation Requests appear here as soon as the first image or video job is submitted.": "第一个图片或视频任务提交后，生成请求会出现在这里。",
+  "Image was produced but could not be delivered": "图已经生成，但没能交付",
+  "Job timed out while waiting for the provider": "等待供应商时任务超时",
+  "Needs engineering — the console offered an action the authority rejects": "需要工程介入——后台给出了一个后端并不接受的操作",
+  "No action needed — the late result was discarded": "无需处理——迟到的结果已丢弃",
+  "No action needed": "无需处理",
+  "No generation jobs recorded yet.": "还没有生成任务记录。",
+  "Open the job for its own failure reason": "打开对应任务查看它自己的失败原因",
+  "Provider answered after this job was already closed": "供应商在任务结案之后才返回",
+  "Provider did not answer in time": "供应商未在时限内响应",
+  "Provider is unavailable": "供应商当前不可用",
+  "Provider outcome is unknown": "供应商这次的结果未知",
+  "Image failed the quality check": "图片没通过完整性检查",
+  "Blank, collaged, or corrupt output is discarded — adjust the prompt and generate again": "空白、拼贴或损坏的产出会被丢弃——调整提示词后重新生成",
+  "Provider policy refused this request": "供应商策略拒绝了这次请求",
+  "Provider refused to run this request": "供应商拒绝执行这次请求",
+  "Provider rejected the request": "供应商拒绝了这次请求",
   "Receiver authority": "Chat 接收端权威",
   "Attempts / retry": "尝试次数 / 下次重试",
   "Envelope hash": "信封哈希",
@@ -89,9 +141,15 @@ export const adminZhPlatformOps: Record<string, string> = {
     "Main → Chat 目标缺失处理结果 · {summary}。",
   "Next failed delivery page": "下一页交付失败记录",
   "No failed Main → Chat deliveries": "暂无 Main → Chat 交付失败记录",
+  "Reconcile before retrying — a duplicate may be produced": "先对账再重试——直接重试可能产出重复结果",
+  "Rejected {id}": "已驳回 {id}",
+  "Replay kept the earlier outcome": "重放保留了先前的结果",
   "Replay selected": "重放选中项",
   "Record target missing": "记录目标缺失",
   "Record expected target missing ({count})": "记录预期目标缺失（{count}）",
+  "Safe to retry; if it repeats, needs engineering": "可以重试；反复出现就需要工程介入",
+  "Send the error code to engineering": "把错误码发给工程",
+  "Take character {id} down": "下架角色 {id}",
   "Target-missing confirmation": "目标缺失确认",
   "Target-missing reason (≥3)": "目标缺失原因（至少 3 个字符）",
   "Expected target missing": "预期目标缺失",
@@ -118,10 +176,27 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Select failed event {id}": "选择交付失败事件 {id}",
   "Last error": "最后错误",
   "Queue replay": "加入重放队列",
+  "The authority hit an internal error": "后台发生了内部错误",
+  "The character is taken down from every public surface and drops out of Featured. This console has no command to put it back.": "该角色会从所有公开位置下架，并被移出精选。这个后台没有把它放回去的命令。",
+  "The character leaves the public catalog at once. Setting visibility back to public restores it.": "该角色会立即离开公开目录。把可见性改回 public 就能恢复。",
+  "The customer ran out of Dreamcoins mid-generation": "客户在生成过程中梦币用尽",
+  "The customer's allowance is used up": "该客户的额度已用完",
+  "The enforcement lands on the reported target and the report moves to actioned.": "处置会落到被举报对象上，该举报转为已处理。",
+  "The generation step failed": "生成步骤失败",
+  "The image becomes publicly visible at once. Blocking it later takes it down again.": "这张图会立即对外可见。之后判拦截就能再撤下来。",
+  "The image disappears from every public surface at once. Passing it later puts it back.": "这张图会立即从所有公开位置消失。之后判通过就能放回去。",
+  "The original decision stands and the appeal closes. The user cannot appeal the same decision again.": "维持原裁决，申诉结案。用户不能就同一裁决再次申诉。",
+  "The original enforcement is lifted and the appeal closes in the user's favour.": "撤销原处置，申诉以用户胜诉结案。",
+  "The original enforcement is replaced with the revised one and the appeal closes.": "原处置会被改判后的处置替换，申诉结案。",
+  "The report closes with no enforcement and leaves the queue. Reopening means filing a new report.": "举报会以不处置结案并离开队列。要重开只能重新提一条举报。",
+  "The request is closed as rejected and leaves this queue. The requester has to raise a new one.": "申请会以驳回结案并离开这个队列。申请人只能重新提一条。",
+  "The requested action is released to run and the request leaves this queue. There is no command to withdraw an approval.": "被申请的操作会被放行执行，该申请离开这个队列。后台没有撤回审批的命令。",
   "The worker will retry the unchanged durable envelopes; no event is sent from this browser request.":
     "worker 将重试未改动的持久化信封；此浏览器请求不会直接发送事件。",
+  "This command is not supported here": "这里不支持这条命令",
   "This records that no user-visible Chat effect was applied. Main becomes terminal only after Chat stores the original envelope hash as a target-missing receipt.":
     "该操作明确记录未产生用户可见的 Chat 效果；仅当 Chat 以原始信封哈希保存目标缺失回执后，Main 才进入终态。",
+  "Two writes collided on this job": "这个任务上有两次写入撞车",
   "Unavailable · ops.queue.read is not granted":
     "不可用 · 尚未授予 ops.queue.read",
   "Check backend health — needs engineering": "检查后端健康，需工程处理",
@@ -168,6 +243,12 @@ export const adminZhPlatformOps: Record<string, string> = {
     "worker 将重试未改动的关联载荷；此浏览器请求不会直接关联事故。",
   "Attempts": "尝试次数",
   "Revision": "版本",
+  "Voice provider rejected the request": "语音供应商拒绝了这次请求",
+  "Wait for capacity, then retry": "等有容量了再重试",
+  "Waiting on a reset or a top-up — not a fault": "等待额度重置或充值——不是故障",
+  "Waiting on a top-up — not a fault": "等待充值——不是故障",
+  "Widen the filters or clear them to inspect the whole authority.": "放宽或清除筛选，可查看全部权威数据。",
+  "Worker reported failure after the job was closed": "工作进程在任务结案之后才报告失败",
   "eligible": "符合重放条件",
   "invalid payload": "载荷无效",
   "attempt missing": "尝试记录缺失",
@@ -178,6 +259,18 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Disposition confirmation": "处置确认",
   "Disposition reason (≥3)": "处置原因（≥3）",
   "Record terminal disposition": "记录终态处置",
+  // 死信批量命令的 toast：后端逐条报的跳过理由。
+  "Skipped · {details}": "已跳过 · {details}",
+  // 事故工作台写操作成功后的 toast 标题（过去是未翻译的英文横幅）。
+  "Authority recovery verification evaluated": "已执行权威恢复校验",
+  "Frozen mitigation preview created": "已创建冻结的止血范围预览",
+  "Incident resolve command accepted": "已受理事故解决命令",
+  "Incident triage saved": "事故分诊已保存",
+  "Incidents merged with assignment history": "事故已合并，归属历史已保留",
+  "Mitigation plan executed": "止血计划已执行",
+  "Postmortem recorded and Incident closed": "复盘已记录，事故已关闭",
+  "Recovery verification explicitly overridden": "恢复校验已显式覆盖",
+  "Selected occurrences split into a new Incident": "已将所选发生记录拆分为新事故",
   "Correlation corrections": "关联关系修正",
   "Cost/latency evidence reference": "成本/延迟证据引用",
   "Create 40-sample matrix": "创建 40 样本矩阵",
@@ -312,12 +405,16 @@ export const adminZhPlatformOps: Record<string, string> = {
   "LoRA optional": "LoRA 可选",
   "LoRA tags ignored by default": "默认已忽略 Civitai 中的 LoRA 标签",
   "Loading Request, Attempt, Delivery, and Settlement facts": "正在加载请求、尝试、交付与结算事实",
-  "Loading authoritative generation metrics...": "正在加载权威生成指标…",
+  "Generation Job totals": "生成任务汇总",
+  "Loading generation metrics…": "正在加载生成指标…",
+  "Loading jobs…": "正在加载任务…",
+  "No jobs match these filters.": "没有符合这些筛选条件的任务。",
+  "Search jobs": "搜索任务",
   "Loading authoritative jobs…": "正在加载权威任务…",
   "Loading complete query": "正在加载完整查询",
   "Loading correlated incidents": "正在加载关联事故",
-  "Loading dead-letter authority": "正在加载死信权威",
-  "Loading generation config authority": "正在加载生成配置权威",
+  "Loading dead-letter queue…": "正在加载死信队列…",
+  "Loading profiles…": "正在加载生成档案…",
   "Loading incident detail": "正在加载事故详情",
   "Loading job detail": "加载任务详情",
   "Main model": "主模型",
@@ -351,7 +448,7 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Negative prompt": "负向提示词",
   "New preset": "新建预设",
   "New prompt recipe": "新建提示词配方",
-  "New work appears here when authoritative signals create an incident or case.":
+  "New work appears here as incidents and cases are raised.":
     "权威信号创建事故或工单后，新工作会显示在这里。",
   "Newest created": "最新创建",
   "Next dead-letter page": "下一页死信任务",
@@ -365,7 +462,7 @@ export const adminZhPlatformOps: Record<string, string> = {
   "No LoRA models added": "尚未添加 LoRA 模型",
   "No LoRA models added. This model will run without LoRA.": "尚未添加 LoRA。这个模型会以无 LoRA 方式运行。",
   "No access · chat.ops.read is not granted": "无访问权限 · 尚未授予 chat.ops.read",
-  "No authoritative facts recorded.": "尚未记录权威事实。",
+  "Nothing recorded yet.": "尚无记录。",
   "No backends.": "暂无后端。",
   "No built-in generation profiles are seeded yet.": "暂无内置生成配置。",
   "No built-in presets are seeded yet.": "暂无内置预设。",
@@ -375,7 +472,6 @@ export const adminZhPlatformOps: Record<string, string> = {
     "暂无诊断模型资产。默认后台使用已 seed 的内置配置。",
   "No draft profiles yet.": "暂无草稿配置。",
   "No generation records in window.": "窗口内无生成记录",
-  "No jobs match the server query.": "没有符合服务端查询条件的任务。",
   "No local model verification required · No component status recorded": "无需本地模型验证 · 无组件状态记录",
   "No model asset selected": "尚未选择模型资产",
   "No model assets imported": "尚未导入模型资产",
@@ -486,6 +582,9 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Requested outputs": "请求输出数",
   "Delivered outputs": "已交付输出数",
   "legacy projection: {status}": "旧版投影：{status}",
+  "{action} appeal {id}": "对申诉 {id} 执行{action}",
+  "{action} character {id}": "对角色 {id} 执行{action}",
+  "{action} request {id}": "对申请 {id} 执行{action}",
   "{pending} pending · {failed} failed": "待交付 {pending} · 失败 {failed}",
   "{captured} captured · {refunded} refunded": "已扣款 {captured} · 已退款 {refunded}",
   "Provider / route": "供应器 / 路线",
@@ -631,7 +730,7 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Workflow inputs": "工作流输入",
   "Workflow save failed": "工作流保存失败",
   "Workflow saved": "工作流已保存",
-  "authoritative results": "条权威结果",
+  "results": "条结果",
   "backendKind": "后端类型",
   "control plane command": "控制面命令",
   "dry-run summary exists": "已有试运行摘要",
@@ -666,4 +765,345 @@ export const adminZhPlatformOps: Record<string, string> = {
     "{profile} 将创建首张肖像，且不会假设身份参考图已经存在。",
   "· authority confirmation required": "· 需要权威确认",
   "· reassigned {count}×": " · 已重新分配 {count} 次",
+  // ---- 视图组运营化改造（生成指标决策层 / 工作流列名 / 档案健康度 / 配方与预设写反馈）----
+  "{error} Showing the last successfully loaded {days}-day snapshot.":
+    "{error} 展示的是最近一次成功加载的 {days} 天快照。",
+  "{error} {days}-day metrics are unavailable. The last successful snapshot was {lastGood} days and is not shown for this window.":
+    "{error} {days} 天口径当前不可用。最近一次成功的快照是 {lastGood} 天，与本窗口口径不同，故不展示。",
+  "{error} {days}-day metrics are unavailable.":
+    "{error} {days} 天口径当前不可用。",
+  "Metrics authority returned {returned} days for a {requested}-day request.":
+    "请求的是 {requested} 天，指标权威返回的却是 {returned} 天。",
+  "Last {days} days":
+    "最近 {days} 天",
+  "Change is measured against the {days} days before this window.":
+    "变化幅度对比的是本窗口之前的 {days} 天。",
+  "No comparison window is available, so no change is shown.":
+    "没有可比窗口，因此不展示变化幅度。",
+  "Failure rate":
+    "失败率",
+  "Total cost":
+    "花费合计",
+  "Placement CTR":
+    "铺位点击率",
+  "Open the failed generation jobs behind this number":
+    "打开这个数字背后的失败任务",
+  "{total} generations · {rate} failed · {cost} DC total":
+    "共 {total} 次生成 · 失败 {rate} · 花费合计 {cost} DC",
+  "{impressions} impressions · {clicks} clicks · {ctr} CTR":
+    "曝光 {impressions} · 点击 {clicks} · 点击率 {ctr}",
+  "Capabilities":
+    "能力",
+  "Slots":
+    "槽位",
+  "Key":
+    "键",
+  "Default":
+    "默认值",
+  "Runs deterministic profile and runtime validation for {label}. No provider is called and no media is generated.":
+    "对 {label} 跑确定性的档案与运行时校验。不调用供应器，也不生成任何媒体。",
+  "Model profile":
+    "模型档案",
+  "No model profiles available.":
+    "没有可选的模型档案。",
+  "Select a model profile…":
+    "选择一个模型档案…",
+  "Draft saved. {label} stays a draft until you publish it.":
+    "草稿已保存。{label} 在你发布之前仍是草稿。",
+  "{label} is published and now serves generation requests.":
+    "{label} 已发布，开始承接生成请求。",
+  "{label} is rolled back and no longer serves generation requests.":
+    "{label} 已回滚，不再承接生成请求。",
+  "Saved. {label} now shows the edited values.":
+    "已保存。{label} 现在展示修改后的值。",
+  "Restored. This preset is selectable again.":
+    "已恢复。这个预设重新可选。",
+  "Archived. {label} is no longer offered to users.":
+    "已归档。{label} 不再提供给用户。",
+  // ---- RELOCATE ----
+  // 下面这些 key 的域归属分别是 i18n-zh-characters.ts（审核队列 / 标签 / 角色模板）、
+  // i18n-zh-creative.ts（铺位 / 图片库）与 i18n-zh-common.ts（Dismiss）。本轮 agent 不持有
+  // 那三个文件（并行改动中），先寄存在这里以保证 i18n 完整性测试为绿；合并时按注释整块搬走，
+  // key 之间无冲突。
+  "Saved view {label} saved.":
+    "已保存视图“{label}”。",
+  "Only this saved filter set is removed. No submission or decision is affected.":
+    "只删除这组保存的筛选条件，不影响任何提交或审核决定。",
+  "Saved view {label} deleted.":
+    "已删除保存的视图“{label}”。",
+  "Human review queue for pending character submissions only. Approve moves the character to approved and into publication prep; it only goes public after Release. Reject moves it to rejected. Both require a reason and are audited.":
+    // 三个动作在界面上就叫「通过」「拒绝」「发布版本」（t("Approve")/t("Reject")/t("Release")）。
+    // 译文原本照抄英文按钮名，中文运营在这句话里找不到任何一个按得下去的按钮。
+    "角色人审队列：只展示待审（pending）的提交。「通过」把角色置为已通过并进入发布准备；只有在「发布版本」发布之后才会公开。「拒绝」置为已拒绝。两者都需要理由并进审计。",
+  "On submit this character becomes {status}.":
+    "提交后这个角色将变为 {status}。",
+  "Approval only starts publication prep — Asset, QA and Release must still complete before it goes live.":
+    "通过审核只是进入发布准备——仍需完成 Asset、QA 与 Release 才会上线。",
+  "Approved. Awaiting publication: complete assets, QA, and Release before the character goes live.":
+    "已通过。等待发布：完成素材、QA 与 Release 后角色才会上线。",
+  "Approved. This decision did not publish the character.":
+    "已通过。这一步并没有发布该角色。",
+  "Review decision recorded.":
+    "审核决定已记录。",
+  "Renamed {slug} to {label}. {count} character link(s) keep the tag.":
+    "已把 {slug} 改名为 {label}。{count} 条角色关联保持不变。",
+  "Saved {slug}. {count} character link(s) keep the tag.":
+    "已保存 {slug}。{count} 条角色关联保持不变。",
+  "Merged {source} into {target} — moved {count} character link(s).":
+    "已把 {source} 合并进 {target}——迁移了 {count} 条角色关联。",
+  "Tag taxonomy — {shown} of {total}":
+    "标签分类法 —— 共 {total} 个，显示 {shown} 个",
+  "Tag taxonomy — {total}":
+    "标签分类法 —— 共 {total} 个",
+  "Search by slug, label, or category":
+    "按 slug、名称或分类搜索",
+  "All categories":
+    "全部分类",
+  "Uncategorised":
+    "未分类",
+  "No tags match these filters.":
+    "没有标签符合当前筛选。",
+  "Saved. {name} now shows the edited values.":
+    "已保存。{name} 现在展示修改后的值。",
+  "{name} is published and offered in character creation.":
+    "{name} 已发布，出现在角色创建流程里。",
+  "{name} is offline and no longer offered in character creation.":
+    "{name} 已下线，不再出现在角色创建流程里。",
+  "Paused. {slot} stops serving immediately.":
+    "已暂停。{slot} 立即停止投放。",
+  "Archived. {slot} is retired and will not serve again.":
+    "已归档。{slot} 已退役，不会再投放。",
+  "Placement pause was committed, but the latest projection could not be refreshed: {message}. Use Refresh before another write.":
+    "暂停已提交，但最新投影没能刷新：{message}。再次写入前请先点刷新。",
+  "Placement archival was committed, but the latest projection could not be refreshed: {message}. Use Refresh before another write.":
+    "归档已提交，但最新投影没能刷新：{message}。再次写入前请先点刷新。",
+  "Saved. Tags and description are searchable for chat reuse now.":
+    "已保存。标签与描述现在可用于聊天复用检索。",
+  "Archived. {id} is out of the library and cannot be placed.":
+    "已归档。{id} 已移出图库，不能再用于铺位。",
+  "Asset changes were committed, but the latest projection could not be refreshed: {message}. Use Refresh before another write.":
+    "资产修改已提交，但最新投影没能刷新：{message}。再次写入前请先点刷新。",
+  "Asset archival was committed, but the latest projection could not be refreshed: {message}. Use Refresh before another write.":
+    "资产归档已提交，但最新投影没能刷新：{message}。再次写入前请先点刷新。",
+  "Go to Creative Runs":
+    "去 Creative Run",
+  "Assets are produced by Creative Runs. Widen the filters, or start a run to create new ones.":
+    "资产由 Creative Run 产出。放宽筛选条件，或者发起一轮 Run 来生成新的。",
+  "Assets are produced by Creative Runs. Start a run to create the first one.":
+    "资产由 Creative Run 产出。发起一轮 Run 来生成第一批。",
+  "No platform assets yet.":
+    "还没有平台资产。",
+  "{scope} · sort {order} · {count} tags":
+    "{scope} · 排序 {order} · {count} 个标签",
+  // RELOCATE(续): 同属 i18n-zh-characters.ts —— 删除保存视图的后果说明。
+  "Deleting is permanent — there is no undo. Pending submissions and past decisions are untouched.":
+    "删除不可撤销，没有后悔药。待审提交与历史审核决定不受影响。",
+// --- Platform operations UX pass: incidents / dead-letter / chat ops / overviews ---
+  // 只追加，不改动上面已有的任何键（合并时保持纯追加）。
+
+  // Dead-letter：重放判定、命令结果与新增列
+  "A delivered artifact already exists": "已存在成功交付的产物",
+  "The authority recorded no failure": "权威未记录失败",
+  "The charge was already refunded": "该扣费已退款",
+  "The request no longer exists": "该请求已不存在",
+  "Only failed, blocked, or refunded requests can be discarded": "只有失败、被拦截或已退款的请求可以丢弃",
+  "Safe to requeue": "可安全重新排队",
+  "Not reported": "权威未给出判定",
+  "Reason not recognised": "未识别的理由",
+  "Dismiss result": "关闭结果提示",
+  "Requeue {count} requests": "重新排队 {count} 条请求",
+  "Discard {count} requests": "丢弃 {count} 条请求",
+  "Requeue {id}": "重新排队 {id}",
+  "Discard {id}": "丢弃 {id}",
+  "{count} requests re-enter the generation queue and are charged for a new attempt. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.":
+    "{count} 条请求将重新进入生成队列，并按新的一次尝试计费。在本对话框里重试复用同一个幂等键，不会重复执行。",
+  "{count} selected requests the authority will not retry are excluded.":
+    "已排除 {count} 条权威判定不可重试的选中请求。",
+  "Discard settles the customer: any charge that was never refunded is refunded now, and the request leaves the queue for good. {count} requests are affected. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.":
+    "丢弃会同时结清客户：尚未退款的扣费此刻退回，请求也永久离开队列。共影响 {count} 条请求。在本对话框里重试复用同一个幂等键，不会重复执行。",
+  "{count} selected requests the authority will not discard are excluded.":
+    "已排除 {count} 条权威判定不可丢弃的选中请求。",
+  "Requeued {id} as attempt {attemptNo}.": "已把 {id} 重新排队为第 {attemptNo} 次尝试。",
+  "Requeued {done} of {total} requests.": "已重新排队 {total} 条中的 {done} 条。",
+  "Discarded {done} of {total} requests · {refunded} refunded.":
+    "已丢弃 {total} 条中的 {done} 条 · 其中 {refunded} 条完成退款。",
+  "refreshing · as of {time}": "刷新中 · 数据截至 {time}",
+  "stale · last good {time}": "已过期 · 上次成功 {time}",
+  "as of {time}": "数据截至 {time}",
+  "loading…": "加载中…",
+
+  // Incidents：影响面、权威建议、冻结计划、拆分/合并确认
+  "Provider spend": "供应商花费",
+  "Started": "开始于",
+  "Refunded": "已退款",
+  "{count} DC": "{count} 币",
+  "SLA due": "SLA 到期",
+  "Authority guidance": "权威给出的处置建议",
+  "Cause confidence": "原因置信度",
+  "Last known good": "最后一次正常",
+  "Open runbook": "打开运行手册",
+  "Occurrences ({count})": "发生记录（{count}）",
+  "No frozen plan is currently valid. Preview an action to freeze its eligible scope.":
+    "当前没有有效的冻结计划。先预览一个动作，把符合条件的范围冻结下来。",
+  "expires": "过期于",
+  "Execute frozen {action} plan": "执行冻结的{action}计划",
+  "Execution confirmation": "执行确认串",
+  "This moves customer money across {count} occurrences and cannot be undone from this console. The frozen scope cannot be re-cut after this point. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.":
+    "这会动 {count} 条发生记录上的客户资金，且无法在后台撤销。冻结范围从这一步起不可再切。在本对话框里重试复用同一个幂等键，不会重复执行。",
+  "{count} occurrences are in the frozen scope; the scope cannot change after this point. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.":
+    "冻结范围内共 {count} 条发生记录；从这一步起范围不可再变。在本对话框里重试复用同一个幂等键，不会重复执行。",
+  "Split {count} occurrences into a new Incident": "把 {count} 条发生记录拆分成新事故",
+  "The occurrences leave this Incident for good. Assignment history is immutable, so a split is undone only by merging back. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.":
+    "这些发生记录会永久离开当前事故。归属历史不可变，拆分只能靠再合并回来撤销。在本对话框里重试复用同一个幂等键，不会重复执行。",
+  "Split confirmation": "拆分确认串",
+  "Split reason (≥3)": "拆分原因（≥3 字）",
+  "Merge {count} Incidents into this one": "把 {count} 个事故合并到当前事故",
+  "The source Incidents become terminal and their occurrences move here permanently. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.":
+    "来源事故会进入终态，其全部发生记录永久移动到这里。在本对话框里重试复用同一个幂等键，不会重复执行。",
+  "Merge confirmation": "合并确认串",
+  "Merge reason (≥3)": "合并原因（≥3 字）",
+  "Resolve reuses the Triage audit reason above.": "标记已解决会复用上方分诊里的审计原因。",
+  "Close audit reason": "关闭审计原因",
+  "Summary needs at least 10 characters": "摘要至少 10 个字",
+  "Root cause is required": "必须填写根因",
+  "At least one corrective action is required": "至少需要一条纠正措施",
+  "Evidence reference is required — it is the field in Recovery verification above":
+    "必须填写证据引用——就是上方「恢复验证」里的那一格",
+  "Audit reason needs at least 3 characters": "审计原因至少 3 个字",
+  "Type the close confirmation": "输入关闭确认串",
+  "Recorded postmortem": "已归档的复盘",
+  "Activity · most recent {count}": "操作记录 · 最近 {count} 条",
+  "Incident correlation failed delivery scrollable table": "事故关联投递失败（可横向滚动表格）",
+
+  // Chat Ops：连通性口径、数据源名与表头
+  "Chat Service state not established yet": "聊天服务状态尚未确定",
+  "Chat Service degraded · {degraded} of {total} authorities unavailable":
+    "聊天服务性能下降 · {total} 个数据源里有 {degraded} 个不可用",
+  "{authority} authority refresh failed:": "{authority} 数据源刷新失败：",
+  "Retry {authority}": "重试 {authority}",
+  "Loading {authority} authority": "正在加载 {authority} 数据源",
+  "Chat Service returned an upstream error ({status}).": "Chat Service 返回上游错误（{status}）。",
+  "Adapter": "适配器",
+  "Reachable": "可达",
+  "Latency (ms)": "延迟（毫秒）",
+  "Model listed": "模型已登记",
+  "Error": "错误",
+  "Model tier": "模型档位",
+  "Unlimited": "不限量",
+  "Messages used": "已用消息数",
+  "Free daily limit": "每日免费上限",
+  "Free remaining": "免费剩余",
+  "Quota status": "配额状态",
+  "Period start": "周期起点",
+  "Session": "会话",
+  "Memory": "记忆",
+  "Messages": "消息数",
+  "Last role": "最后发言方",
+  "Last message status": "最后一条消息状态",
+  "Last safety status": "最后一次审核状态",
+  "Last message": "最后消息时间",
+  "Layer": "层",
+
+  // Overviews：时间窗预设、处置出口与表头
+  "Window presets": "时间窗预设",
+  "Last hour": "最近 1 小时",
+  "Last 24 hours": "最近 24 小时",
+  "Last 7 days": "最近 7 天",
+  "Last 30 days": "最近 30 天",
+  "The authority returned no rows for this window.": "该时间窗内权威没有返回任何记录。",
+  "Where to act": "去哪里处置",
+  "Change provider routing in Profiles & Rollout": "去「配置与放量」调整供应商路由",
+  "Triage the failed requests in Dead-letter": "去「死信」处置失败请求",
+  "Triage the failed and blocked requests in Dead-letter": "去「死信」处置失败与被拦截的请求",
+  "Device": "设备",
+  "Accounts": "账号数",
+  "Inviter": "邀请人",
+  "Adjustments": "调整次数",
+  "Net delta": "净变动",
+  "Entries": "条目数",
+  "Success rate %": "成功率 %",
+  "Coins cost": "币消耗",
+  "Avg cost / request": "每条请求平均消耗",
+  "Latency p50 (ms)": "延迟 p50（毫秒）",
+  "Latency p95 (ms)": "延迟 p95（毫秒）",
+  "Latency samples": "延迟样本数",
+// 后果型文案（`ConfirmDialog.consequence` 落地后从 summary 平移过去）与截断如实标注
+  "The worker will retry the unchanged durable envelopes; no event is sent from this browser request. Retrying inside this dialog reuses the same idempotency key and cannot requeue twice.":
+    "工作进程会重投这些未改动的持久信封；本次浏览器请求本身不发送任何事件。在本对话框里重试复用同一个幂等键，不会重复入队。",
+  "This records that no user-visible Chat effect was applied and is terminal for Main. Main becomes terminal only after Chat stores the original envelope hash as a target-missing receipt. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.":
+    "这会记录「没有产生任何用户可见的 Chat 影响」，并对 Main 侧终结。只有 Chat 把原始信封哈希存为 target-missing 回执后，Main 才真正进入终态。在本对话框里重试复用同一个幂等键，不会重复执行。",
+  "The worker will retry the unchanged correlation payloads; this browser request does not correlate an Incident. Retrying inside this dialog reuses the same idempotency key and cannot requeue twice.":
+    "工作进程会重投这些未改动的关联负载；本次浏览器请求本身不会关联出事故。在本对话框里重试复用同一个幂等键，不会重复入队。",
+  "This preserves the failed carrier and records that its GenerationAttempt source authority is still absent; no user effect is applied. The disposition is terminal. Retrying inside this dialog reuses the same idempotency key and cannot apply twice.":
+    "这会保留失败的载体，并记录它的 GenerationAttempt 源权威仍然缺失；不产生任何用户侧影响。该处置是终态。在本对话框里重试复用同一个幂等键，不会重复执行。",
+  "Ranked list · the authority returns at most {count} rows, so this is not the full set.":
+    "排名列表 · 权威最多只返回 {count} 行，这里不是全量。",
+
+  // dev-only 登录墙（AdminDevLogin.tsx）。整页原先是硬编码中文，英文 locale 下反向露馅。
+  // 严格说它属于外壳文案，但本轮 i18n-zh-shell.ts 不归本分支改，先落在运营域里。
+  "Admin sign-in": "后台登录",
+  "Development only": "仅限开发环境",
+  "The signed-in role {role} has no admin access. Switch to an internal role account.":
+    "当前登录角色 {role} 无后台权限，请换内部角色账号。",
+  "Built-in development accounts, local only.": "内置开发账号，仅本地可用。",
+  "Username": "账号",
+  "Password": "密码",
+  "Sign in": "登录",
+  "Quick accounts": "快捷账号",
+  "Sign out of the current site session": "退出当前前台登录",
+  "Sign-in failed. Check the username and password.": "登录失败，请检查账号密码",
+  "Sign-out failed. Try again.": "退出失败，请重试",
+  "Network error. Try again.": "网络错误，请重试",
+  // TRAP: 以下这些键都**只经变量或三元表达式**到达 t()，源码里没有一处 t("字面量")：
+  //   - `caption={authority === "providers" ? "Chat provider health" : …}` → DataTable 的 t(caption)
+  //   - `empty={query.userId ? "…" : "…"}` → AuthorityTable 的 t(empty)
+  //   - `hint={filtered ? "…" : "…"}` / `title={…}` → ui/EmptyState 的 t(title) / t(hint)
+  //   - `[["successRateRecovered", "…"], …].map(([key, label]) => t(label))`
+  //   - `t(diagnosticKey(diagnostics))`、`cards.map(([label]) => t(String(label)))`
+  // i18n-completeness.test.ts 只认字面量实参，这些一个都看不见，所以漏了整整这一批而它全绿。
+  // 改上面那些三元/数组里的英文原串时，必须同步改这里的 key。
+
+  // Chat 运维：表格标题、空态、概览卡、诊断横幅
+  "Chat provider health": "Chat 供应器健康度",
+  "No chat usage matches this user": "没有该用户的 Chat 用量记录",
+  "No chat usage exists for the current product day": "当前产品日还没有 Chat 用量记录",
+  "No chat events match these filters": "没有 Chat 事件符合当前筛选",
+  "No chat events exist yet": "还没有任何 Chat 事件",
+  "Users at daily limit": "触达每日上限的用户",
+  "Blocked moderation 24h": "24 小时内拦截数",
+  "Chat Service returned invalid JSON.": "Chat 服务返回了非法 JSON。",
+
+  // 事故：恢复校验的五项权威检查
+  "Success rate recovered for the required window": "成功率已在要求的窗口内恢复",
+  "Failure signature stopped growing": "失败特征已停止增长",
+  "Backlog is recovering": "积压正在消化",
+  "Every failed request has a retry or terminal plan": "每个失败请求都有重试或终态处置",
+  "Spend and refunds are reconciled": "消耗与退款已对账",
+
+  // 配置档案与功能开关：两组空态（筛选后 / 本来就空）
+  "The complete profile authority query returned no matches.": "全量配置档案权威查询没有匹配结果。",
+  "No generation profiles match these filters.": "没有生成配置档案符合当前筛选。",
+  "The complete flag authority query returned no matches.": "全量功能开关权威查询没有匹配结果。",
+  "No feature flags exist in the authority.": "权威里还没有任何功能开关。",
+  "No feature flags match these filters": "没有功能开关符合当前筛选",
+  "No feature flags exist yet": "还没有任何功能开关",
+
+  // 死信队列：空态。title 由 compatibility-lists/empty-state.ts 的表按 (authority, filtered)
+  // 取值后过 t()，所以这里的 key 必须和那张表里的英文原串逐字一致。
+  "The complete dead-letter authority query returned no matches.": "全量死信权威查询没有匹配结果。",
+  "No failed or blocked generation requests require triage.": "没有需要处理的失败或受阻生成请求。",
+  "No dead-letter jobs match these filters": "没有死信任务符合当前筛选",
+
+  // 生成任务：重试确认对话框
+  "Retry Generation Request {id}": "重试生成请求 {id}",
+  "Creates a new immutable Attempt only when no delivery has already succeeded.":
+    "仅在尚无成功交付时创建一次新的不可变 Attempt。",
+  "Create retry attempt": "创建重试",
+  // —— 素材可发布性提示（creative/library）——
+  // authorityLabel() 整句返回，这里逐句登记；它拼出来的组合是穷举的，共五种。
+  "Demo or legacy test asset": "演示或历史测试素材",
+  "Not publishable": "不可发布",
+  "Not publishable: asset is archived": "不可发布：素材已归档",
+  "Not publishable: asset was rejected": "不可发布：素材已被驳回",
+  "Not publishable: generation authority is not trusted": "不可发布：生成来源不可信",
 };

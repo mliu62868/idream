@@ -3,6 +3,61 @@
 // INVARIANT: key 在所有 i18n-zh-*.ts 之间互斥——同一个 key 只能有一个域文件持有；
 // 由 i18n-zh-exclusivity.test.ts 强制。新增文案放它所属的域文件，不要另开「杂项」文件。
 export const adminZhGrowth: Record<string, string> = {
+  // 表格/空态收口到共享原语时新增的文案。
+  "Create a draft above; it is not served until you publish it.": "在上方新建草稿；发布前不会对外提供。",
+  "Create one above to broadcast it site-wide.": "在上方新建一条，即可全站广播。",
+  "No announcements match these filters.": "没有公告符合当前筛选。",
+  "The authority searched every announcement. Clear the filters to see them all.":
+    "已检索全部公告。清除筛选可看到全部。",
+  // 钱与增长簇（定价 / 促销 / 编排 / 退款结算）。退款文案落在这里而不是 i18n-zh-customers.ts：
+  // 它属于「钱」这一簇，和定价、兑换码面额共用同一套梦币口径与措辞。
+  "Adding": "新增",
+  "At most {total} Dreamcoins in total: {each} each, up to {uses} redemptions.":
+    "总计最多 {total} 梦币：每次 {each}，最多兑换 {uses} 次。",
+  "Balance after reversal": "冲销后余额",
+  "Dismiss refund settlement": "关闭退款结算",
+  "Dreamcoins reversed": "已冲销梦币",
+  "Every redemption grants {each} Dreamcoins and nothing caps how many times. The total this code can pay out is unbounded.":
+    "每次兑换发放 {each} 梦币，且没有任何次数上限。这个码能发出去的总额没有上限。",
+  "Expires (blank=never)": "有效期（留空=永久）",
+  "Expiry must be a valid date and time.": "有效期必须是合法的日期时间。",
+  "Grant restored": "授予已还原",
+  "It never expires.": "它永不过期。",
+  "It stops working at {when}.": "它在 {when} 失效。",
+  "No active version of this rule key is loaded here, so the price it replaces is unknown.":
+    "当前页面里没有这个规则键的在售版本，因此它顶掉的价格未知。",
+  "No provider payout recorded yet": "尚无 provider 打款记录",
+  "Paid out": "已打款",
+  "Payout in progress": "打款进行中",
+  "Price: {base} base Dreamcoins × {multiplier}": "价格：基础 {base} 梦币 × {multiplier}",
+  "Provider payout": "Provider 打款",
+  "Provider state unknown": "Provider 状态未知",
+  "Refund amount": "退款金额",
+  "Refund settlement for {id}": "{id} 的退款结算",
+  "Removing": "移除",
+  "Reordering": "调整顺序",
+  "Replaces the live version {version}, priced at {base} base Dreamcoins × {multiplier}.":
+    "顶掉在售的版本 {version}（基础 {base} 梦币 × {multiplier}）。",
+  "Same characters, new order.": "角色不变，顺序改变。",
+  "Sending to provider": "正在发往 provider",
+  "The balance is negative: the customer had already spent part of the grant, and those coins are not returned.":
+    "余额为负：客户已经花掉了部分授予的梦币，这部分不返还。",
+  "The money leaves as a {provider} payout that {email} claims; its claim link and payout state appear in this row once the provider accepts it.":
+    "这笔钱以 {provider} payout 的形式发出，由 {email} 自行领取；provider 受理后，领取链接与打款状态会出现在这一行。",
+  "The version this restores is decided by the authority, not by this page.":
+    "回滚到哪一版由服务端权威决定，不由这个页面决定。",
+  "This matches the saved configuration. Nothing would change.": "与已保存的配置一致，不会有任何改动。",
+  "This repeated an earlier identical command. No new money moved.":
+    "这次重复了先前的同一条命令，没有产生新的资金动作。",
+  "Waiting for the customer to claim": "等待客户领取",
+  "Awaiting payout": "等待打款",
+  "Awaiting payout approval": "等待打款审批",
+  "{count} Dreamcoin grant reversed": "已冲销 {count} 梦币授予",
+  "{count} Dreamcoins": "{count} 梦币",
+  "{count} Dreamcoins were put back because the provider refund did not complete.":
+    "由于 provider 退款未完成，{count} 梦币已退回账户。",
+  "the customer had already spent part of the grant": "客户已花掉部分授予的梦币",
+  "· mode": "· 模式",
   ", lift=": "，提升幅度=",
   ", rate=": "，比例=",
   "/ max": "/ 最大值",
@@ -61,15 +116,18 @@ export const adminZhGrowth: Record<string, string> = {
   "Current configured IDs": "当前已配置 ID",
   "Current version": "当前版本",
   "Currently featured": "当前推荐",
+  "Customers are charged this price from the next generation onwards and the previous active version is archived. A rollback restores it, but orders placed in between keep the new price.": "从下一次生成起客户按这个价格计费，上一个启用版本会被归档。回滚能把它请回来，但这期间已经下单的按新价结算。",
   "D1 / D7 retention · invalid for decisions": "D1 / D7 留存 · 不可用于决策",
   "Deactivate": "停用",
   "Delete announcement": "删除公告",
   "Directional only · no assignment or exposure records": "仅供方向参考 · 无分配或曝光记录",
+  "Disable redeem code {id}": "停用兑换码 {id}",
   "Draft → publish archives the previous active version; rollback restores the previous authority.":
     "草稿发布后会归档此前生效版本；回滚会恢复上一权威版本。",
   "Dreamcoins must be a whole number from 1 to 1,000,000.": "Dreamcoins 必须是 1 至 1,000,000 之间的整数。",
   "Edit CMS draft": "编辑 CMS 草稿",
   "Edit draft": "编辑草稿",
+  "Every future redemption of this code fails. There is no re-enable command; a replacement has to be issued as a new code.": "之后所有人兑换这个码都会失败。后台没有重新启用的命令；要补偿只能再发一个新码。",
   "Experiment definitions": "实验定义",
   "Experiment key": "实验键",
   "Feature flags remain rollout monitoring and never inherit managed experiment lift.":
@@ -90,11 +148,10 @@ export const adminZhGrowth: Record<string, string> = {
   "Lift hidden from decision use until every arm has ≥": "各实验组达到至少以下条件前，提升幅度不可用于决策：≥",
   "Link URL (optional)": "链接 URL（可选）",
   "Live featured": "实际上线推荐",
-  "Loading character authority…": "正在加载角色权威…",
-  "Loading featured authority…": "正在加载推荐权威…",
-  "Loading pricing authority": "正在加载定价权威",
-  "Loading redeem-code authority": "正在加载兑换码权威数据",
-  "Loading referral authority": "正在加载推荐权威数据",
+  "Loading featured content…": "正在加载推荐内容…",
+  "Loading prices…": "正在加载定价…",
+  "Loading redeem codes…": "正在加载兑换码…",
+  "Loading referrals…": "正在加载邀请…",
   "Make private": "设为私密",
   "Managed experiment workspace": "受管实验工作区",
   "Max uses (blank=∞)": "最大使用次数（空=∞）",
@@ -115,21 +172,28 @@ export const adminZhGrowth: Record<string, string> = {
     "明文兑换码只用于派生哈希，权威接口不会返回明文。",
   "Pricing & Offers": "定价与优惠",
   "Pricing Rules": "定价规则",
+  "Pricing draft {key} created": "价格草稿 {key} 已创建",
   "Pricing estimate unavailable:": "定价估算不可用：",
   "Pricing rule versions": "定价规则版本",
+  "Pricing rule {name} published": "价格规则 {name} 已发布",
+  "Pricing rule {name} rolled back": "价格规则 {name} 已回滚",
   "Profile health + configuration check": "模型健康度 + 配置检查",
   "Publication readiness": "发布就绪度",
+  "Publish pricing rule": "发布价格规则",
   "Quality & lift": "质量与提升",
   "Quality:": "质量：",
   "Read only · config.pricing.write is not granted": "只读 · 尚未授予 config.pricing.write",
   "Read only · content.takedown.write is not granted": "只读 · 尚未授予 content.takedown.write",
   "Read only · growth.promo.write is not granted": "只读 · 尚未授予 growth.promo.write",
   "Redeem code confirmation": "兑换码确认文本",
+  "Redeem code {code} created": "兑换码 {code} 已创建",
+  "Redeem code {id} disabled": "兑换码 {id} 已停用",
   "Redeem codes": "兑换码",
   "Referral status": "推荐状态",
   "Referrals": "邀请",
   "Resolve blocker": "处理阻塞",
   "Retention cohorts (D1 / D7)": "留存 cohort（D1 / D7）",
+  "Rollback pricing rule": "回滚价格规则",
   "Rule Key": "规则键",
   "Runtime state": "实际上线状态",
   "Save draft": "保存草稿",
@@ -137,7 +201,7 @@ export const adminZhGrowth: Record<string, string> = {
   "Saving creates a draft. Publication remains a separate validated action.":
     "保存只会创建草稿；发布仍是独立且需要验证的操作。",
   "Search announcements": "搜索公告",
-  "Search pricing authority": "搜索定价权威数据",
+  "Search prices": "搜索定价",
   "Search the catalog, control visibility and lifecycle state, and curate the public featured feed.":
     "搜索角色目录、控制可见性和生命周期状态，并策划公开精选信息流。",
   "Skipped invalid character IDs": "已跳过无效角色 ID",
@@ -147,6 +211,7 @@ export const adminZhGrowth: Record<string, string> = {
   "The complete server authority query returned no records.": "完整的服务端权威查询未返回记录。",
   "The configuration check validates deterministic profile and runtime fields only; it does not call a provider or generate media.":
     "配置检查仅验证确定性的模型配置与运行时字段；不会调用生成供应商，也不会生成媒体。",
+  "The previously active version becomes the customer-facing price again from the next generation onwards.": "从下一次生成起，上一个启用版本重新成为面向客户的价格。",
   "These characters were not found or cannot be configured, so they were not saved.":
     "这些角色不存在或不可配置，因此未保存。",
   "This order is the saved configuration. A character is live featured only while the public audience authority also passes, including its primary image, Character Release, qualification, and Serving state.":
@@ -157,6 +222,7 @@ export const adminZhGrowth: Record<string, string> = {
   "Type page path": "输入页面路径",
   "Type profile ID": "输入 profile ID",
   "Type title to confirm": "输入标题确认",
+  "Unlist": "取消公开列出",
   "Use a new lowercase CMS path. Duplicate and application-owned paths are rejected.":
     "请使用新的小写 CMS 路径；重复路径和应用自有路径会被拒绝。",
   "Version, publish, and roll back customer-facing generation prices while keeping every decision auditable.":
@@ -182,4 +248,119 @@ export const adminZhGrowth: Record<string, string> = {
   "· significance:": "· 显著性：",
   "· state v": "· 状态 v",
   "· version": "· 版本",
+  // ---- 视图组运营化改造（实验启停确认与报告 / 洞察诚实化 / 公告与 CMS 写反馈）----
+  "Draft {key} created. It is not assigning traffic until you start it.":
+    "草稿 {key} 已创建。在你启动之前它不会分配任何流量。",
+  "Start experiment":
+    "启动实验",
+  "Stop experiment":
+    "停止实验",
+  "Starting assigns live traffic to {key} v{version}. The reason you enter is written to the audit log.":
+    "启动会把线上流量分配给 {key} v{version}。你填写的理由会写进审计日志。",
+  "Stopping ends live assignment for {key} v{version} and cannot be undone by restarting the same version. The reason you enter is written to the audit log.":
+    "停止会终止 {key} v{version} 的线上分流，且无法通过重启同一版本撤销。你填写的理由会写进审计日志。",
+  "Type the experiment key to confirm":
+    "输入实验 key 以确认",
+  "{key} v{version} is running.":
+    "{key} v{version} 已在运行。",
+  "{key} v{version} is stopped.":
+    "{key} v{version} 已停止。",
+  "surface.what-changed.v1":
+    "surface.what-changed.v1",
+  "What should change, for whom, and which metric should move":
+    "改什么、对谁改、期望哪个指标发生变化",
+  "Flag monitoring is unavailable for this permission set; managed experiments are still shown.":
+    "当前权限看不到 flag 监控；受管实验仍然展示。",
+  "Quality {quality} · maturity {maturity} · guardrails {guardrails} · significance {significance}":
+    "质量 {quality} · 成熟度 {maturity} · 护栏 {guardrails} · 显著性 {significance}",
+  "{metric} is {state}; observed regression {observed} pp against a {max} pp limit.":
+    "{metric} 当前 {state}；实测回退 {observed} pp，上限 {max} pp。",
+  "{variant}: {subjects} mature subjects, rate {rate}%, lift {lift} pp vs control, p={p}.":
+    "{variant}：成熟样本 {subjects} 个，比例 {rate}%，相对对照组提升 {lift} pp，p={p}。",
+  "Lift is withheld from decisions until every arm has at least {minimum} mature production exposures and all guardrails pass.":
+    "在每个实验组都达到至少 {minimum} 次成熟的生产曝光、且护栏全部通过之前，提升幅度不参与决策。",
+  "No funnel or cohort series exists behind this page":
+    "本页背后没有漏斗或分群序列",
+  "This is a contract gap, not a rendering gap: the authority this page reads returns generation health only. Nothing is being hidden from you — there is no funnel or retention series to show, and none is invented here.":
+    "这是数据契约的缺口，不是渲染的缺口：本页读取的权威只返回生成健康度。没有任何东西被藏起来——根本不存在可展示的漏斗或留存序列，本页也不会编一个出来。",
+  "What this page can answer today is below: per-profile generation health, and a configuration check that never calls a provider.":
+    "本页今天能回答的问题在下方：按档案看生成健康度，以及一次不调用供应器的配置检查。",
+  "Deleted “{title}”. It no longer shows anywhere on the site.":
+    "已删除“{title}”。它不再出现在站内任何位置。",
+  "Deactivated “{title}”. It is hidden from the site now.":
+    "已停用“{title}”。它现在对全站隐藏。",
+  "Activated “{title}”. It is visible site-wide now.":
+    "已启用“{title}”。它现在对全站可见。",
+  "Created “{title}”. It is live site-wide now.":
+    "已创建“{title}”，并已对全站生效。",
+  "Created “{title}”. Activate it when you want it on the site.":
+    "已创建“{title}”。需要上站时再启用它。",
+  "An in-product banner — this is the site-wide broadcast channel. Active means visible to everyone.":
+    "站内 banner——这是全站广播渠道。启用即对所有人可见。",
+  "The CMS page list response was incomplete.":
+    "CMS 页面列表的响应不完整。",
+  "The CMS page response was incomplete.":
+    "CMS 页面的响应不完整。",
+  "The article body must be a JSON object.":
+    "文章正文必须是一个 JSON 对象。",
+  "{path} is published and indexable per its indexing status.":
+    "{path} 已发布，是否收录取决于它的 indexing 状态。",
+  "{path} is unpublished and back to draft. It is no longer served.":
+    "{path} 已下线并回到草稿，不再对外提供。",
+  "Draft saved for {path}. Publishing is still a separate action.":
+    "{path} 的草稿已保存。发布仍是单独的一步。",
+  "Created draft {path}. It is not served until you publish it.":
+    "草稿 {path} 已创建。发布之前不会对外提供。",
+  // ---- 实验启停的后果说明（ConfirmDialog.consequence 的文案）----
+  // NOTE: 上面同域的两条旧 summary 文案已被这两条取代，但按「字典只追加」的合并约定保留原位；
+  // 合并完成后可一并清掉（见交接说明）。
+  "Real users start being assigned to {key} v{version} immediately. You can stop it later, but subjects already exposed stay exposed. Your reason goes to the audit log.":
+    "真实用户会立即开始被分配到 {key} v{version}。你之后可以停止它，但已经曝光过的用户仍然算曝光过。你填写的理由会进审计日志。",
+  "Assignment ends for everyone immediately and {key} v{version} cannot be restarted — running this test again needs a new version. Your reason goes to the audit log.":
+    "分流会对所有人立即终止，且 {key} v{version} 无法重启——要再跑这个实验必须新建一个版本。你填写的理由会进审计日志。",
+  // ---- 账单台的表头、指标与空态（中文后台曾整片印英文：TOTAL DELTA / Adjustment user ID …）----
+  // 口径跟随本文件既有的梦币簇：冲销=reversal、支付方=provider、账本=ledger。
+  "Total delta": "变更总额",
+  "Balance after": "变更后余额",
+  "Period end": "周期结束",
+  "Cancel at end": "到期时取消",
+  "Provider status": "支付方状态",
+  "Provider detail": "支付方明细",
+  "Local status": "本地状态",
+  "Failure": "失败原因",
+  // provider 侧查不到这笔单子的累计次数，运营据此判断是对方延迟还是这笔单子已经丢了。
+  "Misses": "查询未命中次数",
+  "Attempted": "发起时间",
+  "Last lookup": "最后查询时间",
+  "Checkout refund acknowledgement": "结账退款确认文本",
+  // 订阅计费口径：Plan 是订阅计划，Period 是计费周期（月付/年付），别译成「时期」。
+  "Plan": "计划",
+  "Period": "计费周期",
+  // NOTE: Email 是跨域通用词，本轮只有账单与团队访问两张表用到，暂由本文件持有；
+  //       若别的域也要用，合并时整条挪去 i18n-zh-common.ts（字典 key 全局互斥）。
+  "Email": "邮箱",
+  "Display name": "显示名称",
+  // 定价规则版本表。注意本文件已有大写 K 的 "Rule Key"（草稿表单），这条是表头的小写 k。
+  "Rule key": "规则键",
+  "Base cost": "基础费用",
+  "Effective": "生效时间",
+  // canonicalListEmptyTitle("ledger" / "subscriptions") 的四个标题，以及账单台自己的空态提示。
+  "No ledger entries exist yet": "暂无账本流水",
+  "No ledger entries match these filters": "没有账本流水符合当前筛选",
+  "No subscriptions exist yet": "暂无订阅",
+  "No subscriptions match these filters": "没有订阅符合当前筛选",
+  "No ledger entries exist in the authority yet.": "服务端权威里还没有任何账本流水。",
+  "The complete authority query returned no ledger entries.": "完整的权威查询没有返回任何账本流水。",
+  "No subscriptions exist in the authority yet.": "服务端权威里还没有任何订阅。",
+  "The complete authority query returned no subscriptions.": "完整的权威查询没有返回任何订阅。",
+  // ---- 兑换码与邀请两张表的表头 ----
+  // 用词跟随本文件既有的表单标签（"Max uses (blank=∞)" → 最大使用次数），别在同一页里
+  // 一处叫「使用」一处叫「兑换」。
+  "Reward": "奖励",
+  "Max uses": "最大使用次数",
+  "Redemptions": "已兑换次数",
+  "Expires": "过期时间",
+  // "Inviter"（邀请人）已由 i18n-zh-platform-ops.ts 持有，这里只补对侧的受邀人。
+  "Invitee": "受邀人",
+  "Reward status": "奖励状态",
 };

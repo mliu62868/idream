@@ -963,6 +963,45 @@ describe("Character Portfolio authority/read model", () => {
     expect(assigned.items.map((item) => item.characterId)).toEqual([characterA]);
   });
 
+  it("orders by recency on request and pages back to the page it came from", async () => {
+    const all = await listCharacterPortfolioData(prisma, characterPortfolioQuerySchema.parse({
+      limit: 20,
+      sort: "updated_desc",
+    }), { asOf });
+    const projects = await prisma.characterProject.findMany({
+      where: { characterId: { in: all.items.map((item) => item.characterId) } },
+      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+      select: { characterId: true },
+    });
+    expect(all.items.map((item) => item.characterId)).toEqual(projects.map((project) => project.characterId));
+    expect(all.pageInfo.totalCount).toBe(projects.length);
+
+    const first = await listCharacterPortfolioData(prisma, characterPortfolioQuerySchema.parse({
+      limit: 1,
+      sort: "updated_desc",
+    }), { asOf });
+    const second = await listCharacterPortfolioData(prisma, characterPortfolioQuerySchema.parse({
+      limit: 1,
+      sort: "updated_desc",
+      cursor: first.pageInfo.endCursor as string,
+    }), { asOf });
+    const back = await listCharacterPortfolioData(prisma, characterPortfolioQuerySchema.parse({
+      limit: 1,
+      sort: "updated_desc",
+      before: second.pageInfo.startCursor as string,
+    }), { asOf });
+    expect(back.items.map((item) => item.characterId)).toEqual(first.items.map((item) => item.characterId));
+  });
+
+  it("invalidates a cursor that was issued under a different sort", async () => {
+    const first = await listCharacterPortfolioData(prisma, characterPortfolioQuerySchema.parse({ limit: 1 }), { asOf });
+    await expect(listCharacterPortfolioData(prisma, characterPortfolioQuerySchema.parse({
+      limit: 1,
+      sort: "updated_desc",
+      cursor: first.pageInfo.endCursor as string,
+    }), { asOf })).rejects.toThrow(/invalid/);
+  });
+
   it("records append-only Promote/Maintain/Improve/Pause/Retire evidence and filters by latest decision", async () => {
     const decision = await createCharacterPortfolioDecision(prisma, {
       characterId: characterA,
