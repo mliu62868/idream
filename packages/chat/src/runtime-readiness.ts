@@ -514,7 +514,7 @@ export async function assertChatSchemaReady(prisma: ChatPrismaClient): Promise<v
       AND encode(
         sha256(convert_to(redact_proc.prosrc, 'UTF8')),
         'hex'
-      ) = '94ff772d58470e1d7abd093ee762db14e7975ec7504d92b1771fad10d13d1a88'
+      ) = 'afef1ed0c7eafc086327abf80dd899e0bdd2652ec89cb9d1122e4ca9a5540d9b'
       AND legacy_redact_proc.prolang = (
         SELECT language.oid
         FROM pg_language AS language
