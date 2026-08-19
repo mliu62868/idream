@@ -3,6 +3,7 @@ import type { CompanionWorkspaceRebuildMessage } from "@idream/shared/chat/compa
 import {
   buildLegacyMemoryImportPlan,
   importLegacyMemoryRelationship,
+  legacyMemoryImportCliEvidence,
   parseLegacyMemoryImportArgs,
   parseLegacyRecallProbeFile,
   persistLegacyWorkspaceCleanupRequired,
@@ -203,6 +204,43 @@ describe("legacy memory importer authority", () => {
     });
     expect(JSON.stringify(summary)).not.toContain("What tea");
     expect(JSON.stringify(summary)).not.toContain("jasmine tea");
+  });
+
+  it("omits legacy entry text and source identifiers from CLI evidence", () => {
+    const evidence = legacyMemoryImportCliEvidence({
+      mode: "dry-run",
+      total: 1,
+      excluded: {
+        boundary: 0,
+        nonCharacter: 0,
+        withoutSource: 0,
+        untraceableSource: 0,
+        duplicateId: 0,
+      },
+      request: {
+        userId: "private-user-id",
+        characterId: "private-character-id",
+        checksum: "a".repeat(64),
+        scope: "relationship",
+        entries: [{
+          legacyMemoryId: "private-memory-id",
+          type: "preference",
+          text: "private jasmine memory text",
+          sourceMessageIds: ["private-source-message-id"],
+        }],
+        recallProbes,
+      },
+    });
+    expect(evidence).toMatchObject({
+      mode: "dry-run",
+      total: 1,
+      checksum: "a".repeat(64),
+    });
+    const serialized = JSON.stringify(evidence);
+    expect(serialized).not.toContain("private jasmine memory text");
+    expect(serialized).not.toContain("private-source-message-id");
+    expect(serialized).not.toContain("private-user-id");
+    expect(serialized).not.toContain("private-character-id");
   });
 
   it("atomically marks Message and selected Version as cleanup-required", async () => {

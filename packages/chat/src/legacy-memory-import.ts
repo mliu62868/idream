@@ -178,6 +178,33 @@ export function redactedLegacyRecallProbeSummary(
   };
 }
 
+export function legacyMemoryImportCliEvidence(
+  result: LegacyMemoryImportPlan & {
+    mode: "dry-run" | "applied";
+    marker?: LegacyMemoryImportMarker;
+  },
+): {
+  mode: "dry-run" | "applied";
+  total: number;
+  excluded: LegacyMemoryImportExclusions;
+  checksum: string;
+  igrepVersion: string;
+  recallProbes: ReturnType<typeof redactedLegacyRecallProbeSummary>;
+  marker?: LegacyMemoryImportMarker;
+} {
+  // INVARIANT: operator evidence may contain counts and digests, never legacy
+  // text, source message ids, or relationship identity.
+  return {
+    mode: result.mode,
+    total: result.total,
+    excluded: result.excluded,
+    checksum: result.request.checksum,
+    igrepVersion: COMPANION_IGREP_VERSION,
+    recallProbes: redactedLegacyRecallProbeSummary(result.request.recallProbes),
+    ...(result.marker ? { marker: result.marker } : {}),
+  };
+}
+
 export async function persistLegacyWorkspaceCleanupRequired(
   tx: Prisma.TransactionClient,
   assistantMessageId: string,
@@ -433,13 +460,7 @@ async function main(): Promise<void> {
     const input = parseLegacyMemoryImportArgs(process.argv.slice(2));
     const recallProbes = parseLegacyRecallProbeFile(await readFile(input.probeFile, "utf8"));
     const result = await importLegacyMemoryRelationship({ ...input, recallProbes });
-    process.stdout.write(`${JSON.stringify({
-      ...result,
-      request: {
-        ...result.request,
-        recallProbes: redactedLegacyRecallProbeSummary(result.request.recallProbes),
-      },
-    })}\n`);
+    process.stdout.write(`${JSON.stringify(legacyMemoryImportCliEvidence(result))}\n`);
   } finally {
     await Promise.all([
       chatPrisma.$disconnect(),

@@ -806,7 +806,7 @@ async function applyFileMutation(
   }
 }
 
-function appliedFileMutationReceipt(
+export function appliedFileMutationReceipt(
   mutation: ChatFileMutation,
 ): Record<string, unknown> {
   switch (mutation.kind) {
@@ -822,7 +822,10 @@ function appliedFileMutationReceipt(
     case "relationship_set":
       return mutation;
     case "relationship_delete":
-      return mutation;
+      return {
+        kind: mutation.kind,
+        characterId: mutation.characterId,
+      };
     case "turn_forget":
     case "session_delete":
       return {

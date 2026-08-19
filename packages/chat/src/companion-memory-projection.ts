@@ -142,6 +142,7 @@ export async function companionWorkspaceCleanupRequired(
       SELECT 1
       FROM chat.chat_file_mutations mutation
       WHERE mutation.user_id = ${userId}
+        AND mutation.status = 'pending'
         AND mutation.payload #>> '{companionCleanupRequired}' = 'true'
         AND (
           ${characterId ?? null}::text IS NULL

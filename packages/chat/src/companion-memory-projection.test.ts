@@ -7,9 +7,13 @@ import type {
 import {
   applyCompanionMemoryProjection,
   canonicalCompanionMessages,
+  companionWorkspaceCleanupRequired,
   companionMemoryProjectionTimeoutMs,
 } from "./companion-memory-projection.js";
-import { recordChatFileMutation } from "./file-mutations.js";
+import {
+  appliedFileMutationReceipt,
+  recordChatFileMutation,
+} from "./file-mutations.js";
 
 const ENV_KEYS = [
   "CHAT_COMPANION_RUNTIME",
@@ -60,6 +64,28 @@ function message(input: Partial<RelationshipMessage> & Pick<RelationshipMessage,
 }
 
 describe("companion memory projection", () => {
+  it("does not retain cleanup authority in applied privacy receipts", () => {
+    expect(appliedFileMutationReceipt({
+      kind: "relationship_delete",
+      characterId: "character-1",
+      companionCleanupRequired: true,
+    })).toEqual({
+      kind: "relationship_delete",
+      characterId: "character-1",
+    });
+  });
+
+  it("only considers pending cleanup intents when recovering authority", async () => {
+    nativeCleanupEnv("");
+    const queryRaw = vi.fn(async (..._args: unknown[]) => [{ required: false }]);
+    await companionWorkspaceCleanupRequired(
+      { $queryRaw: queryRaw } as unknown as Prisma.TransactionClient,
+      "user-1",
+      "character-1",
+    );
+    expect(String(queryRaw.mock.calls[0]?.[0])).toContain("mutation.status = 'pending'");
+  });
+
   it("replays only complete, unambiguous, memory-enabled canonical exchanges", () => {
     const user1 = message({ id: "user-1", role: "user" });
     const assistant1 = message({ id: "assistant-2", role: "assistant" });
