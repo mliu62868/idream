@@ -13,6 +13,10 @@ const readiness = companionReadinessSchema.parse({
   dshCommit: "99f6f02fecdb7dff40c3fbc9470f5907c29f74ca",
   igrepVersion: "0.1.132",
   pluginVersion: "0.1.0",
+  instance: {
+    id: "11111111-1111-4111-8111-111111111111",
+    startedAt: "2026-08-19T11:59:00.000Z",
+  },
   provider: {
     name: "openrouter",
     baseUrl: "https://openrouter.ai/api/v1",
@@ -37,6 +41,10 @@ const readiness = companionReadinessSchema.parse({
     toolReachable: true,
     commitReachable: true,
     workspaceRebuildReachable: true,
+  },
+  verification: {
+    duplicateIngest: { replayedSessions: 1, duplicateDialogueFiles: 0 },
+    crossScope: { probes: 2, leakedResults: 0 },
   },
 });
 

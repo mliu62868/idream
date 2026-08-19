@@ -21,6 +21,10 @@ import {
 } from "./companion-runtime";
 
 const now = "2026-08-19T12:00:00.000Z";
+const sidecarInstance = {
+  id: "11111111-1111-4111-8111-111111111111",
+  startedAt: "2026-08-19T11:59:00.000Z",
+};
 
 const profile = {
   tier: "premium",
@@ -340,12 +344,20 @@ describe("companion runtime stable wire contract", () => {
       },
     };
     const fixtures = [
-      { ...common, type: "started" },
+      { ...common, type: "started", instance: sidecarInstance },
       { ...common, type: "text_delta", delta: "The observatory" },
       { ...common, type: "reasoning_usage", reasoningTokens: 4 },
       { ...common, type: "tool_started", callId: "call-1", name: "generate_image_async" },
       { ...common, type: "tool_finished", callId: "call-1", name: "generate_image_async", outcome: "succeeded", durationMs: 10 },
       { ...common, type: "usage", usage: candidate.usage },
+      {
+        ...common,
+        type: "igrep_observation",
+        operation: "memory",
+        outcome: "hit",
+        resultCount: 2,
+        durationMs: 12,
+      },
       { ...common, type: "heartbeat" },
       { ...common, type: "terminal_candidate", candidate },
       { ...common, type: "failed", error: { code: "provider_timeout", message: "timed out", retryable: true } },
@@ -358,6 +370,7 @@ describe("companion runtime stable wire contract", () => {
       "tool_started",
       "tool_finished",
       "usage",
+      "igrep_observation",
       "heartbeat",
       "terminal_candidate",
       "failed",
@@ -501,6 +514,7 @@ describe("companion runtime stable wire contract", () => {
       dshCommit: COMPANION_DSH_COMMIT,
       igrepVersion: COMPANION_IGREP_VERSION,
       pluginVersion: COMPANION_IGREP_PLUGIN_VERSION,
+      instance: sidecarInstance,
       provider: {
         name: "openrouter",
         baseUrl: profile.baseUrl,
@@ -526,6 +540,16 @@ describe("companion runtime stable wire contract", () => {
         commitReachable: true as const,
         workspaceRebuildReachable: true as const,
       },
+      verification: {
+        duplicateIngest: {
+          replayedSessions: 1,
+          duplicateDialogueFiles: 0,
+        },
+        crossScope: {
+          probes: 2,
+          leakedResults: 0,
+        },
+      },
     };
     expect(companionReadinessSchema.parse(readiness)).toEqual(readiness);
     expect(companionReadinessSchema.safeParse({
@@ -544,6 +568,17 @@ describe("companion runtime stable wire contract", () => {
           },
         },
       },
+    }).success).toBe(false);
+    expect(companionEventSchema.safeParse({
+      invocationId: "invocation-1",
+      attemptId: "attempt-1",
+      sequence: 1,
+      occurredAt: now,
+      type: "igrep_observation",
+      operation: "search",
+      outcome: "hit",
+      resultCount: 0,
+      durationMs: 1,
     }).success).toBe(false);
   });
 });

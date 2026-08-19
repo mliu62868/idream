@@ -16,6 +16,12 @@ const isoDateTimeSchema = z.string().datetime({ offset: true });
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const nonNegativeIntegerSchema = z.number().int().nonnegative();
 const positiveIntegerSchema = z.number().int().positive();
+const companionSidecarInstanceSchema = z
+  .object({
+    id: z.string().uuid(),
+    startedAt: isoDateTimeSchema,
+  })
+  .strict();
 const credentialFreeHttpUrlSchema = z
   .string()
   .url()
@@ -572,7 +578,13 @@ const companionEventIdentity = {
 
 export const companionEventSchema = z
   .discriminatedUnion("type", [
-    z.object({ ...companionEventIdentity, type: z.literal("started") }).strict(),
+    z
+      .object({
+        ...companionEventIdentity,
+        type: z.literal("started"),
+        instance: companionSidecarInstanceSchema,
+      })
+      .strict(),
     z
       .object({
         ...companionEventIdentity,
@@ -612,6 +624,16 @@ export const companionEventSchema = z
         usage: companionUsageSchema,
       })
       .strict(),
+    z
+      .object({
+        ...companionEventIdentity,
+        type: z.literal("igrep_observation"),
+        operation: z.enum(["search", "memory"]),
+        outcome: z.enum(["hit", "empty", "failure"]),
+        resultCount: nonNegativeIntegerSchema.optional(),
+        durationMs: nonNegativeIntegerSchema,
+      })
+      .strict(),
     z.object({ ...companionEventIdentity, type: z.literal("heartbeat") }).strict(),
     z
       .object({
@@ -645,6 +667,20 @@ export const companionEventSchema = z
         path: ["candidate", "attemptId"],
         message: "terminal candidate must retain the event attempt identity",
       });
+    }
+    if (event.type === "igrep_observation") {
+      const expected = event.outcome === "hit"
+        ? (event.resultCount ?? 0) > 0
+        : event.outcome === "empty"
+          ? event.resultCount === 0
+          : event.resultCount === undefined;
+      if (!expected) {
+        context.addIssue({
+          code: "custom",
+          path: ["resultCount"],
+          message: "igrep result count must prove the declared outcome",
+        });
+      }
     }
   });
 
@@ -784,6 +820,7 @@ export const companionReadinessSchema = z
     dshCommit: z.literal(COMPANION_DSH_COMMIT),
     igrepVersion: z.literal(COMPANION_IGREP_VERSION),
     pluginVersion: z.literal(COMPANION_IGREP_PLUGIN_VERSION),
+    instance: companionSidecarInstanceSchema,
     provider: z
       .object({
         name: nonEmptyStringSchema,
@@ -803,6 +840,22 @@ export const companionReadinessSchema = z
         toolReachable: z.literal(true),
         commitReachable: z.literal(true),
         workspaceRebuildReachable: z.literal(true),
+      })
+      .strict(),
+    verification: z
+      .object({
+        duplicateIngest: z
+          .object({
+            replayedSessions: positiveIntegerSchema,
+            duplicateDialogueFiles: z.literal(0),
+          })
+          .strict(),
+        crossScope: z
+          .object({
+            probes: positiveIntegerSchema,
+            leakedResults: z.literal(0),
+          })
+          .strict(),
       })
       .strict(),
   })

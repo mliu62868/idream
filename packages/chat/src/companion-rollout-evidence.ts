@@ -2,13 +2,17 @@ import { z } from "zod";
 import { Prisma } from "../generated/client/client.js";
 import { chatPrisma, type ChatPrismaClient } from "./db.js";
 import { CHAT_TO_MAIN_EVENTS } from "@idream/shared/contracts";
+import type {
+  CompanionIgrepAttemptMetric,
+  CompanionOperationalTelemetry,
+} from "./companion-rollout-telemetry.js";
 
 // SPEC: Gate R evidence is an observed-data report, never a release decision.
 // INVARIANT: inputs and output contain aggregate telemetry only—no ids, content,
 // prompts, tool arguments, profile text, or provider secrets.
 export type EvidenceRuntime = "native" | "dsh";
 
-export interface EvidenceTelemetry {
+export interface EvidenceTelemetry extends CompanionOperationalTelemetry {
   schemaVersion: 1;
   runtime: EvidenceRuntime;
   startedAt: string;
@@ -30,6 +34,19 @@ export interface EvidenceTelemetry {
   memory?: { outcome: string; settleLagMs?: number };
   error?: { category: string; code: string };
 }
+
+const igrepAttemptMetricSchema = z.object({
+  calls: z.number().int().nonnegative(),
+  hit: z.number().int().nonnegative(),
+  empty: z.number().int().nonnegative(),
+  failure: z.number().int().nonnegative(),
+  resultCount: z.number().int().nonnegative(),
+  latencyMs: z.array(z.number().int().nonnegative()).max(64),
+}).strict().refine(
+  (value) => value.calls === value.hit + value.empty + value.failure
+    && value.calls === value.latencyMs.length,
+  "igrep aggregate counts must match observed calls",
+);
 
 export interface AttemptEvidenceRow {
   telemetry: EvidenceTelemetry;
@@ -70,6 +87,14 @@ const telemetrySchema = z.object({
     category: z.string().min(1),
     code: z.string().min(1),
   }).optional(),
+  sidecar: z.object({
+    instanceId: z.string().uuid(),
+    startedAt: z.string().datetime({ offset: true }),
+  }).strict().optional(),
+  igrep: z.object({
+    search: igrepAttemptMetricSchema.optional(),
+    memory: igrepAttemptMetricSchema.optional(),
+  }).strict().optional(),
 });
 
 interface RawAttemptEvidenceRow {
@@ -214,8 +239,8 @@ export function summarizeCompanionRolloutEvidence(input: {
   outbox: readonly OutboxEvidenceRow[];
 }) {
   const runtimes = {
-    native: summarizeRuntime("native", input.attempts, input.outbox),
-    dsh: summarizeRuntime("dsh", input.attempts, input.outbox),
+    native: summarizeRuntime("native", input.attempts, input.outbox, input.window),
+    dsh: summarizeRuntime("dsh", input.attempts, input.outbox, input.window),
   };
   const sampleEvidence = {
     native: runtimes.native.attempts === 0 ? "no_samples" : "observed",
@@ -246,6 +271,7 @@ function summarizeRuntime(
   runtime: EvidenceRuntime,
   allAttempts: readonly AttemptEvidenceRow[],
   allOutbox: readonly OutboxEvidenceRow[],
+  window: { from: Date; to: Date },
 ) {
   const attempts = allAttempts.filter((row) => row.telemetry.runtime === runtime);
   const telemetry = attempts.map((row) => row.telemetry);
@@ -272,6 +298,24 @@ function summarizeRuntime(
       const [provider, model] = key.split("\0");
       return { provider, model, count };
     });
+  const sidecarAttempts = telemetry
+    .filter((row) => row.sidecar !== undefined)
+    .sort((left, right) => Date.parse(left.startedAt) - Date.parse(right.startedAt));
+  const instanceTransitions = sidecarAttempts.reduce((total, row, index) => {
+    if (index === 0) return total;
+    return total + (sidecarAttempts[index - 1]?.sidecar?.instanceId === row.sidecar?.instanceId ? 0 : 1);
+  }, 0);
+  const sidecarStatus = runtime === "native"
+    ? "not_applicable"
+    : sidecarAttempts.length === attempts.length && sidecarAttempts.length >= 2
+      ? "observed"
+      : "insufficient";
+  const durationHours = (window.to.getTime() - window.from.getTime()) / 3_600_000;
+  const igrepStatus = runtime === "native"
+    ? "not_applicable"
+    : sidecarAttempts.length === attempts.length && attempts.length > 0
+      ? "observed"
+      : "insufficient";
   return {
     attempts: attempts.length,
     terminal,
@@ -291,6 +335,12 @@ function summarizeRuntime(
       reasoningTokens: metric(telemetry.map((row) => row.usage?.reasoningTokens)),
     },
     providerModels,
+    providerCost: {
+      status: "insufficient",
+      samples: 0,
+      totalMicros: null,
+      reason: "provider_cost_not_reported_by_companion_upstream",
+    },
     errors: {
       byCategory: Object.fromEntries(groupedCounts(telemetry, (row) => row.error?.category ?? null)
         .map(({ key, count }) => [key, count])),
@@ -300,6 +350,26 @@ function summarizeRuntime(
     memory: {
       outcomes: memoryOutcomes,
       settleLagMs: metric(telemetry.map((row) => row.memory?.settleLagMs)),
+    },
+    sidecar: {
+      status: sidecarStatus,
+      sampledAttempts: sidecarAttempts.length,
+      distinctInstances: new Set(sidecarAttempts.map((row) => row.sidecar?.instanceId)).size,
+      instanceTransitions,
+      restartRatePerHour: sidecarStatus === "observed" && durationHours > 0
+        ? round(instanceTransitions / durationHours)
+        : null,
+      ...(sidecarStatus === "insufficient"
+        ? { reason: "complete_instance_identity_requires_at_least_two_dsh_attempts" }
+        : {}),
+    },
+    igrep: {
+      status: igrepStatus,
+      search: summarizeIgrep(telemetry.map((row) => row.igrep?.search)),
+      memory: summarizeIgrep(telemetry.map((row) => row.igrep?.memory)),
+      ...(igrepStatus === "insufficient"
+        ? { reason: "igrep_observation_coverage_incomplete" }
+        : {}),
     },
     casConflicts: count(telemetry, (row) =>
       row.error?.category === "cas" || row.error?.code === "terminal_cas_conflict"),
@@ -313,6 +383,22 @@ function summarizeRuntime(
       deliveryLagMs: metric(outbox.map((row) => row.deliveryLagMs ?? undefined)),
       oldestPendingMs: maximum(outbox.map((row) => row.pendingAgeMs ?? undefined)),
     },
+  };
+}
+
+function summarizeIgrep(
+  values: readonly (CompanionIgrepAttemptMetric | undefined)[],
+) {
+  const observed = values.filter(
+    (value): value is CompanionIgrepAttemptMetric => value !== undefined,
+  );
+  return {
+    calls: observed.reduce((total, value) => total + value.calls, 0),
+    hit: observed.reduce((total, value) => total + value.hit, 0),
+    empty: observed.reduce((total, value) => total + value.empty, 0),
+    failure: observed.reduce((total, value) => total + value.failure, 0),
+    resultCount: observed.reduce((total, value) => total + value.resultCount, 0),
+    latencyMs: metric(observed.flatMap((value) => value.latencyMs)),
   };
 }
 

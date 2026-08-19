@@ -4,6 +4,7 @@ import { mkdtemp, readFile, readdir, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LlmAdapter, type GenerateOptions, type StreamChunk } from "@deepseek-ai/dsh-llm";
+import { defineTool } from "@deepseek-ai/dsh-tools";
 import {
   companionNdjsonFrameSchema,
   releasedKnowledgeDigest,
@@ -82,6 +83,45 @@ class ToolThenTextAdapter extends LlmAdapter {
       block: { type: "text", text: "I sent the observatory view to the image studio." },
     };
     yield { type: "usage", usage: { inputTokens: 31, outputTokens: 11 } };
+    yield { type: "finish", reason: { kind: "stop" } };
+  }
+}
+
+class MemorySearchThenTextAdapter extends LlmAdapter {
+  private calls = 0;
+
+  async *stream(): AsyncIterable<StreamChunk> {
+    this.calls += 1;
+    if (this.calls === 1) {
+      const args = JSON.stringify({ query: "observatory" });
+      yield { type: "block-start", index: 0, blockType: "tool-call" };
+      yield {
+        type: "tool-call-delta",
+        index: 0,
+        id: "call-memory-1" as never,
+        name: "memory_search",
+        argumentsDelta: args,
+      };
+      yield {
+        type: "block-end",
+        index: 0,
+        block: {
+          type: "tool-call",
+          id: "call-memory-1" as never,
+          name: "memory_search",
+          arguments: args,
+        },
+      };
+      yield { type: "finish", reason: { kind: "tool-calls" } };
+      return;
+    }
+    yield { type: "block-start", index: 0, blockType: "text" };
+    yield { type: "text-delta", index: 0, text: "The observatory memory is here." };
+    yield {
+      type: "block-end",
+      index: 0,
+      block: { type: "text", text: "The observatory memory is here." },
+    };
     yield { type: "finish", reason: { kind: "stop" } };
   }
 }
@@ -265,6 +305,101 @@ function disposalWritingPlugin(configs: Record<string, unknown>[]) {
 }
 
 describe("programmatic DSH companion runtime", () => {
+  it("emits content-free sidecar identity and authoritative igrep result metrics", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chat-agent-igrep-observation-"));
+    temporary.push(root);
+    const instance = {
+      id: "11111111-1111-4111-8111-111111111111",
+      startedAt: "2026-08-19T11:59:00.000Z",
+    };
+    const engine = new CompanionEngine({
+      instance,
+      workspaces: new AttemptWorkspaceStore({
+        canonicalRoot: join(root, "canonical"),
+        privateRoot: join(root, "private"),
+        memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
+      }),
+      plugin: async () => ({
+        name: "igrep",
+        inject: ["tools"],
+        apply(ctx) {
+          ctx.tools.register(defineTool({
+            name: "memory_search",
+            description: "Search memory.",
+            parameters: { query: { type: "string", required: true } },
+            output: {
+              schema: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  results: {
+                    type: "array",
+                    required: true,
+                    items: { type: "string" },
+                  },
+                },
+              },
+              render: (_args, value) => [{ type: "text", text: value.results.join("\n") }],
+            },
+            async execute() {
+              return { results: ["one-result"] };
+            },
+          }));
+        },
+      }),
+      adapter: () => new MemorySearchThenTextAdapter(),
+      igrepCommand: "igrep",
+    });
+    const server = createCompanionServer({
+      authToken: AUTH_TOKEN,
+      readiness: async () => { throw new Error("not used"); },
+      invocation: engine,
+    });
+    servers.push(server);
+    const baseUrl = await listen(server);
+    const run = invocation("private");
+    const response = await fetch(`${baseUrl}/v1/invocations`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${AUTH_TOKEN}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ protocolVersion: 1, type: "run", invocation: run }),
+    });
+    const observed = await frames(response, async (frame) => {
+      if (frame.type !== "commit") return;
+      await fetch(`${baseUrl}/v1/invocations/${run.invocationId}/commit`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${AUTH_TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          protocolVersion: 1,
+          type: "commit_ack",
+          invocationId: run.invocationId,
+          ack: {
+            attemptId: run.attemptId,
+            accepted: true,
+            status: "committed",
+            terminalMessageId: "assistant-terminal-observation",
+            committedAt: new Date().toISOString(),
+          },
+        }),
+      });
+    });
+    const events = observed.flatMap((frame) => frame.type === "event" ? [frame.event] : []);
+    expect(events.find((event) => event.type === "started")).toMatchObject({ instance });
+    expect(events.find((event) => event.type === "igrep_observation")).toMatchObject({
+      operation: "memory",
+      outcome: "hit",
+      resultCount: 1,
+      durationMs: expect.any(Number),
+    });
+    expect(JSON.stringify(events.filter((event) => event.type === "igrep_observation")))
+      .not.toContain("observatory");
+  });
+
   it("preserves replay roles, current-user authority and the Chat-owned system prompt", async () => {
     const root = await mkdtemp(join(tmpdir(), "chat-agent-engine-"));
     temporary.push(root);

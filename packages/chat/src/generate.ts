@@ -63,6 +63,10 @@ import {
 import { DshCompanionRuntime } from "./companion-runtime.js";
 import { verifiedCompanionProfileDigest } from "./companion-sidecar-readiness.js";
 import {
+  recordCompanionOperationalEvent,
+  type CompanionOperationalTelemetry,
+} from "./companion-rollout-telemetry.js";
+import {
   BoundedShadowExecutor,
   type ShadowExecutor,
 } from "./companion-shadow-executor.js";
@@ -120,7 +124,7 @@ function trackDetachedShadowPersistence(promise: Promise<void>): void {
   void promise.finally(() => detachedShadowPersistence.delete(promise));
 }
 
-interface PrimaryAttemptTelemetry {
+interface PrimaryAttemptTelemetry extends CompanionOperationalTelemetry {
   schemaVersion: 1;
   runtime: "native" | "dsh";
   startedAt: string;
@@ -1920,6 +1924,10 @@ async function processDshCompanionTurn(
     await runtime.run(invocation, {
       async emit(event: CompanionEvent) {
         switch (event.type) {
+          case "started":
+          case "igrep_observation":
+            recordCompanionOperationalEvent(primaryTelemetry, event);
+            return;
           case "text_delta":
             await emitDelta(event.delta);
             return;

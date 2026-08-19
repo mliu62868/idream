@@ -1098,10 +1098,32 @@ describe("chat generate agent image tool", () => {
           },
         });
         await port.emit({
-          type: "text_delta",
+          type: "started",
           invocationId: invocation.invocationId,
           attemptId: invocation.attemptId,
           sequence: 1,
+          occurredAt: new Date().toISOString(),
+          instance: {
+            id: "11111111-1111-4111-8111-111111111111",
+            startedAt: "2026-08-19T11:59:00.000Z",
+          },
+        });
+        await port.emit({
+          type: "igrep_observation",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 2,
+          occurredAt: new Date().toISOString(),
+          operation: "memory",
+          outcome: "hit",
+          resultCount: 2,
+          durationMs: 12,
+        });
+        await port.emit({
+          type: "text_delta",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 3,
           occurredAt: new Date().toISOString(),
           delta: "hello from DSH",
         });
@@ -1120,7 +1142,7 @@ describe("chat generate agent image tool", () => {
           type: "terminal_candidate",
           invocationId: invocation.invocationId,
           attemptId: invocation.attemptId,
-          sequence: 2,
+          sequence: 4,
           occurredAt: new Date().toISOString(),
           candidate,
         });
@@ -1200,6 +1222,20 @@ describe("chat generate agent image tool", () => {
               memory: {
                 outcome: "ingested",
                 settleLagMs: expect.any(Number),
+              },
+              sidecar: {
+                instanceId: "11111111-1111-4111-8111-111111111111",
+                startedAt: "2026-08-19T11:59:00.000Z",
+              },
+              igrep: {
+                memory: {
+                  calls: 1,
+                  hit: 1,
+                  empty: 0,
+                  failure: 0,
+                  resultCount: 2,
+                  latencyMs: [12],
+                },
               },
             },
           }),

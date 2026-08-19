@@ -458,43 +458,117 @@ export async function igrepVersion(command: string): Promise<string> {
  * A disposable write/maintain/status cycle proves the executable can finish
  * the exact lifecycle required before a canonical relationship promotion.
  */
-export async function probeIgrepLifecycle(command: string): Promise<void> {
-  const workspace = await mkdtemp(join(tmpdir(), "idream-igrep-ready-"));
-  const transcript = join(workspace, "readiness.jsonl");
-  const nonce = `${process.pid}-${Date.now()}`;
-  try {
+export interface IgrepLifecycleProbeEvidence {
+  duplicateIngest: {
+    replayedSessions: number;
+    duplicateDialogueFiles: 0;
+  };
+  crossScope: {
+    probes: number;
+    leakedResults: 0;
+  };
+}
+
+export async function probeIgrepLifecycle(
+  command: string,
+  dependencies: {
+    run?: RunJsonCommand;
+    status?(workspace: string): Promise<MemoryStatus>;
+    nonce?(): string;
+  } = {},
+): Promise<IgrepLifecycleProbeEvidence> {
+  const root = await mkdtemp(join(tmpdir(), "idream-igrep-ready-"));
+  const workspaces = [join(root, "scope-a"), join(root, "scope-b")] as const;
+  const nonce = dependencies.nonce?.() ?? `${process.pid}-${Date.now()}`;
+  const sentinels = [`scope-a-${nonce}`, `scope-b-${nonce}`] as const;
+  const run = dependencies.run ?? runJsonCommand;
+  const status = dependencies.status ?? ((workspace: string) =>
+    new IgrepMemoryProbe(command).status(workspace));
+  const ingest = async (workspace: string, sentinel: string, sessionId: string) => {
+    const transcript = join(workspace, "readiness.jsonl");
     await writeFile(transcript, [
-      JSON.stringify({ role: "user", content: `readiness user ${nonce}` }),
-      JSON.stringify({ role: "assistant", content: `readiness assistant ${nonce}` }),
+      JSON.stringify({ role: "user", content: `readiness ${sentinel}` }),
+      JSON.stringify({ role: "assistant", content: `acknowledged ${sentinel}` }),
       "",
     ].join("\n"), { mode: 0o600 });
-    await runJsonCommand({
+    await run({
       command,
       args: [
         "mem", "ingest",
         "--workspace", workspace,
         "--transcript", transcript,
         "--agent", "idream-readiness",
-        "--session-id", `readiness-${nonce}`,
+        "--session-id", sessionId,
         "--format", "json",
       ],
       timeoutMs: 30_000,
     });
-    await runJsonCommand({
-      command,
-      args: ["mem", "maintain", "--workspace", workspace],
-      timeoutMs: 120_000,
-    });
-    const status = await new IgrepMemoryProbe(command).status(workspace);
-    if (status.dialogueFiles < 1) {
-      throw new Error("igrep readiness lifecycle did not persist dialogue evidence");
+  };
+  try {
+    await Promise.all(workspaces.map((workspace) => mkdir(workspace, { recursive: true })));
+    const sessionId = `readiness-${nonce}`;
+    await ingest(workspaces[0], sentinels[0], sessionId);
+    const beforeReplay = await status(workspaces[0]);
+    await ingest(workspaces[0], sentinels[0], sessionId);
+    const afterReplay = await status(workspaces[0]);
+    const duplicateDialogueFiles = afterReplay.dialogueFiles - beforeReplay.dialogueFiles;
+    if (beforeReplay.dialogueFiles < 1 || duplicateDialogueFiles !== 0) {
+      throw new Error(`igrep replay created ${duplicateDialogueFiles} duplicate dialogue files`);
     }
-    if ((status.pendingProfileRows ?? 0) !== 0 || !status.lastMaintainAt) {
-      throw new Error(
-        `igrep readiness lifecycle did not settle: pending=${status.pendingProfileRows ?? "missing"}`,
-      );
+    await ingest(workspaces[1], sentinels[1], `${sessionId}-scope-b`);
+
+    for (const workspace of workspaces) {
+      await run({
+        command,
+        args: ["mem", "maintain", "--workspace", workspace],
+        timeoutMs: 120_000,
+      });
+      const observed = await status(workspace);
+      if (observed.dialogueFiles < 1) {
+        throw new Error("igrep readiness lifecycle did not persist dialogue evidence");
+      }
+      if ((observed.pendingProfileRows ?? 0) !== 0 || !observed.lastMaintainAt) {
+        throw new Error(
+          `igrep readiness lifecycle did not settle: pending=${observed.pendingProfileRows ?? "missing"}`,
+        );
+      }
     }
+
+    let leakedResults = 0;
+    for (const [workspace, foreignSentinel] of [
+      [workspaces[0], sentinels[1]],
+      [workspaces[1], sentinels[0]],
+    ] as const) {
+      const recalled = objectRecord(await run({
+        command,
+        args: ["mem-api", "memory-search", "--payload", "-"],
+        stdin: `${JSON.stringify({ workspace, query: foreignSentinel })}\n`,
+        timeoutMs: 30_000,
+      }));
+      if (
+        recalled?.provider !== "igrep"
+        || recalled.strategy !== "shared-search"
+        || typeof recalled.workspaceRoot !== "string"
+        || resolve(recalled.workspaceRoot) !== resolve(workspace)
+        || !Array.isArray(recalled.results)
+        || !Array.isArray(recalled.warnings)
+        || recalled.warnings.length !== 0
+        || typeof recalled.markdownContext !== "string"
+      ) {
+        throw new Error("igrep cross-scope readiness probe returned unverifiable evidence");
+      }
+      if (`${recalled.markdownContext}\n${JSON.stringify(recalled.results)}`.includes(foreignSentinel)) {
+        leakedResults += 1;
+      }
+    }
+    if (leakedResults !== 0) {
+      throw new Error(`igrep cross-scope readiness probe leaked ${leakedResults} results`);
+    }
+    return {
+      duplicateIngest: { replayedSessions: 1, duplicateDialogueFiles: 0 },
+      crossScope: { probes: 2, leakedResults: 0 },
+    };
   } finally {
-    await rm(workspace, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
   }
 }

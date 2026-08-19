@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CompanionWorkspaceRebuild } from "@idream/shared/chat/companion-runtime";
 import { afterEach, describe, expect, it } from "vitest";
-import { IgrepMemoryRebuilder, type JsonCommandOptions } from "./igrep";
+import {
+  IgrepMemoryRebuilder,
+  probeIgrepLifecycle,
+  type JsonCommandOptions,
+} from "./igrep";
 
 const temporary: string[] = [];
 
@@ -114,5 +118,73 @@ describe("official igrep canonical rebuild", () => {
       characterId: "character-1",
       messages: [],
     })).rejects.toThrow(/left 2 profile rows pending/);
+  });
+});
+
+describe("igrep readiness isolation evidence", () => {
+  it("proves same-session replay and bidirectional cross-workspace isolation without returning probe content", async () => {
+    const searches: Array<{ workspace: string; query: string }> = [];
+    const run = async (options: JsonCommandOptions): Promise<unknown> => {
+      if (options.args[0] === "mem-api" && options.args[1] === "memory-search") {
+        const payload = JSON.parse(options.stdin ?? "{}") as { workspace: string; query: string };
+        searches.push(payload);
+        return {
+          provider: "igrep",
+          strategy: "shared-search",
+          workspaceRoot: payload.workspace,
+          results: [],
+          warnings: [],
+          markdownContext: "",
+        };
+      }
+      return { events: 2, dialoguePath: ".igrep/mem/memory/dialogues/readiness.jsonl" };
+    };
+
+    const evidence = await probeIgrepLifecycle("igrep", {
+      run,
+      status: async () => ({
+        dialogueFiles: 1,
+        pendingProfileRows: 0,
+        processedProfileRows: 2,
+        lastMaintainAt: "2026-08-19T12:00:02.000Z",
+      }),
+      nonce: () => "fixed-nonce",
+    });
+
+    expect(evidence).toEqual({
+      duplicateIngest: { replayedSessions: 1, duplicateDialogueFiles: 0 },
+      crossScope: { probes: 2, leakedResults: 0 },
+    });
+    expect(searches).toHaveLength(2);
+    expect(searches[0]?.workspace).not.toBe(searches[1]?.workspace);
+    expect(JSON.stringify(evidence)).not.toContain("fixed-nonce");
+  });
+
+  it("fails closed when either workspace can recall the other scope sentinel", async () => {
+    const run = async (options: JsonCommandOptions): Promise<unknown> => {
+      if (options.args[0] === "mem-api" && options.args[1] === "memory-search") {
+        const payload = JSON.parse(options.stdin ?? "{}") as { workspace: string; query: string };
+        return {
+          provider: "igrep",
+          strategy: "shared-search",
+          workspaceRoot: payload.workspace,
+          results: [{ content: payload.query }],
+          warnings: [],
+          markdownContext: "",
+        };
+      }
+      return { events: 2, dialoguePath: ".igrep/mem/memory/dialogues/readiness.jsonl" };
+    };
+
+    await expect(probeIgrepLifecycle("igrep", {
+      run,
+      status: async () => ({
+        dialogueFiles: 1,
+        pendingProfileRows: 0,
+        processedProfileRows: 2,
+        lastMaintainAt: "2026-08-19T12:00:02.000Z",
+      }),
+      nonce: () => "leak-nonce",
+    })).rejects.toThrow(/cross-scope readiness probe leaked 2 results/);
   });
 });

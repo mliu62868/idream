@@ -24,7 +24,16 @@ const config: SidecarConfig = {
 
 const normalDigest = "1".repeat(64);
 const privateDigest = "2".repeat(64);
+const sidecarInstance = {
+  id: "11111111-1111-4111-8111-111111111111",
+  startedAt: "2026-08-19T11:59:00.000Z",
+};
+const igrepVerification = {
+  duplicateIngest: { replayedSessions: 1, duplicateDialogueFiles: 0 as const },
+  crossScope: { probes: 2, leakedResults: 0 as const },
+};
 const successfulRuntimeEvidence = {
+  instance: sidecarInstance,
   readBootstrapState: async () => ({
     schemaVersion: 1 as const,
     pins: { dsh: "0.1.0-rc.7", igrep: "0.1.132", plugin: "0.1.0" },
@@ -45,7 +54,7 @@ const successfulRuntimeEvidence = {
   }),
   bootstrapRuntimeProof: async () => {},
   providerWarmup: async () => {},
-  memoryLifecycleProbe: async () => {},
+  memoryLifecycleProbe: async () => igrepVerification,
   bridgeProbe: async () => {},
   workspaceRebuildProbe: async () => {},
 };
@@ -80,6 +89,7 @@ describe("fail-closed companion readiness", () => {
       dshCommit: "99f6f02fecdb7dff40c3fbc9470f5907c29f74ca",
       igrepVersion: "0.1.132",
       pluginVersion: "0.1.0",
+      instance: sidecarInstance,
       provider: {
         name: "openrouter",
         baseUrl: "https://openrouter.ai/api/v1",
@@ -91,6 +101,7 @@ describe("fail-closed companion readiness", () => {
         commitReachable: true,
         workspaceRebuildReachable: true,
       },
+      verification: igrepVerification,
     });
     expect(readiness.profiles.normal.normalizedConfigDigest).toBe(
       companionCompositionDigest("normal", plugin.module.resolveConfig({

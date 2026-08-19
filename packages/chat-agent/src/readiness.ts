@@ -23,6 +23,7 @@ import {
   PRIVATE_IGREP_CONFIG,
   igrepVersion,
   probeIgrepLifecycle,
+  type IgrepLifecycleProbeEvidence,
   type LoadedIgrepPlugin,
 } from "./igrep";
 import { probeCompanionBridges } from "./engine";
@@ -282,6 +283,7 @@ function bridgeInvocation(profile: PreparedTurnProfile): CompanionInvocation {
 
 export interface ReadinessOptions {
   config: SidecarConfig;
+  instance: CompanionReadiness["instance"];
   plugin(): Promise<LoadedIgrepPlugin>;
   resolveIgrepVersion?: (command: string) => Promise<string>;
   readBootstrapState?: (path: string) => Promise<BootstrapState>;
@@ -291,7 +293,7 @@ export interface ReadinessOptions {
     plugin: LoadedIgrepPlugin;
   }) => Promise<void>;
   providerWarmup?: (config: SidecarConfig, profile: PreparedTurnProfile) => Promise<void>;
-  memoryLifecycleProbe?: (command: string) => Promise<void>;
+  memoryLifecycleProbe?: (command: string) => Promise<IgrepLifecycleProbeEvidence>;
   bridgeProbe?: (invocation: CompanionInvocation) => Promise<void>;
   workspaceRebuildProbe(): Promise<void>;
 }
@@ -374,11 +376,13 @@ export function createReadinessProbe(
       plugin,
     });
     await (options.providerWarmup ?? warmProvider)(options.config, profile);
-    await (options.memoryLifecycleProbe ?? probeIgrepLifecycle)(options.config.igrepCommand);
+    const verification = await (options.memoryLifecycleProbe ?? probeIgrepLifecycle)(
+      options.config.igrepCommand,
+    );
     await (options.bridgeProbe ?? probeCompanionBridges)(bridgeInvocation(profile));
     await options.workspaceRebuildProbe();
 
-      return companionReadinessSchema.parse({
+    return companionReadinessSchema.parse({
       protocolVersion: 1,
       service: "dsh-companion",
       ready: true,
@@ -387,6 +391,7 @@ export function createReadinessProbe(
       dshCommit: COMPANION_DSH_COMMIT,
       igrepVersion: COMPANION_IGREP_VERSION,
       pluginVersion: COMPANION_IGREP_PLUGIN_VERSION,
+      instance: options.instance,
       provider: {
         name: profile.provider,
         baseUrl: profile.baseUrl,
@@ -412,7 +417,8 @@ export function createReadinessProbe(
         commitReachable: true,
         workspaceRebuildReachable: true,
       },
-      });
+      verification,
+    });
     })();
     inFlight = current.then((readiness) => {
       cached = readiness;

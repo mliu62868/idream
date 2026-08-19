@@ -11,9 +11,11 @@ import {
 import { OpenAiCompatibleAdapter } from "./openai-adapter";
 import { createReadinessProbe, probeWorkspaceRebuild } from "./readiness";
 import { createCompanionServer } from "./server";
+import { createSidecarInstanceIdentity } from "./sidecar-instance";
 import { AttemptWorkspaceStore } from "./workspace";
 
 const config = loadSidecarConfig();
+const instance = createSidecarInstanceIdentity();
 const plugin = Promise.resolve().then(() => loadIgrepPlugin(config.igrepPluginUrl));
 const workspaces = new AttemptWorkspaceStore({
   canonicalRoot: config.canonicalRoot,
@@ -22,6 +24,7 @@ const workspaces = new AttemptWorkspaceStore({
   memoryProbe: new IgrepMemoryProbe(config.igrepCommand),
 });
 const engine = new CompanionEngine({
+  instance,
   workspaces,
   plugin: async () => (await plugin).module,
   adapter: (profile) => new OpenAiCompatibleAdapter({
@@ -42,6 +45,7 @@ const server = createCompanionServer({
   authToken: config.authToken,
   readiness: createReadinessProbe({
     config,
+    instance,
     plugin: () => plugin,
     workspaceRebuildProbe: () => probeWorkspaceRebuild(engine),
   }),

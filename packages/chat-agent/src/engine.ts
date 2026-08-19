@@ -20,6 +20,7 @@ import {
   type CompanionEvent,
   type CompanionInvocation,
   type CompanionLegacyMemoryImport,
+  type CompanionReadiness,
   type CompanionRuntimeRequest,
   type CompanionRuntimeResponse,
   type CompanionTerminalCandidate,
@@ -42,6 +43,7 @@ import {
   verifyLegacyMemoryImport,
   type IgrepPluginModule,
 } from "./igrep";
+import { createSidecarInstanceIdentity } from "./sidecar-instance";
 
 type ControlFrame = Exclude<CompanionRuntimeRequest, { type: "run" }>;
 type EventPayload = CompanionEvent extends infer Event
@@ -51,6 +53,7 @@ type EventPayload = CompanionEvent extends infer Event
   : never;
 
 export interface CompanionEngineOptions {
+  instance?: CompanionReadiness["instance"];
   workspaces: AttemptWorkspaceStore;
   plugin(): Promise<IgrepPluginModule>;
   adapter(profile: PreparedTurnProfile): LlmAdapter;
@@ -423,7 +426,11 @@ export class CompanionEngine implements InvocationService {
   private maintenanceTail = Promise.resolve();
   private closing = false;
 
-  constructor(private readonly options: CompanionEngineOptions) {}
+  private readonly instance: CompanionReadiness["instance"];
+
+  constructor(private readonly options: CompanionEngineOptions) {
+    this.instance = options.instance ?? createSidecarInstanceIdentity();
+  }
 
   async run(invocation: CompanionInvocation, emit: (frame: CompanionRuntimeResponse) => void): Promise<void> {
     if (this.closing) throw new Error("sidecar is shutting down");
@@ -475,6 +482,41 @@ export class CompanionEngine implements InvocationService {
         mode: invocation.memoryMode === "private" ? "private" : "normal",
         igrepCommand: this.options.igrepCommand,
       });
+      const igrepStartedAt = new Map<string, number>();
+      ctx.on("tools/pre-execute", async (execution, next) => {
+        if (execution.name === "igrep_search" || execution.name === "memory_search") {
+          igrepStartedAt.set(String(execution.callId), Date.now());
+        }
+        return next();
+      }, { prepend: true });
+      ctx.on("tools/post-execute", async (execution, result, next) => {
+        const operation = execution.name === "igrep_search"
+          ? "search"
+          : execution.name === "memory_search"
+            ? "memory"
+            : null;
+        if (operation) {
+          const startedAt = igrepStartedAt.get(String(execution.callId)) ?? Date.now();
+          igrepStartedAt.delete(String(execution.callId));
+          const value = !result.isError && result.value && typeof result.value === "object"
+            && !Array.isArray(result.value)
+            ? result.value as Record<string, unknown>
+            : null;
+          const resultCount = Array.isArray(value?.results) ? value.results.length : undefined;
+          event({
+            type: "igrep_observation",
+            operation,
+            outcome: result.isError || resultCount === undefined
+              ? "failure"
+              : resultCount === 0
+                ? "empty"
+                : "hit",
+            ...(result.isError || resultCount === undefined ? {} : { resultCount }),
+            durationMs: Math.max(0, Date.now() - startedAt),
+          });
+        }
+        return next();
+      }, { prepend: true });
       const adapter = this.options.adapter(invocation.preparedTurn.profile);
       ctx.llm.registerAdapter([invocation.preparedTurn.profile.provider], adapter);
 
@@ -614,7 +656,7 @@ export class CompanionEngine implements InvocationService {
         agent.cancel(reason === "user" ? { kind: "user" } : { kind: "hook", reason });
       };
       if (active.cancelReason) active.agentCancel(active.cancelReason);
-      event({ type: "started" });
+      event({ type: "started", instance: this.instance });
       const current = invocation.preparedTurn.messages.find((message) => message.sourceKind === "current_user");
       if (!current || current.role !== "user") throw new Error("current user message is missing");
       agent.followup(freezeMessage({

@@ -21,6 +21,10 @@ function ready() {
     dshCommit: COMPANION_DSH_COMMIT,
     igrepVersion: COMPANION_IGREP_VERSION,
     pluginVersion: COMPANION_IGREP_PLUGIN_VERSION,
+    instance: {
+      id: "11111111-1111-4111-8111-111111111111",
+      startedAt: "2026-08-19T11:59:00.000Z",
+    },
     provider: {
       name: "mock",
       baseUrl: "http://127.0.0.1:8061/v1",
@@ -45,6 +49,10 @@ function ready() {
       toolReachable: true as const,
       commitReachable: true as const,
       workspaceRebuildReachable: true as const,
+    },
+    verification: {
+      duplicateIngest: { replayedSessions: 1, duplicateDialogueFiles: 0 as const },
+      crossScope: { probes: 2, leakedResults: 0 as const },
     },
   };
 }
