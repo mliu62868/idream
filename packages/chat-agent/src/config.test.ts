@@ -21,6 +21,18 @@ describe("sidecar process configuration", () => {
 
     expect(config.authToken).toBe("shared-chat-sidecar-token");
     expect(config.port).toBe(3101);
+    expect(config.shadowRoot).toMatch(/chat-agent-shadow$/);
+  });
+
+  it("requires the shadow workspace root to be disjoint from canonical memory", () => {
+    expect(() => loadSidecarConfig(environment({
+      DSH_IGREP_CANONICAL_ROOT: "/var/lib/idream/memory",
+      DSH_IGREP_SHADOW_ROOT: "/var/lib/idream/memory",
+    }))).toThrow(/SHADOW_ROOT.*disjoint/);
+    expect(() => loadSidecarConfig(environment({
+      DSH_IGREP_CANONICAL_ROOT: "/var/lib/idream/memory",
+      DSH_IGREP_SHADOW_ROOT: "/var/lib/idream/memory/shadow",
+    }))).toThrow(/SHADOW_ROOT.*disjoint/);
   });
 
   it("rejects invalid TCP ports and the removed duplicate token variable", () => {

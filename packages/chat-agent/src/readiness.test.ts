@@ -7,6 +7,7 @@ const config: SidecarConfig = {
   port: 3101,
   authToken: "readiness-secret",
   canonicalRoot: "/tmp/readiness-canonical",
+  shadowRoot: "/tmp/readiness-shadow",
   privateRoot: "/tmp/readiness-private",
   igrepCommand: "igrep",
   igrepPluginUrl: "file:///tmp/igrep/index.mjs",

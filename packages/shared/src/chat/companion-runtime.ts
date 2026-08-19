@@ -231,7 +231,7 @@ export const preparedTurnWireSchema = z
     }
   });
 
-export const companionMemoryModeSchema = z.enum(["normal", "private"]);
+export const companionMemoryModeSchema = z.enum(["normal", "private", "shadow"]);
 
 export const companionWorkspaceRebuildMessageSchema = z
   .object({

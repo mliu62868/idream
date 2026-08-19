@@ -153,6 +153,37 @@ describe("authenticated workspace privacy authority", () => {
     expect(await readdir(join(relationship, ".rebuilds"))).toEqual([]);
   });
 
+  it("isolates shadow attempts from canonical memory and forbids promotion", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chat-agent-shadow-"));
+    temporary.push(root);
+    const canonicalRoot = join(root, "canonical");
+    const shadowRoot = join(root, "shadow");
+    const store = new AttemptWorkspaceStore({
+      canonicalRoot,
+      shadowRoot,
+      privateRoot: join(root, "private"),
+      memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
+    });
+
+    const workspace = await store.prepare({
+      ...activeInvocation(),
+      invocationId: "invocation-shadow",
+      attemptId: "shadow:attempt-purge-active",
+      memoryMode: "shadow",
+    });
+
+    expect(workspace.mode).toBe("shadow");
+    expect(workspace.path.startsWith(shadowRoot)).toBe(true);
+    expect(await present(relationshipWorkspacePath(
+      canonicalRoot,
+      "user-active",
+      "character-active",
+    ))).toBe(false);
+    await expect(workspace.commit()).rejects.toThrow(/shadow.*promote/i);
+    await workspace.discard();
+    expect(await present(workspace.path)).toBe(false);
+  });
+
   it("fails closed immediately when a completed igrep maintain leaves profile rows pending", async () => {
     const root = await mkdtemp(join(tmpdir(), "chat-agent-maintain-failure-"));
     temporary.push(root);

@@ -17,7 +17,7 @@ export interface MemoryProbe {
 
 export interface AttemptWorkspace {
   readonly path: string;
-  readonly mode: "normal" | "private";
+  readonly mode: "normal" | "private" | "shadow";
   commit(): Promise<void>;
   discard(): Promise<void>;
   settleAndDiscard(): Promise<void>;
@@ -25,6 +25,7 @@ export interface AttemptWorkspace {
 
 export interface AttemptWorkspaceStoreOptions {
   canonicalRoot: string;
+  shadowRoot?: string;
   privateRoot?: string;
   memoryProbe: MemoryProbe;
   verificationTimeoutMs?: number;
@@ -94,14 +95,18 @@ async function exists(path: string): Promise<boolean> {
 
 export class AttemptWorkspaceStore {
   private readonly locks = new Map<string, Promise<void>>();
-  private readonly options: Required<Omit<AttemptWorkspaceStoreOptions, "privateRoot">> & {
+  private readonly options: Required<
+    Omit<AttemptWorkspaceStoreOptions, "privateRoot" | "shadowRoot">
+  > & {
     privateRoot: string;
+    shadowRoot: string;
   };
 
   constructor(options: AttemptWorkspaceStoreOptions) {
     this.options = {
       ...options,
       privateRoot: options.privateRoot ?? tmpdir(),
+      shadowRoot: options.shadowRoot ?? `${resolve(options.canonicalRoot)}-shadow`,
       verificationTimeoutMs: options.verificationTimeoutMs ?? 5_000,
       verificationPollMs: options.verificationPollMs ?? 50,
     };
@@ -109,12 +114,24 @@ export class AttemptWorkspaceStore {
 
   async prepare(invocation: CompanionInvocation): Promise<AttemptWorkspace> {
     if (invocation.memoryMode === "private") return this.preparePrivate(invocation);
-    return this.prepareNormal(invocation);
+    if (invocation.memoryMode === "shadow") {
+      return this.prepareNormal(invocation, this.options.shadowRoot, "shadow");
+    }
+    return this.prepareNormal(invocation, this.options.canonicalRoot, "normal");
   }
 
   async purge(request: WorkspacePurgeRequest): Promise<number> {
     if (request.scope === "relationship") {
-      const release = await this.acquireRelationship(request.userId, request.characterId);
+      const releaseCanonical = await this.acquireRelationship(
+        request.userId,
+        request.characterId,
+        this.options.canonicalRoot,
+      );
+      const releaseShadow = await this.acquireRelationship(
+        request.userId,
+        request.characterId,
+        this.options.shadowRoot,
+      );
       const canonicalTarget = relationshipWorkspacePath(
         this.options.canonicalRoot,
         request.userId,
@@ -126,24 +143,38 @@ export class AttemptWorkspaceStore {
         request.characterId,
       );
       try {
+        const shadowTarget = relationshipWorkspacePath(
+          this.options.shadowRoot,
+          request.userId,
+          request.characterId,
+        );
         assertWithin(this.options.canonicalRoot, canonicalTarget);
         assertWithin(this.options.privateRoot, privateTarget);
-        const found = await Promise.all([exists(canonicalTarget), exists(privateTarget)]);
+        assertWithin(this.options.shadowRoot, shadowTarget);
+        const found = await Promise.all([
+          exists(canonicalTarget),
+          exists(privateTarget),
+          exists(shadowTarget),
+        ]);
         await Promise.all([
           rm(canonicalTarget, { recursive: true, force: true }),
           rm(privateTarget, { recursive: true, force: true }),
+          rm(shadowTarget, { recursive: true, force: true }),
         ]);
         return found.some(Boolean) ? 1 : 0;
       } finally {
-        release();
+        releaseShadow();
+        releaseCanonical();
       }
     }
     const canonicalTarget = userWorkspacePath(this.options.canonicalRoot, request.userId);
     const privateTarget = privateUserWorkspacePath(this.options.privateRoot, request.userId);
+    const shadowTarget = userWorkspacePath(this.options.shadowRoot, request.userId);
     assertWithin(this.options.canonicalRoot, canonicalTarget);
     assertWithin(this.options.privateRoot, privateTarget);
+    assertWithin(this.options.shadowRoot, shadowTarget);
     const relationshipNames = new Set<string>();
-    for (const target of [canonicalTarget, privateTarget]) {
+    for (const target of [canonicalTarget, privateTarget, shadowTarget]) {
       if (!(await exists(target))) continue;
       const children = await readdir(target, { withFileTypes: true });
       for (const entry of children) {
@@ -155,6 +186,7 @@ export class AttemptWorkspaceStore {
     await Promise.all([
       rm(canonicalTarget, { recursive: true, force: true }),
       rm(privateTarget, { recursive: true, force: true }),
+      rm(shadowTarget, { recursive: true, force: true }),
     ]);
     return relationshipNames.size;
   }
@@ -163,7 +195,11 @@ export class AttemptWorkspaceStore {
     identity: { userId: string; characterId: string },
     build: (workspace: string) => Promise<T>,
   ): Promise<T> {
-    const release = await this.acquireRelationship(identity.userId, identity.characterId);
+    const release = await this.acquireRelationship(
+      identity.userId,
+      identity.characterId,
+      this.options.canonicalRoot,
+    );
     const relationshipRoot = relationshipWorkspacePath(
       this.options.canonicalRoot,
       identity.userId,
@@ -231,12 +267,20 @@ export class AttemptWorkspaceStore {
     return { path, mode: "private", commit: discard, discard, settleAndDiscard: discard };
   }
 
-  private async prepareNormal(invocation: CompanionInvocation): Promise<AttemptWorkspace> {
-    const release = await this.acquireRelationship(invocation.userId, invocation.characterId);
+  private async prepareNormal(
+    invocation: CompanionInvocation,
+    authorityRoot: string,
+    mode: "normal" | "shadow",
+  ): Promise<AttemptWorkspace> {
+    const release = await this.acquireRelationship(
+      invocation.userId,
+      invocation.characterId,
+      authorityRoot,
+    );
     let attemptRoot: string | undefined;
     try {
       const relationshipRoot = relationshipWorkspacePath(
-        this.options.canonicalRoot,
+        authorityRoot,
         invocation.userId,
         invocation.characterId,
       );
@@ -274,6 +318,9 @@ export class AttemptWorkspaceStore {
         }
       };
       const commit = async () => {
+        if (mode === "shadow") {
+          throw new Error("shadow attempts cannot promote canonical memory");
+        }
         if (finished) throw new Error("attempt workspace is already finalized");
         let nextVersion: string | undefined;
         let nextLink: string | undefined;
@@ -301,7 +348,7 @@ export class AttemptWorkspaceStore {
           release();
         }
       };
-      return { path: workspace, mode: "normal", commit, discard, settleAndDiscard };
+      return { path: workspace, mode, commit, discard, settleAndDiscard };
     } catch (error) {
       if (attemptRoot) await rm(attemptRoot, { recursive: true, force: true }).catch(() => undefined);
       release();
@@ -309,8 +356,12 @@ export class AttemptWorkspaceStore {
     }
   }
 
-  private async acquireRelationship(userId: string, characterId: string): Promise<() => void> {
-    const relationshipKey = safeKey(userId, characterId);
+  private async acquireRelationship(
+    userId: string,
+    characterId: string,
+    authorityRoot: string,
+  ): Promise<() => void> {
+    const relationshipKey = safeKey(authorityRoot, userId, characterId);
     const previous = this.locks.get(relationshipKey) ?? Promise.resolve();
     const mine = deferredLock();
     const queued = previous.then(() => mine.promise);

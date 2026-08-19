@@ -11,6 +11,7 @@ const config = loadSidecarConfig();
 const plugin = Promise.resolve().then(() => loadIgrepPlugin(config.igrepPluginUrl));
 const workspaces = new AttemptWorkspaceStore({
   canonicalRoot: config.canonicalRoot,
+  shadowRoot: config.shadowRoot,
   privateRoot: config.privateRoot,
   memoryProbe: new IgrepMemoryProbe(config.igrepCommand),
 });

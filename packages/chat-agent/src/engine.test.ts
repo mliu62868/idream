@@ -95,7 +95,7 @@ class BlockingAdapter extends LlmAdapter {
   }
 }
 
-function invocation(memoryMode: "normal" | "private" = "private"): CompanionInvocation {
+function invocation(memoryMode: "normal" | "private" | "shadow" = "private"): CompanionInvocation {
   return {
     invocationId: `inv-${memoryMode}`,
     attemptId: `attempt-${memoryMode}`,
@@ -440,16 +440,19 @@ describe("programmatic DSH companion runtime", () => {
     expect(collected.some((frame) => frame.type === "event" && frame.event.type === "tool_finished")).toBe(true);
   });
 
-  it("does not promote a rejected turn even when the plugin writes on session disposal", async () => {
+  it.each(["normal", "shadow"] as const)(
+    "does not promote a rejected %s turn even when the plugin writes on session disposal",
+    async (memoryMode) => {
     const root = await mkdtemp(join(tmpdir(), "chat-agent-reject-"));
     temporary.push(root);
     const configs: Record<string, unknown>[] = [];
-    const run = invocation("normal");
+    const run = invocation(memoryMode);
     run.invocationId = "inv-reject";
     run.attemptId = "attempt-reject";
     const engine = new CompanionEngine({
       workspaces: new AttemptWorkspaceStore({
         canonicalRoot: join(root, "canonical"),
+        shadowRoot: join(root, "shadow"),
         privateRoot: join(root, "private"),
         memoryProbe: { status: async (workspace) => ({ dialogueFiles: await dialogueCount(workspace) }) },
       }),
@@ -495,6 +498,14 @@ describe("programmatic DSH companion runtime", () => {
       run.characterId,
     );
     expect(await dialogueCount(canonicalWorkspace)).toBe(0);
+    if (memoryMode === "shadow") {
+      const shadowWorkspace = relationshipWorkspacePath(
+        join(root, "shadow"),
+        run.userId,
+        run.characterId,
+      );
+      expect(await dialogueCount(shadowWorkspace)).toBe(0);
+    }
     expect(configs).toContainEqual(expect.objectContaining({
       ingest: true,
       wake: true,
@@ -502,7 +513,8 @@ describe("programmatic DSH companion runtime", () => {
       webTool: false,
     }));
     expect(collected.some((frame) => frame.type === "event" && frame.event.type === "failed")).toBe(true);
-  });
+    },
+  );
 
   it("promotes normal memory only after commit acceptance and observable ingest", async () => {
     const root = await mkdtemp(join(tmpdir(), "chat-agent-promote-"));

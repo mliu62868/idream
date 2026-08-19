@@ -357,6 +357,20 @@ export async function processGenerate(
     update: { runtimeTrace },
   });
 
+  const primaryStartedAt = Date.now();
+  const shadowExecution = companionRuntimeConfig.dshShadow.enabled &&
+      attemptRuntime.runtime === "native" &&
+      !authoritativeNoMemoryReply
+    ? runDshShadowTurn({
+        payload,
+        session,
+        prepared,
+        sidecarUrl: companionRuntimeConfig.sidecarUrl,
+        sidecarToken: companionRuntimeConfig.sidecarToken,
+        deadlineMs: companionRuntimeConfig.deadlineMs,
+      })
+    : null;
+
   await appendStreamEvent(key, { type: "start", attempt: payload.attempt });
 
   if (attemptRuntime.runtime === "dsh" && !authoritativeNoMemoryReply) {
@@ -688,10 +702,225 @@ export async function processGenerate(
   }
 
   await scheduleOutboxDelivery();
+  if (shadowExecution) {
+    const shadow = await shadowExecution;
+    const shadowComparison = buildShadowComparison({
+      shadow,
+      primary: {
+        content,
+        provider: prepared.profile.provider,
+        model,
+        finishReason: truncated ? "truncated" : "stop",
+        usage,
+        latencyMs: Date.now() - primaryStartedAt,
+        toolCalls: imageToolCall ? 1 : 0,
+      },
+    });
+    await persistShadowComparison({
+      prisma,
+      payload,
+      terminalStatus: blocked ? "blocked" : "sent",
+      runtimeTraceFacts,
+      truncated,
+      shadowComparison,
+    });
+  }
   return { status: blocked ? "blocked" : "sent" };
   } finally {
     clearInterval(heartbeatTimer);
   }
+}
+
+interface DshShadowOutcome {
+  status: "completed" | "error";
+  invocationId: string;
+  attemptId: string;
+  latencyMs: number;
+  candidate: CompanionTerminalCandidate | null;
+  dryRunToolCalls: number;
+  error: { code: string; message: string } | null;
+}
+
+async function runDshShadowTurn(input: {
+  payload: GeneratePayload;
+  session: FinalizeInput["session"];
+  prepared: PreparedTurn;
+  sidecarUrl: string;
+  sidecarToken: string;
+  deadlineMs: number;
+}): Promise<DshShadowOutcome> {
+  const startedAt = Date.now();
+  const attemptId = `shadow:${input.payload.assistantMessageId}:${input.payload.attempt}`;
+  const invocationId = `shadow:inv:${input.payload.assistantMessageId}:${input.payload.attempt}`;
+  const invocation: CompanionInvocation = {
+    invocationId,
+    attemptId,
+    sessionId: `shadow:${input.payload.sessionId}`,
+    userId: input.session.userId,
+    characterId: input.session.characterId,
+    preparedTurn: toPreparedTurnWire(input.prepared),
+    memoryMode: "shadow",
+    deadlineAt: new Date(Date.now() + input.deadlineMs).toISOString(),
+  };
+  const runtime = new DshCompanionRuntime({
+    baseUrl: input.sidecarUrl,
+    token: input.sidecarToken,
+  });
+  let candidate: CompanionTerminalCandidate | null = null;
+  let eventError: { code: string; message: string } | null = null;
+  let dryRunToolCalls = 0;
+  try {
+    await runtime.run(invocation, {
+      emit(event) {
+        if (event.type === "terminal_candidate") candidate = event.candidate;
+        if (event.type === "failed") {
+          eventError = {
+            code: event.error.code,
+            message: shadowErrorMessage(event.error.message),
+          };
+        }
+      },
+      async executeTool(call) {
+        dryRunToolCalls += 1;
+        return {
+          attemptId: call.attemptId,
+          callId: call.callId,
+          name: call.name,
+          outcome: "succeeded",
+          output: {
+            status: "shadow_dry_run",
+            effectCreated: false,
+          },
+        };
+      },
+      async commit(observed) {
+        if (candidate && stableJson(candidate) !== stableJson(observed)) {
+          eventError = {
+            code: "shadow_terminal_identity_mismatch",
+            message: "shadow commit candidate differed from the observed terminal event",
+          };
+          candidate = null;
+        } else {
+          candidate = observed;
+        }
+        return rejectedCommit(
+          attemptId,
+          "shadow_terminal_observed",
+          "shadow terminal is comparison-only and cannot commit",
+        );
+      },
+    }, AbortSignal.timeout(input.deadlineMs));
+  } catch (error) {
+    eventError = {
+      code: "shadow_runtime_error",
+      message: shadowErrorMessage(error instanceof Error ? error.message : String(error)),
+    };
+  }
+  const observed = candidate as CompanionTerminalCandidate | null;
+  return {
+    status: observed ? "completed" : "error",
+    invocationId,
+    attemptId,
+    latencyMs: Math.max(0, Date.now() - startedAt),
+    candidate: observed,
+    dryRunToolCalls,
+    error: observed ? null : eventError ?? {
+      code: "shadow_terminal_missing",
+      message: "shadow runtime ended without a terminal candidate",
+    },
+  };
+}
+
+function buildShadowComparison(input: {
+  primary: {
+    content: string;
+    provider: string;
+    model: string;
+    finishReason: "stop" | "truncated";
+    usage: { promptTokens: number; completionTokens: number };
+    latencyMs: number;
+    toolCalls: number;
+  };
+  shadow: DshShadowOutcome;
+}): Record<string, unknown> {
+  const shadow = input.shadow.candidate;
+  return {
+    schemaVersion: 1,
+    status: input.shadow.status,
+    invocationId: input.shadow.invocationId,
+    attemptId: input.shadow.attemptId,
+    primary: {
+      provider: input.primary.provider,
+      model: input.primary.model,
+      textDigest: digestText(input.primary.content),
+      textLength: input.primary.content.length,
+      finishReason: input.primary.finishReason,
+      usage: input.primary.usage,
+      latencyMs: input.primary.latencyMs,
+      toolCalls: input.primary.toolCalls,
+    },
+    shadow: shadow
+      ? {
+          provider: shadow.provider,
+          model: shadow.model,
+          textDigest: digestText(shadow.content),
+          textLength: shadow.content.length,
+          finishReason: shadow.finishReason,
+          usage: shadow.usage,
+          latencyMs: input.shadow.latencyMs,
+          toolCalls: shadow.execution.toolCalls,
+          dryRunToolCalls: input.shadow.dryRunToolCalls,
+          steps: shadow.execution.steps,
+        }
+      : null,
+    ...(input.shadow.error ? { error: input.shadow.error } : {}),
+    textDigestEqual: shadow
+      ? digestText(input.primary.content) === digestText(shadow.content)
+      : false,
+  };
+}
+
+async function persistShadowComparison(input: {
+  prisma: ChatPrismaClient;
+  payload: GeneratePayload;
+  terminalStatus: "sent" | "blocked";
+  runtimeTraceFacts: Record<string, unknown>;
+  truncated: boolean;
+  shadowComparison: Record<string, unknown>;
+}): Promise<void> {
+  const trace = JSON.parse(JSON.stringify({
+    ...input.runtimeTraceFacts,
+    ...(input.truncated ? { truncated: true } : {}),
+    shadowComparison: input.shadowComparison,
+  })) as Prisma.InputJsonValue;
+  try {
+    const updated = await input.prisma.message.updateMany({
+      where: {
+        id: input.payload.assistantMessageId,
+        status: input.terminalStatus,
+        attempt: input.payload.attempt,
+      },
+      data: { runtimeTrace: trace },
+    });
+    if (updated.count === 0) return;
+    await input.prisma.messageVersion.update({
+      where: { id: `mv:${input.payload.assistantMessageId}:${input.payload.attempt}` },
+      data: { runtimeTrace: trace },
+    });
+  } catch (error) {
+    logger.warn(
+      { err: error, assistantMessageId: input.payload.assistantMessageId },
+      "DSH shadow comparison persistence failed",
+    );
+  }
+}
+
+function digestText(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function shadowErrorMessage(value: string): string {
+  return value.replace(/\s+/g, " ").trim().slice(0, 300) || "unknown shadow error";
 }
 
 interface DshTurnInput {

@@ -346,6 +346,30 @@ function installDshRolloutEnv(): () => void {
   };
 }
 
+function installDshShadowEnv(): () => void {
+  const previous = {
+    runtime: process.env.CHAT_COMPANION_RUNTIME,
+    memory: process.env.CHAT_MEMORY_BACKEND,
+    token: process.env.DSH_AGENT_TOKEN,
+    shadow: process.env.CHAT_COMPANION_DSH_SHADOW_ENABLED,
+  };
+  process.env.CHAT_COMPANION_RUNTIME = "native";
+  process.env.CHAT_MEMORY_BACKEND = "legacy";
+  process.env.DSH_AGENT_TOKEN = "test-shadow-sidecar-token";
+  process.env.CHAT_COMPANION_DSH_SHADOW_ENABLED = "true";
+  return () => {
+    for (const [name, value] of Object.entries({
+      CHAT_COMPANION_RUNTIME: previous.runtime,
+      CHAT_MEMORY_BACKEND: previous.memory,
+      DSH_AGENT_TOKEN: previous.token,
+      CHAT_COMPANION_DSH_SHADOW_ENABLED: previous.shadow,
+    })) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  };
+}
+
 describe("chat generate agent image tool", () => {
   beforeEach(() => {
     completeMock.mockReset();
@@ -363,6 +387,159 @@ describe("chat generate agent image tool", () => {
     buildContextMock.mockResolvedValue(context);
     moderationMock.mockResolvedValue({ status: "passed", confidence: 0.5 });
     supportsToolsState.value = true;
+  });
+
+  it("delivers only native output while auditing a dry-run DSH shadow", async () => {
+    const restoreEnv = installDshShadowEnv();
+    let shadowToolResult: unknown;
+    let shadowCommitAck: unknown;
+    try {
+      streamMock.mockImplementation(async function* nativeStream() {
+        yield {
+          delta: "native delivery",
+          done: true,
+          usage: { promptTokens: 12, completionTokens: 3 },
+        };
+      });
+      dshRunMock.mockImplementation(async (invocation, port) => {
+        expect(invocation).toMatchObject({
+          memoryMode: "shadow",
+          attemptId: "shadow:msg_assistant:1",
+          invocationId: "shadow:inv:msg_assistant:1",
+        });
+        shadowToolResult = await port.executeTool({
+          attemptId: invocation.attemptId,
+          callId: "shadow-call-1",
+          name: "generate_image_async",
+          arguments: { prompt: "Mira beside the blue observatory window" },
+        });
+        const candidate = {
+          attemptId: invocation.attemptId,
+          content: "shadow candidate",
+          finishReason: "stop" as const,
+          provider: "mock",
+          model: "local-model",
+          usage: { promptTokens: 11, completionTokens: 4, reasoningTokens: 2 },
+          execution: { steps: 2, toolCalls: 1 },
+          completedAt: new Date().toISOString(),
+        };
+        await port.emit({
+          type: "terminal_candidate",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 1,
+          occurredAt: new Date().toISOString(),
+          candidate,
+        });
+        shadowCommitAck = await port.commit(candidate);
+      });
+      const { prisma, messageUpdates, rootMessageUpdates, attachmentCreates } = fakePrisma();
+
+      await expect(processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        prisma,
+        { projectorPrisma: prisma },
+      )).resolves.toEqual({ status: "sent" });
+
+      expect(finalizedMessageUpdate(messageUpdates)).toMatchObject({
+        status: "sent",
+        content: "native delivery",
+      });
+      expect(attachmentCreates).toEqual([]);
+      expect(shadowToolResult).toMatchObject({
+        outcome: "succeeded",
+        output: { status: "shadow_dry_run", effectCreated: false },
+      });
+      expect(shadowCommitAck).toMatchObject({
+        accepted: false,
+        error: { code: "shadow_terminal_observed" },
+      });
+      const deliveredDeltas = (appendStreamEventMock.mock.calls as unknown[][])
+        .map((call) => call[1] as { type?: string; delta?: string })
+        .filter((event) => event.type === "delta")
+        .map((event) => event.delta);
+      expect(deliveredDeltas).toEqual(["native delivery"]);
+      expect(rootMessageUpdates).toContainEqual(expect.objectContaining({
+        data: {
+          runtimeTrace: expect.objectContaining({
+            schemaVersion: 1,
+            attempt: 1,
+            assistantMessageId: "msg_assistant",
+            userMessageId: "msg_user",
+            profile: expect.objectContaining({ model: "local-model" }),
+            trace: expect.objectContaining({ soulFingerprint: expect.any(String) }),
+            budget: expect.objectContaining({ usedInputTokens: expect.any(Number) }),
+            companionRuntime: expect.objectContaining({ runtime: "native" }),
+            scene: null,
+            outputAuthority: "model",
+            shadowComparison: expect.objectContaining({
+              schemaVersion: 1,
+              status: "completed",
+              primary: expect.objectContaining({
+                textDigest: "851477efacde2d6eadbb48983aed7bd31d03def3f94ed7b06534cff9560f2bc4",
+                textLength: 15,
+                finishReason: "stop",
+                usage: { promptTokens: 12, completionTokens: 3 },
+                toolCalls: 0,
+                latencyMs: expect.any(Number),
+              }),
+              shadow: expect.objectContaining({
+                textDigest: "8fe9189530e7ad5f270b71ea233b15564f619476fbb6e5349baac7c8b1cd3126",
+                textLength: 16,
+                finishReason: "stop",
+                usage: { promptTokens: 11, completionTokens: 4, reasoningTokens: 2 },
+                toolCalls: 1,
+                latencyMs: expect.any(Number),
+              }),
+            }),
+          }),
+        },
+      }));
+    } finally {
+      restoreEnv();
+    }
+  });
+
+  it("keeps the native terminal successful when DSH shadow fails", async () => {
+    const restoreEnv = installDshShadowEnv();
+    try {
+      streamMock.mockImplementation(async function* nativeStream() {
+        yield { delta: "native survives", done: true };
+      });
+      dshRunMock.mockRejectedValue(new Error("shadow sidecar unavailable"));
+      const { prisma, messageUpdates, rootMessageUpdates } = fakePrisma();
+
+      await expect(processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        prisma,
+        { projectorPrisma: prisma },
+      )).resolves.toEqual({ status: "sent" });
+
+      expect(finalizedMessageUpdate(messageUpdates)).toMatchObject({
+        status: "sent",
+        content: "native survives",
+      });
+      expect(rootMessageUpdates).toContainEqual(expect.objectContaining({
+        data: {
+          runtimeTrace: expect.objectContaining({
+            shadowComparison: expect.objectContaining({
+              status: "error",
+              shadow: null,
+              error: {
+                code: "shadow_runtime_error",
+                message: "shadow sidecar unavailable",
+              },
+            }),
+          }),
+        },
+      }));
+      expect(appendStreamEventMock).toHaveBeenCalledWith(
+        "chat:stream:msg_assistant",
+        expect.objectContaining({ type: "done" }),
+      );
+    } finally {
+      restoreEnv();
+    }
   });
 
   it("routes a pinned DSH attempt through the Chat commit port before SSE done", async () => {

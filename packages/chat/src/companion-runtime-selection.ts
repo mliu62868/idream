@@ -31,6 +31,9 @@ export interface CompanionRuntimeConfig {
     thresholdBps: number;
     allowlist: readonly string[];
   };
+  dshShadow: {
+    enabled: boolean;
+  };
 }
 
 export interface CompanionAttemptRuntime {
@@ -99,13 +102,21 @@ export function resolveCompanionRuntimeConfig(
     source.CHAT_COMPANION_DSH_ROLLOUT_ALLOWLIST,
   );
   const rolloutSalt = source.CHAT_COMPANION_DSH_ROLLOUT_SALT?.trim() ?? "";
+  const shadowEnabled = parseBoolean(
+    source.CHAT_COMPANION_DSH_SHADOW_ENABLED,
+    false,
+    "CHAT_COMPANION_DSH_SHADOW_ENABLED",
+  );
   if (runtime === "native" && (thresholdBps !== 0 || rolloutAllowlist.length !== 0)) {
     throw new Error(
       "DSH rollout must be empty while CHAT_COMPANION_RUNTIME=native",
     );
   }
+  if (runtime === "dsh" && shadowEnabled) {
+    throw new Error("DSH shadow requires CHAT_COMPANION_RUNTIME=native");
+  }
   const sidecarToken = source.DSH_AGENT_TOKEN?.trim() ?? "";
-  if (runtime === "dsh" && !sidecarToken) {
+  if ((runtime === "dsh" || shadowEnabled) && !sidecarToken) {
     throw new Error("Missing required env var DSH_AGENT_TOKEN");
   }
   if (runtime === "dsh" && !rolloutSalt) {
@@ -137,6 +148,7 @@ export function resolveCompanionRuntimeConfig(
       thresholdBps,
       allowlist: rolloutAllowlist,
     },
+    dshShadow: { enabled: shadowEnabled },
   };
 }
 
@@ -365,6 +377,17 @@ function parseIntegerInRange(
     throw new Error(`${name} must be an integer in ${min}..${max}`);
   }
   return parsed;
+}
+
+function parseBoolean(
+  value: string | undefined,
+  fallback: boolean,
+  name: string,
+): boolean {
+  if (value === undefined) return fallback;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new Error(`${name} must be true or false`);
 }
 
 function isIntegerInRange(value: unknown, min: number, max: number): value is number {

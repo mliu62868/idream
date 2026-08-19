@@ -451,7 +451,7 @@ export class CompanionEngine implements InvocationService {
       });
       await ctx.plugin(ToolRuntime, {});
       await ctx.plugin(AgentRegistry);
-      const pluginConfig = invocation.memoryMode === "normal" ? {
+      const pluginConfig = invocation.memoryMode !== "private" ? {
         command: this.options.igrepCommand,
         ...NORMAL_IGREP_CONFIG,
       } : {

@@ -1,10 +1,11 @@
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 
 export interface SidecarConfig {
   host: string;
   port: number;
   authToken: string;
   canonicalRoot: string;
+  shadowRoot: string;
   privateRoot: string;
   igrepCommand: string;
   igrepPluginUrl: string;
@@ -42,6 +43,15 @@ function absolutePath(value: string, name: string): string {
   return path;
 }
 
+function pathsOverlap(left: string, right: string): boolean {
+  const path = relative(left, right);
+  return path === "" || (
+    !path.startsWith(`..${sep}`) &&
+    path !== ".." &&
+    !path.startsWith(sep)
+  );
+}
+
 export function loadSidecarConfig(env: NodeJS.ProcessEnv = process.env): SidecarConfig {
   const providerOnly = env.DSH_OPENROUTER_PROVIDER_ONLY
     ?.split(",")
@@ -51,19 +61,36 @@ export function loadSidecarConfig(env: NodeJS.ProcessEnv = process.env): Sidecar
   if (readyProvider === "openrouter" && !providerOnly?.length) {
     throw new Error("DSH_OPENROUTER_PROVIDER_ONLY is required for OpenRouter");
   }
+  const canonicalRoot = absolutePath(
+    env.DSH_IGREP_CANONICAL_ROOT ?? "data/chat-agent-memory",
+    "DSH_IGREP_CANONICAL_ROOT",
+  );
+  const privateRoot = absolutePath(
+    env.DSH_IGREP_PRIVATE_ROOT ?? "data/chat-agent-private",
+    "DSH_IGREP_PRIVATE_ROOT",
+  );
+  const shadowRoot = absolutePath(
+    env.DSH_IGREP_SHADOW_ROOT ?? "data/chat-agent-shadow",
+    "DSH_IGREP_SHADOW_ROOT",
+  );
+  if (
+    pathsOverlap(canonicalRoot, shadowRoot) ||
+    pathsOverlap(shadowRoot, canonicalRoot) ||
+    pathsOverlap(privateRoot, shadowRoot) ||
+    pathsOverlap(shadowRoot, privateRoot)
+  ) {
+    throw new Error(
+      "DSH_IGREP_SHADOW_ROOT must be disjoint from canonical and private roots",
+    );
+  }
   return {
     host: env.CHAT_AGENT_HOST?.trim() || "127.0.0.1",
     port: tcpPort(env.CHAT_AGENT_PORT),
     // INVARIANT: Chat and sidecar authenticate one bridge with one shared secret.
     authToken: required(env, "DSH_AGENT_TOKEN"),
-    canonicalRoot: absolutePath(
-      env.DSH_IGREP_CANONICAL_ROOT ?? "data/chat-agent-memory",
-      "DSH_IGREP_CANONICAL_ROOT",
-    ),
-    privateRoot: absolutePath(
-      env.DSH_IGREP_PRIVATE_ROOT ?? "data/chat-agent-private",
-      "DSH_IGREP_PRIVATE_ROOT",
-    ),
+    canonicalRoot,
+    shadowRoot,
+    privateRoot,
     igrepCommand: env.DSH_IGREP_COMMAND?.trim() || "igrep",
     igrepPluginUrl: required(env, "DSH_IGREP_PLUGIN_URL"),
     bootstrapStatePath: absolutePath(

@@ -13,6 +13,7 @@ describe("companion runtime selection", () => {
       runtime: "native",
       memoryBackend: "legacy",
       dshRollout: { thresholdBps: 0, allowlist: [] },
+      dshShadow: { enabled: false },
     });
     expect(selectCompanionRuntimeForAttempt({
       config,
@@ -29,6 +30,31 @@ describe("companion runtime selection", () => {
         bucketBps: null,
       },
     });
+  });
+
+  it("enables DSH shadow only as an explicit token-authenticated native comparison", () => {
+    expect(resolveCompanionRuntimeConfig({
+      CHAT_COMPANION_DSH_SHADOW_ENABLED: "true",
+      DSH_AGENT_TOKEN: "secret",
+    })).toMatchObject({
+      runtime: "native",
+      memoryBackend: "legacy",
+      dshShadow: { enabled: true },
+    });
+    expect(() => resolveCompanionRuntimeConfig({
+      CHAT_COMPANION_DSH_SHADOW_ENABLED: "true",
+    })).toThrow(/DSH_AGENT_TOKEN/);
+    expect(() => resolveCompanionRuntimeConfig({
+      CHAT_COMPANION_DSH_SHADOW_ENABLED: "1",
+      DSH_AGENT_TOKEN: "secret",
+    })).toThrow(/SHADOW_ENABLED/);
+    expect(() => resolveCompanionRuntimeConfig({
+      CHAT_COMPANION_RUNTIME: "dsh",
+      CHAT_MEMORY_BACKEND: "igrep-dsh",
+      CHAT_COMPANION_DSH_SHADOW_ENABLED: "true",
+      DSH_AGENT_TOKEN: "secret",
+      CHAT_COMPANION_DSH_ROLLOUT_SALT: "phase4-stable-salt",
+    })).toThrow(/shadow.*native/i);
   });
 
   it("fails closed when DSH is paired with the legacy memory workers", () => {

@@ -100,7 +100,7 @@ const preparedTurn = {
   },
 };
 
-function invocation(memoryMode: "normal" | "private") {
+function invocation(memoryMode: "normal" | "private" | "shadow") {
   return {
     invocationId: `invocation-${memoryMode}`,
     attemptId: `attempt-${memoryMode}`,
@@ -114,7 +114,7 @@ function invocation(memoryMode: "normal" | "private") {
 }
 
 describe("companion runtime stable wire contract", () => {
-  it.each(["normal", "private"] as const)(
+  it.each(["normal", "private", "shadow"] as const)(
     "round-trips a complete %s invocation without importing runtime implementation types",
     (memoryMode) => {
       const parsed = companionInvocationSchema.parse(invocation(memoryMode));

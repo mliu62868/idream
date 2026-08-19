@@ -47,6 +47,10 @@ after Chat accepts the terminal candidate and public `igrep memory-status` prove
 dialogue ingest and profile maintenance. Rejection, cancellation, deadline, shutdown, or
 an unverifiable/failed maintenance pass deletes the attempt instead. Private turns disable
 all igrep search, memory, ingest, and wake surfaces and delete their temporary directory.
+Shadow turns use a third, disjoint root. They may exercise igrep search, ingest, and wake
+inside that disposable workspace for comparison. Chat rejects every shadow terminal,
+and the sidecar workspace refuses promotion, so shadow state can never replace canonical
+relationship memory.
 
 ## Verification
 
