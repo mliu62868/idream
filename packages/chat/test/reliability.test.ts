@@ -20,6 +20,7 @@ import {
   reprocessPendingInbox,
 } from "../src/inbox.js";
 import { reconcile } from "../src/reconcile.js";
+import { settleCompanionMemoryRepairTraces } from "../src/companion-memory-repair.js";
 import { rollSessionLog, pruneExpiredSegments } from "../src/maintain.js";
 import { deleteMessage, deleteSession, deleteAccount } from "../src/privacy.js";
 import { archiveSession } from "../src/service.js";
@@ -565,6 +566,14 @@ describe("reconcile (P0-4 convergence)", () => {
         usage: { promptTokens: 12, completionTokens: 4, reasoningTokens: 0 },
         attribution: { requestId: "request-repair", actualProvider: "Together" },
       },
+      primaryTelemetry: {
+        schemaVersion: 1,
+        runtime: "dsh",
+        startedAt: "2026-08-19T12:00:00.000Z",
+        totalMs: 1_000,
+        retryCount: 0,
+        memory: { outcome: "failed" },
+      },
     };
     await prisma.chatSession.create({
       data: { id: sessionId, userId, characterId, status: "active" },
@@ -626,21 +635,27 @@ describe("reconcile (P0-4 convergence)", () => {
       url: process.env.DSH_AGENT_URL,
       rolloutSalt: process.env.CHAT_COMPANION_DSH_ROLLOUT_SALT,
       rolloutBps: process.env.CHAT_COMPANION_DSH_ROLLOUT_BPS,
+      rolloutAllowlist: process.env.CHAT_COMPANION_DSH_ROLLOUT_ALLOWLIST,
+      shadow: process.env.CHAT_COMPANION_DSH_SHADOW_ENABLED,
     };
-    process.env.CHAT_COMPANION_RUNTIME = "dsh";
-    process.env.CHAT_MEMORY_BACKEND = "igrep-dsh";
+    process.env.CHAT_COMPANION_RUNTIME = "native";
+    process.env.CHAT_MEMORY_BACKEND = "legacy";
     process.env.DSH_AGENT_TOKEN = "repair-token";
     process.env.DSH_AGENT_URL = `http://127.0.0.1:${address.port}`;
-    process.env.CHAT_COMPANION_DSH_ROLLOUT_SALT = "repair-stable-salt";
-    process.env.CHAT_COMPANION_DSH_ROLLOUT_BPS = "10000";
+    delete process.env.CHAT_COMPANION_DSH_ROLLOUT_SALT;
+    process.env.CHAT_COMPANION_DSH_ROLLOUT_BPS = "0";
+    delete process.env.CHAT_COMPANION_DSH_ROLLOUT_ALLOWLIST;
+    process.env.CHAT_COMPANION_DSH_SHADOW_ENABLED = "false";
     try {
       const result = await reconcile(
         prisma,
         new Date("2026-08-19T12:10:00.000Z"),
         projectorPrisma,
       );
-      expect(result.companionMemoryRepaired).toBe(1);
-      expect(result.companionMemoryRepairErrors).toBe(0);
+      expect({
+        repaired: result.companionMemoryRepaired,
+        errors: result.companionMemoryRepairErrors,
+      }).toEqual({ repaired: 1, errors: 0 });
     } finally {
       await new Promise<void>((resolve, reject) => sidecar.close((error) =>
         error ? reject(error) : resolve()));
@@ -650,6 +665,8 @@ describe("reconcile (P0-4 convergence)", () => {
       restoreEnv("DSH_AGENT_URL", prior.url);
       restoreEnv("CHAT_COMPANION_DSH_ROLLOUT_SALT", prior.rolloutSalt);
       restoreEnv("CHAT_COMPANION_DSH_ROLLOUT_BPS", prior.rolloutBps);
+      restoreEnv("CHAT_COMPANION_DSH_ROLLOUT_ALLOWLIST", prior.rolloutAllowlist);
+      restoreEnv("CHAT_COMPANION_DSH_SHADOW_ENABLED", prior.shadow);
     }
 
     expect(received).toEqual({
@@ -677,6 +694,9 @@ describe("reconcile (P0-4 convergence)", () => {
       select: { runtimeTrace: true },
     });
     expect(assistant.runtimeTrace).toEqual(expect.objectContaining({
+      primaryTelemetry: expect.objectContaining({
+        memory: { outcome: "ingested_rebuilt", settleLagMs: 599_000 },
+      }),
       companion: expect.objectContaining({
         memoryIngestOutcome: "ingested_rebuilt",
         attribution: { requestId: "request-repair", actualProvider: "Together" },
@@ -684,6 +704,63 @@ describe("reconcile (P0-4 convergence)", () => {
     }));
     expect(version.runtimeTrace).toEqual(assistant.runtimeTrace);
     await obliterate(CHAT_QUEUES.memoryExtract);
+  });
+
+  it("rolls back the Message trace when the selected Version CAS is missing", async () => {
+    const sessionId = "rel_dsh_repair_atomic_session";
+    const assistantMessageId = "rel_dsh_repair_atomic_message";
+    const runtimeTrace = {
+      schemaVersion: 1,
+      companionRuntime: {
+        runtime: "dsh",
+        memoryBackend: "igrep-dsh",
+        profile: "idream-companion-memory",
+        private: false,
+      },
+      companion: {
+        invocationId: "rel-dsh-repair-atomic-invocation",
+        memoryIngestOutcome: "failed",
+      },
+      primaryTelemetry: {
+        schemaVersion: 1,
+        runtime: "dsh",
+        startedAt: "2026-08-19T12:00:00.000Z",
+        totalMs: 1_000,
+        retryCount: 0,
+        memory: { outcome: "failed" },
+      },
+    };
+    await prisma.chatSession.create({
+      data: { id: sessionId, userId: USER, characterId: CHAR, status: "active" },
+    });
+    await prisma.message.create({
+      data: {
+        id: assistantMessageId,
+        sessionId,
+        role: "assistant",
+        content: "terminal reply",
+        status: "sent",
+        safetyStatus: "passed",
+        attempt: 1,
+        memoryAuthority: "enabled",
+        runtimeTrace,
+      },
+    });
+
+    try {
+      await expect(settleCompanionMemoryRepairTraces(
+        prisma,
+        [assistantMessageId],
+        "2026-08-19T12:10:00.000Z",
+      )).rejects.toThrow("selected MessageVersion CAS failed");
+      await expect(prisma.message.findUniqueOrThrow({
+        where: { id: assistantMessageId },
+        select: { runtimeTrace: true },
+      })).resolves.toEqual({ runtimeTrace });
+    } finally {
+      await prisma.message.deleteMany({ where: { id: assistantMessageId } });
+      await prisma.chatSession.deleteMany({ where: { id: sessionId } });
+    }
   });
 
   it("selects lagging enabled turns before LIMIT and excludes legacy unknown turns", async () => {

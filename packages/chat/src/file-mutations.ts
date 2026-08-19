@@ -840,9 +840,6 @@ function appliedFileMutationReceipt(
       return {
         kind: mutation.kind,
         characterId: mutation.characterId,
-        ...(mutation.companionCleanupRequired !== undefined
-          ? { companionCleanupRequired: mutation.companionCleanupRequired }
-          : {}),
       };
     case "trace_append":
       return {
@@ -853,9 +850,6 @@ function appliedFileMutationReceipt(
       return {
         kind: mutation.kind,
         deletionRequestEventId: mutation.deletionRequestEventId,
-        ...(mutation.companionCleanupRequired !== undefined
-          ? { companionCleanupRequired: mutation.companionCleanupRequired }
-          : {}),
         ...(mutation.requestBound ? { requestBound: true } : {}),
       };
   }

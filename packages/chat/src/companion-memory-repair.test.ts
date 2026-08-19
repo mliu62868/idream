@@ -18,6 +18,14 @@ function trace(outcome: string, privateMode = false) {
       invocationId: "invocation-1",
       memoryIngestOutcome: outcome,
     },
+    primaryTelemetry: {
+      schemaVersion: 1,
+      runtime: "dsh",
+      startedAt: "2026-08-19T12:00:00.000Z",
+      totalMs: 1_000,
+      retryCount: 0,
+      memory: { outcome },
+    },
   };
 }
 
@@ -45,6 +53,12 @@ describe("durable companion memory repair", () => {
       "2026-08-19T12:10:00.000Z",
     )).toEqual(expect.objectContaining({
       dsh: { model: "deepseek/test" },
+      primaryTelemetry: expect.objectContaining({
+        memory: {
+          outcome: "ingested_rebuilt",
+          settleLagMs: 599_000,
+        },
+      }),
       companion: expect.objectContaining({
         memoryIngestOutcome: "ingested_rebuilt",
         usage: { promptTokens: 10, completionTokens: 4 },

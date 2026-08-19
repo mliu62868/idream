@@ -42,8 +42,34 @@ export function repairedCompanionMemoryTrace(
   }
   const root = record(runtimeTrace)!;
   const companion = record(root.companion)!;
+  const primaryTelemetry = record(root.primaryTelemetry);
+  const priorMemoryTelemetry = record(primaryTelemetry?.memory);
+  const startedAt = typeof primaryTelemetry?.startedAt === "string"
+    ? Date.parse(primaryTelemetry.startedAt)
+    : Number.NaN;
+  const totalMs = typeof primaryTelemetry?.totalMs === "number"
+    ? primaryTelemetry.totalMs
+    : Number.NaN;
+  const repairedAtMs = Date.parse(repairedAt);
+  const settleLagMs = Number.isFinite(startedAt)
+      && Number.isFinite(totalMs)
+      && Number.isFinite(repairedAtMs)
+    ? Math.max(0, repairedAtMs - (startedAt + totalMs))
+    : null;
   return JSON.parse(JSON.stringify({
     ...root,
+    ...(primaryTelemetry
+      ? {
+          primaryTelemetry: {
+            ...primaryTelemetry,
+            memory: {
+              ...priorMemoryTelemetry,
+              outcome: "ingested_rebuilt",
+              ...(settleLagMs === null ? {} : { settleLagMs }),
+            },
+          },
+        }
+      : {}),
     companion: {
       ...companion,
       memoryIngestOutcome: "ingested_rebuilt",
@@ -88,7 +114,10 @@ export async function repairCompanionMemoryProjections(
   now: Date,
 ): Promise<CompanionMemoryRepairResult> {
   const config = env.COMPANION_RUNTIME_CONFIG;
-  if (config.runtime !== "dsh") return { repaired: 0, errors: 0 };
+  // INVARIANT: rollback changes routing for new attempts, not ownership of
+  // already-committed DSH workspaces. Retained sidecar authority must keep
+  // repair/rebuild active until those historical traces settle.
+  if (!config.sidecarToken) return { repaired: 0, errors: 0 };
   const pendingCutoff = new Date(now.getTime() - config.deadlineMs - 30_000);
   const candidates = await prisma.$queryRaw<RepairCandidate[]>`
     SELECT
@@ -159,50 +188,70 @@ export async function repairCompanionMemoryProjections(
       );
       if (!recorded) continue;
 
-      const repairedAt = now.toISOString();
-      await prisma.$transaction(async (tx) => {
-        const current = await tx.message.findMany({
-          where: {
-            id: { in: group.messageIds },
-            role: "assistant",
-            status: "sent",
-            deletedAt: null,
-            memoryAuthority: "enabled",
-          },
-          select: { id: true, attempt: true, runtimeTrace: true },
-        });
-        for (const message of current) {
-          if (!needsCompanionMemoryRepair(message.runtimeTrace)) continue;
-          const runtimeTrace = repairedCompanionMemoryTrace(
-            message.runtimeTrace,
-            repairedAt,
-          );
-          const claimed = await tx.message.updateMany({
-            where: {
-              id: message.id,
-              attempt: message.attempt,
-              status: "sent",
-              deletedAt: null,
-            },
-            data: { runtimeTrace },
-          });
-          if (claimed.count !== 1) continue;
-          await tx.messageVersion.updateMany({
-            where: {
-              id: `mv:${message.id}:${message.attempt}`,
-              messageId: message.id,
-              attempt: message.attempt,
-            },
-            data: { runtimeTrace },
-          });
-          repaired += 1;
-        }
-      });
+      repaired += await settleCompanionMemoryRepairTraces(
+        prisma,
+        group.messageIds,
+        now.toISOString(),
+      );
     } catch {
       errors += 1;
     }
   }
   return { repaired, errors };
+}
+
+/** Message and its selected attempt Version are one observable repair fact. */
+export async function settleCompanionMemoryRepairTraces(
+  prisma: ChatPrismaClient,
+  messageIds: readonly string[],
+  repairedAt: string,
+): Promise<number> {
+  return prisma.$transaction(async (tx) => {
+    const current = await tx.message.findMany({
+      where: {
+        id: { in: [...messageIds] },
+        role: "assistant",
+        status: "sent",
+        deletedAt: null,
+        memoryAuthority: "enabled",
+      },
+      select: { id: true, attempt: true, runtimeTrace: true },
+    });
+    let repaired = 0;
+    for (const message of current) {
+      if (!needsCompanionMemoryRepair(message.runtimeTrace)) continue;
+      const runtimeTrace = repairedCompanionMemoryTrace(
+        message.runtimeTrace,
+        repairedAt,
+      );
+      const claimed = await tx.message.updateMany({
+        where: {
+          id: message.id,
+          attempt: message.attempt,
+          role: "assistant",
+          status: "sent",
+          deletedAt: null,
+          memoryAuthority: "enabled",
+        },
+        data: { runtimeTrace },
+      });
+      if (claimed.count !== 1) continue;
+      const versionClaimed = await tx.messageVersion.updateMany({
+        where: {
+          id: `mv:${message.id}:${message.attempt}`,
+          messageId: message.id,
+          attempt: message.attempt,
+          selected: true,
+        },
+        data: { runtimeTrace },
+      });
+      if (versionClaimed.count !== 1) {
+        throw new Error("companion memory repair selected MessageVersion CAS failed");
+      }
+      repaired += 1;
+    }
+    return repaired;
+  });
 }
 
 function record(value: unknown): Record<string, unknown> | null {

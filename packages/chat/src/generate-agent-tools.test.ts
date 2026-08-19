@@ -1241,6 +1241,114 @@ describe("chat generate agent image tool", () => {
     }
   });
 
+  it("clears provider failures when a complete DSH candidate is blocked locally", async () => {
+    const restoreEnv = installDshRolloutEnv();
+    try {
+      moderationMock.mockResolvedValue({
+        status: "blocked",
+        policyCode: "blocked_test",
+        confidence: 1,
+      });
+      dshRunMock.mockImplementation(async (invocation, port) => {
+        await port.emit({
+          type: "text_delta",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 1,
+          occurredAt: new Date().toISOString(),
+          delta: "complete blocked reply",
+        });
+        const candidate = {
+          attemptId: invocation.attemptId,
+          content: "complete blocked reply",
+          finishReason: "stop" as const,
+          provider: "mock",
+          model: "local-model",
+          usage: { promptTokens: 10, completionTokens: 4, reasoningTokens: 0 },
+          execution: { steps: 1, toolCalls: 0 },
+          completedAt: new Date().toISOString(),
+        };
+        await port.emit({
+          type: "terminal_candidate",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 2,
+          occurredAt: new Date().toISOString(),
+          candidate,
+        });
+        const ack = await port.commit(candidate);
+        if (!ack.accepted) throw new Error(ack.error.code);
+      });
+      const { prisma } = fakePrisma();
+
+      await expect(processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        prisma,
+        { projectorPrisma: prisma },
+      )).resolves.toEqual({ status: "blocked" });
+
+      expect(recordTurnSuccessMock).toHaveBeenCalledOnce();
+      expect(recordTurnFailureMock).not.toHaveBeenCalled();
+      expect(recordMemoryPromotionFailureMock).not.toHaveBeenCalled();
+    } finally {
+      restoreEnv();
+    }
+  });
+
+  it("clears provider failures after a complete DSH candidate loses the context CAS", async () => {
+    const restoreEnv = installDshRolloutEnv();
+    try {
+      dshRunMock.mockImplementation(async (invocation, port) => {
+        await port.emit({
+          type: "text_delta",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 1,
+          occurredAt: new Date().toISOString(),
+          delta: "complete stale reply",
+        });
+        const candidate = {
+          attemptId: invocation.attemptId,
+          content: "complete stale reply",
+          finishReason: "stop" as const,
+          provider: "mock",
+          model: "local-model",
+          usage: { promptTokens: 10, completionTokens: 4, reasoningTokens: 0 },
+          execution: { steps: 1, toolCalls: 0 },
+          completedAt: new Date().toISOString(),
+        };
+        await port.emit({
+          type: "terminal_candidate",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 2,
+          occurredAt: new Date().toISOString(),
+          candidate,
+        });
+        const ack = await port.commit(candidate);
+        if (!ack.accepted) throw new Error(ack.error.code);
+      });
+      const { prisma } = fakePrisma(
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        1n,
+      );
+
+      await expect(processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        prisma,
+        { projectorPrisma: prisma },
+      )).rejects.toThrow("context_changed");
+
+      expect(recordTurnSuccessMock).toHaveBeenCalledOnce();
+      expect(recordTurnFailureMock).not.toHaveBeenCalled();
+    } finally {
+      restoreEnv();
+    }
+  });
+
   it("fails a selected DSH attempt closed without invoking the native provider", async () => {
     const restoreEnv = installDshRolloutEnv();
     try {
@@ -1274,6 +1382,8 @@ describe("chat generate agent image tool", () => {
           }),
         }),
       }));
+      expect(recordTurnFailureMock).toHaveBeenCalledOnce();
+      expect(recordTurnSuccessMock).not.toHaveBeenCalled();
     } finally {
       restoreEnv();
     }

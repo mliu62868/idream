@@ -2130,6 +2130,11 @@ async function processDshCompanionTurn(
       if (memoryIngestOutcome === "ingested") {
         runtimeReadiness.recordMemoryPromotionSuccess();
       }
+    } else {
+      // Output moderation is Chat-local terminal policy. The provider returned
+      // a complete attributable candidate, so blocked delivery disproves any
+      // in-progress provider failure streak just as a sent reply does.
+      runtimeReadiness.recordTurnSuccess();
     }
     await appendStreamEvent(key, {
       type: "done",
@@ -2175,7 +2180,10 @@ async function processDshCompanionTurn(
     return { status: terminalStatus };
   }
 
-  if (terminalStatus === "skipped") return { status: "skipped" };
+  if (terminalStatus === "skipped") {
+    if (observedCandidate) runtimeReadiness.recordTurnSuccess();
+    return { status: "skipped" };
+  }
   const retryable = hasWorkerRetryRemaining(input.jobAttempt);
   const rejectionError = settledAck && !settledAck.accepted
     ? settledAck.error.code
@@ -2209,7 +2217,16 @@ async function processDshCompanionTurn(
     primaryTelemetry: failureTelemetry,
   };
   await persistFailedRuntimeTrace({ prisma, payload, runtimeTraceFacts: failureTrace });
-  runtimeReadiness.recordTurnFailure(runError ?? new Error("DSH returned without a terminal commit"));
+  const completeCandidateLostLocalCas = observedCandidate !== null
+    && (rejectionError === "context_changed" || rejectionError === "terminal_cas_conflict");
+  if (completeCandidateLostLocalCas) {
+    // CAS loss is local concurrency evidence, not provider health evidence.
+    runtimeReadiness.recordTurnSuccess();
+  } else {
+    runtimeReadiness.recordTurnFailure(
+      runError ?? new Error("DSH returned without a terminal commit"),
+    );
+  }
   if (!retryable) await failAssistant(prisma, payload.assistantMessageId);
   await appendStreamEvent(key, {
     type: "error",
