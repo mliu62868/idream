@@ -28,6 +28,7 @@ import {
   type CompanionTerminalCandidate,
   type CompanionToolCall,
   type CompanionToolResult,
+  type CompanionWorkspaceRebuild,
   type PreparedTurnMessage,
   type PreparedTurnProfile,
 } from "@idream/shared/chat/companion-runtime";
@@ -47,6 +48,12 @@ export interface CompanionEngineOptions {
   plugin(): Promise<IgrepPluginModule>;
   adapter(profile: PreparedTurnProfile): LlmAdapter;
   igrepCommand: string;
+  rebuilder?: {
+    rebuild(
+      workspace: string,
+      request: CompanionWorkspaceRebuild,
+    ): Promise<{ sessions: number; messages: number }>;
+  };
   maxSteps?: number;
 }
 
@@ -390,8 +397,9 @@ export async function probeCompanionBridges(invocation: CompanionInvocation): Pr
 
 export class CompanionEngine implements InvocationService {
   private readonly active = new Map<string, ActiveInvocation>();
-  private readonly purgingUsers = new Set<string>();
-  private readonly purgingRelationships = new Set<string>();
+  private readonly purgingUsers = new Map<string, number>();
+  private readonly purgingRelationships = new Map<string, number>();
+  private maintenanceTail = Promise.resolve();
   private closing = false;
 
   constructor(private readonly options: CompanionEngineOptions) {}
@@ -668,24 +676,83 @@ export class CompanionEngine implements InvocationService {
     const relationshipKey = request.scope === "relationship"
       ? `${request.userId}\0${request.characterId}`
       : undefined;
-    if (request.scope === "user") this.purgingUsers.add(userKey);
-    else this.purgingRelationships.add(relationshipKey!);
+    if (request.scope === "user") this.addFence(this.purgingUsers, userKey);
+    else this.addFence(this.purgingRelationships, relationshipKey!);
     try {
-      const matches = () => [...this.active.values()].filter(({ invocation }) =>
-        invocation.userId === request.userId
-        && (request.scope === "user" || invocation.characterId === request.characterId));
-      for (const active of matches()) active.cancel("user");
-      while (matches().length > 0) await new Promise((resolve) => setTimeout(resolve, 10));
-      return await this.options.workspaces.purge(request);
+      return await this.withMaintenance(async () => {
+        const matches = () => [...this.active.values()].filter(({ invocation }) =>
+          invocation.userId === request.userId
+          && (request.scope === "user" || invocation.characterId === request.characterId));
+        for (const active of matches()) active.cancel("user");
+        while (matches().length > 0) await new Promise((resolve) => setTimeout(resolve, 10));
+        return this.options.workspaces.purge(request);
+      });
     } finally {
-      if (request.scope === "user") this.purgingUsers.delete(userKey);
-      else this.purgingRelationships.delete(relationshipKey!);
+      if (request.scope === "user") this.removeFence(this.purgingUsers, userKey);
+      else this.removeFence(this.purgingRelationships, relationshipKey!);
+    }
+  }
+
+  async rebuild(
+    request: CompanionWorkspaceRebuild,
+  ): Promise<{ sessions: number; messages: number }> {
+    if (!this.options.rebuilder) throw new Error("igrep workspace rebuild is not configured");
+    const relationshipKey = `${request.userId}\0${request.characterId}`;
+    if (this.hasFence(this.purgingUsers, request.userId)
+      || this.hasFence(this.purgingRelationships, relationshipKey)) {
+      throw new Error("invocation workspace is already being rebuilt or purged");
+    }
+    this.addFence(this.purgingRelationships, relationshipKey);
+    try {
+      return await this.withMaintenance(async () => {
+        const matches = () => [...this.active.values()].filter(({ invocation }) =>
+          invocation.userId === request.userId
+          && invocation.characterId === request.characterId);
+        for (const active of matches()) active.cancel("user");
+        while (matches().length > 0) await new Promise((resolve) => setTimeout(resolve, 10));
+        return this.options.workspaces.rebuildRelationship(
+          request,
+          (workspace) => this.options.rebuilder!.rebuild(workspace, request),
+        );
+      });
+    } finally {
+      this.removeFence(this.purgingRelationships, relationshipKey);
     }
   }
 
   private isPurging(invocation: CompanionInvocation): boolean {
-    return this.purgingUsers.has(invocation.userId)
-      || this.purgingRelationships.has(`${invocation.userId}\0${invocation.characterId}`);
+    return this.hasFence(this.purgingUsers, invocation.userId)
+      || this.hasFence(
+        this.purgingRelationships,
+        `${invocation.userId}\0${invocation.characterId}`,
+      );
+  }
+
+  private addFence(fences: Map<string, number>, key: string): void {
+    fences.set(key, (fences.get(key) ?? 0) + 1);
+  }
+
+  private removeFence(fences: Map<string, number>, key: string): void {
+    const count = fences.get(key) ?? 0;
+    if (count <= 1) fences.delete(key);
+    else fences.set(key, count - 1);
+  }
+
+  private hasFence(fences: Map<string, number>, key: string): boolean {
+    return (fences.get(key) ?? 0) > 0;
+  }
+
+  /** Maintenance is rare; one process-wide queue makes purge/rebuild ordering explicit. */
+  private async withMaintenance<T>(run: () => Promise<T>): Promise<T> {
+    const previous = this.maintenanceTail;
+    const mine = Promise.withResolvers<void>();
+    this.maintenanceTail = previous.then(() => mine.promise);
+    await previous;
+    try {
+      return await run();
+    } finally {
+      mine.resolve();
+    }
   }
 
   async shutdown(): Promise<void> {
@@ -695,5 +762,6 @@ export class CompanionEngine implements InvocationService {
     while (this.active.size > 0) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
+    await this.maintenanceTail;
   }
 }

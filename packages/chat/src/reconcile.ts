@@ -15,6 +15,7 @@ import {
 import { enqueue } from "./queue.js";
 import { projectChatFileMutations } from "./file-mutations.js";
 import { loadSessionLinkage } from "./relationship-authority.js";
+import { repairCompanionMemoryProjections } from "./companion-memory-repair.js";
 import {
   CHAT_QUEUES,
   idempotencyKeys,
@@ -38,6 +39,8 @@ export async function reconcile(
   pendingFileMutations: number;
   oldestPendingFileMutationMs: number | null;
   unresolvedMemoryAuthorities: number;
+  companionMemoryRepaired: number;
+  companionMemoryRepairErrors: number;
   outboxDelivered: number;
   inboxApplied: number;
 }> {
@@ -69,6 +72,11 @@ export async function reconcile(
       fileProjectionErrors += 1;
     }
   }
+  const companionMemoryRepair = await repairCompanionMemoryProjections(
+    prisma,
+    projectorPrisma,
+    now,
+  );
 
   // `pending` is the durable queue intent. If the request committed while Redis
   // was unavailable (or the process died between commit and enqueue), redispatch
@@ -235,6 +243,8 @@ export async function reconcile(
       ? Math.max(0, now.getTime() - oldestPendingFileMutation.createdAt.getTime())
       : null,
     unresolvedMemoryAuthorities,
+    companionMemoryRepaired: companionMemoryRepair.repaired,
+    companionMemoryRepairErrors: companionMemoryRepair.errors,
     outboxDelivered: delivered,
     inboxApplied,
   };

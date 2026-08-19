@@ -114,6 +114,7 @@ export class AttemptWorkspaceStore {
 
   async purge(request: WorkspacePurgeRequest): Promise<number> {
     if (request.scope === "relationship") {
+      const release = await this.acquireRelationship(request.userId, request.characterId);
       const canonicalTarget = relationshipWorkspacePath(
         this.options.canonicalRoot,
         request.userId,
@@ -124,14 +125,18 @@ export class AttemptWorkspaceStore {
         request.userId,
         request.characterId,
       );
-      assertWithin(this.options.canonicalRoot, canonicalTarget);
-      assertWithin(this.options.privateRoot, privateTarget);
-      const found = await Promise.all([exists(canonicalTarget), exists(privateTarget)]);
-      await Promise.all([
-        rm(canonicalTarget, { recursive: true, force: true }),
-        rm(privateTarget, { recursive: true, force: true }),
-      ]);
-      return found.some(Boolean) ? 1 : 0;
+      try {
+        assertWithin(this.options.canonicalRoot, canonicalTarget);
+        assertWithin(this.options.privateRoot, privateTarget);
+        const found = await Promise.all([exists(canonicalTarget), exists(privateTarget)]);
+        await Promise.all([
+          rm(canonicalTarget, { recursive: true, force: true }),
+          rm(privateTarget, { recursive: true, force: true }),
+        ]);
+        return found.some(Boolean) ? 1 : 0;
+      } finally {
+        release();
+      }
     }
     const canonicalTarget = userWorkspacePath(this.options.canonicalRoot, request.userId);
     const privateTarget = privateUserWorkspacePath(this.options.privateRoot, request.userId);
@@ -152,6 +157,53 @@ export class AttemptWorkspaceStore {
       rm(privateTarget, { recursive: true, force: true }),
     ]);
     return relationshipNames.size;
+  }
+
+  async rebuildRelationship<T>(
+    identity: { userId: string; characterId: string },
+    build: (workspace: string) => Promise<T>,
+  ): Promise<T> {
+    const release = await this.acquireRelationship(identity.userId, identity.characterId);
+    const relationshipRoot = relationshipWorkspacePath(
+      this.options.canonicalRoot,
+      identity.userId,
+      identity.characterId,
+    );
+    const versionsRoot = join(relationshipRoot, ".igrep.versions");
+    const rebuildsRoot = join(relationshipRoot, ".rebuilds");
+    const canonicalLink = join(relationshipRoot, ".igrep");
+    const rebuildRoot = join(rebuildsRoot, randomUUID());
+    const workspace = join(rebuildRoot, "workspace");
+    const candidateVersion = join(versionsRoot, `rebuild-${Date.now()}-${randomUUID()}`);
+    let promoted = false;
+    let nextLink: string | undefined;
+    let result!: T;
+    try {
+      await mkdir(versionsRoot, { recursive: true });
+      await mkdir(workspace, { recursive: true });
+      await mkdir(candidateVersion);
+      assertWithin(relationshipRoot, rebuildRoot);
+      assertWithin(versionsRoot, candidateVersion);
+      await symlink(relative(workspace, candidateVersion), join(workspace, ".igrep"), "dir");
+      const priorVersion = await this.canonicalVersion(canonicalLink, versionsRoot);
+      result = await build(workspace);
+      nextLink = join(relationshipRoot, `.igrep.next-${randomUUID()}`);
+      await symlink(relative(relationshipRoot, candidateVersion), nextLink, "dir");
+      await rename(nextLink, canonicalLink);
+      promoted = true;
+      await rm(rebuildRoot, { recursive: true, force: true });
+      if (priorVersion && priorVersion !== candidateVersion) {
+        await rm(priorVersion, { recursive: true, force: true }).catch(() => undefined);
+      }
+      return result;
+    } finally {
+      if (!promoted) {
+        if (nextLink) await rm(nextLink, { recursive: true, force: true }).catch(() => undefined);
+        await rm(candidateVersion, { recursive: true, force: true }).catch(() => undefined);
+        await rm(rebuildRoot, { recursive: true, force: true }).catch(() => undefined);
+      }
+      release();
+    }
   }
 
   private async preparePrivate(invocation: CompanionInvocation): Promise<AttemptWorkspace> {
@@ -180,16 +232,7 @@ export class AttemptWorkspaceStore {
   }
 
   private async prepareNormal(invocation: CompanionInvocation): Promise<AttemptWorkspace> {
-    const relationshipKey = safeKey(invocation.userId, invocation.characterId);
-    const previous = this.locks.get(relationshipKey) ?? Promise.resolve();
-    const mine = deferredLock();
-    const queued = previous.then(() => mine.promise);
-    this.locks.set(relationshipKey, queued);
-    await previous;
-    const release = () => {
-      mine.release();
-      if (this.locks.get(relationshipKey) === queued) this.locks.delete(relationshipKey);
-    };
+    const release = await this.acquireRelationship(invocation.userId, invocation.characterId);
     let attemptRoot: string | undefined;
     try {
       const relationshipRoot = relationshipWorkspacePath(
@@ -266,21 +309,44 @@ export class AttemptWorkspaceStore {
     }
   }
 
-  private async ensureCanonicalVersion(canonicalLink: string, versionsRoot: string): Promise<string> {
-    if (await exists(canonicalLink)) {
-      const stat = await lstat(canonicalLink);
-      if (stat.isSymbolicLink()) {
-        const target = resolve(dirname(canonicalLink), await readlink(canonicalLink));
-        assertWithin(versionsRoot, target);
-        if (!(await exists(target))) throw new Error("canonical igrep pointer target is missing");
-        return target;
-      }
-      if (!stat.isDirectory()) throw new Error("canonical .igrep must be a directory or symlink");
-      const migrated = join(versionsRoot, `migrated-${Date.now()}-${randomUUID()}`);
-      await rename(canonicalLink, migrated);
-      await symlink(relative(dirname(canonicalLink), migrated), canonicalLink, "dir");
-      return migrated;
+  private async acquireRelationship(userId: string, characterId: string): Promise<() => void> {
+    const relationshipKey = safeKey(userId, characterId);
+    const previous = this.locks.get(relationshipKey) ?? Promise.resolve();
+    const mine = deferredLock();
+    const queued = previous.then(() => mine.promise);
+    this.locks.set(relationshipKey, queued);
+    await previous;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      mine.release();
+      if (this.locks.get(relationshipKey) === queued) this.locks.delete(relationshipKey);
+    };
+  }
+
+  private async canonicalVersion(
+    canonicalLink: string,
+    versionsRoot: string,
+  ): Promise<string | undefined> {
+    if (!(await exists(canonicalLink))) return undefined;
+    const stat = await lstat(canonicalLink);
+    if (stat.isSymbolicLink()) {
+      const target = resolve(dirname(canonicalLink), await readlink(canonicalLink));
+      assertWithin(versionsRoot, target);
+      if (!(await exists(target))) throw new Error("canonical igrep pointer target is missing");
+      return target;
     }
+    if (!stat.isDirectory()) throw new Error("canonical .igrep must be a directory or symlink");
+    const migrated = join(versionsRoot, `migrated-${Date.now()}-${randomUUID()}`);
+    await rename(canonicalLink, migrated);
+    await symlink(relative(dirname(canonicalLink), migrated), canonicalLink, "dir");
+    return migrated;
+  }
+
+  private async ensureCanonicalVersion(canonicalLink: string, versionsRoot: string): Promise<string> {
+    const current = await this.canonicalVersion(canonicalLink, versionsRoot);
+    if (current) return current;
     const initial = join(versionsRoot, `initial-${randomUUID()}`);
     await mkdir(initial);
     const nextLink = `${canonicalLink}.next-${randomUUID()}`;

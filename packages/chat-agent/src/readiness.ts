@@ -368,7 +368,11 @@ export function createReadinessProbe(
           capabilities: { memoryRead: false, memoryWrite: false, tools: true, commit: true },
         },
       },
-      bridges: { toolReachable: true, commitReachable: true },
+      bridges: {
+        toolReachable: true,
+        commitReachable: true,
+        workspaceRebuildReachable: true,
+      },
       });
     })();
     inFlight = current.then((readiness) => {

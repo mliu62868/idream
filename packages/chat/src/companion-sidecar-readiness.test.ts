@@ -41,7 +41,11 @@ function ready() {
         capabilities: { memoryRead: false as const, memoryWrite: false as const, tools: true as const, commit: true as const },
       },
     },
-    bridges: { toolReachable: true as const, commitReachable: true as const },
+    bridges: {
+      toolReachable: true as const,
+      commitReachable: true as const,
+      workspaceRebuildReachable: true as const,
+    },
   };
 }
 

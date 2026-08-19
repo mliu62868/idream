@@ -1,6 +1,7 @@
 import {
   COMPANION_RUNTIME_PROTOCOL_VERSION,
   companionRuntimeResponseSchema,
+  companionWorkspaceRebuildSchema,
   decodeCompanionNdjsonFrame,
   encodeCompanionNdjsonFrame,
   type CompanionCommitAck,
@@ -9,7 +10,17 @@ import {
   type CompanionTerminalCandidate,
   type CompanionToolCall,
   type CompanionToolResult,
+  type CompanionWorkspaceRebuild,
 } from "@idream/shared/chat/companion-runtime";
+import { z } from "zod";
+
+const companionWorkspaceRebuildResponseSchema = z.object({
+  ok: z.literal(true),
+  rebuilt: z.object({
+    sessions: z.number().int().nonnegative(),
+    messages: z.number().int().nonnegative(),
+  }).strict(),
+}).strict();
 
 export interface CompanionRuntimePort {
   emit(event: CompanionEvent): Promise<void> | void;
@@ -83,6 +94,33 @@ export async function purgeCompanionWorkspace(input: {
     throw new Error("companion workspace purge returned an invalid response");
   }
   return { purged: Number((value as Record<string, unknown>).purged) };
+}
+
+export async function rebuildCompanionWorkspace(input: {
+  baseUrl: string;
+  token: string;
+  request: CompanionWorkspaceRebuild;
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+}): Promise<{ sessions: number; messages: number }> {
+  const request = companionWorkspaceRebuildSchema.parse(input.request);
+  const response = await (input.fetchImpl ?? fetch)(
+    `${input.baseUrl.replace(/\/$/, "")}/v1/workspaces/rebuild`,
+    {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${input.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(request),
+      signal: AbortSignal.timeout(input.timeoutMs ?? 330_000),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`companion workspace rebuild failed with HTTP ${response.status}`);
+  }
+  return companionWorkspaceRebuildResponseSchema.parse(await response.json()).rebuilt;
 }
 
 export class DshCompanionRuntime implements CompanionRuntime {

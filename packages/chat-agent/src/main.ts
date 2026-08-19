@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { CompanionEngine } from "./engine";
 import { loadSidecarConfig } from "./config";
-import { IgrepMemoryProbe, loadIgrepPlugin } from "./igrep";
+import { IgrepMemoryProbe, IgrepMemoryRebuilder, loadIgrepPlugin } from "./igrep";
 import { OpenAiCompatibleAdapter } from "./openai-adapter";
 import { createReadinessProbe } from "./readiness";
 import { createCompanionServer } from "./server";
@@ -23,6 +23,7 @@ const engine = new CompanionEngine({
     openRouterProviderOnly: config.openRouterProviderOnly,
   }),
   igrepCommand: config.igrepCommand,
+  rebuilder: new IgrepMemoryRebuilder(config.igrepCommand),
   maxSteps: config.maxSteps,
 });
 const server = createCompanionServer({

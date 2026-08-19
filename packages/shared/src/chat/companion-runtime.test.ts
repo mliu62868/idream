@@ -13,6 +13,7 @@ import {
   companionTerminalCandidateSchema,
   companionToolCallSchema,
   companionToolResultSchema,
+  companionWorkspaceRebuildSchema,
   decodeCompanionNdjsonFrame,
   encodeCompanionNdjsonFrame,
   preparedTurnWireSchema,
@@ -327,6 +328,39 @@ describe("companion runtime stable wire contract", () => {
     }).success).toBe(false);
   });
 
+  it("accepts only strict, paired canonical messages for relationship rebuild", () => {
+    const rebuild = {
+      scope: "relationship",
+      userId: "user-1",
+      characterId: "character-1",
+      messages: [
+        {
+          id: "user-message-1",
+          sessionId: "session-1",
+          role: "user",
+          content: "Remember the observatory.",
+          createdAt: "2026-08-19T12:00:00.000Z",
+        },
+        {
+          id: "assistant-message-1",
+          sessionId: "session-1",
+          role: "assistant",
+          content: "Every blue-lit window.",
+          createdAt: "2026-08-19T12:00:01.000Z",
+        },
+      ],
+    } as const;
+    expect(companionWorkspaceRebuildSchema.parse(rebuild)).toEqual(rebuild);
+    expect(companionWorkspaceRebuildSchema.safeParse({
+      ...rebuild,
+      messages: [rebuild.messages[1]],
+    }).success).toBe(false);
+    expect(companionWorkspaceRebuildSchema.safeParse({
+      ...rebuild,
+      messages: [{ ...rebuild.messages[0], secret: "must-not-cross-wire" }],
+    }).success).toBe(false);
+  });
+
   it("models terminal commit acceptance without treating a candidate as terminal truth", () => {
     expect(companionCommitAckSchema.parse({
       attemptId: "attempt-1",
@@ -374,7 +408,11 @@ describe("companion runtime stable wire contract", () => {
           capabilities: { memoryRead: false, memoryWrite: false, tools: true, commit: true },
         },
       },
-      bridges: { toolReachable: true as const, commitReachable: true as const },
+      bridges: {
+        toolReachable: true as const,
+        commitReachable: true as const,
+        workspaceRebuildReachable: true as const,
+      },
     };
     expect(companionReadinessSchema.parse(readiness)).toEqual(readiness);
     expect(companionReadinessSchema.safeParse({

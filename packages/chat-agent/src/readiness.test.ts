@@ -82,7 +82,11 @@ describe("fail-closed companion readiness", () => {
         model: "deepseek/test",
         resolved: true,
       },
-      bridges: { toolReachable: true, commitReachable: true },
+      bridges: {
+        toolReachable: true,
+        commitReachable: true,
+        workspaceRebuildReachable: true,
+      },
     });
     expect(readiness.profiles.normal.normalizedConfigDigest).toBe(normalDigest);
     expect(readiness.profiles.private.normalizedConfigDigest).toBe(privateDigest);

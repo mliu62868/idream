@@ -1,5 +1,14 @@
 import { once } from "node:events";
-import { access, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LlmAdapter, type GenerateOptions, type StreamChunk } from "@deepseek-ai/dsh-llm";
@@ -101,6 +110,49 @@ function activeInvocation(): CompanionInvocation {
 }
 
 describe("authenticated workspace privacy authority", () => {
+  it("atomically replaces one relationship only after a rebuild succeeds", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chat-agent-rebuild-"));
+    temporary.push(root);
+    const canonicalRoot = join(root, "canonical");
+    const relationship = relationshipWorkspacePath(canonicalRoot, "user-rebuild", "character-rebuild");
+    const versions = join(relationship, ".igrep.versions");
+    const oldVersion = join(versions, "old");
+    await mkdir(oldVersion, { recursive: true });
+    await writeFile(join(oldVersion, "sentinel.txt"), "old");
+    await symlink(".igrep.versions/old", join(relationship, ".igrep"), "dir");
+    const store = new AttemptWorkspaceStore({
+      canonicalRoot,
+      privateRoot: join(root, "private"),
+      memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
+    });
+    const entered = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    const rebuilding = store.rebuildRelationship(
+      { userId: "user-rebuild", characterId: "character-rebuild" },
+      async (workspace) => {
+        await writeFile(join(workspace, ".igrep", "sentinel.txt"), "new");
+        entered.resolve();
+        await finish.promise;
+      },
+    );
+    await entered.promise;
+    expect(await readFile(join(relationship, ".igrep", "sentinel.txt"), "utf8")).toBe("old");
+    finish.resolve();
+    await rebuilding;
+    expect(await readFile(join(relationship, ".igrep", "sentinel.txt"), "utf8")).toBe("new");
+    expect(await readdir(join(relationship, ".rebuilds"))).toEqual([]);
+
+    await expect(store.rebuildRelationship(
+      { userId: "user-rebuild", characterId: "character-rebuild" },
+      async (workspace) => {
+        await writeFile(join(workspace, ".igrep", "sentinel.txt"), "corrupt");
+        throw new Error("maintain failed");
+      },
+    )).rejects.toThrow("maintain failed");
+    expect(await readFile(join(relationship, ".igrep", "sentinel.txt"), "utf8")).toBe("new");
+    expect(await readdir(join(relationship, ".rebuilds"))).toEqual([]);
+  });
+
   it("fails closed immediately when a completed igrep maintain leaves profile rows pending", async () => {
     const root = await mkdtemp(join(tmpdir(), "chat-agent-maintain-failure-"));
     temporary.push(root);
@@ -338,6 +390,62 @@ describe("authenticated workspace privacy authority", () => {
       userId: invocation.userId,
       characterId: invocation.characterId,
     })).toBe(0);
+  });
+
+  it("serializes relationship rebuild and user purge while keeping both routing fences active", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chat-agent-maintenance-order-"));
+    temporary.push(root);
+    const canonicalRoot = join(root, "canonical");
+    const relationship = relationshipWorkspacePath(
+      canonicalRoot,
+      "user-maintenance",
+      "character-maintenance",
+    );
+    await mkdir(relationship, { recursive: true });
+    const entered = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    const engine = new CompanionEngine({
+      workspaces: new AttemptWorkspaceStore({
+        canonicalRoot,
+        privateRoot: join(root, "private"),
+        memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
+      }),
+      plugin: async () => ({ name: "igrep", apply() {} }),
+      adapter: () => new UnusedAdapter(),
+      igrepCommand: "igrep",
+      rebuilder: {
+        async rebuild() {
+          entered.resolve();
+          await finish.promise;
+          return { sessions: 0, messages: 0 };
+        },
+      },
+    });
+    const rebuilding = engine.rebuild({
+      scope: "relationship",
+      userId: "user-maintenance",
+      characterId: "character-maintenance",
+      messages: [],
+    });
+    await entered.promise;
+    let purgeFinished = false;
+    const purging = engine.purge({ scope: "user", userId: "user-maintenance" })
+      .finally(() => { purgeFinished = true; });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(purgeFinished).toBe(false);
+    expect(await present(relationship)).toBe(true);
+    await expect(engine.run({
+      ...activeInvocation(),
+      invocationId: "invocation-during-maintenance",
+      attemptId: "attempt-during-maintenance",
+      userId: "user-maintenance",
+      characterId: "character-maintenance",
+    }, () => undefined)).rejects.toThrow(/being purged/);
+
+    finish.resolve();
+    await rebuilding;
+    await expect(purging).resolves.toBe(1);
+    expect(await present(relationship)).toBe(false);
   });
 
   it("cancels an active relationship invocation before deleting canonical and attempts", async () => {

@@ -52,6 +52,10 @@ import {
 } from "./chat-fs.js";
 import { createId } from "./id.js";
 import {
+  applyCompanionMemoryProjection,
+  companionMemoryProjectionTimeoutMs,
+} from "./companion-memory-projection.js";
+import {
   consolidateMemories,
   deleteMemory,
   forgetByMessageIds,
@@ -291,6 +295,13 @@ export async function applyPendingChatFileMutationsTx(
         relationshipProjection,
         validRelationshipEvidenceSourceIds,
       );
+      if (
+        mutation.kind === "relationship_rebuild"
+        || mutation.kind === "relationship_delete"
+        || mutation.kind === "account_delete"
+      ) {
+        await applyCompanionMemoryProjection(tx, userId, mutation);
+      }
       if (mutation.kind === "memory_extract") {
         const claimed = await tx.message.updateMany({
           where: {
@@ -467,7 +478,7 @@ export async function projectChatFileMutations(
         await lockUser(tx, userId);
         return applyPendingChatFileMutationsTx(tx, userId);
       },
-      { timeout: 30_000 },
+      { timeout: companionMemoryProjectionTimeoutMs() },
     );
   } catch (error) {
     const message =

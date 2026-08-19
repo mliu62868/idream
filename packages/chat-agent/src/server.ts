@@ -3,15 +3,18 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import {
   companionReadinessSchema,
   companionRuntimeRequestSchema,
+  companionWorkspaceRebuildSchema,
   encodeCompanionNdjsonFrame,
   type CompanionInvocation,
   type CompanionReadiness,
   type CompanionRuntimeRequest,
   type CompanionRuntimeResponse,
+  type CompanionWorkspaceRebuild,
 } from "@idream/shared/chat/companion-runtime";
 import type { WorkspacePurgeRequest } from "./workspace";
 
 const MAX_CONTROL_BODY_BYTES = 1_048_576;
+const MAX_REBUILD_BODY_BYTES = 16 * 1_048_576;
 
 type ControlFrame = Exclude<CompanionRuntimeRequest, { type: "run" }>;
 
@@ -22,6 +25,7 @@ export interface InvocationService {
   ): Promise<void>;
   accept(frame: ControlFrame): Promise<void>;
   purge(request: WorkspacePurgeRequest): Promise<number>;
+  rebuild(request: CompanionWorkspaceRebuild): Promise<{ sessions: number; messages: number }>;
   shutdown(): Promise<void>;
 }
 
@@ -59,13 +63,16 @@ function failure(response: ServerResponse, status: number, code: string, error: 
   json(response, status, { error: { code, message } });
 }
 
-async function readJson(request: IncomingMessage): Promise<unknown> {
+async function readJson(
+  request: IncomingMessage,
+  maxBytes = MAX_CONTROL_BODY_BYTES,
+): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     size += buffer.byteLength;
-    if (size > MAX_CONTROL_BODY_BYTES) throw new Error("request body exceeds 1 MiB");
+    if (size > maxBytes) throw new Error(`request body exceeds ${maxBytes} bytes`);
     chunks.push(buffer);
   }
   if (size === 0) throw new Error("request body is required");
@@ -185,6 +192,20 @@ export function createCompanionServer(options: CompanionServerOptions): Companio
         }
         const purged = await options.invocation.purge(purgeRequest(await readJson(request)));
         json(response, 200, { ok: true, purged });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/v1/workspaces/rebuild") {
+        if (closing) {
+          failure(response, 503, "shutting_down", new Error("sidecar is shutting down"));
+          return;
+        }
+        const rebuilt = await options.invocation.rebuild(
+          companionWorkspaceRebuildSchema.parse(
+            await readJson(request, MAX_REBUILD_BODY_BYTES),
+          ),
+        );
+        json(response, 200, { ok: true, rebuilt });
         return;
       }
 

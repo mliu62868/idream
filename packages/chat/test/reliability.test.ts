@@ -3,6 +3,8 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm, readFile, writeFile, mkdir, readdir, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { once } from "node:events";
+import { createServer } from "node:http";
 import path from "node:path";
 import { Pool } from "pg";
 import {
@@ -48,6 +50,11 @@ const MODERATION_RESTORE_RACE_USER = "u_rel_moderation_restore_race";
 const MODERATION_RESTORE_STALE_USER = "u_rel_moderation_restore_stale";
 const CHAR = "c_rel";
 const MODERATION_RESTORE_CHAR = "c_rel_moderation_restore";
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
 
 function accountDeletionV2Envelope(userId: string, sourceEventId: string) {
   return {
@@ -530,6 +537,147 @@ describe("reconcile (P0-4 convergence)", () => {
     const result = await reconcile(prisma);
     expect(result.failedStuck).toBeGreaterThanOrEqual(1);
     expect((await prisma.message.findUnique({ where: { id: "rel_m_stuck" } }))?.status).toBe("failed");
+  });
+
+  it("durably rebuilds a failed post-ACK DSH ingest and settles both runtime traces", async () => {
+    const userId = "rel_dsh_repair_user";
+    const characterId = "rel_dsh_repair_character";
+    const sessionId = "rel_dsh_repair_session";
+    const userMessageId = "rel_dsh_repair_user_message";
+    const assistantMessageId = "rel_dsh_repair_assistant_message";
+    const runtimeTrace = {
+      schemaVersion: 1,
+      companionRuntime: {
+        runtime: "dsh",
+        memoryBackend: "igrep-dsh",
+        profile: "idream-companion-memory",
+        private: false,
+      },
+      companion: {
+        invocationId: "rel-dsh-repair-invocation",
+        memoryIngestOutcome: "failed",
+        usage: { promptTokens: 12, completionTokens: 4, reasoningTokens: 0 },
+        attribution: { requestId: "request-repair", actualProvider: "Together" },
+      },
+    };
+    await prisma.chatSession.create({
+      data: { id: sessionId, userId, characterId, status: "active" },
+    });
+    await prisma.message.create({
+      data: {
+        id: userMessageId,
+        sessionId,
+        role: "user",
+        content: "Remember the blue observatory.",
+        status: "sent",
+        safetyStatus: "passed",
+      },
+    });
+    await prisma.message.create({
+      data: {
+        id: assistantMessageId,
+        sessionId,
+        role: "assistant",
+        content: "I remember every blue window.",
+        status: "sent",
+        safetyStatus: "passed",
+        attempt: 1,
+        replyToMessageId: userMessageId,
+        memoryAuthority: "enabled",
+        memoryExtractedAttempt: 1,
+        runtimeTrace,
+      },
+    });
+    await prisma.messageVersion.create({
+      data: {
+        id: `mv:${assistantMessageId}:1`,
+        messageId: assistantMessageId,
+        content: "I remember every blue window.",
+        attempt: 1,
+        selected: true,
+        runtimeTrace,
+      },
+    });
+    let received: { authorization?: string; body?: unknown } = {};
+    const sidecar = createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      received = {
+        authorization: request.headers.authorization,
+        body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
+      };
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"ok":true,"rebuilt":{"sessions":1,"messages":2}}');
+    });
+    sidecar.listen(0, "127.0.0.1");
+    await once(sidecar, "listening");
+    const address = sidecar.address();
+    if (!address || typeof address === "string") throw new Error("missing sidecar address");
+    const prior = {
+      runtime: process.env.CHAT_COMPANION_RUNTIME,
+      backend: process.env.CHAT_MEMORY_BACKEND,
+      token: process.env.DSH_AGENT_TOKEN,
+      url: process.env.DSH_AGENT_URL,
+      rolloutSalt: process.env.CHAT_COMPANION_DSH_ROLLOUT_SALT,
+      rolloutBps: process.env.CHAT_COMPANION_DSH_ROLLOUT_BPS,
+    };
+    process.env.CHAT_COMPANION_RUNTIME = "dsh";
+    process.env.CHAT_MEMORY_BACKEND = "igrep-dsh";
+    process.env.DSH_AGENT_TOKEN = "repair-token";
+    process.env.DSH_AGENT_URL = `http://127.0.0.1:${address.port}`;
+    process.env.CHAT_COMPANION_DSH_ROLLOUT_SALT = "repair-stable-salt";
+    process.env.CHAT_COMPANION_DSH_ROLLOUT_BPS = "10000";
+    try {
+      const result = await reconcile(
+        prisma,
+        new Date("2026-08-19T12:10:00.000Z"),
+        projectorPrisma,
+      );
+      expect(result.companionMemoryRepaired).toBe(1);
+      expect(result.companionMemoryRepairErrors).toBe(0);
+    } finally {
+      await new Promise<void>((resolve, reject) => sidecar.close((error) =>
+        error ? reject(error) : resolve()));
+      restoreEnv("CHAT_COMPANION_RUNTIME", prior.runtime);
+      restoreEnv("CHAT_MEMORY_BACKEND", prior.backend);
+      restoreEnv("DSH_AGENT_TOKEN", prior.token);
+      restoreEnv("DSH_AGENT_URL", prior.url);
+      restoreEnv("CHAT_COMPANION_DSH_ROLLOUT_SALT", prior.rolloutSalt);
+      restoreEnv("CHAT_COMPANION_DSH_ROLLOUT_BPS", prior.rolloutBps);
+    }
+
+    expect(received).toEqual({
+      authorization: "Bearer repair-token",
+      body: {
+        scope: "relationship",
+        userId,
+        characterId,
+        messages: [
+          expect.objectContaining({ id: userMessageId, role: "user" }),
+          expect.objectContaining({ id: assistantMessageId, role: "assistant" }),
+        ],
+      },
+    });
+    expect(await prisma.chatFileMutation.findFirst({
+      where: { userId, kind: "relationship_rebuild" },
+      select: { status: true },
+    })).toEqual({ status: "applied" });
+    const assistant = await prisma.message.findUniqueOrThrow({
+      where: { id: assistantMessageId },
+      select: { runtimeTrace: true },
+    });
+    const version = await prisma.messageVersion.findUniqueOrThrow({
+      where: { id: `mv:${assistantMessageId}:1` },
+      select: { runtimeTrace: true },
+    });
+    expect(assistant.runtimeTrace).toEqual(expect.objectContaining({
+      companion: expect.objectContaining({
+        memoryIngestOutcome: "ingested_rebuilt",
+        attribution: { requestId: "request-repair", actualProvider: "Together" },
+      }),
+    }));
+    expect(version.runtimeTrace).toEqual(assistant.runtimeTrace);
+    await obliterate(CHAT_QUEUES.memoryExtract);
   });
 
   it("selects lagging enabled turns before LIMIT and excludes legacy unknown turns", async () => {

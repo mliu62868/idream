@@ -233,6 +233,50 @@ export const preparedTurnWireSchema = z
 
 export const companionMemoryModeSchema = z.enum(["normal", "private"]);
 
+export const companionWorkspaceRebuildMessageSchema = z
+  .object({
+    id: nonEmptyStringSchema,
+    sessionId: nonEmptyStringSchema,
+    role: z.enum(["user", "assistant"]),
+    content: z.string().min(1),
+    createdAt: isoDateTimeSchema,
+  })
+  .strict();
+
+export const companionWorkspaceRebuildSchema = z
+  .object({
+    scope: z.literal("relationship"),
+    userId: nonEmptyStringSchema,
+    characterId: nonEmptyStringSchema,
+    messages: z.array(companionWorkspaceRebuildMessageSchema).max(20_000),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const nextRoleBySession = new Map<string, "user" | "assistant">();
+    for (const [index, message] of value.messages.entries()) {
+      const expected = nextRoleBySession.get(message.sessionId) ?? "user";
+      if (message.role !== expected) {
+        context.addIssue({
+          code: "custom",
+          path: ["messages", index, "role"],
+          message: `relationship rebuild expected ${expected} message`,
+        });
+      }
+      nextRoleBySession.set(
+        message.sessionId,
+        message.role === "user" ? "assistant" : "user",
+      );
+    }
+    for (const [sessionId, expected] of nextRoleBySession) {
+      if (expected === "user") continue;
+      context.addIssue({
+        code: "custom",
+        path: ["messages"],
+        message: `relationship rebuild session ${sessionId} has an incomplete exchange`,
+      });
+    }
+  });
+
 export const companionInvocationSchema = z
   .object({
     invocationId: nonEmptyStringSchema,
@@ -622,6 +666,7 @@ export const companionReadinessSchema = z
       .object({
         toolReachable: z.literal(true),
         commitReachable: z.literal(true),
+        workspaceRebuildReachable: z.literal(true),
       })
       .strict(),
   })
@@ -631,6 +676,12 @@ export type PreparedTurnMessage = z.infer<typeof preparedTurnMessageSchema>;
 export type PreparedTurnProfile = z.infer<typeof preparedTurnProfileSchema>;
 export type PreparedTurnWire = z.infer<typeof preparedTurnWireSchema>;
 export type CompanionMemoryMode = z.infer<typeof companionMemoryModeSchema>;
+export type CompanionWorkspaceRebuild = z.infer<
+  typeof companionWorkspaceRebuildSchema
+>;
+export type CompanionWorkspaceRebuildMessage = z.infer<
+  typeof companionWorkspaceRebuildMessageSchema
+>;
 export type CompanionInvocation = z.infer<typeof companionInvocationSchema>;
 export type CompanionToolName = z.infer<typeof companionToolNameSchema>;
 export type CompanionToolCall = z.infer<typeof companionToolCallSchema>;

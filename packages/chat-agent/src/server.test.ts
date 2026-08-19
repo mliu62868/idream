@@ -1,5 +1,5 @@
 import { once } from "node:events";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { companionReadinessSchema } from "@idream/shared/chat/companion-runtime";
 import { createCompanionServer, type CompanionServer } from "./server";
 
@@ -33,7 +33,11 @@ const readiness = companionReadinessSchema.parse({
       capabilities: { memoryRead: false, memoryWrite: false, tools: true, commit: true },
     },
   },
-  bridges: { toolReachable: true, commitReachable: true },
+  bridges: {
+    toolReachable: true,
+    commitReachable: true,
+    workspaceRebuildReachable: true,
+  },
 });
 
 const servers: CompanionServer[] = [];
@@ -67,6 +71,9 @@ describe("companion HTTP authority boundary", () => {
           throw new Error("not used");
         },
         async purge() {
+          throw new Error("not used");
+        },
+        async rebuild() {
           throw new Error("not used");
         },
         async shutdown() {},
@@ -103,6 +110,7 @@ describe("companion HTTP authority boundary", () => {
         async run() { throw new Error("not used"); },
         async accept() { throw new Error("not used"); },
         async purge() { throw new Error("not used"); },
+        async rebuild() { throw new Error("not used"); },
         async shutdown() {},
       },
     });
@@ -115,5 +123,61 @@ describe("companion HTTP authority boundary", () => {
     expect(await response.json()).toEqual({
       error: { code: "not_ready", message: "plugin version drift" },
     });
+  });
+
+  it("protects and strictly validates canonical relationship rebuilds", async () => {
+    const rebuild = vi.fn(async () => ({ sessions: 1, messages: 2 }));
+    const server = createCompanionServer({
+      authToken: AUTH_TOKEN,
+      readiness: async () => readiness,
+      invocation: {
+        async run() { throw new Error("not used"); },
+        async accept() { throw new Error("not used"); },
+        async purge() { throw new Error("not used"); },
+        rebuild,
+        async shutdown() {},
+      },
+    });
+    servers.push(server);
+    const baseUrl = await listen(server);
+    const body = {
+      scope: "relationship",
+      userId: "user-1",
+      characterId: "character-1",
+      messages: [
+        {
+          id: "user-message-1",
+          sessionId: "session-1",
+          role: "user",
+          content: "Remember the observatory.",
+          createdAt: "2026-08-19T12:00:00.000Z",
+        },
+        {
+          id: "assistant-message-1",
+          sessionId: "session-1",
+          role: "assistant",
+          content: "Every blue-lit window.",
+          createdAt: "2026-08-19T12:00:01.000Z",
+        },
+      ],
+    };
+    expect((await fetch(`${baseUrl}/v1/workspaces/rebuild`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    })).status).toBe(401);
+    expect((await fetch(`${baseUrl}/v1/workspaces/rebuild`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${AUTH_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({ ...body, arbitraryPath: "/tmp/escape" }),
+    })).status).toBe(400);
+    const response = await fetch(`${baseUrl}/v1/workspaces/rebuild`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${AUTH_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, rebuilt: { sessions: 1, messages: 2 } });
+    expect(rebuild).toHaveBeenCalledWith(body);
   });
 });

@@ -16,7 +16,6 @@ import { loadSessionLinkage } from "./relationship-authority.js";
 import { CHAT_TO_MAIN_EVENTS } from "@idream/shared/contracts";
 import { recordExchangeCorrection } from "./exchange-corrections.js";
 import { lockUser } from "./turn-lock.js";
-import { purgeRuntimeMemoryIfActive } from "./companion-workspace-privacy.js";
 
 type PrivacyRedactionReason =
   | "logical_exchange_deleted"
@@ -144,11 +143,6 @@ export async function deleteMessage(
       if (currentMessage.status === "deleted" || currentMessage.deletedAt) {
         return;
       }
-      await purgeRuntimeMemoryIfActive({
-        scope: "relationship",
-        userId: input.userId,
-        characterId: currentSession.characterId,
-      });
       const { messages, linkage } = await loadSessionLinkage(
         tx,
         currentSession.id,
@@ -305,11 +299,6 @@ export async function deleteSession(
       ) {
         return;
       }
-      await purgeRuntimeMemoryIfActive({
-        scope: "relationship",
-        userId: input.userId,
-        characterId: currentSession.characterId,
-      });
       const { messages, linkage } = await loadSessionLinkage(tx, session.id);
       const ids = messages.map((m) => m.id);
       await recordIntent({
@@ -421,7 +410,6 @@ export async function deleteAccount(
     });
     if (completedInsideLock) return false;
 
-    await purgeRuntimeMemoryIfActive({ scope: "user", userId: input.userId });
     // Account erasure supersedes every earlier pending/applied file intent.
     // Even a poisoned intent or partial prior file write cannot block the
     // terminal prefix deletion that follows this transaction.

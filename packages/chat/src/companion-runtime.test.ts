@@ -8,6 +8,7 @@ import {
   cancelActiveCompanionInvocations,
   DshCompanionRuntime,
   purgeCompanionWorkspace,
+  rebuildCompanionWorkspace,
 } from "./companion-runtime.js";
 
 const now = "2026-08-19T12:00:00.000Z";
@@ -271,5 +272,45 @@ describe("DshCompanionRuntime", () => {
     });
     expect(new Headers(init.headers).get("authorization")).toBe("Bearer secret");
     expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("rebuilds one relationship from strict canonical Chat exchanges", async () => {
+    const fetchImpl = vi.fn(async () => Response.json({
+      ok: true,
+      rebuilt: { sessions: 1, messages: 2 },
+    }));
+    const request = {
+      scope: "relationship" as const,
+      userId: "user-1",
+      characterId: "char-1",
+      messages: [
+        {
+          id: "user-message-1",
+          sessionId: "session-1",
+          role: "user" as const,
+          content: "Remember the observatory.",
+          createdAt: now,
+        },
+        {
+          id: "assistant-message-1",
+          sessionId: "session-1",
+          role: "assistant" as const,
+          content: "I will remember it.",
+          createdAt: now,
+        },
+      ],
+    };
+
+    await expect(rebuildCompanionWorkspace({
+      baseUrl: "http://127.0.0.1:3101/",
+      token: "secret",
+      request,
+      fetchImpl: fetchImpl as typeof fetch,
+    })).resolves.toEqual({ sessions: 1, messages: 2 });
+    const calls = fetchImpl.mock.calls as unknown[][];
+    expect(calls[0]?.[0]).toBe("http://127.0.0.1:3101/v1/workspaces/rebuild");
+    const init = calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toEqual(request);
+    expect(new Headers(init.headers).get("authorization")).toBe("Bearer secret");
   });
 });

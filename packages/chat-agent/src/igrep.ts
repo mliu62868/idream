@@ -1,9 +1,14 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Context } from "@deepseek-ai/cordis";
+import {
+  companionWorkspaceRebuildSchema,
+  type CompanionWorkspaceRebuild,
+} from "@idream/shared/chat/companion-runtime";
 import type { MemoryProbe, MemoryStatus } from "./workspace";
 
 export const NORMAL_IGREP_CONFIG = Object.freeze({
@@ -62,12 +67,14 @@ export async function loadIgrepPlugin(specifier: string): Promise<LoadedIgrepPlu
   return { module: namespace as IgrepPluginModule, version: packageJson.version, moduleUrl };
 }
 
-interface JsonCommandOptions {
+export interface JsonCommandOptions {
   command: string;
   args: string[];
   stdin?: string;
   timeoutMs?: number;
 }
+
+export type RunJsonCommand = (options: JsonCommandOptions) => Promise<unknown>;
 
 export async function runJsonCommand(options: JsonCommandOptions): Promise<unknown> {
   const child = spawn(options.command, options.args, {
@@ -135,6 +142,87 @@ export class IgrepMemoryProbe implements MemoryProbe {
       processedProfileRows: Number(processedProfileRows),
       lastMaintainAt: lastMaintainAt ?? null,
     };
+  }
+}
+
+export class IgrepMemoryRebuilder {
+  constructor(
+    private readonly command: string,
+    private readonly probe: MemoryProbe = new IgrepMemoryProbe(command),
+    private readonly run: RunJsonCommand = runJsonCommand,
+  ) {}
+
+  async rebuild(
+    workspace: string,
+    input: CompanionWorkspaceRebuild,
+  ): Promise<{ sessions: number; messages: number }> {
+    const request = companionWorkspaceRebuildSchema.parse(input);
+    // The transcript is transport input, not canonical memory. Keep it beside
+    // the candidate .igrep so atomic promotion cannot retain a second copy.
+    const transcriptsRoot = join(workspace, ".idream-rebuild-transcripts");
+    await mkdir(transcriptsRoot, { recursive: true });
+    const bySession = new Map<string, typeof request.messages>();
+    for (const message of request.messages) {
+      const messages = bySession.get(message.sessionId) ?? [];
+      messages.push(message);
+      bySession.set(message.sessionId, messages);
+    }
+    for (const [sessionId, messages] of bySession) {
+      const digest = createHash("sha256").update(sessionId).digest("hex");
+      const transcript = join(transcriptsRoot, `session-${digest}.jsonl`);
+      const rows = messages.map((message) => JSON.stringify({
+        role: message.role,
+        content: message.content,
+        source_at: message.createdAt,
+        source_timezone: "UTC",
+      }));
+      await writeFile(transcript, `${rows.join("\n")}\n`, "utf8");
+      const result = await this.run({
+        command: this.command,
+        args: [
+          "mem",
+          "ingest",
+          "--transcript",
+          transcript,
+          "--workspace",
+          workspace,
+          "--agent",
+          "deepseek-harness",
+          "--session-id",
+          sessionId,
+        ],
+        timeoutMs: 30_000,
+      });
+      const record = result && typeof result === "object" && !Array.isArray(result)
+        ? result as Record<string, unknown>
+        : {};
+      if (record.events !== messages.length || typeof record.dialoguePath !== "string") {
+        throw new Error(`igrep ingest did not verify session ${sessionId}`);
+      }
+    }
+    await this.run({
+      command: this.command,
+      args: ["mem", "maintain", "--workspace", workspace, "--rebuild"],
+      timeoutMs: 300_000,
+    });
+    await this.run({
+      command: this.command,
+      args: ["mem", "doctor", "--workspace", workspace, "--json", "--strict"],
+      timeoutMs: 30_000,
+    });
+    const status = await this.probe.status(workspace);
+    if (status.dialogueFiles !== bySession.size) {
+      throw new Error(
+        `igrep rebuild dialogue count mismatch: expected ${bySession.size}, got ${status.dialogueFiles}`,
+      );
+    }
+    if ((status.pendingProfileRows ?? 0) > 0) {
+      throw new Error(`igrep maintain left ${status.pendingProfileRows} profile rows pending`);
+    }
+    if (request.messages.length > 0 && !status.lastMaintainAt) {
+      throw new Error("igrep rebuild did not expose a completed maintain pass");
+    }
+    return { sessions: bySession.size, messages: request.messages.length };
   }
 }
 

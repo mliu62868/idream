@@ -35,7 +35,6 @@ import {
   type ChatGeneratePayload,
   type ChatImageRequestedPayload,
 } from "@idream/shared/contracts";
-import { purgeRuntimeMemoryIfActive } from "./companion-workspace-privacy.js";
 
 export interface ChatContext {
   prisma: ChatPrismaClient;
@@ -954,14 +953,6 @@ export async function editUserMessage(
         409,
       );
     }
-    // igrep has no public per-message forget seam. Keep the purge under the
-    // same user advisory lock as the edit so no newly committed turn can
-    // repopulate the relationship in the gap.
-    await purgeRuntimeMemoryIfActive({
-      scope: "relationship",
-      userId: input.userId,
-      characterId: currentSession.characterId,
-    });
     if (moderation.status !== "blocked") {
       await assertTurnCapacity(tx, input.userId, session.id, policy, assistantMessageId);
     }
