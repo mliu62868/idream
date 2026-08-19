@@ -69,6 +69,7 @@ export interface CompanionEngineOptions {
     ): Promise<{ entries: number; written: number; igrepVersion: string }>;
   };
   maxSteps?: number;
+  maxConcurrentAgents?: { normal: number; private: number };
 }
 
 interface Deferred<T> {
@@ -422,6 +423,13 @@ export class CompanionEngine implements InvocationService {
     if (this.closing) throw new Error("sidecar is shutting down");
     if (this.isPurging(invocation)) throw new Error("invocation workspace is being purged");
     if (this.active.has(invocation.invocationId)) throw new Error("invocation id is already active");
+    const pool = invocation.memoryMode === "private" ? "private" : "normal";
+    const limit = this.options.maxConcurrentAgents?.[pool] ?? Number.POSITIVE_INFINITY;
+    const activeInPool = [...this.active.values()].filter(({ invocation: current }) =>
+      (current.memoryMode === "private" ? "private" : "normal") === pool).length;
+    if (activeInPool >= limit) {
+      throw new Error(`${pool} companion agent pool is at capacity`);
+    }
     const active = new ActiveInvocation(invocation);
     this.active.set(invocation.invocationId, active);
     let workspace: AttemptWorkspace | undefined;

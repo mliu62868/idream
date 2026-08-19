@@ -687,4 +687,43 @@ describe("programmatic DSH companion runtime", () => {
       && frame.event.reason === "shutdown")).toBe(true);
     expect(await readdir(join(root, "private"))).toEqual([]);
   });
+
+  it("bounds normal and private agents independently", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chat-agent-capacity-"));
+    temporary.push(root);
+    const engine = new CompanionEngine({
+      workspaces: new AttemptWorkspaceStore({
+        canonicalRoot: join(root, "canonical"),
+        shadowRoot: join(root, "shadow"),
+        privateRoot: join(root, "private"),
+        memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
+      }),
+      plugin: async () => ({ name: "igrep", apply() {} }),
+      adapter: () => new BlockingAdapter(),
+      igrepCommand: "igrep",
+      maxConcurrentAgents: { normal: 1, private: 1 },
+    });
+    const firstPrivate = invocation("private");
+    firstPrivate.invocationId = "inv-capacity-private-1";
+    firstPrivate.attemptId = "attempt-capacity-private-1";
+    const secondPrivate = invocation("private");
+    secondPrivate.invocationId = "inv-capacity-private-2";
+    secondPrivate.attemptId = "attempt-capacity-private-2";
+    const firstNormal = invocation("normal");
+    firstNormal.invocationId = "inv-capacity-normal-1";
+    firstNormal.attemptId = "attempt-capacity-normal-1";
+    const secondNormal = invocation("shadow");
+    secondNormal.invocationId = "inv-capacity-normal-2";
+    secondNormal.attemptId = "attempt-capacity-normal-2";
+
+    const privateRun = engine.run(firstPrivate, () => undefined);
+    await expect(engine.run(secondPrivate, () => undefined))
+      .rejects.toThrow(/private.*capacity/);
+    const normalRun = engine.run(firstNormal, () => undefined);
+    await expect(engine.run(secondNormal, () => undefined))
+      .rejects.toThrow(/normal.*capacity/);
+
+    await engine.shutdown();
+    await Promise.all([privateRun, normalRun]);
+  });
 });

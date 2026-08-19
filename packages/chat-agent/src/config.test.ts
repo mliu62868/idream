@@ -22,6 +22,18 @@ describe("sidecar process configuration", () => {
     expect(config.authToken).toBe("shared-chat-sidecar-token");
     expect(config.port).toBe(3101);
     expect(config.shadowRoot).toMatch(/chat-agent-shadow$/);
+    expect(config.maxConcurrentAgents).toEqual({ normal: 4, private: 4 });
+  });
+
+  it("keeps normal and private agent capacity in separate bounded pools", () => {
+    expect(loadSidecarConfig(environment({
+      DSH_MAX_NORMAL_AGENTS: "2",
+      DSH_MAX_PRIVATE_AGENTS: "1",
+    })).maxConcurrentAgents).toEqual({ normal: 2, private: 1 });
+    expect(() => loadSidecarConfig(environment({ DSH_MAX_NORMAL_AGENTS: "0" })))
+      .toThrow(/DSH_MAX_NORMAL_AGENTS/);
+    expect(() => loadSidecarConfig(environment({ DSH_MAX_PRIVATE_AGENTS: "1.5" })))
+      .toThrow(/DSH_MAX_PRIVATE_AGENTS/);
   });
 
   it("requires all workspace authority roots to be pairwise disjoint", () => {

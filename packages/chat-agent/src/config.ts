@@ -16,6 +16,7 @@ export interface SidecarConfig {
   readyBaseUrl: string;
   openRouterProviderOnly?: string[];
   maxSteps: number;
+  maxConcurrentAgents: { normal: number; private: number };
 }
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
@@ -105,5 +106,9 @@ export function loadSidecarConfig(env: NodeJS.ProcessEnv = process.env): Sidecar
     readyBaseUrl: required(env, "DSH_READY_BASE_URL"),
     ...(providerOnly?.length ? { openRouterProviderOnly: providerOnly } : {}),
     maxSteps: positiveInteger(env.DSH_MAX_STEPS, 8, "DSH_MAX_STEPS"),
+    maxConcurrentAgents: {
+      normal: positiveInteger(env.DSH_MAX_NORMAL_AGENTS, 4, "DSH_MAX_NORMAL_AGENTS"),
+      private: positiveInteger(env.DSH_MAX_PRIVATE_AGENTS, 4, "DSH_MAX_PRIVATE_AGENTS"),
+    },
   };
 }

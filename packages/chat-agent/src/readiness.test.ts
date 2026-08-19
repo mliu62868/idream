@@ -18,6 +18,7 @@ const config: SidecarConfig = {
   readyBaseUrl: "https://openrouter.ai/api/v1",
   openRouterProviderOnly: ["DeepSeek"],
   maxSteps: 8,
+  maxConcurrentAgents: { normal: 4, private: 4 },
 };
 
 const normalDigest = "1".repeat(64);

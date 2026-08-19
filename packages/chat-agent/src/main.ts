@@ -36,6 +36,7 @@ const engine = new CompanionEngine({
     COMPANION_IGREP_VERSION,
   ),
   maxSteps: config.maxSteps,
+  maxConcurrentAgents: config.maxConcurrentAgents,
 });
 const server = createCompanionServer({
   authToken: config.authToken,
