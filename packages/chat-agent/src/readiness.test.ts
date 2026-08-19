@@ -12,6 +12,11 @@ const config: SidecarConfig = {
   privateRoot: "/tmp/readiness-private",
   igrepCommand: "igrep",
   igrepPluginUrl: "file:///tmp/igrep/index.mjs",
+  igrepLlm: {
+    url: "https://maintenance.example/v1",
+    model: "maintenance-model",
+    apiKey: "maintenance-secret",
+  },
   bootstrapStatePath: "/tmp/idream-companion-bootstrap.json",
   providerApiKey: "provider-secret",
   readyProvider: "openrouter",
@@ -118,6 +123,8 @@ describe("fail-closed companion readiness", () => {
     expect(readiness.profiles.private.normalizedConfigDigest).not.toBe(privateDigest);
     expect(readiness.profiles.normal.normalizedConfigDigest)
       .not.toBe(readiness.profiles.private.normalizedConfigDigest);
+    expect(JSON.stringify(readiness)).not.toContain("maintenance-secret");
+    expect(JSON.stringify(readiness)).not.toContain("IGREP_LLM");
   });
 
   it("fails closed when the executable version or normalized profile drifts", async () => {

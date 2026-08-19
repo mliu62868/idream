@@ -28,6 +28,12 @@ the installed profile's `node_modules/@igrep/dsh-plugin`. Readiness rejects any 
 normalized plugin-profile drift from DSH `0.1.0-rc.7` / commit
 `99f6f02fecdb7dff40c3fbc9470f5907c29f74ca`, igrep `0.1.132`, and plugin `0.1.0`.
 
+Set `IGREP_LLM_URL`, `IGREP_LLM_MODEL`, and `IGREP_LLM_API_KEY` explicitly for
+igrep profile maintenance. Startup rejects missing, blank, or non-HTTP(S) values and
+binds all official igrep plugin and CLI children to the validated values, so a local
+`~/.igreprc` cannot silently select another maintenance model. These settings are
+separate from the DSH turn provider below and are never returned by readiness or logged.
+
 Chat and this process share `DSH_AGENT_TOKEN`; there is deliberately no second sidecar
 token variable. The default listener is `127.0.0.1:3101`, matching Chat's default
 `DSH_AGENT_URL=http://127.0.0.1:3101`.

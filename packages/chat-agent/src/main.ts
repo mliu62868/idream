@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { COMPANION_IGREP_VERSION } from "@idream/shared/chat/companion-runtime";
 import { CompanionEngine } from "./engine";
-import { loadSidecarConfig } from "./config";
+import { bindIgrepLlmEnvironment, loadSidecarConfig } from "./config";
 import {
   IgrepLegacyMemoryImporter,
   IgrepMemoryProbe,
@@ -15,6 +15,7 @@ import { createSidecarInstanceIdentity } from "./sidecar-instance";
 import { AttemptWorkspaceStore } from "./workspace";
 
 const config = loadSidecarConfig();
+bindIgrepLlmEnvironment(config.igrepLlm);
 const instance = createSidecarInstanceIdentity();
 const plugin = Promise.resolve().then(() => loadIgrepPlugin(config.igrepPluginUrl));
 const workspaces = new AttemptWorkspaceStore({

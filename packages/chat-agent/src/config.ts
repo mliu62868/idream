@@ -9,6 +9,7 @@ export interface SidecarConfig {
   privateRoot: string;
   igrepCommand: string;
   igrepPluginUrl: string;
+  igrepLlm: IgrepLlmConfig;
   bootstrapStatePath: string;
   providerApiKey: string;
   readyProvider: string;
@@ -19,9 +20,42 @@ export interface SidecarConfig {
   maxConcurrentAgents: { normal: number; private: number };
 }
 
+export interface IgrepLlmConfig {
+  url: string;
+  model: string;
+  apiKey: string;
+}
+
+/**
+ * INVARIANT: every official igrep plugin or CLI child inherits the sidecar's
+ * validated maintenance model, never a user's ~/.igreprc defaults.
+ */
+export function bindIgrepLlmEnvironment(
+  config: IgrepLlmConfig,
+  environment: NodeJS.ProcessEnv = process.env,
+): void {
+  environment.IGREP_LLM_URL = config.url;
+  environment.IGREP_LLM_MODEL = config.model;
+  environment.IGREP_LLM_API_KEY = config.apiKey;
+}
+
 function required(env: NodeJS.ProcessEnv, name: string): string {
   const value = env[name]?.trim();
   if (!value) throw new Error(`${name} is required`);
+  return value;
+}
+
+function httpUrl(env: NodeJS.ProcessEnv, name: string): string {
+  const value = required(env, name);
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`${name} must be a valid HTTP(S) URL`);
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error(`${name} must be an HTTP(S) URL`);
+  }
   return value;
 }
 
@@ -104,6 +138,11 @@ export function loadSidecarConfig(env: NodeJS.ProcessEnv = process.env): Sidecar
     privateRoot,
     igrepCommand: env.DSH_IGREP_COMMAND?.trim() || "igrep",
     igrepPluginUrl: required(env, "DSH_IGREP_PLUGIN_URL"),
+    igrepLlm: {
+      url: httpUrl(env, "IGREP_LLM_URL"),
+      model: required(env, "IGREP_LLM_MODEL"),
+      apiKey: required(env, "IGREP_LLM_API_KEY"),
+    },
     bootstrapStatePath: absolutePath(
       required(env, "DSH_BOOTSTRAP_STATE_PATH"),
       "DSH_BOOTSTRAP_STATE_PATH",

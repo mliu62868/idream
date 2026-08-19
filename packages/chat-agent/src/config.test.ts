@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { loadSidecarConfig } from "./config";
+import { bindIgrepLlmEnvironment, loadSidecarConfig } from "./config";
 
 function environment(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
     DSH_AGENT_TOKEN: "shared-chat-sidecar-token",
     DSH_IGREP_PLUGIN_URL: "/opt/igrep/profile/node_modules/@igrep/dsh-plugin/index.mjs",
     DSH_BOOTSTRAP_STATE_PATH: "/opt/igrep/idream-companion-bootstrap.json",
+    IGREP_LLM_URL: "http://127.0.0.1:8061/v1",
+    IGREP_LLM_MODEL: "maintenance-model",
+    IGREP_LLM_API_KEY: "maintenance-secret",
     DSH_PROVIDER_API_KEY: "provider-secret",
     DSH_READY_PROVIDER: "openrouter",
     DSH_READY_MODEL: "deepseek/test",
@@ -23,6 +26,40 @@ describe("sidecar process configuration", () => {
     expect(config.port).toBe(3101);
     expect(config.shadowRoot).toMatch(/chat-agent-shadow$/);
     expect(config.maxConcurrentAgents).toEqual({ normal: 4, private: 4 });
+  });
+
+  it("requires an explicit maintenance LLM instead of inheriting user igrep config", () => {
+    expect(() => loadSidecarConfig(environment({ IGREP_LLM_URL: undefined })))
+      .toThrow(/IGREP_LLM_URL is required/);
+    expect(() => loadSidecarConfig(environment({ IGREP_LLM_MODEL: "  " })))
+      .toThrow(/IGREP_LLM_MODEL is required/);
+    expect(() => loadSidecarConfig(environment({ IGREP_LLM_API_KEY: undefined })))
+      .toThrow(/IGREP_LLM_API_KEY is required/);
+    expect(() => loadSidecarConfig(environment({ IGREP_LLM_URL: "file:///tmp/model" })))
+      .toThrow(/IGREP_LLM_URL.*HTTP/);
+    expect(() => loadSidecarConfig(environment({ IGREP_LLM_URL: "not-a-url" })))
+      .toThrow(/IGREP_LLM_URL.*URL/);
+  });
+
+  it("binds every igrep child to the validated maintenance LLM values", () => {
+    const config = loadSidecarConfig(environment({
+      IGREP_LLM_URL: " https://maintenance.example/v1 ",
+      IGREP_LLM_MODEL: " maintenance-model ",
+      IGREP_LLM_API_KEY: " maintenance-secret ",
+    }));
+    const childEnvironment: NodeJS.ProcessEnv = {
+      IGREP_LLM_URL: "http://stale-user-config/v1",
+      IGREP_LLM_MODEL: "stale-user-model",
+      IGREP_LLM_API_KEY: "stale-user-secret",
+    };
+
+    bindIgrepLlmEnvironment(config.igrepLlm, childEnvironment);
+
+    expect(childEnvironment).toEqual({
+      IGREP_LLM_URL: "https://maintenance.example/v1",
+      IGREP_LLM_MODEL: "maintenance-model",
+      IGREP_LLM_API_KEY: "maintenance-secret",
+    });
   });
 
   it("keeps normal and private agent capacity in separate bounded pools", () => {
