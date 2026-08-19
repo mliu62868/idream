@@ -19,6 +19,7 @@ import {
   resolveChatModelProfile,
 } from "@idream/shared";
 import { ACCOUNT_ERASURE_COMPLETION_V2_INGEST_PATH } from "@idream/shared/contracts";
+import { resolveCompanionRuntimeConfig } from "./companion-runtime-selection.js";
 
 function required(name: string, fallback?: string): string {
   const value = process.env[name] ?? fallback;
@@ -172,6 +173,11 @@ export const env = {
   },
   get PORT() {
     return Number.parseInt(process.env.CHAT_PORT ?? "3100", 10);
+  },
+  // Read as one validated snapshot before each attempt is recorded. The
+  // runtime, memory backend and private/normal profile must never drift apart.
+  get COMPANION_RUNTIME_CONFIG() {
+    return resolveCompanionRuntimeConfig(process.env);
   },
   // Long-term memory retrieval strategy (PLAN P1-2). "recency" (default) is the
   // safe hot-path baseline; "igrep" attempts semantic ranking with a strict

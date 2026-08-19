@@ -362,12 +362,14 @@ function setupProfiles(discoveries, dependencies, dshHome) {
       dependencies.fs,
       dshHome,
     );
-    const validated = validateProfile(discovery, dependencies.fs, dshHome);
     const configDigest = dumpProfileConfigDigest(
       discovery,
       dependencies,
       dshHome,
     );
+    // Loading the profile is what makes DSH materialize/repair the plugin's
+    // peer graph in a clean DSH_HOME. Validate that graph only after the dump.
+    const validated = validateProfile(discovery, dependencies.fs, dshHome);
     return {
       memoryMode: discovery.memoryMode,
       name: discovery.profileName,
@@ -493,7 +495,8 @@ function validateProfile(discovery, fs, dshHome) {
   }
   const peerManifestPaths = PLUGIN_PEERS.map((peerPackage) => {
     const peerManifestPath = path.join(
-      profileDir,
+      dshHome,
+      "profiles",
       "node_modules",
       ...peerPackage.split("/"),
       "package.json",

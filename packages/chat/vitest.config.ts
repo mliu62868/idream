@@ -47,6 +47,10 @@ export default defineConfig({
         "../shared/src/chat/limits.ts",
         import.meta.url,
       ).pathname,
+      "@idream/shared/chat/companion-runtime": new URL(
+        "../shared/src/chat/companion-runtime.ts",
+        import.meta.url,
+      ).pathname,
       "@idream/shared/env": new URL(
         "../shared/src/contracts/env.ts",
         import.meta.url,

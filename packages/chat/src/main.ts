@@ -9,6 +9,7 @@ import {
   runtimeReadiness,
   warmRuntime,
 } from "./runtime-readiness.js";
+import { cancelActiveCompanionInvocations } from "./companion-runtime.js";
 
 const server = startWeb();
 let worker: ReturnType<typeof startWorker> | null = null;
@@ -52,6 +53,7 @@ async function shutdown(signal: string): Promise<void> {
   runtimeReadiness.stopAccepting();
   if (warmupRetry) clearTimeout(warmupRetry);
   logger.info({ signal }, "chat shutting down");
+  await cancelActiveCompanionInvocations("shutdown");
   await Promise.all([
     worker?.close().catch((err) => logger.error({ err }, "worker close failed")),
     new Promise<void>((resolve) => server.close(() => resolve())),

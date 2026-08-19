@@ -69,6 +69,8 @@ export interface BuildContextInput {
   turnMemoryEnabled: boolean;
   /** Anchor the model context to the user turn being answered/regenerated. */
   userMessageId?: string;
+  /** Official runtime memory owns generic recall on the DSH path. */
+  genericMemoryBackend?: "legacy" | "runtime";
 }
 
 export async function buildContext(input: BuildContextInput): Promise<BuiltContext> {
@@ -86,7 +88,15 @@ type BuildContextSnapshotInput = Omit<BuildContextInput, "prisma"> & {
 async function buildContextSnapshot(
   input: BuildContextSnapshotInput,
 ): Promise<BuiltContext> {
-  const { prisma, userId, characterId, sessionId, turnMemoryEnabled, userMessageId } = input;
+  const {
+    prisma,
+    userId,
+    characterId,
+    sessionId,
+    turnMemoryEnabled,
+    userMessageId,
+    genericMemoryBackend = "legacy",
+  } = input;
 
   const currentPersona = await prisma.chatCharacterView.findUnique({
     where: { characterId },
@@ -245,7 +255,11 @@ async function buildContextSnapshot(
   // turn rather than silently generating without them.
   boundaries = await readBoundaries(userId);
 
-  if (turnMemoryEnabled && policy.maxMemories > 0) {
+  if (
+    turnMemoryEnabled &&
+    genericMemoryBackend === "legacy" &&
+    policy.maxMemories > 0
+  ) {
     const query =
       [...recentMessages]
         .reverse()
@@ -266,9 +280,11 @@ async function buildContextSnapshot(
     longTermMemories = memoryRead.value;
     if (!memoryRead.ok) dropped.push("memory");
 
-    // Relationship is degradable like ordinary memories. A committed pending
-    // mutation is not: buildContext's shared user lock makes this one coherent
-    // PG + file authority snapshot.
+  }
+
+  if (turnMemoryEnabled) {
+    // Relationship is Chat-owned companion state, not generic RAG memory. It
+    // remains in PreparedTurn when the official runtime plugin owns recall.
     const relRead = getRelationshipState(userId, characterId).then((value) =>
       value.version > 0
         ? { stage: value.stage, summary: value.summary, version: value.version }

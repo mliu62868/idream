@@ -104,10 +104,24 @@ function prepared(value: BuiltContext = context): PreparedTurn {
     tools: registryChatTools(),
     profile: {
       tier: value.policy.tier,
+      adapter: value.policy.modelProfile.adapter,
       provider: value.policy.modelProfile.provider,
       baseUrl: value.policy.modelProfile.baseUrl,
       model: value.policy.modelProfile.model,
       supportsTools: value.policy.modelProfile.supportsTools,
+      maxOutputTokens: value.policy.modelProfile.maxOutputTokens,
+      timeout: {
+        firstTokenMs: value.policy.modelProfile.firstTokenTimeoutMs,
+        idleMs: value.policy.modelProfile.idleTimeoutMs,
+        completionMs: value.policy.modelProfile.completionTimeoutMs,
+      },
+      sampling: {
+        temperature: value.policy.modelProfile.temperature ?? 0.9,
+        topP: value.policy.modelProfile.topP ?? 0.95,
+        repetitionPenalty: value.policy.modelProfile.repetitionPenalty ?? 1.05,
+        structuredTemperature:
+          value.policy.modelProfile.structuredTemperature ?? 0.2,
+      },
     },
     budget: {
       maxInputTokens: 6_000,
@@ -124,10 +138,25 @@ function prepared(value: BuiltContext = context): PreparedTurn {
       fileContextRevision: "0",
       profile: {
         tier: value.policy.tier,
+        adapter: value.policy.modelProfile.adapter,
         provider: value.policy.modelProfile.provider,
         baseUrl: value.policy.modelProfile.baseUrl,
         model: value.policy.modelProfile.model,
         supportsTools: value.policy.modelProfile.supportsTools,
+        maxOutputTokens: value.policy.modelProfile.maxOutputTokens,
+        timeout: {
+          firstTokenMs: value.policy.modelProfile.firstTokenTimeoutMs,
+          idleMs: value.policy.modelProfile.idleTimeoutMs,
+          completionMs: value.policy.modelProfile.completionTimeoutMs,
+        },
+        sampling: {
+          temperature: value.policy.modelProfile.temperature ?? 0.9,
+          topP: value.policy.modelProfile.topP ?? 0.95,
+          repetitionPenalty:
+            value.policy.modelProfile.repetitionPenalty ?? 1.05,
+          structuredTemperature:
+            value.policy.modelProfile.structuredTemperature ?? 0.2,
+        },
       },
     },
   };

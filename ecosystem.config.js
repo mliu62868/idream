@@ -1,5 +1,5 @@
-// pm2 process topology (design §12). Up to nine logical apps / ten processes
-// (gen-image has two instances); mock video omits gen-video in every mode.
+// pm2 process topology (design §12). The opt-in DSH companion sidecar is a
+// separate Node process; mock video omits gen-video in every mode.
 // Development is the default: web apps use Next dev/Fast Refresh and source
 // services use PM2 watch. Production keeps the immutable standalone web runtime.
 //   bun run pm2:start              # development; no build required
@@ -72,6 +72,7 @@ const genVideoProvider =
   localEnvValue(dir("packages/gen/.env"), "GEN_VIDEO_PROVIDER") ??
   "mock";
 const videoWorkerEnabled = genVideoProvider !== "mock";
+const companionSidecarEnabled = process.env.DSH_AGENT_ENABLED === "1";
 // REDIS_URL must resolve IDENTICALLY across main-web (which enqueues) and gen-finalizer
 // (which consumes) — otherwise generation jobs stick forever. Durable Main↔Chat delivery
 // does not use Redis. Which vars are cross-service, and their one set of defaults, is
@@ -212,6 +213,23 @@ module.exports = {
       },
       // config from packages/admin/.env (next + dotenv load it)
     },
+    ...(companionSidecarEnabled
+      ? [
+          {
+            name: "chat-agent",
+            cwd: dir("packages/chat-agent"),
+            script: "node_modules/tsx/dist/cli.mjs",
+            args: "src/main.ts",
+            exec_mode: "fork",
+            instances: 1,
+            kill_timeout: 5 * 60 * 1_000,
+            ...sourceWatch("packages/chat-agent/src", "packages/shared/src"),
+            env: {
+              ...runtimeIdentityEnv,
+            },
+          },
+        ]
+      : []),
     // fast I/O + slow generation — chat/web (API+SSE) + chat/worker, one process
     {
       name: "chat",

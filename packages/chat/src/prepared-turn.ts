@@ -9,6 +9,10 @@ import type {
 import { buildContext, type BuiltContext } from "./context.js";
 import { buildCompanionSystemPrompt } from "./prompt.js";
 import { registryChatTools } from "./agent-tools.js";
+import {
+  preparedTurnWireSchema,
+  type PreparedTurnWire,
+} from "@idream/shared/chat/companion-runtime";
 
 export interface PreparedTurn {
   model: string;
@@ -17,10 +21,23 @@ export interface PreparedTurn {
   tools: ChatToolDefinition[];
   profile: {
     tier: string;
+    adapter: string;
     provider: string;
     baseUrl: string;
     model: string;
     supportsTools: boolean;
+    maxOutputTokens: number;
+    timeout: {
+      firstTokenMs: number;
+      idleMs: number;
+      completionMs: number;
+    };
+    sampling: {
+      temperature: number;
+      topP: number;
+      repetitionPenalty: number;
+      structuredTemperature: number;
+    };
   };
   budget: {
     maxInputTokens: number;
@@ -46,21 +63,49 @@ export interface PrepareCompanionTurnInput {
   sessionId: string;
   turnMemoryEnabled: boolean;
   userMessageId: string;
+  genericMemoryBackend?: "legacy" | "runtime";
 }
 
-const runtimeByPreparedTurn = new WeakMap<PreparedTurn, BuiltContext>();
+interface PreparedTurnRuntimeState {
+  context: BuiltContext;
+  currentUserMessageId: string;
+}
+
+const runtimeByPreparedTurn = new WeakMap<PreparedTurn, PreparedTurnRuntimeState>();
 
 export async function prepareCompanionTurn(
   input: PrepareCompanionTurnInput,
 ): Promise<PreparedTurn> {
   const context = await buildContext(input);
+  return compilePreparedTurn(context, input.userMessageId);
+}
+
+/** Compile a pure, pinned generation snapshot from an already-authoritative context. */
+export function compilePreparedTurn(
+  context: BuiltContext,
+  currentUserMessageId: string,
+): PreparedTurn {
   const fitted = fitPreparedTurnBudget(context);
+  const modelProfile = fitted.context.policy.modelProfile;
   const profile: PreparedTurn["profile"] = {
     tier: fitted.context.policy.tier,
-    provider: fitted.context.policy.modelProfile.provider,
-    baseUrl: fitted.context.policy.modelProfile.baseUrl,
-    model: fitted.context.policy.modelProfile.model,
-    supportsTools: fitted.context.policy.modelProfile.supportsTools,
+    adapter: modelProfile.adapter,
+    provider: modelProfile.provider,
+    baseUrl: modelProfile.baseUrl,
+    model: modelProfile.model,
+    supportsTools: modelProfile.supportsTools,
+    maxOutputTokens: modelProfile.maxOutputTokens,
+    timeout: {
+      firstTokenMs: modelProfile.firstTokenTimeoutMs,
+      idleMs: modelProfile.idleTimeoutMs,
+      completionMs: modelProfile.completionTimeoutMs,
+    },
+    sampling: {
+      temperature: modelProfile.temperature ?? 0.9,
+      topP: modelProfile.topP ?? 0.95,
+      repetitionPenalty: modelProfile.repetitionPenalty ?? 1.05,
+      structuredTemperature: modelProfile.structuredTemperature ?? 0.2,
+    },
   };
   const prepared: PreparedTurn = {
     model: profile.model,
@@ -81,15 +126,71 @@ export async function prepareCompanionTurn(
       profile,
     },
   };
-  runtimeByPreparedTurn.set(prepared, fitted.context);
+  runtimeByPreparedTurn.set(prepared, {
+    context: fitted.context,
+    currentUserMessageId,
+  });
   return prepared;
 }
 
 /** Internal runtime state for finalization and deterministic tool planning. */
 export function preparedTurnRuntime(prepared: PreparedTurn): BuiltContext {
-  const context = runtimeByPreparedTurn.get(prepared);
-  if (!context) throw new Error("PreparedTurn was not produced by prepareCompanionTurn");
-  return context;
+  const runtime = runtimeByPreparedTurn.get(prepared);
+  if (!runtime) throw new Error("PreparedTurn was not produced by prepareCompanionTurn");
+  return runtime.context;
+}
+
+/**
+ * Product wire only: stable ids and provenance, no DB handle, API key, DSH type
+ * or mutable runtime object may cross this boundary.
+ */
+export function toPreparedTurnWire(prepared: PreparedTurn): PreparedTurnWire {
+  const runtime = runtimeByPreparedTurn.get(prepared);
+  if (!runtime) throw new Error("PreparedTurn was not produced by prepareCompanionTurn");
+  const { context, currentUserMessageId } = runtime;
+  const messages: PreparedTurnWire["messages"] = [
+    {
+      id: [
+        "system",
+        prepared.trace.soulFingerprint,
+        prepared.trace.sceneVersion,
+        prepared.trace.relationshipVersion ?? "none",
+      ].join(":"),
+      sourceKind: "plugin",
+      role: "system",
+      content: prepared.messages[0]?.content ?? "",
+    },
+  ];
+  if (context.openingMessage) {
+    messages.push({
+      id: `opening:${prepared.trace.characterReleaseId ?? prepared.trace.characterContentVersionId}`,
+      sourceKind: "plugin",
+      role: "assistant",
+      content: context.openingMessage,
+    });
+  }
+  for (const message of context.recentMessages) {
+    messages.push({
+      id: message.id,
+      sourceKind:
+        message.id === currentUserMessageId ? "current_user" : "replay",
+      role: message.role,
+      content: message.photoSummary
+        ? `${message.content}\n[You sent a photo: ${message.photoSummary}]`
+        : message.content,
+    });
+  }
+  const { profile: _runtimeProfile, ...wireTrace } = prepared.trace;
+  return preparedTurnWireSchema.parse({
+    version: 1,
+    model: prepared.model,
+    characterName: prepared.characterName,
+    messages,
+    tools: prepared.tools,
+    profile: prepared.profile,
+    budget: prepared.budget,
+    trace: wireTrace,
+  });
 }
 
 function buildModelMessages(context: BuiltContext): ModelMessage[] {

@@ -17,6 +17,7 @@
       "@idream/shared/env": ["../shared/src/contracts/env.ts"],
       "@idream/shared/bff": ["../shared/src/bff/signing.ts"],
       "@idream/shared/chat/limits": ["../shared/src/chat/limits.ts"],
+      "@idream/shared/chat/companion-runtime": ["../shared/src/chat/companion-runtime.ts"],
       "@idream/shared/observability/sentry": ["../shared/src/observability/sentry.ts"]
     }
   },

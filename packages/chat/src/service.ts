@@ -35,6 +35,7 @@ import {
   type ChatGeneratePayload,
   type ChatImageRequestedPayload,
 } from "@idream/shared/contracts";
+import { purgeRuntimeMemoryIfActive } from "./companion-workspace-privacy.js";
 
 export interface ChatContext {
   prisma: ChatPrismaClient;
@@ -848,6 +849,14 @@ export async function editUserMessage(
   if (assistant && ["generating", "pending"].includes(assistant.status)) {
     throw new ChatError("message_generating", "reply is still generating", 409);
   }
+
+  // igrep has no public per-message forget seam. Over-forget this one
+  // relationship before rewriting PG; later committed turns rebuild memory.
+  await purgeRuntimeMemoryIfActive({
+    scope: "relationship",
+    userId: input.userId,
+    characterId: session.characterId,
+  });
 
   await assertEligible(prisma, input.userId, session.characterId);
   const entitlement = await prisma.chatEntitlementView.findUnique({ where: { userId: input.userId } });

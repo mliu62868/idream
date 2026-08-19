@@ -26,6 +26,7 @@ const {
 function loadConfig(mode, overrides = {}) {
   const originalMode = process.env.IDREAM_PM2_MODE;
   const originalVideoProvider = process.env.GEN_VIDEO_PROVIDER;
+  const originalDshAgentEnabled = process.env.DSH_AGENT_ENABLED;
   try {
     if (mode === undefined) {
       delete process.env.IDREAM_PM2_MODE;
@@ -42,6 +43,11 @@ function loadConfig(mode, overrides = {}) {
     } else {
       process.env.GEN_VIDEO_PROVIDER = videoProvider;
     }
+    const dshAgentEnabled = Object.hasOwn(overrides, "DSH_AGENT_ENABLED")
+      ? overrides.DSH_AGENT_ENABLED
+      : originalDshAgentEnabled;
+    if (dshAgentEnabled === undefined) delete process.env.DSH_AGENT_ENABLED;
+    else process.env.DSH_AGENT_ENABLED = dshAgentEnabled;
     delete require.cache[require.resolve(configPath)];
     return require(configPath);
   } finally {
@@ -54,6 +60,11 @@ function loadConfig(mode, overrides = {}) {
       delete process.env.GEN_VIDEO_PROVIDER;
     } else {
       process.env.GEN_VIDEO_PROVIDER = originalVideoProvider;
+    }
+    if (originalDshAgentEnabled === undefined) {
+      delete process.env.DSH_AGENT_ENABLED;
+    } else {
+      process.env.DSH_AGENT_ENABLED = originalDshAgentEnabled;
     }
     delete require.cache[require.resolve(configPath)];
   }
@@ -182,6 +193,20 @@ test("development is the source-backed default", () => {
     path.join(repoRoot, "packages/main/src/server"),
     path.join(repoRoot, "packages/shared/src"),
   ]);
+});
+
+test("the DSH companion sidecar is explicit, single-instance and starts before Chat", () => {
+  const disabled = loadConfig("development", { DSH_AGENT_ENABLED: undefined });
+  assert.equal(disabled.apps.some((app) => app.name === "chat-agent"), false);
+
+  const enabled = loadConfig("development", { DSH_AGENT_ENABLED: "1" });
+  const sidecar = byName(enabled, "chat-agent");
+  const chat = byName(enabled, "chat");
+  assert.equal(sidecar.cwd, path.join(repoRoot, "packages/chat-agent"));
+  assert.equal(sidecar.args, "src/main.ts");
+  assert.equal(sidecar.instances, 1);
+  assert.equal(sidecar.exec_mode, "fork");
+  assert.ok(enabled.apps.indexOf(sidecar) < enabled.apps.indexOf(chat));
 });
 
 test("every runtime receives the operator-approved source identity", () => {

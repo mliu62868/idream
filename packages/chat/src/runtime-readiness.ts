@@ -13,6 +13,8 @@ import { chatPrisma, chatProjectorPrisma } from "./db.js";
 import type { ChatModel } from "./providers.js";
 import { providers } from "./providers.js";
 import { redisOptions } from "./queue.js";
+import { env } from "./env.js";
+import { probeCompanionSidecar } from "./companion-sidecar-readiness.js";
 
 export interface RuntimeReadinessSnapshot {
   live: boolean;
@@ -953,6 +955,38 @@ export async function warmRuntime(input: {
       (tier) => resolveChatModelProfile(process.env, tier),
     ));
     const warmedProfiles: string[] = [];
+    const companion = env.COMPANION_RUNTIME_CONFIG;
+    if (companion.runtime === "dsh") {
+      const profile = profiles[0] ?? resolveChatModelProfile(process.env);
+      const sidecar = await probeCompanionSidecar({
+        baseUrl: companion.sidecarUrl,
+        token: companion.sidecarToken,
+        expectedProvider: profile.provider,
+        expectedModel: profile.model,
+      });
+      warmedProfiles.push(
+        `dsh:${sidecar.dshVersion}:${sidecar.dshCommit}`,
+        `igrep:${sidecar.igrepVersion}:${sidecar.pluginVersion}`,
+        `profile:normal:${sidecar.profiles.normal.normalizedConfigDigest}`,
+        `profile:private:${sidecar.profiles.private.normalizedConfigDigest}`,
+      );
+      readiness.warmed(
+        warmedProfiles,
+        async () => {
+          await assertChatSchemaReady(prisma);
+          await assertChatProjectorReady(prisma, projectorPrisma);
+          await pingRuntimeRedis();
+          await probeCompanionSidecar({
+            baseUrl: companion.sidecarUrl,
+            token: companion.sidecarToken,
+            expectedProvider: profile.provider,
+            expectedModel: profile.model,
+          });
+        },
+        warmupAttempt,
+      );
+      return;
+    }
     for (const profile of profiles) {
       let output = "";
       for await (const chunk of chat.stream({

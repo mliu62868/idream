@@ -20,6 +20,7 @@ import {
   parseSceneState,
 } from "./scene.js";
 import { extractTurnDerivations } from "./turn-extraction.js";
+import { genericMemoryOwnedByCompanionRuntime } from "./companion-runtime-selection.js";
 
 export type MemoryExtractPayload = ChatMemoryExtractPayload;
 
@@ -87,6 +88,9 @@ export async function processMemoryExtract(
 
   // Semantic extraction (igrep mem derive) when enabled, regex floor otherwise —
   // off the hot path, so a slow LLM only delays this worker, never a reply.
+  const runtimeOwnsGenericMemory = genericMemoryOwnedByCompanionRuntime(
+    assistant.runtimeTrace,
+  );
   const extraction = await extractTurnDerivations({
     userId: session.userId,
     characterId: session.characterId,
@@ -94,7 +98,8 @@ export async function processMemoryExtract(
     assistantMessageId: assistant.id,
     userText: userMessage.content,
     assistantText: assistant.content,
-    memoryEnabled: assistant.memoryAuthority === "enabled",
+    memoryEnabled:
+      assistant.memoryAuthority === "enabled" && !runtimeOwnsGenericMemory,
   });
   const candidates = extraction.memoryCandidates;
   const sceneDelta = extraction.sceneDelta;

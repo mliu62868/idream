@@ -9,6 +9,8 @@ const { computeSourceRevision } = require("./source-revision.cjs");
 const repoRoot = path.resolve(__dirname, "..");
 const productionGateCwd = path.join(repoRoot, "packages/main");
 const productionGenCwd = path.join(repoRoot, "packages/gen");
+const productionChatAgentCwd = path.join(repoRoot, "packages/chat-agent");
+const companionSidecarEnabled = process.env.DSH_AGENT_ENABLED === "1";
 const genImageOwnershipProbe = path.join(
   repoRoot,
   "scripts/check-gen-image-worker-ownership.cjs",
@@ -23,6 +25,7 @@ const supportedActions = new Set([
 const productionAdmissionTargets = [
   "main-web",
   "admin-web",
+  ...(companionSidecarEnabled ? ["chat-agent"] : []),
   "chat",
   "main-event-consumer",
   "admin-command-worker",
@@ -67,6 +70,17 @@ const productionProcessDefinitions = new Map([
     args: ["src/main.ts"],
     execMode: "fork_mode",
   }],
+  ...(companionSidecarEnabled
+    ? [["chat-agent", {
+        cwd: productionChatAgentCwd,
+        execPath: path.join(
+          productionChatAgentCwd,
+          "node_modules/tsx/dist/cli.mjs",
+        ),
+        args: ["src/main.ts"],
+        execMode: "fork_mode",
+      }]]
+    : []),
   ["gen-image", {
     cwd: productionGenCwd,
     execPath: path.join(productionGenCwd, "node_modules/tsx/dist/cli.mjs"),

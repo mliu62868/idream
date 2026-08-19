@@ -471,7 +471,7 @@ function materializeProfile(fs, profile, pluginPath, peerVersion = DSH_VERSION) 
     "@deepseek-ai/dsh-tools",
   ]) {
     fs.seed(
-      path.join(profileDir, "node_modules", ...peerPackage.split("/"), "package.json"),
+      path.join(DSH_HOME, "profiles", "node_modules", ...peerPackage.split("/"), "package.json"),
       JSON.stringify({ name: peerPackage, version: peerVersion }),
     );
   }

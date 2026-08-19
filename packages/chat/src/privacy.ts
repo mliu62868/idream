@@ -16,6 +16,7 @@ import { loadSessionLinkage } from "./relationship-authority.js";
 import { CHAT_TO_MAIN_EVENTS } from "@idream/shared/contracts";
 import { recordExchangeCorrection } from "./exchange-corrections.js";
 import { lockUser } from "./turn-lock.js";
+import { purgeRuntimeMemoryIfActive } from "./companion-workspace-privacy.js";
 
 type PrivacyRedactionReason =
   | "logical_exchange_deleted"
@@ -122,6 +123,11 @@ export async function deleteMessage(
   if (!session || session.userId !== input.userId) {
     throw new Error("not your message");
   }
+  await purgeRuntimeMemoryIfActive({
+    scope: "relationship",
+    userId: input.userId,
+    characterId: session.characterId,
+  });
   await withTurnAuthority(
     {
       userId: input.userId,
@@ -279,6 +285,11 @@ export async function deleteSession(
   if (!session || session.userId !== input.userId) {
     throw new Error("not your session");
   }
+  await purgeRuntimeMemoryIfActive({
+    scope: "relationship",
+    userId: input.userId,
+    characterId: session.characterId,
+  });
   await withTurnAuthority(
     {
       userId: input.userId,
@@ -379,6 +390,7 @@ export async function deleteAccount(
   prisma: ChatPrismaClient = chatPrisma,
   projectorPrisma: ChatPrismaClient = chatProjectorPrisma,
 ): Promise<void> {
+  await purgeRuntimeMemoryIfActive({ scope: "user", userId: input.userId });
   const completionEventType = input.requestBound
     ? CHAT_TO_MAIN_EVENTS.accountErasureCompletedV2
     : CHAT_TO_MAIN_EVENTS.accountErasureCompleted;

@@ -15,6 +15,7 @@ const enqueueMock = vi.hoisted(() => vi.fn(async () => {}));
 const supportsToolsState = vi.hoisted(() => ({ value: true }));
 const recordTurnFailureMock = vi.hoisted(() => vi.fn());
 const recordTurnSuccessMock = vi.hoisted(() => vi.fn());
+const dshRunMock = vi.hoisted(() => vi.fn());
 
 vi.mock("./db.js", () => ({ chatPrisma: {} }));
 vi.mock("./providers.js", () => ({
@@ -51,6 +52,11 @@ vi.mock("./runtime-readiness.js", () => ({
   runtimeReadiness: {
     recordTurnFailure: recordTurnFailureMock,
     recordTurnSuccess: recordTurnSuccessMock,
+  },
+}));
+vi.mock("./companion-runtime.js", () => ({
+  DshCompanionRuntime: class {
+    run = dshRunMock;
   },
 }));
 
@@ -209,6 +215,7 @@ function fakePrisma(
     },
     messageVersion: {
       upsert: async () => ({}),
+      update: async () => ({}),
     },
     chatSession: {
       findUnique: async () => ({
@@ -311,9 +318,112 @@ describe("chat generate agent image tool", () => {
     enqueueMock.mockClear();
     recordTurnFailureMock.mockClear();
     recordTurnSuccessMock.mockClear();
+    dshRunMock.mockReset();
     buildContextMock.mockResolvedValue(context);
     moderationMock.mockResolvedValue({ status: "passed", confidence: 0.5 });
     supportsToolsState.value = true;
+  });
+
+  it("routes a pinned DSH attempt through the Chat commit port before SSE done", async () => {
+    const previous = {
+      runtime: process.env.CHAT_COMPANION_RUNTIME,
+      memory: process.env.CHAT_MEMORY_BACKEND,
+      token: process.env.DSH_AGENT_TOKEN,
+    };
+    process.env.CHAT_COMPANION_RUNTIME = "dsh";
+    process.env.CHAT_MEMORY_BACKEND = "igrep-dsh";
+    process.env.DSH_AGENT_TOKEN = "test-sidecar-token";
+    try {
+      dshRunMock.mockImplementation(async (invocation, port) => {
+        await port.executeTool({
+          attemptId: invocation.attemptId,
+          callId: "call-1",
+          name: "generate_image_async",
+          arguments: {
+            prompt: "Realistic portrait of Melissa beside a blue observatory window",
+            caption: "The view is ours tonight.",
+          },
+        });
+        await port.emit({
+          type: "text_delta",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 1,
+          occurredAt: new Date().toISOString(),
+          delta: "hello from DSH",
+        });
+        const candidate = {
+          attemptId: invocation.attemptId,
+          content: "hello from DSH",
+          finishReason: "stop",
+          provider: "mock",
+          model: "local-model",
+          usage: { promptTokens: 10, completionTokens: 4, reasoningTokens: 2 },
+          execution: { steps: 2, toolCalls: 1 },
+          attribution: { requestId: "req-1", actualProvider: "local-mlx" },
+          completedAt: new Date().toISOString(),
+        };
+        await port.emit({
+          type: "terminal_candidate",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 2,
+          occurredAt: new Date().toISOString(),
+          candidate,
+        });
+        await port.commit(candidate);
+      });
+      const { prisma, messageUpdates, attachmentCreates } = fakePrisma();
+
+      await expect(processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        prisma,
+        { projectorPrisma: prisma },
+      )).resolves.toEqual({ status: "sent" });
+
+      expect(buildContextMock).toHaveBeenCalledWith(expect.objectContaining({
+        genericMemoryBackend: "runtime",
+      }));
+      expect(finalizedMessageUpdate(messageUpdates)).toMatchObject({
+        status: "sent",
+        content: "hello from DSH",
+        runtimeTrace: expect.objectContaining({
+          companionRuntime: expect.objectContaining({ runtime: "dsh" }),
+          dsh: expect.objectContaining({
+            version: "0.1.0-rc.7",
+            igrepVersion: "0.1.132",
+            memoryMode: "normal",
+          }),
+          companion: expect.objectContaining({
+            memoryIngestOutcome: "pending",
+            execution: { steps: 2, toolCalls: 1 },
+            attribution: { requestId: "req-1", actualProvider: "local-mlx" },
+          }),
+        }),
+      });
+      const streamTypes = (appendStreamEventMock.mock.calls as unknown[][])
+        .map((call) => (call[1] as { type?: string } | undefined)?.type);
+      expect(streamTypes).toEqual(expect.arrayContaining(["start", "delta", "done"]));
+      expect(streamTypes.indexOf("done")).toBeGreaterThan(streamTypes.indexOf("delta"));
+      expect(enqueueMock).toHaveBeenCalledWith(expect.objectContaining({
+        queue: "chat.memory.extract",
+      }));
+      expect(attachmentCreates[0]?.data).toMatchObject({
+        metadata: expect.objectContaining({
+          toolCallIdentity: {
+            attemptId: "msg_assistant:1",
+            callId: "call-1",
+          },
+        }),
+      });
+    } finally {
+      if (previous.runtime === undefined) delete process.env.CHAT_COMPANION_RUNTIME;
+      else process.env.CHAT_COMPANION_RUNTIME = previous.runtime;
+      if (previous.memory === undefined) delete process.env.CHAT_MEMORY_BACKEND;
+      else process.env.CHAT_MEMORY_BACKEND = previous.memory;
+      if (previous.token === undefined) delete process.env.DSH_AGENT_TOKEN;
+      else process.env.DSH_AGENT_TOKEN = previous.token;
+    }
   });
 
   it("renews the generation lease while the provider is silent", async () => {

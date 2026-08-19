@@ -7,6 +7,7 @@
 //   - finalize writes message + selected version + usage + summary + moderation +
 //     outbox in ONE transaction (atomic ledger).
 //   - session.jsonl append is the agent trace (separate fact; user-visible = PG).
+import { createHash } from "node:crypto";
 import type { Prisma } from "../generated/client/client.js";
 import type { ChatPrismaClient } from "./db.js";
 import { chatPrisma, chatProjectorPrisma } from "./db.js";
@@ -16,6 +17,8 @@ import type { BuiltContext } from "./context.js";
 import {
   prepareCompanionTurn,
   preparedTurnRuntime,
+  toPreparedTurnWire,
+  type PreparedTurn,
 } from "./prepared-turn.js";
 import { characterAvailableToUser } from "./character-eligibility.js";
 import { appendStreamEvent, streamKey } from "./stream.js";
@@ -51,6 +54,24 @@ import {
   noMemoryAuthorityReply,
 } from "@idream/shared";
 import { runtimeReadiness } from "./runtime-readiness.js";
+import { env } from "./env.js";
+import {
+  pinCompanionRuntimeForAttempt,
+  type CompanionAttemptRuntime,
+} from "./companion-runtime-selection.js";
+import { DshCompanionRuntime } from "./companion-runtime.js";
+import {
+  COMPANION_DSH_COMMIT,
+  COMPANION_DSH_VERSION,
+  COMPANION_IGREP_PLUGIN_VERSION,
+  COMPANION_IGREP_VERSION,
+  type CompanionCommitAck,
+  type CompanionEvent,
+  type CompanionInvocation,
+  type CompanionTerminalCandidate,
+  type CompanionToolCall,
+  type CompanionToolResult,
+} from "@idream/shared/chat/companion-runtime";
 
 export type GeneratePayload = ChatGeneratePayload;
 
@@ -158,6 +179,18 @@ export async function processGenerate(
     return { status: "failed" };
   }
   const turnMemoryEnabled = assistant.memoryAuthority === "enabled";
+  const priorRuntimeTrace =
+    assistant.runtimeTrace &&
+    typeof assistant.runtimeTrace === "object" &&
+    !Array.isArray(assistant.runtimeTrace)
+      ? assistant.runtimeTrace as Record<string, unknown>
+      : null;
+  const companionRuntimeConfig = env.COMPANION_RUNTIME_CONFIG;
+  const attemptRuntime = pinCompanionRuntimeForAttempt({
+    config: companionRuntimeConfig,
+    memoryAuthority: turnMemoryEnabled ? "enabled" : "disabled",
+    priorPin: priorRuntimeTrace?.companionRuntime,
+  });
 
   const claimed = await prisma.message.updateMany({
     where: {
@@ -204,6 +237,8 @@ export async function processGenerate(
     sessionId: session.id,
     turnMemoryEnabled,
     userMessageId: payload.userMessageId,
+    genericMemoryBackend:
+      attemptRuntime.memoryBackend === "igrep-dsh" ? "runtime" : "legacy",
   });
   const context = preparedTurnRuntime(prepared);
   const authoritativeNoMemoryReply = turnMemoryEnabled
@@ -218,6 +253,28 @@ export async function processGenerate(
     profile: prepared.profile,
     trace: prepared.trace,
     budget: prepared.budget,
+    companionRuntime: {
+      runtime: attemptRuntime.runtime,
+      memoryBackend: attemptRuntime.memoryBackend,
+      profile: attemptRuntime.profile,
+      private: attemptRuntime.private,
+    },
+    ...(attemptRuntime.runtime === "dsh"
+      ? {
+          dsh: {
+            version: COMPANION_DSH_VERSION,
+            commit: COMPANION_DSH_COMMIT,
+            sessionId: `${payload.assistantMessageId}:${payload.attempt}`,
+            igrepVersion: COMPANION_IGREP_VERSION,
+            pluginVersion: COMPANION_IGREP_PLUGIN_VERSION,
+            profileDigest: digestRuntimeProfile(attemptRuntime.profile, prepared.profile),
+            workspaceKeyHash: digestWorkspaceKey(session.userId, session.characterId),
+            memoryMode: attemptRuntime.private ? "private" : "normal",
+            provider: prepared.profile.provider,
+            model: prepared.profile.model,
+          },
+        }
+      : {}),
     scene: context.scene,
     outputAuthority: authoritativeNoMemoryReply
       ? "no_memory_boundary"
@@ -253,6 +310,23 @@ export async function processGenerate(
   });
 
   await appendStreamEvent(key, { type: "start", attempt: payload.attempt });
+
+  if (attemptRuntime.runtime === "dsh" && !authoritativeNoMemoryReply) {
+    return processDshCompanionTurn({
+      prisma,
+      projectorPrisma,
+      payload,
+      session,
+      prepared,
+      context,
+      runtimeTraceFacts,
+      attemptRuntime,
+      sidecarToken: companionRuntimeConfig.sidecarToken,
+      heartbeat,
+      key,
+      jobAttempt: hooks.jobAttempt,
+    });
+  }
 
   const modelMessages = prepared.messages;
   const chunks: string[] = [];
@@ -572,6 +646,441 @@ export async function processGenerate(
   }
 }
 
+interface DshTurnInput {
+  prisma: ChatPrismaClient;
+  projectorPrisma: ChatPrismaClient;
+  payload: GeneratePayload;
+  session: FinalizeInput["session"];
+  prepared: PreparedTurn;
+  context: BuiltContext;
+  runtimeTraceFacts: Record<string, unknown>;
+  attemptRuntime: CompanionAttemptRuntime;
+  sidecarToken: string;
+  heartbeat(force?: boolean): Promise<void>;
+  key: string;
+  jobAttempt: GenerateHooks["jobAttempt"];
+}
+
+async function processDshCompanionTurn(
+  input: DshTurnInput,
+): Promise<{ status: "sent" | "blocked" | "skipped" | "failed" }> {
+  const {
+    prisma,
+    projectorPrisma,
+    payload,
+    session,
+    prepared,
+    context,
+    runtimeTraceFacts,
+    attemptRuntime,
+    heartbeat,
+    key,
+  } = input;
+  const attemptId = `${payload.assistantMessageId}:${payload.attempt}`;
+  const invocationId = `inv:${attemptId}`;
+  const invocation: CompanionInvocation = {
+    invocationId,
+    attemptId,
+    sessionId: payload.sessionId,
+    userId: session.userId,
+    characterId: session.characterId,
+    preparedTurn: toPreparedTurnWire(prepared),
+    memoryMode: attemptRuntime.private ? "private" : "normal",
+    deadlineAt: new Date(Date.now() + attemptRuntime.deadlineMs).toISOString(),
+  };
+  const runtime = new DshCompanionRuntime({
+    baseUrl: attemptRuntime.sidecarUrl,
+    token: input.sidecarToken,
+  });
+  const chunks: string[] = [];
+  let sequence = 0;
+  let usage: { promptTokens: number; completionTokens: number } | null = null;
+  let reasoningTokens = 0;
+  let imageToolCall: ImageAgentToolCall | null = null;
+  let toolIdentity: { attemptId: string; callId: string } | null = null;
+  const toolResults = new Map<
+    string,
+    { fingerprint: string; result: CompanionToolResult }
+  >();
+  let commitAck: CompanionCommitAck | null = null;
+  let announcedCandidate: CompanionTerminalCandidate | null = null;
+  let terminalStatus: "sent" | "blocked" | "skipped" | null = null;
+  let committedUsage: { promptTokens: number; completionTokens: number } | null = null;
+  let committedTrace: Record<string, unknown> | null = null;
+
+  const emitDelta = async (delta: string): Promise<void> => {
+    await heartbeat();
+    sequence += 1;
+    chunks.push(delta);
+    await appendStreamEvent(key, {
+      type: "delta",
+      attempt: payload.attempt,
+      seq: sequence,
+      delta,
+    });
+  };
+
+  const executeTool = async (
+    call: CompanionToolCall,
+  ): Promise<CompanionToolResult> => {
+    const fingerprint = JSON.stringify(call);
+    const previous = toolResults.get(call.callId);
+    if (previous) {
+      if (previous.fingerprint === fingerprint) return previous.result;
+      return {
+        attemptId: call.attemptId,
+        callId: call.callId,
+        name: call.name,
+        outcome: "unknown",
+        error: {
+          code: "tool_identity_conflict",
+          message: "the same callId was replayed with different arguments",
+          retryable: false,
+        },
+      };
+    }
+    const parsed = findAgentTool(call.name)?.parseCall(call.arguments);
+    let result: CompanionToolResult;
+    if (!parsed) {
+      result = {
+        attemptId: call.attemptId,
+        callId: call.callId,
+        name: call.name,
+        outcome: "failed",
+        error: {
+          code: "invalid_tool_arguments",
+          message: "tool arguments failed the Chat-owned schema",
+          retryable: false,
+        },
+      };
+    } else if (imageToolCall) {
+      result = {
+        attemptId: call.attemptId,
+        callId: call.callId,
+        name: call.name,
+        outcome: "failed",
+        error: {
+          code: "tool_limit_reached",
+          message: "one image tool effect is allowed per companion turn",
+          retryable: false,
+        },
+      };
+    } else {
+      imageToolCall = toolCallFromPlan(parsed);
+      toolIdentity = { attemptId: call.attemptId, callId: call.callId };
+      // SPEC: execution here is a durable reservation. The only external image
+      // effect is created later inside Chat's terminal CAS transaction.
+      result = {
+        attemptId: call.attemptId,
+        callId: call.callId,
+        name: call.name,
+        outcome: "succeeded",
+        output: {
+          status: "accepted_for_terminal_commit",
+          effectId: `${call.attemptId}:${call.callId}`,
+        },
+      };
+      const trace = JSON.parse(JSON.stringify({
+        ...runtimeTraceFacts,
+        companionTool: { ...toolIdentity, name: call.name, arguments: call.arguments },
+      })) as Prisma.InputJsonValue;
+      await prisma.message.updateMany({
+        where: {
+          id: payload.assistantMessageId,
+          status: "generating",
+          attempt: payload.attempt,
+        },
+        data: { runtimeTrace: trace },
+      });
+    }
+    toolResults.set(call.callId, { fingerprint, result });
+    return result;
+  };
+
+  const commit = async (
+    candidate: CompanionTerminalCandidate,
+  ): Promise<CompanionCommitAck> => {
+    if (commitAck) return commitAck;
+    if (
+      !announcedCandidate ||
+      JSON.stringify(announcedCandidate) !== JSON.stringify(candidate)
+    ) {
+      commitAck = rejectedCommit(
+        attemptId,
+        "terminal_candidate_not_announced",
+        "commit candidate was not the exact stable event previously announced",
+      );
+      return commitAck;
+    }
+    if (candidate.content !== chunks.join("")) {
+      commitAck = rejectedCommit(
+        attemptId,
+        "stream_candidate_mismatch",
+        "terminal candidate differs from the text delivered over SSE",
+      );
+      return commitAck;
+    }
+    if (
+      candidate.model !== prepared.model ||
+      candidate.provider !== prepared.profile.provider
+    ) {
+      commitAck = rejectedCommit(
+        attemptId,
+        "provider_identity_mismatch",
+        "terminal candidate differs from the pinned provider profile",
+      );
+      return commitAck;
+    }
+    if (candidate.finishReason === "length") {
+      commitAck = rejectedCommit(
+        attemptId,
+        "provider_output_limit",
+        "provider stopped at the pinned output limit",
+      );
+      return commitAck;
+    }
+    const content = candidate.content;
+    const moderation = await providers.moderation.check({
+      targetType: "text",
+      content,
+    });
+    const blocked = moderation.status === "blocked";
+    const candidateUsage = {
+      promptTokens: candidate.usage.promptTokens,
+      completionTokens: candidate.usage.completionTokens,
+    };
+    const committedAt = new Date().toISOString();
+    const terminalTrace: Record<string, unknown> = {
+      ...runtimeTraceFacts,
+      companion: {
+        invocationId,
+        attemptId,
+        profile: attemptRuntime.profile,
+        terminalCandidateAt: candidate.completedAt,
+        commitAckAt: committedAt,
+        memoryIngestOutcome: blocked
+          ? "discarded_blocked"
+          : attemptRuntime.private
+            ? "disabled"
+            : "pending",
+        execution: candidate.execution,
+        usage: candidate.usage,
+        ...(candidate.attribution ? { attribution: candidate.attribution } : {}),
+        ...(toolIdentity ? { toolIdentity } : {}),
+      },
+    };
+    const traceEntry: Record<string, unknown> | null = attemptRuntime.private
+      ? null
+      : JSON.parse(JSON.stringify({
+          ts: committedAt,
+          kind: "chat.turn",
+          attempt: payload.attempt,
+          assistantMessageId: payload.assistantMessageId,
+          userMessageId: payload.userMessageId,
+          system: prepared.messages.find((message) => message.role === "system")?.content ?? "",
+          injectedMemories: [],
+          boundaries: context.boundaries,
+          rawOutput: content,
+          toolCalls: imageToolCall ? [imageToolCall] : [],
+          moderation,
+          model: candidate.model,
+          runtime: "dsh",
+          invocationId,
+          preparedTurn: { trace: prepared.trace, budget: prepared.budget },
+        })) as Record<string, unknown>;
+    await heartbeat(true);
+    const finalized = await finalize({
+      prisma,
+      payload,
+      session,
+      content: blocked ? "" : content,
+      model: candidate.model,
+      usage: candidateUsage,
+      moderation,
+      blocked,
+      context,
+      imageToolCall,
+      toolCallTrigger: "agent_fc",
+      toolCallIdentity: toolIdentity,
+      traceEntry,
+      projectorPrisma,
+      runtimeTrace: JSON.parse(JSON.stringify(terminalTrace)) as Prisma.InputJsonValue,
+    });
+    if (finalized !== "finalized") {
+      terminalStatus = finalized === "stale" ? null : "skipped";
+      commitAck = rejectedCommit(
+        attemptId,
+        finalized === "stale" ? "context_changed" : "terminal_cas_conflict",
+        "Chat terminal authority rejected the candidate",
+      );
+      return commitAck;
+    }
+    terminalStatus = blocked ? "blocked" : "sent";
+    committedUsage = candidateUsage;
+    committedTrace = terminalTrace;
+    commitAck = blocked
+      ? rejectedCommit(
+          attemptId,
+          "output_blocked",
+          "terminal output was blocked and must not enter runtime memory",
+        )
+      : {
+          attemptId,
+          accepted: true,
+          status: "committed",
+          terminalMessageId: payload.assistantMessageId,
+          committedAt,
+        };
+    return commitAck;
+  };
+
+  let runError: unknown = null;
+  const deadlineSignal = AbortSignal.timeout(attemptRuntime.deadlineMs);
+  try {
+    await runtime.run(invocation, {
+      async emit(event: CompanionEvent) {
+        switch (event.type) {
+          case "text_delta":
+            await emitDelta(event.delta);
+            return;
+          case "usage":
+            usage = {
+              promptTokens: event.usage.promptTokens,
+              completionTokens: event.usage.completionTokens,
+            };
+            reasoningTokens = event.usage.reasoningTokens;
+            return;
+          case "reasoning_usage":
+            reasoningTokens = event.reasoningTokens;
+            return;
+          case "terminal_candidate":
+            if (announcedCandidate) {
+              throw new Error("companion announced more than one terminal candidate");
+            }
+            announcedCandidate = event.candidate;
+            return;
+          case "failed":
+            throw new Error(`${event.error.code}: ${event.error.message}`);
+          case "cancelled":
+            throw new Error(`companion invocation cancelled: ${event.reason}`);
+          default:
+            return;
+        }
+      },
+      executeTool,
+      commit,
+    }, deadlineSignal);
+  } catch (error) {
+    runError = error;
+    if (deadlineSignal.aborted) {
+      await runtime.cancel(invocationId, "timeout").catch(() => {});
+    }
+  }
+
+  // These are assigned by callbacks invoked inside runtime.run(); TypeScript's
+  // local control-flow analysis cannot observe those writes across the port.
+  const settledTrace = committedTrace as Record<string, unknown> | null;
+  const settledAck = commitAck as CompanionCommitAck | null;
+  if (terminalStatus === "sent" || terminalStatus === "blocked") {
+    const memoryIngestOutcome = terminalStatus === "blocked"
+      ? "discarded_blocked"
+      : attemptRuntime.private
+        ? "disabled"
+        : runError
+          ? "failed"
+          : "ingested";
+    if (settledTrace) {
+      const companion = settledTrace.companion as Record<string, unknown>;
+      const finalTrace = JSON.parse(JSON.stringify({
+        ...settledTrace,
+        companion: {
+          ...companion,
+          memoryIngestOutcome,
+          memoryIngestSettledAt: new Date().toISOString(),
+          reasoningTokens,
+        },
+      })) as Prisma.InputJsonValue;
+      await prisma.message.updateMany({
+        where: {
+          id: payload.assistantMessageId,
+          status: terminalStatus,
+          attempt: payload.attempt,
+        },
+        data: { runtimeTrace: finalTrace },
+      });
+      await prisma.messageVersion.update({
+        where: { id: `mv:${payload.assistantMessageId}:${payload.attempt}` },
+        data: { runtimeTrace: finalTrace },
+      });
+    }
+    if (runError && terminalStatus === "sent") {
+      logger.warn(
+        { err: runError, invocationId, assistantMessageId: payload.assistantMessageId },
+        "DSH turn committed but isolated memory promotion failed",
+      );
+    } else if (terminalStatus === "sent") {
+      runtimeReadiness.recordTurnSuccess();
+    }
+    await appendStreamEvent(key, {
+      type: "done",
+      attempt: payload.attempt,
+      usage: committedUsage ?? usage ?? {
+        promptTokens: prepared.budget.usedInputTokens,
+        completionTokens: estimateTokens(chunks.join("")),
+      },
+    });
+    if (terminalStatus === "sent") {
+      await enqueue({
+        queue: CHAT_QUEUES.memoryExtract,
+        payload: {
+          sessionId: session.id,
+          assistantMessageId: payload.assistantMessageId,
+          userMessageId: payload.userMessageId,
+          attempt: payload.attempt,
+        } satisfies ChatMemoryExtractPayload,
+        dedupeKey: idempotencyKeys.chatMemoryExtract(
+          payload.assistantMessageId,
+          payload.attempt,
+        ),
+      }).catch((error) => {
+        logger.warn(
+          { err: error, assistantMessageId: payload.assistantMessageId },
+          "Scene and relationship extraction enqueue deferred",
+        );
+      });
+    }
+    await scheduleOutboxDelivery();
+    return { status: terminalStatus };
+  }
+
+  if (terminalStatus === "skipped") return { status: "skipped" };
+  const retryable = hasWorkerRetryRemaining(input.jobAttempt);
+  runtimeReadiness.recordTurnFailure(runError ?? new Error("DSH returned without a terminal commit"));
+  if (!retryable) await failAssistant(prisma, payload.assistantMessageId);
+  await appendStreamEvent(key, {
+    type: "error",
+    attempt: payload.attempt,
+    code: settledAck && !settledAck.accepted ? settledAck.error.code : "provider_failed",
+    retryable,
+  });
+  throw runError instanceof Error
+    ? runError
+    : new Error("DSH returned without a terminal commit");
+}
+
+function rejectedCommit(
+  attemptId: string,
+  code: string,
+  message: string,
+): CompanionCommitAck {
+  return {
+    attemptId,
+    accepted: false,
+    status: "rejected",
+    error: { code, message },
+  };
+}
+
 interface FinalizeInput {
   prisma: ChatPrismaClient;
   payload: GeneratePayload;
@@ -591,6 +1100,7 @@ interface FinalizeInput {
   context: BuiltContext;
   imageToolCall: ImageAgentToolCall | null;
   toolCallTrigger: "agent_fc" | "agent_tool_call";
+  toolCallIdentity?: { attemptId: string; callId: string } | null;
   traceEntry: Record<string, unknown> | null;
   projectorPrisma: ChatPrismaClient;
   /** Non-null only when the pre-stream trace needs correcting (truncated reply). */
@@ -600,7 +1110,7 @@ interface FinalizeInput {
 async function finalize(
   input: FinalizeInput,
 ): Promise<"finalized" | "stale" | "skipped"> {
-  const { prisma, payload, session, content, model, usage, moderation, blocked, context, imageToolCall, toolCallTrigger, traceEntry, projectorPrisma, runtimeTrace } = input;
+  const { prisma, payload, session, content, model, usage, moderation, blocked, context, imageToolCall, toolCallTrigger, toolCallIdentity, traceEntry, projectorPrisma, runtimeTrace } = input;
 
   // Account/session/message privacy operations use the same lock. Re-read all
   // authority after acquiring it so a deleted user turn or session cannot be
@@ -704,7 +1214,12 @@ async function finalize(
       });
       await tx.messageVersion.update({
         where: { id: `mv:${payload.assistantMessageId}:${payload.attempt}` },
-        data: { content, model, selected: true },
+        data: {
+          content,
+          model,
+          selected: true,
+          ...(runtimeTrace ? { runtimeTrace } : {}),
+        },
       });
 
       // usage++ (period = UTC day; free quota is daily, design P0-C)
@@ -833,6 +1348,7 @@ async function finalize(
             metadata: {
               trigger: toolCallTrigger,
               toolName: built.toolName,
+              ...(toolCallIdentity ? { toolCallIdentity } : {}),
               sourceUserMessageId: payload.userMessageId,
               assistantCaption: built.assistantCaption,
               orientation: built.controls.orientation,
@@ -906,6 +1422,19 @@ function hasWorkerRetryRemaining(
 
 function estimateTokens(text: string): number {
   return Math.max(1, Math.ceil(text.length / 4));
+}
+function digestRuntimeProfile(
+  profileName: string,
+  profile: PreparedTurn["profile"],
+): string {
+  return createHash("sha256")
+    .update(JSON.stringify({ profileName, profile }))
+    .digest("hex");
+}
+function digestWorkspaceKey(userId: string, characterId: string): string {
+  return createHash("sha256")
+    .update(`${userId}\0${characterId}`)
+    .digest("hex");
 }
 function clamp(value: string, max: number): string {
   return value.length <= max ? value : `${value.slice(0, max - 1)}…`;

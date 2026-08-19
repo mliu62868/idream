@@ -10,6 +10,7 @@ import {
   companionInvocationSchema,
   companionNdjsonFrameSchema,
   companionReadinessSchema,
+  companionTerminalCandidateSchema,
   companionToolCallSchema,
   companionToolResultSchema,
   decodeCompanionNdjsonFrame,
@@ -258,7 +259,12 @@ describe("companion runtime stable wire contract", () => {
       provider: "openrouter",
       model: profile.model,
       usage: { promptTokens: 12, completionTokens: 8, reasoningTokens: 0 },
+      execution: { steps: 2, toolCalls: 1 },
       completedAt: now,
+      attribution: {
+        requestId: "req-1",
+        actualProvider: "DeepInfra",
+      },
     };
     const fixtures = [
       { ...common, type: "started" },
@@ -298,6 +304,27 @@ describe("companion runtime stable wire contract", () => {
     expect(() => decodeCompanionNdjsonFrame(`${encoded}${encoded}`)).toThrow(
       /exactly one NDJSON frame/,
     );
+  });
+
+  it("rejects empty or unknown provider attribution", () => {
+    const candidate = {
+      attemptId: "attempt-1",
+      content: "Hello",
+      finishReason: "stop",
+      provider: "openrouter",
+      model: profile.model,
+      usage: { promptTokens: 12, completionTokens: 8, reasoningTokens: 0 },
+      execution: { steps: 1, toolCalls: 0 },
+      completedAt: now,
+    };
+    expect(companionTerminalCandidateSchema.safeParse({
+      ...candidate,
+      attribution: {},
+    }).success).toBe(false);
+    expect(companionTerminalCandidateSchema.safeParse({
+      ...candidate,
+      attribution: { requestId: "req-1", secret: "must-not-cross-wire" },
+    }).success).toBe(false);
   });
 
   it("models terminal commit acceptance without treating a candidate as terminal truth", () => {

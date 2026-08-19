@@ -337,7 +337,24 @@ export const companionTerminalCandidateSchema = z
     provider: nonEmptyStringSchema,
     model: nonEmptyStringSchema,
     usage: companionUsageSchema,
+    execution: z
+      .object({
+        steps: positiveIntegerSchema,
+        toolCalls: nonNegativeIntegerSchema,
+      })
+      .strict(),
     completedAt: isoDateTimeSchema,
+    attribution: z
+      .object({
+        requestId: nonEmptyStringSchema.optional(),
+        actualProvider: nonEmptyStringSchema.optional(),
+      })
+      .strict()
+      .refine(
+        (value) => value.requestId !== undefined || value.actualProvider !== undefined,
+        "provider attribution must contain a request id or actual provider",
+      )
+      .optional(),
   })
   .strict();
 
