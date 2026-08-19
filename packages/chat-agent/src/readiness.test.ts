@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SidecarConfig } from "./config";
 import { createReadinessProbe, probeWorkspaceRebuild } from "./readiness";
+import { companionCompositionDigest } from "./composition";
 
 const config: SidecarConfig = {
   host: "127.0.0.1",
@@ -91,8 +92,19 @@ describe("fail-closed companion readiness", () => {
         workspaceRebuildReachable: true,
       },
     });
-    expect(readiness.profiles.normal.normalizedConfigDigest).toBe(normalDigest);
-    expect(readiness.profiles.private.normalizedConfigDigest).toBe(privateDigest);
+    expect(readiness.profiles.normal.normalizedConfigDigest).toBe(
+      companionCompositionDigest("normal", plugin.module.resolveConfig({
+        command: config.igrepCommand,
+        search: true,
+        webProvider: false,
+        webTool: false,
+        memory: true,
+        ingest: true,
+        wake: true,
+      })),
+    );
+    expect(readiness.profiles.normal.normalizedConfigDigest).not.toBe(normalDigest);
+    expect(readiness.profiles.private.normalizedConfigDigest).not.toBe(privateDigest);
     expect(readiness.profiles.normal.normalizedConfigDigest)
       .not.toBe(readiness.profiles.private.normalizedConfigDigest);
   });

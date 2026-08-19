@@ -38,6 +38,14 @@ function tcpPort(raw: string | undefined): number {
   return value;
 }
 
+function loopbackHost(raw: string | undefined): string {
+  const host = raw?.trim() || "127.0.0.1";
+  if (!new Set(["127.0.0.1", "::1", "localhost"]).has(host.toLowerCase())) {
+    throw new Error("CHAT_AGENT_HOST must be a loopback host");
+  }
+  return host;
+}
+
 function absolutePath(value: string, name: string): string {
   const path = resolve(value);
   if (!isAbsolute(path)) throw new Error(`${name} must resolve to an absolute path`);
@@ -87,7 +95,7 @@ export function loadSidecarConfig(env: NodeJS.ProcessEnv = process.env): Sidecar
     );
   }
   return {
-    host: env.CHAT_AGENT_HOST?.trim() || "127.0.0.1",
+    host: loopbackHost(env.CHAT_AGENT_HOST),
     port: tcpPort(env.CHAT_AGENT_PORT),
     // INVARIANT: Chat and sidecar authenticate one bridge with one shared secret.
     authToken: required(env, "DSH_AGENT_TOKEN"),

@@ -129,6 +129,15 @@ export function resolveCompanionRuntimeConfig(
   if (!new Set(["http:", "https:"]).has(parsedUrl.protocol)) {
     throw new Error("DSH_AGENT_URL must use http or https");
   }
+  if (parsedUrl.username || parsedUrl.password) {
+    throw new Error("DSH_AGENT_URL must not contain credentials");
+  }
+  if (parsedUrl.search || parsedUrl.hash) {
+    throw new Error("DSH_AGENT_URL must not contain query or fragment");
+  }
+  if (!new Set(["127.0.0.1", "[::1]", "localhost"]).has(parsedUrl.hostname.toLowerCase())) {
+    throw new Error("DSH_AGENT_URL must use a loopback host");
+  }
   const deadlineMs = parsePositiveInteger(
     source.DSH_AGENT_DEADLINE_MS,
     5 * 60_000,

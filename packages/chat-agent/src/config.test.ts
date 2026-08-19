@@ -57,4 +57,12 @@ describe("sidecar process configuration", () => {
     const env = environment({ DSH_AGENT_TOKEN: undefined, CHAT_AGENT_AUTH_TOKEN: "stale-token" });
     expect(() => loadSidecarConfig(env)).toThrow(/DSH_AGENT_TOKEN is required/);
   });
+
+  it("binds the authenticated sidecar only to loopback", () => {
+    expect(() => loadSidecarConfig(environment({ CHAT_AGENT_HOST: "0.0.0.0" })))
+      .toThrow(/CHAT_AGENT_HOST.*loopback/);
+    expect(() => loadSidecarConfig(environment({ CHAT_AGENT_HOST: "192.168.1.8" })))
+      .toThrow(/CHAT_AGENT_HOST.*loopback/);
+    expect(loadSidecarConfig(environment({ CHAT_AGENT_HOST: "::1" })).host).toBe("::1");
+  });
 });

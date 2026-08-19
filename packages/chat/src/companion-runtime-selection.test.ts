@@ -76,6 +76,25 @@ describe("companion runtime selection", () => {
     ).toThrow(/DSH_AGENT_TOKEN/);
   });
 
+  it("rejects remote or credential-bearing sidecar authorities", () => {
+    const base = {
+      CHAT_COMPANION_DSH_SHADOW_ENABLED: "true",
+      DSH_AGENT_TOKEN: "secret",
+    };
+    expect(() => resolveCompanionRuntimeConfig({
+      ...base,
+      DSH_AGENT_URL: "https://sidecar.example.com:3101",
+    })).toThrow(/DSH_AGENT_URL.*loopback/);
+    expect(() => resolveCompanionRuntimeConfig({
+      ...base,
+      DSH_AGENT_URL: "http://token@127.0.0.1:3101",
+    })).toThrow(/DSH_AGENT_URL.*credentials/);
+    expect(resolveCompanionRuntimeConfig({
+      ...base,
+      DSH_AGENT_URL: "http://[::1]:3101",
+    }).sidecarUrl).toBe("http://[::1]:3101");
+  });
+
   it("pins normal and no-memory attempts to different profiles", () => {
     const config = resolveCompanionRuntimeConfig({
       CHAT_COMPANION_RUNTIME: "dsh",

@@ -1,10 +1,8 @@
 import { Context } from "@deepseek-ai/cordis";
-import { AgentRegistry } from "@deepseek-ai/dsh-agent";
-import { AgentLoop } from "@deepseek-ai/dsh-agent-loop";
+import type { AgentRegistry } from "@deepseek-ai/dsh-agent";
 import {
   CallId,
   LlmAdapter,
-  LlmRuntime,
   MessageId,
   freezeMessage,
   type AssistantMessage,
@@ -13,10 +11,8 @@ import {
   type ToolResultMessage,
   type UserMessage,
 } from "@deepseek-ai/dsh-llm";
-import { Session, SessionId, SessionStore, type SessionEvent, type TurnEndReason } from "@deepseek-ai/dsh-session";
-import { SystemPrompt } from "@deepseek-ai/dsh-system-prompt";
-import * as ToolTimeoutPolicy from "@deepseek-ai/dsh-tool-call-timeout-policy";
-import { ToolRuntime, type JsonValue, type ToolDefinition } from "@deepseek-ai/dsh-tools";
+import { Session, SessionId, type SessionEvent, type TurnEndReason } from "@deepseek-ai/dsh-session";
+import { type JsonValue, type ToolDefinition } from "@deepseek-ai/dsh-tools";
 import {
   companionEventSchema,
   companionToolResultSchema,
@@ -34,6 +30,7 @@ import {
   type PreparedTurnProfile,
 } from "@idream/shared/chat/companion-runtime";
 import type { InvocationService } from "./server";
+import { applyCompanionComposition } from "./composition";
 import type {
   AttemptWorkspace,
   AttemptWorkspaceStore,
@@ -41,8 +38,6 @@ import type {
   WorkspacePurgeRequest,
 } from "./workspace";
 import {
-  NORMAL_IGREP_CONFIG,
-  PRIVATE_IGREP_CONFIG,
   legacyRecallProbeSetChecksum,
   verifyLegacyMemoryImport,
   type IgrepPluginModule,
@@ -475,25 +470,11 @@ export class CompanionEngine implements InvocationService {
       }
 
       ctx = new Context();
-      await ctx.plugin(LlmRuntime);
-      await ctx.plugin(SessionStore);
-      await ctx.plugin(SystemPrompt, {
-        includeHarnessIdentity: false,
-        includeRuntimeContext: true,
-        persona: "",
+      await applyCompanionComposition(ctx, {
+        plugin,
+        mode: invocation.memoryMode === "private" ? "private" : "normal",
+        igrepCommand: this.options.igrepCommand,
       });
-      await ctx.plugin(ToolRuntime, {});
-      await ctx.plugin(AgentRegistry);
-      const pluginConfig = invocation.memoryMode !== "private" ? {
-        command: this.options.igrepCommand,
-        ...NORMAL_IGREP_CONFIG,
-      } : {
-        command: this.options.igrepCommand,
-        ...PRIVATE_IGREP_CONFIG,
-      };
-      await ctx.plugin(plugin as never, pluginConfig as never);
-      await ctx.plugin(ToolTimeoutPolicy);
-      await ctx.plugin(AgentLoop, { agents: [], maxParallelToolCalls: 1 });
       const adapter = this.options.adapter(invocation.preparedTurn.profile);
       ctx.llm.registerAdapter([invocation.preparedTurn.profile.provider], adapter);
 

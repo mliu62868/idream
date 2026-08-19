@@ -27,18 +27,13 @@ import {
 } from "./igrep";
 import { probeCompanionBridges } from "./engine";
 import { OpenAiCompatibleAdapter } from "./openai-adapter";
+import {
+  COMPANION_CORE_PACKAGES,
+  companionCompositionDigest,
+  resolvedCompanionIgrepConfig,
+} from "./composition";
 
 const require = createRequire(import.meta.url);
-const CORE_PACKAGES = [
-  "@deepseek-ai/dsh-agent",
-  "@deepseek-ai/dsh-agent-loop",
-  "@deepseek-ai/dsh-llm",
-  "@deepseek-ai/dsh-session",
-  "@deepseek-ai/dsh-system-prompt",
-  "@deepseek-ai/dsh-tool-call-timeout-policy",
-  "@deepseek-ai/dsh-tools",
-] as const;
-
 async function packageVersion(name: string): Promise<string> {
   const packageJson = JSON.parse(
     await readFile(require.resolve(`${name}/package.json`), "utf8"),
@@ -342,8 +337,8 @@ export function createReadinessProbe(
     const current = (async () => {
     const cordis = await packageVersion("@deepseek-ai/cordis");
     if (cordis !== "4.0.1") throw new Error(`Cordis version drifted to ${cordis}`);
-    const versions = await Promise.all(CORE_PACKAGES.map(packageVersion));
-    const drift = CORE_PACKAGES.filter((_name, index) => versions[index] !== COMPANION_DSH_VERSION);
+    const versions = await Promise.all(COMPANION_CORE_PACKAGES.map(packageVersion));
+    const drift = COMPANION_CORE_PACKAGES.filter((_name, index) => versions[index] !== COMPANION_DSH_VERSION);
     if (drift.length > 0) throw new Error(`DSH core version drift: ${drift.join(", ")}`);
     const plugin = await options.plugin();
     if (plugin.version !== COMPANION_IGREP_PLUGIN_VERSION) {
@@ -353,14 +348,16 @@ export function createReadinessProbe(
     if (resolvedIgrepVersion !== COMPANION_IGREP_VERSION) {
       throw new Error(`igrep version drifted to ${resolvedIgrepVersion}`);
     }
-    const normal = plugin.module.resolveConfig?.({
-      command: options.config.igrepCommand,
-      ...NORMAL_IGREP_CONFIG,
-    }) ?? { command: options.config.igrepCommand, ...NORMAL_IGREP_CONFIG };
-    const privateProfile = plugin.module.resolveConfig?.({
-      command: options.config.igrepCommand,
-      ...PRIVATE_IGREP_CONFIG,
-    }) ?? { command: options.config.igrepCommand, ...PRIVATE_IGREP_CONFIG };
+    const normal = resolvedCompanionIgrepConfig(
+      plugin.module,
+      "normal",
+      options.config.igrepCommand,
+    );
+    const privateProfile = resolvedCompanionIgrepConfig(
+      plugin.module,
+      "private",
+      options.config.igrepCommand,
+    );
     if (normal.ingest !== true || normal.wake !== true || normal.memory !== true || normal.search !== true
       || normal.webProvider !== false || normal.webTool !== false) {
       throw new Error("normal igrep profile did not normalize to the pinned capability set");
@@ -400,13 +397,13 @@ export function createReadinessProbe(
         normal: {
           name: "normal",
           loaded: true,
-          normalizedConfigDigest: state.profiles.normal.configDigest,
+          normalizedConfigDigest: companionCompositionDigest("normal", normal),
           capabilities: { memoryRead: true, memoryWrite: true, tools: true, commit: true },
         },
         private: {
           name: "private",
           loaded: true,
-          normalizedConfigDigest: state.profiles.private.configDigest,
+          normalizedConfigDigest: companionCompositionDigest("private", privateProfile),
           capabilities: { memoryRead: false, memoryWrite: false, tools: true, commit: true },
         },
       },
