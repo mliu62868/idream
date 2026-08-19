@@ -27,6 +27,7 @@ export default defineConfig({
       "src/server/probe-payment-provider.test.ts",
       "src/server/probe-age-verification.test.ts",
       "src/server/probe-generation-persistence.test.ts",
+      "src/server/probe-chat-service.test.ts",
       "src/server/probe-sentry.test.ts",
       "src/server/readiness/probe-report.test.ts",
       "src/server/readiness/migration-authority.test.ts",
@@ -52,6 +53,10 @@ export default defineConfig({
       {
         find: /^@idream\/shared\/contracts$/,
         replacement: `${sharedSourceRoot}contracts/index.ts`,
+      },
+      {
+        find: /^@idream\/shared\/bff$/,
+        replacement: `${sharedSourceRoot}bff/signing.ts`,
       },
       // 子路径名与目录名不一致的必须显式列出，通配规则会把 env 解析成 shared/src/env。
       {

@@ -461,6 +461,7 @@ export interface ChatServiceProbeEvidence {
   characterId?: string | null;
   characterSource?: string | null;
   usedSignedBff?: boolean;
+  expectedCompanionRuntime?: string | null;
   loadError?: string;
   health?: {
     ok?: boolean;
@@ -507,6 +508,7 @@ export interface ChatServiceProbeEvidence {
       assistantSent?: boolean;
       assistantStatus?: string | null;
       derivationSettled?: boolean;
+      dsh?: ChatProbeDshEvidence | null;
       error?: string | null;
     } | null;
     regenerateAnchor?: {
@@ -519,6 +521,8 @@ export interface ChatServiceProbeEvidence {
       futureUserSceneVersion?: number | null;
       futureSceneVersion?: number | null;
       regeneratedSceneVersion?: number | null;
+      futureDsh?: ChatProbeDshEvidence | null;
+      regeneratedDsh?: ChatProbeDshEvidence | null;
       error?: string | null;
     } | null;
     noMemory?: {
@@ -528,6 +532,7 @@ export interface ChatServiceProbeEvidence {
       authorityPinned?: boolean;
       relationshipUnchanged?: boolean;
       memorySourceAbsent?: boolean;
+      dsh?: ChatProbeDshEvidence | null;
       error?: string | null;
     } | null;
     blockedInput?: {
@@ -561,9 +566,57 @@ export interface ChatProbeOperationEvidence {
   error?: string | null;
 }
 
+export interface ChatProbeDshEvidence {
+  ok?: boolean;
+  runtime?: string;
+  memoryBackend?: string;
+  profile?: string;
+  private?: boolean;
+  assignmentReason?: string;
+  primaryRuntime?: string;
+  terminalStatus?: string;
+  sseTerminal?: string;
+  provider?: string;
+  model?: string;
+  profileDigest?: string;
+  outputAuthority?: string;
+  requestId?: string;
+  actualProvider?: string;
+  memoryOutcome?: string;
+  memoryIngestOutcome?: string;
+  memorySettledAt?: string;
+  memorySettleLagMs?: number;
+  sidecarInstanceId?: string;
+  error?: string | null;
+}
+
 const chatProbeOperationShape = {
   ok: flag,
   status: optionalCount,
+  error: nullableText,
+};
+
+const chatProbeDshEvidenceShape = {
+  ok: flag,
+  runtime: optionalText,
+  memoryBackend: optionalText,
+  profile: optionalText,
+  private: flag,
+  assignmentReason: optionalText,
+  primaryRuntime: optionalText,
+  terminalStatus: optionalText,
+  sseTerminal: optionalText,
+  provider: optionalText,
+  model: optionalText,
+  profileDigest: optionalText,
+  outputAuthority: optionalText,
+  requestId: optionalText,
+  actualProvider: optionalText,
+  memoryOutcome: optionalText,
+  memoryIngestOutcome: optionalText,
+  memorySettledAt: optionalText,
+  memorySettleLagMs: optionalCount,
+  sidecarInstanceId: optionalText,
   error: nullableText,
 };
 
@@ -578,6 +631,7 @@ const chatServiceProbeEvidenceSchema: z.ZodType<ChatServiceProbeEvidence> = z.ob
   characterId: nullableText,
   characterSource: nullableText,
   usedSignedBff: flag,
+  expectedCompanionRuntime: nullableText,
   health: nullableObject({
     ok: flag,
     status: optionalCount,
@@ -620,6 +674,7 @@ const chatServiceProbeEvidenceSchema: z.ZodType<ChatServiceProbeEvidence> = z.ob
       assistantSent: flag,
       assistantStatus: nullableText,
       derivationSettled: flag,
+      dsh: nullableObject(chatProbeDshEvidenceShape),
     }),
     regenerateAnchor: nullableObject({
       ...chatProbeOperationShape,
@@ -630,6 +685,8 @@ const chatServiceProbeEvidenceSchema: z.ZodType<ChatServiceProbeEvidence> = z.ob
       futureUserSceneVersion: optionalCount,
       futureSceneVersion: optionalCount,
       regeneratedSceneVersion: optionalCount,
+      futureDsh: nullableObject(chatProbeDshEvidenceShape),
+      regeneratedDsh: nullableObject(chatProbeDshEvidenceShape),
     }),
     noMemory: nullableObject({
       ...chatProbeOperationShape,
@@ -637,6 +694,7 @@ const chatServiceProbeEvidenceSchema: z.ZodType<ChatServiceProbeEvidence> = z.ob
       authorityPinned: flag,
       relationshipUnchanged: flag,
       memorySourceAbsent: flag,
+      dsh: nullableObject(chatProbeDshEvidenceShape),
     }),
     blockedInput: nullableObject({ ...chatProbeOperationShape, status_: nullableText }),
     cleanup: nullableObject({
