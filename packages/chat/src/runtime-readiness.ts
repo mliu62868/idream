@@ -28,6 +28,7 @@ export interface RuntimeReadinessSnapshot {
   components: {
     provider: RuntimeComponentHealth;
     memory: RuntimeComponentHealth;
+    shadow: RuntimeComponentHealth;
   };
 }
 
@@ -64,6 +65,11 @@ const HEALTHY_COMPONENT: RuntimeComponentHealth = {
 
 type DependencyProbe = () => Promise<void>;
 type FullWarmup = () => Promise<void>;
+type RuntimeShadowProfile = {
+  provider: string;
+  baseUrl: string;
+  model: string;
+};
 
 export class RuntimeReadiness {
   private state: RuntimeReadinessSnapshot = {
@@ -78,9 +84,11 @@ export class RuntimeReadiness {
     components: {
       provider: UNKNOWN_COMPONENT_HEALTH,
       memory: UNKNOWN_COMPONENT_HEALTH,
+      shadow: UNKNOWN_COMPONENT_HEALTH,
     },
   };
   private dependencyProbe: DependencyProbe | null = null;
+  private shadowProfile: RuntimeShadowProfile | null = null;
   private dependencyProbeInFlight: Promise<void> | null = null;
   private nextDependencyProbeAt = 0;
   private invalidated = false;
@@ -99,6 +107,7 @@ export class RuntimeReadiness {
       components: {
         provider: { ...this.state.components.provider },
         memory: { ...this.state.components.memory },
+        shadow: { ...this.state.components.shadow },
       },
     };
   }
@@ -108,6 +117,7 @@ export class RuntimeReadiness {
     this.activeWarmupAttempt = warmupAttempt;
     this.activeWarmupInvalidationEpoch = this.invalidationEpoch;
     this.dependencyProbe = null;
+    this.shadowProfile = null;
     this.dependencyProbeInFlight = null;
     this.nextDependencyProbeAt = 0;
     this.state = {
@@ -116,6 +126,10 @@ export class RuntimeReadiness {
       warming: true,
       lastError: this.invalidated ? this.state.lastError : null,
       dependencyCheckedAt: null,
+      components: {
+        ...this.state.components,
+        shadow: UNKNOWN_COMPONENT_HEALTH,
+      },
     };
     return warmupAttempt;
   }
@@ -153,6 +167,7 @@ export class RuntimeReadiness {
       components: {
         provider: HEALTHY_COMPONENT,
         memory: HEALTHY_COMPONENT,
+        shadow: this.state.components.shadow,
       },
     };
     return true;
@@ -226,6 +241,28 @@ export class RuntimeReadiness {
     this.recordComponentSuccess("memory");
   }
 
+  /** Shadow health is an admission fence only; it never removes native service. */
+  recordShadowReadinessFailure(error: unknown): void {
+    const current = this.state.components.shadow;
+    this.shadowProfile = null;
+    this.state = {
+      ...this.state,
+      components: {
+        ...this.state.components,
+        shadow: {
+          status: "unhealthy",
+          consecutiveFailures: current.consecutiveFailures + 1,
+          lastError: error instanceof Error ? error.message : String(error),
+        },
+      },
+    };
+  }
+
+  recordShadowReadinessSuccess(profile: RuntimeShadowProfile): void {
+    this.shadowProfile = { ...profile };
+    this.recordComponentSuccess("shadow");
+  }
+
   configureFullWarmupRecovery(fullWarmup: FullWarmup): void {
     this.fullWarmup = fullWarmup;
     if (this.invalidated) this.scheduleFullWarmupRecovery();
@@ -239,6 +276,21 @@ export class RuntimeReadiness {
 
   canAcceptTurns(): boolean {
     return this.state.live && this.state.ready && this.state.accepting;
+  }
+
+  canAdmitShadow(profile?: RuntimeShadowProfile): boolean {
+    if (
+      !this.canAcceptTurns() ||
+      this.state.components.shadow.status !== "healthy" ||
+      !this.shadowProfile
+    ) {
+      return false;
+    }
+    if (!profile) return true;
+    return profile.provider === this.shadowProfile.provider &&
+      profile.baseUrl.replace(/\/$/, "") ===
+        this.shadowProfile.baseUrl.replace(/\/$/, "") &&
+      profile.model === this.shadowProfile.model;
   }
 
   private recordComponentFailure(
@@ -1036,6 +1088,7 @@ export async function warmRuntime(input: {
   memoryChat?: ChatModel;
   profiles?: ChatModelProfile[];
   pingRedis?: () => Promise<void>;
+  probeSidecar?: typeof probeCompanionSidecar;
   readiness?: RuntimeReadiness;
 } = {}): Promise<void> {
   const readiness = input.readiness ?? runtimeReadiness;
@@ -1054,6 +1107,7 @@ export async function warmRuntime(input: {
     ));
     const warmedProfiles: string[] = [];
     const companion = env.COMPANION_RUNTIME_CONFIG;
+    const probeSidecar = input.probeSidecar ?? probeCompanionSidecar;
     if (companion.runtime === "dsh") {
       const profile = profiles[0] ?? resolveChatModelProfile(process.env);
       const profileIdentity = JSON.stringify({
@@ -1070,7 +1124,7 @@ export async function warmRuntime(input: {
       }) !== profileIdentity)) {
         throw new Error("DSH readiness requires one tool-capable provider profile across all tiers");
       }
-      const sidecar = await probeCompanionSidecar({
+      const sidecar = await probeSidecar({
         baseUrl: companion.sidecarUrl,
         token: companion.sidecarToken,
         expectedProvider: profile.provider,
@@ -1090,7 +1144,7 @@ export async function warmRuntime(input: {
           await assertChatSchemaReady(prisma);
           await assertChatProjectorReady(prisma, projectorPrisma);
           await pingRuntimeRedis();
-          await probeCompanionSidecar({
+          await probeSidecar({
             baseUrl: companion.sidecarUrl,
             token: companion.sidecarToken,
             expectedProvider: profile.provider,
@@ -1148,12 +1202,45 @@ export async function warmRuntime(input: {
     });
     if (!extracted.content.trim()) throw new Error("memory extractor warm-up returned no content");
     warmedProfiles.push(`memory:${memory.model}`);
+
+    const shadowProfile = profiles[0] ?? resolveChatModelProfile(process.env);
+    let shadowHasFullProof = false;
+    const probeShadowWithoutAffectingNative = async () => {
+      if (!companion.dshShadow.enabled) return null;
+      try {
+        const sidecar = await probeSidecar({
+          baseUrl: companion.sidecarUrl,
+          token: companion.sidecarToken,
+          expectedProvider: shadowProfile.provider,
+          expectedBaseUrl: shadowProfile.baseUrl,
+          expectedModel: shadowProfile.model,
+          full: !shadowHasFullProof,
+        });
+        shadowHasFullProof = true;
+        readiness.recordShadowReadinessSuccess(shadowProfile);
+        return sidecar;
+      } catch (error) {
+        shadowHasFullProof = false;
+        readiness.recordShadowReadinessFailure(error);
+        return null;
+      }
+    };
+    const shadowSidecar = await probeShadowWithoutAffectingNative();
+    if (shadowSidecar) {
+      warmedProfiles.push(
+        `dsh-shadow:${shadowSidecar.dshVersion}:${shadowSidecar.dshCommit}`,
+        `igrep-shadow:${shadowSidecar.igrepVersion}:${shadowSidecar.pluginVersion}`,
+        `shadow-profile:normal:${shadowSidecar.profiles.normal.normalizedConfigDigest}`,
+        `shadow-profile:private:${shadowSidecar.profiles.private.normalizedConfigDigest}`,
+      );
+    }
     readiness.warmed(
       warmedProfiles,
       async () => {
         await assertChatSchemaReady(prisma);
         await assertChatProjectorReady(prisma, projectorPrisma);
         await pingRuntimeRedis();
+        await probeShadowWithoutAffectingNative();
       },
       warmupAttempt,
     );

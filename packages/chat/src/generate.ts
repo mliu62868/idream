@@ -17,6 +17,7 @@ import type { BuiltContext } from "./context.js";
 import {
   prepareCompanionTurn,
   preparedTurnRuntime,
+  toDshShadowPreparedTurnWire,
   toPreparedTurnWire,
   type PreparedTurn,
 } from "./prepared-turn.js";
@@ -522,7 +523,8 @@ export async function processGenerate(
   const shadowInput = companionRuntimeConfig.dshShadow.enabled &&
       attemptRuntime.runtime === "native" &&
       turnMemoryEnabled &&
-      !authoritativeNoMemoryReply
+      !authoritativeNoMemoryReply &&
+      runtimeReadiness.canAdmitShadow(prepared.profile)
     ? {
       payload,
       session,
@@ -1092,7 +1094,7 @@ async function runDshShadowTurn(input: DshShadowRunInput & {
     sessionId: `shadow:${input.payload.sessionId}`,
     userId: input.session.userId,
     characterId: input.session.characterId,
-    preparedTurn: toPreparedTurnWire(input.prepared),
+    preparedTurn: toDshShadowPreparedTurnWire(input.prepared),
     memoryMode: "shadow",
     deadlineAt: new Date(Date.now() + input.deadlineMs).toISOString(),
   };

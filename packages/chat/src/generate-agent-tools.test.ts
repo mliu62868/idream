@@ -19,6 +19,7 @@ const recordTurnFailureMock = vi.hoisted(() => vi.fn());
 const recordTurnSuccessMock = vi.hoisted(() => vi.fn());
 const recordMemoryPromotionFailureMock = vi.hoisted(() => vi.fn());
 const recordMemoryPromotionSuccessMock = vi.hoisted(() => vi.fn());
+const canAdmitShadowMock = vi.hoisted(() => vi.fn(() => true));
 const dshRunMock = vi.hoisted(() => vi.fn());
 const dshCancelMock = vi.hoisted(() => vi.fn(async () => {}));
 
@@ -59,6 +60,7 @@ vi.mock("./runtime-readiness.js", () => ({
     recordTurnSuccess: recordTurnSuccessMock,
     recordMemoryPromotionFailure: recordMemoryPromotionFailureMock,
     recordMemoryPromotionSuccess: recordMemoryPromotionSuccessMock,
+    canAdmitShadow: canAdmitShadowMock,
   },
 }));
 vi.mock("./companion-runtime.js", () => ({
@@ -420,6 +422,8 @@ describe("chat generate agent image tool", () => {
     recordTurnSuccessMock.mockClear();
     recordMemoryPromotionFailureMock.mockClear();
     recordMemoryPromotionSuccessMock.mockClear();
+    canAdmitShadowMock.mockReset();
+    canAdmitShadowMock.mockReturnValue(true);
     dshRunMock.mockReset();
     dshCancelMock.mockClear();
     buildContextMock.mockResolvedValue(context);
@@ -684,6 +688,38 @@ describe("chat generate agent image tool", () => {
         { projectorPrisma: prisma, shadowExecutor },
       )).resolves.toEqual({ status: "sent" });
 
+      expect(shadowExecutor.submit).not.toHaveBeenCalled();
+      expect(dshRunMock).not.toHaveBeenCalled();
+      expect(canAdmitShadowMock).not.toHaveBeenCalled();
+    } finally {
+      restoreEnv();
+    }
+  });
+
+  it("delivers the native primary without enqueuing an unready shadow", async () => {
+    const restoreEnv = installDshShadowEnv();
+    try {
+      canAdmitShadowMock.mockReturnValue(false);
+      streamMock.mockImplementation(async function* nativeStream() {
+        yield { delta: "native remains available", done: true };
+      });
+      const { prisma, messageUpdates } = fakePrisma();
+      const shadowExecutor = {
+        submit: vi.fn(() => ({ cancel: vi.fn(), onSettled: vi.fn(async () => {}) })),
+        cancel: vi.fn(),
+        onIdle: vi.fn(async () => {}),
+      };
+
+      await expect(processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        prisma,
+        { projectorPrisma: prisma, shadowExecutor },
+      )).resolves.toEqual({ status: "sent" });
+
+      expect(finalizedMessageUpdate(messageUpdates)).toMatchObject({
+        status: "sent",
+        content: "native remains available",
+      });
       expect(shadowExecutor.submit).not.toHaveBeenCalled();
       expect(dshRunMock).not.toHaveBeenCalled();
     } finally {

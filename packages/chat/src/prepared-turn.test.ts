@@ -3,6 +3,7 @@ import type { BuiltContext } from "./context.js";
 import {
   compilePreparedTurn,
   fitPreparedTurnBudget,
+  toDshShadowPreparedTurnWire,
   toPreparedTurnWire,
 } from "./prepared-turn.js";
 import { resolvePolicy } from "./policy.js";
@@ -124,5 +125,36 @@ describe("PreparedTurn budget", () => {
         releasedKnowledgeDigest: source.releasedKnowledge.digest,
       },
     });
+  });
+
+  it("removes only native legacy recall authority from the DSH shadow projection", () => {
+    const source = context();
+    source.sessionSummary = "A session-local rolling summary.";
+    source.longTermMemories = ["The user prefers jasmine tea."];
+    source.relationship = {
+      stage: "close",
+      summary: "They trust each other deeply.",
+      version: 7,
+    };
+    source.recentMessages = [
+      { id: "user-history", role: "user", content: "Earlier question" },
+      { id: "assistant-history", role: "assistant", content: "Earlier answer" },
+      { id: "user-current", role: "user", content: "Current question" },
+    ];
+    const prepared = compilePreparedTurn(source, "user-current");
+
+    const nativeWire = toPreparedTurnWire(prepared);
+    const shadowWire = toDshShadowPreparedTurnWire(prepared);
+
+    expect(nativeWire.messages[0]?.content).toContain("The user prefers jasmine tea.");
+    expect(nativeWire.messages[0]?.content).toContain("They trust each other deeply.");
+    expect(shadowWire.messages[0]?.content).not.toContain("The user prefers jasmine tea.");
+    expect(shadowWire.messages[0]?.content).not.toContain("They trust each other deeply.");
+    expect(shadowWire.messages[0]?.content).toContain("Stay specific and grounded.");
+    expect(shadowWire.messages[0]?.content).toContain("the library");
+    expect(shadowWire.messages[0]?.content).toContain("A session-local rolling summary.");
+    expect(shadowWire.releasedKnowledge).toEqual(source.releasedKnowledge);
+    expect(shadowWire.messages.slice(1)).toEqual(nativeWire.messages.slice(1));
+    expect(toPreparedTurnWire(prepared)).toEqual(nativeWire);
   });
 });

@@ -173,6 +173,7 @@ describe("RuntimeReadiness", () => {
     expect(state.snapshot().components).toEqual({
       provider: { status: "healthy", consecutiveFailures: 0, lastError: null },
       memory: { status: "healthy", consecutiveFailures: 0, lastError: null },
+      shadow: { status: "unknown", consecutiveFailures: 0, lastError: null },
     });
   });
 

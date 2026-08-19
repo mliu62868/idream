@@ -199,6 +199,27 @@ export function toPreparedTurnWire(prepared: PreparedTurn): PreparedTurnWire {
   });
 }
 
+/**
+ * Phase-2 comparison input: official igrep is the shadow recall authority, so
+ * native legacy recall bytes must not make the shadow result look better. Soul,
+ * Scene, boundaries, summary and the pinned transcript remain identical.
+ */
+export function toDshShadowPreparedTurnWire(
+  prepared: PreparedTurn,
+): PreparedTurnWire {
+  const runtime = runtimeByPreparedTurn.get(prepared);
+  if (!runtime) throw new Error("PreparedTurn was not produced by prepareCompanionTurn");
+  const shadowPrepared = compilePreparedTurn(
+    {
+      ...runtime.context,
+      longTermMemories: [],
+      relationship: null,
+    },
+    runtime.currentUserMessageId,
+  );
+  return toPreparedTurnWire(shadowPrepared);
+}
+
 function buildModelMessages(context: BuiltContext): ModelMessage[] {
   return [
     { role: "system", content: buildCompanionSystemPrompt(context) },
