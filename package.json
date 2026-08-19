@@ -27,6 +27,8 @@
     "check": "bun run lint && bun run typecheck && bun run build",
     "dev": "bun run --filter @idream/main dev",
     "dev:admin": "bun run --filter @idream/admin dev",
+    "dsh-companion:setup": "node scripts/setup-dsh-companion.mjs",
+    "dsh-companion:check": "node scripts/setup-dsh-companion.mjs --check",
     "pm2:start": "node scripts/start-pm2-ecosystem.cjs",
     "pm2:start:production": "node scripts/start-pm2-ecosystem.cjs production",
     "pm2:stop": "node scripts/start-pm2-ecosystem.cjs current stop",
