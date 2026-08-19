@@ -417,6 +417,7 @@ export async function processGenerate(
       });
   }, 30_000);
   heartbeatTimer.unref();
+  let cancelUnsettledShadow: (() => void) | null = null;
 
   try {
   const key = streamKey(payload.assistantMessageId);
@@ -531,6 +532,32 @@ export async function processGenerate(
       deadlineMs: companionRuntimeConfig.deadlineMs,
       }
     : null;
+  const shadowLifecycle = shadowInput
+    ? startDshShadowLifecycle({
+        prisma,
+        run: shadowInput,
+        executor: hooks.shadowExecutor ?? dshShadowExecutor,
+      })
+    : null;
+  cancelUnsettledShadow = shadowLifecycle
+    ? () => shadowLifecycle.cancel("primary_early_exit", {
+        runtimeTraceFacts,
+        truncated: false,
+        messageStatuses: ["generating", "failed"],
+        primary: {
+          content: "",
+          provider: prepared.profile.provider,
+          model: prepared.model,
+          finishReason: "cancelled",
+          usage: {
+            promptTokens: prepared.budget.usedInputTokens,
+            completionTokens: 0,
+          },
+          latencyMs: Math.max(0, Date.now() - primaryStartedAt),
+          toolCalls: 0,
+        },
+      })
+    : null;
 
   await appendStreamEvent(key, { type: "start", attempt: payload.attempt });
 
@@ -591,6 +618,30 @@ export async function processGenerate(
       telemetry,
       trace: { ...runtimeTraceFacts, primaryTelemetry: telemetry },
     };
+  };
+
+  const cancelShadowForPrimary = (
+    reason: string,
+    facts: Record<string, unknown>,
+    finishReason: "failed" | "cancelled" = "failed",
+  ): void => {
+    shadowLifecycle?.cancel(reason, {
+      runtimeTraceFacts: facts,
+      truncated: false,
+      messageStatuses: ["generating", "failed"],
+      primary: {
+        content: chunks.join(""),
+        provider: prepared.profile.provider,
+        model: prepared.model,
+        finishReason,
+        usage: providerUsage ?? {
+          promptTokens: prepared.budget.usedInputTokens,
+          completionTokens: estimateTokens(chunks.join("")),
+        },
+        latencyMs: Math.max(0, Date.now() - primaryStartedAt),
+        toolCalls: imageToolCall ? 1 : 0,
+      },
+    });
   };
 
   const streamDelta = async (delta: string): Promise<void> => {
@@ -795,6 +846,7 @@ export async function processGenerate(
         payload,
         runtimeTraceFacts: failure.trace,
       });
+      cancelShadowForPrimary("primary_provider_failed", failure.trace);
       if (seq === 0) throw error instanceof Error ? error : new Error(String(error));
       return { status: "failed" };
     }
@@ -826,6 +878,7 @@ export async function processGenerate(
       payload,
       runtimeTraceFacts: failure.trace,
     });
+    cancelShadowForPrimary("primary_provider_failed", failure.trace);
     throw error;
   }
   // The provider answered, so whatever knocked earlier turns over was not a
@@ -925,9 +978,13 @@ export async function processGenerate(
       nativeTelemetry.sseTerminal = "error";
       await persistFailedRuntimeTrace({ prisma, payload, runtimeTraceFacts });
     }
+    cancelShadowForPrimary("primary_context_changed", runtimeTraceFacts);
     return { status: "failed" };
   }
-  if (finalized === "skipped") return { status: "skipped" };
+  if (finalized === "skipped") {
+    cancelShadowForPrimary("primary_terminal_cas_conflict", runtimeTraceFacts);
+    return { status: "skipped" };
+  }
 
   await appendStreamEvent(key, { type: "done", attempt: payload.attempt, usage });
   nativeTelemetry.sseTerminal = "done";
@@ -940,48 +997,21 @@ export async function processGenerate(
     truncated,
   });
 
-  if (shadowInput) {
-    const primary = {
-      content,
-      provider: prepared.profile.provider,
-      model,
-      finishReason: truncated ? "truncated" as const : "stop" as const,
-      usage,
-      latencyMs: Math.max(0, Date.now() - primaryStartedAt),
-      toolCalls: imageToolCall ? 1 : 0,
-    };
-    const persistOutcome = async (shadow: DshShadowOutcome): Promise<void> => {
-      await persistShadowComparison({
-        prisma,
-        payload,
-        terminalStatus: blocked ? "blocked" : "sent",
-        runtimeTraceFacts,
-        truncated,
-        shadowComparison: buildShadowComparison({ shadow, primary }),
-      });
-    };
-    const executor = hooks.shadowExecutor ?? dshShadowExecutor;
-    const accepted = executor.submit(async (signal) => {
-      await persistOutcome(await runDshShadowTurn({ ...shadowInput, signal }));
+  if (shadowLifecycle) {
+    shadowLifecycle.complete({
+      runtimeTraceFacts,
+      truncated,
+      messageStatuses: [blocked ? "blocked" : "sent"],
+      primary: {
+        content,
+        provider: prepared.profile.provider,
+        model,
+        finishReason: truncated ? "truncated" as const : "stop" as const,
+        usage,
+        latencyMs: Math.max(0, Date.now() - primaryStartedAt),
+        toolCalls: imageToolCall ? 1 : 0,
+      },
     });
-    if (!accepted) {
-      logger.warn(
-        { assistantMessageId: payload.assistantMessageId, code: "shadow_queue_saturated" },
-        "DSH shadow executor queue is saturated",
-      );
-      trackDetachedShadowPersistence(persistOutcome({
-        status: "error",
-        invocationId: `shadow:inv:${payload.assistantMessageId}:${payload.attempt}`,
-        attemptId: `shadow:${payload.assistantMessageId}:${payload.attempt}`,
-        latencyMs: 0,
-        candidate: null,
-        dryRunToolCalls: 0,
-        error: {
-          code: "shadow_queue_saturated",
-          message: "DSH shadow executor queue is saturated",
-        },
-      }));
-    }
   }
 
   // Scene is ordinary session continuity and advances even for an incognito turn.
@@ -1006,12 +1036,13 @@ export async function processGenerate(
   await scheduleOutboxDelivery();
   return { status: blocked ? "blocked" : "sent" };
   } finally {
+    cancelUnsettledShadow?.();
     clearInterval(heartbeatTimer);
   }
 }
 
 interface DshShadowOutcome {
-  status: "completed" | "error";
+  status: "completed" | "error" | "cancelled";
   invocationId: string;
   attemptId: string;
   latencyMs: number;
@@ -1020,13 +1051,36 @@ interface DshShadowOutcome {
   error: { code: string; message: string } | null;
 }
 
-async function runDshShadowTurn(input: {
+interface DshShadowRunInput {
   payload: GeneratePayload;
   session: FinalizeInput["session"];
   prepared: PreparedTurn;
   sidecarUrl: string;
   sidecarToken: string;
   deadlineMs: number;
+}
+
+interface ShadowPrimaryOutcome {
+  runtimeTraceFacts: Record<string, unknown>;
+  truncated: boolean;
+  messageStatuses: Array<"generating" | "sent" | "blocked" | "failed">;
+  primary: {
+    content: string;
+    provider: string;
+    model: string;
+    finishReason: "stop" | "truncated" | "failed" | "cancelled";
+    usage: { promptTokens: number; completionTokens: number };
+    latencyMs: number;
+    toolCalls: number;
+  };
+}
+
+interface DshShadowLifecycle {
+  complete(primary: ShadowPrimaryOutcome): void;
+  cancel(reason: string, primary: ShadowPrimaryOutcome): void;
+}
+
+async function runDshShadowTurn(input: DshShadowRunInput & {
   signal?: AbortSignal;
 }): Promise<DshShadowOutcome> {
   const startedAt = Date.now();
@@ -1046,6 +1100,17 @@ async function runDshShadowTurn(input: {
     baseUrl: input.sidecarUrl,
     token: input.sidecarToken,
   });
+  let sidecarCancellation: Promise<void> | null = null;
+  const cancelSidecar = (): void => {
+    const rawReason = String(input.signal?.reason ?? "cancelled");
+    const reason = rawReason === "shutdown"
+      ? "shutdown"
+      : rawReason.includes("timeout")
+        ? "timeout"
+        : "user";
+    sidecarCancellation ??= runtime.cancel(invocationId, reason).catch(() => {});
+  };
+  input.signal?.addEventListener("abort", cancelSidecar, { once: true });
   let candidate: CompanionTerminalCandidate | null = null;
   let eventError: { code: string; message: string } | null = null;
   let dryRunToolCalls = 0;
@@ -1093,9 +1158,25 @@ async function runDshShadowTurn(input: {
       ? AbortSignal.any([input.signal, AbortSignal.timeout(input.deadlineMs)])
       : AbortSignal.timeout(input.deadlineMs));
   } catch (error) {
+    if (input.signal?.aborted) {
+      return {
+        ...shadowCancellationOutcome(input.payload, String(input.signal.reason ?? "cancelled")),
+        latencyMs: Math.max(0, Date.now() - startedAt),
+      };
+    }
     eventError = {
       code: "shadow_runtime_error",
       message: shadowErrorMessage(error instanceof Error ? error.message : String(error)),
+    };
+  } finally {
+    input.signal?.removeEventListener("abort", cancelSidecar);
+    await sidecarCancellation;
+  }
+  if (input.signal?.aborted && candidate === null) {
+    return {
+      ...shadowCancellationOutcome(input.payload, String(input.signal.reason ?? "cancelled")),
+      latencyMs: Math.max(0, Date.now() - startedAt),
+      dryRunToolCalls,
     };
   }
   const observed = candidate as CompanionTerminalCandidate | null;
@@ -1114,15 +1195,7 @@ async function runDshShadowTurn(input: {
 }
 
 function buildShadowComparison(input: {
-  primary: {
-    content: string;
-    provider: string;
-    model: string;
-    finishReason: "stop" | "truncated";
-    usage: { promptTokens: number; completionTokens: number };
-    latencyMs: number;
-    toolCalls: number;
-  };
+  primary: ShadowPrimaryOutcome["primary"];
   shadow: DshShadowOutcome;
 }): Record<string, unknown> {
   const shadow = input.shadow.candidate;
@@ -1162,25 +1235,191 @@ function buildShadowComparison(input: {
   };
 }
 
+function startDshShadowLifecycle(input: {
+  prisma: ChatPrismaClient;
+  run: DshShadowRunInput;
+  executor: ShadowExecutor;
+}): DshShadowLifecycle {
+  let shadowResolved = false;
+  let resolveShadow!: (outcome: DshShadowOutcome) => void;
+  const shadowOutcome = new Promise<DshShadowOutcome>((resolve) => {
+    resolveShadow = resolve;
+  });
+  const settleShadow = (outcome: DshShadowOutcome): void => {
+    if (shadowResolved) return;
+    shadowResolved = true;
+    resolveShadow(outcome);
+  };
+
+  let primaryResolved = false;
+  let resolvePrimary!: (outcome: ShadowPrimaryOutcome) => void;
+  const primaryOutcome = new Promise<ShadowPrimaryOutcome>((resolve) => {
+    resolvePrimary = resolve;
+  });
+  const settlePrimary = (outcome: ShadowPrimaryOutcome): void => {
+    if (primaryResolved) return;
+    primaryResolved = true;
+    resolvePrimary(outcome);
+  };
+
+  const persistence = Promise.all([shadowOutcome, primaryOutcome])
+    .then(async ([shadow, primary]) => {
+      await persistShadowComparison({
+        prisma: input.prisma,
+        payload: input.run.payload,
+        terminalStatuses: primary.messageStatuses,
+        runtimeTraceFacts: primary.runtimeTraceFacts,
+        truncated: primary.truncated,
+        shadowComparison: buildShadowComparison({ shadow, primary: primary.primary }),
+      });
+    });
+  trackDetachedShadowPersistence(persistence);
+
+  const cancelQueued = (reason: string): Promise<void> => {
+    settleShadow(shadowCancellationOutcome(input.run.payload, reason));
+    return persistence;
+  };
+  const handle = input.executor.submit(async (signal) => {
+    try {
+      settleShadow(await runDshShadowTurn({ ...input.run, signal }));
+    } catch (error) {
+      settleShadow({
+        status: "error",
+        invocationId: `shadow:inv:${input.run.payload.assistantMessageId}:${input.run.payload.attempt}`,
+        attemptId: `shadow:${input.run.payload.assistantMessageId}:${input.run.payload.attempt}`,
+        latencyMs: 0,
+        candidate: null,
+        dryRunToolCalls: 0,
+        error: {
+          code: "shadow_runtime_error",
+          message: shadowErrorMessage(error instanceof Error ? error.message : String(error)),
+        },
+      });
+    }
+  }, cancelQueued);
+  if (!handle) {
+    logger.warn(
+      {
+        assistantMessageId: input.run.payload.assistantMessageId,
+        code: "shadow_queue_saturated",
+      },
+      "DSH shadow executor queue is saturated",
+    );
+    settleShadow({
+      status: "error",
+      invocationId: `shadow:inv:${input.run.payload.assistantMessageId}:${input.run.payload.attempt}`,
+      attemptId: `shadow:${input.run.payload.assistantMessageId}:${input.run.payload.attempt}`,
+      latencyMs: 0,
+      candidate: null,
+      dryRunToolCalls: 0,
+      error: {
+        code: "shadow_queue_saturated",
+        message: "DSH shadow executor queue is saturated",
+      },
+    });
+  }
+
+  return {
+    complete(primary) {
+      settlePrimary(primary);
+    },
+    cancel(reason, primary) {
+      if (primaryResolved) return;
+      // Resolve evidence before signalling the task. A sidecar that races to a
+      // candidate after primary authority failed must not be reported as a
+      // valid Phase-2 comparison.
+      settlePrimary(primary);
+      settleShadow(shadowCancellationOutcome(input.run.payload, reason));
+      handle?.cancel(reason);
+    },
+  };
+}
+
+function shadowCancellationOutcome(
+  payload: GeneratePayload,
+  reason: string,
+): DshShadowOutcome {
+  const evidence = reason === "shutdown"
+    ? {
+        code: "shadow_shutdown_cancelled",
+        message: "DSH shadow cancelled during worker shutdown",
+      }
+    : reason === "primary_provider_failed"
+      ? {
+          code: "shadow_primary_provider_failed",
+          message: "DSH shadow cancelled because the primary provider failed",
+        }
+      : reason === "primary_context_changed"
+        ? {
+            code: "shadow_primary_context_changed",
+            message: "DSH shadow cancelled because primary terminal authority changed",
+          }
+        : reason === "primary_terminal_cas_conflict"
+          ? {
+              code: "shadow_primary_terminal_cas_conflict",
+              message: "DSH shadow cancelled because primary terminal CAS was lost",
+            }
+          : {
+              code: "shadow_primary_cancelled",
+              message: `DSH shadow cancelled with primary: ${shadowErrorMessage(reason)}`,
+            };
+  return {
+    status: "cancelled",
+    invocationId: `shadow:inv:${payload.assistantMessageId}:${payload.attempt}`,
+    attemptId: `shadow:${payload.assistantMessageId}:${payload.attempt}`,
+    latencyMs: 0,
+    candidate: null,
+    dryRunToolCalls: 0,
+    error: evidence,
+  };
+}
+
 export async function persistShadowComparison(input: {
   prisma: ChatPrismaClient;
   payload: GeneratePayload;
-  terminalStatus: "sent" | "blocked";
+  terminalStatus?: "sent" | "blocked";
+  terminalStatuses?: Array<"generating" | "sent" | "blocked" | "failed">;
   runtimeTraceFacts: Record<string, unknown>;
   truncated: boolean;
   shadowComparison: Record<string, unknown>;
 }): Promise<void> {
-  const trace = JSON.parse(JSON.stringify({
-    ...input.runtimeTraceFacts,
-    ...(input.truncated ? { truncated: true } : {}),
-    shadowComparison: input.shadowComparison,
-  })) as Prisma.InputJsonValue;
   try {
     await input.prisma.$transaction(async (tx) => {
+      const terminalStatuses = input.terminalStatuses ??
+        (input.terminalStatus ? [input.terminalStatus] : []);
+      if (terminalStatuses.length === 0) {
+        throw new Error("DSH shadow comparison requires a terminal status CAS");
+      }
+      const current = await tx.message.findUnique({
+        where: { id: input.payload.assistantMessageId },
+        select: { status: true, attempt: true, runtimeTrace: true },
+      });
+      if (
+        !current ||
+        current.attempt !== input.payload.attempt ||
+        !terminalStatuses.includes(current.status as typeof terminalStatuses[number])
+      ) return;
+      const version = await tx.messageVersion.findUnique({
+        where: { id: `mv:${input.payload.assistantMessageId}:${input.payload.attempt}` },
+        select: { runtimeTrace: true },
+      });
+      if (!version) throw new Error("DSH shadow comparison version is missing");
+      const baseTrace = jsonObject(current.runtimeTrace) ?? input.runtimeTraceFacts;
+      const versionBaseTrace = jsonObject(version.runtimeTrace) ?? baseTrace;
+      const trace = JSON.parse(JSON.stringify({
+        ...baseTrace,
+        ...(input.truncated ? { truncated: true } : {}),
+        shadowComparison: input.shadowComparison,
+      })) as Prisma.InputJsonValue;
+      const versionTrace = JSON.parse(JSON.stringify({
+        ...versionBaseTrace,
+        ...(input.truncated ? { truncated: true } : {}),
+        shadowComparison: input.shadowComparison,
+      })) as Prisma.InputJsonValue;
       const updated = await tx.message.updateMany({
         where: {
           id: input.payload.assistantMessageId,
-          status: input.terminalStatus,
+          status: current.status,
           attempt: input.payload.attempt,
         },
         data: { runtimeTrace: trace },
@@ -1192,7 +1431,7 @@ export async function persistShadowComparison(input: {
           messageId: input.payload.assistantMessageId,
           attempt: input.payload.attempt,
         },
-        data: { runtimeTrace: trace },
+        data: { runtimeTrace: versionTrace },
       });
       if (versionUpdated.count !== 1) {
         throw new Error("DSH shadow comparison version CAS failed");

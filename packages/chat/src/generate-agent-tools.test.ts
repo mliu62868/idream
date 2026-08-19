@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CHAT_TO_MAIN_EVENTS } from "@idream/shared/contracts";
 import { releasedKnowledgeDigest } from "@idream/shared/chat/companion-runtime";
 import type { ChatPrismaClient } from "./db.js";
+import { BoundedShadowExecutor } from "./companion-shadow-executor.js";
 
 const completeMock = vi.hoisted(() => vi.fn());
 const streamMock = vi.hoisted(() => vi.fn());
@@ -19,6 +20,7 @@ const recordTurnSuccessMock = vi.hoisted(() => vi.fn());
 const recordMemoryPromotionFailureMock = vi.hoisted(() => vi.fn());
 const recordMemoryPromotionSuccessMock = vi.hoisted(() => vi.fn());
 const dshRunMock = vi.hoisted(() => vi.fn());
+const dshCancelMock = vi.hoisted(() => vi.fn(async () => {}));
 
 vi.mock("./db.js", () => ({ chatPrisma: {} }));
 vi.mock("./providers.js", () => ({
@@ -62,6 +64,7 @@ vi.mock("./runtime-readiness.js", () => ({
 vi.mock("./companion-runtime.js", () => ({
   DshCompanionRuntime: class {
     run = dshRunMock;
+    cancel = dshCancelMock;
   },
 }));
 vi.mock("./companion-sidecar-readiness.js", () => ({
@@ -109,6 +112,8 @@ function fakePrisma(
   const outboxCreates: CreateCall[] = [];
   const messageUpdates: CreateCall[] = [];
   const rootMessageUpdates: CreateCall[] = [];
+  let currentAssistantStatus = "generating";
+  let currentAssistantTrace: Record<string, unknown> | null = assistantRuntimeTrace ?? null;
   const character = {
     characterId: "char_1",
     creatorId: "creator_1",
@@ -160,21 +165,31 @@ function fakePrisma(
             id: "msg_assistant",
             role: "assistant",
             sessionId: "sess_1",
-            status: "generating",
+            status: currentAssistantStatus,
             attempt: 1,
             replyToMessageId: "msg_user",
             deletedAt: null,
+            runtimeTrace: currentAssistantTrace,
           },
       updateMany: async (call: CreateCall) => {
         messageUpdates.push(call);
+        if (typeof call.data.status === "string") currentAssistantStatus = call.data.status;
+        if (call.data.runtimeTrace && typeof call.data.runtimeTrace === "object") {
+          currentAssistantTrace = call.data.runtimeTrace as Record<string, unknown>;
+        }
         return { count: 1 };
       },
       update: async (call: CreateCall) => {
         messageUpdates.push(call);
+        if (typeof call.data.status === "string") currentAssistantStatus = call.data.status;
+        if (call.data.runtimeTrace && typeof call.data.runtimeTrace === "object") {
+          currentAssistantTrace = call.data.runtimeTrace as Record<string, unknown>;
+        }
         return {};
       },
     },
     messageVersion: {
+      findUnique: async () => ({ runtimeTrace: null }),
       updateMany: async () => ({ count: 1 }),
       update: async () => ({}),
     },
@@ -220,14 +235,18 @@ function fakePrisma(
               id: "msg_assistant",
               role: "assistant",
               sessionId: "sess_1",
-              status: "generating",
+              status: currentAssistantStatus,
               attempt: 1,
               replyToMessageId: "msg_user",
               memoryAuthority: turnAuthority?.memoryAuthority ?? "enabled",
-              runtimeTrace: assistantRuntimeTrace ?? null,
+              runtimeTrace: currentAssistantTrace,
             },
       updateMany: async (call: CreateCall) => {
         rootMessageUpdates.push(call);
+        if (typeof call.data.status === "string") currentAssistantStatus = call.data.status;
+        if (call.data.runtimeTrace && typeof call.data.runtimeTrace === "object") {
+          currentAssistantTrace = call.data.runtimeTrace as Record<string, unknown>;
+        }
         return { count: 1 };
       },
     },
@@ -402,6 +421,7 @@ describe("chat generate agent image tool", () => {
     recordMemoryPromotionFailureMock.mockClear();
     recordMemoryPromotionSuccessMock.mockClear();
     dshRunMock.mockReset();
+    dshCancelMock.mockClear();
     buildContextMock.mockResolvedValue(context);
     moderationMock.mockResolvedValue({ status: "passed", confidence: 0.5 });
     supportsToolsState.value = true;
@@ -536,6 +556,34 @@ describe("chat generate agent image tool", () => {
     }
   });
 
+  it("starts the accepted DSH shadow before the native provider completes", async () => {
+    const restoreEnv = installDshShadowEnv();
+    let markShadowStarted!: () => void;
+    const shadowStarted = new Promise<void>((resolve) => { markShadowStarted = resolve; });
+    try {
+      streamMock.mockImplementation(async function* nativeStream() {
+        await Promise.race([
+          shadowStarted,
+          new Promise<never>((_resolve, reject) => {
+            setTimeout(() => reject(new Error("shadow did not start beside primary")), 100);
+          }),
+        ]);
+        yield { delta: "native after concurrent admission", done: true };
+      });
+      dshRunMock.mockImplementation(async () => { markShadowStarted(); });
+      const { prisma } = fakePrisma();
+
+      await expect(processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        prisma,
+        { projectorPrisma: prisma },
+      )).resolves.toEqual({ status: "sent" });
+      await drainDshShadowExecutor();
+    } finally {
+      restoreEnv();
+    }
+  });
+
   it("keeps the native terminal successful when DSH shadow fails", async () => {
     const restoreEnv = installDshShadowEnv();
     try {
@@ -625,7 +673,7 @@ describe("chat generate agent image tool", () => {
         { content: "ordinary private turn", memoryAuthority: "disabled" },
       );
       const shadowExecutor = {
-        submit: vi.fn(() => true),
+        submit: vi.fn(() => ({ cancel: vi.fn(), onSettled: vi.fn(async () => {}) })),
         cancel: vi.fn(),
         onIdle: vi.fn(async () => {}),
       };
@@ -651,7 +699,7 @@ describe("chat generate agent image tool", () => {
       });
       const { prisma, messageUpdates, rootMessageUpdates } = fakePrisma();
       const shadowExecutor = {
-        submit: vi.fn(() => false),
+        submit: vi.fn(() => null),
         cancel: vi.fn(),
         onIdle: vi.fn(async () => {}),
       };
@@ -682,6 +730,147 @@ describe("chat generate agent image tool", () => {
     }
   });
 
+  it("cancels an active shadow and records provider-failure evidence without waiting", async () => {
+    const restoreEnv = installDshShadowEnv();
+    const executor = new BoundedShadowExecutor({ concurrency: 1, maxQueued: 1 });
+    try {
+      supportsToolsState.value = false;
+      streamMock.mockImplementation(async function* failedPrimary() {
+        throw new Error("primary provider unavailable");
+      });
+      dshRunMock.mockImplementation(async (_invocation, _port, signal: AbortSignal) => {
+        await new Promise<void>((resolve) => {
+          signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+      });
+      const { prisma, messageUpdates, rootMessageUpdates } = fakePrisma();
+
+      await expect(processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        prisma,
+        { projectorPrisma: prisma, shadowExecutor: executor },
+      )).rejects.toThrow("primary provider unavailable");
+      await executor.onIdle();
+      await drainDshShadowExecutor();
+
+      expect(dshCancelMock).toHaveBeenCalledWith("shadow:inv:msg_assistant:1", "user");
+      expect([...messageUpdates, ...rootMessageUpdates]).toContainEqual(expect.objectContaining({
+        data: {
+          runtimeTrace: expect.objectContaining({
+            shadowComparison: expect.objectContaining({
+              status: "cancelled",
+              shadow: null,
+              error: {
+                code: "shadow_primary_provider_failed",
+                message: "DSH shadow cancelled because the primary provider failed",
+              },
+            }),
+          }),
+        },
+      }));
+    } finally {
+      executor.cancel("test_cleanup");
+      await executor.onIdle();
+      restoreEnv();
+    }
+  });
+
+  it("cancels shadow on a primary terminal CAS conflict and records the reason", async () => {
+    const restoreEnv = installDshShadowEnv();
+    const executor = new BoundedShadowExecutor({ concurrency: 1, maxQueued: 1 });
+    try {
+      supportsToolsState.value = false;
+      streamMock.mockImplementation(async function* nativeStream() {
+        yield { delta: "obsolete reply", done: true };
+      });
+      dshRunMock.mockImplementation(async (_invocation, _port, signal: AbortSignal) => {
+        await new Promise<void>((resolve) => {
+          signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+      });
+      const { prisma, messageUpdates, rootMessageUpdates } = fakePrisma(
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        1n,
+      );
+
+      await expect(processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        prisma,
+        { projectorPrisma: prisma, shadowExecutor: executor },
+      )).resolves.toEqual({ status: "failed" });
+      await executor.onIdle();
+      await drainDshShadowExecutor();
+
+      expect([...messageUpdates, ...rootMessageUpdates]).toContainEqual(expect.objectContaining({
+        data: {
+          runtimeTrace: expect.objectContaining({
+            shadowComparison: expect.objectContaining({
+              status: "cancelled",
+              error: expect.objectContaining({ code: "shadow_primary_context_changed" }),
+            }),
+          }),
+        },
+      }));
+    } finally {
+      executor.cancel("test_cleanup");
+      await executor.onIdle();
+      restoreEnv();
+    }
+  });
+
+  it("persists shadow_shutdown_cancelled for accepted queued work before idle", async () => {
+    const restoreEnv = installDshShadowEnv();
+    const executor = new BoundedShadowExecutor({ concurrency: 1, maxQueued: 1 });
+    try {
+      streamMock.mockImplementation(async function* nativeStream() {
+        yield { delta: "native remains authoritative", done: true };
+      });
+      dshRunMock.mockImplementation(async (_invocation, _port, signal: AbortSignal) => {
+        await new Promise<void>((resolve) => {
+          signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+      });
+      const first = fakePrisma();
+      const second = fakePrisma();
+
+      await processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        first.prisma,
+        { projectorPrisma: first.prisma, shadowExecutor: executor },
+      );
+      await processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        second.prisma,
+        { projectorPrisma: second.prisma, shadowExecutor: executor },
+      );
+
+      executor.cancel("shutdown");
+      await executor.onIdle();
+      await drainDshShadowExecutor();
+
+      expect([...second.messageUpdates, ...second.rootMessageUpdates]).toContainEqual(expect.objectContaining({
+        data: {
+          runtimeTrace: expect.objectContaining({
+            shadowComparison: expect.objectContaining({
+              status: "cancelled",
+              error: {
+                code: "shadow_shutdown_cancelled",
+                message: "DSH shadow cancelled during worker shutdown",
+              },
+            }),
+          }),
+        },
+      }));
+    } finally {
+      executor.cancel("test_cleanup");
+      await executor.onIdle();
+      restoreEnv();
+    }
+  });
+
   it("rolls back both shadow comparison traces when the version CAS misses", async () => {
     const committed = { message: "before", version: "before" };
     const prisma = {
@@ -689,12 +878,18 @@ describe("chat generate agent image tool", () => {
         let pendingMessage = committed.message;
         const tx = {
           message: {
+            findUnique: vi.fn(async () => ({
+              status: "sent",
+              attempt: 1,
+              runtimeTrace: { schemaVersion: 1 },
+            })),
             updateMany: vi.fn(async (call: CreateCall) => {
               pendingMessage = JSON.stringify(call.data.runtimeTrace);
               return { count: 1 };
             }),
           },
           messageVersion: {
+            findUnique: vi.fn(async () => ({ runtimeTrace: { schemaVersion: 1 } })),
             updateMany: vi.fn(async () => ({ count: 0 })),
           },
         };
@@ -787,6 +982,62 @@ describe("chat generate agent image tool", () => {
     })).resolves.toBe("updated");
     expect(stored.messageTrace).toEqual(trace);
     expect(stored.versionTrace).toEqual(trace);
+  });
+
+  it("merges detached shadow evidence into the latest retry telemetry", async () => {
+    const updates: CreateCall[] = [];
+    const currentTrace = {
+      schemaVersion: 1,
+      primaryTelemetry: { schemaVersion: 1, runtime: "native", retryCount: 2 },
+    };
+    const tx = {
+      message: {
+        findUnique: vi.fn(async () => ({
+          status: "generating",
+          attempt: 1,
+          runtimeTrace: currentTrace,
+        })),
+        updateMany: vi.fn(async (call: CreateCall) => {
+          updates.push(call);
+          return { count: 1 };
+        }),
+      },
+      messageVersion: {
+        findUnique: vi.fn(async () => ({ runtimeTrace: currentTrace })),
+        updateMany: vi.fn(async (call: CreateCall) => {
+          updates.push(call);
+          return { count: 1 };
+        }),
+      },
+    };
+    const prisma = {
+      $transaction: vi.fn(async (callback: (client: typeof tx) => Promise<unknown>) => callback(tx)),
+    } as unknown as ChatPrismaClient;
+
+    await persistShadowComparison({
+      prisma,
+      payload: {
+        sessionId: "sess_1",
+        assistantMessageId: "msg_assistant",
+        userMessageId: "msg_user",
+        attempt: 1,
+      },
+      terminalStatuses: ["generating", "failed"],
+      runtimeTraceFacts: {
+        schemaVersion: 1,
+        primaryTelemetry: { schemaVersion: 1, runtime: "native", retryCount: 1 },
+      },
+      truncated: false,
+      shadowComparison: { schemaVersion: 1, status: "cancelled" },
+    });
+
+    expect(updates).toHaveLength(2);
+    for (const update of updates) {
+      expect(update.data.runtimeTrace).toMatchObject({
+        primaryTelemetry: { retryCount: 2 },
+        shadowComparison: { status: "cancelled" },
+      });
+    }
   });
 
   it("routes a pinned DSH attempt through the Chat commit port before SSE done", async () => {
