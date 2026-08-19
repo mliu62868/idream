@@ -29,7 +29,7 @@ function installShadowEnv(): void {
   process.env.CHAT_MEMORY_BACKEND = "legacy";
   process.env.CHAT_COMPANION_DSH_SHADOW_ENABLED = "true";
   process.env.DSH_AGENT_TOKEN = "shadow-readiness-token";
-  process.env.DSH_AGENT_URL = "http://shadow-sidecar:3101";
+  process.env.DSH_AGENT_URL = "http://127.0.0.1:3101";
 }
 
 function canonicalDatabases(): {
@@ -114,7 +114,7 @@ describe("native runtime DSH shadow readiness", () => {
     });
 
     expect(probeSidecar).toHaveBeenCalledWith(expect.objectContaining({
-      baseUrl: "http://shadow-sidecar:3101",
+      baseUrl: "http://127.0.0.1:3101",
       token: "shadow-readiness-token",
       expectedProvider: "openai",
       expectedBaseUrl: "http://native-model/v1",
