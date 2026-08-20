@@ -2606,6 +2606,24 @@ describe("launch readiness", () => {
     expect(sceneMismatch.checks.find(
       (check) => check.id === "chat-service-live-probe",
     )?.message).toContain("old-turn Scene anchoring");
+
+    const fractionalScene = assessLaunchReadiness({
+      env: productionEnv,
+      chatServiceProbe: passingChatServiceProbe({
+        conversation: {
+          ...passing.conversation,
+          regenerateAnchor: {
+            ...passing.conversation?.regenerateAnchor,
+            futureUserSceneVersion: 1.5,
+            futureSceneVersion: 1.5,
+          },
+        },
+      }),
+      now,
+    });
+    expect(fractionalScene.checks.find(
+      (check) => check.id === "chat-service-live-probe",
+    )?.message).toContain("old-turn Scene anchoring");
   });
 
   it("fails when the signed Chat probe observed a different Chat FS authority", () => {

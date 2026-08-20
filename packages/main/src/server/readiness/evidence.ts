@@ -89,10 +89,12 @@ export function isRelativeFutureSceneAnchor(input: {
   futureUserSceneVersion?: number | null;
   futureSceneVersion?: number | null;
 }): boolean {
+  const futureUserSceneVersion = input.futureUserSceneVersion;
   return input.originalSceneVersion === 0 &&
-    typeof input.futureUserSceneVersion === "number" &&
-    input.futureUserSceneVersion > input.originalSceneVersion &&
-    input.futureSceneVersion === input.futureUserSceneVersion;
+    typeof futureUserSceneVersion === "number" &&
+    Number.isSafeInteger(futureUserSceneVersion) &&
+    futureUserSceneVersion > input.originalSceneVersion &&
+    input.futureSceneVersion === futureUserSceneVersion;
 }
 
 // SPEC: 所有 probe 的失败详情都长这样。retryable 由多数 probe 实际写出，消费端目前不读，
