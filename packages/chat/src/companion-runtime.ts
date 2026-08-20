@@ -42,7 +42,7 @@ export interface CompanionRuntime {
   ): Promise<void>;
   cancel(
     invocationId: string,
-    reason: "user" | "timeout" | "shutdown",
+    reason: "user" | "timeout" | "shutdown" | "transport",
   ): Promise<void>;
 }
 
@@ -254,7 +254,7 @@ export class DshCompanionRuntime implements CompanionRuntime {
 
   async cancel(
     invocationId: string,
-    reason: "user" | "timeout" | "shutdown",
+    reason: "user" | "timeout" | "shutdown" | "transport",
   ): Promise<void> {
     await this.control(invocationId, "cancel", {
       protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
@@ -300,6 +300,7 @@ async function* responseLines(
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let pending = "";
+  let completed = false;
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -316,7 +317,9 @@ async function* responseLines(
     if (pending.trim()) {
       throw new Error("companion sidecar returned a partial NDJSON frame");
     }
+    completed = true;
   } finally {
+    if (!completed) await reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }
 }

@@ -205,6 +205,53 @@ describe("DshCompanionRuntime", () => {
     })).rejects.toThrow(/event sequence/);
   });
 
+  it("cancels the response body and releases invocation ownership when a product callback fails", async () => {
+    const input = invocation();
+    const frame = encodeCompanionNdjsonFrame({
+      protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
+      type: "event",
+      invocationId: input.invocationId,
+      event: {
+        type: "heartbeat",
+        invocationId: input.invocationId,
+        attemptId: input.attemptId,
+        sequence: 1,
+        occurredAt: now,
+      },
+    });
+    let bodyCancelled = false;
+    let requests = 0;
+    const runtime = new DshCompanionRuntime({
+      baseUrl: "http://127.0.0.1:3101",
+      token: "secret",
+      fetchImpl: (async () => {
+        requests += 1;
+        if (requests > 1) return new Response("", { status: 200 });
+        return new Response(new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(frame));
+          },
+          cancel() {
+            bodyCancelled = true;
+          },
+        }), { status: 200 });
+      }) as typeof fetch,
+    });
+    const failedPort = {
+      emit() { throw new Error("product callback failed"); },
+      async executeTool() { throw new Error("unused"); },
+      async commit() { throw new Error("unused"); },
+    };
+
+    await expect(runtime.run(input, failedPort)).rejects.toThrow("product callback failed");
+    expect(bodyCancelled).toBe(true);
+    await expect(runtime.run(input, {
+      emit() {},
+      async executeTool() { throw new Error("unused"); },
+      async commit() { throw new Error("unused"); },
+    })).resolves.toBeUndefined();
+  });
+
   it("maps Chat shutdown to every active sidecar invocation", async () => {
     let close: (() => void) | undefined;
     const calls: string[] = [];

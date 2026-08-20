@@ -1247,6 +1247,7 @@ async function processDshCompanionTurn(
       await runtime.cancel(invocationId, "timeout").catch(() => {});
     } else {
       runErrorTaxonomy ??= { category: "runtime", code: "dsh_runtime_error" };
+      await runtime.cancel(invocationId, "transport").catch(() => {});
     }
   }
 

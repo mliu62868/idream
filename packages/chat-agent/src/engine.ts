@@ -343,15 +343,15 @@ class ToolBridge {
 class ActiveInvocation {
   readonly commit = deferred<CompanionCommitAck>();
   readonly cancellation = new AbortController();
-  agentCancel?: (reason: "user" | "timeout" | "shutdown") => void;
-  cancelReason?: "user" | "timeout" | "shutdown";
+  agentCancel?: (reason: "user" | "timeout" | "shutdown" | "transport") => void;
+  cancelReason?: "user" | "timeout" | "shutdown" | "transport";
   toolBridge?: ToolBridge;
   commitAwaiting = false;
   commitCanonical?: string;
 
   constructor(readonly invocation: CompanionInvocation) {}
 
-  cancel(reason: "user" | "timeout" | "shutdown"): void {
+  cancel(reason: "user" | "timeout" | "shutdown" | "transport"): void {
     if (this.cancelReason) return;
     this.cancelReason = reason;
     this.cancellation.abort(new Error(`invocation cancelled: ${reason}`));

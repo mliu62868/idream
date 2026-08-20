@@ -1631,6 +1631,7 @@ describe("chat generate agent image tool", () => {
           ? "sidecar disconnected before the tool intent"
           : "sidecar disconnected after the tool result",
       );
+      expect(dshCancelMock).toHaveBeenCalledWith("inv:msg_assistant:1", "transport");
       expect(attachmentCreates).toHaveLength(0);
       expect(outboxCreates.filter((call) => call.data.eventType === CHAT_TO_MAIN_EVENTS.imageRequested)).toHaveLength(0);
 

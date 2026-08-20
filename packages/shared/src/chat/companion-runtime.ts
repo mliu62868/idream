@@ -670,7 +670,7 @@ export const companionEventSchema = z
       .object({
         ...companionEventIdentity,
         type: z.literal("cancelled"),
-        reason: z.enum(["user", "timeout", "shutdown"]),
+        reason: z.enum(["user", "timeout", "shutdown", "transport"]),
       })
       .strict(),
   ])
@@ -716,7 +716,7 @@ export const companionRuntimeRequestSchema = z.discriminatedUnion("type", [
       protocolVersion: protocolVersionSchema,
       type: z.literal("cancel"),
       invocationId: nonEmptyStringSchema,
-      reason: z.enum(["user", "timeout", "shutdown"]),
+      reason: z.enum(["user", "timeout", "shutdown", "transport"]),
     })
     .strict(),
   z
