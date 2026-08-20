@@ -257,16 +257,37 @@ async function sendAndCollectToolTurn(input: ProbeInput & {
     status?: unknown;
   };
   const assistantMessageId = text(accepted.assistantMessageId);
-  const attempt = integer(accepted.attempt);
+  let attempt = integer(accepted.attempt);
   if (send.status !== 202) {
     throw new DshImageToolProbeError(`${leg}_send_rejected_${send.status}`);
   }
   if (
     !assistantMessageId ||
-    attempt === null ||
-    attempt < 1 ||
     accepted.status === "blocked"
   ) {
+    throw new DshImageToolProbeError(`${leg}_acceptance_invalid`);
+  }
+  if (attempt === null) {
+    const state = await signedFetch({
+      ...input,
+      method: "GET",
+      path: `/api/v1/chat/sessions/${input.sessionId}`,
+    }).catch(() => {
+      throw new DshImageToolProbeError(`${leg}_acceptance_state_transport`);
+    });
+    if (state.status !== 200) {
+      throw new DshImageToolProbeError(
+        `${leg}_acceptance_state_rejected_${state.status}`,
+      );
+    }
+    const snapshot = await state.json().catch(() => ({})) as {
+      messages?: PublicMessage[];
+    };
+    attempt = integer(
+      snapshot.messages?.find((message) => message.id === assistantMessageId)?.attempt,
+    );
+  }
+  if (attempt === null || attempt < 1) {
     throw new DshImageToolProbeError(`${leg}_acceptance_invalid`);
   }
   const stream = await probeStream({

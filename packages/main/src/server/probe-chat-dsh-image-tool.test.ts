@@ -127,7 +127,7 @@ describe("signed DSH image-tool probe orchestration", () => {
     });
   });
 
-  it("fails closed instead of guessing a missing accepted attempt", async () => {
+  it("reads the accepted assistant attempt instead of guessing it", async () => {
     mocks.signedFetch.mockImplementation(async (request: { path: string; method: string }) => {
       if (request.path === "/api/v1/chat/sessions" && request.method === "POST") {
         return json({ id: "session-audit" }, 201);
@@ -135,14 +135,29 @@ describe("signed DSH image-tool probe orchestration", () => {
       if (request.path.endsWith("/messages") && request.method === "POST") {
         return json({ assistantMessageId: "assistant-without-attempt" }, 202);
       }
+      if (request.path === "/api/v1/chat/sessions/session-audit" && request.method === "GET") {
+        return json({
+          messages: [{
+            id: "assistant-without-attempt",
+            role: "assistant",
+            status: "generating",
+            attempt: 4,
+          }],
+        }, 200);
+      }
       throw new Error(`unexpected request ${request.method} ${request.path}`);
     });
 
     await expect(runDshImageToolProbe(input)).resolves.toMatchObject({
       ok: false,
-      error: "DSH image tool E2E failed at generate_acceptance_invalid",
+      error: "DSH image tool E2E failed at generate_turn_unsettled",
     });
-    expect(mocks.probeStream).not.toHaveBeenCalled();
+    expect(mocks.probeStream).toHaveBeenCalledWith(
+      expect.objectContaining({
+        assistantMessageId: "assistant-without-attempt",
+        expectedAttempt: 4,
+      }),
+    );
   });
 
   it("does not retry the edit write after one successful generate leg", async () => {
