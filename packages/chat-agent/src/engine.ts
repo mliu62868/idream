@@ -485,7 +485,7 @@ export class CompanionEngine implements InvocationService {
       }
       ctx = new Context();
       await applyCompanionComposition(ctx, { plugin, plan: compositionPlan });
-      workspace = await this.options.workspaces.prepare(invocation);
+      workspace = await this.options.workspaces.prepare(invocation, active.cancellation.signal);
       const igrepStartedAt = new Map<string, number>();
       ctx.on("tools/pre-execute", async (execution, next) => {
         if (execution.name === "igrep_search" || execution.name === "memory_search") {

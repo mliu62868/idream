@@ -168,9 +168,13 @@ export class AttemptWorkspaceStore {
     };
   }
 
-  async prepare(invocation: CompanionInvocation): Promise<AttemptWorkspace> {
+  async prepare(
+    invocation: CompanionInvocation,
+    signal?: AbortSignal,
+  ): Promise<AttemptWorkspace> {
+    signal?.throwIfAborted();
     if (invocation.memoryMode === "private") return this.preparePrivate(invocation);
-    return this.prepareNormal(invocation);
+    return this.prepareNormal(invocation, signal);
   }
 
   async purge(request: WorkspacePurgeRequest): Promise<number> {
@@ -489,12 +493,16 @@ export class AttemptWorkspaceStore {
     return { path, mode: "private", commit: discard, discard, settleAndDiscard: discard };
   }
 
-  private async prepareNormal(invocation: CompanionInvocation): Promise<AttemptWorkspace> {
+  private async prepareNormal(
+    invocation: CompanionInvocation,
+    signal?: AbortSignal,
+  ): Promise<AttemptWorkspace> {
     const authorityRoot = this.options.canonicalRoot;
     const release = await this.acquireRelationship(
       invocation.userId,
       invocation.characterId,
       authorityRoot,
+      signal,
     );
     let attemptRoot: string | undefined;
     let knowledgeRoot: string | undefined;
@@ -655,13 +663,40 @@ export class AttemptWorkspaceStore {
     userId: string,
     characterId: string,
     authorityRoot = this.options.canonicalRoot,
+    signal?: AbortSignal,
   ): Promise<() => void> {
     const relationshipKey = safeKey(authorityRoot, userId, characterId);
     const previous = this.locks.get(relationshipKey) ?? Promise.resolve();
     const mine = deferredLock();
     const queued = previous.then(() => mine.promise);
     this.locks.set(relationshipKey, queued);
-    await previous;
+    try {
+      if (signal) {
+        const aborted = Promise.withResolvers<never>();
+        const onAbort = () => aborted.reject(
+          signal.reason ?? new Error("relationship workspace wait aborted"),
+        );
+        if (signal.aborted) onAbort();
+        else signal.addEventListener("abort", onAbort, { once: true });
+        try {
+          await Promise.race([previous, aborted.promise]);
+        } finally {
+          signal.removeEventListener("abort", onAbort);
+        }
+        signal.throwIfAborted();
+      } else {
+        await previous;
+      }
+    } catch (error) {
+      // INVARIANT: A cancelled waiter stays behind the current owner but no
+      // longer owns a queue slot. Resolving its node lets later waiters advance
+      // only after the preceding owner releases the relationship.
+      mine.release();
+      void queued.then(() => {
+        if (this.locks.get(relationshipKey) === queued) this.locks.delete(relationshipKey);
+      });
+      throw error;
+    }
     let released = false;
     return () => {
       if (released) return;

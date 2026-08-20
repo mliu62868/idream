@@ -1077,6 +1077,106 @@ describe("programmatic DSH companion runtime", () => {
     expect(await readdir(join(root, "private"))).toEqual([]);
   });
 
+  it.each([
+    ["user", 30_000],
+    ["timeout", 80],
+  ] as const)(
+    "abandons a queued relationship workspace when the second invocation is cancelled by %s",
+    async (reason, deadlineMs) => {
+      const root = await mkdtemp(join(tmpdir(), `chat-agent-workspace-wait-${reason}-`));
+      temporary.push(root);
+      let adapterFactoryCalls = 0;
+      const engine = new CompanionEngine({
+        workspaces: new AttemptWorkspaceStore({
+          canonicalRoot: join(root, "canonical"),
+          privateRoot: join(root, "private"),
+          memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
+        }),
+        plugin: async () => ({ name: "igrep", apply() {} }),
+        adapter: () => {
+          adapterFactoryCalls += 1;
+          return new BlockingAdapter();
+        },
+        igrepCommand: "igrep",
+        igrepLlm: IGREP_LLM,
+      });
+      const first = invocation("normal");
+      first.invocationId = `inv-workspace-holder-${reason}`;
+      first.attemptId = `attempt-workspace-holder-${reason}`;
+      const firstFrames: CompanionRuntimeResponse[] = [];
+      const firstRun = engine.run(first, (frame) => firstFrames.push(frame));
+
+      try {
+        await vi.waitFor(() => {
+          expect(firstFrames).toContainEqual(expect.objectContaining({
+            type: "event",
+            event: expect.objectContaining({ type: "started" }),
+          }));
+        });
+
+        const second = invocation("normal");
+        second.invocationId = `inv-workspace-waiter-${reason}`;
+        second.attemptId = `attempt-workspace-waiter-${reason}`;
+        second.deadlineAt = new Date(Date.now() + deadlineMs).toISOString();
+        const secondFrames: CompanionRuntimeResponse[] = [];
+        const secondRun = engine.run(second, (frame) => secondFrames.push(frame));
+
+        if (reason === "user") {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          await engine.accept({
+            protocolVersion: 1,
+            type: "cancel",
+            invocationId: second.invocationId,
+            reason: "user",
+          });
+        }
+
+        expect(await Promise.race([
+          secondRun.then(() => "settled" as const),
+          new Promise<"stalled">((resolve) => setTimeout(() => resolve("stalled"), 500)),
+        ])).toBe("settled");
+        expect(secondFrames).toContainEqual(expect.objectContaining({
+          type: "event",
+          event: expect.objectContaining({ type: "cancelled", reason }),
+        }));
+        expect(adapterFactoryCalls).toBe(1);
+
+        await engine.accept({
+          protocolVersion: 1,
+          type: "cancel",
+          invocationId: first.invocationId,
+          reason: "user",
+        });
+        await firstRun;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        expect(adapterFactoryCalls).toBe(1);
+
+        const successor = invocation("normal");
+        successor.invocationId = second.invocationId;
+        successor.attemptId = `attempt-workspace-successor-${reason}`;
+        const successorFrames: CompanionRuntimeResponse[] = [];
+        const successorRun = engine.run(successor, (frame) => successorFrames.push(frame));
+        await vi.waitFor(() => {
+          expect(successorFrames).toContainEqual(expect.objectContaining({
+            type: "event",
+            event: expect.objectContaining({ type: "started" }),
+          }));
+        });
+        expect(adapterFactoryCalls).toBe(2);
+        await engine.accept({
+          protocolVersion: 1,
+          type: "cancel",
+          invocationId: successor.invocationId,
+          reason: "user",
+        });
+        await successorRun;
+      } finally {
+        await engine.shutdown();
+        await firstRun;
+      }
+    },
+  );
+
   it("cancels active DSH turns as shutdown before closing the HTTP server", async () => {
     const root = await mkdtemp(join(tmpdir(), "chat-agent-shutdown-"));
     temporary.push(root);
