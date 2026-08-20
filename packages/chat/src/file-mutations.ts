@@ -53,7 +53,6 @@ import {
 import { createId } from "./id.js";
 import {
   applyCompanionMemoryProjection,
-  companionWorkspaceCleanupRequired,
   companionMemoryProjectionTimeoutMs,
 } from "./companion-memory-projection.js";
 import { recordOutbox } from "./outbox.js";
@@ -107,7 +106,6 @@ const fileMutationSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("account_delete"),
     deletionRequestEventId: z.string().min(1),
-    companionCleanupRequired: z.boolean().optional(),
     // Optional keeps already-persisted legacy rows readable. Only `true`
     // authorizes the dedicated v2 completion protocol.
     requestBound: z.literal(true).optional(),
@@ -133,12 +131,10 @@ const fileMutationSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("relationship_delete"),
     characterId: z.string().min(1),
-    companionCleanupRequired: z.boolean().optional(),
   }),
   z.object({
     kind: z.literal("relationship_rebuild"),
     characterId: z.string().min(1),
-    companionCleanupRequired: z.boolean().optional(),
   }),
   z.object({
     kind: z.literal("trace_append"),
@@ -199,23 +195,7 @@ export async function recordChatFileMutation(
   userId: string,
   mutation: ChatFileMutation,
 ): Promise<string> {
-  let parsed = fileMutationSchema.parse(mutation);
-  if (
-    parsed.kind === "relationship_rebuild"
-    || parsed.kind === "relationship_delete"
-    || parsed.kind === "account_delete"
-  ) {
-    const persistedRequired = await companionWorkspaceCleanupRequired(
-      tx,
-      userId,
-      parsed.kind === "account_delete" ? undefined : parsed.characterId,
-    );
-    parsed = {
-      ...parsed,
-      companionCleanupRequired:
-        parsed.companionCleanupRequired === true || persistedRequired,
-    };
-  }
+  const parsed = fileMutationSchema.parse(mutation);
   const id = createId("filemut");
   const payload = JSON.stringify(parsed);
   await tx.$executeRaw`

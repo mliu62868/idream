@@ -20,6 +20,7 @@ export default defineConfig({
       "src/policy.test.ts",
       "src/prepared-turn.test.ts",
       "src/prompt.test.ts",
+      "src/providers.test.ts",
       "src/worker-readiness.test.ts",
       "src/service.test.ts",
     ],

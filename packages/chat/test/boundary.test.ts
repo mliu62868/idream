@@ -13,7 +13,6 @@ import {
   projectChatFileMutations,
   recordChatFileMutation,
 } from "../src/file-mutations.js";
-import type { ChatModel } from "../src/providers.js";
 import {
   assertChatSchemaReady,
   RuntimeReadiness,
@@ -495,20 +494,9 @@ describe("chat boundary (chat_service role)", () => {
 
   it("admits the canonical request/projector role and capability split", async () => {
     const readiness = new RuntimeReadiness();
-    const chat: ChatModel = {
-      async *stream() {
-        yield { delta: "READY", done: true };
-      },
-      async complete() {
-        return { content: "{}" };
-      },
-    };
-
     await warmRuntime({
       prisma,
       projectorPrisma,
-      chat,
-      memoryChat: chat,
       profiles: [{
         adapter: "openai-compatible-v1",
         provider: "openai",
@@ -538,7 +526,6 @@ describe("chat boundary (chat_service role)", () => {
       await expect(warmRuntime({
         prisma: maskedPrisma,
         projectorPrisma,
-        chat: { stream: async function* () {} } as unknown as ChatModel,
         pingRedis: async () => {},
         readiness: new RuntimeReadiness(),
       })).rejects.toThrow("chat request authenticated role is not canonical");
@@ -555,7 +542,6 @@ describe("chat boundary (chat_service role)", () => {
       await expect(warmRuntime({
         prisma,
         projectorPrisma,
-        chat: { stream: async function* () {} } as unknown as ChatModel,
         pingRedis: async () => {},
         readiness: new RuntimeReadiness(),
       })).rejects.toThrow("chat request database capability is not canonical");
@@ -629,7 +615,6 @@ describe("chat boundary (chat_service role)", () => {
       await expect(warmRuntime({
         prisma,
         projectorPrisma,
-        chat: { stream: async function* () {} } as unknown as ChatModel,
         pingRedis: async () => {},
         readiness: new RuntimeReadiness(),
       })).rejects.toThrow(error);

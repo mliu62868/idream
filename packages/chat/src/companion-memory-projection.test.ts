@@ -7,11 +7,9 @@ import type {
 import {
   applyCompanionMemoryProjection,
   canonicalCompanionMessages,
-  companionWorkspaceCleanupRequired,
   companionMemoryProjectionTimeoutMs,
 } from "./companion-memory-projection.js";
 import {
-  appliedFileMutationReceipt,
   recordChatFileMutation,
 } from "./file-mutations.js";
 
@@ -45,25 +43,6 @@ function message(
 }
 
 describe("companion memory projection", () => {
-  it("redacts cleanup authority only after the durable privacy mutation applies", () => {
-    expect(appliedFileMutationReceipt({
-      kind: "relationship_delete",
-      characterId: "character-1",
-      companionCleanupRequired: true,
-    })).toEqual({
-      kind: "relationship_delete",
-      characterId: "character-1",
-    });
-  });
-
-  it("always requires cleanup for the sole persistent DSH workspace authority", async () => {
-    await expect(companionWorkspaceCleanupRequired(
-      {} as Prisma.TransactionClient,
-      "user-1",
-      "character-1",
-    )).resolves.toBe(true);
-  });
-
   it("replays only complete, unambiguous, memory-enabled canonical exchanges", () => {
     const user = message({ id: "user-1", role: "user" });
     const assistant = message({ id: "assistant-2", role: "assistant" });
@@ -151,7 +130,7 @@ describe("companion memory projection", () => {
     expect(companionMemoryProjectionTimeoutMs()).toBe(37_000);
   });
 
-  it("persists the required cleanup authority before projection", async () => {
+  it("persists the single-authority projection intent without legacy cleanup flags", async () => {
     const executeRaw = vi.fn(async (..._args: unknown[]) => 1);
     const tx = { $executeRaw: executeRaw } as unknown as Prisma.TransactionClient;
 
@@ -164,7 +143,6 @@ describe("companion memory projection", () => {
     expect(JSON.parse(String(persistedPayload))).toEqual({
       kind: "relationship_delete",
       characterId: "character-1",
-      companionCleanupRequired: true,
     });
   });
 });

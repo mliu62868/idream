@@ -115,7 +115,7 @@ const freeEntitlement = {
 };
 
 describe("public runtime trace", () => {
-  it("returns the single authoritative DSH trace unchanged", () => {
+  it("returns the single authoritative DSH trace and hides historical Shadow diagnostics", () => {
     const trace = {
       attempt: 1,
       companionRuntime: {
@@ -123,8 +123,16 @@ describe("public runtime trace", () => {
         memoryBackend: "igrep-dsh",
         profile: "idream-companion-memory",
       },
+      shadowAdmission: { status: "admitted" },
+      shadowComparison: {
+        invocationId: "private-invocation",
+        error: { message: "private provider bytes" },
+      },
     };
-    expect(publicRuntimeTrace(trace)).toEqual(trace);
+    expect(publicRuntimeTrace(trace)).toEqual({
+      attempt: 1,
+      companionRuntime: trace.companionRuntime,
+    });
   });
 });
 

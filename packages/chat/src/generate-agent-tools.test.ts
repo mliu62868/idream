@@ -3,17 +3,11 @@ import { CHAT_TO_MAIN_EVENTS } from "@idream/shared/contracts";
 import { releasedKnowledgeDigest } from "@idream/shared/chat/companion-runtime";
 import type { ChatPrismaClient } from "./db.js";
 
-const completeMock = vi.hoisted(() => vi.fn());
-const streamMock = vi.hoisted(() => vi.fn());
 const moderationMock = vi.hoisted(() => vi.fn());
 const buildContextMock = vi.hoisted(() => vi.fn());
 const appendStreamEventMock = vi.hoisted(() => vi.fn(async () => ({ id: "stream-id", event: {} })));
 const appendLineMock = vi.hoisted(() => vi.fn(async () => {}));
 const enqueueMock = vi.hoisted(() => vi.fn(async () => {}));
-// Mutable seam so individual tests can flip the FC-capability flag without
-// re-mocking the whole providers module (mirrors CHAT_MOCK_SUPPORTS_TOOLS on the
-// real MockChatModel, see providers.ts).
-const supportsToolsState = vi.hoisted(() => ({ value: true }));
 const recordTurnFailureMock = vi.hoisted(() => vi.fn());
 const recordTurnSuccessMock = vi.hoisted(() => vi.fn());
 const invalidateReadinessMock = vi.hoisted(() => vi.fn());
@@ -26,13 +20,6 @@ const verifiedProfileDigestState = vi.hoisted(() => ({ value: "d".repeat(64) }))
 vi.mock("./db.js", () => ({ chatPrisma: {} }));
 vi.mock("./providers.js", () => ({
   providers: {
-    chat: {
-      complete: completeMock,
-      stream: streamMock,
-      get supportsTools() {
-        return supportsToolsState.value;
-      },
-    },
     moderation: {
       check: moderationMock,
     },
@@ -404,8 +391,6 @@ function installDshRolloutEnv(): () => void {
 
 describe("chat generate agent image tool", () => {
   beforeEach(() => {
-    completeMock.mockReset();
-    streamMock.mockReset();
     moderationMock.mockReset();
     buildContextMock.mockReset();
     appendStreamEventMock.mockClear();
@@ -421,7 +406,6 @@ describe("chat generate agent image tool", () => {
     verifiedProfileDigestState.value = "d".repeat(64);
     buildContextMock.mockResolvedValue(context);
     moderationMock.mockResolvedValue({ status: "passed", confidence: 0.5 });
-    supportsToolsState.value = true;
   });
 
   it("atomically claims the exact attempt route and MessageVersion or rolls both back", async () => {
@@ -856,7 +840,6 @@ describe("chat generate agent image tool", () => {
         { projectorPrisma: prisma },
       )).rejects.toThrow("sidecar unavailable");
 
-      expect(streamMock).not.toHaveBeenCalled();
       expect([...messageUpdates, ...rootMessageUpdates]).toContainEqual(expect.objectContaining({
         data: expect.objectContaining({
           runtimeTrace: expect.objectContaining({
@@ -910,7 +893,6 @@ describe("chat generate agent image tool", () => {
         { projectorPrisma: prisma },
       )).resolves.toEqual({ status: "failed" });
 
-      expect(streamMock).not.toHaveBeenCalled();
       expect(recordTurnFailureMock).not.toHaveBeenCalled();
       expect(recordTurnSuccessMock).not.toHaveBeenCalled();
       expect(invalidateReadinessMock).toHaveBeenCalledOnce();

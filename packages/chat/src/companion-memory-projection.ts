@@ -20,14 +20,12 @@ type CompanionProjectionMutation =
   | {
       kind: "relationship_rebuild";
       characterId: string;
-      companionCleanupRequired?: boolean;
     }
   | {
       kind: "relationship_delete";
       characterId: string;
-      companionCleanupRequired?: boolean;
     }
-  | { kind: "account_delete"; companionCleanupRequired?: boolean };
+  | { kind: "account_delete" };
 
 export interface CompanionMemoryProjectionPort {
   rebuild(request: CompanionWorkspaceRebuild): Promise<unknown>;
@@ -112,17 +110,7 @@ export async function buildCompanionWorkspaceRebuild(
 }
 
 export function companionMemoryProjectionTimeoutMs(): number {
-  const config = env.COMPANION_RUNTIME_CONFIG;
-  return config.sidecarToken ? config.deadlineMs + 30_000 : 30_000;
-}
-
-/** Phase 6 has one persistent companion workspace authority. */
-export async function companionWorkspaceCleanupRequired(
-  _tx: Prisma.TransactionClient,
-  _userId: string,
-  _characterId?: string,
-): Promise<boolean> {
-  return true;
+  return env.COMPANION_RUNTIME_CONFIG.deadlineMs + 30_000;
 }
 
 export async function applyCompanionMemoryProjection(

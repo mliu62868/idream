@@ -35,8 +35,6 @@ import {
   findAgentTool,
   GENERATE_IMAGE_ASYNC_TOOL,
   imageToolCaption,
-  planAgentToolCall,
-  shouldPlanImageTool,
   type AgentToolCallPlan,
   type ImageAgentToolCall,
 } from "./agent-tools.js";
@@ -48,10 +46,7 @@ import {
   type ChatImageRequestedPayload,
   type ChatMemoryExtractPayload,
 } from "@idream/shared/contracts";
-import {
-  ChatModelOutputLimitError,
-  noMemoryAuthorityReply,
-} from "@idream/shared";
+import { noMemoryAuthorityReply } from "@idream/shared";
 import { runtimeReadiness } from "./runtime-readiness.js";
 import { env } from "./env.js";
 import {
@@ -1822,11 +1817,8 @@ async function finalize(
         payload: { sessionId: session.id, delta: 1 },
       });
 
-      // toolPlan re-derives the discriminated plan from imageToolCall so the outbox
-      // construction below branches on plan.tool (extended by the edit_last_image arm).
-      const toolPlan: AgentToolCallPlan | null = imageToolCall ? planFromToolCall(imageToolCall) : null;
-      if (toolPlan) {
-        const built = await buildImageRequestFromPlan(toolPlan, tx, session.id);
+      if (imageToolCall) {
+        const built = await buildImageRequestFromCall(imageToolCall, tx, session.id);
         const attachmentId = createId("att");
         await tx.messageAttachment.create({
           data: {
@@ -1941,52 +1933,36 @@ function toolCallFromPlan(plan: AgentToolCallPlan): ImageAgentToolCall {
   }
 }
 
-// Inverse of toolCallFromPlan: re-derives the discriminated plan from a resolved
-// ImageAgentToolCall (name+arguments already correlated per tool, since it was built by
-// toolCallFromPlan or by the FC/planner validation paths). Kept as an explicit switch
-// (rather than `{ tool: toolCall.name, args: toolCall.arguments }`) because TS can't
-// correlate a union's discriminant with its payload across two independently-typed
-// property accesses.
-function planFromToolCall(toolCall: ImageAgentToolCall): AgentToolCallPlan {
-  switch (toolCall.name) {
-    case GENERATE_IMAGE_ASYNC_TOOL:
-      return { tool: toolCall.name, args: toolCall.arguments };
-    case EDIT_LAST_IMAGE_TOOL:
-      return { tool: toolCall.name, args: toolCall.arguments };
-    default: {
-      const exhaustive: never = toolCall;
-      throw new Error(`unhandled agent tool call: ${String(exhaustive)}`);
-    }
-  }
-}
-
-interface ImageRequestFromPlan {
+interface ImageRequestFromCall {
   promptHint: string;
   assistantCaption: string | null;
   controls: { orientation: string; outputCount: number; sourceImageAssetId?: string };
-  // The tool this request actually ended up as — distinct from plan.tool when
+  // The tool this request actually ended up as — distinct from call.name when
   // edit_last_image degrades to a fresh generate (no source photo). Recorded on the
   // attachment as metadata.toolName so the trail reflects what actually happened,
   // never a stale "edit_last_image" tag on what is, in fact, a plain generate.
   toolName: typeof GENERATE_IMAGE_ASYNC_TOOL | typeof EDIT_LAST_IMAGE_TOOL;
 }
 
-// Shapes the attachment/outbox payload fields per plan.tool. The edit_last_image arm
+// Shapes the attachment/outbox payload fields per DSH tool call. The edit_last_image arm
 // looks up the session's most recent completed photo (behavior contract point 1) and,
 // when found, carries its mediaAssetId as the img2img source (point 2). No source photo
 // degrades to generate_image_async semantics rather than erroring (point 3) — sending a
 // fresh image beats failing the turn.
-async function buildImageRequestFromPlan(
-  plan: AgentToolCallPlan,
+async function buildImageRequestFromCall(
+  call: ImageAgentToolCall,
   tx: Prisma.TransactionClient,
   sessionId: string,
-): Promise<ImageRequestFromPlan> {
-  switch (plan.tool) {
+): Promise<ImageRequestFromCall> {
+  switch (call.name) {
     case GENERATE_IMAGE_ASYNC_TOOL:
       return {
-        promptHint: plan.args.prompt,
-        assistantCaption: plan.args.caption ?? null,
-        controls: { orientation: plan.args.orientation, outputCount: plan.args.outputCount },
+        promptHint: call.arguments.prompt,
+        assistantCaption: call.arguments.caption ?? null,
+        controls: {
+          orientation: call.arguments.orientation,
+          outputCount: call.arguments.outputCount,
+        },
         toolName: GENERATE_IMAGE_ASYNC_TOOL,
       };
     case EDIT_LAST_IMAGE_TOOL: {
@@ -2000,22 +1976,22 @@ async function buildImageRequestFromPlan(
           "edit_last_image: no completed source photo in session; falling back to generate_image_async semantics",
         );
         return {
-          promptHint: plan.args.instruction,
-          assistantCaption: plan.args.caption ?? null,
+          promptHint: call.arguments.instruction,
+          assistantCaption: call.arguments.caption ?? null,
           controls: { orientation: "4:5", outputCount: 1 },
           toolName: GENERATE_IMAGE_ASYNC_TOOL,
         };
       }
       return {
-        promptHint: plan.args.instruction,
-        assistantCaption: plan.args.caption ?? null,
+        promptHint: call.arguments.instruction,
+        assistantCaption: call.arguments.caption ?? null,
         controls: { orientation: "4:5", outputCount: 1, sourceImageAssetId: source.mediaAssetId },
         toolName: EDIT_LAST_IMAGE_TOOL,
       };
     }
     default: {
-      const exhaustive: never = plan;
-      throw new Error(`unhandled agent tool plan: ${JSON.stringify(exhaustive)}`);
+      const exhaustive: never = call;
+      throw new Error(`unhandled agent tool call: ${JSON.stringify(exhaustive)}`);
     }
   }
 }

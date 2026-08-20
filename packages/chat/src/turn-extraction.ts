@@ -10,9 +10,7 @@ export interface TurnExtractionResult {
   sceneDelta: SceneDelta;
 }
 
-/**
- * SPEC: one turn produces Chat-owned relationship and Scene derivations.
- */
+/** Keep Chat-owned Scene/relationship derivation outside DSH's generic memory. */
 export async function extractTurnDerivations(input: {
   userMessageId: string;
   assistantMessageId: string;

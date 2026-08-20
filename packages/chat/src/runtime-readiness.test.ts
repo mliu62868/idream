@@ -10,7 +10,6 @@ import {
 } from "@idream/shared/chat/companion-runtime";
 import { ACCOUNT_DELETION_V2_INGEST_PATH } from "@idream/shared/contracts";
 import type { ChatPrismaClient } from "./db.js";
-import type { ChatModel } from "./providers.js";
 import { createChatServer } from "./web.js";
 import {
   assertChatSchemaReady,
@@ -567,9 +566,6 @@ describe("RuntimeReadiness", () => {
     const prisma = {
       $queryRaw: vi.fn().mockRejectedValue(schemaError),
     } as unknown as ChatPrismaClient;
-    const chat = {
-      stream: vi.fn(),
-    } as unknown as ChatModel;
     const pingRedis = vi.fn();
 
     await expect(warmRuntime({ prisma, pingRedis, readiness })).rejects.toThrow(
@@ -582,7 +578,6 @@ describe("RuntimeReadiness", () => {
       lastError: "column messages.scene_version does not exist",
     });
     expect(pingRedis).not.toHaveBeenCalled();
-    expect(chat.stream).not.toHaveBeenCalled();
   });
 
   it("keeps /readyz unready when the projector connection reuses the request role", async () => {
@@ -613,7 +608,6 @@ describe("RuntimeReadiness", () => {
         capabilitiesReady: true,
       }]),
     } as unknown as ChatPrismaClient;
-    const chat = { stream: vi.fn() } as unknown as ChatModel;
     const pingRedis = vi.fn();
 
     await expect(warmRuntime({
@@ -629,7 +623,6 @@ describe("RuntimeReadiness", () => {
       lastError: "chat projector authenticated role is not canonical",
     });
     expect(pingRedis).not.toHaveBeenCalled();
-    expect(chat.stream).not.toHaveBeenCalled();
   });
 
   it("keeps /readyz unready when the request connection does not use chat_service", async () => {
@@ -703,13 +696,6 @@ describe("RuntimeReadiness", () => {
         capabilitiesReady: true,
       }]),
     } as unknown as ChatPrismaClient;
-    const chat: ChatModel = {
-      async *stream() {
-        yield { delta: "READY", done: true };
-      },
-      complete: vi.fn().mockResolvedValue({ content: "{}" }),
-    };
-
     await expect(warmRuntime({
       prisma,
       projectorPrisma,
@@ -760,13 +746,6 @@ describe("RuntimeReadiness", () => {
         capabilitiesReady: true,
       }]),
     } as unknown as ChatPrismaClient;
-    const chat: ChatModel = {
-      async *stream() {
-        yield { delta: "READY", done: true };
-      },
-      complete: vi.fn().mockResolvedValue({ content: "{}" }),
-    };
-
     await expect(warmRuntime({
       prisma,
       projectorPrisma,
@@ -862,7 +841,6 @@ describe("RuntimeReadiness", () => {
         sessionRole: "chat_projector",
       }]),
     } as unknown as ChatPrismaClient;
-    const chat = { stream: vi.fn() } as unknown as ChatModel;
     const pingRedis = vi.fn();
 
     await expect(warmRuntime({
@@ -878,7 +856,6 @@ describe("RuntimeReadiness", () => {
       lastError: "chat projector database authority differs from request database",
     });
     expect(pingRedis).not.toHaveBeenCalled();
-    expect(chat.stream).not.toHaveBeenCalled();
   });
 
   it("keeps /readyz unready when the projector credential cannot connect", async () => {
@@ -1072,6 +1049,67 @@ describe("RuntimeReadiness", () => {
         `composition:private:${"b".repeat(64)}`,
       ]),
     });
+  });
+
+  it("rejects a mock DSH model profile in production before probing the sidecar", async () => {
+    const previousAppEnv = process.env.APP_ENV;
+    process.env.APP_ENV = "production";
+    const readiness = new RuntimeReadiness();
+    const prisma = {
+      $queryRaw: vi
+        .fn()
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ messageMemoryAuthorityReady: true }])
+        .mockResolvedValueOnce([{ fileMutationAuthorityReady: true }])
+        .mockResolvedValueOnce([{ fileMutationAuthorityReady: true }])
+        .mockResolvedValueOnce([{
+          role: "chat_service",
+          sessionRole: "chat_service",
+          database: "idream",
+          serverAddress: "127.0.0.1",
+          serverPort: 5433,
+          capabilitiesReady: true,
+        }]),
+    } as unknown as ChatPrismaClient;
+    const projectorPrisma = {
+      $queryRaw: vi.fn().mockResolvedValueOnce([{
+        role: "chat_projector",
+        sessionRole: "chat_projector",
+        database: "idream",
+        serverAddress: "127.0.0.1",
+        serverPort: 5433,
+        capabilitiesReady: true,
+      }]),
+    } as unknown as ChatPrismaClient;
+    const probeSidecar = vi.fn();
+
+    try {
+      await expect(warmRuntime({
+        prisma,
+        projectorPrisma,
+        pingRedis: vi.fn().mockResolvedValue(undefined),
+        readiness,
+        probeSidecar,
+        profiles: [{
+          adapter: "openai-compatible-v1",
+          provider: "mock",
+          baseUrl: "http://model/v1",
+          model: "mock-model",
+          apiKey: "",
+          maxOutputTokens: 100,
+          firstTokenTimeoutMs: 100,
+          idleTimeoutMs: 100,
+          completionTimeoutMs: 100,
+          supportsTools: true,
+        }],
+      })).rejects.toThrow(
+        "Production requires non-mock DSH model profile: CHAT_MODEL_PROVIDER",
+      );
+      expect(probeSidecar).not.toHaveBeenCalled();
+    } finally {
+      if (previousAppEnv === undefined) delete process.env.APP_ENV;
+      else process.env.APP_ENV = previousAppEnv;
+    }
   });
 
   it("rejects non-tool-capable profiles before probing DSH", async () => {

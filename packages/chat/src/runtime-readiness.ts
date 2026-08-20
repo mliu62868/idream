@@ -1047,6 +1047,13 @@ export async function warmRuntime(input: {
     const companion = env.COMPANION_RUNTIME_CONFIG;
     const probeSidecar = input.probeSidecar ?? probeCompanionSidecar;
     const profile = profiles[0] ?? resolveChatModelProfile(process.env);
+    // INVARIANT: DSH is the only model runtime, so production admission must
+    // reject its mock profile here before any sidecar can report a false-ready.
+    if (env.APP_ENV === "production" && profile.provider === "mock") {
+      throw new Error(
+        "Production requires non-mock DSH model profile: CHAT_MODEL_PROVIDER",
+      );
+    }
     const profileIdentity = JSON.stringify({
       provider: profile.provider,
       baseUrl: profile.baseUrl,
@@ -1096,17 +1103,6 @@ export async function warmRuntime(input: {
     throw error;
   }
 }
-
-const READINESS_TOOL = {
-  name: "runtime_readiness_probe",
-  description: "Validate that the exact production tool schema is accepted.",
-  parameters: {
-    type: "object",
-    properties: { ready: { type: "boolean" } },
-    required: ["ready"],
-    additionalProperties: false,
-  },
-};
 
 function distinctProfiles(profiles: ChatModelProfile[]): ChatModelProfile[] {
   const seen = new Set<string>();

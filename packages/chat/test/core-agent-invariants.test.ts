@@ -16,7 +16,6 @@ import { reconcile } from "../src/reconcile.js";
 import { createSession, getSession, sendMessage } from "../src/service.js";
 import { drainQueue, enqueue, obliterate } from "../src/queue.js";
 import { appendStreamEvent, streamKey } from "../src/stream.js";
-import { getLastMockStreamMessages } from "../src/providers.js";
 import { CHAT_QUEUES } from "@idream/shared/contracts";
 import { acceptAgeGate } from "./fixtures.js";
 
@@ -32,7 +31,6 @@ const USERS = {
   recovery: "u_core_recovery",
   poisonedPayload: "u_core_poisoned_payload",
   inputLimit: "u_core_input_limit",
-  contextBudget: "u_core_context_budget",
   privateOwner: "u_core_private_owner",
   privateIntruder: "u_core_private_intruder",
 } as const;
@@ -269,36 +267,6 @@ describe("core chat command invariants", () => {
 });
 
 describe("core context continuity invariants", () => {
-  it("bounds recent transcript size while retaining the newest user turn", async () => {
-    const session = await createSession(
-      { userId: USERS.contextBudget, characterId: CHARACTER },
-      { prisma },
-    );
-    const oldMessages = Array.from({ length: 12 }, (_, index) => ({
-      id: `msg_core_budget_${index}`,
-      sessionId: session.id,
-      role: index % 2 === 0 ? "user" : "assistant",
-      content: `${index}:`.padEnd(6_000, String(index % 10)),
-      status: "sent",
-      safetyStatus: "passed",
-      createdAt: new Date(Date.UTC(2026, 0, 3, 0, 0, index)),
-    }));
-    await prisma.message.createMany({ data: oldMessages });
-    await sendMessage(
-      { userId: USERS.contextBudget, sessionId: session.id, content: "newest-context-marker" },
-      { prisma },
-    );
-    await drainQueue(CHAT_QUEUES.generate, async (job) => {
-      await processGenerate(job.payload as Parameters<typeof processGenerate>[0], prisma);
-    });
-
-    const modelMessages = getLastMockStreamMessages() ?? [];
-    const transcript = modelMessages.filter((message) => message.role !== "system");
-    expect(transcript.reduce((total, message) => total + message.content.length, 0)).toBeLessThanOrEqual(24_000);
-    expect(transcript.at(-1)?.content).toContain("newest-context-marker");
-    expect(transcript[0]?.role).toBe("user");
-  });
-
   it("loads the newest 200 messages in stable user/assistant order", async () => {
     const session = await createSession(
       { userId: USERS.history, characterId: CHARACTER },

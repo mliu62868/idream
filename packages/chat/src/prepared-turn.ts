@@ -2,10 +2,7 @@
 // Scene, relationship, memory, transcript, prompt order, tool exposure, budget,
 // and trace assembly; the worker must not rebuild any of those independently.
 import type { ChatPrismaClient } from "./db.js";
-import type {
-  ChatToolDefinition,
-  ModelMessage,
-} from "./providers.js";
+import type { ChatToolDefinition, ModelMessage } from "@idream/shared";
 import { buildContext, type BuiltContext } from "./context.js";
 import { buildCompanionSystemPrompt } from "./prompt.js";
 import { registryChatTools } from "./agent-tools.js";

@@ -12,7 +12,6 @@ export const CHAT_TO_MAIN_EVENTS = {
   messageBlocked: "chat.message.blocked",
   imageRequested: "chat.image.requested",
   sessionDeleted: "chat.session.deleted",
-  memoryUpdated: "chat.memory.updated",
   relationshipUpdated: "chat.relationship.updated",
   usageIncremented: "chat.usage.incremented",
   safetyFlagged: "chat.safety.flagged",

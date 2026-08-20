@@ -45,16 +45,6 @@ const IDREAM_COMPOSITION_IDENTITY = Object.freeze({
 });
 const EXECUTION_POLICY_VERSION = 1;
 const EFFECTFUL_TOOL_CONCURRENCY = 1;
-export const COMPANION_EXECUTION_PLUGIN_ORDER = [
-  "llm",
-  "session",
-  "system-prompt",
-  "tools",
-  "agent-registry",
-  "igrep",
-  "tool-call-timeout-policy",
-  "agent-loop",
-] as const;
 export const FORBIDDEN_COMPANION_EXECUTION_SERVICES = [
   "shell",
   "fs",
@@ -81,6 +71,42 @@ export interface CompanionCompositionPlan {
   readonly digest: string;
 }
 
+interface CompanionCompositionInput {
+  plugin: IgrepPluginModule;
+  plan: CompanionCompositionPlan;
+}
+
+// INVARIANT: this table is both the executable registration path and Gate C's
+// manifest source, so evidence cannot stay green after runtime composition drifts.
+const COMPANION_EXECUTION_PLUGINS = [
+  { name: "llm", install: async (ctx: Context) => { await ctx.plugin(LlmRuntime); } },
+  { name: "session", install: async (ctx: Context) => { await ctx.plugin(SessionStore); } },
+  {
+    name: "system-prompt",
+    install: async (ctx: Context) => { await ctx.plugin(SystemPrompt, SYSTEM_PROMPT_OPTIONS); },
+  },
+  { name: "tools", install: async (ctx: Context) => { await ctx.plugin(ToolRuntime, {}); } },
+  { name: "agent-registry", install: async (ctx: Context) => { await ctx.plugin(AgentRegistry); } },
+  {
+    name: "igrep",
+    install: async (ctx: Context, input: CompanionCompositionInput) => {
+      await ctx.plugin(input.plugin as never, input.plan.normalizedIgrepConfig as never);
+    },
+  },
+  {
+    name: "tool-call-timeout-policy",
+    install: async (ctx: Context) => { await ctx.plugin(ToolTimeoutPolicy); },
+  },
+  {
+    name: "agent-loop",
+    install: async (ctx: Context) => { await ctx.plugin(AgentLoop, AGENT_LOOP_OPTIONS); },
+  },
+] as const;
+
+export const COMPANION_EXECUTION_PLUGIN_ORDER = Object.freeze(
+  COMPANION_EXECUTION_PLUGINS.map((entry) => entry.name),
+);
+
 export function companionIgrepConfig(
   mode: CompanionCompositionMode,
   command: string,
@@ -100,29 +126,18 @@ export function resolvedCompanionIgrepConfig(
   return plugin.resolveConfig?.(raw) ?? raw;
 }
 
-/** The engine and readiness share this exact composition seam. */
+/** Execute only the registrations whose names are hashed into Gate C evidence. */
 export async function applyCompanionComposition(
   ctx: Context,
-  input: {
-    plugin: IgrepPluginModule;
-    plan: CompanionCompositionPlan;
-  },
+  input: CompanionCompositionInput,
 ): Promise<void> {
   assertCompanionExecutionManifest(input.plan.manifest);
-  await ctx.plugin(LlmRuntime);
-  await ctx.plugin(SessionStore);
-  await ctx.plugin(SystemPrompt, SYSTEM_PROMPT_OPTIONS);
-  await ctx.plugin(ToolRuntime, {});
-  await ctx.plugin(AgentRegistry);
-  await ctx.plugin(
-    input.plugin as never,
-    input.plan.normalizedIgrepConfig as never,
-  );
-  await ctx.plugin(ToolTimeoutPolicy);
-  await ctx.plugin(AgentLoop, AGENT_LOOP_OPTIONS);
+  for (const registration of COMPANION_EXECUTION_PLUGINS) {
+    await registration.install(ctx, input);
+  }
 }
 
-/** Gate C validates the manifest consumed by the executing engine. */
+/** Reject a digest whose declared services differ from the executable table. */
 export function assertCompanionExecutionManifest(
   manifest: Readonly<Record<string, unknown>>,
 ): void {
