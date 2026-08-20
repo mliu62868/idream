@@ -251,4 +251,54 @@ describe("OpenAI-compatible DSH adapter", () => {
       }
     })()).rejects.toThrow(/unsupported finish_reason content_filter/);
   });
+
+  it("never includes a provider error body in the thrown failure", async () => {
+    const sentinel = "PRIVATE_USER_PROMPT_SENTINEL";
+    const provider = createServer((_request, response) => {
+      response.writeHead(422, { "content-type": "application/json" });
+      response.end(JSON.stringify({ detail: [{ input: sentinel }] }));
+    });
+    servers.push(provider);
+    provider.listen(0, "127.0.0.1");
+    await once(provider, "listening");
+    const address = provider.address();
+    if (!address || typeof address === "string") throw new Error("missing provider address");
+    const adapter = new OpenAiCompatibleAdapter({
+      profile: {
+        tier: "test",
+        adapter: "openai-compatible-v1",
+        provider: "openrouter",
+        baseUrl: `http://127.0.0.1:${address.port}/v1`,
+        model: "deepseek/test",
+        supportsTools: true,
+        maxOutputTokens: 16,
+        timeout: { firstTokenMs: 1_000, idleMs: 1_000, completionMs: 5_000 },
+        sampling: {
+          temperature: 0.9,
+          topP: 0.95,
+          repetitionPenalty: 1.05,
+          structuredTemperature: 0.2,
+        },
+      },
+      apiKey: "provider-secret",
+      openRouterProviderOnly: ["DeepSeek"],
+    });
+
+    let thrown: unknown;
+    try {
+      for await (const _chunk of adapter.stream({
+        provider: "openrouter",
+        model: "deepseek/test",
+        messages: [],
+      })) {
+        // Drain until the provider failure is surfaced.
+      }
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toMatch(/HTTP 422 \(body sha256 [a-f0-9]{64}\)/);
+    expect(JSON.stringify(thrown)).not.toContain(sentinel);
+    expect((thrown as Error).message).not.toContain(sentinel);
+  });
 });

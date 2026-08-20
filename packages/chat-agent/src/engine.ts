@@ -710,7 +710,12 @@ export class CompanionEngine implements InvocationService {
           type: "failed",
           error: {
             code: terminalCommitted ? "memory_commit_failed" : "invocation_failed",
-            message: error instanceof Error ? error.message : String(error),
+            // INVARIANT: provider/plugin errors may echo request input. The
+            // cross-process frame is content-free; detailed diagnostics stay
+            // behind the provider boundary and never enter Redis/job traces.
+            message: terminalCommitted
+              ? "companion memory commit failed"
+              : "companion invocation failed",
             retryable: false,
           },
         });

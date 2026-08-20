@@ -9,6 +9,7 @@ import {
   type StreamChunk,
   type TokenUsage,
 } from "@deepseek-ai/dsh-llm";
+import { createHash } from "node:crypto";
 import type { PreparedTurnProfile } from "@idream/shared/chat/companion-runtime";
 
 export interface OpenAiCompatibleAdapterOptions {
@@ -239,9 +240,11 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
         signal: timeout.signal,
       });
       if (!response.ok) {
-        const message = (await response.text()).slice(0, 2_000);
+        const bodyDigest = createHash("sha256")
+          .update(await response.text())
+          .digest("hex");
         throw new LlmError(
-          `OpenAI-compatible provider returned HTTP ${response.status}: ${message}`,
+          `OpenAI-compatible provider returned HTTP ${response.status} (body sha256 ${bodyDigest})`,
           "PROVIDER_HTTP_ERROR",
           { status: response.status },
         );

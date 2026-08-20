@@ -154,6 +154,12 @@ class ProviderMustNotRunAdapter extends LlmAdapter {
   }
 }
 
+class PrivateFailureAdapter extends LlmAdapter {
+  async *stream(): AsyncIterable<StreamChunk> {
+    throw new Error("PRIVATE_PROVIDER_BODY_SENTINEL");
+  }
+}
+
 function invocation(memoryMode: "normal" | "private" = "private"): CompanionInvocation {
   const knowledgeAuthority = {
     characterId: "character-1",
@@ -328,6 +334,41 @@ function disposalWritingPlugin(configs: Record<string, unknown>[]) {
 }
 
 describe("programmatic DSH companion runtime", () => {
+  it("keeps failed invocation frames content-free", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chat-agent-private-failure-"));
+    temporary.push(root);
+    const engine = new CompanionEngine({
+      workspaces: new AttemptWorkspaceStore({
+        canonicalRoot: join(root, "canonical"),
+        privateRoot: join(root, "private"),
+        memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
+      }),
+      plugin: async () => ({ name: "igrep", apply() {} }),
+      adapter: () => new PrivateFailureAdapter(),
+      igrepCommand: "igrep",
+      igrepLlm: IGREP_LLM,
+    });
+    const observed: CompanionRuntimeResponse[] = [];
+
+    await engine.run(invocation("private"), (frame) => observed.push(frame));
+
+    const failed = observed.find((frame) =>
+      frame.type === "event" && frame.event.type === "failed"
+    );
+    expect(failed).toMatchObject({
+      type: "event",
+      event: {
+        type: "failed",
+        error: {
+          code: "invocation_failed",
+          message: "companion invocation failed",
+          retryable: false,
+        },
+      },
+    });
+    expect(JSON.stringify(observed)).not.toContain("PRIVATE_PROVIDER_BODY_SENTINEL");
+  });
+
   it.each(["normal", "private"] as const)(
     "rejects a stale %s profile before composition, workspace or adapter initialization",
     async (memoryMode) => {
@@ -374,7 +415,11 @@ describe("programmatic DSH companion runtime", () => {
         type: "event",
         event: expect.objectContaining({
           type: "failed",
-          error: expect.objectContaining({ message: expect.stringMatching(/profile digest/i) }),
+          error: {
+            code: "invocation_failed",
+            message: "companion invocation failed",
+            retryable: false,
+          },
         }),
       }));
     },
