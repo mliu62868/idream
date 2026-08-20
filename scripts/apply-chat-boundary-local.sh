@@ -28,10 +28,8 @@ if [[ ! -f "$APPLY_SCRIPT" ]]; then
   exit 66
 fi
 
-set -a
 # shellcheck disable=SC1090 -- this is the repository-owned local Chat env.
 source "$CHAT_ENV"
-set +a
 
 # Keep the database target independent from the runtime URL. Load the env first,
 # then replace every ambient route so it cannot override the approved target.
@@ -42,30 +40,29 @@ export DB="idream_runtime_20260812"
 readonly PGHOST PGPORT DB
 
 read_url_password() {
-  IDREAM_DATABASE_URL_NAME="$1" node -e '
-    const name = process.env.IDREAM_DATABASE_URL_NAME;
+  IDREAM_DATABASE_URL="$1" IDREAM_DATABASE_URL_LABEL="$2" node -e '
+    const label = process.env.IDREAM_DATABASE_URL_LABEL;
     try {
-      const raw = process.env[name];
+      const raw = process.env.IDREAM_DATABASE_URL;
       if (!raw) throw new Error("missing");
       const password = decodeURIComponent(new URL(raw).password);
       if (!password) throw new Error("empty");
       process.stdout.write(password);
     } catch {
-      console.error(`FAIL: ${name} must contain a database password`);
+      console.error(`FAIL: ${label} must contain a database password`);
       process.exit(65);
     }
   '
 }
 
-CHAT_SERVICE_PASSWORD="$(read_url_password CHAT_DATABASE_URL)"
-CHAT_PROJECTOR_PASSWORD="$(read_url_password CHAT_PROJECTOR_DATABASE_URL)"
-export CHAT_SERVICE_PASSWORD CHAT_PROJECTOR_PASSWORD
-
-read -r -p "PostgreSQL superuser [postgres]: " SUPER_INPUT
-export SUPER="${SUPER_INPUT:-postgres}"
-read -r -s -p "Password for ${SUPER}: " SUPER_PASSWORD
-echo
-export SUPER_PASSWORD
+CHAT_SERVICE_PASSWORD="$(read_url_password "$CHAT_DATABASE_URL" CHAT_DATABASE_URL)"
+CHAT_PROJECTOR_PASSWORD="$(read_url_password "$CHAT_PROJECTOR_DATABASE_URL" CHAT_PROJECTOR_DATABASE_URL)"
+# Local bootstrap authority is postgres/postgres in docker-compose.yml and the
+# checked-in local env examples. An explicit POSTGRES_PASSWORD may override it.
+SUPER="postgres"
+SUPER_PASSWORD="${POSTGRES_PASSWORD:-postgres}"
+export CHAT_DATABASE_URL CHAT_SERVICE_PASSWORD CHAT_PROJECTOR_PASSWORD SUPER SUPER_PASSWORD
+readonly SUPER
 
 cleanup() {
   unset SUPER_PASSWORD CHAT_SERVICE_PASSWORD CHAT_PROJECTOR_PASSWORD
