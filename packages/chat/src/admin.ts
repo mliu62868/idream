@@ -485,11 +485,31 @@ async function companionAttemptEvidence(rawQuery?: Record<string, string>) {
       id: true,
       attempt: true,
       status: true,
+      content: true,
+      model: true,
       memoryExtractedAttempt: true,
       runtimeTrace: true,
+      versions: {
+        where: { selected: true },
+        take: 2,
+        select: {
+          attempt: true,
+          content: true,
+          model: true,
+          runtimeTrace: true,
+        },
+      },
     },
   });
-  if (!row) return null;
+  const version = row?.versions[0];
+  if (
+    !row ||
+    row.versions.length !== 1 ||
+    version?.attempt !== row.attempt ||
+    version.content !== row.content ||
+    version.model !== row.model ||
+    JSON.stringify(version.runtimeTrace) !== JSON.stringify(row.runtimeTrace)
+  ) return null;
   return {
     messageId: row.id,
     attempt: row.attempt,

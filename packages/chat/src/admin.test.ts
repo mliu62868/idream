@@ -536,6 +536,50 @@ describe("chat internal admin api", () => {
           },
           rawPrompt: SECRET,
         },
+        versions: {
+          create: {
+            id: `${P}attempt-evidence-version`,
+            content: "",
+            selected: true,
+            attempt: 1,
+            runtimeTrace: {
+              companionRuntime: {
+                runtime: "dsh",
+                memoryBackend: "igrep-dsh",
+                profile: "idream-companion-memory",
+                private: false,
+              },
+              dsh: {
+                memoryMode: "normal",
+                profileDigest: digest,
+                provider: "openai",
+                model: "fixture-model",
+              },
+              primaryTelemetry: {
+                schemaVersion: 1,
+                runtime: "dsh",
+                terminalStatus: "sent",
+                truncated: false,
+                sseTerminal: "done",
+                provider: "openai",
+                model: "fixture-model",
+                memory: { outcome: "ingested", settleLagMs: 5 },
+                sidecar: {
+                  instanceId: "5dd87053-012f-4ca3-a4d7-5aeb89466d5b",
+                  startedAt: "2026-08-20T12:00:00.000Z",
+                  profileDigest: digest,
+                },
+              },
+              companion: {
+                profile: "idream-companion-memory",
+                memoryIngestOutcome: "ingested",
+                memoryIngestSettledAt: "2026-08-20T12:00:01.000Z",
+                attribution: { requestId: "request-probe" },
+              },
+              rawPrompt: SECRET,
+            },
+          },
+        },
       },
     });
 
@@ -562,6 +606,21 @@ describe("chat internal admin api", () => {
     });
     expect(JSON.stringify(res.body)).not.toContain(SECRET);
     expect(JSON.stringify(res.body)).not.toContain("rawPrompt");
+
+    await chatPrisma.messageVersion.update({
+      where: { id: `${P}attempt-evidence-version` },
+      data: { runtimeTrace: { drifted: true } },
+    });
+    await expect(dispatchChatAdmin({
+      method: "GET",
+      path: "/internal/admin/companion-attempt-evidence",
+      query: {
+        userId: DEDICATED_PROBE_USER,
+        sessionId: `${P}s-dedicated-probe`,
+        messageId: `${P}attempt-evidence`,
+        mode: "normal",
+      },
+    })).resolves.toMatchObject({ status: 404 });
   });
 
   it("does not apply the current extraction watermark to a historical attempt", async () => {
