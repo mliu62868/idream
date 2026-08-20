@@ -20,14 +20,17 @@ const superPool = new Pool({ connectionString: process.env.CHAT_TEST_SUPER_URL }
 const prisma = createChatPrisma();
 let fsRoot: string;
 const USER = "u_web";
+const FOREIGN_USER = "u_web_foreign";
 const CHAR = "c_web";
 
 beforeAll(async () => {
   fsRoot = await mkdtemp(path.join(tmpdir(), "chat-web-"));
   process.env.CHAT_FS_ROOT = fsRoot;
   await superPool.query(
-    `INSERT INTO public.users (id,email,status,"createdAt","updatedAt") VALUES ($1,$2,'active',now(),now()) ON CONFLICT (id) DO NOTHING`,
-    [USER, "web@test.dev"],
+    `INSERT INTO public.users (id,email,status,"createdAt","updatedAt")
+     VALUES ($1,$2,'active',now(),now()),($3,$4,'active',now(),now())
+     ON CONFLICT (id) DO NOTHING`,
+    [USER, "web@test.dev", FOREIGN_USER, "web-foreign@test.dev"],
   );
   await superPool.query(
     `INSERT INTO public.characters (id,name,age,description,visibility,status,style,gender,appearance,"advancedDetails","createdAt","updatedAt")
@@ -105,7 +108,7 @@ describe("dispatchChat router", () => {
     const foreignVoiceAuthority = await dispatchChat({
       method: "GET",
       path: `/api/v1/chat/sessions/${sessionId}/messages/${assistantMessageId}/voice-authority`,
-      userId: "other_user",
+      userId: FOREIGN_USER,
     });
     expect(foreignVoiceAuthority).toMatchObject({ kind: "json", status: 404 });
   });
@@ -142,6 +145,7 @@ describe("dispatchChat router", () => {
       query: { lastEventId: "0" },
     });
     expect(foreign.kind === "json" && foreign.status).toBe(404);
+    expect(await drainGen()).toBe(1);
   });
 
   it("unknown route → 404", async () => {
@@ -160,6 +164,14 @@ describe("post-turn Scene/relationship projection", () => {
       path: `/api/v1/chat/sessions/${sessionId}/messages`,
       userId: USER,
       body: { content: "please call me Alex" },
+    });
+    expect(sent).toMatchObject({
+      kind: "json",
+      status: 202,
+      body: {
+        assistantMessageId: expect.any(String),
+        userMessageId: expect.any(String),
+      },
     });
     const { assistantMessageId, userMessageId } = sent.kind === "json"
       ? (sent.body as { assistantMessageId: string; userMessageId: string })
@@ -195,6 +207,14 @@ describe("post-turn Scene/relationship projection", () => {
       userId: USER,
       body: { content: "call me Secret" },
     });
+    expect(sent).toMatchObject({
+      kind: "json",
+      status: 202,
+      body: {
+        assistantMessageId: expect.any(String),
+        userMessageId: expect.any(String),
+      },
+    });
     const { assistantMessageId, userMessageId } = sent.kind === "json"
       ? (sent.body as { assistantMessageId: string; userMessageId: string })
       : { assistantMessageId: "", userMessageId: "" };
@@ -209,7 +229,9 @@ describe("post-turn Scene/relationship projection", () => {
       kind: "memory_extract" as const,
       payload: { path: ["sessionId"], equals: sessionId },
     };
-    expect(await prisma.chatFileMutation.count({ where: mutationWhere })).toBe(0);
+    const priorMemoryProjectionCount = await prisma.chatFileMutation.count({
+      where: mutationWhere,
+    });
 
     const res = await processMemoryExtract({
       sessionId,
@@ -222,6 +244,8 @@ describe("post-turn Scene/relationship projection", () => {
     expect(await prisma.chatSceneRevision.count({
       where: { sessionId, sourceAssistantMessageId: assistantMessageId },
     })).toBe(1);
-    expect(await prisma.chatFileMutation.count({ where: mutationWhere })).toBe(0);
+    expect(await prisma.chatFileMutation.count({ where: mutationWhere })).toBe(
+      priorMemoryProjectionCount,
+    );
   });
 });

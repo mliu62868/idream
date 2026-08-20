@@ -5,6 +5,7 @@ import {
   describe,
   expect,
   it,
+  vi,
 } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -30,6 +31,7 @@ import {
 } from "../src/chat-fs.js";
 import { obliterate } from "../src/queue.js";
 import { CHAT_QUEUES } from "@idream/shared/contracts";
+import { companionWorkspaceRebuildSchema } from "@idream/shared/chat/companion-runtime";
 import { acceptAgeGate } from "./fixtures.js";
 
 const prisma = createChatPrisma();
@@ -123,7 +125,44 @@ async function expectNoDerivedState(userId: string, contentNeedle: string) {
   expect(relationship.summary).not.toContain(contentNeedle);
 }
 
+async function companionControlFetch(
+  input: string | URL | Request,
+  init?: RequestInit,
+): Promise<Response> {
+  const url = new URL(
+    typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.href
+        : input.url,
+  );
+  expect(init?.method).toBe("POST");
+  expect(new Headers(init?.headers).get("authorization")).toMatch(/^Bearer \S+$/u);
+  const body = JSON.parse(String(init?.body)) as unknown;
+  if (url.pathname === "/v1/workspaces/rebuild") {
+    const request = companionWorkspaceRebuildSchema.parse(body);
+    return Response.json({
+      ok: true,
+      rebuilt: {
+        sessions: new Set(request.messages.map((message) => message.sessionId)).size,
+        messages: request.messages.length,
+      },
+    });
+  }
+  if (url.pathname === "/v1/workspaces/purge") {
+    expect(body).toEqual(expect.objectContaining({
+      scope: expect.stringMatching(/^(?:relationship|user)$/u),
+      userId: expect.any(String),
+    }));
+    return Response.json({ ok: true, purged: 1 });
+  }
+  throw new Error(`unexpected companion control request: ${url.pathname}`);
+}
+
 beforeAll(async () => {
+  // INTENT: DB tests verify Chat's canonical rebuild wire without depending on
+  // a developer's live sidecar state or weakening the production parser.
+  vi.stubGlobal("fetch", companionControlFetch);
   fsRoot = await mkdtemp(path.join(tmpdir(), "chat-memory-race-"));
   process.env.CHAT_FS_ROOT = fsRoot;
   for (const userId of Object.values(USERS)) {
@@ -154,6 +193,7 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
+  vi.unstubAllGlobals();
   await prisma.$disconnect();
   await projectorPrisma.$disconnect();
   await superPool.end();
