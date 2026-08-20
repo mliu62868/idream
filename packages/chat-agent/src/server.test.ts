@@ -105,8 +105,10 @@ describe("companion HTTP authority boundary", () => {
       },
       completedAt: "2026-08-19T12:00:00.000Z",
     };
-    const service = invocation();
-    vi.mocked(service.memoryCutoverProof).mockResolvedValue(proof);
+    const service: InvocationService = {
+      ...invocation(),
+      memoryCutoverProof: vi.fn(async () => proof),
+    };
     const { baseUrl } = await start(service);
     const body = {
       scope: "relationship",
