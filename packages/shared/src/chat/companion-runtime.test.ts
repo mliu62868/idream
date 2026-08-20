@@ -19,6 +19,7 @@ import {
   companionToolReservationSchema,
   companionToolResultSchema,
   companionWorkspaceRebuildBudget,
+  companionWorkspaceRebuildMetrics,
   COMPANION_WORKSPACE_REBUILD_MAX_TIMEOUT_MS,
   companionWorkspaceRebuildSchema,
   decodeCompanionWorkspaceRebuildFrame,
@@ -484,6 +485,16 @@ describe("companion runtime stable wire contract", () => {
       ...rebuild,
       messages: [{ ...rebuild.messages[0], secret: "must-not-cross-wire" }],
     }).success).toBe(false);
+    expect(companionWorkspaceRebuildSchema.safeParse({
+      ...rebuild,
+      messages: [
+        ...rebuild.messages,
+        { ...rebuild.messages[0], id: "user-message-2", sessionId: "session-2" },
+        { ...rebuild.messages[1], id: "assistant-message-2", sessionId: "session-2" },
+        { ...rebuild.messages[0], id: "user-message-3" },
+        { ...rebuild.messages[1], id: "assistant-message-3" },
+      ],
+    }).success).toBe(false);
   });
 
   it("round-trips strict relationship rebuild stream frames", () => {
@@ -503,25 +514,41 @@ describe("companion runtime stable wire contract", () => {
   });
 
   it("budgets rebuild work independently of turn deadlines and monotonically by payload size", () => {
-    const small = companionWorkspaceRebuildBudget({ messages: [{
+    const small = companionWorkspaceRebuildBudget(companionWorkspaceRebuildMetrics({ messages: [{
       id: "user-1",
       sessionId: "session-1",
       role: "user",
       content: "short",
       createdAt: now,
-    }] });
-    const large = companionWorkspaceRebuildBudget({ messages: [{
+    }] }));
+    const large = companionWorkspaceRebuildBudget(companionWorkspaceRebuildMetrics({ messages: [{
       id: "user-1",
       sessionId: "session-1",
       role: "user",
       content: "x".repeat(2 * 1_048_576),
       createdAt: now,
+    }] }));
+    const escapedMetrics = companionWorkspaceRebuildMetrics({ messages: [{
+      id: "user-1",
+      sessionId: "session-1",
+      role: "user",
+      content: "\u0000".repeat(1_048_576),
+      createdAt: now,
     }] });
+    const manySessions = companionWorkspaceRebuildBudget({
+      messageCount: 20_004,
+      sessionCount: 10_002,
+      estimatedBytes: 20 * 1_048_576,
+    });
 
-    expect(large.ingestTimeoutMs).toBeGreaterThan(small.ingestTimeoutMs);
-    expect(small.totalTimeoutMs).toBe(small.ingestTimeoutMs + 370_000);
+    expect(large.totalIngestTimeoutMs).toBeGreaterThan(small.totalIngestTimeoutMs);
+    expect(escapedMetrics.estimatedBytes).toBeGreaterThanOrEqual(6 * 1_048_576);
+    expect(small.totalTimeoutMs).toBe(small.totalIngestTimeoutMs + 370_000);
     expect(large.totalTimeoutMs).toBeLessThanOrEqual(
       COMPANION_WORKSPACE_REBUILD_MAX_TIMEOUT_MS,
+    );
+    expect(manySessions.totalIngestTimeoutMs).toBeGreaterThanOrEqual(
+      10_002 * 30_000,
     );
   });
 

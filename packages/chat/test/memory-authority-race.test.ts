@@ -141,26 +141,60 @@ async function companionControlFetch(
   );
   expect(init?.method).toBe("POST");
   expect(new Headers(init?.headers).get("authorization")).toMatch(/^Bearer \S+$/u);
-  if (url.pathname === "/v1/workspaces/rebuild") {
+  if (url.pathname === "/v1/workspaces/rebuild/prepare") {
     const frames = (await new Response(init?.body).text())
       .trim()
       .split("\n")
       .map(decodeCompanionWorkspaceRebuildFrame);
     const start = frames[0];
     if (start?.type !== "start") throw new Error("missing relationship rebuild start frame");
+    const messages: Array<{
+      id: string;
+      sessionId: string;
+      role: "user" | "assistant";
+      content: string;
+      createdAt: string;
+    }> = [];
+    let active: Omit<(typeof messages)[number], "content"> | undefined;
+    let content = "";
+    for (const frame of frames.slice(1)) {
+      if (frame.type === "message_start") {
+        active = frame.message;
+        content = "";
+      } else if (frame.type === "content_chunk") {
+        content += frame.content;
+      } else if (frame.type === "message_complete" && active) {
+        messages.push({ ...active, content });
+        active = undefined;
+      }
+    }
     const request = companionWorkspaceRebuildSchema.parse({
       scope: start.scope,
       userId: start.userId,
       characterId: start.characterId,
-      messages: frames.flatMap((frame) => frame.type === "message" ? [frame.message] : []),
+      messages,
+      fence: start.fence,
     });
     return Response.json({
       ok: true,
       rebuilt: {
+        rebuildId: "77777777-7777-4777-8777-777777777777",
         sessions: new Set(request.messages.map((message) => message.sessionId)).size,
         messages: request.messages.length,
       },
     });
+  }
+  if (url.pathname === "/v1/workspaces/rebuild/promote") {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      scope: "relationship",
+      rebuildId: "77777777-7777-4777-8777-777777777777",
+      fence: expect.objectContaining({ authorityVersion: expect.any(String) }),
+    });
+    return Response.json({ ok: true, rebuilt: { sessions: 1, messages: 2 } });
+  }
+  if (url.pathname === "/v1/workspaces/rebuild/discard") {
+    return Response.json({ ok: true });
   }
   if (url.pathname === "/v1/workspaces/purge") {
     const body = JSON.parse(String(init?.body)) as unknown;

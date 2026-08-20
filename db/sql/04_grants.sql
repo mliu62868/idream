@@ -94,7 +94,17 @@ GRANT UPDATE (memory_extracted_attempt, updated_at)
   ON chat.messages TO chat_projector;
 GRANT SELECT ON chat.chat_send_receipts TO chat_projector;
 GRANT SELECT ON chat.chat_file_mutations TO chat_projector;
-GRANT UPDATE (status, payload, attempts, last_error, applied_at)
+GRANT UPDATE (
+  status,
+  payload,
+  attempts,
+  last_error,
+  applied_at,
+  projection_claim_token,
+  projection_claimed_at,
+  projection_authority_version,
+  projection_rebuild_id
+)
   ON chat.chat_file_mutations TO chat_projector;
 GRANT SELECT ON chat.chat_outbox_events TO chat_projector;
 GRANT INSERT (

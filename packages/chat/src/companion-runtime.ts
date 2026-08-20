@@ -1,10 +1,11 @@
 import {
   COMPANION_RUNTIME_PROTOCOL_VERSION,
   COMPANION_NDJSON_FRAME_MAX_BYTES,
+  COMPANION_WORKSPACE_REBUILD_CONTENT_CHUNK_CHARS,
   companionMemoryCutoverSidecarProofSchema,
   companionRuntimeResponseSchema,
   companionWorkspaceRebuildBudget,
-  companionWorkspaceRebuildSchema,
+  companionWorkspaceRebuildMetrics,
   decodeCompanionNdjsonFrame,
   encodeCompanionWorkspaceRebuildFrame,
   encodeCompanionNdjsonFrame,
@@ -16,12 +17,22 @@ import {
   type CompanionToolCall,
   type CompanionToolResult,
   type CompanionWorkspaceRebuild,
+  type CompanionWorkspaceRebuildPromotion,
 } from "@idream/shared/chat/companion-runtime";
 import { z } from "zod";
 
 const companionWorkspaceRebuildResponseSchema = z.object({
   ok: z.literal(true),
   rebuilt: z.object({
+    sessions: z.number().int().nonnegative(),
+    messages: z.number().int().nonnegative(),
+  }).strict(),
+}).strict();
+
+const companionWorkspaceRebuildPrepareResponseSchema = z.object({
+  ok: z.literal(true),
+  rebuilt: z.object({
+    rebuildId: z.string().uuid(),
     sessions: z.number().int().nonnegative(),
     messages: z.number().int().nonnegative(),
   }).strict(),
@@ -106,14 +117,34 @@ export async function purgeCompanionWorkspace(input: {
   return { purged: Number((value as Record<string, unknown>).purged) };
 }
 
-export async function rebuildCompanionWorkspace(input: {
+export async function prepareCompanionWorkspaceRebuild(input: {
   baseUrl: string;
   token: string;
-  request: CompanionWorkspaceRebuild;
+  request: CompanionWorkspaceRebuild & { fence: NonNullable<CompanionWorkspaceRebuild["fence"]> };
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
-}): Promise<{ sessions: number; messages: number }> {
-  const request = companionWorkspaceRebuildSchema.parse(input.request);
+}): Promise<{ rebuildId: string; sessions: number; messages: number }> {
+  const response = await sendCompanionWorkspaceRebuild(
+    input,
+    "/v1/workspaces/rebuild/prepare",
+  );
+  return companionWorkspaceRebuildPrepareResponseSchema.parse(await response.json()).rebuilt;
+}
+
+async function sendCompanionWorkspaceRebuild(
+  input: {
+    baseUrl: string;
+    token: string;
+    request: CompanionWorkspaceRebuild;
+    fetchImpl?: typeof fetch;
+    timeoutMs?: number;
+  },
+  path: string,
+): Promise<Response> {
+  // `buildCompanionWorkspaceRebuild` already owns canonical validation. Avoid
+  // cloning a potentially multi-gigabyte array again at the transport seam;
+  // the sidecar validates every streamed frame before staging it.
+  const request = input.request;
   const init: RequestInit & { duplex: "half" } = {
     method: "POST",
     headers: {
@@ -124,28 +155,90 @@ export async function rebuildCompanionWorkspace(input: {
     body: companionWorkspaceRebuildBody(request),
     duplex: "half",
     signal: AbortSignal.timeout(
-      input.timeoutMs ?? companionWorkspaceRebuildBudget(request).totalTimeoutMs,
+      input.timeoutMs ?? companionWorkspaceRebuildBudget(
+        companionWorkspaceRebuildMetrics(request),
+      ).totalTimeoutMs,
     ),
   };
   const response = await (input.fetchImpl ?? fetch)(
-    `${input.baseUrl.replace(/\/$/, "")}/v1/workspaces/rebuild`,
+    `${input.baseUrl.replace(/\/$/, "")}${path}`,
     init,
   );
   if (!response.ok) {
     throw new Error(`companion workspace rebuild failed with HTTP ${response.status}`);
   }
+  return response;
+}
+
+export async function promoteCompanionWorkspaceRebuild(input: {
+  baseUrl: string;
+  token: string;
+  request: CompanionWorkspaceRebuildPromotion;
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+}): Promise<{ sessions: number; messages: number }> {
+  const response = await (input.fetchImpl ?? fetch)(
+    `${input.baseUrl.replace(/\/$/, "")}/v1/workspaces/rebuild/promote`,
+    {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${input.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(input.request),
+      // Promotion runs while Chat owns the final short authority transaction.
+      // It is intentionally limited to the sidecar's local pointer cutover;
+      // ingest/maintenance belongs to prepare and must never reach this seam.
+      signal: AbortSignal.timeout(input.timeoutMs ?? COMPANION_CONTROL_TIMEOUT_MS),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`companion workspace rebuild promotion failed with HTTP ${response.status}`);
+  }
   return companionWorkspaceRebuildResponseSchema.parse(await response.json()).rebuilt;
+}
+
+export async function discardCompanionWorkspaceRebuild(input: {
+  baseUrl: string;
+  token: string;
+  request: CompanionWorkspaceRebuildPromotion;
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+}): Promise<void> {
+  const response = await (input.fetchImpl ?? fetch)(
+    `${input.baseUrl.replace(/\/$/, "")}/v1/workspaces/rebuild/discard`,
+    {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${input.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(input.request),
+      signal: AbortSignal.timeout(input.timeoutMs ?? 60_000),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`companion workspace rebuild discard failed with HTTP ${response.status}`);
+  }
+  const value = await response.json();
+  if (!value || typeof value !== "object" || (value as Record<string, unknown>).ok !== true) {
+    throw new Error("companion workspace rebuild discard returned an invalid response");
+  }
 }
 
 function companionWorkspaceRebuildBody(
   request: CompanionWorkspaceRebuild,
 ): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
-  let index = -1;
+  let phase: "start" | "message_start" | "content" | "message_complete" | "complete" | "done" = "start";
+  let messageIndex = 0;
+  let contentOffset = 0;
   return new ReadableStream<Uint8Array>({
     pull(controller) {
-      if (index === -1) {
-        index = 0;
+      if (phase === "start") {
+        phase = request.messages.length > 0 ? "message_start" : "complete";
         controller.enqueue(encoder.encode(encodeCompanionWorkspaceRebuildFrame({
           protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
           type: "start",
@@ -153,21 +246,48 @@ function companionWorkspaceRebuildBody(
           userId: request.userId,
           characterId: request.characterId,
           messageCount: request.messages.length,
+          ...(request.fence ? { fence: request.fence } : {}),
         })));
         return;
       }
-      const message = request.messages[index];
-      if (message) {
-        index += 1;
+      const message = request.messages[messageIndex];
+      if (phase === "message_start" && message) {
+        contentOffset = 0;
+        phase = "content";
+        const { content, ...header } = message;
         controller.enqueue(encoder.encode(encodeCompanionWorkspaceRebuildFrame({
           protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
-          type: "message",
-          message,
+          type: "message_start",
+          message: header,
+          contentLength: content.length,
         })));
         return;
       }
-      if (index === request.messages.length) {
-        index += 1;
+      if (phase === "content" && message) {
+        const content = message.content.slice(
+          contentOffset,
+          contentOffset + COMPANION_WORKSPACE_REBUILD_CONTENT_CHUNK_CHARS,
+        );
+        contentOffset += content.length;
+        phase = contentOffset === message.content.length ? "message_complete" : "content";
+        controller.enqueue(encoder.encode(encodeCompanionWorkspaceRebuildFrame({
+          protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
+          type: "content_chunk",
+          content,
+        })));
+        return;
+      }
+      if (phase === "message_complete") {
+        messageIndex += 1;
+        phase = messageIndex < request.messages.length ? "message_start" : "complete";
+        controller.enqueue(encoder.encode(encodeCompanionWorkspaceRebuildFrame({
+          protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
+          type: "message_complete",
+        })));
+        return;
+      }
+      if (phase === "complete") {
+        phase = "done";
         controller.enqueue(encoder.encode(encodeCompanionWorkspaceRebuildFrame({
           protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
           type: "complete",

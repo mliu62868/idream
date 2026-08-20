@@ -36,6 +36,13 @@
 //     exception — buildRelationshipProjection replays its summary/stage verbatim
 //     — and relationship_delete calls chat.purge_applied_relationship_sets to
 //     drop those retained rows before the reset takes effect.
+//   - Long rebuilds: relationship_rebuild is the sole two-stage exception. A
+//     short transaction claims and snapshots it, igrep builds outside every PG
+//     transaction, a second short transaction records the retryable candidate,
+//     and a final user-fenced transaction rechecks authority, performs only the
+//     bounded local pointer cutover, and settles the receipt.
+import { randomUUID } from "node:crypto";
+import path from "node:path";
 import { z } from "zod";
 import type { Prisma } from "../generated/client/client.js";
 import type { ChatPrismaClient } from "./db.js";
@@ -44,7 +51,10 @@ import { deletePrefix, writeAtomic } from "./chat-fs.js";
 import { createId } from "./id.js";
 import {
   applyCompanionMemoryProjection,
+  buildCompanionWorkspaceRebuild,
+  companionMemoryProjectionPort,
   companionMemoryProjectionTimeoutMs,
+  type CompanionMemoryProjectionPort,
 } from "./companion-memory-projection.js";
 import { recordOutbox } from "./outbox.js";
 import {
@@ -63,6 +73,11 @@ import {
   type RelationshipProjectionOperation,
 } from "./relationship-authority.js";
 import { lockTurn, lockUser, lockUserShared } from "./turn-lock.js";
+import type {
+  CompanionWorkspaceRebuild,
+  CompanionWorkspaceRebuildFence,
+  CompanionWorkspaceRebuildPromotion,
+} from "@idream/shared/chat/companion-runtime";
 import { CHAT_TO_MAIN_EVENTS } from "@idream/shared/contracts";
 
 const relationshipEvidenceSchema = z.object({
@@ -208,6 +223,10 @@ export async function applyPendingChatFileMutationsTx(
   tx: Prisma.TransactionClient,
   userId: string,
   maximum = Number.MAX_SAFE_INTEGER,
+  options: {
+    companionAlreadyAppliedMutationId?: string;
+    localRelationshipAlreadyAppliedMutationId?: string;
+  } = {},
 ): Promise<number> {
   let applied = 0;
   while (applied < maximum) {
@@ -219,18 +238,21 @@ export async function applyPendingChatFileMutationsTx(
     if (rows.length === 0) break;
     for (const row of rows) {
       const mutation = parsePersistedFileMutation(row);
+      const localRelationshipAlreadyApplied =
+        mutation.kind === "relationship_rebuild"
+        && row.id === options.localRelationshipAlreadyAppliedMutationId;
       if (mutation.kind === "memory_extract") {
         await assertMemoryExtractAuthority(tx, userId, mutation);
       }
       const relationshipProjection =
-        mutation.kind === "relationship_rebuild"
+        mutation.kind === "relationship_rebuild" && !localRelationshipAlreadyApplied
           ? await buildRelationshipProjection(tx, {
               userId,
               characterId: mutation.characterId,
             })
           : null;
       const validRelationshipEvidenceSourceIds =
-        mutation.kind === "relationship_rebuild"
+        mutation.kind === "relationship_rebuild" && !localRelationshipAlreadyApplied
           ? new Set((await tx.message.findMany({
               where: {
                 session: {
@@ -245,19 +267,23 @@ export async function applyPendingChatFileMutationsTx(
               select: { id: true },
             })).map((message) => message.id))
           : null;
-      await applyFileMutation(
-        userId,
-        row.id,
-        mutation,
-        relationshipProjection,
-        validRelationshipEvidenceSourceIds,
-      );
+      if (!localRelationshipAlreadyApplied) {
+        await applyFileMutation(
+          userId,
+          row.id,
+          mutation,
+          relationshipProjection,
+          validRelationshipEvidenceSourceIds,
+        );
+      }
       if (
         mutation.kind === "relationship_rebuild"
         || mutation.kind === "relationship_delete"
         || mutation.kind === "account_delete"
       ) {
-        await applyCompanionMemoryProjection(tx, userId, mutation);
+        if (row.id !== options.companionAlreadyAppliedMutationId) {
+          await applyCompanionMemoryProjection(tx, userId, mutation);
+        }
       }
       if (mutation.kind === "memory_extract") {
         const claimed = await tx.message.updateMany({
@@ -340,6 +366,10 @@ export async function applyPendingChatFileMutationsTx(
           ) as Prisma.InputJsonValue,
           attempts: { increment: 1 },
           lastError: null,
+          projectionClaimToken: null,
+          projectionClaimedAt: null,
+          projectionAuthorityVersion: null,
+          projectionRebuildId: null,
           appliedAt: new Date(),
         },
       });
@@ -398,27 +428,460 @@ export async function runWithProjectedChatFiles<T>(
   );
 }
 
+const COMPANION_PROJECTION_CLAIM_LEASE_MS = 120_000;
+const COMPANION_PROJECTION_HEARTBEAT_MS = 30_000;
+
+class CompanionProjectionClaimBusyError extends Error {}
+
+export interface CompanionProjectionClaim {
+  mutationId: string;
+  userId: string;
+  characterId: string;
+  claimToken: string;
+  authorityVersion: bigint;
+  fence: CompanionWorkspaceRebuildFence;
+  request?: CompanionWorkspaceRebuild & { fence: CompanionWorkspaceRebuildFence };
+  relationshipProjection?: RelationshipProjectionOperation[];
+  validRelationshipEvidenceSourceIds?: Set<string>;
+  rebuildId?: string;
+}
+
+export type ClaimedProjectionStep =
+  | { kind: "empty" }
+  | { kind: "ordinary"; applied: number }
+  | { kind: "companion"; claim: CompanionProjectionClaim };
+
+export async function claimNextProjectionTx(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  options: { now?: Date; claimToken?: string } = {},
+): Promise<ClaimedProjectionStep> {
+  const now = options.now ?? new Date();
+  const row = await tx.chatFileMutation.findFirst({
+    where: { userId, status: "pending" },
+    orderBy: { sequence: "asc" },
+  });
+  if (!row) return { kind: "empty" };
+  const mutation = parsePersistedFileMutation(row);
+  if (mutation.kind !== "relationship_rebuild") {
+    return {
+      kind: "ordinary",
+      applied: await applyPendingChatFileMutationsTx(tx, userId, 1),
+    };
+  }
+  const staleBefore = new Date(now.getTime() - COMPANION_PROJECTION_CLAIM_LEASE_MS);
+  if (
+    row.projectionClaimToken
+    && row.projectionClaimedAt
+    && row.projectionClaimedAt >= staleBefore
+  ) {
+    throw new CompanionProjectionClaimBusyError(
+      `relationship rebuild ${row.id} is owned by a live projection claim`,
+    );
+  }
+  const authority = await tx.chatFileMutation.aggregate({
+    where: { userId },
+    _max: { sequence: true },
+  });
+  const authorityVersion = authority._max.sequence;
+  if (!authorityVersion || authorityVersion <= 0n) {
+    throw new Error("relationship rebuild projection authority version is missing");
+  }
+  if (
+    row.projectionClaimToken
+    && row.projectionAuthorityVersion
+    && row.projectionRebuildId
+  ) {
+    if (row.projectionAuthorityVersion !== authorityVersion) {
+      await tx.chatFileMutation.updateMany({
+        where: {
+          id: row.id,
+          status: "pending",
+          projectionClaimToken: row.projectionClaimToken,
+        },
+        data: {
+          projectionClaimToken: null,
+          projectionClaimedAt: null,
+          projectionAuthorityVersion: null,
+          projectionRebuildId: null,
+        },
+      });
+      throw new Error("relationship rebuild authority advanced after candidate persistence");
+    }
+    const renewed = await tx.chatFileMutation.updateMany({
+      where: {
+        id: row.id,
+        status: "pending",
+        projectionClaimToken: row.projectionClaimToken,
+        projectionRebuildId: row.projectionRebuildId,
+      },
+      data: { projectionClaimedAt: now },
+    });
+    if (renewed.count !== 1) {
+      throw new CompanionProjectionClaimBusyError(
+        `relationship rebuild ${row.id} recovery claim changed concurrently`,
+      );
+    }
+    const fence: CompanionWorkspaceRebuildFence = {
+      mutationId: row.id,
+      claimToken: row.projectionClaimToken,
+      authorityVersion: authorityVersion.toString(),
+    };
+    return {
+      kind: "companion",
+      claim: {
+        mutationId: row.id,
+        userId,
+        characterId: mutation.characterId,
+        claimToken: row.projectionClaimToken,
+        authorityVersion,
+        fence,
+        rebuildId: row.projectionRebuildId,
+      },
+    };
+  }
+  const claimToken = options.claimToken ?? randomUUID();
+  const claimed = await tx.chatFileMutation.updateMany({
+    where: {
+      id: row.id,
+      status: "pending",
+      OR: [
+        { projectionClaimToken: null },
+        { projectionClaimedAt: { lt: staleBefore } },
+      ],
+    },
+    data: {
+      projectionClaimToken: claimToken,
+      projectionClaimedAt: now,
+      projectionAuthorityVersion: authorityVersion,
+      projectionRebuildId: null,
+    },
+  });
+  if (claimed.count !== 1) {
+    throw new CompanionProjectionClaimBusyError(
+      `relationship rebuild ${row.id} claim changed concurrently`,
+    );
+  }
+  const fence: CompanionWorkspaceRebuildFence = {
+    mutationId: row.id,
+    claimToken,
+    authorityVersion: authorityVersion.toString(),
+  };
+  const request = await buildCompanionWorkspaceRebuild(tx, {
+    userId,
+    characterId: mutation.characterId,
+  });
+  const relationshipProjection = await buildRelationshipProjection(tx, {
+    userId,
+    characterId: mutation.characterId,
+  });
+  const validRelationshipEvidenceSourceIds = new Set((await tx.message.findMany({
+    where: {
+      session: {
+        userId,
+        characterId: mutation.characterId,
+        status: { not: "deleted" },
+        deletedAt: null,
+      },
+      status: "sent",
+      deletedAt: null,
+    },
+    select: { id: true },
+  })).map((message) => message.id));
+  return {
+    kind: "companion",
+    claim: {
+      mutationId: row.id,
+      userId,
+      characterId: mutation.characterId,
+      claimToken,
+      authorityVersion,
+      fence,
+      request: { ...request, fence },
+      relationshipProjection,
+      validRelationshipEvidenceSourceIds,
+    },
+  };
+}
+
+export async function persistPreparedCompanionProjectionTx(
+  tx: Prisma.TransactionClient,
+  claim: CompanionProjectionClaim,
+  rebuildId: string,
+): Promise<boolean> {
+  const authority = await tx.chatFileMutation.aggregate({
+    where: { userId: claim.userId },
+    _max: { sequence: true },
+  });
+  if (authority._max.sequence !== claim.authorityVersion) return false;
+  const persisted = await tx.chatFileMutation.updateMany({
+    where: {
+      id: claim.mutationId,
+      status: "pending",
+      projectionClaimToken: claim.claimToken,
+      projectionAuthorityVersion: claim.authorityVersion,
+    },
+    data: {
+      projectionClaimedAt: new Date(),
+      projectionRebuildId: rebuildId,
+    },
+  });
+  return persisted.count === 1;
+}
+
+/**
+ * Perform only the bounded canonical-pointer cutover while owning the same
+ * user fence as every authoritative writer. The candidate was expensive to
+ * build, but promotion itself must stay a local, idempotent control operation:
+ * keeping it behind this final authority check closes the persisted-candidate
+ * to promotion race without putting ingest/maintenance inside PostgreSQL.
+ */
+export async function promoteCompanionProjectionTx(
+  tx: Prisma.TransactionClient,
+  claim: CompanionProjectionClaim,
+  rebuildId: string,
+  promote: () => Promise<unknown>,
+): Promise<boolean> {
+  await lockUser(tx, claim.userId);
+  const authority = await tx.chatFileMutation.aggregate({
+    where: { userId: claim.userId },
+    _max: { sequence: true },
+  });
+  if (authority._max.sequence !== claim.authorityVersion) return false;
+  const owned = await tx.chatFileMutation.count({
+    where: {
+      id: claim.mutationId,
+      status: "pending",
+      projectionClaimToken: claim.claimToken,
+      projectionAuthorityVersion: claim.authorityVersion,
+      projectionRebuildId: rebuildId,
+    },
+  });
+  if (owned !== 1) return false;
+  await promote();
+  return true;
+}
+
+async function settleCompanionProjectionTx(
+  tx: Prisma.TransactionClient,
+  claim: CompanionProjectionClaim,
+  rebuildId: string,
+): Promise<number> {
+  const authority = await tx.chatFileMutation.aggregate({
+    where: { userId: claim.userId },
+    _max: { sequence: true },
+  });
+  if (authority._max.sequence !== claim.authorityVersion) return 0;
+  const owned = await tx.chatFileMutation.count({
+    where: {
+      id: claim.mutationId,
+      status: "pending",
+      projectionClaimToken: claim.claimToken,
+      projectionAuthorityVersion: claim.authorityVersion,
+      projectionRebuildId: rebuildId,
+    },
+  });
+  if (owned !== 1) return 0;
+  return applyPendingChatFileMutationsTx(tx, claim.userId, 1, {
+    companionAlreadyAppliedMutationId: claim.mutationId,
+    localRelationshipAlreadyAppliedMutationId: claim.mutationId,
+  });
+}
+
+async function applyClaimedLocalRelationshipProjection(
+  claim: CompanionProjectionClaim,
+): Promise<void> {
+  if (!claim.relationshipProjection || !claim.validRelationshipEvidenceSourceIds) {
+    throw new Error("relationship rebuild claim omitted its local projection snapshot");
+  }
+  await applyFileMutation(
+    claim.userId,
+    claim.mutationId,
+    { kind: "relationship_rebuild", characterId: claim.characterId },
+    claim.relationshipProjection,
+    claim.validRelationshipEvidenceSourceIds,
+  );
+}
+
+async function clearProjectionClaim(
+  authorityPrisma: ChatPrismaClient,
+  claim: CompanionProjectionClaim,
+): Promise<void> {
+  await authorityPrisma.chatFileMutation.updateMany({
+    where: {
+      id: claim.mutationId,
+      status: "pending",
+      projectionClaimToken: claim.claimToken,
+    },
+    data: {
+      projectionClaimToken: null,
+      projectionClaimedAt: null,
+      projectionAuthorityVersion: null,
+      projectionRebuildId: null,
+    },
+  });
+}
+
+async function expireProjectionClaim(
+  authorityPrisma: ChatPrismaClient,
+  claim: CompanionProjectionClaim,
+): Promise<void> {
+  await authorityPrisma.chatFileMutation.updateMany({
+    where: {
+      id: claim.mutationId,
+      status: "pending",
+      projectionClaimToken: claim.claimToken,
+    },
+    data: { projectionClaimedAt: new Date(0) },
+  });
+}
+
+function startProjectionClaimHeartbeat(
+  authorityPrisma: ChatPrismaClient,
+  claim: CompanionProjectionClaim,
+): { stop(): Promise<void>; failure(): Error | undefined } {
+  let failure: Error | undefined;
+  let inFlight: Promise<void> | undefined;
+  const renew = () => {
+    if (inFlight || failure) return;
+    inFlight = authorityPrisma.chatFileMutation.updateMany({
+      where: {
+        id: claim.mutationId,
+        status: "pending",
+        projectionClaimToken: claim.claimToken,
+      },
+      data: { projectionClaimedAt: new Date() },
+    }).then(({ count }) => {
+      if (count !== 1) throw new Error("relationship rebuild projection claim was lost");
+    }).catch((error: unknown) => {
+      failure = error instanceof Error ? error : new Error(String(error));
+    }).finally(() => {
+      inFlight = undefined;
+    });
+  };
+  const timer = setInterval(renew, COMPANION_PROJECTION_HEARTBEAT_MS);
+  timer.unref();
+  return {
+    async stop() {
+      clearInterval(timer);
+      await inFlight;
+    },
+    failure: () => failure,
+  };
+}
+
 export async function projectChatFileMutations(
   userId: string,
   authorityPrisma: ChatPrismaClient = chatProjectorPrisma,
+  companionPort: CompanionMemoryProjectionPort = companionMemoryProjectionPort(),
+  applyLocalProjection: (claim: CompanionProjectionClaim) => Promise<void> =
+    applyClaimedLocalRelationshipProjection,
 ): Promise<number> {
   try {
     let applied = 0;
     for (;;) {
-      // One intent per transaction makes the independent rebuild budget an
-      // actual upper bound. A backlog cannot multiply one sidecar deadline
-      // inside a single interactive transaction.
-      const current = await authorityPrisma.$transaction(
+      const step = await authorityPrisma.$transaction(
         async (tx) => {
           await lockUser(tx, userId);
-          return applyPendingChatFileMutationsTx(tx, userId, 1);
+          return claimNextProjectionTx(tx, userId);
         },
         { timeout: companionMemoryProjectionTimeoutMs() },
       );
-      if (current === 0) return applied;
-      applied += current;
+      if (step.kind === "empty") return applied;
+      if (step.kind === "ordinary") {
+        applied += step.applied;
+        continue;
+      }
+      const { claim } = step;
+      if (!companionPort.prepare || !companionPort.promote || !companionPort.discard) {
+        throw new Error("companion projection port does not implement fenced rebuilds");
+      }
+      const heartbeat = startProjectionClaimHeartbeat(authorityPrisma, claim);
+      let prepared: Awaited<ReturnType<NonNullable<typeof companionPort.prepare>>> | undefined;
+      let promoted = false;
+      let candidatePersisted = Boolean(claim.rebuildId);
+      try {
+        // INVARIANT: no interactive transaction or advisory lock crosses this
+        // potentially multi-minute sidecar call. Only the renewable DB claim
+        // remains durable while the candidate is built.
+        let persisted = candidatePersisted;
+        if (claim.rebuildId) {
+          prepared = { rebuildId: claim.rebuildId, sessions: 0, messages: 0 };
+        } else {
+          if (!claim.request) throw new Error("relationship rebuild claim omitted its snapshot");
+          // Local relationship.md reconstruction can also scale with years of
+          // history. It is idempotent and runs under the durable pending claim,
+          // never inside the final authority transaction.
+          await applyLocalProjection(claim);
+          prepared = await companionPort.prepare(claim.request);
+          const heartbeatFailure = heartbeat.failure();
+          if (heartbeatFailure) throw heartbeatFailure;
+          persisted = await authorityPrisma.$transaction(
+            async (tx) => {
+              await lockUser(tx, userId);
+              return persistPreparedCompanionProjectionTx(tx, claim, prepared!.rebuildId);
+            },
+            { timeout: companionMemoryProjectionTimeoutMs() },
+          );
+          candidatePersisted = persisted;
+        }
+        const promotion: CompanionWorkspaceRebuildPromotion = {
+          scope: "relationship",
+          userId: claim.userId,
+          characterId: claim.characterId,
+          rebuildId: prepared.rebuildId,
+          fence: claim.fence,
+        };
+        if (!persisted) {
+          await companionPort.discard(promotion);
+          await clearProjectionClaim(authorityPrisma, claim);
+          await heartbeat.stop();
+          continue;
+        }
+        const heartbeatFailure = heartbeat.failure();
+        if (heartbeatFailure) throw heartbeatFailure;
+        await heartbeat.stop();
+        const current = await authorityPrisma.$transaction(
+          async (tx) => {
+            const cutover = await promoteCompanionProjectionTx(
+              tx,
+              claim,
+              prepared!.rebuildId,
+              async () => {
+                await companionPort.promote!(promotion);
+                promoted = true;
+              },
+            );
+            if (!cutover) return 0;
+            return settleCompanionProjectionTx(tx, claim, prepared!.rebuildId);
+          },
+          { timeout: companionMemoryProjectionTimeoutMs() },
+        );
+        if (current === 0) {
+          await companionPort.discard(promotion);
+          await clearProjectionClaim(authorityPrisma, claim);
+          continue;
+        }
+        applied += current;
+      } catch (error) {
+        await heartbeat.stop();
+        if (prepared && !promoted && !candidatePersisted) {
+          await companionPort.discard({
+            scope: "relationship",
+            userId: claim.userId,
+            characterId: claim.characterId,
+            rebuildId: prepared.rebuildId,
+            fence: claim.fence,
+          }).catch(() => undefined);
+        }
+        await (candidatePersisted
+          ? expireProjectionClaim(authorityPrisma, claim)
+          : clearProjectionClaim(authorityPrisma, claim)).catch(() => undefined);
+        throw error;
+      }
     }
   } catch (error) {
+    if (error instanceof CompanionProjectionClaimBusyError) throw error;
     const message =
       error instanceof Error ? error.message.slice(0, 1_000) : "projection failed";
     const head = await authorityPrisma.chatFileMutation.findFirst({

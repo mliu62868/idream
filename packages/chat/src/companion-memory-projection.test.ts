@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { COMPANION_WORKSPACE_REBUILD_MAX_TIMEOUT_MS } from "@idream/shared/chat/companion-runtime";
 import type { Prisma } from "../generated/client/client.js";
 import type {
   RelationshipLinkage,
@@ -7,6 +6,7 @@ import type {
 } from "./relationship-authority.js";
 import {
   applyCompanionMemoryProjection,
+  buildCompanionWorkspaceRebuild,
   canonicalCompanionMessages,
   companionMemoryProjectionTimeoutMs,
 } from "./companion-memory-projection.js";
@@ -107,6 +107,8 @@ describe("companion memory projection", () => {
     const rebuild = vi.fn(async () => ({ sessions: 0, messages: 0 }));
     const tx = {
       chatSession: { findMany: vi.fn(async () => []) },
+      message: { findMany: vi.fn(async () => []) },
+      chatSendReceipt: { findMany: vi.fn(async () => []) },
     } as unknown as Prisma.TransactionClient;
 
     await applyCompanionMemoryProjection(
@@ -125,12 +127,57 @@ describe("companion memory projection", () => {
     });
   });
 
-  it("keeps projection timeout above every rebuild budget near a turn deadline", () => {
+  it("loads a relationship with many sessions in a fixed three-query snapshot", async () => {
+    const sessionCount = 10_001;
+    const sessions = Array.from({ length: sessionCount }, (_, index) => ({
+      id: `session-${index}`,
+    }));
+    const messages = sessions.flatMap(({ id }, index) => {
+      const user = message({
+        id: `user-${index}`,
+        sessionId: id,
+        role: "user",
+        createdAt: new Date(1_787_169_600_000 + index * 2),
+      });
+      return [
+        user,
+        message({
+          id: `assistant-${index}`,
+          sessionId: id,
+          role: "assistant",
+          replyToMessageId: user.id,
+          createdAt: new Date(1_787_169_600_001 + index * 2),
+        }),
+      ];
+    });
+    const findSessions = vi.fn(async () => sessions);
+    const findMessages = vi.fn(async () => messages);
+    const findReceipts = vi.fn(async () => []);
+    const tx = {
+      chatSession: { findMany: findSessions },
+      message: { findMany: findMessages },
+      chatSendReceipt: { findMany: findReceipts },
+    } as unknown as Prisma.TransactionClient;
+
+    const rebuilt = await buildCompanionWorkspaceRebuild(tx, {
+      userId: "user-many",
+      characterId: "character-many",
+    });
+
+    expect(rebuilt.messages).toHaveLength(sessionCount * 2);
+    expect(rebuilt.messages.at(-1)).toMatchObject({
+      id: `assistant-${sessionCount - 1}`,
+      sessionId: `session-${sessionCount - 1}`,
+    });
+    expect(findSessions).toHaveBeenCalledOnce();
+    expect(findMessages).toHaveBeenCalledOnce();
+    expect(findReceipts).toHaveBeenCalledOnce();
+  });
+
+  it("keeps DB projection transactions short and independent of turn deadlines", () => {
     process.env.DSH_AGENT_TOKEN = "cleanup-token";
     process.env.DSH_AGENT_DEADLINE_MS = "7000";
-    expect(companionMemoryProjectionTimeoutMs()).toBe(
-      COMPANION_WORKSPACE_REBUILD_MAX_TIMEOUT_MS + 30_000,
-    );
+    expect(companionMemoryProjectionTimeoutMs()).toBe(120_000);
     expect(companionMemoryProjectionTimeoutMs()).toBeGreaterThan(7_000);
   });
 

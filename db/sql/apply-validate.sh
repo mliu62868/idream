@@ -203,6 +203,7 @@ SESSION_ID="${VALIDATION_PREFIX}_s1"
 MESSAGE_ID="${VALIDATION_PREFIX}_m1"
 RECEIPT_ID="${VALIDATION_PREFIX}_receipt1"
 FILE_MUTATION_ID="${VALIDATION_PREFIX}_fm1"
+CLAIM_FILE_MUTATION_ID="${VALIDATION_PREFIX}_fm_claim"
 PENDING_FILE_MUTATION_ID="${VALIDATION_PREFIX}_fm_pending"
 FORGED_FILE_MUTATION_ID="${VALIDATION_PREFIX}_fm_forge"
 SEQUENCE_FILE_MUTATION_ID="${VALIDATION_PREFIX}_fm_sequence"
@@ -239,6 +240,10 @@ must_be_true "file mutation redaction and trigger authority are canonical" \
   "SELECT to_regprocedure('chat.redact_file_mutation_payload(text,text,jsonb)') IS NOT NULL AND chat.redact_file_mutation_payload('validation-file-mutation','account_delete',jsonb_build_object('kind','account_delete','deletionRequestEventId','validation-request','requestBound',true)) = jsonb_build_object('kind','account_delete','deletionRequestEventId','validation-request','requestBound',true) AND (SELECT count(*) = 1 AND bool_and(t.tgenabled IN ('O', 'A') AND t.tgtype = 31 AND t.tgqual IS NULL AND t.tgattr::text = '' AND t.tgfoid = to_regprocedure('chat.assert_file_mutation_update()')) FROM pg_trigger t WHERE t.tgrelid='chat.chat_file_mutations'::regclass AND t.tgname='chat_file_mutations_immutable' AND NOT t.tgisinternal) AND position('chat.redact_file_mutation_payload(OLD.id,OLD.kind,OLD.payload)' IN regexp_replace((SELECT p.prosrc FROM pg_proc p WHERE p.oid=to_regprocedure('chat.assert_file_mutation_update()')),'[[:space:]]','','g')) > 0 AND position('chat.redact_file_mutation_payload(OLD.kind,OLD.payload)' IN regexp_replace((SELECT p.prosrc FROM pg_proc p WHERE p.oid=to_regprocedure('chat.assert_file_mutation_update()')),'[[:space:]]','','g')) = 0;"
 must_be_true "Phase 6 legacy session state is absent" \
   "SELECT NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='chat' AND table_name='chat_sessions' AND column_name IN ('memory_summary','log_extracted_seq')) AND NOT EXISTS (SELECT 1 FROM chat.chat_file_mutations WHERE kind='trace_append') AND NOT EXISTS (SELECT 1 FROM chat.messages WHERE jsonb_typeof(runtime_trace)='object' AND (runtime_trace ?| ARRAY['shadowAdmission','shadowComparison','shadowEvidence'] OR (runtime_trace #> '{companionTool}') ? 'arguments')) AND NOT EXISTS (SELECT 1 FROM chat.message_versions WHERE jsonb_typeof(runtime_trace)='object' AND (runtime_trace ?| ARRAY['shadowAdmission','shadowComparison','shadowEvidence'] OR (runtime_trace #> '{companionTool}') ? 'arguments'));"
+must_be_true "file mutation projection claim schema is complete" \
+  "SELECT count(*) = 4 AND bool_and(is_nullable='YES') AND bool_and(data_type = CASE column_name WHEN 'projection_claimed_at' THEN 'timestamp without time zone' WHEN 'projection_authority_version' THEN 'bigint' ELSE 'text' END) FROM information_schema.columns WHERE table_schema='chat' AND table_name='chat_file_mutations' AND column_name IN ('projection_claim_token','projection_claimed_at','projection_authority_version','projection_rebuild_id');"
+must_be_true "file mutation projection claim constraint is validated" \
+  "SELECT count(*) = 1 AND bool_and(convalidated AND position('projection_claim_token' IN pg_get_constraintdef(oid)) > 0 AND position('projection_claimed_at' IN pg_get_constraintdef(oid)) > 0 AND position('projection_authority_version' IN pg_get_constraintdef(oid)) > 0 AND position('projection_rebuild_id' IN pg_get_constraintdef(oid)) > 0) FROM pg_constraint WHERE conrelid='chat.chat_file_mutations'::regclass AND conname='chat_file_mutations_projection_claim_check';"
 must_be_true "request role has append-only Scene authority" \
   "SELECT has_table_privilege('chat_service','chat.chat_scene_revisions','SELECT') AND has_table_privilege('chat_service','chat.chat_scene_revisions','INSERT') AND NOT has_table_privilege('chat_service','chat.chat_scene_revisions','UPDATE') AND NOT has_table_privilege('chat_service','chat.chat_scene_revisions','DELETE');"
 must_be_true "projector has no Scene authority" \
@@ -295,7 +300,7 @@ must_be_true "runtime roles have the exact least-privilege catalog matrix" \
         OR has_column_privilege(role_name,relation,attribute.attname,'UPDATE') IS DISTINCT FROM (
           can_update
           OR (role_name='chat_projector' AND relname='messages' AND attribute.attname IN ('memory_extracted_attempt','updated_at'))
-          OR (role_name='chat_projector' AND relname='chat_file_mutations' AND attribute.attname IN ('status','payload','attempts','last_error','applied_at'))
+          OR (role_name='chat_projector' AND relname='chat_file_mutations' AND attribute.attname IN ('status','payload','attempts','last_error','applied_at','projection_claim_token','projection_claimed_at','projection_authority_version','projection_rebuild_id'))
         )
         OR has_column_privilege(role_name,relation,attribute.attname,'REFERENCES')
    ), authority_views AS (
@@ -398,14 +403,16 @@ psql_chat -U chat_service -d "$DB" -c "SELECT session_id, version, source_assist
 psql_chat -U chat_service -d "$DB" -c "SELECT source_service, source_event_id, payload_hash, processed_at FROM chat.chat_inbox_events LIMIT 0;" >/dev/null
 psql_chat -U chat_service -d "$DB" -c "SELECT user_id, idempotency_key, request_hash, user_message_id, assistant_message_id, response_status, safety_policy_code FROM chat.chat_send_receipts LIMIT 0;" >/dev/null
 psql_chat -U chat_service -d "$DB" -c "SELECT command_id, to_character_content_version_id, status FROM chat.chat_session_release_migrations LIMIT 0;" >/dev/null
-psql_chat -U chat_service -d "$DB" -c "SELECT user_id, kind, payload, status FROM chat.chat_file_mutations LIMIT 0;" >/dev/null
+psql_chat -U chat_service -d "$DB" -c "SELECT user_id, kind, payload, status, projection_claim_token, projection_claimed_at, projection_authority_version, projection_rebuild_id FROM chat.chat_file_mutations LIMIT 0;" >/dev/null
 psql_chat -U chat_service -d "$DB" -c "INSERT INTO chat.chat_sessions (id,user_id,character_id) VALUES ('$SESSION_ID','$USER_ID','$CHARACTER_ID');" >/dev/null
 psql_chat -U chat_service -d "$DB" -c "INSERT INTO chat.chat_send_receipts (id,user_id,session_id,idempotency_key,request_hash,user_message_id,assistant_message_id,response_status) VALUES ('$RECEIPT_ID','$USER_ID','$SESSION_ID','${VALIDATION_PREFIX}_send_key','${VALIDATION_PREFIX}_request_hash','${VALIDATION_PREFIX}_user_message','${VALIDATION_PREFIX}_assistant_message','generating');" >/dev/null
 psql_chat -U chat_service -d "$DB" -c "INSERT INTO chat.messages (id,session_id,role,status,memory_authority) VALUES ('$MESSAGE_ID','$SESSION_ID','assistant','sent','enabled');" >/dev/null
 psql_chat -U chat_service -d "$DB" -c "INSERT INTO chat.chat_scene_revisions (id,session_id,version,source_assistant_message_id,source_attempt,snapshot) VALUES ('${VALIDATION_PREFIX}_scene1','$SESSION_ID',1,'$MESSAGE_ID',1,'{\"schemaVersion\":1,\"version\":1}');" >/dev/null
 psql_chat -U chat_service -d "$DB" -c "INSERT INTO chat.chat_file_mutations (id,user_id,kind,payload) VALUES ('$FILE_MUTATION_ID','$USER_ID','memory_extract','{\"kind\":\"memory_extract\",\"sessionId\":\"$SESSION_ID\",\"userMessageId\":\"${VALIDATION_PREFIX}_user_message\",\"characterId\":\"$CHARACTER_ID\",\"turnKey\":\"$MESSAGE_ID\",\"attempt\":1,\"relationshipEvidence\":[]}');" >/dev/null
+psql_chat -U chat_service -d "$DB" -c "INSERT INTO chat.chat_file_mutations (id,user_id,kind,payload) VALUES ('$CLAIM_FILE_MUTATION_ID','$USER_ID','relationship_rebuild','{\"kind\":\"relationship_rebuild\",\"characterId\":\"$CHARACTER_ID\"}');" >/dev/null
 psql_projector -U chat_projector -d "$DB" -c "SELECT user_id FROM chat.chat_sessions WHERE id='$SESSION_ID'; SELECT assistant_message_id FROM chat.chat_send_receipts WHERE id='$RECEIPT_ID'; UPDATE chat.messages SET memory_extracted_attempt=memory_extracted_attempt,updated_at=timezone('utc',now()) WHERE id='$MESSAGE_ID'; INSERT INTO chat.chat_outbox_events (id,event_type,aggregate_type,aggregate_id,payload,schema_version,status,attempts,next_run_at,created_at) VALUES ('$PROJECTOR_OUTBOX_ID','chat.validation','validation','$USER_ID','{}',1,'pending',0,timezone('utc',now()),timezone('utc',now())) RETURNING *;" >/dev/null
 psql_projector -U chat_projector -d "$DB" -c "UPDATE chat.chat_file_mutations SET status='applied', payload=chat.redact_file_mutation_payload(id,kind,payload), attempts=attempts+1, applied_at=timezone('utc',now()) WHERE id='$FILE_MUTATION_ID';" >/dev/null
+psql_projector -U chat_projector -d "$DB" -c "UPDATE chat.chat_file_mutations SET projection_claim_token='11111111-1111-4111-8111-111111111111', projection_claimed_at=timezone('utc',now()), projection_authority_version=sequence, projection_rebuild_id='22222222-2222-4222-8222-222222222222' WHERE id='$CLAIM_FILE_MUTATION_ID'; UPDATE chat.chat_file_mutations SET status='applied', payload=chat.redact_file_mutation_payload(id,kind,payload), attempts=attempts+1, last_error=NULL, applied_at=timezone('utc',now()), projection_claim_token=NULL, projection_claimed_at=NULL, projection_authority_version=NULL, projection_rebuild_id=NULL WHERE id='$CLAIM_FILE_MUTATION_ID';" >/dev/null
 echo "  OK: views readable, request CRUD and narrow projector SQL surface writable"
 
 # Negative test helper: a statement that MUST be rejected.
@@ -448,6 +455,7 @@ must_reject "DELETE pending file intent"    "INSERT INTO chat.chat_file_mutation
 must_reject "forge applied file intent"     "INSERT INTO chat.chat_file_mutations (id,user_id,kind,payload) VALUES ('$FORGED_FILE_MUTATION_ID','$USER_ID','account_delete','{\"kind\":\"account_delete\"}'); UPDATE chat.chat_file_mutations SET status='applied' WHERE id='$FORGED_FILE_MUTATION_ID';"
 must_reject "inject file intent sequence"   "INSERT INTO chat.chat_file_mutations (id,sequence,user_id,kind,payload) VALUES ('$SEQUENCE_FILE_MUTATION_ID',-1,'$USER_ID','account_delete','{\"kind\":\"account_delete\"}');"
 must_reject "mutate applied file receipt"   "UPDATE chat.chat_file_mutations SET payload='{\"kind\":\"memory_extract\",\"sessionId\":\"changed\"}'::jsonb WHERE id='$FILE_MUTATION_ID';"
+must_reject "request role forge projection claim" "UPDATE chat.chat_file_mutations SET projection_claim_token='11111111-1111-4111-8111-111111111111', projection_claimed_at=timezone('utc',now()), projection_authority_version=1 WHERE id='$PENDING_FILE_MUTATION_ID';"
 must_reject "account purge without canonical intent" "SELECT chat.purge_file_mutations_for_account('$USER_ID','$FILE_MUTATION_ID');"
 must_reject_projector "account purge without erasure intent" "SELECT chat.purge_file_mutations_for_account('$USER_ID','$FILE_MUTATION_ID');"
 must_reject_projector "relationship purge without reset intent" "SELECT chat.purge_applied_relationship_sets('$USER_ID','$CHARACTER_ID',9223372036854775807);"

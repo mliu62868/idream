@@ -1,11 +1,14 @@
 import {
+  chmod,
   lstat,
   mkdir,
   mkdtemp,
   readFile,
   readlink,
   readdir,
+  realpath,
   rm,
+  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -105,6 +108,233 @@ function store(
 }
 
 describe("DSH workspace authority", () => {
+  it("prepares a fenced rebuild without promotion, then promotes it idempotently", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dsh-workspace-fenced-rebuild-"));
+    temporary.push(root);
+    const workspaces = store(root);
+    const identity = { userId: "user-1", characterId: "character-1" };
+    await workspaces.rebuildRelationship(identity, async (workspace) => {
+      for (const path of [
+        join(root, "canonical"),
+        userWorkspacePath(join(root, "canonical"), identity.userId),
+        relationshipWorkspacePath(
+          join(root, "canonical"),
+          identity.userId,
+          identity.characterId,
+        ),
+        dirname(dirname(workspace)),
+        dirname(workspace),
+        workspace,
+        join(workspace, ".igrep"),
+      ]) {
+        expect((await stat(path)).mode & 0o777).toBe(0o700);
+      }
+      await writeFile(join(workspace, ".igrep", "old.txt"), "old");
+    });
+    const fence = {
+      mutationId: "filemut-1",
+      claimToken: "11111111-1111-4111-8111-111111111111",
+      authorityVersion: "7",
+    };
+
+    const prepared = await workspaces.prepareRelationshipRebuild(
+      identity,
+      fence,
+      async (workspace) => {
+        await writeFile(join(workspace, ".igrep", "new.txt"), "new");
+        return { sessions: 2, messages: 4 };
+      },
+    );
+    const relationship = relationshipWorkspacePath(
+      join(root, "canonical"),
+      identity.userId,
+      identity.characterId,
+    );
+    expect(await readFile(join(await realpath(join(relationship, ".igrep")), "old.txt"), "utf8"))
+      .toBe("old");
+    expect((await stat(join(
+      relationship,
+      ".rebuild-candidates",
+      prepared.rebuildId,
+      "manifest.json",
+    ))).mode & 0o777).toBe(0o600);
+
+    await expect(workspaces.promoteRelationshipRebuild({
+      ...identity,
+      rebuildId: prepared.rebuildId,
+      fence,
+    })).resolves.toEqual({ sessions: 2, messages: 4 });
+    expect(await readFile(join(await realpath(join(relationship, ".igrep")), "new.txt"), "utf8"))
+      .toBe("new");
+
+    const replay = await workspaces.prepareRelationshipRebuild(
+      identity,
+      { ...fence, claimToken: "22222222-2222-4222-8222-222222222222" },
+      async (workspace) => {
+        await writeFile(join(workspace, ".igrep", "must-not-win.txt"), "stale retry");
+        return { sessions: 2, messages: 4 };
+      },
+    );
+    await expect(workspaces.promoteRelationshipRebuild({
+      ...identity,
+      rebuildId: replay.rebuildId,
+      fence: { ...fence, claimToken: "22222222-2222-4222-8222-222222222222" },
+    })).resolves.toEqual({ sessions: 2, messages: 4 });
+    await expect(readFile(
+      join(await realpath(join(relationship, ".igrep")), "must-not-win.txt"),
+      "utf8",
+    )).rejects.toMatchObject({ code: "ENOENT" });
+
+    const staleFence = {
+      mutationId: "filemut-stale",
+      claimToken: "33333333-3333-4333-8333-333333333333",
+      authorityVersion: "6",
+    };
+    const stale = await workspaces.prepareRelationshipRebuild(
+      identity,
+      staleFence,
+      async (workspace) => {
+        await writeFile(join(workspace, ".igrep", "stale.txt"), "stale");
+        return { sessions: 1, messages: 2 };
+      },
+    );
+    await expect(workspaces.promoteRelationshipRebuild({
+      ...identity,
+      rebuildId: stale.rebuildId,
+      fence: staleFence,
+    })).rejects.toThrow(/authority is stale/);
+  });
+
+  it("cancels a queued fenced promotion before any pointer swap", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dsh-workspace-abort-promotion-"));
+    temporary.push(root);
+    const workspaces = store(root);
+    const identity = { userId: "user-1", characterId: "character-1" };
+    await workspaces.rebuildRelationship(identity, async (workspace) => {
+      await writeFile(join(workspace, ".igrep", "old.txt"), "old");
+    });
+    const fence = {
+      mutationId: "filemut-abort",
+      claimToken: "44444444-4444-4444-8444-444444444444",
+      authorityVersion: "8",
+    };
+    const prepared = await workspaces.prepareRelationshipRebuild(
+      identity,
+      fence,
+      async (workspace) => {
+        await writeFile(join(workspace, ".igrep", "must-not-promote.txt"), "new");
+        return { sessions: 1, messages: 2 };
+      },
+    );
+    const attempt = await workspaces.prepare(invocation("normal"));
+    const controller = new AbortController();
+    const promotion = workspaces.promoteRelationshipRebuild({
+      ...identity,
+      rebuildId: prepared.rebuildId,
+      fence,
+    }, controller.signal);
+    const rejected = expect(promotion).rejects.toThrow(/promotion deadline elapsed/);
+    controller.abort(new Error("promotion deadline elapsed"));
+    await attempt.discard();
+
+    await rejected;
+    const relationship = relationshipWorkspacePath(
+      join(root, "canonical"),
+      identity.userId,
+      identity.characterId,
+    );
+    expect(await readFile(join(await realpath(join(relationship, ".igrep")), "old.txt"), "utf8"))
+      .toBe("old");
+    await expect(readFile(
+      join(await realpath(join(relationship, ".igrep")), "must-not-promote.txt"),
+      "utf8",
+    )).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rolls back when cancellation lands immediately after the pointer rename", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dsh-workspace-abort-after-swap-"));
+    temporary.push(root);
+    const workspaces = store(root);
+    const identity = { userId: "user-1", characterId: "character-1" };
+    await workspaces.rebuildRelationship(identity, async (workspace) => {
+      await writeFile(join(workspace, ".igrep", "old.txt"), "old");
+    });
+    const fence = {
+      mutationId: "filemut-abort-after-swap",
+      claimToken: "55555555-5555-4555-8555-555555555555",
+      authorityVersion: "9",
+    };
+    const prepared = await workspaces.prepareRelationshipRebuild(
+      identity,
+      fence,
+      async (workspace) => {
+        await writeFile(join(workspace, ".igrep", "new.txt"), "new");
+        return { sessions: 1, messages: 2 };
+      },
+    );
+    const controller = new AbortController();
+    const signal = controller.signal;
+    const nativeThrow = signal.throwIfAborted.bind(signal);
+    let checkpoints = 0;
+    Object.defineProperty(signal, "throwIfAborted", {
+      value() {
+        checkpoints += 1;
+        // acquire wait + entry + pre/post candidate rename + pre pointer
+        // rename = five checks; the sixth is the post-rename barrier.
+        if (checkpoints === 6) {
+          controller.abort(new Error("abort after pointer swap"));
+        }
+        nativeThrow();
+      },
+    });
+
+    await expect(workspaces.promoteRelationshipRebuild({
+      ...identity,
+      rebuildId: prepared.rebuildId,
+      fence,
+    }, signal)).rejects.toThrow(/abort after pointer swap/);
+    const relationship = relationshipWorkspacePath(
+      join(root, "canonical"),
+      identity.userId,
+      identity.characterId,
+    );
+    expect(await readFile(join(await realpath(join(relationship, ".igrep")), "old.txt"), "utf8"))
+      .toBe("old");
+    expect(await readFile(join(
+      relationship,
+      ".rebuild-candidates",
+      prepared.rebuildId,
+      "workspace",
+      ".igrep",
+      "new.txt",
+    ), "utf8")).toBe("new");
+  });
+
+  it("reaps durable rebuild garbage after a sidecar restart", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dsh-workspace-rebuild-garbage-"));
+    temporary.push(root);
+    const relationship = relationshipWorkspacePath(
+      join(root, "canonical"),
+      "user-1",
+      "character-1",
+    );
+    const stale = join(relationship, ".rebuild-garbage", "stale", "secret.txt");
+    await mkdir(dirname(stale), { recursive: true });
+    await writeFile(stale, "deleted transcript");
+
+    store(root);
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      try {
+        await lstat(stale);
+        await new Promise((resolve) => setTimeout(resolve, 2));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") break;
+        throw error;
+      }
+    }
+    await expect(lstat(stale)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("initializes a brand-new empty relationship and promotes only its accepted attempt", async () => {
     const root = await mkdtemp(join(tmpdir(), "dsh-workspace-new-"));
     temporary.push(root);
@@ -114,14 +344,26 @@ describe("DSH workspace authority", () => {
     });
 
     const workspace = await workspaces.prepare(invocation("normal"));
-    await writeFile(join(workspace.path, ".igrep", "dialogue.jsonl"), "{}\n");
-    await workspace.commit();
-
     const relationship = relationshipWorkspacePath(
       join(root, "canonical"),
       "user-1",
       "character-1",
     );
+    for (const path of [
+      join(root, "canonical"),
+      userWorkspacePath(join(root, "canonical"), "user-1"),
+      relationship,
+      join(relationship, ".igrep.versions"),
+      join(relationship, ".attempts"),
+      dirname(workspace.path),
+      workspace.path,
+      join(workspace.path, ".igrep"),
+    ]) {
+      expect((await stat(path)).mode & 0o777).toBe(0o700);
+    }
+    await writeFile(join(workspace.path, ".igrep", "dialogue.jsonl"), "{}\n");
+    await workspace.commit();
+
     const pointer = join(relationship, ".igrep");
     expect(workspace.mode).toBe("normal");
     expect((await lstat(pointer)).isSymbolicLink()).toBe(true);
@@ -189,10 +431,43 @@ describe("DSH workspace authority", () => {
     temporary.push(root);
     const canonicalRoot = join(root, "canonical");
     const workspace = await store(root).prepare(invocation("private"));
+    const privateRelationship = relationshipWorkspacePath(
+      join(root, "private"),
+      "user-1",
+      "character-1",
+    );
+    for (const path of [
+      join(root, "private"),
+      userWorkspacePath(join(root, "private"), "user-1"),
+      privateRelationship,
+      workspace.path,
+    ]) {
+      expect((await stat(path)).mode & 0o777).toBe(0o700);
+    }
     await workspace.commit();
     expect(workspace.mode).toBe("private");
     await expect(lstat(userWorkspacePath(canonicalRoot, "user-1")))
       .rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("repairs permissive existing authority directories before use", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dsh-workspace-mode-repair-"));
+    temporary.push(root);
+    const canonicalRoot = join(root, "canonical");
+    const userRoot = userWorkspacePath(canonicalRoot, "user-1");
+    const relationship = relationshipWorkspacePath(
+      canonicalRoot,
+      "user-1",
+      "character-1",
+    );
+    await mkdir(relationship, { recursive: true });
+    for (const path of [canonicalRoot, userRoot, relationship]) await chmod(path, 0o755);
+
+    const workspace = await store(root).prepare(invocation("normal"));
+    for (const path of [canonicalRoot, userRoot, relationship, workspace.path]) {
+      expect((await stat(path)).mode & 0o777).toBe(0o700);
+    }
+    await workspace.discard();
   });
 
   it("purges relationship workspace and historical proof idempotently", async () => {

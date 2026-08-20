@@ -90,6 +90,70 @@ export interface RelationshipLinkage {
   candidateSourceIds: Map<string, string[]>;
 }
 
+export interface RelationshipLinkageSession {
+  id: string;
+  messages: RelationshipMessage[];
+  linkage: RelationshipLinkage;
+}
+
+/**
+ * Load one relationship snapshot in three serial queries regardless of its
+ * session count. A rebuild may span years of short sessions; per-session SQL
+ * would turn a bounded snapshot into an unbounded round-trip loop.
+ */
+export async function loadRelationshipLinkages(
+  db: Prisma.TransactionClient,
+  input: { userId: string; characterId: string },
+): Promise<RelationshipLinkageSession[]> {
+  const where = {
+    userId: input.userId,
+    characterId: input.characterId,
+    status: { not: "deleted" },
+    deletedAt: null,
+  } as const;
+  // Keep these sequential: Prisma's interactive transaction owns one pg
+  // client and rejects concurrent use.
+  const sessions = await db.chatSession.findMany({
+    where,
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    select: { id: true },
+  });
+  const messages = await db.message.findMany({
+    where: { session: where },
+    select: relationshipMessageSelect,
+  });
+  const receipts = await db.chatSendReceipt.findMany({
+    where: { session: where },
+    select: {
+      sessionId: true,
+      userMessageId: true,
+      assistantMessageId: true,
+    },
+  });
+  const messagesBySession = new Map(
+    sessions.map(({ id }) => [id, [] as RelationshipMessage[]]),
+  );
+  const receiptsBySession = new Map(
+    sessions.map(({ id }) => [id, [] as Array<{
+      userMessageId: string;
+      assistantMessageId: string;
+    }>]),
+  );
+  for (const message of messages) messagesBySession.get(message.sessionId)?.push(message);
+  for (const receipt of receipts) receiptsBySession.get(receipt.sessionId)?.push(receipt);
+  return sessions.map(({ id }) => {
+    const sessionMessages = messagesBySession.get(id) ?? [];
+    return {
+      id,
+      messages: sessionMessages,
+      linkage: resolveRelationshipLinkage(
+        sessionMessages,
+        receiptsBySession.get(id) ?? [],
+      ),
+    };
+  });
+}
+
 /**
  * Read both evidence tables for one session and resolve them together. Linkage
  * is only meaningful over a whole session, so these two queries are never

@@ -1,18 +1,20 @@
 import {
-  COMPANION_WORKSPACE_REBUILD_MAX_TIMEOUT_MS,
-  companionWorkspaceRebuildSchema,
   type CompanionWorkspaceRebuild,
+  type CompanionWorkspaceRebuildFence,
   type CompanionWorkspaceRebuildMessage,
+  type CompanionWorkspaceRebuildPromotion,
 } from "@idream/shared/chat/companion-runtime";
 import type { Prisma } from "../generated/client/client.js";
 import { env } from "./env.js";
 import {
+  discardCompanionWorkspaceRebuild,
+  prepareCompanionWorkspaceRebuild,
+  promoteCompanionWorkspaceRebuild,
   purgeCompanionWorkspace,
-  rebuildCompanionWorkspace,
   type CompanionWorkspacePurgeTarget,
 } from "./companion-runtime.js";
 import {
-  loadSessionLinkage,
+  loadRelationshipLinkages,
   type RelationshipLinkage,
   type RelationshipMessage,
 } from "./relationship-authority.js";
@@ -29,8 +31,13 @@ type CompanionProjectionMutation =
   | { kind: "account_delete" };
 
 export interface CompanionMemoryProjectionPort {
-  rebuild(request: CompanionWorkspaceRebuild): Promise<unknown>;
+  rebuild?(request: CompanionWorkspaceRebuild): Promise<unknown>;
   purge(target: CompanionWorkspacePurgeTarget): Promise<unknown>;
+  prepare?(request: CompanionWorkspaceRebuild & {
+    fence: CompanionWorkspaceRebuildFence;
+  }): Promise<{ rebuildId: string; sessions: number; messages: number }>;
+  promote?(request: CompanionWorkspaceRebuildPromotion): Promise<unknown>;
+  discard?(request: CompanionWorkspaceRebuildPromotion): Promise<void>;
 }
 
 interface CanonicalSession {
@@ -87,34 +94,52 @@ export async function buildCompanionWorkspaceRebuild(
   tx: Prisma.TransactionClient,
   input: { userId: string; characterId: string },
 ): Promise<CompanionWorkspaceRebuild> {
-  const sessions = await tx.chatSession.findMany({
-    where: {
-      userId: input.userId,
-      characterId: input.characterId,
-      status: { not: "deleted" },
-      deletedAt: null,
-    },
-    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-    select: { id: true },
-  });
-  const canonical: CanonicalSession[] = [];
-  // A Prisma interactive transaction owns one pg client. Keep every query
-  // sequential; Promise.all here would re-enter that client.
+  const sessions = await loadRelationshipLinkages(tx, input);
+  const messages: CompanionWorkspaceRebuildMessage[] = [];
+  // Content strings are reused, not cloned. The result array is the only
+  // additional aggregate transcript retained at the Chat transport seam.
   for (const session of sessions) {
-    canonical.push({ id: session.id, ...await loadSessionLinkage(tx, session.id) });
+    const projected = canonicalCompanionMessages([session]);
+    for (const message of projected) messages.push(message);
   }
-  return companionWorkspaceRebuildSchema.parse({
+  return {
     scope: "relationship",
     ...input,
-    messages: canonicalCompanionMessages(canonical),
-  });
+    messages,
+  };
 }
 
 export function companionMemoryProjectionTimeoutMs(): number {
-  // This transaction encloses the external replacement today. Its deadline
-  // must dominate the largest child rebuild budget and must not inherit the
-  // unrelated model-turn deadline.
-  return COMPANION_WORKSPACE_REBUILD_MAX_TIMEOUT_MS + 30_000;
+  // Only claim/snapshot/authority/settle DB work runs inside this transaction;
+  // sidecar ingest and maintenance are deliberately outside it.
+  return 120_000;
+}
+
+export function companionMemoryProjectionPort(): CompanionMemoryProjectionPort {
+  const config = env.COMPANION_RUNTIME_CONFIG;
+  return {
+    purge: (target) => purgeCompanionWorkspace({
+      baseUrl: config.sidecarUrl,
+      token: config.sidecarToken,
+      target,
+      timeoutMs: 60_000,
+    }),
+    prepare: (request) => prepareCompanionWorkspaceRebuild({
+      baseUrl: config.sidecarUrl,
+      token: config.sidecarToken,
+      request,
+    }),
+    promote: (request) => promoteCompanionWorkspaceRebuild({
+      baseUrl: config.sidecarUrl,
+      token: config.sidecarToken,
+      request,
+    }),
+    discard: (request) => discardCompanionWorkspaceRebuild({
+      baseUrl: config.sidecarUrl,
+      token: config.sidecarToken,
+      request,
+    }),
+  };
 }
 
 export async function applyCompanionMemoryProjection(
@@ -123,23 +148,7 @@ export async function applyCompanionMemoryProjection(
   mutation: CompanionProjectionMutation,
   port?: CompanionMemoryProjectionPort,
 ): Promise<void> {
-  let activePort = port;
-  if (!activePort) {
-    const config = env.COMPANION_RUNTIME_CONFIG;
-    activePort = {
-      rebuild: (request: CompanionWorkspaceRebuild) => rebuildCompanionWorkspace({
-        baseUrl: config.sidecarUrl,
-        token: config.sidecarToken,
-        request,
-      }),
-      purge: (target: CompanionWorkspacePurgeTarget) => purgeCompanionWorkspace({
-        baseUrl: config.sidecarUrl,
-        token: config.sidecarToken,
-        target,
-        timeoutMs: 60_000,
-      }),
-    };
-  }
+  const activePort = port ?? companionMemoryProjectionPort();
   if (mutation.kind === "relationship_rebuild") {
     const request = await buildCompanionWorkspaceRebuild(tx, {
       userId,
@@ -148,6 +157,9 @@ export async function applyCompanionMemoryProjection(
     // The sidecar performs ephemeral cleanup and canonical replacement under
     // one relationship fence; splitting purge/rebuild here would admit a turn
     // between two control requests.
+    if (!activePort.rebuild) {
+      throw new Error("relationship rebuild requires the durable fenced projector");
+    }
     await activePort.rebuild(request);
     return;
   }

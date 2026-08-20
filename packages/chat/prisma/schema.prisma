@@ -334,16 +334,20 @@ model ChatOutboxEvent {
 }
 
 model ChatFileMutation {
-  id        String    @id
-  sequence  BigInt    @unique @default(autoincrement())
-  userId    String    @map("user_id")
-  kind      String
-  payload   Json      @default("{}")
-  status    String    @default("pending")
-  attempts  Int       @default(0)
-  lastError String?   @map("last_error")
-  createdAt DateTime  @default(now()) @map("created_at")
-  appliedAt DateTime? @map("applied_at")
+  id                         String    @id
+  sequence                   BigInt    @unique @default(autoincrement())
+  userId                     String    @map("user_id")
+  kind                       String
+  payload                    Json      @default("{}")
+  status                     String    @default("pending")
+  attempts                   Int       @default(0)
+  lastError                  String?   @map("last_error")
+  projectionClaimToken       String?   @map("projection_claim_token")
+  projectionClaimedAt        DateTime? @map("projection_claimed_at")
+  projectionAuthorityVersion BigInt?   @map("projection_authority_version")
+  projectionRebuildId        String?   @map("projection_rebuild_id")
+  createdAt                  DateTime  @default(now()) @map("created_at")
+  appliedAt                  DateTime? @map("applied_at")
 
   @@index([userId, status, sequence], map: "chat_file_mutations_user_pending_idx")
   @@map("chat_file_mutations")

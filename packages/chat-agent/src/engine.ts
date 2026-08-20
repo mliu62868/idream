@@ -26,7 +26,6 @@ import {
   type CompanionTerminalCandidate,
   type CompanionToolCall,
   type CompanionToolResult,
-  type CompanionWorkspaceRebuild,
   type PreparedTurnMessage,
   type PreparedTurnProfile,
 } from "@idream/shared/chat/companion-runtime";
@@ -42,6 +41,10 @@ import type {
   WorkspacePurgeRequest,
 } from "./workspace";
 import type { IgrepPluginModule } from "./igrep";
+import type {
+  CompanionWorkspaceRebuildPromotion,
+  CompanionWorkspaceRebuildSource,
+} from "./rebuild-source";
 import { createSidecarInstanceIdentity } from "./sidecar-instance";
 
 type ControlFrame = Exclude<CompanionRuntimeRequest, { type: "run" }>;
@@ -61,7 +64,8 @@ export interface CompanionEngineOptions {
   rebuilder?: {
     rebuild(
       workspace: string,
-      request: CompanionWorkspaceRebuild,
+      request: CompanionWorkspaceRebuildSource,
+      signal?: AbortSignal,
     ): Promise<{ sessions: number; messages: number }>;
   };
   maxSteps?: number;
@@ -855,30 +859,67 @@ export class CompanionEngine implements InvocationService {
   }
 
   async rebuild(
-    request: CompanionWorkspaceRebuild,
+    request: CompanionWorkspaceRebuildSource,
+    signal?: AbortSignal,
   ): Promise<{ sessions: number; messages: number }> {
     if (!this.options.rebuilder) throw new Error("igrep workspace rebuild is not configured");
+    return this.withRelationshipMaintenance(request, () =>
+      this.options.workspaces.rebuildRelationship(
+        request,
+        async (workspace) => {
+          if (signal?.aborted) throw signal.reason;
+          const result = await this.options.rebuilder!.rebuild(workspace, request, signal);
+          // INVARIANT: a disconnected Chat transaction cannot promote a
+          // candidate after losing its rebuild completion/ACK channel.
+          if (signal?.aborted) throw signal.reason;
+          return result;
+        },
+        signal,
+      ));
+  }
+
+  async prepareRebuild(
+    request: CompanionWorkspaceRebuildSource,
+    signal?: AbortSignal,
+  ): Promise<{ rebuildId: string; sessions: number; messages: number }> {
+    if (!this.options.rebuilder) throw new Error("igrep workspace rebuild is not configured");
+    if (!request.fence) throw new Error("relationship rebuild prepare requires a fence");
+    return this.withRelationshipMaintenance(request, () =>
+      this.options.workspaces.prepareRelationshipRebuild(
+        request,
+        request.fence!,
+        (workspace) => this.options.rebuilder!.rebuild(workspace, request, signal),
+        signal,
+      ));
+  }
+
+  async promoteRebuild(
+    request: CompanionWorkspaceRebuildPromotion,
+    signal?: AbortSignal,
+  ): Promise<{ sessions: number; messages: number }> {
+    signal?.throwIfAborted();
     const relationshipKey = `${request.userId}\0${request.characterId}`;
     if (this.hasFence(this.purgingUsers, request.userId)
       || this.hasFence(this.purgingRelationships, relationshipKey)) {
-      throw new Error("invocation workspace is already being rebuilt or purged");
+      throw new Error("relationship rebuild promotion is busy");
     }
+    // Promotion runs under Chat's final DB authority transaction. It must not
+    // queue behind unrelated multi-minute maintenance: prepare already did all
+    // ingest/maintain/doctor work, so this seam is only the local pointer CAS.
     this.addFence(this.purgingRelationships, relationshipKey);
     try {
-      return await this.withMaintenance(async () => {
-        const matches = () => [...this.active.values()].filter(({ invocation }) =>
-          invocation.userId === request.userId
-          && invocation.characterId === request.characterId);
-        for (const active of matches()) active.cancel("user");
-        while (matches().length > 0) await new Promise((resolve) => setTimeout(resolve, 10));
-        return this.options.workspaces.rebuildRelationship(
-          request,
-          (workspace) => this.options.rebuilder!.rebuild(workspace, request),
-        );
-      });
+      const active = [...this.active.values()].some(({ invocation }) =>
+        invocation.userId === request.userId
+        && invocation.characterId === request.characterId);
+      if (active) throw new Error("relationship rebuild promotion found an active invocation");
+      return await this.options.workspaces.promoteRelationshipRebuild(request, signal);
     } finally {
       this.removeFence(this.purgingRelationships, relationshipKey);
     }
+  }
+
+  async discardRebuild(request: CompanionWorkspaceRebuildPromotion): Promise<void> {
+    await this.options.workspaces.discardRelationshipRebuild(request);
   }
 
   async memoryCutoverProof(input: {
@@ -898,6 +939,30 @@ export class CompanionEngine implements InvocationService {
         this.purgingRelationships,
         `${invocation.userId}\0${invocation.characterId}`,
       );
+  }
+
+  private async withRelationshipMaintenance<T>(
+    request: { userId: string; characterId: string },
+    run: () => Promise<T>,
+  ): Promise<T> {
+    const relationshipKey = `${request.userId}\0${request.characterId}`;
+    if (this.hasFence(this.purgingUsers, request.userId)
+      || this.hasFence(this.purgingRelationships, relationshipKey)) {
+      throw new Error("invocation workspace is already being rebuilt or purged");
+    }
+    this.addFence(this.purgingRelationships, relationshipKey);
+    try {
+      return await this.withMaintenance(async () => {
+        const matches = () => [...this.active.values()].filter(({ invocation }) =>
+          invocation.userId === request.userId
+          && invocation.characterId === request.characterId);
+        for (const active of matches()) active.cancel("user");
+        while (matches().length > 0) await new Promise((resolve) => setTimeout(resolve, 10));
+        return run();
+      });
+    } finally {
+      this.removeFence(this.purgingRelationships, relationshipKey);
+    }
   }
 
   private addFence(fences: Map<string, number>, key: string): void {

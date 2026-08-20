@@ -49,12 +49,18 @@ token variable. The default listener is `127.0.0.1:3101`, matching Chat's defaul
   companion control frames.
 - `POST /v1/workspaces/purge` accepts either `{ "scope":"user", "userId":"..." }` or
   `{ "scope":"relationship", "userId":"...", "characterId":"..." }`.
-- `POST /v1/workspaces/rebuild` accepts strict `application/x-ndjson` start, message,
-  and complete frames, then atomically replaces one relationship from canonical Chat
-  messages. There is no aggregate body/message cap; each message frame is bounded and
-  the declared terminal count makes a truncated stream fail before replacement. Deep
-  readiness proves this path with a disposable empty rebuild and always purges the probe
-  relationship afterward.
+- `POST /v1/workspaces/rebuild/prepare` accepts strict `application/x-ndjson` `start`,
+  `message_start`, bounded `content_chunk`, `message_complete`, and `complete` frames.
+  Its required fence binds one durable Chat mutation claim and authority version. The
+  sidecar validates and spools each session incrementally into a request-owned `0700`
+  directory with `0600` files, ingests sessions sequentially, and creates a private
+  candidate without changing canonical memory. There is no aggregate body,
+  message-count, or single-message cap.
+- `POST /v1/workspaces/rebuild/promote` atomically promotes only the exact prepared
+  fence. Per-relationship authority versions are monotonic, so an old candidate cannot
+  overwrite a newer projection. `POST /v1/workspaces/rebuild/discard` removes an
+  unpromoted candidate. A truncated/disconnected prepare is removed automatically.
+  There is deliberately no one-shot HTTP rebuild route that can bypass this protocol.
 
 Normal memory is copied into an isolated attempt workspace. It is promoted atomically only
 after Chat accepts the terminal candidate and public `igrep memory-status` proves both

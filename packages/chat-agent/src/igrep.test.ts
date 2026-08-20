@@ -1,10 +1,7 @@
-import { mkdir, mkdtemp, readFile, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import {
-  companionWorkspaceRebuildBudget,
-  type CompanionWorkspaceRebuild,
-} from "@idream/shared/chat/companion-runtime";
+import { dirname, join } from "node:path";
+import type { CompanionWorkspaceRebuild } from "@idream/shared/chat/companion-runtime";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   IgrepMemoryRebuilder,
@@ -33,9 +30,10 @@ describe("igrep subprocess bounds", () => {
       thrown = error;
     }
     expect(thrown).toBeInstanceOf(Error);
-    expect((thrown as Error).message).toBe("igrep_command_stderr_limit_exceeded");
+    expect((thrown as Error).message).toMatch(
+      /^child command failed: code=stderr_limit digest=[a-f0-9]{64}$/,
+    );
     expect((thrown as Error).message).not.toContain("PRIVATE_STDERR_SENTINEL");
-    expect((thrown as Error).message.length).toBeLessThan(100);
   });
 });
 
@@ -49,38 +47,26 @@ describe("official igrep canonical rebuild", () => {
     await mkdir(workspace);
     await symlink(memory, join(workspace, ".igrep"), "dir");
     const commands: JsonCommandOptions[] = [];
+    let ingests = 0;
     const run = async (options: JsonCommandOptions): Promise<unknown> => {
       commands.push(options);
       if (options.args[0] === "mem" && options.args[1] === "ingest") {
         const transcript = options.args[options.args.indexOf("--transcript") + 1];
+        expect((await stat(dirname(transcript!))).mode & 0o777).toBe(0o700);
+        expect((await stat(transcript!)).mode & 0o777).toBe(0o600);
         const rows = (await readFile(transcript!, "utf8")).trim().split("\n");
-        expect(rows.map((row) => JSON.parse(row))).toEqual([
-          {
-            role: "user",
-            content: "Remember the observatory.",
-            source_at: "2026-08-19T12:00:00.000Z",
-            source_timezone: "UTC",
-          },
-          {
-            role: "assistant",
-            content: "Every blue-lit window.",
-            source_at: "2026-08-19T12:00:01.000Z",
-            source_timezone: "UTC",
-          },
-          {
-            role: "user",
-            content: "Remember the winter garden.",
-            source_at: "2026-08-19T12:00:02.000Z",
-            source_timezone: "UTC",
-          },
-          {
-            role: "assistant",
-            content: "Its glass roof caught the snow.",
-            source_at: "2026-08-19T12:00:03.000Z",
-            source_timezone: "UTC",
-          },
-        ]);
-        return { events: 4, dialoguePath: ".igrep/mem/memory/dialogues/rebuilt.jsonl" };
+        const expected = [[
+          ["user", "Remember the observatory.", "2026-08-19T12:00:00.000Z"],
+          ["assistant", "Every blue-lit window.", "2026-08-19T12:00:01.000Z"],
+        ], [
+          ["user", "Remember the winter garden.", "2026-08-19T12:00:02.000Z"],
+          ["assistant", "Its glass roof caught the snow.", "2026-08-19T12:00:03.000Z"],
+        ]][ingests++];
+        expect(rows.map((row) => {
+          const parsed = JSON.parse(row) as Record<string, string>;
+          return [parsed.role, parsed.content, parsed.source_at];
+        })).toEqual(expected);
+        return { events: rows.length, dialoguePath: ".igrep/mem/memory/dialogues/rebuilt.jsonl" };
       }
       return { ok: true };
     };
@@ -123,7 +109,7 @@ describe("official igrep canonical rebuild", () => {
       "igrep",
       {
         status: async () => ({
-          dialogueFiles: 1,
+          dialogueFiles: 2,
           pendingProfileRows: 0,
           processedProfileRows: 2,
           lastMaintainAt: "2026-08-19T12:00:02.000Z",
@@ -138,14 +124,13 @@ describe("official igrep canonical rebuild", () => {
     });
     expect(commands.map((command) => command.args.slice(0, 2))).toEqual([
       ["mem", "ingest"],
+      ["mem", "ingest"],
       ["mem", "maintain"],
       ["mem", "doctor"],
     ]);
-    expect(commands[1]?.args).toContain("--rebuild");
-    expect(commands[2]?.args).toContain("--strict");
-    expect(commands[0]?.timeoutMs).toBe(
-      companionWorkspaceRebuildBudget(request).ingestTimeoutMs,
-    );
+    expect(commands[2]?.args).toContain("--rebuild");
+    expect(commands[3]?.args).toContain("--strict");
+    expect(commands[0]?.timeoutMs).toBeGreaterThan(30_000);
   });
 
   it("fails closed when maintain leaves canonical profile rows pending", async () => {

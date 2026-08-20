@@ -410,6 +410,10 @@ CREATE TABLE IF NOT EXISTS chat.chat_file_mutations (
   status     text NOT NULL DEFAULT 'pending',
   attempts   integer NOT NULL DEFAULT 0,
   last_error text,
+  projection_claim_token text,
+  projection_claimed_at timestamp,
+  projection_authority_version bigint,
+  projection_rebuild_id text,
   created_at timestamp NOT NULL DEFAULT (timezone('utc', now())),
   applied_at timestamp,
   CONSTRAINT chat_file_mutations_status_check
@@ -425,6 +429,10 @@ ALTER TABLE chat.chat_file_mutations
   ADD COLUMN IF NOT EXISTS status text,
   ADD COLUMN IF NOT EXISTS attempts integer,
   ADD COLUMN IF NOT EXISTS last_error text,
+  ADD COLUMN IF NOT EXISTS projection_claim_token text,
+  ADD COLUMN IF NOT EXISTS projection_claimed_at timestamp,
+  ADD COLUMN IF NOT EXISTS projection_authority_version bigint,
+  ADD COLUMN IF NOT EXISTS projection_rebuild_id text,
   ADD COLUMN IF NOT EXISTS created_at timestamp,
   ADD COLUMN IF NOT EXISTS applied_at timestamp;
 
@@ -673,6 +681,7 @@ ALTER TABLE chat.chat_file_mutations
   DROP CONSTRAINT IF EXISTS chat_file_mutations_status_check,
   DROP CONSTRAINT IF EXISTS chat_file_mutations_attempts_check,
   DROP CONSTRAINT IF EXISTS chat_file_mutations_lifecycle_check,
+  DROP CONSTRAINT IF EXISTS chat_file_mutations_projection_claim_check,
   DROP CONSTRAINT IF EXISTS chat_file_mutations_payload_kind_check;
 ALTER TABLE chat.chat_file_mutations
   ADD CONSTRAINT chat_file_mutations_status_check
@@ -684,6 +693,27 @@ ALTER TABLE chat.chat_file_mutations
       (status = 'pending' AND applied_at IS NULL)
       OR
       (status = 'applied' AND applied_at IS NOT NULL AND attempts > 0)
+    ),
+  ADD CONSTRAINT chat_file_mutations_projection_claim_check
+    CHECK (
+      (
+        projection_claim_token IS NULL
+        AND projection_claimed_at IS NULL
+        AND projection_authority_version IS NULL
+        AND projection_rebuild_id IS NULL
+      )
+      OR
+      (
+        status = 'pending'
+        AND kind = 'relationship_rebuild'
+        AND projection_claim_token ~ '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$'
+        AND projection_claimed_at IS NOT NULL
+        AND projection_authority_version > 0
+        AND (
+          projection_rebuild_id IS NULL
+          OR projection_rebuild_id ~ '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$'
+        )
+      )
     ),
   ADD CONSTRAINT chat_file_mutations_payload_kind_check
     CHECK (
@@ -700,6 +730,10 @@ BEGIN
     IF NEW.status <> 'pending'
        OR NEW.attempts <> 0
        OR NEW.applied_at IS NOT NULL
+       OR NEW.projection_claim_token IS NOT NULL
+       OR NEW.projection_claimed_at IS NOT NULL
+       OR NEW.projection_authority_version IS NOT NULL
+       OR NEW.projection_rebuild_id IS NOT NULL
        OR NEW.payload ->> 'kind' IS DISTINCT FROM NEW.kind THEN
       RAISE EXCEPTION 'new chat file mutation must be a pending canonical intent';
     END IF;
@@ -742,6 +776,10 @@ BEGIN
      OR NEW.attempts <= OLD.attempts
      OR NEW.applied_at IS NULL
      OR NEW.last_error IS NOT NULL
+     OR NEW.projection_claim_token IS NOT NULL
+     OR NEW.projection_claimed_at IS NOT NULL
+     OR NEW.projection_authority_version IS NOT NULL
+     OR NEW.projection_rebuild_id IS NOT NULL
      OR NEW.payload IS DISTINCT FROM
         chat.redact_file_mutation_payload(OLD.id, OLD.kind, OLD.payload) THEN
     RAISE EXCEPTION 'chat file mutation completion evidence is invalid';

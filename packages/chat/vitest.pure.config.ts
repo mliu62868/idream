@@ -15,6 +15,7 @@ export default defineConfig({
       "src/memory-cutover-audit-core.test.ts",
       "src/memory-cutover-audit.test.ts",
       "src/companion-memory-projection.test.ts",
+      "src/file-mutations-projection.test.ts",
       "src/agent-tools.test.ts",
       "src/chat-fs.test.ts",
       "src/policy.test.ts",

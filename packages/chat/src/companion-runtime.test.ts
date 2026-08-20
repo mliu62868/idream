@@ -9,10 +9,12 @@ import {
 } from "@idream/shared/chat/companion-runtime";
 import {
   cancelActiveCompanionInvocations,
+  discardCompanionWorkspaceRebuild,
   DshCompanionRuntime,
+  prepareCompanionWorkspaceRebuild,
+  promoteCompanionWorkspaceRebuild,
   purgeCompanionWorkspace,
   readCompanionMemoryCutoverProof,
-  rebuildCompanionWorkspace,
 } from "./companion-runtime.js";
 
 const now = "2026-08-19T12:00:00.000Z";
@@ -385,59 +387,68 @@ describe("DshCompanionRuntime", () => {
     expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 
-  it("rebuilds one relationship from strict canonical Chat exchanges", async () => {
-    const fetchImpl = vi.fn(async () => Response.json({
-      ok: true,
-      rebuilt: { sessions: 1, messages: 2 },
-    }));
+  it("prepares and promotes a rebuild through the fenced two-stage boundary", async () => {
+    const fence = {
+      mutationId: "filemut-1",
+      claimToken: "11111111-1111-4111-8111-111111111111",
+      authorityVersion: "7",
+    };
     const request = {
       scope: "relationship" as const,
       userId: "user-1",
       characterId: "char-1",
-      messages: [
-        {
-          id: "user-message-1",
-          sessionId: "session-1",
-          role: "user" as const,
-          content: "Remember the observatory.",
-          createdAt: now,
-        },
-        {
-          id: "assistant-message-1",
-          sessionId: "session-1",
-          role: "assistant" as const,
-          content: "I will remember it.",
-          createdAt: now,
-        },
-      ],
+      messages: [],
+      fence,
     };
+    const fetchImpl = vi.fn(async (url: string) => url.endsWith("/prepare")
+      ? Response.json({
+          ok: true,
+          rebuilt: {
+            rebuildId: "22222222-2222-4222-8222-222222222222",
+            sessions: 0,
+            messages: 0,
+          },
+        })
+      : Response.json({ ok: true, rebuilt: { sessions: 0, messages: 0 } }));
 
-    await expect(rebuildCompanionWorkspace({
-      baseUrl: "http://127.0.0.1:3101/",
+    const prepared = await prepareCompanionWorkspaceRebuild({
+      baseUrl: "http://127.0.0.1:3101",
       token: "secret",
       request,
       fetchImpl: fetchImpl as typeof fetch,
-    })).resolves.toEqual({ sessions: 1, messages: 2 });
+    });
+    const promotion = {
+      scope: "relationship" as const,
+      userId: request.userId,
+      characterId: request.characterId,
+      rebuildId: prepared.rebuildId,
+      fence,
+    };
+    await expect(promoteCompanionWorkspaceRebuild({
+      baseUrl: "http://127.0.0.1:3101",
+      token: "secret",
+      request: promotion,
+      fetchImpl: fetchImpl as typeof fetch,
+    })).resolves.toEqual({ sessions: 0, messages: 0 });
+
     const calls = fetchImpl.mock.calls as unknown[][];
-    expect(calls[0]?.[0]).toBe("http://127.0.0.1:3101/v1/workspaces/rebuild");
-    const init = calls[0]?.[1] as RequestInit;
-    const wire = await new Response(init.body).text();
-    expect(wire.length).toBeGreaterThan(0);
-    expect(wire.trim().split("\n").map(decodeCompanionWorkspaceRebuildFrame)).toEqual([
-      {
-        protocolVersion: 1,
-        type: "start",
-        scope: "relationship",
-        userId: "user-1",
-        characterId: "char-1",
-        messageCount: 2,
-      },
-      { protocolVersion: 1, type: "message", message: request.messages[0] },
-      { protocolVersion: 1, type: "message", message: request.messages[1] },
-      { protocolVersion: 1, type: "complete", messageCount: 2 },
-    ]);
-    expect(new Headers(init.headers).get("authorization")).toBe("Bearer secret");
-    expect(new Headers(init.headers).get("content-type")).toBe("application/x-ndjson");
+    expect(calls[0]?.[0]).toBe("http://127.0.0.1:3101/v1/workspaces/rebuild/prepare");
+    const prepareWire = await new Response((calls[0]?.[1] as RequestInit).body).text();
+    const start = decodeCompanionWorkspaceRebuildFrame(prepareWire.split("\n")[0]!);
+    expect(start).toMatchObject({ type: "start", fence });
+    expect(calls[1]?.[0]).toBe("http://127.0.0.1:3101/v1/workspaces/rebuild/promote");
+    expect(JSON.parse(String((calls[1]?.[1] as RequestInit).body))).toEqual(promotion);
+
+    const discardFetch = vi.fn(async () => Response.json({ ok: true }));
+    await discardCompanionWorkspaceRebuild({
+      baseUrl: "http://127.0.0.1:3101",
+      token: "secret",
+      request: promotion,
+      fetchImpl: discardFetch as typeof fetch,
+    });
+    expect((discardFetch.mock.calls as unknown[][])[0]?.[0]).toBe(
+      "http://127.0.0.1:3101/v1/workspaces/rebuild/discard",
+    );
   });
 
   it("reads one current content-free cutover proof from the sidecar", async () => {

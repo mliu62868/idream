@@ -5,6 +5,7 @@ import {
   lstat,
   mkdir,
   mkdtemp,
+  open,
   readdir,
   readFile,
   readlink,
@@ -18,9 +19,11 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import {
   companionMemoryCutoverSidecarProofSchema,
+  companionWorkspaceRebuildFenceSchema,
   releasedKnowledgeSnapshotSchema,
   type CompanionInvocation,
   type CompanionMemoryCutoverSidecarProof,
+  type CompanionWorkspaceRebuildFence,
 } from "@idream/shared/chat/companion-runtime";
 
 export interface MemoryStatus {
@@ -40,6 +43,16 @@ export interface AttemptWorkspace {
   commit(): Promise<void>;
   discard(): Promise<void>;
   settleAndDiscard(): Promise<void>;
+}
+
+export interface PreparedRelationshipRebuild {
+  rebuildId: string;
+  sessions: number;
+  messages: number;
+}
+
+interface RelationshipRebuildCandidateManifest extends PreparedRelationshipRebuild {
+  fence: CompanionWorkspaceRebuildFence;
 }
 
 export interface AttemptWorkspaceStoreOptions {
@@ -153,6 +166,9 @@ async function exists(path: string): Promise<boolean> {
 
 export class AttemptWorkspaceStore {
   private readonly locks = new Map<string, Promise<void>>();
+  private readonly rebuildGarbage = new Set<string>();
+  private rebuildGarbageDrain: Promise<void> | undefined;
+  private rebuildGarbageRetry: NodeJS.Timeout | undefined;
   private readonly options: Required<
     Omit<AttemptWorkspaceStoreOptions, "privateRoot">
   > & {
@@ -166,6 +182,9 @@ export class AttemptWorkspaceStore {
       verificationTimeoutMs: options.verificationTimeoutMs ?? 5_000,
       verificationPollMs: options.verificationPollMs ?? 50,
     };
+    void this.discoverRebuildGarbage()
+      .then((paths) => this.removeRebuildGarbage(paths))
+      .catch(() => undefined);
   }
 
   async prepare(
@@ -252,11 +271,228 @@ export class AttemptWorkspaceStore {
   async rebuildRelationship<T>(
     identity: { userId: string; characterId: string },
     build: (workspace: string) => Promise<T>,
+    signal?: AbortSignal,
   ): Promise<T> {
-    const release = await this.acquireRelationship(identity.userId, identity.characterId);
+    const release = await this.acquireRelationship(
+      identity.userId,
+      identity.characterId,
+      this.options.canonicalRoot,
+      signal,
+    );
     try {
+      signal?.throwIfAborted();
       await this.purgeEphemeralRelationship(identity);
-      return await this.replaceRelationshipLocked(identity, build);
+      signal?.throwIfAborted();
+      return await this.replaceRelationshipLocked(identity, build, signal);
+    } finally {
+      release();
+    }
+  }
+
+  async prepareRelationshipRebuild(
+    identity: { userId: string; characterId: string },
+    fence: CompanionWorkspaceRebuildFence,
+    build: (workspace: string) => Promise<{ sessions: number; messages: number }>,
+    signal?: AbortSignal,
+  ): Promise<PreparedRelationshipRebuild> {
+    const parsedFence = companionWorkspaceRebuildFenceSchema.parse(fence);
+    const release = await this.acquireRelationship(
+      identity.userId,
+      identity.characterId,
+      this.options.canonicalRoot,
+      signal,
+    );
+    const relationshipRoot = await this.ensurePrivateRelationshipDirectory(
+      this.options.canonicalRoot,
+      identity.userId,
+      identity.characterId,
+    );
+    const candidatesRoot = join(relationshipRoot, ".rebuild-candidates");
+    const rebuildId = randomUUID();
+    const candidateRoot = join(candidatesRoot, rebuildId);
+    const workspace = join(candidateRoot, "workspace");
+    const memory = join(workspace, ".igrep");
+    try {
+      signal?.throwIfAborted();
+      await this.purgeEphemeralRelationship(identity);
+      // A new durable claim supersedes every candidate left by an expired
+      // claim. The relationship lock prevents a live prepare/promote race.
+      await rm(candidatesRoot, { recursive: true, force: true });
+      await mkdir(memory, { recursive: true, mode: 0o700 });
+      for (const path of [candidatesRoot, candidateRoot, workspace, memory]) {
+        await chmod(path, 0o700);
+      }
+      const result = await build(workspace);
+      signal?.throwIfAborted();
+      const manifest: RelationshipRebuildCandidateManifest = {
+        rebuildId,
+        fence: parsedFence,
+        sessions: result.sessions,
+        messages: result.messages,
+      };
+      const handle = await open(join(candidateRoot, "manifest.json"), "wx", 0o600);
+      try {
+        await handle.writeFile(`${JSON.stringify(manifest)}\n`, "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      return { rebuildId, sessions: result.sessions, messages: result.messages };
+    } catch (error) {
+      await rm(candidateRoot, { recursive: true, force: true }).catch(() => undefined);
+      throw error;
+    } finally {
+      release();
+    }
+  }
+
+  async promoteRelationshipRebuild(input: {
+    userId: string;
+    characterId: string;
+    rebuildId: string;
+    fence: CompanionWorkspaceRebuildFence;
+  }, signal?: AbortSignal): Promise<{ sessions: number; messages: number }> {
+    const fence = companionWorkspaceRebuildFenceSchema.parse(input.fence);
+    const release = await this.acquireRelationship(
+      input.userId,
+      input.characterId,
+      this.options.canonicalRoot,
+      signal,
+    );
+    const relationshipRoot = await this.ensurePrivateRelationshipDirectory(
+      this.options.canonicalRoot,
+      input.userId,
+      input.characterId,
+    );
+    const versionsRoot = join(relationshipRoot, ".igrep.versions");
+    const canonicalLink = join(relationshipRoot, ".igrep");
+    const candidateRoot = join(relationshipRoot, ".rebuild-candidates", input.rebuildId);
+    const candidateMemory = join(candidateRoot, "workspace", ".igrep");
+    const candidateVersion = join(
+      versionsRoot,
+      `projection-${fence.authorityVersion}-${input.rebuildId}`,
+    );
+    let candidateMoved = false;
+    let canonicalChanged = false;
+    let priorVersion: string | undefined;
+    try {
+      signal?.throwIfAborted();
+      await mkdir(versionsRoot, { recursive: true, mode: 0o700 });
+      await chmod(versionsRoot, 0o700);
+      const current = await this.canonicalVersion(canonicalLink, versionsRoot);
+      priorVersion = current;
+      // A lost HTTP response can leave the pointer swapped while Chat rolls
+      // its short transaction back. The exact version name proves this same
+      // rebuildId already won, so retry stays idempotent even after its tiny
+      // candidate metadata has been collected.
+      if (current && resolve(current) === resolve(candidateVersion)
+        && !(await exists(candidateRoot))) {
+        return { sessions: 0, messages: 0 };
+      }
+      const manifest = this.parseRelationshipRebuildCandidateManifest(
+        await readFile(join(candidateRoot, "manifest.json"), "utf8"),
+      );
+      if (
+        manifest.rebuildId !== input.rebuildId
+        || JSON.stringify(manifest.fence) !== JSON.stringify(fence)
+      ) {
+        throw new Error("relationship rebuild promotion fence does not match its candidate");
+      }
+      const currentAuthority = current
+        ? this.projectionAuthorityVersion(basename(current))
+        : undefined;
+      const requestedAuthority = BigInt(fence.authorityVersion);
+      if (currentAuthority !== undefined && currentAuthority > requestedAuthority) {
+        throw new Error("relationship rebuild promotion authority is stale");
+      }
+      if (currentAuthority === requestedAuthority) {
+        if (!current) throw new Error("relationship rebuild authority has no canonical version");
+        const garbage = await this.quarantineRebuildGarbage(
+          relationshipRoot,
+          versionsRoot,
+          current,
+          candidateRoot,
+        );
+        this.removeRebuildGarbage(garbage);
+        return { sessions: manifest.sessions, messages: manifest.messages };
+      }
+      signal?.throwIfAborted();
+      if (!(await exists(candidateVersion))) {
+        await rename(candidateMemory, candidateVersion);
+        candidateMoved = true;
+      }
+      signal?.throwIfAborted();
+      const nextLink = join(relationshipRoot, `.igrep.next-${randomUUID()}`);
+      try {
+        await symlink(relative(relationshipRoot, candidateVersion), nextLink, "dir");
+        signal?.throwIfAborted();
+        await rename(nextLink, canonicalLink);
+        canonicalChanged = true;
+        signal?.throwIfAborted();
+      } finally {
+        await rm(nextLink, { force: true }).catch(() => undefined);
+      }
+      const garbage = await this.quarantineRebuildGarbage(
+        relationshipRoot,
+        versionsRoot,
+        candidateVersion,
+        candidateRoot,
+      );
+      this.removeRebuildGarbage(garbage);
+      return { sessions: manifest.sessions, messages: manifest.messages };
+    } catch (error) {
+      if (canonicalChanged) {
+        if (priorVersion) {
+          const rollbackLink = join(relationshipRoot, `.igrep.rollback-${randomUUID()}`);
+          try {
+            await symlink(relative(relationshipRoot, priorVersion), rollbackLink, "dir");
+            await rename(rollbackLink, canonicalLink);
+          } finally {
+            await rm(rollbackLink, { force: true }).catch(() => undefined);
+          }
+        } else {
+          await rm(canonicalLink, { force: true });
+        }
+      }
+      if (candidateMoved) {
+        await rename(candidateVersion, candidateMemory).catch(() => undefined);
+      }
+      throw error;
+    } finally {
+      release();
+    }
+  }
+
+  async discardRelationshipRebuild(input: {
+    userId: string;
+    characterId: string;
+    rebuildId: string;
+    fence: CompanionWorkspaceRebuildFence;
+  }): Promise<void> {
+    const fence = companionWorkspaceRebuildFenceSchema.parse(input.fence);
+    const release = await this.acquireRelationship(input.userId, input.characterId);
+    const candidateRoot = join(
+      relationshipWorkspacePath(
+        this.options.canonicalRoot,
+        input.userId,
+        input.characterId,
+      ),
+      ".rebuild-candidates",
+      input.rebuildId,
+    );
+    try {
+      const manifest = this.parseRelationshipRebuildCandidateManifest(
+        await readFile(join(candidateRoot, "manifest.json"), "utf8"),
+      );
+      if (
+        manifest.rebuildId !== input.rebuildId
+        || JSON.stringify(manifest.fence) !== JSON.stringify(fence)
+      ) {
+        throw new Error("relationship rebuild discard fence does not match its candidate");
+      }
+      await rm(candidateRoot, { recursive: true, force: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     } finally {
       release();
     }
@@ -309,8 +545,9 @@ export class AttemptWorkspaceStore {
   private async replaceRelationshipLocked<T>(
     identity: { userId: string; characterId: string },
     build: (workspace: string) => Promise<T>,
+    signal?: AbortSignal,
   ): Promise<T> {
-    const relationshipRoot = relationshipWorkspacePath(
+    const relationshipRoot = await this.ensurePrivateRelationshipDirectory(
       this.options.canonicalRoot,
       identity.userId,
       identity.characterId,
@@ -328,24 +565,36 @@ export class AttemptWorkspaceStore {
     let priorVersion: string | undefined;
     let result!: T;
     try {
-      await mkdir(versionsRoot, { recursive: true });
+      signal?.throwIfAborted();
+      await mkdir(versionsRoot, { recursive: true, mode: 0o700 });
+      await chmod(versionsRoot, 0o700);
       // A prior interrupted rebuild may have left transcripts outside .igrep.
       // The relationship lock makes it safe to clear them before retrying.
       await rm(rebuildsRoot, { recursive: true, force: true });
-      await mkdir(workspace, { recursive: true });
-      await mkdir(candidateMemory);
+      await mkdir(rebuildRoot, { recursive: true, mode: 0o700 });
+      await chmod(rebuildRoot, 0o700);
+      await mkdir(workspace, { mode: 0o700 });
+      await chmod(workspace, 0o700);
+      await mkdir(candidateMemory, { mode: 0o700 });
+      await chmod(candidateMemory, 0o700);
       assertWithin(relationshipRoot, rebuildRoot);
       assertWithin(versionsRoot, candidateVersion);
       priorVersion = await this.canonicalVersion(canonicalLink, versionsRoot);
       result = await build(workspace);
+      signal?.throwIfAborted();
       // igrep 0.1.132 refuses a workspace whose .igrep resolves outside the
       // workspace. Build and verify in a real directory, then move that exact
       // certified directory into the version authority before pointer swap.
       await rename(candidateMemory, candidateVersion);
+      signal?.throwIfAborted();
       nextLink = join(relationshipRoot, `.igrep.next-${randomUUID()}`);
       await symlink(relative(relationshipRoot, candidateVersion), nextLink, "dir");
+      signal?.throwIfAborted();
       await rename(nextLink, canonicalLink);
       canonicalChanged = true;
+      // INVARIANT: cancellation remains rollback-safe through pointer swap;
+      // superseded privacy data has not been garbage-collected at this point.
+      signal?.throwIfAborted();
       promoted = true;
       await rm(rebuildRoot, { recursive: true, force: true });
       await this.garbageCollectVersions(versionsRoot, candidateVersion);
@@ -469,14 +718,13 @@ export class AttemptWorkspaceStore {
     return marker;
   }
   private async preparePrivate(invocation: CompanionInvocation): Promise<AttemptWorkspace> {
-    const relationshipRoot = privateRelationshipWorkspacePath(
+    const relationshipRoot = await this.ensurePrivateRelationshipDirectory(
       this.options.privateRoot,
       invocation.userId,
       invocation.characterId,
     );
-    assertWithin(this.options.privateRoot, relationshipRoot);
-    await mkdir(relationshipRoot, { recursive: true });
     const path = await mkdtemp(join(relationshipRoot, "attempt-"));
+    await chmod(path, 0o700);
     let finished = false;
     const discard = async () => {
       if (finished) return;
@@ -507,7 +755,7 @@ export class AttemptWorkspaceStore {
     let attemptRoot: string | undefined;
     let knowledgeRoot: string | undefined;
     try {
-      const relationshipRoot = relationshipWorkspacePath(
+      const relationshipRoot = await this.ensurePrivateRelationshipDirectory(
         authorityRoot,
         invocation.userId,
         invocation.characterId,
@@ -515,16 +763,20 @@ export class AttemptWorkspaceStore {
       const versionsRoot = join(relationshipRoot, ".igrep.versions");
       const attemptsRoot = join(relationshipRoot, ".attempts");
       const canonicalLink = join(relationshipRoot, ".igrep");
-      await mkdir(versionsRoot, { recursive: true });
-      await mkdir(attemptsRoot, { recursive: true });
+      await mkdir(versionsRoot, { recursive: true, mode: 0o700 });
+      await mkdir(attemptsRoot, { recursive: true, mode: 0o700 });
+      await chmod(versionsRoot, 0o700);
+      await chmod(attemptsRoot, 0o700);
       const canonicalVersion = await this.ensureCanonicalVersion(canonicalLink, versionsRoot);
       const ownedAttemptRoot = join(attemptsRoot, `${safeKey(invocation.attemptId)}-${randomUUID()}`);
       attemptRoot = ownedAttemptRoot;
       const workspace = join(ownedAttemptRoot, "workspace");
       const attemptMemory = join(workspace, ".igrep");
       assertWithin(relationshipRoot, ownedAttemptRoot);
-      await mkdir(workspace, { recursive: true });
+      await mkdir(workspace, { recursive: true, mode: 0o700 });
+      for (const path of [ownedAttemptRoot, workspace]) await chmod(path, 0o700);
       await cp(canonicalVersion, attemptMemory, { recursive: true, force: false });
+      await chmod(attemptMemory, 0o700);
       const mountedKnowledgeRoot = await this.materializeReleasedKnowledge(
         workspace,
         invocation,
@@ -643,6 +895,127 @@ export class AttemptWorkspaceStore {
     }
   }
 
+  /**
+   * Move superseded trees out of the authority namespace using same-filesystem
+   * renames. Recursive unlink is intentionally asynchronous: rebuild promotion
+   * executes inside Chat's short authority transaction and may only perform a
+   * bounded local pointer cutover. The durable garbage directory is retried by
+   * every later promotion before new entries are added.
+   */
+  private async quarantineRebuildGarbage(
+    relationshipRoot: string,
+    versionsRoot: string,
+    currentVersion: string,
+    candidateRoot: string,
+  ): Promise<string[]> {
+    assertWithin(versionsRoot, currentVersion);
+    const garbageRoot = join(relationshipRoot, ".rebuild-garbage");
+    await mkdir(garbageRoot, { recursive: true, mode: 0o700 });
+    await chmod(garbageRoot, 0o700);
+    const garbage = (await readdir(garbageRoot, { withFileTypes: true }))
+      .map((entry) => join(garbageRoot, entry.name));
+    for (const entry of await readdir(versionsRoot, { withFileTypes: true })) {
+      const source = join(versionsRoot, entry.name);
+      if (resolve(source) === resolve(currentVersion)) continue;
+      const target = join(garbageRoot, `${entry.name}-${randomUUID()}`);
+      assertWithin(garbageRoot, target);
+      await rename(source, target);
+      garbage.push(target);
+    }
+    if (await exists(candidateRoot)) {
+      const target = join(garbageRoot, `candidate-${randomUUID()}`);
+      assertWithin(garbageRoot, target);
+      await rename(candidateRoot, target);
+      garbage.push(target);
+    }
+    return garbage;
+  }
+
+  private removeRebuildGarbage(paths: readonly string[]): void {
+    for (const path of paths) this.rebuildGarbage.add(path);
+    if (this.rebuildGarbageDrain || this.rebuildGarbage.size === 0) return;
+    if (this.rebuildGarbageRetry) clearTimeout(this.rebuildGarbageRetry);
+    this.rebuildGarbageRetry = undefined;
+    this.rebuildGarbageDrain = (async () => {
+      for (const path of [...this.rebuildGarbage]) {
+        try {
+          await rm(path, { recursive: true, force: true });
+          this.rebuildGarbage.delete(path);
+        } catch {
+          // The quarantined path is outside canonical authority. Keep its
+          // durable name and retry without making an already-complete pointer
+          // cutover fail after the fact.
+        }
+      }
+    })().finally(() => {
+      this.rebuildGarbageDrain = undefined;
+      if (this.rebuildGarbage.size === 0) return;
+      this.rebuildGarbageRetry = setTimeout(
+        () => this.removeRebuildGarbage([]),
+        30_000,
+      );
+      this.rebuildGarbageRetry.unref();
+    });
+  }
+
+  private async discoverRebuildGarbage(): Promise<string[]> {
+    const found: string[] = [];
+    let users;
+    try {
+      users = await readdir(this.options.canonicalRoot, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return found;
+      throw error;
+    }
+    for (const user of users) {
+      if (!user.isDirectory() || !user.name.startsWith("user-")) continue;
+      const userRoot = join(this.options.canonicalRoot, user.name);
+      for (const relationship of await readdir(userRoot, { withFileTypes: true })) {
+        if (!relationship.isDirectory() || !relationship.name.startsWith("relationship-")) {
+          continue;
+        }
+        const garbageRoot = join(userRoot, relationship.name, ".rebuild-garbage");
+        try {
+          for (const entry of await readdir(garbageRoot, { withFileTypes: true })) {
+            found.push(join(garbageRoot, entry.name));
+          }
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+      }
+    }
+    return found;
+  }
+
+  private parseRelationshipRebuildCandidateManifest(
+    raw: string,
+  ): RelationshipRebuildCandidateManifest {
+    const value = JSON.parse(raw) as Partial<RelationshipRebuildCandidateManifest>;
+    if (
+      typeof value.rebuildId !== "string"
+      || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(value.rebuildId)
+      || !Number.isSafeInteger(value.sessions)
+      || Number(value.sessions) < 0
+      || !Number.isSafeInteger(value.messages)
+      || Number(value.messages) < 0
+    ) {
+      throw new Error("relationship rebuild candidate manifest is invalid");
+    }
+    return {
+      rebuildId: value.rebuildId,
+      sessions: Number(value.sessions),
+      messages: Number(value.messages),
+      fence: companionWorkspaceRebuildFenceSchema.parse(value.fence),
+    };
+  }
+
+  private projectionAuthorityVersion(versionName: string): bigint | undefined {
+    const match = /^projection-([1-9]\d*)-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.exec(
+      versionName,
+    );
+    return match?.[1] ? BigInt(match[1]) : undefined;
+  }
+
   private async purgeEphemeralRelationship(
     identity: { userId: string; characterId: string },
   ): Promise<void> {
@@ -706,6 +1079,29 @@ export class AttemptWorkspaceStore {
     };
   }
 
+  private async ensurePrivateRelationshipDirectory(
+    authorityRoot: string,
+    userId: string,
+    characterId: string,
+  ): Promise<string> {
+    const resolvedRoot = resolve(authorityRoot);
+    const userRoot = userWorkspacePath(resolvedRoot, userId);
+    const relationshipRoot = relationshipWorkspacePath(
+      resolvedRoot,
+      userId,
+      characterId,
+    );
+    assertWithin(resolvedRoot, relationshipRoot);
+    await mkdir(relationshipRoot, { recursive: true, mode: 0o700 });
+    // The default private root may be the shared OS tmpdir; never chmod that
+    // global directory. Every product-owned descendant still fails closed.
+    const owned = resolve(resolvedRoot) === resolve(tmpdir())
+      ? [userRoot, relationshipRoot]
+      : [resolvedRoot, userRoot, relationshipRoot];
+    for (const path of owned) await chmod(path, 0o700);
+    return relationshipRoot;
+  }
+
   private async canonicalVersion(
     canonicalLink: string,
     versionsRoot: string,
@@ -742,7 +1138,8 @@ export class AttemptWorkspaceStore {
     const current = await this.canonicalVersion(canonicalLink, versionsRoot);
     if (current) return current;
     const initial = join(versionsRoot, `initial-${randomUUID()}`);
-    await mkdir(initial);
+    await mkdir(initial, { mode: 0o700 });
+    await chmod(initial, 0o700);
     const nextLink = `${canonicalLink}.next-${randomUUID()}`;
     await symlink(relative(dirname(canonicalLink), initial), nextLink, "dir");
     await rename(nextLink, canonicalLink);

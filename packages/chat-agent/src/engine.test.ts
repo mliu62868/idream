@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { mkdtemp, readFile, readdir, realpath, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LlmAdapter, LlmError, type GenerateOptions, type StreamChunk } from "@deepseek-ai/dsh-llm";
@@ -1445,6 +1445,51 @@ describe("programmatic DSH companion runtime", () => {
       && frame.event.type === "cancelled"
       && frame.event.reason === "shutdown")).toBe(true);
     expect(await readdir(join(root, "private"))).toEqual([]);
+  });
+
+  it("never promotes a rebuilt workspace after the Chat completion channel aborts", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chat-agent-rebuild-abort-"));
+    temporary.push(root);
+    const workspaces = new AttemptWorkspaceStore({
+      canonicalRoot: join(root, "canonical"),
+      privateRoot: join(root, "private"),
+      memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
+    });
+    const identity = { userId: "user-abort", characterId: "character-abort" };
+    await workspaces.rebuildRelationship(identity, async (workspace) => {
+      await writeFile(join(workspace, ".igrep", "old.txt"), "old authority");
+    });
+    const controller = new AbortController();
+    const engine = new CompanionEngine({
+      workspaces,
+      plugin: async () => ({ name: "igrep", apply() {} }),
+      adapter: () => new OneStepAdapter(),
+      igrepCommand: "igrep",
+      igrepLlm: IGREP_LLM,
+      rebuilder: {
+        rebuild: async (workspace) => {
+          await writeFile(join(workspace, ".igrep", "new.txt"), "must not promote");
+          controller.abort(new Error("Chat transaction disconnected"));
+          return { sessions: 0, messages: 0 };
+        },
+      },
+    });
+
+    await expect(engine.rebuild({
+      scope: "relationship",
+      ...identity,
+      messages: [],
+    }, controller.signal)).rejects.toThrow(/Chat transaction disconnected/);
+
+    const relationship = relationshipWorkspacePath(
+      join(root, "canonical"),
+      identity.userId,
+      identity.characterId,
+    );
+    expect(await readFile(join(await realpath(join(relationship, ".igrep")), "old.txt"), "utf8"))
+      .toBe("old authority");
+    await expect(readFile(join(await realpath(join(relationship, ".igrep")), "new.txt"), "utf8"))
+      .rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("bounds normal and private agents independently", async () => {

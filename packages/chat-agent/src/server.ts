@@ -1,9 +1,13 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+import { chmod, mkdir, mkdtemp, open, rm, type FileHandle } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   companionReadinessSchema,
   companionRuntimeRequestSchema,
-  companionWorkspaceRebuildSchema,
+  companionWorkspaceRebuildFenceSchema,
+  companionWorkspaceRebuildPromotionSchema,
   decodeCompanionWorkspaceRebuildFrame,
   encodeCompanionNdjsonFrame,
   type CompanionInvocation,
@@ -11,13 +15,17 @@ import {
   type CompanionReadiness,
   type CompanionRuntimeRequest,
   type CompanionRuntimeResponse,
-  type CompanionWorkspaceRebuild,
 } from "@idream/shared/chat/companion-runtime";
+import type {
+  CompanionWorkspaceRebuildPromotion,
+  CompanionWorkspaceRebuildSource,
+  CompanionWorkspaceRebuildSpool,
+} from "./rebuild-source";
 import type { WorkspacePurgeRequest } from "./workspace";
 
 const MAX_CONTROL_BODY_BYTES = 1_048_576;
-// A durable Chat message is bounded independently; only the aggregate rebuild
-// is intentionally unbounded so old relationships remain privacy-rebuildable.
+// Content is carried in Shared-owned 16Ki-character chunks, making the frame
+// cap independent of the unbounded durable message and relationship sizes.
 const MAX_REBUILD_FRAME_BYTES = 256 * 1_024;
 
 type ControlFrame = Exclude<CompanionRuntimeRequest, { type: "run" }>;
@@ -29,7 +37,19 @@ export interface InvocationService {
   ): Promise<void>;
   accept(frame: ControlFrame): Promise<void>;
   purge(request: WorkspacePurgeRequest): Promise<number>;
-  rebuild(request: CompanionWorkspaceRebuild): Promise<{ sessions: number; messages: number }>;
+  rebuild(
+    request: CompanionWorkspaceRebuildSource,
+    signal?: AbortSignal,
+  ): Promise<{ sessions: number; messages: number }>;
+  prepareRebuild(
+    request: CompanionWorkspaceRebuildSource,
+    signal?: AbortSignal,
+  ): Promise<{ rebuildId: string; sessions: number; messages: number }>;
+  promoteRebuild(
+    request: CompanionWorkspaceRebuildPromotion,
+    signal?: AbortSignal,
+  ): Promise<{ sessions: number; messages: number }>;
+  discardRebuild(request: CompanionWorkspaceRebuildPromotion): Promise<void>;
   memoryCutoverProof(request: {
     userId: string;
     characterId: string;
@@ -41,6 +61,7 @@ export interface CompanionServerOptions {
   authToken: string;
   readiness(force?: boolean): Promise<CompanionReadiness>;
   invocation: InvocationService;
+  rebuildSpoolRoot?: string;
 }
 
 export interface CompanionServer {
@@ -108,47 +129,177 @@ async function* readNdjsonLines(request: IncomingMessage): AsyncGenerator<string
   if (pending.byteLength > 0) yield pending.toString("utf8");
 }
 
-async function readWorkspaceRebuild(request: IncomingMessage): Promise<CompanionWorkspaceRebuild> {
+interface StagedWorkspaceRebuild {
+  source: CompanionWorkspaceRebuildSpool;
+  dispose(): Promise<void>;
+}
+
+async function stageWorkspaceRebuild(
+  request: IncomingMessage,
+  spoolBase: string,
+): Promise<StagedWorkspaceRebuild> {
   if (request.headers["content-type"]?.split(";", 1)[0]?.trim() !== "application/x-ndjson") {
     throw new Error("relationship rebuild requires application/x-ndjson");
   }
+  await mkdir(spoolBase, { recursive: true, mode: 0o700 });
+  await chmod(spoolBase, 0o700);
+  const spoolRoot = await mkdtemp(join(spoolBase, "request-"));
+  await chmod(spoolRoot, 0o700);
+  const manifestPath = join(spoolRoot, "manifest.jsonl");
+  const manifest = await open(manifestPath, "wx", 0o600);
   let start: Extract<
     ReturnType<typeof decodeCompanionWorkspaceRebuildFrame>,
     { type: "start" }
   > | undefined;
   let complete = false;
-  const messages: CompanionWorkspaceRebuild["messages"] = [];
-  for await (const line of readNdjsonLines(request)) {
-    const frame = decodeCompanionWorkspaceRebuildFrame(line);
-    if (!start) {
-      if (frame.type !== "start") {
-        throw new Error("relationship rebuild must start with a start frame");
+  let messages = 0;
+  let sessions = 0;
+  let estimatedBytes = 0;
+  let transcript: FileHandle | undefined;
+  let currentSession: {
+    id: string;
+    path: string;
+    messages: number;
+    bytes: number;
+    expectedRole: "user" | "assistant";
+  } | undefined;
+  let activeMessage: {
+    contentLength: number;
+    received: number;
+    createdAt: string;
+  } | undefined;
+  const seenSessions = new Set<string>();
+  const writeTranscript = async (value: string) => {
+    if (!transcript || !currentSession) throw new Error("relationship transcript is not open");
+    await transcript.write(value);
+    const bytes = Buffer.byteLength(value);
+    currentSession.bytes += bytes;
+    estimatedBytes += bytes;
+  };
+  const finishSession = async () => {
+    if (!currentSession) return;
+    if (activeMessage || currentSession.expectedRole !== "user") {
+      throw new Error(`relationship rebuild session ${currentSession.id} has an incomplete exchange`);
+    }
+    await transcript?.sync();
+    await transcript?.close();
+    transcript = undefined;
+    await manifest.write(`${JSON.stringify({
+      sessionId: currentSession.id,
+      transcriptPath: currentSession.path,
+      messageCount: currentSession.messages,
+      estimatedBytes: currentSession.bytes,
+    })}\n`);
+    sessions += 1;
+    currentSession = undefined;
+  };
+  try {
+    for await (const line of readNdjsonLines(request)) {
+      const frame = decodeCompanionWorkspaceRebuildFrame(line);
+      if (!start) {
+        if (frame.type !== "start") {
+          throw new Error("relationship rebuild must start with a start frame");
+        }
+        start = frame;
+        continue;
       }
-      start = frame;
-      continue;
-    }
-    if (complete) throw new Error("relationship rebuild has frames after completion");
-    if (frame.type === "start") throw new Error("relationship rebuild has multiple start frames");
-    if (frame.type === "message") {
-      if (messages.length >= start.messageCount) {
-        throw new Error("relationship rebuild exceeds its declared message count");
+      if (complete) throw new Error("relationship rebuild has frames after completion");
+      if (frame.type === "start") throw new Error("relationship rebuild has multiple start frames");
+      if (frame.type === "message_start") {
+        if (activeMessage) throw new Error("relationship rebuild message is already open");
+        if (messages >= start.messageCount) {
+          throw new Error("relationship rebuild exceeds its declared message count");
+        }
+        if (currentSession?.id !== frame.message.sessionId) {
+          await finishSession();
+          if (seenSessions.has(frame.message.sessionId)) {
+            throw new Error("relationship rebuild sessions must be contiguous");
+          }
+          seenSessions.add(frame.message.sessionId);
+          const digest = createHash("sha256").update(frame.message.sessionId).digest("hex");
+          const path = join(spoolRoot, `session-${digest}.jsonl`);
+          transcript = await open(path, "wx", 0o600);
+          currentSession = {
+            id: frame.message.sessionId,
+            path,
+            messages: 0,
+            bytes: 0,
+            expectedRole: "user",
+          };
+        }
+        if (frame.message.role !== currentSession.expectedRole) {
+          throw new Error(
+            `relationship rebuild expected ${currentSession.expectedRole} message`,
+          );
+        }
+        activeMessage = {
+          contentLength: frame.contentLength,
+          received: 0,
+          createdAt: frame.message.createdAt,
+        };
+        await writeTranscript(
+          `{"role":${JSON.stringify(frame.message.role)},"content":"`,
+        );
+        continue;
       }
-      messages.push(frame.message);
-      continue;
+      if (frame.type === "content_chunk") {
+        if (!activeMessage) throw new Error("relationship rebuild content has no open message");
+        activeMessage.received += frame.content.length;
+        if (activeMessage.received > activeMessage.contentLength) {
+          throw new Error("relationship rebuild content exceeds its declared length");
+        }
+        await writeTranscript(JSON.stringify(frame.content).slice(1, -1));
+        continue;
+      }
+      if (frame.type === "message_complete") {
+        if (!activeMessage || !currentSession) {
+          throw new Error("relationship rebuild has no message to complete");
+        }
+        if (activeMessage.received !== activeMessage.contentLength) {
+          throw new Error("relationship rebuild content length is incomplete");
+        }
+        await writeTranscript(
+          `,"source_at":${JSON.stringify(activeMessage.createdAt)},"source_timezone":"UTC"}\n`,
+        );
+        currentSession.messages += 1;
+        currentSession.expectedRole = currentSession.expectedRole === "user"
+          ? "assistant"
+          : "user";
+        activeMessage = undefined;
+        messages += 1;
+        continue;
+      }
+      if (activeMessage) throw new Error("relationship rebuild completed inside a message");
+      if (frame.messageCount !== start.messageCount || messages !== start.messageCount) {
+        throw new Error("relationship rebuild completed with a mismatched message count");
+      }
+      await finishSession();
+      complete = true;
     }
-    if (frame.messageCount !== start.messageCount || messages.length !== start.messageCount) {
-      throw new Error("relationship rebuild completed with a mismatched message count");
-    }
-    complete = true;
+    if (!start) throw new Error("relationship rebuild start frame is required");
+    if (!complete) throw new Error("relationship rebuild complete frame is required");
+    await manifest.sync();
+    await manifest.close();
+    return {
+      source: {
+        kind: "spool",
+        scope: "relationship",
+        userId: start.userId,
+        characterId: start.characterId,
+        messageCount: messages,
+        sessionCount: sessions,
+        estimatedBytes,
+        manifestPath,
+        ...(start.fence ? { fence: start.fence } : {}),
+      },
+      dispose: () => rm(spoolRoot, { recursive: true, force: true }),
+    };
+  } catch (error) {
+    await transcript?.close().catch(() => undefined);
+    await manifest.close().catch(() => undefined);
+    await rm(spoolRoot, { recursive: true, force: true });
+    throw error;
   }
-  if (!start) throw new Error("relationship rebuild start frame is required");
-  if (!complete) throw new Error("relationship rebuild complete frame is required");
-  return companionWorkspaceRebuildSchema.parse({
-    scope: start.scope,
-    userId: start.userId,
-    characterId: start.characterId,
-    messages,
-  });
 }
 
 function controlRoute(pathname: string): { invocationId: string; type: ControlFrame["type"] } | undefined {
@@ -193,6 +344,10 @@ function relationshipRequest(value: unknown): {
     throw new Error("relationship workspace identity is required");
   }
   return parsed;
+}
+
+function rebuildPromotionRequest(value: unknown): CompanionWorkspaceRebuildPromotion {
+  return companionWorkspaceRebuildPromotionSchema.parse(value);
 }
 
 export function createCompanionServer(options: CompanionServerOptions): CompanionServer {
@@ -278,13 +433,80 @@ export function createCompanionServer(options: CompanionServerOptions): Companio
         return;
       }
 
-      if (request.method === "POST" && url.pathname === "/v1/workspaces/rebuild") {
+      if (request.method === "POST" && url.pathname === "/v1/workspaces/rebuild/prepare") {
         if (closing) {
           failure(response, 503, "shutting_down", new Error("sidecar is shutting down"));
           return;
         }
-        const rebuilt = await options.invocation.rebuild(await readWorkspaceRebuild(request));
+        const staged = await stageWorkspaceRebuild(
+          request,
+          options.rebuildSpoolRoot ?? join(tmpdir(), "idream-chat-rebuilds"),
+        );
+        const controller = new AbortController();
+        let rebuilding = true;
+        const abortOnDisconnect = () => {
+          if (rebuilding) controller.abort(new Error("relationship rebuild client disconnected"));
+        };
+        request.once("aborted", abortOnDisconnect);
+        response.once("close", abortOnDisconnect);
+        const rebuilt = await (async () => {
+          try {
+            if (!staged.source.fence) {
+              throw new Error("relationship rebuild prepare requires a projection fence");
+            }
+            const result = await options.invocation.prepareRebuild(
+              staged.source,
+              controller.signal,
+            );
+            rebuilding = false;
+            return result;
+          } finally {
+            rebuilding = false;
+            request.removeListener("aborted", abortOnDisconnect);
+            response.removeListener("close", abortOnDisconnect);
+            await staged.dispose();
+          }
+        })();
+        // INVARIANT: a successful response acknowledges a fully verified staged
+        // candidate and removal of the request-owned plaintext spool. It does
+        // not promote; Chat must still pass the final DB authority fence.
         json(response, 200, { ok: true, rebuilt });
+        return;
+      }
+
+      if (request.method === "POST" && (
+        url.pathname === "/v1/workspaces/rebuild/promote"
+        || url.pathname === "/v1/workspaces/rebuild/discard"
+      )) {
+        if (closing) {
+          failure(response, 503, "shutting_down", new Error("sidecar is shutting down"));
+          return;
+        }
+        const promotion = rebuildPromotionRequest(await readJson(request));
+        if (url.pathname.endsWith("/discard")) {
+          await options.invocation.discardRebuild(promotion);
+          json(response, 200, { ok: true });
+        } else {
+          const controller = new AbortController();
+          let promoting = true;
+          const abortOnDisconnect = () => {
+            if (promoting) controller.abort(new Error("relationship promotion client disconnected"));
+          };
+          request.once("aborted", abortOnDisconnect);
+          response.once("close", abortOnDisconnect);
+          try {
+            const rebuilt = await options.invocation.promoteRebuild(
+              promotion,
+              controller.signal,
+            );
+            promoting = false;
+            json(response, 200, { ok: true, rebuilt });
+          } finally {
+            promoting = false;
+            request.removeListener("aborted", abortOnDisconnect);
+            response.removeListener("close", abortOnDisconnect);
+          }
+        }
         return;
       }
 

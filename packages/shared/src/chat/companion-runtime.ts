@@ -316,17 +316,49 @@ export const companionWorkspaceRebuildMessageSchema = z
   })
   .strict();
 
+export const COMPANION_WORKSPACE_REBUILD_CONTENT_CHUNK_CHARS = 16_384;
+const companionWorkspaceRebuildMessageHeaderSchema =
+  companionWorkspaceRebuildMessageSchema.omit({ content: true });
+
+export const companionWorkspaceRebuildFenceSchema = z.object({
+  mutationId: nonEmptyStringSchema,
+  claimToken: z.string().uuid(),
+  authorityVersion: z.string().regex(/^[1-9]\d*$/),
+}).strict();
+
+export const companionWorkspaceRebuildPromotionSchema = z.object({
+  scope: z.literal("relationship"),
+  userId: nonEmptyStringSchema,
+  characterId: nonEmptyStringSchema,
+  rebuildId: z.string().uuid(),
+  fence: companionWorkspaceRebuildFenceSchema,
+}).strict();
+
 export const companionWorkspaceRebuildSchema = z
   .object({
     scope: z.literal("relationship"),
     userId: nonEmptyStringSchema,
     characterId: nonEmptyStringSchema,
     messages: z.array(companionWorkspaceRebuildMessageSchema),
+    fence: companionWorkspaceRebuildFenceSchema.optional(),
   })
   .strict()
   .superRefine((value, context) => {
     const nextRoleBySession = new Map<string, "user" | "assistant">();
+    const completedSessions = new Set<string>();
+    let activeSession: string | undefined;
     for (const [index, message] of value.messages.entries()) {
+      if (activeSession !== message.sessionId) {
+        if (activeSession) completedSessions.add(activeSession);
+        if (completedSessions.has(message.sessionId)) {
+          context.addIssue({
+            code: "custom",
+            path: ["messages", index, "sessionId"],
+            message: "relationship rebuild sessions must be contiguous",
+          });
+        }
+        activeSession = message.sessionId;
+      }
       const expected = nextRoleBySession.get(message.sessionId) ?? "user";
       if (message.role !== expected) {
         context.addIssue({
@@ -352,9 +384,10 @@ export const companionWorkspaceRebuildSchema = z
 
 /**
  * SPEC: relationship rebuilds cross the process boundary as bounded NDJSON
- * frames, terminated by an explicit count. The stream has no aggregate byte or
- * message cap because Chat history is the canonical authority and must remain
- * rebuildable after privacy mutations regardless of relationship age.
+ * frames, terminated by an explicit count. A production prepare carries the
+ * durable projector claim/version fence that the separate promotion request
+ * must repeat exactly. The stream has no aggregate byte or message cap because
+ * Chat history is canonical and must remain privacy-rebuildable at any age.
  */
 export const companionWorkspaceRebuildFrameSchema = z.discriminatedUnion("type", [
   z.object({
@@ -364,11 +397,22 @@ export const companionWorkspaceRebuildFrameSchema = z.discriminatedUnion("type",
     userId: nonEmptyStringSchema,
     characterId: nonEmptyStringSchema,
     messageCount: nonNegativeIntegerSchema,
+    fence: companionWorkspaceRebuildFenceSchema.optional(),
   }).strict(),
   z.object({
     protocolVersion: z.literal(COMPANION_RUNTIME_PROTOCOL_VERSION),
-    type: z.literal("message"),
-    message: companionWorkspaceRebuildMessageSchema,
+    type: z.literal("message_start"),
+    message: companionWorkspaceRebuildMessageHeaderSchema,
+    contentLength: positiveIntegerSchema,
+  }).strict(),
+  z.object({
+    protocolVersion: z.literal(COMPANION_RUNTIME_PROTOCOL_VERSION),
+    type: z.literal("content_chunk"),
+    content: z.string().min(1).max(COMPANION_WORKSPACE_REBUILD_CONTENT_CHUNK_CHARS),
+  }).strict(),
+  z.object({
+    protocolVersion: z.literal(COMPANION_RUNTIME_PROTOCOL_VERSION),
+    type: z.literal("message_complete"),
   }).strict(),
   z.object({
     protocolVersion: z.literal(COMPANION_RUNTIME_PROTOCOL_VERSION),
@@ -379,41 +423,64 @@ export const companionWorkspaceRebuildFrameSchema = z.discriminatedUnion("type",
 
 const COMPANION_WORKSPACE_REBUILD_INGEST_BASE_TIMEOUT_MS = 30_000;
 const COMPANION_WORKSPACE_REBUILD_INGEST_PER_MIB_MS = 5_000;
-const COMPANION_WORKSPACE_REBUILD_MAX_INGEST_TIMEOUT_MS = 1_800_000;
 const COMPANION_WORKSPACE_REBUILD_FIXED_TIMEOUT_MS = 370_000;
-export const COMPANION_WORKSPACE_REBUILD_MAX_TIMEOUT_MS =
-  COMPANION_WORKSPACE_REBUILD_MAX_INGEST_TIMEOUT_MS
-  + COMPANION_WORKSPACE_REBUILD_FIXED_TIMEOUT_MS;
+export const COMPANION_WORKSPACE_REBUILD_MAX_TIMEOUT_MS = 2_000_000_000;
 
-/**
- * The outer request budget must dominate every sidecar child deadline:
- * size-aware ingest + 300s maintain + 30s doctor + 10s status + 30s transport.
- * Three bytes per UTF-16 code unit safely overestimates UTF-8 payload bytes.
- */
-export function companionWorkspaceRebuildBudget(input: {
+export function companionWorkspaceRebuildSessionIngestTimeoutMs(
+  estimatedBytes: number,
+): number {
+  return COMPANION_WORKSPACE_REBUILD_INGEST_BASE_TIMEOUT_MS
+    + Math.ceil(Math.max(0, estimatedBytes) / 1_048_576)
+    * COMPANION_WORKSPACE_REBUILD_INGEST_PER_MIB_MS;
+}
+
+export function companionWorkspaceRebuildMetrics(input: {
   messages: readonly CompanionWorkspaceRebuildMessage[];
-}): { ingestTimeoutMs: number; totalTimeoutMs: number } {
-  if (input.messages.length === 0) {
-    return { ingestTimeoutMs: 0, totalTimeoutMs: COMPANION_WORKSPACE_REBUILD_FIXED_TIMEOUT_MS };
-  }
+}): { messageCount: number; sessionCount: number; estimatedBytes: number } {
+  const sessions = new Set<string>();
   let estimatedBytes = 0;
   for (const message of input.messages) {
-    estimatedBytes += 256 + 3 * (
+    sessions.add(message.sessionId);
+    // JSON escaping can expand one UTF-16 code unit (for example U+0000 or an
+    // unpaired surrogate) to six ASCII bytes. This remains an allocation-free
+    // upper bound for the staged transcript and its transport frames.
+    estimatedBytes += 256 + 6 * (
       message.id.length
       + message.sessionId.length
       + message.content.length
       + message.createdAt.length
     );
   }
-  const ingestTimeoutMs = Math.min(
-    COMPANION_WORKSPACE_REBUILD_MAX_INGEST_TIMEOUT_MS,
-    COMPANION_WORKSPACE_REBUILD_INGEST_BASE_TIMEOUT_MS
-      + Math.ceil(estimatedBytes / 1_048_576)
-      * COMPANION_WORKSPACE_REBUILD_INGEST_PER_MIB_MS,
-  );
   return {
-    ingestTimeoutMs,
-    totalTimeoutMs: ingestTimeoutMs + COMPANION_WORKSPACE_REBUILD_FIXED_TIMEOUT_MS,
+    messageCount: input.messages.length,
+    sessionCount: sessions.size,
+    estimatedBytes,
+  };
+}
+
+/**
+ * The outer request budget must dominate every sidecar child deadline:
+ * size-aware ingest + 300s maintain + 30s doctor + 10s status + 30s transport.
+ * Six bytes per UTF-16 code unit covers the worst JSON escape expansion.
+ */
+export function companionWorkspaceRebuildBudget(input: {
+  messageCount: number;
+  sessionCount: number;
+  estimatedBytes: number;
+}): { totalIngestTimeoutMs: number; totalTimeoutMs: number } {
+  const totalIngestTimeoutMs = input.messageCount === 0
+    ? 0
+    : COMPANION_WORKSPACE_REBUILD_INGEST_BASE_TIMEOUT_MS * input.sessionCount
+      + COMPANION_WORKSPACE_REBUILD_INGEST_PER_MIB_MS * (
+        input.sessionCount
+        + Math.ceil(Math.max(0, input.estimatedBytes) / 1_048_576)
+      );
+  return {
+    totalIngestTimeoutMs,
+    totalTimeoutMs: Math.min(
+      COMPANION_WORKSPACE_REBUILD_MAX_TIMEOUT_MS,
+      totalIngestTimeoutMs + COMPANION_WORKSPACE_REBUILD_FIXED_TIMEOUT_MS,
+    ),
   };
 }
 
@@ -1137,6 +1204,12 @@ export type CompanionWorkspaceRebuild = z.infer<
 >;
 export type CompanionWorkspaceRebuildMessage = z.infer<
   typeof companionWorkspaceRebuildMessageSchema
+>;
+export type CompanionWorkspaceRebuildFence = z.infer<
+  typeof companionWorkspaceRebuildFenceSchema
+>;
+export type CompanionWorkspaceRebuildPromotion = z.infer<
+  typeof companionWorkspaceRebuildPromotionSchema
 >;
 export type CompanionWorkspaceRebuildFrame = z.infer<
   typeof companionWorkspaceRebuildFrameSchema

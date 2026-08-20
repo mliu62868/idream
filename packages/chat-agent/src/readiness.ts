@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
@@ -33,6 +32,7 @@ import {
   companionCompositionDigest,
   resolvedCompanionIgrepConfig,
 } from "./composition";
+import { runBoundedTextCommand } from "./bounded-command";
 
 const require = createRequire(import.meta.url);
 async function packageVersion(name: string): Promise<string> {
@@ -115,29 +115,7 @@ async function textCommand(
   args: string[],
   env: NodeJS.ProcessEnv,
 ): Promise<string> {
-  const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], env });
-  const stdout: Buffer[] = [];
-  const stderr: Buffer[] = [];
-  let bytes = 0;
-  child.stdout.on("data", (chunk: Buffer) => {
-    bytes += chunk.byteLength;
-    if (bytes > 4_194_304) child.kill("SIGKILL");
-    else stdout.push(chunk);
-  });
-  child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-  const timeout = setTimeout(() => child.kill("SIGKILL"), 120_000);
-  const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
-    (resolveResult, reject) => {
-      child.once("error", reject);
-      child.once("close", (code, signal) => resolveResult({ code, signal }));
-    },
-  ).finally(() => clearTimeout(timeout));
-  if (result.code !== 0) {
-    throw new Error(
-      `${command} ${args.join(" ")} failed (${result.code ?? result.signal}): ${Buffer.concat(stderr).toString("utf8").trim()}`,
-    );
-  }
-  return Buffer.concat(stdout).toString("utf8");
+  return runBoundedTextCommand({ command, args, env, timeoutMs: 120_000 });
 }
 
 function normalizedDump(value: string): string {

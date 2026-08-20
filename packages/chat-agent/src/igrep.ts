@@ -1,15 +1,22 @@
-import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, open, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Context } from "@deepseek-ai/cordis";
 import {
-  companionWorkspaceRebuildBudget,
+  companionWorkspaceRebuildSessionIngestTimeoutMs,
   companionWorkspaceRebuildSchema,
-  type CompanionWorkspaceRebuild,
 } from "@idream/shared/chat/companion-runtime";
+import {
+  rebuildSourceMetrics,
+  rebuildSpoolSessions,
+  type CompanionWorkspaceRebuildSource,
+} from "./rebuild-source";
+import {
+  invalidBoundedCommandOutput,
+  runBoundedTextCommand,
+} from "./bounded-command";
 import type {
   MemoryProbe,
   MemoryStatus,
@@ -81,9 +88,6 @@ export interface JsonCommandOptions {
 
 export type RunJsonCommand = (options: JsonCommandOptions) => Promise<unknown>;
 
-const COMMAND_STDOUT_LIMIT_BYTES = 4_194_304;
-const COMMAND_STDERR_LIMIT_BYTES = 65_536;
-
 async function sameRealPath(left: string, right: string): Promise<boolean> {
   try {
     return await realpath(left) === await realpath(right);
@@ -93,55 +97,18 @@ async function sameRealPath(left: string, right: string): Promise<boolean> {
 }
 
 export async function runJsonCommand(options: JsonCommandOptions): Promise<unknown> {
-  throwIfAborted(options.signal);
-  const child = spawn(options.command, options.args, {
-    stdio: ["pipe", "pipe", "pipe"],
-    env: process.env,
+  const stdout = await runBoundedTextCommand({
+    command: options.command,
+    args: options.args,
+    stdin: options.stdin,
+    timeoutMs: options.timeoutMs ?? 10_000,
+    signal: options.signal,
   });
-  const abort = () => child.kill("SIGKILL");
-  options.signal?.addEventListener("abort", abort, { once: true });
-  if (options.signal?.aborted) abort();
-  child.stdin.on("error", () => undefined);
-  const stdout: Buffer[] = [];
-  const stderr: Buffer[] = [];
-  let stdoutBytes = 0;
-  let stderrBytes = 0;
-  let limitFailure: "stdout" | "stderr" | null = null;
-  child.stdout.on("data", (chunk: Buffer) => {
-    stdoutBytes += chunk.byteLength;
-    if (stdoutBytes > COMMAND_STDOUT_LIMIT_BYTES) {
-      limitFailure ??= "stdout";
-      child.kill("SIGKILL");
-    }
-    else stdout.push(chunk);
-  });
-  child.stderr.on("data", (chunk: Buffer) => {
-    const remaining = Math.max(0, COMMAND_STDERR_LIMIT_BYTES - stderrBytes);
-    if (remaining > 0) stderr.push(chunk.subarray(0, remaining));
-    stderrBytes += chunk.byteLength;
-    if (stderrBytes > COMMAND_STDERR_LIMIT_BYTES) {
-      limitFailure ??= "stderr";
-      child.kill("SIGKILL");
-    }
-  });
-  child.stdin.end(options.stdin);
-  const timeout = setTimeout(() => child.kill("SIGKILL"), options.timeoutMs ?? 10_000);
-  const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveResult, reject) => {
-    child.once("error", reject);
-    child.once("close", (code, signal) => resolveResult({ code, signal }));
-  }).finally(() => {
-    clearTimeout(timeout);
-    options.signal?.removeEventListener("abort", abort);
-  });
-  throwIfAborted(options.signal);
-  if (limitFailure) {
-    throw new Error(`igrep_command_${limitFailure}_limit_exceeded`);
+  try {
+    return JSON.parse(stdout);
+  } catch {
+    throw invalidBoundedCommandOutput(stdout);
   }
-  if (result.code !== 0) {
-    const stderrDigest = createHash("sha256").update(Buffer.concat(stderr)).digest("hex");
-    throw new Error(`igrep command failed (${result.code ?? result.signal}; stderr sha256 ${stderrDigest})`);
-  }
-  return JSON.parse(Buffer.concat(stdout).toString("utf8"));
 }
 
 export class IgrepMemoryProbe implements MemoryProbe {
@@ -161,7 +128,9 @@ export class IgrepMemoryProbe implements MemoryProbe {
         lastMaintain?: { at?: unknown } | null;
       };
     };
-    if (payload.error) throw new Error(`igrep memory-status failed: ${JSON.stringify(payload.error)}`);
+    if (payload.error) {
+      throw invalidBoundedCommandOutput(JSON.stringify(payload.error));
+    }
     const dialogueFiles = payload.memory?.dialogueFiles;
     if (!Number.isSafeInteger(dialogueFiles) || Number(dialogueFiles) < 0) {
       throw new Error("igrep memory-status omitted a valid memory.dialogueFiles count");
@@ -194,71 +163,109 @@ export class IgrepMemoryRebuilder {
 
   async rebuild(
     workspace: string,
-    input: CompanionWorkspaceRebuild,
+    input: CompanionWorkspaceRebuildSource,
+    signal?: AbortSignal,
   ): Promise<{ sessions: number; messages: number }> {
-    const request = companionWorkspaceRebuildSchema.parse(input);
-    const budget = companionWorkspaceRebuildBudget(request);
+    const source = "kind" in input ? input : companionWorkspaceRebuildSchema.parse(input);
+    const metrics = rebuildSourceMetrics(source);
     // The transcript is transport input, not canonical memory. Keep it beside
     // the candidate .igrep so atomic promotion cannot retain a second copy.
     const transcriptsRoot = join(workspace, ".idream-rebuild-transcripts");
-    await mkdir(transcriptsRoot, { recursive: true });
-    const bySession = new Map<string, typeof request.messages>();
-    for (const message of request.messages) {
-      const messages = bySession.get(message.sessionId) ?? [];
-      messages.push(message);
-      bySession.set(message.sessionId, messages);
-    }
-    if (request.messages.length > 0) {
-      // INTENT: one canonical relationship rebuild is one igrep ingest unit.
-      // Per-Chat-session commands make the global deadline grow as 30s * N;
-      // session identity remains in Chat authority and does not partition this
-      // relationship's generic-memory workspace.
-      const rebuildSessionId = createHash("sha256")
-        .update(`${request.userId}\0${request.characterId}`)
-        .digest("hex");
-      const transcript = join(transcriptsRoot, `relationship-${rebuildSessionId}.jsonl`);
-      const rows = request.messages.map((message) => JSON.stringify({
-        role: message.role,
-        content: message.content,
-        source_at: message.createdAt,
-        source_timezone: "UTC",
-      }));
-      await writeFile(transcript, `${rows.join("\n")}\n`, "utf8");
+    await mkdir(transcriptsRoot, { recursive: true, mode: 0o700 });
+    await chmod(transcriptsRoot, 0o700);
+    const ingest = async (session: {
+      sessionId: string;
+      transcriptPath: string;
+      messageCount: number;
+      estimatedBytes: number;
+    }) => {
+      throwIfAborted(signal);
       const result = await this.run({
         command: this.command,
         args: [
           "mem",
           "ingest",
           "--transcript",
-          transcript,
+          session.transcriptPath,
           "--workspace",
           workspace,
           "--agent",
           "deepseek-harness",
           "--session-id",
-          rebuildSessionId,
+          session.sessionId,
         ],
-        timeoutMs: budget.ingestTimeoutMs,
+        timeoutMs: companionWorkspaceRebuildSessionIngestTimeoutMs(
+          session.estimatedBytes,
+        ),
+        signal,
       });
       const record = result && typeof result === "object" && !Array.isArray(result)
         ? result as Record<string, unknown>
         : {};
-      if (record.events !== request.messages.length || typeof record.dialoguePath !== "string") {
-        throw new Error("igrep ingest did not verify the relationship rebuild transcript");
+      if (record.events !== session.messageCount || typeof record.dialoguePath !== "string") {
+        throw new Error(`igrep ingest did not verify session ${session.sessionId}`);
+      }
+    };
+    if ("kind" in source) {
+      for await (const session of rebuildSpoolSessions(source)) await ingest(session);
+    } else {
+      let current: {
+        sessionId: string;
+        transcriptPath: string;
+        messageCount: number;
+        estimatedBytes: number;
+        handle: Awaited<ReturnType<typeof open>>;
+      } | undefined;
+      const finish = async () => {
+        if (!current) return;
+        await current.handle.sync();
+        await current.handle.close();
+        await ingest(current);
+        current = undefined;
+      };
+      try {
+        for (const message of source.messages) {
+          if (current?.sessionId !== message.sessionId) {
+            await finish();
+            const digest = createHash("sha256").update(message.sessionId).digest("hex");
+            const transcriptPath = join(transcriptsRoot, `session-${digest}.jsonl`);
+            current = {
+              sessionId: message.sessionId,
+              transcriptPath,
+              messageCount: 0,
+              estimatedBytes: 0,
+              handle: await open(transcriptPath, "wx", 0o600),
+            };
+          }
+          const row = `${JSON.stringify({
+            role: message.role,
+            content: message.content,
+            source_at: message.createdAt,
+            source_timezone: "UTC",
+          })}\n`;
+          await current.handle.write(row);
+          current.messageCount += 1;
+          current.estimatedBytes += Buffer.byteLength(row);
+        }
+        await finish();
+      } finally {
+        await current?.handle.close().catch(() => undefined);
       }
     }
     await this.run({
       command: this.command,
       args: ["mem", "maintain", "--workspace", workspace, "--rebuild"],
       timeoutMs: 300_000,
+      signal,
     });
     await this.run({
       command: this.command,
       args: ["mem", "doctor", "--workspace", workspace, "--json", "--strict"],
       timeoutMs: 30_000,
+      signal,
     });
     const status = await this.probe.status(workspace);
-    const expectedDialogueFiles = request.messages.length > 0 ? 1 : 0;
+    const expectedDialogueFiles = metrics.sessionCount;
     if (status.dialogueFiles !== expectedDialogueFiles) {
       throw new Error(
         `igrep rebuild dialogue count mismatch: expected ${expectedDialogueFiles}, got ${status.dialogueFiles}`,
@@ -267,10 +274,10 @@ export class IgrepMemoryRebuilder {
     if ((status.pendingProfileRows ?? 0) > 0) {
       throw new Error(`igrep maintain left ${status.pendingProfileRows} profile rows pending`);
     }
-    if (request.messages.length > 0 && !status.lastMaintainAt) {
+    if (metrics.messageCount > 0 && !status.lastMaintainAt) {
       throw new Error("igrep rebuild did not expose a completed maintain pass");
     }
-    return { sessions: bySession.size, messages: request.messages.length };
+    return { sessions: metrics.sessionCount, messages: metrics.messageCount };
   }
 }
 
@@ -287,19 +294,18 @@ function objectRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-export async function igrepVersion(command: string): Promise<string> {
-  const child = spawn(command, ["--version"], { stdio: ["ignore", "pipe", "pipe"] });
-  const stdout: Buffer[] = [];
-  const stderr: Buffer[] = [];
-  child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
-  child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-  const result = await new Promise<number | null>((resolveResult, reject) => {
-    child.once("error", reject);
-    child.once("close", resolveResult);
+export async function igrepVersion(
+  command: string,
+  options: { timeoutMs?: number; signal?: AbortSignal } = {},
+): Promise<string> {
+  const stdout = await runBoundedTextCommand({
+    command,
+    args: ["--version"],
+    timeoutMs: options.timeoutMs ?? 10_000,
+    signal: options.signal,
   });
-  if (result !== 0) throw new Error(Buffer.concat(stderr).toString("utf8").trim() || "igrep --version failed");
-  const match = /(?:^|\s)(\d+\.\d+\.\d+)(?:\s|$)/.exec(Buffer.concat(stdout).toString("utf8").trim());
-  if (!match?.[1]) throw new Error("igrep --version did not return a semantic version");
+  const match = /(?:^|\s)(\d+\.\d+\.\d+)(?:\s|$)/.exec(stdout.trim());
+  if (!match?.[1]) throw invalidBoundedCommandOutput(stdout);
   return match[1];
 }
 
