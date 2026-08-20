@@ -12,6 +12,39 @@ afterEach(async () => {
   }));
 });
 
+function adapterFor(baseUrl: string): OpenAiCompatibleAdapter {
+  return new OpenAiCompatibleAdapter({
+    profile: {
+      tier: "test",
+      adapter: "openai-compatible-v1",
+      provider: "openrouter",
+      baseUrl,
+      model: "deepseek/test",
+      supportsTools: true,
+      maxOutputTokens: 16,
+      timeout: { firstTokenMs: 1_000, idleMs: 1_000, completionMs: 5_000 },
+      sampling: {
+        temperature: 0.9,
+        topP: 0.95,
+        repetitionPenalty: 1.05,
+        structuredTemperature: 0.2,
+      },
+    },
+    apiKey: "provider-secret",
+    openRouterProviderOnly: ["DeepSeek"],
+  });
+}
+
+async function drain(adapter: OpenAiCompatibleAdapter): Promise<void> {
+  for await (const _chunk of adapter.stream({
+    provider: "openrouter",
+    model: "deepseek/test",
+    messages: [],
+  })) {
+    // Drain the stream so response limits and terminal validation run.
+  }
+}
+
 describe("OpenAI-compatible DSH adapter", () => {
   it("pins OpenRouter routing and preserves streamed usage and finish", async () => {
     let requestBody: Record<string, unknown> | undefined;
@@ -300,5 +333,49 @@ describe("OpenAI-compatible DSH adapter", () => {
     expect((thrown as Error).message).toMatch(/HTTP 422 \(body sha256 [a-f0-9]{64}\)/);
     expect(JSON.stringify(thrown)).not.toContain(sentinel);
     expect((thrown as Error).message).not.toContain(sentinel);
+  });
+
+  it("aborts an SSE stream whose undelimited event exceeds the byte limit", async () => {
+    const provider = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.end(`data: ${"x".repeat(1_100_000)}`);
+    });
+    servers.push(provider);
+    provider.listen(0, "127.0.0.1");
+    await once(provider, "listening");
+    const address = provider.address();
+    if (!address || typeof address === "string") throw new Error("missing provider address");
+    const adapter = adapterFor(`http://127.0.0.1:${address.port}/v1`);
+
+    await expect(drain(adapter)).rejects.toMatchObject({
+      code: "PROVIDER_STREAM_LIMIT",
+      message: "provider SSE event exceeded the configured byte limit",
+    });
+  });
+
+  it("aborts cumulative decoded output before block state can grow without bound", async () => {
+    const provider = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      const delta = "y".repeat(60_000);
+      for (let index = 0; index < 36; index += 1) {
+        response.write(`data: ${JSON.stringify({
+          id: "provider-request-limit",
+          provider: "DeepSeek",
+          choices: [{ delta: { content: delta }, finish_reason: null }],
+        })}\n\n`);
+      }
+      response.end();
+    });
+    servers.push(provider);
+    provider.listen(0, "127.0.0.1");
+    await once(provider, "listening");
+    const address = provider.address();
+    if (!address || typeof address === "string") throw new Error("missing provider address");
+    const adapter = adapterFor(`http://127.0.0.1:${address.port}/v1`);
+
+    await expect(drain(adapter)).rejects.toMatchObject({
+      code: "PROVIDER_STREAM_LIMIT",
+      message: "provider output exceeded the configured byte limit",
+    });
   });
 });

@@ -51,6 +51,10 @@ interface BlockState {
   name?: string;
 }
 
+const MAX_PROVIDER_STREAM_BYTES = 4_194_304;
+const MAX_PROVIDER_EVENT_BYTES = 1_048_576;
+const MAX_PROVIDER_OUTPUT_BYTES = 2_097_152;
+
 function chatCompletionsUrl(baseUrl: string): string {
   const url = new URL(baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`);
   url.pathname = `${url.pathname.replace(/\/$/, "")}/chat/completions`;
@@ -258,6 +262,20 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
       let usage: TokenUsage | undefined;
       let responseId: string | undefined;
       let actualProvider: string | undefined;
+      let responseBytes = 0;
+      let outputBytes = 0;
+      const failStreamLimit = (message: string): never => {
+        const error = new LlmError(message, "PROVIDER_STREAM_LIMIT");
+        timeout.abort(error);
+        throw error;
+      };
+      const appendOutput = (state: BlockState, value: string): void => {
+        outputBytes += Buffer.byteLength(value);
+        if (outputBytes > MAX_PROVIDER_OUTPUT_BYTES) {
+          failStreamLimit("provider output exceeded the configured byte limit");
+        }
+        state.text += value;
+      };
       const ensure = (key: string, type: BlockState["type"], id?: string): [BlockState, StreamChunk[]] => {
         const existing = blocks.get(key);
         if (existing) return [existing, []];
@@ -276,14 +294,14 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
         if (delta?.content) {
           const [state, start] = ensure("text", "text");
           chunks.push(...start);
-          state.text += delta.content;
+          appendOutput(state, delta.content);
           chunks.push({ type: "text-delta", index: state.index, text: delta.content });
         }
         const reasoning = delta?.reasoning_content ?? delta?.reasoning;
         if (reasoning) {
           const [state, start] = ensure("reasoning", "reasoning");
           chunks.push(...start);
-          state.text += reasoning;
+          appendOutput(state, reasoning);
           chunks.push({ type: "reasoning-delta", index: state.index, text: reasoning });
         }
         for (const call of delta?.tool_calls ?? []) {
@@ -293,7 +311,7 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
           state.id ??= call.id;
           state.name ??= call.function?.name;
           const argumentsDelta = call.function?.arguments ?? "";
-          state.text += argumentsDelta;
+          appendOutput(state, argumentsDelta);
           if (!state.id) throw new LlmError("provider tool call omitted its id", "INVALID_RESPONSE");
           chunks.push({
             type: "tool-call-delta",
@@ -308,11 +326,18 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
 
       for await (const text of response.body.pipeThrough(new TextDecoderStream())) {
         timeout.resetIdle(this.profile.timeout.idleMs);
+        responseBytes += Buffer.byteLength(text);
+        if (responseBytes > MAX_PROVIDER_STREAM_BYTES) {
+          failStreamLimit("provider stream exceeded the configured byte limit");
+        }
         buffer += text;
         for (;;) {
           const boundary = /\r?\n\r?\n/.exec(buffer);
           if (!boundary || boundary.index === undefined) break;
           const event = buffer.slice(0, boundary.index);
+          if (Buffer.byteLength(event) > MAX_PROVIDER_EVENT_BYTES) {
+            failStreamLimit("provider SSE event exceeded the configured byte limit");
+          }
           buffer = buffer.slice(boundary.index + boundary[0].length);
           const data = event
             .split(/\r?\n/)
@@ -329,6 +354,9 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
             firstToken = false;
           }
           for (const chunk of chunks) yield chunk;
+        }
+        if (Buffer.byteLength(buffer) > MAX_PROVIDER_EVENT_BYTES) {
+          failStreamLimit("provider SSE event exceeded the configured byte limit");
         }
       }
 
