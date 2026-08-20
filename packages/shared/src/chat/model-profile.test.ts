@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { characterSoulLiveCanarySchema } from "../admin/contracts/characters-release.js";
 import { requiredChatCanaryProfiles, resolveChatModelProfile } from "./model-profile.js";
 
 describe("chat model profile", () => {
@@ -47,14 +48,28 @@ describe("chat model profile", () => {
   });
 
   it("requires one DSH runtime canary even when retired plan aliases are set", () => {
-    expect(requiredChatCanaryProfiles({
+    const canaries = requiredChatCanaryProfiles({
       CHAT_MODEL_PROVIDER: "openai",
       CHAT_MODEL_NAME: "base",
       CHAT_MODEL_FREE: "free",
       CHAT_MODEL_PREMIUM: "premium",
       CHAT_MODEL_DELUXE: "deluxe",
-    })).toMatchObject([
-      { tier: "default", profile: { model: "base" } },
-    ]);
+    });
+    expect(canaries).toMatchObject([{ tier: "free", profile: { model: "base" } }]);
+    const canary = canaries[0];
+    expect(characterSoulLiveCanarySchema.safeParse({
+      tier: canary.tier,
+      provider: canary.profile.provider,
+      model: canary.profile.model,
+      adapter: canary.profile.adapter,
+      characterContentVersionId: "content_1",
+      soulFingerprint: "fingerprint",
+      compilerVersion: "character-soul-1",
+      firstTokenMs: 1,
+      totalMs: 2,
+      coldStart: false,
+      result: "passed",
+      evidenceRef: "test://dsh-canary",
+    }).success).toBe(true);
   });
 });

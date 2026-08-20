@@ -90,7 +90,9 @@ export function resolveChatModelProfile(
 export function requiredChatCanaryProfiles(source: Environment = process.env) {
   // INVARIANT: DSH has one configured provider/model surface. Plan entitlements
   // must never silently select an unproven provider alias.
-  return [{ tier: "default", profile: resolveChatModelProfile(source) }];
+  // `free` is the canonical existing evidence lane; it labels the one runtime,
+  // not a plan-specific model selection.
+  return [{ tier: "free", profile: resolveChatModelProfile(source) }];
 }
 
 function parseProvider(value: string): ChatModelProvider {
