@@ -181,6 +181,7 @@ function fakePrisma(
     status?: "pending" | "generating";
     attempt?: number;
     strictClaimCas?: boolean;
+    failToolReservation?: boolean;
   } = {},
 ) {
   const attachmentCreates: CreateCall[] = [];
@@ -330,6 +331,15 @@ function fakePrisma(
             },
       updateMany: async (call: CreateCall) => {
         rootMessageUpdates.push(call);
+        const nextTrace = call.data.runtimeTrace;
+        if (
+          assistantState.failToolReservation &&
+          nextTrace &&
+          typeof nextTrace === "object" &&
+          "companionTool" in nextTrace
+        ) {
+          return { count: 0 };
+        }
         if (typeof call.data.status === "string") currentAssistantStatus = call.data.status;
         if (call.data.runtimeTrace && typeof call.data.runtimeTrace === "object") {
           currentAssistantTrace = call.data.runtimeTrace as Record<string, unknown>;
@@ -367,7 +377,14 @@ function fakePrisma(
     $transaction: async <T>(callback: (client: typeof tx) => Promise<T>) => callback(tx),
   } as unknown as ChatPrismaClient;
 
-  return { prisma, attachmentCreates, outboxCreates, messageUpdates, rootMessageUpdates };
+  return {
+    prisma,
+    attachmentCreates,
+    outboxCreates,
+    messageUpdates,
+    rootMessageUpdates,
+    assistantTrace: () => currentAssistantTrace,
+  };
 }
 
 const context = {
@@ -2054,7 +2071,7 @@ describe("chat generate agent image tool", () => {
     }
   });
 
-  it("replays a durable DSH tool reservation without creating a second identity", async () => {
+  it("[Gate T] replays a durable DSH tool reservation without creating a second identity", async () => {
     const restoreEnv = installDshRolloutEnv();
     const reservation = {
       attemptId: "msg_assistant:1",
@@ -2135,6 +2152,150 @@ describe("chat generate agent image tool", () => {
       restoreEnv();
     }
   });
+
+  it("[Gate T] reports unknown and creates no effect when tool reservation authority is lost", async () => {
+    const restoreEnv = installDshRolloutEnv();
+    try {
+      let toolResult: unknown;
+      dshRunMock.mockImplementation(async (_invocation, port) => {
+        toolResult = await port.executeTool({
+          attemptId: "msg_assistant:1",
+          callId: "call-lost-authority",
+          name: "generate_image_async",
+          arguments: { prompt: "Mira beside the observatory after authority changed" },
+        });
+      });
+      const { prisma, attachmentCreates, outboxCreates } = fakePrisma(
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        0n,
+        { status: "pending", strictClaimCas: true, failToolReservation: true },
+      );
+
+      await expect(processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        prisma,
+        { projectorPrisma: prisma, jobAttempt: { attemptsMade: 0, maxAttempts: 1 } },
+      )).resolves.toEqual({ status: "failed" });
+
+      expect(toolResult).toMatchObject({
+        outcome: "unknown",
+        error: { code: "tool_reservation_authority_lost", retryable: false },
+      });
+      expect(attachmentCreates).toHaveLength(0);
+      expect(outboxCreates.filter((call) => call.data.eventType === CHAT_TO_MAIN_EVENTS.imageRequested)).toHaveLength(0);
+    } finally {
+      restoreEnv();
+    }
+  });
+
+  it.each(["before_intent", "after_result"] as const)(
+    "[Gate T] converges a sidecar crash %s and creates one image effect after restart",
+    async (crashPoint) => {
+    const restoreEnv = installDshRolloutEnv();
+    const reservation = {
+      attemptId: "msg_assistant:1",
+      callId: "call-crash-replay",
+      name: "generate_image_async" as const,
+      arguments: {
+        prompt: "Mira beside the observatory window after restart",
+        caption: "The same view, recovered.",
+      },
+    };
+    try {
+      let runs = 0;
+      const toolResults: unknown[] = [];
+      dshRunMock.mockImplementation(async (invocation, port) => {
+        runs += 1;
+        if (runs === 1 && crashPoint === "before_intent") {
+          throw new Error("sidecar disconnected before the tool intent");
+        }
+        toolResults.push(await port.executeTool(reservation));
+        if (runs === 1) {
+          throw new Error("sidecar disconnected after the tool result");
+        }
+        await port.emit({
+          type: "text_delta",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 1,
+          occurredAt: new Date().toISOString(),
+          delta: "the recovered image is queued",
+        });
+        const candidate = {
+          attemptId: invocation.attemptId,
+          content: "the recovered image is queued",
+          finishReason: "stop" as const,
+          provider: "mock",
+          model: "local-model",
+          usage: { promptTokens: 10, completionTokens: 5, reasoningTokens: 0 },
+          execution: { steps: 2, toolCalls: 1 },
+          completedAt: new Date().toISOString(),
+        };
+        await port.emit({
+          type: "terminal_candidate",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 2,
+          occurredAt: new Date().toISOString(),
+          candidate,
+        });
+        await port.commit(candidate);
+      });
+      const { prisma, attachmentCreates, outboxCreates, assistantTrace } =
+        fakePrisma(
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          0n,
+          { status: "pending", strictClaimCas: true },
+        );
+
+      await expect(processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        prisma,
+        { projectorPrisma: prisma, jobAttempt: { attemptsMade: 0, maxAttempts: 2 } },
+      )).rejects.toThrow(
+        crashPoint === "before_intent"
+          ? "sidecar disconnected before the tool intent"
+          : "sidecar disconnected after the tool result",
+      );
+      expect(attachmentCreates).toHaveLength(0);
+      expect(outboxCreates.filter((call) => call.data.eventType === CHAT_TO_MAIN_EVENTS.imageRequested)).toHaveLength(0);
+
+      await expect(processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        prisma,
+        { projectorPrisma: prisma, jobAttempt: { attemptsMade: 1, maxAttempts: 2 } },
+      )).resolves.toEqual({ status: "sent" });
+
+      expect(toolResults).toEqual(Array.from(
+        { length: crashPoint === "before_intent" ? 1 : 2 },
+        () => expect.objectContaining({
+          outcome: "succeeded",
+          output: expect.objectContaining({ effectId: "msg_assistant:1:call-crash-replay" }),
+        }),
+      ));
+      expect(attachmentCreates).toHaveLength(1);
+      expect(outboxCreates.filter((call) => call.data.eventType === CHAT_TO_MAIN_EVENTS.imageRequested)).toHaveLength(1);
+      expect(assistantTrace()?.companionTool).toEqual(reservation);
+
+      await expect(processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        prisma,
+        { projectorPrisma: prisma, jobAttempt: { attemptsMade: 1, maxAttempts: 2 } },
+      )).resolves.toEqual({ status: "skipped" });
+      expect(runs).toBe(2);
+      expect(attachmentCreates).toHaveLength(1);
+      expect(outboxCreates.filter((call) => call.data.eventType === CHAT_TO_MAIN_EVENTS.imageRequested)).toHaveLength(1);
+    } finally {
+      restoreEnv();
+    }
+    },
+  );
 
   it("renews the generation lease while the provider is silent", async () => {
     vi.useFakeTimers();

@@ -10,6 +10,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:pure": "vitest run --config vitest.pure.config.ts",
     "build": "echo 'source-only (tsx runtime), no build'",
     "db:generate": "prisma generate",
     "db:apply": "bash ../../db/sql/apply-validate.sh",

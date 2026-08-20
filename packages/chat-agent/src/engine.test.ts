@@ -561,7 +561,7 @@ describe("programmatic DSH companion runtime", () => {
     await expect(readdir(join(root, "canonical"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("runs a real two-step DSH tool loop and reuses an identical tool result", async () => {
+  it("[Gate T] runs a real two-step DSH tool loop and reuses an identical tool result", async () => {
     const root = await mkdtemp(join(tmpdir(), "chat-agent-tool-"));
     temporary.push(root);
     const adapter = new ToolThenTextAdapter();
@@ -679,6 +679,211 @@ describe("programmatic DSH companion runtime", () => {
       source: { kind: "tool", callId: "call-image-1" },
     });
     expect(collected.some((frame) => frame.type === "event" && frame.event.type === "tool_finished")).toBe(true);
+  });
+
+  it("[Gate T] projects a failed Chat tool outcome as a DSH tool error before the recovery step", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chat-agent-tool-error-"));
+    temporary.push(root);
+    const adapter = new ToolThenTextAdapter();
+    const run = invocation();
+    run.invocationId = "inv-tool-error";
+    run.attemptId = "attempt-tool-error";
+    run.preparedTurn.tools.push({
+      name: "generate_image_async",
+      description: "Generate a companion image asynchronously.",
+      parameters: {
+        type: "object",
+        properties: { prompt: { type: "string" } },
+        required: ["prompt"],
+      },
+    });
+    const engine = new CompanionEngine({
+      workspaces: new AttemptWorkspaceStore({
+        canonicalRoot: join(root, "canonical"),
+        privateRoot: join(root, "private"),
+        memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
+      }),
+      plugin: async () => ({ name: "igrep", apply() {} }),
+      adapter: () => adapter,
+      igrepCommand: "igrep",
+      igrepLlm: IGREP_LLM,
+    });
+    const server = createCompanionServer({
+      authToken: AUTH_TOKEN,
+      readiness: async () => { throw new Error("not used"); },
+      invocation: engine,
+    });
+    servers.push(server);
+    const baseUrl = await listen(server);
+    const response = await fetch(`${baseUrl}/v1/invocations`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${AUTH_TOKEN}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ protocolVersion: 1, type: "run", invocation: run }),
+    });
+    const collected = await frames(response, async (frame) => {
+      if (frame.type === "tool_call") {
+        const control = await fetch(
+          `${baseUrl}/v1/invocations/${run.invocationId}/tool-result`,
+          {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${AUTH_TOKEN}`,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({
+              protocolVersion: 1,
+              type: "tool_result",
+              invocationId: run.invocationId,
+              result: {
+                attemptId: run.attemptId,
+                callId: frame.call.callId,
+                name: frame.call.name,
+                outcome: "failed",
+                error: {
+                  code: "image_entitlement_denied",
+                  message: "image generation is unavailable for this turn",
+                  retryable: false,
+                },
+              },
+            }),
+          },
+        );
+        expect(control.status).toBe(200);
+      } else if (frame.type === "commit") {
+        const control = await fetch(`${baseUrl}/v1/invocations/${run.invocationId}/commit`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${AUTH_TOKEN}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            protocolVersion: 1,
+            type: "commit_ack",
+            invocationId: run.invocationId,
+            ack: {
+              attemptId: run.attemptId,
+              accepted: true,
+              status: "committed",
+              terminalMessageId: "assistant-tool-error-terminal",
+              committedAt: new Date().toISOString(),
+            },
+          }),
+        });
+        expect(control.status).toBe(200);
+      }
+    });
+
+    expect(adapter.calls).toHaveLength(2);
+    expect(adapter.calls[1]?.messages.at(-1)).toMatchObject({
+      role: "user",
+      source: { kind: "tool", callId: "call-image-1" },
+      content: [{
+        type: "tool-result",
+        toolCallId: "call-image-1",
+        isError: true,
+        content: [{ type: "text", text: expect.stringContaining("image_entitlement_denied") }],
+      }],
+    });
+    expect(collected).toContainEqual(expect.objectContaining({
+      type: "event",
+      event: expect.objectContaining({
+        type: "tool_finished",
+        callId: "call-image-1",
+        outcome: "failed",
+      }),
+    }));
+  });
+
+  it("[Gate T] classifies a timed-out effectful tool as unknown and lets DSH recover in the next step", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chat-agent-tool-timeout-"));
+    temporary.push(root);
+    const adapter = new ToolThenTextAdapter();
+    const run = invocation();
+    run.invocationId = "inv-tool-timeout";
+    run.attemptId = "attempt-tool-timeout";
+    run.preparedTurn.profile.timeout.completionMs = 20;
+    run.preparedTurn.tools.push({
+      name: "generate_image_async",
+      description: "Generate a companion image asynchronously.",
+      parameters: {
+        type: "object",
+        properties: { prompt: { type: "string" } },
+        required: ["prompt"],
+      },
+    });
+    const engine = new CompanionEngine({
+      workspaces: new AttemptWorkspaceStore({
+        canonicalRoot: join(root, "canonical"),
+        privateRoot: join(root, "private"),
+        memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
+      }),
+      plugin: async () => ({ name: "igrep", apply() {} }),
+      adapter: () => adapter,
+      igrepCommand: "igrep",
+      igrepLlm: IGREP_LLM,
+    });
+    const server = createCompanionServer({
+      authToken: AUTH_TOKEN,
+      readiness: async () => { throw new Error("not used"); },
+      invocation: engine,
+    });
+    servers.push(server);
+    const baseUrl = await listen(server);
+    const response = await fetch(`${baseUrl}/v1/invocations`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${AUTH_TOKEN}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ protocolVersion: 1, type: "run", invocation: run }),
+    });
+    const collected = await frames(response, async (frame) => {
+      if (frame.type !== "commit") return;
+      const control = await fetch(`${baseUrl}/v1/invocations/${run.invocationId}/commit`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${AUTH_TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          protocolVersion: 1,
+          type: "commit_ack",
+          invocationId: run.invocationId,
+          ack: {
+            attemptId: run.attemptId,
+            accepted: true,
+            status: "committed",
+            terminalMessageId: "assistant-tool-timeout-terminal",
+            committedAt: new Date().toISOString(),
+          },
+        }),
+      });
+      expect(control.status).toBe(200);
+    });
+
+    expect(collected.filter((frame) => frame.type === "tool_call")).toHaveLength(1);
+    expect(collected).toContainEqual(expect.objectContaining({
+      type: "event",
+      event: expect.objectContaining({
+        type: "tool_finished",
+        callId: "call-image-1",
+        outcome: "unknown",
+      }),
+    }));
+    expect(adapter.calls).toHaveLength(2);
+    expect(adapter.calls[1]?.messages.at(-1)).toMatchObject({
+      content: [{
+        type: "tool-result",
+        isError: true,
+        content: [{ type: "text", text: "Error: tool call timed out after 20ms" }],
+      }],
+    });
+    expect(collected.find((frame) => frame.type === "commit")).toMatchObject({
+      candidate: { execution: { steps: 2, toolCalls: 1 } },
+    });
   });
 
   it.each(["normal", "shadow"] as const)(

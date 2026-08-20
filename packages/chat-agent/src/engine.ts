@@ -293,19 +293,32 @@ class ToolBridge {
     const onAbort = () => aborted.reject(signal.reason ?? new Error("tool call aborted"));
     if (signal.aborted) onAbort();
     else signal.addEventListener("abort", onAbort, { once: true });
+    let result: CompanionToolResult;
     try {
-      const result = await Promise.race([entry.waiting.promise, aborted.promise]);
+      result = await Promise.race([entry.waiting.promise, aborted.promise]);
+    } catch (error) {
+      // A timeout/cancel after durable intent cannot prove that the external
+      // effect failed. Publish an unknown terminal observation so Chat can
+      // reconcile by attemptId + callId without treating silence as success.
       this.event({
         type: "tool_finished",
         callId: call.callId,
         name: call.name,
-        outcome: result.outcome,
+        outcome: "unknown",
         durationMs: Math.max(0, Date.now() - entry.startedAt),
       });
-      return result;
+      throw error;
     } finally {
       signal.removeEventListener("abort", onAbort);
     }
+    this.event({
+      type: "tool_finished",
+      callId: call.callId,
+      name: call.name,
+      outcome: result.outcome,
+      durationMs: Math.max(0, Date.now() - entry.startedAt),
+    });
+    return result;
   }
 
   accept(result: CompanionToolResult): void {
@@ -613,6 +626,13 @@ export class CompanionEngine implements InvocationService {
                   arguments: args,
                 } as CompanionToolCall;
                 const result = await bridge.execute(call, execution.signal);
+                if (result.outcome !== "succeeded") {
+                  // INVARIANT: Chat owns the effect outcome, while DSH owns the
+                  // think-act-observe loop. A failed/unknown Chat result must
+                  // enter that loop as a tool error instead of a successful
+                  // JSON value or the next step may claim an effect happened.
+                  throw new Error(`${result.error.code}: ${result.error.message}`);
+                }
                 return { payload: JSON.stringify(result) } satisfies JsonValue;
               },
             };

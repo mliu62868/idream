@@ -1882,25 +1882,17 @@ async function processDshCompanionTurn(
         },
       };
     } else {
-      imageToolCall = toolCallFromPlan(parsed);
-      toolIdentity = { attemptId: call.attemptId, callId: call.callId };
-      // SPEC: execution here is a durable reservation. The only external image
-      // effect is created later inside Chat's terminal CAS transaction.
-      result = {
+      const reservation = {
         attemptId: call.attemptId,
         callId: call.callId,
         name: call.name,
-        outcome: "succeeded",
-        output: {
-          status: "accepted_for_terminal_commit",
-          effectId: `${call.attemptId}:${call.callId}`,
-        },
+        arguments: call.arguments,
       };
       const trace = JSON.parse(JSON.stringify({
         ...runtimeTraceFacts,
-        companionTool: { ...toolIdentity, name: call.name, arguments: call.arguments },
+        companionTool: reservation,
       })) as Prisma.InputJsonValue;
-      await prisma.message.updateMany({
+      const reserved = await prisma.message.updateMany({
         where: {
           id: payload.assistantMessageId,
           status: "generating",
@@ -1908,6 +1900,35 @@ async function processDshCompanionTurn(
         },
         data: { runtimeTrace: trace },
       });
+      if (reserved.count !== 1) {
+        result = {
+          attemptId: call.attemptId,
+          callId: call.callId,
+          name: call.name,
+          outcome: "unknown",
+          error: {
+            code: "tool_reservation_authority_lost",
+            message: "Chat lost attempt authority before the tool intent became durable",
+            retryable: false,
+          },
+        };
+      } else {
+        imageToolCall = toolCallFromPlan(parsed);
+        toolIdentity = { attemptId: call.attemptId, callId: call.callId };
+        // SPEC: execution here is a durable reservation. The only external
+        // image effect is created later inside Chat's terminal CAS transaction.
+        runtimeTraceFacts.companionTool = reservation;
+        result = {
+          attemptId: call.attemptId,
+          callId: call.callId,
+          name: call.name,
+          outcome: "succeeded",
+          output: {
+            status: "accepted_for_terminal_commit",
+            effectId: `${call.attemptId}:${call.callId}`,
+          },
+        };
+      }
     }
     toolResults.set(call.callId, { fingerprint, result });
     return result;

@@ -16,6 +16,7 @@ export default defineConfig({
       APP_ENV: "test",
       NODE_ENV: "test",
       CHAT_BFF_SIGNING_SECRET: "test-bff-secret-0123456789abcdef",
+      CHAT_DATABASE_URL: "postgresql://pure:unused@127.0.0.1:1/pure?schema=chat",
       CHAT_MODEL_PROVIDER: "mock",
       MODERATION_PROVIDER: "mock",
     },
