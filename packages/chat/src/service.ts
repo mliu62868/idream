@@ -292,11 +292,14 @@ export async function getSession(
   }
   return {
     session,
-    messages: messages.map((message) => ({
-      ...message,
-      scene: runtimeScene(message.runtimeTrace),
-      attachments: byMessage.get(message.id) ?? [],
-    })),
+    messages: messages.map((message) => {
+      const { runtimeTrace, ...publicMessage } = message;
+      return {
+        ...publicMessage,
+        scene: runtimeScene(runtimeTrace),
+        attachments: byMessage.get(message.id) ?? [],
+      };
+    }),
   };
 }
 

@@ -992,6 +992,131 @@ export const companionProbeDshEvidenceSchema = z
   })
   .strict();
 
+/**
+ * Project internal attempt trace into the only content-free shape an operator
+ * probe may consume. Raw trace objects never cross the public Chat API.
+ */
+export function projectCompanionProbeDshEvidence(
+  value: unknown,
+  mode: "normal" | "private",
+): z.infer<typeof companionProbeDshEvidenceSchema> {
+  const trace = probeRecord(value);
+  const runtime = probeRecord(trace.companionRuntime);
+  const dsh = probeRecord(trace.dsh);
+  const telemetry = probeRecord(trace.primaryTelemetry);
+  const memory = probeRecord(telemetry.memory);
+  const sidecar = probeRecord(telemetry.sidecar);
+  const companion = probeRecord(trace.companion);
+  const attribution = probeRecord(companion.attribution);
+  const expectedProfile = mode === "normal"
+    ? "idream-companion-memory"
+    : "idream-companion-private";
+  const failures: string[] = [];
+  const expectFact = (condition: boolean, field: string) => {
+    if (!condition) failures.push(field);
+  };
+
+  expectFact(runtime.runtime === "dsh", "companionRuntime.runtime");
+  expectFact(runtime.memoryBackend === "igrep-dsh", "companionRuntime.memoryBackend");
+  expectFact(runtime.profile === expectedProfile, "companionRuntime.profile");
+  expectFact(runtime.private === (mode === "private"), "companionRuntime.private");
+  expectFact(dsh.memoryMode === mode, "dsh.memoryMode");
+  expectFact(
+    typeof dsh.profileDigest === "string" && /^[a-f0-9]{64}$/u.test(dsh.profileDigest),
+    "dsh.profileDigest",
+  );
+  expectFact(
+    typeof sidecar.profileDigest === "string" && sidecar.profileDigest === dsh.profileDigest,
+    "primaryTelemetry.sidecar.profileDigest",
+  );
+  expectFact(
+    telemetry.schemaVersion === 1 && telemetry.runtime === "dsh",
+    "primaryTelemetry.runtime",
+  );
+  expectFact(telemetry.terminalStatus === "sent", "primaryTelemetry.terminalStatus");
+  expectFact(telemetry.truncated === false, "primaryTelemetry.truncated");
+  expectFact(telemetry.sseTerminal === "done", "primaryTelemetry.sseTerminal");
+  expectFact(
+    typeof telemetry.provider === "string" && telemetry.provider === dsh.provider &&
+      typeof telemetry.model === "string" && telemetry.model === dsh.model,
+    "primaryTelemetry.providerModel",
+  );
+
+  if (mode === "normal") {
+    expectFact(companion.profile === expectedProfile, "companion.profile");
+    expectFact(
+      memory.outcome === "ingested" || memory.outcome === "ingested_rebuilt",
+      "primaryTelemetry.memory.outcome",
+    );
+    expectFact(
+      typeof memory.settleLagMs === "number" &&
+        Number.isFinite(memory.settleLagMs) && memory.settleLagMs >= 0,
+      "primaryTelemetry.memory.settleLagMs",
+    );
+    expectFact(
+      companion.memoryIngestOutcome === "ingested" ||
+        companion.memoryIngestOutcome === "ingested_rebuilt",
+      "companion.memoryIngestOutcome",
+    );
+    expectFact(probeIsoDate(companion.memoryIngestSettledAt), "companion.memoryIngestSettledAt");
+    expectFact(
+      typeof sidecar.instanceId === "string" &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(sidecar.instanceId) &&
+        probeIsoDate(sidecar.startedAt),
+      "primaryTelemetry.sidecar",
+    );
+    expectFact(
+      (typeof attribution.requestId === "string" && attribution.requestId.length > 0) ||
+        (typeof attribution.actualProvider === "string" && attribution.actualProvider.length > 0),
+      "companion.attribution",
+    );
+  } else {
+    expectFact(trace.outputAuthority === "model", "outputAuthority");
+    expectFact(memory.outcome === "disabled", "primaryTelemetry.memory.outcome");
+  }
+
+  return companionProbeDshEvidenceSchema.parse({
+    ok: failures.length === 0,
+    ...(runtime.runtime === "dsh" ? { runtime: "dsh" as const } : {}),
+    ...(runtime.memoryBackend === "igrep-dsh" ? { memoryBackend: "igrep-dsh" as const } : {}),
+    ...(typeof runtime.profile === "string" ? { profile: runtime.profile } : {}),
+    ...(typeof runtime.private === "boolean" ? { private: runtime.private } : {}),
+    ...(telemetry.runtime === "dsh" ? { primaryRuntime: "dsh" as const } : {}),
+    ...(typeof telemetry.terminalStatus === "string" ? { terminalStatus: telemetry.terminalStatus } : {}),
+    ...(typeof telemetry.sseTerminal === "string" ? { sseTerminal: telemetry.sseTerminal } : {}),
+    ...(typeof telemetry.provider === "string" ? { provider: telemetry.provider } : {}),
+    ...(typeof telemetry.model === "string" ? { model: telemetry.model } : {}),
+    ...(typeof dsh.profileDigest === "string" ? { profileDigest: dsh.profileDigest } : {}),
+    ...(typeof trace.outputAuthority === "string" ? { outputAuthority: trace.outputAuthority } : {}),
+    ...(typeof attribution.requestId === "string" ? { requestId: attribution.requestId } : {}),
+    ...(typeof attribution.actualProvider === "string" ? { actualProvider: attribution.actualProvider } : {}),
+    ...(typeof memory.outcome === "string" ? { memoryOutcome: memory.outcome } : {}),
+    ...(typeof companion.memoryIngestOutcome === "string"
+      ? { memoryIngestOutcome: companion.memoryIngestOutcome }
+      : {}),
+    ...(typeof companion.memoryIngestSettledAt === "string"
+      ? { memorySettledAt: companion.memoryIngestSettledAt }
+      : {}),
+    ...(typeof memory.settleLagMs === "number" ? { memorySettleLagMs: memory.settleLagMs } : {}),
+    ...(typeof sidecar.instanceId === "string" ? { sidecarInstanceId: sidecar.instanceId } : {}),
+    error: failures.length === 0
+      ? null
+      : `DSH ${mode} evidence failed: ${failures.join(", ")}`,
+  });
+}
+
+function probeRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function probeIsoDate(value: unknown): value is string {
+  return typeof value === "string" &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u.test(value) &&
+    Number.isFinite(Date.parse(value));
+}
+
 export type PreparedTurnMessage = z.infer<typeof preparedTurnMessageSchema>;
 export type PreparedTurnProfile = z.infer<typeof preparedTurnProfileSchema>;
 export type PreparedTurnWire = z.infer<typeof preparedTurnWireSchema>;

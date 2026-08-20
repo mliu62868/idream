@@ -10,6 +10,7 @@ import { Prisma } from "../generated/client/client.js";
 import { chatPrisma } from "./db.js";
 import { env } from "./env.js";
 import { FREE_DAILY_MESSAGES } from "@idream/shared/chat/limits";
+import { projectCompanionProbeDshEvidence } from "@idream/shared/chat/companion-runtime";
 import { pipelineEndpoint } from "@idream/shared/env";
 import {
   DEDICATED_CHAT_PROBE_USER_ID,
@@ -39,6 +40,12 @@ export async function dispatchChatAdmin(req: ChatAdminRequest): Promise<ChatAdmi
     if (rest === "/provider-health") return { status: 200, body: await providerHealth() };
     if (rest === "/companion-rollout-evidence") {
       return { status: 200, body: await companionRolloutEvidence(req.query) };
+    }
+    if (rest === "/companion-attempt-evidence") {
+      const evidence = await companionAttemptEvidence(req.query);
+      return evidence
+        ? { status: 200, body: evidence }
+        : { status: 404, body: { error: "not_found" } };
     }
     if (rest === "/sessions") return { status: 200, body: await sessions(req.query) };
     if (rest === "/usage") return { status: 200, body: await usage(req.query) };
@@ -451,6 +458,45 @@ async function companionRolloutEvidence(rawQuery?: Record<string, string>) {
     scope: query.scope,
     ...(query.userId ? { userId: query.userId } : {}),
   });
+}
+
+const companionAttemptEvidenceQuerySchema = z
+  .object({
+    userId: z.literal(DEDICATED_CHAT_PROBE_USER_ID),
+    sessionId: z.string().trim().min(1),
+    messageId: z.string().trim().min(1),
+    mode: z.enum(["normal", "private"]),
+  })
+  .strict();
+
+async function companionAttemptEvidence(rawQuery?: Record<string, string>) {
+  const query = companionAttemptEvidenceQuerySchema.parse(rawQuery ?? {});
+  const row = await chatPrisma.message.findFirst({
+    where: {
+      id: query.messageId,
+      sessionId: query.sessionId,
+      deletedAt: null,
+      session: {
+        userId: query.userId,
+        deletedAt: null,
+      },
+    },
+    select: {
+      id: true,
+      attempt: true,
+      status: true,
+      memoryExtractedAttempt: true,
+      runtimeTrace: true,
+    },
+  });
+  if (!row) return null;
+  return {
+    messageId: row.id,
+    attempt: row.attempt,
+    status: row.status,
+    memoryExtractedAttempt: row.memoryExtractedAttempt,
+    dsh: projectCompanionProbeDshEvidence(row.runtimeTrace, query.mode),
+  };
 }
 
 async function sessions(rawQuery?: Record<string, string>) {

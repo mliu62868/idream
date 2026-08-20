@@ -1024,7 +1024,7 @@ describe("public API runtime contracts", () => {
     }
   });
 
-  it("preserves exact immutable opening authority and rejects malformed linkage", () => {
+  it("rejects internal runtime traces while preserving public opening linkage", () => {
     const payload = {
       ok: true,
       data: {
@@ -1050,15 +1050,17 @@ describe("public API runtime contracts", () => {
       },
     };
 
-    expect(
-      parseChatSessionDetailResponse(payload).session.messages[0],
-    ).toMatchObject({
-      replyToMessageId: null,
-      runtimeTrace: {
-        messageKind: "opening",
-        outputAuthority: "immutable_opening",
+    expect(() => parseChatSessionDetailResponse(payload)).toThrow(PublicApiContractError);
+    const { runtimeTrace: _runtimeTrace, ...publicOpening } = payload.data.session.messages[0];
+    expect(parseChatSessionDetailResponse({
+      ...payload,
+      data: {
+        session: {
+          ...payload.data.session,
+          messages: [publicOpening],
+        },
       },
-    });
+    }).session.messages[0]).toMatchObject({ replyToMessageId: null });
     expect(() => parseChatSessionDetailResponse({
       ...payload,
       data: {

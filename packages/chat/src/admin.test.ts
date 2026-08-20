@@ -490,6 +490,80 @@ describe("chat internal admin api", () => {
     expect(serialized).not.toContain(`${P}m-evidence`);
   });
 
+  it("returns only content-free DSH attempt evidence for the dedicated audit actor", async () => {
+    const digest = "a".repeat(64);
+    await chatPrisma.message.create({
+      data: {
+        id: `${P}attempt-evidence`,
+        sessionId: `${P}s-dedicated-probe`,
+        role: "assistant",
+        status: "sent",
+        attempt: 1,
+        memoryExtractedAttempt: 1,
+        runtimeTrace: {
+          companionRuntime: {
+            runtime: "dsh",
+            memoryBackend: "igrep-dsh",
+            profile: "idream-companion-memory",
+            private: false,
+          },
+          dsh: {
+            memoryMode: "normal",
+            profileDigest: digest,
+            provider: "openai",
+            model: "fixture-model",
+          },
+          primaryTelemetry: {
+            schemaVersion: 1,
+            runtime: "dsh",
+            terminalStatus: "sent",
+            truncated: false,
+            sseTerminal: "done",
+            provider: "openai",
+            model: "fixture-model",
+            memory: { outcome: "ingested", settleLagMs: 5 },
+            sidecar: {
+              instanceId: "5dd87053-012f-4ca3-a4d7-5aeb89466d5b",
+              startedAt: "2026-08-20T12:00:00.000Z",
+              profileDigest: digest,
+            },
+          },
+          companion: {
+            profile: "idream-companion-memory",
+            memoryIngestOutcome: "ingested",
+            memoryIngestSettledAt: "2026-08-20T12:00:01.000Z",
+            attribution: { requestId: "request-probe" },
+          },
+          rawPrompt: SECRET,
+        },
+      },
+    });
+
+    const res = await dispatchChatAdmin({
+      method: "GET",
+      path: "/internal/admin/companion-attempt-evidence",
+      query: {
+        userId: DEDICATED_PROBE_USER,
+        sessionId: `${P}s-dedicated-probe`,
+        messageId: `${P}attempt-evidence`,
+        mode: "normal",
+      },
+    });
+
+    expect(res).toMatchObject({
+      status: 200,
+      body: {
+        messageId: `${P}attempt-evidence`,
+        attempt: 1,
+        status: "sent",
+        memoryExtractedAttempt: 1,
+        dsh: { ok: true, runtime: "dsh", memoryBackend: "igrep-dsh" },
+      },
+    });
+    expect(JSON.stringify(res.body)).not.toContain(SECRET);
+    expect(JSON.stringify(res.body)).not.toContain("rawPrompt");
+  });
+
   it("does not apply the current extraction watermark to a historical attempt", async () => {
     const messageId = `${P}m-evidence-native`;
     const priorVersionId = `${P}mv-evidence-native`;

@@ -9,6 +9,7 @@ import {
 import { loadCharacterSoulSnapshot } from "@idream/shared";
 import {
   companionProbeDshEvidenceSchema,
+  projectCompanionProbeDshEvidence,
   type CompanionProbeDshEvidence,
 } from "@idream/shared/chat/companion-runtime";
 import { prisma } from "./lib/db";
@@ -144,110 +145,49 @@ export function projectDshCompanionEvidence(
   value: unknown,
   mode: "normal" | "private",
 ): DshCompanionProbeEvidence {
-  const trace = isRecord(value) ? value : {};
-  const runtime = isRecord(trace.companionRuntime) ? trace.companionRuntime : {};
-  const dsh = isRecord(trace.dsh) ? trace.dsh : {};
-  const telemetry = isRecord(trace.primaryTelemetry) ? trace.primaryTelemetry : {};
-  const memory = isRecord(telemetry.memory) ? telemetry.memory : {};
-  const sidecar = isRecord(telemetry.sidecar) ? telemetry.sidecar : {};
-  const companion = isRecord(trace.companion) ? trace.companion : {};
-  const attribution = isRecord(companion.attribution) ? companion.attribution : {};
-  const expectedProfile = mode === "normal"
-    ? "idream-companion-memory"
-    : "idream-companion-private";
-  const failures: string[] = [];
-  const expect = (condition: boolean, field: string) => {
-    if (!condition) failures.push(field);
-  };
+  return companionProbeDshEvidenceSchema.parse(
+    projectCompanionProbeDshEvidence(value, mode),
+  );
+}
 
-  expect(runtime.runtime === "dsh", "companionRuntime.runtime");
-  expect(runtime.memoryBackend === "igrep-dsh", "companionRuntime.memoryBackend");
-  expect(runtime.profile === expectedProfile, "companionRuntime.profile");
-  expect(runtime.private === (mode === "private"), "companionRuntime.private");
-  expect(dsh.memoryMode === mode, "dsh.memoryMode");
-  expect(
-    typeof dsh.profileDigest === "string" && /^[a-f0-9]{64}$/u.test(dsh.profileDigest),
-    "dsh.profileDigest",
-  );
-  expect(
-    typeof sidecar.profileDigest === "string" &&
-      sidecar.profileDigest === dsh.profileDigest,
-    "primaryTelemetry.sidecar.profileDigest",
-  );
-  expect(telemetry.schemaVersion === 1 && telemetry.runtime === "dsh", "primaryTelemetry.runtime");
-  expect(telemetry.terminalStatus === "sent", "primaryTelemetry.terminalStatus");
-  expect(telemetry.truncated === false, "primaryTelemetry.truncated");
-  expect(telemetry.sseTerminal === "done", "primaryTelemetry.sseTerminal");
-  expect(
-    typeof telemetry.provider === "string" && telemetry.provider === dsh.provider &&
-      typeof telemetry.model === "string" && telemetry.model === dsh.model,
-    "primaryTelemetry.providerModel",
-  );
-
-  if (mode === "normal") {
-    expect(companion.profile === expectedProfile, "companion.profile");
-    expect(
-      memory.outcome === "ingested" || memory.outcome === "ingested_rebuilt",
-      "primaryTelemetry.memory.outcome",
-    );
-    expect(
-      typeof memory.settleLagMs === "number" &&
-        Number.isFinite(memory.settleLagMs) && memory.settleLagMs >= 0,
-      "primaryTelemetry.memory.settleLagMs",
-    );
-    expect(
-      companion.memoryIngestOutcome === "ingested" ||
-        companion.memoryIngestOutcome === "ingested_rebuilt",
-      "companion.memoryIngestOutcome",
-    );
-    expect(isIsoDate(companion.memoryIngestSettledAt), "companion.memoryIngestSettledAt");
-    expect(
-      typeof sidecar.instanceId === "string" &&
-        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(sidecar.instanceId) &&
-        isIsoDate(sidecar.startedAt),
-      "primaryTelemetry.sidecar",
-    );
-    expect(
-      (typeof attribution.requestId === "string" && attribution.requestId.length > 0) ||
-        (typeof attribution.actualProvider === "string" && attribution.actualProvider.length > 0),
-      "companion.attribution",
-    );
-  } else {
-    // This probe sends an ordinary private conversation, not an explicit
-    // request to persist a fact. The model remains output authority while the
-    // private profile and disabled memory outcome prove the no-memory boundary.
-    expect(trace.outputAuthority === "model", "outputAuthority");
-    expect(memory.outcome === "disabled", "primaryTelemetry.memory.outcome");
+export async function fetchProbeCompanionAttemptEvidence(input: {
+  serviceUrl: string;
+  internalToken: string | null;
+  userId: string;
+  sessionId: string;
+  messageId: string;
+  attempt: number;
+  mode: "normal" | "private";
+  fetchImpl?: (
+    input: URL | RequestInfo,
+    init?: RequestInit,
+  ) => Promise<Response>;
+}): Promise<DshCompanionProbeEvidence> {
+  if (input.userId !== CHAT_PROBE_USER_ID || !input.internalToken?.trim()) {
+    throw new Error("content-free DSH attempt evidence requires the dedicated audit actor and INTERNAL_TOKEN");
   }
-
-  return companionProbeDshEvidenceSchema.parse({
-    ok: failures.length === 0,
-    ...(runtime.runtime === "dsh" ? { runtime: "dsh" as const } : {}),
-    ...(runtime.memoryBackend === "igrep-dsh" ? { memoryBackend: "igrep-dsh" as const } : {}),
-    ...(typeof runtime.profile === "string" ? { profile: runtime.profile } : {}),
-    ...(typeof runtime.private === "boolean" ? { private: runtime.private } : {}),
-    ...(telemetry.runtime === "dsh" ? { primaryRuntime: "dsh" as const } : {}),
-    ...(typeof telemetry.terminalStatus === "string" ? { terminalStatus: telemetry.terminalStatus } : {}),
-    ...(typeof telemetry.sseTerminal === "string" ? { sseTerminal: telemetry.sseTerminal } : {}),
-    ...(typeof telemetry.provider === "string" ? { provider: telemetry.provider } : {}),
-    ...(typeof telemetry.model === "string" ? { model: telemetry.model } : {}),
-    ...(typeof dsh.profileDigest === "string" ? { profileDigest: dsh.profileDigest } : {}),
-    ...(typeof trace.outputAuthority === "string" ? { outputAuthority: trace.outputAuthority } : {}),
-    ...(typeof attribution.requestId === "string" ? { requestId: attribution.requestId } : {}),
-    ...(typeof attribution.actualProvider === "string" ? { actualProvider: attribution.actualProvider } : {}),
-    ...(typeof memory.outcome === "string" ? { memoryOutcome: memory.outcome } : {}),
-    ...(typeof companion.memoryIngestOutcome === "string"
-      ? { memoryIngestOutcome: companion.memoryIngestOutcome }
-      : {}),
-    ...(typeof companion.memoryIngestSettledAt === "string"
-      ? { memorySettledAt: companion.memoryIngestSettledAt }
-      : {}),
-    ...(typeof memory.settleLagMs === "number" ? { memorySettleLagMs: memory.settleLagMs } : {}),
-    ...(typeof sidecar.instanceId === "string" ? { sidecarInstanceId: sidecar.instanceId } : {}),
-    error: failures.length === 0
-      ? null
-      : `DSH ${mode} evidence failed: ${failures.join(", ")}`,
+  const url = new URL(
+    "/internal/admin/companion-attempt-evidence",
+    normalizedBase(input.serviceUrl),
+  );
+  url.searchParams.set("userId", input.userId);
+  url.searchParams.set("sessionId", input.sessionId);
+  url.searchParams.set("messageId", input.messageId);
+  url.searchParams.set("mode", input.mode);
+  const response = await (input.fetchImpl ?? fetch)(url, {
+    method: "GET",
+    headers: { "x-internal-token": input.internalToken },
   });
+  const body = await response.json().catch(() => null);
+  const record = isRecord(body) ? body : {};
+  if (
+    !response.ok ||
+    record.messageId !== input.messageId ||
+    record.attempt !== input.attempt
+  ) {
+    throw new Error(`content-free DSH attempt evidence returned HTTP ${response.status}`);
+  }
+  return companionProbeDshEvidenceSchema.parse(record.dsh);
 }
 
 function isIsoDate(value: unknown): value is string {
@@ -709,7 +649,13 @@ async function probeConversation(input: {
       assistant.status === "sent" &&
       Boolean(assistant.content?.trim());
     const normalDsh = input.expectedCompanionRuntime === "dsh"
-      ? projectDshCompanionEvidence(assistant?.runtimeTrace, "normal")
+      ? await fetchProbeCompanionAttemptEvidence({
+          ...input,
+          sessionId,
+          messageId: sent.assistantMessageId,
+          attempt: sent.attempt ?? 1,
+          mode: "normal",
+        })
       : undefined;
     evidence.getSession = {
       ok:
@@ -785,7 +731,13 @@ async function probeConversation(input: {
     )?.sceneVersion ?? null;
     const futureSceneVersion = sceneVersion(futureState.message?.scene);
     const futureDsh = input.expectedCompanionRuntime === "dsh"
-      ? projectDshCompanionEvidence(futureState.message?.runtimeTrace, "normal")
+      ? await fetchProbeCompanionAttemptEvidence({
+          ...input,
+          sessionId,
+          messageId: futureTurn.assistantMessageId,
+          attempt: futureTurn.attempt ?? 1,
+          mode: "normal",
+        })
       : undefined;
     const futureReady =
       futureState.status === 200 &&
@@ -871,7 +823,13 @@ async function probeConversation(input: {
       : { status: 0, message: null, settled: false };
     const regeneratedSceneVersion = sceneVersion(regeneratedState.message?.scene);
     const regeneratedDsh = input.expectedCompanionRuntime === "dsh"
-      ? projectDshCompanionEvidence(regeneratedState.message?.runtimeTrace, "normal")
+      ? await fetchProbeCompanionAttemptEvidence({
+          ...input,
+          sessionId,
+          messageId: regenerated.assistantMessageId!,
+          attempt: regenerated.attempt ?? regeneratedState.message?.attempt ?? 1,
+          mode: "normal",
+        })
       : undefined;
     evidence.regenerateAnchor = {
       ok:
@@ -982,7 +940,13 @@ async function probeConversation(input: {
       relationshipFingerprint(relationshipAfter) ===
       relationshipFingerprint(relationshipBefore);
     const privateDsh = input.expectedCompanionRuntime === "dsh"
-      ? projectDshCompanionEvidence(noMemState.message?.runtimeTrace, "private")
+      ? await fetchProbeCompanionAttemptEvidence({
+          ...input,
+          sessionId,
+          messageId: noMemTurn.assistantMessageId,
+          attempt: noMemTurn.attempt ?? 1,
+          mode: "private",
+        })
       : undefined;
     evidence.noMemory = {
       ok:
@@ -1054,7 +1018,6 @@ type ProbeSessionMessage = {
   status?: string;
   sceneVersion?: number;
   scene?: unknown;
-  runtimeTrace?: unknown;
 };
 
 /**
@@ -1419,14 +1382,7 @@ async function waitForSessionMessage(input: {
         typeof lastMessage.memoryExtractedAttempt === "number" &&
         lastMessage.memoryExtractedAttempt >= lastMessage.attempt
       );
-    const runtimeTrace = isRecord(lastMessage?.runtimeTrace)
-      ? lastMessage.runtimeTrace
-      : {};
-    const primaryTelemetry = isRecord(runtimeTrace.primaryTelemetry)
-      ? runtimeTrace.primaryTelemetry
-      : {};
-    const terminalTraceComplete = primaryTelemetry.sseTerminal === "done";
-    if (response.status === 200 && sent && memoryComplete && terminalTraceComplete) {
+    if (response.status === 200 && sent && memoryComplete) {
       return {
         status: response.status,
         message: lastMessage,

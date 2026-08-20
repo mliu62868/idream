@@ -7,40 +7,20 @@ import {
   isLocalChatMessageId,
 } from "./chat-message-actions";
 
-const openingTrace = {
-  schemaVersion: 1,
-  attempt: 1,
-  messageKind: "opening",
-  outputAuthority: "immutable_opening",
-};
-
 describe("chat message action authority", () => {
-  it("recognizes only the exact immutable opening authority", () => {
+  it("recognizes the immutable opening from public reply linkage", () => {
     expect(isImmutableOpeningMessage({
       role: "assistant",
       replyToMessageId: null,
-      runtimeTrace: openingTrace,
     })).toBe(true);
 
     expect(isImmutableOpeningMessage({
       role: "assistant",
       replyToMessageId: "user-1",
-      runtimeTrace: openingTrace,
-    })).toBe(false);
-    expect(isImmutableOpeningMessage({
-      role: "assistant",
-      replyToMessageId: null,
-      runtimeTrace: { ...openingTrace, outputAuthority: "model" },
-    })).toBe(false);
-    expect(isImmutableOpeningMessage({
-      role: "assistant",
-      replyToMessageId: null,
-      runtimeTrace: null,
     })).toBe(false);
     expect(isImmutableOpeningMessage({
       role: "user",
       replyToMessageId: null,
-      runtimeTrace: openingTrace,
     })).toBe(false);
   });
 

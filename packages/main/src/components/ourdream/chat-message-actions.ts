@@ -1,7 +1,6 @@
 export type ChatMessageActionAuthority = {
   role: string;
   replyToMessageId?: string | null;
-  runtimeTrace?: unknown;
   status?: string | null;
 };
 
@@ -36,18 +35,9 @@ export function canRegenerateChatMessage(
 export function isImmutableOpeningMessage(
   message: ChatMessageActionAuthority,
 ): boolean {
-  const trace = message.runtimeTrace;
-  return Boolean(
-    message.role === "assistant" &&
-      message.replyToMessageId === null &&
-      trace &&
-      typeof trace === "object" &&
-      !Array.isArray(trace) &&
-      (trace as Record<string, unknown>).schemaVersion === 1 &&
-      (trace as Record<string, unknown>).messageKind === "opening" &&
-      (trace as Record<string, unknown>).outputAuthority ===
-        "immutable_opening",
-  );
+  // INVARIANT: Chat creates exactly one assistant message without a user
+  // parent: the immutable opening. Runtime execution trace stays internal.
+  return message.role === "assistant" && message.replyToMessageId === null;
 }
 
 export function chatMessageActionPaddingClass(

@@ -49,8 +49,14 @@ type PublicMessage = {
   status?: unknown;
   attempt?: unknown;
   memoryExtractedAttempt?: unknown;
-  runtimeTrace?: unknown;
   attachments?: PublicAttachment[];
+};
+
+type ChatAttemptAudit = {
+  attempt: number;
+  status: string;
+  memoryExtractedAttempt: number;
+  runtimeTrace: unknown;
 };
 
 type ProbeInput = {
@@ -318,7 +324,13 @@ async function waitForCompletedImageTurn(input: ProbeInput & {
   const leg = input.name === "generate_image_async" ? "generate" : "edit";
   const deadline = Date.now() + input.timeoutMs;
   let lastMessage: PublicMessage | null = null;
-  while (Date.now() < deadline) {
+  const auditClient = new Client({
+    connectionString: input.chatAuditDatabaseUrl,
+    application_name: "idream-dsh-image-tool-attempt-audit",
+  });
+  await auditClient.connect();
+  try {
+    while (Date.now() < deadline) {
     const response = await signedFetch({
       ...input,
       method: "GET",
@@ -340,13 +352,11 @@ async function waitForCompletedImageTurn(input: ProbeInput & {
       ["completed", "failed", "rejected", "refunded", "canceled"].includes(
         String(generated[0]?.status ?? ""),
       );
+    const audit = await readChatAttemptAudit(auditClient, input.assistantMessageId);
     const attempt = integer(lastMessage?.attempt);
-    const memorySettled = attempt !== null &&
-      integer(lastMessage?.memoryExtractedAttempt) !== null &&
-      integer(lastMessage?.memoryExtractedAttempt)! >= attempt;
-    const primaryTelemetry = record(
-      record(lastMessage?.runtimeTrace).primaryTelemetry,
-    );
+    const memorySettled = attempt !== null && audit !== null &&
+      audit.memoryExtractedAttempt >= attempt;
+    const primaryTelemetry = record(record(audit?.runtimeTrace).primaryTelemetry);
     const terminalMessage =
       primaryTelemetry.terminalStatus === "sent" &&
       primaryTelemetry.sseTerminal === "done";
@@ -355,12 +365,14 @@ async function waitForCompletedImageTurn(input: ProbeInput & {
       lastMessage?.role === "assistant" &&
       lastMessage.status === "sent" &&
       attempt === input.attempt &&
+      audit?.attempt === input.attempt &&
+      audit.status === "sent" &&
       memorySettled &&
       terminalMessage &&
       (generated.length === 0 || terminalAttachment)
     ) {
       const companion = projectDshCompanionEvidence(
-        lastMessage.runtimeTrace,
+        audit.runtimeTrace,
         "normal",
       );
       return {
@@ -378,7 +390,7 @@ async function waitForCompletedImageTurn(input: ProbeInput & {
             : {}),
         },
         trace: projectDshImageToolTrace(
-          lastMessage.runtimeTrace,
+          audit.runtimeTrace,
           attachments,
           {
             assistantMessageId: input.assistantMessageId,
@@ -390,10 +402,39 @@ async function waitForCompletedImageTurn(input: ProbeInput & {
       };
     }
     await delay(250);
+    }
+  } finally {
+    await auditClient.end();
   }
   throw new DshImageToolProbeError(
     lastMessage ? `${leg}_turn_unsettled` : `${leg}_assistant_missing`,
   );
+}
+
+async function readChatAttemptAudit(
+  client: Client,
+  messageId: string,
+): Promise<ChatAttemptAudit | null> {
+  const result = await client.query<ChatAttemptAudit>({
+    text: `
+      SELECT
+        m.attempt,
+        m.status,
+        m.memory_extracted_attempt AS "memoryExtractedAttempt",
+        m.runtime_trace AS "runtimeTrace"
+      FROM chat.messages m
+      JOIN chat.message_versions mv
+        ON mv.message_id = m.id
+       AND mv.attempt = m.attempt
+       AND mv.selected = true
+       AND mv.runtime_trace = m.runtime_trace
+      WHERE m.id = $1
+        AND m.deleted_at IS NULL
+      LIMIT 1
+    `,
+    values: [messageId],
+  });
+  return result.rows[0] ?? null;
 }
 
 async function collectAuditSnapshot(input: {

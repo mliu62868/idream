@@ -16,7 +16,7 @@ vi.mock("./queue.js", async (importOriginal) => {
 });
 
 const { ChatError } = await import("./errors.js");
-const { regenerate } = await import("./service.js");
+const { getSession, regenerate } = await import("./service.js");
 
 interface FakeData {
   message?: unknown;
@@ -74,6 +74,7 @@ function fakePrisma(data: FakeData): ChatPrismaClient {
     chatEntitlementView: { findUnique: unique(data.entitlement ?? null) },
     chatUsage: { findUnique: unique(data.usage ?? null) },
     messageVersion: { count: async () => 0 },
+    messageAttachment: { findMany: async () => [] },
     $queryRaw: async () => [{ locked: 1 }],
     $executeRaw: async (...args: unknown[]) => {
       data.fileIntentWrites?.push(args);
@@ -117,6 +118,41 @@ const freeEntitlement = {
   unlimitedMessages: false,
   voiceEnabled: false,
 };
+
+describe("public session detail", () => {
+  it("preserves the public Scene projection without exposing internal runtime trace", async () => {
+    const prisma = fakePrisma({
+      message: {
+        ...assistantMessage,
+        runtimeTrace: {
+          scene: {
+            schemaVersion: 1,
+            version: 2,
+            location: "station",
+            time: null,
+            participants: ["u1", "c1"],
+            emotionalBeat: null,
+            unresolvedThreads: [],
+          },
+          dsh: { profileDigest: "must-stay-internal" },
+          companionTool: { arguments: { prompt: "must-not-leak" } },
+        },
+      },
+      session,
+    });
+
+    const result = await getSession(
+      { userId: "u1", sessionId: "sess1" },
+      { prisma, projectorPrisma: prisma },
+    );
+    const assistant = result.messages.find((message) => message.id === "msg_a");
+
+    expect(assistant?.scene).toMatchObject({ version: 2, location: "station" });
+    expect(assistant).not.toHaveProperty("runtimeTrace");
+    expect(JSON.stringify(result)).not.toContain("must-not-leak");
+    expect(JSON.stringify(result)).not.toContain("must-stay-internal");
+  });
+});
 
 describe("regenerate quota + eligibility guard (P0-C)", () => {
   beforeEach(() => enqueueMock.mockClear());

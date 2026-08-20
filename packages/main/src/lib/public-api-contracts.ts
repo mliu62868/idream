@@ -1253,7 +1253,6 @@ const chatMessageSchema = z
     content: z.string(),
     status: z.string().optional(),
     replyToMessageId: nonEmptyString.nullable().optional(),
-    runtimeTrace: z.record(z.string(), z.unknown()).nullable().optional(),
     attachments: z.array(chatAttachmentSchema).optional(),
     sceneVersion: z.number().int().nonnegative().optional(),
     scene: z.object({
@@ -1265,6 +1264,15 @@ const chatMessageSchema = z
       emotionalBeat: z.string().nullable(),
       unresolvedThreads: z.array(z.string()),
     }).nullable().optional(),
+  })
+  .superRefine((value, context) => {
+    if (Object.hasOwn(value, "runtimeTrace")) {
+      context.addIssue({
+        code: "custom",
+        path: ["runtimeTrace"],
+        message: "internal runtime trace is not part of the public Chat contract",
+      });
+    }
   })
   .passthrough();
 

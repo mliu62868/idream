@@ -12,6 +12,7 @@ import {
   companionMemoryCutoverSidecarProofSchema,
   companionNdjsonFrameSchema,
   companionProbeDshEvidenceSchema,
+  projectCompanionProbeDshEvidence,
   companionReadinessSchema,
   companionTerminalCandidateSchema,
   companionToolCallSchema,
@@ -678,5 +679,44 @@ describe("companion runtime stable wire contract", () => {
       ...evidence,
       rawTrace: { systemPrompt: "must-not-cross-the-report-boundary" },
     }).success).toBe(false);
+
+    const projected = projectCompanionProbeDshEvidence({
+      companionRuntime: {
+        runtime: "dsh",
+        memoryBackend: "igrep-dsh",
+        profile: "idream-companion-memory",
+        private: false,
+      },
+      dsh: {
+        memoryMode: "normal",
+        profileDigest: "d".repeat(64),
+        provider: "openai",
+        model: "fixture-model",
+      },
+      primaryTelemetry: {
+        schemaVersion: 1,
+        runtime: "dsh",
+        terminalStatus: "sent",
+        truncated: false,
+        sseTerminal: "done",
+        provider: "openai",
+        model: "fixture-model",
+        memory: { outcome: "ingested", settleLagMs: 4 },
+        sidecar: {
+          instanceId: sidecarInstance.id,
+          startedAt: sidecarInstance.startedAt,
+          profileDigest: "d".repeat(64),
+        },
+      },
+      companion: {
+        profile: "idream-companion-memory",
+        memoryIngestOutcome: "ingested",
+        memoryIngestSettledAt: now,
+        attribution: { requestId: "request-1" },
+      },
+      rawPrompt: "must-not-cross-the-report-boundary",
+    }, "normal");
+    expect(projected).toMatchObject({ ok: true, runtime: "dsh" });
+    expect(JSON.stringify(projected)).not.toContain("must-not-cross");
   });
 });

@@ -16,6 +16,7 @@ import {
   chatServiceProbeSettleTimeoutMs,
   assertDedicatedChatProbeActor,
   collectProbeRolloutEvidenceBeforeCleanup,
+  fetchProbeCompanionAttemptEvidence,
   parseExpectedCompanionRuntime,
   projectDshCompanionEvidence,
   runProbe,
@@ -513,6 +514,41 @@ describe("chat service conversation probe", () => {
       "scope=internal-audit&userId=seed-chat-probe-user",
     ]);
     expect(JSON.stringify(evidence)).not.toContain("internal-probe-token");
+  });
+
+  it("reads content-free per-attempt DSH evidence only through the internal audit seam", async () => {
+    const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+      expect(url.pathname).toBe("/internal/admin/companion-attempt-evidence");
+      expect(Object.fromEntries(url.searchParams)).toEqual({
+        userId: auditActor.id,
+        sessionId: "session-probe",
+        messageId: "assistant-normal",
+        mode: "normal",
+      });
+      expect(init?.headers).toEqual({ "x-internal-token": "internal-probe-token" });
+      return new Response(JSON.stringify({
+        messageId: "assistant-normal",
+        attempt: 1,
+        status: "sent",
+        memoryExtractedAttempt: 1,
+        dsh: projectDshCompanionEvidence(completedDshTrace(), "normal"),
+      }), { status: 200 });
+    });
+
+    const evidence = await fetchProbeCompanionAttemptEvidence({
+      serviceUrl: "http://127.0.0.1:3100",
+      internalToken: "internal-probe-token",
+      userId: auditActor.id,
+      sessionId: "session-probe",
+      messageId: "assistant-normal",
+      attempt: 1,
+      mode: "normal",
+      fetchImpl,
+    });
+
+    expect(evidence).toMatchObject({ ok: true, runtime: "dsh", memoryBackend: "igrep-dsh" });
+    expect(JSON.stringify(evidence)).not.toContain("must-not-leak");
   });
 
   it("fails closed when pre-cleanup Gate R evidence is not attributable", async () => {

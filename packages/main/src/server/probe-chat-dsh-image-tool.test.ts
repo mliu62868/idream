@@ -6,6 +6,15 @@ const mocks = vi.hoisted(() => ({
   preflightCleanup: vi.fn(),
   completedCleanup: vi.fn(),
   probeStream: vi.fn(),
+  chatAuditQuery: vi.fn(),
+}));
+
+vi.mock("pg", () => ({
+  Client: class {
+    connect = vi.fn(async () => undefined);
+    end = vi.fn(async () => undefined);
+    query = mocks.chatAuditQuery;
+  },
 }));
 
 vi.mock("./lib/db", () => ({
@@ -80,6 +89,7 @@ beforeEach(() => {
     sawDelta: true,
     sawDone: true,
   });
+  mocks.chatAuditQuery.mockResolvedValue({ rows: [] });
   mocks.signedFetch.mockImplementation(async (request: { path: string; method: string }) => {
     if (request.path === "/api/v1/chat/sessions" && request.method === "POST") {
       return json({ id: "session-audit" }, 201);
@@ -191,6 +201,38 @@ describe("signed DSH image-tool probe orchestration", () => {
       callId: "call-generate",
       name: "generate_image_async" as const,
     };
+    const generateTrace = {
+      companionRuntime: { runtime: "dsh", memoryBackend: "igrep-dsh" },
+      companionTool: {
+        ...generateIdentity,
+        argumentsDigest: "a".repeat(64),
+      },
+      companion: {
+        execution: { steps: 2, toolCalls: 1 },
+        toolResult: {
+          ...generateIdentity,
+          outcome: "succeeded",
+          output: {
+            status: "accepted_for_terminal_commit",
+            effectId: "assistant-generate:1:call-generate",
+          },
+        },
+      },
+      primaryTelemetry: {
+        terminalStatus: "sent",
+        sseTerminal: "done",
+        truncated: false,
+        toolCalls: 1,
+      },
+    };
+    mocks.chatAuditQuery.mockResolvedValue({
+      rows: [{
+        attempt: 1,
+        status: "sent",
+        memoryExtractedAttempt: 1,
+        runtimeTrace: generateTrace,
+      }],
+    });
     mocks.signedFetch.mockImplementation(async (request: {
       path: string;
       method: string;
@@ -212,30 +254,6 @@ describe("signed DSH image-tool probe orchestration", () => {
             status: "sent",
             attempt: 1,
             memoryExtractedAttempt: 1,
-            runtimeTrace: {
-              companionRuntime: { runtime: "dsh", memoryBackend: "igrep-dsh" },
-              companionTool: {
-                ...generateIdentity,
-                argumentsDigest: "a".repeat(64),
-              },
-              companion: {
-                execution: { steps: 2, toolCalls: 1 },
-                toolResult: {
-                  ...generateIdentity,
-                  outcome: "succeeded",
-                  output: {
-                    status: "accepted_for_terminal_commit",
-                    effectId: "assistant-generate:1:call-generate",
-                  },
-                },
-              },
-              primaryTelemetry: {
-                terminalStatus: "sent",
-                sseTerminal: "done",
-                truncated: false,
-                toolCalls: 1,
-              },
-            },
             attachments: [{
               id: "attachment-generate",
               kind: "generated_image",
