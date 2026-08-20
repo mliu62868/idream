@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, readdir, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LlmAdapter, type GenerateOptions, type StreamChunk } from "@deepseek-ai/dsh-llm";
+import { LlmAdapter, LlmError, type GenerateOptions, type StreamChunk } from "@deepseek-ai/dsh-llm";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import {
   companionNdjsonFrameSchema,
@@ -157,6 +157,20 @@ class ProviderMustNotRunAdapter extends LlmAdapter {
 class PrivateFailureAdapter extends LlmAdapter {
   async *stream(): AsyncIterable<StreamChunk> {
     throw new Error("PRIVATE_PROVIDER_BODY_SENTINEL");
+  }
+}
+
+class ProviderHttpFailureAdapter extends LlmAdapter {
+  constructor(private readonly status: number) {
+    super();
+  }
+
+  async *stream(): AsyncIterable<StreamChunk> {
+    throw new LlmError(
+      "PRIVATE_PROVIDER_BODY_SENTINEL",
+      "PROVIDER_HTTP_ERROR",
+      { status: this.status },
+    );
   }
 }
 
@@ -369,6 +383,41 @@ describe("programmatic DSH companion runtime", () => {
     expect(JSON.stringify(observed)).not.toContain("PRIVATE_PROVIDER_BODY_SENTINEL");
   });
 
+  it.each([
+    [401, "provider_http_401", false],
+    [429, "provider_http_429", true],
+  ] as const)("keeps provider HTTP %s taxonomy without its body", async (status, code, retryable) => {
+    const root = await mkdtemp(join(tmpdir(), "chat-agent-provider-taxonomy-"));
+    temporary.push(root);
+    const engine = new CompanionEngine({
+      workspaces: new AttemptWorkspaceStore({
+        canonicalRoot: join(root, "canonical"),
+        privateRoot: join(root, "private"),
+        memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
+      }),
+      plugin: async () => ({ name: "igrep", apply() {} }),
+      adapter: () => new ProviderHttpFailureAdapter(status),
+      igrepCommand: "igrep",
+      igrepLlm: IGREP_LLM,
+    });
+    const observed: CompanionRuntimeResponse[] = [];
+
+    await engine.run(invocation("private"), (frame) => observed.push(frame));
+
+    expect(observed).toContainEqual(expect.objectContaining({
+      type: "event",
+      event: expect.objectContaining({
+        type: "failed",
+        error: {
+          code,
+          message: "companion provider request failed",
+          retryable,
+        },
+      }),
+    }));
+    expect(JSON.stringify(observed)).not.toContain("PRIVATE_PROVIDER_BODY_SENTINEL");
+  });
+
   it.each(["normal", "private"] as const)(
     "rejects a stale %s profile before composition, workspace or adapter initialization",
     async (memoryMode) => {
@@ -416,8 +465,8 @@ describe("programmatic DSH companion runtime", () => {
         event: expect.objectContaining({
           type: "failed",
           error: {
-            code: "invocation_failed",
-            message: "companion invocation failed",
+            code: "profile_digest_mismatch",
+            message: "companion preflight failed",
             retryable: false,
           },
         }),
@@ -522,6 +571,76 @@ describe("programmatic DSH companion runtime", () => {
     });
     expect(JSON.stringify(events.filter((event) => event.type === "igrep_observation")))
       .not.toContain("observatory");
+  });
+
+  it("classifies an igrep memory failure without leaking its error", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chat-agent-igrep-failure-"));
+    temporary.push(root);
+    const engine = new CompanionEngine({
+      workspaces: new AttemptWorkspaceStore({
+        canonicalRoot: join(root, "canonical"),
+        privateRoot: join(root, "private"),
+        memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
+      }),
+      plugin: async () => ({
+        name: "igrep",
+        inject: ["tools"],
+        apply(ctx) {
+          ctx.tools.register(defineTool({
+            name: "memory_search",
+            description: "Search memory.",
+            parameters: { query: { type: "string", required: true } },
+            output: {
+              schema: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  results: { type: "array", required: true, items: { type: "string" } },
+                },
+              },
+              render: () => [],
+            },
+            async execute() {
+              throw new Error("PRIVATE_IGREP_DIAGNOSTIC_SENTINEL");
+            },
+          }));
+        },
+      }),
+      adapter: () => new MemorySearchThenTextAdapter(),
+      igrepCommand: "igrep",
+      igrepLlm: IGREP_LLM,
+    });
+    const run = invocation("normal");
+    const observed: CompanionRuntimeResponse[] = [];
+
+    await engine.run(run, (frame) => {
+      observed.push(frame);
+      if (frame.type !== "commit") return;
+      void engine.accept({
+        protocolVersion: 1,
+        type: "commit_ack",
+        invocationId: run.invocationId,
+        ack: {
+          attemptId: run.attemptId,
+          accepted: false,
+          status: "rejected",
+          error: { code: "terminal_cas_conflict", message: "lost authority" },
+        },
+      });
+    });
+
+    expect(observed).toContainEqual(expect.objectContaining({
+      type: "event",
+      event: expect.objectContaining({
+        type: "failed",
+        error: {
+          code: "igrep_memory_failed",
+          message: "companion memory tool failed",
+          retryable: true,
+        },
+      }),
+    }));
+    expect(JSON.stringify(observed)).not.toContain("PRIVATE_IGREP_DIAGNOSTIC_SENTINEL");
   });
 
   it("preserves replay roles, current-user authority and the Chat-owned system prompt", async () => {

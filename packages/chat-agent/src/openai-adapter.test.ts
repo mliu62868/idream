@@ -289,9 +289,15 @@ describe("OpenAI-compatible DSH adapter", () => {
   it("never includes a provider error body in the thrown failure", async () => {
     const sentinel = "PRIVATE_USER_PROMPT_SENTINEL";
     let bodyRead = false;
+    let bodyCancelled = false;
     const adapter = adapterFor("http://127.0.0.1:1/v1", (async () => ({
       ok: false,
       status: 422,
+      body: {
+        async cancel() {
+          bodyCancelled = true;
+        },
+      },
       async text() {
         bodyRead = true;
         return sentinel.repeat(100_000);
@@ -313,6 +319,7 @@ describe("OpenAI-compatible DSH adapter", () => {
     expect(thrown).toBeInstanceOf(Error);
     expect((thrown as Error).message).toBe("OpenAI-compatible provider returned HTTP 422");
     expect(bodyRead).toBe(false);
+    expect(bodyCancelled).toBe(true);
     expect(JSON.stringify(thrown)).not.toContain(sentinel);
     expect((thrown as Error).message).not.toContain(sentinel);
   });

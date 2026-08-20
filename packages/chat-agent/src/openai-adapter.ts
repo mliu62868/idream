@@ -243,6 +243,7 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
         signal: timeout.signal,
       });
       if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
         throw new LlmError(
           `OpenAI-compatible provider returned HTTP ${response.status}`,
           "PROVIDER_HTTP_ERROR",

@@ -6,6 +6,7 @@ import {
   MessageId,
   freezeMessage,
   type AssistantMessage,
+  type LlmFailure,
   type StreamChunk,
   type TokenUsage,
   type ToolResultMessage,
@@ -110,6 +111,68 @@ function wireAttribution(finish: StreamChunk & { type: "finish" }) {
   return {
     ...(requestId ? { requestId } : {}),
     ...(actualProvider ? { actualProvider } : {}),
+  };
+}
+
+function invocationFailure(input: {
+  terminalCommitted: boolean;
+  phase: "composition" | "workspace" | "agent" | "memory_commit";
+  turnFailure?: LlmFailure;
+  igrepFailure?: "search" | "memory";
+  preflightCode?: string;
+}) {
+  if (input.terminalCommitted || input.phase === "memory_commit") {
+    return {
+      code: "memory_commit_failed",
+      message: "companion memory commit failed",
+      retryable: false,
+    };
+  }
+  if (input.preflightCode) {
+    return {
+      code: input.preflightCode,
+      message: "companion preflight failed",
+      retryable: false,
+    };
+  }
+  if (input.igrepFailure) {
+    return {
+      code: `igrep_${input.igrepFailure}_failed`,
+      message: "companion memory tool failed",
+      retryable: true,
+    };
+  }
+  if (input.turnFailure?.code === "PROVIDER_HTTP_ERROR") {
+    const status = input.turnFailure.status;
+    const validStatus = Number.isInteger(status) && status! >= 100 && status! <= 599;
+    return {
+      code: validStatus ? `provider_http_${status}` : "provider_http_error",
+      message: "companion provider request failed",
+      retryable: status === 429 || (typeof status === "number" && status >= 500),
+    };
+  }
+  const providerCodes: Record<string, string> = {
+    PROVIDER_STREAM_LIMIT: "provider_stream_limit",
+    EMPTY_RESPONSE: "provider_empty_response",
+    INVALID_RESPONSE: "provider_invalid_response",
+    INVALID_ROUTE: "provider_invalid_route",
+  };
+  const providerCode = input.turnFailure?.code
+    ? providerCodes[input.turnFailure.code]
+    : undefined;
+  if (providerCode) {
+    return {
+      code: providerCode,
+      message: "companion provider response failed",
+      retryable: providerCode === "provider_empty_response",
+    };
+  }
+  return {
+    code: input.phase === "workspace" ? "workspace_prepare_failed" : "invocation_failed",
+    message: input.phase === "workspace"
+      ? "companion workspace preparation failed"
+      : "companion invocation failed",
+    retryable: input.phase === "workspace",
   };
 }
 
@@ -444,6 +507,10 @@ export class CompanionEngine implements InvocationService {
     let ctx: Context | undefined;
     let deadlineTimer: NodeJS.Timeout | undefined;
     let sessionCreated = false;
+    let failurePhase: "composition" | "workspace" | "agent" | "memory_commit" = "composition";
+    let turnFailure: LlmFailure | undefined;
+    let igrepFailure: "search" | "memory" | undefined;
+    let preflightCode: string | undefined;
     const event = (payload: EventPayload) => {
       const value = companionEventSchema.parse({
         ...payload,
@@ -464,6 +531,7 @@ export class CompanionEngine implements InvocationService {
       deadlineTimer = setTimeout(() => active.cancel("timeout"), deadlineMs);
       const plugin = await this.options.plugin();
       if (plugin.name !== "igrep" || typeof plugin.apply !== "function") {
+        preflightCode = "igrep_plugin_invalid";
         throw new Error("DSH_IGREP_PLUGIN_URL did not load the official igrep module namespace");
       }
       const mode = invocation.memoryMode === "private" ? "private" : "normal";
@@ -481,11 +549,14 @@ export class CompanionEngine implements InvocationService {
         },
       );
       if (compositionPlan.digest !== invocation.expectedProfileDigest) {
+        preflightCode = "profile_digest_mismatch";
         throw new Error("expected profile digest does not match the active companion composition");
       }
       ctx = new Context();
       await applyCompanionComposition(ctx, { plugin, plan: compositionPlan });
+      failurePhase = "workspace";
       workspace = await this.options.workspaces.prepare(invocation, active.cancellation.signal);
+      failurePhase = "agent";
       const igrepStartedAt = new Map<string, number>();
       ctx.on("tools/pre-execute", async (execution, next) => {
         if (execution.name === "igrep_search" || execution.name === "memory_search") {
@@ -507,6 +578,7 @@ export class CompanionEngine implements InvocationService {
             ? result.value as Record<string, unknown>
             : null;
           const resultCount = Array.isArray(value?.results) ? value.results.length : undefined;
+          if (result.isError || resultCount === undefined) igrepFailure = operation;
           event({
             type: "igrep_observation",
             operation,
@@ -557,6 +629,7 @@ export class CompanionEngine implements InvocationService {
           }
         } else if (sessionEvent.type === "turn/end") {
           turnEnd = sessionEvent.data.reason;
+          if (turnEnd.kind === "error") turnFailure = turnEnd.error;
         }
       });
 
@@ -700,24 +773,33 @@ export class CompanionEngine implements InvocationService {
         throw new Error(reason?.message ?? "turn ended without an accepted commit");
       }
       if (!workspace) throw new Error("accepted turn lost its attempt workspace");
+      failurePhase = "memory_commit";
       await workspace.commit();
       workspace = undefined;
     } catch (error) {
       if (active.cancelReason) {
         event({ type: "cancelled", reason: active.cancelReason });
       } else {
+        const failure = invocationFailure({
+          terminalCommitted,
+          phase: failurePhase,
+          ...(turnFailure ? { turnFailure } : {}),
+          ...(igrepFailure ? { igrepFailure } : {}),
+          ...(preflightCode ? { preflightCode } : {}),
+        });
+        process.stderr.write(`${JSON.stringify({
+          level: "error",
+          component: "chat-agent",
+          event: "companion_invocation_failed",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          phase: failurePhase,
+          code: failure.code,
+          retryable: failure.retryable,
+        })}\n`);
         event({
           type: "failed",
-          error: {
-            code: terminalCommitted ? "memory_commit_failed" : "invocation_failed",
-            // INVARIANT: provider/plugin errors may echo request input. The
-            // cross-process frame is content-free; detailed diagnostics stay
-            // behind the provider boundary and never enter Redis/job traces.
-            message: terminalCommitted
-              ? "companion memory commit failed"
-              : "companion invocation failed",
-            retryable: false,
-          },
+          error: failure,
         });
       }
     } finally {
