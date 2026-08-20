@@ -378,12 +378,17 @@ export async function processGenerate(
     return { status: "failed" };
   }
   const turnMemoryEnabled = assistant.memoryAuthority === "enabled";
-  const priorRuntimeTrace =
+  const storedRuntimeTrace =
     assistant.runtimeTrace &&
     typeof assistant.runtimeTrace === "object" &&
     !Array.isArray(assistant.runtimeTrace)
       ? assistant.runtimeTrace as Record<string, unknown>
       : null;
+  // INVARIANT: edit/regenerate create a new durable attempt on the same
+  // assistant row. Only that exact attempt may reuse a route/profile pin.
+  const priorRuntimeTrace = storedRuntimeTrace?.attempt === payload.attempt
+    ? storedRuntimeTrace
+    : null;
   const companionRuntimeConfig = env.COMPANION_RUNTIME_CONFIG;
   const attemptRuntime = pinCompanionRuntimeForAttempt({
     config: companionRuntimeConfig,

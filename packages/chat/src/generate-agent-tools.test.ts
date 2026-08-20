@@ -111,12 +111,18 @@ function fakePrisma(
   },
   assistantRuntimeTrace?: Record<string, unknown>,
   terminalContextRevision: bigint = 0n,
+  assistantState: {
+    status?: "pending" | "generating";
+    attempt?: number;
+    strictClaimCas?: boolean;
+  } = {},
 ) {
   const attachmentCreates: CreateCall[] = [];
   const outboxCreates: CreateCall[] = [];
   const messageUpdates: CreateCall[] = [];
   const rootMessageUpdates: CreateCall[] = [];
-  let currentAssistantStatus = "generating";
+  let currentAssistantStatus: string = assistantState.status ?? "generating";
+  const currentAssistantAttempt = assistantState.attempt ?? 1;
   let currentAssistantTrace: Record<string, unknown> | null = assistantRuntimeTrace ?? null;
   const character = {
     characterId: "char_1",
@@ -170,13 +176,23 @@ function fakePrisma(
             role: "assistant",
             sessionId: "sess_1",
             status: currentAssistantStatus,
-            attempt: 1,
+            attempt: currentAssistantAttempt,
             replyToMessageId: "msg_user",
             deletedAt: null,
             runtimeTrace: currentAssistantTrace,
           },
       updateMany: async (call: CreateCall) => {
         messageUpdates.push(call);
+        if (
+          assistantState.strictClaimCas &&
+          call.data.status === "generating" &&
+          (
+            call.where?.status !== currentAssistantStatus ||
+            call.where?.attempt !== currentAssistantAttempt
+          )
+        ) {
+          return { count: 0 };
+        }
         if (typeof call.data.status === "string") currentAssistantStatus = call.data.status;
         if (call.data.runtimeTrace && typeof call.data.runtimeTrace === "object") {
           currentAssistantTrace = call.data.runtimeTrace as Record<string, unknown>;
@@ -241,7 +257,7 @@ function fakePrisma(
               role: "assistant",
               sessionId: "sess_1",
               status: currentAssistantStatus,
-              attempt: 1,
+              attempt: currentAssistantAttempt,
               replyToMessageId: "msg_user",
               memoryAuthority: turnAuthority?.memoryAuthority ?? "enabled",
               runtimeTrace: currentAssistantTrace,
@@ -505,6 +521,62 @@ describe("chat generate agent image tool", () => {
     expect(messageWhere).toMatchObject({ status: "pending" });
     expect(versionUpdate).toEqual({ runtimeTrace: trace });
     expect(versionClaimUpdate).toEqual({ runtimeTrace: trace });
+  });
+
+  it("claims an edited reply's new attempt instead of reusing the previous attempt trace", async () => {
+    supportsToolsState.value = false;
+    streamMock.mockImplementation(async function* editedReplyStream() {
+      yield { delta: "reply after edit", done: true };
+    });
+    const previousAttemptTrace = {
+      schemaVersion: 1,
+      attempt: 1,
+      companionRuntime: {
+        runtime: "native",
+        memoryBackend: "legacy",
+        profile: "native",
+        private: false,
+      },
+      primaryTelemetry: {
+        schemaVersion: 1,
+        runtime: "native",
+        startedAt: "2026-08-19T12:00:00.000Z",
+        retryCount: 0,
+        terminalStatus: "sent",
+      },
+    };
+    const { prisma, messageUpdates } = fakePrisma(
+      undefined,
+      undefined,
+      undefined,
+      previousAttemptTrace,
+      0n,
+      { status: "pending", attempt: 2, strictClaimCas: true },
+    );
+
+    await expect(processGenerate(
+      {
+        sessionId: "sess_1",
+        assistantMessageId: "msg_assistant",
+        userMessageId: "msg_user",
+        attempt: 2,
+      },
+      prisma,
+      { projectorPrisma: prisma },
+    )).resolves.toEqual({ status: "sent" });
+
+    expect(messageUpdates[0]).toMatchObject({
+      where: { status: "pending", attempt: 2 },
+      data: {
+        status: "generating",
+        runtimeTrace: expect.objectContaining({ attempt: 2 }),
+      },
+    });
+    expect(finalizedMessageUpdate(messageUpdates)).toMatchObject({
+      status: "sent",
+      content: "reply after edit",
+      runtimeTrace: expect.objectContaining({ attempt: 2 }),
+    });
   });
 
   it("delivers only native output while auditing a dry-run DSH shadow", async () => {
@@ -1627,6 +1699,7 @@ describe("chat generate agent image tool", () => {
       });
       const priorTrace = {
         schemaVersion: 1,
+        attempt: 1,
         companionRuntime: {
           runtime: "dsh",
           memoryBackend: "igrep-dsh",
@@ -2272,6 +2345,7 @@ describe("chat generate agent image tool", () => {
     const startedAt = new Date(Date.now() - 5_000).toISOString();
     const { prisma, messageUpdates } = fakePrisma(undefined, undefined, undefined, {
       schemaVersion: 1,
+      attempt: 1,
       companionRuntime: {
         runtime: "native",
         memoryBackend: "legacy",
