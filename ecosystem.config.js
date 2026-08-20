@@ -86,6 +86,19 @@ const chatShadowEnabled =
     "CHAT_COMPANION_DSH_SHADOW_ENABLED",
   ) ??
   "false";
+const chatCompanionAuthorityEnv = Object.fromEntries(
+  [
+    "CHAT_COMPANION_RUNTIME",
+    "CHAT_MEMORY_BACKEND",
+    "CHAT_COMPANION_DSH_ROLLOUT_BPS",
+    "CHAT_COMPANION_DSH_ROLLOUT_SALT",
+    "CHAT_COMPANION_DSH_ALLOWLIST",
+  ].flatMap((key) => {
+    const value =
+      process.env[key] ?? localEnvValue(dir("packages/chat/.env"), key);
+    return value === undefined ? [] : [[key, value]];
+  }),
+);
 // REDIS_URL must resolve IDENTICALLY across main-web (which enqueues) and gen-finalizer
 // (which consumes) — otherwise generation jobs stick forever. Durable Main↔Chat delivery
 // does not use Redis. Which vars are cross-service, and their one set of defaults, is
@@ -258,6 +271,9 @@ module.exports = {
       env: {
         ...runtimeIdentityEnv,
         ...sharedInternalEnv,
+        // INVARIANT: dotenv never overrides PM2. Project the complete routing
+        // authority so a gated restart cannot retain a stale native cohort.
+        ...chatCompanionAuthorityEnv,
         // SPEC: project the effective shell-over-.env switch into PM2 so the
         // gated restart wrapper can both enable and disable Shadow explicitly.
         CHAT_COMPANION_DSH_SHADOW_ENABLED: chatShadowEnabled,
