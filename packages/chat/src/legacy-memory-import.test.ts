@@ -4,11 +4,11 @@ import {
   buildLegacyMemoryImportPlan,
   importLegacyMemoryRelationship,
   legacyMemoryImportCliEvidence,
-  parseLegacyMemoryImportArgs,
   parseLegacyRecallProbeFile,
   persistLegacyWorkspaceCleanupRequired,
   redactedLegacyRecallProbeSummary,
 } from "./legacy-memory-import.js";
+import { parseLegacyMemoryImportArgs } from "./memory-cli.js";
 import { createChatPrisma, createChatProjectorPrisma } from "./db.js";
 import type { MemoryItem } from "./memories.js";
 import { lockUser } from "./turn-lock.js";
@@ -115,7 +115,7 @@ describe("legacy memory importer authority", () => {
       characterId: "character-1",
       memories,
       canonicalMessages: canonical,
-      recallProbes,
+      recallProbes: [],
     });
     expect(rejected.request.entries).toEqual([]);
     expect(rejected.excluded.duplicateId).toBe(2);
@@ -176,10 +176,10 @@ describe("legacy memory importer authority", () => {
       version: 1,
       probes: recallProbes,
     }))).toEqual(recallProbes);
-    expect(() => parseLegacyRecallProbeFile(JSON.stringify({
+    expect(parseLegacyRecallProbeFile(JSON.stringify({
       version: 1,
       probes: [],
-    }))).toThrow();
+    }))).toEqual([]);
     expect(() => parseLegacyRecallProbeFile(JSON.stringify({
       version: 1,
       probes: [recallProbes[0], recallProbes[0]],
@@ -217,9 +217,11 @@ describe("legacy memory importer authority", () => {
         untraceableSource: 0,
         duplicateId: 0,
       },
+      legacySourceChecksum: "b".repeat(64),
       request: {
         userId: "private-user-id",
         characterId: "private-character-id",
+        legacySourceChecksum: "b".repeat(64),
         checksum: "a".repeat(64),
         scope: "relationship",
         entries: [{
@@ -351,7 +353,7 @@ describe("legacy memory importer authority", () => {
         userId: `legacy-dry-run-${Date.now()}`,
         characterId: "character-dry-run",
         dryRun: true,
-        recallProbes,
+        recallProbes: [],
       }, {
         prisma,
         projectorPrisma,
@@ -377,7 +379,8 @@ describe("legacy memory importer authority", () => {
     const userMessageId = `legacy-intent-user-message-${suffix}`;
     const assistantMessageId = `legacy-intent-assistant-message-${suffix}`;
     const versionId = `legacy-intent-version-${suffix}`;
-    const probeSetChecksum = redactedLegacyRecallProbeSummary(recallProbes).checksum;
+    const emptyRecallProbes: typeof recallProbes = [];
+    const probeSetChecksum = redactedLegacyRecallProbeSummary(emptyRecallProbes).checksum;
     let sidecarCalled = false;
     try {
       await reader.chatSession.create({
@@ -422,7 +425,7 @@ describe("legacy memory importer authority", () => {
         userId,
         characterId,
         dryRun: false,
-        recallProbes,
+        recallProbes: emptyRecallProbes,
       }, {
         prisma: reader,
         projectorPrisma: projector,
@@ -433,12 +436,15 @@ describe("legacy memory importer authority", () => {
         },
         fetchImpl: async (_url, init) => {
           sidecarCalled = true;
-          const request = JSON.parse(String(init?.body)) as { checksum: string };
+          const request = JSON.parse(String(init?.body)) as {
+            checksum: string;
+            legacySourceChecksum: string;
+          };
           const assistant = await writer.message.findUniqueOrThrow({
             where: { id: assistantMessageId },
             select: { runtimeTrace: true },
           });
-          expect(assistant.runtimeTrace).toEqual({
+          expect(assistant.runtimeTrace).toMatchObject({
             existing: true,
             companionWorkspace: {
               cleanupRequired: true,
@@ -447,6 +453,15 @@ describe("legacy memory importer authority", () => {
               recallProbeSetChecksum: probeSetChecksum,
               igrepVersion: "0.1.132",
               cutoverReadyAt: null,
+              memoryCutover: {
+                schemaVersion: 1,
+                status: "import_pending",
+                legacySourceChecksum: expect.stringMatching(/^[a-f0-9]{64}$/),
+                importChecksum: request.checksum,
+                igrepVersion: "0.1.132",
+                recallProbeSetChecksum: probeSetChecksum,
+                startedAt: expect.any(String),
+              },
             },
           });
           await expect(writer.$transaction(async (tx) => {
@@ -460,19 +475,16 @@ describe("legacy memory importer authority", () => {
               entries: 0,
               written: 0,
               checksum: request.checksum,
+              legacySourceChecksum: request.legacySourceChecksum,
               igrepVersion: "0.1.132",
+              cutoverWorkspaceVersion: "rebuild-1787169600000-11111111-1111-4111-8111-111111111111",
+              workspaceVersion: "rebuild-1787169600000-11111111-1111-4111-8111-111111111111",
               status: "cutover_ready",
               recallParity: {
                 probeSetChecksum,
-                total: 1,
-                passed: 1,
-                probes: [{
-                  probeId: "tea-preference",
-                  queryHash: "2".repeat(64),
-                  legacyExpectedHash: "3".repeat(64),
-                  recallContextHash: "4".repeat(64),
-                  hitCount: 1,
-                }],
+                total: 0,
+                passed: 0,
+                probes: [],
               },
               completedAt: "2026-08-19T12:00:02.000Z",
             },
@@ -492,10 +504,22 @@ describe("legacy memory importer authority", () => {
         }),
       ]);
       expect(message.runtimeTrace).toMatchObject({
-        companionWorkspace: { cleanupRequired: true, state: "cutover_ready" },
+        companionWorkspace: {
+          cleanupRequired: true,
+          state: "cutover_ready",
+          memoryCutover: {
+            status: "cutover_ready",
+            mode: "empty",
+            cutoverWorkspaceVersion: expect.any(String),
+          },
+        },
       });
       expect(version.runtimeTrace).toMatchObject({
-        companionWorkspace: { cleanupRequired: true, state: "cutover_ready" },
+        companionWorkspace: {
+          cleanupRequired: true,
+          state: "cutover_ready",
+          memoryCutover: { status: "cutover_ready", mode: "empty" },
+        },
       });
     } finally {
       await reader.messageVersion.deleteMany({ where: { messageId: assistantMessageId } });

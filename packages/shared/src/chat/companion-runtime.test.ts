@@ -9,6 +9,8 @@ import {
   companionEventSchema,
   companionInvocationSchema,
   companionLegacyMemoryImportSchema,
+  companionMemoryCutoverProofSchema,
+  companionMemoryCutoverSidecarProofSchema,
   companionNdjsonFrameSchema,
   companionProbeDshEvidenceSchema,
   companionReadinessSchema,
@@ -579,6 +581,7 @@ describe("companion runtime stable wire contract", () => {
       scope: "relationship",
       userId: "user-1",
       characterId: "character-1",
+      legacySourceChecksum: "a".repeat(64),
       checksum: "d".repeat(64),
       entries: [{
         legacyMemoryId: "memory-1",
@@ -609,9 +612,65 @@ describe("companion runtime stable wire contract", () => {
       ...request,
       recallProbes: [],
     }).success).toBe(false);
+    expect(companionLegacyMemoryImportSchema.parse({
+      ...request,
+      checksum: "4".repeat(64),
+      entries: [],
+      recallProbes: [],
+    })).toMatchObject({ entries: [], recallProbes: [] });
+    expect(companionLegacyMemoryImportSchema.safeParse({
+      ...request,
+      entries: [],
+    }).success).toBe(false);
     expect(companionLegacyMemoryImportSchema.safeParse({
       ...request,
       recallProbes: [request.recallProbes[0], request.recallProbes[0]],
+    }).success).toBe(false);
+  });
+
+  it("owns both Chat and sidecar cutover proof wires in the shared contract", () => {
+    const sidecarProof = {
+      entries: 0,
+      legacySourceChecksum: "a".repeat(64),
+      checksum: "b".repeat(64),
+      igrepVersion: "0.1.132",
+      cutoverWorkspaceVersion: "rebuild-1787169600000-11111111-1111-4111-8111-111111111111",
+      workspaceVersion: "commit-1787169700000-22222222-2222-4222-8222-222222222222",
+      status: "cutover_ready",
+      recallParity: {
+        probeSetChecksum: "c".repeat(64),
+        total: 0,
+        passed: 0,
+        probes: [],
+      },
+      completedAt: now,
+    } as const;
+    expect(companionMemoryCutoverSidecarProofSchema.parse(sidecarProof)).toEqual(sidecarProof);
+    expect(companionMemoryCutoverSidecarProofSchema.safeParse({
+      ...sidecarProof,
+      legacySourceChecksum: undefined,
+    }).success).toBe(false);
+
+    const chatProof = {
+      schemaVersion: 1,
+      status: "cutover_ready",
+      mode: "empty",
+      legacySourceChecksum: sidecarProof.legacySourceChecksum,
+      importChecksum: sidecarProof.checksum,
+      igrepVersion: sidecarProof.igrepVersion,
+      cutoverWorkspaceVersion: sidecarProof.cutoverWorkspaceVersion,
+      workspaceVersion: sidecarProof.workspaceVersion,
+      recallParity: {
+        probeSetChecksum: sidecarProof.recallParity.probeSetChecksum,
+        total: 0,
+        passed: 0,
+      },
+      completedAt: now,
+    } as const;
+    expect(companionMemoryCutoverProofSchema.parse(chatProof)).toEqual(chatProof);
+    expect(companionMemoryCutoverProofSchema.safeParse({
+      ...chatProof,
+      mode: "imported",
     }).success).toBe(false);
   });
 

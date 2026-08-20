@@ -1,7 +1,7 @@
 import {
   COMPANION_RUNTIME_PROTOCOL_VERSION,
-  COMPANION_IGREP_VERSION,
   companionLegacyMemoryImportSchema,
+  companionMemoryCutoverSidecarProofSchema,
   companionRuntimeResponseSchema,
   companionWorkspaceRebuildSchema,
   decodeCompanionNdjsonFrame,
@@ -10,6 +10,7 @@ import {
   type CompanionEvent,
   type CompanionInvocation,
   type CompanionLegacyMemoryImport,
+  type CompanionMemoryCutoverSidecarProof,
   type CompanionTerminalCandidate,
   type CompanionToolCall,
   type CompanionToolResult,
@@ -27,31 +28,15 @@ const companionWorkspaceRebuildResponseSchema = z.object({
 
 const companionLegacyMemoryImportResponseSchema = z.object({
   ok: z.literal(true),
-  imported: z.object({
+  imported: companionMemoryCutoverSidecarProofSchema.extend({
     skipped: z.boolean(),
-    entries: z.number().int().nonnegative(),
     written: z.number().int().nonnegative(),
-    checksum: z.string().regex(/^[a-f0-9]{64}$/),
-    igrepVersion: z.literal(COMPANION_IGREP_VERSION),
-    status: z.literal("cutover_ready"),
-    recallParity: z.object({
-      probeSetChecksum: z.string().regex(/^[a-f0-9]{64}$/),
-      total: z.number().int().positive(),
-      passed: z.number().int().positive(),
-      probes: z.array(z.object({
-        probeId: z.string().regex(/^[A-Za-z0-9._-]{1,64}$/),
-        queryHash: z.string().regex(/^[a-f0-9]{64}$/),
-        legacyExpectedHash: z.string().regex(/^[a-f0-9]{64}$/),
-        recallContextHash: z.string().regex(/^[a-f0-9]{64}$/),
-        hitCount: z.number().int().nonnegative(),
-      }).strict()).min(1).max(100),
-    }).strict().superRefine((parity, context) => {
-      if (parity.passed !== parity.total || parity.probes.length !== parity.total) {
-        context.addIssue({ code: "custom", message: "recall parity is incomplete" });
-      }
-    }),
-    completedAt: z.string().datetime({ offset: true }),
   }).strict(),
+}).strict();
+
+const companionMemoryCutoverProofResponseSchema = z.object({
+  ok: z.literal(true),
+  proof: companionMemoryCutoverSidecarProofSchema.nullable(),
 }).strict();
 
 export interface CompanionRuntimePort {
@@ -180,6 +165,37 @@ export async function importLegacyCompanionMemory(input: {
     throw new Error(`companion legacy memory import failed with HTTP ${response.status}`);
   }
   return companionLegacyMemoryImportResponseSchema.parse(await response.json()).imported;
+}
+
+export async function readCompanionMemoryCutoverProof(input: {
+  baseUrl: string;
+  token: string;
+  userId: string;
+  characterId: string;
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+}): Promise<CompanionMemoryCutoverSidecarProof | null> {
+  const response = await (input.fetchImpl ?? fetch)(
+    `${input.baseUrl.replace(/\/$/, "")}/v1/workspaces/memory-cutover-proof`,
+    {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${input.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        scope: "relationship",
+        userId: input.userId,
+        characterId: input.characterId,
+      }),
+      signal: AbortSignal.timeout(input.timeoutMs ?? COMPANION_CONTROL_TIMEOUT_MS),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`companion memory cutover proof failed with HTTP ${response.status}`);
+  }
+  return companionMemoryCutoverProofResponseSchema.parse(await response.json()).proof;
 }
 
 export class DshCompanionRuntime implements CompanionRuntime {

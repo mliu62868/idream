@@ -10,6 +10,7 @@ import {
   DshCompanionRuntime,
   importLegacyCompanionMemory,
   purgeCompanionWorkspace,
+  readCompanionMemoryCutoverProof,
   rebuildCompanionWorkspace,
 } from "./companion-runtime.js";
 
@@ -337,7 +338,10 @@ describe("DshCompanionRuntime", () => {
         entries: 1,
         written: 1,
         checksum: "d".repeat(64),
+        legacySourceChecksum: "a".repeat(64),
         igrepVersion: "0.1.132",
+        cutoverWorkspaceVersion: "rebuild-1787169600000-11111111-1111-4111-8111-111111111111",
+        workspaceVersion: "rebuild-1787169600000-11111111-1111-4111-8111-111111111111",
         status: "cutover_ready",
         recallParity: {
           probeSetChecksum: "e".repeat(64),
@@ -358,6 +362,7 @@ describe("DshCompanionRuntime", () => {
       scope: "relationship" as const,
       userId: "user-1",
       characterId: "char-1",
+      legacySourceChecksum: "a".repeat(64),
       checksum: "d".repeat(64),
       entries: [{
         legacyMemoryId: "memory-1",
@@ -385,5 +390,42 @@ describe("DshCompanionRuntime", () => {
     const init = calls[0]?.[1] as RequestInit;
     expect(JSON.parse(String(init.body))).toEqual(request);
     expect(new Headers(init.headers).get("authorization")).toBe("Bearer secret");
+  });
+
+  it("reads one current content-free cutover proof from the sidecar", async () => {
+    const proof = {
+      entries: 0,
+      legacySourceChecksum: "a".repeat(64),
+      checksum: "d".repeat(64),
+      igrepVersion: "0.1.132" as const,
+      cutoverWorkspaceVersion: "rebuild-1787169600000-11111111-1111-4111-8111-111111111111",
+      workspaceVersion: "commit-1787169700000-22222222-2222-4222-8222-222222222222",
+      status: "cutover_ready" as const,
+      recallParity: {
+        probeSetChecksum: "e".repeat(64),
+        total: 0,
+        passed: 0,
+        probes: [],
+      },
+      completedAt: now,
+    };
+    const fetchImpl = vi.fn(async () => Response.json({ ok: true, proof }));
+
+    await expect(readCompanionMemoryCutoverProof({
+      baseUrl: "http://127.0.0.1:3101/",
+      token: "secret",
+      userId: "user-1",
+      characterId: "char-1",
+      fetchImpl: fetchImpl as typeof fetch,
+    })).resolves.toEqual(proof);
+    const calls = fetchImpl.mock.calls as unknown[][];
+    expect(calls[0]?.[0]).toBe(
+      "http://127.0.0.1:3101/v1/workspaces/memory-cutover-proof",
+    );
+    expect(JSON.parse(String((calls[0]?.[1] as RequestInit).body))).toEqual({
+      scope: "relationship",
+      userId: "user-1",
+      characterId: "char-1",
+    });
   });
 });

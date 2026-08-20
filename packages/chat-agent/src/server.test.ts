@@ -87,6 +87,9 @@ describe("companion HTTP authority boundary", () => {
         async importLegacyMemory() {
           throw new Error("not used");
         },
+        async memoryCutoverProof() {
+          throw new Error("not used");
+        },
         async shutdown() {},
       },
     });
@@ -123,6 +126,7 @@ describe("companion HTTP authority boundary", () => {
         async purge() { throw new Error("not used"); },
         async rebuild() { throw new Error("not used"); },
         async importLegacyMemory() { throw new Error("not used"); },
+        async memoryCutoverProof() { throw new Error("not used"); },
         async shutdown() {},
       },
     });
@@ -148,6 +152,7 @@ describe("companion HTTP authority boundary", () => {
         async purge() { throw new Error("not used"); },
         rebuild,
         async importLegacyMemory() { throw new Error("not used"); },
+        async memoryCutoverProof() { throw new Error("not used"); },
         async shutdown() {},
       },
     });
@@ -200,7 +205,10 @@ describe("companion HTTP authority boundary", () => {
       entries: 1,
       written: 1,
       checksum: "d".repeat(64),
-      igrepVersion: "0.1.132",
+      legacySourceChecksum: "a".repeat(64),
+      igrepVersion: "0.1.132" as const,
+      cutoverWorkspaceVersion: "rebuild-1787169600000-11111111-1111-4111-8111-111111111111",
+      workspaceVersion: "rebuild-1787169600000-11111111-1111-4111-8111-111111111111",
       status: "cutover_ready" as const,
       recallParity: {
         probeSetChecksum: "e".repeat(64),
@@ -225,6 +233,7 @@ describe("companion HTTP authority boundary", () => {
         async purge() { throw new Error("not used"); },
         async rebuild() { throw new Error("not used"); },
         importLegacyMemory,
+        async memoryCutoverProof() { throw new Error("not used"); },
         async shutdown() {},
       },
     });
@@ -234,6 +243,7 @@ describe("companion HTTP authority boundary", () => {
       scope: "relationship",
       userId: "user-1",
       characterId: "character-1",
+      legacySourceChecksum: "a".repeat(64),
       checksum: "d".repeat(64),
       entries: [{
         legacyMemoryId: "memory-1",
@@ -270,6 +280,65 @@ describe("companion HTTP authority boundary", () => {
     expect(importLegacyMemory).toHaveBeenCalledWith(body, expect.any(AbortSignal));
   });
 
+  it("returns the current content-free cutover proof for one relationship", async () => {
+    const proof = {
+      entries: 0,
+      legacySourceChecksum: "a".repeat(64),
+      checksum: "d".repeat(64),
+      igrepVersion: "0.1.132" as const,
+      cutoverWorkspaceVersion: "rebuild-1787169600000-11111111-1111-4111-8111-111111111111",
+      workspaceVersion: "commit-1787169700000-22222222-2222-4222-8222-222222222222",
+      status: "cutover_ready" as const,
+      recallParity: {
+        probeSetChecksum: "e".repeat(64),
+        total: 0,
+        passed: 0,
+        probes: [],
+      },
+      completedAt: "2026-08-19T12:00:00.000Z",
+    };
+    const memoryCutoverProof = vi.fn(async () => proof);
+    const server = createCompanionServer({
+      authToken: AUTH_TOKEN,
+      readiness: async () => readiness,
+      invocation: {
+        async run() { throw new Error("not used"); },
+        async accept() { throw new Error("not used"); },
+        async purge() { throw new Error("not used"); },
+        async rebuild() { throw new Error("not used"); },
+        async importLegacyMemory() { throw new Error("not used"); },
+        memoryCutoverProof,
+        async shutdown() {},
+      },
+    });
+    servers.push(server);
+    const baseUrl = await listen(server);
+    const body = {
+      scope: "relationship",
+      userId: "user-1",
+      characterId: "character-1",
+    };
+    expect((await fetch(`${baseUrl}/v1/workspaces/memory-cutover-proof`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    })).status).toBe(401);
+    const response = await fetch(`${baseUrl}/v1/workspaces/memory-cutover-proof`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${AUTH_TOKEN}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, proof });
+    expect(memoryCutoverProof).toHaveBeenCalledWith({
+      userId: body.userId,
+      characterId: body.characterId,
+    });
+  });
+
   it("aborts a legacy import when its authenticated client disconnects", async () => {
     const entered = Promise.withResolvers<AbortSignal>();
     const server = createCompanionServer({
@@ -287,6 +356,7 @@ describe("companion HTTP authority boundary", () => {
             signal.addEventListener("abort", () => reject(signal.reason), { once: true });
           });
         },
+        async memoryCutoverProof() { throw new Error("not used"); },
         async shutdown() {},
       },
     });
@@ -303,13 +373,10 @@ describe("companion HTTP authority boundary", () => {
         scope: "relationship",
         userId: "disconnect-user",
         characterId: "disconnect-character",
-        checksum: "a".repeat(64),
+        legacySourceChecksum: "a".repeat(64),
+        checksum: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
         entries: [],
-        recallProbes: [{
-          id: "disconnect-probe",
-          query: "What should be recalled?",
-          legacyExpected: "expected",
-        }],
+        recallProbes: [],
       }),
       signal: client.signal,
     });

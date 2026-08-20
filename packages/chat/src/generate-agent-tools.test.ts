@@ -27,6 +27,18 @@ const canAdmitShadowMock = vi.hoisted(() => vi.fn(() => true));
 const dshRunMock = vi.hoisted(() => vi.fn());
 const dshCancelMock = vi.hoisted(() => vi.fn(async () => {}));
 const verifiedProfileDigestState = vi.hoisted(() => ({ value: "d".repeat(64) }));
+const ensureMemoryCutoverMock = vi.hoisted(() => vi.fn(async () => ({
+  schemaVersion: 1 as const,
+  status: "cutover_ready" as const,
+  mode: "empty" as const,
+  legacySourceChecksum: "a".repeat(64),
+  importChecksum: "b".repeat(64),
+  igrepVersion: "0.1.132" as const,
+  cutoverWorkspaceVersion: "rebuild-1787169600000-11111111-1111-4111-8111-111111111111",
+  workspaceVersion: "rebuild-1787169600000-11111111-1111-4111-8111-111111111111",
+  recallParity: { probeSetChecksum: "c".repeat(64), total: 0, passed: 0 },
+  completedAt: "2026-08-19T12:00:00.000Z",
+})));
 
 vi.mock("./db.js", () => ({ chatPrisma: {} }));
 vi.mock("./providers.js", () => ({
@@ -56,7 +68,11 @@ vi.mock("./stream.js", () => ({
 }));
 vi.mock("./chat-fs.js", () => ({
   appendLine: appendLineMock,
-  chatFsPaths: { sessionLog: () => "/tmp/session.jsonl" },
+  chatFsPaths: {
+    memory: () => ["mem", "user", "character", "memory.md"],
+    sessionLog: () => "/tmp/session.jsonl",
+  },
+  withFileMutationLock: async (_path: string[], run: () => Promise<unknown>) => run(),
 }));
 vi.mock("./queue.js", () => ({ enqueue: enqueueMock }));
 vi.mock("./runtime-readiness.js", () => ({
@@ -77,6 +93,9 @@ vi.mock("./companion-runtime.js", () => ({
 }));
 vi.mock("./companion-sidecar-readiness.js", () => ({
   verifiedCompanionProfileDigest: () => verifiedProfileDigestState.value,
+}));
+vi.mock("./companion-memory-cutover-runtime.js", () => ({
+  ensureCompanionMemoryCutoverTx: ensureMemoryCutoverMock,
 }));
 
 const {
@@ -532,6 +551,7 @@ describe("chat generate agent image tool", () => {
     canAdmitShadowMock.mockReturnValue(true);
     dshRunMock.mockReset();
     dshCancelMock.mockClear();
+    ensureMemoryCutoverMock.mockClear();
     verifiedProfileDigestState.value = "d".repeat(64);
     buildContextMock.mockResolvedValue(context);
     moderationMock.mockResolvedValue({ status: "passed", confidence: 0.5 });
@@ -1487,6 +1507,10 @@ describe("chat generate agent image tool", () => {
           }),
           companionRuntime: expect.objectContaining({
             runtime: "dsh",
+            memoryCutover: expect.objectContaining({
+              status: "cutover_ready",
+              workspaceVersion: expect.any(String),
+            }),
             assignment: expect.objectContaining({
               policyVersion: 1,
               reason: "threshold",
@@ -1569,6 +1593,42 @@ describe("chat generate agent image tool", () => {
           },
         }),
       });
+    } finally {
+      restoreEnv();
+    }
+  });
+
+  it("refuses a new normal DSH claim until memory cutover is proven", async () => {
+    const restoreEnv = installDshRolloutEnv();
+    try {
+      ensureMemoryCutoverMock.mockRejectedValueOnce(
+        new Error("legacy memory import is required before DSH cutover"),
+      );
+      const { prisma, messageUpdates } = fakePrisma(
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        0n,
+        { status: "pending", strictClaimCas: true },
+      );
+
+      await expect(processGenerate(
+        {
+          sessionId: "sess_1",
+          assistantMessageId: "msg_assistant",
+          userMessageId: "msg_user",
+          attempt: 1,
+        },
+        prisma,
+        { projectorPrisma: prisma },
+      )).rejects.toThrow("legacy memory import is required before DSH cutover");
+
+      expect(ensureMemoryCutoverMock).toHaveBeenCalledOnce();
+      expect(dshRunMock).not.toHaveBeenCalled();
+      expect(messageUpdates).not.toContainEqual(expect.objectContaining({
+        data: expect.objectContaining({ status: "generating" }),
+      }));
     } finally {
       restoreEnv();
     }
@@ -1941,6 +2001,24 @@ describe("chat generate agent image tool", () => {
           profile: "idream-companion-memory",
           private: false,
           profileDigest: "d".repeat(64),
+          memoryCutover: {
+            schemaVersion: 1,
+            status: "cutover_ready",
+            mode: "empty",
+            legacySourceChecksum: "a".repeat(64),
+            importChecksum: "b".repeat(64),
+            igrepVersion: "0.1.132",
+            cutoverWorkspaceVersion:
+              "rebuild-1787169600000-11111111-1111-4111-8111-111111111111",
+            workspaceVersion:
+              "rebuild-1787169600000-11111111-1111-4111-8111-111111111111",
+            recallParity: {
+              probeSetChecksum: "c".repeat(64),
+              total: 0,
+              passed: 0,
+            },
+            completedAt: "2026-08-19T12:00:00.000Z",
+          },
         },
         primaryTelemetry: {
           schemaVersion: 1,

@@ -28,6 +28,7 @@ import {
 } from "./workspace";
 
 const AUTH_TOKEN = "purge-test-secret";
+const LEGACY_SOURCE_CHECKSUM = "a".repeat(64);
 const temporary: string[] = [];
 const IGREP_LLM = { url: "https://maintenance.example/v1", model: "maintenance-model" };
 const servers: CompanionServer[] = [];
@@ -170,6 +171,8 @@ describe("authenticated workspace privacy authority", () => {
     });
     const marker = {
       checksum: "d".repeat(64),
+      legacySourceChecksum: LEGACY_SOURCE_CHECKSUM,
+      entries: 2,
       igrepVersion: "0.1.132",
       completedAt: "2026-08-19T12:00:00.000Z",
       status: "cutover_ready" as const,
@@ -178,6 +181,8 @@ describe("authenticated workspace privacy authority", () => {
     let builds = 0;
     const first = await store.importLegacyMemory(identity, {
       checksum: marker.checksum,
+      legacySourceChecksum: marker.legacySourceChecksum,
+      entries: marker.entries,
       igrepVersion: marker.igrepVersion,
       probeSetChecksum: marker.recallParity.probeSetChecksum,
       completedAt: marker.completedAt,
@@ -217,9 +222,16 @@ describe("authenticated workspace privacy authority", () => {
     );
     expect(markerPath.startsWith(relationship)).toBe(false);
     expect(JSON.parse(await readFile(markerPath, "utf8"))).toEqual(first.marker);
+    await expect(store.memoryCutoverProof(identity)).resolves.toMatchObject({
+      entries: 2,
+      cutoverWorkspaceVersion: first.marker.workspaceVersion,
+      workspaceVersion: first.marker.workspaceVersion,
+    });
 
     await expect(store.importLegacyMemory(identity, {
       checksum: marker.checksum,
+      legacySourceChecksum: marker.legacySourceChecksum,
+      entries: marker.entries,
       igrepVersion: marker.igrepVersion,
       probeSetChecksum: marker.recallParity.probeSetChecksum,
       completedAt: "2026-08-19T13:00:00.000Z",
@@ -232,6 +244,8 @@ describe("authenticated workspace privacy authority", () => {
     const changedParity = recallParity("5".repeat(64));
     const changed = await store.importLegacyMemory(identity, {
       checksum: marker.checksum,
+      legacySourceChecksum: marker.legacySourceChecksum,
+      entries: marker.entries,
       igrepVersion: marker.igrepVersion,
       probeSetChecksum: changedParity.probeSetChecksum,
       completedAt: "2026-08-19T14:00:00.000Z",
@@ -265,6 +279,8 @@ describe("authenticated workspace privacy authority", () => {
       { userId: "completed-user", characterId: "completed-character" },
       {
         checksum: "e".repeat(64),
+        legacySourceChecksum: LEGACY_SOURCE_CHECKSUM,
+        entries: 1,
         igrepVersion: "0.1.132",
         probeSetChecksum: "1".repeat(64),
       },
@@ -300,6 +316,8 @@ describe("authenticated workspace privacy authority", () => {
     });
     const marker = {
       checksum: "7".repeat(64),
+      legacySourceChecksum: LEGACY_SOURCE_CHECKSUM,
+      entries: 1,
       igrepVersion: "0.1.132",
       probeSetChecksum: "1".repeat(64),
     };
@@ -318,6 +336,7 @@ describe("authenticated workspace privacy authority", () => {
     await store.rebuildRelationship(identity, async (workspace) => {
       await writeFile(join(workspace, ".igrep", "sentinel.txt"), "canonical-rebuild");
     });
+    await expect(store.memoryCutoverProof(identity)).resolves.toBeNull();
 
     const retried = await store.importLegacyMemory(identity, marker, importCandidate);
 
@@ -328,6 +347,42 @@ describe("authenticated workspace privacy authority", () => {
       ".igrep",
       "sentinel.txt",
     ), "utf8")).toBe("import-2");
+  });
+
+  it("certifies an audited empty relationship through the same import marker", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chat-agent-empty-cutover-"));
+    temporary.push(root);
+    const store = new AttemptWorkspaceStore({
+      canonicalRoot: join(root, "canonical"),
+      privateRoot: join(root, "private"),
+      memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
+    });
+    const identity = { userId: "empty-user", characterId: "empty-character" };
+    const imported = await store.importLegacyMemory(identity, {
+      checksum: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      legacySourceChecksum: LEGACY_SOURCE_CHECKSUM,
+      entries: 0,
+      igrepVersion: "0.1.132",
+      probeSetChecksum: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    }, async () => ({
+      entries: 0,
+      written: 0,
+      igrepVersion: "0.1.132",
+      recallParity: {
+        probeSetChecksum:
+          "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        total: 0,
+        passed: 0,
+        probes: [],
+      },
+    }));
+
+    expect(imported.marker.entries).toBe(0);
+    await expect(store.memoryCutoverProof(identity)).resolves.toMatchObject({
+      entries: 0,
+      status: "cutover_ready",
+      recallParity: { total: 0, passed: 0, probes: [] },
+    });
   });
 
   it("rejects importer version drift before canonical promotion", async () => {
@@ -352,6 +407,8 @@ describe("authenticated workspace privacy authority", () => {
 
     await expect(store.importLegacyMemory(identity, {
       checksum: "8".repeat(64),
+      legacySourceChecksum: LEGACY_SOURCE_CHECKSUM,
+      entries: 1,
       igrepVersion: "0.1.132",
       probeSetChecksum: "1".repeat(64),
     }, async (workspace) => {
@@ -396,6 +453,8 @@ describe("authenticated workspace privacy authority", () => {
     let builds = 0;
     const imported = await store.importLegacyMemory(identity, {
       checksum: "6".repeat(64),
+      legacySourceChecksum: LEGACY_SOURCE_CHECKSUM,
+      entries: 1,
       igrepVersion: "0.1.132",
       probeSetChecksum: "1".repeat(64),
     }, async () => {
@@ -443,6 +502,8 @@ describe("authenticated workspace privacy authority", () => {
 
     await expect(store.importLegacyMemory(identity, {
       checksum: "e".repeat(64),
+      legacySourceChecksum: LEGACY_SOURCE_CHECKSUM,
+      entries: 1,
       igrepVersion: "0.1.132",
       probeSetChecksum: "1".repeat(64),
       completedAt: "2026-08-19T12:00:00.000Z",
@@ -478,6 +539,8 @@ describe("authenticated workspace privacy authority", () => {
 
     await expect(store.importLegacyMemory(identity, {
       checksum: "f".repeat(64),
+      legacySourceChecksum: LEGACY_SOURCE_CHECKSUM,
+      entries: 1,
       igrepVersion: "0.1.132",
       probeSetChecksum: "1".repeat(64),
     }, async (workspace) => {
@@ -543,6 +606,7 @@ describe("authenticated workspace privacy authority", () => {
       scope: "relationship",
       userId: "engine-user",
       characterId: "engine-character",
+      legacySourceChecksum: LEGACY_SOURCE_CHECKSUM,
       checksum,
       entries,
       recallProbes: [{

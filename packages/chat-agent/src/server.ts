@@ -8,12 +8,13 @@ import {
   encodeCompanionNdjsonFrame,
   type CompanionInvocation,
   type CompanionLegacyMemoryImport,
+  type CompanionMemoryCutoverSidecarProof,
   type CompanionReadiness,
   type CompanionRuntimeRequest,
   type CompanionRuntimeResponse,
   type CompanionWorkspaceRebuild,
 } from "@idream/shared/chat/companion-runtime";
-import type { LegacyRecallParityEvidence, WorkspacePurgeRequest } from "./workspace";
+import type { WorkspacePurgeRequest } from "./workspace";
 
 const MAX_CONTROL_BODY_BYTES = 1_048_576;
 const MAX_REBUILD_BODY_BYTES = 16 * 1_048_576;
@@ -29,16 +30,16 @@ export interface InvocationService {
   accept(frame: ControlFrame): Promise<void>;
   purge(request: WorkspacePurgeRequest): Promise<number>;
   rebuild(request: CompanionWorkspaceRebuild): Promise<{ sessions: number; messages: number }>;
-  importLegacyMemory(request: CompanionLegacyMemoryImport, signal?: AbortSignal): Promise<{
-    skipped: boolean;
-    entries: number;
-    written: number;
-    checksum: string;
-    igrepVersion: string;
-    status: "cutover_ready";
-    recallParity: LegacyRecallParityEvidence;
-    completedAt: string;
-  }>;
+  importLegacyMemory(request: CompanionLegacyMemoryImport, signal?: AbortSignal): Promise<
+    CompanionMemoryCutoverSidecarProof & {
+      skipped: boolean;
+      written: number;
+    }
+  >;
+  memoryCutoverProof(request: {
+    userId: string;
+    characterId: string;
+  }): Promise<CompanionMemoryCutoverSidecarProof | null>;
   shutdown(): Promise<void>;
 }
 
@@ -123,6 +124,17 @@ function purgeRequest(value: unknown): WorkspacePurgeRequest {
     return { scope: "relationship", userId, characterId };
   }
   throw new Error("workspace purge scope must be user or relationship");
+}
+
+function relationshipRequest(value: unknown): {
+  userId: string;
+  characterId: string;
+} {
+  const parsed = purgeRequest(value);
+  if (parsed.scope !== "relationship") {
+    throw new Error("relationship workspace identity is required");
+  }
+  return parsed;
 }
 
 export function createCompanionServer(options: CompanionServerOptions): CompanionServer {
@@ -250,6 +262,20 @@ export function createCompanionServer(options: CompanionServerOptions): Companio
           response.removeListener("close", disconnect);
         }
         json(response, 200, { ok: true, imported });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/v1/workspaces/memory-cutover-proof") {
+        if (closing) {
+          failure(response, 503, "shutting_down", new Error("sidecar is shutting down"));
+          return;
+        }
+        const relationship = relationshipRequest(await readJson(request));
+        const proof = await options.invocation.memoryCutoverProof({
+          userId: relationship.userId,
+          characterId: relationship.characterId,
+        });
+        json(response, 200, { ok: true, proof });
         return;
       }
 

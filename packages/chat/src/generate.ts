@@ -25,10 +25,12 @@ import { characterAvailableToUser } from "./character-eligibility.js";
 import { appendStreamEvent, streamKey } from "./stream.js";
 import { recordOutbox, scheduleOutboxDelivery } from "./outbox.js";
 import { createId } from "./id.js";
+import { chatFsPaths, withFileMutationLock } from "./chat-fs.js";
 import { enqueue, type ChatJob } from "./queue.js";
 import { logger } from "./logger.js";
 import {
   CHAT_CONTEXT_INVALIDATING_FILE_MUTATIONS,
+  assertNoPendingChatFileMutationsTx,
   projectChatFileMutations,
   withTurnAuthority,
 } from "./file-mutations.js";
@@ -62,6 +64,12 @@ import {
 } from "./companion-runtime-selection.js";
 import { DshCompanionRuntime } from "./companion-runtime.js";
 import { verifiedCompanionProfileDigest } from "./companion-sidecar-readiness.js";
+import { ensureCompanionMemoryCutoverTx } from "./companion-memory-cutover-runtime.js";
+import {
+  companionMemoryCutoverProofSchema,
+  type CompanionMemoryCutoverProof,
+} from "./companion-memory-cutover.js";
+import { lockUser } from "./turn-lock.js";
 import {
   recordCompanionOperationalEvent,
   type CompanionOperationalTelemetry,
@@ -173,56 +181,70 @@ export async function claimGenerateAttemptAuthority(input: {
   model: string | null;
   expectedMessageStatus: "pending" | "generating";
 }): Promise<boolean> {
-  return input.prisma.$transaction(async (tx) => {
-    const messageClaim = await tx.message.updateMany({
-      where: {
-        id: input.payload.assistantMessageId,
-        status: input.expectedMessageStatus,
-        attempt: input.payload.attempt,
-        deletedAt: null,
-      },
-      data: {
-        status: "generating",
-        runtimeTrace: input.runtimeTrace,
-        updatedAt: new Date(),
-      },
-    });
-    if (messageClaim.count === 0) return false;
-    if (messageClaim.count !== 1) {
-      throw new Error("attempt message claim CAS affected an unexpected row count");
-    }
+  return input.prisma.$transaction((tx) => claimGenerateAttemptAuthorityTx({
+    tx,
+    payload: input.payload,
+    runtimeTrace: input.runtimeTrace,
+    model: input.model,
+    expectedMessageStatus: input.expectedMessageStatus,
+  }));
+}
 
-    const versionId = `mv:${input.payload.assistantMessageId}:${input.payload.attempt}`;
-    await tx.messageVersion.upsert({
-      where: { id: versionId },
-      create: {
-        id: versionId,
-        messageId: input.payload.assistantMessageId,
-        content: "",
-        model: input.model,
-        selected: false,
-        attempt: input.payload.attempt,
-        runtimeTrace: input.runtimeTrace,
-      },
-      update: {
-        ...(input.model === null ? {} : { model: input.model }),
-        runtimeTrace: input.runtimeTrace,
-      },
-    });
-    const versionClaim = await tx.messageVersion.updateMany({
-      where: {
-        id: versionId,
-        messageId: input.payload.assistantMessageId,
-        attempt: input.payload.attempt,
-        selected: false,
-      },
-      data: { runtimeTrace: input.runtimeTrace },
-    });
-    if (versionClaim.count !== 1) {
-      throw new Error("attempt MessageVersion claim version CAS failed");
-    }
-    return true;
+export async function claimGenerateAttemptAuthorityTx(input: {
+  tx: Prisma.TransactionClient;
+  payload: GeneratePayload;
+  runtimeTrace: Prisma.InputJsonValue;
+  model: string | null;
+  expectedMessageStatus: "pending" | "generating";
+}): Promise<boolean> {
+  const messageClaim = await input.tx.message.updateMany({
+    where: {
+      id: input.payload.assistantMessageId,
+      status: input.expectedMessageStatus,
+      attempt: input.payload.attempt,
+      deletedAt: null,
+    },
+    data: {
+      status: "generating",
+      runtimeTrace: input.runtimeTrace,
+      updatedAt: new Date(),
+    },
   });
+  if (messageClaim.count === 0) return false;
+  if (messageClaim.count !== 1) {
+    throw new Error("attempt message claim CAS affected an unexpected row count");
+  }
+
+  const versionId = `mv:${input.payload.assistantMessageId}:${input.payload.attempt}`;
+  await input.tx.messageVersion.upsert({
+    where: { id: versionId },
+    create: {
+      id: versionId,
+      messageId: input.payload.assistantMessageId,
+      content: "",
+      model: input.model,
+      selected: false,
+      attempt: input.payload.attempt,
+      runtimeTrace: input.runtimeTrace,
+    },
+    update: {
+      ...(input.model === null ? {} : { model: input.model }),
+      runtimeTrace: input.runtimeTrace,
+    },
+  });
+  const versionClaim = await input.tx.messageVersion.updateMany({
+    where: {
+      id: versionId,
+      messageId: input.payload.assistantMessageId,
+      attempt: input.payload.attempt,
+      selected: false,
+    },
+    data: { runtimeTrace: input.runtimeTrace },
+  });
+  if (versionClaim.count !== 1) {
+    throw new Error("attempt MessageVersion claim version CAS failed");
+  }
+  return true;
 }
 
 /** BullMQ-facing seam: retries reuse the same durable assistant placeholder. */
@@ -440,7 +462,13 @@ export async function processGenerate(
     startedAt: new Date(primaryStartedAt).toISOString(),
     retryCount: hooks.jobAttempt?.attemptsMade ?? 0,
   };
-  const companionRuntimePin = {
+  let memoryCutover: CompanionMemoryCutoverProof | undefined;
+  if (attemptRuntime.runtime === "dsh" && !attemptRuntime.private && priorRuntimeTrace) {
+    memoryCutover = companionMemoryCutoverProofSchema.parse(
+      priorRuntimePin?.memoryCutover,
+    );
+  }
+  let companionRuntimePin = {
     runtime: attemptRuntime.runtime,
     memoryBackend: attemptRuntime.memoryBackend,
     profile: attemptRuntime.profile,
@@ -449,6 +477,7 @@ export async function processGenerate(
     deadlineMs: attemptRuntime.deadlineMs,
     assignment: attemptRuntime.assignment,
     ...(dshProfileDigest ? { profileDigest: dshProfileDigest } : {}),
+    ...(memoryCutover ? { memoryCutover } : {}),
   };
   const companionCleanupRequired = attemptRuntime.runtime === "dsh"
     || (
@@ -456,7 +485,7 @@ export async function processGenerate(
       && attemptRuntime.runtime === "native"
       && turnMemoryEnabled
     );
-  const admissionRuntimeTrace = JSON.parse(JSON.stringify(
+  const buildAdmissionRuntimeTrace = () => JSON.parse(JSON.stringify(
     priorRuntimeTrace ?? {
       schemaVersion: 1,
       attempt: payload.attempt,
@@ -470,13 +499,41 @@ export async function processGenerate(
     },
   )) as Prisma.InputJsonValue;
 
-  const claimed = await claimGenerateAttemptAuthority({
-    prisma,
-    payload,
-    runtimeTrace: admissionRuntimeTrace,
-    model: assistant.model,
-    expectedMessageStatus: priorRuntimeTrace ? "generating" : "pending",
-  });
+  const claimed = attemptRuntime.runtime === "dsh"
+      && !attemptRuntime.private
+      && !priorRuntimeTrace
+    ? await withFileMutationLock(
+        chatFsPaths.memory(session.userId, session.characterId),
+        () => prisma.$transaction(async (tx) => {
+          await lockUser(tx, session.userId);
+          await assertNoPendingChatFileMutationsTx(tx, session.userId);
+          memoryCutover = await ensureCompanionMemoryCutoverTx({
+            tx,
+            userId: session.userId,
+            characterId: session.characterId,
+            sidecar: {
+              baseUrl: attemptRuntime.sidecarUrl,
+              token: companionRuntimeConfig.sidecarToken,
+              timeoutMs: attemptRuntime.deadlineMs + 30_000,
+            },
+          });
+          companionRuntimePin = { ...companionRuntimePin, memoryCutover };
+          return claimGenerateAttemptAuthorityTx({
+            tx,
+            payload,
+            runtimeTrace: buildAdmissionRuntimeTrace(),
+            model: assistant.model,
+            expectedMessageStatus: "pending",
+          });
+        }, { timeout: attemptRuntime.deadlineMs + 45_000 }),
+      )
+    : await claimGenerateAttemptAuthority({
+        prisma,
+        payload,
+        runtimeTrace: buildAdmissionRuntimeTrace(),
+        model: assistant.model,
+        expectedMessageStatus: priorRuntimeTrace ? "generating" : "pending",
+      });
   if (!claimed) return { status: "skipped" };
   let lastHeartbeatAt = Date.now();
   const heartbeat = async (force = false): Promise<void> => {

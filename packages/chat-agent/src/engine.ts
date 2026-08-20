@@ -14,12 +14,15 @@ import {
 import { Session, SessionId, type SessionEvent, type TurnEndReason } from "@deepseek-ai/dsh-session";
 import { type JsonValue, type ToolDefinition } from "@deepseek-ai/dsh-tools";
 import {
+  COMPANION_IGREP_VERSION,
   companionEventSchema,
+  companionMemoryCutoverSidecarProofSchema,
   companionToolResultSchema,
   type CompanionCommitAck,
   type CompanionEvent,
   type CompanionInvocation,
   type CompanionLegacyMemoryImport,
+  type CompanionMemoryCutoverSidecarProof,
   type CompanionReadiness,
   type CompanionRuntimeRequest,
   type CompanionRuntimeResponse,
@@ -823,20 +826,20 @@ export class CompanionEngine implements InvocationService {
     }
   }
 
-  async importLegacyMemory(request: CompanionLegacyMemoryImport, signal?: AbortSignal): Promise<{
+  async importLegacyMemory(
+    request: CompanionLegacyMemoryImport,
+    signal?: AbortSignal,
+  ): Promise<CompanionMemoryCutoverSidecarProof & {
     skipped: boolean;
-    entries: number;
     written: number;
-    checksum: string;
-    igrepVersion: string;
-    status: "cutover_ready";
-    recallParity: LegacyRecallParityEvidence;
-    completedAt: string;
   }> {
     if (!this.options.legacyImporter) {
       throw new Error("igrep legacy memory import is not configured");
     }
     const parsed = verifyLegacyMemoryImport(request);
+    if (this.options.legacyImporter.version !== COMPANION_IGREP_VERSION) {
+      throw new Error("igrep legacy memory import version drifted");
+    }
     const relationshipKey = `${parsed.userId}\0${parsed.characterId}`;
     if (this.hasFence(this.purgingUsers, parsed.userId)
       || this.hasFence(this.purgingRelationships, relationshipKey)) {
@@ -852,6 +855,8 @@ export class CompanionEngine implements InvocationService {
         while (matches().length > 0) await new Promise((resolve) => setTimeout(resolve, 10));
         const marker = {
           checksum: parsed.checksum,
+          entries: parsed.entries.length,
+          legacySourceChecksum: parsed.legacySourceChecksum,
           igrepVersion: this.options.legacyImporter!.version,
           probeSetChecksum: legacyRecallProbeSetChecksum(parsed),
         };
@@ -870,34 +875,50 @@ export class CompanionEngine implements InvocationService {
           signal,
         );
         if (imported.skipped) {
+          const proof = companionMemoryCutoverSidecarProofSchema.parse({
+            ...imported.marker,
+            cutoverWorkspaceVersion: imported.marker.workspaceVersion,
+            workspaceVersion: imported.marker.workspaceVersion,
+          });
           return {
+            ...proof,
             skipped: true,
-            entries: parsed.entries.length,
             written: 0,
-            checksum: parsed.checksum,
-            igrepVersion: imported.marker.igrepVersion,
-            status: imported.marker.status,
-            recallParity: imported.marker.recallParity,
-            completedAt: imported.marker.completedAt,
           };
         }
         if (imported.result.igrepVersion !== marker.igrepVersion) {
           throw new Error("igrep legacy memory import version drifted");
         }
-        return {
-          skipped: false,
+        const proof = companionMemoryCutoverSidecarProofSchema.parse({
+          ...imported.marker,
           entries: imported.result.entries,
-          written: imported.result.written,
           checksum: parsed.checksum,
+          legacySourceChecksum: parsed.legacySourceChecksum,
           igrepVersion: imported.result.igrepVersion,
-          status: imported.marker.status,
-          recallParity: imported.marker.recallParity,
-          completedAt: imported.marker.completedAt,
+          cutoverWorkspaceVersion: imported.marker.workspaceVersion,
+          workspaceVersion: imported.marker.workspaceVersion,
+        });
+        return {
+          ...proof,
+          skipped: false,
+          written: imported.result.written,
         };
       });
     } finally {
       this.removeFence(this.purgingRelationships, relationshipKey);
     }
+  }
+
+  async memoryCutoverProof(input: {
+    userId: string;
+    characterId: string;
+  }) {
+    const relationshipKey = `${input.userId}\0${input.characterId}`;
+    if (this.hasFence(this.purgingUsers, input.userId)
+      || this.hasFence(this.purgingRelationships, relationshipKey)) {
+      throw new Error("invocation workspace is already being rebuilt or purged");
+    }
+    return this.options.workspaces.memoryCutoverProof(input);
   }
 
   private isPurging(invocation: CompanionInvocation): boolean {

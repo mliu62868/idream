@@ -31,6 +31,7 @@ function request(): CompanionLegacyMemoryImport {
     scope: "relationship",
     userId: "user-1",
     characterId: "character-1",
+    legacySourceChecksum: "a".repeat(64),
     checksum: createHash("sha256").update(JSON.stringify(entries)).digest("hex"),
     entries,
     recallProbes: [{

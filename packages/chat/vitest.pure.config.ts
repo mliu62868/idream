@@ -10,6 +10,12 @@ export default defineConfig({
       "src/generate-agent-tools.test.ts",
       "src/runtime-readiness.test.ts",
       "src/companion-runtime-selection.test.ts",
+      "src/companion-runtime.test.ts",
+      "src/companion-memory-cutover.test.ts",
+      "src/companion-memory-cutover-runtime.test.ts",
+      "src/memory-cutover-audit-core.test.ts",
+      "src/memory-cutover-audit.test.ts",
+      "src/legacy-memory-import-pure.test.ts",
       "src/service.test.ts",
     ],
     env: {
@@ -19,6 +25,9 @@ export default defineConfig({
       CHAT_DATABASE_URL: "postgresql://pure:unused@127.0.0.1:1/pure?schema=chat",
       CHAT_MODEL_PROVIDER: "mock",
       MODERATION_PROVIDER: "mock",
+      CHAT_DATABASE_URL: "postgresql://pure_test:pure_test@127.0.0.1:1/pure_test",
+      CHAT_PROJECTOR_DATABASE_URL:
+        "postgresql://pure_test_projector:pure_test@127.0.0.1:1/pure_test",
     },
   },
   resolve: {

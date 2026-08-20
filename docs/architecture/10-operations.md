@@ -408,6 +408,60 @@ not public cost proof. Do not relabel it `not_applicable_self_hosted` until both
 the persisted attempt trace and runtime readiness independently prove the
 self-hosted loopback authority. No synthetic currency amount is permitted.
 
+### ADR-19 Phase 5 memory cutover
+
+Phase 5 is relationship-scoped. Before admitting a normal DSH attempt, Chat
+recomputes the current legacy-source checksum under user authority, reads the
+Chat cutover fact and the sidecar's content-free marker, and requires matching
+import checksum, exact igrep version, recall parity, cutover workspace version,
+and current workspace lineage. A relationship with zero parsed legacy rows may
+create an audited empty marker through the same importer. The absence of a file
+alone is never treated as proof when any legacy row exists; excluded rows need
+an explicit operator-reviewed empty import.
+
+The importer defaults to dry-run and is explicit per relationship. Probe files
+contain no identity. A non-empty import requires at least one recall probe; an
+operator-reviewed empty import uses the versioned empty probe set.
+
+```bash
+cat >.tmp/empty-memory-probes.json <<'JSON'
+{"version":1,"probes":[]}
+JSON
+
+bun run --cwd packages/chat memory:import-legacy -- \
+  --user-id '<user-id>' \
+  --character-id '<character-id>' \
+  --probe-file .tmp/legacy-memory-probes.json \
+  --dry-run
+
+# Only after reviewing the redacted counts/checksums and recall probe set:
+bun run --cwd packages/chat memory:import-legacy -- \
+  --user-id '<user-id>' \
+  --character-id '<character-id>' \
+  --probe-file .tmp/legacy-memory-probes.json \
+  --apply
+```
+
+Run the batch audit after every apply wave and before increasing the normal DSH
+cohort. It is read-only: it enumerates legacy `memory.md` relationships, reads
+canonical Chat/proof state and the authenticated sidecar marker, then emits only
+hashed relationship identity, counts, exclusions, checksums, and proof status.
+Any non-ready relationship, source race, malformed proof, or unavailable
+sidecar produces exit code 1.
+
+```bash
+bun run --cwd packages/chat memory:cutover-audit \
+  > .tmp/adr19-memory-cutover-audit.json
+```
+
+Phase 6 remains closed until this audit is 100% ready for the controlled cohort,
+Gate R and its rollback observation window have actually completed, and the
+user-facing `/memories` list/edit/delete/reset product surface has moved to an
+official igrep public seam (or been reduced to the canonical relationship reset
+contract). That surface still reads and writes legacy `mem/*.md`; deleting only
+background retrieval/extraction would otherwise leave a second authority or an
+empty control panel.
+
 Sentry readiness requires four distinct, fresh reports from the package-bound
 `probe:sentry` entrypoints. The CLI intentionally rejects a relabeled `--service`;
 each package loads its own SDK/runtime and binds the captured event plus resolved

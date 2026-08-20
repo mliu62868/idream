@@ -392,9 +392,10 @@ export const companionLegacyMemoryImportSchema = z
     scope: z.literal("relationship"),
     userId: nonEmptyStringSchema,
     characterId: nonEmptyStringSchema,
+    legacySourceChecksum: sha256Schema,
     checksum: sha256Schema,
     entries: z.array(companionLegacyMemoryImportEntrySchema).max(20_000),
-    recallProbes: z.array(companionLegacyRecallProbeSchema).min(1).max(100),
+    recallProbes: z.array(companionLegacyRecallProbeSchema).max(100),
   })
   .strict()
   .superRefine((value, context) => {
@@ -414,7 +415,83 @@ export const companionLegacyMemoryImportSchema = z
         message: "legacy recall probe ids must be unique",
       });
     }
+    if ((value.entries.length === 0) !== (value.recallProbes.length === 0)) {
+      context.addIssue({
+        code: "custom",
+        path: ["recallProbes"],
+        message: "legacy facts require recall probes and an empty import must not invent parity",
+      });
+    }
   });
+
+const companionWorkspaceVersionSchema = z.string().regex(
+  /^(?:(?:rebuild|commit|migrated)-\d+-)?[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$|^initial-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/,
+);
+
+const companionMemoryRecallParitySummarySchema = z.object({
+  probeSetChecksum: sha256Schema,
+  total: nonNegativeIntegerSchema,
+  passed: nonNegativeIntegerSchema,
+}).strict().superRefine((value, context) => {
+  if (value.passed !== value.total) {
+    context.addIssue({ code: "custom", message: "recall parity is incomplete" });
+  }
+});
+
+const companionMemoryRecallParityProofSchema = companionMemoryRecallParitySummarySchema.extend({
+  probes: z.array(z.object({
+    probeId: z.string().regex(/^[A-Za-z0-9._-]{1,64}$/),
+    queryHash: sha256Schema,
+    legacyExpectedHash: sha256Schema,
+    recallContextHash: sha256Schema,
+    hitCount: nonNegativeIntegerSchema,
+  }).strict()).max(100),
+}).strict().superRefine((value, context) => {
+  if (value.probes.length !== value.total) {
+    context.addIssue({ code: "custom", message: "recall parity probes are incomplete" });
+  }
+});
+
+export const companionMemoryCutoverProofSchema = z.object({
+  schemaVersion: z.literal(1),
+  status: z.literal("cutover_ready"),
+  mode: z.enum(["imported", "empty"]),
+  legacySourceChecksum: sha256Schema,
+  importChecksum: sha256Schema,
+  igrepVersion: z.literal(COMPANION_IGREP_VERSION),
+  cutoverWorkspaceVersion: companionWorkspaceVersionSchema,
+  workspaceVersion: companionWorkspaceVersionSchema,
+  recallParity: companionMemoryRecallParitySummarySchema,
+  completedAt: isoDateTimeSchema,
+}).strict().superRefine((value, context) => {
+  if ((value.mode === "empty") !== (value.recallParity.total === 0)) {
+    context.addIssue({
+      code: "custom",
+      path: ["recallParity"],
+      message: "empty and imported cutover proofs require different parity evidence",
+    });
+  }
+});
+
+export const companionMemoryCutoverSidecarProofSchema = z.object({
+  entries: nonNegativeIntegerSchema,
+  legacySourceChecksum: sha256Schema,
+  checksum: sha256Schema,
+  igrepVersion: z.literal(COMPANION_IGREP_VERSION),
+  cutoverWorkspaceVersion: companionWorkspaceVersionSchema,
+  workspaceVersion: companionWorkspaceVersionSchema,
+  status: z.literal("cutover_ready"),
+  recallParity: companionMemoryRecallParityProofSchema,
+  completedAt: isoDateTimeSchema,
+}).strict().superRefine((value, context) => {
+  if ((value.entries === 0) !== (value.recallParity.total === 0)) {
+    context.addIssue({
+      code: "custom",
+      path: ["recallParity"],
+      message: "empty and imported sidecar proofs require different parity evidence",
+    });
+  }
+});
 
 export const companionInvocationSchema = z
   .object({
@@ -1084,6 +1161,12 @@ export type CompanionLegacyMemoryImportEntry = z.infer<
 >;
 export type CompanionLegacyRecallProbe = z.infer<
   typeof companionLegacyRecallProbeSchema
+>;
+export type CompanionMemoryCutoverProof = z.infer<
+  typeof companionMemoryCutoverProofSchema
+>;
+export type CompanionMemoryCutoverSidecarProof = z.infer<
+  typeof companionMemoryCutoverSidecarProofSchema
 >;
 export type CompanionInvocation = z.infer<typeof companionInvocationSchema>;
 export type CompanionToolName = z.infer<typeof companionToolNameSchema>;

@@ -17,8 +17,10 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import {
+  companionMemoryCutoverSidecarProofSchema,
   releasedKnowledgeSnapshotSchema,
   type CompanionInvocation,
+  type CompanionMemoryCutoverSidecarProof,
 } from "@idream/shared/chat/companion-runtime";
 
 export interface MemoryStatus {
@@ -96,6 +98,8 @@ export function legacyMemoryImportMarkerPath(
 
 export interface LegacyMemoryImportMarker {
   checksum: string;
+  entries: number;
+  legacySourceChecksum: string;
   igrepVersion: string;
   workspaceVersion: string;
   status: "cutover_ready";
@@ -125,7 +129,11 @@ export interface VerifiedLegacyMemoryImport {
   recallParity: LegacyRecallParityEvidence;
 }
 
-type LegacyMemoryImportMarkerInput = Pick<LegacyMemoryImportMarker, "checksum" | "igrepVersion"> & {
+type LegacyMemoryImportMarkerInput = Pick<
+  LegacyMemoryImportMarker,
+  "checksum" | "legacySourceChecksum" | "igrepVersion"
+> & {
+  entries: number;
   probeSetChecksum: string;
   completedAt?: string;
 };
@@ -310,6 +318,9 @@ export class AttemptWorkspaceStore {
     | { skipped: false; result: VerifiedLegacyMemoryImport; marker: LegacyMemoryImportMarker }
   > {
     this.assertLegacyMemoryImportMarkerIdentity(marker);
+    if (!Number.isSafeInteger(marker.entries) || marker.entries < 0) {
+      throw new Error("legacy memory import entry count is invalid");
+    }
     if (!/^[a-f0-9]{64}$/.test(marker.probeSetChecksum)) {
       throw new Error("legacy recall probe-set checksum is invalid");
     }
@@ -340,6 +351,8 @@ export class AttemptWorkspaceStore {
       );
       if (
         current?.checksum === marker.checksum
+        && current.entries === marker.entries
+        && current.legacySourceChecksum === marker.legacySourceChecksum
         && current.igrepVersion === marker.igrepVersion
         && current.recallParity.probeSetChecksum === marker.probeSetChecksum
         && current.workspaceVersion === basename(canonicalVersion ?? "")
@@ -353,11 +366,16 @@ export class AttemptWorkspaceStore {
           if (verified.igrepVersion !== marker.igrepVersion) {
             throw new Error("igrep legacy memory import version drifted");
           }
+          if (verified.entries !== marker.entries) {
+            throw new Error("igrep legacy memory import entry count drifted");
+          }
           if (verified.recallParity.probeSetChecksum !== marker.probeSetChecksum) {
             throw new Error("legacy recall parity probe-set checksum drifted");
           }
           completedMarker = {
             checksum: marker.checksum,
+            entries: verified.entries,
+            legacySourceChecksum: marker.legacySourceChecksum,
             igrepVersion: marker.igrepVersion,
             workspaceVersion,
             status: "cutover_ready",
@@ -373,6 +391,50 @@ export class AttemptWorkspaceStore {
       }, signal);
       if (!completedMarker) throw new Error("legacy memory import marker was not completed");
       return { skipped: false, result, marker: completedMarker };
+    } finally {
+      release();
+    }
+  }
+
+  async memoryCutoverProof(
+    identity: { userId: string; characterId: string },
+  ): Promise<CompanionMemoryCutoverSidecarProof | null> {
+    const release = await this.acquireRelationship(identity.userId, identity.characterId);
+    try {
+      const marker = await this.readLegacyMemoryImportMarker(
+        legacyMemoryImportMarkerPath(
+          this.options.canonicalRoot,
+          identity.userId,
+          identity.characterId,
+        ),
+      );
+      if (!marker) return null;
+      const relationshipRoot = relationshipWorkspacePath(
+        this.options.canonicalRoot,
+        identity.userId,
+        identity.characterId,
+      );
+      const canonical = await this.canonicalVersion(
+        join(relationshipRoot, ".igrep"),
+        join(relationshipRoot, ".igrep.versions"),
+      );
+      if (!canonical) {
+        throw new Error("cutover marker exists without a canonical igrep workspace");
+      }
+      const workspaceVersion = basename(canonical);
+      if (
+        workspaceVersion !== marker.workspaceVersion
+        && workspaceVersion.startsWith("rebuild-")
+      ) {
+        // A canonical rebuild is not a descendant commit of the certified
+        // import. The marker remains audit evidence, but cannot authorize use.
+        return null;
+      }
+      return companionMemoryCutoverSidecarProofSchema.parse({
+        ...marker,
+        cutoverWorkspaceVersion: marker.workspaceVersion,
+        workspaceVersion,
+      });
     } finally {
       release();
     }
@@ -481,18 +543,25 @@ export class AttemptWorkspaceStore {
     if (marker.status !== "cutover_ready") {
       throw new Error("legacy memory import marker is not cutover-ready");
     }
-    this.assertLegacyRecallParity(marker.recallParity);
+    if (!Number.isSafeInteger(marker.entries) || marker.entries < 0) {
+      throw new Error("legacy memory import marker entry count is invalid");
+    }
+    this.assertLegacyRecallParity(marker.recallParity, marker.entries);
     if (!Number.isFinite(Date.parse(marker.completedAt))) {
       throw new Error("legacy memory import marker completion time is invalid");
     }
   }
 
-  private assertLegacyRecallParity(parity: LegacyRecallParityEvidence): void {
+  private assertLegacyRecallParity(
+    parity: LegacyRecallParityEvidence,
+    entries: number,
+  ): void {
     if (!/^[a-f0-9]{64}$/.test(parity.probeSetChecksum)
       || !Number.isSafeInteger(parity.total)
-      || parity.total <= 0
+      || parity.total < 0
       || parity.passed !== parity.total
-      || parity.probes.length !== parity.total) {
+      || parity.probes.length !== parity.total
+      || ((entries === 0) !== (parity.total === 0))) {
       throw new Error("legacy recall parity evidence is incomplete");
     }
     const probeIds = new Set<string>();
@@ -517,10 +586,16 @@ export class AttemptWorkspaceStore {
   }
 
   private assertLegacyMemoryImportMarkerIdentity(
-    marker: Pick<LegacyMemoryImportMarker, "checksum" | "igrepVersion">,
+    marker: Pick<
+      LegacyMemoryImportMarker,
+      "checksum" | "legacySourceChecksum" | "igrepVersion"
+    >,
   ): void {
     if (!/^[a-f0-9]{64}$/.test(marker.checksum)) {
       throw new Error("legacy memory import marker checksum is invalid");
+    }
+    if (!/^[a-f0-9]{64}$/.test(marker.legacySourceChecksum)) {
+      throw new Error("legacy memory import source checksum is invalid");
     }
     if (!/^\d+\.\d+\.\d+$/.test(marker.igrepVersion)) {
       throw new Error("legacy memory import marker igrep version is invalid");
@@ -540,24 +615,24 @@ export class AttemptWorkspaceStore {
     const value = JSON.parse(raw) as Record<string, unknown>;
     const fields = Object.keys(value).sort().join(",");
     if (fields === "checksum,completedAt,igrepVersion") {
-      this.assertLegacyMemoryImportMarkerIdentity(
-        value as unknown as Pick<LegacyMemoryImportMarker, "checksum" | "igrepVersion">,
-      );
       if (!Number.isFinite(Date.parse(String(value.completedAt)))) {
         throw new Error("legacy memory import marker completion time is invalid");
       }
       return null;
     }
-    if (fields === "checksum,completedAt,igrepVersion,recallParity,status") {
-      const unbound = value as unknown as Omit<LegacyMemoryImportMarker, "workspaceVersion">;
-      this.assertLegacyMemoryImportMarker({
-        ...unbound,
-        workspaceVersion: `rebuild-0-${randomUUID()}`,
-      });
+    if (
+      fields === "checksum,completedAt,igrepVersion,recallParity,status"
+      || fields
+        === "checksum,completedAt,igrepVersion,recallParity,status,workspaceVersion"
+      || fields
+        === "checksum,completedAt,entries,igrepVersion,recallParity,status,workspaceVersion"
+    ) {
+      // Pre-cutover-gate markers did not bind the certified entry count, so
+      // they cannot authorize a normal DSH attempt. A rerun upgrades them.
       return null;
     }
     if (fields
-      !== "checksum,completedAt,igrepVersion,recallParity,status,workspaceVersion") {
+      !== "checksum,completedAt,entries,igrepVersion,legacySourceChecksum,recallParity,status,workspaceVersion") {
       throw new Error("legacy memory import marker contains unexpected fields");
     }
     const marker = value as unknown as LegacyMemoryImportMarker;

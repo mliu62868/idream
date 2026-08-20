@@ -4,8 +4,6 @@
 // projection cannot invalidate source evidence between planning and promotion.
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   COMPANION_IGREP_VERSION,
   companionLegacyRecallProbeSchema,
@@ -17,7 +15,7 @@ import {
 } from "@idream/shared/chat/companion-runtime";
 import { z } from "zod";
 import type { Prisma } from "../generated/client/client.js";
-import { chatFsPaths, readWhole } from "./chat-fs.js";
+import { chatFsPaths, readWhole, withFileMutationLock } from "./chat-fs.js";
 import {
   assertNoPendingChatFileMutationsTx,
   projectChatFileMutations,
@@ -28,7 +26,12 @@ import {
 import {
   importLegacyCompanionMemory,
 } from "./companion-runtime.js";
+import {
+  resolveCompanionMemoryCutover,
+  type CompanionMemoryCutoverProof,
+} from "./companion-memory-cutover.js";
 import { canonicalCompanionSidecarUrl } from "./companion-runtime-selection.js";
+import type { LegacyMemoryImportCliInput } from "./memory-cli.js";
 import {
   chatPrisma,
   chatProjectorPrisma,
@@ -48,19 +51,20 @@ export interface LegacyMemoryImportExclusions {
 export interface LegacyMemoryImportPlan {
   total: number;
   excluded: LegacyMemoryImportExclusions;
+  legacySourceChecksum: string;
   request: CompanionLegacyMemoryImport;
 }
 
-export interface LegacyMemoryImportMarker {
-  checksum: string;
-  igrepVersion: string;
-  status: "cutover_ready";
-  recallParity: {
-    probeSetChecksum: string;
-    total: number;
-    passed: number;
-  };
-  completedAt: string;
+export type LegacyMemoryImportMarker = CompanionMemoryCutoverProof;
+
+export interface LegacyMemoryImportPendingProof {
+  schemaVersion: 1;
+  status: "import_pending";
+  legacySourceChecksum: string;
+  importChecksum: string;
+  igrepVersion: typeof COMPANION_IGREP_VERSION;
+  recallProbeSetChecksum: string;
+  startedAt: string;
 }
 
 export interface LegacyWorkspaceCleanupFact {
@@ -70,15 +74,23 @@ export interface LegacyWorkspaceCleanupFact {
   recallProbeSetChecksum: string;
   igrepVersion: string;
   cutoverReadyAt: string | null;
+  memoryCutover?: LegacyMemoryImportPendingProof | CompanionMemoryCutoverProof;
 }
 
-export function buildLegacyMemoryImportPlan(input: {
+export interface LegacyMemoryCandidateSnapshot {
+  total: number;
+  excluded: LegacyMemoryImportExclusions;
+  entries: CompanionLegacyMemoryImportEntry[];
+  legacySourceChecksum: string;
+  importChecksum: string;
+}
+
+export function buildLegacyMemoryCandidateSnapshot(input: {
   userId: string;
   characterId: string;
   memories: readonly MemoryItem[];
   canonicalMessages: readonly CompanionWorkspaceRebuildMessage[];
-  recallProbes: readonly CompanionLegacyRecallProbe[];
-}): LegacyMemoryImportPlan {
+}): LegacyMemoryCandidateSnapshot {
   const canonicalIds = new Set(input.canonicalMessages.map((message) => message.id));
   const counts = new Map<string, number>();
   for (const memory of input.memories) {
@@ -121,18 +133,47 @@ export function buildLegacyMemoryImportPlan(input: {
       sourceMessageIds,
     });
   }
-  const checksum = createHash("sha256")
+  const importChecksum = createHash("sha256")
     .update(JSON.stringify(entries))
+    .digest("hex");
+  const legacySourceChecksum = createHash("sha256")
+    .update(JSON.stringify(input.memories.map((memory) => ({
+      id: memory.id,
+      characterId: memory.characterId,
+      type: memory.type,
+      text: memory.text,
+      sourceMessageIds: [...memory.sourceMessageIds].sort(),
+      confidence: memory.confidence,
+    }))))
     .digest("hex");
   return {
     total: input.memories.length,
     excluded,
+    entries,
+    legacySourceChecksum,
+    importChecksum,
+  };
+}
+
+export function buildLegacyMemoryImportPlan(input: {
+  userId: string;
+  characterId: string;
+  memories: readonly MemoryItem[];
+  canonicalMessages: readonly CompanionWorkspaceRebuildMessage[];
+  recallProbes: readonly CompanionLegacyRecallProbe[];
+}): LegacyMemoryImportPlan {
+  const snapshot = buildLegacyMemoryCandidateSnapshot(input);
+  return {
+    total: snapshot.total,
+    excluded: snapshot.excluded,
+    legacySourceChecksum: snapshot.legacySourceChecksum,
     request: companionLegacyMemoryImportSchema.parse({
       scope: "relationship",
       userId: input.userId,
       characterId: input.characterId,
-      checksum,
-      entries,
+      legacySourceChecksum: snapshot.legacySourceChecksum,
+      checksum: snapshot.importChecksum,
+      entries: snapshot.entries,
       recallProbes: input.recallProbes,
     }),
   };
@@ -141,7 +182,7 @@ export function buildLegacyMemoryImportPlan(input: {
 const legacyRecallProbeFileSchema = z
   .object({
     version: z.literal(1),
-    probes: z.array(companionLegacyRecallProbeSchema).min(1).max(100),
+    probes: z.array(companionLegacyRecallProbeSchema).max(100),
   })
   .strict()
   .superRefine((value, context) => {
@@ -188,6 +229,7 @@ export function legacyMemoryImportCliEvidence(
   total: number;
   excluded: LegacyMemoryImportExclusions;
   checksum: string;
+  legacySourceChecksum: string;
   igrepVersion: string;
   recallProbes: ReturnType<typeof redactedLegacyRecallProbeSummary>;
   marker?: LegacyMemoryImportMarker;
@@ -199,6 +241,7 @@ export function legacyMemoryImportCliEvidence(
     total: result.total,
     excluded: result.excluded,
     checksum: result.request.checksum,
+    legacySourceChecksum: result.legacySourceChecksum,
     igrepVersion: COMPANION_IGREP_VERSION,
     recallProbes: redactedLegacyRecallProbeSummary(result.request.recallProbes),
     ...(result.marker ? { marker: result.marker } : {}),
@@ -270,7 +313,6 @@ async function withLegacyMemoryImportAuthority<T>(
   projectorPrisma: ChatPrismaClient,
   timeoutMs: number,
 ): Promise<T> {
-  await projectChatFileMutations(userId, projectorPrisma);
   return prisma.$transaction(async (tx) => {
     // INVARIANT: one import owns the user's canonical snapshot through the
     // remote promotion. The nested cleanup-intent transaction deliberately
@@ -282,7 +324,7 @@ async function withLegacyMemoryImportAuthority<T>(
   }, { timeout: timeoutMs });
 }
 
-function parseLegacyMemoryFile(raw: string, characterId: string): MemoryItem[] {
+export function parseLegacyMemoryFile(raw: string, characterId: string): MemoryItem[] {
   const memories: MemoryItem[] = [];
   for (const [lineNo, line] of raw.split("\n").entries()) {
     const parsed = parseLine(characterId, line, lineNo);
@@ -343,121 +385,103 @@ export async function importLegacyMemoryRelationship(
   const prisma = dependencies.prisma ?? chatPrisma;
   const projectorPrisma = dependencies.projectorPrisma ?? chatProjectorPrisma;
   const config = input.dryRun ? null : sidecarConfig(dependencies.env ?? process.env);
-  return withLegacyMemoryImportAuthority(
-    input.userId,
-    async (tx) => {
-      const raw = await readWhole(chatFsPaths.memory(input.userId, input.characterId)) ?? "";
-      const identity = { userId: input.userId, characterId: input.characterId };
-      const canonical = await buildCompanionWorkspaceRebuild(tx, identity);
-      const plan = buildLegacyMemoryImportPlan({
-        ...identity,
-        memories: parseLegacyMemoryFile(raw, input.characterId),
-        canonicalMessages: canonical.messages,
-        recallProbes: input.recallProbes,
-      });
-      if (input.dryRun || !config) return { ...plan, mode: "dry-run" };
-      const anchor = [...canonical.messages].reverse()
-        .find((message) => message.role === "assistant");
-      if (!anchor) {
-        throw new Error("legacy import needs a canonical assistant anchor for cleanup authority");
-      }
-      // A timeout or process exit after the request reaches the sidecar is
-      // ambiguous: promotion may already have happened. Commit cleanupRequired
-      // first so rollback remains fail-closed even when this outer transaction
-      // never reaches its final cutover-ready write.
-      await prisma.$transaction(async (cleanupTx) => {
-        await persistLegacyWorkspaceCleanupRequired(cleanupTx, anchor.id, {
-          cleanupRequired: true,
-          state: "import_pending",
-          importChecksum: plan.request.checksum,
-          recallProbeSetChecksum: redactedLegacyRecallProbeSummary(
-            plan.request.recallProbes,
-          ).checksum,
-          igrepVersion: COMPANION_IGREP_VERSION,
-          cutoverReadyAt: null,
+  await projectChatFileMutations(input.userId, projectorPrisma);
+  return withFileMutationLock(
+    chatFsPaths.memory(input.userId, input.characterId),
+    () => withLegacyMemoryImportAuthority(
+      input.userId,
+      async (tx) => {
+        const raw = await readWhole(chatFsPaths.memory(input.userId, input.characterId)) ?? "";
+        const identity = { userId: input.userId, characterId: input.characterId };
+        const canonical = await buildCompanionWorkspaceRebuild(tx, identity);
+        const plan = buildLegacyMemoryImportPlan({
+          ...identity,
+          memories: parseLegacyMemoryFile(raw, input.characterId),
+          canonicalMessages: canonical.messages,
+          recallProbes: input.recallProbes,
         });
-      }, { timeout: 30_000 });
-      const imported = await importLegacyCompanionMemory({
-        baseUrl: config.baseUrl,
-        token: config.token,
-        request: plan.request,
-        fetchImpl: dependencies.fetchImpl,
-        timeoutMs: config.timeoutMs + 30_000,
-      });
-      await persistLegacyWorkspaceCleanupRequired(tx, anchor.id, {
-        cleanupRequired: true,
-        state: "cutover_ready",
-        importChecksum: imported.checksum,
-        recallProbeSetChecksum: imported.recallParity.probeSetChecksum,
-        igrepVersion: imported.igrepVersion,
-        cutoverReadyAt: imported.completedAt,
-      });
-      return {
-        ...plan,
-        mode: "applied",
-        imported,
-        marker: {
-          checksum: imported.checksum,
-          igrepVersion: imported.igrepVersion,
-          status: imported.status,
-          recallParity: {
-            probeSetChecksum: imported.recallParity.probeSetChecksum,
-            total: imported.recallParity.total,
-            passed: imported.recallParity.passed,
+        if (input.dryRun || !config) return { ...plan, mode: "dry-run" };
+        const anchor = [...canonical.messages].reverse()
+          .find((message) => message.role === "assistant");
+        if (!anchor) {
+          throw new Error("legacy import needs a canonical assistant anchor for cleanup authority");
+        }
+        // A timeout or process exit after the request reaches the sidecar is
+        // ambiguous: promotion may already have happened. Commit cleanupRequired
+        // first so rollback remains fail-closed even when this outer transaction
+        // never reaches its final cutover-ready write.
+        await prisma.$transaction(async (cleanupTx) => {
+          const startedAt = new Date().toISOString();
+          await persistLegacyWorkspaceCleanupRequired(cleanupTx, anchor.id, {
+            cleanupRequired: true,
+            state: "import_pending",
+            importChecksum: plan.request.checksum,
+            recallProbeSetChecksum: redactedLegacyRecallProbeSummary(
+              plan.request.recallProbes,
+            ).checksum,
+            igrepVersion: COMPANION_IGREP_VERSION,
+            cutoverReadyAt: null,
+            memoryCutover: {
+              schemaVersion: 1,
+              status: "import_pending",
+              legacySourceChecksum: plan.legacySourceChecksum,
+              importChecksum: plan.request.checksum,
+              igrepVersion: COMPANION_IGREP_VERSION,
+              recallProbeSetChecksum: redactedLegacyRecallProbeSummary(
+                plan.request.recallProbes,
+              ).checksum,
+              startedAt,
+            },
+          });
+        }, { timeout: 30_000 });
+        const imported = await importLegacyCompanionMemory({
+          baseUrl: config.baseUrl,
+          token: config.token,
+          request: plan.request,
+          fetchImpl: dependencies.fetchImpl,
+          timeoutMs: config.timeoutMs + 30_000,
+        });
+        const certified = resolveCompanionMemoryCutover({
+          snapshot: {
+            total: plan.total,
+            eligibleEntries: plan.request.entries.length,
+            legacySourceChecksum: plan.legacySourceChecksum,
+            importChecksum: plan.request.checksum,
           },
-          completedAt: imported.completedAt,
-        },
-      };
-    },
-    prisma,
-    projectorPrisma,
-    config ? config.timeoutMs + 45_000 : 30_000,
+          chatProof: null,
+          sidecarProof: imported,
+        });
+        if (certified.action !== "admit") {
+          throw new Error("legacy import did not produce a cutover proof");
+        }
+        const marker: LegacyMemoryImportMarker = certified.proof;
+        await persistLegacyWorkspaceCleanupRequired(tx, anchor.id, {
+          cleanupRequired: true,
+          state: "cutover_ready",
+          importChecksum: imported.checksum,
+          recallProbeSetChecksum: imported.recallParity.probeSetChecksum,
+          igrepVersion: imported.igrepVersion,
+          cutoverReadyAt: imported.completedAt,
+          memoryCutover: marker,
+        });
+        return {
+          ...plan,
+          mode: "applied",
+          imported,
+          marker,
+        };
+      },
+      prisma,
+      projectorPrisma,
+      config ? config.timeoutMs + 45_000 : 30_000,
+    ),
   );
 }
 
-export function parseLegacyMemoryImportArgs(argv: readonly string[]): {
-  userId: string;
-  characterId: string;
-  probeFile: string;
-  dryRun: boolean;
-} {
-  let userId = "";
-  let characterId = "";
-  let probeFile = "";
-  let dryRun = true;
-  let explicitDryRun = false;
-  for (let index = 0; index < argv.length; index += 1) {
-    const argument = argv[index];
-    if (argument === "--user-id" || argument === "--character-id" || argument === "--probe-file") {
-      const value = argv[index + 1]?.trim();
-      if (!value || value.startsWith("--")) throw new Error(`${argument} requires a value`);
-      if (argument === "--user-id") userId = value;
-      else if (argument === "--character-id") characterId = value;
-      else probeFile = value;
-      index += 1;
-      continue;
-    }
-    if (argument === "--apply") {
-      if (explicitDryRun) throw new Error("--apply and --dry-run are mutually exclusive");
-      dryRun = false;
-      continue;
-    }
-    if (argument === "--dry-run") {
-      if (!dryRun) throw new Error("--apply and --dry-run are mutually exclusive");
-      explicitDryRun = true;
-      continue;
-    }
-    throw new Error(`unknown argument: ${argument}`);
-  }
-  if (!userId) throw new Error("--user-id is required");
-  if (!characterId) throw new Error("--character-id is required");
-  if (!probeFile) throw new Error("--probe-file is required");
-  return { userId, characterId, probeFile, dryRun };
-}
-
-async function main(): Promise<void> {
+export async function runLegacyMemoryImportCli(
+  input: LegacyMemoryImportCliInput,
+): Promise<void> {
   try {
-    const input = parseLegacyMemoryImportArgs(process.argv.slice(2));
     const recallProbes = parseLegacyRecallProbeFile(await readFile(input.probeFile, "utf8"));
     const result = await importLegacyMemoryRelationship({ ...input, recallProbes });
     process.stdout.write(`${JSON.stringify(legacyMemoryImportCliEvidence(result))}\n`);
@@ -467,9 +491,4 @@ async function main(): Promise<void> {
       chatProjectorPrisma.$disconnect(),
     ]);
   }
-}
-
-const entrypoint = process.argv[1] ? path.resolve(process.argv[1]) : "";
-if (fileURLToPath(import.meta.url) === entrypoint) {
-  await main();
 }

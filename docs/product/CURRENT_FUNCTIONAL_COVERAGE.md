@@ -1,12 +1,19 @@
 # iDream 当前功能覆盖审计
 
-更新日期：2026-08-16
+更新日期：2026-08-20
 
 ## 结论
 
 这份文档是当前代码态的功能覆盖表，覆盖的是“用户能否完整使用”和“有没有测试证据”。它补充并修正 `ProductFeatureMap.md` 里 2026-06-13 的旧状态描述。
 
 当前状态：**Character Soul Runtime 的仓库实现、开发库迁移、生产构建、真实 Admin 发布与签名 Chat 对话闭环已经完成。Alexa 的 schema v1 Soul v3 已连同三槽精确素材包通过 evaluator-4 QA、Release 提议、独立批准、固定快照校验和 Publish，当前 Serving 指向 Admin Release #5（`cmsi6ziej000offl7v0y4wr6d`）/ ContentVersion `cmsh1x0h6014zmul7b05gdna3`。旧会话继续固定各自创建时的 Release，新会话固定 Release #5、`character-soul-1` fingerprint 与精确 Qwen profile；公开详情页读取 Release 固定的 hero。final Gate 的 Character Soul 权威审计为 26/26 引用快照可加载、0 parity mismatch、0 invalid snapshot；15 个可解析 legacy Serving 与 271 个历史 null pin 作为迁移期 drain 指标保留，不被误判为损坏状态。历史运行证据证明本地核心链与三权威 Recovery，最新 Gate 则明确拒绝把缺 release 绑定的旧 probes 当作当前 revision；公开上线保持 NO-GO。**
+
+## 2026-08-20 ADR-19 DSH companion runtime 迁移状态
+
+- **当前结论是迁移中，不是 Phase 6 完成**：Phase 5 已补齐 relationship-scoped legacy importer、`maintain --rebuild`、strict doctor、recall parity、workspace 外 marker、Chat cutover fact、正常 DSH attempt 前的 checksum/workspace lineage 准入，以及默认只读的 `memory:cutover-audit` 全量审计入口。确定没有 legacy row 的新 relationship 通过同一 importer 建立可审计 empty proof；存在任一 legacy row（即使全部被 eligibility 排除）都必须先经 operator 明确导入/空导入，不能靠文件不存在猜测。
+- **源码门禁是 fail closed**：新的 normal DSH attempt 只有在当前 legacy-source checksum、eligible import checksum、exact igrep `0.1.132`、完整 recall parity、cutover workspace version 与 sidecar 当前 lineage 一致时才原子 claim；重试复用同一 durable proof。proof 失败时不会进入 DSH 或静默回退 native。`memory:cutover-audit` 只输出脱敏 identity hash、counts/exclusions/checksums/proof status，任一未 ready 返回非零。
+- **证据边界**：本轮只完成仓库实现与自动化验证，没有在此记录中执行真实数据库 batch audit、逐 relationship apply、100% controlled-beta cutover、Gate R 观察窗或 rollback window，因此不能声称 memory 数据已全量迁完。Phase 6 仍由这些真实证据阻断。
+- **产品 blocker**：当前 Chat `/memories` API 与 Main `MemoryPanel` 仍直接 list/edit/delete legacy `mem/*.md`；igrep 集成还没有稳定的产品级 item list/update/delete public seam。删除 legacy retrieval/extraction/projection 前，必须把该表面迁到 official igrep/Chat canonical rebuild，或明确收口为 relationship reset。否则会保留第二权威或出现空面板。native loop、legacy env、shadow job 与 legacy 文件路径现阶段均保留，不能标成已删除。
 
 ## 2026-08-15–16 后台运营台可用性重构（表现层，全站视觉未经浏览器复验）
 
