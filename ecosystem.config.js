@@ -24,10 +24,17 @@
 // the pm2 daemon's cwd under `--only`, which silently breaks per-app .env loading.
 const { existsSync, readFileSync } = require("node:fs");
 const path = require("path");
+const { pathToFileURL } = require("node:url");
 const {
   resolveCompanionSidecarEnabled,
 } = require("./scripts/companion-sidecar-topology.cjs");
 const dir = (rel) => path.join(__dirname, rel);
+const tsxPreflight = require.resolve(
+  "./packages/chat-agent/node_modules/tsx/dist/preflight.cjs",
+);
+const tsxLoader = require.resolve(
+  "./packages/chat-agent/node_modules/tsx/dist/loader.mjs",
+);
 const runtimeMode = process.env.IDREAM_PM2_MODE ?? "development";
 if (runtimeMode !== "development" && runtimeMode !== "production") {
   throw new Error(
@@ -244,8 +251,16 @@ module.exports = {
           {
             name: "chat-agent",
             cwd: dir("packages/chat-agent"),
-            script: "node_modules/tsx/dist/cli.mjs",
-            args: "src/main.ts",
+            // INVARIANT: PM2 must own the process holding port 3101. The tsx CLI
+            // forks a child, so killing its PM2 parent leaves an orphan sidecar.
+            script: "src/main.ts",
+            interpreter: process.execPath,
+            node_args: [
+              "--require",
+              tsxPreflight,
+              "--import",
+              pathToFileURL(tsxLoader).href,
+            ],
             exec_mode: "fork",
             instances: 1,
             kill_timeout: 5 * 60 * 1_000,

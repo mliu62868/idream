@@ -135,6 +135,7 @@ function pm2Process(name, status) {
       pm_cwd: definition.cwd,
       pm_exec_path: definition.execPath,
       args: definition.args,
+      node_args: definition.nodeArgs ?? [],
       exec_mode: definition.execMode,
       watch: false,
       IDREAM_PM2_MODE: "production",
@@ -150,6 +151,7 @@ function pm2ProcessFromApp(app, status, mode) {
       pm_cwd: app.cwd,
       pm_exec_path: path.resolve(app.cwd, app.script),
       args: typeof app.args === "string" ? [app.args] : (app.args ?? []),
+      node_args: app.node_args ?? [],
       exec_mode: `${app.exec_mode}_mode`,
       watch: app.watch,
       IDREAM_PM2_MODE: mode,
@@ -241,7 +243,19 @@ test("the DSH companion sidecar is explicit, single-instance and starts before C
   const sidecar = byName(enabled, "chat-agent");
   const chat = byName(enabled, "chat");
   assert.equal(sidecar.cwd, path.join(repoRoot, "packages/chat-agent"));
-  assert.equal(sidecar.args, "src/main.ts");
+  assert.equal(sidecar.script, "src/main.ts");
+  assert.equal(sidecar.interpreter, process.execPath);
+  assert.deepEqual(sidecar.node_args.slice(0, 3), [
+    "--require",
+    require.resolve(
+      path.join(
+        repoRoot,
+        "packages/chat-agent/node_modules/tsx/dist/preflight.cjs",
+      ),
+    ),
+    "--import",
+  ]);
+  assert.match(sidecar.node_args[3], /^file:\/\/.*\/tsx\/dist\/loader\.mjs$/);
   assert.equal(sidecar.instances, 1);
   assert.equal(sidecar.exec_mode, "fork");
   assert.ok(enabled.apps.indexOf(sidecar) < enabled.apps.indexOf(chat));
@@ -393,6 +407,7 @@ test("production definition authority stays exact for every ecosystem app", () =
       cwd: app.cwd,
       execPath: path.resolve(app.cwd, app.script),
       args: typeof app.args === "string" ? [app.args] : (app.args ?? []),
+      ...(app.node_args ? { nodeArgs: app.node_args } : {}),
       execMode: `${app.exec_mode}_mode`,
     });
   }
@@ -405,6 +420,7 @@ test("every production definition field fails closed on drift", () => {
     { pm_cwd: `${exact.pm2_env.pm_cwd}-stale` },
     { pm_exec_path: `${exact.pm2_env.pm_exec_path}-stale` },
     { args: ["packages/admin"] },
+    { node_args: ["--inspect"] },
     { exec_mode: "fork_mode" },
     { watch: true },
     { IDREAM_PM2_MODE: "development" },

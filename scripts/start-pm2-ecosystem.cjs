@@ -2,6 +2,7 @@ const { spawnSync } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
 const { existsSync, readFileSync } = require("node:fs");
 const path = require("node:path");
+const { pathToFileURL } = require("node:url");
 const {
   loadGenEnvironment,
 } = require("./check-gen-image-worker-ownership.cjs");
@@ -14,6 +15,12 @@ const repoRoot = path.resolve(__dirname, "..");
 const productionGateCwd = path.join(repoRoot, "packages/main");
 const productionGenCwd = path.join(repoRoot, "packages/gen");
 const productionChatAgentCwd = path.join(repoRoot, "packages/chat-agent");
+const productionChatAgentTsxPreflight = require.resolve(
+  path.join(productionChatAgentCwd, "node_modules/tsx/dist/preflight.cjs"),
+);
+const productionChatAgentTsxLoader = require.resolve(
+  path.join(productionChatAgentCwd, "node_modules/tsx/dist/loader.mjs"),
+);
 
 function localEnvValue(envPath, key) {
   if (!existsSync(envPath)) return undefined;
@@ -98,11 +105,14 @@ const productionProcessDefinitions = new Map([
   ...(companionSidecarEnabled
     ? [["chat-agent", {
         cwd: productionChatAgentCwd,
-        execPath: path.join(
-          productionChatAgentCwd,
-          "node_modules/tsx/dist/cli.mjs",
-        ),
-        args: ["src/main.ts"],
+        execPath: path.join(productionChatAgentCwd, "src/main.ts"),
+        args: [],
+        nodeArgs: [
+          "--require",
+          productionChatAgentTsxPreflight,
+          "--import",
+          pathToFileURL(productionChatAgentTsxLoader).href,
+        ],
         execMode: "fork_mode",
       }]]
     : []),
@@ -215,6 +225,8 @@ function matchesProductionProcessDefinition(process) {
       pm2Env.pm_exec_path === definition.execPath &&
       JSON.stringify(normalizePm2Args(pm2Env.args)) ===
         JSON.stringify(definition.args) &&
+      JSON.stringify(normalizePm2Args(pm2Env.node_args)) ===
+        JSON.stringify(definition.nodeArgs ?? []) &&
       pm2Env.exec_mode === definition.execMode &&
       pm2Env.watch === false &&
       processRuntimeMarker(process) === "production",
