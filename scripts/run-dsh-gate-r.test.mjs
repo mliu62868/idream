@@ -231,6 +231,19 @@ test("Gate R admits healthy internal-audit evidence only for local controlled us
   assert.equal(result.stdout.includes("native.json"), false);
 });
 
+test("Gate R treats canonical rebuild as a settled DSH memory outcome", () => {
+  const dsh = report("dsh");
+  dsh.conversation.rolloutEvidence.aggregate.runtimes.dsh.memory.outcomes = {
+    ingested: 2,
+    ingested_rebuilt: 1,
+    disabled: 1,
+  };
+
+  const result = runGate({ dsh });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.json.localBlockers.includes("memory_outcomes_settled"), false);
+});
+
 test("Gate R fails valid evidence when any zero-tolerance operational invariant is violated", () => {
   const cases = [
     ["error_rate_zero", (value) => { value.rates.error = 0.25; }],

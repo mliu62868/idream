@@ -435,7 +435,7 @@ export function evaluateGateR({ nativeAggregates, dshAggregates, maxLatencyRatio
     check("outbox_delivery_complete", allRuntimes.every((runtime) => runtime.outbox.events === runtime.attempts && runtime.outbox.delivered === runtime.attempts)),
     check("igrep_observed", dshRuntimes.every((runtime) => runtime.igrep.status === "observed")),
     check("igrep_failure_zero", dshRuntimes.every((runtime) => runtime.igrep.search.failure === 0 && runtime.igrep.memory.failure === 0)),
-    check("memory_outcomes_settled", nativeRuntimes.every((runtime) => countOutcomes(runtime) === runtime.attempts && hasOnlyOutcomes(runtime, new Set(["extracted", "unknown"]))) && dshRuntimes.every((runtime) => countOutcomes(runtime) === runtime.attempts && hasOnlyOutcomes(runtime, new Set(["ingested", "disabled"])))),
+    check("memory_outcomes_settled", nativeRuntimes.every((runtime) => countOutcomes(runtime) === runtime.attempts && hasOnlyOutcomes(runtime, new Set(["extracted", "unknown"]))) && dshRuntimes.every((runtime) => countOutcomes(runtime) === runtime.attempts && hasOnlyOutcomes(runtime, new Set(["ingested", "ingested_rebuilt", "disabled"])))),
     check("sidecar_identity_stable", dshRuntimes.every((runtime) => runtime.sidecar.status === "observed" && runtime.sidecar.sampledAttempts === runtime.attempts && runtime.sidecar.distinctInstances === 1 && runtime.sidecar.instanceTransitions === 0 && runtime.sidecar.restartRatePerHour === 0)),
     check("provider_model_identity_match", identity.complete && identity.unique),
     check("firstTokenMs_p50_ratio", firstTokenP50.withinThreshold),
