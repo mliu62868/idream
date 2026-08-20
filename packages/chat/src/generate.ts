@@ -2045,6 +2045,12 @@ async function processDshCompanionTurn(
     };
     const committedAt = new Date().toISOString();
     const terminalAt = Date.now();
+    // INVARIANT: persist the exact content-free bridge result so audits bind
+    // the committed tool effect to this attempt instead of inferring success
+    // from the earlier reservation identity.
+    const committedToolResult = toolIdentity
+      ? toolResults.get(toolIdentity.callId)?.result
+      : undefined;
     const terminalTelemetry: PrimaryAttemptTelemetry = {
       ...primaryTelemetry,
       ...(primaryFirstTokenMs === undefined ? {} : { firstTokenMs: primaryFirstTokenMs }),
@@ -2082,6 +2088,7 @@ async function processDshCompanionTurn(
         usage: candidate.usage,
         ...(candidate.attribution ? { attribution: candidate.attribution } : {}),
         ...(toolIdentity ? { toolIdentity } : {}),
+        ...(committedToolResult ? { toolResult: committedToolResult } : {}),
       },
     };
     const traceEntry: Record<string, unknown> | null = attemptRuntime.private

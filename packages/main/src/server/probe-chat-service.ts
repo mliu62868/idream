@@ -750,7 +750,7 @@ export function selectSoulReadyProbeCharacter(
 }
 
 /** Make a signed BFF request to the chat service (signature covers method+path+body). */
-async function signedFetch(input: {
+export async function signedFetch(input: {
   serviceUrl: string;
   secret: string;
   userId: string;
@@ -1387,7 +1387,7 @@ function validateProbeRolloutAggregate(
   return value as ProbeRolloutAggregate;
 }
 
-async function cleanupExistingProbeState(input: {
+export async function cleanupExistingProbeState(input: {
   serviceUrl: string;
   secret: string;
   userId: string;
@@ -1447,7 +1447,7 @@ async function cleanupExistingProbeState(input: {
   }
 }
 
-async function cleanupCompletedProbeState(input: {
+export async function cleanupCompletedProbeState(input: {
   serviceUrl: string;
   secret: string;
   userId: string;
@@ -1843,7 +1843,7 @@ function sceneVersion(value: unknown): number | null {
     : null;
 }
 
-async function probeStream(input: {
+export async function probeStream(input: {
   serviceUrl: string;
   secret: string;
   userId: string;

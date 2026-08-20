@@ -2360,6 +2360,18 @@ describe("chat generate agent image tool", () => {
       expect(attachmentCreates).toHaveLength(1);
       expect(outboxCreates.filter((call) => call.data.eventType === CHAT_TO_MAIN_EVENTS.imageRequested)).toHaveLength(1);
       expect(assistantTrace()?.companionTool).toEqual(reservation);
+      expect(assistantTrace()?.companion).toMatchObject({
+        toolResult: {
+          attemptId: reservation.attemptId,
+          callId: reservation.callId,
+          name: reservation.name,
+          outcome: "succeeded",
+          output: {
+            status: "accepted_for_terminal_commit",
+            effectId: "msg_assistant:1:call-crash-replay",
+          },
+        },
+      });
 
       await expect(processGenerate(
         { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
