@@ -688,6 +688,16 @@ export class CompanionEngine implements InvocationService {
       handle = undefined;
       if (!terminalCommitted) {
         await workspace.settleAndDiscard();
+        if (invocation.memoryMode === "shadow") {
+          event({
+            type: "workspace_settled",
+            memoryMode: "shadow",
+            workspaceClass: "shadow",
+            disposition: "discarded",
+            commitAccepted: false,
+            promotionAttempted: false,
+          });
+        }
         workspace = undefined;
       }
       if (active.cancelReason) {

@@ -224,6 +224,93 @@ send, and blocked-input handling). If `CHAT_SERVICE_PROBE_CHARACTER_ID` is unset
 the probe auto-selects a public approved adult character from the main DB; use
 `--character-id=...` when a fixed production probe character is required.
 
+During the ADR-19 Shadow phase, keep the delivered runtime on `native/legacy`,
+enable the bounded DSH Shadow executor, and add
+`--expected-companion-shadow dsh`. The probe then fails closed unless all three
+normal turns persist a completed, content-free Shadow comparison; tool-call
+counts must equal dry-run tool-call counts, and the private/no-memory turn must
+prove Shadow admission was skipped. This flag observes an already-enabled
+Shadow deployment—it never changes rollout settings itself.
+
+For a temporary local Shadow proof, preserve and restore the deployment switch
+even when the probe fails. The restoration is part of the evidence, not manual
+cleanup to remember later:
+
+```bash
+set -euo pipefail
+
+# ecosystem.config.js projects the effective shell-over-packages/chat/.env
+# value into Chat's PM2 env, so this is the deployed switch authority.
+shadow_before="$(pm2 jlist | node -e '
+  let body="";
+  process.stdin.on("data", chunk => body += chunk);
+  process.stdin.on("end", () => {
+    const processInfo = JSON.parse(body).find(entry => entry.name === "chat");
+    if (!processInfo) process.exit(1);
+    process.stdout.write(processInfo.pm2_env.CHAT_COMPANION_DSH_SHADOW_ENABLED === "true" ? "true" : "false");
+  });
+')"
+dsh_agent_enabled_before="$(pm2 jlist | node -e '
+  let body="";
+  process.stdin.on("data", chunk => body += chunk);
+  process.stdin.on("end", () => {
+    const processInfo = JSON.parse(body).find(entry => entry.name === "chat-agent");
+    process.stdout.write(processInfo ? "1" : "0");
+  });
+')"
+test "$dsh_agent_enabled_before" = "1"
+
+wait_chat_ready() {
+  require_shadow="$1"
+  for _ in $(seq 1 120); do
+    if ready_body="$(curl --connect-timeout 2 --max-time 5 --fail --silent --show-error http://127.0.0.1:3100/readyz 2>/dev/null)" &&
+      READY_BODY="$ready_body" REQUIRE_SHADOW="$require_shadow" node -e '
+        const body = JSON.parse(process.env.READY_BODY);
+        const shadowReady = process.env.REQUIRE_SHADOW !== "true" ||
+          body.components?.shadow?.status === "healthy";
+        process.exit(body.ok === true && shadowReady ? 0 : 1);
+      '
+    then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "FAIL: Chat readiness did not converge" >&2
+  return 1
+}
+
+restore_shadow() {
+  DSH_AGENT_ENABLED="$dsh_agent_enabled_before" \
+    CHAT_COMPANION_DSH_SHADOW_ENABLED="$shadow_before" \
+    bun run pm2:restart
+  wait_chat_ready "$shadow_before"
+  shadow_after="$(pm2 jlist | node -e '
+    let body="";
+    process.stdin.on("data", chunk => body += chunk);
+    process.stdin.on("end", () => {
+      const processInfo = JSON.parse(body).find(entry => entry.name === "chat");
+      if (!processInfo) process.exit(1);
+      process.stdout.write(processInfo.pm2_env.CHAT_COMPANION_DSH_SHADOW_ENABLED === "true" ? "true" : "false");
+    });
+  ')"
+  test "$shadow_after" = "$shadow_before"
+}
+trap restore_shadow EXIT
+
+DSH_AGENT_ENABLED="$dsh_agent_enabled_before" \
+  CHAT_COMPANION_DSH_SHADOW_ENABLED=true \
+  bun run pm2:restart
+wait_chat_ready true
+bun run --filter @idream/main probe:chat-service -- \
+  --service-url http://127.0.0.1:3100 \
+  --character-id lola-moonstruck \
+  --expected-companion-shadow dsh \
+  --report .tmp/launch-chat-shadow-probe.json
+
+restore_shadow
+trap - EXIT
+```
+
 Sentry readiness requires four distinct, fresh reports from the package-bound
 `probe:sentry` entrypoints. The CLI intentionally rejects a relabeled `--service`;
 each package loads its own SDK/runtime and binds the captured event plus resolved

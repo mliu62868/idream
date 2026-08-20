@@ -16,7 +16,7 @@ vi.mock("./queue.js", async (importOriginal) => {
 });
 
 const { ChatError } = await import("./errors.js");
-const { regenerate } = await import("./service.js");
+const { publicRuntimeTrace, regenerate } = await import("./service.js");
 
 interface FakeData {
   message?: unknown;
@@ -114,6 +114,72 @@ const freeEntitlement = {
   unlimitedMessages: false,
   voiceEnabled: false,
 };
+
+describe("public runtime trace", () => {
+  it("replaces private Shadow diagnostics with strict content-free evidence", () => {
+    const trace = publicRuntimeTrace({
+      attempt: 1,
+      shadowAdmission: {
+        schemaVersion: 1,
+        status: "skipped_readiness",
+        enqueued: false,
+      },
+      shadowComparison: {
+        schemaVersion: 1,
+        status: "error",
+        invocationId: "private-invocation",
+        attemptId: "private-attempt",
+        profileDigest: "d".repeat(64),
+        profileVerified: false,
+        primary: {
+          provider: "openai",
+          model: "primary-model",
+          textDigest: "a".repeat(64),
+          textLength: 10,
+          finishReason: "stop",
+          usage: { promptTokens: 4, completionTokens: 2 },
+          latencyMs: 10,
+          toolCalls: 0,
+        },
+        shadow: null,
+        workspace: null,
+        commitRejected: false,
+        error: {
+          code: "provider leaked prompt bytes",
+          message: "private prompt and provider response body",
+        },
+        textDigestEqual: false,
+      },
+    });
+
+    expect(trace).toEqual({
+      attempt: 1,
+      shadowEvidence: {
+        schemaVersion: 1,
+        status: "error",
+        errorCode: "shadow_runtime_error",
+      },
+    });
+    expect(JSON.stringify(trace)).not.toContain("private");
+    expect(JSON.stringify(trace)).not.toContain("prompt");
+  });
+
+  it("publishes synchronous private admission without a comparison", () => {
+    expect(publicRuntimeTrace({
+      shadowAdmission: {
+        schemaVersion: 1,
+        status: "skipped_private",
+        enqueued: false,
+      },
+    })).toEqual({
+      shadowEvidence: {
+        schemaVersion: 1,
+        status: "skipped_private",
+        enqueued: false,
+      },
+    });
+  });
+});
 
 describe("regenerate quota + eligibility guard (P0-C)", () => {
   beforeEach(() => enqueueMock.mockClear());

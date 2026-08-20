@@ -27,6 +27,8 @@ function loadConfig(mode, overrides = {}) {
   const originalMode = process.env.IDREAM_PM2_MODE;
   const originalVideoProvider = process.env.GEN_VIDEO_PROVIDER;
   const originalDshAgentEnabled = process.env.DSH_AGENT_ENABLED;
+  const originalChatShadowEnabled =
+    process.env.CHAT_COMPANION_DSH_SHADOW_ENABLED;
   try {
     if (mode === undefined) {
       delete process.env.IDREAM_PM2_MODE;
@@ -48,6 +50,17 @@ function loadConfig(mode, overrides = {}) {
       : originalDshAgentEnabled;
     if (dshAgentEnabled === undefined) delete process.env.DSH_AGENT_ENABLED;
     else process.env.DSH_AGENT_ENABLED = dshAgentEnabled;
+    const chatShadowEnabled = Object.hasOwn(
+      overrides,
+      "CHAT_COMPANION_DSH_SHADOW_ENABLED",
+    )
+      ? overrides.CHAT_COMPANION_DSH_SHADOW_ENABLED
+      : originalChatShadowEnabled;
+    if (chatShadowEnabled === undefined) {
+      delete process.env.CHAT_COMPANION_DSH_SHADOW_ENABLED;
+    } else {
+      process.env.CHAT_COMPANION_DSH_SHADOW_ENABLED = chatShadowEnabled;
+    }
     delete require.cache[require.resolve(configPath)];
     return require(configPath);
   } finally {
@@ -65,6 +78,12 @@ function loadConfig(mode, overrides = {}) {
       delete process.env.DSH_AGENT_ENABLED;
     } else {
       process.env.DSH_AGENT_ENABLED = originalDshAgentEnabled;
+    }
+    if (originalChatShadowEnabled === undefined) {
+      delete process.env.CHAT_COMPANION_DSH_SHADOW_ENABLED;
+    } else {
+      process.env.CHAT_COMPANION_DSH_SHADOW_ENABLED =
+        originalChatShadowEnabled;
     }
     delete require.cache[require.resolve(configPath)];
   }
@@ -207,6 +226,18 @@ test("the DSH companion sidecar is explicit, single-instance and starts before C
   assert.equal(sidecar.instances, 1);
   assert.equal(sidecar.exec_mode, "fork");
   assert.ok(enabled.apps.indexOf(sidecar) < enabled.apps.indexOf(chat));
+});
+
+test("the gated PM2 wrapper projects the explicit Chat Shadow switch", () => {
+  const enabled = byName(loadConfig("development", {
+    CHAT_COMPANION_DSH_SHADOW_ENABLED: "true",
+  }), "chat");
+  const disabled = byName(loadConfig("development", {
+    CHAT_COMPANION_DSH_SHADOW_ENABLED: "false",
+  }), "chat");
+
+  assert.equal(enabled.env.CHAT_COMPANION_DSH_SHADOW_ENABLED, "true");
+  assert.equal(disabled.env.CHAT_COMPANION_DSH_SHADOW_ENABLED, "false");
 });
 
 test("every runtime receives the operator-approved source identity", () => {

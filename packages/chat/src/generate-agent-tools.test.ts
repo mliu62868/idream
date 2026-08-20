@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CHAT_TO_MAIN_EVENTS } from "@idream/shared/contracts";
-import { releasedKnowledgeDigest } from "@idream/shared/chat/companion-runtime";
+import {
+  releasedKnowledgeDigest,
+  type CompanionShadowComparison,
+} from "@idream/shared/chat/companion-runtime";
 import type { ChatPrismaClient } from "./db.js";
 import { BoundedShadowExecutor } from "./companion-shadow-executor.js";
 
@@ -95,6 +98,67 @@ function finalizedMessageUpdate(
   return messageUpdates.find(
     (call) => (call.data as { status?: string }).status === "sent",
   )?.data;
+}
+
+function shadowComparisonFixture(
+  status: "completed" | "cancelled" = "completed",
+): CompanionShadowComparison {
+  const primary = {
+    provider: "mock",
+    model: "local-model",
+    textDigest: "a".repeat(64),
+    textLength: 15,
+    finishReason: "stop" as const,
+    usage: { promptTokens: 12, completionTokens: 3 },
+    latencyMs: 10,
+    toolCalls: 0,
+  };
+  if (status === "cancelled") {
+    return {
+      schemaVersion: 1,
+      status,
+      invocationId: "shadow:inv:msg_assistant:1",
+      attemptId: "shadow:msg_assistant:1",
+      profileDigest: "d".repeat(64),
+      profileVerified: false,
+      primary: { ...primary, finishReason: "cancelled" },
+      shadow: null,
+      workspace: null,
+      commitRejected: false,
+      error: { code: "shadow_primary_cancelled", message: "primary cancelled" },
+      textDigestEqual: false,
+    };
+  }
+  return {
+    schemaVersion: 1,
+    status,
+    invocationId: "shadow:inv:msg_assistant:1",
+    attemptId: "shadow:msg_assistant:1",
+    profileDigest: "d".repeat(64),
+    profileVerified: true,
+    primary,
+    shadow: {
+      provider: "mock",
+      model: "local-model",
+      textDigest: "b".repeat(64),
+      textLength: 16,
+      finishReason: "stop",
+      usage: { promptTokens: 11, completionTokens: 4, reasoningTokens: 2 },
+      latencyMs: 12,
+      toolCalls: 0,
+      dryRunToolCalls: 0,
+      steps: 1,
+    },
+    workspace: {
+      memoryMode: "shadow",
+      workspaceClass: "shadow",
+      disposition: "discarded",
+      commitAccepted: false,
+      promotionAttempted: false,
+    },
+    commitRejected: true,
+    textDigestEqual: false,
+  };
 }
 
 // `completedSourceAttachment` seeds the edit_last_image lookup (generate.ts's
@@ -604,6 +668,18 @@ describe("chat generate agent image tool", () => {
           invocationId: "shadow:inv:msg_assistant:1",
           expectedProfileDigest: "d".repeat(64),
         });
+        await port.emit({
+          type: "started",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 1,
+          occurredAt: new Date().toISOString(),
+          instance: {
+            id: "11111111-1111-4111-8111-111111111111",
+            startedAt: new Date().toISOString(),
+          },
+          profileDigest: "d".repeat(64),
+        });
         shadowToolResult = await port.executeTool({
           attemptId: invocation.attemptId,
           callId: "shadow-call-1",
@@ -624,11 +700,23 @@ describe("chat generate agent image tool", () => {
           type: "terminal_candidate",
           invocationId: invocation.invocationId,
           attemptId: invocation.attemptId,
-          sequence: 1,
+          sequence: 2,
           occurredAt: new Date().toISOString(),
           candidate,
         });
         shadowCommitAck = await port.commit(candidate);
+        await port.emit({
+          type: "workspace_settled",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 3,
+          occurredAt: new Date().toISOString(),
+          memoryMode: "shadow",
+          workspaceClass: "shadow",
+          disposition: "discarded",
+          commitAccepted: false,
+          promotionAttempted: false,
+        });
       });
       const { prisma, messageUpdates, rootMessageUpdates, attachmentCreates } = fakePrisma();
 
@@ -707,6 +795,13 @@ describe("chat generate agent image tool", () => {
                 toolCalls: 1,
                 latencyMs: expect.any(Number),
               }),
+              workspace: {
+                memoryMode: "shadow",
+                workspaceClass: "shadow",
+                disposition: "discarded",
+                commitAccepted: false,
+                promotionAttempted: false,
+              },
             }),
           }),
         },
@@ -827,7 +922,7 @@ describe("chat generate agent image tool", () => {
       streamMock.mockImplementation(async function* nativeStream() {
         yield { delta: "private native reply", done: true };
       });
-      const { prisma } = fakePrisma(
+      const { prisma, messageUpdates } = fakePrisma(
         undefined,
         undefined,
         { content: "ordinary private turn", memoryAuthority: "disabled" },
@@ -847,6 +942,15 @@ describe("chat generate agent image tool", () => {
       expect(shadowExecutor.submit).not.toHaveBeenCalled();
       expect(dshRunMock).not.toHaveBeenCalled();
       expect(canAdmitShadowMock).not.toHaveBeenCalled();
+      expect(finalizedMessageUpdate(messageUpdates)).toMatchObject({
+        runtimeTrace: expect.objectContaining({
+          shadowAdmission: {
+            schemaVersion: 1,
+            status: "skipped_private",
+            enqueued: false,
+          },
+        }),
+      });
     } finally {
       restoreEnv();
     }
@@ -1102,7 +1206,7 @@ describe("chat generate agent image tool", () => {
       terminalStatus: "sent",
       runtimeTraceFacts: { schemaVersion: 1 },
       truncated: false,
-      shadowComparison: { schemaVersion: 1, status: "completed" },
+      shadowComparison: shadowComparisonFixture(),
     })).resolves.toBeUndefined();
 
     expect(committed).toEqual({ message: "before", version: "before" });
@@ -1259,7 +1363,7 @@ describe("chat generate agent image tool", () => {
         primaryTelemetry: { schemaVersion: 1, runtime: "native", retryCount: 1 },
       },
       truncated: false,
-      shadowComparison: { schemaVersion: 1, status: "cancelled" },
+      shadowComparison: shadowComparisonFixture("cancelled"),
     });
 
     expect(updates).toHaveLength(2);

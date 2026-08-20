@@ -747,6 +747,17 @@ describe("programmatic DSH companion runtime", () => {
         run.characterId,
       );
       expect(await dialogueCount(shadowWorkspace)).toBe(0);
+      expect(collected).toContainEqual(expect.objectContaining({
+        type: "event",
+        event: expect.objectContaining({
+          type: "workspace_settled",
+          memoryMode: "shadow",
+          workspaceClass: "shadow",
+          disposition: "discarded",
+          commitAccepted: false,
+          promotionAttempted: false,
+        }),
+      }));
     }
     expect(configs).toContainEqual(expect.objectContaining({
       ingest: true,

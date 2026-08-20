@@ -684,6 +684,46 @@ function addChatServiceProbeCheck(
           "conversation smoke did not prove no-memory turn authority",
         );
       }
+      if (probe.expectedCompanionShadow === "dsh") {
+        const normalShadowEvidence = [
+          probe.conversation.getSession?.shadow,
+          probe.conversation.regenerateAnchor?.futureShadow,
+          probe.conversation.regenerateAnchor?.regeneratedShadow,
+        ];
+        const normalShadowComplete = normalShadowEvidence.every((shadow) =>
+          shadow?.ok === true &&
+          shadow.status === "completed" &&
+          shadow.primaryRuntime === "native" &&
+          shadow.profileVerified === true &&
+          typeof shadow.primaryProvider === "string" &&
+          typeof shadow.primaryModel === "string" &&
+          typeof shadow.shadowProvider === "string" &&
+          typeof shadow.shadowModel === "string" &&
+          typeof shadow.shadowFinishReason === "string" &&
+          typeof shadow.shadowToolCalls === "number" &&
+          shadow.shadowToolCalls === shadow.shadowDryRunToolCalls &&
+          typeof shadow.shadowSteps === "number" &&
+          shadow.workspaceClass === "shadow" &&
+          shadow.promotionAttempted === false &&
+          shadow.commitRejected === true &&
+          shadow.privateSkipped === false
+        );
+        if (!normalShadowComplete) {
+          problems.push(
+            "conversation smoke did not prove three isolated dry-run Shadow completions",
+          );
+        }
+        const privateShadow = probe.conversation.noMemory?.shadow;
+        if (
+          privateShadow?.ok !== true ||
+          privateShadow.primaryRuntime !== "native" ||
+          privateShadow.privateSkipped !== true
+        ) {
+          problems.push(
+            "conversation smoke did not prove private Shadow admission was skipped",
+          );
+        }
+      }
       if (
         probe.conversation.blockedInput?.ok !== true ||
         probe.conversation.blockedInput.status_ !== "blocked"

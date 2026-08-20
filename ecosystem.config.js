@@ -73,6 +73,13 @@ const genVideoProvider =
   "mock";
 const videoWorkerEnabled = genVideoProvider !== "mock";
 const companionSidecarEnabled = process.env.DSH_AGENT_ENABLED === "1";
+const chatShadowEnabled =
+  process.env.CHAT_COMPANION_DSH_SHADOW_ENABLED ??
+  localEnvValue(
+    dir("packages/chat/.env"),
+    "CHAT_COMPANION_DSH_SHADOW_ENABLED",
+  ) ??
+  "false";
 // REDIS_URL must resolve IDENTICALLY across main-web (which enqueues) and gen-finalizer
 // (which consumes) — otherwise generation jobs stick forever. Durable Main↔Chat delivery
 // does not use Redis. Which vars are cross-service, and their one set of defaults, is
@@ -245,6 +252,9 @@ module.exports = {
       env: {
         ...runtimeIdentityEnv,
         ...sharedInternalEnv,
+        // SPEC: project the effective shell-over-.env switch into PM2 so the
+        // gated restart wrapper can both enable and disable Shadow explicitly.
+        CHAT_COMPANION_DSH_SHADOW_ENABLED: chatShadowEnabled,
       },
       // config from packages/chat/.env (CHAT_PORT, CHAT_DATABASE_URL, …)
     },

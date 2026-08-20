@@ -438,6 +438,28 @@ function passingChatServiceProbe(
   };
 }
 
+function passingDshShadowEvidence() {
+  return {
+    ok: true,
+    status: "completed",
+    primaryRuntime: "native",
+    profileVerified: true,
+    primaryProvider: "openai",
+    primaryModel: "primary-model",
+    shadowProvider: "openai",
+    shadowModel: "shadow-model",
+    shadowFinishReason: "stop",
+    shadowToolCalls: 1,
+    shadowDryRunToolCalls: 1,
+    shadowSteps: 2,
+    workspaceClass: "shadow",
+    promotionAttempted: false,
+    commitRejected: true,
+    privateSkipped: false,
+    error: null,
+  } as const;
+}
+
 function passingChatProbe(
   override: Partial<ChatModelProbeEvidence> = {},
 ): ChatModelProbeEvidence {
@@ -2512,6 +2534,64 @@ describe("launch readiness", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("revalidates every normal and private Shadow fact instead of trusting top-level ok", () => {
+    const passing = passingChatServiceProbe();
+    const shadow = passingDshShadowEvidence();
+    const withShadow = passingChatServiceProbe({
+      expectedCompanionShadow: "dsh",
+      conversation: {
+        ...passing.conversation,
+        getSession: { ...passing.conversation?.getSession, shadow },
+        regenerateAnchor: {
+          ...passing.conversation?.regenerateAnchor,
+          futureShadow: shadow,
+          regeneratedShadow: shadow,
+        },
+        noMemory: {
+          ...passing.conversation?.noMemory,
+          shadow: {
+            ok: true,
+            primaryRuntime: "native",
+            privateSkipped: true,
+            error: null,
+          },
+        },
+      },
+    });
+    const passingReport = assessLaunchReadiness({
+      env: productionEnv,
+      chatServiceProbe: withShadow,
+      now,
+    });
+    expect(
+      passingReport.checks.find((check) => check.id === "chat-service-live-probe"),
+    ).toMatchObject({ status: "pass" });
+
+    const failingReport = assessLaunchReadiness({
+      env: productionEnv,
+      chatServiceProbe: passingChatServiceProbe({
+        ...withShadow,
+        conversation: {
+          ...withShadow.conversation,
+          regenerateAnchor: {
+            ...withShadow.conversation?.regenerateAnchor,
+            futureShadow: { ...shadow, promotionAttempted: true },
+          },
+          noMemory: {
+            ...withShadow.conversation?.noMemory,
+            shadow: undefined,
+          },
+        },
+      }),
+      now,
+    });
+    const message = failingReport.checks.find(
+      (check) => check.id === "chat-service-live-probe",
+    )?.message;
+    expect(message).toContain("three isolated dry-run Shadow completions");
+    expect(message).toContain("private Shadow admission was skipped");
   });
 
   it("fails when the signed Chat probe observed a different Chat FS authority", () => {

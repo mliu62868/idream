@@ -11,6 +11,12 @@ import { characterAvailableToUser } from "./character-eligibility.js";
 import { providers } from "./providers.js";
 import { createId } from "./id.js";
 import { FREE_DAILY_MESSAGES } from "@idream/shared/chat/limits";
+import {
+  companionShadowAdmissionSchema,
+  companionShadowComparisonSchema,
+  companionShadowPublicEvidenceSchema,
+  type CompanionShadowPublicEvidence,
+} from "@idream/shared/chat/companion-runtime";
 import { enqueue } from "./queue.js";
 import { streamKey } from "./stream.js";
 import { recordOutbox, scheduleOutboxDelivery } from "./outbox.js";
@@ -286,9 +292,67 @@ export async function getSession(
     session,
     messages: messages.map((message) => ({
       ...message,
+      runtimeTrace: publicRuntimeTrace(message.runtimeTrace),
       scene: runtimeScene(message.runtimeTrace),
       attachments: byMessage.get(message.id) ?? [],
     })),
+  };
+}
+
+/** Public reads keep product facts while removing private Shadow diagnostics. */
+export function publicRuntimeTrace(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const {
+    shadowAdmission: rawAdmission,
+    shadowComparison: rawComparison,
+    ...trace
+  } = value as Record<string, unknown>;
+  let shadowEvidence: CompanionShadowPublicEvidence | null = null;
+  const comparison = companionShadowComparisonSchema.safeParse(rawComparison);
+  if (
+    comparison.success &&
+    comparison.data.status === "completed" &&
+    comparison.data.shadow &&
+    comparison.data.workspace
+  ) {
+    shadowEvidence = companionShadowPublicEvidenceSchema.parse({
+      schemaVersion: 1,
+      status: "completed",
+      profileVerified: true,
+      primary: {
+        provider: comparison.data.primary.provider,
+        model: comparison.data.primary.model,
+      },
+      shadow: {
+        provider: comparison.data.shadow.provider,
+        model: comparison.data.shadow.model,
+        finishReason: comparison.data.shadow.finishReason,
+        toolCalls: comparison.data.shadow.toolCalls,
+        dryRunToolCalls: comparison.data.shadow.dryRunToolCalls,
+        steps: comparison.data.shadow.steps,
+      },
+      workspace: comparison.data.workspace,
+    });
+  } else if (
+    comparison.success &&
+    (comparison.data.status === "error" || comparison.data.status === "cancelled")
+  ) {
+    const rawCode = comparison.data.error?.code ?? "shadow_runtime_error";
+    const errorCode = /^[a-z][a-z0-9_]{0,63}$/u.test(rawCode)
+      ? rawCode
+      : "shadow_runtime_error";
+    shadowEvidence = companionShadowPublicEvidenceSchema.parse({
+      schemaVersion: 1,
+      status: comparison.data.status,
+      errorCode,
+    });
+  } else if (rawComparison === undefined || rawComparison === null) {
+    const admission = companionShadowAdmissionSchema.safeParse(rawAdmission);
+    if (admission.success) shadowEvidence = admission.data;
+  }
+  return {
+    ...trace,
+    ...(shadowEvidence ? { shadowEvidence } : {}),
   };
 }
 

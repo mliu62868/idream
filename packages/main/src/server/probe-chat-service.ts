@@ -9,6 +9,7 @@ import {
 import { loadCharacterSoulSnapshot } from "@idream/shared";
 import {
   companionProbeDshEvidenceSchema,
+  companionShadowPublicEvidenceSchema,
   type CompanionProbeDshEvidence,
 } from "@idream/shared/chat/companion-runtime";
 import { prisma } from "./lib/db";
@@ -27,6 +28,7 @@ type ProbeOptions = {
   userId: string;
   characterId: string | null;
   expectedCompanionRuntime: "dsh" | null;
+  expectedCompanionShadow: "dsh" | null;
 };
 
 type OperationEvidence = {
@@ -50,6 +52,7 @@ type NoMemoryEvidence = OperationEvidence & {
   memorySourceAbsent?: boolean;
   relationshipUnchanged?: boolean;
   dsh?: DshCompanionProbeEvidence;
+  shadow?: DshShadowProbeEvidence;
 };
 
 type RegenerateAnchorEvidence = OperationEvidence & {
@@ -62,9 +65,31 @@ type RegenerateAnchorEvidence = OperationEvidence & {
   regeneratedSceneVersion?: number | null;
   futureDsh?: DshCompanionProbeEvidence;
   regeneratedDsh?: DshCompanionProbeEvidence;
+  futureShadow?: DshShadowProbeEvidence;
+  regeneratedShadow?: DshShadowProbeEvidence;
 };
 
 export type DshCompanionProbeEvidence = CompanionProbeDshEvidence;
+
+type DshShadowProbeEvidence = {
+  ok: boolean;
+  status?: string;
+  primaryRuntime?: string;
+  profileVerified?: boolean;
+  primaryProvider?: string;
+  primaryModel?: string;
+  shadowProvider?: string;
+  shadowModel?: string;
+  shadowFinishReason?: string;
+  shadowToolCalls?: number;
+  shadowDryRunToolCalls?: number;
+  shadowSteps?: number;
+  workspaceClass?: "shadow";
+  promotionAttempted?: false;
+  commitRejected?: true;
+  privateSkipped: boolean;
+  error: string | null;
+};
 
 type CleanupEvidence = OperationEvidence & {
   memoryGone?: boolean;
@@ -92,6 +117,7 @@ type ConversationEvidence = {
     assistantStatus?: string | null;
     derivationSettled?: boolean;
     dsh?: DshCompanionProbeEvidence;
+    shadow?: DshShadowProbeEvidence;
   };
   regenerateAnchor: RegenerateAnchorEvidence;
   noMemory: NoMemoryEvidence;
@@ -223,6 +249,110 @@ export function projectDshCompanionEvidence(
   });
 }
 
+/**
+ * INVARIANT: Shadow evidence contains only aggregate execution facts. Answer
+ * bytes, hashes, invocation ids and workspace identities never cross Chat's
+ * public session boundary and never enter the launch report.
+ */
+export function projectDshShadowEvidence(
+  value: unknown,
+  mode: "normal" | "private",
+): DshShadowProbeEvidence {
+  const trace = isRecord(value) ? value : {};
+  const runtime = isRecord(trace.companionRuntime) ? trace.companionRuntime : {};
+  const telemetry = isRecord(trace.primaryTelemetry) ? trace.primaryTelemetry : {};
+  const memory = isRecord(telemetry.memory) ? telemetry.memory : {};
+  const privateComparisonPresent = trace.shadowComparison !== undefined ||
+    trace.shadowAdmission !== undefined;
+  const evidenceResult = companionShadowPublicEvidenceSchema.safeParse(
+    trace.shadowEvidence,
+  );
+  const shadowEvidence = evidenceResult.success ? evidenceResult.data : null;
+  const failures: string[] = [];
+  const expect = (condition: boolean, field: string) => {
+    if (!condition) failures.push(field);
+  };
+
+  expect(runtime.runtime === "native", "companionRuntime.runtime");
+  expect(runtime.memoryBackend === "legacy", "companionRuntime.memoryBackend");
+  expect(runtime.private === (mode === "private"), "companionRuntime.private");
+  expect(!privateComparisonPresent, "shadowEvidence.privateFieldsAbsent");
+
+  if (mode === "private") {
+    expect(
+      evidenceResult.success &&
+        shadowEvidence?.status === "skipped_private" &&
+        shadowEvidence.enqueued === false,
+      "shadowEvidence.skipped_private",
+    );
+    expect(telemetry.schemaVersion === 1 && telemetry.runtime === "native", "primaryTelemetry.runtime");
+    expect(telemetry.terminalStatus === "sent", "primaryTelemetry.terminalStatus");
+    expect(telemetry.sseTerminal === "done", "primaryTelemetry.sseTerminal");
+    expect(memory.outcome === "disabled", "primaryTelemetry.memory.outcome");
+    return {
+      ok: failures.length === 0,
+      ...(runtime.runtime === "native" ? { primaryRuntime: "native" } : {}),
+      privateSkipped:
+        !privateComparisonPresent &&
+        evidenceResult.success &&
+        evidenceResult.data.status === "skipped_private",
+      error: failures.length === 0
+        ? null
+        : `DSH private shadow evidence failed: ${failures.join(", ")}`,
+    };
+  }
+
+  const completed = shadowEvidence?.status === "completed"
+    ? shadowEvidence
+    : null;
+  const primary = completed?.primary;
+  const shadow = completed?.shadow;
+  const shadowToolCalls = shadow?.toolCalls ?? null;
+  const dryRunToolCalls = shadow?.dryRunToolCalls ?? null;
+  const shadowSteps = shadow?.steps ?? null;
+  expect(evidenceResult.success, "shadowEvidence.contract");
+  expect(completed !== null, "shadowEvidence.status");
+  expect(completed?.workspace.workspaceClass === "shadow", "shadowEvidence.workspace.class");
+  expect(completed?.workspace.disposition === "discarded", "shadowEvidence.workspace.discarded");
+  expect(completed?.workspace.promotionAttempted === false, "shadowEvidence.workspace.notPromoted");
+  expect(completed?.workspace.commitAccepted === false, "shadowEvidence.workspace.commitRejected");
+  expect(shadowToolCalls !== null, "shadowEvidence.shadow.toolCalls");
+  expect(dryRunToolCalls !== null, "shadowEvidence.shadow.dryRunToolCalls");
+  expect(shadowSteps !== null, "shadowEvidence.shadow.steps");
+  expect(
+    shadowToolCalls !== null && dryRunToolCalls !== null && shadowToolCalls === dryRunToolCalls,
+    "shadowEvidence.shadow.dryRunOnly",
+  );
+
+  return {
+    ok: failures.length === 0,
+    ...(completed ? { status: "completed" } : {}),
+    ...(runtime.runtime === "native" ? { primaryRuntime: "native" } : {}),
+    ...(completed ? { profileVerified: completed.profileVerified } : {}),
+    ...(primary ? { primaryProvider: primary.provider } : {}),
+    ...(primary ? { primaryModel: primary.model } : {}),
+    ...(shadow ? { shadowProvider: shadow.provider } : {}),
+    ...(shadow ? { shadowModel: shadow.model } : {}),
+    ...(shadow
+      ? { shadowFinishReason: shadow.finishReason }
+      : {}),
+    ...(shadowToolCalls === null ? {} : { shadowToolCalls }),
+    ...(dryRunToolCalls === null ? {} : { shadowDryRunToolCalls: dryRunToolCalls }),
+    ...(shadowSteps === null ? {} : { shadowSteps }),
+    ...(completed
+      ? {
+          workspaceClass: completed.workspace.workspaceClass,
+          promotionAttempted: completed.workspace.promotionAttempted,
+          commitRejected: !completed.workspace.commitAccepted,
+        }
+      : {}),
+    privateSkipped: false,
+    error: failures.length === 0
+      ? null
+      : `DSH normal shadow evidence failed: ${failures.join(", ")}`,
+  };
+}
+
 function isIsoDate(value: unknown): value is string {
   return typeof value === "string" &&
     /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u.test(value) &&
@@ -239,6 +369,10 @@ function readOptions(): ProbeOptions {
       probeCliArg("expected-companion-runtime") ??
         process.env.CHAT_SERVICE_PROBE_EXPECTED_COMPANION_RUNTIME,
     ),
+    expectedCompanionShadow: parseExpectedCompanionShadow(
+      probeCliArg("expected-companion-shadow") ??
+        process.env.CHAT_SERVICE_PROBE_EXPECTED_COMPANION_SHADOW,
+    ),
   };
 }
 
@@ -251,6 +385,15 @@ export function parseExpectedCompanionRuntime(
   throw new Error("expected companion runtime must be dsh");
 }
 
+export function parseExpectedCompanionShadow(
+  value: string | undefined,
+): "dsh" | null {
+  const normalized = value?.trim();
+  if (!normalized) return null;
+  if (normalized === "dsh") return normalized;
+  throw new Error("expected companion shadow must be dsh");
+}
+
 async function main() {
   const options = readOptions();
   try {
@@ -260,6 +403,7 @@ async function main() {
       characterId: options.characterId,
       secret: process.env.CHAT_BFF_SIGNING_SECRET ?? null,
       expectedCompanionRuntime: options.expectedCompanionRuntime,
+      expectedCompanionShadow: options.expectedCompanionShadow,
     });
 
     if (options.report) {
@@ -327,6 +471,7 @@ export async function runProbe(input: {
   characterId: string | null;
   secret: string | null;
   expectedCompanionRuntime?: "dsh" | null;
+  expectedCompanionShadow?: "dsh" | null;
 }): Promise<ChatServiceProbeReport> {
   const checkedAt = new Date().toISOString();
   const startedAt = Date.now();
@@ -343,6 +488,7 @@ export async function runProbe(input: {
       | "missing",
     usedSignedBff: Boolean(input.secret?.trim()),
     expectedCompanionRuntime: input.expectedCompanionRuntime ?? null,
+    expectedCompanionShadow: input.expectedCompanionShadow ?? null,
   };
 
   const health = await probeHealth(input.serviceUrl);
@@ -363,6 +509,9 @@ export async function runProbe(input: {
   );
 
   try {
+    if (input.expectedCompanionRuntime && input.expectedCompanionShadow) {
+      throw new Error("primary DSH and DSH shadow expectations are mutually exclusive");
+    }
     if (!input.serviceUrl?.trim()) {
       throw new Error("CHAT_SERVICE_URL is required for chat service probe");
     }
@@ -407,6 +556,7 @@ export async function runProbe(input: {
         characterId: character.id,
         runId: randomUUID(),
         expectedCompanionRuntime: input.expectedCompanionRuntime ?? null,
+        expectedCompanionShadow: input.expectedCompanionShadow ?? null,
       });
     }
   } catch (error) {
@@ -591,6 +741,7 @@ async function probeConversation(input: {
   characterId: string;
   runId: string;
   expectedCompanionRuntime: "dsh" | null;
+  expectedCompanionShadow: "dsh" | null;
 }): Promise<ConversationEvidence> {
   const evidence: ConversationEvidence = {
     ok: false,
@@ -666,6 +817,7 @@ async function probeConversation(input: {
       sessionId,
       assistantMessageId: sent.assistantMessageId,
       requireMemoryExtracted: true,
+      requireDshShadow: input.expectedCompanionShadow === "dsh",
     });
     const assistant = normal.message;
     const assistantSent =
@@ -675,23 +827,29 @@ async function probeConversation(input: {
     const normalDsh = input.expectedCompanionRuntime === "dsh"
       ? projectDshCompanionEvidence(assistant?.runtimeTrace, "normal")
       : undefined;
+    const normalShadow = input.expectedCompanionShadow === "dsh"
+      ? projectDshShadowEvidence(assistant?.runtimeTrace, "normal")
+      : undefined;
     evidence.getSession = {
       ok:
         normal.status === 200 &&
         assistantSent &&
         normal.settled === true &&
-        (normalDsh?.ok ?? true),
+        (normalDsh?.ok ?? true) &&
+        (normalShadow?.ok ?? true),
       status: normal.status,
       assistantMessageId: sent.assistantMessageId,
       assistantSent,
       assistantStatus: assistant?.status ?? null,
       derivationSettled: normal.settled,
       ...(normalDsh ? { dsh: normalDsh, error: normalDsh.error } : {}),
+      ...(normalShadow ? { shadow: normalShadow, error: normalShadow.error } : {}),
     };
     if (!evidence.getSession.ok) {
       throw new Error(
         `normal terminal state failed: HTTP ${normal.status}; ` +
-        `settled=${normal.settled === true}; dsh=${normalDsh?.ok ?? "not_required"}`,
+        `settled=${normal.settled === true}; dsh=${normalDsh?.ok ?? "not_required"}; ` +
+        `shadow=${normalShadow?.ok ?? "not_required"}`,
       );
     }
 
@@ -741,6 +899,7 @@ async function probeConversation(input: {
           sessionId,
           assistantMessageId: futureTurn.assistantMessageId,
           requireMemoryExtracted: true,
+          requireDshShadow: input.expectedCompanionShadow === "dsh",
         })
       : { status: 0, message: null, settled: false };
     const originalSceneVersion = sceneVersion(assistant?.scene);
@@ -751,18 +910,22 @@ async function probeConversation(input: {
     const futureDsh = input.expectedCompanionRuntime === "dsh"
       ? projectDshCompanionEvidence(futureState.message?.runtimeTrace, "normal")
       : undefined;
+    const futureShadow = input.expectedCompanionShadow === "dsh"
+      ? projectDshShadowEvidence(futureState.message?.runtimeTrace, "normal")
+      : undefined;
     const futureReady =
       futureState.status === 200 &&
       futureState.settled === true &&
       originalSceneVersion === 0 &&
       futureUserSceneVersion === 1 &&
       futureSceneVersion === 1 &&
-      (futureDsh?.ok ?? true);
+      (futureDsh?.ok ?? true) &&
+      (futureShadow?.ok ?? true);
     if (!futureReady) {
       const failure =
         `future scene terminal state failed: HTTP ${futureState.status}; ` +
         `settled=${futureState.settled === true}; scenes=${originalSceneVersion}/${futureUserSceneVersion}/${futureSceneVersion}; ` +
-        `dsh=${futureDsh?.ok ?? "not_required"}`;
+        `dsh=${futureDsh?.ok ?? "not_required"}; shadow=${futureShadow?.ok ?? "not_required"}`;
       evidence.regenerateAnchor = {
         ok: false,
         status: futureState.status,
@@ -772,6 +935,7 @@ async function probeConversation(input: {
         futureUserSceneVersion,
         futureSceneVersion,
         ...(futureDsh ? { futureDsh } : {}),
+        ...(futureShadow ? { futureShadow } : {}),
         error: failure,
       };
       throw new Error(failure);
@@ -799,6 +963,7 @@ async function probeConversation(input: {
         futureUserSceneVersion,
         futureSceneVersion,
         ...(futureDsh ? { futureDsh } : {}),
+        ...(futureShadow ? { futureShadow } : {}),
         error: failure,
       };
       throw new Error(failure);
@@ -821,6 +986,7 @@ async function probeConversation(input: {
         futureUserSceneVersion,
         futureSceneVersion,
         ...(futureDsh ? { futureDsh } : {}),
+        ...(futureShadow ? { futureShadow } : {}),
         error: failure,
       };
       throw new Error(failure);
@@ -831,11 +997,15 @@ async function probeConversation(input: {
           sessionId,
           assistantMessageId: regenerated.assistantMessageId,
           requireMemoryExtracted: true,
+          requireDshShadow: input.expectedCompanionShadow === "dsh",
         })
       : { status: 0, message: null, settled: false };
     const regeneratedSceneVersion = sceneVersion(regeneratedState.message?.scene);
     const regeneratedDsh = input.expectedCompanionRuntime === "dsh"
       ? projectDshCompanionEvidence(regeneratedState.message?.runtimeTrace, "normal")
+      : undefined;
+    const regeneratedShadow = input.expectedCompanionShadow === "dsh"
+      ? projectDshShadowEvidence(regeneratedState.message?.runtimeTrace, "normal")
       : undefined;
     evidence.regenerateAnchor = {
       ok:
@@ -851,7 +1021,9 @@ async function probeConversation(input: {
         regeneratedSceneVersion === originalSceneVersion &&
         regeneratedState.message?.attempt === regenerated.attempt &&
         (futureDsh?.ok ?? true) &&
-        (regeneratedDsh?.ok ?? true),
+        (regeneratedDsh?.ok ?? true) &&
+        (futureShadow?.ok ?? true) &&
+        (regeneratedShadow?.ok ?? true),
       status: regenerate.status,
       assistantMessageId: regenerated.assistantMessageId,
       originalAttempt: assistant?.attempt,
@@ -862,6 +1034,8 @@ async function probeConversation(input: {
       regeneratedSceneVersion,
       ...(futureDsh ? { futureDsh } : {}),
       ...(regeneratedDsh ? { regeneratedDsh } : {}),
+      ...(futureShadow ? { futureShadow } : {}),
+      ...(regeneratedShadow ? { regeneratedShadow } : {}),
       error:
         futureStream.ok &&
         regeneratedStream.ok &&
@@ -870,9 +1044,11 @@ async function probeConversation(input: {
         futureSceneVersion === 1 &&
         regeneratedSceneVersion === originalSceneVersion &&
         (futureDsh?.ok ?? true) &&
-        (regeneratedDsh?.ok ?? true)
+        (regeneratedDsh?.ok ?? true) &&
+        (futureShadow?.ok ?? true) &&
+        (regeneratedShadow?.ok ?? true)
           ? null
-          : `futureStream=${futureStream.ok}; futureSettled=${futureState.settled}; regenerateStream=${regeneratedStream.ok}; regenerateSettled=${regeneratedState.settled}; scenes=${originalSceneVersion}/${futureUserSceneVersion}/${futureSceneVersion}/${regeneratedSceneVersion}; futureDsh=${futureDsh?.ok ?? "not_required"}; regeneratedDsh=${regeneratedDsh?.ok ?? "not_required"}`,
+          : `futureStream=${futureStream.ok}; futureSettled=${futureState.settled}; regenerateStream=${regeneratedStream.ok}; regenerateSettled=${regeneratedState.settled}; scenes=${originalSceneVersion}/${futureUserSceneVersion}/${futureSceneVersion}/${regeneratedSceneVersion}; futureDsh=${futureDsh?.ok ?? "not_required"}; regeneratedDsh=${regeneratedDsh?.ok ?? "not_required"}; futureShadow=${futureShadow?.ok ?? "not_required"}; regeneratedShadow=${regeneratedShadow?.ok ?? "not_required"}`,
     };
     if (!evidence.regenerateAnchor.ok) {
       throw new Error(evidence.regenerateAnchor.error ?? "regenerate evidence failed");
@@ -930,6 +1106,9 @@ async function probeConversation(input: {
       };
       throw new Error(evidence.noMemory.error!);
     }
+    // Shadow admission is persisted before the primary provider starts. The
+    // final snapshot therefore proves a private turn was synchronously denied;
+    // absence of a later comparison is only corroborating evidence.
     const noMemState = noMemTurn.assistantMessageId
       ? await waitForSessionMessage({
           ...input,
@@ -938,9 +1117,6 @@ async function probeConversation(input: {
           requireMemoryExtracted: false,
         })
       : { status: 0, message: null };
-    await delay(
-      readPositiveIntEnv("CHAT_SERVICE_PROBE_NO_MEMORY_SETTLE_MS", 1_000),
-    );
     const [relationshipAfter, memoriesAfter] = await Promise.all([
       readProbeRelationship(input),
       readProbeMemories(input),
@@ -959,6 +1135,9 @@ async function probeConversation(input: {
     const privateDsh = input.expectedCompanionRuntime === "dsh"
       ? projectDshCompanionEvidence(noMemState.message?.runtimeTrace, "private")
       : undefined;
+    const privateShadow = input.expectedCompanionShadow === "dsh"
+      ? projectDshShadowEvidence(noMemState.message?.runtimeTrace, "private")
+      : undefined;
     evidence.noMemory = {
       ok:
         disableMemory.status === 200 &&
@@ -967,22 +1146,25 @@ async function probeConversation(input: {
         authorityPinned &&
         relationshipUnchanged &&
         memorySourceAbsent &&
-        (privateDsh?.ok ?? true),
+        (privateDsh?.ok ?? true) &&
+        (privateShadow?.ok ?? true),
       status: noMemSend.status,
       assistantMessageId: noMemTurn.assistantMessageId,
       authorityPinned,
       relationshipUnchanged,
       memorySourceAbsent,
       ...(privateDsh ? { dsh: privateDsh } : {}),
+      ...(privateShadow ? { shadow: privateShadow } : {}),
       error:
         disableMemory.status === 200 &&
         noMemStream.ok &&
         authorityPinned &&
         relationshipUnchanged &&
         memorySourceAbsent &&
-        (privateDsh?.ok ?? true)
+        (privateDsh?.ok ?? true) &&
+        (privateShadow?.ok ?? true)
         ? null
-        : `disable=${disableMemory.status}; stream=${noMemStream.ok}; authority=${authorityPinned}; relationship=${relationshipUnchanged}; memory=${memorySourceAbsent}; privateDsh=${privateDsh?.ok ?? "not_required"}`,
+        : `disable=${disableMemory.status}; stream=${noMemStream.ok}; authority=${authorityPinned}; relationship=${relationshipUnchanged}; memory=${memorySourceAbsent}; privateDsh=${privateDsh?.ok ?? "not_required"}; privateShadow=${privateShadow?.ok ?? "not_required"}`,
     };
     if (!evidence.noMemory.ok) {
       throw new Error(evidence.noMemory.error ?? "private no-memory evidence failed");
@@ -1299,6 +1481,7 @@ async function waitForSessionMessage(input: {
   sessionId: string;
   assistantMessageId: string;
   requireMemoryExtracted: boolean;
+  requireDshShadow?: boolean;
 }): Promise<{
   status: number;
   message: ProbeSessionMessage | null;
@@ -1307,7 +1490,7 @@ async function waitForSessionMessage(input: {
 }> {
   const deadline =
     Date.now() +
-    readPositiveIntEnv("CHAT_SERVICE_PROBE_SETTLE_TIMEOUT_MS", 90_000);
+    chatServiceProbeSettleTimeoutMs(input.requireDshShadow === true);
   let lastStatus = 0;
   let lastMessage: ProbeSessionMessage | null = null;
   let lastMessages: ProbeSessionMessage[] | undefined;
@@ -1341,7 +1524,19 @@ async function waitForSessionMessage(input: {
       ? runtimeTrace.primaryTelemetry
       : {};
     const terminalTraceComplete = primaryTelemetry.sseTerminal === "done";
-    if (response.status === 200 && sent && memoryComplete && terminalTraceComplete) {
+    const shadowState = shadowProbeObservation(runtimeTrace);
+    if (input.requireDshShadow && shadowState === "failed") {
+      return {
+        status: response.status,
+        message: lastMessage,
+        messages: body.messages,
+        settled: false,
+      };
+    }
+    const shadowComplete = !input.requireDshShadow || shadowState === "completed";
+    if (
+      response.status === 200 && sent && memoryComplete && terminalTraceComplete && shadowComplete
+    ) {
       return {
         status: response.status,
         message: lastMessage,
@@ -1357,6 +1552,28 @@ async function waitForSessionMessage(input: {
     ...(lastMessages ? { messages: lastMessages } : {}),
     settled: false,
   };
+}
+
+export function shadowProbeObservation(
+  runtimeTrace: Record<string, unknown>,
+): "pending" | "completed" | "failed" {
+  if (runtimeTrace.shadowEvidence === undefined) return "pending";
+  const parsed = companionShadowPublicEvidenceSchema.safeParse(
+    runtimeTrace.shadowEvidence,
+  );
+  if (!parsed.success) return "failed";
+  return ["completed", "error", "cancelled"].includes(parsed.data.status)
+    ? "completed"
+    : "failed";
+}
+
+export function chatServiceProbeSettleTimeoutMs(requireDshShadow: boolean): number {
+  return requireDshShadow
+    ? readPositiveIntEnv(
+        "CHAT_SERVICE_PROBE_SHADOW_SETTLE_TIMEOUT_MS",
+        DEFAULT_CHAT_SERVICE_PROBE_STREAM_TIMEOUT_MS,
+      )
+    : readPositiveIntEnv("CHAT_SERVICE_PROBE_SETTLE_TIMEOUT_MS", 90_000);
 }
 
 async function readProbeRelationship(input: {

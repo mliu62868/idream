@@ -16,6 +16,12 @@ const isoDateTimeSchema = z.string().datetime({ offset: true });
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const nonNegativeIntegerSchema = z.number().int().nonnegative();
 const positiveIntegerSchema = z.number().int().positive();
+const opaqueRuntimeIdentitySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(200)
+  .regex(/^[A-Za-z0-9._:/-]+$/);
 const companionSidecarInstanceSchema = z
   .object({
     id: z.string().uuid(),
@@ -516,6 +522,166 @@ export const companionUsageSchema = z
   })
   .strict();
 
+export const companionShadowAdmissionSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    status: z.enum([
+      "skipped_private",
+      "skipped_readiness",
+      "skipped_primary_runtime",
+    ]),
+    enqueued: z.literal(false),
+  })
+  .strict();
+
+export const companionShadowWorkspaceEvidenceSchema = z
+  .object({
+    memoryMode: z.literal("shadow"),
+    workspaceClass: z.literal("shadow"),
+    disposition: z.literal("discarded"),
+    commitAccepted: z.literal(false),
+    promotionAttempted: z.literal(false),
+  })
+  .strict();
+
+const companionShadowPrimaryEvidenceSchema = z
+  .object({
+    provider: opaqueRuntimeIdentitySchema,
+    model: opaqueRuntimeIdentitySchema,
+    textDigest: sha256Schema,
+    textLength: nonNegativeIntegerSchema,
+    finishReason: z.enum(["stop", "truncated", "failed", "cancelled"]),
+    usage: z.object({
+      promptTokens: nonNegativeIntegerSchema,
+      completionTokens: nonNegativeIntegerSchema,
+    }).strict(),
+    latencyMs: nonNegativeIntegerSchema,
+    toolCalls: nonNegativeIntegerSchema,
+  })
+  .strict();
+
+const companionShadowCandidateEvidenceSchema = z
+  .object({
+    provider: opaqueRuntimeIdentitySchema,
+    model: opaqueRuntimeIdentitySchema,
+    textDigest: sha256Schema,
+    textLength: nonNegativeIntegerSchema,
+    finishReason: z.enum(["stop", "length"]),
+    usage: companionUsageSchema,
+    latencyMs: nonNegativeIntegerSchema,
+    toolCalls: nonNegativeIntegerSchema,
+    dryRunToolCalls: nonNegativeIntegerSchema,
+    steps: positiveIntegerSchema,
+  })
+  .strict();
+
+// SPEC: Phase-2 evidence may contain opaque digests and aggregate execution
+// facts, but never prompt, answer, tool arguments, workspace paths, or secrets.
+export const companionShadowComparisonSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    status: z.enum(["completed", "error", "cancelled"]),
+    invocationId: nonEmptyStringSchema,
+    attemptId: nonEmptyStringSchema,
+    profileDigest: sha256Schema,
+    profileVerified: z.boolean(),
+    primary: companionShadowPrimaryEvidenceSchema,
+    shadow: companionShadowCandidateEvidenceSchema.nullable(),
+    workspace: companionShadowWorkspaceEvidenceSchema.nullable(),
+    commitRejected: z.boolean(),
+    error: z.object({
+      code: nonEmptyStringSchema,
+      message: nonEmptyStringSchema,
+    }).strict().optional(),
+    textDigestEqual: z.boolean(),
+  })
+  .strict()
+  .superRefine((comparison, context) => {
+    if (comparison.status === "completed") {
+      if (!comparison.shadow) {
+        context.addIssue({ code: "custom", path: ["shadow"], message: "completed Shadow evidence requires a candidate" });
+      }
+      if (!comparison.workspace) {
+        context.addIssue({ code: "custom", path: ["workspace"], message: "completed Shadow evidence requires workspace settlement" });
+      }
+      if (comparison.error !== undefined) {
+        context.addIssue({ code: "custom", path: ["error"], message: "completed Shadow evidence cannot contain an error" });
+      }
+      if (!comparison.profileVerified) {
+        context.addIssue({ code: "custom", path: ["profileVerified"], message: "completed Shadow evidence requires a verified profile" });
+      }
+      if (!comparison.commitRejected) {
+        context.addIssue({ code: "custom", path: ["commitRejected"], message: "completed Shadow evidence requires an explicit commit rejection" });
+      }
+    } else {
+      if (comparison.shadow !== null) {
+        context.addIssue({ code: "custom", path: ["shadow"], message: "failed Shadow evidence cannot retain a candidate" });
+      }
+      if (comparison.error === undefined) {
+        context.addIssue({ code: "custom", path: ["error"], message: "failed Shadow evidence requires an error" });
+      }
+    }
+    if (
+      comparison.shadow &&
+      comparison.shadow.toolCalls !== comparison.shadow.dryRunToolCalls
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["shadow", "dryRunToolCalls"],
+        message: "every Shadow tool call must be a dry run",
+      });
+    }
+  });
+
+const companionShadowPublicCompletedEvidenceSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    status: z.literal("completed"),
+    profileVerified: z.literal(true),
+    primary: z
+      .object({
+        provider: opaqueRuntimeIdentitySchema,
+        model: opaqueRuntimeIdentitySchema,
+      })
+      .strict(),
+    shadow: z
+      .object({
+        provider: opaqueRuntimeIdentitySchema,
+        model: opaqueRuntimeIdentitySchema,
+        finishReason: z.enum(["stop", "length"]),
+        toolCalls: nonNegativeIntegerSchema,
+        dryRunToolCalls: nonNegativeIntegerSchema,
+        steps: positiveIntegerSchema,
+      })
+      .strict(),
+    workspace: companionShadowWorkspaceEvidenceSchema,
+  })
+  .strict()
+  .refine(
+    (evidence) => evidence.shadow.toolCalls === evidence.shadow.dryRunToolCalls,
+    {
+      path: ["shadow", "dryRunToolCalls"],
+      message: "every public Shadow tool call must be a dry run",
+    },
+  );
+
+const companionShadowPublicFailureEvidenceSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    status: z.enum(["error", "cancelled"]),
+    errorCode: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/u),
+  })
+  .strict();
+
+// SPEC: user-facing session reads may expose only content-free Shadow proof.
+// Invocation ids, digests, answer lengths, latency, usage and provider error
+// messages remain in Chat's private durable trace.
+export const companionShadowPublicEvidenceSchema = z.union([
+  companionShadowAdmissionSchema,
+  companionShadowPublicCompletedEvidenceSchema,
+  companionShadowPublicFailureEvidenceSchema,
+]);
+
 export const companionTerminalCandidateSchema = z
   .object({
     attemptId: nonEmptyStringSchema,
@@ -617,6 +783,13 @@ export const companionEventSchema = z
         name: companionToolNameSchema,
         outcome: z.enum(["succeeded", "failed", "unknown"]),
         durationMs: nonNegativeIntegerSchema,
+      })
+      .strict(),
+    z
+      .object({
+        ...companionEventIdentity,
+        type: z.literal("workspace_settled"),
+        ...companionShadowWorkspaceEvidenceSchema.shape,
       })
       .strict(),
     z
@@ -917,6 +1090,16 @@ export type CompanionToolName = z.infer<typeof companionToolNameSchema>;
 export type CompanionToolCall = z.infer<typeof companionToolCallSchema>;
 export type CompanionToolResult = z.infer<typeof companionToolResultSchema>;
 export type CompanionUsage = z.infer<typeof companionUsageSchema>;
+export type CompanionShadowAdmission = z.infer<typeof companionShadowAdmissionSchema>;
+export type CompanionShadowWorkspaceEvidence = z.infer<
+  typeof companionShadowWorkspaceEvidenceSchema
+>;
+export type CompanionShadowComparison = z.infer<
+  typeof companionShadowComparisonSchema
+>;
+export type CompanionShadowPublicEvidence = z.infer<
+  typeof companionShadowPublicEvidenceSchema
+>;
 export type CompanionTerminalCandidate = z.infer<
   typeof companionTerminalCandidateSchema
 >;

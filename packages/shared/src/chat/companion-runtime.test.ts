@@ -12,6 +12,9 @@ import {
   companionNdjsonFrameSchema,
   companionProbeDshEvidenceSchema,
   companionReadinessSchema,
+  companionShadowAdmissionSchema,
+  companionShadowComparisonSchema,
+  companionShadowPublicEvidenceSchema,
   companionTerminalCandidateSchema,
   companionToolCallSchema,
   companionToolResultSchema,
@@ -169,6 +172,112 @@ describe("companion runtime stable wire contract", () => {
         payload: {},
       }).success,
     ).toBe(false);
+  });
+
+  it("pins Shadow admission and comparison evidence without prompt or answer bytes", () => {
+    expect(companionShadowAdmissionSchema.parse({
+      schemaVersion: 1,
+      status: "skipped_private",
+      enqueued: false,
+    })).toEqual({
+      schemaVersion: 1,
+      status: "skipped_private",
+      enqueued: false,
+    });
+    expect(companionShadowAdmissionSchema.safeParse({
+      schemaVersion: 1,
+      status: "skipped_private",
+      enqueued: true,
+    }).success).toBe(false);
+
+    const comparison = {
+      schemaVersion: 1 as const,
+      status: "completed" as const,
+      invocationId: "shadow-invocation",
+      attemptId: "shadow-attempt",
+      profileDigest: "d".repeat(64),
+      profileVerified: true,
+      primary: {
+        provider: "openai",
+        model: "primary-model",
+        textDigest: "a".repeat(64),
+        textLength: 20,
+        finishReason: "stop" as const,
+        usage: { promptTokens: 10, completionTokens: 5 },
+        latencyMs: 120,
+        toolCalls: 0,
+      },
+      shadow: {
+        provider: "openai",
+        model: "shadow-model",
+        textDigest: "b".repeat(64),
+        textLength: 24,
+        finishReason: "stop" as const,
+        usage: { promptTokens: 11, completionTokens: 6, reasoningTokens: 0 },
+        latencyMs: 150,
+        toolCalls: 1,
+        dryRunToolCalls: 1,
+        steps: 2,
+      },
+      workspace: {
+        memoryMode: "shadow" as const,
+        workspaceClass: "shadow" as const,
+        disposition: "discarded" as const,
+        commitAccepted: false,
+        promotionAttempted: false,
+      },
+      commitRejected: true,
+      textDigestEqual: false,
+    };
+    expect(companionShadowComparisonSchema.parse(comparison)).toEqual(comparison);
+    expect(companionShadowComparisonSchema.safeParse({
+      ...comparison,
+      shadow: { ...comparison.shadow, dryRunToolCalls: 0 },
+    }).success).toBe(false);
+    expect(companionShadowComparisonSchema.safeParse({
+      ...comparison,
+      rawAnswer: "must never cross this evidence boundary",
+    }).success).toBe(false);
+  });
+
+  it("keeps public Shadow evidence content-free and strict", () => {
+    const evidence = {
+      schemaVersion: 1,
+      status: "completed",
+      profileVerified: true,
+      primary: { provider: "openai", model: "primary-model" },
+      shadow: {
+        provider: "openai",
+        model: "shadow-model",
+        finishReason: "stop",
+        toolCalls: 1,
+        dryRunToolCalls: 1,
+        steps: 2,
+      },
+      workspace: {
+        memoryMode: "shadow",
+        workspaceClass: "shadow",
+        disposition: "discarded",
+        commitAccepted: false,
+        promotionAttempted: false,
+      },
+    } as const;
+
+    expect(companionShadowPublicEvidenceSchema.parse(evidence)).toEqual(evidence);
+    expect(companionShadowPublicEvidenceSchema.safeParse({
+      ...evidence,
+      invocationId: "private-invocation",
+    }).success).toBe(false);
+    expect(companionShadowPublicEvidenceSchema.safeParse({
+      ...evidence,
+      shadow: { ...evidence.shadow, dryRunToolCalls: 0 },
+    }).success).toBe(false);
+    expect(companionShadowPublicEvidenceSchema.safeParse({
+      schemaVersion: 1,
+      status: "error",
+      errorCode: "shadow_runtime_error",
+      message: "provider echoed private prompt bytes",
+    }).success).toBe(false);
   });
 
   it("rejects secrets and extra keys at every declared authority boundary", () => {

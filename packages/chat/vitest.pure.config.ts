@@ -10,6 +10,7 @@ export default defineConfig({
       "src/generate-agent-tools.test.ts",
       "src/runtime-readiness.test.ts",
       "src/companion-runtime-selection.test.ts",
+      "src/service.test.ts",
     ],
     env: {
       APP_ENV: "test",

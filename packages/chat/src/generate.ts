@@ -75,10 +75,14 @@ import {
   COMPANION_DSH_VERSION,
   COMPANION_IGREP_PLUGIN_VERSION,
   COMPANION_IGREP_VERSION,
+  companionShadowComparisonSchema,
   companionToolCallSchema,
   type CompanionCommitAck,
   type CompanionEvent,
   type CompanionInvocation,
+  type CompanionShadowAdmission,
+  type CompanionShadowComparison,
+  type CompanionShadowWorkspaceEvidence,
   type CompanionTerminalCandidate,
   type CompanionToolCall,
   type CompanionToolResult,
@@ -518,6 +522,31 @@ export async function processGenerate(
     ? null
     : noMemoryAuthorityReply(sourceTurn.content);
   await hooks.afterContextBuilt?.(context);
+  let shadowAdmission: CompanionShadowAdmission | null = null;
+  let shadowCanRun = false;
+  if (companionRuntimeConfig.dshShadow.enabled) {
+    if (attemptRuntime.runtime !== "native") {
+      shadowAdmission = {
+        schemaVersion: 1,
+        status: "skipped_primary_runtime",
+        enqueued: false,
+      };
+    } else if (!turnMemoryEnabled || authoritativeNoMemoryReply) {
+      shadowAdmission = {
+        schemaVersion: 1,
+        status: "skipped_private",
+        enqueued: false,
+      };
+    } else if (!runtimeReadiness.canAdmitShadow(prepared.profile)) {
+      shadowAdmission = {
+        schemaVersion: 1,
+        status: "skipped_readiness",
+        enqueued: false,
+      };
+    } else {
+      shadowCanRun = true;
+    }
+  }
   const runtimeTraceFacts: Record<string, unknown> = {
     schemaVersion: 1,
     attempt: payload.attempt,
@@ -553,6 +582,7 @@ export async function processGenerate(
     outputAuthority: authoritativeNoMemoryReply
       ? "no_memory_boundary"
       : "model",
+    ...(shadowAdmission ? { shadowAdmission } : {}),
     primaryTelemetry: {
       ...primaryTelemetryBase,
       provider: prepared.profile.provider,
@@ -577,11 +607,7 @@ export async function processGenerate(
     throw new Error("prepared turn runtime trace did not persist atomically");
   }
 
-  const shadowInput = companionRuntimeConfig.dshShadow.enabled &&
-      attemptRuntime.runtime === "native" &&
-      turnMemoryEnabled &&
-      !authoritativeNoMemoryReply &&
-      runtimeReadiness.canAdmitShadow(prepared.profile)
+  const shadowInput = shadowCanRun
     ? {
       payload,
       session,
@@ -1113,8 +1139,11 @@ interface DshShadowOutcome {
   invocationId: string;
   attemptId: string;
   profileDigest: string;
+  profileVerified: boolean;
   latencyMs: number;
   candidate: CompanionTerminalCandidate | null;
+  workspace: CompanionShadowWorkspaceEvidence | null;
+  commitRejected: boolean;
   dryRunToolCalls: number;
   error: { code: string; message: string } | null;
 }
@@ -1182,6 +1211,9 @@ async function runDshShadowTurn(input: DshShadowRunInput & {
   };
   input.signal?.addEventListener("abort", cancelSidecar, { once: true });
   let candidate: CompanionTerminalCandidate | null = null;
+  let workspace: CompanionShadowWorkspaceEvidence | null = null;
+  let profileVerified = false;
+  let commitRejected = false;
   let eventError: { code: string; message: string } | null = null;
   let dryRunToolCalls = 0;
   try {
@@ -1190,7 +1222,17 @@ async function runDshShadowTurn(input: DshShadowRunInput & {
         if (event.type === "started" && event.profileDigest !== input.profileDigest) {
           throw new Error("shadow started profile digest differs from the pinned composition");
         }
+        if (event.type === "started") profileVerified = true;
         if (event.type === "terminal_candidate") candidate = event.candidate;
+        if (event.type === "workspace_settled") {
+          workspace = {
+            memoryMode: event.memoryMode,
+            workspaceClass: event.workspaceClass,
+            disposition: event.disposition,
+            commitAccepted: event.commitAccepted,
+            promotionAttempted: event.promotionAttempted,
+          };
+        }
         if (event.type === "failed") {
           eventError = {
             code: event.error.code,
@@ -1212,6 +1254,7 @@ async function runDshShadowTurn(input: DshShadowRunInput & {
         };
       },
       async commit(observed) {
+        commitRejected = true;
         if (candidate && stableJson(candidate) !== stableJson(observed)) {
           eventError = {
             code: "shadow_terminal_identity_mismatch",
@@ -1261,17 +1304,25 @@ async function runDshShadowTurn(input: DshShadowRunInput & {
     };
   }
   const observed = candidate as CompanionTerminalCandidate | null;
+  const settledWorkspace = workspace as CompanionShadowWorkspaceEvidence | null;
+  const completed = observed !== null && settledWorkspace !== null &&
+    profileVerified && commitRejected;
   return {
-    status: observed ? "completed" : "error",
+    status: completed ? "completed" : "error",
     invocationId,
     attemptId,
     profileDigest: input.profileDigest,
+    profileVerified,
     latencyMs: Math.max(0, Date.now() - startedAt),
-    candidate: observed,
+    candidate: completed ? observed : null,
+    workspace: settledWorkspace,
+    commitRejected,
     dryRunToolCalls,
-    error: observed ? null : eventError ?? {
+    error: completed ? null : eventError ?? {
       code: "shadow_terminal_missing",
-      message: "shadow runtime ended without a terminal candidate",
+      message: observed
+        ? "shadow runtime ended without workspace settlement evidence"
+        : "shadow runtime ended without a terminal candidate",
     },
   };
 }
@@ -1279,14 +1330,15 @@ async function runDshShadowTurn(input: DshShadowRunInput & {
 function buildShadowComparison(input: {
   primary: ShadowPrimaryOutcome["primary"];
   shadow: DshShadowOutcome;
-}): Record<string, unknown> {
+}): CompanionShadowComparison {
   const shadow = input.shadow.candidate;
-  return {
+  return companionShadowComparisonSchema.parse({
     schemaVersion: 1,
     status: input.shadow.status,
     invocationId: input.shadow.invocationId,
     attemptId: input.shadow.attemptId,
     profileDigest: input.shadow.profileDigest,
+    profileVerified: input.shadow.profileVerified,
     primary: {
       provider: input.primary.provider,
       model: input.primary.model,
@@ -1311,11 +1363,13 @@ function buildShadowComparison(input: {
           steps: shadow.execution.steps,
         }
       : null,
+    workspace: input.shadow.workspace,
+    commitRejected: input.shadow.commitRejected,
     ...(input.shadow.error ? { error: input.shadow.error } : {}),
     textDigestEqual: shadow
       ? digestText(input.primary.content) === digestText(shadow.content)
       : false,
-  };
+  });
 }
 
 function startDshShadowLifecycle(input: {
@@ -1371,8 +1425,11 @@ function startDshShadowLifecycle(input: {
         invocationId: `shadow:inv:${input.run.payload.assistantMessageId}:${input.run.payload.attempt}`,
         attemptId: `shadow:${input.run.payload.assistantMessageId}:${input.run.payload.attempt}`,
         profileDigest: input.run.profileDigest,
+        profileVerified: false,
         latencyMs: 0,
         candidate: null,
+        workspace: null,
+        commitRejected: false,
         dryRunToolCalls: 0,
         error: {
           code: "shadow_runtime_error",
@@ -1394,8 +1451,11 @@ function startDshShadowLifecycle(input: {
       invocationId: `shadow:inv:${input.run.payload.assistantMessageId}:${input.run.payload.attempt}`,
       attemptId: `shadow:${input.run.payload.assistantMessageId}:${input.run.payload.attempt}`,
       profileDigest: input.run.profileDigest,
+      profileVerified: false,
       latencyMs: 0,
       candidate: null,
+      workspace: null,
+      commitRejected: false,
       dryRunToolCalls: 0,
       error: {
         code: "shadow_queue_saturated",
@@ -1454,8 +1514,11 @@ function shadowCancellationOutcome(
     invocationId: `shadow:inv:${payload.assistantMessageId}:${payload.attempt}`,
     attemptId: `shadow:${payload.assistantMessageId}:${payload.attempt}`,
     profileDigest,
+    profileVerified: false,
     latencyMs: 0,
     candidate: null,
+    workspace: null,
+    commitRejected: false,
     dryRunToolCalls: 0,
     error: evidence,
   };
@@ -1468,7 +1531,7 @@ export async function persistShadowComparison(input: {
   terminalStatuses?: Array<"generating" | "sent" | "blocked" | "failed">;
   runtimeTraceFacts: Record<string, unknown>;
   truncated: boolean;
-  shadowComparison: Record<string, unknown>;
+  shadowComparison: CompanionShadowComparison;
 }): Promise<void> {
   try {
     await input.prisma.$transaction(async (tx) => {
