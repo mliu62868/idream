@@ -200,11 +200,6 @@ export function ChatHubWorkspace() {
                           {formatRelative(row.lastMessageAt)}
                         </span>
                       </div>
-                      {row.memorySummary ? (
-                        <p className="mt-2 line-clamp-1 text-[13px] font-medium leading-5 text-[rgb(170,170,170)]">
-                          {row.memorySummary}
-                        </p>
-                      ) : null}
                       {row.status === "archived" ? (
                         <span className="mt-3 inline-flex w-fit rounded-full bg-black/30 px-2 py-1 text-[11px] font-bold uppercase text-[rgb(114,113,112)]">
                           Archived

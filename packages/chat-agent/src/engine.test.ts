@@ -154,7 +154,7 @@ class ProviderMustNotRunAdapter extends LlmAdapter {
   }
 }
 
-function invocation(memoryMode: "normal" | "private" | "shadow" = "private"): CompanionInvocation {
+function invocation(memoryMode: "normal" | "private" = "private"): CompanionInvocation {
   const knowledgeAuthority = {
     characterId: "character-1",
     characterContentVersionId: "ccv-1",
@@ -328,7 +328,7 @@ function disposalWritingPlugin(configs: Record<string, unknown>[]) {
 }
 
 describe("programmatic DSH companion runtime", () => {
-  it.each(["normal", "private", "shadow"] as const)(
+  it.each(["normal", "private"] as const)(
     "rejects a stale %s profile before composition, workspace or adapter initialization",
     async (memoryMode) => {
       const root = await mkdtemp(join(tmpdir(), "chat-agent-profile-drift-"));
@@ -886,7 +886,7 @@ describe("programmatic DSH companion runtime", () => {
     });
   });
 
-  it.each(["normal", "shadow"] as const)(
+  it.each(["normal"] as const)(
     "does not promote a rejected %s turn even when the plugin writes on session disposal",
     async (memoryMode) => {
     const root = await mkdtemp(join(tmpdir(), "chat-agent-reject-"));
@@ -898,7 +898,6 @@ describe("programmatic DSH companion runtime", () => {
     const engine = new CompanionEngine({
       workspaces: new AttemptWorkspaceStore({
         canonicalRoot: join(root, "canonical"),
-        shadowRoot: join(root, "shadow"),
         privateRoot: join(root, "private"),
         memoryProbe: { status: async (workspace) => ({ dialogueFiles: await dialogueCount(workspace) }) },
       }),
@@ -945,25 +944,6 @@ describe("programmatic DSH companion runtime", () => {
       run.characterId,
     );
     expect(await dialogueCount(canonicalWorkspace)).toBe(0);
-    if (memoryMode === "shadow") {
-      const shadowWorkspace = relationshipWorkspacePath(
-        join(root, "shadow"),
-        run.userId,
-        run.characterId,
-      );
-      expect(await dialogueCount(shadowWorkspace)).toBe(0);
-      expect(collected).toContainEqual(expect.objectContaining({
-        type: "event",
-        event: expect.objectContaining({
-          type: "workspace_settled",
-          memoryMode: "shadow",
-          workspaceClass: "shadow",
-          disposition: "discarded",
-          commitAccepted: false,
-          promotionAttempted: false,
-        }),
-      }));
-    }
     expect(configs).toContainEqual(expect.objectContaining({
       ingest: true,
       wake: true,
@@ -1142,7 +1122,6 @@ describe("programmatic DSH companion runtime", () => {
     const engine = new CompanionEngine({
       workspaces: new AttemptWorkspaceStore({
         canonicalRoot: join(root, "canonical"),
-        shadowRoot: join(root, "shadow"),
         privateRoot: join(root, "private"),
         memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
       }),
@@ -1161,7 +1140,7 @@ describe("programmatic DSH companion runtime", () => {
     const firstNormal = invocation("normal");
     firstNormal.invocationId = "inv-capacity-normal-1";
     firstNormal.attemptId = "attempt-capacity-normal-1";
-    const secondNormal = invocation("shadow");
+    const secondNormal = invocation("normal");
     secondNormal.invocationId = "inv-capacity-normal-2";
     secondNormal.attemptId = "attempt-capacity-normal-2";
 

@@ -6,13 +6,10 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Context } from "@deepseek-ai/cordis";
 import {
-  companionLegacyMemoryImportSchema,
   companionWorkspaceRebuildSchema,
-  type CompanionLegacyMemoryImport,
   type CompanionWorkspaceRebuild,
 } from "@idream/shared/chat/companion-runtime";
 import type {
-  LegacyRecallParityEvidence,
   MemoryProbe,
   MemoryStatus,
 } from "./workspace";
@@ -250,195 +247,11 @@ export class IgrepMemoryRebuilder {
   }
 }
 
-export function verifyLegacyMemoryImport(
-  input: CompanionLegacyMemoryImport,
-): CompanionLegacyMemoryImport {
-  const request = companionLegacyMemoryImportSchema.parse(input);
-  const checksum = createHash("sha256")
-    .update(JSON.stringify(request.entries))
-    .digest("hex");
-  if (checksum !== request.checksum) {
-    throw new Error("legacy memory import checksum does not match its strict entries");
-  }
-  return request;
-}
-
-export function legacyRecallProbeSetChecksum(input: CompanionLegacyMemoryImport): string {
-  return sha256(JSON.stringify(input.recallProbes));
-}
-
-export class IgrepLegacyMemoryImporter {
-  constructor(
-    private readonly command: string,
-    readonly version: string,
-    private readonly run: RunJsonCommand = runJsonCommand,
-    private readonly resolveVersion: (command: string) => Promise<string> = igrepVersion,
-  ) {}
-
-  async import(
-    workspace: string,
-    input: CompanionLegacyMemoryImport,
-    signal?: AbortSignal,
-  ): Promise<{
-    entries: number;
-    written: number;
-    igrepVersion: string;
-    recallParity: LegacyRecallParityEvidence;
-  }> {
-    const request = verifyLegacyMemoryImport(input);
-    const actualVersion = await this.resolveVersion(this.command);
-    if (actualVersion !== this.version) {
-      throw new Error(`igrep legacy memory import version drifted to ${actualVersion}`);
-    }
-
-    let written = 0;
-    for (const entry of request.entries) {
-      throwIfAborted(signal);
-      const result = await this.run({
-        command: this.command,
-        args: [
-          "mem",
-          "record",
-          "--workspace",
-          workspace,
-          "--format",
-          "json",
-        ],
-        stdin: entry.text,
-        timeoutMs: 30_000,
-        signal,
-      });
-      const record = objectRecord(result);
-      if (
-        record?.provider !== "igrep"
-        || record.action !== "record"
-        || record.path !== ".igrep/mem/MEMORY.md"
-        || typeof record.written !== "boolean"
-        || typeof record.contentHash !== "string"
-        || !/^[a-f0-9]{64}$/.test(record.contentHash)
-      ) {
-        throw new Error(`igrep record did not verify legacy memory ${entry.legacyMemoryId}`);
-      }
-      if (record.written) written += 1;
-    }
-
-    const maintain = objectRecord(await this.run({
-      command: this.command,
-      args: ["mem", "maintain", "--workspace", workspace, "--rebuild"],
-      timeoutMs: 300_000,
-      signal,
-    }));
-    if (
-      maintain?.provider !== "igrep"
-      || maintain.action !== "maintain"
-      || !Number.isSafeInteger(maintain.pendingRows)
-      || Number(maintain.pendingRows) !== 0
-    ) {
-      throw new Error("igrep maintain did not certify the legacy memory candidate");
-    }
-
-    const doctor = objectRecord(await this.run({
-      command: this.command,
-      args: ["mem", "doctor", "--workspace", workspace, "--json", "--strict"],
-      timeoutMs: 30_000,
-      signal,
-    }));
-    if (
-      doctor?.provider !== "igrep"
-      || doctor.ok !== true
-      || !Array.isArray(doctor.warnings)
-      || doctor.warnings.length !== 0
-    ) {
-      throw new Error("igrep doctor did not certify the legacy memory candidate");
-    }
-
-    const recallParity = await this.verifyRecallParity(workspace, request, signal);
-
-    return {
-      entries: request.entries.length,
-      written,
-      igrepVersion: this.version,
-      recallParity,
-    };
-  }
-
-  private async verifyRecallParity(
-    workspace: string,
-    request: CompanionLegacyMemoryImport,
-    signal?: AbortSignal,
-  ): Promise<LegacyRecallParityEvidence> {
-    const probes: LegacyRecallParityEvidence["probes"] = [];
-    for (const probe of request.recallProbes) {
-      throwIfAborted(signal);
-      let recalled: Record<string, unknown> | null;
-      try {
-        recalled = objectRecord(await this.run({
-          command: this.command,
-          args: [
-            "mem-api",
-            "memory-search",
-            "--payload",
-            "-",
-          ],
-          stdin: `${JSON.stringify({ workspace, query: probe.query })}\n`,
-          timeoutMs: 30_000,
-          signal,
-        }));
-      } catch {
-        throwIfAborted(signal);
-        // The generic command runner includes argv in its error. Replace it so
-        // operator queries cannot enter sidecar logs on a CLI failure.
-        throw new Error(`igrep recall command failed for ${probe.id}`);
-      }
-      const markdownContext = recalled?.markdownContext;
-      const results = recalled?.results;
-      const warnings = recalled?.warnings;
-      const workspaceMatches = typeof recalled?.workspaceRoot === "string"
-        && await sameRealPath(recalled.workspaceRoot, workspace);
-      if (
-        recalled?.provider !== "igrep"
-        || recalled.strategy !== "shared-search"
-        || !workspaceMatches
-        || typeof markdownContext !== "string"
-        || !Array.isArray(results)
-        || !Array.isArray(warnings)
-        || warnings.length !== 0
-      ) {
-        throw new Error(`igrep recall did not certify parity probe ${probe.id}`);
-      }
-      if (!normalized(markdownContext).includes(normalized(probe.legacyExpected))) {
-        throw new Error(`igrep recall parity failed for ${probe.id}`);
-      }
-      probes.push({
-        probeId: probe.id,
-        queryHash: sha256(probe.query),
-        legacyExpectedHash: sha256(probe.legacyExpected),
-        recallContextHash: sha256(markdownContext),
-        hitCount: results.length,
-      });
-    }
-    return {
-      probeSetChecksum: legacyRecallProbeSetChecksum(request),
-      total: request.recallProbes.length,
-      passed: probes.length,
-      probes,
-    };
-  }
-}
-
-function sha256(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-function normalized(value: string): string {
-  return value.normalize("NFKC").toLocaleLowerCase("en-US").replace(/\s+/g, " ").trim();
-}
-
 function throwIfAborted(signal?: AbortSignal): void {
   if (!signal?.aborted) return;
   throw signal.reason instanceof Error
     ? signal.reason
-    : new Error("legacy memory import aborted");
+    : new Error("igrep command aborted");
 }
 
 function objectRecord(value: unknown): Record<string, unknown> | null {

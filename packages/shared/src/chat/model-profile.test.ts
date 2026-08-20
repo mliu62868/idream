@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  resolveChatMemoryExtractProfile,
-  resolveChatModelProfile,
-} from "./model-profile.js";
+import { resolveChatModelProfile } from "./model-profile.js";
 
 describe("chat model profile", () => {
   it("resolves provider, tier model and all timeout budgets once", () => {
@@ -44,16 +41,6 @@ describe("chat model profile", () => {
       topP: 0.9,
       repetitionPenalty: 1.2,
       structuredTemperature: 0.1,
-    });
-  });
-
-  it("derives the extraction profile from the same chat endpoint", () => {
-    expect(resolveChatMemoryExtractProfile({
-      CHAT_MODEL_BASE_URL: "http://model.test/v1",
-      CHAT_MODEL_API_KEY: "key",
-    })).toMatchObject({
-      baseUrl: "http://model.test/v1",
-      apiKey: "key",
     });
   });
 });

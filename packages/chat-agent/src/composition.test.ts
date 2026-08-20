@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  COMPANION_EXECUTION_PLUGIN_ORDER,
+  FORBIDDEN_COMPANION_EXECUTION_SERVICES,
   companionCompositionDigest,
   companionCompositionManifest,
   createCompanionCompositionPlan,
@@ -44,6 +46,10 @@ describe("companion composition identity", () => {
         },
       },
     });
+    expect(manifest.pluginOrder).toEqual(COMPANION_EXECUTION_PLUGIN_ORDER);
+    expect(manifest.pluginOrder).not.toEqual(expect.arrayContaining(
+      [...FORBIDDEN_COMPANION_EXECUTION_SERVICES],
+    ));
     expect(JSON.stringify(manifest)).not.toContain("/opt/idream");
     expect(JSON.stringify(manifest)).not.toContain("must-not-enter-the-digest");
 

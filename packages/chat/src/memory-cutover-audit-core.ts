@@ -1,28 +1,21 @@
 import { createHash } from "node:crypto";
-import {
-  resolveCompanionMemoryCutover,
-  type CompanionLegacyMemorySnapshotEvidence,
-} from "./companion-memory-cutover.js";
+import { validateHistoricalMemoryCutoverEvidence } from "./companion-memory-cutover.js";
 
 export interface MemoryCutoverAuditCandidate {
   userId: string;
   characterId: string;
-  snapshot: CompanionLegacyMemorySnapshotEvidence;
-  excluded: Record<string, number>;
-  chatProof: unknown | null;
+  chatProof: unknown;
   sidecarProof: unknown | null;
-  snapshotStable: boolean;
   probeError?: string;
 }
 
 export interface MemoryCutoverAuditRow {
   relationshipKeyHash: string;
-  total: number;
-  eligibleEntries: number;
-  excluded: Record<string, number>;
-  legacySourceChecksum: string;
-  importChecksum: string;
-  status: "ready" | "empty_unproven" | "blocked" | "snapshot_raced" | "sidecar_unavailable";
+  status: "ready" | "missing_sidecar_proof" | "sidecar_unavailable" | "blocked";
+  mode: "imported" | "empty" | null;
+  entries: number | null;
+  cutoverWorkspaceVersion: string | null;
+  currentWorkspaceVersion: string | null;
   reason: string | null;
 }
 
@@ -33,27 +26,36 @@ export function evaluateMemoryCutoverAuditCandidate(
     relationshipKeyHash: createHash("sha256")
       .update(`${candidate.userId}\0${candidate.characterId}`)
       .digest("hex"),
-    total: candidate.snapshot.total,
-    eligibleEntries: candidate.snapshot.eligibleEntries,
-    excluded: candidate.excluded,
-    legacySourceChecksum: candidate.snapshot.legacySourceChecksum,
-    importChecksum: candidate.snapshot.importChecksum,
-  };
-  if (!candidate.snapshotStable) {
-    return { ...base, status: "snapshot_raced", reason: "legacy source changed during audit" };
-  }
+    mode: null,
+    entries: null,
+    cutoverWorkspaceVersion: null,
+    currentWorkspaceVersion: null,
+  } as const;
   if (candidate.probeError) {
-    return { ...base, status: "sidecar_unavailable", reason: candidate.probeError };
+    return {
+      ...base,
+      status: "sidecar_unavailable",
+      reason: candidate.probeError,
+    };
+  }
+  if (candidate.sidecarProof === null) {
+    return {
+      ...base,
+      status: "missing_sidecar_proof",
+      reason: "historical sidecar cutover marker is missing",
+    };
   }
   try {
-    const decision = resolveCompanionMemoryCutover(candidate);
-    return decision.action === "admit"
-      ? { ...base, status: "ready", reason: null }
-      : {
-          ...base,
-          status: "empty_unproven",
-          reason: "audited empty cutover proof has not been created",
-        };
+    const evidence = validateHistoricalMemoryCutoverEvidence(candidate);
+    return {
+      relationshipKeyHash: base.relationshipKeyHash,
+      status: "ready",
+      mode: evidence.chatProof.mode,
+      entries: evidence.sidecarProof.entries,
+      cutoverWorkspaceVersion: evidence.sidecarProof.cutoverWorkspaceVersion,
+      currentWorkspaceVersion: evidence.sidecarProof.workspaceVersion,
+      reason: null,
+    };
   } catch (error) {
     return {
       ...base,

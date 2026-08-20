@@ -658,7 +658,6 @@ async function usage(rawQuery?: Record<string, string>) {
         sessionId: row.sessionId,
         modelTier: entitlement?.modelTier ?? "free",
         unlimitedMessages,
-        memoryMultiplier: entitlement?.memoryMultiplier ?? 1,
         voiceEnabled: entitlement?.voiceEnabled ?? false,
         messagesUsed: row.messagesUsed,
         freeDailyLimit: FREE_DAILY_MESSAGES,

@@ -1,15 +1,12 @@
 // SPEC: Build the model context for a turn (design §3 step 8). Recent messages +
-// rolling summary come from PG (authority). Persona/entitlement from read-only
-// views. Long-term memory + boundaries from the file layer, with a TIMEOUT budget:
-// on timeout/error we degrade to "recent messages only" and never block the reply
-// (design §5 hot-path degradation). memory_enabled=false reads NO long-term memory.
+// pinned Soul/Scene/relationship and transcript form Chat's product authority.
+// Official igrep injects generic memory inside the DSH runtime.
 import { loadCharacterSoulSnapshot } from "@idream/shared";
 import type { ReleasedKnowledgeSnapshot } from "@idream/shared/chat/companion-runtime";
 import type { ChatPrismaClient, ChatCharacterView } from "./db.js";
 import type { Prisma } from "../generated/client/client.js";
-import { env } from "./env.js";
 import { resolvePolicy, snapshotFromView, type ChatPolicy } from "./policy.js";
-import { readBoundaries, retrieveMemories } from "./retrieval.js";
+import { readBoundaries } from "./boundaries.js";
 import { getRelationshipState } from "./relationship.js";
 import {
   CHAT_CONTEXT_INVALIDATING_FILE_MUTATIONS,
@@ -22,14 +19,13 @@ import {
 } from "./scene.js";
 import { buildReleasedKnowledgeSnapshot } from "./released-knowledge.js";
 
-const MEMORY_READ_TIMEOUT_MS = 250;
+const RELATIONSHIP_READ_TIMEOUT_MS = 250;
 
 const PHOTO_AWARENESS_MESSAGE_WINDOW = 6;
 
 export interface BuiltContext {
   persona: ResolvedChatPersona;
   policy: ChatPolicy;
-  sessionSummary: string | null;
   recentMessages: Array<{
     id: string;
     role: "user" | "assistant";
@@ -40,7 +36,6 @@ export interface BuiltContext {
     photoSummary?: string;
   }>;
   boundaries: string[];
-  longTermMemories: string[];
   /** Qualitative companion bond for tone/continuity (P1-B). Null when none/incognito. */
   relationship: { stage: string; summary: string; version: number } | null;
   /** Immutable Scene revision pinned by the user turn being answered. */
@@ -49,9 +44,7 @@ export interface BuiltContext {
   /** Immutable pinned opening, injected only for the first turn. */
   openingMessage: string | null;
   /** Budget degradation is explicit; callers must surface it in PreparedTurn. */
-  dropped: Array<"memory" | "summary" | "transcript">;
-  /** False for no-memory sessions and old-turn regenerations. */
-  canUpdateSessionSummary: boolean;
+  dropped: Array<"transcript">;
   /** Privacy/context fence revalidated after the model returns. */
   sessionContextRevision: bigint;
   fileContextRevision: bigint;
@@ -73,8 +66,6 @@ export interface BuildContextInput {
   turnMemoryEnabled: boolean;
   /** Anchor the model context to the user turn being answered/regenerated. */
   userMessageId?: string;
-  /** Official runtime memory owns generic recall on the DSH path. */
-  genericMemoryBackend?: "legacy" | "runtime";
 }
 
 export async function buildContext(input: BuildContextInput): Promise<BuiltContext> {
@@ -99,7 +90,6 @@ async function buildContextSnapshot(
     sessionId,
     turnMemoryEnabled,
     userMessageId,
-    genericMemoryBackend = "legacy",
   } = input;
 
   const currentPersona = await prisma.chatCharacterView.findUnique({
@@ -126,11 +116,6 @@ async function buildContextSnapshot(
         },
       })
     : null;
-  const latestUserMessage = await prisma.message.findFirst({
-    where: { sessionId, role: "user", status: "sent", deletedAt: null },
-    orderBy: { createdAt: "desc" },
-    select: { id: true },
-  });
   if (!currentPersona) throw new Error(`character ${characterId} not visible to chat`);
   const anchor =
     anchorUserMessage?.sessionId === sessionId &&
@@ -273,46 +258,14 @@ async function buildContextSnapshot(
     }
   }
 
-  // File-layer retrieval (design §3 step 8 / P0-G). Boundaries and normal memories
-  // are read SEPARATELY with different reliability contracts:
-  //   - boundaries: full read every turn, NO timeout/degrade. A read error fails
-  //     closed (throws) so we never generate a boundary-less reply.
-  //   - long-term memories: degradable. Timeout/error → drop to recent-only.
+  // Global boundaries fail closed and remain independent from generic memory.
   let boundaries: string[] = [];
-  let longTermMemories: string[] = [];
   let relationship: BuiltContext["relationship"] = null;
 
   // Global interaction boundaries are not memories. They remain in force for
   // incognito sessions and zero-memory tiers, and any read failure aborts the
   // turn rather than silently generating without them.
   boundaries = await readBoundaries(userId);
-
-  if (
-    turnMemoryEnabled &&
-    genericMemoryBackend === "legacy" &&
-    policy.maxMemories > 0
-  ) {
-    const query =
-      [...recentMessages]
-        .reverse()
-        .find((message) => message.role === "user")?.content ?? "";
-    const read = retrieveMemories({
-      userId,
-      characterId,
-      query,
-      max: policy.maxMemories,
-    });
-    // Outer hot-path cap. recency = 250ms; igrep mode gets its own budget +
-    // margin (retrieveMemories self-degrades to recency on its own timeout).
-    const budget =
-      env.MEMORY_RETRIEVAL === "igrep"
-        ? env.MEMORY_RETRIEVAL_TIMEOUT_MS + MEMORY_READ_TIMEOUT_MS
-        : MEMORY_READ_TIMEOUT_MS;
-    const memoryRead = await withTimeoutStatus(read, budget, []);
-    longTermMemories = memoryRead.value;
-    if (!memoryRead.ok) dropped.push("memory");
-
-  }
 
   if (turnMemoryEnabled) {
     // Relationship is Chat-owned companion state, not generic RAG memory. It
@@ -324,12 +277,11 @@ async function buildContextSnapshot(
     );
     relationship = await withTimeout(
       relRead,
-      MEMORY_READ_TIMEOUT_MS,
+      RELATIONSHIP_READ_TIMEOUT_MS,
       null,
     );
   }
 
-  const anchoredToLatestTurn = !anchor || anchor.id === latestUserMessage?.id;
   const latestInvalidatingMutation =
     await prisma.chatFileMutation.findFirst({
       where: {
@@ -346,21 +298,13 @@ async function buildContextSnapshot(
   return {
     persona,
     policy,
-    // No-memory means no derived context. When regenerating an older turn, skip the
-    // rolling summary too: it may contain future turns after the anchor message.
-    sessionSummary:
-      turnMemoryEnabled && anchoredToLatestTurn
-        ? session?.memorySummary ?? null
-        : null,
     recentMessages,
     boundaries,
-    longTermMemories,
     relationship,
     scene,
     sceneVersion,
     openingMessage,
     dropped,
-    canUpdateSessionSummary: turnMemoryEnabled && anchoredToLatestTurn,
     sessionContextRevision: session?.contextRevision ?? 0n,
     fileContextRevision: latestInvalidatingMutation?.sequence ?? 0n,
     releasedKnowledge,
@@ -450,26 +394,6 @@ function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
       () => {
         clearTimeout(timer);
         resolve(fallback);
-      },
-    );
-  });
-}
-
-function withTimeoutStatus<T>(
-  promise: Promise<T>,
-  ms: number,
-  fallback: T,
-): Promise<{ value: T; ok: boolean }> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => resolve({ value: fallback, ok: false }), ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve({ value, ok: true });
-      },
-      () => {
-        clearTimeout(timer);
-        resolve({ value: fallback, ok: false });
       },
     );
   });

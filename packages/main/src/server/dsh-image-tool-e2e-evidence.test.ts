@@ -204,7 +204,6 @@ function goodSnapshot(): DshImageToolAuditSnapshot {
     },
     cleanup: {
       sessionGone: true,
-      memoriesGone: true,
       relationshipsGone: true,
       recentChatDeleted: true,
       sourceTextRedacted: true,

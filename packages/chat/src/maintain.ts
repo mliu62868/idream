@@ -1,8 +1,8 @@
 // SPEC: chat.maintain (design §9-D3). Keep session.jsonl small + bounded:
 //   - roll the active log to a numbered segment once it exceeds a size threshold
-//     (append stays fast); long-term memory already distilled into mem/*.md.
+//     (append stays fast); the log is not the official igrep memory authority.
 //   - TTL: delete segments older than a retention window (raw trace is not the
-//     memory authority, so pruning it loses nothing material).
+//     companion-memory authority, so pruning it loses nothing material).
 // no-memory sessions don't write jsonl at all (handled upstream in generate).
 import { rename, stat, readdir, rm, mkdir } from "node:fs/promises";
 import path from "node:path";

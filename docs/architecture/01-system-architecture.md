@@ -55,7 +55,11 @@ Main Site owns:
 
 Chat Service owns:
   chat_sessions, messages, message_versions, chat_usage,
-  companion_memories, relationship_states, chat stream, chat outbox
+  Soul/PreparedTurn, Scene/relationship/boundaries, workspace scope,
+  chat stream, chat outbox
+
+Chat Agent sidecar owns:
+  DSH AgentLoop + official igrep companion-memory lifecycle
 
 Chat Service reads only:
   core.chat_user_view
@@ -140,7 +144,7 @@ handler           ok({ items, nextCursor })  +  after(()=>events.track('explore_
 
 ### 4.2 典型写请求（发消息 `POST /api/v1/chat/sessions/:id/messages`）
 
-Chat 写请求进入 Chat Service。主站可以作为 BFF 验证 session cookie 并代理请求，但不写 `chat_sessions/messages/memories/relationships`，也不做 chat finalizer。
+Chat 写请求进入 Chat Service。主站可以作为 BFF 验证 session cookie 并代理请求，但不写 `chat_sessions/messages/relationships`，也不做 chat finalizer。Chat 每一轮只调用 DSH sidecar；official igrep 负责通用记忆，产品不暴露 item API。
 
 ```
 Browser ─▶ Main BFF/API Gateway ─▶ Chat Service

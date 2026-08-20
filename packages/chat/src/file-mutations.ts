@@ -56,12 +56,6 @@ import {
   companionWorkspaceCleanupRequired,
   companionMemoryProjectionTimeoutMs,
 } from "./companion-memory-projection.js";
-import {
-  consolidateMemories,
-  deleteMemory,
-  forgetByMessageIds,
-  updateMemory,
-} from "./memories.js";
 import { recordOutbox } from "./outbox.js";
 import {
   appendRelationshipEvidenceOnce,
@@ -80,14 +74,6 @@ import {
 } from "./relationship-authority.js";
 import { lockTurn, lockUser, lockUserShared } from "./turn-lock.js";
 import { CHAT_TO_MAIN_EVENTS } from "@idream/shared/contracts";
-
-const memoryCandidateSchema = z.object({
-  scope: z.enum(["global", "character", "session"]),
-  type: z.string().min(1),
-  text: z.string().min(1),
-  confidence: z.number(),
-  sourceMessageIds: z.array(z.string().min(1)),
-});
 
 const relationshipEvidenceSchema = z.object({
   sourceAssistantMessageId: z.string().min(1),
@@ -137,17 +123,6 @@ const fileMutationSchema = z.discriminatedUnion("kind", [
     warmth: z.number().int().min(0).max(1).optional(),
     familiarity: z.number().int().min(0).max(1).optional(),
     relationshipEvidence: z.array(relationshipEvidenceSchema).optional(),
-    candidates: z.array(memoryCandidateSchema),
-    maxStored: z.number().int().nonnegative(),
-  }),
-  z.object({
-    kind: z.literal("memory_update"),
-    memoryId: z.string().min(1),
-    text: z.string(),
-  }),
-  z.object({
-    kind: z.literal("memory_delete"),
-    memoryId: z.string().min(1),
   }),
   z.object({
     kind: z.literal("relationship_set"),
@@ -214,8 +189,6 @@ export const CHAT_CONTEXT_INVALIDATING_FILE_MUTATIONS = [
   "turn_forget",
   "session_delete",
   "account_delete",
-  "memory_update",
-  "memory_delete",
   "relationship_set",
   "relationship_delete",
   "relationship_rebuild",
@@ -362,18 +335,6 @@ export async function applyPendingChatFileMutationsTx(
           aggregateId: mutation.characterId,
           payload: { userId, fileMutationId: row.id },
         });
-        if (mutation.candidates.length > 0) {
-          await recordOutbox(tx, {
-            eventType: CHAT_TO_MAIN_EVENTS.memoryUpdated,
-            aggregateType: "user",
-            aggregateId: userId,
-            payload: {
-              characterId: mutation.characterId,
-              count: mutation.candidates.length,
-              fileMutationId: row.id,
-            },
-          });
-        }
       }
       if (mutation.kind === "session_delete") {
         await recordOutbox(tx, {
@@ -678,7 +639,6 @@ async function applyFileMutation(
 ): Promise<void> {
   switch (mutation.kind) {
     case "turn_forget":
-      await forgetByMessageIds(userId, mutation.messageIds);
       // Later trace entries embed model context and injected memories, so a
       // source message can be copied into rows whose own message ids differ.
       // Legacy trace has no complete context provenance; privacy deletion/edit
@@ -686,7 +646,6 @@ async function applyFileMutation(
       await removeSessionTraceFiles(userId, mutation.sessionId);
       return;
     case "session_delete":
-      await forgetByMessageIds(userId, mutation.messageIds);
       await removeSessionTraceFiles(userId, mutation.sessionId);
       return;
     case "account_delete":
@@ -713,20 +672,6 @@ async function applyFileMutation(
           },
         );
       }
-      if (mutation.candidates.length > 0) {
-        await consolidateMemories(
-          userId,
-          mutation.characterId,
-          mutation.candidates,
-          { maxStored: mutation.maxStored },
-        );
-      }
-      return;
-    case "memory_update":
-      await updateMemory(userId, mutation.memoryId, mutation.text);
-      return;
-    case "memory_delete":
-      await deleteMemory(userId, mutation.memoryId);
       return;
     case "relationship_set":
       await setRelationshipOnce(
@@ -832,12 +777,6 @@ export function appliedFileMutationReceipt(
         kind: mutation.kind,
         sessionId: mutation.sessionId,
         characterId: mutation.characterId,
-      };
-    case "memory_update":
-    case "memory_delete":
-      return {
-        kind: mutation.kind,
-        memoryId: mutation.memoryId,
       };
     case "relationship_rebuild":
       return {

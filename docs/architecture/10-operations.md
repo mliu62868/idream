@@ -224,98 +224,18 @@ send, and blocked-input handling). If `CHAT_SERVICE_PROBE_CHARACTER_ID` is unset
 the probe auto-selects a public approved adult character from the main DB; use
 `--character-id=...` when a fixed production probe character is required.
 
-During the ADR-19 Shadow phase, keep the delivered runtime on `native/legacy`,
-enable the bounded DSH Shadow executor, and add
-`--expected-companion-shadow dsh`. The probe then fails closed unless all three
-normal turns persist a completed, content-free Shadow comparison; tool-call
-counts must equal dry-run tool-call counts, and the private/no-memory turn must
-prove Shadow admission was skipped. This flag observes an already-enabled
-Shadow deployment—it never changes rollout settings itself.
-
-For a temporary local Shadow proof, preserve and restore the deployment switch
-even when the probe fails. The restoration is part of the evidence, not manual
-cleanup to remember later:
-
-```bash
-set -euo pipefail
-
-# ecosystem.config.js projects the effective shell-over-packages/chat/.env
-# value into Chat's PM2 env, so this is the deployed switch authority.
-shadow_before="$(pm2 jlist | node -e '
-  let body="";
-  process.stdin.on("data", chunk => body += chunk);
-  process.stdin.on("end", () => {
-    const processInfo = JSON.parse(body).find(entry => entry.name === "chat");
-    if (!processInfo) process.exit(1);
-    process.stdout.write(processInfo.pm2_env.CHAT_COMPANION_DSH_SHADOW_ENABLED === "true" ? "true" : "false");
-  });
-')"
-dsh_agent_enabled_before="$(pm2 jlist | node -e '
-  let body="";
-  process.stdin.on("data", chunk => body += chunk);
-  process.stdin.on("end", () => {
-    const processInfo = JSON.parse(body).find(entry => entry.name === "chat-agent");
-    process.stdout.write(processInfo ? "1" : "0");
-  });
-')"
-test "$dsh_agent_enabled_before" = "1"
-
-wait_chat_ready() {
-  require_shadow="$1"
-  for _ in $(seq 1 120); do
-    if ready_body="$(curl --connect-timeout 2 --max-time 5 --fail --silent --show-error http://127.0.0.1:3100/readyz 2>/dev/null)" &&
-      READY_BODY="$ready_body" REQUIRE_SHADOW="$require_shadow" node -e '
-        const body = JSON.parse(process.env.READY_BODY);
-        const shadowReady = process.env.REQUIRE_SHADOW !== "true" ||
-          body.components?.shadow?.status === "healthy";
-        process.exit(body.ok === true && shadowReady ? 0 : 1);
-      '
-    then
-      return 0
-    fi
-    sleep 1
-  done
-  echo "FAIL: Chat readiness did not converge" >&2
-  return 1
-}
-
-restore_shadow() {
-  DSH_AGENT_ENABLED="$dsh_agent_enabled_before" \
-    CHAT_COMPANION_DSH_SHADOW_ENABLED="$shadow_before" \
-    bun run pm2:restart
-  wait_chat_ready "$shadow_before"
-  shadow_after="$(pm2 jlist | node -e '
-    let body="";
-    process.stdin.on("data", chunk => body += chunk);
-    process.stdin.on("end", () => {
-      const processInfo = JSON.parse(body).find(entry => entry.name === "chat");
-      if (!processInfo) process.exit(1);
-      process.stdout.write(processInfo.pm2_env.CHAT_COMPANION_DSH_SHADOW_ENABLED === "true" ? "true" : "false");
-    });
-  ')"
-  test "$shadow_after" = "$shadow_before"
-}
-trap restore_shadow EXIT
-
-DSH_AGENT_ENABLED="$dsh_agent_enabled_before" \
-  CHAT_COMPANION_DSH_SHADOW_ENABLED=true \
-  bun run pm2:restart
-wait_chat_ready true
-bun run --filter @idream/main probe:chat-service -- \
-  --service-url http://127.0.0.1:3100 \
-  --character-id lola-moonstruck \
-  --expected-companion-shadow dsh \
-  --report .tmp/launch-chat-shadow-probe.json
-
-restore_shadow
-trap - EXIT
-```
-
-ADR-19 primary DSH validation is a separate gate. First prove the installed
-composition and the code-owned C/S/M/T contracts, then observe the already
-deployed relationship-sticky DSH route. `DSH_AGENT_ENABLED` uses the same
-shell-over-`packages/chat/.env` precedence as Chat; a plain gated restart must
-therefore retain the sidecar without an ad-hoc export on every invocation.
+ADR-19 Phase 6 has one deployed execution topology: Chat always routes to the
+required `chat-agent` DSH sidecar, and normal memory is owned by the official
+igrep plugin. There is no native/legacy cohort, Shadow executor, or topology
+flag to enable. PM2 must supervise the process that owns port 3101 directly;
+the production definition pins the exact script, Node interpreter, and tsx
+loader arguments so a restart cannot leave an orphan listener.
+ADR-19 primary DSH validation first proves the code-owned C/S/M/T contracts and
+the programmatic execution composition, then observes the deployed DSH route.
+Gate C truth is the composition manifest and digest that the engine actually
+applies. An installer profile dump is provenance only: `dsh-base` may be
+materialized while the engine does not load its services. The actual manifest
+must fail if it contains shell, fs/filesystem, subagent, goal, or scheduler.
 
 ```bash
 set -euo pipefail
@@ -329,9 +249,8 @@ bun run --filter @idream/chat test -- \
   src/generate-agent-tools.test.ts \
   test/reliability.test.ts
 
-# This observes either an exact allowlist canary or a proven threshold cohort.
-# It never changes rollout state and fails closed if the selected relationship
-# is not actually DSH/igrep-dsh with the expected profile/provider evidence.
+# This observes the only deployed DSH/igrep-dsh runtime and fails closed unless
+# the relationship persists the expected profile/provider evidence.
 bun run --filter @idream/main probe:chat-service -- \
   --service-url http://127.0.0.1:3100 \
   --user-id seed-chat-probe-user \
@@ -340,12 +259,11 @@ bun run --filter @idream/main probe:chat-service -- \
   --report .tmp/launch-chat-dsh-probe.json
 ```
 
-Gate R is observed aggregate evidence, not an automatic release verdict. For a
-customer canary, collect the exact observation window through Chat's internal
-read-only endpoint. The endpoint continues to return
-`releaseDecision.status=not_evaluated`; operators must compare the resulting
-native/DSH samples against the approved baseline thresholds and observation
-window before any Phase-6 deletion.
+Gate R is observed aggregate evidence, not an automatic release verdict. The
+pre-cleanup native/DSH observation window remains queryable as historical
+evidence through Chat's internal read-only endpoint. The endpoint returns
+`releaseDecision.status=not_evaluated`; that value is never a release approval
+and must not be promoted into public-production Go evidence.
 
 ```bash
 set -euo pipefail
@@ -408,60 +326,29 @@ not public cost proof. Do not relabel it `not_applicable_self_hosted` until both
 the persisted attempt trace and runtime readiness independently prove the
 self-hosted loopback authority. No synthetic currency amount is permitted.
 
-### ADR-19 Phase 5 memory cutover
+### ADR-19 Phase 6 memory authority
 
-Phase 5 is relationship-scoped. Before admitting a normal DSH attempt, Chat
-recomputes the current legacy-source checksum under user authority, reads the
-Chat cutover fact and the sidecar's content-free marker, and requires matching
-import checksum, exact igrep version, recall parity, cutover workspace version,
-and current workspace lineage. A relationship with zero parsed legacy rows may
-create an audited empty marker through the same importer. The absence of a file
-alone is never treated as proof when any legacy row exists; excluded rows need
-an explicit operator-reviewed empty import.
+The Phase 5 importer and every legacy `memory.md` read/write path are removed.
+A normal relationship now opens the existing canonical igrep workspace or
+initializes a new empty canonical workspace directly. A private turn uses an
+ephemeral workspace and never creates canonical memory.
 
-The importer defaults to dry-run and is explicit per relationship. Probe files
-contain no identity. A non-empty import requires at least one recall probe; an
-operator-reviewed empty import uses the versioned empty probe set.
-
-```bash
-cat >.tmp/empty-memory-probes.json <<'JSON'
-{"version":1,"probes":[]}
-JSON
-
-bun run --cwd packages/chat memory:import-legacy -- \
-  --user-id '<user-id>' \
-  --character-id '<character-id>' \
-  --probe-file .tmp/legacy-memory-probes.json \
-  --dry-run
-
-# Only after reviewing the redacted counts/checksums and recall probe set:
-bun run --cwd packages/chat memory:import-legacy -- \
-  --user-id '<user-id>' \
-  --character-id '<character-id>' \
-  --probe-file .tmp/legacy-memory-probes.json \
-  --apply
-```
-
-Run the batch audit after every apply wave and before increasing the normal DSH
-cohort. It is read-only: it enumerates legacy `memory.md` relationships, reads
-canonical Chat/proof state and the authenticated sidecar marker, then emits only
-hashed relationship identity, counts, exclusions, checksums, and proof status.
-Any non-ready relationship, source race, malformed proof, or unavailable
-sidecar produces exit code 1.
+Phase 5 cutover markers and the content-free `cutover_ready` proof stored in
+historical attempt traces remain read-only audit evidence. They do not admit
+new turns and their absence is valid for relationships created after Phase 6.
+The audit enumerates only relationships that already contain a historical
+attempt proof and compares it with the authenticated sidecar marker. It never
+reads `memory.md`, imports facts, or manufactures an empty proof:
 
 ```bash
 bun run --cwd packages/chat memory:cutover-audit \
   > .tmp/adr19-memory-cutover-audit.json
 ```
 
-Phase 6 remains closed until this audit is 100% ready for the controlled cohort,
-Gate R and its rollback observation window have actually completed, and the
-user-facing `/memories` list/edit/delete/reset product surface has moved to an
-official igrep public seam (or been reduced to the canonical relationship reset
-contract). That surface still reads and writes legacy `mem/*.md`; deleting only
-background retrieval/extraction would otherwise leave a second authority or an
-empty control panel.
-
+The item-level `/memories` API and list/edit/delete UI no longer exist because
+official igrep exposes no stable item seam. Product controls are deliberately
+limited to memory on/off and whole relationship reset; reset purges the
+relationship workspace and its historical cutover marker together.
 Sentry readiness requires four distinct, fresh reports from the package-bound
 `probe:sentry` entrypoints. The CLI intentionally rejects a relabeled `--service`;
 each package loads its own SDK/runtime and binds the captured event plus resolved

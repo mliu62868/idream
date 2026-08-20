@@ -5,8 +5,8 @@ import {
   lstat,
   mkdir,
   mkdtemp,
-  readFile,
   readdir,
+  readFile,
   readlink,
   rename,
   rm,
@@ -36,7 +36,7 @@ export interface MemoryProbe {
 
 export interface AttemptWorkspace {
   readonly path: string;
-  readonly mode: "normal" | "private" | "shadow";
+  readonly mode: "normal" | "private";
   commit(): Promise<void>;
   discard(): Promise<void>;
   settleAndDiscard(): Promise<void>;
@@ -44,7 +44,6 @@ export interface AttemptWorkspace {
 
 export interface AttemptWorkspaceStoreOptions {
   canonicalRoot: string;
-  shadowRoot?: string;
   privateRoot?: string;
   memoryProbe: MemoryProbe;
   verificationTimeoutMs?: number;
@@ -81,33 +80,33 @@ export function relationshipWorkspacePath(
   return join(userWorkspacePath(canonicalRoot, userId), `relationship-${safeKey(userId, characterId)}`);
 }
 
-function legacyMemoryImportUserMetaPath(canonicalRoot: string, userId: string): string {
+function memoryCutoverUserMetaPath(canonicalRoot: string, userId: string): string {
   return join(resolve(canonicalRoot), "_meta", `user-${safeKey(userId)}`);
 }
 
-export function legacyMemoryImportMarkerPath(
+export function memoryCutoverMarkerPath(
   canonicalRoot: string,
   userId: string,
   characterId: string,
 ): string {
   return join(
-    legacyMemoryImportUserMetaPath(canonicalRoot, userId),
+    memoryCutoverUserMetaPath(canonicalRoot, userId),
     `relationship-${safeKey(userId, characterId)}.json`,
   );
 }
 
-export interface LegacyMemoryImportMarker {
+export interface MemoryCutoverMarker {
   checksum: string;
   entries: number;
   legacySourceChecksum: string;
   igrepVersion: string;
   workspaceVersion: string;
   status: "cutover_ready";
-  recallParity: LegacyRecallParityEvidence;
+  recallParity: MemoryCutoverRecallParityEvidence;
   completedAt: string;
 }
 
-export interface LegacyRecallParityProbeEvidence {
+export interface MemoryCutoverRecallParityProbeEvidence {
   probeId: string;
   queryHash: string;
   legacyExpectedHash: string;
@@ -115,29 +114,12 @@ export interface LegacyRecallParityProbeEvidence {
   hitCount: number;
 }
 
-export interface LegacyRecallParityEvidence {
+export interface MemoryCutoverRecallParityEvidence {
   probeSetChecksum: string;
   total: number;
   passed: number;
-  probes: LegacyRecallParityProbeEvidence[];
+  probes: MemoryCutoverRecallParityProbeEvidence[];
 }
-
-export interface VerifiedLegacyMemoryImport {
-  entries: number;
-  written: number;
-  igrepVersion: string;
-  recallParity: LegacyRecallParityEvidence;
-}
-
-type LegacyMemoryImportMarkerInput = Pick<
-  LegacyMemoryImportMarker,
-  "checksum" | "legacySourceChecksum" | "igrepVersion"
-> & {
-  entries: number;
-  probeSetChecksum: string;
-  completedAt?: string;
-};
-
 function privateUserWorkspacePath(privateRoot: string, userId: string): string {
   return join(resolve(privateRoot), `user-${safeKey(userId)}`);
 }
@@ -172,17 +154,15 @@ async function exists(path: string): Promise<boolean> {
 export class AttemptWorkspaceStore {
   private readonly locks = new Map<string, Promise<void>>();
   private readonly options: Required<
-    Omit<AttemptWorkspaceStoreOptions, "privateRoot" | "shadowRoot">
+    Omit<AttemptWorkspaceStoreOptions, "privateRoot">
   > & {
     privateRoot: string;
-    shadowRoot: string;
   };
 
   constructor(options: AttemptWorkspaceStoreOptions) {
     this.options = {
       ...options,
       privateRoot: options.privateRoot ?? tmpdir(),
-      shadowRoot: options.shadowRoot ?? `${resolve(options.canonicalRoot)}-shadow`,
       verificationTimeoutMs: options.verificationTimeoutMs ?? 5_000,
       verificationPollMs: options.verificationPollMs ?? 50,
     };
@@ -190,10 +170,7 @@ export class AttemptWorkspaceStore {
 
   async prepare(invocation: CompanionInvocation): Promise<AttemptWorkspace> {
     if (invocation.memoryMode === "private") return this.preparePrivate(invocation);
-    if (invocation.memoryMode === "shadow") {
-      return this.prepareNormal(invocation, this.options.shadowRoot, "shadow");
-    }
-    return this.prepareNormal(invocation, this.options.canonicalRoot, "normal");
+    return this.prepareNormal(invocation);
   }
 
   async purge(request: WorkspacePurgeRequest): Promise<number> {
@@ -202,11 +179,6 @@ export class AttemptWorkspaceStore {
         request.userId,
         request.characterId,
         this.options.canonicalRoot,
-      );
-      const releaseShadow = await this.acquireRelationship(
-        request.userId,
-        request.characterId,
-        this.options.shadowRoot,
       );
       const canonicalTarget = relationshipWorkspacePath(
         this.options.canonicalRoot,
@@ -218,60 +190,42 @@ export class AttemptWorkspaceStore {
         request.userId,
         request.characterId,
       );
-      const markerTarget = legacyMemoryImportMarkerPath(
+      const cutoverMarker = memoryCutoverMarkerPath(
         this.options.canonicalRoot,
         request.userId,
         request.characterId,
       );
       try {
-        const shadowTarget = relationshipWorkspacePath(
-          this.options.shadowRoot,
-          request.userId,
-          request.characterId,
-        );
         assertWithin(this.options.canonicalRoot, canonicalTarget);
-        assertWithin(this.options.canonicalRoot, markerTarget);
         assertWithin(this.options.privateRoot, privateTarget);
-        assertWithin(this.options.shadowRoot, shadowTarget);
         const found = await Promise.all([
           exists(canonicalTarget),
           exists(privateTarget),
-          exists(shadowTarget),
-          exists(markerTarget),
+          exists(cutoverMarker),
         ]);
         await Promise.all([
           rm(canonicalTarget, { recursive: true, force: true }),
           rm(privateTarget, { recursive: true, force: true }),
-          rm(shadowTarget, { recursive: true, force: true }),
-          rm(markerTarget, { force: true }),
+          rm(cutoverMarker, { force: true }),
         ]);
-        await rmdir(legacyMemoryImportUserMetaPath(this.options.canonicalRoot, request.userId))
-          .catch((error: NodeJS.ErrnoException) => {
-            if (error.code !== "ENOENT" && error.code !== "ENOTEMPTY") throw error;
-          });
         await Promise.all([
           rmdir(userWorkspacePath(this.options.canonicalRoot, request.userId)),
           rmdir(privateUserWorkspacePath(this.options.privateRoot, request.userId)),
-          rmdir(userWorkspacePath(this.options.shadowRoot, request.userId)),
+          rmdir(memoryCutoverUserMetaPath(this.options.canonicalRoot, request.userId)),
         ].map((cleanup) => cleanup.catch((error: NodeJS.ErrnoException) => {
           if (error.code !== "ENOENT" && error.code !== "ENOTEMPTY") throw error;
         })));
         return found.some(Boolean) ? 1 : 0;
       } finally {
-        releaseShadow();
         releaseCanonical();
       }
     }
     const canonicalTarget = userWorkspacePath(this.options.canonicalRoot, request.userId);
     const privateTarget = privateUserWorkspacePath(this.options.privateRoot, request.userId);
-    const shadowTarget = userWorkspacePath(this.options.shadowRoot, request.userId);
-    const markerTarget = legacyMemoryImportUserMetaPath(this.options.canonicalRoot, request.userId);
     assertWithin(this.options.canonicalRoot, canonicalTarget);
-    assertWithin(this.options.canonicalRoot, markerTarget);
     assertWithin(this.options.privateRoot, privateTarget);
-    assertWithin(this.options.shadowRoot, shadowTarget);
     const relationshipNames = new Set<string>();
-    for (const target of [canonicalTarget, privateTarget, shadowTarget]) {
+    for (const target of [canonicalTarget, privateTarget]) {
       if (!(await exists(target))) continue;
       const children = await readdir(target, { withFileTypes: true });
       for (const entry of children) {
@@ -283,8 +237,10 @@ export class AttemptWorkspaceStore {
     await Promise.all([
       rm(canonicalTarget, { recursive: true, force: true }),
       rm(privateTarget, { recursive: true, force: true }),
-      rm(shadowTarget, { recursive: true, force: true }),
-      rm(markerTarget, { recursive: true, force: true }),
+      rm(memoryCutoverUserMetaPath(this.options.canonicalRoot, request.userId), {
+        recursive: true,
+        force: true,
+      }),
     ]);
     return relationshipNames.size;
   }
@@ -294,103 +250,9 @@ export class AttemptWorkspaceStore {
     build: (workspace: string) => Promise<T>,
   ): Promise<T> {
     const release = await this.acquireRelationship(identity.userId, identity.characterId);
-    const releaseShadow = await this.acquireRelationship(
-      identity.userId,
-      identity.characterId,
-      this.options.shadowRoot,
-    );
     try {
       await this.purgeEphemeralRelationship(identity);
       return await this.replaceRelationshipLocked(identity, build);
-    } finally {
-      releaseShadow();
-      release();
-    }
-  }
-
-  async importLegacyMemory(
-    identity: { userId: string; characterId: string },
-    marker: LegacyMemoryImportMarkerInput,
-    build: (workspace: string) => Promise<VerifiedLegacyMemoryImport>,
-    signal?: AbortSignal,
-  ): Promise<
-    | { skipped: true; marker: LegacyMemoryImportMarker }
-    | { skipped: false; result: VerifiedLegacyMemoryImport; marker: LegacyMemoryImportMarker }
-  > {
-    this.assertLegacyMemoryImportMarkerIdentity(marker);
-    if (!Number.isSafeInteger(marker.entries) || marker.entries < 0) {
-      throw new Error("legacy memory import entry count is invalid");
-    }
-    if (!/^[a-f0-9]{64}$/.test(marker.probeSetChecksum)) {
-      throw new Error("legacy recall probe-set checksum is invalid");
-    }
-    if (marker.completedAt !== undefined && !Number.isFinite(Date.parse(marker.completedAt))) {
-      throw new Error("legacy memory import marker completion time is invalid");
-    }
-    this.throwIfAborted(signal);
-    const release = await this.acquireRelationship(identity.userId, identity.characterId);
-    try {
-      this.throwIfAborted(signal);
-      const markerPath = legacyMemoryImportMarkerPath(
-        this.options.canonicalRoot,
-        identity.userId,
-        identity.characterId,
-      );
-      const current = await this.readLegacyMemoryImportMarker(markerPath);
-      const canonicalLink = join(
-        relationshipWorkspacePath(
-          this.options.canonicalRoot,
-          identity.userId,
-          identity.characterId,
-        ),
-        ".igrep",
-      );
-      const canonicalVersion = await this.canonicalVersion(
-        canonicalLink,
-        join(dirname(canonicalLink), ".igrep.versions"),
-      );
-      if (
-        current?.checksum === marker.checksum
-        && current.entries === marker.entries
-        && current.legacySourceChecksum === marker.legacySourceChecksum
-        && current.igrepVersion === marker.igrepVersion
-        && current.recallParity.probeSetChecksum === marker.probeSetChecksum
-        && current.workspaceVersion === basename(canonicalVersion ?? "")
-      ) {
-        return { skipped: true, marker: current };
-      }
-      let completedMarker: LegacyMemoryImportMarker | undefined;
-      const result = await this.replaceRelationshipLocked(identity, build, {
-        path: markerPath,
-        value: (verified, workspaceVersion) => {
-          if (verified.igrepVersion !== marker.igrepVersion) {
-            throw new Error("igrep legacy memory import version drifted");
-          }
-          if (verified.entries !== marker.entries) {
-            throw new Error("igrep legacy memory import entry count drifted");
-          }
-          if (verified.recallParity.probeSetChecksum !== marker.probeSetChecksum) {
-            throw new Error("legacy recall parity probe-set checksum drifted");
-          }
-          completedMarker = {
-            checksum: marker.checksum,
-            entries: verified.entries,
-            legacySourceChecksum: marker.legacySourceChecksum,
-            igrepVersion: marker.igrepVersion,
-            workspaceVersion,
-            status: "cutover_ready",
-            recallParity: verified.recallParity,
-            // INVARIANT: completion is recorded only after record, maintain,
-            // strict doctor, and every recall parity probe have returned
-            // successfully from build().
-            completedAt: marker.completedAt ?? new Date().toISOString(),
-          };
-          this.assertLegacyMemoryImportMarker(completedMarker);
-          return completedMarker;
-        },
-      }, signal);
-      if (!completedMarker) throw new Error("legacy memory import marker was not completed");
-      return { skipped: false, result, marker: completedMarker };
     } finally {
       release();
     }
@@ -401,8 +263,8 @@ export class AttemptWorkspaceStore {
   ): Promise<CompanionMemoryCutoverSidecarProof | null> {
     const release = await this.acquireRelationship(identity.userId, identity.characterId);
     try {
-      const marker = await this.readLegacyMemoryImportMarker(
-        legacyMemoryImportMarkerPath(
+      const marker = await this.readMemoryCutoverMarker(
+        memoryCutoverMarkerPath(
           this.options.canonicalRoot,
           identity.userId,
           identity.characterId,
@@ -414,7 +276,7 @@ export class AttemptWorkspaceStore {
         identity.userId,
         identity.characterId,
       );
-      const canonical = await this.canonicalVersion(
+      const canonical = await this.readCanonicalVersion(
         join(relationshipRoot, ".igrep"),
         join(relationshipRoot, ".igrep.versions"),
       );
@@ -426,8 +288,8 @@ export class AttemptWorkspaceStore {
         workspaceVersion !== marker.workspaceVersion
         && workspaceVersion.startsWith("rebuild-")
       ) {
-        // A canonical rebuild is not a descendant commit of the certified
-        // import. The marker remains audit evidence, but cannot authorize use.
+        // A rebuild is not a descendant commit of the certified migration.
+        // The old marker remains on disk for forensics, but the audit is stale.
         return null;
       }
       return companionMemoryCutoverSidecarProofSchema.parse({
@@ -443,13 +305,6 @@ export class AttemptWorkspaceStore {
   private async replaceRelationshipLocked<T>(
     identity: { userId: string; characterId: string },
     build: (workspace: string) => Promise<T>,
-    marker?: {
-      path: string;
-      value: LegacyMemoryImportMarker | (
-        (result: T, workspaceVersion: string) => LegacyMemoryImportMarker
-      );
-    },
-    signal?: AbortSignal,
   ): Promise<T> {
     const relationshipRoot = relationshipWorkspacePath(
       this.options.canonicalRoot,
@@ -466,11 +321,9 @@ export class AttemptWorkspaceStore {
     let promoted = false;
     let canonicalChanged = false;
     let nextLink: string | undefined;
-    let nextMarker: string | undefined;
     let priorVersion: string | undefined;
     let result!: T;
     try {
-      this.throwIfAborted(signal);
       await mkdir(versionsRoot, { recursive: true });
       // A prior interrupted rebuild may have left transcripts outside .igrep.
       // The relationship lock makes it safe to clear them before retrying.
@@ -481,41 +334,20 @@ export class AttemptWorkspaceStore {
       assertWithin(versionsRoot, candidateVersion);
       priorVersion = await this.canonicalVersion(canonicalLink, versionsRoot);
       result = await build(workspace);
-      this.throwIfAborted(signal);
-      if (marker) {
-        const markerValue = typeof marker.value === "function"
-          ? marker.value(result, basename(candidateVersion))
-          : marker.value;
-        assertWithin(this.options.canonicalRoot, marker.path);
-        await mkdir(dirname(marker.path), { recursive: true });
-        nextMarker = `${marker.path}.next-${randomUUID()}`;
-        await writeFile(nextMarker, `${JSON.stringify(markerValue)}\n`, {
-          encoding: "utf8",
-          mode: 0o600,
-        });
-      }
       // igrep 0.1.132 refuses a workspace whose .igrep resolves outside the
       // workspace. Build and verify in a real directory, then move that exact
       // certified directory into the version authority before pointer swap.
       await rename(candidateMemory, candidateVersion);
-      this.throwIfAborted(signal);
       nextLink = join(relationshipRoot, `.igrep.next-${randomUUID()}`);
       await symlink(relative(relationshipRoot, candidateVersion), nextLink, "dir");
-      this.throwIfAborted(signal);
       await rename(nextLink, canonicalLink);
       canonicalChanged = true;
       promoted = true;
-      this.throwIfAborted(signal);
       await rm(rebuildRoot, { recursive: true, force: true });
       await this.garbageCollectVersions(versionsRoot, candidateVersion);
-      if (marker && nextMarker) {
-        await rename(nextMarker, marker.path);
-        nextMarker = undefined;
-      }
       return result;
     } finally {
       if (nextLink) await rm(nextLink, { recursive: true, force: true }).catch(() => undefined);
-      if (nextMarker) await rm(nextMarker, { force: true }).catch(() => undefined);
       if (!promoted) {
         if (canonicalChanged) {
           if (priorVersion) {
@@ -534,26 +366,26 @@ export class AttemptWorkspaceStore {
     }
   }
 
-  private assertLegacyMemoryImportMarker(marker: LegacyMemoryImportMarker): void {
-    this.assertLegacyMemoryImportMarkerIdentity(marker);
+  private assertMemoryCutoverMarker(marker: MemoryCutoverMarker): void {
+    this.assertMemoryCutoverMarkerIdentity(marker);
     if (!/^(?:rebuild|migrated)-\d+-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/
       .test(marker.workspaceVersion)) {
-      throw new Error("legacy memory import marker workspace version is invalid");
+      throw new Error("memory cutover marker workspace version is invalid");
     }
     if (marker.status !== "cutover_ready") {
-      throw new Error("legacy memory import marker is not cutover-ready");
+      throw new Error("memory cutover marker is not cutover-ready");
     }
     if (!Number.isSafeInteger(marker.entries) || marker.entries < 0) {
-      throw new Error("legacy memory import marker entry count is invalid");
+      throw new Error("memory cutover marker entry count is invalid");
     }
-    this.assertLegacyRecallParity(marker.recallParity, marker.entries);
+    this.assertMemoryCutoverRecallParity(marker.recallParity, marker.entries);
     if (!Number.isFinite(Date.parse(marker.completedAt))) {
-      throw new Error("legacy memory import marker completion time is invalid");
+      throw new Error("memory cutover marker completion time is invalid");
     }
   }
 
-  private assertLegacyRecallParity(
-    parity: LegacyRecallParityEvidence,
+  private assertMemoryCutoverRecallParity(
+    parity: MemoryCutoverRecallParityEvidence,
     entries: number,
   ): void {
     if (!/^[a-f0-9]{64}$/.test(parity.probeSetChecksum)
@@ -562,7 +394,7 @@ export class AttemptWorkspaceStore {
       || parity.passed !== parity.total
       || parity.probes.length !== parity.total
       || ((entries === 0) !== (parity.total === 0))) {
-      throw new Error("legacy recall parity evidence is incomplete");
+      throw new Error("memory cutover recall parity evidence is incomplete");
     }
     const probeIds = new Set<string>();
     for (const probe of parity.probes) {
@@ -572,39 +404,32 @@ export class AttemptWorkspaceStore {
           .every((digest) => /^[a-f0-9]{64}$/.test(digest))
         || !Number.isSafeInteger(probe.hitCount)
         || probe.hitCount < 0) {
-        throw new Error("legacy recall parity probe evidence is invalid");
+        throw new Error("memory cutover recall parity probe evidence is invalid");
       }
       probeIds.add(probe.probeId);
     }
   }
 
-  private throwIfAborted(signal?: AbortSignal): void {
-    if (!signal?.aborted) return;
-    throw signal.reason instanceof Error
-      ? signal.reason
-      : new Error("legacy memory import aborted");
-  }
-
-  private assertLegacyMemoryImportMarkerIdentity(
+  private assertMemoryCutoverMarkerIdentity(
     marker: Pick<
-      LegacyMemoryImportMarker,
+      MemoryCutoverMarker,
       "checksum" | "legacySourceChecksum" | "igrepVersion"
     >,
   ): void {
     if (!/^[a-f0-9]{64}$/.test(marker.checksum)) {
-      throw new Error("legacy memory import marker checksum is invalid");
+      throw new Error("memory cutover marker checksum is invalid");
     }
     if (!/^[a-f0-9]{64}$/.test(marker.legacySourceChecksum)) {
-      throw new Error("legacy memory import source checksum is invalid");
+      throw new Error("memory cutover marker source checksum is invalid");
     }
     if (!/^\d+\.\d+\.\d+$/.test(marker.igrepVersion)) {
-      throw new Error("legacy memory import marker igrep version is invalid");
+      throw new Error("memory cutover marker igrep version is invalid");
     }
   }
 
-  private async readLegacyMemoryImportMarker(
+  private async readMemoryCutoverMarker(
     path: string,
-  ): Promise<LegacyMemoryImportMarker | null> {
+  ): Promise<MemoryCutoverMarker | null> {
     let raw: string;
     try {
       raw = await readFile(path, "utf8");
@@ -616,7 +441,7 @@ export class AttemptWorkspaceStore {
     const fields = Object.keys(value).sort().join(",");
     if (fields === "checksum,completedAt,igrepVersion") {
       if (!Number.isFinite(Date.parse(String(value.completedAt)))) {
-        throw new Error("legacy memory import marker completion time is invalid");
+        throw new Error("memory cutover marker completion time is invalid");
       }
       return null;
     }
@@ -627,19 +452,18 @@ export class AttemptWorkspaceStore {
       || fields
         === "checksum,completedAt,entries,igrepVersion,recallParity,status,workspaceVersion"
     ) {
-      // Pre-cutover-gate markers did not bind the certified entry count, so
-      // they cannot authorize a normal DSH attempt. A rerun upgrades them.
+      // Pre-gate markers did not bind the certified entry count and therefore
+      // are insufficient as historical migration audit evidence.
       return null;
     }
     if (fields
       !== "checksum,completedAt,entries,igrepVersion,legacySourceChecksum,recallParity,status,workspaceVersion") {
-      throw new Error("legacy memory import marker contains unexpected fields");
+      throw new Error("memory cutover marker contains unexpected fields");
     }
-    const marker = value as unknown as LegacyMemoryImportMarker;
-    this.assertLegacyMemoryImportMarker(marker);
+    const marker = value as unknown as MemoryCutoverMarker;
+    this.assertMemoryCutoverMarker(marker);
     return marker;
   }
-
   private async preparePrivate(invocation: CompanionInvocation): Promise<AttemptWorkspace> {
     const relationshipRoot = privateRelationshipWorkspacePath(
       this.options.privateRoot,
@@ -665,11 +489,8 @@ export class AttemptWorkspaceStore {
     return { path, mode: "private", commit: discard, discard, settleAndDiscard: discard };
   }
 
-  private async prepareNormal(
-    invocation: CompanionInvocation,
-    authorityRoot: string,
-    mode: "normal" | "shadow",
-  ): Promise<AttemptWorkspace> {
+  private async prepareNormal(invocation: CompanionInvocation): Promise<AttemptWorkspace> {
+    const authorityRoot = this.options.canonicalRoot;
     const release = await this.acquireRelationship(
       invocation.userId,
       invocation.characterId,
@@ -722,9 +543,6 @@ export class AttemptWorkspaceStore {
         }
       };
       const commit = async () => {
-        if (mode === "shadow") {
-          throw new Error("shadow attempts cannot promote canonical memory");
-        }
         if (finished) throw new Error("attempt workspace is already finalized");
         let nextVersion: string | undefined;
         let nextLink: string | undefined;
@@ -750,7 +568,7 @@ export class AttemptWorkspaceStore {
           release();
         }
       };
-      return { path: workspace, mode, commit, discard, settleAndDiscard };
+      return { path: workspace, mode: "normal", commit, discard, settleAndDiscard };
     } catch (error) {
       if (attemptRoot) {
         if (knowledgeRoot) {
@@ -825,23 +643,12 @@ export class AttemptWorkspaceStore {
       identity.userId,
       identity.characterId,
     );
-    const shadowTarget = relationshipWorkspacePath(
-      this.options.shadowRoot,
-      identity.userId,
-      identity.characterId,
-    );
     assertWithin(this.options.privateRoot, privateTarget);
-    assertWithin(this.options.shadowRoot, shadowTarget);
-    await Promise.all([
-      rm(privateTarget, { recursive: true, force: true }),
-      rm(shadowTarget, { recursive: true, force: true }),
-    ]);
-    await Promise.all([
-      rmdir(privateUserWorkspacePath(this.options.privateRoot, identity.userId)),
-      rmdir(userWorkspacePath(this.options.shadowRoot, identity.userId)),
-    ].map((cleanup) => cleanup.catch((error: NodeJS.ErrnoException) => {
+    await rm(privateTarget, { recursive: true, force: true });
+    await rmdir(privateUserWorkspacePath(this.options.privateRoot, identity.userId))
+      .catch((error: NodeJS.ErrnoException) => {
       if (error.code !== "ENOENT" && error.code !== "ENOTEMPTY") throw error;
-    })));
+    });
   }
 
   private async acquireRelationship(
@@ -881,6 +688,19 @@ export class AttemptWorkspaceStore {
     await rename(canonicalLink, migrated);
     await symlink(relative(dirname(canonicalLink), migrated), canonicalLink, "dir");
     return migrated;
+  }
+
+  private async readCanonicalVersion(
+    canonicalLink: string,
+    versionsRoot: string,
+  ): Promise<string | undefined> {
+    if (!(await exists(canonicalLink))) return undefined;
+    const stat = await lstat(canonicalLink);
+    if (!stat.isSymbolicLink()) return undefined;
+    const target = resolve(dirname(canonicalLink), await readlink(canonicalLink));
+    assertWithin(versionsRoot, target);
+    if (!(await exists(target))) throw new Error("canonical igrep pointer target is missing");
+    return target;
   }
 
   private async ensureCanonicalVersion(canonicalLink: string, versionsRoot: string): Promise<string> {

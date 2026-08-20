@@ -348,7 +348,6 @@ export const chatOpsUsageSchema = z
     sessionId: z.string().nullable(),
     modelTier: z.string().min(1),
     unlimitedMessages: z.boolean(),
-    memoryMultiplier: z.number(),
     voiceEnabled: z.boolean(),
     messagesUsed: nonNegativeCount,
     freeDailyLimit: nonNegativeCount,

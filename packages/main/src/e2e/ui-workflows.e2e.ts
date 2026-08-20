@@ -846,20 +846,14 @@ async function fileExists(target: string) {
   }
 }
 
-async function seedChatCompanionFiles(email: string, characterId: string) {
+async function seedChatRelationshipFile(email: string, characterId: string) {
   const user = await prisma.user.findUniqueOrThrow({
     where: { email },
     select: { id: true },
   });
   const root = chatFsRoot();
   const dir = path.join(root, "mem", user.id, characterId);
-  const memoryId = `mem_e2e_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
-  const initialMemory = "User likes rainy bookstores.";
   await mkdir(dir, { recursive: true });
-  await writeFile(
-    path.join(dir, "memory.md"),
-    `- [preference] ${initialMemory} <!-- src:e2e-message mid:${memoryId} conf:0.9 -->\n`,
-  );
   await writeFile(
     path.join(dir, "relationship.md"),
     [
@@ -876,7 +870,6 @@ async function seedChatCompanionFiles(email: string, characterId: string) {
       "",
     ].join("\n"),
   );
-  return { initialMemory };
 }
 
 async function cleanupPublicE2EFixtures() {
@@ -3954,12 +3947,11 @@ test("chat session drawer renames, archives, and redirects after deleting the cu
   });
 });
 
-test("chat memory panel edits memories, deletes memories, and resets relationship state", async ({
+test("chat memory panel controls memory mode and resets the whole relationship", async ({
   page,
 }) => {
   const { email } = await startSignedInAdultSession(page, "chat-memory-panel");
-  const { initialMemory } = await seedChatCompanionFiles(email, "melissa-burke");
-  const editedMemory = "User likes late-night jazz.";
+  await seedChatRelationshipFile(email, "melissa-burke");
 
   await page.goto("/characters/melissa-burke");
   await expect(page.getByRole("heading", { name: "Melissa Burke" })).toBeVisible({ timeout: 10_000 });
@@ -3969,49 +3961,13 @@ test("chat memory panel edits memories, deletes memories, and resets relationshi
     timeout: 10_000,
   });
 
-  let failMemoryRequest = true;
-  await page.route("**/api/v1/chat/memories?**", async (route) => {
-    if (!failMemoryRequest) {
-      await route.continue();
-      return;
-    }
-    failMemoryRequest = false;
-    await route.fulfill({
-      status: 500,
-      contentType: "application/json",
-      body: JSON.stringify({ ok: false, error: { message: "forced memory failure" } }),
-    });
-  });
-
   await page.getByTestId("memory-panel-open").click();
-  const memoryStatus = page.getByTestId("memory-panel-status");
-  await expect(memoryStatus).toContainText("Couldn't load memories.", { timeout: 10_000 });
-  await expect(memoryStatus).toHaveAttribute("role", "alert");
-  await expect(memoryStatus).toHaveAttribute("aria-live", "assertive");
-  await memoryStatus.getByRole("button", { name: "Retry" }).click();
-
-  const memoryItem = page.getByTestId("memory-item").filter({ hasText: initialMemory });
-  await expect(memoryItem).toBeVisible({ timeout: 10_000 });
-
-  await memoryItem.getByTestId("memory-edit").click();
-  await page.getByRole("textbox", { name: "Edit memory" }).fill(editedMemory);
-  await page.getByTestId("memory-save").click();
-  const editedItem = page.getByTestId("memory-item").filter({ hasText: editedMemory });
-  await expect(editedItem).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByText(initialMemory)).toHaveCount(0);
-
-  await editedItem.getByTestId("memory-delete").click();
-  await expect(editedItem.getByRole("button", { name: "Confirm delete memory" })).toBeVisible({
-    timeout: 10_000,
-  });
-  await expect(editedItem).toBeVisible();
-  await editedItem.getByRole("button", { name: "Confirm delete memory" }).click();
-  await expect(editedItem).toHaveCount(0, { timeout: 10_000 });
-  await expect(memoryStatus).toContainText(
-    "No memories yet. As you chat, important details will show up here.",
-  );
-  await expect(memoryStatus).toHaveAttribute("role", "status");
-  await expect(memoryStatus).toHaveAttribute("aria-live", "polite");
+  const memoryToggle = page.getByTestId("memory-toggle").last();
+  await expect(memoryToggle).toHaveAttribute("aria-pressed", "true");
+  await memoryToggle.click();
+  await expect(memoryToggle).toHaveAttribute("aria-pressed", "false", { timeout: 10_000 });
+  await memoryToggle.click();
+  await expect(memoryToggle).toHaveAttribute("aria-pressed", "true", { timeout: 10_000 });
 
   await page.getByTestId("relationship-reset").click();
   await expect(page.getByRole("button", { name: "Confirm reset relationship" })).toBeVisible({
@@ -5858,15 +5814,15 @@ test("profile account management signs out sessions and deletes the account", as
   );
   await mkdir(path.dirname(chatLogPath), { recursive: true });
   await writeFile(chatLogPath, '{"kind":"account-delete-canary"}\n');
-  const chatMemoryPath = path.join(
+  const chatRelationshipPath = path.join(
     chatFsRoot(),
     "mem",
     user.id,
     "account-delete-canary",
-    "memory.md",
+    "relationship.md",
   );
-  await mkdir(path.dirname(chatMemoryPath), { recursive: true });
-  await writeFile(chatMemoryPath, "Account deletion terminal canary memory.\n");
+  await mkdir(path.dirname(chatRelationshipPath), { recursive: true });
+  await writeFile(chatRelationshipPath, "Account deletion terminal canary relationship.\n");
 
   await page.goto("/profile");
   const deleteButton = page.getByRole("button", { name: "Delete", exact: true });
@@ -5923,7 +5879,7 @@ test("profile account management signs out sessions and deletes the account", as
     chatPrisma.chatSession.findUnique({ where: { id: chatSessionId } }),
   ).resolves.not.toBeNull();
   expect(await fileExists(chatLogPath)).toBe(true);
-  expect(await fileExists(chatMemoryPath)).toBe(true);
+  expect(await fileExists(chatRelationshipPath)).toBe(true);
   expect(await fileExists(blobPath)).toBe(true);
   await expect(
     prisma.mediaAsset.findUnique({ where: { id: mediaId } }),
@@ -6004,7 +5960,7 @@ test("profile account management signs out sessions and deletes the account", as
     chatPrisma.chatFileMutation.count({ where: { userId: user.id } }),
   ).resolves.toBe(0);
   expect(await fileExists(chatLogPath)).toBe(false);
-  expect(await fileExists(chatMemoryPath)).toBe(false);
+  expect(await fileExists(chatRelationshipPath)).toBe(false);
 
   const completion = await chatPrisma.chatOutboxEvent.findFirstOrThrow({
     where: {

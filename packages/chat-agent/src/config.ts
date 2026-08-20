@@ -5,7 +5,6 @@ export interface SidecarConfig {
   port: number;
   authToken: string;
   canonicalRoot: string;
-  shadowRoot: string;
   privateRoot: string;
   igrepCommand: string;
   igrepPluginUrl: string;
@@ -121,17 +120,9 @@ export function loadSidecarConfig(env: NodeJS.ProcessEnv = process.env): Sidecar
     env.DSH_IGREP_PRIVATE_ROOT ?? "data/chat-agent-private",
     "DSH_IGREP_PRIVATE_ROOT",
   );
-  const shadowRoot = absolutePath(
-    env.DSH_IGREP_SHADOW_ROOT ?? "data/chat-agent-shadow",
-    "DSH_IGREP_SHADOW_ROOT",
-  );
   if (
     pathsOverlap(canonicalRoot, privateRoot) ||
-    pathsOverlap(privateRoot, canonicalRoot) ||
-    pathsOverlap(canonicalRoot, shadowRoot) ||
-    pathsOverlap(shadowRoot, canonicalRoot) ||
-    pathsOverlap(privateRoot, shadowRoot) ||
-    pathsOverlap(shadowRoot, privateRoot)
+    pathsOverlap(privateRoot, canonicalRoot)
   ) {
     throw new Error(
       "DSH igrep workspace roots must be pairwise disjoint",
@@ -143,7 +134,6 @@ export function loadSidecarConfig(env: NodeJS.ProcessEnv = process.env): Sidecar
     // INVARIANT: Chat and sidecar authenticate one bridge with one shared secret.
     authToken: required(env, "DSH_AGENT_TOKEN"),
     canonicalRoot,
-    shadowRoot,
     privateRoot,
     igrepCommand: env.DSH_IGREP_COMMAND?.trim() || "igrep",
     igrepPluginUrl: required(env, "DSH_IGREP_PLUGIN_URL"),

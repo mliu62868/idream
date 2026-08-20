@@ -364,7 +364,7 @@ model CharacterTemplate {                          // admin CMS：建角色起�
 
 > **拆分已落地**（见 14）。chat 域权威表已**物理迁出** main schema，落在 `packages/chat/prisma/schema.prisma`（独立 `chat` schema，`chat_service` 角色连接）。main **不再**写 `chat_sessions`/`messages`，只通过 Chat API + outbox/inbox 事件交互。DDL 权威在 `db/sql/03_chat_tables.sql`（用户手工执行），Prisma schema 仅映射，不 `db push`。
 >
-> **重要变更**：`companion_memories` / `relationship_states` **不再是 PG 表**，已迁到 Chat Service 的**文件层**（`packages/chat/src/chat-fs.ts`，`CHAT_FS_ROOT` 下 `mem/{userId}/{charId}/memory.md`、`relationship.md`、`global/boundaries.md`，租户分区 + 原子重写）。记忆的增删改查走文件层（`memories.ts`），不进数据库。
+> **Phase 6 authority**：`companion_memories` / `relationship_states` 不是 PG 表。Scene/relationship/boundaries 是 Chat 文件投影；通用记忆仅由 DSH sidecar 内的 official igrep workspace 持有。没有 `memory.md` 或 `/memories` item authority。
 
 **main 侧只保留一个 read projection**（由 chat→main outbox 投喂，永不是 source of truth）：
 
@@ -400,7 +400,7 @@ model ChatSession {
   title           String?
   status          String    @default("active")
   memoryEnabled   Boolean   @default(true) @map("memory_enabled")
-  memorySummary   String?   @map("memory_summary")
+  memorySummary   String?   @map("memory_summary") // 历史可空 drain 字段；runtime/public projection 不读写
   logExtractedSeq BigInt    @default(0) @map("log_extracted_seq")
   lastMessageAt   DateTime? @map("last_message_at")
   // ... createdAt/updatedAt/deletedAt
@@ -1068,7 +1068,7 @@ CREATE INDEX characters_name_trgm ON characters USING gin (name gin_trgm_ops);
 ## 7. 与 BackendFeatureSpec 的差异/补充
 
 - 队列状态在 Redis/BullMQ（ADR-5），关系库只存权威业务态 + 幂等记录；新增基础设施表：`ProviderEvent`、`AnalyticsEvent`、`RoutePage`、`CharacterLike`、`Follow`，spec 未显式列出但实现必需。
-- chat 域已外迁到 Chat Service（`packages/chat`，独立 `chat` schema + 视图）；main 仅保留 `RecentChat` read projection。`companion_memories`/`relationship_states` 已**不再是表**，迁到 chat 文件层（§3.4）。
+- chat 域已外迁到 Chat Service（`packages/chat`，独立 `chat` schema + 视图）；main 仅保留 `RecentChat` read projection。通用记忆只在 DSH/igrep workspace，Chat 文件层仅承载 Scene/relationship/boundaries（§3.4）。
 - 新增 Admin 控制平面表（§3.10）：审计/审批/特性开关/应用设置/生成模型·prompt·路由·定价的可治理配置/权限/支持授权/法务保留。
 - `Character.source`（official|user）区分官方 CMS 角色与用户角色；新增 `CharacterTemplate`（建角色起步模板）。
 - `MediaAsset.liked` 保留为拥有者快捷标记，多用户点赞用 `MediaLike`。

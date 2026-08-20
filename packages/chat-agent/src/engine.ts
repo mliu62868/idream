@@ -14,15 +14,11 @@ import {
 import { Session, SessionId, type SessionEvent, type TurnEndReason } from "@deepseek-ai/dsh-session";
 import { type JsonValue, type ToolDefinition } from "@deepseek-ai/dsh-tools";
 import {
-  COMPANION_IGREP_VERSION,
   companionEventSchema,
-  companionMemoryCutoverSidecarProofSchema,
   companionToolResultSchema,
   type CompanionCommitAck,
   type CompanionEvent,
   type CompanionInvocation,
-  type CompanionLegacyMemoryImport,
-  type CompanionMemoryCutoverSidecarProof,
   type CompanionReadiness,
   type CompanionRuntimeRequest,
   type CompanionRuntimeResponse,
@@ -42,14 +38,9 @@ import {
 import type {
   AttemptWorkspace,
   AttemptWorkspaceStore,
-  LegacyRecallParityEvidence,
   WorkspacePurgeRequest,
 } from "./workspace";
-import {
-  legacyRecallProbeSetChecksum,
-  verifyLegacyMemoryImport,
-  type IgrepPluginModule,
-} from "./igrep";
+import type { IgrepPluginModule } from "./igrep";
 import { createSidecarInstanceIdentity } from "./sidecar-instance";
 
 type ControlFrame = Exclude<CompanionRuntimeRequest, { type: "run" }>;
@@ -71,19 +62,6 @@ export interface CompanionEngineOptions {
       workspace: string,
       request: CompanionWorkspaceRebuild,
     ): Promise<{ sessions: number; messages: number }>;
-  };
-  legacyImporter?: {
-    readonly version: string;
-    import(
-      workspace: string,
-      request: CompanionLegacyMemoryImport,
-      signal?: AbortSignal,
-    ): Promise<{
-      entries: number;
-      written: number;
-      igrepVersion: string;
-      recallParity: LegacyRecallParityEvidence;
-    }>;
   };
   maxSteps?: number;
   maxConcurrentAgents?: { normal: number; private: number };
@@ -711,16 +689,6 @@ export class CompanionEngine implements InvocationService {
       handle = undefined;
       if (!terminalCommitted) {
         await workspace.settleAndDiscard();
-        if (invocation.memoryMode === "shadow") {
-          event({
-            type: "workspace_settled",
-            memoryMode: "shadow",
-            workspaceClass: "shadow",
-            disposition: "discarded",
-            commitAccepted: false,
-            promotionAttempted: false,
-          });
-        }
         workspace = undefined;
       }
       if (active.cancelReason) {
@@ -826,89 +794,6 @@ export class CompanionEngine implements InvocationService {
     }
   }
 
-  async importLegacyMemory(
-    request: CompanionLegacyMemoryImport,
-    signal?: AbortSignal,
-  ): Promise<CompanionMemoryCutoverSidecarProof & {
-    skipped: boolean;
-    written: number;
-  }> {
-    if (!this.options.legacyImporter) {
-      throw new Error("igrep legacy memory import is not configured");
-    }
-    const parsed = verifyLegacyMemoryImport(request);
-    if (this.options.legacyImporter.version !== COMPANION_IGREP_VERSION) {
-      throw new Error("igrep legacy memory import version drifted");
-    }
-    const relationshipKey = `${parsed.userId}\0${parsed.characterId}`;
-    if (this.hasFence(this.purgingUsers, parsed.userId)
-      || this.hasFence(this.purgingRelationships, relationshipKey)) {
-      throw new Error("invocation workspace is already being rebuilt or purged");
-    }
-    this.addFence(this.purgingRelationships, relationshipKey);
-    try {
-      return await this.withMaintenance(async () => {
-        const matches = () => [...this.active.values()].filter(({ invocation }) =>
-          invocation.userId === parsed.userId
-          && invocation.characterId === parsed.characterId);
-        for (const active of matches()) active.cancel("user");
-        while (matches().length > 0) await new Promise((resolve) => setTimeout(resolve, 10));
-        const marker = {
-          checksum: parsed.checksum,
-          entries: parsed.entries.length,
-          legacySourceChecksum: parsed.legacySourceChecksum,
-          igrepVersion: this.options.legacyImporter!.version,
-          probeSetChecksum: legacyRecallProbeSetChecksum(parsed),
-        };
-        const imported = await this.options.workspaces.importLegacyMemory(
-          parsed,
-          marker,
-          async (workspace) => {
-            const result = await this.options.legacyImporter!.import(workspace, parsed, signal);
-            if (signal?.aborted) {
-              throw signal.reason instanceof Error
-                ? signal.reason
-                : new Error("legacy memory import aborted");
-            }
-            return result;
-          },
-          signal,
-        );
-        if (imported.skipped) {
-          const proof = companionMemoryCutoverSidecarProofSchema.parse({
-            ...imported.marker,
-            cutoverWorkspaceVersion: imported.marker.workspaceVersion,
-            workspaceVersion: imported.marker.workspaceVersion,
-          });
-          return {
-            ...proof,
-            skipped: true,
-            written: 0,
-          };
-        }
-        if (imported.result.igrepVersion !== marker.igrepVersion) {
-          throw new Error("igrep legacy memory import version drifted");
-        }
-        const proof = companionMemoryCutoverSidecarProofSchema.parse({
-          ...imported.marker,
-          entries: imported.result.entries,
-          checksum: parsed.checksum,
-          legacySourceChecksum: parsed.legacySourceChecksum,
-          igrepVersion: imported.result.igrepVersion,
-          cutoverWorkspaceVersion: imported.marker.workspaceVersion,
-          workspaceVersion: imported.marker.workspaceVersion,
-        });
-        return {
-          ...proof,
-          skipped: false,
-          written: imported.result.written,
-        };
-      });
-    } finally {
-      this.removeFence(this.purgingRelationships, relationshipKey);
-    }
-  }
-
   async memoryCutoverProof(input: {
     userId: string;
     characterId: string;
@@ -920,7 +805,6 @@ export class CompanionEngine implements InvocationService {
     }
     return this.options.workspaces.memoryCutoverProof(input);
   }
-
   private isPurging(invocation: CompanionInvocation): boolean {
     return this.hasFence(this.purgingUsers, invocation.userId)
       || this.hasFence(

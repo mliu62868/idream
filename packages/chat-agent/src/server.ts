@@ -2,12 +2,10 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import {
   companionReadinessSchema,
-  companionLegacyMemoryImportSchema,
   companionRuntimeRequestSchema,
   companionWorkspaceRebuildSchema,
   encodeCompanionNdjsonFrame,
   type CompanionInvocation,
-  type CompanionLegacyMemoryImport,
   type CompanionMemoryCutoverSidecarProof,
   type CompanionReadiness,
   type CompanionRuntimeRequest,
@@ -18,7 +16,6 @@ import type { WorkspacePurgeRequest } from "./workspace";
 
 const MAX_CONTROL_BODY_BYTES = 1_048_576;
 const MAX_REBUILD_BODY_BYTES = 16 * 1_048_576;
-const MAX_LEGACY_IMPORT_MS = 300_000;
 
 type ControlFrame = Exclude<CompanionRuntimeRequest, { type: "run" }>;
 
@@ -30,12 +27,6 @@ export interface InvocationService {
   accept(frame: ControlFrame): Promise<void>;
   purge(request: WorkspacePurgeRequest): Promise<number>;
   rebuild(request: CompanionWorkspaceRebuild): Promise<{ sessions: number; messages: number }>;
-  importLegacyMemory(request: CompanionLegacyMemoryImport, signal?: AbortSignal): Promise<
-    CompanionMemoryCutoverSidecarProof & {
-      skipped: boolean;
-      written: number;
-    }
-  >;
   memoryCutoverProof(request: {
     userId: string;
     characterId: string;
@@ -140,7 +131,6 @@ function relationshipRequest(value: unknown): {
 export function createCompanionServer(options: CompanionServerOptions): CompanionServer {
   if (!options.authToken) throw new Error("companion auth token is required");
   const expectedDigest = tokenDigest(options.authToken);
-  const activeLegacyImports = new Set<AbortController>();
   let closing = false;
 
   const http = createServer(async (request, response) => {
@@ -235,36 +225,6 @@ export function createCompanionServer(options: CompanionServerOptions): Companio
         return;
       }
 
-      if (request.method === "POST" && url.pathname === "/v1/workspaces/import-legacy-memory") {
-        if (closing) {
-          failure(response, 503, "shutting_down", new Error("sidecar is shutting down"));
-          return;
-        }
-        const input = companionLegacyMemoryImportSchema.parse(
-          await readJson(request, MAX_REBUILD_BODY_BYTES),
-        );
-        const abort = new AbortController();
-        activeLegacyImports.add(abort);
-        const timeout = setTimeout(
-          () => abort.abort(new Error("legacy memory import exceeded 300000ms")),
-          MAX_LEGACY_IMPORT_MS,
-        );
-        const disconnect = () => abort.abort(new Error("legacy memory import client disconnected"));
-        request.once("aborted", disconnect);
-        response.once("close", disconnect);
-        let imported: Awaited<ReturnType<InvocationService["importLegacyMemory"]>>;
-        try {
-          imported = await options.invocation.importLegacyMemory(input, abort.signal);
-        } finally {
-          activeLegacyImports.delete(abort);
-          clearTimeout(timeout);
-          request.removeListener("aborted", disconnect);
-          response.removeListener("close", disconnect);
-        }
-        json(response, 200, { ok: true, imported });
-        return;
-      }
-
       if (request.method === "POST" && url.pathname === "/v1/workspaces/memory-cutover-proof") {
         if (closing) {
           failure(response, 503, "shutting_down", new Error("sidecar is shutting down"));
@@ -278,7 +238,6 @@ export function createCompanionServer(options: CompanionServerOptions): Companio
         json(response, 200, { ok: true, proof });
         return;
       }
-
       const route = request.method === "POST" ? controlRoute(url.pathname) : undefined;
       if (route) {
         const frame = companionRuntimeRequestSchema.parse(await readJson(request));
@@ -305,9 +264,6 @@ export function createCompanionServer(options: CompanionServerOptions): Companio
     async close() {
       if (closing) return;
       closing = true;
-      for (const abort of activeLegacyImports) {
-        abort.abort(new Error("sidecar is shutting down"));
-      }
       await options.invocation.shutdown();
       if (!http.listening) return;
       await new Promise<void>((resolve, reject) => {

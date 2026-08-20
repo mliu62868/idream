@@ -443,7 +443,6 @@ const chatSessionSchema = z
     status: nonEmptyString,
     memoryEnabled: z.boolean(),
     lastMessageAt: timestamp.nullable(),
-    memorySummary: z.string().nullable(),
   })
   .passthrough();
 

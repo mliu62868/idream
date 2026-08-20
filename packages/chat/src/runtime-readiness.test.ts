@@ -1,7 +1,13 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
-import { OpenAICompatibleChatModel } from "@idream/shared";
+import {
+  COMPANION_DSH_COMMIT,
+  COMPANION_DSH_VERSION,
+  COMPANION_IGREP_PLUGIN_VERSION,
+  COMPANION_IGREP_VERSION,
+  COMPANION_RUNTIME_PROTOCOL_VERSION,
+} from "@idream/shared/chat/companion-runtime";
 import { ACCOUNT_DELETION_V2_INGEST_PATH } from "@idream/shared/contracts";
 import type { ChatPrismaClient } from "./db.js";
 import type { ChatModel } from "./providers.js";
@@ -15,6 +21,52 @@ import {
   RuntimeReadiness,
   warmRuntime,
 } from "./runtime-readiness.js";
+
+function readySidecar() {
+  return {
+    protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
+    service: "dsh-companion" as const,
+    ready: true as const,
+    checkedAt: "2026-08-20T00:00:00.000Z",
+    dshVersion: COMPANION_DSH_VERSION,
+    dshCommit: COMPANION_DSH_COMMIT,
+    igrepVersion: COMPANION_IGREP_VERSION,
+    pluginVersion: COMPANION_IGREP_PLUGIN_VERSION,
+    instance: {
+      id: "11111111-1111-4111-8111-111111111111",
+      startedAt: "2026-08-19T23:59:00.000Z",
+    },
+    provider: {
+      name: "openai",
+      baseUrl: "http://model/v1",
+      model: "companion-model",
+      resolved: true as const,
+    },
+    profiles: {
+      normal: {
+        name: "normal" as const,
+        loaded: true as const,
+        executionCompositionDigest: "a".repeat(64),
+        capabilities: { memoryRead: true as const, memoryWrite: true as const, tools: true as const, commit: true as const },
+      },
+      private: {
+        name: "private" as const,
+        loaded: true as const,
+        executionCompositionDigest: "b".repeat(64),
+        capabilities: { memoryRead: false as const, memoryWrite: false as const, tools: true as const, commit: true as const },
+      },
+    },
+    bridges: {
+      toolReachable: true as const,
+      commitReachable: true as const,
+      workspaceRebuildReachable: true as const,
+    },
+    verification: {
+      duplicateIngest: { replayedSessions: 1, duplicateDialogueFiles: 0 as const },
+      crossScope: { probes: 2, leakedResults: 0 as const },
+    },
+  };
+}
 
 describe("RuntimeReadiness", () => {
   it("distinguishes liveness, warmup readiness and shutdown admission", () => {
@@ -173,7 +225,6 @@ describe("RuntimeReadiness", () => {
     expect(state.snapshot().components).toEqual({
       provider: { status: "healthy", consecutiveFailures: 0, lastError: null },
       memory: { status: "healthy", consecutiveFailures: 0, lastError: null },
-      shadow: { status: "unknown", consecutiveFailures: 0, lastError: null },
     });
   });
 
@@ -521,7 +572,7 @@ describe("RuntimeReadiness", () => {
     } as unknown as ChatModel;
     const pingRedis = vi.fn();
 
-    await expect(warmRuntime({ prisma, chat, pingRedis, readiness })).rejects.toThrow(
+    await expect(warmRuntime({ prisma, pingRedis, readiness })).rejects.toThrow(
       "messages.scene_version",
     );
 
@@ -568,7 +619,6 @@ describe("RuntimeReadiness", () => {
     await expect(warmRuntime({
       prisma,
       projectorPrisma,
-      chat,
       pingRedis,
       readiness,
     })).rejects.toThrow("chat projector authenticated role is not canonical");
@@ -614,7 +664,6 @@ describe("RuntimeReadiness", () => {
     await expect(warmRuntime({
       prisma,
       projectorPrisma,
-      chat: { stream: vi.fn() } as unknown as ChatModel,
       pingRedis: vi.fn(),
       readiness,
     })).rejects.toThrow("chat request authenticated role is not canonical");
@@ -664,8 +713,6 @@ describe("RuntimeReadiness", () => {
     await expect(warmRuntime({
       prisma,
       projectorPrisma,
-      chat,
-      memoryChat: chat,
       profiles: [{
         adapter: "openai-compatible-v1",
         provider: "openai",
@@ -723,8 +770,6 @@ describe("RuntimeReadiness", () => {
     await expect(warmRuntime({
       prisma,
       projectorPrisma,
-      chat,
-      memoryChat: chat,
       profiles: [{
         adapter: "openai-compatible-v1",
         provider: "openai",
@@ -776,7 +821,6 @@ describe("RuntimeReadiness", () => {
     await expect(warmRuntime({
       prisma,
       projectorPrisma,
-      chat: { stream: vi.fn() } as unknown as ChatModel,
       pingRedis: vi.fn(),
       readiness,
     })).rejects.toThrow("chat projector database capability is not canonical");
@@ -824,7 +868,6 @@ describe("RuntimeReadiness", () => {
     await expect(warmRuntime({
       prisma,
       projectorPrisma,
-      chat,
       pingRedis,
       readiness,
     })).rejects.toThrow("chat projector database authority differs from request database");
@@ -866,7 +909,6 @@ describe("RuntimeReadiness", () => {
     await expect(warmRuntime({
       prisma,
       projectorPrisma,
-      chat: { stream: vi.fn() } as unknown as ChatModel,
       pingRedis: vi.fn(),
       readiness,
     })).rejects.toThrow(credentialError.message);
@@ -904,7 +946,6 @@ describe("RuntimeReadiness", () => {
     try {
       await expect(warmRuntime({
         prisma,
-        chat: { stream: vi.fn() } as unknown as ChatModel,
         pingRedis: vi.fn(),
         readiness,
       })).rejects.toThrow("Missing required env var CHAT_PROJECTOR_PASSWORD");
@@ -978,7 +1019,7 @@ describe("RuntimeReadiness", () => {
     );
   });
 
-  it("warms every distinct model profile with tools and the memory extractor", async () => {
+  it("warms only the verified DSH sidecar and both official igrep profiles", async () => {
     const readiness = new RuntimeReadiness();
     const prisma = {
       $queryRaw: vi
@@ -1006,42 +1047,34 @@ describe("RuntimeReadiness", () => {
         capabilitiesReady: true,
       }]),
     } as unknown as ChatPrismaClient;
-    const calls: Array<Parameters<ChatModel["stream"]>[0]> = [];
-    const chat: ChatModel = {
-      supportsTools: true,
-      async *stream(input) {
-        calls.push(input);
-        yield { delta: "READY", done: false };
-        yield { delta: "", done: true };
-      },
-      complete: vi.fn().mockResolvedValue({ content: "{}" }),
-    };
+    const probeSidecar = vi.fn().mockResolvedValue(readySidecar());
     await warmRuntime({
       prisma,
       projectorPrisma,
-      chat,
-      memoryChat: chat,
       pingRedis: vi.fn().mockResolvedValue(undefined),
       readiness,
+      probeSidecar,
       profiles: [
-        { adapter: "openai-compatible-v1", provider: "openai", baseUrl: "http://model/v1", model: "free-model", apiKey: "", maxOutputTokens: 100, firstTokenTimeoutMs: 100, idleTimeoutMs: 100, completionTimeoutMs: 100, supportsTools: true },
-        { adapter: "openai-compatible-v1", provider: "openai", baseUrl: "http://model/v1", model: "premium-model", apiKey: "", maxOutputTokens: 100, firstTokenTimeoutMs: 100, idleTimeoutMs: 100, completionTimeoutMs: 100, supportsTools: true },
-        { adapter: "openai-compatible-v1", provider: "openai", baseUrl: "http://model/v1", model: "premium-model", apiKey: "", maxOutputTokens: 100, firstTokenTimeoutMs: 100, idleTimeoutMs: 100, completionTimeoutMs: 100, supportsTools: true },
+        { adapter: "openai-compatible-v1", provider: "openai", baseUrl: "http://model/v1", model: "companion-model", apiKey: "", maxOutputTokens: 100, firstTokenTimeoutMs: 100, idleTimeoutMs: 100, completionTimeoutMs: 100, supportsTools: true },
       ],
     });
-    expect(calls.map((call) => call.model)).toEqual(["free-model", "premium-model"]);
-    expect(calls.every((call) => (call.tools?.length ?? 0) === 1)).toBe(true);
-    expect(chat.complete).toHaveBeenCalledOnce();
+    expect(probeSidecar).toHaveBeenCalledWith(expect.objectContaining({
+      expectedProvider: "openai",
+      expectedModel: "companion-model",
+      full: true,
+    }));
     expect(readiness.snapshot()).toMatchObject({
       ready: true,
       warmedProfiles: expect.arrayContaining([
-        "chat:openai:free-model",
-        "chat:openai:premium-model",
+        `dsh:${COMPANION_DSH_VERSION}:${COMPANION_DSH_COMMIT}`,
+        `igrep:${COMPANION_IGREP_VERSION}:${COMPANION_IGREP_PLUGIN_VERSION}`,
+        `composition:normal:${"a".repeat(64)}`,
+        `composition:private:${"b".repeat(64)}`,
       ]),
     });
   });
 
-  it("keeps /readyz ready when a real memory model needs more than 16 output tokens to finish its warm-up", async () => {
+  it("rejects non-tool-capable profiles before probing DSH", async () => {
     const readiness = new RuntimeReadiness();
     const prisma = {
       $queryRaw: vi
@@ -1069,13 +1102,6 @@ describe("RuntimeReadiness", () => {
         capabilitiesReady: true,
       }]),
     } as unknown as ChatPrismaClient;
-    const chat: ChatModel = {
-      async *stream() {
-        yield { delta: "READY", done: false };
-        yield { delta: "", done: true };
-      },
-      complete: vi.fn(),
-    };
     const profile = {
       adapter: "openai-compatible-v1" as const,
       provider: "pipeline" as const,
@@ -1088,48 +1114,17 @@ describe("RuntimeReadiness", () => {
       completionTimeoutMs: 100,
       supportsTools: false,
     };
-    const completionBodies: Array<Record<string, unknown>> = [];
-    const memoryChat = new OpenAICompatibleChatModel(
-      profile,
-      vi.fn(async (_input, init) => {
-        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-        completionBodies.push(body);
-        const outputLimitReached = Number(body.max_tokens) <= 16;
-        return Response.json({
-          choices: [{
-            finish_reason: outputLimitReached ? "length" : "stop",
-            message: { content: outputLimitReached ? "{" : "{}" },
-          }],
-        });
-      }),
-    );
-
-    await warmRuntime({
+    const probeSidecar = vi.fn();
+    await expect(warmRuntime({
       prisma,
       projectorPrisma,
-      chat,
-      memoryChat,
       pingRedis: vi.fn().mockResolvedValue(undefined),
       readiness,
       profiles: [profile],
-    });
-
-    expect(completionBodies).toEqual([expect.objectContaining({
-      max_tokens: 64,
-      stream: false,
-      chat_template_kwargs: { enable_thinking: false },
-      messages: [
-        { role: "system", content: "Reply with exactly {} and nothing else." },
-        { role: "user", content: "{}" },
-      ],
-    })]);
-    const readyz = await dispatchRequest(createChatServer(readiness), "/readyz");
-    expect(readyz.status).toBe(200);
-    expect(JSON.parse(readyz.body)).toMatchObject({
-      live: true,
-      ready: true,
-      lastError: null,
-    });
+      probeSidecar,
+    })).rejects.toThrow("one tool-capable provider profile");
+    expect(probeSidecar).not.toHaveBeenCalled();
+    expect(readiness.snapshot().ready).toBe(false);
   });
 });
 

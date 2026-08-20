@@ -629,23 +629,11 @@ describe("reconcile (P0-4 convergence)", () => {
     const address = sidecar.address();
     if (!address || typeof address === "string") throw new Error("missing sidecar address");
     const prior = {
-      runtime: process.env.CHAT_COMPANION_RUNTIME,
-      backend: process.env.CHAT_MEMORY_BACKEND,
       token: process.env.DSH_AGENT_TOKEN,
       url: process.env.DSH_AGENT_URL,
-      rolloutSalt: process.env.CHAT_COMPANION_DSH_ROLLOUT_SALT,
-      rolloutBps: process.env.CHAT_COMPANION_DSH_ROLLOUT_BPS,
-      rolloutAllowlist: process.env.CHAT_COMPANION_DSH_ROLLOUT_ALLOWLIST,
-      shadow: process.env.CHAT_COMPANION_DSH_SHADOW_ENABLED,
     };
-    process.env.CHAT_COMPANION_RUNTIME = "native";
-    process.env.CHAT_MEMORY_BACKEND = "legacy";
     process.env.DSH_AGENT_TOKEN = "repair-token";
     process.env.DSH_AGENT_URL = `http://127.0.0.1:${address.port}`;
-    delete process.env.CHAT_COMPANION_DSH_ROLLOUT_SALT;
-    process.env.CHAT_COMPANION_DSH_ROLLOUT_BPS = "0";
-    delete process.env.CHAT_COMPANION_DSH_ROLLOUT_ALLOWLIST;
-    process.env.CHAT_COMPANION_DSH_SHADOW_ENABLED = "false";
     try {
       const result = await reconcile(
         prisma,
@@ -659,14 +647,8 @@ describe("reconcile (P0-4 convergence)", () => {
     } finally {
       await new Promise<void>((resolve, reject) => sidecar.close((error) =>
         error ? reject(error) : resolve()));
-      restoreEnv("CHAT_COMPANION_RUNTIME", prior.runtime);
-      restoreEnv("CHAT_MEMORY_BACKEND", prior.backend);
       restoreEnv("DSH_AGENT_TOKEN", prior.token);
       restoreEnv("DSH_AGENT_URL", prior.url);
-      restoreEnv("CHAT_COMPANION_DSH_ROLLOUT_SALT", prior.rolloutSalt);
-      restoreEnv("CHAT_COMPANION_DSH_ROLLOUT_BPS", prior.rolloutBps);
-      restoreEnv("CHAT_COMPANION_DSH_ROLLOUT_ALLOWLIST", prior.rolloutAllowlist);
-      restoreEnv("CHAT_COMPANION_DSH_SHADOW_ENABLED", prior.shadow);
     }
 
     expect(received).toEqual({
@@ -966,15 +948,9 @@ describe("reconcile (P0-4 convergence)", () => {
     const poisonUser = "rel_poison_file_user";
     const healthyUser = "rel_healthy_file_user";
     const poisonPayload = JSON.stringify({
-      kind: "memory_extract",
-      sessionId: "missing_session",
-      userMessageId: "missing_user",
-      characterId: CHAR,
-      turnKey: "missing_assistant",
-      attempt: 1,
-      summaryDelta: "must never project",
-      candidates: [],
-      maxStored: 0,
+      kind: "relationship_set",
+      characterId: "",
+      state: "invalid",
     });
     await prisma.$executeRaw`
       INSERT INTO chat.chat_file_mutations (
@@ -986,13 +962,13 @@ describe("reconcile (P0-4 convergence)", () => {
       VALUES (
         'rel_poison_file_intent',
         ${poisonUser},
-        'memory_extract',
+        'relationship_set',
         ${poisonPayload}::jsonb
       )
     `;
     const healthyPayload = JSON.stringify({
-      kind: "memory_delete",
-      memoryId: "already_absent",
+      kind: "relationship_delete",
+      characterId: CHAR,
     });
     await prisma.$executeRaw`
       INSERT INTO chat.chat_file_mutations (
@@ -1004,7 +980,7 @@ describe("reconcile (P0-4 convergence)", () => {
       VALUES (
         'rel_healthy_file_intent',
         ${healthyUser},
-        'memory_delete',
+        'relationship_delete',
         ${healthyPayload}::jsonb
       )
     `;

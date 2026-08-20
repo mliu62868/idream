@@ -116,42 +116,13 @@ export function companionMemoryProjectionTimeoutMs(): number {
   return config.sidecarToken ? config.deadlineMs + 30_000 : 30_000;
 }
 
-/**
- * A privacy intent must remember file-sidecar authority before PG rows vanish.
- * Runtime routing may already be native when the later projector replays it.
- */
+/** Phase 6 has one persistent companion workspace authority. */
 export async function companionWorkspaceCleanupRequired(
-  tx: Prisma.TransactionClient,
-  userId: string,
-  characterId?: string,
+  _tx: Prisma.TransactionClient,
+  _userId: string,
+  _characterId?: string,
 ): Promise<boolean> {
-  if (env.COMPANION_RUNTIME_CONFIG.sidecarToken) return true;
-  const rows = await tx.$queryRaw<Array<{ required: boolean }>>`
-    SELECT EXISTS (
-      SELECT 1
-      FROM chat.messages message
-      JOIN chat.chat_sessions session ON session.id = message.session_id
-      WHERE session.user_id = ${userId}
-        AND (${characterId ?? null}::text IS NULL OR session.character_id = ${characterId ?? null})
-        AND (
-          message.runtime_trace #>> '{companionRuntime,runtime}' = 'dsh'
-          OR message.runtime_trace #>> '{companionWorkspace,cleanupRequired}' = 'true'
-          OR message.runtime_trace ? 'shadowComparison'
-        )
-      UNION ALL
-      SELECT 1
-      FROM chat.chat_file_mutations mutation
-      WHERE mutation.user_id = ${userId}
-        AND mutation.status = 'pending'
-        AND mutation.payload #>> '{companionCleanupRequired}' = 'true'
-        AND (
-          ${characterId ?? null}::text IS NULL
-          OR mutation.payload #>> '{characterId}' = ${characterId ?? null}
-        )
-      LIMIT 1
-    ) AS required
-  `;
-  return rows[0]?.required === true;
+  return true;
 }
 
 export async function applyCompanionMemoryProjection(
@@ -160,22 +131,9 @@ export async function applyCompanionMemoryProjection(
   mutation: CompanionProjectionMutation,
   port?: CompanionMemoryProjectionPort,
 ): Promise<void> {
-  // INVARIANT: cleanup authority outlives routing authority. During rollback,
-  // retained DSH credentials keep privacy intents projected even though new
-  // turns already use the native runtime.
   let activePort = port;
   if (!activePort) {
     const config = env.COMPANION_RUNTIME_CONFIG;
-    const required = mutation.companionCleanupRequired
-      ?? await companionWorkspaceCleanupRequired(
-        tx,
-        userId,
-        mutation.kind === "account_delete" ? undefined : mutation.characterId,
-      );
-    if (!required) return;
-    if (!config.sidecarToken) {
-      throw new Error("DSH workspace cleanup is required but unavailable");
-    }
     activePort = {
       rebuild: (request: CompanionWorkspaceRebuild) => rebuildCompanionWorkspace({
         baseUrl: config.sidecarUrl,

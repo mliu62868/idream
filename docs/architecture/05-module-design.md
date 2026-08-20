@@ -52,7 +52,7 @@
 
 ## 4. chat
 
-**职责**：Chat Service（**独立服务 `packages/chat`**，独立 Postgres schema/视图）拥有聊天域完整能力：会话与消息、消息版本、上下文记忆、关系状态、聊天额度、输入/输出审核、重生成、历史、SSE/stream replay、chat outbox。主站经 `server/bff/chat-proxy` 签名 + 反向代理（`dispatchV1` 里 `chat`/`messages` resource → `proxyChatRequest`）。
+**职责**：Chat Service（**独立服务 `packages/chat`**，独立 Postgres schema/视图）拥有聊天产品权威：会话与消息、消息版本、Soul/PreparedTurn、Scene/relationship/boundaries、DSH workspace scope、聊天额度、输入/输出审核、重生成、历史、SSE/stream replay、chat outbox。每一轮只进入 DSH AgentLoop；官方 igrep plugin 在 sidecar workspace 内拥有通用记忆 lifecycle。主站经 `server/bff/chat-proxy` 签名 + 反向代理（`dispatchV1` 里 `chat`/`messages` resource → `proxyChatRequest`）。
 
 **主站关系**：
 - 主站拥有 `users`、`characters/girlfriends`、billing entitlement、age eligibility 的权威状态。
@@ -63,13 +63,13 @@
 **关键流程**（详见 01 §4.2、06 §7、`docs/product/CHAT_SERVICE_PRD.md`）：
 - `POST /chat/sessions`：Chat 根据 userId + characterId 找或建 active session；从主站只读 view 断言用户 active、年龄/身份符合、角色可读且未下架。
 - `POST /chat/sessions/:id/messages`：Chat 校验 owner、entitlement/usage、角色状态、输入审核 → 事务落 user message + assistant placeholder → 入 Chat 内部 `chat.generate` → 返回 `assistantMessageId + streamUrl`。
-- Chat worker：拼 prompt（character persona + relationship + memorySummary + long-term memories + 最近 N 条）→ 调 `ChatModel`（流式）→ Redis Stream/SSE → 输出审核 → 事务落 assistant `Message` + `MessageVersion(selected)` → 更新 `lastMessageAt`、`chat_usage`、`memorySummary`、`companion_memories`、`relationship_states`、`chat_outbox_events`。
+- Chat worker：冻结 PreparedTurn（released Soul + recent messages + Scene/relationship/boundaries + released knowledge + entitlement + workspace scope）→ DSH AgentLoop（official igrep wake/search）→ Redis Stream/SSE → 输出审核 → 事务落 assistant `Message` + `MessageVersion(selected)`、`chat_usage`、moderation/outbox；terminal commit ACK 后才允许 official plugin ingest。
 - `POST /messages/:id/regenerate`：新增 `MessageVersion`，**不改审计历史**。
-- 删除会话 = 软删 `status=deleted`；删除消息/记忆后必须从后续 context 与 runtime index 中移除。
+- 删除会话 = 软删 `status=deleted`；产品不暴露 memory item API，只支持 memory on/off 与 whole-relationship reset，后者同时清除 relationship 投影并 purge DSH workspace。
 
 **不变量**：被审核拦截的消息返回安全错误但**保留会话**；user/assistant 内容都产生 chat moderation trace；额度由 Chat 服务端结合主站 entitlement view 判定；Chat outbox 事件按 event id 幂等消费。
 
-**记忆策略**：滑动窗口 + 滚动摘要 + 长期记忆 + relationship state。Deluxe 3x memory = 更大窗口/更长摘要/更多 memory retrieval，由 entitlement view 配置。
+**记忆策略**：recent-message window 与 Chat-owned Scene/relationship/boundaries 进入 PreparedTurn；通用记忆仅由 official igrep 管理。历史 `memorySummary` 不再读写，entitlement 不映射为自研 memory cap/top-K。
 
 ---
 

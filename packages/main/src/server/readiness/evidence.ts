@@ -463,7 +463,6 @@ export interface ChatServiceProbeEvidence {
   characterSource?: string | null;
   usedSignedBff?: boolean;
   expectedCompanionRuntime?: string | null;
-  expectedCompanionShadow?: string | null;
   loadError?: string;
   health?: {
     ok?: boolean;
@@ -511,7 +510,6 @@ export interface ChatServiceProbeEvidence {
       assistantStatus?: string | null;
       derivationSettled?: boolean;
       dsh?: ChatProbeDshEvidence | null;
-      shadow?: ChatProbeDshShadowEvidence | null;
       error?: string | null;
     } | null;
     regenerateAnchor?: {
@@ -526,8 +524,6 @@ export interface ChatServiceProbeEvidence {
       regeneratedSceneVersion?: number | null;
       futureDsh?: ChatProbeDshEvidence | null;
       regeneratedDsh?: ChatProbeDshEvidence | null;
-      futureShadow?: ChatProbeDshShadowEvidence | null;
-      regeneratedShadow?: ChatProbeDshShadowEvidence | null;
       error?: string | null;
     } | null;
     noMemory?: {
@@ -536,9 +532,7 @@ export interface ChatServiceProbeEvidence {
       assistantMessageId?: string;
       authorityPinned?: boolean;
       relationshipUnchanged?: boolean;
-      memorySourceAbsent?: boolean;
       dsh?: ChatProbeDshEvidence | null;
-      shadow?: ChatProbeDshShadowEvidence | null;
       error?: string | null;
     } | null;
     blockedInput?: {
@@ -559,8 +553,6 @@ export interface ChatServiceProbeEvidence {
     cleanup?: {
       ok?: boolean;
       status?: number;
-      memoryGone?: boolean;
-      memoriesDeleted?: number;
       relationshipDeleted?: boolean;
       relationshipsDeleted?: number;
       relationshipsGone?: boolean;
@@ -581,26 +573,6 @@ export interface ChatProbeOperationEvidence {
 
 export type ChatProbeDshEvidence = Partial<CompanionProbeDshEvidence>;
 
-export interface ChatProbeDshShadowEvidence {
-  ok?: boolean;
-  status?: string;
-  primaryRuntime?: string;
-  profileVerified?: boolean;
-  primaryProvider?: string;
-  primaryModel?: string;
-  shadowProvider?: string;
-  shadowModel?: string;
-  shadowFinishReason?: string;
-  shadowToolCalls?: number;
-  shadowDryRunToolCalls?: number;
-  shadowSteps?: number;
-  workspaceClass?: string;
-  promotionAttempted?: boolean;
-  commitRejected?: boolean;
-  privateSkipped?: boolean;
-  error?: string | null;
-}
-
 const chatProbeOperationShape = {
   ok: flag,
   status: optionalCount,
@@ -613,7 +585,6 @@ const chatProbeDshEvidenceShape = {
   memoryBackend: optionalText,
   profile: optionalText,
   private: flag,
-  assignmentReason: optionalText,
   primaryRuntime: optionalText,
   terminalStatus: optionalText,
   sseTerminal: optionalText,
@@ -631,26 +602,6 @@ const chatProbeDshEvidenceShape = {
   error: nullableText,
 };
 
-const chatProbeDshShadowEvidenceShape = {
-  ok: flag,
-  status: optionalText,
-  primaryRuntime: optionalText,
-  profileVerified: flag,
-  primaryProvider: optionalText,
-  primaryModel: optionalText,
-  shadowProvider: optionalText,
-  shadowModel: optionalText,
-  shadowFinishReason: optionalText,
-  shadowToolCalls: optionalCount,
-  shadowDryRunToolCalls: optionalCount,
-  shadowSteps: optionalCount,
-  workspaceClass: optionalText,
-  promotionAttempted: flag,
-  commitRejected: flag,
-  privateSkipped: flag,
-  error: nullableText,
-};
-
 const chatServiceProbeEvidenceSchema: z.ZodType<ChatServiceProbeEvidence> = z.object({
   ok: flag,
   checkedAt: nullableText,
@@ -663,7 +614,6 @@ const chatServiceProbeEvidenceSchema: z.ZodType<ChatServiceProbeEvidence> = z.ob
   characterSource: nullableText,
   usedSignedBff: flag,
   expectedCompanionRuntime: nullableText,
-  expectedCompanionShadow: nullableText,
   health: nullableObject({
     ok: flag,
     status: optionalCount,
@@ -707,7 +657,6 @@ const chatServiceProbeEvidenceSchema: z.ZodType<ChatServiceProbeEvidence> = z.ob
       assistantStatus: nullableText,
       derivationSettled: flag,
       dsh: nullableObject(chatProbeDshEvidenceShape),
-      shadow: nullableObject(chatProbeDshShadowEvidenceShape),
     }),
     regenerateAnchor: nullableObject({
       ...chatProbeOperationShape,
@@ -720,17 +669,13 @@ const chatServiceProbeEvidenceSchema: z.ZodType<ChatServiceProbeEvidence> = z.ob
       regeneratedSceneVersion: optionalCount,
       futureDsh: nullableObject(chatProbeDshEvidenceShape),
       regeneratedDsh: nullableObject(chatProbeDshEvidenceShape),
-      futureShadow: nullableObject(chatProbeDshShadowEvidenceShape),
-      regeneratedShadow: nullableObject(chatProbeDshShadowEvidenceShape),
     }),
     noMemory: nullableObject({
       ...chatProbeOperationShape,
       assistantMessageId: optionalText,
       authorityPinned: flag,
       relationshipUnchanged: flag,
-      memorySourceAbsent: flag,
       dsh: nullableObject(chatProbeDshEvidenceShape),
-      shadow: nullableObject(chatProbeDshShadowEvidenceShape),
     }),
     blockedInput: nullableObject({ ...chatProbeOperationShape, status_: nullableText }),
     rolloutEvidence: nullableObject({
@@ -741,8 +686,6 @@ const chatServiceProbeEvidenceSchema: z.ZodType<ChatServiceProbeEvidence> = z.ob
     cleanup: nullableObject({
       ...chatProbeOperationShape,
       relationshipDeleted: flag,
-      memoryGone: flag,
-      memoriesDeleted: optionalCount,
       relationshipsDeleted: optionalCount,
       relationshipsGone: flag,
       sessionDeleted: flag,

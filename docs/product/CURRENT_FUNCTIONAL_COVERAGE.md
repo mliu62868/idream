@@ -10,10 +10,11 @@
 
 ## 2026-08-20 ADR-19 DSH companion runtime 迁移状态
 
-- **当前结论是迁移中，不是 Phase 6 完成**：Phase 5 已补齐 relationship-scoped legacy importer、`maintain --rebuild`、strict doctor、recall parity、workspace 外 marker、Chat cutover fact、正常 DSH attempt 前的 checksum/workspace lineage 准入，以及默认只读的 `memory:cutover-audit` 全量审计入口。确定没有 legacy row 的新 relationship 通过同一 importer 建立可审计 empty proof；存在任一 legacy row（即使全部被 eligibility 排除）都必须先经 operator 明确导入/空导入，不能靠文件不存在猜测。
-- **源码门禁是 fail closed**：新的 normal DSH attempt 只有在当前 legacy-source checksum、eligible import checksum、exact igrep `0.1.132`、完整 recall parity、cutover workspace version 与 sidecar 当前 lineage 一致时才原子 claim；重试复用同一 durable proof。proof 失败时不会进入 DSH 或静默回退 native。`memory:cutover-audit` 只输出脱敏 identity hash、counts/exclusions/checksums/proof status，任一未 ready 返回非零。
-- **证据边界**：本轮只完成仓库实现与自动化验证，没有在此记录中执行真实数据库 batch audit、逐 relationship apply、100% controlled-beta cutover、Gate R 观察窗或 rollback window，因此不能声称 memory 数据已全量迁完。Phase 6 仍由这些真实证据阻断。
-- **产品 blocker**：当前 Chat `/memories` API 与 Main `MemoryPanel` 仍直接 list/edit/delete legacy `mem/*.md`；igrep 集成还没有稳定的产品级 item list/update/delete public seam。删除 legacy retrieval/extraction/projection 前，必须把该表面迁到 official igrep/Chat canonical rebuild，或明确收口为 relationship reset。否则会保留第二权威或出现空面板。native loop、legacy env、shadow job 与 legacy 文件路径现阶段均保留，不能标成已删除。
+- **仓库运行时已收口为单一 DSH + official igrep authority**：Chat 在 attempt 开始前固定 normal/private profile，并只调用必需的 `chat-agent` sidecar；native Agent loop、Shadow executor/job/flags、rollout/native/legacy env、自研 memory retrieval/extraction/cap/projection/read/write 以及 importer 已删除，没有 fallback 副本。
+- **Gate C 读取实际 execution composition**：engine 应用的 programmatic manifest/digest 是真值；installer profile 物化 `dsh-base` 只算 provenance。实际 manifest 对 shell、fs/filesystem、subagent、goal、scheduler fail closed。Gate T 的 tool reservation、error、timeout、unknown-outcome 和 terminal commit 语义继续保留。
+- **产品 memory 表面已按 official seam 收口**：`/memories` item API 和 Main 的逐条 list/edit/delete UI 已删除。用户只保留 memory on/off 与 whole relationship reset；reset 删除 relationship workspace 和历史 cutover marker。normal 新关系直接初始化空 igrep workspace，既有 canonical workspace 复用；private turn 使用一次性 workspace，不落 canonical memory。
+- **迁移证据保留但不再参与 admission**：Phase 5 最终审计为 4 个 relationship、ready 4、blocked 0，其中非空关系 recall parity 已通过；历史 attempt 的 content-free `cutover_ready` proof 与 sidecar marker 保留为只读 `memory:cutover-audit` seam。全新 Phase 6 relationship 合法地没有迁移 proof，运行时绝不再读 `memory.md` 或在线 import。
+- **发布证据边界**：受控本地已完成 100% DSH、sidecar crash、rollback/restore rehearsal，并保留 Gate R 的 pre-cleanup native/DSH 窗口。`releaseDecision:not_evaluated` 仍明确不是放行决定；这些证据不等于 public-production Go，公开上线仍由生产环境、正式阈值/观察窗和完整 launch gate 决定。
 
 ## 2026-08-15–16 后台运营台可用性重构（表现层，全站视觉未经浏览器复验）
 

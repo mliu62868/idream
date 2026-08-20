@@ -15,7 +15,6 @@ import {
   createChatProjectorPrisma,
 } from "../src/db.js";
 import { processMemoryExtract } from "../src/memory.js";
-import { listMemories } from "../src/memories.js";
 import {
   getRelationshipState,
   relationshipTurnSummary,
@@ -119,7 +118,6 @@ function extractPayload(turn: Turn) {
 }
 
 async function expectNoDerivedState(userId: string, contentNeedle: string) {
-  expect(await listMemories(userId, CHAR)).toEqual([]);
   const relationship = await getRelationshipState(userId, CHAR);
   expect(relationship.signals.turns).toBe(0);
   expect(relationship.summary).not.toContain(contentNeedle);
@@ -203,7 +201,6 @@ describe("memory extraction turn authority", () => {
           eventType: {
             in: [
               "chat.relationship.updated",
-              "chat.memory.updated",
             ],
           },
           payload: { path: ["userId"], equals: USERS.edit },
@@ -295,7 +292,6 @@ describe("memory extraction turn authority", () => {
           eventType: {
             in: [
               "chat.relationship.updated",
-              "chat.memory.updated",
             ],
           },
           payload: { path: ["userId"], equals: USERS.delete },
@@ -313,11 +309,9 @@ describe("memory extraction turn authority", () => {
     await expect(
       processMemoryExtract(extractPayload(turn), prisma),
     ).resolves.toMatchObject({ skipped: null });
-    expect(await listMemories(USERS.cleanup, CHAR)).not.toEqual([]);
     const relationship = await getRelationshipState(USERS.cleanup, CHAR);
     expect(relationship.signals.turns).toBe(1);
-    // Relationship state is a qualitative projection; raw user secrets stay
-    // only in source-linked memory/evidence authority and never in its summary.
+    // Relationship state is qualitative; raw user secrets never enter its summary.
     expect(relationship.summary).toContain("self-disclosure");
     expect(relationship.summary).not.toContain("CleanupSecret");
 
@@ -453,12 +447,6 @@ describe("legacy linkage and context privacy fences", () => {
       "context_fence",
       "PrivateOldContext must never be revived",
     );
-    await prisma.chatSession.update({
-      where: { id: older.sessionId },
-      data: {
-        memorySummary: "PrivateOldContext summary",
-      },
-    });
     const currentUserMessageId = "memory_race_context_current_user";
     const currentAssistantMessageId =
       "memory_race_context_current_assistant";
@@ -515,12 +503,6 @@ describe("legacy linkage and context privacy fences", () => {
         select: { status: true, content: true },
       }),
     ).toEqual({ status: "failed", content: "" });
-    expect(
-      await prisma.chatSession.findUnique({
-        where: { id: older.sessionId },
-        select: { memorySummary: true },
-      }),
-    ).toEqual({ memorySummary: null });
     const payloads = await prisma.chatFileMutation.findMany({
       where: { userId: USERS.context },
       select: { payload: true },

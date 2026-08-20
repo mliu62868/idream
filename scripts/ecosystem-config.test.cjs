@@ -17,7 +17,6 @@ const {
   productionProcessDefinition,
   productionDefinitionPlan,
   productionVideoWorkerCount,
-  resolveCompanionSidecarEnabled,
   matchesProductionProcessDefinition,
   resolveCurrentPm2Mode,
   runPm2Ecosystem,
@@ -27,18 +26,6 @@ const {
 function loadConfig(mode, overrides = {}) {
   const originalMode = process.env.IDREAM_PM2_MODE;
   const originalVideoProvider = process.env.GEN_VIDEO_PROVIDER;
-  const originalDshAgentEnabled = process.env.DSH_AGENT_ENABLED;
-  const originalChatShadowEnabled =
-    process.env.CHAT_COMPANION_DSH_SHADOW_ENABLED;
-  const projectedChatKeys = [
-    "CHAT_COMPANION_RUNTIME",
-    "CHAT_MEMORY_BACKEND",
-    "CHAT_COMPANION_DSH_ROLLOUT_BPS",
-    "CHAT_COMPANION_DSH_ROLLOUT_SALT",
-  ];
-  const originalProjectedChatEnv = Object.fromEntries(
-    projectedChatKeys.map((key) => [key, process.env[key]]),
-  );
   try {
     if (mode === undefined) {
       delete process.env.IDREAM_PM2_MODE;
@@ -55,27 +42,6 @@ function loadConfig(mode, overrides = {}) {
     } else {
       process.env.GEN_VIDEO_PROVIDER = videoProvider;
     }
-    const dshAgentEnabled = Object.hasOwn(overrides, "DSH_AGENT_ENABLED")
-      ? overrides.DSH_AGENT_ENABLED
-      : originalDshAgentEnabled;
-    if (dshAgentEnabled === undefined) delete process.env.DSH_AGENT_ENABLED;
-    else process.env.DSH_AGENT_ENABLED = dshAgentEnabled;
-    const chatShadowEnabled = Object.hasOwn(
-      overrides,
-      "CHAT_COMPANION_DSH_SHADOW_ENABLED",
-    )
-      ? overrides.CHAT_COMPANION_DSH_SHADOW_ENABLED
-      : originalChatShadowEnabled;
-    if (chatShadowEnabled === undefined) {
-      delete process.env.CHAT_COMPANION_DSH_SHADOW_ENABLED;
-    } else {
-      process.env.CHAT_COMPANION_DSH_SHADOW_ENABLED = chatShadowEnabled;
-    }
-    for (const key of projectedChatKeys) {
-      if (!Object.hasOwn(overrides, key)) continue;
-      if (overrides[key] === undefined) delete process.env[key];
-      else process.env[key] = overrides[key];
-    }
     delete require.cache[require.resolve(configPath)];
     return require(configPath);
   } finally {
@@ -88,21 +54,6 @@ function loadConfig(mode, overrides = {}) {
       delete process.env.GEN_VIDEO_PROVIDER;
     } else {
       process.env.GEN_VIDEO_PROVIDER = originalVideoProvider;
-    }
-    if (originalDshAgentEnabled === undefined) {
-      delete process.env.DSH_AGENT_ENABLED;
-    } else {
-      process.env.DSH_AGENT_ENABLED = originalDshAgentEnabled;
-    }
-    if (originalChatShadowEnabled === undefined) {
-      delete process.env.CHAT_COMPANION_DSH_SHADOW_ENABLED;
-    } else {
-      process.env.CHAT_COMPANION_DSH_SHADOW_ENABLED =
-        originalChatShadowEnabled;
-    }
-    for (const key of projectedChatKeys) {
-      if (originalProjectedChatEnv[key] === undefined) delete process.env[key];
-      else process.env[key] = originalProjectedChatEnv[key];
     }
     delete require.cache[require.resolve(configPath)];
   }
@@ -196,7 +147,7 @@ function onlineProductionProcesses() {
 }
 
 test("development is the source-backed default", () => {
-  const config = loadConfig(undefined, { DSH_AGENT_ENABLED: "0" });
+  const config = loadConfig();
   assert.equal(config.apps.length, 9);
   for (const app of config.apps) {
     assert.equal(app.env.IDREAM_PM2_MODE, "development");
@@ -237,13 +188,10 @@ test("development is the source-backed default", () => {
   ]);
 });
 
-test("the DSH companion sidecar is explicit, single-instance and starts before Chat", () => {
-  const disabled = loadConfig("development", { DSH_AGENT_ENABLED: "0" });
-  assert.equal(disabled.apps.some((app) => app.name === "chat-agent"), false);
-
-  const enabled = loadConfig("development", { DSH_AGENT_ENABLED: "1" });
-  const sidecar = byName(enabled, "chat-agent");
-  const chat = byName(enabled, "chat");
+test("the DSH companion sidecar is required, single-instance and starts before Chat", () => {
+  const config = loadConfig("development");
+  const sidecar = byName(config, "chat-agent");
+  const chat = byName(config, "chat");
   assert.equal(sidecar.cwd, path.join(repoRoot, "packages/chat-agent"));
   assert.equal(sidecar.script, "src/main.ts");
   assert.equal(sidecar.interpreter, process.execPath);
@@ -260,44 +208,68 @@ test("the DSH companion sidecar is explicit, single-instance and starts before C
   assert.match(sidecar.node_args[3], /^file:\/\/.*\/tsx\/dist\/loader\.mjs$/);
   assert.equal(sidecar.instances, 1);
   assert.equal(sidecar.exec_mode, "fork");
-  assert.ok(enabled.apps.indexOf(sidecar) < enabled.apps.indexOf(chat));
+  assert.ok(config.apps.indexOf(sidecar) < config.apps.indexOf(chat));
 });
 
-test("the DSH topology switch uses shell-over-Chat-env authority and rejects drift", () => {
-  assert.equal(resolveCompanionSidecarEnabled(undefined, undefined), false);
-  assert.equal(resolveCompanionSidecarEnabled(undefined, "1"), true);
-  assert.equal(resolveCompanionSidecarEnabled("0", "1"), false);
-  assert.equal(resolveCompanionSidecarEnabled("1", "0"), true);
-  assert.throws(
-    () => resolveCompanionSidecarEnabled(undefined, "true"),
-    /DSH_AGENT_ENABLED.*0 or 1/,
+test("obsolete rollout flags cannot remove the sidecar or enter Chat config", () => {
+  const obsolete = [
+    "DSH_AGENT_ENABLED",
+    "COMPANION_EXECUTION_MODE",
+    "COMPANION_DSH_PERCENT",
+    "COMPANION_SHADOW_ENABLED",
+  ];
+  const originals = new Map(obsolete.map((key) => [key, process.env[key]]));
+  try {
+    for (const key of obsolete) process.env[key] = "0";
+    const config = loadConfig("production");
+    const sidecar = byName(config, "chat-agent");
+    const chat = byName(config, "chat");
+    assert.equal(sidecar.instances, 1);
+    for (const key of obsolete) {
+      assert.equal(Object.hasOwn(sidecar.env, key), false, `sidecar ${key}`);
+      assert.equal(Object.hasOwn(chat.env, key), false, `chat ${key}`);
+    }
+  } finally {
+    for (const [key, value] of originals) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    delete require.cache[require.resolve(configPath)];
+  }
+});
+
+test("production admission drains Chat before the single companion sidecar", () => {
+  assert.equal(
+    productionAdmissionTargets.filter((name) => name === "chat-agent").length,
+    1,
+  );
+  assert.ok(
+    productionAdmissionTargets.indexOf("chat") <
+      productionAdmissionTargets.indexOf("chat-agent"),
   );
 });
 
-test("the gated PM2 wrapper projects the explicit Chat Shadow switch", () => {
-  const enabled = byName(loadConfig("development", {
-    CHAT_COMPANION_DSH_SHADOW_ENABLED: "true",
-  }), "chat");
-  const disabled = byName(loadConfig("development", {
-    CHAT_COMPANION_DSH_SHADOW_ENABLED: "false",
-  }), "chat");
-
-  assert.equal(enabled.env.CHAT_COMPANION_DSH_SHADOW_ENABLED, "true");
-  assert.equal(disabled.env.CHAT_COMPANION_DSH_SHADOW_ENABLED, "false");
-});
-
-test("the gated PM2 wrapper projects the exact Chat companion authority", () => {
-  const chat = byName(loadConfig("development", {
-    CHAT_COMPANION_RUNTIME: "dsh",
-    CHAT_MEMORY_BACKEND: "igrep-dsh",
-    CHAT_COMPANION_DSH_ROLLOUT_BPS: "10000",
-    CHAT_COMPANION_DSH_ROLLOUT_SALT: "controlled-cutover",
-  }), "chat");
-
-  assert.equal(chat.env.CHAT_COMPANION_RUNTIME, "dsh");
-  assert.equal(chat.env.CHAT_MEMORY_BACKEND, "igrep-dsh");
-  assert.equal(chat.env.CHAT_COMPANION_DSH_ROLLOUT_BPS, "10000");
-  assert.equal(chat.env.CHAT_COMPANION_DSH_ROLLOUT_SALT, "controlled-cutover");
+test("production pins the direct sidecar PID definition exactly", () => {
+  const definition = productionProcessDefinition("chat-agent");
+  assert.deepEqual(definition, {
+    cwd: path.join(repoRoot, "packages/chat-agent"),
+    execPath: path.join(repoRoot, "packages/chat-agent/src/main.ts"),
+    args: [],
+    nodeArgs: [
+      "--require",
+      require.resolve(
+        path.join(
+          repoRoot,
+          "packages/chat-agent/node_modules/tsx/dist/preflight.cjs",
+        ),
+      ),
+      "--import",
+      definition.nodeArgs[3],
+    ],
+    execInterpreter: process.execPath,
+    execMode: "fork_mode",
+  });
+  assert.match(definition.nodeArgs[3], /^file:\/\/.*\/tsx\/dist\/loader\.mjs$/);
 });
 
 test("every runtime receives the operator-approved source identity", () => {

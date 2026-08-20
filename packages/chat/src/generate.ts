@@ -12,12 +12,10 @@ import type { Prisma } from "../generated/client/client.js";
 import type { ChatPrismaClient } from "./db.js";
 import { chatPrisma, chatProjectorPrisma } from "./db.js";
 import { providers } from "./providers.js";
-import type { ChatChunk, ChatToolCall, ModelMessage } from "./providers.js";
 import type { BuiltContext } from "./context.js";
 import {
   prepareCompanionTurn,
   preparedTurnRuntime,
-  toDshShadowPreparedTurnWire,
   toPreparedTurnWire,
   type PreparedTurn,
 } from "./prepared-turn.js";
@@ -25,12 +23,10 @@ import { characterAvailableToUser } from "./character-eligibility.js";
 import { appendStreamEvent, streamKey } from "./stream.js";
 import { recordOutbox, scheduleOutboxDelivery } from "./outbox.js";
 import { createId } from "./id.js";
-import { chatFsPaths, withFileMutationLock } from "./chat-fs.js";
 import { enqueue, type ChatJob } from "./queue.js";
 import { logger } from "./logger.js";
 import {
   CHAT_CONTEXT_INVALIDATING_FILE_MUTATIONS,
-  assertNoPendingChatFileMutationsTx,
   projectChatFileMutations,
   withTurnAuthority,
 } from "./file-mutations.js";
@@ -64,33 +60,19 @@ import {
 } from "./companion-runtime-selection.js";
 import { DshCompanionRuntime } from "./companion-runtime.js";
 import { verifiedCompanionProfileDigest } from "./companion-sidecar-readiness.js";
-import { ensureCompanionMemoryCutoverTx } from "./companion-memory-cutover-runtime.js";
-import {
-  companionMemoryCutoverProofSchema,
-  type CompanionMemoryCutoverProof,
-} from "./companion-memory-cutover.js";
-import { lockUser } from "./turn-lock.js";
 import {
   recordCompanionOperationalEvent,
   type CompanionOperationalTelemetry,
 } from "./companion-rollout-telemetry.js";
 import {
-  BoundedShadowExecutor,
-  type ShadowExecutor,
-} from "./companion-shadow-executor.js";
-import {
   COMPANION_DSH_COMMIT,
   COMPANION_DSH_VERSION,
   COMPANION_IGREP_PLUGIN_VERSION,
   COMPANION_IGREP_VERSION,
-  companionShadowComparisonSchema,
   companionToolCallSchema,
   type CompanionCommitAck,
   type CompanionEvent,
   type CompanionInvocation,
-  type CompanionShadowAdmission,
-  type CompanionShadowComparison,
-  type CompanionShadowWorkspaceEvidence,
   type CompanionTerminalCandidate,
   type CompanionToolCall,
   type CompanionToolResult,
@@ -113,32 +95,11 @@ export interface GenerateHooks {
   afterContextBuilt?: (context: BuiltContext) => Promise<void> | void;
   jobAttempt?: Pick<ChatJob, "attemptsMade" | "maxAttempts">;
   projectorPrisma?: ChatPrismaClient;
-  shadowExecutor?: ShadowExecutor;
-}
-
-const dshShadowExecutor = new BoundedShadowExecutor({ concurrency: 2, maxQueued: 16 });
-const detachedShadowPersistence = new Set<Promise<void>>();
-
-/** Waits for accepted shadow runs and queue-saturation evidence writes. */
-export async function drainDshShadowExecutor(): Promise<void> {
-  await dshShadowExecutor.onIdle();
-  while (detachedShadowPersistence.size > 0) {
-    await Promise.allSettled([...detachedShadowPersistence]);
-  }
-}
-
-export function cancelDshShadowExecutor(reason = "cancelled"): void {
-  dshShadowExecutor.cancel(reason);
-}
-
-function trackDetachedShadowPersistence(promise: Promise<void>): void {
-  detachedShadowPersistence.add(promise);
-  void promise.finally(() => detachedShadowPersistence.delete(promise));
 }
 
 interface PrimaryAttemptTelemetry extends CompanionOperationalTelemetry {
   schemaVersion: 1;
-  runtime: "native" | "dsh";
+  runtime: "dsh";
   startedAt: string;
   firstTokenMs?: number;
   totalMs?: number;
@@ -419,13 +380,10 @@ export async function processGenerate(
   const attemptRuntime = pinCompanionRuntimeForAttempt({
     config: companionRuntimeConfig,
     memoryAuthority: turnMemoryEnabled ? "enabled" : "disabled",
-    userId: session.userId,
-    characterId: session.characterId,
     priorPin: priorRuntimeTrace?.companionRuntime,
   });
   const priorRuntimePin = jsonObject(priorRuntimeTrace?.companionRuntime);
-  const dshProfileDigest = attemptRuntime.runtime === "dsh"
-    ? priorRuntimeTrace
+  const dshProfileDigest = priorRuntimeTrace
       ? typeof priorRuntimePin?.profileDigest === "string" &&
           /^[a-f0-9]{64}$/.test(priorRuntimePin.profileDigest)
         ? priorRuntimePin.profileDigest
@@ -435,8 +393,7 @@ export async function processGenerate(
       : verifiedCompanionProfileDigest(
           attemptRuntime.sidecarUrl,
           attemptRuntime.private ? "private" : "normal",
-        )
-    : null;
+        );
   const priorPrimaryTelemetry = jsonObject(priorRuntimeTrace?.primaryTelemetry);
   const priorPrimaryStartedAt =
     priorPrimaryTelemetry?.schemaVersion === 1 &&
@@ -450,90 +407,40 @@ export async function processGenerate(
   const primaryStartedAt = Number.isFinite(priorPrimaryStartedAt)
     ? priorPrimaryStartedAt
     : Date.now();
-  let primaryFirstTokenMs = typeof priorPrimaryTelemetry?.firstTokenMs === "number"
-    && Number.isFinite(priorPrimaryTelemetry.firstTokenMs)
-    && priorPrimaryTelemetry.firstTokenMs >= 0
-    ? priorPrimaryTelemetry.firstTokenMs
-    : undefined;
-  let primarySteps = 0;
   const primaryTelemetryBase: PrimaryAttemptTelemetry = {
     schemaVersion: 1,
     runtime: attemptRuntime.runtime,
     startedAt: new Date(primaryStartedAt).toISOString(),
     retryCount: hooks.jobAttempt?.attemptsMade ?? 0,
   };
-  let memoryCutover: CompanionMemoryCutoverProof | undefined;
-  if (attemptRuntime.runtime === "dsh" && !attemptRuntime.private && priorRuntimeTrace) {
-    memoryCutover = companionMemoryCutoverProofSchema.parse(
-      priorRuntimePin?.memoryCutover,
-    );
-  }
-  let companionRuntimePin = {
+  const companionRuntimePin = {
     runtime: attemptRuntime.runtime,
     memoryBackend: attemptRuntime.memoryBackend,
     profile: attemptRuntime.profile,
     private: attemptRuntime.private,
     sidecarUrl: attemptRuntime.sidecarUrl,
     deadlineMs: attemptRuntime.deadlineMs,
-    assignment: attemptRuntime.assignment,
     ...(dshProfileDigest ? { profileDigest: dshProfileDigest } : {}),
-    ...(memoryCutover ? { memoryCutover } : {}),
   };
-  const companionCleanupRequired = attemptRuntime.runtime === "dsh"
-    || (
-      companionRuntimeConfig.dshShadow.enabled
-      && attemptRuntime.runtime === "native"
-      && turnMemoryEnabled
-    );
-  const buildAdmissionRuntimeTrace = () => JSON.parse(JSON.stringify(
+  const admissionRuntimeTrace = JSON.parse(JSON.stringify(
     priorRuntimeTrace ?? {
       schemaVersion: 1,
       attempt: payload.attempt,
       assistantMessageId: payload.assistantMessageId,
       userMessageId: payload.userMessageId,
       companionRuntime: companionRuntimePin,
-      ...(companionCleanupRequired
-        ? { companionWorkspace: { cleanupRequired: true } }
-        : {}),
+      companionWorkspace: { cleanupRequired: true },
       primaryTelemetry: primaryTelemetryBase,
     },
   )) as Prisma.InputJsonValue;
 
-  const claimed = attemptRuntime.runtime === "dsh"
-      && !attemptRuntime.private
-      && !priorRuntimeTrace
-    ? await withFileMutationLock(
-        chatFsPaths.memory(session.userId, session.characterId),
-        () => prisma.$transaction(async (tx) => {
-          await lockUser(tx, session.userId);
-          await assertNoPendingChatFileMutationsTx(tx, session.userId);
-          memoryCutover = await ensureCompanionMemoryCutoverTx({
-            tx,
-            userId: session.userId,
-            characterId: session.characterId,
-            sidecar: {
-              baseUrl: attemptRuntime.sidecarUrl,
-              token: companionRuntimeConfig.sidecarToken,
-              timeoutMs: attemptRuntime.deadlineMs + 30_000,
-            },
-          });
-          companionRuntimePin = { ...companionRuntimePin, memoryCutover };
-          return claimGenerateAttemptAuthorityTx({
-            tx,
-            payload,
-            runtimeTrace: buildAdmissionRuntimeTrace(),
-            model: assistant.model,
-            expectedMessageStatus: "pending",
-          });
-        }, { timeout: attemptRuntime.deadlineMs + 45_000 }),
-      )
-    : await claimGenerateAttemptAuthority({
-        prisma,
-        payload,
-        runtimeTrace: buildAdmissionRuntimeTrace(),
-        model: assistant.model,
-        expectedMessageStatus: priorRuntimeTrace ? "generating" : "pending",
-      });
+  const claimed = await claimGenerateAttemptAuthority({
+    prisma,
+    payload,
+    runtimeTrace: admissionRuntimeTrace,
+    model: assistant.model,
+    expectedMessageStatus: priorRuntimeTrace ? "generating" : "pending",
+  });
   if (!claimed) return { status: "skipped" };
   let lastHeartbeatAt = Date.now();
   const heartbeat = async (force = false): Promise<void> => {
@@ -560,156 +467,87 @@ export async function processGenerate(
       });
   }, 30_000);
   heartbeatTimer.unref();
-  let cancelUnsettledShadow: (() => void) | null = null;
-
   try {
-  const key = streamKey(payload.assistantMessageId);
-  const prepared = await prepareCompanionTurn({
-    prisma,
-    userId: session.userId,
-    characterId: session.characterId,
-    sessionId: session.id,
-    turnMemoryEnabled,
-    userMessageId: payload.userMessageId,
-    genericMemoryBackend:
-      attemptRuntime.memoryBackend === "igrep-dsh" ? "runtime" : "legacy",
-  });
-  const context = preparedTurnRuntime(prepared);
-  const authoritativeNoMemoryReply = turnMemoryEnabled
-    ? null
-    : noMemoryAuthorityReply(sourceTurn.content);
-  await hooks.afterContextBuilt?.(context);
-  let shadowAdmission: CompanionShadowAdmission | null = null;
-  let shadowCanRun = false;
-  if (companionRuntimeConfig.dshShadow.enabled) {
-    if (attemptRuntime.runtime !== "native") {
-      shadowAdmission = {
-        schemaVersion: 1,
-        status: "skipped_primary_runtime",
-        enqueued: false,
-      };
-    } else if (!turnMemoryEnabled || authoritativeNoMemoryReply) {
-      shadowAdmission = {
-        schemaVersion: 1,
-        status: "skipped_private",
-        enqueued: false,
-      };
-    } else if (!runtimeReadiness.canAdmitShadow(prepared.profile)) {
-      shadowAdmission = {
-        schemaVersion: 1,
-        status: "skipped_readiness",
-        enqueued: false,
-      };
-    } else {
-      shadowCanRun = true;
-    }
-  }
-  const runtimeTraceFacts: Record<string, unknown> = {
-    schemaVersion: 1,
-    attempt: payload.attempt,
-    assistantMessageId: payload.assistantMessageId,
-    userMessageId: payload.userMessageId,
-    profile: prepared.profile,
-    trace: prepared.trace,
-    budget: prepared.budget,
-    companionRuntime: companionRuntimePin,
-    ...(companionCleanupRequired
-      ? { companionWorkspace: { cleanupRequired: true } }
-      : {}),
-    ...(priorRuntimeTrace?.companionTool
-      ? { companionTool: priorRuntimeTrace.companionTool }
-      : {}),
-    ...(attemptRuntime.runtime === "dsh"
-      ? {
-          dsh: {
-            version: COMPANION_DSH_VERSION,
-            commit: COMPANION_DSH_COMMIT,
-            sessionId: `${payload.assistantMessageId}:${payload.attempt}`,
-            igrepVersion: COMPANION_IGREP_VERSION,
-            pluginVersion: COMPANION_IGREP_PLUGIN_VERSION,
-            profileDigest: dshProfileDigest,
-            workspaceKeyHash: digestWorkspaceKey(session.userId, session.characterId),
-            memoryMode: attemptRuntime.private ? "private" : "normal",
-            provider: prepared.profile.provider,
-            model: prepared.profile.model,
-          },
-        }
-      : {}),
-    scene: context.scene,
-    outputAuthority: authoritativeNoMemoryReply
-      ? "no_memory_boundary"
-      : "model",
-    ...(shadowAdmission ? { shadowAdmission } : {}),
-    primaryTelemetry: {
-      ...primaryTelemetryBase,
-      provider: prepared.profile.provider,
-      model: prepared.model,
-    } satisfies PrimaryAttemptTelemetry,
-  };
-  const runtimeTrace = JSON.parse(
-    JSON.stringify(runtimeTraceFacts),
-  ) as Prisma.InputJsonValue;
-  // INVARIANT: every attempt that reaches PreparedTurn records its exact model
-  // and immutable content authority even when file memory is disabled or the
-  // provider later fails before producing a token.
-  const preparedTracePersisted = await persistAttemptRuntimeTraceCas({
-    prisma,
-    payload,
-    expectedMessageStatus: "generating",
-    trace: runtimeTrace,
-    stage: "prepared_turn",
-    versionModel: prepared.model,
-  });
-  if (preparedTracePersisted !== "updated") {
-    throw new Error("prepared turn runtime trace did not persist atomically");
-  }
+    const key = streamKey(payload.assistantMessageId);
+    const prepared = await prepareCompanionTurn({
+      prisma,
+      userId: session.userId,
+      characterId: session.characterId,
+      sessionId: session.id,
+      turnMemoryEnabled,
+      userMessageId: payload.userMessageId,
+    });
+    const context = preparedTurnRuntime(prepared);
+    const authoritativeNoMemoryReply = turnMemoryEnabled
+      ? null
+      : noMemoryAuthorityReply(sourceTurn.content);
+    await hooks.afterContextBuilt?.(context);
 
-  const shadowInput = shadowCanRun
-    ? {
+    const runtimeTraceFacts: Record<string, unknown> = {
+      schemaVersion: 1,
+      attempt: payload.attempt,
+      assistantMessageId: payload.assistantMessageId,
+      userMessageId: payload.userMessageId,
+      profile: prepared.profile,
+      trace: prepared.trace,
+      budget: prepared.budget,
+      companionRuntime: companionRuntimePin,
+      companionWorkspace: { cleanupRequired: true },
+      ...(priorRuntimeTrace?.companionTool
+        ? { companionTool: priorRuntimeTrace.companionTool }
+        : {}),
+      dsh: {
+        version: COMPANION_DSH_VERSION,
+        commit: COMPANION_DSH_COMMIT,
+        sessionId: `${payload.assistantMessageId}:${payload.attempt}`,
+        igrepVersion: COMPANION_IGREP_VERSION,
+        pluginVersion: COMPANION_IGREP_PLUGIN_VERSION,
+        profileDigest: dshProfileDigest,
+        workspaceKeyHash: digestWorkspaceKey(session.userId, session.characterId),
+        memoryMode: attemptRuntime.private ? "private" : "normal",
+        provider: prepared.profile.provider,
+        model: prepared.profile.model,
+      },
+      scene: context.scene,
+      outputAuthority: authoritativeNoMemoryReply ? "no_memory_boundary" : "model",
+      primaryTelemetry: {
+        ...primaryTelemetryBase,
+        provider: prepared.profile.provider,
+        model: prepared.model,
+      } satisfies PrimaryAttemptTelemetry,
+    };
+    const runtimeTrace = JSON.parse(
+      JSON.stringify(runtimeTraceFacts),
+    ) as Prisma.InputJsonValue;
+    const preparedTracePersisted = await persistAttemptRuntimeTraceCas({
+      prisma,
       payload,
-      session,
-      prepared,
-      sidecarUrl: companionRuntimeConfig.sidecarUrl,
-      sidecarToken: companionRuntimeConfig.sidecarToken,
-      profileDigest: verifiedCompanionProfileDigest(
-        companionRuntimeConfig.sidecarUrl,
-        "normal",
-      ),
-      deadlineMs: companionRuntimeConfig.deadlineMs,
-      }
-    : null;
-  const shadowLifecycle = shadowInput
-    ? startDshShadowLifecycle({
-        prisma,
-        run: shadowInput,
-        executor: hooks.shadowExecutor ?? dshShadowExecutor,
-      })
-    : null;
-  cancelUnsettledShadow = shadowLifecycle
-    ? () => shadowLifecycle.cancel("primary_early_exit", {
-        runtimeTraceFacts,
-        truncated: false,
-        messageStatuses: ["generating", "failed"],
-        primary: {
-          content: "",
-          provider: prepared.profile.provider,
-          model: prepared.model,
-          finishReason: "cancelled",
-          usage: {
-            promptTokens: prepared.budget.usedInputTokens,
-            completionTokens: 0,
-          },
-          latencyMs: Math.max(0, Date.now() - primaryStartedAt),
-          toolCalls: 0,
-        },
-      })
-    : null;
+      expectedMessageStatus: "generating",
+      trace: runtimeTrace,
+      stage: "prepared_turn",
+      versionModel: prepared.model,
+    });
+    if (preparedTracePersisted !== "updated") {
+      throw new Error("prepared turn runtime trace did not persist atomically");
+    }
 
-  await appendStreamEvent(key, { type: "start", attempt: payload.attempt });
-
-  if (attemptRuntime.runtime === "dsh" && !authoritativeNoMemoryReply) {
+    await appendStreamEvent(key, { type: "start", attempt: payload.attempt });
     if (!dshProfileDigest) {
       throw new Error("DSH attempt is missing its readiness-verified profile digest");
+    }
+    if (authoritativeNoMemoryReply) {
+      return processNoMemoryBoundaryTurn({
+        prisma,
+        projectorPrisma,
+        payload,
+        session,
+        prepared,
+        context,
+        runtimeTraceFacts,
+        content: authoritativeNoMemoryReply,
+        heartbeat,
+        key,
+      });
     }
     return processDshCompanionTurn({
       prisma,
@@ -726,930 +564,138 @@ export async function processGenerate(
       key,
       jobAttempt: hooks.jobAttempt,
     });
-  }
-
-  const modelMessages = prepared.messages;
-  const chunks: string[] = [];
-  let seq = 0;
-  // Set when the stream died after the user already watched text arrive; the
-  // ledger keeps the partial reply and the trace records why it is short.
-  let truncated = false;
-  let nativeTerminalError: PrimaryAttemptTelemetry["error"] | null = null;
-  // Real token counts, reported by the provider on the terminal chunk. Absent for
-  // every locally-authored reply (no-memory boundary, tool caption) and for any
-  // stream that never reached `done`, which is what estimateTokens covers.
-  let providerUsage: { promptTokens: number; completionTokens: number } | null = null;
-  let imageToolCall: ImageAgentToolCall | null = null;
-  // metadata.trigger for the attachment (finalize, below): "agent_fc" when the model's
-  // native function call produced it, "agent_tool_call" for the legacy regex+planner path.
-  let toolCallTrigger: "agent_fc" | "agent_tool_call" = "agent_tool_call";
-
-  const fcEnabled = providers.chat.supportsTools === true && prepared.tools.length > 0;
-
-  const nativeFailureTrace = (
-    category: string,
-    code: string,
-  ): { trace: Record<string, unknown>; telemetry: PrimaryAttemptTelemetry } => {
-    const telemetry: PrimaryAttemptTelemetry = {
-      ...primaryTelemetryBase,
-      ...(primaryFirstTokenMs === undefined ? {} : { firstTokenMs: primaryFirstTokenMs }),
-      totalMs: Math.max(0, Date.now() - primaryStartedAt),
-      terminalStatus: "failed",
-      truncated: false,
-      provider: prepared.profile.provider,
-      model: prepared.model,
-      ...(providerUsage ? { usage: providerUsage } : {}),
-      steps: primarySteps,
-      toolCalls: imageToolCall ? 1 : 0,
-      memory: { outcome: "not_started" },
-      error: { category, code },
-    };
-    return {
-      telemetry,
-      trace: { ...runtimeTraceFacts, primaryTelemetry: telemetry },
-    };
-  };
-
-  const cancelShadowForPrimary = (
-    reason: string,
-    facts: Record<string, unknown>,
-    finishReason: "failed" | "cancelled" = "failed",
-  ): void => {
-    shadowLifecycle?.cancel(reason, {
-      runtimeTraceFacts: facts,
-      truncated: false,
-      messageStatuses: ["generating", "failed"],
-      primary: {
-        content: chunks.join(""),
-        provider: prepared.profile.provider,
-        model: prepared.model,
-        finishReason,
-        usage: providerUsage ?? {
-          promptTokens: prepared.budget.usedInputTokens,
-          completionTokens: estimateTokens(chunks.join("")),
-        },
-        latencyMs: Math.max(0, Date.now() - primaryStartedAt),
-        toolCalls: imageToolCall ? 1 : 0,
-      },
-    });
-  };
-
-  const streamDelta = async (delta: string): Promise<void> => {
-    await heartbeat();
-    primaryFirstTokenMs ??= Math.max(0, Date.now() - primaryStartedAt);
-    seq += 1;
-    chunks.push(delta);
-    await appendStreamEvent(key, { type: "delta", attempt: payload.attempt, seq, delta });
-  };
-
-  // A provider that reports usage wins over the estimate; one that does not
-  // leaves providerUsage null and changes nothing.
-  const readChunkUsage = (part: ChatChunk): void => {
-    if (part.usage) providerUsage = part.usage;
-  };
-
-  const streamPlain = async (): Promise<void> => {
-    primarySteps += 1;
-    for await (const part of providers.chat.stream(prepared)) {
-      readChunkUsage(part);
-      if (part.delta) await streamDelta(part.delta);
-    }
-  };
-
-  const streamCaption = async (toolCall: ImageAgentToolCall): Promise<void> => {
-    const reply = imageToolCaption(toolCall, context.persona.name);
-    for (const piece of chunk(reply, 96)) await streamDelta(piece);
-  };
-
-  // FC follow-up call (behavior contract point 3): when a legal tool call left no
-  // prose behind, ask the model for a short in-character line to accompany the photo.
-  const streamToolFollowup = async (rawCall: ChatToolCall, toolCall: ImageAgentToolCall): Promise<void> => {
-    const followupMessages: ModelMessage[] = [
-      ...modelMessages,
-      {
-        role: "assistant",
-        content: "",
-        tool_calls: [{ id: rawCall.id, type: "function", function: { name: rawCall.name, arguments: rawCall.arguments } }],
-      },
-      {
-        role: "tool",
-        tool_call_id: rawCall.id,
-        content: JSON.stringify({
-          status: "generating",
-          note: "The photo is being generated and will be delivered shortly. Respond to the user now with a short in-character message accompanying the incoming photo.",
-        }),
-      },
-    ];
-    let reply = "";
-    try {
-      primarySteps += 1;
-      const completion = await providers.chat.complete({
-        ...prepared,
-        messages: followupMessages,
-        maxTokens: 300,
-      });
-      reply = completion.content.trim();
-    } catch (error) {
-      logger.warn(
-        { err: error, assistantMessageId: payload.assistantMessageId },
-        "chat agent tool follow-up complete() failed; falling back to caption",
-      );
-    }
-    if (!reply) reply = toolCall.arguments.caption?.trim() || imageToolCaption(toolCall, context.persona.name);
-    for (const piece of chunk(reply, 96)) await streamDelta(piece);
-  };
-
-  // Legacy regex-gate + planner path (pre-FC behavior), used when FC is unavailable
-  // and as the safety net when FC is available but the model didn't call the tool.
-  const runPlannerFallback = async (): Promise<void> => {
-    // policy.imageToolEnabled off (entitlement or character advancedDetails.imageToolEnabled=false)
-    // suppresses the tool entirely — not just the FC path, so the legacy planner must not run either.
-    if (prepared.tools.length === 0) return;
-    if (!shouldPlanImageTool(prepared)) return;
-    try {
-      primarySteps += 1;
-      const toolPlan = await planAgentToolCall({
-        chat: providers.chat,
-        model: prepared.model,
-        turn: prepared,
-      });
-      imageToolCall = toolPlan.toolCall;
-      toolCallTrigger = "agent_tool_call";
-    } catch {
-      imageToolCall = null;
-    }
-  };
-
-  // Legal-tool-call validation shared by the FC path: unknown tool name or a JSON/schema
-  // failure is dropped silently (contract point 2) — never thrown.
-  const validateToolCall = (rawCall: ChatToolCall): AgentToolCallPlan | null => {
-    const tool = findAgentTool(rawCall.name);
-    if (!tool) {
-      logger.warn(
-        { toolName: rawCall.name, assistantMessageId: payload.assistantMessageId },
-        "chat agent tool call references unknown tool; ignoring",
-      );
-      return null;
-    }
-    try {
-      const plan = tool.parseCall(JSON.parse(rawCall.arguments) as unknown);
-      if (!plan) {
-        logger.warn(
-          { toolName: rawCall.name, assistantMessageId: payload.assistantMessageId },
-          "chat agent tool call failed args validation; ignoring",
-        );
-        return null;
-      }
-      return plan;
-    } catch (error) {
-      logger.warn(
-        { err: error, toolName: rawCall.name, assistantMessageId: payload.assistantMessageId },
-        "chat agent tool call has invalid JSON arguments; ignoring",
-      );
-      return null;
-    }
-  };
-
-  try {
-    if (authoritativeNoMemoryReply) {
-      for (const piece of chunk(authoritativeNoMemoryReply, 96)) {
-        await streamDelta(piece);
-      }
-    } else if (fcEnabled) {
-      let toolCalls: ChatToolCall[] = [];
-      let fellBackAlready = false;
-      try {
-        primarySteps += 1;
-        for await (const part of providers.chat.stream(prepared)) {
-          readChunkUsage(part);
-          if (part.toolCalls) toolCalls = part.toolCalls;
-          if (part.delta) await streamDelta(part.delta);
-        }
-      } catch (streamError) {
-        if (seq > 0) throw streamError;
-        // The FC-enabled call died before any content streamed: fall back to the
-        // full legacy path (contract point 5) rather than failing the turn.
-        fellBackAlready = true;
-        await runPlannerFallback();
-        if (imageToolCall) await streamCaption(imageToolCall);
-        else await streamPlain();
-      }
-
-      const rawCall = toolCalls[0];
-      if (rawCall) {
-        const plan = validateToolCall(rawCall);
-        if (plan) {
-          imageToolCall = toolCallFromPlan(plan);
-          toolCallTrigger = "agent_fc";
-          if (!chunks.join("").trim()) await streamToolFollowup(rawCall, imageToolCall);
-        }
-        // else: illegal call — ignore it, keep whatever prose already streamed, don't throw.
-      } else if (!fellBackAlready) {
-        // FC available but returned no tool call: the regex-gate + planner remains the
-        // safety net so a missed FC call doesn't silently drop the image path.
-        await runPlannerFallback();
-        if (imageToolCall && !chunks.join("").trim()) await streamCaption(imageToolCall);
-      }
-    } else {
-      await runPlannerFallback();
-      if (imageToolCall) await streamCaption(imageToolCall);
-      else await streamPlain();
-    }
-  } catch (error) {
-    const outputLimitReached = error instanceof ChatModelOutputLimitError;
-    const retryable = seq === 0 && hasWorkerRetryRemaining(hooks.jobAttempt);
-    if (!outputLimitReached) runtimeReadiness.recordTurnFailure(error);
-    // A stream that died after the user already watched text arrive keeps what
-    // was delivered: erasing a visibly-streamed reply is worse than a short one.
-    // An output limit is not that case — the model itself ran out of room, the
-    // tail is structurally missing, and the turn stays terminal (retry/regenerate).
-    if (seq > 0 && !outputLimitReached) {
-      truncated = true;
-      nativeTerminalError = {
-        category: "provider",
-        code: "provider_stream_interrupted",
-      };
-      logger.warn(
-        { err: error, assistantMessageId: payload.assistantMessageId, seq },
-        "chat stream dropped mid-reply; finalizing the partial content",
-      );
-    } else {
-      const errorCode = outputLimitReached ? "provider_output_limit" : "provider_failed";
-      const failure = nativeFailureTrace("provider", errorCode);
-      await persistFailedRuntimeTrace({
-        prisma,
-        payload,
-        runtimeTraceFacts: failure.trace,
-      });
-      if (!retryable) {
-        await failAssistant(prisma, payload.assistantMessageId);
-      }
-      await appendStreamEvent(key, {
-        type: "error",
-        attempt: payload.attempt,
-        code: errorCode,
-        retryable,
-      });
-      failure.telemetry.sseTerminal = "error";
-      await persistFailedRuntimeTrace({
-        prisma,
-        payload,
-        runtimeTraceFacts: failure.trace,
-      });
-      cancelShadowForPrimary("primary_provider_failed", failure.trace);
-      if (seq === 0) throw error instanceof Error ? error : new Error(String(error));
-      return { status: "failed" };
-    }
-  }
-
-  let content = chunks.join("");
-  if (!content.trim()) {
-    const error = new Error("chat model returned an empty response");
-    const retryable = hasWorkerRetryRemaining(hooks.jobAttempt);
-    runtimeReadiness.recordTurnFailure(error);
-    const failure = nativeFailureTrace("provider", "empty_model_response");
-    await persistFailedRuntimeTrace({
-      prisma,
-      payload,
-      runtimeTraceFacts: failure.trace,
-    });
-    if (!retryable) {
-      await failAssistant(prisma, payload.assistantMessageId);
-    }
-    await appendStreamEvent(key, {
-      type: "error",
-      attempt: payload.attempt,
-      code: "empty_model_response",
-      retryable,
-    });
-    failure.telemetry.sseTerminal = "error";
-    await persistFailedRuntimeTrace({
-      prisma,
-      payload,
-      runtimeTraceFacts: failure.trace,
-    });
-    cancelShadowForPrimary("primary_provider_failed", failure.trace);
-    throw error;
-  }
-  // The provider answered, so whatever knocked earlier turns over was not a
-  // process-wide outage. A locally-authored reply proves nothing about it, and a
-  // truncated one is exactly the failure the streak is counting.
-  if (!authoritativeNoMemoryReply && !truncated) runtimeReadiness.recordTurnSuccess();
-
-  const model = prepared.model;
-  const usage = providerUsage ?? {
-    promptTokens: prepared.budget.usedInputTokens,
-    completionTokens: estimateTokens(content),
-  };
-
-  // Output moderation (design §3 step 10).
-  const moderation = await providers.moderation.check({ targetType: "text", content });
-  const blocked = moderation.status === "blocked";
-  const nativeTelemetry: PrimaryAttemptTelemetry = {
-    ...primaryTelemetryBase,
-    provider: prepared.profile.provider,
-    model,
-    ...(primaryFirstTokenMs === undefined ? {} : { firstTokenMs: primaryFirstTokenMs }),
-    totalMs: Math.max(0, Date.now() - primaryStartedAt),
-    terminalStatus: blocked ? "blocked" : "sent",
-    truncated,
-    usage,
-    steps: primarySteps,
-    toolCalls: imageToolCall ? 1 : 0,
-    memory: {
-      outcome: blocked
-        ? "discarded_blocked"
-        : turnMemoryEnabled
-          ? "pending"
-          : "disabled",
-    },
-    ...(nativeTerminalError ? { error: nativeTerminalError } : {}),
-  };
-  runtimeTraceFacts.primaryTelemetry = nativeTelemetry;
-  // Ops must be able to tell a model that chose to stop from a stream that was
-  // cut, since only the second one is worth chasing.
-  const finalRuntimeTrace = JSON.parse(JSON.stringify({
-    ...runtimeTraceFacts,
-    ...(truncated ? { truncated: true } : {}),
-  })) as Prisma.InputJsonValue;
-  const traceEntry: Record<string, unknown> | null = turnMemoryEnabled
-    ? JSON.parse(JSON.stringify({
-        ts: new Date().toISOString(),
-        kind: "chat.turn",
-        attempt: payload.attempt,
-        assistantMessageId: payload.assistantMessageId,
-        userMessageId: payload.userMessageId,
-        system:
-          modelMessages.find((message) => message.role === "system")?.content ??
-          "",
-        injectedMemories: context.longTermMemories,
-        boundaries: context.boundaries,
-        rawOutput: content,
-        toolCalls: imageToolCall ? [imageToolCall] : [],
-        moderation,
-        model,
-        preparedTurn: {
-          trace: prepared.trace,
-          budget: prepared.budget,
-        },
-      })) as Record<string, unknown>
-    : null;
-
-  await heartbeat(true);
-  const finalized = await finalize({
-    prisma,
-    payload,
-    session,
-    content: blocked ? "" : content,
-    model,
-    usage,
-    moderation,
-    blocked,
-    context,
-    imageToolCall,
-    toolCallTrigger,
-    traceEntry,
-    projectorPrisma,
-    runtimeTrace: finalRuntimeTrace,
-  });
-  if (finalized === "stale") {
-    nativeTelemetry.terminalStatus = "failed";
-    nativeTelemetry.memory = { outcome: "not_started" };
-    nativeTelemetry.error = { category: "cas", code: "context_changed" };
-    runtimeTraceFacts.primaryTelemetry = nativeTelemetry;
-    await persistFailedRuntimeTrace({ prisma, payload, runtimeTraceFacts });
-    const sseErrorPublished = await appendStreamEvent(key, {
-      type: "error",
-      attempt: payload.attempt,
-      code: "context_changed",
-      retryable: true,
-    }).then(() => true).catch(() => false);
-    if (sseErrorPublished) {
-      nativeTelemetry.sseTerminal = "error";
-      await persistFailedRuntimeTrace({ prisma, payload, runtimeTraceFacts });
-    }
-    cancelShadowForPrimary("primary_context_changed", runtimeTraceFacts);
-    return { status: "failed" };
-  }
-  if (finalized === "skipped") {
-    cancelShadowForPrimary("primary_terminal_cas_conflict", runtimeTraceFacts);
-    return { status: "skipped" };
-  }
-
-  await appendStreamEvent(key, { type: "done", attempt: payload.attempt, usage });
-  nativeTelemetry.sseTerminal = "done";
-  runtimeTraceFacts.primaryTelemetry = nativeTelemetry;
-  await persistTerminalRuntimeTrace({
-    prisma,
-    payload,
-    messageStatus: blocked ? "blocked" : "sent",
-    runtimeTraceFacts,
-    truncated,
-  });
-
-  if (shadowLifecycle) {
-    shadowLifecycle.complete({
-      runtimeTraceFacts,
-      truncated,
-      messageStatuses: [blocked ? "blocked" : "sent"],
-      primary: {
-        content,
-        provider: prepared.profile.provider,
-        model,
-        finishReason: truncated ? "truncated" as const : "stop" as const,
-        usage,
-        latencyMs: Math.max(0, Date.now() - primaryStartedAt),
-        toolCalls: imageToolCall ? 1 : 0,
-      },
-    });
-  }
-
-  // Scene is ordinary session continuity and advances even for an incognito turn.
-  // The worker independently gates file memory and relationship writes using the
-  // immutable per-turn memoryAuthority captured on the assistant message.
-  if (!blocked) {
-    await enqueue({
-      queue: CHAT_QUEUES.memoryExtract,
-      payload: {
-        sessionId: session.id,
-        assistantMessageId: payload.assistantMessageId,
-        userMessageId: payload.userMessageId,
-        attempt: payload.attempt,
-      } satisfies ChatMemoryExtractPayload,
-      dedupeKey: idempotencyKeys.chatMemoryExtract(payload.assistantMessageId, payload.attempt),
-    }).catch((error) => {
-      // Reconcile scans sent messages whose memory_extracted_attempt lags.
-      logger.warn({ err: error, assistantMessageId: payload.assistantMessageId }, "memory extraction enqueue deferred");
-    });
-  }
-
-  await scheduleOutboxDelivery();
-  return { status: blocked ? "blocked" : "sent" };
   } finally {
-    cancelUnsettledShadow?.();
     clearInterval(heartbeatTimer);
   }
 }
 
-interface DshShadowOutcome {
-  status: "completed" | "error" | "cancelled";
-  invocationId: string;
-  attemptId: string;
-  profileDigest: string;
-  profileVerified: boolean;
-  latencyMs: number;
-  candidate: CompanionTerminalCandidate | null;
-  workspace: CompanionShadowWorkspaceEvidence | null;
-  commitRejected: boolean;
-  dryRunToolCalls: number;
-  error: { code: string; message: string } | null;
-}
-
-interface DshShadowRunInput {
+interface NoMemoryBoundaryTurnInput {
+  prisma: ChatPrismaClient;
+  projectorPrisma: ChatPrismaClient;
   payload: GeneratePayload;
   session: FinalizeInput["session"];
   prepared: PreparedTurn;
-  sidecarUrl: string;
-  sidecarToken: string;
-  profileDigest: string;
-  deadlineMs: number;
-}
-
-interface ShadowPrimaryOutcome {
+  context: BuiltContext;
   runtimeTraceFacts: Record<string, unknown>;
-  truncated: boolean;
-  messageStatuses: Array<"generating" | "sent" | "blocked" | "failed">;
-  primary: {
-    content: string;
-    provider: string;
-    model: string;
-    finishReason: "stop" | "truncated" | "failed" | "cancelled";
-    usage: { promptTokens: number; completionTokens: number };
-    latencyMs: number;
-    toolCalls: number;
-  };
+  content: string;
+  heartbeat(force?: boolean): Promise<void>;
+  key: string;
 }
 
-interface DshShadowLifecycle {
-  complete(primary: ShadowPrimaryOutcome): void;
-  cancel(reason: string, primary: ShadowPrimaryOutcome): void;
-}
-
-async function runDshShadowTurn(input: DshShadowRunInput & {
-  signal?: AbortSignal;
-}): Promise<DshShadowOutcome> {
-  const startedAt = Date.now();
-  const attemptId = `shadow:${input.payload.assistantMessageId}:${input.payload.attempt}`;
-  const invocationId = `shadow:inv:${input.payload.assistantMessageId}:${input.payload.attempt}`;
-  const invocation: CompanionInvocation = {
-    invocationId,
-    attemptId,
-    sessionId: `shadow:${input.payload.sessionId}`,
-    userId: input.session.userId,
-    characterId: input.session.characterId,
-    preparedTurn: toDshShadowPreparedTurnWire(input.prepared),
-    memoryMode: "shadow",
-    expectedProfileDigest: input.profileDigest,
-    deadlineAt: new Date(Date.now() + input.deadlineMs).toISOString(),
-  };
-  const runtime = new DshCompanionRuntime({
-    baseUrl: input.sidecarUrl,
-    token: input.sidecarToken,
-  });
-  let sidecarCancellation: Promise<void> | null = null;
-  const cancelSidecar = (): void => {
-    const rawReason = String(input.signal?.reason ?? "cancelled");
-    const reason = rawReason === "shutdown"
-      ? "shutdown"
-      : rawReason.includes("timeout")
-        ? "timeout"
-        : "user";
-    sidecarCancellation ??= runtime.cancel(invocationId, reason).catch(() => {});
-  };
-  input.signal?.addEventListener("abort", cancelSidecar, { once: true });
-  let candidate: CompanionTerminalCandidate | null = null;
-  let workspace: CompanionShadowWorkspaceEvidence | null = null;
-  let profileVerified = false;
-  let commitRejected = false;
-  let eventError: { code: string; message: string } | null = null;
-  let dryRunToolCalls = 0;
-  try {
-    await runtime.run(invocation, {
-      emit(event) {
-        if (event.type === "started" && event.profileDigest !== input.profileDigest) {
-          throw new Error("shadow started profile digest differs from the pinned composition");
-        }
-        if (event.type === "started") profileVerified = true;
-        if (event.type === "terminal_candidate") candidate = event.candidate;
-        if (event.type === "workspace_settled") {
-          workspace = {
-            memoryMode: event.memoryMode,
-            workspaceClass: event.workspaceClass,
-            disposition: event.disposition,
-            commitAccepted: event.commitAccepted,
-            promotionAttempted: event.promotionAttempted,
-          };
-        }
-        if (event.type === "failed") {
-          eventError = {
-            code: event.error.code,
-            message: shadowErrorMessage(event.error.message),
-          };
-        }
-      },
-      async executeTool(call) {
-        dryRunToolCalls += 1;
-        return {
-          attemptId: call.attemptId,
-          callId: call.callId,
-          name: call.name,
-          outcome: "succeeded",
-          output: {
-            status: "shadow_dry_run",
-            effectCreated: false,
-          },
-        };
-      },
-      async commit(observed) {
-        commitRejected = true;
-        if (candidate && stableJson(candidate) !== stableJson(observed)) {
-          eventError = {
-            code: "shadow_terminal_identity_mismatch",
-            message: "shadow commit candidate differed from the observed terminal event",
-          };
-          candidate = null;
-        } else {
-          candidate = observed;
-        }
-        return rejectedCommit(
-          attemptId,
-          "shadow_terminal_observed",
-          "shadow terminal is comparison-only and cannot commit",
-        );
-      },
-    }, input.signal
-      ? AbortSignal.any([input.signal, AbortSignal.timeout(input.deadlineMs)])
-      : AbortSignal.timeout(input.deadlineMs));
-  } catch (error) {
-    if (input.signal?.aborted) {
-      return {
-        ...shadowCancellationOutcome(
-          input.payload,
-          String(input.signal.reason ?? "cancelled"),
-          input.profileDigest,
-        ),
-        latencyMs: Math.max(0, Date.now() - startedAt),
-      };
-    }
-    eventError = {
-      code: "shadow_runtime_error",
-      message: shadowErrorMessage(error instanceof Error ? error.message : String(error)),
-    };
-  } finally {
-    input.signal?.removeEventListener("abort", cancelSidecar);
-    await sidecarCancellation;
+/** A deterministic privacy reply is policy output, not a second model runtime. */
+async function processNoMemoryBoundaryTurn(
+  input: NoMemoryBoundaryTurnInput,
+): Promise<{ status: "sent" | "blocked" | "skipped" | "failed" }> {
+  const startedAt = Date.parse(
+    (input.runtimeTraceFacts.primaryTelemetry as PrimaryAttemptTelemetry).startedAt,
+  );
+  let sequence = 0;
+  for (const delta of chunk(input.content, 96)) {
+    await input.heartbeat();
+    sequence += 1;
+    await appendStreamEvent(input.key, {
+      type: "delta",
+      attempt: input.payload.attempt,
+      seq: sequence,
+      delta,
+    });
   }
-  if (input.signal?.aborted && candidate === null) {
-    return {
-      ...shadowCancellationOutcome(
-        input.payload,
-        String(input.signal.reason ?? "cancelled"),
-        input.profileDigest,
+  const moderation = await providers.moderation.check({
+    targetType: "text",
+    content: input.content,
+  });
+  const blocked = moderation.status === "blocked";
+  const usage = {
+    promptTokens: input.prepared.budget.usedInputTokens,
+    completionTokens: estimateTokens(input.content),
+  };
+  const telemetry: PrimaryAttemptTelemetry = {
+    ...(input.runtimeTraceFacts.primaryTelemetry as PrimaryAttemptTelemetry),
+    totalMs: Math.max(0, Date.now() - startedAt),
+    terminalStatus: blocked ? "blocked" : "sent",
+    truncated: false,
+    provider: input.prepared.profile.provider,
+    model: input.prepared.model,
+    usage,
+    steps: 0,
+    toolCalls: 0,
+    memory: { outcome: blocked ? "discarded_blocked" : "disabled" },
+  };
+  input.runtimeTraceFacts.primaryTelemetry = telemetry;
+  input.runtimeTraceFacts.companionWorkspace = { cleanupRequired: false };
+  const finalTrace = JSON.parse(JSON.stringify(
+    input.runtimeTraceFacts,
+  )) as Prisma.InputJsonValue;
+  await input.heartbeat(true);
+  const finalized = await finalize({
+    prisma: input.prisma,
+    projectorPrisma: input.projectorPrisma,
+    payload: input.payload,
+    session: input.session,
+    content: blocked ? "" : input.content,
+    model: input.prepared.model,
+    usage,
+    moderation,
+    blocked,
+    context: input.context,
+    imageToolCall: null,
+    toolCallTrigger: "agent_tool_call",
+    traceEntry: null,
+    runtimeTrace: finalTrace,
+  });
+  if (finalized === "stale") {
+    telemetry.terminalStatus = "failed";
+    telemetry.error = { category: "cas", code: "context_changed" };
+    await persistFailedRuntimeTrace({
+      prisma: input.prisma,
+      payload: input.payload,
+      runtimeTraceFacts: input.runtimeTraceFacts,
+    });
+    await appendStreamEvent(input.key, {
+      type: "error",
+      attempt: input.payload.attempt,
+      code: "context_changed",
+      retryable: true,
+    }).catch(() => undefined);
+    return { status: "failed" };
+  }
+  if (finalized === "skipped") return { status: "skipped" };
+
+  await appendStreamEvent(input.key, {
+    type: "done",
+    attempt: input.payload.attempt,
+    usage,
+  });
+  telemetry.sseTerminal = "done";
+  await persistTerminalRuntimeTrace({
+    prisma: input.prisma,
+    payload: input.payload,
+    messageStatus: blocked ? "blocked" : "sent",
+    runtimeTraceFacts: input.runtimeTraceFacts,
+    truncated: false,
+  });
+  if (!blocked) {
+    await enqueue({
+      queue: CHAT_QUEUES.memoryExtract,
+      payload: {
+        sessionId: input.session.id,
+        assistantMessageId: input.payload.assistantMessageId,
+        userMessageId: input.payload.userMessageId,
+        attempt: input.payload.attempt,
+      } satisfies ChatMemoryExtractPayload,
+      dedupeKey: idempotencyKeys.chatMemoryExtract(
+        input.payload.assistantMessageId,
+        input.payload.attempt,
       ),
-      latencyMs: Math.max(0, Date.now() - startedAt),
-      dryRunToolCalls,
-    };
-  }
-  const observed = candidate as CompanionTerminalCandidate | null;
-  const settledWorkspace = workspace as CompanionShadowWorkspaceEvidence | null;
-  const completed = observed !== null && settledWorkspace !== null &&
-    profileVerified && commitRejected;
-  return {
-    status: completed ? "completed" : "error",
-    invocationId,
-    attemptId,
-    profileDigest: input.profileDigest,
-    profileVerified,
-    latencyMs: Math.max(0, Date.now() - startedAt),
-    candidate: completed ? observed : null,
-    workspace: settledWorkspace,
-    commitRejected,
-    dryRunToolCalls,
-    error: completed ? null : eventError ?? {
-      code: "shadow_terminal_missing",
-      message: observed
-        ? "shadow runtime ended without workspace settlement evidence"
-        : "shadow runtime ended without a terminal candidate",
-    },
-  };
-}
-
-function buildShadowComparison(input: {
-  primary: ShadowPrimaryOutcome["primary"];
-  shadow: DshShadowOutcome;
-}): CompanionShadowComparison {
-  const shadow = input.shadow.candidate;
-  return companionShadowComparisonSchema.parse({
-    schemaVersion: 1,
-    status: input.shadow.status,
-    invocationId: input.shadow.invocationId,
-    attemptId: input.shadow.attemptId,
-    profileDigest: input.shadow.profileDigest,
-    profileVerified: input.shadow.profileVerified,
-    primary: {
-      provider: input.primary.provider,
-      model: input.primary.model,
-      textDigest: digestText(input.primary.content),
-      textLength: input.primary.content.length,
-      finishReason: input.primary.finishReason,
-      usage: input.primary.usage,
-      latencyMs: input.primary.latencyMs,
-      toolCalls: input.primary.toolCalls,
-    },
-    shadow: shadow
-      ? {
-          provider: shadow.provider,
-          model: shadow.model,
-          textDigest: digestText(shadow.content),
-          textLength: shadow.content.length,
-          finishReason: shadow.finishReason,
-          usage: shadow.usage,
-          latencyMs: input.shadow.latencyMs,
-          toolCalls: shadow.execution.toolCalls,
-          dryRunToolCalls: input.shadow.dryRunToolCalls,
-          steps: shadow.execution.steps,
-        }
-      : null,
-    workspace: input.shadow.workspace,
-    commitRejected: input.shadow.commitRejected,
-    ...(input.shadow.error ? { error: input.shadow.error } : {}),
-    textDigestEqual: shadow
-      ? digestText(input.primary.content) === digestText(shadow.content)
-      : false,
-  });
-}
-
-function startDshShadowLifecycle(input: {
-  prisma: ChatPrismaClient;
-  run: DshShadowRunInput;
-  executor: ShadowExecutor;
-}): DshShadowLifecycle {
-  let shadowResolved = false;
-  let resolveShadow!: (outcome: DshShadowOutcome) => void;
-  const shadowOutcome = new Promise<DshShadowOutcome>((resolve) => {
-    resolveShadow = resolve;
-  });
-  const settleShadow = (outcome: DshShadowOutcome): void => {
-    if (shadowResolved) return;
-    shadowResolved = true;
-    resolveShadow(outcome);
-  };
-
-  let primaryResolved = false;
-  let resolvePrimary!: (outcome: ShadowPrimaryOutcome) => void;
-  const primaryOutcome = new Promise<ShadowPrimaryOutcome>((resolve) => {
-    resolvePrimary = resolve;
-  });
-  const settlePrimary = (outcome: ShadowPrimaryOutcome): void => {
-    if (primaryResolved) return;
-    primaryResolved = true;
-    resolvePrimary(outcome);
-  };
-
-  const persistence = Promise.all([shadowOutcome, primaryOutcome])
-    .then(async ([shadow, primary]) => {
-      await persistShadowComparison({
-        prisma: input.prisma,
-        payload: input.run.payload,
-        terminalStatuses: primary.messageStatuses,
-        runtimeTraceFacts: primary.runtimeTraceFacts,
-        truncated: primary.truncated,
-        shadowComparison: buildShadowComparison({ shadow, primary: primary.primary }),
-      });
-    });
-  trackDetachedShadowPersistence(persistence);
-
-  const cancelQueued = (reason: string): Promise<void> => {
-    settleShadow(shadowCancellationOutcome(input.run.payload, reason, input.run.profileDigest));
-    return persistence;
-  };
-  const handle = input.executor.submit(async (signal) => {
-    try {
-      settleShadow(await runDshShadowTurn({ ...input.run, signal }));
-    } catch (error) {
-      settleShadow({
-        status: "error",
-        invocationId: `shadow:inv:${input.run.payload.assistantMessageId}:${input.run.payload.attempt}`,
-        attemptId: `shadow:${input.run.payload.assistantMessageId}:${input.run.payload.attempt}`,
-        profileDigest: input.run.profileDigest,
-        profileVerified: false,
-        latencyMs: 0,
-        candidate: null,
-        workspace: null,
-        commitRejected: false,
-        dryRunToolCalls: 0,
-        error: {
-          code: "shadow_runtime_error",
-          message: shadowErrorMessage(error instanceof Error ? error.message : String(error)),
-        },
-      });
-    }
-  }, cancelQueued);
-  if (!handle) {
-    logger.warn(
-      {
-        assistantMessageId: input.run.payload.assistantMessageId,
-        code: "shadow_queue_saturated",
-      },
-      "DSH shadow executor queue is saturated",
-    );
-    settleShadow({
-      status: "error",
-      invocationId: `shadow:inv:${input.run.payload.assistantMessageId}:${input.run.payload.attempt}`,
-      attemptId: `shadow:${input.run.payload.assistantMessageId}:${input.run.payload.attempt}`,
-      profileDigest: input.run.profileDigest,
-      profileVerified: false,
-      latencyMs: 0,
-      candidate: null,
-      workspace: null,
-      commitRejected: false,
-      dryRunToolCalls: 0,
-      error: {
-        code: "shadow_queue_saturated",
-        message: "DSH shadow executor queue is saturated",
-      },
+    }).catch((error) => {
+      logger.warn(
+        { err: error, assistantMessageId: input.payload.assistantMessageId },
+        "scene extraction enqueue deferred",
+      );
     });
   }
-
-  return {
-    complete(primary) {
-      settlePrimary(primary);
-    },
-    cancel(reason, primary) {
-      if (primaryResolved) return;
-      // Resolve evidence before signalling the task. A sidecar that races to a
-      // candidate after primary authority failed must not be reported as a
-      // valid Phase-2 comparison.
-      settlePrimary(primary);
-      settleShadow(shadowCancellationOutcome(input.run.payload, reason, input.run.profileDigest));
-      handle?.cancel(reason);
-    },
-  };
-}
-
-function shadowCancellationOutcome(
-  payload: GeneratePayload,
-  reason: string,
-  profileDigest: string,
-): DshShadowOutcome {
-  const evidence = reason === "shutdown"
-    ? {
-        code: "shadow_shutdown_cancelled",
-        message: "DSH shadow cancelled during worker shutdown",
-      }
-    : reason === "primary_provider_failed"
-      ? {
-          code: "shadow_primary_provider_failed",
-          message: "DSH shadow cancelled because the primary provider failed",
-        }
-      : reason === "primary_context_changed"
-        ? {
-            code: "shadow_primary_context_changed",
-            message: "DSH shadow cancelled because primary terminal authority changed",
-          }
-        : reason === "primary_terminal_cas_conflict"
-          ? {
-              code: "shadow_primary_terminal_cas_conflict",
-              message: "DSH shadow cancelled because primary terminal CAS was lost",
-            }
-          : {
-              code: "shadow_primary_cancelled",
-              message: `DSH shadow cancelled with primary: ${shadowErrorMessage(reason)}`,
-            };
-  return {
-    status: "cancelled",
-    invocationId: `shadow:inv:${payload.assistantMessageId}:${payload.attempt}`,
-    attemptId: `shadow:${payload.assistantMessageId}:${payload.attempt}`,
-    profileDigest,
-    profileVerified: false,
-    latencyMs: 0,
-    candidate: null,
-    workspace: null,
-    commitRejected: false,
-    dryRunToolCalls: 0,
-    error: evidence,
-  };
-}
-
-export async function persistShadowComparison(input: {
-  prisma: ChatPrismaClient;
-  payload: GeneratePayload;
-  terminalStatus?: "sent" | "blocked";
-  terminalStatuses?: Array<"generating" | "sent" | "blocked" | "failed">;
-  runtimeTraceFacts: Record<string, unknown>;
-  truncated: boolean;
-  shadowComparison: CompanionShadowComparison;
-}): Promise<void> {
-  try {
-    await input.prisma.$transaction(async (tx) => {
-      const terminalStatuses = input.terminalStatuses ??
-        (input.terminalStatus ? [input.terminalStatus] : []);
-      if (terminalStatuses.length === 0) {
-        throw new Error("DSH shadow comparison requires a terminal status CAS");
-      }
-      const current = await tx.message.findUnique({
-        where: { id: input.payload.assistantMessageId },
-        select: { status: true, attempt: true, runtimeTrace: true },
-      });
-      if (
-        !current ||
-        current.attempt !== input.payload.attempt ||
-        !terminalStatuses.includes(current.status as typeof terminalStatuses[number])
-      ) return;
-      const version = await tx.messageVersion.findUnique({
-        where: { id: `mv:${input.payload.assistantMessageId}:${input.payload.attempt}` },
-        select: { runtimeTrace: true },
-      });
-      if (!version) throw new Error("DSH shadow comparison version is missing");
-      const baseTrace = jsonObject(current.runtimeTrace) ?? input.runtimeTraceFacts;
-      const versionBaseTrace = jsonObject(version.runtimeTrace) ?? baseTrace;
-      const trace = JSON.parse(JSON.stringify({
-        ...baseTrace,
-        ...(input.truncated ? { truncated: true } : {}),
-        shadowComparison: input.shadowComparison,
-      })) as Prisma.InputJsonValue;
-      const versionTrace = JSON.parse(JSON.stringify({
-        ...versionBaseTrace,
-        ...(input.truncated ? { truncated: true } : {}),
-        shadowComparison: input.shadowComparison,
-      })) as Prisma.InputJsonValue;
-      const updated = await tx.message.updateMany({
-        where: {
-          id: input.payload.assistantMessageId,
-          status: current.status,
-          attempt: input.payload.attempt,
-        },
-        data: { runtimeTrace: trace },
-      });
-      if (updated.count === 0) return;
-      const versionUpdated = await tx.messageVersion.updateMany({
-        where: {
-          id: `mv:${input.payload.assistantMessageId}:${input.payload.attempt}`,
-          messageId: input.payload.assistantMessageId,
-          attempt: input.payload.attempt,
-        },
-        data: { runtimeTrace: versionTrace },
-      });
-      if (versionUpdated.count !== 1) {
-        throw new Error("DSH shadow comparison version CAS failed");
-      }
-    });
-  } catch (error) {
-    logger.warn(
-      { err: error, assistantMessageId: input.payload.assistantMessageId },
-      "DSH shadow comparison persistence failed",
-    );
-  }
+  await scheduleOutboxDelivery();
+  return { status: blocked ? "blocked" : "sent" };
 }
 
 async function persistTerminalRuntimeTrace(input: {
@@ -1754,10 +800,6 @@ export async function persistAttemptRuntimeTraceCas(input: {
 
 function digestText(value: string): string {
   return createHash("sha256").update(value).digest("hex");
-}
-
-function shadowErrorMessage(value: string): string {
-  return value.replace(/\s+/g, " ").trim().slice(0, 300) || "unknown shadow error";
 }
 
 interface DshTurnInput {
@@ -2233,7 +1275,7 @@ async function processDshCompanionTurn(
     }
   }
 
-  // Match the native persistence invariant: once the user has seen text, a
+  // Once the user has seen text, a
   // transport/runtime failure may not erase it from the Chat ledger. This is a
   // Chat-authored truncated terminal, never an accepted sidecar commit, so the
   // isolated igrep attempt is still discarded.
@@ -2693,15 +1735,9 @@ async function finalize(
         },
       });
 
-      // memorySummary is cleared, not written. What used to live there was the
-      // newest turn clamped to 900 chars — a strict subset of the 12 recent
-      // messages the prompt already carries verbatim, so it only ever spent
-      // tokens restating them. Nulling it here (rather than just not writing)
-      // drains rows that still hold a value from before it was dropped;
-      // otherwise a frozen summary would be injected into every prompt forever.
       await tx.chatSession.update({
         where: { id: session.id },
-        data: { lastMessageAt: new Date(), memorySummary: null },
+        data: { lastMessageAt: new Date() },
       });
     }
 

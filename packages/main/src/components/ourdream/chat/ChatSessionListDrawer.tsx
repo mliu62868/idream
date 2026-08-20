@@ -14,7 +14,6 @@ type SessionRow = {
   status: string;
   memoryEnabled: boolean;
   lastMessageAt: string | null;
-  memorySummary: string | null;
 };
 
 export function ChatSessionListDrawer({

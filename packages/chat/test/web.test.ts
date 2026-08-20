@@ -1,6 +1,6 @@
-// P0-3 + P1-1 acceptance via the dispatch surface (router) + memory derivation.
-// Proves the full request path (create session → send → generate → read) and that
-// memory is derived only from sent/allowed turns and skipped for no-memory sessions.
+// Acceptance via the dispatch surface (router) + post-turn derivation.
+// Proves the full request path and that Chat derives only Scene/relationship;
+// generic memory belongs to official igrep inside DSH.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -1143,8 +1143,8 @@ describe("dispatchChat router", () => {
   });
 });
 
-describe("memory.extract (P1-1)", () => {
-  it("derives a preference from a 'call me X' turn and writes mem file", async () => {
+describe("post-turn Scene/relationship projection", () => {
+  it("projects relationship evidence without writing generic memory", async () => {
     const created = await dispatchChat({ method: "POST", path: "/api/v1/chat/sessions", userId: USER, body: { characterId: CHAR } });
     const sessionId = created.kind === "json" ? (created.body as { id: string }).id : "";
 
@@ -1158,11 +1158,16 @@ describe("memory.extract (P1-1)", () => {
     await drainGen();
 
     const res = await processMemoryExtract({ sessionId, assistantMessageId, attempt: 1 });
-    expect(res.written).toBeGreaterThanOrEqual(1);
+    expect(res).toEqual({ written: 0, skipped: null });
 
-    const mem = await readFile(path.join(fsRoot, "mem", USER, CHAR, "memory.md"), "utf8");
-    expect(mem).toContain("called Alex");
-    expect(mem).toContain("src:"); // source back-link to PG message
+    const relationship = await readFile(
+      path.join(fsRoot, "mem", USER, CHAR, "relationship.md"),
+      "utf8",
+    );
+    expect(relationship).toContain("meaningful self-disclosure");
+    await expect(
+      readFile(path.join(fsRoot, "mem", USER, CHAR, "memory.md"), "utf8"),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("no-memory session: advances Scene but skips cross-session derivation", async () => {
@@ -1186,11 +1191,7 @@ describe("memory.extract (P1-1)", () => {
       where: { sessionId, sourceAssistantMessageId: assistantMessageId },
     })).toBe(1);
     expect(await prisma.chatFileMutation.count({
-      where: {
-        userId: USER,
-        kind: "memory_extract",
-        payload: { path: ["turnKey"], equals: assistantMessageId },
-      },
+      where: { userId: USER, kind: "memory_extract" },
     })).toBe(0);
   });
 });

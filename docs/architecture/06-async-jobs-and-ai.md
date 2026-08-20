@@ -94,9 +94,8 @@ worker 不会从可变 Job 字段猜测或补造执行身份。
 | queue | producer | handler 职责 | 幂等键 |
 | --- | --- | --- | --- |
 | `moderation.input` | chat/creator/generation | 高危内容拦截（在调模型/provider 前） | target |
-| `chat.generate` | Chat Service API | 拼 prompt → ChatModel 流 → Redis Stream token → Chat DB 落 assistant/usage/memory/relationship/outbox | assistantMessageId |
-| `chat.memory.extract` | Chat worker | 从已通过审核的消息抽取长期记忆候选并写 Chat DB | assistantMessageId |
-| `chat.memory.rebuild` | Chat reconciler / 删除补偿 | 从 Chat 权威 memory/message 状态重建运行时 memory index | userId+characterId+version |
+| `chat.generate` | Chat Service API | 冻结 PreparedTurn → DSH AgentLoop + official igrep → Redis Stream token → Chat DB 落 assistant/usage/moderation/outbox | assistantMessageId |
+| `chat.memory.extract` | Chat worker | 历史 wire name：从已提交的权威 turn 只派生 Scene/relationship 文件投影，不抽取通用记忆 | assistantMessageId |
 | `chat.outbox.deliver` | Chat DB outbox | HTTP 投递 Main durable ingest；Main receipt commit ACK 后才标 delivered | eventId |
 | `ai.image.generate` | Main generation/Character Preview dispatch Outbox | Gen Image backend → BlobStore → immutable terminal record → durable relay admission | attemptId |
 | `ai.video.generate` | Main generation dispatch Outbox | Gen Video backend → BlobStore → immutable terminal record → durable relay admission | attemptId |
@@ -108,7 +107,6 @@ worker 不会从可变 Job 字段猜测或补造执行身份。
 | `reward.ledger` | referral/redeem/signup | 恰好一次发奖（dreamcoin/entitlement） | sourceId |
 | `report.triage` | reports API | 按类别定优先级、未成年即时隐藏 | reportId |
 | `analytics.events` | 各 API（或直接 after 落表） | 落库/外发，fire-and-forget | — |
-| `chat.summarize` | Chat worker | 压缩旧消息进 Chat DB `memorySummary` | sessionId+watermark |
 | `media.cleanup` | media delete | 删对象存储 bytes | assetId |
 
 > moderation.input 可"同步快路径 + 异步深检"：发消息时同步跑一个低延迟分类（拦明显高危），深度检测（哈希匹配等）在 worker 补。CSAM 检测**必须**在产物释放前完成（07 §3）。
@@ -211,23 +209,20 @@ POST /chat/sessions/:id/messages
   ▼ 返回 {assistantMessageId, streamUrl}
 
 worker chat.generate:
-  1) 读取 recent messages + memorySummary + companionMemories + relationshipState
-  2) 读取 character persona / entitlement / eligibility view
-  3) ChatModel.stream(...)
+  1) 冻结 released Soul + recent messages + Scene/relationship/boundaries + released knowledge + policy
+  2) 选择唯一 workspace scope：普通 relationship 持久化，private attempt 临时隔离
+  3) DSH AgentLoop（official igrep wake/search + model stream）
   4) 写 Redis Stream start/delta/done/error
   5) moderation.output(full text)
   6) transaction:
        update assistant message + message_versions(selected)
        increment chat_usage
-       update memorySummary
-       apply companionMemories
-       apply relationshipStates
        insert chat_moderation_events
        insert chat_outbox_events
-  7) enqueue('chat.outbox.deliver')
+  7) terminal commit ACK 后开放 official igrep ingest；再 enqueue('chat.outbox.deliver')
 ```
 
-额度：免费用户按 Chat DB `chat_usage` 限；`unlimited_messages` entitlement view 跳过；模型能力按 plan（Deluxe = premium models + 3x memory）。Chat 发送 `chat.usage.incremented` 给主站 analytics/billing 报表，但主站不参与每条消息的落库。
+额度：免费用户按 Chat DB `chat_usage` 限；`unlimited_messages` entitlement view 跳过；模型能力按 plan。Phase 6 不把 entitlement 映射为自研 igrep item cap/top-K。Chat 发送 `chat.usage.incremented` 给主站 analytics/billing 报表，但主站不参与每条消息的落库。
 
 ## 8. dreamcoin 预留/结算不变量（与 08 一致）
 

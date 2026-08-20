@@ -139,7 +139,7 @@ describe("generation terminal relay consumer", () => {
     expect(retry).toHaveBeenCalledOnce();
   });
 
-  it("isolates a schema-valid non-generation finalize poison from a valid relay", async () => {
+  it("isolates a removed Chat finalize payload from a valid generation relay", async () => {
     const payload = relayPayload();
     const dedupeKey = idempotencyKeys.generationTerminalRelay(
       payload.terminalRecord.attemptId,

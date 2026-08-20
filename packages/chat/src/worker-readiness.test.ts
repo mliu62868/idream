@@ -12,8 +12,6 @@ const runtime = vi.hoisted(() => ({
   refreshDependencies: vi.fn(),
   processGenerateJob: vi.fn(async () => ({ status: "sent" })),
   terminalizeGenerateJobFailure: vi.fn(async () => true),
-  cancelDshShadowExecutor: vi.fn(),
-  drainDshShadowExecutor: vi.fn(async () => {}),
   processMemoryExtract: vi.fn(async () => ({ written: 0, skipped: null })),
   deliverPendingOutbox: vi.fn(async () => 0),
   consumeDurableInbox: vi.fn(async () => ({ acknowledged: true })),
@@ -43,8 +41,6 @@ vi.mock("./runtime-readiness.js", () => ({
   },
 }));
 vi.mock("./generate.js", () => ({
-  cancelDshShadowExecutor: runtime.cancelDshShadowExecutor,
-  drainDshShadowExecutor: runtime.drainDshShadowExecutor,
   processGenerateJob: runtime.processGenerateJob,
   terminalizeGenerateJobFailure: runtime.terminalizeGenerateJobFailure,
 }));
@@ -72,8 +68,6 @@ describe("chat worker readiness admission", () => {
     runtime.refreshDependencies.mockReset();
     runtime.processGenerateJob.mockClear();
     runtime.terminalizeGenerateJobFailure.mockClear();
-    runtime.cancelDshShadowExecutor.mockClear();
-    runtime.drainDshShadowExecutor.mockClear();
     runtime.processMemoryExtract.mockClear();
     runtime.deliverPendingOutbox.mockClear();
     runtime.consumeDurableInbox.mockClear();
@@ -96,8 +90,6 @@ describe("chat worker readiness admission", () => {
       );
     } finally {
       await worker.close();
-      expect(runtime.cancelDshShadowExecutor).toHaveBeenCalledWith("shutdown");
-      expect(runtime.drainDshShadowExecutor).toHaveBeenCalledOnce();
       vi.useRealTimers();
     }
   });

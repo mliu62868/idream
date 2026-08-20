@@ -1,4 +1,4 @@
-// pm2 process topology (design §12). The opt-in DSH companion sidecar is a
+// pm2 process topology (design §12). The required DSH companion sidecar is a
 // separate Node process; mock video omits gen-video in every mode.
 // Development is the default: web apps use Next dev/Fast Refresh and source
 // services use PM2 watch. Production keeps the immutable standalone web runtime.
@@ -13,7 +13,8 @@
 // Production web apps run from immutable .next-runtime releases. Prefer restart
 // after both builds are published; rolling reload still needs deployment-aware
 // routing to keep old clients and workers on the same release during the overlap.
-// ⚠️ chat is instances:1 — it writes the local file store (sessions/mem). Do NOT
+// ⚠️ chat is instances:1 — it writes Chat-owned session/relationship/boundary
+//    projections. Generic memory lives only in the DSH/igrep workspace. Do NOT
 //    scale it past 1 without moving CHAT_FS_ROOT to shared storage (D1/C1).
 // ⚠️ script paths point at real node entry files (.mjs / next's CJS bin), NOT the
 //    pnpm `.bin/*` shell shims — pm2's node interpreter cannot parse a /bin/sh shim
@@ -25,9 +26,6 @@
 const { existsSync, readFileSync } = require("node:fs");
 const path = require("path");
 const { pathToFileURL } = require("node:url");
-const {
-  resolveCompanionSidecarEnabled,
-} = require("./scripts/companion-sidecar-topology.cjs");
 const dir = (rel) => path.join(__dirname, rel);
 const tsxPreflight = require.resolve(
   "./packages/chat-agent/node_modules/tsx/dist/preflight.cjs",
@@ -82,30 +80,6 @@ const genVideoProvider =
   localEnvValue(dir("packages/gen/.env"), "GEN_VIDEO_PROVIDER") ??
   "mock";
 const videoWorkerEnabled = genVideoProvider !== "mock";
-const companionSidecarEnabled = resolveCompanionSidecarEnabled(
-  process.env.DSH_AGENT_ENABLED,
-  localEnvValue(dir("packages/chat/.env"), "DSH_AGENT_ENABLED"),
-);
-const chatShadowEnabled =
-  process.env.CHAT_COMPANION_DSH_SHADOW_ENABLED ??
-  localEnvValue(
-    dir("packages/chat/.env"),
-    "CHAT_COMPANION_DSH_SHADOW_ENABLED",
-  ) ??
-  "false";
-const chatCompanionAuthorityEnv = Object.fromEntries(
-  [
-    "CHAT_COMPANION_RUNTIME",
-    "CHAT_MEMORY_BACKEND",
-    "CHAT_COMPANION_DSH_ROLLOUT_BPS",
-    "CHAT_COMPANION_DSH_ROLLOUT_SALT",
-    "CHAT_COMPANION_DSH_ALLOWLIST",
-  ].flatMap((key) => {
-    const value =
-      process.env[key] ?? localEnvValue(dir("packages/chat/.env"), key);
-    return value === undefined ? [] : [[key, value]];
-  }),
-);
 // REDIS_URL must resolve IDENTICALLY across main-web (which enqueues) and gen-finalizer
 // (which consumes) — otherwise generation jobs stick forever. Durable Main↔Chat delivery
 // does not use Redis. Which vars are cross-service, and their one set of defaults, is
@@ -246,31 +220,27 @@ module.exports = {
       },
       // config from packages/admin/.env (next + dotenv load it)
     },
-    ...(companionSidecarEnabled
-      ? [
-          {
-            name: "chat-agent",
-            cwd: dir("packages/chat-agent"),
-            // INVARIANT: PM2 must own the process holding port 3101. The tsx CLI
-            // forks a child, so killing its PM2 parent leaves an orphan sidecar.
-            script: "src/main.ts",
-            interpreter: process.execPath,
-            node_args: [
-              "--require",
-              tsxPreflight,
-              "--import",
-              pathToFileURL(tsxLoader).href,
-            ],
-            exec_mode: "fork",
-            instances: 1,
-            kill_timeout: 5 * 60 * 1_000,
-            ...sourceWatch("packages/chat-agent/src", "packages/shared/src"),
-            env: {
-              ...runtimeIdentityEnv,
-            },
-          },
-        ]
-      : []),
+    {
+      name: "chat-agent",
+      cwd: dir("packages/chat-agent"),
+      // INVARIANT: PM2 must own the process holding port 3101. The tsx CLI
+      // forks a child, so killing its PM2 parent leaves an orphan sidecar.
+      script: "src/main.ts",
+      interpreter: process.execPath,
+      node_args: [
+        "--require",
+        tsxPreflight,
+        "--import",
+        pathToFileURL(tsxLoader).href,
+      ],
+      exec_mode: "fork",
+      instances: 1,
+      kill_timeout: 5 * 60 * 1_000,
+      ...sourceWatch("packages/chat-agent/src", "packages/shared/src"),
+      env: {
+        ...runtimeIdentityEnv,
+      },
+    },
     // fast I/O + slow generation — chat/web (API+SSE) + chat/worker, one process
     {
       name: "chat",
@@ -286,12 +256,6 @@ module.exports = {
       env: {
         ...runtimeIdentityEnv,
         ...sharedInternalEnv,
-        // INVARIANT: dotenv never overrides PM2. Project the complete routing
-        // authority so a gated restart cannot retain a stale native cohort.
-        ...chatCompanionAuthorityEnv,
-        // SPEC: project the effective shell-over-.env switch into PM2 so the
-        // gated restart wrapper can both enable and disable Shadow explicitly.
-        CHAT_COMPANION_DSH_SHADOW_ENABLED: chatShadowEnabled,
       },
       // config from packages/chat/.env (CHAT_PORT, CHAT_DATABASE_URL, …)
     },

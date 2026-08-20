@@ -1,8 +1,10 @@
 # Chat Agent sidecar
 
-Minimal programmatic DeepSeek Harness companion runtime for Chat. It composes only the
-DSH core services needed for a turn and loads the official igrep plugin from an explicit
-profile path; it does not load the DSH base, shell, filesystem, subagent, or goal plugins.
+Minimal programmatic DeepSeek Harness companion runtime for Chat. The programmatic
+composition manifest and digest are the execution truth: it loads only the turn services
+and official igrep plugin, with no shell, filesystem, subagent, goal, or scheduler service.
+The installer profile may materialize `dsh-base`; its dump is provenance evidence, not
+proof that the engine loaded those services.
 
 ## Runtime setup
 
@@ -50,68 +52,12 @@ token variable. The default listener is `127.0.0.1:3101`, matching Chat's defaul
 - `POST /v1/workspaces/rebuild` replaces one relationship from strict canonical Chat
   messages. Deep readiness proves this path with a disposable empty rebuild and always
   purges the probe relationship afterward.
-- `POST /v1/workspaces/import-legacy-memory` records one strict, checksummed relationship
-  through public `igrep mem record`, then requires `maintain --rebuild` and
-  `doctor --strict` plus every operator recall-parity probe through public
-  `igrep mem-api memory-search` before atomic promotion.
 
 Normal memory is copied into an isolated attempt workspace. It is promoted atomically only
 after Chat accepts the terminal candidate and public `igrep memory-status` proves both
 dialogue ingest and profile maintenance. Rejection, cancellation, deadline, shutdown, or
 an unverifiable/failed maintenance pass deletes the attempt instead. Private turns disable
 all igrep search, memory, ingest, and wake surfaces and delete their temporary directory.
-Shadow turns use a third, disjoint root. They may exercise igrep search, ingest, and wake
-inside that disposable workspace for comparison. Chat rejects every shadow terminal,
-and the sidecar workspace refuses promotion, so shadow state can never replace canonical
-relationship memory.
-
-## One-off legacy memory import
-
-The operator command is deliberately single-relationship and defaults to dry-run:
-
-```bash
-bun run --cwd packages/chat memory:import-legacy -- --user-id USER_ID --character-id CHARACTER_ID --probe-file /secure/probes.json
-bun run --cwd packages/chat memory:import-legacy -- --user-id USER_ID --character-id CHARACTER_ID --probe-file /secure/probes.json --apply
-```
-
-The operator-owned probe file is strict JSON. `legacyExpected` is a literal,
-case-insensitive fragment that the old recall authority is known to return:
-
-```json
-{
-  "version": 1,
-  "probes": [
-    {
-      "id": "tea-preference",
-      "query": "What tea does the user prefer?",
-      "legacyExpected": "jasmine tea"
-    }
-  ]
-}
-```
-
-Dry-run needs neither `DSH_AGENT_TOKEN` nor a reachable sidecar. It reports total legacy
-entries, every exclusion class, the exact eligible entries, and their checksum. Apply also
-reports the sidecar result and the durable external marker. The marker becomes
-`status=cutover_ready` only after every probe passes and stores checksums, counts,
-opaque probe ids, hit counts, and completion time—not queries, expected text, or
-recalled context. Repeating the same import checksum, igrep version, and probe-set
-checksum is a no-op. Chat also atomically merges a cleanup-required fact into the
-anchor assistant `Message` and selected `MessageVersion`, so rollback cannot make a
-later privacy cleanup intent look unnecessary. Before the sidecar request, Chat commits
-that fact as `state=import_pending`; only a verified sidecar response advances it to
-`state=cutover_ready`. A timeout, process exit, or final database failure therefore leaves
-a conservative cleanup requirement instead of losing the fact that promotion may have
-happened. The external marker is bound to the exact promoted workspace version, so any
-later edit/delete rebuild invalidates the old parity evidence and forces revalidation.
-
-Apply is a bounded one-off operator operation: it holds Chat's exclusive per-user authority
-lock while it validates canonical turns and waits for the sidecar. That prevents an
-edit/delete projection from invalidating source evidence before promotion, while
-the sidecar hard-aborts at 300s, Chat aborts its request after
-`DSH_AGENT_DEADLINE_MS + 30s`, and `DSH_AGENT_DEADLINE_MS + 45s` bounds the interactive
-transaction. Run it during a quiet maintenance window. The marker is stored under the canonical root's hashed `_meta/`
-namespace, outside the candidate workspace; relationship/user purge removes it.
 
 ## Verification
 

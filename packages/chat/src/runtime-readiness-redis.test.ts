@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChatPrismaClient } from "./db.js";
-import type { ChatModel } from "./providers.js";
 
 const redisMock = vi.hoisted(() => ({
   ping: vi.fn<() => Promise<string>>(),
@@ -40,7 +39,6 @@ describe("Chat Redis runtime readiness", () => {
     const warming = warmRuntime({
       prisma: canonicalRequestPrisma(),
       projectorPrisma: canonicalProjectorPrisma(),
-      chat: { stream: vi.fn(), complete: vi.fn() } as unknown as ChatModel,
       readiness,
     });
     const outcome = warming.then(

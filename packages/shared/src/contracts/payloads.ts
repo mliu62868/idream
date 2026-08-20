@@ -290,104 +290,6 @@ export const videoGeneratePayloadSchema = z
   })
   .passthrough();
 
-const memoryScopeSchema = z.enum(["global", "character", "session"]);
-const memoryTypeSchema = z.enum(["user_fact", "preference", "boundary", "shared_event"]);
-const memoryStatusSchema = z.enum(["active", "deleted"]);
-
-export const memoryCandidateSchema = z
-  .object({
-    operation: z.enum(["upsert", "delete"]).default("upsert"),
-    scope: memoryScopeSchema,
-    type: memoryTypeSchema,
-    text: z.string(),
-    confidence: z.number().min(0).max(1),
-    sourceMessageIds: z.array(z.string()),
-  })
-  .passthrough();
-
-export const syncedMemorySchema = z
-  .object({
-    id: z.string(),
-    userId: z.string().optional(),
-    characterId: z.string().nullable().optional(),
-    sessionId: z.string().nullable().optional(),
-    scope: memoryScopeSchema,
-    type: memoryTypeSchema,
-    text: z.string(),
-    confidence: z.number().min(0).max(1).default(1),
-    status: memoryStatusSchema.default("active"),
-    sourceMessageIds: z.array(z.string()).default([]),
-    createdAt: z.string().optional(),
-    updatedAt: z.string().optional(),
-  })
-  .passthrough();
-
-export const memorySyncChangeSchema = z.discriminatedUnion("operation", [
-  z
-    .object({
-      operation: z.literal("upsert"),
-      memory: syncedMemorySchema,
-    })
-    .passthrough(),
-  z
-    .object({
-      operation: z.literal("delete"),
-      memoryId: z.string(),
-    })
-    .passthrough(),
-]);
-
-export const memorySyncPayloadSchema = z
-  .object({
-    version: z.literal(1),
-    kind: z.literal("memory.sync"),
-    requestId: z.string(),
-    userId: z.string(),
-    characterId: z.string().nullable().optional(),
-    changes: z.array(memorySyncChangeSchema),
-  })
-  .passthrough();
-
-export const memoryForgetPayloadSchema = z
-  .object({
-    version: z.literal(1),
-    kind: z.literal("memory.forget"),
-    requestId: z.string(),
-    userId: z.string(),
-    scope: z.enum(["message", "memory", "character", "account"]).optional(),
-    targetIds: z.array(z.string()).default([]),
-    sessionId: z.string().optional(),
-    memoryIds: z.array(z.string()).default([]),
-    sourceMessageId: z.string().optional(),
-    reason: z.enum([
-      "user_delete",
-      "session_no_memory",
-      "memory_delete",
-      "user_deleted_message",
-      "user_deleted_memory",
-      "memory_disabled",
-      "account_deleted",
-      "runtime_rebuild",
-    ]),
-  })
-  .passthrough();
-
-export const memoryRebuildPayloadSchema = z
-  .object({
-    version: z.literal(1),
-    kind: z.literal("memory.rebuild"),
-    requestId: z.string(),
-    userId: z.string(),
-    characterId: z.string().nullable().optional(),
-    source: z
-      .object({
-        memorySnapshotVersion: z.number().int().min(0).optional(),
-        memories: z.array(syncedMemorySchema).default([]),
-      })
-      .passthrough(),
-  })
-  .passthrough();
-
 const usageSchema = z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()]));
 
 const generationQualityDimensionSchema = z
@@ -411,18 +313,6 @@ export const generationQualitySchema = z
   })
   .passthrough();
 
-const memoryPatchSchema = z
-  .object({
-    sessionSummary: z
-      .object({
-        operation: z.literal("replace"),
-        text: z.string(),
-      })
-      .optional(),
-    candidates: z.array(memoryCandidateSchema).default([]),
-  })
-  .passthrough();
-
 const generationAssetSchema = z
   .object({
     key: z.string(),
@@ -435,62 +325,6 @@ const generationAssetSchema = z
   .passthrough();
 
 const aiFinalizeVariantsSchema = z.discriminatedUnion("kind", [
-  z
-    .object({
-      version: z.literal(1),
-      kind: z.literal("chat.completed"),
-      requestId: z.string(),
-      sessionId: z.string(),
-      userMessageId: z.string(),
-      assistantMessageId: z.string(),
-      content: z.string(),
-      model: z.string(),
-      usage: z.object({
-        promptTokens: z.number().int().min(0),
-        completionTokens: z.number().int().min(0),
-      }),
-      memoryPatch: memoryPatchSchema.optional(),
-      relationshipPatch: z
-        .object({
-          operation: z.literal("merge").default("merge"),
-          stage: z.enum(["new", "familiar", "close", "committed"]).optional(),
-          summaryDelta: z.string().optional(),
-          signalsDelta: z.record(z.string(), z.number()).default({}),
-          boundaries: z.array(z.string()).optional(),
-        })
-        .passthrough()
-        .optional(),
-      trace: z.unknown().optional(),
-    })
-    .passthrough(),
-  z
-    .object({
-      version: z.literal(1),
-      kind: z.literal("chat.failed"),
-      requestId: z.string(),
-      sessionId: z.string(),
-      userMessageId: z.string(),
-      assistantMessageId: z.string(),
-      error: z.object({
-        code: z.string(),
-        message: z.string(),
-        retryable: z.boolean(),
-        partialOutput: z.boolean(),
-      }),
-    })
-    .passthrough(),
-  z
-    .object({
-      version: z.literal(1),
-      kind: z.literal("memory.forgotten"),
-      requestId: z.string(),
-      userId: z.string(),
-      scope: z.enum(["message", "memory", "character", "account"]).optional(),
-      targetIds: z.array(z.string()).default([]),
-      deletedMemoryIds: z.array(z.string()).default([]),
-      reason: z.string(),
-    })
-    .passthrough(),
   z
     .object({
       version: z.literal(1),
@@ -623,7 +457,4 @@ export type ChatAccountErasureCompletedV2Payload = z.infer<
 export type AccountDeletionRequestedV2Payload = z.infer<
   typeof accountDeletionRequestedV2PayloadSchema
 >;
-export type MemorySyncPayload = z.infer<typeof memorySyncPayloadSchema>;
-export type MemoryForgetPayload = z.infer<typeof memoryForgetPayloadSchema>;
-export type MemoryRebuildPayload = z.infer<typeof memoryRebuildPayloadSchema>;
 export type AiFinalizePayload = z.infer<typeof aiFinalizePayloadSchema>;

@@ -13,11 +13,7 @@ import {
   defaultBullmqPrefix,
   mainWebUrlOrigin,
 } from "@idream/shared/env";
-import {
-  resolveChatFsRoot,
-  resolveChatMemoryExtractProfile,
-  resolveChatModelProfile,
-} from "@idream/shared";
+import { resolveChatFsRoot, resolveChatModelProfile } from "@idream/shared";
 import { ACCOUNT_ERASURE_COMPLETION_V2_INGEST_PATH } from "@idream/shared/contracts";
 import { resolveCompanionRuntimeConfig } from "./companion-runtime-selection.js";
 
@@ -174,58 +170,8 @@ export const env = {
   get PORT() {
     return Number.parseInt(process.env.CHAT_PORT ?? "3100", 10);
   },
-  // Read as one validated snapshot before each attempt is recorded. Runtime,
-  // memory backend, stable relationship cohort and private/normal profile must
-  // never drift apart inside that attempt.
+  // Read as one validated snapshot before each attempt is recorded.
   get COMPANION_RUNTIME_CONFIG() {
     return resolveCompanionRuntimeConfig(process.env);
-  },
-  // Long-term memory retrieval strategy (PLAN P1-2). "recency" (default) is the
-  // safe hot-path baseline; "igrep" attempts semantic ranking with a strict
-  // timeout that degrades back to recency (P0 hot path must not depend on igrep).
-  get MEMORY_RETRIEVAL() {
-    return process.env.CHAT_MEMORY_RETRIEVAL === "igrep" ? "igrep" : "recency";
-  },
-  get MEMORY_RETRIEVAL_TIMEOUT_MS() {
-    return Number.parseInt(process.env.CHAT_MEMORY_RETRIEVAL_TIMEOUT_MS ?? "1500", 10);
-  },
-  // Long-term memory EXTRACTION strategy (P1-C). "heuristic" (default) is the
-  // deterministic EN/ZH regex; "igrep" uses `igrep mem derive --llm` to pull
-  // structured observations off the turn, degrading to the regex on
-  // timeout/error/empty. Runs OFF the hot path (chat.memory.extract worker), so
-  // a slow LLM only delays memory writes, never replies.
-  get MEMORY_EXTRACT() {
-    return process.env.CHAT_MEMORY_EXTRACT === "igrep" ? "igrep" : "heuristic";
-  },
-  get MEMORY_EXTRACT_TIMEOUT_MS() {
-    return resolveChatMemoryExtractProfile(process.env).timeoutMs;
-  },
-  // Whether the igrep extractor passes --llm (semantic). Default on in igrep mode;
-  // set CHAT_MEMORY_EXTRACT_LLM=false to use igrep's deterministic path only.
-  get MEMORY_EXTRACT_LLM() {
-    return process.env.CHAT_MEMORY_EXTRACT_LLM !== "false";
-  },
-  // Model for `igrep mem derive --llm`. Defaults to the omlx reasoning model the
-  // product chose; pair it with EXTRA_BODY below to disable thinking so it emits
-  // parseable observations[] JSON.
-  get MEMORY_EXTRACT_MODEL() {
-    return resolveChatMemoryExtractProfile(process.env).model;
-  },
-  // OpenAI-compatible endpoint igrep's extractor calls. Reuses the chat model
-  // endpoint/key (omlx) by default, with dedicated overrides.
-  get MEMORY_EXTRACT_LLM_URL() {
-    return resolveChatMemoryExtractProfile(process.env).baseUrl;
-  },
-  get MEMORY_EXTRACT_LLM_KEY() {
-    return resolveChatMemoryExtractProfile(process.env).apiKey;
-  },
-  // Extra OpenAI request body passed to the extractor's LLM. Default disables
-  // Qwen "thinking" (reasoning prose breaks the observations[] JSON parse). Set
-  // CHAT_MEMORY_EXTRACT_EXTRA_BODY="" for a non-reasoning model.
-  get MEMORY_EXTRACT_EXTRA_BODY() {
-    return process.env.CHAT_MEMORY_EXTRACT_EXTRA_BODY ?? '{"chat_template_kwargs": {"enable_thinking": false}}';
-  },
-  get IGREP_BIN() {
-    return process.env.IGREP_BIN ?? "igrep";
   },
 } as const;

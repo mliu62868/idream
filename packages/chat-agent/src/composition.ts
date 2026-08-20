@@ -45,6 +45,24 @@ const IDREAM_COMPOSITION_IDENTITY = Object.freeze({
 });
 const EXECUTION_POLICY_VERSION = 1;
 const EFFECTFUL_TOOL_CONCURRENCY = 1;
+export const COMPANION_EXECUTION_PLUGIN_ORDER = [
+  "llm",
+  "session",
+  "system-prompt",
+  "tools",
+  "agent-registry",
+  "igrep",
+  "tool-call-timeout-policy",
+  "agent-loop",
+] as const;
+export const FORBIDDEN_COMPANION_EXECUTION_SERVICES = [
+  "shell",
+  "fs",
+  "filesystem",
+  "subagent",
+  "goal",
+  "scheduler",
+] as const;
 
 export type CompanionCompositionMode = "normal" | "private";
 
@@ -90,6 +108,7 @@ export async function applyCompanionComposition(
     plan: CompanionCompositionPlan;
   },
 ): Promise<void> {
+  assertCompanionExecutionManifest(input.plan.manifest);
   await ctx.plugin(LlmRuntime);
   await ctx.plugin(SessionStore);
   await ctx.plugin(SystemPrompt, SYSTEM_PROMPT_OPTIONS);
@@ -101,6 +120,26 @@ export async function applyCompanionComposition(
   );
   await ctx.plugin(ToolTimeoutPolicy);
   await ctx.plugin(AgentLoop, AGENT_LOOP_OPTIONS);
+}
+
+/** Gate C validates the manifest consumed by the executing engine. */
+export function assertCompanionExecutionManifest(
+  manifest: Readonly<Record<string, unknown>>,
+): void {
+  const pluginOrder = manifest.pluginOrder;
+  if (
+    !Array.isArray(pluginOrder) ||
+    pluginOrder.length !== COMPANION_EXECUTION_PLUGIN_ORDER.length ||
+    pluginOrder.some((entry, index) => entry !== COMPANION_EXECUTION_PLUGIN_ORDER[index])
+  ) {
+    throw new Error("companion execution plugin order drifted");
+  }
+  const forbidden = pluginOrder.find((entry) =>
+    FORBIDDEN_COMPANION_EXECUTION_SERVICES.includes(entry as never)
+  );
+  if (forbidden) {
+    throw new Error(`forbidden companion execution service loaded: ${String(forbidden)}`);
+  }
 }
 
 /**
@@ -127,6 +166,7 @@ export function createCompanionCompositionPlan(
   const manifest = immutableClone(
     companionCompositionManifest(mode, immutableIgrepConfig, authority),
   ) as Readonly<Record<string, unknown>>;
+  assertCompanionExecutionManifest(manifest);
   return Object.freeze({
     mode,
     normalizedIgrepConfig: immutableIgrepConfig,
@@ -155,16 +195,7 @@ export function companionCompositionManifest(
     cordisVersion: "4.0.1",
     dshVersion: COMPANION_DSH_VERSION,
     pluginVersion: COMPANION_IGREP_PLUGIN_VERSION,
-    pluginOrder: [
-      "llm",
-      "session",
-      "system-prompt",
-      "tools",
-      "agent-registry",
-      "igrep",
-      "tool-call-timeout-policy",
-      "agent-loop",
-    ],
+    pluginOrder: COMPANION_EXECUTION_PLUGIN_ORDER,
     systemPrompt: SYSTEM_PROMPT_OPTIONS,
     toolRuntime: {},
     agentLoop: AGENT_LOOP_OPTIONS,

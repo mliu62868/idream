@@ -1,5 +1,5 @@
 // SPEC: chat/worker (design §10) — one process consuming every chat queue:
-// generate / memory.extract / outbox.deliver / inbox.consume / reconcile /
+// generate / Scene+relationship projection / outbox.deliver / inbox.consume / reconcile /
 // maintain. Single instance (writes local files). Graceful shutdown closes all.
 import type { Worker } from "bullmq";
 import {
@@ -10,8 +10,6 @@ import {
 import { runWorker } from "./queue.js";
 import { logger } from "./logger.js";
 import {
-  cancelDshShadowExecutor,
-  drainDshShadowExecutor,
   processGenerateJob,
   terminalizeGenerateJobFailure,
 } from "./generate.js";
@@ -95,8 +93,6 @@ export function startWorker(): { close: () => Promise<void> } {
       clearInterval(reconcileTimer);
       clearInterval(maintainTimer);
       await Promise.all(workers.map((w) => w.close()));
-      cancelDshShadowExecutor("shutdown");
-      await drainDshShadowExecutor();
     },
   };
 }

@@ -1,7 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Pool } from "pg";
 import type { Prisma } from "../generated/client/client.js";
-import { createChatPrisma, createChatProjectorPrisma } from "./db.js";
 import type {
   RelationshipLinkage,
   RelationshipMessage,
@@ -17,39 +15,20 @@ import {
   recordChatFileMutation,
 } from "./file-mutations.js";
 
-const ENV_KEYS = [
-  "CHAT_COMPANION_RUNTIME",
-  "CHAT_MEMORY_BACKEND",
-  "CHAT_COMPANION_DSH_ROLLOUT_BPS",
-  "CHAT_COMPANION_DSH_ROLLOUT_ALLOWLIST",
-  "CHAT_COMPANION_DSH_ROLLOUT_SALT",
-  "CHAT_COMPANION_DSH_SHADOW_ENABLED",
-  "DSH_AGENT_TOKEN",
-  "DSH_AGENT_DEADLINE_MS",
-] as const;
-const originalEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
+const originalToken = process.env.DSH_AGENT_TOKEN;
+const originalDeadline = process.env.DSH_AGENT_DEADLINE_MS;
 
 afterEach(() => {
-  for (const key of ENV_KEYS) {
-    const value = originalEnv[key];
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
+  if (originalToken === undefined) delete process.env.DSH_AGENT_TOKEN;
+  else process.env.DSH_AGENT_TOKEN = originalToken;
+  if (originalDeadline === undefined) delete process.env.DSH_AGENT_DEADLINE_MS;
+  else process.env.DSH_AGENT_DEADLINE_MS = originalDeadline;
   vi.restoreAllMocks();
 });
 
-function nativeCleanupEnv(token = "cleanup-token"): void {
-  process.env.CHAT_COMPANION_RUNTIME = "native";
-  process.env.CHAT_MEMORY_BACKEND = "legacy";
-  process.env.CHAT_COMPANION_DSH_ROLLOUT_BPS = "0";
-  process.env.CHAT_COMPANION_DSH_ROLLOUT_ALLOWLIST = "";
-  process.env.CHAT_COMPANION_DSH_SHADOW_ENABLED = "false";
-  process.env.DSH_AGENT_TOKEN = token;
-  process.env.DSH_AGENT_DEADLINE_MS = "7000";
-  delete process.env.CHAT_COMPANION_DSH_ROLLOUT_SALT;
-}
-
-function message(input: Partial<RelationshipMessage> & Pick<RelationshipMessage, "id" | "role">): RelationshipMessage {
+function message(
+  input: Partial<RelationshipMessage> & Pick<RelationshipMessage, "id" | "role">,
+): RelationshipMessage {
   return {
     sessionId: "session-1",
     status: "sent",
@@ -66,7 +45,7 @@ function message(input: Partial<RelationshipMessage> & Pick<RelationshipMessage,
 }
 
 describe("companion memory projection", () => {
-  it("does not retain cleanup authority in applied privacy receipts", () => {
+  it("redacts cleanup authority only after the durable privacy mutation applies", () => {
     expect(appliedFileMutationReceipt({
       kind: "relationship_delete",
       characterId: "character-1",
@@ -77,93 +56,17 @@ describe("companion memory projection", () => {
     });
   });
 
-  it("only considers pending cleanup intents when recovering authority", async () => {
-    nativeCleanupEnv("");
-    const queryRaw = vi.fn(async (..._args: unknown[]) => [{ required: false }]);
-    await companionWorkspaceCleanupRequired(
-      { $queryRaw: queryRaw } as unknown as Prisma.TransactionClient,
+  it("always requires cleanup for the sole persistent DSH workspace authority", async () => {
+    await expect(companionWorkspaceCleanupRequired(
+      {} as Prisma.TransactionClient,
       "user-1",
       "character-1",
-    );
-    expect(String(queryRaw.mock.calls[0]?.[0])).toContain("mutation.status = 'pending'");
-  });
-
-  it("recognizes a pending cleanup intent and forgets its applied SQL receipt", async () => {
-    nativeCleanupEnv("");
-    const prisma = createChatPrisma();
-    const projector = createChatProjectorPrisma();
-    const superPool = new Pool({ connectionString: process.env.CHAT_TEST_SUPER_URL });
-    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const mutationId = `cleanup-receipt-${suffix}`;
-    const userId = `cleanup-user-${suffix}`;
-    const characterId = `cleanup-character-${suffix}`;
-    try {
-      await superPool.query(
-        `INSERT INTO chat.chat_file_mutations (id, user_id, kind, payload)
-         VALUES ($1, $2, 'relationship_delete', $3::jsonb)`,
-        [mutationId, userId, JSON.stringify({
-          kind: "relationship_delete",
-          characterId,
-          companionCleanupRequired: true,
-        })],
-      );
-
-      await prisma.$transaction(async (tx) => {
-        expect(await companionWorkspaceCleanupRequired(tx, userId, characterId)).toBe(true);
-      });
-
-      const updated = await projector.$executeRaw`
-        UPDATE chat.chat_file_mutations
-        SET status = 'applied',
-            payload = chat.redact_file_mutation_payload(id, kind, payload),
-            attempts = attempts + 1,
-            applied_at = timezone('utc', now())
-        WHERE id = ${mutationId}
-          AND status = 'pending'
-      `;
-      expect(updated).toBe(1);
-      const rows = await projector.$queryRaw<Array<{ payload: unknown; status: string }>>`
-        SELECT status, payload
-        FROM chat.chat_file_mutations
-        WHERE id = ${mutationId}
-      `;
-      expect(rows).toEqual([{
-        status: "applied",
-        payload: { kind: "relationship_delete", characterId },
-      }]);
-      await prisma.$transaction(async (tx) => {
-        expect(await companionWorkspaceCleanupRequired(tx, userId, characterId)).toBe(false);
-      });
-    } finally {
-      const cleanup = await superPool.connect();
-      try {
-        await cleanup.query("BEGIN");
-        await cleanup.query(
-          "SELECT set_config('idream.account_erasure_file_mutation_user', $1, true)",
-          [userId],
-        );
-        await cleanup.query(
-          "DELETE FROM chat.chat_file_mutations WHERE id = $1",
-          [mutationId],
-        );
-        await cleanup.query("COMMIT");
-      } catch (error) {
-        await cleanup.query("ROLLBACK");
-        throw error;
-      } finally {
-        cleanup.release();
-        await Promise.all([
-          prisma.$disconnect(),
-          projector.$disconnect(),
-          superPool.end(),
-        ]);
-      }
-    }
+    )).resolves.toBe(true);
   });
 
   it("replays only complete, unambiguous, memory-enabled canonical exchanges", () => {
-    const user1 = message({ id: "user-1", role: "user" });
-    const assistant1 = message({ id: "assistant-2", role: "assistant" });
+    const user = message({ id: "user-1", role: "user" });
+    const assistant = message({ id: "assistant-2", role: "assistant" });
     const deletedUser = message({
       id: "user-3",
       role: "user",
@@ -175,20 +78,19 @@ describe("companion memory projection", () => {
       role: "assistant",
       memoryAuthority: "disabled",
     });
-    const sources = new Map([
-      [assistant1.id, user1],
-      [deletedSourceAssistant.id, deletedUser],
-      [privateAssistant.id, user1],
-    ]);
     const linkage: RelationshipLinkage = {
-      sources,
-      ambiguousAssistantIds: ["assistant-ambiguous"],
+      sources: new Map([
+        [assistant.id, user],
+        [deletedSourceAssistant.id, deletedUser],
+        [privateAssistant.id, user],
+      ]),
+      ambiguousAssistantIds: [],
       candidateSourceIds: new Map(),
     };
 
     expect(canonicalCompanionMessages([{
       id: "session-1",
-      messages: [privateAssistant, deletedSourceAssistant, assistant1, deletedUser, user1],
+      messages: [privateAssistant, deletedSourceAssistant, assistant, deletedUser, user],
       linkage,
     }])).toEqual([
       expect.objectContaining({ id: "user-1", role: "user" }),
@@ -196,36 +98,32 @@ describe("companion memory projection", () => {
     ]);
   });
 
-  it("purges every workspace after rollback even when new turns use native", async () => {
-    nativeCleanupEnv();
+  it("purges relationship and user workspaces through the only cleanup port", async () => {
     const purge = vi.fn(async () => ({ purged: 1 }));
     const rebuild = vi.fn();
 
     await applyCompanionMemoryProjection(
       {} as Prisma.TransactionClient,
-      "user-rollback",
-      { kind: "relationship_delete", characterId: "character-rollback" },
+      "user-1",
+      { kind: "relationship_delete", characterId: "character-1" },
       { purge, rebuild },
     );
     await applyCompanionMemoryProjection(
       {} as Prisma.TransactionClient,
-      "user-rollback",
+      "user-1",
       { kind: "account_delete" },
       { purge, rebuild },
     );
 
     expect(purge.mock.calls).toEqual([
-      [{ scope: "relationship", userId: "user-rollback", characterId: "character-rollback" }],
-      [{ scope: "user", userId: "user-rollback" }],
+      [{ scope: "relationship", userId: "user-1", characterId: "character-1" }],
+      [{ scope: "user", userId: "user-1" }],
     ]);
     expect(rebuild).not.toHaveBeenCalled();
-    expect(companionMemoryProjectionTimeoutMs()).toBe(37_000);
   });
 
   it("delegates one fenced rebuild for retained canonical rows", async () => {
-    nativeCleanupEnv();
-    process.env.CHAT_COMPANION_DSH_SHADOW_ENABLED = "true";
-    const purge = vi.fn(async () => ({ purged: 1 }));
+    const purge = vi.fn();
     const rebuild = vi.fn(async () => ({ sessions: 0, messages: 0 }));
     const tx = {
       chatSession: { findMany: vi.fn(async () => []) },
@@ -233,94 +131,40 @@ describe("companion memory projection", () => {
 
     await applyCompanionMemoryProjection(
       tx,
-      "user-shadow",
-      { kind: "relationship_rebuild", characterId: "character-shadow" },
+      "user-1",
+      { kind: "relationship_rebuild", characterId: "character-1" },
       { purge, rebuild },
     );
 
     expect(purge).not.toHaveBeenCalled();
-    expect(rebuild).toHaveBeenCalledWith(expect.objectContaining({
+    expect(rebuild).toHaveBeenCalledWith({
       scope: "relationship",
-      userId: "user-shadow",
-      characterId: "character-shadow",
+      userId: "user-1",
+      characterId: "character-1",
       messages: [],
-    }));
-  });
-
-  it("uses an explicitly injected cleanup port even when deployment credentials are absent", async () => {
-    nativeCleanupEnv("");
-    process.env.CHAT_COMPANION_RUNTIME = "dsh";
-    process.env.CHAT_MEMORY_BACKEND = "igrep-dsh";
-    process.env.CHAT_COMPANION_DSH_ROLLOUT_SALT = "cleanup-test-salt";
-    const purge = vi.fn(async () => ({ purged: 1 }));
-    const rebuild = vi.fn();
-
-    await applyCompanionMemoryProjection(
-      {} as Prisma.TransactionClient,
-      "user-native",
-      {
-        kind: "relationship_delete",
-        characterId: "character-native",
-        companionCleanupRequired: true,
-      },
-      { purge, rebuild },
-    );
-
-    expect(purge).toHaveBeenCalledWith({
-      scope: "relationship",
-      userId: "user-native",
-      characterId: "character-native",
     });
-    expect(rebuild).not.toHaveBeenCalled();
   });
 
-  it("keeps a durable cleanup intent pending when its required capability is missing", async () => {
-    nativeCleanupEnv("");
-
-    await expect(applyCompanionMemoryProjection(
-      {} as Prisma.TransactionClient,
-      "user-rollback",
-      {
-        kind: "relationship_delete",
-        characterId: "character-rollback",
-        companionCleanupRequired: true,
-      },
-    )).rejects.toThrow("DSH workspace cleanup is required but unavailable");
+  it("derives cleanup timeout from the single DSH deadline", () => {
+    process.env.DSH_AGENT_TOKEN = "cleanup-token";
+    process.env.DSH_AGENT_DEADLINE_MS = "7000";
+    expect(companionMemoryProjectionTimeoutMs()).toBe(37_000);
   });
 
-  it("pins historical workspace authority into the durable privacy intent", async () => {
-    nativeCleanupEnv("");
+  it("persists the required cleanup authority before projection", async () => {
     const executeRaw = vi.fn(async (..._args: unknown[]) => 1);
-    const tx = {
-      $queryRaw: vi.fn(async () => [{ required: true }]),
-      $executeRaw: executeRaw,
-    } as unknown as Prisma.TransactionClient;
+    const tx = { $executeRaw: executeRaw } as unknown as Prisma.TransactionClient;
 
-    await recordChatFileMutation(tx, "user-rollback", {
+    await recordChatFileMutation(tx, "user-1", {
       kind: "relationship_delete",
-      characterId: "character-rollback",
+      characterId: "character-1",
     });
 
     const persistedPayload = executeRaw.mock.calls[0]?.[4];
-    expect(typeof persistedPayload).toBe("string");
     expect(JSON.parse(String(persistedPayload))).toEqual({
       kind: "relationship_delete",
-      characterId: "character-rollback",
+      characterId: "character-1",
       companionCleanupRequired: true,
     });
-  });
-
-  it("skips a persisted negative cleanup decision without requiring credentials", async () => {
-    nativeCleanupEnv("");
-
-    await expect(applyCompanionMemoryProjection(
-      {} as Prisma.TransactionClient,
-      "user-native",
-      {
-        kind: "relationship_delete",
-        characterId: "character-native",
-        companionCleanupRequired: false,
-      },
-    )).resolves.toBeUndefined();
   });
 });

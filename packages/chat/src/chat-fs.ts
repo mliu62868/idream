@@ -2,7 +2,6 @@
 // fs — no Store interface (YAGNI). To switch to shared storage/S3 later, change
 // only this file. Layout (under CHAT_FS_ROOT, tenant-partitioned):
 //   sessions/{userId}/{sessionId}.jsonl  agent execution trace (append-only)
-//   mem/{userId}/{charId}/memory.md      long-term memory (atomic rewrite)
 //   mem/{userId}/{charId}/relationship.md
 //   mem/{userId}/global/boundaries.md
 // INVARIANTS: append uses O_APPEND; whole-file updates use temp+rename (atomic);
@@ -41,7 +40,6 @@ export const chatFsPaths = {
     userId,
     `${safeSegment(sessionId)}.jsonl`,
   ],
-  memory: (userId: string, charId: string) => ["mem", userId, charId, "memory.md"],
   relationship: (userId: string, charId: string) => ["mem", userId, charId, "relationship.md"],
   relationshipEvidence: (userId: string, charId: string) => [
     "mem",
@@ -81,7 +79,7 @@ export async function writeAtomic(relParts: string[], content: string): Promise<
   await rename(tmp, file);
 }
 
-// Whole-file memory and relationship updates are read-modify-write operations.
+// Whole-file relationship and boundary updates are read-modify-write operations.
 // The worker is single-instance, but HTTP edits run in the same process and can
 // interleave with it. Serialize by authority-file path so an edit and a derived
 // update cannot silently overwrite each other.

@@ -54,5 +54,5 @@ export function verifiedCompanionProfileDigest(
 ): string {
   const readiness = verifiedByEndpoint.get(endpoint(baseUrl));
   if (!readiness) throw new Error("companion profile digest is not readiness-verified");
-  return readiness.profiles[mode].normalizedConfigDigest;
+  return readiness.profiles[mode].executionCompositionDigest;
 }

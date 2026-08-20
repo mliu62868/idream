@@ -85,16 +85,16 @@ Safety rules:
 
 ### 3.3 Chat
 
-Chat data is owned by Chat Service. The main site may proxy these APIs and consume chat outbox events, but it does not directly write chat sessions, messages, memories, or relationship state.
+Chat product data is owned by Chat Service. The main site may proxy these APIs and consume chat outbox events, but it does not directly write chat sessions, messages, relationship state, or workspace scope. Generic companion memory is owned by official igrep inside the DSH sidecar; no iDream item table/API exists.
 
 | 实体 | 关键字段 |
 | --- | --- |
-| `chat_sessions` | `id`, `user_id`, `character_id`, `title`, `status`, `memory_summary`, `last_message_at`, `created_at` |
+| `chat_sessions` | `id`, `user_id`, `character_id`, `title`, `status`, `memory_enabled`, `last_message_at`, `created_at`（`memory_summary` 仅历史 drain） |
 | `messages` | `id`, `session_id`, `role`, `content`, `model`, `status`, `token_count`, `safety_status`, `created_at` |
 | `message_versions` | `id`, `message_id`, `content`, `model`, `created_at`, `selected` |
 | `chat_usage` | `id`, `user_id`, `session_id`, `messages_used`, `period_start`, `period_end` |
-| `companion_memories` | `id`, `user_id`, `character_id`, `session_id`, `scope`, `type`, `text`, `confidence`, `status`, `source_message_ids`, `created_at`, `updated_at` |
-| `relationship_states` | `id`, `user_id`, `character_id`, `stage`, `summary`, `signals_json`, `boundaries_json`, `version`, `updated_at` |
+| Chat file projection | versioned Scene、relationship evidence/state、boundaries；不含 generic memory items |
+| DSH workspace | `(user_id, character_id)` derived scope 下的 official igrep canonical memory；private attempt 临时隔离 |
 
 Enums:
 

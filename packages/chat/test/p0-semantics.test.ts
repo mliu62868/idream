@@ -161,33 +161,6 @@ describe("P0-E: no-memory / incognito", () => {
     expect(msgs.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("clears the rolling summary when memory is disabled", async () => {
-    const user = "u_p0_nomem_summary";
-    const session = await createSession({ userId: user, characterId: CHAR }, { prisma });
-
-    await sendMessage(
-      { userId: user, sessionId: session.id, content: "remember this summary seed" },
-      { prisma },
-    );
-    expect(await generateOnce()).toBe(1);
-    // Seeded directly: turns no longer write memorySummary, but disabling memory
-    // still has to clear whatever a pre-existing row is carrying.
-    await prisma.chatSession.update({
-      where: { id: session.id },
-      data: { memorySummary: "legacy summary seed" },
-    });
-
-    await setNoMemory({ userId: user, sessionId: session.id, memoryEnabled: false }, { prisma });
-    expect((await prisma.chatSession.findUnique({ where: { id: session.id } }))?.memorySummary).toBeNull();
-
-    await sendMessage(
-      { userId: user, sessionId: session.id, content: "this should not enter summary" },
-      { prisma },
-    );
-    expect(await generateOnce()).toBe(1);
-    expect((await prisma.chatSession.findUnique({ where: { id: session.id } }))?.memorySummary).toBeNull();
-  });
-
   it("replays the original disabled authority after the session is restored", async () => {
     const user = "u_p0_nomem_replay";
     const session = await createSession({ userId: user, characterId: CHAR }, { prisma });
@@ -210,24 +183,6 @@ describe("P0-E: no-memory / incognito", () => {
     ).toBe("disabled");
     expect(await prisma.message.count({ where: { sessionId: session.id } })).toBe(2);
     expect(await generateOnce()).toBe(1);
-  });
-
-  it("does not repopulate a cleared summary from an enabled in-flight turn", async () => {
-    const user = "u_p0_nomem_inflight";
-    const session = await createSession({ userId: user, characterId: CHAR }, { prisma });
-    const sent = await sendMessage(
-      { userId: user, sessionId: session.id, content: "enabled before the toggle" },
-      { prisma },
-    );
-    expect(
-      (await prisma.message.findUniqueOrThrow({ where: { id: sent.assistantMessageId } }))
-        .memoryAuthority,
-    ).toBe("enabled");
-
-    await setNoMemory({ userId: user, sessionId: session.id, memoryEnabled: false }, { prisma });
-    expect(await generateOnce()).toBe(1);
-    expect((await prisma.chatSession.findUnique({ where: { id: session.id } }))?.memorySummary).toBeNull();
-    await obliterate(CHAT_QUEUES.memoryExtract);
   });
 
   it("fails historical unknown turn authority closed", async () => {
@@ -266,7 +221,7 @@ describe("P0-E: no-memory / incognito", () => {
         },
         prisma,
       ),
-    ).toEqual({ written: 0, skipped: "scene_only_legacy_unknown" });
+    ).toEqual({ written: 0, skipped: "scene_only_unknown" });
     expect(await prisma.chatSceneRevision.count({
       where: { sessionId: session.id, sourceAssistantMessageId: assistant.id },
     })).toBe(1);

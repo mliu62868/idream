@@ -4,16 +4,16 @@
 
 ## 1. 定位
 
-Chat Service 不是一个简单 LLM proxy，也不是主站后台 worker。它是 AI 伴侣 / 角色扮演的完整运行时，拥有聊天域数据库，负责让角色在多轮、多会话中保持一致、有记忆、有关系进展。
+Chat Service 不是一个简单 LLM proxy，也不是主站后台 worker。它是 AI 伴侣 / 角色扮演的产品权威，拥有聊天域数据库并通过单一 DSH runtime 执行每一轮；官方 igrep plugin 在 Chat 划定的 relationship workspace 内负责通用记忆的检索和写入生命周期。
 
 新的核心边界：
 
-- **Chat Service 拥有 chat domain**：会话、消息、消息版本、长期记忆、关系状态、聊天用量、流式事件、聊天审核轨迹、聊天 outbox 事件。
+- **Chat Service 拥有 chat domain**：会话、消息、消息版本、Soul/PreparedTurn、Scene/relationship/boundaries、workspace scope、聊天用量、流式事件、聊天审核轨迹、聊天 outbox 事件。
 - **主站拥有 core domain**：用户账号、登录会话、角色创建与审核、公开角色目录、订阅/权益权威、年龄/身份验证权威、SEO、library 聚合和全站后台。
 - **Chat Service 可以读主站 User 和角色表**：通过只读 DB role、view/read model 或只读副本读取必要字段，不能写主站权威表。
 - **主站不参与 chat 热路径落库**：发消息、流式输出、上下文检索、记忆写入、relationship 更新都在 Chat Service 内完成。
 
-关键边界：**主站是 user / character / billing / compliance 的权威源；Chat Service 是 session / message / memory / relationship 的权威源。** 两边可以共用 ID，不共享可变业务表写权限。
+关键边界：**主站是 user / character / billing / compliance 的权威源；Chat Service 是 session / message / relationship / workspace scope 的权威源；DSH 内的官方 igrep plugin 是通用记忆 lifecycle authority。** 两边可以共用 ID，不共享可变业务表写权限。
 
 ## 2. 产品目标
 
@@ -22,15 +22,15 @@ P0 目标：
 - 角色能记住当前会话上下文。
 - 角色能跨会话记住用户明确表达的偏好、基本事实、边界和共同经历。
 - 用户刷新页面、断开 SSE、worker 重试后，不丢任务、不丢最终消息。
-- 用户删除消息、删除记忆、关闭记忆或删除账号后，后续回复不再使用对应内容。
-- Premium/Deluxe 权益影响模型、上下文窗口、记忆深度和速率限制。
+- 用户删除消息、关闭记忆、重置整段 relationship 或删除账号后，后续回复不再从相应 Chat authority 构建上下文。
+- Premium/Deluxe 权益影响模型、最近消息窗口和速率限制；产品不在官方 plugin 之外另造自定义记忆容量或逐条管理层。
 - Chat 热路径不依赖主站 API 同步调用。
 
 P1 目标：
 
 - 关系状态随互动稳定演进，例如熟悉度、信任、亲密语气、共同经历。
-- 用户可在设置里查看、编辑、删除角色记住的内容。
-- 支持每个角色独立记忆，也支持用户允许的全局偏好记忆。
+- 用户可在设置里开关记忆并重置整个 relationship；不提供官方 plugin 尚未支持的逐条 list/edit/delete。
+- 每个 user/character relationship 使用独立 workspace，不建立跨角色的第二套全局记忆权威。
 - 支持 incognito / no-memory chat。
 - 支持 voice call、图片生成上下文、group chat 的记忆复用。
 
@@ -55,8 +55,8 @@ P1 目标：
 | Chat sessions | Chat Service | 读写权威 |
 | Messages / message versions | Chat Service | 读写权威 |
 | Chat usage / metering | Chat Service | 读写权威，向 billing/analytics 发事件 |
-| User-visible memories | Chat Service | 读写权威 |
-| Runtime vector index | Chat Service | 可缓存，可重建 |
+| Companion recall/write | DSH 内的官方 igrep plugin | Chat 定义 relationship scope、开关、私密隔离和整段重置，不解释或改写 item 格式 |
+| igrep workspace/index | DSH sidecar | 普通 relationship 可持久化且可按 Chat transcript 重建；私密 turn 仅临时 workspace |
 | Relationship state | Chat Service | 读写权威 |
 | Chat moderation trace | Chat Service | 读写权威，同时可向主站 safety/admin 发事件 |
 | Global safety policy | 主站/Safety | Chat 只读 policy snapshot 或调用独立 moderation provider |
@@ -64,8 +64,8 @@ P1 目标：
 这个边界避免三类问题：
 
 - 主站不再成为 chat 热路径瓶颈。
-- 用户聊天、记忆和关系状态有清晰的写入权威。
-- Chat 可以独立扩展 memory retrieval、streaming、group chat 和 voice，而不复制主站用户/角色/支付逻辑。
+- 用户聊天、relationship 与 companion workspace 有清晰且不重叠的写入权威。
+- Chat 可以独立扩展 streaming、group chat 和 voice，而不复制主站用户/角色/支付逻辑或 official plugin 的 memory lifecycle。
 
 ## 4. 数据库拓扑
 
@@ -85,7 +85,7 @@ Postgres cluster
   chat.chat_moderation_events
   chat.chat_outbox_events
   chat.chat_inbox_events            # Main→Chat 入站事件
-  # companion_memories / relationship_states 已迁文件层（mem/*.md），不在 PG
+  # Scene / relationship / boundaries 由 Chat 文件投影持有；通用记忆只在 DSH/igrep workspace
   # chat_stream_events: P0 仅 Redis Stream，DB replay 表可选
 ```
 
@@ -168,7 +168,7 @@ Chat 建会话和发消息时必须检查：
 SELECT
   user_id,
   model_tier,
-  memory_multiplier,
+  memory_multiplier,              -- 历史/预留字段，Phase 6 不映射为自研 memory cap
   unlimited_messages,
   voice_enabled,
   updated_at
@@ -178,7 +178,7 @@ FROM billing.current_chat_entitlements;
 Chat 用它决定：
 
 - 模型 tier。
-- 上下文窗口和记忆数量。
+- 上下文窗口；`memory_multiplier` 当前不改变 official igrep 行为。
 - 免费消息额度是否生效。
 - voice/group chat 等功能门。
 
@@ -208,7 +208,7 @@ character_id
 title
 status                  active | archived | deleted
 memory_enabled
-memory_summary
+memory_summary          # 历史可空 drain 字段；不进入运行时上下文或公共投影
 last_message_at
 created_at
 updated_at
@@ -218,7 +218,7 @@ deleted_at
 说明：
 
 - `user_id` 和 `character_id` 引用主站 ID，但在独立 DB 拓扑下不做跨库 FK。
-- `memory_summary` 是当前会话滚动摘要，不是长期记忆替代品。
+- `memory_summary` 只为既有 schema/历史行保留；Phase 6 不再读写它，也不把它投影给产品端。
 
 ### 6.2 `chat.messages`
 
@@ -264,25 +264,16 @@ updated_at
 
 Chat Service 本地判定免费消息额度；每次成功 assistant reply 后写 usage，并通过 outbox 发 `chat.usage.incremented` 给主站 analytics/billing。
 
-### 6.5 `chat.companion_memories`（已迁文件层，非 PG 表）
+### 6.5 DSH/igrep relationship workspace
 
-> **更新**：长期记忆改为**文件层权威**（`mem/{userId}/{charId}/memory.md`），不再是 PG 表。下方字段保留为**每条记忆的逻辑结构**（落在文件 front-matter）。技术落地见 `docs/architecture/14-chat-service-tech-design.md` §5。
+通用记忆没有 iDream 自定义 item 表或 `memory.md` 权威。官方 igrep plugin 在 DSH sidecar 内拥有 wake/search/ingest 生命周期；Chat 只提供不可绕过的产品边界：
 
-```text
-（逻辑字段，存于 memory.md front-matter）
-user_id
-character_id
-session_id
-scope                   global | character | session
-type                    user_fact | preference | boundary | shared_event
-text
-confidence
-status                  active | deleted
-source_message_ids
-created_at / updated_at / deleted_at
-```
-
-每条长期记忆必须有来源（`source_message_ids` 回链 PG message）。不能从被拦截、已删除、no-memory 会话中的内容生成长期记忆——派生时 `canMemorize` 回查 PG message 状态。
+- `memory_enabled=true`：按 `(user_id, character_id)` 使用唯一持久 workspace。
+- 已迁移 relationship 复用已存在的 canonical workspace/proof；历史 marker 仅用于迁移审计，不是新请求 admission gate。
+- 没有 workspace/proof 的 relationship 是合法的新关系，由 sidecar 原生初始化为空 workspace，绝不读取旧 `memory.md`。
+- `memory_enabled=false`：使用临时 workspace，不写 canonical index/proof。
+- Chat terminal commit ACK 后才允许本轮进入 plugin ingest；失败或结果不明保持可审计的 `unknown`，不得猜测成功。
+- 官方 plugin 没有逐条 list/edit/delete seam，因此产品只提供记忆开关和 whole-relationship reset，不建立第二套 item authority。
 
 ### 6.6 `chat.relationship_states`（已迁文件层，非 PG 表）
 
@@ -383,30 +374,12 @@ Chat 可以把 persona 转成内部 prompt，但不能修改权威角色设定�
 
 ### 7.2 Memory
 
-记忆分四类：
+通用记忆由官方 igrep plugin 解释，Chat 不复制它的类型、候选抽取、容量、淘汰或检索排序。Chat 保留四条第一性边界：
 
-| 类型 | 示例 | 默认 scope | 说明 |
-|------|------|------------|------|
-| `user_fact` | 用户喜欢被叫某个昵称 | user/character | 稳定事实 |
-| `preference` | 喜欢慢热、轻松语气 | user/character | 交互偏好 |
-| `boundary` | 不想聊某类话题 | user/global | 高优先级，不应被覆盖 |
-| `shared_event` | 上次一起讨论过旅行设定 | session/character | 共同经历或剧情节点 |
-
-允许写入长期记忆：
-
-- 用户明确表达稳定偏好。
-- 用户明确给出个人设定、称呼、互动边界。
-- 多次重复出现且置信度足够高的互动偏好。
-- 与角色有关的共同剧情节点。
-
-禁止写入长期记忆：
-
-- 审核 blocked 的输入或输出。
-- 用户删除过的消息。
-- `mode=no_memory` 会话内容。
-- 敏感身份信息，除非产品明确需要且用户明确提供。
-- 模型自行猜测的用户事实。
-- 低置信度情绪判断，例如“用户一定喜欢 X”。
+- 普通 turn 只能访问当前 user/character 的唯一持久 relationship workspace。
+- no-memory/private turn 只能访问本次 attempt 的临时 workspace，且不得产生 canonical memory/proof。
+- Scene、relationship state 与 boundaries 是 Chat 权威的独立 PreparedTurn 输入；尤其 boundaries 不依赖 igrep 检索。
+- 只有 Chat terminal commit ACK 后才允许 official plugin ingest；blocked、failed、deleted 或未提交内容不能由 Chat 主动送入记忆。
 
 ### 7.3 Relationship State
 
@@ -428,13 +401,9 @@ Chat 可以把 persona 转成内部 prompt，但不能修改权威角色设定�
 }
 ```
 
-### 7.4 Session Summary
+### 7.4 PreparedTurn context
 
-`chat_sessions.memory_summary` 是当前会话滚动摘要，用于减少 token 成本。
-
-- session summary：当前会话内剧情/上下文压缩。
-- long-term memory：跨会话偏好、事实、边界和关系事件。
-- relationship state：用户和角色之间的长期互动状态。
+每轮上下文由 Chat 构建一次不可变 PreparedTurn：已发布 Soul、recent messages、Scene、relationship、boundaries、已发布知识和 entitlement policy。通用记忆由 DSH 内的 igrep plugin 在对应 workspace 召回；历史 `chat_sessions.memory_summary` 不再进入上下文。
 
 ## 8. API 边界
 
@@ -478,9 +447,7 @@ GET    /api/v1/chat/streams/:assistantMessageId
 POST   /api/v1/messages/:id/regenerate
 DELETE /api/v1/messages/:id
 
-GET    /api/v1/chat/memories
-PATCH  /api/v1/chat/memories/:id
-DELETE /api/v1/chat/memories/:id
+POST   /api/v1/chat/sessions/:id/memory
 POST   /api/v1/chat/sessions/:id/no-memory
 
 GET    /api/v1/chat/relationships
@@ -488,6 +455,8 @@ GET    /api/v1/chat/relationships/:characterId
 PATCH  /api/v1/chat/relationships/:characterId
 DELETE /api/v1/chat/relationships/:characterId
 ```
+
+`/api/v1/chat/memories` 及其 item route 不存在。relationship `DELETE` 是唯一的通用记忆清除能力：同一 durable mutation 同时删除 Chat relationship 投影并 purge 对应 DSH workspace。
 
 主站产品页可以直接代理这些 API，或者前端按环境配置调用 Chat Service 域名。
 
@@ -515,30 +484,27 @@ Chat Service:
      - 输入被审核拦截（P0-B）：**不入队、不返回 streamUrl**，返回
        `{ status:"blocked", streamUrl:null, safety:{ layer:"input", policyCode } }`；
        前端据此原地展示安全提示，不开启空的 EventSource。
-  9. Chat worker 将 placeholder 转为 generating、刷新 generation lease，并构建上下文：
+  9. Chat worker 将 placeholder 转为 generating、刷新 generation lease，并构建不可变 PreparedTurn：
+       - released Soul + character authority
        - recent messages
-       - session summary
-       - companion memories
-       - relationship state
-       - character persona from read-only view
-       - entitlement policy
- 10. 调模型并写 Redis Stream token。
+       - Scene / relationship / boundaries
+       - released knowledge + entitlement policy
+       - relationship workspace scope（普通持久、private 临时）
+ 10. 单一路径调用 DSH AgentLoop；官方 igrep plugin 在同一 loop 内完成 wake/search，worker 写 Redis Stream token。
  11. 输出审核。
  12. DB transaction（只账本，强一致）:
        - update assistant message
        - create selected message_version
        - increment chat_usage
-       - update memory_summary           # 会话滚动摘要，留 PG
        - insert moderation events
        - insert outbox events
- 13. finalize 后发送 SSE done；写 session.jsonl（chat.generate 进程内 best-effort append）。
- 14. enqueue chat.memory.extract：按 reply_to_message_id 精确派生长期记忆/关系，写**文件层**（mem/*.md），
-     **不进上面的 PG 事务**（最终一致；companion_memories / relationship_states 已迁文件）。
-     `memory_extracted_attempt` 记录 durable 派生水位，遗漏任务由 reconciler 补投，relationship 按 turn key 幂等。
+ 13. terminal commit ACK 后发送 SSE done，并允许 official igrep plugin ingest 本轮；终端 trace 只记录 content-free attempt/call/outcome/effect 身份。
+ 14. enqueue `chat.memory.extract`：该历史 wire name 的任务现在只从权威 turn 派生 Scene/relationship 投影，
+     不抽取通用记忆、不写 summary、不调用旧 importer；`memory_extracted_attempt` 仅作为该投影的 durable 水位。
  15. outbox 异步投递主站 analytics/safety/library。
 ```
 
-> **更新**：长期记忆与关系状态已迁文件层（§6.5/§6.6），故移出 finalize 事务，改由异步 `chat.memory.extract` 写文件。finalize 事务只保留账本（messages/usage/moderation/outbox + 会话滚动摘要）。详见 `docs/architecture/14-chat-service-tech-design.md` §3/§5。
+> Phase 6 只有 DSH/igrep 通用记忆 authority。Chat finalize 事务保留 messages/usage/moderation/outbox 账本；Scene/relationship 是 Chat 文件投影，通用记忆的 ingest 受 terminal commit ACK gate 约束。
 
 浏览器断线重连时带 `Last-Event-ID`，Chat 从 Redis Stream 继续读。如果 token stream 已过期，前端退化为拉取 `GET /api/v1/chat/sessions/:id` 中已落库的消息。
 
@@ -547,10 +513,9 @@ Chat Service:
 Chat Service 内部可以使用 BullMQ + Redis，但这些队列不是主站到 worker 的跨服务协议。
 
 ```text
-chat.generate            生成 assistant 回复 + 落账本 + 写 session.jsonl
+chat.generate            DSH AgentLoop 生成 assistant 回复 + 落账本
 chat.moderation.deep     深度审核补偿
-chat.memory.extract      按 reply_to_message_id 读取 PG 权威 turn，派生记忆/关系写文件层；session.jsonl 仅诊断
-chat.memory.rebuild      重建 memory index（igrep）
+chat.memory.extract      历史 wire name：按 reply_to_message_id 读取 PG 权威 turn，只派生 Scene/relationship
 chat.outbox.deliver      投递 Chat→Main 跨服务事件
 chat.inbox.consume       消费 Main→Chat 入站事件（chat_inbox_events）
 chat.maintain            session.jsonl 滚动/压缩/TTL + 清理过期 stream
@@ -573,7 +538,6 @@ chat.maintain            session.jsonl 滚动/压缩/TTL + 清理过期 stream
 
 ```text
 chat-generate:<assistantMessageId>
-memory-rebuild:<userId>:<characterId>:<version>
 outbox:<eventId>
 ```
 
@@ -607,7 +571,6 @@ chat.message.created
 chat.message.completed
 chat.message.blocked
 chat.session.deleted
-chat.memory.updated
 chat.relationship.updated
 chat.usage.incremented
 chat.safety.flagged
@@ -629,15 +592,15 @@ P0 控制：
 
 - 删除聊天消息后，后续上下文不再使用该消息。
 - 删除会话后，不在普通 chat context 中出现。
-- 关闭记忆后，`memory_enabled=false`，不检索长期记忆，不写新长期记忆。
-- 删除记忆后，memory hard-delete 或 crypto-erasure，并重建 runtime index。
+- 关闭记忆后，`memory_enabled=false`，后续 attempt 使用临时 workspace，不读写 canonical relationship workspace。
+- 重置 relationship 后，Chat relationship 投影和对应 DSH workspace 作为同一 durable intent 被清除；不提供逐条 memory 删除。
 
 P1 控制：
 
-- 账号导出包含 Chat Service 的 messages、memories、relationship snapshots。
+- 账号导出包含 Chat Service 的 messages、Scene/relationship/boundaries snapshots；官方 plugin 无逐条枚举 seam，不能伪造 item 导出。
 - 账号删除由主站通过专属 capability route 发 `user.account_deletion.requested.v2`，Chat 执行聊天域删除/匿名化，并回传带精确 request event id 的 `chat.account_erasure.completed`；`user.deleted` 仅保留消费历史已持久化事件。
 
-删除不能只从检索结果中过滤，必须清理可检索索引、摘要缓存和 source linkage。
+整段重置和账号删除不能只从检索结果中过滤，必须 purge 对应 workspace，并清理 Chat 文件投影和 source linkage。
 
 ## 13. 安全与合规
 
@@ -660,8 +623,8 @@ Chat Service 独立测试：
 4. 调 `POST /chat/sessions/:id/messages`。
 5. fake LLM 输出 token，断言 Redis Stream start/delta/done。
 6. 断言 `messages`、`message_versions`、`chat_usage` 已落库。
-7. 断言 `mem/*.md`（记忆/关系文件）符合规则，且未从 blocked/no-memory 派生。
-8. 删除 message/memory/session，确认后续 context 不再包含被删除内容（PG 行 + 文件 + session.jsonl 都清）。
+7. 断言已有已迁移 workspace 被复用、全新 relationship 原生初始化为空、private turn 不产生 canonical workspace/proof。
+8. 关闭记忆和 whole-relationship reset 后，确认 workspace scope 与 Chat relationship/boundaries 权威符合预期；`/memories` item API 必须 404。
 
 主站集成测试：
 
@@ -674,12 +637,12 @@ Chat Service 独立测试：
 
 ## 15. 实施路线
 
-1. 从现有主站 Prisma schema 中拆出 chat domain 表的目标 schema：`chat_sessions`、`messages`、`message_versions`、`chat_usage`（`companion_memories` / `relationship_states` **改文件层，不入 PG**）。
-2. 新增 `chat_moderation_events`、`chat_outbox_events`、`chat_inbox_events`；建文件层目录（sessions/ + mem/，直接 fs，读写集中在 `chat-fs.ts`）。
+1. 从现有主站 Prisma schema 中拆出 chat domain 表的目标 schema：`chat_sessions`、`messages`、`message_versions`、`chat_usage`；通用记忆不建 iDream item 表。
+2. 新增 `chat_moderation_events`、`chat_outbox_events`、`chat_inbox_events`；Chat 文件投影只承载 Scene/relationship/boundaries。
 3. 定义主站只读 views：`chat_user_view`、`chat_character_view`、`chat_entitlement_view`、`chat_user_eligibility_view`。
 4. 建立 Chat Service DB role：主站权威 schema 只读，chat schema 读写。
 5. 把 `POST /chat/sessions/:id/messages` 的权威落库迁移到 Chat Service。
-6. finalize 事务只落账本；memory/relationship 改异步 `chat.memory.extract` 写文件层（不进事务）。
+6. finalize 事务只落账本；Chat terminal ACK 后才开放 official igrep ingest，Scene/relationship 由异步投影维护。
 7. 主站改为调用/代理 Chat API，不再写 chat tables。
 8. 用 outbox 同步 `chat.message.completed`、`chat.usage.incremented`、`chat.safety.flagged`。
 9. 增加账号删除、角色下架、权益变更的主站到 Chat 事件。
@@ -710,53 +673,25 @@ Chat Service 独立测试：
 
 - **阶段降级**：长期不互动时阶段可缓慢回落（产品决策：回落比晋升慢得多，且无任何负面通知——避免制造愧疚感）。回落阈值为**可调运营参数**。
 
-### 16.2 记忆降级的 UI 反馈（信任不变量）
+### 16.2 记忆错误与边界（信任不变量）
 
-当记忆检索超时、igrep 不可用或文件读出错时，热路径**静默退化为"仅 recent messages"**继续生成（见 `14-chat-service-tech-design.md` §5 热路径降级）。这对伴侣产品是一个**隐藏的信任风险**：角色会显得"突然忘了我"或"性格变了"。产品口径：
+igrep 是 DSH loop 内的官方工具，不存在 native 或自研 retrieval fallback。tool timeout/error 必须保留 call identity 与 content-free outcome；执行结果不明时保持 `unknown`，不得伪装成召回成功或静默切到第二套 memory authority。
 
-- **语气/事实记忆**：**静默降级，不向用户报错、不显示"记忆暂不可用"横幅**。理由：弹一个技术错误反而打破沉浸感、放大"她坏了"的感受；偶发一轮回复不够"记得"，远比一个错误提示温和。降级是临时的，下一轮恢复即可。
-
-- **边界（boundary）是硬不变量，永不降级**：用户设定的边界（不想聊的话题、禁忌、安全相关约束）**必须每轮全量注入，绝不受检索超时/索引不可用影响**。工程上 `boundaries` 文件与普通记忆走不同路径（全量注入 + 进程内缓存，见 `14` §5），即使其余记忆检索全部超时，边界仍然在场。
+- **边界（boundary）是硬不变量，永不依赖召回**：用户设定的边界必须每轮从 Chat 权威全量注入 PreparedTurn，不受 igrep 超时或 workspace 状态影响。
 
   > **产品不变量（写死，不可降级）**：宁可这一轮"显得没那么记得共同经历"，**也绝不**因为降级而**越过一条已知边界**。越界是严重信任与合规事故，遗忘细节只是体验瑕疵。两者优先级不对等。
 
-- **可观测但不打扰**：降级事件记内部指标（降级率是 SLO 信号），但**不**作为面向用户的提示。若降级率持续偏高（角色长期"失忆"），属于工程告警范畴，不是 UI 文案能补偿的——要修的是检索可用性。
+- **可观测且不伪装成功**：igrep error/timeout/unknown 进入内部 trace 与指标；产品按 terminal error 语义展示失败和重试，不生成一个看似成功的无记忆 fallback reply。
 
-### 16.3 `chat_memory_multiplier` 各档默认值与单位映射
+### 16.3 Entitlement 与 official memory
 
-`chat_memory_multiplier` 来自 entitlement（数值 SSoT 在 `ECONOMY_AND_PRICING.md` §2.2：Free/Premium=1，Deluxe=3）。本节定义这个倍数**乘的是什么**，并给出各档具体档位。
-
-- **倍数作用对象**：同时缩放两件事——
-  1. **每个 (user, character) 的长期记忆上限**（`max_stored_memories`，超出按 recency+confidence 淘汰最弱的）；
-  2. **每轮检索注入的 top-K 结构化记忆条数**（`retrieved_top_K`，`user_fact`/`preference`/`shared_event` 合计）。
-- **不缩放**：`boundaries`（永远全量注入，与档位无关——见 §16.2）；会话内 recent messages 窗口由 `max_context_messages` 独立控制。
-
-具体映射表（**baseline = multiplier 1**；数值为**可调运营参数**，最终以 policy resolver 配置为准，不写死在判定逻辑）：
-
-| 档位 | multiplier | `max_stored_memories`（每角色长期记忆上限） | `retrieved_top_K`（每轮注入结构化记忆条数） | `max_context_messages`（recent 窗口） |
-|------|-----------|---------------------------------------------|---------------------------------------------|----------------------------------------|
-| Free | 1（基线） | 100 | 8 | 20 |
-| Premium | 1（基线） | 100 | 8 | 40 |
-| Deluxe | 3 | 300 | 24 | 60 |
-
-说明：
-
-- **"3×" 同时放大"记得多少"（stored）和"每轮唤起多少"（top-K）**——这才是 Deluxe "更懂你、记得更久" 的体感来源，而不仅是存得多但唤不起来。
-- Free 与 Premium 的 `chat_memory_multiplier` **同为 1**（记忆深度不是 Premium 的卖点；Premium 的卖点是 unlimited messages / 生成权益，见 ECONOMY §2）。Premium 相对 Free 仅 `max_context_messages` 更大（更长会话连贯性），记忆档位一致。
-- `max_context_messages` 不直接乘 `chat_memory_multiplier`，是 policy resolver 里与档位关联的独立参数，列在此表只为给出完整的"记忆/上下文预算"全景。
-- 表中所有数字标记为 **tunable**：进 policy resolver 配置（`14` §3 `resolvePolicy`），可随成本/效果 A/B 调整，不进代码常量。
+Phase 6 不把 `chat_memory_multiplier` 映射成 iDream 自研的 item 上限、top-K 或淘汰规则，因为官方 igrep 没有这个受支持的产品 seam。entitlement 仍可决定模型与 recent-message context；只有在官方 plugin 提供稳定、可测试的配置契约后，才能把记忆档位重新纳入产品承诺。
 
 ### 16.4 消息编辑/删除对记忆的影响
 
-- **删除消息 / 被审核拦截的消息**：**永不**成为长期记忆。这是既定设计——派生时 `canMemorize` 回查 PG message 的 `status`/`safety_status`（§7.2、§12、`14` §5），blocked/deleted 一律拒绝。已删消息若曾被派生过记忆，按 §12 隐私删除连带清理（记忆 source linkage 回链该 message）。
-
-- **编辑历史消息**：编辑一条**已经派生过记忆**的旧消息，**不会**回溯重写已派生的长期记忆（产品决策）。
-
-  > **理由（KISS / YAGNI）**：记忆是从对话**流**蒸馏的产物，一条旧消息可能已与其他消息合并、消化进关系叙事或滚动摘要，做"精确回溯撤销并重算"既复杂又易错（要追溯哪些记忆受这条消息影响、部分回滚、重建索引），收益极低。伴侣场景里编辑旧消息极少见，且新的互动会自然覆盖旧倾向。
-
-  产品承诺改为：**编辑只影响该消息之后的对话与未来派生**——编辑后的内容会随后续互动正常进入记忆候选；用户若要清除某条已记住的内容，走**显式的记忆删除入口**（§12 / `GET·PATCH·DELETE /api/v1/chat/memories`），这是直接、可验证、用户可控的路径，而非依赖编辑消息这种隐式副作用。
-
-  - **edge case**：编辑**尚未派生**的近期消息（派生水位线之上，见 `14` §9 D3），派生本就读最新文本，自然用编辑后的版本——无需特殊处理。
+- blocked/failed turn 不会越过 Chat terminal commit ACK gate 进入 official plugin ingest。
+- 编辑或删除历史消息会改变 Chat transcript、后续 PreparedTurn 和 whole-relationship rebuild 的 canonical input。
+- 官方 plugin 当前没有按 source message 精确撤销单个 item 的 seam，因此产品不承诺 item 级回溯删除。需要确保通用记忆完全清除时，用户执行 whole-relationship reset；这会 purge workspace 并清除 relationship 投影。
 
 ### 16.5 语音计费口径
 

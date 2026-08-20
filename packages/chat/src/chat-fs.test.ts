@@ -32,7 +32,7 @@ describe("chat-fs", () => {
   });
 
   it("writeAtomic replaces whole file", async () => {
-    const p = chatFsPaths.memory("u1", "c1");
+    const p = chatFsPaths.relationship("u1", "c1");
     await writeAtomic(p, "v1");
     await writeAtomic(p, "v2");
     expect(await readWhole(p)).toBe("v2");
@@ -45,10 +45,10 @@ describe("chat-fs", () => {
 
   it("listPrefix + deletePrefix cover a user partition (privacy delete)", async () => {
     await appendLine(chatFsPaths.sessionLog("u9", "s1"), "{}");
-    await writeAtomic(chatFsPaths.memory("u9", "c1"), "m");
+    await writeAtomic(chatFsPaths.relationship("u9", "c1"), "r");
     await writeAtomic(chatFsPaths.boundaries("u9"), "b");
     const before = await listPrefix(chatFsPaths.userPrefix("u9"));
-    // listPrefix is rooted at CHAT_FS_ROOT; user files live under sessions/ and mem/
+    // listPrefix is rooted at CHAT_FS_ROOT; relationship and boundaries share mem/.
     expect((await listPrefix(["sessions", "u9"])).length).toBe(1);
     expect((await listPrefix(["mem", "u9"])).length).toBe(2);
     void before;
@@ -65,7 +65,7 @@ describe("chat-fs", () => {
   });
 
   it("serializes read-modify-write work for the same authority file", async () => {
-    const target = chatFsPaths.memory("u-lock", "c-lock");
+    const target = chatFsPaths.relationship("u-lock", "c-lock");
     const order: string[] = [];
     let releaseFirst = (): void => {};
     const firstGate = new Promise<void>((resolve) => {

@@ -1,9 +1,7 @@
 import "dotenv/config";
-import { COMPANION_IGREP_VERSION } from "@idream/shared/chat/companion-runtime";
 import { CompanionEngine } from "./engine";
 import { bindIgrepLlmEnvironment, loadSidecarConfig } from "./config";
 import {
-  IgrepLegacyMemoryImporter,
   IgrepMemoryProbe,
   IgrepMemoryRebuilder,
   loadIgrepPlugin,
@@ -20,7 +18,6 @@ const instance = createSidecarInstanceIdentity();
 const plugin = Promise.resolve().then(() => loadIgrepPlugin(config.igrepPluginUrl));
 const workspaces = new AttemptWorkspaceStore({
   canonicalRoot: config.canonicalRoot,
-  shadowRoot: config.shadowRoot,
   privateRoot: config.privateRoot,
   memoryProbe: new IgrepMemoryProbe(config.igrepCommand),
 });
@@ -36,10 +33,6 @@ const engine = new CompanionEngine({
   igrepCommand: config.igrepCommand,
   igrepLlm: config.igrepLlm,
   rebuilder: new IgrepMemoryRebuilder(config.igrepCommand),
-  legacyImporter: new IgrepLegacyMemoryImporter(
-    config.igrepCommand,
-    COMPANION_IGREP_VERSION,
-  ),
   maxSteps: config.maxSteps,
   maxConcurrentAgents: config.maxConcurrentAgents,
 });

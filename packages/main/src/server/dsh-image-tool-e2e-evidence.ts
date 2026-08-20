@@ -254,7 +254,6 @@ export type DshImageToolAuditSnapshot = {
   };
   cleanup: {
     sessionGone: boolean;
-    memoriesGone: boolean;
     relationshipsGone: boolean;
     recentChatDeleted: boolean;
     sourceTextRedacted: boolean;

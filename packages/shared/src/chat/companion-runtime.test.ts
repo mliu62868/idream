@@ -8,15 +8,11 @@ import {
   companionCommitAckSchema,
   companionEventSchema,
   companionInvocationSchema,
-  companionLegacyMemoryImportSchema,
   companionMemoryCutoverProofSchema,
   companionMemoryCutoverSidecarProofSchema,
   companionNdjsonFrameSchema,
   companionProbeDshEvidenceSchema,
   companionReadinessSchema,
-  companionShadowAdmissionSchema,
-  companionShadowComparisonSchema,
-  companionShadowPublicEvidenceSchema,
   companionTerminalCandidateSchema,
   companionToolCallSchema,
   companionToolResultSchema,
@@ -98,7 +94,7 @@ const preparedTurn = {
   budget: {
     maxInputTokens: 8_000,
     usedInputTokens: 1_234,
-    dropped: ["memory" as const],
+    dropped: ["transcript" as const],
   },
   releasedKnowledge: {
     characterId: "character-1",
@@ -123,7 +119,7 @@ const preparedTurn = {
   },
 };
 
-function invocation(memoryMode: "normal" | "private" | "shadow") {
+function invocation(memoryMode: "normal" | "private") {
   return {
     invocationId: `invocation-${memoryMode}`,
     attemptId: `attempt-${memoryMode}`,
@@ -138,7 +134,7 @@ function invocation(memoryMode: "normal" | "private" | "shadow") {
 }
 
 describe("companion runtime stable wire contract", () => {
-  it.each(["normal", "private", "shadow"] as const)(
+  it.each(["normal", "private"] as const)(
     "round-trips a complete %s invocation without importing runtime implementation types",
     (memoryMode) => {
       const parsed = companionInvocationSchema.parse(invocation(memoryMode));
@@ -174,112 +170,6 @@ describe("companion runtime stable wire contract", () => {
         payload: {},
       }).success,
     ).toBe(false);
-  });
-
-  it("pins Shadow admission and comparison evidence without prompt or answer bytes", () => {
-    expect(companionShadowAdmissionSchema.parse({
-      schemaVersion: 1,
-      status: "skipped_private",
-      enqueued: false,
-    })).toEqual({
-      schemaVersion: 1,
-      status: "skipped_private",
-      enqueued: false,
-    });
-    expect(companionShadowAdmissionSchema.safeParse({
-      schemaVersion: 1,
-      status: "skipped_private",
-      enqueued: true,
-    }).success).toBe(false);
-
-    const comparison = {
-      schemaVersion: 1 as const,
-      status: "completed" as const,
-      invocationId: "shadow-invocation",
-      attemptId: "shadow-attempt",
-      profileDigest: "d".repeat(64),
-      profileVerified: true,
-      primary: {
-        provider: "openai",
-        model: "primary-model",
-        textDigest: "a".repeat(64),
-        textLength: 20,
-        finishReason: "stop" as const,
-        usage: { promptTokens: 10, completionTokens: 5 },
-        latencyMs: 120,
-        toolCalls: 0,
-      },
-      shadow: {
-        provider: "openai",
-        model: "shadow-model",
-        textDigest: "b".repeat(64),
-        textLength: 24,
-        finishReason: "stop" as const,
-        usage: { promptTokens: 11, completionTokens: 6, reasoningTokens: 0 },
-        latencyMs: 150,
-        toolCalls: 1,
-        dryRunToolCalls: 1,
-        steps: 2,
-      },
-      workspace: {
-        memoryMode: "shadow" as const,
-        workspaceClass: "shadow" as const,
-        disposition: "discarded" as const,
-        commitAccepted: false,
-        promotionAttempted: false,
-      },
-      commitRejected: true,
-      textDigestEqual: false,
-    };
-    expect(companionShadowComparisonSchema.parse(comparison)).toEqual(comparison);
-    expect(companionShadowComparisonSchema.safeParse({
-      ...comparison,
-      shadow: { ...comparison.shadow, dryRunToolCalls: 0 },
-    }).success).toBe(false);
-    expect(companionShadowComparisonSchema.safeParse({
-      ...comparison,
-      rawAnswer: "must never cross this evidence boundary",
-    }).success).toBe(false);
-  });
-
-  it("keeps public Shadow evidence content-free and strict", () => {
-    const evidence = {
-      schemaVersion: 1,
-      status: "completed",
-      profileVerified: true,
-      primary: { provider: "openai", model: "primary-model" },
-      shadow: {
-        provider: "openai",
-        model: "shadow-model",
-        finishReason: "stop",
-        toolCalls: 1,
-        dryRunToolCalls: 1,
-        steps: 2,
-      },
-      workspace: {
-        memoryMode: "shadow",
-        workspaceClass: "shadow",
-        disposition: "discarded",
-        commitAccepted: false,
-        promotionAttempted: false,
-      },
-    } as const;
-
-    expect(companionShadowPublicEvidenceSchema.parse(evidence)).toEqual(evidence);
-    expect(companionShadowPublicEvidenceSchema.safeParse({
-      ...evidence,
-      invocationId: "private-invocation",
-    }).success).toBe(false);
-    expect(companionShadowPublicEvidenceSchema.safeParse({
-      ...evidence,
-      shadow: { ...evidence.shadow, dryRunToolCalls: 0 },
-    }).success).toBe(false);
-    expect(companionShadowPublicEvidenceSchema.safeParse({
-      schemaVersion: 1,
-      status: "error",
-      errorCode: "shadow_runtime_error",
-      message: "provider echoed private prompt bytes",
-    }).success).toBe(false);
   });
 
   it("rejects secrets and extra keys at every declared authority boundary", () => {
@@ -576,58 +466,6 @@ describe("companion runtime stable wire contract", () => {
     }).success).toBe(false);
   });
 
-  it("accepts only source-traceable character facts for legacy memory import", () => {
-    const request = {
-      scope: "relationship",
-      userId: "user-1",
-      characterId: "character-1",
-      legacySourceChecksum: "a".repeat(64),
-      checksum: "d".repeat(64),
-      entries: [{
-        legacyMemoryId: "memory-1",
-        type: "preference",
-        text: "User prefers jasmine tea.",
-        sourceMessageIds: ["user-message-1"],
-      }],
-      recallProbes: [{
-        id: "tea-preference",
-        query: "What tea does the user prefer?",
-        legacyExpected: "jasmine tea",
-      }],
-    } as const;
-    expect(companionLegacyMemoryImportSchema.parse(request)).toEqual(request);
-    expect(companionLegacyMemoryImportSchema.safeParse({
-      ...request,
-      entries: [{ ...request.entries[0], type: "boundary" }],
-    }).success).toBe(false);
-    expect(companionLegacyMemoryImportSchema.safeParse({
-      ...request,
-      entries: [{ ...request.entries[0], sourceMessageIds: [] }],
-    }).success).toBe(false);
-    expect(companionLegacyMemoryImportSchema.safeParse({
-      ...request,
-      arbitraryPath: "/tmp/escape",
-    }).success).toBe(false);
-    expect(companionLegacyMemoryImportSchema.safeParse({
-      ...request,
-      recallProbes: [],
-    }).success).toBe(false);
-    expect(companionLegacyMemoryImportSchema.parse({
-      ...request,
-      checksum: "4".repeat(64),
-      entries: [],
-      recallProbes: [],
-    })).toMatchObject({ entries: [], recallProbes: [] });
-    expect(companionLegacyMemoryImportSchema.safeParse({
-      ...request,
-      entries: [],
-    }).success).toBe(false);
-    expect(companionLegacyMemoryImportSchema.safeParse({
-      ...request,
-      recallProbes: [request.recallProbes[0], request.recallProbes[0]],
-    }).success).toBe(false);
-  });
-
   it("owns both Chat and sidecar cutover proof wires in the shared contract", () => {
     const sidecarProof = {
       entries: 0,
@@ -673,7 +511,6 @@ describe("companion runtime stable wire contract", () => {
       mode: "imported",
     }).success).toBe(false);
   });
-
   it("models terminal commit acceptance without treating a candidate as terminal truth", () => {
     expect(companionCommitAckSchema.parse({
       attemptId: "attempt-1",
@@ -712,13 +549,13 @@ describe("companion runtime stable wire contract", () => {
         normal: {
           name: "normal" as const,
           loaded: true as const,
-          normalizedConfigDigest: "b".repeat(64),
+          executionCompositionDigest: "b".repeat(64),
           capabilities: { memoryRead: true, memoryWrite: true, tools: true, commit: true },
         },
         private: {
           name: "private" as const,
           loaded: true as const,
-          normalizedConfigDigest: "c".repeat(64),
+          executionCompositionDigest: "c".repeat(64),
           capabilities: { memoryRead: false, memoryWrite: false, tools: true, commit: true },
         },
       },

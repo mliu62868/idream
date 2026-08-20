@@ -19,7 +19,6 @@ import {
   setNoMemory,
 } from "./service.js";
 import { deleteMessage, deleteSession } from "./privacy.js";
-import { listMemories } from "./memories.js";
 import {
   getRelationshipState,
   listRelationships,
@@ -175,59 +174,6 @@ async function route(req: ChatRequest): Promise<ChatResponse> {
     return { kind: "sse", streamKey: streamKey(segs[1]), lastEventId: req.query?.lastEventId };
   }
 
-  // /memories  and  /memories/:id  (long-term memory management, PRD §8.2)
-  if (segs[0] === "memories" && segs.length === 1 && method === "GET") {
-    const memories = await withReadableChatFileSnapshot(userId, () =>
-      listMemories(userId, req.query?.characterId),
-    );
-    return json(200, { memories });
-  }
-  if (segs[0] === "memories" && segs.length === 2) {
-    const memoryId = segs[1];
-    if (method === "PATCH") {
-      const text = limitedStr(body(req).text, 500, "memory text");
-      const found = await withActiveUserFileIntent(
-        userId,
-        async (tx) => {
-          const existing = (await listMemories(userId)).some(
-            (memory) => memory.id === memoryId,
-          );
-          if (!existing) return false;
-          await recordChatFileMutation(tx, userId, {
-            kind: "memory_update",
-            memoryId,
-            text,
-          });
-          return true;
-        },
-      );
-      if (!found) return json(404, { error: "memory_not_found" });
-      const updated = await withReadableChatFileSnapshot(userId, async () =>
-        (await listMemories(userId)).find(
-          (memory) => memory.id === memoryId,
-        ),
-      );
-      if (!updated) return json(404, { error: "memory_not_found" });
-      return json(200, updated);
-    }
-    if (method === "DELETE") {
-      const removed = await withActiveUserFileIntent(
-        userId,
-        async (tx) => {
-          const existing = (await listMemories(userId)).some(
-            (memory) => memory.id === memoryId,
-          );
-          if (!existing) return false;
-          await recordChatFileMutation(tx, userId, {
-            kind: "memory_delete",
-            memoryId,
-          });
-          return true;
-        },
-      );
-      return json(removed ? 200 : 404, removed ? { ok: true } : { error: "memory_not_found" });
-    }
-  }
 
   // /relationships  and  /relationships/:characterId  (companion bond, PRD §8.2)
   if (segs[0] === "relationships" && segs.length === 1 && method === "GET") {

@@ -1,14 +1,10 @@
 const { spawnSync } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
-const { existsSync, readFileSync } = require("node:fs");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const {
   loadGenEnvironment,
 } = require("./check-gen-image-worker-ownership.cjs");
-const {
-  resolveCompanionSidecarEnabled,
-} = require("./companion-sidecar-topology.cjs");
 const { computeSourceRevision } = require("./source-revision.cjs");
 
 const repoRoot = path.resolve(__dirname, "..");
@@ -22,25 +18,6 @@ const productionChatAgentTsxLoader = require.resolve(
   path.join(productionChatAgentCwd, "node_modules/tsx/dist/loader.mjs"),
 );
 
-function localEnvValue(envPath, key) {
-  if (!existsSync(envPath)) return undefined;
-  for (const line of readFileSync(envPath, "utf8").split(/\r?\n/)) {
-    const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)?\s*$/);
-    if (!match || match[1] !== key) continue;
-    const rawValue = (match[2] ?? "").trim();
-    const quote = rawValue[0];
-    if ((quote === '"' || quote === "'") && rawValue.at(-1) === quote) {
-      return rawValue.slice(1, -1);
-    }
-    return rawValue.replace(/\s+#.*$/, "");
-  }
-  return undefined;
-}
-
-const companionSidecarEnabled = resolveCompanionSidecarEnabled(
-  process.env.DSH_AGENT_ENABLED,
-  localEnvValue(path.join(repoRoot, "packages/chat/.env"), "DSH_AGENT_ENABLED"),
-);
 const genImageOwnershipProbe = path.join(
   repoRoot,
   "scripts/check-gen-image-worker-ownership.cjs",
@@ -58,7 +35,7 @@ const productionAdmissionTargets = [
   "chat",
   // Admission shutdown is ordered: Chat drains/cancels active invocations
   // before the sidecar that owns them is allowed to stop.
-  ...(companionSidecarEnabled ? ["chat-agent"] : []),
+  "chat-agent",
   "main-event-consumer",
   "admin-command-worker",
 ];
@@ -102,21 +79,19 @@ const productionProcessDefinitions = new Map([
     args: ["src/main.ts"],
     execMode: "fork_mode",
   }],
-  ...(companionSidecarEnabled
-    ? [["chat-agent", {
-        cwd: productionChatAgentCwd,
-        execPath: path.join(productionChatAgentCwd, "src/main.ts"),
-        args: [],
-        nodeArgs: [
-          "--require",
-          productionChatAgentTsxPreflight,
-          "--import",
-          pathToFileURL(productionChatAgentTsxLoader).href,
-        ],
-        execInterpreter: process.execPath,
-        execMode: "fork_mode",
-      }]]
-    : []),
+  ["chat-agent", {
+    cwd: productionChatAgentCwd,
+    execPath: path.join(productionChatAgentCwd, "src/main.ts"),
+    args: [],
+    nodeArgs: [
+      "--require",
+      productionChatAgentTsxPreflight,
+      "--import",
+      pathToFileURL(productionChatAgentTsxLoader).href,
+    ],
+    execInterpreter: process.execPath,
+    execMode: "fork_mode",
+  }],
   ["gen-image", {
     cwd: productionGenCwd,
     execPath: path.join(productionGenCwd, "node_modules/tsx/dist/cli.mjs"),
@@ -814,7 +789,6 @@ module.exports = {
   productionProcessDefinition,
   productionDefinitionPlan,
   productionVideoWorkerCount,
-  resolveCompanionSidecarEnabled,
   repoRoot,
   matchesProductionProcessDefinition,
   resolveCurrentPm2Mode,

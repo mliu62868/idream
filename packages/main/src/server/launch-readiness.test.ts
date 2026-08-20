@@ -343,6 +343,7 @@ function passingChatServiceProbe(
     actorDataClass: "audit",
     dedicatedActor: true,
     usedSignedBff: true,
+    expectedCompanionRuntime: "dsh",
     health: {
       ok: true,
       status: 200,
@@ -390,6 +391,7 @@ function passingChatServiceProbe(
         assistantSent: true,
         assistantStatus: "sent",
         derivationSettled: true,
+        dsh: passingDshEvidence("normal"),
         error: null,
       },
       regenerateAnchor: {
@@ -402,6 +404,8 @@ function passingChatServiceProbe(
         futureUserSceneVersion: 1,
         futureSceneVersion: 1,
         regeneratedSceneVersion: 0,
+        futureDsh: passingDshEvidence("normal"),
+        regeneratedDsh: passingDshEvidence("normal"),
         error: null,
       },
       noMemory: {
@@ -410,7 +414,7 @@ function passingChatServiceProbe(
         assistantMessageId: "msg_probe_no_memory_assistant",
         authorityPinned: true,
         relationshipUnchanged: true,
-        memorySourceAbsent: true,
+        dsh: passingDshEvidence("private"),
         error: null,
       },
       blockedInput: {
@@ -422,8 +426,6 @@ function passingChatServiceProbe(
       cleanup: {
         ok: true,
         status: 404,
-        memoryGone: true,
-        memoriesDeleted: 0,
         relationshipDeleted: true,
         relationshipsDeleted: 1,
         relationshipsGone: true,
@@ -438,24 +440,28 @@ function passingChatServiceProbe(
   };
 }
 
-function passingDshShadowEvidence() {
+function passingDshEvidence(mode: "normal" | "private") {
   return {
     ok: true,
-    status: "completed",
-    primaryRuntime: "native",
-    profileVerified: true,
-    primaryProvider: "openai",
-    primaryModel: "primary-model",
-    shadowProvider: "openai",
-    shadowModel: "shadow-model",
-    shadowFinishReason: "stop",
-    shadowToolCalls: 1,
-    shadowDryRunToolCalls: 1,
-    shadowSteps: 2,
-    workspaceClass: "shadow",
-    promotionAttempted: false,
-    commitRejected: true,
-    privateSkipped: false,
+    runtime: "dsh",
+    memoryBackend: "igrep-dsh",
+    profile: mode === "normal" ? "idream-companion-memory" : "idream-companion-private",
+    private: mode === "private",
+    primaryRuntime: "dsh",
+    terminalStatus: "sent",
+    sseTerminal: "done",
+    provider: "openai",
+    model: "companion-model",
+    profileDigest: "a".repeat(64),
+    ...(mode === "normal"
+      ? {
+          memoryOutcome: "ingested",
+          memoryIngestOutcome: "ingested",
+          memorySettledAt: "2026-06-24T23:57:30.000Z",
+          memorySettleLagMs: 12,
+          sidecarInstanceId: "11111111-1111-4111-8111-111111111111",
+        }
+      : { outputAuthority: "model", memoryOutcome: "disabled" }),
     error: null,
   } as const;
 }
@@ -2536,52 +2542,16 @@ describe("launch readiness", () => {
     }
   });
 
-  it("revalidates every normal and private Shadow fact instead of trusting top-level ok", () => {
+  it("requires DSH proof for normal, regenerated and private turns", () => {
     const passing = passingChatServiceProbe();
-    const shadow = passingDshShadowEvidence();
-    const withShadow = passingChatServiceProbe({
-      expectedCompanionShadow: "dsh",
-      conversation: {
-        ...passing.conversation,
-        getSession: { ...passing.conversation?.getSession, shadow },
-        regenerateAnchor: {
-          ...passing.conversation?.regenerateAnchor,
-          futureShadow: shadow,
-          regeneratedShadow: shadow,
-        },
-        noMemory: {
-          ...passing.conversation?.noMemory,
-          shadow: {
-            ok: true,
-            primaryRuntime: "native",
-            privateSkipped: true,
-            error: null,
-          },
-        },
-      },
-    });
-    const passingReport = assessLaunchReadiness({
-      env: productionEnv,
-      chatServiceProbe: withShadow,
-      now,
-    });
-    expect(
-      passingReport.checks.find((check) => check.id === "chat-service-live-probe"),
-    ).toMatchObject({ status: "pass" });
-
     const failingReport = assessLaunchReadiness({
       env: productionEnv,
       chatServiceProbe: passingChatServiceProbe({
-        ...withShadow,
         conversation: {
-          ...withShadow.conversation,
+          ...passing.conversation,
           regenerateAnchor: {
-            ...withShadow.conversation?.regenerateAnchor,
-            futureShadow: { ...shadow, promotionAttempted: true },
-          },
-          noMemory: {
-            ...withShadow.conversation?.noMemory,
-            shadow: undefined,
+            ...passing.conversation?.regenerateAnchor,
+            futureDsh: { ...passingDshEvidence("normal"), ok: false },
           },
         },
       }),
@@ -2590,8 +2560,7 @@ describe("launch readiness", () => {
     const message = failingReport.checks.find(
       (check) => check.id === "chat-service-live-probe",
     )?.message;
-    expect(message).toContain("three isolated dry-run Shadow completions");
-    expect(message).toContain("private Shadow admission was skipped");
+    expect(message).toContain("old-turn Scene anchoring");
   });
 
   it("fails when the signed Chat probe observed a different Chat FS authority", () => {

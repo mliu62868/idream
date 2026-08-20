@@ -170,7 +170,6 @@ export async function runDshImageToolProbe(
         cleanup = {
           ...cleanup,
           sessionGone: chatCleanup.sessionGone === true,
-          memoriesGone: chatCleanup.memoryGone === true,
           relationshipsGone: chatCleanup.relationshipsGone === true,
         };
       } catch {
@@ -642,7 +641,6 @@ function failedReport(input: {
 function emptyCleanup(): DshImageToolAuditSnapshot["cleanup"] {
   return {
     sessionGone: false,
-    memoriesGone: false,
     relationshipsGone: false,
     recentChatDeleted: false,
     sourceTextRedacted: false,

@@ -417,7 +417,7 @@ export function createReadinessProbe(
         normal: {
           name: "normal",
           loaded: true,
-          normalizedConfigDigest: companionCompositionDigest("normal", normal, {
+          executionCompositionDigest: companionCompositionDigest("normal", normal, {
             maxSteps: options.config.maxSteps,
             igrepLlm: options.config.igrepLlm,
           }),
@@ -426,7 +426,7 @@ export function createReadinessProbe(
         private: {
           name: "private",
           loaded: true,
-          normalizedConfigDigest: companionCompositionDigest("private", privateProfile, {
+          executionCompositionDigest: companionCompositionDigest("private", privateProfile, {
             maxSteps: options.config.maxSteps,
             igrepLlm: options.config.igrepLlm,
           }),

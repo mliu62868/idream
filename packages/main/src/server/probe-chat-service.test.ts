@@ -17,12 +17,9 @@ import {
   assertDedicatedChatProbeActor,
   collectProbeRolloutEvidenceBeforeCleanup,
   parseExpectedCompanionRuntime,
-  parseExpectedCompanionShadow,
   projectDshCompanionEvidence,
-  projectDshShadowEvidence,
   runProbe,
   selectSoulReadyProbeCharacter,
-  shadowProbeObservation,
 } from "./probe-chat-service";
 
 const auditActor = {
@@ -33,31 +30,7 @@ const auditActor = {
   deletedAt: null,
 };
 
-function completedShadowEvidence() {
-  return {
-    schemaVersion: 1,
-    status: "completed",
-    profileVerified: true,
-    primary: { provider: "openai", model: "fixture-model" },
-    shadow: {
-      provider: "openai",
-      model: "fixture-model",
-      finishReason: "stop",
-      toolCalls: 1,
-      dryRunToolCalls: 1,
-      steps: 2,
-    },
-    workspace: {
-      memoryMode: "shadow",
-      workspaceClass: "shadow",
-      disposition: "discarded",
-      commitAccepted: false,
-      promotionAttempted: false,
-    },
-  } as const;
-}
-
-function completedDshTrace(assignment: Record<string, unknown>) {
+function completedDshTrace() {
   return {
     companionRuntime: {
       runtime: "dsh",
@@ -65,7 +38,6 @@ function completedDshTrace(assignment: Record<string, unknown>) {
       profile: "idream-companion-memory",
       private: false,
       sidecarUrl: "http://127.0.0.1:3101",
-      assignment,
     },
     dsh: {
       profileDigest: "a".repeat(64),
@@ -135,7 +107,7 @@ function installFailFastProbeFetch(
         schemaVersion: 1,
         window: { from, to },
         releaseDecision: { status: "not_evaluated" },
-        runtimes: { native: { attempts: 1 }, dsh: { attempts: 0 } },
+        runtimes: { native: { attempts: 0 }, dsh: { attempts: 1 } },
         dataScope: {
           userAuthority: "core.chat_user_view",
           scope: "internal-audit",
@@ -150,9 +122,6 @@ function installFailFastProbeFetch(
     if (url.pathname === "/api/v1/chat/sessions" && method === "GET") {
       sessionListReads += 1;
       return sessionListReads === 2 ? json({}, 401) : json([]);
-    }
-    if (url.pathname === "/api/v1/chat/memories" && method === "GET") {
-      return json({ memories: [] });
     }
     if (url.pathname === "/api/v1/chat/relationships" && method === "GET") {
       return json({ relationships: [] });
@@ -307,7 +276,7 @@ describe("chat service probe actor authority", () => {
 
 describe("chat service DSH evidence", () => {
   it("requires an explicit exact DSH mode instead of accepting an ambiguous value", () => {
-    expect(parseExpectedCompanionRuntime(undefined)).toBeNull();
+    expect(parseExpectedCompanionRuntime(undefined)).toBe("dsh");
     expect(parseExpectedCompanionRuntime("dsh")).toBe("dsh");
     expect(parseExpectedCompanionRuntime(" dsh ")).toBe("dsh");
     expect(() => parseExpectedCompanionRuntime("native")).toThrow(
@@ -315,145 +284,14 @@ describe("chat service DSH evidence", () => {
     );
   });
 
-  it("requires an explicit exact DSH shadow mode", () => {
-    expect(parseExpectedCompanionShadow(undefined)).toBeNull();
-    expect(parseExpectedCompanionShadow("dsh")).toBe("dsh");
-    expect(parseExpectedCompanionShadow(" dsh ")).toBe("dsh");
-    expect(() => parseExpectedCompanionShadow("native")).toThrow(
-      "expected companion shadow must be dsh",
-    );
-  });
-
-  it("gives Shadow settlement its own 330 second observation envelope", () => {
-    expect(chatServiceProbeSettleTimeoutMs(false)).toBe(90_000);
-    expect(chatServiceProbeSettleTimeoutMs(true)).toBe(330_000);
-    vi.stubEnv("CHAT_SERVICE_PROBE_SHADOW_SETTLE_TIMEOUT_MS", "345000");
-    expect(chatServiceProbeSettleTimeoutMs(true)).toBe(345_000);
-  });
-
-  it("projects completed DSH shadow evidence without exposing answer bytes", () => {
-    const evidence = projectDshShadowEvidence({
-      companionRuntime: {
-        runtime: "native",
-        memoryBackend: "legacy",
-        private: false,
-      },
-      shadowEvidence: completedShadowEvidence(),
-    }, "normal");
-
-    expect(evidence).toEqual({
-      ok: true,
-      status: "completed",
-      primaryRuntime: "native",
-      profileVerified: true,
-      primaryProvider: "openai",
-      primaryModel: "fixture-model",
-      shadowProvider: "openai",
-      shadowModel: "fixture-model",
-      shadowFinishReason: "stop",
-      shadowToolCalls: 1,
-      shadowDryRunToolCalls: 1,
-      shadowSteps: 2,
-      workspaceClass: "shadow",
-      promotionAttempted: false,
-      commitRejected: true,
-      privateSkipped: false,
-      error: null,
-    });
-    expect(JSON.stringify(evidence)).not.toContain("profileDigest");
-  });
-
-  it("proves a private native turn skipped DSH shadow admission", () => {
-    const evidence = projectDshShadowEvidence({
-      companionRuntime: {
-        runtime: "native",
-        memoryBackend: "legacy",
-        private: true,
-      },
-      primaryTelemetry: {
-        schemaVersion: 1,
-        runtime: "native",
-        terminalStatus: "sent",
-        sseTerminal: "done",
-        memory: { outcome: "disabled" },
-      },
-      shadowEvidence: {
-        schemaVersion: 1,
-        status: "skipped_private",
-        enqueued: false,
-      },
-    }, "private");
-
-    expect(evidence).toEqual({
-      ok: true,
-      primaryRuntime: "native",
-      privateSkipped: true,
-      error: null,
-    });
-  });
-
-  it("rejects any persisted Shadow comparison on a private turn", () => {
-    const evidence = projectDshShadowEvidence({
-      companionRuntime: {
-        runtime: "native",
-        memoryBackend: "legacy",
-        private: true,
-      },
-      primaryTelemetry: {
-        schemaVersion: 1,
-        runtime: "native",
-        terminalStatus: "sent",
-        sseTerminal: "done",
-        memory: { outcome: "disabled" },
-      },
-      shadowEvidence: {
-        schemaVersion: 1,
-        status: "skipped_private",
-        enqueued: false,
-      },
-      shadowComparison: { must: "remain private" },
-    }, "private");
-
-    expect(evidence.ok).toBe(false);
-    expect(evidence.privateSkipped).toBe(false);
-    expect(evidence.error).toContain("shadowEvidence.privateFieldsAbsent");
-  });
-
-  it("fails closed when a Shadow tool call was not dry-run", () => {
-    const evidence = projectDshShadowEvidence({
-      companionRuntime: { runtime: "native", memoryBackend: "legacy", private: false },
-      shadowEvidence: {
-        ...completedShadowEvidence(),
-        shadow: {
-          ...completedShadowEvidence().shadow,
-          dryRunToolCalls: 0,
-        },
-      },
-    }, "normal");
-
-    expect(evidence.ok).toBe(false);
-    expect(evidence.error).toContain("shadowEvidence.contract");
-  });
-
-  it("fails immediately on a terminal Shadow admission skip", () => {
-    expect(shadowProbeObservation({
-      shadowEvidence: {
-        schemaVersion: 1,
-        status: "skipped_readiness",
-        enqueued: false,
-      },
-    })).toBe("failed");
-    expect(shadowProbeObservation({
-      shadowEvidence: completedShadowEvidence(),
-    })).toBe("completed");
-    expect(shadowProbeObservation({})).toBe("pending");
+  it("uses one bounded settlement envelope for the sole DSH runtime", () => {
+    expect(chatServiceProbeSettleTimeoutMs()).toBe(90_000);
+    vi.stubEnv("CHAT_SERVICE_PROBE_SETTLE_TIMEOUT_MS", "120000");
+    expect(chatServiceProbeSettleTimeoutMs()).toBe(120_000);
   });
 
   it("projects a settled allowlisted DSH turn without exposing the raw trace", () => {
-    const evidence = projectDshCompanionEvidence(completedDshTrace({
-      policyVersion: 1,
-      reason: "allowlist",
-    }), "normal");
+    const evidence = projectDshCompanionEvidence(completedDshTrace(), "normal");
 
     expect(evidence).toEqual({
       ok: true,
@@ -461,7 +299,6 @@ describe("chat service DSH evidence", () => {
       memoryBackend: "igrep-dsh",
       profile: "idream-companion-memory",
       private: false,
-      assignmentReason: "allowlist",
       primaryRuntime: "dsh",
       terminalStatus: "sent",
       sseTerminal: "done",
@@ -480,34 +317,6 @@ describe("chat service DSH evidence", () => {
     expect(JSON.stringify(evidence)).not.toContain("must-not-leak");
   });
 
-  it("accepts a provable threshold assignment for a full DSH rollout", () => {
-    const evidence = projectDshCompanionEvidence(completedDshTrace({
-      policyVersion: 1,
-      reason: "threshold",
-      bucketBps: 9_999,
-      thresholdBps: 10_000,
-    }), "normal");
-
-    expect(evidence).toMatchObject({
-      ok: true,
-      runtime: "dsh",
-      assignmentReason: "threshold",
-      error: null,
-    });
-  });
-
-  it("rejects an unprovable threshold assignment", () => {
-    const evidence = projectDshCompanionEvidence(completedDshTrace({
-      policyVersion: 1,
-      reason: "threshold",
-      bucketBps: 4_000,
-      thresholdBps: 4_000,
-    }), "normal");
-
-    expect(evidence.ok).toBe(false);
-    expect(evidence.error).toContain("companionRuntime.assignment");
-  });
-
   it("fails closed when the started sidecar digest differs from the durable attempt pin", () => {
     const evidence = projectDshCompanionEvidence({
       companionRuntime: {
@@ -515,7 +324,6 @@ describe("chat service DSH evidence", () => {
         memoryBackend: "igrep-dsh",
         profile: "idream-companion-memory",
         private: false,
-        assignment: { policyVersion: 1, reason: "allowlist" },
       },
       dsh: {
         profileDigest: "a".repeat(64),
@@ -557,7 +365,6 @@ describe("chat service DSH evidence", () => {
         memoryBackend: "igrep-dsh",
         profile: "idream-companion-memory",
         private: false,
-        assignment: { policyVersion: 1, reason: "allowlist" },
       },
       dsh: {
         profileDigest: "b".repeat(64),
@@ -597,7 +404,6 @@ describe("chat service DSH evidence", () => {
         memoryBackend: "igrep-dsh",
         profile: "idream-companion-private",
         private: true,
-        assignment: { policyVersion: 1, reason: "allowlist" },
       },
       dsh: {
         profileDigest: "c".repeat(64),

@@ -593,6 +593,9 @@ function addChatServiceProbeCheck(
     if (probe.usedSignedBff !== true) {
       problems.push("probe did not use signed BFF headers");
     }
+    if (probe.expectedCompanionRuntime !== "dsh") {
+      problems.push("probe did not require the sole DSH companion runtime");
+    }
     if (probe.health?.ok !== true || probe.health.status !== 200) {
       problems.push("healthz did not return HTTP 200 ok");
     }
@@ -657,7 +660,8 @@ function addChatServiceProbeCheck(
       if (
         probe.conversation.getSession?.ok !== true ||
         probe.conversation.getSession.assistantSent !== true ||
-        probe.conversation.getSession.derivationSettled !== true
+        probe.conversation.getSession.derivationSettled !== true ||
+        probe.conversation.getSession.dsh?.ok !== true
       ) {
         problems.push(
           "conversation smoke did not reload the assistant message",
@@ -668,7 +672,9 @@ function addChatServiceProbeCheck(
         probe.conversation.regenerateAnchor.originalSceneVersion !== 0 ||
         probe.conversation.regenerateAnchor.futureUserSceneVersion !== 1 ||
         probe.conversation.regenerateAnchor.futureSceneVersion !== 1 ||
-        probe.conversation.regenerateAnchor.regeneratedSceneVersion !== 0
+        probe.conversation.regenerateAnchor.regeneratedSceneVersion !== 0 ||
+        probe.conversation.regenerateAnchor.futureDsh?.ok !== true ||
+        probe.conversation.regenerateAnchor.regeneratedDsh?.ok !== true
       ) {
         problems.push(
           "conversation smoke did not prove old-turn Scene anchoring",
@@ -678,51 +684,11 @@ function addChatServiceProbeCheck(
         probe.conversation.noMemory?.ok !== true ||
         probe.conversation.noMemory.authorityPinned !== true ||
         probe.conversation.noMemory.relationshipUnchanged !== true ||
-        probe.conversation.noMemory.memorySourceAbsent !== true
+        probe.conversation.noMemory.dsh?.ok !== true
       ) {
         problems.push(
           "conversation smoke did not prove no-memory turn authority",
         );
-      }
-      if (probe.expectedCompanionShadow === "dsh") {
-        const normalShadowEvidence = [
-          probe.conversation.getSession?.shadow,
-          probe.conversation.regenerateAnchor?.futureShadow,
-          probe.conversation.regenerateAnchor?.regeneratedShadow,
-        ];
-        const normalShadowComplete = normalShadowEvidence.every((shadow) =>
-          shadow?.ok === true &&
-          shadow.status === "completed" &&
-          shadow.primaryRuntime === "native" &&
-          shadow.profileVerified === true &&
-          typeof shadow.primaryProvider === "string" &&
-          typeof shadow.primaryModel === "string" &&
-          typeof shadow.shadowProvider === "string" &&
-          typeof shadow.shadowModel === "string" &&
-          typeof shadow.shadowFinishReason === "string" &&
-          typeof shadow.shadowToolCalls === "number" &&
-          shadow.shadowToolCalls === shadow.shadowDryRunToolCalls &&
-          typeof shadow.shadowSteps === "number" &&
-          shadow.workspaceClass === "shadow" &&
-          shadow.promotionAttempted === false &&
-          shadow.commitRejected === true &&
-          shadow.privateSkipped === false
-        );
-        if (!normalShadowComplete) {
-          problems.push(
-            "conversation smoke did not prove three isolated dry-run Shadow completions",
-          );
-        }
-        const privateShadow = probe.conversation.noMemory?.shadow;
-        if (
-          privateShadow?.ok !== true ||
-          privateShadow.primaryRuntime !== "native" ||
-          privateShadow.privateSkipped !== true
-        ) {
-          problems.push(
-            "conversation smoke did not prove private Shadow admission was skipped",
-          );
-        }
       }
       if (
         probe.conversation.blockedInput?.ok !== true ||
@@ -735,7 +701,6 @@ function addChatServiceProbeCheck(
       if (
         probe.conversation.cleanup?.ok !== true ||
         probe.conversation.cleanup.sessionDeleted !== true ||
-        probe.conversation.cleanup.memoryGone !== true ||
         probe.conversation.cleanup.relationshipDeleted !== true ||
         probe.conversation.cleanup.relationshipsGone !== true ||
         probe.conversation.cleanup.sessionGone !== true

@@ -35,13 +35,13 @@ function ready() {
       normal: {
         name: "normal" as const,
         loaded: true as const,
-        normalizedConfigDigest: "a".repeat(64),
+        executionCompositionDigest: "a".repeat(64),
         capabilities: { memoryRead: true as const, memoryWrite: true as const, tools: true as const, commit: true as const },
       },
       private: {
         name: "private" as const,
         loaded: true as const,
-        normalizedConfigDigest: "b".repeat(64),
+        executionCompositionDigest: "b".repeat(64),
         capabilities: { memoryRead: false as const, memoryWrite: false as const, tools: true as const, commit: true as const },
       },
     },

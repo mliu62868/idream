@@ -1,13 +1,12 @@
 // SPEC: policy resolver (design §3, SSoT). Maps an entitlement snapshot to the
 // knobs the hot path + worker both need. ONE place — never re-derive inline.
 // EXAMPLE: resolvePolicy({modelTier:"deluxe",...}) → { model, maxContextMessages,
-//          maxMemories, rateLimitPerHour, voiceEnabled, allowMemoryWrite, ... }
+//          rateLimitPerHour, voiceEnabled, memoryEnabled, ... }
 import type { ChatEntitlementView } from "./db.js";
 import { resolveChatModelProfile, type ChatModelProfile } from "@idream/shared";
 
 export interface EntitlementSnapshot {
   modelTier: string;
-  memoryMultiplier: number;
   unlimitedMessages: boolean;
   voiceEnabled: boolean;
   imageToolEnabled: boolean;
@@ -20,15 +19,10 @@ export interface ChatPolicy {
   maxContextMessages: number;
   /** Hard character budget for recent transcript input (separate from output tokens). */
   maxContextChars: number;
-  /** Top-K long-term memories injected per turn (retrieval cap). */
-  maxMemories: number;
-  /** Total long-term memories retained on disk per character (storage cap, P1-C). */
-  maxStoredMemories: number;
   rateLimitPerHour: number;
   unlimitedMessages: boolean;
   voiceEnabled: boolean;
-  allowMemoryWrite: boolean;
-  allowGlobalMemoryWrite: boolean;
+  memoryEnabled: boolean;
   allowRelationshipPatch: boolean;
   outputModerationRequired: boolean;
   /** Entitlement flag AND character flag (image_tool_enabled on both boundary views). */
@@ -37,10 +31,6 @@ export interface ChatPolicy {
 
 const BASE_CONTEXT = 12;
 const BASE_CONTEXT_CHARS = 24_000;
-const BASE_MEMORIES = 6;
-// Storage baseline (P1-C): how many long-term memories a Free tier retains on
-// disk per character. Deluxe (memoryMultiplier=3) keeps 3× — "3x chat memory".
-const BASE_STORED_MEMORIES = 30;
 
 export function resolvePolicy(
   ent: EntitlementSnapshot,
@@ -57,15 +47,10 @@ export function resolvePolicy(
     model: modelProfile.model,
     maxContextMessages: isPaid ? BASE_CONTEXT * 2 : BASE_CONTEXT,
     maxContextChars: isPaid ? BASE_CONTEXT_CHARS * 2 : BASE_CONTEXT_CHARS,
-    maxMemories: memoryAllowed ? Math.round(BASE_MEMORIES * Math.max(1, ent.memoryMultiplier)) : 0,
-    maxStoredMemories: memoryAllowed
-      ? Math.round(BASE_STORED_MEMORIES * Math.max(1, ent.memoryMultiplier))
-      : 0,
     rateLimitPerHour: tier === "deluxe" ? 600 : tier === "premium" ? 300 : 60,
     unlimitedMessages: ent.unlimitedMessages,
     voiceEnabled: ent.voiceEnabled,
-    allowMemoryWrite: memoryAllowed,
-    allowGlobalMemoryWrite: memoryAllowed && isPaid,
+    memoryEnabled: memoryAllowed,
     allowRelationshipPatch: memoryAllowed,
     outputModerationRequired: true,
     imageToolEnabled: ent.imageToolEnabled && (opts.characterImageToolEnabled ?? true),
@@ -86,7 +71,6 @@ export function modelForTier(tier: string): string {
 export function snapshotFromView(row: ChatEntitlementView | null): EntitlementSnapshot {
   return {
     modelTier: row?.modelTier ?? "free",
-    memoryMultiplier: row?.memoryMultiplier ?? 1,
     unlimitedMessages: row?.unlimitedMessages ?? false,
     voiceEnabled: row?.voiceEnabled ?? false,
     imageToolEnabled: row?.imageToolEnabled ?? true,

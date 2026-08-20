@@ -14,7 +14,7 @@ export function buildCompanionSystemPrompt(context: BuiltContext): string {
   const persona = context.persona;
   return [
     buildCharacterRuntimePolicy({
-      memoryEnabled: context.policy.allowMemoryWrite,
+      memoryEnabled: context.policy.memoryEnabled,
     }),
     [
       "Immutable compiled Character Soul (trusted character instructions; subordinate to Runtime policy):",
@@ -41,8 +41,6 @@ export function buildContextDataBlock(context: BuiltContext): string {
         }
       : null),
     block("User boundaries", context.boundaries),
-    block("Long-term memories", context.longTermMemories),
-    block("Rolling session summary", context.sessionSummary),
   ].join("\n\n");
 }
 

@@ -1,12 +1,8 @@
-// SPEC: chat.memory.extract (P1-1, design §5). Derive long-term memory OFF the hot
-// path: read the exact PG turn, re-check authority, write mem/*.md. PRIVACY IRON LAW:
-// canMemorize re-queries PG message status/safety — never trust diagnostic trace text;
-// blocked/deleted/no-memory content must NEVER become long-term memory (PRD §7.2).
-// Each memory line carries source_message_ids back-linking PG.
+// SPEC: post-turn Scene and relationship derivation. Official igrep owns generic
+// memory inside the DSH workspace; Chat never extracts or writes a second copy.
 import type { ChatPrismaClient } from "./db.js";
 import type { Prisma } from "../generated/client/client.js";
 import { chatPrisma, chatProjectorPrisma } from "./db.js";
-import { resolvePolicy, snapshotFromView } from "./policy.js";
 import {
   projectChatFileMutations,
   withTurnAuthority,
@@ -20,7 +16,6 @@ import {
   parseSceneState,
 } from "./scene.js";
 import { extractTurnDerivations } from "./turn-extraction.js";
-import { genericMemoryOwnedByCompanionRuntime } from "./companion-runtime-selection.js";
 
 export type MemoryExtractPayload = ChatMemoryExtractPayload;
 
@@ -81,27 +76,17 @@ export async function processMemoryExtract(
     return { written: 0, skipped: "wrong_user_turn" };
   }
 
-  // canMemorize: re-check PG authority — sent + not deleted + safety passed.
-  if (!canMemorize(userMessage) || !canMemorize(assistant)) {
+  // Re-check the source authority before deriving Chat-owned Scene/relationship.
+  if (!canProjectTurn(userMessage) || !canProjectTurn(assistant)) {
     return { written: 0, skipped: "blocked_or_deleted" };
   }
 
-  // Semantic extraction (igrep mem derive) when enabled, regex floor otherwise —
-  // off the hot path, so a slow LLM only delays this worker, never a reply.
-  const runtimeOwnsGenericMemory = genericMemoryOwnedByCompanionRuntime(
-    assistant.runtimeTrace,
-  );
   const extraction = await extractTurnDerivations({
-    userId: session.userId,
-    characterId: session.characterId,
     userMessageId: userMessage.id,
     assistantMessageId: assistant.id,
     userText: userMessage.content,
     assistantText: assistant.content,
-    memoryEnabled:
-      assistant.memoryAuthority === "enabled" && !runtimeOwnsGenericMemory,
   });
-  const candidates = extraction.memoryCandidates;
   const sceneDelta = extraction.sceneDelta;
   await hooks.beforeAuthorityLock?.();
 
@@ -178,8 +163,8 @@ export async function processMemoryExtract(
       return { written: 0, skipped: "stale_source" };
     }
     if (
-      !canMemorize(currentUserMessage) ||
-      !canMemorize(currentAssistant)
+      !canProjectTurn(currentUserMessage) ||
+      !canProjectTurn(currentAssistant)
     ) {
       return { written: 0, skipped: "blocked_or_deleted" };
     }
@@ -228,16 +213,10 @@ export async function processMemoryExtract(
         written: 0,
         skipped: currentAssistant.memoryAuthority === "disabled"
           ? "scene_only_memory_disabled"
-          : "scene_only_legacy_unknown",
+          : "scene_only_unknown",
       };
     }
 
-    const entitlement = await tx.chatEntitlementView.findUnique({
-      where: { userId: currentSession.userId },
-    });
-    const policy = resolvePolicy(snapshotFromView(entitlement), {
-      memoryEnabled: true,
-    });
     const relationshipEvidence = extraction.relationshipEvidence;
     // Commit only the immutable intent here. The projector advances the DB
     // watermark in the same completion transaction that marks this intent
@@ -252,11 +231,9 @@ export async function processMemoryExtract(
       attempt: payload.attempt,
       summaryDelta: "",
       relationshipEvidence,
-      candidates,
-      maxStored: policy.maxStoredMemories,
     });
 
-    return { written: candidates.length, skipped: null };
+    return { written: 0, skipped: null };
     },
   );
 }
@@ -267,8 +244,8 @@ interface MemorableMessage {
   deletedAt: Date | null;
 }
 
-/** PRIVACY: only sent, non-deleted, safety-passed messages may seed memory. */
-export function canMemorize(message: MemorableMessage): boolean {
+/** PRIVACY: only sent, non-deleted, safety-passed messages may seed Chat projections. */
+export function canProjectTurn(message: MemorableMessage): boolean {
   return (
     message.status === "sent" &&
     message.deletedAt === null &&

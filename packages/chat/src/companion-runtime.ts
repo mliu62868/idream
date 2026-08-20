@@ -1,6 +1,5 @@
 import {
   COMPANION_RUNTIME_PROTOCOL_VERSION,
-  companionLegacyMemoryImportSchema,
   companionMemoryCutoverSidecarProofSchema,
   companionRuntimeResponseSchema,
   companionWorkspaceRebuildSchema,
@@ -9,7 +8,6 @@ import {
   type CompanionCommitAck,
   type CompanionEvent,
   type CompanionInvocation,
-  type CompanionLegacyMemoryImport,
   type CompanionMemoryCutoverSidecarProof,
   type CompanionTerminalCandidate,
   type CompanionToolCall,
@@ -26,19 +24,10 @@ const companionWorkspaceRebuildResponseSchema = z.object({
   }).strict(),
 }).strict();
 
-const companionLegacyMemoryImportResponseSchema = z.object({
-  ok: z.literal(true),
-  imported: companionMemoryCutoverSidecarProofSchema.extend({
-    skipped: z.boolean(),
-    written: z.number().int().nonnegative(),
-  }).strict(),
-}).strict();
-
 const companionMemoryCutoverProofResponseSchema = z.object({
   ok: z.literal(true),
   proof: companionMemoryCutoverSidecarProofSchema.nullable(),
 }).strict();
-
 export interface CompanionRuntimePort {
   emit(event: CompanionEvent): Promise<void> | void;
   executeTool(call: CompanionToolCall): Promise<CompanionToolResult>;
@@ -140,33 +129,6 @@ export async function rebuildCompanionWorkspace(input: {
   return companionWorkspaceRebuildResponseSchema.parse(await response.json()).rebuilt;
 }
 
-export async function importLegacyCompanionMemory(input: {
-  baseUrl: string;
-  token: string;
-  request: CompanionLegacyMemoryImport;
-  fetchImpl?: typeof fetch;
-  timeoutMs?: number;
-}): Promise<z.infer<typeof companionLegacyMemoryImportResponseSchema>["imported"]> {
-  const request = companionLegacyMemoryImportSchema.parse(input.request);
-  const response = await (input.fetchImpl ?? fetch)(
-    `${input.baseUrl.replace(/\/$/, "")}/v1/workspaces/import-legacy-memory`,
-    {
-      method: "POST",
-      headers: {
-        accept: "application/json",
-        authorization: `Bearer ${input.token}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(request),
-      signal: AbortSignal.timeout(input.timeoutMs ?? 330_000),
-    },
-  );
-  if (!response.ok) {
-    throw new Error(`companion legacy memory import failed with HTTP ${response.status}`);
-  }
-  return companionLegacyMemoryImportResponseSchema.parse(await response.json()).imported;
-}
-
 export async function readCompanionMemoryCutoverProof(input: {
   baseUrl: string;
   token: string;
@@ -197,7 +159,6 @@ export async function readCompanionMemoryCutoverProof(input: {
   }
   return companionMemoryCutoverProofResponseSchema.parse(await response.json()).proof;
 }
-
 export class DshCompanionRuntime implements CompanionRuntime {
   private readonly baseUrl: string;
   private readonly token: string;

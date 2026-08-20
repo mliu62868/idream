@@ -24,7 +24,8 @@ describe("sidecar process configuration", () => {
 
     expect(config.authToken).toBe("shared-chat-sidecar-token");
     expect(config.port).toBe(3101);
-    expect(config.shadowRoot).toMatch(/chat-agent-shadow$/);
+    expect(config.canonicalRoot).toMatch(/chat-agent-memory$/);
+    expect(config.privateRoot).toMatch(/chat-agent-private$/);
     expect(config.maxConcurrentAgents).toEqual({ normal: 4, private: 4 });
   });
 
@@ -82,18 +83,10 @@ describe("sidecar process configuration", () => {
       .toThrow(/DSH_MAX_PRIVATE_AGENTS/);
   });
 
-  it("requires all workspace authority roots to be pairwise disjoint", () => {
+  it("keeps canonical and private workspace authority roots disjoint", () => {
     expect(() => loadSidecarConfig(environment({
       DSH_IGREP_CANONICAL_ROOT: "/var/lib/idream/memory",
       DSH_IGREP_PRIVATE_ROOT: "/var/lib/idream/memory/private",
-    }))).toThrow(/workspace roots.*disjoint/);
-    expect(() => loadSidecarConfig(environment({
-      DSH_IGREP_CANONICAL_ROOT: "/var/lib/idream/memory",
-      DSH_IGREP_SHADOW_ROOT: "/var/lib/idream/memory",
-    }))).toThrow(/workspace roots.*disjoint/);
-    expect(() => loadSidecarConfig(environment({
-      DSH_IGREP_CANONICAL_ROOT: "/var/lib/idream/memory",
-      DSH_IGREP_SHADOW_ROOT: "/var/lib/idream/memory/shadow",
     }))).toThrow(/workspace roots.*disjoint/);
   });
 

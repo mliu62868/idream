@@ -8,7 +8,6 @@ const config: SidecarConfig = {
   port: 3101,
   authToken: "readiness-secret",
   canonicalRoot: "/tmp/readiness-canonical",
-  shadowRoot: "/tmp/readiness-shadow",
   privateRoot: "/tmp/readiness-private",
   igrepCommand: "igrep",
   igrepPluginUrl: "file:///tmp/igrep/index.mjs",
@@ -112,7 +111,7 @@ describe("fail-closed companion readiness", () => {
       },
       verification: igrepVerification,
     });
-    expect(readiness.profiles.normal.normalizedConfigDigest).toBe(
+    expect(readiness.profiles.normal.executionCompositionDigest).toBe(
       companionCompositionDigest("normal", plugin.module.resolveConfig({
         command: config.igrepCommand,
         search: true,
@@ -123,13 +122,13 @@ describe("fail-closed companion readiness", () => {
         wake: true,
       }), { maxSteps: config.maxSteps, igrepLlm: config.igrepLlm }),
     );
-    expect(readiness.profiles.normal.normalizedConfigDigest).not.toBe(normalDigest);
-    expect(readiness.profiles.private.normalizedConfigDigest).not.toBe(privateDigest);
-    expect(readiness.profiles.normal.normalizedConfigDigest)
-      .not.toBe(readiness.profiles.private.normalizedConfigDigest);
+    expect(readiness.profiles.normal.executionCompositionDigest).not.toBe(normalDigest);
+    expect(readiness.profiles.private.executionCompositionDigest).not.toBe(privateDigest);
+    expect(readiness.profiles.normal.executionCompositionDigest)
+      .not.toBe(readiness.profiles.private.executionCompositionDigest);
     expect(JSON.stringify(readiness)).not.toContain("maintenance-secret");
     expect(JSON.stringify(readiness)).not.toContain("IGREP_LLM");
-    expect(bridgeProfileDigest).toBe(readiness.profiles.private.normalizedConfigDigest);
+    expect(bridgeProfileDigest).toBe(readiness.profiles.private.executionCompositionDigest);
   });
 
   it("fails closed when the executable version or normalized profile drifts", async () => {

@@ -3,7 +3,6 @@ import type { BuiltContext } from "./context.js";
 import {
   compilePreparedTurn,
   fitPreparedTurnBudget,
-  toDshShadowPreparedTurnWire,
   toPreparedTurnWire,
 } from "./prepared-turn.js";
 import { resolvePolicy } from "./policy.js";
@@ -12,7 +11,6 @@ function context(): BuiltContext {
   const policy = {
     ...resolvePolicy({
       modelTier: "free",
-      memoryMultiplier: 1,
       unlimitedMessages: false,
       voiceEnabled: false,
       imageToolEnabled: false,
@@ -44,14 +42,12 @@ function context(): BuiltContext {
       compilerVersion: "character-soul-1",
     },
     policy,
-    sessionSummary: `summary ${"s".repeat(1_000)}`,
     recentMessages: Array.from({ length: 8 }, (_, index) => ({
       id: `message-${index}`,
       role: index % 2 === 0 ? "user" as const : "assistant" as const,
       content: `turn ${index} ${"t".repeat(600)}`,
     })),
     boundaries: ["Never invent canon."],
-    longTermMemories: [`memory ${"m".repeat(2_000)}`],
     relationship: null,
     scene: {
       schemaVersion: 1,
@@ -65,7 +61,6 @@ function context(): BuiltContext {
     sceneVersion: 1,
     openingMessage: null,
     dropped: [],
-    canUpdateSessionSummary: true,
     sessionContextRevision: 0n,
     fileContextRevision: 0n,
     releasedKnowledge: {
@@ -79,12 +74,10 @@ function context(): BuiltContext {
 }
 
 describe("PreparedTurn budget", () => {
-  it("counts all adapter input and degrades memory, summary, then transcript", () => {
+  it("counts all adapter input and drops only complete transcript exchanges", () => {
     const result = fitPreparedTurnBudget(context());
     expect(result.budget.usedInputTokens).toBeLessThanOrEqual(result.budget.maxInputTokens);
-    expect(result.budget.dropped).toEqual(["memory", "summary", "transcript"]);
-    expect(result.context.longTermMemories).toEqual([]);
-    expect(result.context.sessionSummary).toBeNull();
+    expect(result.budget.dropped).toEqual(["transcript"]);
     expect(result.context.recentMessages.length).toBeLessThan(8);
     expect(result.context.recentMessages[0]?.role).toBe("user");
     expect(result.context.recentMessages.length % 2).toBe(0);
@@ -92,8 +85,6 @@ describe("PreparedTurn budget", () => {
 
   it("serializes stable replay/current ids and a credential-free pinned profile", () => {
     const source = context();
-    source.sessionSummary = null;
-    source.longTermMemories = [];
     source.recentMessages = [
       { id: "user-history", role: "user", content: "Earlier" },
       { id: "assistant-history", role: "assistant", content: "Reply" },
@@ -127,10 +118,8 @@ describe("PreparedTurn budget", () => {
     });
   });
 
-  it("removes only native legacy recall authority from the DSH shadow projection", () => {
+  it("preserves Soul, Scene, relationship and boundaries in the sole DSH projection", () => {
     const source = context();
-    source.sessionSummary = "A session-local rolling summary.";
-    source.longTermMemories = ["The user prefers jasmine tea."];
     source.relationship = {
       stage: "close",
       summary: "They trust each other deeply.",
@@ -143,19 +132,14 @@ describe("PreparedTurn budget", () => {
     ];
     const prepared = compilePreparedTurn(source, "user-current");
 
-    const nativeWire = toPreparedTurnWire(prepared);
-    const shadowWire = toDshShadowPreparedTurnWire(prepared);
+    const wire = toPreparedTurnWire(prepared);
 
-    expect(nativeWire.messages[0]?.content).toContain("The user prefers jasmine tea.");
-    expect(nativeWire.messages[0]?.content).toContain("They trust each other deeply.");
-    expect(shadowWire.messages[0]?.content).not.toContain("The user prefers jasmine tea.");
-    expect(shadowWire.messages[0]?.content).toContain("They trust each other deeply.");
-    expect(shadowWire.trace.relationshipVersion).toBe(7);
-    expect(shadowWire.messages[0]?.content).toContain("Stay specific and grounded.");
-    expect(shadowWire.messages[0]?.content).toContain("the library");
-    expect(shadowWire.messages[0]?.content).toContain("A session-local rolling summary.");
-    expect(shadowWire.releasedKnowledge).toEqual(source.releasedKnowledge);
-    expect(shadowWire.messages.slice(1)).toEqual(nativeWire.messages.slice(1));
-    expect(toPreparedTurnWire(prepared)).toEqual(nativeWire);
+    expect(wire.messages[0]?.content).toContain("They trust each other deeply.");
+    expect(wire.trace.relationshipVersion).toBe(7);
+    expect(wire.messages[0]?.content).toContain("Stay specific and grounded.");
+    expect(wire.messages[0]?.content).toContain("the library");
+    expect(wire.messages[0]?.content).toContain("Never invent canon.");
+    expect(wire.releasedKnowledge).toEqual(source.releasedKnowledge);
+    expect(toPreparedTurnWire(prepared)).toEqual(wire);
   });
 });

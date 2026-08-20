@@ -327,15 +327,15 @@ describe("proxyChatRequest", () => {
     characterSpy.mockRestore();
   });
 
-  it("passes through management endpoints (memories) unchanged", async () => {
+  it("passes through the whole-relationship management endpoint unchanged", async () => {
     const { proxyChatRequest } = await import("./chat-proxy");
-    fetchMock.mockResolvedValueOnce(jsonResp({ memories: [{ id: "mem_1" }] }, 200));
-    const req = new Request("http://localhost/api/v1/chat/memories", {
+    fetchMock.mockResolvedValueOnce(jsonResp({ relationships: [] }, 200));
+    const req = new Request("http://localhost/api/v1/chat/relationships", {
       method: "GET",
       headers: { "x-idream-user-id": "seed-dev-user" },
     });
-    const res = await proxyChatRequest(req, ["chat", "memories"]);
+    const res = await proxyChatRequest(req, ["chat", "relationships"]);
     expectPrivateNoStore(res);
-    expect(await res.json()).toEqual({ memories: [{ id: "mem_1" }] });
+    expect(await res.json()).toEqual({ relationships: [] });
   });
 });

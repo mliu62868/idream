@@ -43,7 +43,7 @@ export interface PreparedTurn {
   budget: {
     maxInputTokens: number;
     usedInputTokens: number;
-    dropped: Array<"memory" | "summary" | "transcript">;
+    dropped: Array<"transcript">;
   };
   releasedKnowledge: ReleasedKnowledgeSnapshot;
   trace: {
@@ -66,7 +66,6 @@ export interface PrepareCompanionTurnInput {
   sessionId: string;
   turnMemoryEnabled: boolean;
   userMessageId: string;
-  genericMemoryBackend?: "legacy" | "runtime";
 }
 
 interface PreparedTurnRuntimeState {
@@ -199,26 +198,6 @@ export function toPreparedTurnWire(prepared: PreparedTurn): PreparedTurnWire {
   });
 }
 
-/**
- * Phase-2 comparison input: official igrep is the shadow recall authority, so
- * native legacy recall bytes must not make the shadow result look better. Soul,
- * Scene, relationship, boundaries, summary and the pinned transcript remain identical.
- */
-export function toDshShadowPreparedTurnWire(
-  prepared: PreparedTurn,
-): PreparedTurnWire {
-  const runtime = runtimeByPreparedTurn.get(prepared);
-  if (!runtime) throw new Error("PreparedTurn was not produced by prepareCompanionTurn");
-  const shadowPrepared = compilePreparedTurn(
-    {
-      ...runtime.context,
-      longTermMemories: [],
-    },
-    runtime.currentUserMessageId,
-  );
-  return toPreparedTurnWire(shadowPrepared);
-}
-
 function buildModelMessages(context: BuiltContext): ModelMessage[] {
   return [
     { role: "system", content: buildCompanionSystemPrompt(context) },
@@ -236,7 +215,7 @@ function buildModelMessages(context: BuiltContext): ModelMessage[] {
 
 /**
  * INVARIANT: the tier budget covers every adapter byte. Degradation order is
- * fixed and observable: memory, then summary, then the oldest transcript.
+ * fixed and observable: drop only the oldest complete transcript exchange.
  */
 export function fitPreparedTurnBudget(context: BuiltContext): {
   context: BuiltContext;
@@ -246,7 +225,6 @@ export function fitPreparedTurnBudget(context: BuiltContext): {
 } {
   const fitted: BuiltContext = {
     ...context,
-    longTermMemories: [...context.longTermMemories],
     recentMessages: context.recentMessages.map((message) => ({ ...message })),
     dropped: [...context.dropped],
   };
@@ -262,16 +240,6 @@ export function fitPreparedTurnBudget(context: BuiltContext): {
   };
 
   let calculated = calculate();
-  if (calculated.usedInputTokens > maxInputTokens && fitted.longTermMemories.length > 0) {
-    fitted.longTermMemories = [];
-    dropped.add("memory");
-    calculated = calculate();
-  }
-  if (calculated.usedInputTokens > maxInputTokens && fitted.sessionSummary) {
-    fitted.sessionSummary = null;
-    dropped.add("summary");
-    calculated = calculate();
-  }
   while (calculated.usedInputTokens > maxInputTokens && fitted.recentMessages.length > 1) {
     // INVARIANT: the transcript is a sequence of user-led exchanges. Dropping a
     // single message can make an old assistant reply look like an unsolicited

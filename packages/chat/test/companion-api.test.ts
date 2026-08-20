@@ -1,6 +1,5 @@
-// AI-companion management API acceptance (PRD §8.2, §12): memory + relationship
-// management and delete-message → forget source linkage, end-to-end over the
-// router against PG + the file layer.
+// AI-companion management API acceptance (PRD §8.2, §12): relationship reset,
+// message deletion and SSE aliases over the router against PG + the file layer.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -25,8 +24,8 @@ function jbody<T>(res: ChatResponse): T {
   return res.body as T;
 }
 
-/** create session → send a memory-seeding message → generate → extract memory. */
-async function seedMemory(content: string): Promise<{ sessionId: string; userMessageId: string; assistantMessageId: string }> {
+/** Create one complete turn and settle the structured Scene/relationship job. */
+async function seedTurn(content: string): Promise<{ sessionId: string; userMessageId: string; assistantMessageId: string }> {
   const created = await dispatchChat({ method: "POST", path: "/api/v1/chat/sessions", userId: USER, body: { characterId: CHAR } });
   const sessionId = jbody<{ id: string }>(created).id;
   const sent = await dispatchChat({
@@ -64,70 +63,26 @@ afterAll(async () => {
   await rm(fsRoot, { recursive: true, force: true });
 });
 
-describe("memory management API", () => {
-  it("lists, edits, and deletes long-term memory", async () => {
-    await seedMemory("call me Robin and i like jazz");
-
-    const listed = jbody<{ memories: Array<{ id: string; text: string }> }>(
-      await dispatchChat({ method: "GET", path: "/api/v1/chat/memories", userId: USER, query: { characterId: CHAR } }),
-    );
-    const mem = listed.memories.find((m) => m.text.includes("Robin"));
-    expect(mem).toBeDefined();
-    expect(mem!.id).toMatch(/^mem_/);
-
-    // PATCH edits text in place, id stays stable
-    const patched = jbody<{ id: string; text: string }>(
-      await dispatchChat({ method: "PATCH", path: `/api/v1/chat/memories/${mem!.id}`, userId: USER, body: { text: "User likes being called Bobby." } }),
-    );
-    expect(patched.id).toBe(mem!.id);
-    expect(patched.text).toBe("User likes being called Bobby.");
-
-    // DELETE removes it from the authority file
-    const del = await dispatchChat({ method: "DELETE", path: `/api/v1/chat/memories/${mem!.id}`, userId: USER });
-    expect(del.kind === "json" && del.status).toBe(200);
-    const after = jbody<{ memories: Array<{ id: string }> }>(
-      await dispatchChat({ method: "GET", path: "/api/v1/chat/memories", userId: USER }),
-    );
-    expect(after.memories.find((m) => m.id === mem!.id)).toBeUndefined();
-
-    // unknown id → 404
-    const miss = await dispatchChat({ method: "DELETE", path: "/api/v1/chat/memories/mem_nope", userId: USER });
-    expect(miss.kind === "json" && miss.status).toBe(404);
-  });
-});
-
-describe("delete message forgets derived memory (privacy §12)", () => {
-  it("removes source-linked memory when the message is deleted", async () => {
-    const { userMessageId } = await seedMemory("please call me Sky");
-
-    const before = jbody<{ memories: Array<{ text: string; sourceMessageIds: string[] }> }>(
-      await dispatchChat({ method: "GET", path: "/api/v1/chat/memories", userId: USER, query: { characterId: CHAR } }),
-    );
-    expect(before.memories.some((m) => m.sourceMessageIds.includes(userMessageId))).toBe(true);
-
-    const del = await dispatchChat({ method: "DELETE", path: `/api/v1/chat/messages/${userMessageId}`, userId: USER });
-    expect(del.kind === "json" && del.status).toBe(200);
-
-    const after = jbody<{ memories: Array<{ sourceMessageIds: string[] }> }>(
-      await dispatchChat({ method: "GET", path: "/api/v1/chat/memories", userId: USER, query: { characterId: CHAR } }),
-    );
-    expect(after.memories.some((m) => m.sourceMessageIds.includes(userMessageId))).toBe(false);
+describe("removed item-memory API", () => {
+  it("does not expose list, edit or delete authority outside official igrep", async () => {
+    const response = await dispatchChat({
+      method: "GET",
+      path: "/api/v1/chat/memories",
+      userId: USER,
+    });
+    expect(response.kind === "json" && response.status).toBe(404);
   });
 
   it("reaches delete via the bare /api/v1/messages/:id path (BFF proxy convention)", async () => {
-    const { userMessageId } = await seedMemory("call me Nova");
+    const { userMessageId } = await seedTurn("call me Nova");
     const del = await dispatchChat({ method: "DELETE", path: `/api/v1/messages/${userMessageId}`, userId: USER });
     expect(del.kind === "json" && del.status).toBe(200);
-    const after = jbody<{ memories: Array<{ sourceMessageIds: string[] }> }>(
-      await dispatchChat({ method: "GET", path: "/api/v1/chat/memories", userId: USER, query: { characterId: CHAR } }),
-    );
-    expect(after.memories.some((m) => m.sourceMessageIds.includes(userMessageId))).toBe(false);
   });
 });
 
 describe("SSE stream aliases (PRD §8.2)", () => {
   it("serves both /messages/:id/stream and /streams/:id", async () => {
-    const { assistantMessageId } = await seedMemory("please call me Streamer");
+    const { assistantMessageId } = await seedTurn("please call me Streamer");
     const viaMessages = await dispatchChat({ method: "GET", path: `/api/v1/chat/messages/${assistantMessageId}/stream`, userId: USER });
     const viaStreams = await dispatchChat({ method: "GET", path: `/api/v1/chat/streams/${assistantMessageId}`, userId: USER });
     expect(viaMessages.kind).toBe("sse");
@@ -142,7 +97,7 @@ describe("SSE stream aliases (PRD §8.2)", () => {
 
 describe("relationship management API", () => {
   it("lists, reads, edits, and resets the companion bond", async () => {
-    await seedMemory("hey there, nice to meet you");
+    await seedTurn("hey there, nice to meet you");
 
     const listed = jbody<{ relationships: Array<{ characterId: string; stage: string }> }>(
       await dispatchChat({ method: "GET", path: "/api/v1/chat/relationships", userId: USER }),

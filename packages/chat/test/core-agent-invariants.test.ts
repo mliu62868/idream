@@ -11,7 +11,6 @@ import IORedis from "ioredis";
 import { createChatPrisma } from "../src/db.js";
 import { processGenerate } from "../src/generate.js";
 import { processMemoryExtract } from "../src/memory.js";
-import { listMemories } from "../src/memories.js";
 import { getRelationshipState } from "../src/relationship.js";
 import { reconcile } from "../src/reconcile.js";
 import { createSession, getSession, sendMessage } from "../src/service.js";
@@ -29,11 +28,9 @@ const USERS = {
   turnRace: "u_core_turn_race",
   quotaRace: "u_core_quota_race",
   history: "u_core_history",
-  summary: "u_core_summary",
   memory: "u_core_memory",
   recovery: "u_core_recovery",
   poisonedPayload: "u_core_poisoned_payload",
-  exactMemory: "u_core_exact_memory",
   inputLimit: "u_core_input_limit",
   contextBudget: "u_core_context_budget",
   privateOwner: "u_core_private_owner",
@@ -341,29 +338,6 @@ describe("core context continuity invariants", () => {
     expect(loaded.messages.at(-1)?.content).toBe("assistant-100");
   });
 
-  it("drains a legacy rolling summary instead of re-injecting it forever", async () => {
-    const session = await createSession(
-      { userId: USERS.summary, characterId: CHARACTER },
-      { prisma },
-    );
-    // Rows written before the rolling summary was dropped still hold a value, and
-    // prompt assembly still reads the field — so a turn must clear it, not ignore it.
-    await prisma.chatSession.update({
-      where: { id: session.id },
-      data: { memorySummary: "stale ".repeat(150) },
-    });
-    await sendMessage(
-      { userId: USERS.summary, sessionId: session.id, content: "newest-summary-marker" },
-      { prisma },
-    );
-    await drainQueue(CHAT_QUEUES.generate, async (job) => {
-      await processGenerate(job.payload as Parameters<typeof processGenerate>[0], prisma);
-    });
-
-    const updated = await prisma.chatSession.findUnique({ where: { id: session.id } });
-    expect(updated?.memorySummary).toBeNull();
-  });
-
   it("derives relationship progress idempotently for a retried memory job", async () => {
     const session = await createSession(
       { userId: USERS.memory, characterId: CHARACTER },
@@ -399,61 +373,6 @@ describe("core context continuity invariants", () => {
     const relationship = await getRelationshipState(USERS.memory, CHARACTER);
     expect(relationship.signals.turns).toBe(1);
     expect(relationship.version).toBe(1);
-  });
-
-  it("derives memory from the explicit source turn, not a timestamp guess", async () => {
-    const session = await createSession(
-      { userId: USERS.exactMemory, characterId: CHARACTER },
-      { prisma },
-    );
-    const createdAt = new Date("2026-01-02T00:00:00.000Z");
-    await prisma.message.createMany({
-      data: [
-        {
-          id: "msg_core_exact_wrong",
-          sessionId: session.id,
-          role: "user",
-          content: "call me WrongName",
-          status: "sent",
-          safetyStatus: "passed",
-          createdAt,
-        },
-        {
-          id: "msg_core_exact_right",
-          sessionId: session.id,
-          role: "user",
-          content: "call me RightName",
-          status: "sent",
-          safetyStatus: "passed",
-          createdAt,
-        },
-        {
-          id: "msg_core_exact_assistant",
-          sessionId: session.id,
-          role: "assistant",
-          content: "Got it.",
-          status: "sent",
-          safetyStatus: "passed",
-          replyToMessageId: "msg_core_exact_right",
-          memoryAuthority: "enabled",
-          createdAt,
-        },
-      ],
-    });
-
-    await processMemoryExtract(
-      {
-        sessionId: session.id,
-        assistantMessageId: "msg_core_exact_assistant",
-        userMessageId: "msg_core_exact_right",
-        attempt: 1,
-      },
-      prisma,
-    );
-
-    const memories = await listMemories(USERS.exactMemory, CHARACTER);
-    expect(memories.some((memory) => memory.text.includes("RightName"))).toBe(true);
-    expect(memories.some((memory) => memory.text.includes("WrongName"))).toBe(false);
   });
 
   it("expires per-message Redis streams instead of leaking keys forever", async () => {

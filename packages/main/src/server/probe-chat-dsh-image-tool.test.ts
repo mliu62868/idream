@@ -70,7 +70,6 @@ beforeEach(() => {
   mocks.completedCleanup.mockResolvedValue({
     ok: true,
     sessionGone: true,
-    memoryGone: true,
     relationshipsGone: true,
   });
   mocks.probeStream.mockResolvedValue({
@@ -103,7 +102,6 @@ describe("signed DSH image-tool probe orchestration", () => {
       ok: false,
       cleanup: {
         sessionGone: true,
-        memoriesGone: true,
         relationshipsGone: true,
         recentChatDeleted: false,
         sourceTextRedacted: false,
@@ -124,7 +122,6 @@ describe("signed DSH image-tool probe orchestration", () => {
       ok: false,
       cleanup: {
         sessionGone: false,
-        memoriesGone: false,
         relationshipsGone: false,
       },
     });

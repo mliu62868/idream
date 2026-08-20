@@ -23,13 +23,6 @@ export interface ChatModelProfile {
   structuredTemperature?: number;
 }
 
-export interface ChatMemoryExtractProfile {
-  model: string;
-  baseUrl: string;
-  apiKey: string;
-  timeoutMs: number;
-}
-
 type Environment = Record<string, string | undefined>;
 
 const DEFAULT_MODEL =
@@ -54,7 +47,7 @@ export function resolveChatModelProfile(
     : tier === "premium"
       ? source.CHAT_MODEL_PREMIUM ?? defaultModel
       : source.CHAT_MODEL_FREE ?? defaultModel;
-  const legacyTimeout = positiveInt(
+  const defaultTimeout = positiveInt(
     source.CHAT_MODEL_TIMEOUT_MS ?? source.PIPELINE_TIMEOUT_MS,
     DEFAULT_TIMEOUT_MS,
   );
@@ -85,29 +78,17 @@ export function resolveChatModelProfile(
     ),
     firstTokenTimeoutMs: positiveInt(
       source.CHAT_MODEL_FIRST_TOKEN_TIMEOUT_MS,
-      legacyTimeout,
+      defaultTimeout,
     ),
     idleTimeoutMs: positiveInt(
       source.CHAT_MODEL_IDLE_TIMEOUT_MS,
-      legacyTimeout,
+      defaultTimeout,
     ),
     completionTimeoutMs: positiveInt(
       source.CHAT_MODEL_COMPLETE_TIMEOUT_MS,
-      legacyTimeout,
+      defaultTimeout,
     ),
     supportsTools: provider === "openai",
-  };
-}
-
-export function resolveChatMemoryExtractProfile(
-  source: Environment = process.env,
-): ChatMemoryExtractProfile {
-  const chat = resolveChatModelProfile(source);
-  return {
-    model: source.CHAT_MEMORY_EXTRACT_MODEL ?? "Qwen3.5-4B-MLX-4bit",
-    baseUrl: source.CHAT_MEMORY_EXTRACT_LLM_URL ?? chat.baseUrl,
-    apiKey: source.CHAT_MEMORY_EXTRACT_LLM_KEY ?? chat.apiKey ?? "omlx",
-    timeoutMs: positiveInt(source.CHAT_MEMORY_EXTRACT_TIMEOUT_MS, 45_000),
   };
 }
 

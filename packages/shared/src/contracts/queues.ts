@@ -42,22 +42,10 @@ export const CHAT_QUEUES = {
   maintain: "chat.maintain",
 } as const;
 
-/**
- * Legacy in-monolith queue names. Retained so the single-process pipeline keeps
- * working during the strangler migration; new code should use the grouped maps.
- */
-export const LEGACY_QUEUES = {
-  chatGenerate: "ai.chat.generate",
-  memorySync: "ai.memory.sync",
-  memoryForget: "ai.memory.forget",
-  memoryRebuild: "ai.memory.rebuild",
-} as const;
-
 export const ALL_QUEUE_NAMES = [
   ...Object.values(GEN_QUEUES),
   ...Object.values(MAIN_QUEUES),
   ...Object.values(CHAT_QUEUES),
-  ...Object.values(LEGACY_QUEUES),
 ] as const;
 
 export type QueueName = (typeof ALL_QUEUE_NAMES)[number];
