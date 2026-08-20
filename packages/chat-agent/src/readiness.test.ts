@@ -121,7 +121,7 @@ describe("fail-closed companion readiness", () => {
         memory: true,
         ingest: true,
         wake: true,
-      })),
+      }), { maxSteps: config.maxSteps, igrepLlm: config.igrepLlm }),
     );
     expect(readiness.profiles.normal.normalizedConfigDigest).not.toBe(normalDigest);
     expect(readiness.profiles.private.normalizedConfigDigest).not.toBe(privateDigest);

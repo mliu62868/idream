@@ -34,6 +34,7 @@ const engine = new CompanionEngine({
     openRouterProviderOnly: config.openRouterProviderOnly,
   }),
   igrepCommand: config.igrepCommand,
+  igrepLlm: config.igrepLlm,
   rebuilder: new IgrepMemoryRebuilder(config.igrepCommand),
   legacyImporter: new IgrepLegacyMemoryImporter(
     config.igrepCommand,

@@ -1,0 +1,110 @@
+import { describe, expect, it } from "vitest";
+import {
+  companionCompositionDigest,
+  companionCompositionManifest,
+  createCompanionCompositionPlan,
+} from "./composition";
+
+describe("companion composition identity", () => {
+  it("pins iDream adapter, bridge and execution policy while excluding paths and secrets", () => {
+    const authority = {
+      maxSteps: 8,
+      igrepLlm: { url: "https://maintenance.example/v1", model: "maintenance-model" },
+    };
+    const manifest = companionCompositionManifest(
+      "normal",
+      {
+        command: "/opt/idream/igrep/bin/igrep",
+        apiKey: "must-not-enter-the-digest",
+        search: true,
+        memory: true,
+        ingest: true,
+        wake: true,
+      },
+      authority,
+    );
+
+    expect(manifest).toMatchObject({
+      schemaVersion: 2,
+      idream: {
+        adapter: { name: "openai-compatible", contractVersion: 1 },
+        bridges: {
+          preparedTurn: 1,
+          tool: 1,
+          event: 1,
+          commit: 1,
+        },
+        executionPolicy: {
+          version: 1,
+          maxSteps: 8,
+          maxParallelToolCalls: 1,
+          effectfulToolConcurrency: 1,
+          deadlineSource: "invocation.deadlineAt",
+          commitBeforeIngest: true,
+        },
+      },
+    });
+    expect(JSON.stringify(manifest)).not.toContain("/opt/idream");
+    expect(JSON.stringify(manifest)).not.toContain("must-not-enter-the-digest");
+
+    const alternateRuntime = companionCompositionDigest(
+      "normal",
+      {
+        command: "/different/runtime/path/igrep",
+        apiKey: "different-secret",
+        search: true,
+        memory: true,
+        ingest: true,
+        wake: true,
+      },
+      authority,
+    );
+    expect(alternateRuntime).toBe(companionCompositionDigest(
+      "normal",
+      {
+        command: "/opt/idream/igrep/bin/igrep",
+        apiKey: "must-not-enter-the-digest",
+        search: true,
+        memory: true,
+        ingest: true,
+        wake: true,
+      },
+      authority,
+    ));
+    expect(companionCompositionDigest(
+      "normal",
+      { search: true, memory: true, ingest: true, wake: true },
+      { ...authority, maxSteps: 9 },
+    )).not.toBe(alternateRuntime);
+    expect(companionCompositionDigest(
+      "normal",
+      { search: true, memory: true, ingest: true, wake: true },
+      {
+        ...authority,
+        igrepLlm: { ...authority.igrepLlm, model: "different-maintenance-model" },
+      },
+    )).not.toBe(alternateRuntime);
+  });
+
+  it("builds an immutable plan without mutating the resolved plugin config", () => {
+    const normalized = {
+      command: "/opt/idream/igrep/bin/igrep",
+      search: true,
+      memory: true,
+      ingest: true,
+      wake: true,
+    };
+    const authority = {
+      maxSteps: 8,
+      igrepLlm: { url: "https://maintenance.example/v1", model: "maintenance-model" },
+    };
+
+    const plan = createCompanionCompositionPlan("normal", normalized, authority);
+
+    expect(Object.isFrozen(normalized)).toBe(false);
+    expect(Object.isFrozen(plan)).toBe(true);
+    expect(Object.isFrozen(plan.normalizedIgrepConfig)).toBe(true);
+    expect(Object.isFrozen(plan.manifest)).toBe(true);
+    expect(plan.digest).toBe(companionCompositionDigest("normal", normalized, authority));
+  });
+});

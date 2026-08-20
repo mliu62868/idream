@@ -10,6 +10,7 @@ import {
   companionInvocationSchema,
   companionLegacyMemoryImportSchema,
   companionNdjsonFrameSchema,
+  companionProbeDshEvidenceSchema,
   companionReadinessSchema,
   companionTerminalCandidateSchema,
   companionToolCallSchema,
@@ -597,6 +598,22 @@ describe("companion runtime stable wire contract", () => {
       outcome: "hit",
       resultCount: 0,
       durationMs: 1,
+    }).success).toBe(false);
+  });
+
+  it("keeps signed DSH probe evidence content-free and exact", () => {
+    const evidence = {
+      ok: true,
+      runtime: "dsh" as const,
+      memoryBackend: "igrep-dsh" as const,
+      profileDigest: "d".repeat(64),
+      sidecarInstanceId: sidecarInstance.id,
+      error: null,
+    };
+    expect(companionProbeDshEvidenceSchema.parse(evidence)).toEqual(evidence);
+    expect(companionProbeDshEvidenceSchema.safeParse({
+      ...evidence,
+      rawTrace: { systemPrompt: "must-not-cross-the-report-boundary" },
     }).success).toBe(false);
   });
 });

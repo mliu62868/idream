@@ -11,13 +11,14 @@ import {
   type CompanionInvocation,
   type CompanionRuntimeResponse,
 } from "@idream/shared/chat/companion-runtime";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CompanionEngine } from "./engine";
 import { companionCompositionDigest, companionIgrepConfig } from "./composition";
 import { createCompanionServer, type CompanionServer } from "./server";
 import { AttemptWorkspaceStore, relationshipWorkspacePath } from "./workspace";
 
 const AUTH_TOKEN = "engine-test-secret";
+const IGREP_LLM = { url: "https://maintenance.example/v1", model: "maintenance-model" };
 const temporary: string[] = [];
 const servers: CompanionServer[] = [];
 
@@ -167,6 +168,7 @@ function invocation(memoryMode: "normal" | "private" | "shadow" = "private"): Co
     expectedProfileDigest: companionCompositionDigest(
       memoryMode === "private" ? "private" : "normal",
       companionIgrepConfig(memoryMode === "private" ? "private" : "normal", "igrep"),
+      { maxSteps: 8, igrepLlm: IGREP_LLM },
     ),
     deadlineAt: new Date(Date.now() + 30_000).toISOString(),
     preparedTurn: {
@@ -320,20 +322,36 @@ function disposalWritingPlugin(configs: Record<string, unknown>[]) {
 
 describe("programmatic DSH companion runtime", () => {
   it.each(["normal", "private", "shadow"] as const)(
-    "rejects a stale %s profile before provider execution",
+    "rejects a stale %s profile before composition, workspace or adapter initialization",
     async (memoryMode) => {
       const root = await mkdtemp(join(tmpdir(), "chat-agent-profile-drift-"));
       temporary.push(root);
       const adapter = new ProviderMustNotRunAdapter();
+      let applyCalls = 0;
+      let adapterFactoryCalls = 0;
+      const workspaces = new AttemptWorkspaceStore({
+        canonicalRoot: join(root, "canonical"),
+        privateRoot: join(root, "private"),
+        memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
+      });
+      const prepare = vi.spyOn(workspaces, "prepare");
       const engine = new CompanionEngine({
-        workspaces: new AttemptWorkspaceStore({
-          canonicalRoot: join(root, "canonical"),
-          privateRoot: join(root, "private"),
-          memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
+        workspaces,
+        plugin: async () => ({
+          name: "igrep",
+          resolveConfig(config) {
+            return { ...config, resolvedMarker: true };
+          },
+          apply() {
+            applyCalls += 1;
+          },
         }),
-        plugin: async () => ({ name: "igrep", apply() {} }),
-        adapter: () => adapter,
+        adapter: () => {
+          adapterFactoryCalls += 1;
+          return adapter;
+        },
         igrepCommand: "igrep",
+        igrepLlm: IGREP_LLM,
       });
       const run = invocation(memoryMode);
       run.expectedProfileDigest = "f".repeat(64);
@@ -341,6 +359,9 @@ describe("programmatic DSH companion runtime", () => {
 
       await engine.run(run, (frame) => observed.push(frame));
 
+      expect(applyCalls).toBe(0);
+      expect(prepare).not.toHaveBeenCalled();
+      expect(adapterFactoryCalls).toBe(0);
       expect(adapter.calls).toBe(0);
       expect(observed).toContainEqual(expect.objectContaining({
         type: "event",
@@ -396,6 +417,7 @@ describe("programmatic DSH companion runtime", () => {
       }),
       adapter: () => new MemorySearchThenTextAdapter(),
       igrepCommand: "igrep",
+      igrepLlm: IGREP_LLM,
     });
     const server = createCompanionServer({
       authToken: AUTH_TOKEN,
@@ -463,6 +485,7 @@ describe("programmatic DSH companion runtime", () => {
       plugin: async () => ({ name: "igrep", apply() {} }),
       adapter: () => adapter,
       igrepCommand: "igrep",
+      igrepLlm: IGREP_LLM,
     });
     const server = createCompanionServer({
       authToken: AUTH_TOKEN,
@@ -556,6 +579,7 @@ describe("programmatic DSH companion runtime", () => {
       plugin: async () => ({ name: "igrep", apply() {} }),
       adapter: () => adapter,
       igrepCommand: "igrep",
+      igrepLlm: IGREP_LLM,
     });
     const server = createCompanionServer({
       authToken: AUTH_TOKEN,
@@ -657,6 +681,7 @@ describe("programmatic DSH companion runtime", () => {
       plugin: async () => disposalWritingPlugin(configs),
       adapter: () => new OneStepAdapter(),
       igrepCommand: "igrep",
+      igrepLlm: IGREP_LLM,
     });
     const server = createCompanionServer({
       authToken: AUTH_TOKEN,
@@ -729,6 +754,7 @@ describe("programmatic DSH companion runtime", () => {
       plugin: async () => disposalWritingPlugin([]),
       adapter: () => new OneStepAdapter(),
       igrepCommand: "igrep",
+      igrepLlm: IGREP_LLM,
     });
     const server = createCompanionServer({
       authToken: AUTH_TOKEN,
@@ -801,6 +827,7 @@ describe("programmatic DSH companion runtime", () => {
       plugin: async () => ({ name: "igrep", apply() {} }),
       adapter: () => new BlockingAdapter(),
       igrepCommand: "igrep",
+      igrepLlm: IGREP_LLM,
     });
     const server = createCompanionServer({
       authToken: AUTH_TOKEN,
@@ -850,6 +877,7 @@ describe("programmatic DSH companion runtime", () => {
       plugin: async () => ({ name: "igrep", apply() {} }),
       adapter: () => new BlockingAdapter(),
       igrepCommand: "igrep",
+      igrepLlm: IGREP_LLM,
     });
     const server = createCompanionServer({
       authToken: AUTH_TOKEN,
@@ -886,6 +914,7 @@ describe("programmatic DSH companion runtime", () => {
       plugin: async () => ({ name: "igrep", apply() {} }),
       adapter: () => new BlockingAdapter(),
       igrepCommand: "igrep",
+      igrepLlm: IGREP_LLM,
       maxConcurrentAgents: { normal: 1, private: 1 },
     });
     const firstPrivate = invocation("private");

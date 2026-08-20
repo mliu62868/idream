@@ -22,6 +22,7 @@ const recordMemoryPromotionSuccessMock = vi.hoisted(() => vi.fn());
 const canAdmitShadowMock = vi.hoisted(() => vi.fn(() => true));
 const dshRunMock = vi.hoisted(() => vi.fn());
 const dshCancelMock = vi.hoisted(() => vi.fn(async () => {}));
+const verifiedProfileDigestState = vi.hoisted(() => ({ value: "d".repeat(64) }));
 
 vi.mock("./db.js", () => ({ chatPrisma: {} }));
 vi.mock("./providers.js", () => ({
@@ -70,10 +71,11 @@ vi.mock("./companion-runtime.js", () => ({
   },
 }));
 vi.mock("./companion-sidecar-readiness.js", () => ({
-  verifiedCompanionProfileDigest: () => "d".repeat(64),
+  verifiedCompanionProfileDigest: () => verifiedProfileDigestState.value,
 }));
 
 const {
+  claimGenerateAttemptAuthority,
   drainDshShadowExecutor,
   persistAttemptRuntimeTraceCas,
   persistShadowComparison,
@@ -192,6 +194,7 @@ function fakePrisma(
     },
     messageVersion: {
       findUnique: async () => ({ runtimeTrace: null }),
+      upsert: async () => ({}),
       updateMany: async () => ({ count: 1 }),
       update: async () => ({}),
     },
@@ -426,9 +429,82 @@ describe("chat generate agent image tool", () => {
     canAdmitShadowMock.mockReturnValue(true);
     dshRunMock.mockReset();
     dshCancelMock.mockClear();
+    verifiedProfileDigestState.value = "d".repeat(64);
     buildContextMock.mockResolvedValue(context);
     moderationMock.mockResolvedValue({ status: "passed", confidence: 0.5 });
     supportsToolsState.value = true;
+  });
+
+  it("atomically claims the exact attempt route and MessageVersion or rolls both back", async () => {
+    const stored: {
+      messageTrace: Record<string, unknown> | null;
+      versionTrace: Record<string, unknown> | null;
+    } = { messageTrace: null, versionTrace: null };
+    let messageWhere: Record<string, unknown> | undefined;
+    let versionUpdate: Record<string, unknown> | undefined;
+    let versionClaimUpdate: Record<string, unknown> | undefined;
+    let rejectVersionCas = true;
+    const prisma = {
+      $transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) => {
+        const pending = structuredClone(stored);
+        const tx = {
+          message: {
+            updateMany: vi.fn(async (call: CreateCall) => {
+              messageWhere = call.where;
+              pending.messageTrace = call.data.runtimeTrace as Record<string, unknown>;
+              return { count: 1 };
+            }),
+          },
+          messageVersion: {
+            upsert: vi.fn(async (call: {
+              create: CreateCall["data"];
+              update: Record<string, unknown>;
+            }) => {
+              pending.versionTrace = call.create.runtimeTrace as Record<string, unknown>;
+              versionUpdate = call.update;
+              return {};
+            }),
+            updateMany: vi.fn(async (call: CreateCall) => {
+              if (rejectVersionCas) return { count: 0 };
+              versionClaimUpdate = call.data;
+              pending.versionTrace = call.data.runtimeTrace as Record<string, unknown>;
+              return { count: 1 };
+            }),
+          },
+        };
+        const result = await callback(tx);
+        Object.assign(stored, pending);
+        return result;
+      }),
+    } as unknown as ChatPrismaClient;
+    const trace = {
+      companionRuntime: {
+        runtime: "dsh",
+        profileDigest: "d".repeat(64),
+      },
+    };
+    const input = {
+      prisma,
+      payload: {
+        sessionId: "sess_1",
+        assistantMessageId: "msg_assistant",
+        userMessageId: "msg_user",
+        attempt: 1,
+      },
+      runtimeTrace: trace,
+      model: null,
+      expectedMessageStatus: "pending" as const,
+    };
+
+    await expect(claimGenerateAttemptAuthority(input)).rejects.toThrow(/version CAS/i);
+    expect(stored).toEqual({ messageTrace: null, versionTrace: null });
+
+    rejectVersionCas = false;
+    await expect(claimGenerateAttemptAuthority(input)).resolves.toBe(true);
+    expect(stored).toEqual({ messageTrace: trace, versionTrace: trace });
+    expect(messageWhere).toMatchObject({ status: "pending" });
+    expect(versionUpdate).toEqual({ runtimeTrace: trace });
+    expect(versionClaimUpdate).toEqual({ runtimeTrace: trace });
   });
 
   it("delivers only native output while auditing a dry-run DSH shadow", async () => {
@@ -1022,6 +1098,45 @@ describe("chat generate agent image tool", () => {
     expect(stored.versionTrace).toEqual(trace);
   });
 
+  it("pins the PreparedTurn model on the exact MessageVersion in the trace transaction", async () => {
+    const writes: { message?: CreateCall["data"]; version?: CreateCall["data"] } = {};
+    const tx = {
+      message: {
+        updateMany: vi.fn(async (call: CreateCall) => {
+          writes.message = call.data;
+          return { count: 1 };
+        }),
+      },
+      messageVersion: {
+        updateMany: vi.fn(async (call: CreateCall) => {
+          writes.version = call.data;
+          return { count: 1 };
+        }),
+      },
+    };
+    const prisma = {
+      $transaction: vi.fn(async (callback: (client: typeof tx) => Promise<unknown>) => callback(tx)),
+    } as unknown as ChatPrismaClient;
+    const trace = { schemaVersion: 1, state: "prepared" };
+
+    await expect(persistAttemptRuntimeTraceCas({
+      prisma,
+      payload: {
+        sessionId: "sess_1",
+        assistantMessageId: "msg_assistant",
+        userMessageId: "msg_user",
+        attempt: 1,
+      },
+      expectedMessageStatus: "generating",
+      trace,
+      stage: "prepared_turn",
+      versionModel: "selected-model",
+    })).resolves.toBe("updated");
+
+    expect(writes.message).toEqual({ runtimeTrace: trace });
+    expect(writes.version).toEqual({ runtimeTrace: trace, model: "selected-model" });
+  });
+
   it("merges detached shadow evidence into the latest retry telemetry", async () => {
     const updates: CreateCall[] = [];
     const currentTrace = {
@@ -1501,6 +1616,53 @@ describe("chat generate agent image tool", () => {
     }
   });
 
+  it("reuses the durable DSH profile digest when readiness changes before a retry", async () => {
+    const restoreEnv = installDshRolloutEnv();
+    try {
+      let observedDigest: string | undefined;
+      verifiedProfileDigestState.value = "e".repeat(64);
+      dshRunMock.mockImplementation(async (invocation) => {
+        observedDigest = invocation.expectedProfileDigest;
+        throw new Error("retry observation complete");
+      });
+      const priorTrace = {
+        schemaVersion: 1,
+        companionRuntime: {
+          runtime: "dsh",
+          memoryBackend: "igrep-dsh",
+          profile: "idream-companion-memory",
+          private: false,
+          profileDigest: "d".repeat(64),
+        },
+        primaryTelemetry: {
+          schemaVersion: 1,
+          runtime: "dsh",
+          startedAt: "2026-08-19T12:00:00.000Z",
+          retryCount: 0,
+        },
+      };
+      const { prisma, messageUpdates } = fakePrisma(
+        undefined,
+        undefined,
+        undefined,
+        priorTrace,
+      );
+
+      await expect(processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        prisma,
+        { projectorPrisma: prisma, jobAttempt: { attemptsMade: 1, maxAttempts: 3 } },
+      )).rejects.toThrow("retry observation complete");
+
+      expect(observedDigest).toBe("d".repeat(64));
+      expect(messageUpdates[0]?.data.runtimeTrace).toMatchObject({
+        companionRuntime: { profileDigest: "d".repeat(64) },
+      });
+    } finally {
+      restoreEnv();
+    }
+  });
+
   it("persists DSH text already delivered before a runtime disconnect as truncated", async () => {
     const restoreEnv = installDshRolloutEnv();
     try {
@@ -1639,7 +1801,7 @@ describe("chat generate agent image tool", () => {
         });
         await port.commit(candidate);
       });
-      const { prisma, attachmentCreates, rootMessageUpdates } = fakePrisma(
+      const { prisma, attachmentCreates, messageUpdates, rootMessageUpdates } = fakePrisma(
         undefined,
         undefined,
         undefined,
@@ -1649,6 +1811,7 @@ describe("chat generate agent image tool", () => {
             memoryBackend: "igrep-dsh",
             profile: "idream-companion-memory",
             private: false,
+            profileDigest: "d".repeat(64),
           },
           companionTool: reservation,
         },
@@ -1665,7 +1828,7 @@ describe("chat generate agent image tool", () => {
         output: { effectId: "msg_assistant:1:call-replayed" },
       });
       expect(attachmentCreates).toHaveLength(1);
-      const persistedReservations = rootMessageUpdates
+      const persistedReservations = [...messageUpdates, ...rootMessageUpdates]
         .map((call) => (call.data.runtimeTrace as { companionTool?: unknown } | undefined)?.companionTool)
         .filter(Boolean);
       expect(persistedReservations.length).toBeGreaterThan(0);
@@ -1733,7 +1896,7 @@ describe("chat generate agent image tool", () => {
 
     expect(streamMock).not.toHaveBeenCalled();
     expect(completeMock).not.toHaveBeenCalled();
-    expect(messageUpdates[0]?.data).toMatchObject({
+    expect(finalizedMessageUpdate(messageUpdates)).toMatchObject({
       status: "sent",
       content: "I can’t retain that across sessions. If you want to use it later, tell me again then.",
     });
@@ -1769,7 +1932,7 @@ describe("chat generate agent image tool", () => {
 
     expect(result.status).toBe("sent");
     expect(streamMock).not.toHaveBeenCalled();
-    expect(messageUpdates[0]?.data).toMatchObject({
+    expect(finalizedMessageUpdate(messageUpdates)).toMatchObject({
       status: "sent",
       content: "我给你生成一张靠窗的照片。",
     });
@@ -2290,7 +2453,7 @@ describe("chat generate agent image tool", () => {
     expect(streamMock.mock.calls[0]?.[0]).toMatchObject({ tools: expect.any(Array) });
     // Prose was non-empty, so no FC follow-up complete() call was needed.
     expect(completeMock).not.toHaveBeenCalled();
-    expect(messageUpdates[0]?.data).toMatchObject({
+    expect(finalizedMessageUpdate(messageUpdates)).toMatchObject({
       status: "sent",
       content: "I'd love to share this with you.",
     });
@@ -2323,7 +2486,7 @@ describe("chat generate agent image tool", () => {
     );
 
     expect(result.status).toBe("sent");
-    expect(messageUpdates[0]?.data).toMatchObject({
+    expect(finalizedMessageUpdate(messageUpdates)).toMatchObject({
       status: "sent",
       content: "Just chatting, no photo needed.",
     });

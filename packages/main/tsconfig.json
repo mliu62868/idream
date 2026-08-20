@@ -43,6 +43,9 @@
       ],
       "@idream/shared/observability/sentry": [
         "../shared/src/observability/sentry.ts"
+      ],
+      "@idream/shared/chat/companion-runtime": [
+        "../shared/src/chat/companion-runtime.ts"
       ]
     }
   },

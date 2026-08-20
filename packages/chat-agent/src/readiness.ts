@@ -390,7 +390,10 @@ export function createReadinessProbe(
     );
     await (options.bridgeProbe ?? probeCompanionBridges)(bridgeInvocation(
       profile,
-      companionCompositionDigest("private", privateProfile),
+      companionCompositionDigest("private", privateProfile, {
+        maxSteps: options.config.maxSteps,
+        igrepLlm: options.config.igrepLlm,
+      }),
     ));
     await options.workspaceRebuildProbe();
 
@@ -414,13 +417,19 @@ export function createReadinessProbe(
         normal: {
           name: "normal",
           loaded: true,
-          normalizedConfigDigest: companionCompositionDigest("normal", normal),
+          normalizedConfigDigest: companionCompositionDigest("normal", normal, {
+            maxSteps: options.config.maxSteps,
+            igrepLlm: options.config.igrepLlm,
+          }),
           capabilities: { memoryRead: true, memoryWrite: true, tools: true, commit: true },
         },
         private: {
           name: "private",
           loaded: true,
-          normalizedConfigDigest: companionCompositionDigest("private", privateProfile),
+          normalizedConfigDigest: companionCompositionDigest("private", privateProfile, {
+            maxSteps: options.config.maxSteps,
+            igrepLlm: options.config.igrepLlm,
+          }),
           capabilities: { memoryRead: false, memoryWrite: false, tools: true, commit: true },
         },
       },

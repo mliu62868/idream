@@ -56,7 +56,16 @@ function httpUrl(env: NodeJS.ProcessEnv, name: string): string {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new Error(`${name} must be an HTTP(S) URL`);
   }
-  return value;
+  if (url.username || url.password) {
+    throw new Error(`${name} must not contain credentials`);
+  }
+  if (url.search) {
+    throw new Error(`${name} must not contain a query`);
+  }
+  if (url.hash) {
+    throw new Error(`${name} must not contain a fragment`);
+  }
+  return url.toString().replace(/\/$/u, "");
 }
 
 function positiveInteger(raw: string | undefined, fallback: number, name: string): number {

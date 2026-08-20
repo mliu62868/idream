@@ -29,6 +29,7 @@ import {
 
 const AUTH_TOKEN = "purge-test-secret";
 const temporary: string[] = [];
+const IGREP_LLM = { url: "https://maintenance.example/v1", model: "maintenance-model" };
 const servers: CompanionServer[] = [];
 
 afterEach(async () => {
@@ -96,6 +97,7 @@ function activeInvocation(): CompanionInvocation {
     expectedProfileDigest: companionCompositionDigest(
       "normal",
       companionIgrepConfig("normal", "igrep"),
+      { maxSteps: 8, igrepLlm: IGREP_LLM },
     ),
     deadlineAt: new Date(Date.now() + 30_000).toISOString(),
     preparedTurn: {
@@ -522,6 +524,7 @@ describe("authenticated workspace privacy authority", () => {
       plugin: async () => ({ name: "igrep", apply() {} }),
       adapter: () => new UnusedAdapter(),
       igrepCommand: "igrep",
+      igrepLlm: IGREP_LLM,
       legacyImporter: {
         version: "0.1.132",
         async import(workspace) {
@@ -818,6 +821,7 @@ describe("authenticated workspace privacy authority", () => {
       plugin: async () => ({ name: "igrep", apply() {} }),
       adapter: () => new UnusedAdapter(),
       igrepCommand: "igrep",
+      igrepLlm: IGREP_LLM,
     });
     const server = createCompanionServer({
       authToken: AUTH_TOKEN,
@@ -877,6 +881,7 @@ describe("authenticated workspace privacy authority", () => {
       plugin: async () => ({ name: "igrep", apply() {} }),
       adapter: () => new UnusedAdapter(),
       igrepCommand: "igrep",
+      igrepLlm: IGREP_LLM,
     });
     const server = createCompanionServer({
       authToken: AUTH_TOKEN,
@@ -950,6 +955,7 @@ describe("authenticated workspace privacy authority", () => {
       plugin: async () => ({ name: "igrep", apply() {} }),
       adapter: () => new UnusedAdapter(),
       igrepCommand: "igrep",
+      igrepLlm: IGREP_LLM,
       rebuilder: {
         async rebuild() {
           entered.resolve();
@@ -999,6 +1005,7 @@ describe("authenticated workspace privacy authority", () => {
       plugin: async () => ({ name: "igrep", apply() {} }),
       adapter: () => new BlockingAdapter(),
       igrepCommand: "igrep",
+      igrepLlm: IGREP_LLM,
     });
     const server = createCompanionServer({
       authToken: AUTH_TOKEN,

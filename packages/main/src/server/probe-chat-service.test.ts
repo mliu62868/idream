@@ -104,6 +104,7 @@ describe("chat service DSH evidence", () => {
         sidecar: {
           instanceId: "5dd87053-012f-4ca3-a4d7-5aeb89466d5b",
           startedAt: "2026-08-19T12:00:00.000Z",
+          profileDigest: "a".repeat(64),
         },
       },
       companion: {
@@ -141,6 +142,48 @@ describe("chat service DSH evidence", () => {
       error: null,
     });
     expect(JSON.stringify(evidence)).not.toContain("must-not-leak");
+  });
+
+  it("fails closed when the started sidecar digest differs from the durable attempt pin", () => {
+    const evidence = projectDshCompanionEvidence({
+      companionRuntime: {
+        runtime: "dsh",
+        memoryBackend: "igrep-dsh",
+        profile: "idream-companion-memory",
+        private: false,
+        assignment: { policyVersion: 1, reason: "allowlist" },
+      },
+      dsh: {
+        profileDigest: "a".repeat(64),
+        memoryMode: "normal",
+        provider: "openai",
+        model: "fixture-model",
+      },
+      primaryTelemetry: {
+        schemaVersion: 1,
+        runtime: "dsh",
+        terminalStatus: "sent",
+        truncated: false,
+        provider: "openai",
+        model: "fixture-model",
+        sseTerminal: "done",
+        memory: { outcome: "ingested", settleLagMs: 17 },
+        sidecar: {
+          instanceId: "5dd87053-012f-4ca3-a4d7-5aeb89466d5b",
+          startedAt: "2026-08-19T12:00:00.000Z",
+          profileDigest: "b".repeat(64),
+        },
+      },
+      companion: {
+        profile: "idream-companion-memory",
+        memoryIngestOutcome: "ingested",
+        memoryIngestSettledAt: "2026-08-19T12:00:01.000Z",
+        attribution: { requestId: "chatcmpl-probe" },
+      },
+    }, "normal");
+
+    expect(evidence.ok).toBe(false);
+    expect(evidence.error).toContain("primaryTelemetry.sidecar.profileDigest");
   });
 
   it("fails closed when a normal DSH candidate has no provider attribution", () => {

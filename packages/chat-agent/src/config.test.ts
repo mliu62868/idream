@@ -39,11 +39,20 @@ describe("sidecar process configuration", () => {
       .toThrow(/IGREP_LLM_URL.*HTTP/);
     expect(() => loadSidecarConfig(environment({ IGREP_LLM_URL: "not-a-url" })))
       .toThrow(/IGREP_LLM_URL.*URL/);
+    expect(() => loadSidecarConfig(environment({
+      IGREP_LLM_URL: "https://user:secret@maintenance.example/v1",
+    }))).toThrow(/IGREP_LLM_URL.*credentials/);
+    expect(() => loadSidecarConfig(environment({
+      IGREP_LLM_URL: "https://maintenance.example/v1?route=hidden",
+    }))).toThrow(/IGREP_LLM_URL.*query/);
+    expect(() => loadSidecarConfig(environment({
+      IGREP_LLM_URL: "https://maintenance.example/v1#hidden",
+    }))).toThrow(/IGREP_LLM_URL.*fragment/);
   });
 
   it("binds every igrep child to the validated maintenance LLM values", () => {
     const config = loadSidecarConfig(environment({
-      IGREP_LLM_URL: " https://maintenance.example/v1 ",
+      IGREP_LLM_URL: " https://maintenance.example/v1/ ",
       IGREP_LLM_MODEL: " maintenance-model ",
       IGREP_LLM_API_KEY: " maintenance-secret ",
     }));

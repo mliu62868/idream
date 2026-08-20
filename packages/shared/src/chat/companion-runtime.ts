@@ -863,6 +863,33 @@ export const companionReadinessSchema = z
   })
   .strict();
 
+/** Content-free Gate-E projection shared by the signed probe and its report consumer. */
+export const companionProbeDshEvidenceSchema = z
+  .object({
+    ok: z.boolean(),
+    runtime: nonEmptyStringSchema.optional(),
+    memoryBackend: nonEmptyStringSchema.optional(),
+    profile: nonEmptyStringSchema.optional(),
+    private: z.boolean().optional(),
+    assignmentReason: nonEmptyStringSchema.optional(),
+    primaryRuntime: nonEmptyStringSchema.optional(),
+    terminalStatus: nonEmptyStringSchema.optional(),
+    sseTerminal: nonEmptyStringSchema.optional(),
+    provider: nonEmptyStringSchema.optional(),
+    model: nonEmptyStringSchema.optional(),
+    profileDigest: sha256Schema.optional(),
+    outputAuthority: nonEmptyStringSchema.optional(),
+    requestId: nonEmptyStringSchema.optional(),
+    actualProvider: nonEmptyStringSchema.optional(),
+    memoryOutcome: nonEmptyStringSchema.optional(),
+    memoryIngestOutcome: nonEmptyStringSchema.optional(),
+    memorySettledAt: isoDateTimeSchema.optional(),
+    memorySettleLagMs: z.number().finite().nonnegative().optional(),
+    sidecarInstanceId: z.string().uuid().optional(),
+    error: z.string().nullable(),
+  })
+  .strict();
+
 export type PreparedTurnMessage = z.infer<typeof preparedTurnMessageSchema>;
 export type PreparedTurnProfile = z.infer<typeof preparedTurnProfileSchema>;
 export type PreparedTurnWire = z.infer<typeof preparedTurnWireSchema>;
@@ -899,3 +926,4 @@ export type CompanionRuntimeRequest = z.infer<typeof companionRuntimeRequestSche
 export type CompanionRuntimeResponse = z.infer<typeof companionRuntimeResponseSchema>;
 export type CompanionNdjsonFrame = z.infer<typeof companionNdjsonFrameSchema>;
 export type CompanionReadiness = z.infer<typeof companionReadinessSchema>;
+export type CompanionProbeDshEvidence = z.infer<typeof companionProbeDshEvidenceSchema>;

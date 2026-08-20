@@ -158,6 +158,69 @@ export type GenerateWorkerJob = Pick<
   "payload" | "attemptsMade" | "maxAttempts"
 >;
 
+/**
+ * INVARIANT: the first durable attempt claim publishes one route/profile truth
+ * on Message and its exact unselected MessageVersion, or publishes neither.
+ */
+export async function claimGenerateAttemptAuthority(input: {
+  prisma: ChatPrismaClient;
+  payload: GeneratePayload;
+  runtimeTrace: Prisma.InputJsonValue;
+  model: string | null;
+  expectedMessageStatus: "pending" | "generating";
+}): Promise<boolean> {
+  return input.prisma.$transaction(async (tx) => {
+    const messageClaim = await tx.message.updateMany({
+      where: {
+        id: input.payload.assistantMessageId,
+        status: input.expectedMessageStatus,
+        attempt: input.payload.attempt,
+        deletedAt: null,
+      },
+      data: {
+        status: "generating",
+        runtimeTrace: input.runtimeTrace,
+        updatedAt: new Date(),
+      },
+    });
+    if (messageClaim.count === 0) return false;
+    if (messageClaim.count !== 1) {
+      throw new Error("attempt message claim CAS affected an unexpected row count");
+    }
+
+    const versionId = `mv:${input.payload.assistantMessageId}:${input.payload.attempt}`;
+    await tx.messageVersion.upsert({
+      where: { id: versionId },
+      create: {
+        id: versionId,
+        messageId: input.payload.assistantMessageId,
+        content: "",
+        model: input.model,
+        selected: false,
+        attempt: input.payload.attempt,
+        runtimeTrace: input.runtimeTrace,
+      },
+      update: {
+        ...(input.model === null ? {} : { model: input.model }),
+        runtimeTrace: input.runtimeTrace,
+      },
+    });
+    const versionClaim = await tx.messageVersion.updateMany({
+      where: {
+        id: versionId,
+        messageId: input.payload.assistantMessageId,
+        attempt: input.payload.attempt,
+        selected: false,
+      },
+      data: { runtimeTrace: input.runtimeTrace },
+    });
+    if (versionClaim.count !== 1) {
+      throw new Error("attempt MessageVersion claim version CAS failed");
+    }
+    return true;
+  });
+}
+
 /** BullMQ-facing seam: retries reuse the same durable assistant placeholder. */
 export async function processGenerateJob(
   job: GenerateWorkerJob,
@@ -329,6 +392,20 @@ export async function processGenerate(
     characterId: session.characterId,
     priorPin: priorRuntimeTrace?.companionRuntime,
   });
+  const priorRuntimePin = jsonObject(priorRuntimeTrace?.companionRuntime);
+  const dshProfileDigest = attemptRuntime.runtime === "dsh"
+    ? priorRuntimeTrace
+      ? typeof priorRuntimePin?.profileDigest === "string" &&
+          /^[a-f0-9]{64}$/.test(priorRuntimePin.profileDigest)
+        ? priorRuntimePin.profileDigest
+        : (() => {
+            throw new Error("existing DSH attempt is missing its durable profile digest pin");
+          })()
+      : verifiedCompanionProfileDigest(
+          attemptRuntime.sidecarUrl,
+          attemptRuntime.private ? "private" : "normal",
+        )
+    : null;
   const priorPrimaryTelemetry = jsonObject(priorRuntimeTrace?.primaryTelemetry);
   const priorPrimaryStartedAt =
     priorPrimaryTelemetry?.schemaVersion === 1 &&
@@ -362,6 +439,7 @@ export async function processGenerate(
     sidecarUrl: attemptRuntime.sidecarUrl,
     deadlineMs: attemptRuntime.deadlineMs,
     assignment: attemptRuntime.assignment,
+    ...(dshProfileDigest ? { profileDigest: dshProfileDigest } : {}),
   };
   const companionCleanupRequired = attemptRuntime.runtime === "dsh"
     || (
@@ -369,34 +447,28 @@ export async function processGenerate(
       && attemptRuntime.runtime === "native"
       && turnMemoryEnabled
     );
-  const admissionRuntimeTrace = JSON.parse(JSON.stringify({
-    schemaVersion: 1,
-    attempt: payload.attempt,
-    assistantMessageId: payload.assistantMessageId,
-    userMessageId: payload.userMessageId,
-    companionRuntime: companionRuntimePin,
-    ...(companionCleanupRequired
-      ? { companionWorkspace: { cleanupRequired: true } }
-      : {}),
-    primaryTelemetry: primaryTelemetryBase,
-  })) as Prisma.InputJsonValue;
-
-  const claimed = await prisma.message.updateMany({
-    where: {
-      id: payload.assistantMessageId,
-      status: { in: ["pending", "generating"] },
+  const admissionRuntimeTrace = JSON.parse(JSON.stringify(
+    priorRuntimeTrace ?? {
+      schemaVersion: 1,
       attempt: payload.attempt,
-      deletedAt: null,
+      assistantMessageId: payload.assistantMessageId,
+      userMessageId: payload.userMessageId,
+      companionRuntime: companionRuntimePin,
+      ...(companionCleanupRequired
+        ? { companionWorkspace: { cleanupRequired: true } }
+        : {}),
+      primaryTelemetry: primaryTelemetryBase,
     },
-    data: {
-      status: "generating",
-      updatedAt: new Date(),
-      // Persist the route in the same admission write. A crash before
-      // PreparedTurn is built must not let a retry observe a newer cohort.
-      ...(!priorRuntimeTrace ? { runtimeTrace: admissionRuntimeTrace } : {}),
-    },
+  )) as Prisma.InputJsonValue;
+
+  const claimed = await claimGenerateAttemptAuthority({
+    prisma,
+    payload,
+    runtimeTrace: admissionRuntimeTrace,
+    model: assistant.model,
+    expectedMessageStatus: priorRuntimeTrace ? "generating" : "pending",
   });
-  if (claimed.count === 0) return { status: "skipped" };
+  if (!claimed) return { status: "skipped" };
   let lastHeartbeatAt = Date.now();
   const heartbeat = async (force = false): Promise<void> => {
     const now = Date.now();
@@ -441,19 +513,6 @@ export async function processGenerate(
     ? null
     : noMemoryAuthorityReply(sourceTurn.content);
   await hooks.afterContextBuilt?.(context);
-  const priorDshTrace = priorRuntimeTrace?.dsh && typeof priorRuntimeTrace.dsh === "object"
-    && !Array.isArray(priorRuntimeTrace.dsh)
-    ? priorRuntimeTrace.dsh as Record<string, unknown>
-    : null;
-  const dshProfileDigest = attemptRuntime.runtime === "dsh"
-    ? typeof priorDshTrace?.profileDigest === "string"
-      && /^[a-f0-9]{64}$/.test(priorDshTrace.profileDigest)
-      ? priorDshTrace.profileDigest
-      : verifiedCompanionProfileDigest(
-          attemptRuntime.sidecarUrl,
-          attemptRuntime.private ? "private" : "normal",
-        )
-    : null;
   const runtimeTraceFacts: Record<string, unknown> = {
     schemaVersion: 1,
     attempt: payload.attempt,
@@ -498,31 +557,20 @@ export async function processGenerate(
   const runtimeTrace = JSON.parse(
     JSON.stringify(runtimeTraceFacts),
   ) as Prisma.InputJsonValue;
-  const attemptVersionId = `mv:${payload.assistantMessageId}:${payload.attempt}`;
   // INVARIANT: every attempt that reaches PreparedTurn records its exact model
   // and immutable content authority even when file memory is disabled or the
   // provider later fails before producing a token.
-  await prisma.message.updateMany({
-    where: {
-      id: payload.assistantMessageId,
-      status: "generating",
-      attempt: payload.attempt,
-    },
-    data: { runtimeTrace },
+  const preparedTracePersisted = await persistAttemptRuntimeTraceCas({
+    prisma,
+    payload,
+    expectedMessageStatus: "generating",
+    trace: runtimeTrace,
+    stage: "prepared_turn",
+    versionModel: prepared.model,
   });
-  await prisma.messageVersion.upsert({
-    where: { id: attemptVersionId },
-    create: {
-      id: attemptVersionId,
-      messageId: payload.assistantMessageId,
-      content: "",
-      model: prepared.model,
-      selected: false,
-      attempt: payload.attempt,
-      runtimeTrace,
-    },
-    update: { runtimeTrace },
-  });
+  if (preparedTracePersisted !== "updated") {
+    throw new Error("prepared turn runtime trace did not persist atomically");
+  }
 
   const shadowInput = companionRuntimeConfig.dshShadow.enabled &&
       attemptRuntime.runtime === "native" &&
@@ -1515,6 +1563,7 @@ async function persistFailedRuntimeTrace(input: {
 }
 
 type AttemptRuntimeTraceStage =
+  | "prepared_turn"
   | "primary_terminal"
   | "primary_failure"
   | "dsh_memory_settlement";
@@ -1531,6 +1580,7 @@ export async function persistAttemptRuntimeTraceCas(input: {
   expectedMessageStatus: string | readonly string[];
   trace: Prisma.InputJsonValue;
   stage: AttemptRuntimeTraceStage;
+  versionModel?: string;
 }): Promise<"updated" | "stale" | "failed"> {
   try {
     return await input.prisma.$transaction(async (tx) => {
@@ -1551,7 +1601,10 @@ export async function persistAttemptRuntimeTraceCas(input: {
           messageId: input.payload.assistantMessageId,
           attempt: input.payload.attempt,
         },
-        data: { runtimeTrace: input.trace },
+        data: {
+          runtimeTrace: input.trace,
+          ...(input.versionModel ? { model: input.versionModel } : {}),
+        },
       });
       if (versionUpdated.count !== 1) {
         throw new Error("attempt runtime trace version CAS failed");

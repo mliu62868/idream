@@ -7,6 +7,10 @@ import {
   signBffContext,
 } from "@idream/shared/bff";
 import { loadCharacterSoulSnapshot } from "@idream/shared";
+import {
+  companionProbeDshEvidenceSchema,
+  type CompanionProbeDshEvidence,
+} from "@idream/shared/chat/companion-runtime";
 import { prisma } from "./lib/db";
 import { publicCharacterAudienceWhere } from "./modules/ourdream/public-content-audience";
 import type { ChatServiceProbeEvidence, ProbeReportOf } from "./readiness/evidence";
@@ -60,29 +64,7 @@ type RegenerateAnchorEvidence = OperationEvidence & {
   regeneratedDsh?: DshCompanionProbeEvidence;
 };
 
-export type DshCompanionProbeEvidence = {
-  ok: boolean;
-  runtime?: "dsh";
-  memoryBackend?: "igrep-dsh";
-  profile?: string;
-  private?: boolean;
-  assignmentReason?: string;
-  primaryRuntime?: "dsh";
-  terminalStatus?: string;
-  sseTerminal?: string;
-  provider?: string;
-  model?: string;
-  profileDigest?: string;
-  outputAuthority?: string;
-  requestId?: string;
-  actualProvider?: string;
-  memoryOutcome?: string;
-  memoryIngestOutcome?: string;
-  memorySettledAt?: string;
-  memorySettleLagMs?: number;
-  sidecarInstanceId?: string;
-  error: string | null;
-};
+export type DshCompanionProbeEvidence = CompanionProbeDshEvidence;
 
 type CleanupEvidence = OperationEvidence & {
   memoryGone?: boolean;
@@ -163,6 +145,11 @@ export function projectDshCompanionEvidence(
     typeof dsh.profileDigest === "string" && /^[a-f0-9]{64}$/u.test(dsh.profileDigest),
     "dsh.profileDigest",
   );
+  expect(
+    typeof sidecar.profileDigest === "string" &&
+      sidecar.profileDigest === dsh.profileDigest,
+    "primaryTelemetry.sidecar.profileDigest",
+  );
   expect(telemetry.schemaVersion === 1 && telemetry.runtime === "dsh", "primaryTelemetry.runtime");
   expect(telemetry.terminalStatus === "sent", "primaryTelemetry.terminalStatus");
   expect(telemetry.truncated === false, "primaryTelemetry.truncated");
@@ -199,7 +186,7 @@ export function projectDshCompanionEvidence(
     expect(memory.outcome === "disabled", "primaryTelemetry.memory.outcome");
   }
 
-  return {
+  return companionProbeDshEvidenceSchema.parse({
     ok: failures.length === 0,
     ...(runtime.runtime === "dsh" ? { runtime: "dsh" as const } : {}),
     ...(runtime.memoryBackend === "igrep-dsh" ? { memoryBackend: "igrep-dsh" as const } : {}),
@@ -227,7 +214,7 @@ export function projectDshCompanionEvidence(
     error: failures.length === 0
       ? null
       : `DSH ${mode} evidence failed: ${failures.join(", ")}`,
-  };
+  });
 }
 
 function isIsoDate(value: unknown): value is string {

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { CompanionProbeDshEvidence } from "@idream/shared/chat/companion-runtime";
 
 // SPEC: 上线就绪探针的 evidence 契约 —— 12 个 probe-*.ts 作为独立进程跑真实依赖后写 JSON，
 //       launch-readiness.ts 经 *_PROBE_REPORT 环境变量读回来判定门禁。本文件是这条进程边界上
@@ -566,29 +567,7 @@ export interface ChatProbeOperationEvidence {
   error?: string | null;
 }
 
-export interface ChatProbeDshEvidence {
-  ok?: boolean;
-  runtime?: string;
-  memoryBackend?: string;
-  profile?: string;
-  private?: boolean;
-  assignmentReason?: string;
-  primaryRuntime?: string;
-  terminalStatus?: string;
-  sseTerminal?: string;
-  provider?: string;
-  model?: string;
-  profileDigest?: string;
-  outputAuthority?: string;
-  requestId?: string;
-  actualProvider?: string;
-  memoryOutcome?: string;
-  memoryIngestOutcome?: string;
-  memorySettledAt?: string;
-  memorySettleLagMs?: number;
-  sidecarInstanceId?: string;
-  error?: string | null;
-}
+export type ChatProbeDshEvidence = Partial<CompanionProbeDshEvidence>;
 
 const chatProbeOperationShape = {
   ok: flag,
