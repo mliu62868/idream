@@ -48,4 +48,25 @@ describe("companion prompt instruction hierarchy", () => {
 
     expect(prompt).toContain("Never promise future recall");
   });
+
+  it("puts enabled image-tool behavior in the highest-priority runtime policy", () => {
+    const prompt = buildCompanionSystemPrompt({
+      persona: {
+        name: "Mira",
+        relationship: "girlfriend",
+        description: "Warm and playful.",
+        systemPrompt: "Speak softly.",
+        identityPrompt: null,
+      },
+      policy: { memoryEnabled: true, imageToolEnabled: true },
+      recentMessages: [],
+      boundaries: [],
+      relationship: null,
+      scene: { schemaVersion: 1, version: 0 },
+      sceneVersion: 0,
+    } as never);
+
+    expect(prompt).toContain("call generate_image_async");
+    expect(prompt).toContain("call edit_last_image");
+  });
 });

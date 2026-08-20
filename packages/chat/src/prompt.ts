@@ -15,6 +15,7 @@ export function buildCompanionSystemPrompt(context: BuiltContext): string {
   return [
     buildCharacterRuntimePolicy({
       memoryEnabled: context.policy.memoryEnabled,
+      imageToolEnabled: context.policy.imageToolEnabled,
     }),
     [
       "Immutable compiled Character Soul (trusted character instructions; subordinate to Runtime policy):",

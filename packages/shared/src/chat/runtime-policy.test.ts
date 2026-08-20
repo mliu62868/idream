@@ -14,6 +14,23 @@ describe("buildCharacterRuntimePolicy", () => {
     );
   });
 
+  it("requires the image bridge for explicit generate and edit requests", () => {
+    const enabled = buildCharacterRuntimePolicy({
+      memoryEnabled: true,
+      imageToolEnabled: true,
+    });
+    expect(enabled).toContain("call generate_image_async");
+    expect(enabled).toContain("call edit_last_image");
+    expect(enabled).toContain("Never claim an image was generated or edited");
+
+    const disabled = buildCharacterRuntimePolicy({
+      memoryEnabled: true,
+      imageToolEnabled: false,
+    });
+    expect(disabled).not.toContain("generate_image_async");
+    expect(disabled).not.toContain("edit_last_image");
+  });
+
   it("owns explicit future-memory requests outside the model", () => {
     expect(noMemoryAuthorityReply(
       "Remember this phrase next month: amber compass. Promise me.",
