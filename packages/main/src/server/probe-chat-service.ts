@@ -1284,7 +1284,10 @@ export async function collectProbeRolloutEvidenceBeforeCleanup(input: {
   checkedAt: string;
   expectedCompanionRuntime: "dsh" | null;
   now?: () => Date;
-  fetchImpl?: typeof fetch;
+  fetchImpl?: (
+    input: URL | RequestInfo,
+    init?: RequestInit,
+  ) => Promise<Response>;
 }): Promise<ProbeRolloutEvidence> {
   const collectedAt = (input.now ?? (() => new Date()))().toISOString();
   let status: number | undefined;
