@@ -30,6 +30,7 @@
     "dsh-companion:setup": "node scripts/setup-dsh-companion.mjs",
     "dsh-companion:check": "node scripts/setup-dsh-companion.mjs --check",
     "chat:purge-legacy-session-traces": "node --env-file=packages/chat/.env scripts/purge-legacy-chat-session-traces.mjs",
+    "chat:retire-legacy-item-memory-intents": "node --env-file=packages/chat/.env scripts/retire-legacy-chat-item-memory-intents.mjs",
     "pm2:start": "node scripts/start-pm2-ecosystem.cjs",
     "pm2:start:production": "node scripts/start-pm2-ecosystem.cjs production",
     "pm2:stop": "node scripts/start-pm2-ecosystem.cjs current stop",

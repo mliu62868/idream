@@ -403,6 +403,9 @@ function passingChatServiceProbe(
         futureUserSceneVersion: 1,
         futureSceneVersion: 1,
         regeneratedSceneVersion: 0,
+        recallMatched: true,
+        wakeObserved: true,
+        memorySearchHit: true,
         futureDsh: passingDshEvidence("normal"),
         regeneratedDsh: passingDshEvidence("normal"),
         error: null,
@@ -454,6 +457,11 @@ function passingDshEvidence(mode: "normal" | "private") {
     profileDigest: "a".repeat(64),
     ...(mode === "normal"
       ? {
+          wakeCalls: 1,
+          wakeFailures: 0,
+          memorySearchCalls: 1,
+          memorySearchHits: 1,
+          memorySearchFailures: 0,
           memoryOutcome: "ingested",
           memoryIngestOutcome: "ingested",
           memorySettledAt: "2026-06-24T23:57:30.000Z",
@@ -2563,6 +2571,23 @@ describe("launch readiness", () => {
       (check) => check.id === "chat-service-live-probe",
     )?.message;
     expect(message).toContain("old-turn Scene anchoring");
+
+    const recallFailure = assessLaunchReadiness({
+      env: productionEnv,
+      chatServiceProbe: passingChatServiceProbe({
+        conversation: {
+          ...passing.conversation,
+          regenerateAnchor: {
+            ...passing.conversation?.regenerateAnchor,
+            memorySearchHit: false,
+          },
+        },
+      }),
+      now,
+    });
+    expect(recallFailure.checks.find(
+      (check) => check.id === "chat-service-live-probe",
+    )?.message).toContain("old-turn Scene anchoring");
   });
 
   it("fails when the signed Chat probe observed a different Chat FS authority", () => {

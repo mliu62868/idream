@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import "dotenv/config";
 import {
@@ -61,6 +61,9 @@ type RegenerateAnchorEvidence = OperationEvidence & {
   futureUserSceneVersion?: number | null;
   futureSceneVersion?: number | null;
   regeneratedSceneVersion?: number | null;
+  recallMatched?: boolean;
+  wakeObserved?: boolean;
+  memorySearchHit?: boolean;
   futureDsh?: DshCompanionProbeEvidence;
   regeneratedDsh?: DshCompanionProbeEvidence;
 };
@@ -148,6 +151,34 @@ export function projectDshCompanionEvidence(
   return companionProbeDshEvidenceSchema.parse(
     projectCompanionProbeDshEvidence(value, mode),
   );
+}
+
+/** Gate E reports only booleans; the unique recall token never leaves this process. */
+export function evaluateDshRecallEvidence(input: {
+  assistantContent?: string;
+  sentinel: string;
+  dsh?: DshCompanionProbeEvidence;
+}): {
+  ok: boolean;
+  recallMatched: boolean;
+  wakeObserved: boolean;
+  memorySearchHit: boolean;
+} {
+  const recallMatched = Boolean(
+    input.assistantContent?.toLowerCase().includes(input.sentinel.toLowerCase()),
+  );
+  const wakeObserved =
+    (input.dsh?.wakeCalls ?? 0) > 0 && input.dsh?.wakeFailures === 0;
+  const memorySearchHit =
+    (input.dsh?.memorySearchCalls ?? 0) > 0 &&
+    (input.dsh?.memorySearchHits ?? 0) > 0 &&
+    input.dsh?.memorySearchFailures === 0;
+  return {
+    ok: recallMatched && wakeObserved && memorySearchHit,
+    recallMatched,
+    wakeObserved,
+    memorySearchHit,
+  };
 }
 
 export async function fetchProbeCompanionAttemptEvidence(input: {
@@ -602,11 +633,18 @@ async function probeConversation(input: {
     if (!session.id) throw new Error(`create session returned HTTP ${createRes.status}`);
     sessionId = session.id;
 
-    // 2) send message
+    const recallSentinel = `rooftop-${createHash("sha256")
+      .update(input.runId)
+      .digest("hex")
+      .slice(0, 16)}`;
+
+    // 2) send message and persist one unique fact for the later recall proof.
     const sendRes = await signedFetch({
       ...input, method: "POST", path: `/api/v1/chat/sessions/${sessionId}/messages`,
       body: JSON.stringify({
-        content: "Tonight we're in the rooftop garden with Mina. I feel calm, and we still need to choose the train.",
+        content:
+          `Tonight we're in the rooftop garden with Mina. The exact rooftop probe code word is ${recallSentinel}. ` +
+          "I feel calm, and we still need to choose the train.",
       }),
       idempotencyKey: `chat-probe:${input.runId}:normal`,
     });
@@ -685,7 +723,9 @@ async function probeConversation(input: {
       method: "POST",
       path: `/api/v1/chat/sessions/${sessionId}/messages`,
       body: JSON.stringify({
-        content: "Now we move to the train station at dawn, after choosing the train.",
+        content:
+          "Use memory_search to recall the exact rooftop probe code word from our prior turn, say it exactly, " +
+          "then move us to the train station at dawn after choosing the train.",
       }),
       idempotencyKey: `chat-probe:${input.runId}:future-scene`,
     });
@@ -739,18 +779,26 @@ async function probeConversation(input: {
           mode: "normal",
         })
       : undefined;
+    const recall = input.expectedCompanionRuntime === "dsh"
+      ? evaluateDshRecallEvidence({
+          assistantContent: futureState.message?.content,
+          sentinel: recallSentinel,
+          dsh: futureDsh,
+        })
+      : { ok: true, recallMatched: true, wakeObserved: true, memorySearchHit: true };
     const futureReady =
       futureState.status === 200 &&
       futureState.settled === true &&
       originalSceneVersion === 0 &&
       futureUserSceneVersion === 1 &&
       futureSceneVersion === 1 &&
+      recall.ok &&
       (futureDsh?.ok ?? true);
     if (!futureReady) {
       const failure =
         `future scene terminal state failed: HTTP ${futureState.status}; ` +
         `settled=${futureState.settled === true}; scenes=${originalSceneVersion}/${futureUserSceneVersion}/${futureSceneVersion}; ` +
-        `dsh=${futureDsh?.ok ?? "not_required"}`;
+        `dsh=${futureDsh?.ok ?? "not_required"}; recall=${recall.ok}`;
       evidence.regenerateAnchor = {
         ok: false,
         status: futureState.status,
@@ -759,6 +807,9 @@ async function probeConversation(input: {
         originalSceneVersion,
         futureUserSceneVersion,
         futureSceneVersion,
+        recallMatched: recall.recallMatched,
+        wakeObserved: recall.wakeObserved,
+        memorySearchHit: recall.memorySearchHit,
         ...(futureDsh ? { futureDsh } : {}),
         error: failure,
       };
@@ -842,6 +893,7 @@ async function probeConversation(input: {
         originalSceneVersion === 0 &&
         futureUserSceneVersion === 1 &&
         futureSceneVersion === 1 &&
+        recall.ok &&
         regeneratedSceneVersion === originalSceneVersion &&
         regeneratedState.message?.attempt === regenerated.attempt &&
         (futureDsh?.ok ?? true) &&
@@ -854,6 +906,9 @@ async function probeConversation(input: {
       futureUserSceneVersion,
       futureSceneVersion,
       regeneratedSceneVersion,
+      recallMatched: recall.recallMatched,
+      wakeObserved: recall.wakeObserved,
+      memorySearchHit: recall.memorySearchHit,
       ...(futureDsh ? { futureDsh } : {}),
       ...(regeneratedDsh ? { regeneratedDsh } : {}),
       error:
@@ -862,11 +917,12 @@ async function probeConversation(input: {
         originalSceneVersion === 0 &&
         futureUserSceneVersion === 1 &&
         futureSceneVersion === 1 &&
+        recall.ok &&
         regeneratedSceneVersion === originalSceneVersion &&
         (futureDsh?.ok ?? true) &&
         (regeneratedDsh?.ok ?? true)
           ? null
-          : `futureStream=${futureStream.ok}; futureSettled=${futureState.settled}; regenerateStream=${regeneratedStream.ok}; regenerateSettled=${regeneratedState.settled}; scenes=${originalSceneVersion}/${futureUserSceneVersion}/${futureSceneVersion}/${regeneratedSceneVersion}; futureDsh=${futureDsh?.ok ?? "not_required"}; regeneratedDsh=${regeneratedDsh?.ok ?? "not_required"}`,
+          : `futureStream=${futureStream.ok}; futureSettled=${futureState.settled}; regenerateStream=${regeneratedStream.ok}; regenerateSettled=${regeneratedState.settled}; scenes=${originalSceneVersion}/${futureUserSceneVersion}/${futureSceneVersion}/${regeneratedSceneVersion}; recall=${recall.ok}; futureDsh=${futureDsh?.ok ?? "not_required"}; regeneratedDsh=${regeneratedDsh?.ok ?? "not_required"}`,
     };
     if (!evidence.regenerateAnchor.ok) {
       throw new Error(evidence.regenerateAnchor.error ?? "regenerate evidence failed");

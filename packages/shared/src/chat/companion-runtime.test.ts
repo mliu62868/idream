@@ -690,6 +690,17 @@ describe("companion runtime stable wire contract", () => {
       resultCount: 0,
       durationMs: 1,
     }).success).toBe(false);
+    expect(companionEventSchema.parse({
+      invocationId: "invocation-1",
+      attemptId: "attempt-1",
+      sequence: 2,
+      occurredAt: now,
+      type: "igrep_observation",
+      operation: "wake",
+      outcome: "empty",
+      resultCount: 0,
+      durationMs: 0,
+    })).toMatchObject({ operation: "wake", outcome: "empty" });
   });
 
   it("keeps signed DSH probe evidence content-free and exact", () => {
@@ -699,6 +710,13 @@ describe("companion runtime stable wire contract", () => {
       memoryBackend: "igrep-dsh" as const,
       profileDigest: "d".repeat(64),
       sidecarInstanceId: sidecarInstance.id,
+      wakeCalls: 1,
+      wakeFailures: 0,
+      igrepSearchCalls: 0,
+      igrepSearchFailures: 0,
+      memorySearchCalls: 0,
+      memorySearchHits: 0,
+      memorySearchFailures: 0,
       error: null,
     };
     expect(companionProbeDshEvidenceSchema.parse(evidence)).toEqual(evidence);
@@ -729,6 +747,10 @@ describe("companion runtime stable wire contract", () => {
         provider: "openai",
         model: "fixture-model",
         memory: { outcome: "ingested", settleLagMs: 4 },
+        igrep: {
+          wake: { calls: 1, hit: 0, empty: 1, failure: 0, resultCount: 0, latencyMs: [1] },
+          memory: { calls: 1, hit: 1, empty: 0, failure: 0, resultCount: 1, latencyMs: [4] },
+        },
         sidecar: {
           instanceId: sidecarInstance.id,
           startedAt: sidecarInstance.startedAt,
@@ -743,7 +765,15 @@ describe("companion runtime stable wire contract", () => {
       },
       rawPrompt: "must-not-cross-the-report-boundary",
     }, "normal");
-    expect(projected).toMatchObject({ ok: true, runtime: "dsh" });
+    expect(projected).toMatchObject({
+      ok: true,
+      runtime: "dsh",
+      wakeCalls: 1,
+      wakeFailures: 0,
+      memorySearchCalls: 1,
+      memorySearchHits: 1,
+      memorySearchFailures: 0,
+    });
     expect(JSON.stringify(projected)).not.toContain("must-not-cross");
   });
 });

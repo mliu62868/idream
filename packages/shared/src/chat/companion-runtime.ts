@@ -807,7 +807,7 @@ export const companionEventSchema = z
       .object({
         ...companionEventIdentity,
         type: z.literal("igrep_observation"),
-        operation: z.enum(["search", "memory"]),
+        operation: z.enum(["wake", "search", "memory"]),
         outcome: z.enum(["hit", "empty", "failure"]),
         resultCount: nonNegativeIntegerSchema.optional(),
         durationMs: nonNegativeIntegerSchema,
@@ -1063,6 +1063,13 @@ export const companionProbeDshEvidenceSchema = z
     memorySettledAt: isoDateTimeSchema.optional(),
     memorySettleLagMs: z.number().finite().nonnegative().optional(),
     sidecarInstanceId: z.string().uuid().optional(),
+    wakeCalls: nonNegativeIntegerSchema,
+    wakeFailures: nonNegativeIntegerSchema,
+    igrepSearchCalls: nonNegativeIntegerSchema,
+    igrepSearchFailures: nonNegativeIntegerSchema,
+    memorySearchCalls: nonNegativeIntegerSchema,
+    memorySearchHits: nonNegativeIntegerSchema,
+    memorySearchFailures: nonNegativeIntegerSchema,
     error: z.string().nullable(),
   })
   .strict();
@@ -1080,6 +1087,10 @@ export function projectCompanionProbeDshEvidence(
   const dsh = probeRecord(trace.dsh);
   const telemetry = probeRecord(trace.primaryTelemetry);
   const memory = probeRecord(telemetry.memory);
+  const igrep = probeRecord(telemetry.igrep);
+  const wake = probeIgrepMetric(igrep.wake);
+  const search = probeIgrepMetric(igrep.search);
+  const memorySearch = probeIgrepMetric(igrep.memory);
   const sidecar = probeRecord(telemetry.sidecar);
   const companion = probeRecord(trace.companion);
   const attribution = probeRecord(companion.attribution);
@@ -1145,9 +1156,15 @@ export function projectCompanionProbeDshEvidence(
         (typeof attribution.actualProvider === "string" && attribution.actualProvider.length > 0),
       "companion.attribution",
     );
+    expectFact(wake.valid && wake.calls > 0 && wake.failure === 0, "primaryTelemetry.igrep.wake");
   } else {
     expectFact(trace.outputAuthority === "model", "outputAuthority");
     expectFact(memory.outcome === "disabled", "primaryTelemetry.memory.outcome");
+    expectFact(
+      wake.valid && search.valid && memorySearch.valid &&
+        wake.calls === 0 && search.calls === 0 && memorySearch.calls === 0,
+      "primaryTelemetry.igrep.private",
+    );
   }
 
   return companionProbeDshEvidenceSchema.parse({
@@ -1174,10 +1191,43 @@ export function projectCompanionProbeDshEvidence(
       : {}),
     ...(typeof memory.settleLagMs === "number" ? { memorySettleLagMs: memory.settleLagMs } : {}),
     ...(typeof sidecar.instanceId === "string" ? { sidecarInstanceId: sidecar.instanceId } : {}),
+    wakeCalls: wake.calls,
+    wakeFailures: wake.failure,
+    igrepSearchCalls: search.calls,
+    igrepSearchFailures: search.failure,
+    memorySearchCalls: memorySearch.calls,
+    memorySearchHits: memorySearch.hit,
+    memorySearchFailures: memorySearch.failure,
     error: failures.length === 0
       ? null
       : `DSH ${mode} evidence failed: ${failures.join(", ")}`,
   });
+}
+
+function probeIgrepMetric(value: unknown): {
+  valid: boolean;
+  calls: number;
+  hit: number;
+  empty: number;
+  failure: number;
+} {
+  if (value === undefined) {
+    return { valid: true, calls: 0, hit: 0, empty: 0, failure: 0 };
+  }
+  const metric = probeRecord(value);
+  const values = [metric.calls, metric.hit, metric.empty, metric.failure];
+  const valid = values.every((entry) =>
+    typeof entry === "number" && Number.isSafeInteger(entry) && entry >= 0
+  ) && metric.calls === Number(metric.hit) + Number(metric.empty) + Number(metric.failure);
+  return valid
+    ? {
+        valid: true,
+        calls: Number(metric.calls),
+        hit: Number(metric.hit),
+        empty: Number(metric.empty),
+        failure: Number(metric.failure),
+      }
+    : { valid: false, calls: 0, hit: 0, empty: 0, failure: 0 };
 }
 
 function probeRecord(value: unknown): Record<string, unknown> {

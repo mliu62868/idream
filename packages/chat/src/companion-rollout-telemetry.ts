@@ -15,7 +15,7 @@ export interface CompanionOperationalTelemetry {
     startedAt: string;
     profileDigest: string;
   };
-  igrep?: Partial<Record<"search" | "memory", CompanionIgrepAttemptMetric>>;
+  igrep?: Partial<Record<"wake" | "search" | "memory", CompanionIgrepAttemptMetric>>;
 }
 
 /** Persist only operational facts; event identities, queries, snippets and paths are discarded. */

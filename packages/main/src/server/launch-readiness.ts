@@ -671,11 +671,14 @@ function addChatServiceProbeCheck(
         probe.conversation.regenerateAnchor.futureUserSceneVersion !== 1 ||
         probe.conversation.regenerateAnchor.futureSceneVersion !== 1 ||
         probe.conversation.regenerateAnchor.regeneratedSceneVersion !== 0 ||
+        probe.conversation.regenerateAnchor.recallMatched !== true ||
+        probe.conversation.regenerateAnchor.wakeObserved !== true ||
+        probe.conversation.regenerateAnchor.memorySearchHit !== true ||
         probe.conversation.regenerateAnchor.futureDsh?.ok !== true ||
         probe.conversation.regenerateAnchor.regeneratedDsh?.ok !== true
       ) {
         problems.push(
-          "conversation smoke did not prove old-turn Scene anchoring",
+          "conversation smoke did not prove old-turn Scene anchoring and igrep recall",
         );
       }
       if (

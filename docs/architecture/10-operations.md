@@ -218,8 +218,12 @@ Unknown values fail closed. Put the chosen value in the Main authority that will
 feed PM2; Chat and Gen must use their own exact deployed env authorities.
 
 `launch:probe:chat-service` must prove more than BFF reachability: it runs a signed
-conversation smoke (session create, message send, SSE stream, reload, no-memory
-send, and blocked-input handling). If `CHAT_SERVICE_PROBE_CHARACTER_ID` is unset,
+conversation smoke (session create, message send, SSE stream, reload, a unique
+prior-turn sentinel recalled through an observed official `wake` + successful
+`memory_search` hit, regenerate, no-memory zero-read/write evidence, and
+blocked-input handling). The report keeps only content-free booleans and metric
+counts; it never emits the sentinel, query, result snippet, or internal trace. If
+`CHAT_SERVICE_PROBE_CHARACTER_ID` is unset,
 the probe auto-selects a public approved adult character from the main DB; use
 `--character-id=...` when a fixed production probe character is required.
 The optional `bun run diagnose:chat-provider` command talks directly to the
@@ -356,27 +360,29 @@ official igrep exposes no stable item seam. Product controls are deliberately
 limited to memory on/off and whole relationship reset; reset purges the
 relationship workspace and its historical cutover marker together.
 
-Before applying the Phase 6 boundary SQL, prove that no retired item intent is
-still waiting for execution:
+Before applying the Phase 6 boundary SQL, run the content-free audit:
 
-```sql
-SELECT user_id, kind, count(*)
-FROM chat.chat_file_mutations
-WHERE status = 'pending'
-  AND kind IN ('memory_update', 'memory_delete')
-GROUP BY user_id, kind
-ORDER BY user_id, kind;
+```bash
+bun run chat:retire-legacy-item-memory-intents
 ```
 
-Any row is a hard `LEGACY_ITEM_MEMORY_INTENT_PENDING` deployment blocker. Do
-not delete or mark the ledger row applied: an item id cannot be translated to
-the official igrep identity without risking resurrection of text the user
-asked to remove. Keep Chat paused for that user, use the authenticated
-user-scope companion purge to remove canonical/private workspace state, then
-rebuild each still-active relationship from current PostgreSQL messages through
-the normal fenced `relationship_rebuild` recovery path. Re-run the query and
-apply SQL only when it returns zero rows. The DDL intentionally fails closed if
-this proof was skipped.
+Exit `0` means there is nothing to retire; exit `2` means the report found
+pending `memory_update` / `memory_delete` rows. Keep Chat admission paused but
+leave the loopback companion sidecar available, then run the one-way retirement:
+
+```bash
+bun run chat:retire-legacy-item-memory-intents -- --apply
+bun run chat:retire-legacy-item-memory-intents
+```
+
+For every affected user the command first performs an authenticated whole-user
+workspace purge, then takes the canonical user advisory lock and converts only
+still-pending legacy item rows into identity-only applied receipts. It never
+rebuilds from PostgreSQL: the source message may still contain text covered by
+the old delete intent, so replay could resurrect precisely the content being
+retired. A crash after purge is safe to rerun; a purge failure leaves the ledger
+pending. The DDL intentionally keeps `LEGACY_ITEM_MEMORY_INTENT_PENDING` as a
+hard blocker until the final audit exits `0`.
 
 Sentry readiness requires four distinct, fresh reports from the package-bound
 `probe:sentry` entrypoints. The CLI intentionally rejects a relabeled `--service`;

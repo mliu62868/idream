@@ -522,6 +522,9 @@ export interface ChatServiceProbeEvidence {
       futureUserSceneVersion?: number | null;
       futureSceneVersion?: number | null;
       regeneratedSceneVersion?: number | null;
+      recallMatched?: boolean;
+      wakeObserved?: boolean;
+      memorySearchHit?: boolean;
       futureDsh?: ChatProbeDshEvidence | null;
       regeneratedDsh?: ChatProbeDshEvidence | null;
       error?: string | null;
@@ -599,6 +602,13 @@ const chatProbeDshEvidenceShape = {
   memorySettledAt: optionalText,
   memorySettleLagMs: optionalCount,
   sidecarInstanceId: optionalText,
+  wakeCalls: optionalCount,
+  wakeFailures: optionalCount,
+  igrepSearchCalls: optionalCount,
+  igrepSearchFailures: optionalCount,
+  memorySearchCalls: optionalCount,
+  memorySearchHits: optionalCount,
+  memorySearchFailures: optionalCount,
   error: nullableText,
 };
 
@@ -667,6 +677,9 @@ const chatServiceProbeEvidenceSchema: z.ZodType<ChatServiceProbeEvidence> = z.ob
       futureUserSceneVersion: optionalCount,
       futureSceneVersion: optionalCount,
       regeneratedSceneVersion: optionalCount,
+      recallMatched: flag,
+      wakeObserved: flag,
+      memorySearchHit: flag,
       futureDsh: nullableObject(chatProbeDshEvidenceShape),
       regeneratedDsh: nullableObject(chatProbeDshEvidenceShape),
     }),

@@ -501,8 +501,14 @@ describe("programmatic DSH companion runtime", () => {
       }),
       plugin: async () => ({
         name: "igrep",
-        inject: ["tools"],
+        inject: ["tools", "systemPrompt"],
         apply(ctx) {
+          ctx.systemPrompt.section({
+            name: "tool:memory_search",
+            order: 122,
+            text: "Recall prior facts. {{igrep_memory_profile}}",
+          });
+          ctx.systemPrompt.variable("igrep_memory_profile", () => "resident-profile");
           ctx.tools.register(defineTool({
             name: "memory_search",
             description: "Search memory.",
@@ -538,7 +544,7 @@ describe("programmatic DSH companion runtime", () => {
     });
     servers.push(server);
     const baseUrl = await listen(server);
-    const run = invocation("private");
+    const run = invocation("normal");
     const response = await fetch(`${baseUrl}/v1/invocations`, {
       method: "POST",
       headers: {
@@ -561,10 +567,9 @@ describe("programmatic DSH companion runtime", () => {
           invocationId: run.invocationId,
           ack: {
             attemptId: run.attemptId,
-            accepted: true,
-            status: "committed",
-            terminalMessageId: "assistant-terminal-observation",
-            committedAt: new Date().toISOString(),
+            accepted: false,
+            status: "rejected",
+            error: { code: "terminal_cas_conflict", message: "test rejection" },
           },
         }),
       });
@@ -574,7 +579,18 @@ describe("programmatic DSH companion runtime", () => {
       instance,
       profileDigest: run.expectedProfileDigest,
     });
-    expect(events.find((event) => event.type === "igrep_observation")).toMatchObject({
+    expect(events[0]?.type).toBe("started");
+    expect(events.find((event) =>
+      event.type === "igrep_observation" && event.operation === "wake"
+    )).toMatchObject({
+      operation: "wake",
+      outcome: "hit",
+      resultCount: 1,
+      durationMs: expect.any(Number),
+    });
+    expect(events.find((event) =>
+      event.type === "igrep_observation" && event.operation === "memory"
+    )).toMatchObject({
       operation: "memory",
       outcome: "hit",
       resultCount: 1,

@@ -515,6 +515,8 @@ export class CompanionEngine implements InvocationService {
     let turnFailure: LlmFailure | undefined;
     let igrepFailure: "search" | "memory" | undefined;
     let preflightCode: string | undefined;
+    let runtimeStarted = false;
+    const pendingOperationalEvents: EventPayload[] = [];
     const event = (payload: EventPayload) => {
       const value = companionEventSchema.parse({
         ...payload,
@@ -561,6 +563,23 @@ export class CompanionEngine implements InvocationService {
       failurePhase = "workspace";
       workspace = await this.options.workspaces.prepare(invocation, active.cancellation.signal);
       failurePhase = "agent";
+      if (mode === "normal") {
+        ctx.on("system-prompt/assemble", async (_assembly, _context, next) => {
+          const startedAt = Date.now();
+          const assembled = await next();
+          const profile = assembled.variables.igrep_memory_profile?.trim() ?? "";
+          const observation = {
+            type: "igrep_observation",
+            operation: "wake",
+            outcome: profile ? "hit" : "empty",
+            resultCount: profile ? 1 : 0,
+            durationMs: Math.max(0, Date.now() - startedAt),
+          } as const satisfies EventPayload;
+          if (runtimeStarted) event(observation);
+          else pendingOperationalEvents.push(observation);
+          return assembled;
+        }, { prepend: true });
+      }
       const igrepStartedAt = new Map<string, number>();
       ctx.on("tools/pre-execute", async (execution, next) => {
         if (execution.name === "igrep_search" || execution.name === "memory_search") {
@@ -752,6 +771,8 @@ export class CompanionEngine implements InvocationService {
       };
       if (active.cancelReason) active.agentCancel(active.cancelReason);
       event({ type: "started", instance: this.instance, profileDigest: compositionPlan.digest });
+      runtimeStarted = true;
+      for (const pending of pendingOperationalEvents.splice(0)) event(pending);
       const current = invocation.preparedTurn.messages.find((message) => message.sourceKind === "current_user");
       if (!current || current.role !== "user") throw new Error("current user message is missing");
       agent.followup(freezeMessage({

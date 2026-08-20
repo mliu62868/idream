@@ -17,6 +17,7 @@ import {
   assertDedicatedChatProbeActor,
   collectProbeRolloutEvidenceBeforeCleanup,
   fetchProbeCompanionAttemptEvidence,
+  evaluateDshRecallEvidence,
   parseExpectedCompanionRuntime,
   projectDshCompanionEvidence,
   runProbe,
@@ -56,6 +57,10 @@ function completedDshTrace() {
       model: "fixture-model",
       sseTerminal: "done",
       memory: { outcome: "ingested", settleLagMs: 17 },
+      igrep: {
+        wake: { calls: 1, hit: 0, empty: 1, failure: 0, resultCount: 0, latencyMs: [2] },
+        memory: { calls: 1, hit: 1, empty: 0, failure: 0, resultCount: 1, latencyMs: [8] },
+      },
       sidecar: {
         instanceId: "5dd87053-012f-4ca3-a4d7-5aeb89466d5b",
         startedAt: "2026-08-19T12:00:00.000Z",
@@ -313,6 +318,13 @@ describe("chat service DSH evidence", () => {
       memorySettledAt: "2026-08-19T12:00:01.000Z",
       memorySettleLagMs: 17,
       sidecarInstanceId: "5dd87053-012f-4ca3-a4d7-5aeb89466d5b",
+      wakeCalls: 1,
+      wakeFailures: 0,
+      igrepSearchCalls: 0,
+      igrepSearchFailures: 0,
+      memorySearchCalls: 1,
+      memorySearchHits: 1,
+      memorySearchFailures: 0,
       error: null,
     });
     expect(JSON.stringify(evidence)).not.toContain("must-not-leak");
@@ -437,16 +449,41 @@ describe("chat service DSH evidence", () => {
         model: "fixture-model",
         sseTerminal: "done",
         memory: { outcome: "pending" },
+        igrep: {
+          wake: { calls: 1, hit: 0, empty: 1, failure: 0, resultCount: 0, latencyMs: [1] },
+        },
       },
     }, "private");
 
     expect(evidence.ok).toBe(false);
     expect(evidence.error).not.toContain("outputAuthority");
     expect(evidence.error).toContain("primaryTelemetry.memory.outcome");
+    expect(evidence.error).toContain("primaryTelemetry.igrep.private");
   });
 });
 
 describe("chat service conversation probe", () => {
+  it("requires actual wake and a memory_search hit without exposing the recall sentinel", () => {
+    const sentinel = "recall-probe-secret-42";
+    const evidence = evaluateDshRecallEvidence({
+      assistantContent: `You told me ${sentinel}.`,
+      sentinel,
+      dsh: projectDshCompanionEvidence(completedDshTrace(), "normal"),
+    });
+    expect(evidence).toEqual({
+      ok: true,
+      recallMatched: true,
+      wakeObserved: true,
+      memorySearchHit: true,
+    });
+    expect(JSON.stringify(evidence)).not.toContain(sentinel);
+    expect(evaluateDshRecallEvidence({
+      assistantContent: "I cannot recall it.",
+      sentinel,
+      dsh: projectDshCompanionEvidence(completedDshTrace(), "normal"),
+    }).ok).toBe(false);
+  });
+
   it("keeps the SSE observer outside the default DSH execution deadline", () => {
     expect(DEFAULT_CHAT_SERVICE_PROBE_STREAM_TIMEOUT_MS).toBe(330_000);
   });

@@ -539,8 +539,9 @@ $$;
 -- Item-level legacy edits/deletes cannot be translated into official igrep
 -- identity. Silently dropping them could resurrect content a user deleted;
 -- applying them after cutover is impossible because the item API no longer
--- exists. Stop deployment so the operator can purge that user's companion
--- workspace and rebuild from current PG messages before retrying this SQL.
+-- exists. Stop deployment so the operator can run the authenticated, purge-only
+-- `chat:retire-legacy-item-memory-intents -- --apply` command. Never rebuild
+-- these users from PG here: their source rows may still contain deleted text.
 DO $$
 BEGIN
   IF EXISTS (

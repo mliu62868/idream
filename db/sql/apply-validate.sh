@@ -204,6 +204,8 @@ MESSAGE_ID="${VALIDATION_PREFIX}_m1"
 RECEIPT_ID="${VALIDATION_PREFIX}_receipt1"
 FILE_MUTATION_ID="${VALIDATION_PREFIX}_fm1"
 CLAIM_FILE_MUTATION_ID="${VALIDATION_PREFIX}_fm_claim"
+LEGACY_UPDATE_MUTATION_ID="${VALIDATION_PREFIX}_fm_legacy_update"
+LEGACY_DELETE_MUTATION_ID="${VALIDATION_PREFIX}_fm_legacy_delete"
 PENDING_FILE_MUTATION_ID="${VALIDATION_PREFIX}_fm_pending"
 FORGED_FILE_MUTATION_ID="${VALIDATION_PREFIX}_fm_forge"
 SEQUENCE_FILE_MUTATION_ID="${VALIDATION_PREFIX}_fm_sequence"
@@ -413,6 +415,10 @@ psql_chat -U chat_service -d "$DB" -c "INSERT INTO chat.chat_file_mutations (id,
 psql_projector -U chat_projector -d "$DB" -c "SELECT user_id FROM chat.chat_sessions WHERE id='$SESSION_ID'; SELECT assistant_message_id FROM chat.chat_send_receipts WHERE id='$RECEIPT_ID'; UPDATE chat.messages SET memory_extracted_attempt=memory_extracted_attempt,updated_at=timezone('utc',now()) WHERE id='$MESSAGE_ID'; INSERT INTO chat.chat_outbox_events (id,event_type,aggregate_type,aggregate_id,payload,schema_version,status,attempts,next_run_at,created_at) VALUES ('$PROJECTOR_OUTBOX_ID','chat.validation','validation','$USER_ID','{}',1,'pending',0,timezone('utc',now()),timezone('utc',now())) RETURNING *;" >/dev/null
 psql_projector -U chat_projector -d "$DB" -c "UPDATE chat.chat_file_mutations SET status='applied', payload=chat.redact_file_mutation_payload(id,kind,payload), attempts=attempts+1, applied_at=timezone('utc',now()) WHERE id='$FILE_MUTATION_ID';" >/dev/null
 psql_projector -U chat_projector -d "$DB" -c "UPDATE chat.chat_file_mutations SET projection_claim_token='11111111-1111-4111-8111-111111111111', projection_claimed_at=timezone('utc',now()), projection_authority_version=sequence, projection_rebuild_id='22222222-2222-4222-8222-222222222222' WHERE id='$CLAIM_FILE_MUTATION_ID'; UPDATE chat.chat_file_mutations SET status='applied', payload=chat.redact_file_mutation_payload(id,kind,payload), attempts=attempts+1, last_error=NULL, applied_at=timezone('utc',now()), projection_claim_token=NULL, projection_claimed_at=NULL, projection_authority_version=NULL, projection_rebuild_id=NULL WHERE id='$CLAIM_FILE_MUTATION_ID';" >/dev/null
+psql_chat -U chat_service -d "$DB" -c "INSERT INTO chat.chat_file_mutations (id,user_id,kind,payload) VALUES ('$LEGACY_UPDATE_MUTATION_ID','$USER_ID','memory_update','{\"kind\":\"memory_update\",\"content\":\"PRIVATE_LEGACY_SENTINEL\"}'),('$LEGACY_DELETE_MUTATION_ID','$USER_ID','memory_delete','{\"kind\":\"memory_delete\",\"content\":\"PRIVATE_LEGACY_SENTINEL\"}');" >/dev/null
+psql_projector -U chat_projector -d "$DB" -c "UPDATE chat.chat_file_mutations SET status='applied', payload=jsonb_build_object('kind',kind), attempts=attempts+1, last_error=NULL, applied_at=timezone('utc',now()), projection_claim_token=NULL, projection_claimed_at=NULL, projection_authority_version=NULL, projection_rebuild_id=NULL WHERE id IN ('$LEGACY_UPDATE_MUTATION_ID','$LEGACY_DELETE_MUTATION_ID');" >/dev/null
+must_be_true "legacy item retirement receipts are terminal and content-free" \
+  "SELECT count(*)=2 AND bool_and(status='applied' AND payload=jsonb_build_object('kind',kind) AND attempts=1 AND applied_at IS NOT NULL AND payload::text NOT LIKE '%PRIVATE_LEGACY_SENTINEL%') FROM chat.chat_file_mutations WHERE id IN ('$LEGACY_UPDATE_MUTATION_ID','$LEGACY_DELETE_MUTATION_ID');"
 echo "  OK: views readable, request CRUD and narrow projector SQL surface writable"
 
 # Negative test helper: a statement that MUST be rejected.

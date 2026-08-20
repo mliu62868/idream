@@ -24,6 +24,15 @@ describe("companion operational telemetry", () => {
       ...common,
       sequence: 2,
       type: "igrep_observation",
+      operation: "wake",
+      outcome: "empty",
+      resultCount: 0,
+      durationMs: 3,
+    });
+    recordCompanionOperationalEvent(telemetry, {
+      ...common,
+      sequence: 3,
+      type: "igrep_observation",
       operation: "memory",
       outcome: "hit",
       resultCount: 2,
@@ -31,7 +40,7 @@ describe("companion operational telemetry", () => {
     });
     recordCompanionOperationalEvent(telemetry, {
       ...common,
-      sequence: 3,
+      sequence: 4,
       type: "igrep_observation",
       operation: "memory",
       outcome: "failure",
@@ -45,6 +54,14 @@ describe("companion operational telemetry", () => {
         profileDigest: "d".repeat(64),
       },
       igrep: {
+        wake: {
+          calls: 1,
+          hit: 0,
+          empty: 1,
+          failure: 0,
+          resultCount: 0,
+          latencyMs: [3],
+        },
         memory: {
           calls: 2,
           hit: 1,
