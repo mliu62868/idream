@@ -433,7 +433,12 @@ export function evaluateGateR({ nativeAggregates, dshAggregates, maxLatencyRatio
     check("outbox_pending_zero", allRuntimes.every((runtime) => runtime.outbox.pending === 0 && runtime.outbox.oldestPendingMs === null)),
     check("outbox_failed_zero", allRuntimes.every((runtime) => runtime.outbox.failed === 0)),
     check("outbox_delivery_complete", allRuntimes.every((runtime) => runtime.outbox.events === runtime.attempts && runtime.outbox.delivered === runtime.attempts)),
-    check("igrep_observed", dshRuntimes.every((runtime) => runtime.igrep.status === "observed")),
+    check("igrep_observed", dshRuntimes.every((runtime) => {
+      const calls = runtime.igrep.search.calls + runtime.igrep.memory.calls;
+      const latencySamples = runtime.igrep.search.latencyMs.samples
+        + runtime.igrep.memory.latencyMs.samples;
+      return runtime.igrep.status === "observed" && calls > 0 && latencySamples === calls;
+    })),
     check("igrep_failure_zero", dshRuntimes.every((runtime) => runtime.igrep.search.failure === 0 && runtime.igrep.memory.failure === 0)),
     check("memory_outcomes_settled", nativeRuntimes.every((runtime) => countOutcomes(runtime) === runtime.attempts && hasOnlyOutcomes(runtime, new Set(["extracted", "unknown"]))) && dshRuntimes.every((runtime) => countOutcomes(runtime) === runtime.attempts && hasOnlyOutcomes(runtime, new Set(["ingested", "ingested_rebuilt", "disabled"])))),
     check("sidecar_identity_stable", dshRuntimes.every((runtime) => runtime.sidecar.status === "observed" && runtime.sidecar.sampledAttempts === runtime.attempts && runtime.sidecar.distinctInstances === 1 && runtime.sidecar.instanceTransitions === 0 && runtime.sidecar.restartRatePerHour === 0)),

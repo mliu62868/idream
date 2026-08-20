@@ -298,7 +298,7 @@ test("Gate R rejects provider/model drift before latency can be attributed", () 
   assert.ok(result.json.localBlockers.includes("provider_model_identity_match"));
 });
 
-test("Gate R distinguishes zero igrep calls from missing coverage and actual failures", () => {
+test("Gate R rejects zero igrep calls and distinguishes them from actual failures", () => {
   const zeroCalls = report("dsh");
   for (const operation of ["search", "memory"]) {
     zeroCalls.conversation.rolloutEvidence.aggregate.runtimes.dsh.igrep[operation] = {
@@ -310,8 +310,9 @@ test("Gate R distinguishes zero igrep calls from missing coverage and actual fai
       latencyMs: metric(0, null, null),
     };
   }
-  const accepted = runGate({ dsh: zeroCalls });
-  assert.equal(accepted.status, 0, accepted.stderr);
+  const zeroCallResult = runGate({ dsh: zeroCalls });
+  assert.equal(zeroCallResult.status, 1, zeroCallResult.stderr);
+  assert.ok(zeroCallResult.json.localBlockers.includes("igrep_observed"));
 
   const uncovered = report("dsh");
   uncovered.conversation.rolloutEvidence.aggregate.runtimes.dsh.igrep.status = "insufficient";

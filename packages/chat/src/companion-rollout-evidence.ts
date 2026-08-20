@@ -172,9 +172,12 @@ export async function collectCompanionRolloutEvidence(
   const evidenceAttempts: AttemptEvidenceRow[] = [];
   for (const row of attempts) {
     const parsed = telemetrySchema.safeParse(row.telemetry);
-    if (parsed.success) {
-      evidenceAttempts.push({ telemetry: parsed.data, memoryExtracted: row.memoryExtracted });
+    if (!parsed.success) {
+      // INVARIANT: malformed telemetry is evidence of an unhealthy window. It
+      // must not disappear from the denominator and make Gate R look better.
+      throw new Error("companion rollout telemetry row failed schema validation");
     }
+    evidenceAttempts.push({ telemetry: parsed.data, memoryExtracted: row.memoryExtracted });
   }
 
   const outbox = await prisma.$queryRaw<RawOutboxEvidenceRow[]>(Prisma.sql`
@@ -336,9 +339,12 @@ function summarizeRuntime(
       ? "observed"
       : "insufficient";
   const durationHours = (window.to.getTime() - window.from.getTime()) / 3_600_000;
+  const igrepSearch = summarizeIgrep(telemetry.map((row) => row.igrep?.search));
+  const igrepMemory = summarizeIgrep(telemetry.map((row) => row.igrep?.memory));
+  const igrepCalls = igrepSearch.calls + igrepMemory.calls;
   const igrepStatus = runtime === "native"
     ? "not_applicable"
-    : sidecarAttempts.length === attempts.length && attempts.length > 0
+    : sidecarAttempts.length === attempts.length && attempts.length > 0 && igrepCalls > 0
       ? "observed"
       : "insufficient";
   return {
@@ -390,10 +396,14 @@ function summarizeRuntime(
     },
     igrep: {
       status: igrepStatus,
-      search: summarizeIgrep(telemetry.map((row) => row.igrep?.search)),
-      memory: summarizeIgrep(telemetry.map((row) => row.igrep?.memory)),
+      search: igrepSearch,
+      memory: igrepMemory,
       ...(igrepStatus === "insufficient"
-        ? { reason: "igrep_observation_coverage_incomplete" }
+        ? {
+            reason: igrepCalls === 0
+              ? "igrep_operation_not_observed"
+              : "igrep_observation_coverage_incomplete",
+          }
         : {}),
     },
     casConflicts: count(telemetry, (row) =>

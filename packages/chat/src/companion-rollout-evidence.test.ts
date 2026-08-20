@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { summarizeCompanionRolloutEvidence } from "./companion-rollout-evidence.js";
+import { describe, expect, it, vi } from "vitest";
+import type { ChatPrismaClient } from "./db.js";
+import {
+  collectCompanionRolloutEvidence,
+  summarizeCompanionRolloutEvidence,
+} from "./companion-rollout-evidence.js";
 
 describe("Gate R companion rollout evidence", () => {
   it("aggregates observed native and DSH facts without inventing a release threshold", () => {
@@ -234,6 +238,38 @@ describe("Gate R companion rollout evidence", () => {
     expect(result.releaseDecision.status).toBe("not_evaluated");
   });
 
+  it("does not infer igrep observation from sidecar identity without a real operation", () => {
+    const attempts = [1, 2].map((index) => ({
+      telemetry: {
+        schemaVersion: 1 as const,
+        runtime: "dsh" as const,
+        startedAt: `2026-08-19T0${index}:00:00.000Z`,
+        retryCount: 0,
+        sidecar: {
+          instanceId: "11111111-1111-4111-8111-111111111111",
+          startedAt: "2026-08-19T00:59:00.000Z",
+          profileDigest: "d".repeat(64),
+        },
+      },
+      memoryExtracted: false,
+    }));
+    const result = summarizeCompanionRolloutEvidence({
+      window: {
+        from: new Date("2026-08-19T00:00:00.000Z"),
+        to: new Date("2026-08-20T00:00:00.000Z"),
+      },
+      attempts,
+      outbox: [],
+    });
+
+    expect(result.runtimes.dsh.igrep).toMatchObject({
+      status: "insufficient",
+      reason: "igrep_operation_not_observed",
+      search: { calls: 0, latencyMs: { samples: 0 } },
+      memory: { calls: 0, latencyMs: { samples: 0 } },
+    });
+  });
+
   it("reports historical native memory extraction as unknown", () => {
     const result = summarizeCompanionRolloutEvidence({
       window: {
@@ -256,5 +292,34 @@ describe("Gate R companion rollout evidence", () => {
     });
 
     expect(result.runtimes.native.memory.outcomes).toEqual({ unknown: 1 });
+  });
+
+  it("fails the evidence window closed when any selected telemetry row is malformed", async () => {
+    const valid = {
+      schemaVersion: 1,
+      runtime: "dsh",
+      startedAt: "2026-08-19T01:00:00.000Z",
+      retryCount: 0,
+      sidecar: {
+        instanceId: "11111111-1111-4111-8111-111111111111",
+        startedAt: "2026-08-19T00:59:00.000Z",
+        profileDigest: "d".repeat(64),
+      },
+    };
+    const prisma = {
+      $queryRaw: vi.fn(async () => [
+        { telemetry: valid, memoryExtracted: false },
+        { telemetry: { ...valid, startedAt: "2026-08-19T02:00:00.000Z" }, memoryExtracted: false },
+        { telemetry: { ...valid, retryCount: -1 }, memoryExtracted: false },
+      ]),
+    } as unknown as ChatPrismaClient;
+
+    await expect(collectCompanionRolloutEvidence({
+      window: {
+        from: new Date("2026-08-19T00:00:00.000Z"),
+        to: new Date("2026-08-20T00:00:00.000Z"),
+      },
+    }, prisma)).rejects.toThrow("telemetry row failed schema validation");
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
   });
 });
