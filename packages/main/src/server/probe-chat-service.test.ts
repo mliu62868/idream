@@ -165,6 +165,9 @@ function installFailFastProbeFetch(
     if (url.pathname === "/api/v1/chat/sessions/session-recall/messages" && method === "POST") {
       const content = JSON.parse(String(init?.body)) as { content: string };
       expect(content.content).not.toContain(seededRecallMarker);
+      expect(content.content).toContain(
+        'Call memory_search with query exactly "exact rooftop probe code word"',
+      );
       return json({
         assistantMessageId: "assistant-recall",
         userMessageId: "user-recall",

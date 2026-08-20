@@ -750,7 +750,8 @@ async function probeConversation(input: {
       path: `/api/v1/chat/sessions/${recallSessionId}/messages`,
       body: JSON.stringify({
         content:
-          "Use memory_search to recall the exact rooftop probe code word from a prior session and say it exactly.",
+          'Call memory_search with query exactly "exact rooftop probe code word". ' +
+          "Use only that tool result to recall the code word from a prior session, then say it exactly.",
       }),
       idempotencyKey: `chat-probe:${input.runId}:cross-session-recall`,
     });
