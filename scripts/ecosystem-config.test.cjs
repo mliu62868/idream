@@ -136,6 +136,7 @@ function pm2Process(name, status) {
       pm_exec_path: definition.execPath,
       args: definition.args,
       node_args: definition.nodeArgs ?? [],
+      exec_interpreter: definition.execInterpreter,
       exec_mode: definition.execMode,
       watch: false,
       IDREAM_PM2_MODE: "production",
@@ -152,6 +153,7 @@ function pm2ProcessFromApp(app, status, mode) {
       pm_exec_path: path.resolve(app.cwd, app.script),
       args: typeof app.args === "string" ? [app.args] : (app.args ?? []),
       node_args: app.node_args ?? [],
+      exec_interpreter: app.interpreter,
       exec_mode: `${app.exec_mode}_mode`,
       watch: app.watch,
       IDREAM_PM2_MODE: mode,
@@ -408,6 +410,7 @@ test("production definition authority stays exact for every ecosystem app", () =
       execPath: path.resolve(app.cwd, app.script),
       args: typeof app.args === "string" ? [app.args] : (app.args ?? []),
       ...(app.node_args ? { nodeArgs: app.node_args } : {}),
+      ...(app.interpreter ? { execInterpreter: app.interpreter } : {}),
       execMode: `${app.exec_mode}_mode`,
     });
   }
@@ -434,6 +437,16 @@ test("every production definition field fails closed on drift", () => {
       false,
     );
   }
+
+  const sidecar = pm2Process("chat-agent", "online");
+  assert.equal(matchesProductionProcessDefinition(sidecar), true);
+  assert.equal(
+    matchesProductionProcessDefinition({
+      ...sidecar,
+      pm2_env: { ...sidecar.pm2_env, exec_interpreter: "/usr/bin/bun" },
+    }),
+    false,
+  );
 });
 
 test("production stop phases classify every non-voice app exactly once", () => {

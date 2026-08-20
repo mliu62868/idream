@@ -113,6 +113,7 @@ const productionProcessDefinitions = new Map([
           "--import",
           pathToFileURL(productionChatAgentTsxLoader).href,
         ],
+        execInterpreter: process.execPath,
         execMode: "fork_mode",
       }]]
     : []),
@@ -227,6 +228,8 @@ function matchesProductionProcessDefinition(process) {
         JSON.stringify(definition.args) &&
       JSON.stringify(normalizePm2Args(pm2Env.node_args)) ===
         JSON.stringify(definition.nodeArgs ?? []) &&
+      (definition.execInterpreter === undefined ||
+        pm2Env.exec_interpreter === definition.execInterpreter) &&
       pm2Env.exec_mode === definition.execMode &&
       pm2Env.watch === false &&
       processRuntimeMarker(process) === "production",
