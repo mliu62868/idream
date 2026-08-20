@@ -178,12 +178,16 @@ bun run launch:probe:image:local
 bun run launch:probe:web-surface -- --report .tmp/launch-web-surface-probe.json
 bun run launch:probe:product-config -- --report .tmp/launch-product-config-probe.json
 bun run launch:probe:chat-service -- --report .tmp/launch-chat-service-probe.json
-bun run launch:probe:chat -- --report .tmp/launch-chat-probe.json
 bun run launch:probe:voice -- --report .tmp/launch-voice-probe.json
 bun run launch:probe:blob -- --report .tmp/launch-blob-probe.json
 bun run launch:probe:payment -- --report .tmp/launch-payment-probe.json
 bun run launch:probe:age -- --report .tmp/launch-age-probe.json
 ```
+
+`bun run diagnose:chat-provider -- --report .tmp/chat-provider-diagnostic.json`
+is an optional raw OpenAI-compatible transport diagnostic. It bypasses the DSH
+sidecar, igrep, Chat commit authority, and tool bridge, so it is deliberately
+excluded from launch readiness.
 
 Run the final direct gate:
 

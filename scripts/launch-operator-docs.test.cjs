@@ -28,9 +28,10 @@ test("launch operator docs use the package-bound Sentry probes", () => {
   }
 });
 
-test("the root Chat model probe loads the Chat runtime authority", () => {
+test("the raw provider diagnostic is not exposed as a Chat launch gate", () => {
+  assert.equal(rootPackage.scripts["launch:probe:chat"], undefined);
   assert.equal(
-    rootPackage.scripts["launch:probe:chat"],
+    rootPackage.scripts["diagnose:chat-provider"],
     "node --env-file=packages/main/.env --env-file=packages/chat/.env packages/main/node_modules/.bin/tsx packages/main/src/server/probe-chat-model.ts",
   );
 });

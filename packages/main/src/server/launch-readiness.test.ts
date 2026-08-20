@@ -70,7 +70,6 @@ const productionEnv = {
   CHAT_MODEL_BASE_URL: "https://pipeline.ourdream.internal",
   CHAT_MODEL_NAME: "chat-default",
   CHAT_MODEL_API_KEY: "production-pipeline-token-0123456789",
-  CHAT_MODEL_PROBE_REPORT: ".tmp/launch-chat-probe.json",
   ADMIN_TEXT_PROBE_REPORT: ".tmp/launch-admin-text-probe.json",
   ADMIN_TEXT_PROBE_MAX_AGE_MINUTES: "1440",
   ADMIN_TEXT_PROBE_CHARACTER_ID: "reviewed-character-1",
@@ -1154,7 +1153,6 @@ describe("launch readiness", () => {
         "web-surface-live-probe",
         "chat-provider-non-mock",
         "chat-service-live-probe",
-        "chat-model-live-probe",
         "voice-model-live-probe",
         "gen-image-provider",
         "pipeline-image-live-probe",
@@ -2791,7 +2789,7 @@ describe("launch readiness", () => {
     expect(failedIds(report)).toContain("chat-service-live-probe");
   });
 
-  it("fails when production env is configured but the live chat model probe is missing", () => {
+  it("does not treat the raw provider diagnostic as Chat launch authority", () => {
     const report = assessLaunchReadiness({
       env: productionEnv,
       imagePipelineProbe: passingImageProbe(),
@@ -2808,81 +2806,10 @@ describe("launch readiness", () => {
       now,
     });
 
-    expect(report.ok).toBe(false);
-    expect(failedIds(report)).toContain("chat-model-live-probe");
-  });
-
-  it("fails when the live chat model probe returns no assistant text", () => {
-    const report = assessLaunchReadiness({
-      env: productionEnv,
-      imagePipelineProbe: passingImageProbe(),
-      ageVerificationProbe: passingAgeProbe(),
-      blobStorageProbe: passingBlobProbe(),
-      chatModelProbe: passingChatProbe({
-        ok: false,
-        chunks: 0,
-        characters: 0,
-        done: true,
-      }),
-      voiceModelProbe: passingVoiceProbe(),
-      chatServiceProbe: passingChatServiceProbe(),
-      paymentProviderProbe: passingPaymentProbe(),
-      safetyGatewayProbe: passingSafetyProbe(),
-      productConfigProbe: passingProductConfigProbe(),
-      webSurfaceProbe: passingWebSurfaceProbe(),
-      publicCatalogProbe: passingPublicCatalogProbe(),
-      now,
-    });
-
-    expect(report.ok).toBe(false);
-    expect(failedIds(report)).toContain("chat-model-live-probe");
-  });
-
-  it("fails when the live chat model probe returns a mock template response", () => {
-    const report = assessLaunchReadiness({
-      env: productionEnv,
-      imagePipelineProbe: passingImageProbe(),
-      ageVerificationProbe: passingAgeProbe(),
-      blobStorageProbe: passingBlobProbe(),
-      chatModelProbe: passingChatProbe({
-        ok: false,
-        assistantPreview: "Mock Launch Probe reply: hello",
-      }),
-      voiceModelProbe: passingVoiceProbe(),
-      chatServiceProbe: passingChatServiceProbe(),
-      paymentProviderProbe: passingPaymentProbe(),
-      safetyGatewayProbe: passingSafetyProbe(),
-      productConfigProbe: passingProductConfigProbe(),
-      webSurfaceProbe: passingWebSurfaceProbe(),
-      publicCatalogProbe: passingPublicCatalogProbe(),
-      now,
-    });
-
-    expect(report.ok).toBe(false);
-    expect(failedIds(report)).toContain("chat-model-live-probe");
-  });
-
-  it("fails when the live chat model probe is stale", () => {
-    const report = assessLaunchReadiness({
-      env: productionEnv,
-      imagePipelineProbe: passingImageProbe(),
-      ageVerificationProbe: passingAgeProbe(),
-      blobStorageProbe: passingBlobProbe(),
-      chatModelProbe: passingChatProbe({
-        checkedAt: "2026-06-20T00:00:00.000Z",
-      }),
-      voiceModelProbe: passingVoiceProbe(),
-      chatServiceProbe: passingChatServiceProbe(),
-      paymentProviderProbe: passingPaymentProbe(),
-      safetyGatewayProbe: passingSafetyProbe(),
-      productConfigProbe: passingProductConfigProbe(),
-      webSurfaceProbe: passingWebSurfaceProbe(),
-      publicCatalogProbe: passingPublicCatalogProbe(),
-      now,
-    });
-
-    expect(report.ok).toBe(false);
-    expect(failedIds(report)).toContain("chat-model-live-probe");
+    expect(failedIds(report)).not.toContain("chat-model-live-probe");
+    expect(report.checks.map((check) => check.id)).not.toContain(
+      "chat-model-live-probe",
+    );
   });
 
   it("fails when production env is configured but the live voice model probe is missing", () => {
@@ -3415,9 +3342,6 @@ describe("launch readiness", () => {
     );
     expect(report.checks.map((check) => check.id)).toContain(
       "pipeline-image-live-probe",
-    );
-    expect(report.checks.map((check) => check.id)).toContain(
-      "chat-model-live-probe",
     );
     expect(report.checks.map((check) => check.id)).toContain(
       "chat-service-live-probe",

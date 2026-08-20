@@ -157,8 +157,8 @@ Historical local result from 2026-06-30:
   by default and can be overridden with `CHAT_SERVICE_PROBE_STREAM_TIMEOUT_MS`.
   The chat worker now emits terminal SSE `done` only after DB finalize, so the
   stream terminal event and reload state agree.
-- chat model via `pipeline`: pass, using `http://127.0.0.1:8061/v1` and
-  `Qwen3.6-35B-A3B-uncensored-heretic-Native-MTP-Preserved-mlx-8Bit`.
+- the historical raw provider diagnostic reached `http://127.0.0.1:8061/v1`;
+  it is not DSH/Chat launch evidence and is no longer a required pipeline step.
 - image generation via `pipeline`: pass, using `http://127.0.0.1:8091` and
   `pornmaster-zimage-turbo`; combined pipeline probe produced 1 image asset in
   about 97.3s.
@@ -250,7 +250,6 @@ bun run launch:probe:web-surface -- --report .tmp/launch-web-surface-probe.json
 bun run launch:probe:product-config -- --report .tmp/launch-product-config-probe.json
 bun run launch:probe:catalog -- --report .tmp/public-catalog-probe.json
 bun run launch:probe:chat-service -- --report .tmp/launch-chat-service-probe.json
-bun run launch:probe:chat -- --report .tmp/launch-chat-probe.json
 ```
 
 If voice is included in the active demo promise, also run:

@@ -536,6 +536,24 @@ BEGIN
 END
 $$;
 
+-- Item-level legacy edits/deletes cannot be translated into official igrep
+-- identity. Silently dropping them could resurrect content a user deleted;
+-- applying them after cutover is impossible because the item API no longer
+-- exists. Stop deployment so the operator can purge that user's companion
+-- workspace and rebuild from current PG messages before retrying this SQL.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM chat.chat_file_mutations
+    WHERE kind IN ('memory_update', 'memory_delete')
+      AND status = 'pending'
+  ) THEN
+    RAISE EXCEPTION 'LEGACY_ITEM_MEMORY_INTENT_PENDING';
+  END IF;
+END
+$$;
+
 CREATE UNIQUE INDEX IF NOT EXISTS chat_file_mutations_sequence_key
   ON chat.chat_file_mutations (sequence);
 CREATE INDEX IF NOT EXISTS chat_file_mutations_user_pending_idx
@@ -598,14 +616,6 @@ AS $$
       'sessionId', mutation_payload -> 'sessionId',
       'characterId', mutation_payload -> 'characterId'
     )
-    WHEN 'memory_update' THEN jsonb_build_object(
-      'kind', mutation_kind,
-      'memoryId', mutation_payload -> 'memoryId'
-    )
-    WHEN 'memory_delete' THEN jsonb_build_object(
-      'kind', mutation_kind,
-      'memoryId', mutation_payload -> 'memoryId'
-    )
     WHEN 'relationship_rebuild' THEN jsonb_build_object(
       'kind', mutation_kind,
       'characterId', mutation_payload -> 'characterId'
@@ -625,21 +635,10 @@ AS $$
   END
 $$;
 
-CREATE OR REPLACE FUNCTION chat.redact_file_mutation_payload(
-  mutation_kind text,
-  mutation_payload jsonb
-)
-RETURNS jsonb
-LANGUAGE sql
-IMMUTABLE
-PARALLEL SAFE
-AS $$
-  SELECT chat.redact_file_mutation_payload(
-    NULL,
-    mutation_kind,
-    mutation_payload
-  )
-$$;
+-- Phase 6 has no runtime caller for the pre-request-identity overload. Keep
+-- exactly one redaction authority so stale code cannot silently manufacture a
+-- receipt without the immutable mutation id.
+DROP FUNCTION IF EXISTS chat.redact_file_mutation_payload(text, jsonb);
 
 -- Pre-v2 pending account erasure intents did not carry a request identity.
 -- Bind them one-way to their immutable ledger id before the canonical payload

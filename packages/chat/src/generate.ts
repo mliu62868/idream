@@ -4,8 +4,8 @@
 // INVARIANTS:
 //   - idempotent on message.status: already sent/blocked/deleted ⇒ no-op (no double
 //     usage, no duplicate selected version).
-//   - finalize writes message + selected version + usage + summary + moderation +
-//     outbox in ONE transaction (atomic ledger).
+//   - finalize writes Message + selected MessageVersion + usage + moderation +
+//     outbox + content-free runtime trace in ONE transaction (atomic ledger).
 //   - content-free runtime evidence lives atomically on Message + MessageVersion;
 //     prompts, model output, and tool payloads never enter the file ledger.
 import { createHash } from "node:crypto";

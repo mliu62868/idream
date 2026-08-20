@@ -26,8 +26,9 @@ Admin Persona authoring
   -> CharacterServing
   -> Chat Session / Message pin
   -> immutable persona resolution
-  -> prompt assembly
-  -> ChatModel
+  -> PreparedTurn
+  -> DSH AgentLoop
+  -> Chat terminal commit
 ```
 
 这条链已经具备正确的工程地基：
@@ -36,7 +37,7 @@ Admin Persona authoring
 - 新会话固定当时 serving 的 `CharacterContentVersion + CharacterRelease`；
 - 历史消息优先使用 message pin，其次使用 session pin；
 - pinned snapshot 不完整时 fail closed，不从 mutable Character 补人格字段；
-- runtime rules、persona 和 memory/relationship data 已经分层；
+- runtime rules、persona、official igrep memory 和 relationship/Scene data 已经分层；
 - no-memory turn 不读取、不派生长期记忆或关系状态；
 - relationship 的 turns 与 warmth/familiarity 已分开，消息数量本身不升级关系。
 
@@ -81,10 +82,10 @@ Admin Persona authoring
 | 用户角色当前内容指针 | Main / Character | 可变指针，只允许指向该角色的不可变版本 |
 | Session / Message pin | Chat | 决定某轮使用哪个 Release/Soul |
 | Scene state | Chat session | 会话内演进 |
-| User memory | Chat user/character | 跨会话演进 |
+| User memory | DSH official igrep workspace | 跨会话演进 |
 | Relationship evidence/state | Chat user/character | 跨会话演进 |
 | Runtime policy | Chat deployment/product policy | 随部署版本演进 |
-| Provider wire format | ChatModel adapter | 可替换实现细节 |
+| Provider wire format | chat-agent DSH adapter | 可替换实现细节 |
 
 任何字段如果无法明确放进上述一行，就不能进入生产契约。
 
@@ -123,7 +124,7 @@ Relationship stage 不是模型直接写入的自由文本，也不是消息数�
 
 ### 2.6 运行时行为不依赖某个具体模型
 
-Soul 定义角色行为契约；ChatModel adapter 只负责把 `PreparedTurn` 转成 provider wire 并流式返回。不得在 Character 内容里写某个 Provider 专属格式或模型名称。
+Soul 定义角色行为契约；chat-agent DSH adapter 只负责把 `PreparedTurn` 转成 provider wire 并流式返回。不得在 Character 内容里写某个 Provider 专属格式或模型名称。
 
 ## 3. Decision
 
@@ -243,7 +244,7 @@ type CharacterSoulSnapshot = {
 
 - `firstMessage`：属于 `openingSnapshot`；
 - appearance、服装、镜头、图片风格：属于视觉身份/`appearanceSnapshot`；
-- 当前用户姓名、偏好、边界、共同经历：属于 Chat memory；
+- 当前用户姓名、偏好、边界、共同经历：属于 official igrep relationship memory；
 - 当前关系阶段：属于 Relationship State；
 - 当前地点、时间、剧情节点：属于 Scene State；
 - token budget、tool availability、entitlement：属于 Runtime Policy。
@@ -372,7 +373,7 @@ Module 内部拥有：
 - entitlement/policy resolution；
 - recent transcript anchoring；
 - boundary 的 fail-closed read；
-- memory/relationship 的可降级 read；
+- igrep memory 与 relationship projection 的独立 read；
 - scene resolution；
 - prompt section ordering；
 - data/instruction encoding；
@@ -381,11 +382,11 @@ Module 内部拥有：
 - tool planner prompt（收编 `agent-tools` 现在自拼的第二版 system prompt）；
 - runtime trace。
 
-generation worker 不再分别调用 context builder、prompt builder、tool prompt helper 并理解它们的顺序约束。`PreparedTurn` 是 ChatModel adapter 的唯一输入。
+generation worker 不再分别调用 context builder、prompt builder、tool prompt helper 并理解它们的顺序约束。`PreparedTurn` 是 DSH AgentLoop 的唯一输入。
 
 `budget` 的计量实现可先由现有字符预算映射为 token 估算，不阻塞在精确 tokenizer 上；关键是 `dropped` 必须如实记录，不允许静默丢弃。
 
-`ChatModel` seam 已有真实的生产 adapter 与测试 adapter，因此保留；Soul compiler 是纯计算，不为它增加 repository/provider port。
+生产执行只有 DSH AgentLoop；测试通过同一 companion wire 注入协议 fixture，不保留第二个 ChatModel 权威。Soul compiler 是纯计算，不为它增加 repository/provider port。
 
 ### 4.4 Prompt 层次与信任级别
 
@@ -457,7 +458,7 @@ function reduceRelationship(
 
 durable intent kind 是 `memory_extract`（`chat.memory.extract` 是投递它的队列名）。扩展其 payload，携带经过校验的 `relationshipEvidence[]`。
 
-但 ledger 本身不能充当 evidence 的长期存储：`chat_file_mutations` 的隐私姿态是 payload 在 apply 后覆写为 identity-only receipt（`relationship_set` 是当前唯一例外）。持久化归属定为文件层——projector 在更新 `relationship.md` 之前，先把 evidence 以 append-only 记录写入同目录的 evidence log，再投影状态。文件层本来就是 memory/relationship 的 durable authority，账号/会话擦除沿既有路径连带删除。
+但 ledger 本身不能充当 evidence 的长期存储：`chat_file_mutations` 的隐私姿态是 payload 在 apply 后覆写为 identity-only receipt（`relationship_set` 是当前唯一例外）。持久化归属定为文件层——projector 在更新 `relationship.md` 之前，先把 evidence 以 append-only 记录写入同目录的 evidence log，再投影状态。文件层只承载 relationship/evidence/boundary 投影；通用关系记忆的唯一运行权威是 DSH 官方 igrep workspace。账号/会话擦除沿各自的 durable purge/rebuild 路径连带删除。
 
 重建时使用文件层的原始 evidence，不用新模型重新解释旧消息。删除消息、账户擦除、relationship rebuild 通过 source message linkage 精确扣除后重新 reduce。存量 relationship 不重放历史消息迁移：以当前 state 记一条无 source 的 baseline，此前贡献不可追溯扣除（它们本来就没有证据），baseline 之后的一切变化都走 evidence。
 
@@ -468,12 +469,12 @@ durable intent kind 是 `memory_extract`（`chat.memory.extract` 是投递它的
 - no-memory turn 不生成 relationship evidence；
 - 不增加 turns；
 - 不更新 summary；
-- 不写 memory candidate；
+- 使用 private DSH profile，不执行 igrep wake/search/ingest/maintain；
 - finalize 和 projector 都重新校验 turn authority，不能只信 job payload。
 
 ## 6. Memory 与 Scene 分离
 
-现有长期记忆类别继续保留：`user_fact`、`preference`、`boundary`、`shared_event`。
+Chat 不再定义或持久化 item-level 长期记忆类别。通用关系记忆由官方 igrep 以 opaque workspace 负责 wake/search/ingest/maintain；产品只暴露 memory on/off 与 whole-relationship reset，不再提供逐项 list/edit/delete。
 
 新增 typed Scene State，归 Chat session 所有：
 
@@ -495,8 +496,8 @@ type SceneState = {
 - 不作为长期用户事实；
 - 可被下一轮 prompt、图片工具和语音表现共同消费；
 - regenerate older turn 时按 anchor 读取对应版本，不能看到未来 scene；
-- scene 属于会话内连续性，与跨会话抽取分属两个门：no-memory turn 照常更新 Scene（它不出会话、随会话删除），但不产生 memory candidate 与 relationship evidence——§5.3 约束的是后两者；
-- scene 更新必须在 assistant finalize 后基于 exact turn 派生；memory candidates、relationship evidence、scene delta 由同一次抽取调用产出（抽取模型与主生成共享本地算力，一轮至多一次抽取调用），按 `memoryAuthority` 分别落闸，负载高峰可降级延后——抽取是异步 durable intent，延后不影响已完成的 turn。
+- scene 属于会话内连续性，与跨会话关系投影分属两个门：no-memory turn 照常更新 Scene（它不出会话、随会话删除），但不生成 relationship evidence，也不进入 igrep lifecycle；
+- scene 更新必须在 assistant finalize 后基于 exact turn 派生；Scene delta 与 relationship evidence 由 Chat 的异步 durable projector 产出，通用关系记忆只在 DSH terminal commit ACK 后由官方 igrep ingest。两条权威独立落闸，projector 延后不影响已完成的 turn。
 
 regenerate 按 anchor 读历史版本，意味着 scene 必须保留版本历史，单个 `sceneSnapshot Json?` 列承载不了。首次实施即建 scene revision 权威（`sessionId + version` 唯一、记录 `sourceAssistantMessageId`），turn 的 user message 行记录 anchor 时刻的 `sceneVersion`——与 release pin 同款语义；不把 JSON 编码进旧 `memorySummary String?`（该列已在 Phase 6 删除）。数据库迁移由迁移脚本描述并由用户执行；不由 agent 直接连库改表。
 
@@ -527,7 +528,7 @@ Character Project Draft
 - token estimate；
 - error/warning diagnostics；
 - behavior evaluation suite/version；
-- exact production ChatModel profile（分档 free/premium/deluxe 解析出的每个不同模型，相同者去重）；
+- exact production DSH programmatic composition、provider/model 与 profile digest（当前唯一 profile）；
 - live canary result。
 
 Release 验证成功只说明该 snapshot 可以 serving，不自动 Publish。Approval、Release、Serving 继续是三个不同动作。
@@ -618,7 +619,7 @@ focused contract tests
   -> cleanup
 ```
 
-Mock ChatModel 证明协议，不证明生产角色行为。Live canary 必须记录 model id、adapter、compilerVersion、soul fingerprint、首 token/总耗时和是否冷启动；分档模型逐一覆盖（相同模型去重）。
+协议 fixture 只证明 wire，不证明生产角色行为。Live canary 必须走签名 Chat→DSH 路径，记录 exact model id、sidecar composition/profile digest、compilerVersion、soul fingerprint、首 token/总耗时和是否冷启动；当前只有一个生产 DSH profile。
 
 ## 10. Runtime 拓扑与启动门禁
 
@@ -639,14 +640,15 @@ Mock ChatModel 证明协议，不证明生产角色行为。Live canary 必须�
 
 启动门禁应验证当前环境到底属于上述哪一种拓扑；既非同 cluster read view、又无 durable projection watermark 时拒绝 ready。
 
-### 10.2 模型配置只有一个 resolver，且共享同一 client 实现
+### 10.2 模型配置只有一个 DSH resolver
 
-现状 chat 模型配置在四处各自解析（chat env、model probe、launch readiness、probe runner），且已产生真实分歧：探针加载不到 chat 的 `.env` 而探到 mock、探针超时是总时长而生产是空闲超时、runner 把 provider 写死为 `pipeline` 而生产是 `openai`（差 function-calling 路径）。历史已证明“数值统一了、施加语义没统一”仍然漂移，所以只统一 env 解析不够：
+Chat、chat-agent、readiness 与签名 live probe 必须消费同一个 DSH profile resolver。它输出唯一 production provider/model/base URL/timeout/max tokens，并以实际 programmatic composition manifest 计算 profile digest：
 
-- 只有一个 model profile resolver：输入 tier，输出 provider/model/base url/timeout/max tokens；chat 进程、readiness、launch probe、运营 live canary 都消费它；
-- 探针复用 chat 包的 ChatModel adapter 实现，不再重写 client——超时语义（空闲 vs 总时长）、请求体、能力开关只存在一份；
-- resolver 覆盖全部模型面：分档对话模型与 memory extract 模型；
-- 每个 assistant turn 的 trace 记录 resolver 解析结果（provider、model id、tier），支撑 §14 的按 turn 追溯。
+- Chat 把已经 readiness 验证且持久化的 expected profile digest 固化到 attempt；
+- sidecar 在 workspace、agent、provider 调用前按实际 resolved config 重算并严格匹配；
+- 每个 assistant turn 的 content-free trace 记录 provider、model、profile digest 与 sidecar instance；
+- 直连 OpenAI-compatible endpoint 的 `diagnose:chat-provider` 只诊断 transport，不传 tools、绕过 DSH/igrep/commit bridge，因此不得作为 launch 或角色行为证据；
+- 不存在分档 ChatModel 或独立 memory-extract 模型权威。
 
 ### 10.3 Cold start 属于 readiness
 
@@ -668,7 +670,7 @@ Mock ChatModel 证明协议，不证明生产角色行为。Live canary 必须�
 
 - 校验 Main/Chat database topology，并校验 `db/sql/` 基线文件与已应用迁移的一致性（现状基线 view 存在被后续迁移取代的 NULL 占位列）；
 - 增加 read model parity/freshness launch gate；
-- 统一 Chat model config resolver，探针改为复用 chat 的 ChatModel adapter（§10.2）；
+- 统一 DSH model/composition resolver，签名探针只消费 Chat→DSH 的可归因证据（§10.2）；
 - 增加 exact model warm readiness；chat 进程补 readiness 门与优雅排水（kill timeout）；
 - 清理会污染自动 probe 选角的非正式公开 fixture；
 - 记录当前官方 Release、Content Version 和 pinned session 基线，以及 null-pin 用户会话基数。
@@ -748,7 +750,7 @@ Mock ChatModel 证明协议，不证明生产角色行为。Live canary 必须�
 目标：把会话剧情连续性从字符串 summary 中分离。
 
 - 增加 Chat schema migration（scene revision 权威 + user message 行 `sceneVersion`）；
-- exact-turn scene extraction，与 memory/relationship 抽取合并为同一次调用、按 `memoryAuthority` 落闸；
+- exact-turn Scene/relationship derivation；通用记忆由 official igrep 在 DSH commit gate 后独立 ingest；
 - regenerate anchor；
 - prompt data injection；
 - 图片/语音工具读取同一 Scene State；
@@ -772,7 +774,7 @@ Mock ChatModel 证明协议，不证明生产角色行为。Live canary 必须�
 | Relationship | `packages/chat/src/relationship.ts` | evidence reducer，保留文件层 authority |
 | Durable evidence | `packages/chat/src/file-mutations.ts` + 文件层 evidence log | `memory_extract` payload 扩展；evidence 落 append-only log；ledger 保持 receipt 隐私姿态 |
 | Scene | `packages/chat/prisma/schema.prisma` + `db/sql/` | scene revision 权威 + user message 行 `sceneVersion` migration |
-| Runtime config | `packages/chat/src/env.ts`、`providers.ts`、main 侧 probe/launch-readiness、probe runner | 统一 resolver + 共享 ChatModel adapter、topology/warm readiness、优雅排水 |
+| Runtime config | `packages/shared/src/chat/model-profile.ts`、Chat readiness、chat-agent composition、signed probe | 单一 DSH resolver + exact composition/profile digest、warm readiness、优雅排水 |
 | Admin UI | Character Workspace / Persona surface | Soul editor、diff、QA、Release journey |
 
 任何 DB 模式变更只提交 Prisma/SQL 迁移与验证脚本，由用户在目标数据库执行。

@@ -56,30 +56,6 @@ const imagePipelineModel =
   process.env.PIPELINE_IMAGE_MODEL_DEFAULT ??
   genEnv.PIPELINE_IMAGE_MODEL_DEFAULT ??
   "pornmaster-zimage-turbo";
-const chatModelBaseUrl =
-  process.env.CHAT_MODEL_BASE_URL ??
-  process.env.PIPELINE_CHAT_API_URL ??
-  chatEnv.CHAT_MODEL_BASE_URL ??
-  mainEnv.PIPELINE_API_URL ??
-  "http://127.0.0.1:8061/v1";
-const chatModelProvider =
-  process.env.CHAT_MODEL_PROVIDER ??
-  process.env.CHAT_PROVIDER ??
-  chatEnv.CHAT_MODEL_PROVIDER ??
-  chatEnv.CHAT_PROVIDER ??
-  "mock";
-const chatModelName =
-  process.env.CHAT_MODEL_NAME ??
-  process.env.PIPELINE_CHAT_MODEL_DEFAULT ??
-  chatEnv.CHAT_MODEL_NAME ??
-  mainEnv.PIPELINE_CHAT_MODEL_DEFAULT ??
-  "Qwen3.6-35B-A3B-uncensored-heretic-Native-MTP-Preserved-mlx-8Bit";
-const chatModelApiKey =
-  process.env.CHAT_MODEL_API_KEY ??
-  process.env.PIPELINE_CHAT_API_TOKEN ??
-  chatEnv.CHAT_MODEL_API_KEY ??
-  mainEnv.PIPELINE_API_TOKEN ??
-  "";
 const configuredVoicePipelineUrl =
   process.env.PIPELINE_VOICE_API_URL ??
   process.env.MOSS_TTS_API_URL ??
@@ -150,37 +126,6 @@ const steps = [
       CHAT_SERVICE_URL: chatServiceUrl,
       CHAT_BFF_SIGNING_SECRET: chatBffSigningSecret,
       CHAT_SERVICE_PROBE_USER_ID: chatServiceProbeUserId,
-    },
-  },
-  {
-    id: "chat-model",
-    required: true,
-    command: "bun",
-    args: [
-      "run",
-      "launch:probe:chat",
-      "--",
-      "--report",
-      ".tmp/launch-chat-probe.json",
-    ],
-    env: {
-      ...baseEnv,
-      CHAT_MODEL_PROVIDER: chatModelProvider,
-      CHAT_MODEL_BASE_URL: chatModelBaseUrl,
-      CHAT_MODEL_NAME: chatModelName,
-      CHAT_MODEL_API_KEY: chatModelApiKey,
-      CHAT_MODEL_FREE: process.env.CHAT_MODEL_FREE ?? chatEnv.CHAT_MODEL_FREE,
-      CHAT_MODEL_PREMIUM: process.env.CHAT_MODEL_PREMIUM ?? chatEnv.CHAT_MODEL_PREMIUM,
-      CHAT_MODEL_DELUXE: process.env.CHAT_MODEL_DELUXE ?? chatEnv.CHAT_MODEL_DELUXE,
-      CHAT_MODEL_MAX_TOKENS: process.env.CHAT_MODEL_MAX_TOKENS ?? chatEnv.CHAT_MODEL_MAX_TOKENS,
-      CHAT_MODEL_TIMEOUT_MS: process.env.CHAT_MODEL_TIMEOUT_MS ?? chatEnv.CHAT_MODEL_TIMEOUT_MS,
-      CHAT_MODEL_FIRST_TOKEN_TIMEOUT_MS:
-        process.env.CHAT_MODEL_FIRST_TOKEN_TIMEOUT_MS ?? chatEnv.CHAT_MODEL_FIRST_TOKEN_TIMEOUT_MS,
-      CHAT_MODEL_IDLE_TIMEOUT_MS:
-        process.env.CHAT_MODEL_IDLE_TIMEOUT_MS ?? chatEnv.CHAT_MODEL_IDLE_TIMEOUT_MS,
-      CHAT_MODEL_COMPLETE_TIMEOUT_MS:
-        process.env.CHAT_MODEL_COMPLETE_TIMEOUT_MS ?? chatEnv.CHAT_MODEL_COMPLETE_TIMEOUT_MS,
-      PIPELINE_CHAT_MODEL_DEFAULT: chatModelName,
     },
   },
   {
@@ -300,8 +245,6 @@ const report = {
     adminWebUrl,
     chatServiceUrl,
     chatServiceProbeUserId,
-    chatModelBaseUrl,
-    chatModelName,
     imagePipelineUrl,
     imagePipelineModel,
     voicePipelineUrl: voicePipelineUrl ?? null,

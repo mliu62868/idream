@@ -343,6 +343,11 @@ describe("chat boundary (chat_service role)", () => {
          OR role.rolname IN ('chat_service', 'chat_projector')
       ORDER BY object_type, role.rolname
     `);
+    const retiredRedactor = await superPool.query<{ present: boolean }>(`
+      SELECT to_regprocedure(
+        'chat.redact_file_mutation_payload(text,jsonb)'
+      ) IS NOT NULL AS present
+    `);
 
     expect({
       tables: tableDrift.rows,
@@ -351,6 +356,7 @@ describe("chat boundary (chat_service role)", () => {
       sequences: sequenceDrift.rows,
       functions: functionDrift.rows,
       defaults: defaultPrivilegeDrift.rows,
+      retiredRedactor: retiredRedactor.rows[0]?.present,
     }).toEqual({
       tables: [],
       columns: [],
@@ -358,6 +364,7 @@ describe("chat boundary (chat_service role)", () => {
       sequences: [],
       functions: [],
       defaults: [],
+      retiredRedactor: false,
     });
   });
 
@@ -571,14 +578,6 @@ describe("chat boundary (chat_service role)", () => {
       error: "chat request database capability is not canonical",
     },
     {
-      label: "request legacy function EXECUTE",
-      grant: `GRANT EXECUTE ON FUNCTION
-        chat.redact_file_mutation_payload(text,jsonb) TO chat_service`,
-      revoke: `REVOKE EXECUTE ON FUNCTION
-        chat.redact_file_mutation_payload(text,jsonb) FROM chat_service`,
-      error: "chat request database capability is not canonical",
-    },
-    {
       label: "projector unrelated table DELETE",
       grant: "GRANT DELETE ON chat.chat_sessions TO chat_projector",
       revoke: "REVOKE DELETE ON chat.chat_sessions FROM chat_projector",
@@ -743,6 +742,40 @@ describe("chat boundary (chat_service role)", () => {
       );
     } finally {
       await superPool.query(original.rows[0]!.definition);
+    }
+  });
+
+  it("refuses readiness while a retired item-memory privacy intent is pending", async () => {
+    const userId = `legacy-item-user-${process.pid}-${Date.now()}`;
+    const mutationId = `legacy-item-intent-${process.pid}-${Date.now()}`;
+    await superPool.query(
+      `INSERT INTO chat.chat_file_mutations (id, user_id, kind, payload)
+       VALUES ($1, $2, 'memory_delete', $3::jsonb)`,
+      [mutationId, userId, JSON.stringify({ kind: "memory_delete", memoryId: "legacy-mid" })],
+    );
+    try {
+      await expect(assertChatSchemaReady(prisma)).rejects.toThrow(
+        "file mutation authority is not canonical",
+      );
+    } finally {
+      const client = await superPool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(
+          "SELECT set_config('idream.account_erasure_file_mutation_user', $1, true)",
+          [userId],
+        );
+        await client.query(
+          "DELETE FROM chat.chat_file_mutations WHERE id = $1",
+          [mutationId],
+        );
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
     }
   });
 });

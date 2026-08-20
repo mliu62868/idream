@@ -6,7 +6,6 @@ import {
   chatFsRootFingerprint,
   resolveChatFsRoot,
   characterVideoProductionRecipe,
-  looksLikeMockChatResponse,
 } from "@idream/shared";
 import {
   defaultBullmqPrefix,
@@ -27,7 +26,6 @@ import type {
   AdminTextProbeEvidence,
   AgeVerificationProbeEvidence,
   BlobStorageProbeEvidence,
-  ChatModelProbeEvidence,
   ChatServiceProbeEvidence,
   GenBlobAuthorityEvidence,
   GenerationPersistenceProbeEvidence,
@@ -723,74 +721,6 @@ function addChatServiceProbeCheck(
       problems.length === 0
         ? undefined
         : `Run \`bun run --filter @idream/main probe:chat-service -- --report .tmp/launch-chat-service-probe.json\` against the real chat service, then set ${PROBE_REPORTS[probeName].reportEnvKey} before check:launch.`,
-  });
-}
-
-function addChatModelProbeCheck(
-  checks: LaunchReadinessCheck[],
-  env: EnvLike,
-  probe: ChatModelProbeEvidence | null,
-  now: Date,
-) {
-  const problems: string[] = [];
-  const probeName: ProbeName = "chatModelProbe";
-  const configuredProvider =
-    env.CHAT_MODEL_PROVIDER ?? env.CHAT_PROVIDER ?? "mock";
-  const configuredBaseUrl = env.CHAT_MODEL_BASE_URL ?? env.PIPELINE_API_URL;
-  const configuredModel =
-    env.CHAT_MODEL_NAME ?? env.PIPELINE_CHAT_MODEL_DEFAULT;
-
-  addMissingProbeReportProblem(problems, env, probeName);
-  if (!probe) {
-    problems.push("no probe report was loaded");
-  } else if (probe.loadError) {
-    problems.push(probe.loadError);
-  } else {
-    if (probe.ok !== true) problems.push("probe did not complete successfully");
-    if (probe.provider !== configuredProvider) {
-      problems.push(
-        `probe provider is ${probe.provider ?? "unknown"}, not ${configuredProvider}`,
-      );
-    }
-    if (configuredProvider !== "mock") {
-      if (!sameUrl(probe.baseUrl, configuredBaseUrl)) {
-        problems.push(
-          "probe base URL does not match CHAT_MODEL_BASE_URL or PIPELINE_API_URL",
-        );
-      }
-      if (hasMinLength(configuredModel, 1) && probe.model !== configuredModel) {
-        problems.push(
-          "probe model does not match CHAT_MODEL_NAME or PIPELINE_CHAT_MODEL_DEFAULT",
-        );
-      }
-    }
-    if ((probe.chunks ?? 0) < 1) {
-      problems.push("probe produced no response chunks");
-    }
-    if ((probe.characters ?? 0) < 1) {
-      problems.push("probe produced no assistant text");
-    }
-    if (looksLikeMockChatResponse(probe.assistantPreview ?? "")) {
-      problems.push("probe assistant text is a mock/template response");
-    }
-    if (probe.done !== true) {
-      problems.push("probe stream did not finish");
-    }
-    addProbeFreshnessProblems(problems, env, probeName, probe.checkedAt, now);
-  }
-
-  addCheck(checks, {
-    id: "chat-model-live-probe",
-    area: "Chat",
-    status: problems.length === 0 ? "pass" : "fail",
-    message:
-      problems.length === 0
-        ? "Recent chat model probe authenticated and received a complete assistant response."
-        : `Chat model probe evidence is missing or invalid: ${problems.join("; ")}.`,
-    remediation:
-      problems.length === 0
-        ? undefined
-        : `Run \`bun run --filter @idream/main probe:chat -- --report .tmp/launch-chat-probe.json\` against the real chat model gateway, then set ${PROBE_REPORTS[probeName].reportEnvKey} before check:launch.`,
   });
 }
 
@@ -2601,7 +2531,6 @@ function requiredRevisionProbeNames(
     "imageGenerationPersistenceProbe",
     "blobStorageProbe",
     "chatServiceProbe",
-    "chatModelProbe",
     "adminTextProbe",
     "voiceModelProbe",
     "productConfigProbe",
@@ -2904,7 +2833,6 @@ export function assessLaunchReadiness(
   });
   addChatServiceChecks(checks, env);
   addChatServiceProbeCheck(checks, env, probes.chatServiceProbe, now);
-  addChatModelProbeCheck(checks, env, probes.chatModelProbe, now);
   addAdminTextProbeCheck(checks, env, probes.adminTextProbe, now);
   addChatModerationChecks(checks, env);
 

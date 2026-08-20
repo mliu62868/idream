@@ -92,7 +92,7 @@ export function requiredChatCanaryProfiles(source: Environment = process.env) {
   // must never silently select an unproven provider alias.
   // `free` is the canonical existing evidence lane; it labels the one runtime,
   // not a plan-specific model selection.
-  return [{ tier: "free", profile: resolveChatModelProfile(source) }];
+  return [{ tier: "free" as const, profile: resolveChatModelProfile(source) }];
 }
 
 function parseProvider(value: string): ChatModelProvider {

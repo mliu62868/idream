@@ -423,9 +423,9 @@ export async function assertChatSchemaReady(prisma: ChatPrismaClient): Promise<v
   }
 
   // INVARIANT: account-erasure v2 is acknowledged only after Chat has
-  // materialized its request-bound file-mutation receipt. A legacy two-arg
-  // redactor makes that receipt impossible to commit, so reject the runtime
-  // before it can accept or ACK any durable event.
+  // materialized its request-bound file-mutation receipt. The retired two-arg
+  // redactor must be absent: it cannot bind a receipt to the immutable ledger
+  // id and would reintroduce a second execution contract.
   const [catalogAuthority] = await prisma.$queryRaw<
     Array<{ fileMutationAuthorityReady: boolean }>
   >`
@@ -441,7 +441,7 @@ export async function assertChatSchemaReady(prisma: ChatPrismaClient): Promise<v
     )
     SELECT COALESCE(
       functions.redact_oid IS NOT NULL
-      AND functions.legacy_redact_oid IS NOT NULL
+      AND functions.legacy_redact_oid IS NULL
       AND functions.trigger_oid IS NOT NULL
       AND redact_proc.prolang = (
         SELECT language.oid
@@ -455,20 +455,7 @@ export async function assertChatSchemaReady(prisma: ChatPrismaClient): Promise<v
       AND encode(
         sha256(convert_to(redact_proc.prosrc, 'UTF8')),
         'hex'
-      ) = '7ae851f3380a7d567018dd541a58b80bbafea3a24f40640b894426ad8be7bcc4'
-      AND legacy_redact_proc.prolang = (
-        SELECT language.oid
-        FROM pg_language AS language
-        WHERE language.lanname = 'sql'
-      )
-      AND legacy_redact_proc.prorettype = 'jsonb'::regtype
-      AND legacy_redact_proc.provolatile = 'i'
-      AND legacy_redact_proc.proparallel = 's'
-      AND NOT legacy_redact_proc.prosecdef
-      AND encode(
-        sha256(convert_to(legacy_redact_proc.prosrc, 'UTF8')),
-        'hex'
-      ) = 'e39530608271e79c6e706b0564df5baab900412e27648330a5e47b70bca5ff42'
+      ) = 'f2ea2b2d711d36e94baeb0312cd719c658972f27ce5d0dd48ba74845e11c166f'
       AND trigger_proc.prolang = (
         SELECT language.oid
         FROM pg_language AS language
@@ -489,8 +476,6 @@ export async function assertChatSchemaReady(prisma: ChatPrismaClient): Promise<v
       ON trigger_proc.oid = functions.trigger_oid
     LEFT JOIN pg_proc AS redact_proc
       ON redact_proc.oid = functions.redact_oid
-    LEFT JOIN pg_proc AS legacy_redact_proc
-      ON legacy_redact_proc.oid = functions.legacy_redact_oid
     CROSS JOIN LATERAL (
       SELECT count(*) = 1
         AND bool_and(
@@ -525,6 +510,12 @@ export async function assertChatSchemaReady(prisma: ChatPrismaClient): Promise<v
       'kind', 'account_delete',
       'deletionRequestEventId', 'readiness-request',
       'requestBound', true
+    )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM chat.chat_file_mutations
+      WHERE kind IN ('memory_update', 'memory_delete')
+        AND status = 'pending'
     ) AS "fileMutationAuthorityReady"
   `;
   if (!semanticAuthority?.fileMutationAuthorityReady) {

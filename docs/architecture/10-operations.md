@@ -193,7 +193,6 @@ bun run launch:probe:web-surface -- --report .tmp/launch-web-surface-probe.json
 bun run launch:probe:product-config -- --report .tmp/launch-product-config-probe.json
 bun run launch:probe:catalog -- --report .tmp/public-catalog-probe.json
 bun run launch:probe:chat-service -- --report .tmp/launch-chat-service-probe.json
-bun run launch:probe:chat -- --report .tmp/launch-chat-probe.json
 bun run launch:probe:voice -- --report .tmp/launch-voice-probe.json
 bun run launch:probe:blob -- --report .tmp/launch-blob-probe.json
 bun run launch:probe:payment -- --report .tmp/launch-payment-probe.json
@@ -223,6 +222,10 @@ conversation smoke (session create, message send, SSE stream, reload, no-memory
 send, and blocked-input handling). If `CHAT_SERVICE_PROBE_CHARACTER_ID` is unset,
 the probe auto-selects a public approved adult character from the main DB; use
 `--character-id=...` when a fixed production probe character is required.
+The optional `bun run diagnose:chat-provider` command talks directly to the
+OpenAI-compatible endpoint. It is transport diagnostics only and never counts
+as Chat launch evidence because it bypasses DSH composition, igrep, tool/commit
+bridges, and the Chat terminal CAS.
 
 ADR-19 Phase 6 has one deployed execution topology: Chat always routes to the
 required `chat-agent` DSH sidecar, and normal memory is owned by the official
@@ -352,6 +355,29 @@ The item-level `/memories` API and list/edit/delete UI no longer exist because
 official igrep exposes no stable item seam. Product controls are deliberately
 limited to memory on/off and whole relationship reset; reset purges the
 relationship workspace and its historical cutover marker together.
+
+Before applying the Phase 6 boundary SQL, prove that no retired item intent is
+still waiting for execution:
+
+```sql
+SELECT user_id, kind, count(*)
+FROM chat.chat_file_mutations
+WHERE status = 'pending'
+  AND kind IN ('memory_update', 'memory_delete')
+GROUP BY user_id, kind
+ORDER BY user_id, kind;
+```
+
+Any row is a hard `LEGACY_ITEM_MEMORY_INTENT_PENDING` deployment blocker. Do
+not delete or mark the ledger row applied: an item id cannot be translated to
+the official igrep identity without risking resurrection of text the user
+asked to remove. Keep Chat paused for that user, use the authenticated
+user-scope companion purge to remove canonical/private workspace state, then
+rebuild each still-active relationship from current PostgreSQL messages through
+the normal fenced `relationship_rebuild` recovery path. Re-run the query and
+apply SQL only when it returns zero rows. The DDL intentionally fails closed if
+this proof was skipped.
+
 Sentry readiness requires four distinct, fresh reports from the package-bound
 `probe:sentry` entrypoints. The CLI intentionally rejects a relabeled `--service`;
 each package loads its own SDK/runtime and binds the captured event plus resolved
@@ -391,9 +417,6 @@ bun run --filter @idream/main probe:product-config -- \
 bun run --filter @idream/main probe:chat-service -- \
   --report .tmp/launch-chat-service-probe.json
 
-bun run --filter @idream/main probe:chat -- \
-  --report .tmp/launch-chat-probe.json
-
 bun run --filter @idream/main probe:voice -- \
   --report .tmp/launch-voice-probe.json
 
@@ -422,7 +445,6 @@ bun run check:launch:direct -- \
 `PRODUCT_CONFIG_PROBE_REPORT=.tmp/launch-product-config-probe.json`、
 `PUBLIC_CATALOG_PROBE_REPORT=.tmp/public-catalog-probe.json`、
 `CHAT_SERVICE_PROBE_REPORT=.tmp/launch-chat-service-probe.json`、
-`CHAT_MODEL_PROBE_REPORT=.tmp/launch-chat-probe.json`、
 `VOICE_MODEL_PROBE_REPORT=.tmp/launch-voice-probe.json`、
 `PAYMENT_PROVIDER_PROBE_REPORT=.tmp/launch-payment-probe.json`、
 `AGE_VERIFICATION_PROBE_REPORT=.tmp/launch-age-probe.json`、
@@ -465,8 +487,6 @@ probe 报告，证明当前 `BLOB_PROVIDER` 能对真实 bucket 完成 PUT、sig
 读回校验和 DELETE；否则对象存储 env 填了但 credentials、bucket policy 或 endpoint
 不可用时会失败。门禁还要求 `SAFETY_GATEWAY_PROBE_REPORT` 指向最近一次 safety gateway
 probe 报告，证明 `MODERATION_SERVICE_URL` 能鉴权、返回可解析 decision，并且良性文本不会被误拦。
-`CHAT_MODEL_PROBE_REPORT` 则证明 `CHAT_MODEL_BASE_URL`/`PIPELINE_API_URL` 指向的
-OpenAI-compatible chat gateway 能鉴权、返回 assistant 文本并正常结束流式响应。
 `PAYMENT_PROVIDER_PROBE_REPORT` 对 BTCPay 先使用 Greenfield
 `GET /api/v1/stores/{storeId}` 证明 `BTCPAY_API_KEY` 具备读取目标 store 的权限，
 再使用 `POST /api/v1/stores/{storeId}/invoices` 创建一张带
