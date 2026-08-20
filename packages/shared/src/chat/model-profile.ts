@@ -33,7 +33,6 @@ const DEFAULT_TIMEOUT_MS = 45_000;
 /** One resolver for production, policy, probes, readiness and diagnostics. */
 export function resolveChatModelProfile(
   source: Environment = process.env,
-  tier: string = "free",
 ): ChatModelProfile {
   const provider = parseProvider(
     source.CHAT_MODEL_PROVIDER ?? source.CHAT_PROVIDER ?? "mock",
@@ -42,11 +41,6 @@ export function resolveChatModelProfile(
     source.CHAT_MODEL_NAME ??
     source.PIPELINE_CHAT_MODEL_DEFAULT ??
     DEFAULT_MODEL;
-  const model = tier === "deluxe"
-    ? source.CHAT_MODEL_DELUXE ?? defaultModel
-    : tier === "premium"
-      ? source.CHAT_MODEL_PREMIUM ?? defaultModel
-      : source.CHAT_MODEL_FREE ?? defaultModel;
   const defaultTimeout = positiveInt(
     source.CHAT_MODEL_TIMEOUT_MS ?? source.PIPELINE_TIMEOUT_MS,
     DEFAULT_TIMEOUT_MS,
@@ -58,7 +52,7 @@ export function resolveChatModelProfile(
       source.CHAT_MODEL_BASE_URL ??
       source.PIPELINE_API_URL ??
       DEFAULT_BASE_URL,
-    model,
+    model: defaultModel,
     apiKey:
       source.CHAT_MODEL_API_KEY ??
       source.PIPELINE_API_TOKEN ??
@@ -92,16 +86,11 @@ export function resolveChatModelProfile(
   };
 }
 
-/** Exact distinct production surfaces that must each carry live Soul canary evidence. */
+/** The one configured DSH surface that must carry live Soul canary evidence. */
 export function requiredChatCanaryProfiles(source: Environment = process.env) {
-  const seen = new Set<string>();
-  return (["free", "premium", "deluxe"] as const).flatMap((tier) => {
-    const profile = resolveChatModelProfile(source, tier);
-    const key = `${profile.adapter}\u0000${profile.provider}\u0000${profile.baseUrl}\u0000${profile.model}\u0000${profile.supportsTools}`;
-    if (seen.has(key)) return [];
-    seen.add(key);
-    return [{ tier, profile }];
-  });
+  // INVARIANT: DSH has one configured provider/model surface. Plan entitlements
+  // must never silently select an unproven provider alias.
+  return [{ tier: "default", profile: resolveChatModelProfile(source) }];
 }
 
 function parseProvider(value: string): ChatModelProvider {

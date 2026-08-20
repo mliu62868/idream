@@ -168,17 +168,16 @@ Chat 建会话和发消息时必须检查：
 SELECT
   user_id,
   model_tier,
-  memory_multiplier,              -- 历史/预留字段，Phase 6 不映射为自研 memory cap
   unlimited_messages,
   voice_enabled,
   updated_at
-FROM billing.current_chat_entitlements;
+FROM billing.chat_entitlement_view;
 ```
 
 Chat 用它决定：
 
-- 模型 tier。
-- 上下文窗口；`memory_multiplier` 当前不改变 official igrep 行为。
+- 方案派生的上下文窗口与速率策略；`model_tier` 只是保留的方案分类字段，不选择模型。
+- DSH provider/model 是整个运行时的一份配置，不能由 Premium/Deluxe 别名替换。
 - 免费消息额度是否生效。
 - voice/group chat 等功能门。
 
@@ -683,7 +682,7 @@ igrep 是 DSH loop 内的官方工具，不存在 native 或自研 retrieval fal
 
 ### 16.3 Entitlement 与 official memory
 
-Phase 6 不把 `chat_memory_multiplier` 映射成 iDream 自研的 item 上限、top-K 或淘汰规则，因为官方 igrep 没有这个受支持的产品 seam。entitlement 仍可决定模型与 recent-message context；只有在官方 plugin 提供稳定、可测试的配置契约后，才能把记忆档位重新纳入产品承诺。
+Phase 6 不做 `chat_memory_multiplier`：官方 igrep 没有受支持、可测试的记忆档位 seam。entitlement 可决定 recent-message context，但 DSH provider/model 不按方案切换；只有官方 plugin 提供稳定、可测试的配置契约后，才能把记忆档位重新纳入产品承诺。
 
 ### 16.4 消息编辑/删除对记忆的影响
 

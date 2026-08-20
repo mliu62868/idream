@@ -656,7 +656,13 @@ describe("chat boundary (chat_service role)", () => {
 
   it("CANNOT write the read-only views", async () => {
     await mustReject("INSERT INTO core.chat_user_view (user_id) VALUES ('x')");
-    await mustReject("UPDATE billing.chat_entitlement_view SET model_tier = 'deluxe'");
+    await mustReject("UPDATE billing.chat_entitlement_view SET unlimited_messages = true");
+  });
+
+  it("does not expose the retired generic-memory multiplier", async () => {
+    await expect(
+      pool.query("SELECT memory_multiplier FROM billing.chat_entitlement_view LIMIT 1"),
+    ).rejects.toThrow(/memory_multiplier/i);
   });
 
   it("refuses readiness when the file-mutation trigger only runs for replica sessions", async () => {

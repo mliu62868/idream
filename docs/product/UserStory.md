@@ -136,7 +136,7 @@
 | US-UP-02 | 作为免费用户，我希望在遇到高级功能锁时进入升级页。 | P0 | custom prompt、生成额度不足、Premium 功能都有升级入口 |
 | US-UP-03 | 作为购买用户，我希望安全完成 checkout。 | P0 | 支持支付成功、失败、取消；状态回写 Subscription |
 | US-UP-04 | 作为 Premium 用户，我希望支付后立即获得权益。 | P0 | 权益实时生效；原任务可继续；账号页显示当前方案 |
-| US-UP-05 | 作为 Deluxe 用户，我希望获得更高生成/语音额度和模型/记忆能力。 | P0 | Entitlement 明确区分 Premium 与 Deluxe；服务端按 plan enforcement |
+| US-UP-05 | 作为 Deluxe 用户，我希望获得更高生成/语音额度和条件视频权益。 | P0 | Entitlement 明确区分 Premium 与 Deluxe；服务端按 plan enforcement；DSH Chat 不按方案切换模型或承诺记忆倍率 |
 | US-UP-06 | 作为付费用户，我希望管理续费或取消。 | P1 | 账号或 billing portal 可进入；取消后状态和权益时间正确 |
 
 ### 2.8 SEO 内容页

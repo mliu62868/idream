@@ -92,7 +92,6 @@ view ChatCharacterTagsView {
 view ChatEntitlementView {
   userId            String   @unique @map("user_id")
   modelTier         String   @map("model_tier")
-  memoryMultiplier  Int      @map("memory_multiplier")
   unlimitedMessages Boolean  @map("unlimited_messages")
   voiceEnabled      Boolean  @map("voice_enabled")
   updatedAt         DateTime @map("updated_at")

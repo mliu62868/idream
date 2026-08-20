@@ -76,11 +76,14 @@ FROM public.character_tags ct
 JOIN public.tags t ON t.id = ct."tagId"
 GROUP BY ct."characterId";
 
--- 5.3 entitlement view: pivot active entitlement rows → tier/flags -------------
--- Mirrors service.ts modelTier/memoryMultiplier so chat resolves policy the same
--- way main does. `plan` value is jsonb {slug, billingPeriod}; feature flags are
--- jsonb booleans keyed snake_case (see featureKey()).
-CREATE OR REPLACE VIEW billing.chat_entitlement_view AS
+-- 5.3 entitlement view: pivot active entitlement rows → plan policy flags ------
+-- `model_tier` is retained as the plan-policy classification for quota/context
+-- limits. DSH always uses the one configured provider/model; no plan may choose
+-- a model alias or an unsupported generic-memory multiplier.
+-- `plan` value is jsonb {slug, billingPeriod}; feature flags are jsonb booleans
+-- keyed snake_case (see featureKey()).
+DROP VIEW IF EXISTS billing.chat_entitlement_view;
+CREATE VIEW billing.chat_entitlement_view AS
 WITH ent AS (
   SELECT
     e."userId"                                              AS user_id,
@@ -108,7 +111,6 @@ tier AS (
 SELECT
   t.user_id                                                 AS user_id,
   t.model_tier                                              AS model_tier,
-  CASE WHEN t.model_tier = 'deluxe' THEN 3 ELSE 1 END       AS memory_multiplier,
   COALESCE((t.m->>'unlimited_messages')::boolean, false)    AS unlimited_messages,
   COALESCE((t.m->>'voice_enabled')::boolean, false)         AS voice_enabled,
   t.updated_at                                              AS updated_at,

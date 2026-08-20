@@ -132,7 +132,7 @@
 | Upgrade plan cards | `/upgrade` | SubscriptionPlan |
 | Monthly/Yearly | `/upgrade` | billingPeriod（Monthly、Yearly Save 75% + free coins） |
 | Premium plan | `/upgrade` | plan=premium（$19.99/mo 或 $99.90/yr；1,500 dreamcoins/月或 18,000/年；image + voice enabled，videoGeneration=false；卡面展示 dreamcoins + chat entitlements） |
-| Deluxe plan | `/upgrade` | plan=deluxe（$59.99/mo 或 $299.90/yr；6,000 dreamcoins/月或 72,000/年；Premium models、3x memory、voice 120 min/月；video entitlement 需 `video_gen` + provider ready 才能曝光） |
+| Deluxe plan | `/upgrade` | plan=deluxe（$59.99/mo 或 $299.90/yr；6,000 dreamcoins/月或 72,000/年；premium generation models、voice 120 min/月；video entitlement 需 `video_gen` + provider ready 才能曝光；DSH Chat 使用同一 provider/model，不承诺记忆倍率） |
 | Promo surfaces | home toast/banner | campaign |
 | Checkout | `/upgrade` | payment provider |
 | Premium entitlement | app-wide | plan flags |

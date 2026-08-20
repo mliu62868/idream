@@ -38,7 +38,7 @@ export function resolvePolicy(
 ): ChatPolicy {
   const tier = ent.modelTier;
   const isPaid = tier === "premium" || tier === "deluxe";
-  const modelProfile = resolveChatModelProfile(process.env, tier);
+  const modelProfile = resolveChatModelProfile(process.env);
 
   const memoryAllowed = opts.memoryEnabled;
   return {
@@ -57,14 +57,9 @@ export function resolvePolicy(
   };
 }
 
-/**
- * Map an entitlement tier to the REAL provider model (design P0-D). Centralized
- * here so the provider never needs to know product tiers. Deluxe/Premium get the
- * configured premium model; Free gets the base model. Single-model deploys leave
- * the CHAT_MODEL_* aliases unset, so every tier resolves to CHAT_MODEL_NAME.
- */
-export function modelForTier(tier: string): string {
-  return resolveChatModelProfile(process.env, tier).model;
+/** DSH has exactly one configured provider/model for every entitlement plan. */
+export function currentModel(): string {
+  return resolveChatModelProfile(process.env).model;
 }
 
 /** Normalize a Prisma entitlement view row (nullable for unknown users) → snapshot. */

@@ -84,7 +84,7 @@
 | --- | --- | --- | --- | --- |
 | **Free** | $0 | — | 注册赠币（一次性，见 §3） | 浏览、有限聊天、无付费生成（除非用赠币/充值） |
 | **Premium** | $19.99/mo | $99.90/yr（≈$8.33/mo） | 1,500 / 月（年付 18,000/年） | unlimited messages、image gen、voice（30 min/月）、`videoGeneration=false` |
-| **Deluxe** | $59.99/mo | $299.90/yr（≈$24.99/mo） | 6,000 / 月（年付 72,000/年） | Premium 全部 + **premium models** + voice（120 min/月） + video entitlement；仅在 `video_gen` 与 provider gate 同时 ready 时曝光 |
+| **Deluxe** | $59.99/mo | $299.90/yr（≈$24.99/mo） | 6,000 / 月（年付 72,000/年） | Premium 全部 + premium generation models + voice（120 min/月） + video entitlement；仅在 `video_gen` 与 provider gate 同时 ready 时曝光 |
 
 ### 2.1 年付促销
 
@@ -113,7 +113,7 @@
 > - 旧 `features` 里的 `image_quota / video_quota` 计数器字段**已废弃**（被单一货币模型取代）；图片/视频额度统一折算 dreamcoin。
 > - `voiceMinutes` **仍在使用、并按滚动 30 天窗口计量**（见 §1.1），不是废弃字段。
 > - 当前计划卡 UI 展示 `includedDreamcoins` 与聊天/模型权益，不展示「N images / N videos」等媒体等价数字。若未来恢复媒体等价文案，必须由 `includedDreamcoins ÷ 费率` 动态算出，不硬编码，并且 `video_gen=false` 时隐藏视频等价。
-> - 「custom prompt / negative prompt / premium chat models / chat memory multiplier」等高阶权益由 entitlement / Chat Service 层计算，**不落在 `Plan.features`** 内。
+> - 「custom prompt / negative prompt」等高阶控制由 entitlement / Chat Service 层计算，**不落在 `Plan.features`** 内。Deluxe 的 `premiumModels` 是生成模型权益；DSH Chat 不按方案切换 provider/model，也不承诺记忆倍率。
 
 ---
 
@@ -125,8 +125,8 @@
 | --- | --- | --- |
 | 注册赠币 | **一次性 250 币** | 足够试用约 50 张图，体验生成漏斗；`reason=signup_bonus`（代码 SSoT：`service.ts` signup 授予 250），不每月续 |
 | 文字消息 | **每日 30 条 / 角色不限** | 经 `chat_usage` 按自然日滚动计；超额提示升级 |
-| 聊天模型 | 基础模型 | 非 premium models |
-| 聊天记忆 | `chat_memory_multiplier = 1`（基线） | 见 Chat PRD |
+| 聊天模型 | 当前配置的 DSH model | 所有方案使用同一 provider/model |
+| 聊天记忆 | official igrep + Chat 边界/关系投影 | 不按方案承诺倍率 |
 | 图片/视频/语音 | 仅用赠币或充值 | 无每月免费额度；赠币用完即需订阅或充值 |
 | 发布角色 | 不可 | 仅可保存私有（My AI） |
 | 自定义 prompt / negative prompt / 高阶模型 | 不可 | premium 门 |
@@ -155,7 +155,7 @@
 
 ### 4.3 降级 / 到期
 
-- 订阅到期 → `recomputeEntitlements` 移除高阶权益（custom prompt / premium models / 3× memory 等）。
+- 订阅到期 → `recomputeEntitlements` 移除高阶权益（custom prompt / premium generation models / video entitlement 等）。
 - **已发放的 dreamcoin 余额保留**，可继续按费率消费（降级不清零余额）。
 - 高阶模型生成入口在降级后置灰（entitlement 门控），但用户仍可用基础模型 + 余额生成。
 
@@ -176,7 +176,7 @@
 | `08-billing-and-entitlements.md §6` | 配额→币的折算口径（本文 §0/§1 取代其「建议」表述） |
 | `BackendFeatureSpec.md §5.5` | 生成请求契约引用本文 §1.2 的费率与乘数公式 |
 | `ADMIN_CONSOLE_PLAN.md` | `PricingRule` 字段语义；改价走配置版本化 + 审计 |
-| `CHAT_SERVICE_PRD.md` | `chat_memory_multiplier` 数值与语音计费口径 |
+| `CHAT_SERVICE_PRD.md` | DSH 单模型与语音计费口径 |
 | `PRD.md §6.7` | 计划卡展示口径（当前只展示 dreamcoins + 权益；未来媒体等价必须动态算出且受 feature flag 控制） |
 
 ---

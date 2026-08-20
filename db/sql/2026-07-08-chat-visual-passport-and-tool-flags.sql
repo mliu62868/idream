@@ -37,9 +37,10 @@ LEFT JOIN public.character_visual_profiles vp
 LEFT JOIN public.character_serving cs ON cs."characterId" = c.id
 LEFT JOIN public.character_releases cr ON cr.id = cs."currentReleaseId";
 
--- Entitlement image_tool_enabled: mirrors the voice_enabled pivot in 02_core_views.sql
--- (:76), but defaults TRUE — the tool is currently available to every tier, gated
--- only by the per-character flag above (AND'd together in chat's policy.ts).
+-- Entitlement image_tool_enabled: mirrors the voice_enabled pivot in 02_core_views.sql,
+-- but defaults TRUE — the tool is currently available to every tier, gated only
+-- by the per-character flag above (AND'd together in chat's policy.ts). DSH uses
+-- one configured model; model_tier remains plan-policy classification only.
 CREATE OR REPLACE VIEW billing.chat_entitlement_view AS
 WITH ent AS (
   SELECT
@@ -68,7 +69,6 @@ tier AS (
 SELECT
   t.user_id                                                 AS user_id,
   t.model_tier                                               AS model_tier,
-  CASE WHEN t.model_tier = 'deluxe' THEN 3 ELSE 1 END       AS memory_multiplier,
   COALESCE((t.m->>'unlimited_messages')::boolean, false)    AS unlimited_messages,
   COALESCE((t.m->>'voice_enabled')::boolean, false)         AS voice_enabled,
   t.updated_at                                              AS updated_at,

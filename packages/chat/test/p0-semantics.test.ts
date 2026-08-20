@@ -14,7 +14,7 @@ import { ChatError } from "../src/errors.js";
 import type { GeneratePayload } from "../src/generate.js";
 import { processMemoryExtract } from "../src/memory.js";
 import { reconcile } from "../src/reconcile.js";
-import { modelForTier } from "../src/policy.js";
+import { currentModel } from "../src/policy.js";
 import { drainQueue, obliterate } from "../src/queue.js";
 import { CHAT_QUEUES, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { acceptAgeGate, ingestMainEvent } from "./fixtures.js";
@@ -235,7 +235,7 @@ describe("P0-D: policy model is written to the message", () => {
     expect(await generateOnce()).toBe(1);
     const assistant = await prisma.message.findUnique({ where: { id: sent.assistantMessageId } });
     expect(assistant?.status).toBe("sent");
-    expect(assistant?.model).toBe(modelForTier("free"));
+    expect(assistant?.model).toBe(currentModel());
   });
 });
 

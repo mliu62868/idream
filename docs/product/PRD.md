@@ -19,7 +19,7 @@ Ourdream.ai 是一个 18+ AI 角色扮演与 AI 伴侣平台，核心价值是�
 - 用户可以通过多步向导创建自定义 AI 伴侣，定义性别、风格、外观、发型、体型、名称、tags 和高级设定。
 - 用户可以与公开或私有角色进行长上下文角色扮演聊天。
 - 用户可以围绕角色或 Freeplay 生成图片；Video 进入当前发布范围时可生成视频，并管理 Images、Liked 以及条件启用的 Videos gallery。
-- Premium/Deluxe 按所选月/年周期一次性预付访问，通过无限消息、周期 dreamcoin、高级模型/记忆和高级控制提升体验；当前支付 provider 不自动续订，到期后由用户重新购买。**生成（图片/视频/语音）统一消耗 dreamcoin，不设独立配额**，口径见 `ECONOMY_AND_PRICING.md`。
+- Premium/Deluxe 按所选月/年周期一次性预付访问，通过无限消息、周期 dreamcoin、高级生成能力和高级控制提升体验；当前支付 provider 不自动续订，到期后由用户重新购买。**生成（图片/视频/语音）统一消耗 dreamcoin，不设独立配额**，口径见 `ECONOMY_AND_PRICING.md`。
 - 平台必须具备 18+ 年龄门槛、部分场景下的身份年龄验证、安全规则、隐私保护、内容举报、申诉和帮助支持。
 
 ## 3. 用户与角色
@@ -31,7 +31,7 @@ Ourdream.ai 是一个 18+ AI 角色扮演与 AI 伴侣平台，核心价值是�
 | 角色扮演用户 | 与角色进行持续对话 | 私密聊天、上下文记忆、聊天历史、场景延续、重新生成回复 |
 | 创作者 | 创建自定义角色或故事场景 | 多步草稿、外观、tags、高级详情、预览、发布或私有保存 |
 | 生成用户 | 为角色生成图片；Video 启用时生成视频 | 角色/Freeplay、模式切换、preset、背景、姿势、服装、自定义提示词、图库管理 |
-| Premium/Deluxe 用户 | 获得更高额度和高级能力 | 周期预付访问、dreamcoin、无限消息、高级生成、语音额度、模型/记忆增强、权益到期时间与重新购买 |
+| Premium/Deluxe 用户 | 获得更高额度和高级能力 | 周期预付访问、dreamcoin、无限消息、高级生成、语音额度、权益到期时间与重新购买 |
 | 社区用户 | 浏览创作者和公共内容 | Feed、Community、Chat、Remix、Like、Share、Report、创作者榜单 |
 | SEO 访问者 | 从长尾内容页进入平台 | 指南、类型页、比较页、视频/生成器落地页、CTA |
 | 安全/支持用户 | 了解规则或处理问题 | Safety Center、Help Desk、Terms、举报、账号问题 |
@@ -185,7 +185,7 @@ Ourdream.ai 是一个 18+ AI 角色扮演与 AI 伴侣平台，核心价值是�
 | UP-02 | 展示 Premium 和 Deluxe 两档价格、账单周期、权益、促销和 dreamcoin bonus。 | P0 |
 | UP-03 | 支持一次性周期访问 checkout、支付成功/失败、权益到期与到期后重新购买；只有 provider 真实支持自动续订时才发布取消/恢复续订能力。 | P0 |
 | UP-04 | 明确 Premium 权益：每月 dreamcoin、无限消息、音频消息、custom/negative prompt、发布角色；Video 启用时展示视频生成权益。生成额度均以 dreamcoin 折算示意，非独立配额（见 economy §0/§2）。 | P0 |
-| UP-05 | 明确 Deluxe 权益：Premium 全部 + Premium chat models + 3× chat memory + 更高每月 dreamcoin（同一套费率，见 economy §2）。 | P0 |
+| UP-05 | 明确 Deluxe 权益：Premium 全部 + 更高每月 dreamcoin、premium generation models、语音分钟与条件视频权益（同一套费率，见 economy §2）。 | P0 |
 | UP-06 | 使用 dreamcoin 前展示余额、消耗和不足时的充值/升级入口（见 economy §5）。 | P1 |
 | UP-07 | 用户可在账号页查看付费访问档位、权益结束时间并更换计划；当前 provider 明示无自动续订。 | P1 |
 

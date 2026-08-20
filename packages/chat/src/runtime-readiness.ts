@@ -1038,9 +1038,9 @@ export async function warmRuntime(input: {
     const pingRuntimeRedis = input.pingRedis ?? pingRedis;
     await pingRuntimeRedis();
 
-    const profiles = distinctProfiles(input.profiles ?? ["free", "premium", "deluxe"].map(
-      (tier) => resolveChatModelProfile(process.env, tier),
-    ));
+    const profiles = distinctProfiles(input.profiles ?? [
+      resolveChatModelProfile(process.env),
+    ]);
     const warmedProfiles: string[] = [];
     const companion = env.COMPANION_RUNTIME_CONFIG;
     const probeSidecar = input.probeSidecar ?? probeCompanionSidecar;
