@@ -173,7 +173,9 @@ describe("chat boundary (chat_service role)", () => {
             AND privilege_name = 'UPDATE' THEN true
           WHEN relname = 'chat_file_mutations'
             AND attname IN (
-              'status', 'payload', 'attempts', 'last_error', 'applied_at'
+              'status', 'payload', 'attempts', 'last_error', 'applied_at',
+              'projection_claim_token', 'projection_claimed_at',
+              'projection_authority_version', 'projection_rebuild_id'
             )
             AND privilege_name = 'UPDATE' THEN true
           WHEN relname = 'chat_outbox_events'

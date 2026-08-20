@@ -467,7 +467,7 @@ export async function assertChatSchemaReady(prisma: ChatPrismaClient): Promise<v
       AND encode(
         sha256(convert_to(trigger_proc.prosrc, 'UTF8')),
         'hex'
-      ) = 'cbd3c376165f562a06735453ec28ec3937083bebdad7ea206d10aa4321a9d914'
+      ) = '72d257f039ae14b818d640689cf6448f69abd6aeadd25ccfde0c402eddbeea7c'
       AND trigger_authority.ready,
       false
     ) AS "fileMutationAuthorityReady"
@@ -676,7 +676,9 @@ async function connectedDatabaseAuthority(
                 ))
               OR (relation_authority.relname = 'chat_file_mutations'
                 AND attribute.attname IN (
-                  'status', 'payload', 'attempts', 'last_error', 'applied_at'
+                  'status', 'payload', 'attempts', 'last_error', 'applied_at',
+                  'projection_claim_token', 'projection_claimed_at',
+                  'projection_authority_version', 'projection_rebuild_id'
                 ))
             )
           ) AS can_update

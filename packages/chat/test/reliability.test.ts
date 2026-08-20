@@ -37,6 +37,11 @@ import {
   characterModerationRestorationEventId,
 } from "@idream/shared/contracts";
 import { acceptAgeGate, ingestMainEvent } from "./fixtures.js";
+import { testCompanionWorkspaceFetch } from "./dsh-fixtures.js";
+import {
+  companionWorkspaceRebuildSchema,
+  decodeCompanionWorkspaceRebuildFrame,
+} from "@idream/shared/chat/companion-runtime";
 
 const prisma = createChatPrisma();
 const projectorPrisma = createChatProjectorPrisma();
@@ -55,6 +60,50 @@ const ORIGINAL_BULLMQ_PREFIX = process.env.BULLMQ_PREFIX;
 function restoreEnv(name: string, value: string | undefined): void {
   if (value === undefined) delete process.env[name];
   else process.env[name] = value;
+}
+
+function decodeRebuildBody(text: string) {
+  const frames = text.trim().split("\n").map(decodeCompanionWorkspaceRebuildFrame);
+  const start = frames[0];
+  if (start?.type !== "start") throw new Error("missing rebuild start frame");
+  const messages: Array<{
+    id: string;
+    sessionId: string;
+    role: "user" | "assistant";
+    content: string;
+    createdAt: string;
+  }> = [];
+  let active: Omit<(typeof messages)[number], "content"> | undefined;
+  let content = "";
+  for (const frame of frames.slice(1)) {
+    if (frame.type === "message_start") {
+      active = frame.message;
+      content = "";
+    } else if (frame.type === "content_chunk") {
+      content += frame.content;
+    } else if (frame.type === "message_complete" && active) {
+      messages.push({ ...active, content });
+      active = undefined;
+    }
+  }
+  return companionWorkspaceRebuildSchema.parse({
+    scope: start.scope,
+    userId: start.userId,
+    characterId: start.characterId,
+    messages,
+    fence: start.fence,
+  });
+}
+
+async function withCompanionWorkspaceStub<T>(
+  run: () => Promise<T>,
+): Promise<T> {
+  vi.stubGlobal("fetch", testCompanionWorkspaceFetch());
+  try {
+    return await run();
+  } finally {
+    vi.unstubAllGlobals();
+  }
 }
 
 function accountDeletionV2Envelope(userId: string, sourceEventId: string) {
@@ -540,7 +589,7 @@ describe("reconcile (P0-4 convergence)", () => {
     await prisma.$executeRawUnsafe(
       `UPDATE chat.messages SET updated_at = timezone('utc', now()) - interval '10 minutes' WHERE id = 'rel_m_stuck'`,
     );
-    const result = await reconcile(prisma);
+    const result = await withCompanionWorkspaceStub(() => reconcile(prisma));
     expect(result.failedStuck).toBeGreaterThanOrEqual(1);
     expect((await prisma.message.findUnique({ where: { id: "rel_m_stuck" } }))?.status).toBe("failed");
   });
@@ -616,12 +665,23 @@ describe("reconcile (P0-4 convergence)", () => {
     const sidecar = createServer(async (request, response) => {
       const chunks: Buffer[] = [];
       for await (const chunk of request) chunks.push(Buffer.from(chunk));
-      received = {
-        authorization: request.headers.authorization,
-        body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
-      };
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end('{"ok":true,"rebuilt":{"sessions":1,"messages":2}}');
+      const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+      if (pathname === "/v1/workspaces/rebuild/prepare") {
+        received = {
+          authorization: request.headers.authorization,
+          body: decodeRebuildBody(Buffer.concat(chunks).toString("utf8")),
+        };
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end('{"ok":true,"rebuilt":{"rebuildId":"77777777-7777-4777-8777-777777777777","sessions":1,"messages":2}}');
+        return;
+      }
+      if (pathname === "/v1/workspaces/rebuild/promote") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end('{"ok":true,"rebuilt":{"sessions":1,"messages":2}}');
+        return;
+      }
+      response.writeHead(404, { "content-type": "application/json" });
+      response.end('{"ok":false,"error":"unexpected test route"}');
     });
     sidecar.listen(0, "127.0.0.1");
     await once(sidecar, "listening");
@@ -660,6 +720,11 @@ describe("reconcile (P0-4 convergence)", () => {
           expect.objectContaining({ id: userMessageId, role: "user" }),
           expect.objectContaining({ id: assistantMessageId, role: "assistant" }),
         ],
+        fence: expect.objectContaining({
+          mutationId: expect.any(String),
+          claimToken: expect.any(String),
+          authorityVersion: expect.any(String),
+        }),
       },
     });
     expect(await prisma.chatFileMutation.findFirst({
@@ -832,8 +897,12 @@ describe("reconcile (P0-4 convergence)", () => {
     });
     await prisma.message.createMany({
       data: Array.from({ length: 201 }, (_, index) => {
+        // This fixture proves the global LIMIT ordering. Other integration
+        // files can leave legitimate sent turns in the shared test database, so
+        // the Scene-backfill population must dominate the non-lagging
+        // `updated_at DESC` tie-breaker without changing the lagging-first rule.
         const createdAt = new Date(
-          Date.UTC(2026, 6, 18, 0, 0, index),
+          Date.UTC(2099, 0, 1, 0, 0, index),
         );
         const userMessageId =
           `rel_memory_starvation_extracted_source_${index}`;
@@ -998,10 +1067,12 @@ describe("reconcile (P0-4 convergence)", () => {
         select: { status: true, attempts: true },
       }),
     ).toMatchObject({ status: "pending", attempts: 1 });
-    await deleteAccount({
-      userId: poisonUser,
-      deletionRequestEventId: `reliability-poison-delete-${poisonUser}`,
-    }, prisma);
+    await withCompanionWorkspaceStub(() =>
+      deleteAccount({
+        userId: poisonUser,
+        deletionRequestEventId: `reliability-poison-delete-${poisonUser}`,
+      }, prisma),
+    );
   });
 });
 
@@ -1029,11 +1100,11 @@ describe("privacy deletion (P0-5, PG + files)", () => {
       legacyClient.release();
     }
 
-    await expect(
+    await expect(withCompanionWorkspaceStub(() =>
       projectorPrisma.$transaction((tx) =>
         applyPendingChatFileMutationsTx(tx, userId),
       ),
-    ).resolves.toBe(1);
+    )).resolves.toBe(1);
     await expect(
       prisma.chatOutboxEvent.findFirst({
         where: {
@@ -1073,11 +1144,13 @@ describe("privacy deletion (P0-5, PG + files)", () => {
       data: { status: "consumed", consumedAt: new Date() },
     });
     const deliver = vi.fn(acknowledgeRequestBoundCompletion);
-    await expect(consumeAccountDeletionRequestV2(
-      ack.receiptId,
-      prisma,
-      projectorPrisma,
-      deliver,
+    await expect(withCompanionWorkspaceStub(() =>
+      consumeAccountDeletionRequestV2(
+        ack.receiptId,
+        prisma,
+        projectorPrisma,
+        deliver,
+      ),
     )).resolves.toEqual({ applied: true });
 
     await expect(prisma.chatSession.count({ where: { userId } })).resolves.toBe(0);
@@ -1126,11 +1199,13 @@ describe("privacy deletion (P0-5, PG + files)", () => {
       payload: expect.objectContaining({ requestBound: true }),
     });
 
-    await expect(consumeAccountDeletionRequestV2(
-      ack.receiptId,
-      prisma,
-      projectorPrisma,
-      acknowledgeRequestBoundCompletion,
+    await expect(withCompanionWorkspaceStub(() =>
+      consumeAccountDeletionRequestV2(
+        ack.receiptId,
+        prisma,
+        projectorPrisma,
+        acknowledgeRequestBoundCompletion,
+      ),
     )).resolves.toEqual({ applied: true });
     await expect(prisma.chatFileMutation.count({
       where: { userId, status: "pending" },
@@ -1158,10 +1233,12 @@ describe("privacy deletion (P0-5, PG + files)", () => {
     );
     if (!ack.receiptId) throw new Error("missing v2 deletion receipt");
 
-    await deleteAccount({
-      userId,
-      deletionRequestEventId: sourceEventId,
-    }, prisma, projectorPrisma);
+    await withCompanionWorkspaceStub(() =>
+      deleteAccount({
+        userId,
+        deletionRequestEventId: sourceEventId,
+      }, prisma, projectorPrisma),
+    );
     const legacyCompletion = await prisma.chatOutboxEvent.findFirstOrThrow({
       where: {
         eventType: CHAT_TO_MAIN_EVENTS.accountErasureCompleted,
@@ -1178,11 +1255,13 @@ describe("privacy deletion (P0-5, PG + files)", () => {
     });
 
     const deliver = vi.fn(acknowledgeRequestBoundCompletion);
-    await expect(consumeAccountDeletionRequestV2(
-      ack.receiptId,
-      prisma,
-      projectorPrisma,
-      deliver,
+    await expect(withCompanionWorkspaceStub(() =>
+      consumeAccountDeletionRequestV2(
+        ack.receiptId,
+        prisma,
+        projectorPrisma,
+        deliver,
+      ),
     )).resolves.toEqual({ applied: true });
     expect(deliver).toHaveBeenCalledTimes(1);
     await expect(prisma.chatOutboxEvent.findFirst({
@@ -1260,7 +1339,9 @@ describe("privacy deletion (P0-5, PG + files)", () => {
         },
       ],
     });
-    await deleteSession({ userId: USER, sessionId: s.id }, prisma);
+    await withCompanionWorkspaceStub(() =>
+      deleteSession({ userId: USER, sessionId: s.id }, prisma),
+    );
 
     expect(await prisma.message.findUnique({ where: { id: "rel_del_m" } })).toBeNull();
     expect(await prisma.messageVersion.count({
@@ -1375,13 +1456,15 @@ describe("privacy deletion (P0-5, PG + files)", () => {
       ],
     });
 
-    await deleteMessage({
-      userId: USER,
-      messageId:
-        deletedRole === "user"
-          ? `rel_delete_user_${suffix}`
-          : `rel_delete_assistant_${suffix}`,
-    }, prisma);
+    await withCompanionWorkspaceStub(() =>
+      deleteMessage({
+        userId: USER,
+        messageId:
+          deletedRole === "user"
+            ? `rel_delete_user_${suffix}`
+            : `rel_delete_assistant_${suffix}`,
+      }, prisma),
+    );
 
     const exchangeMessageIds = [
       `rel_delete_user_${suffix}`,
@@ -1457,10 +1540,12 @@ describe("privacy deletion (P0-5, PG + files)", () => {
       await writeFile(path.join(fsRoot, "mem", u, "global", "boundaries.md"), "b");
     });
 
-    await deleteAccount({
-      userId: u,
-      deletionRequestEventId: `reliability-delete-${u}`,
-    }, prisma);
+    await withCompanionWorkspaceStub(() =>
+      deleteAccount({
+        userId: u,
+        deletionRequestEventId: `reliability-delete-${u}`,
+      }, prisma),
+    );
 
     expect(await prisma.chatSession.findMany({ where: { userId: u } })).toEqual([]);
     expect(await listPrefix(["mem", u])).toEqual([]);

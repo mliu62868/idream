@@ -3,7 +3,7 @@
 // session trace is written, and chat→main outbox events are recorded. Also proves
 // regenerate is NOT swallowed by dedupe (carries :attempt) and refresh/replay via
 // the persisted message survives a "dropped" stream.
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -16,7 +16,10 @@ import { drainQueue, obliterate } from "../src/queue.js";
 import { listStreamEvents, streamKey } from "../src/stream.js";
 import { CHAT_QUEUES } from "@idream/shared/contracts";
 import { acceptAgeGate } from "./fixtures.js";
-import { processGenerateWithTestDsh } from "./dsh-fixtures.js";
+import {
+  processGenerateWithTestDsh,
+  testCompanionWorkspaceFetch,
+} from "./dsh-fixtures.js";
 
 const prisma = createChatPrisma();
 const superPool = new Pool({ connectionString: process.env.CHAT_TEST_SUPER_URL });
@@ -29,6 +32,7 @@ const IDEMPOTENCY_USER = "u_hot_idempotency";
 const CHAR = "c_hot";
 
 beforeAll(async () => {
+  vi.stubGlobal("fetch", testCompanionWorkspaceFetch());
   fsRoot = await mkdtemp(path.join(tmpdir(), "chat-hp-"));
   process.env.CHAT_FS_ROOT = fsRoot;
   await obliterate(CHAT_QUEUES.generate).catch(() => {});
@@ -64,6 +68,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  vi.unstubAllGlobals();
   await prisma.$disconnect();
   await superPool.end();
   await rm(fsRoot, { recursive: true, force: true });

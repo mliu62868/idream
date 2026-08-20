@@ -208,6 +208,17 @@ beforeAll(async () => {
   } as const;
   await chatPrisma.message.create({
     data: {
+      id: `${P}m-dedicated-probe-user`,
+      sessionId: `${P}s-dedicated-probe`,
+      role: "user",
+      content: SECRET,
+      status: "sent",
+      safetyStatus: "passed",
+      createdAt: new Date(EVIDENCE_BASE.getTime() + 3_500),
+    },
+  });
+  await chatPrisma.message.create({
+    data: {
       id: `${P}m-dedicated-probe`,
       sessionId: `${P}s-dedicated-probe`,
       role: "assistant",
@@ -215,6 +226,7 @@ beforeAll(async () => {
       status: "sent",
       safetyStatus: "passed",
       attempt: 1,
+      replyToMessageId: `${P}m-dedicated-probe-user`,
       memoryAuthority: "enabled",
       memoryExtractedAttempt: 1,
       runtimeTrace: { primaryTelemetry: probeTelemetry },

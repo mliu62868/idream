@@ -63,6 +63,44 @@ export function testCompanionSidecarProbe() {
   };
 }
 
+export function testCompanionWorkspaceFetch(): typeof fetch {
+  return async (input, init) => {
+    const url = typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : input.url;
+    if (url.endsWith("/v1/workspaces/rebuild/prepare")) {
+      // Consume the real NDJSON stream: transport failures must remain visible
+      // in DB integration tests instead of becoming detached fixture promises.
+      await new Response(init?.body).text();
+      return Response.json({
+        ok: true,
+        rebuilt: {
+          rebuildId: "77777777-7777-4777-8777-777777777777",
+          sessions: 0,
+          messages: 0,
+        },
+      });
+    }
+    if (url.endsWith("/v1/workspaces/rebuild/promote")) {
+      return Response.json({ ok: true, rebuilt: { sessions: 0, messages: 0 } });
+    }
+    if (url.endsWith("/v1/workspaces/rebuild/discard")) {
+      return Response.json({ ok: true });
+    }
+    if (url.endsWith("/v1/workspaces/purge")) {
+      return Response.json({ ok: true, purged: 0 });
+    }
+    if (url.endsWith("/v1/workspaces/memory-cutover-proof")) {
+      return Response.json({ ok: true, proof: null });
+    }
+    return Response.json({ ok: false, error: "unexpected companion workspace test URL" }, {
+      status: 404,
+    });
+  };
+}
+
 export async function withTestDshToolCalls<T>(
   calls: readonly Omit<CompanionToolCall, "attemptId">[],
   run: () => Promise<T>,

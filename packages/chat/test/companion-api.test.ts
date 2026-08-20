@@ -1,6 +1,6 @@
 // AI-companion management API acceptance (PRD §8.2, §12): relationship reset,
 // message deletion and SSE aliases over the router against PG + the file layer.
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -12,7 +12,10 @@ import { processMemoryExtract } from "../src/memory.js";
 import { drainQueue } from "../src/queue.js";
 import { CHAT_QUEUES } from "@idream/shared/contracts";
 import { acceptAgeGate } from "./fixtures.js";
-import { processGenerateWithTestDsh } from "./dsh-fixtures.js";
+import {
+  processGenerateWithTestDsh,
+  testCompanionWorkspaceFetch,
+} from "./dsh-fixtures.js";
 
 const prisma = createChatPrisma();
 const superPool = new Pool({ connectionString: process.env.CHAT_TEST_SUPER_URL });
@@ -49,6 +52,7 @@ async function seedTurn(content: string): Promise<{ sessionId: string; userMessa
 }
 
 beforeAll(async () => {
+  vi.stubGlobal("fetch", testCompanionWorkspaceFetch());
   fsRoot = await mkdtemp(path.join(tmpdir(), "chat-capi-"));
   process.env.CHAT_FS_ROOT = fsRoot;
   await superPool.query(
@@ -64,6 +68,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  vi.unstubAllGlobals();
   await prisma.$disconnect();
   await superPool.end();
   await rm(fsRoot, { recursive: true, force: true });
