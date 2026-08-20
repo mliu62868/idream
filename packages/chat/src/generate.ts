@@ -496,6 +496,9 @@ export async function processGenerate(
       ...(priorRuntimeTrace?.companionTool
         ? { companionTool: priorRuntimeTrace.companionTool }
         : {}),
+      ...(priorRuntimeTrace?.companionToolEffect
+        ? { companionToolEffect: priorRuntimeTrace.companionToolEffect }
+        : {}),
       dsh: {
         version: COMPANION_DSH_VERSION,
         commit: COMPANION_DSH_COMMIT,
@@ -863,7 +866,9 @@ async function processDshCompanionTurn(
   let usage: { promptTokens: number; completionTokens: number } | null = null;
   let reasoningTokens = 0;
   let imageToolCall: ImageAgentToolCall | null = null;
+  let imageToolRequest: ImageRequestFromCall | null = null;
   let toolIdentity: { attemptId: string; callId: string } | null = null;
+  let toolReservationUncertain = false;
   const toolResults = new Map<
     string,
     { fingerprint: string; result: CompanionToolResult }
@@ -894,10 +899,11 @@ async function processDshCompanionTurn(
   const executeTool = async (
     call: CompanionToolCall,
   ): Promise<CompanionToolResult> => {
+    const parsedCall = findAgentTool(call.name)?.parseCall(call.arguments) ?? null;
     const fingerprint = stableJson({
       attemptId: call.attemptId,
       name: call.name,
-      arguments: call.arguments,
+      arguments: parsedCall?.arguments ?? call.arguments,
     });
     const previous = toolResults.get(call.callId);
     if (previous) {
@@ -910,6 +916,19 @@ async function processDshCompanionTurn(
         error: {
           code: "tool_identity_conflict",
           message: "the same callId was replayed with different arguments",
+          retryable: false,
+        },
+      };
+    }
+    if (toolReservationUncertain) {
+      return {
+        attemptId: call.attemptId,
+        callId: call.callId,
+        name: call.name,
+        outcome: "unknown",
+        error: {
+          code: "tool_reservation_authority_lost",
+          message: "Chat cannot prove whether the prior tool reservation committed",
           retryable: false,
         },
       };
@@ -929,10 +948,24 @@ async function processDshCompanionTurn(
           },
         };
       }
+      const replayed = findAgentTool(reserved.name)?.parseCall(reserved.arguments);
+      if (!replayed) {
+        throw new Error("durable companion tool reservation failed Chat schema validation");
+      }
+      const effectPin = parseImageToolEffectPin(
+        runtimeTraceFacts.companionToolEffect,
+        reserved,
+      );
+      const replayedRequest = effectPin
+        ? imageRequestFromEffectPin(replayed, effectPin)
+        : null;
+      if (!replayedRequest) {
+        throw new Error("durable companion tool effect pin failed Chat schema validation");
+      }
       const reservedFingerprint = stableJson({
         attemptId: reserved.attemptId,
         name: reserved.name,
-        arguments: reserved.arguments,
+        arguments: replayed.arguments,
       });
       if (reservedFingerprint !== fingerprint) {
         return {
@@ -951,11 +984,8 @@ async function processDshCompanionTurn(
           },
         };
       }
-      const replayed = findAgentTool(reserved.name)?.parseCall(reserved.arguments);
-      if (!replayed) {
-        throw new Error("durable companion tool reservation failed Chat schema validation");
-      }
       imageToolCall = replayed;
+      imageToolRequest = replayedRequest;
       toolIdentity = { attemptId: reserved.attemptId, callId: reserved.callId };
       const result: CompanionToolResult = {
         attemptId: call.attemptId,
@@ -968,10 +998,13 @@ async function processDshCompanionTurn(
         },
       };
       toolResults.set(call.callId, { fingerprint, result });
-      toolResults.set(reserved.callId, { fingerprint: reservedFingerprint, result });
+      toolResults.set(reserved.callId, {
+        fingerprint: reservedFingerprint,
+        result: { ...result, callId: reserved.callId },
+      });
       return result;
     }
-    const parsed = findAgentTool(call.name)?.parseCall(call.arguments);
+    const parsed = parsedCall;
     let result: CompanionToolResult;
     if (!parsed) {
       result = {
@@ -998,15 +1031,17 @@ async function processDshCompanionTurn(
         },
       };
     } else {
+      const resolvedRequest = await buildImageRequestFromCall(parsed, prisma, session.id);
       const reservation = {
         attemptId: call.attemptId,
         callId: call.callId,
-        name: call.name,
-        arguments: call.arguments,
+        name: parsed.name,
+        arguments: parsed.arguments,
       };
       const trace = JSON.parse(JSON.stringify({
         ...runtimeTraceFacts,
         companionTool: reservation,
+        companionToolEffect: imageToolEffectPin(reservation, resolvedRequest),
       })) as Prisma.InputJsonValue;
       const reserved = await persistAttemptRuntimeTraceCas({
         prisma,
@@ -1016,6 +1051,7 @@ async function processDshCompanionTurn(
         stage: "tool_reservation",
       });
       if (reserved !== "updated") {
+        toolReservationUncertain = true;
         result = {
           attemptId: call.attemptId,
           callId: call.callId,
@@ -1029,10 +1065,15 @@ async function processDshCompanionTurn(
         };
       } else {
         imageToolCall = parsed;
+        imageToolRequest = resolvedRequest;
         toolIdentity = { attemptId: call.attemptId, callId: call.callId };
         // SPEC: execution here is a durable reservation. The only external
         // image effect is created later inside Chat's terminal CAS transaction.
         runtimeTraceFacts.companionTool = reservation;
+        runtimeTraceFacts.companionToolEffect = imageToolEffectPin(
+          reservation,
+          resolvedRequest,
+        );
         result = {
           attemptId: call.attemptId,
           callId: call.callId,
@@ -1180,6 +1221,7 @@ async function processDshCompanionTurn(
       blocked,
       context,
       imageToolCall,
+      imageToolRequest,
       toolCallTrigger: "agent_fc",
       toolCallIdentity: toolIdentity,
       traceEntry,
@@ -1360,6 +1402,7 @@ async function processDshCompanionTurn(
       blocked,
       context,
       imageToolCall,
+      imageToolRequest,
       toolCallTrigger: "agent_fc",
       toolCallIdentity: toolIdentity,
       traceEntry: null,
@@ -1612,6 +1655,7 @@ interface FinalizeInput {
   blocked: boolean;
   context: BuiltContext;
   imageToolCall: ImageAgentToolCall | null;
+  imageToolRequest?: ImageRequestFromCall | null;
   toolCallTrigger: "agent_fc" | "agent_tool_call";
   toolCallIdentity?: { attemptId: string; callId: string } | null;
   traceEntry: Record<string, unknown> | null;
@@ -1623,7 +1667,7 @@ interface FinalizeInput {
 async function finalize(
   input: FinalizeInput,
 ): Promise<"finalized" | "stale" | "skipped"> {
-  const { prisma, payload, session, content, model, usage, moderation, blocked, context, imageToolCall, toolCallTrigger, toolCallIdentity, traceEntry, projectorPrisma, runtimeTrace } = input;
+  const { prisma, payload, session, content, model, usage, moderation, blocked, context, imageToolCall, imageToolRequest = null, toolCallTrigger, toolCallIdentity, traceEntry, projectorPrisma, runtimeTrace } = input;
 
   // Account/session/message privacy operations use the same lock. Re-read all
   // authority after acquiring it so a deleted user turn or session cannot be
@@ -1839,7 +1883,23 @@ async function finalize(
       });
 
       if (imageToolCall) {
-        const built = await buildImageRequestFromCall(imageToolCall, tx, session.id);
+        if (!imageToolRequest) {
+          throw new Error("image tool terminal is missing its durable effect pin");
+        }
+        const built = imageToolRequest;
+        if (built.controls.sourceImageAssetId) {
+          const pinnedSource = await tx.messageAttachment.findFirst({
+            where: {
+              sessionId: session.id,
+              kind: "generated_image",
+              status: "completed",
+              mediaAssetId: built.controls.sourceImageAssetId,
+            },
+          });
+          if (pinnedSource?.mediaAssetId !== built.controls.sourceImageAssetId) {
+            return "stale";
+          }
+        }
         const attachmentId = createId("att");
         await tx.messageAttachment.create({
           data: {
@@ -1951,6 +2011,83 @@ interface ImageRequestFromCall {
   toolName: typeof GENERATE_IMAGE_ASYNC_TOOL | typeof EDIT_LAST_IMAGE_TOOL;
 }
 
+interface ImageToolEffectPin {
+  attemptId: string;
+  callId: string;
+  toolName: typeof GENERATE_IMAGE_ASYNC_TOOL | typeof EDIT_LAST_IMAGE_TOOL;
+  sourceImageAssetId: string | null;
+}
+
+function imageToolEffectPin(
+  reservation: Pick<CompanionToolCall, "attemptId" | "callId">,
+  request: ImageRequestFromCall,
+): ImageToolEffectPin {
+  return {
+    attemptId: reservation.attemptId,
+    callId: reservation.callId,
+    toolName: request.toolName,
+    sourceImageAssetId: request.controls.sourceImageAssetId ?? null,
+  };
+}
+
+function parseImageToolEffectPin(
+  value: unknown,
+  reservation: Pick<CompanionToolCall, "attemptId" | "callId">,
+): ImageToolEffectPin | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const pin = value as Record<string, unknown>;
+  if (
+    pin.attemptId !== reservation.attemptId ||
+    pin.callId !== reservation.callId ||
+    (pin.toolName !== GENERATE_IMAGE_ASYNC_TOOL && pin.toolName !== EDIT_LAST_IMAGE_TOOL) ||
+    (pin.sourceImageAssetId !== null && typeof pin.sourceImageAssetId !== "string")
+  ) {
+    return null;
+  }
+  return pin as unknown as ImageToolEffectPin;
+}
+
+function imageRequestFromEffectPin(
+  call: ImageAgentToolCall,
+  pin: ImageToolEffectPin,
+): ImageRequestFromCall | null {
+  if (call.name === GENERATE_IMAGE_ASYNC_TOOL) {
+    if (pin.toolName !== GENERATE_IMAGE_ASYNC_TOOL || pin.sourceImageAssetId !== null) return null;
+    return {
+      promptHint: call.arguments.prompt,
+      assistantCaption: call.arguments.caption ?? null,
+      controls: {
+        orientation: call.arguments.orientation,
+        outputCount: call.arguments.outputCount,
+      },
+      toolName: GENERATE_IMAGE_ASYNC_TOOL,
+    };
+  }
+  if (pin.toolName === GENERATE_IMAGE_ASYNC_TOOL && pin.sourceImageAssetId === null) {
+    return {
+      promptHint: call.arguments.instruction,
+      assistantCaption: call.arguments.caption ?? null,
+      controls: { orientation: "4:5", outputCount: 1 },
+      toolName: GENERATE_IMAGE_ASYNC_TOOL,
+    };
+  }
+  if (pin.toolName !== EDIT_LAST_IMAGE_TOOL || !pin.sourceImageAssetId) return null;
+  return {
+    promptHint: call.arguments.instruction,
+    assistantCaption: call.arguments.caption ?? null,
+    controls: {
+      orientation: "4:5",
+      outputCount: 1,
+      sourceImageAssetId: pin.sourceImageAssetId,
+    },
+    toolName: EDIT_LAST_IMAGE_TOOL,
+  };
+}
+
+type MessageAttachmentReader =
+  | Pick<Prisma.TransactionClient, "messageAttachment">
+  | Pick<ChatPrismaClient, "messageAttachment">;
+
 // Shapes the attachment/outbox payload fields per DSH tool call. The edit_last_image arm
 // looks up the session's most recent completed photo (behavior contract point 1) and,
 // when found, carries its mediaAssetId as the img2img source (point 2). No source photo
@@ -1958,7 +2095,7 @@ interface ImageRequestFromCall {
 // fresh image beats failing the turn.
 async function buildImageRequestFromCall(
   call: ImageAgentToolCall,
-  tx: Prisma.TransactionClient,
+  tx: MessageAttachmentReader,
   sessionId: string,
 ): Promise<ImageRequestFromCall> {
   switch (call.name) {

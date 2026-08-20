@@ -85,7 +85,9 @@ function finalizedMessageUpdate(
 // buildImageRequestFromPlan queries tx.messageAttachment.findFirst); undefined
 // exercises the no-source-photo fallback (behavior contract point 3).
 function fakePrisma(
-  completedSourceAttachment?: { mediaAssetId: string },
+  completedSourceAttachment?:
+    | { mediaAssetId: string }
+    | Array<{ mediaAssetId: string }>,
   typedSourceTurn?: {
     engagementSessionId: string;
     characterContentVersionId: string;
@@ -112,6 +114,20 @@ function fakePrisma(
   let currentAssistantStatus: string = assistantState.status ?? "generating";
   const currentAssistantAttempt = assistantState.attempt ?? 1;
   let currentAssistantTrace: Record<string, unknown> | null = assistantRuntimeTrace ?? null;
+  const findCompletedSource = async (
+    call?: { where?: { mediaAssetId?: string | { not: null } } },
+  ) => {
+    const sources = Array.isArray(completedSourceAttachment)
+      ? completedSourceAttachment
+      : completedSourceAttachment
+        ? [completedSourceAttachment]
+        : [];
+    const requested = call?.where?.mediaAssetId;
+    if (typeof requested === "string") {
+      return sources.find((source) => source.mediaAssetId === requested) ?? null;
+    }
+    return sources.at(-1) ?? null;
+  };
   const character = {
     characterId: "char_1",
     creatorId: "creator_1",
@@ -146,7 +162,7 @@ function fakePrisma(
         attachmentCreates.push(call);
         return {};
       },
-      findFirst: async () => completedSourceAttachment ?? null,
+      findFirst: findCompletedSource,
     },
     message: {
       findUnique: async (call: { where: { id: string } }) => call.where.id === "msg_user"
@@ -241,6 +257,9 @@ function fakePrisma(
   };
 
   const prisma = {
+    messageAttachment: {
+      findFirst: findCompletedSource,
+    },
     message: {
       findUnique: async (call: { where: { id: string } }) =>
         call.where.id === "msg_user"
@@ -1260,6 +1279,14 @@ describe("chat generate agent image tool", () => {
         caption: "Still the same view.",
       },
     };
+    const durableReservation = {
+      ...reservation,
+      arguments: {
+        ...reservation.arguments,
+        orientation: "4:5",
+        outputCount: 1,
+      },
+    };
     try {
       let replayResult: unknown;
       dshRunMock.mockImplementation(async (invocation, port) => {
@@ -1304,7 +1331,13 @@ describe("chat generate agent image tool", () => {
             private: false,
             profileDigest: "d".repeat(64),
           },
-          companionTool: reservation,
+          companionTool: durableReservation,
+          companionToolEffect: {
+            attemptId: reservation.attemptId,
+            callId: reservation.callId,
+            toolName: reservation.name,
+            sourceImageAssetId: null,
+          },
         },
       );
 
@@ -1324,7 +1357,7 @@ describe("chat generate agent image tool", () => {
         .filter(Boolean);
       expect(persistedReservations.length).toBeGreaterThan(0);
       expect(persistedReservations).toEqual(
-        Array.from({ length: persistedReservations.length }, () => reservation),
+        Array.from({ length: persistedReservations.length }, () => durableReservation),
       );
     } finally {
       restoreEnv();
@@ -1334,16 +1367,22 @@ describe("chat generate agent image tool", () => {
   it("[Gate T] reports unknown and creates no effect when tool reservation authority is lost", async () => {
     const restoreEnv = installDshRolloutEnv();
     try {
-      let toolResult: unknown;
+      const toolResults: unknown[] = [];
       dshRunMock.mockImplementation(async (_invocation, port) => {
-        toolResult = await port.executeTool({
+        toolResults.push(await port.executeTool({
           attemptId: "msg_assistant:1",
           callId: "call-lost-authority",
           name: "generate_image_async",
           arguments: { prompt: "Mira beside the observatory after authority changed" },
-        });
+        }));
+        toolResults.push(await port.executeTool({
+          attemptId: "msg_assistant:1",
+          callId: "call-after-unknown-commit",
+          name: "generate_image_async",
+          arguments: { prompt: "A second image must not overwrite uncertain authority" },
+        }));
       });
-      const { prisma, attachmentCreates, outboxCreates } = fakePrisma(
+      const { prisma, attachmentCreates, outboxCreates, messageUpdates } = fakePrisma(
         undefined,
         undefined,
         undefined,
@@ -1358,10 +1397,20 @@ describe("chat generate agent image tool", () => {
         { projectorPrisma: prisma, jobAttempt: { attemptsMade: 0, maxAttempts: 1 } },
       )).resolves.toEqual({ status: "failed" });
 
-      expect(toolResult).toMatchObject({
-        outcome: "unknown",
-        error: { code: "tool_reservation_authority_lost", retryable: false },
-      });
+      expect(toolResults).toEqual([
+        expect.objectContaining({
+          outcome: "unknown",
+          error: expect.objectContaining({ code: "tool_reservation_authority_lost", retryable: false }),
+        }),
+        expect.objectContaining({
+          callId: "call-after-unknown-commit",
+          outcome: "unknown",
+          error: expect.objectContaining({ code: "tool_reservation_authority_lost", retryable: false }),
+        }),
+      ]);
+      expect(messageUpdates.filter((call) =>
+        Boolean((call.data.runtimeTrace as { companionTool?: unknown } | undefined)?.companionTool)
+      )).toHaveLength(1);
       expect(attachmentCreates).toHaveLength(0);
       expect(outboxCreates.filter((call) => call.data.eventType === CHAT_TO_MAIN_EVENTS.imageRequested)).toHaveLength(0);
     } finally {
@@ -1382,7 +1431,15 @@ describe("chat generate agent image tool", () => {
         caption: "The same view, recovered.",
       },
     };
-    const retryCall = { ...firstCall, callId: "call-crash-retry" };
+    const retryCall = {
+      ...firstCall,
+      callId: "call-crash-retry",
+      arguments: {
+        ...firstCall.arguments,
+        orientation: "4:5" as const,
+        outputCount: 1,
+      },
+    };
     try {
       let runs = 0;
       const toolResults: unknown[] = [];
@@ -1451,7 +1508,10 @@ describe("chat generate agent image tool", () => {
         { projectorPrisma: prisma, jobAttempt: { attemptsMade: 1, maxAttempts: 2 } },
       )).resolves.toEqual({ status: "sent" });
 
-      const durableCall = crashPoint === "before_intent" ? retryCall : firstCall;
+      const durableCall = {
+        ...(crashPoint === "before_intent" ? retryCall : firstCall),
+        arguments: retryCall.arguments,
+      };
       expect(toolResults).toEqual(
         crashPoint === "before_intent"
           ? [expect.objectContaining({
@@ -1509,5 +1569,105 @@ describe("chat generate agent image tool", () => {
     }
     },
   );
+
+  it("[Gate T] pins the edit source before a crash so a newer image cannot retarget the effect", async () => {
+    const restoreEnv = installDshRolloutEnv();
+    const sources = [{ mediaAssetId: "media_original" }];
+    const firstCall = {
+      attemptId: "msg_assistant:1",
+      callId: "call-edit-before-crash",
+      name: "edit_last_image" as const,
+      arguments: {
+        instruction: "Move the same portrait beneath the observatory dome",
+        caption: "Same portrait, new setting.",
+      },
+    };
+    const retryCall = { ...firstCall, callId: "call-edit-after-crash" };
+    try {
+      let runs = 0;
+      dshRunMock.mockImplementation(async (invocation, port) => {
+        runs += 1;
+        const call = runs === 1 ? firstCall : retryCall;
+        const result = await port.executeTool(call);
+        expect(result).toMatchObject({
+          outcome: "succeeded",
+          output: { effectId: `${firstCall.attemptId}:${firstCall.callId}` },
+        });
+        if (runs === 1) throw new Error("sidecar disconnected after edit reservation");
+        await port.emit({
+          type: "text_delta",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 1,
+          occurredAt: new Date().toISOString(),
+          delta: "the pinned edit is queued",
+        });
+        const candidate = {
+          attemptId: invocation.attemptId,
+          content: "the pinned edit is queued",
+          finishReason: "stop" as const,
+          provider: "mock",
+          model: "local-model",
+          usage: { promptTokens: 10, completionTokens: 5, reasoningTokens: 0 },
+          execution: { steps: 2, toolCalls: 1 },
+          completedAt: new Date().toISOString(),
+        };
+        await port.emit({
+          type: "terminal_candidate",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 2,
+          occurredAt: new Date().toISOString(),
+          candidate,
+        });
+        await port.commit(candidate);
+      });
+      const { prisma, attachmentCreates, outboxCreates, assistantTrace } = fakePrisma(
+        sources,
+        undefined,
+        undefined,
+        undefined,
+        0n,
+        { status: "pending", strictClaimCas: true },
+      );
+
+      await expect(processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        prisma,
+        { projectorPrisma: prisma, jobAttempt: { attemptsMade: 0, maxAttempts: 2 } },
+      )).rejects.toThrow("sidecar disconnected after edit reservation");
+
+      // A different image completes while BullMQ is retrying. The accepted edit
+      // intent must still target the source Chat resolved before the crash.
+      sources.push({ mediaAssetId: "media_newer" });
+
+      await expect(processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        prisma,
+        { projectorPrisma: prisma, jobAttempt: { attemptsMade: 1, maxAttempts: 2 } },
+      )).resolves.toEqual({ status: "sent" });
+
+      expect(attachmentCreates).toHaveLength(1);
+      expect(attachmentCreates[0]?.data.metadata).toMatchObject({
+        toolName: "edit_last_image",
+        editSourceAssetId: "media_original",
+      });
+      const imageEvent = outboxCreates.find((call) =>
+        call.data.eventType === CHAT_TO_MAIN_EVENTS.imageRequested
+      );
+      expect(imageEvent?.data.payload).toMatchObject({
+        controls: { sourceImageAssetId: "media_original" },
+      });
+      expect(assistantTrace()?.companionToolEffect).toMatchObject({
+        attemptId: firstCall.attemptId,
+        callId: firstCall.callId,
+        toolName: firstCall.name,
+        sourceImageAssetId: "media_original",
+      });
+      expect(runs).toBe(2);
+    } finally {
+      restoreEnv();
+    }
+  });
 
 });
