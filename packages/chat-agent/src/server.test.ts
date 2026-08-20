@@ -313,10 +313,11 @@ describe("companion HTTP authority boundary", () => {
         commands.push(options);
         if (options.args[1] === "ingest") {
           const transcriptPath = options.args[options.args.indexOf("--transcript") + 1]!;
+          const workspace = options.args[options.args.indexOf("--workspace") + 1]!;
+          expect(dirname(transcriptPath)).toBe(join(workspace, ".idream-rebuild-transcripts"));
           expect((await stat(dirname(transcriptPath))).mode & 0o777).toBe(0o700);
           expect((await stat(transcriptPath)).mode & 0o777).toBe(0o600);
           transcriptBytes += (await stat(transcriptPath)).size;
-          const workspace = options.args[options.args.indexOf("--workspace") + 1]!;
           expect((await stat(workspace)).mode & 0o777).toBe(0o700);
           expect((await stat(join(workspace, ".igrep"))).mode & 0o777).toBe(0o700);
           await writeFile(join(workspace, ".igrep", "retained-count.txt"), String(messageCount));
@@ -383,7 +384,7 @@ describe("companion HTTP authority boundary", () => {
       body,
     });
 
-    expect(response.status).toBe(200);
+    expect(response.status, await response.clone().text()).toBe(200);
     const prepared = await response.json() as {
       ok: true;
       rebuilt: { rebuildId: string; sessions: number; messages: number };

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, open, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, open, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -239,7 +239,16 @@ export class IgrepMemoryRebuilder {
       }
     };
     if ("kind" in source) {
-      for await (const session of rebuildSpoolSessions(source)) await ingest(session);
+      for await (const session of rebuildSpoolSessions(source)) {
+        const digest = createHash("sha256").update(session.sessionId).digest("hex");
+        const transcriptPath = join(transcriptsRoot, `session-${digest}.jsonl`);
+        // igrep treats the transcript as workspace input. Keep request spools
+        // outside that trust boundary and copy only the validated 0600 bytes
+        // into the disposable candidate workspace before invoking the CLI.
+        await copyFile(session.transcriptPath, transcriptPath);
+        await chmod(transcriptPath, 0o600);
+        await ingest({ ...session, transcriptPath });
+      }
     } else {
       let current: {
         sessionId: string;
