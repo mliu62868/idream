@@ -67,6 +67,12 @@ type CollectedTurn = {
   companion: DshImageToolLegSnapshot["companion"];
 };
 
+class DshImageToolProbeError extends Error {
+  constructor(readonly stage: string) {
+    super(stage);
+  }
+}
+
 type DbJobRow = Omit<
   DshImageToolLegSnapshot["jobs"][number],
   "createdAt" | "completedAt" | "sourceImageAssetId"
@@ -139,7 +145,7 @@ export async function runDshImageToolProbe(
       idempotencyKey: `chat-dsh-image-probe:generate:${runId}`,
     });
     if (!generate.trace.ok || !generate.trace.attachment) {
-      throw new Error("generate leg failed authority projection");
+      throw new DshImageToolProbeError("generate_tool_trace_invalid");
     }
 
     stage = "edit_tool_turn";
@@ -155,9 +161,10 @@ export async function runDshImageToolProbe(
       idempotencyKey: `chat-dsh-image-probe:edit:${runId}`,
     });
     if (!edit.trace.ok || !edit.trace.attachment) {
-      throw new Error("edit leg failed authority projection");
+      throw new DshImageToolProbeError("edit_tool_trace_invalid");
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof DshImageToolProbeError) stage = error.stage;
     // The stage name is an intentional content-free error taxonomy. Provider
     // payloads, prompt bytes and signed headers never reach stdout or reports.
   } finally {
@@ -232,6 +239,7 @@ async function sendAndCollectToolTurn(input: ProbeInput & {
   content: string;
   idempotencyKey: string;
 }): Promise<CollectedTurn> {
+  const leg = input.name === "generate_image_async" ? "generate" : "edit";
   // SPEC: one signed POST per leg. This function contains no retry path; any
   // uncertain or failed write aborts the probe before another paid effect.
   const send = await signedFetch({
@@ -240,6 +248,8 @@ async function sendAndCollectToolTurn(input: ProbeInput & {
     path: `/api/v1/chat/sessions/${input.sessionId}/messages`,
     body: JSON.stringify({ content: input.content }),
     idempotencyKey: input.idempotencyKey,
+  }).catch(() => {
+    throw new DshImageToolProbeError(`${leg}_send_transport`);
   });
   const accepted = await send.json().catch(() => ({})) as {
     assistantMessageId?: unknown;
@@ -248,22 +258,26 @@ async function sendAndCollectToolTurn(input: ProbeInput & {
   };
   const assistantMessageId = text(accepted.assistantMessageId);
   const attempt = integer(accepted.attempt);
+  if (send.status !== 202) {
+    throw new DshImageToolProbeError(`${leg}_send_rejected_${send.status}`);
+  }
   if (
-    send.status !== 202 ||
     !assistantMessageId ||
     attempt === null ||
     attempt < 1 ||
     accepted.status === "blocked"
   ) {
-    throw new Error("tool turn was not accepted");
+    throw new DshImageToolProbeError(`${leg}_acceptance_invalid`);
   }
   const stream = await probeStream({
     ...input,
     assistantMessageId,
     expectedAttempt: attempt,
+  }).catch(() => {
+    throw new DshImageToolProbeError(`${leg}_stream_transport`);
   });
   if (!stream.ok || !stream.sawStart || !stream.sawDelta || !stream.sawDone) {
-    throw new Error("signed SSE did not reach done");
+    throw new DshImageToolProbeError(`${leg}_stream_incomplete`);
   }
   return waitForCompletedImageTurn({
     ...input,
@@ -280,6 +294,7 @@ async function waitForCompletedImageTurn(input: ProbeInput & {
   name: DshImageToolName;
   sourceAssetId?: string;
 }): Promise<CollectedTurn> {
+  const leg = input.name === "generate_image_async" ? "generate" : "edit";
   const deadline = Date.now() + input.timeoutMs;
   let lastMessage: PublicMessage | null = null;
   while (Date.now() < deadline) {
@@ -287,6 +302,8 @@ async function waitForCompletedImageTurn(input: ProbeInput & {
       ...input,
       method: "GET",
       path: `/api/v1/chat/sessions/${input.sessionId}`,
+    }).catch(() => {
+      throw new DshImageToolProbeError(`${leg}_state_transport`);
     });
     const body = await response.json().catch(() => ({})) as {
       messages?: PublicMessage[];
@@ -353,7 +370,9 @@ async function waitForCompletedImageTurn(input: ProbeInput & {
     }
     await delay(250);
   }
-  throw new Error(lastMessage ? "image turn did not settle" : "assistant message missing");
+  throw new DshImageToolProbeError(
+    lastMessage ? `${leg}_turn_unsettled` : `${leg}_assistant_missing`,
+  );
 }
 
 async function collectAuditSnapshot(input: {

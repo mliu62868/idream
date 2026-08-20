@@ -106,7 +106,7 @@ describe("signed DSH image-tool probe orchestration", () => {
         recentChatDeleted: false,
         sourceTextRedacted: false,
       },
-      error: "DSH image tool E2E failed at generate_tool_turn",
+      error: "DSH image tool E2E failed at generate_send_rejected_503",
     });
     expect(dshImageToolProbeExitCode(report)).toBe(1);
     const serialized = JSON.stringify(report);
@@ -140,7 +140,7 @@ describe("signed DSH image-tool probe orchestration", () => {
 
     await expect(runDshImageToolProbe(input)).resolves.toMatchObject({
       ok: false,
-      error: "DSH image tool E2E failed at generate_tool_turn",
+      error: "DSH image tool E2E failed at generate_acceptance_invalid",
     });
     expect(mocks.probeStream).not.toHaveBeenCalled();
   });
@@ -231,7 +231,7 @@ describe("signed DSH image-tool probe orchestration", () => {
     ]);
     expect(report).toMatchObject({
       ok: false,
-      error: "DSH image tool E2E failed at edit_tool_turn",
+      error: "DSH image tool E2E failed at edit_send_rejected_503",
     });
     expect(JSON.stringify(report)).not.toContain("private edit provider failure");
     expect(JSON.stringify(report)).not.toContain("private generated image prompt");
