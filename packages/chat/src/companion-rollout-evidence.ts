@@ -162,8 +162,7 @@ export async function collectCompanionRolloutEvidence(
     WHERE mv.created_at >= ${input.window.from}
       AND mv.created_at < ${input.window.to}
       AND m.role = 'assistant'
-      AND jsonb_typeof(${primaryTelemetry}) = 'object'
-      AND ${primaryTelemetry} ->> 'runtime' IN ('native', 'dsh')
+      AND m.reply_to_message_id IS NOT NULL
       AND u.status = 'active'
       AND u.deleted_at IS NULL
       ${audienceFilter}
@@ -196,6 +195,7 @@ export async function collectCompanionRolloutEvidence(
       WHERE mv.created_at >= ${input.window.from}
         AND mv.created_at < ${input.window.to}
         AND m.role = 'assistant'
+        AND m.reply_to_message_id IS NOT NULL
         AND jsonb_typeof(${primaryTelemetry}) = 'object'
         AND ${primaryTelemetry} ->> 'runtime' IN ('native', 'dsh')
         AND u.status = 'active'

@@ -310,7 +310,9 @@ describe("Gate R companion rollout evidence", () => {
       $queryRaw: vi.fn(async () => [
         { telemetry: valid, memoryExtracted: false },
         { telemetry: { ...valid, startedAt: "2026-08-19T02:00:00.000Z" }, memoryExtracted: false },
-        { telemetry: { ...valid, retryCount: -1 }, memoryExtracted: false },
+        { telemetry: { ...valid, startedAt: "2026-08-19T03:00:00.000Z" }, memoryExtracted: false },
+        { telemetry: { ...valid, startedAt: "2026-08-19T04:00:00.000Z" }, memoryExtracted: false },
+        { telemetry: null, memoryExtracted: false },
       ]),
     } as unknown as ChatPrismaClient;
 
@@ -321,5 +323,12 @@ describe("Gate R companion rollout evidence", () => {
       },
     }, prisma)).rejects.toThrow("telemetry row failed schema validation");
     expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    const query = (prisma.$queryRaw as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as {
+      strings?: readonly string[];
+    };
+    const sql = query.strings?.join("?") ?? "";
+    expect(sql).toContain("m.reply_to_message_id IS NOT NULL");
+    expect(sql).not.toContain("jsonb_typeof");
+    expect(sql).not.toContain("primaryTelemetry') ->> 'runtime' IN");
   });
 });
