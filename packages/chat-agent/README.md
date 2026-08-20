@@ -49,9 +49,12 @@ token variable. The default listener is `127.0.0.1:3101`, matching Chat's defaul
   companion control frames.
 - `POST /v1/workspaces/purge` accepts either `{ "scope":"user", "userId":"..." }` or
   `{ "scope":"relationship", "userId":"...", "characterId":"..." }`.
-- `POST /v1/workspaces/rebuild` replaces one relationship from strict canonical Chat
-  messages. Deep readiness proves this path with a disposable empty rebuild and always
-  purges the probe relationship afterward.
+- `POST /v1/workspaces/rebuild` accepts strict `application/x-ndjson` start, message,
+  and complete frames, then atomically replaces one relationship from canonical Chat
+  messages. There is no aggregate body/message cap; each message frame is bounded and
+  the declared terminal count makes a truncated stream fail before replacement. Deep
+  readiness proves this path with a disposable empty rebuild and always purges the probe
+  relationship afterward.
 
 Normal memory is copied into an isolated attempt workspace. It is promoted atomically only
 after Chat accepts the terminal candidate and public `igrep memory-status` proves both

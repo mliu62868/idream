@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { COMPANION_WORKSPACE_REBUILD_MAX_TIMEOUT_MS } from "@idream/shared/chat/companion-runtime";
 import type { Prisma } from "../generated/client/client.js";
 import type {
   RelationshipLinkage,
@@ -124,10 +125,13 @@ describe("companion memory projection", () => {
     });
   });
 
-  it("derives cleanup timeout from the single DSH deadline", () => {
+  it("keeps projection timeout above every rebuild budget near a turn deadline", () => {
     process.env.DSH_AGENT_TOKEN = "cleanup-token";
     process.env.DSH_AGENT_DEADLINE_MS = "7000";
-    expect(companionMemoryProjectionTimeoutMs()).toBe(37_000);
+    expect(companionMemoryProjectionTimeoutMs()).toBe(
+      COMPANION_WORKSPACE_REBUILD_MAX_TIMEOUT_MS + 30_000,
+    );
+    expect(companionMemoryProjectionTimeoutMs()).toBeGreaterThan(7_000);
   });
 
   it("persists the single-authority projection intent without legacy cleanup flags", async () => {

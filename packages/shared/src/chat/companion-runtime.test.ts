@@ -17,8 +17,12 @@ import {
   companionToolCallSchema,
   companionToolReservationSchema,
   companionToolResultSchema,
+  companionWorkspaceRebuildBudget,
+  COMPANION_WORKSPACE_REBUILD_MAX_TIMEOUT_MS,
   companionWorkspaceRebuildSchema,
+  decodeCompanionWorkspaceRebuildFrame,
   decodeCompanionNdjsonFrame,
+  encodeCompanionWorkspaceRebuildFrame,
   encodeCompanionNdjsonFrame,
   preparedTurnWireSchema,
 } from "./companion-runtime";
@@ -479,6 +483,45 @@ describe("companion runtime stable wire contract", () => {
       ...rebuild,
       messages: [{ ...rebuild.messages[0], secret: "must-not-cross-wire" }],
     }).success).toBe(false);
+  });
+
+  it("round-trips strict relationship rebuild stream frames", () => {
+    const frame = {
+      protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
+      type: "start" as const,
+      scope: "relationship" as const,
+      userId: "user-1",
+      characterId: "character-1",
+      messageCount: 20_002,
+    };
+    expect(decodeCompanionWorkspaceRebuildFrame(
+      encodeCompanionWorkspaceRebuildFrame(frame),
+    )).toEqual(frame);
+    expect(() => decodeCompanionWorkspaceRebuildFrame(`${JSON.stringify(frame)}\n{}\n`))
+      .toThrow(/exactly one relationship rebuild NDJSON frame/);
+  });
+
+  it("budgets rebuild work independently of turn deadlines and monotonically by payload size", () => {
+    const small = companionWorkspaceRebuildBudget({ messages: [{
+      id: "user-1",
+      sessionId: "session-1",
+      role: "user",
+      content: "short",
+      createdAt: now,
+    }] });
+    const large = companionWorkspaceRebuildBudget({ messages: [{
+      id: "user-1",
+      sessionId: "session-1",
+      role: "user",
+      content: "x".repeat(2 * 1_048_576),
+      createdAt: now,
+    }] });
+
+    expect(large.ingestTimeoutMs).toBeGreaterThan(small.ingestTimeoutMs);
+    expect(small.totalTimeoutMs).toBe(small.ingestTimeoutMs + 370_000);
+    expect(large.totalTimeoutMs).toBeLessThanOrEqual(
+      COMPANION_WORKSPACE_REBUILD_MAX_TIMEOUT_MS,
+    );
   });
 
   it("owns both Chat and sidecar cutover proof wires in the shared contract", () => {

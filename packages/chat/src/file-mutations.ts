@@ -224,13 +224,14 @@ export async function recordChatFileMutation(
 export async function applyPendingChatFileMutationsTx(
   tx: Prisma.TransactionClient,
   userId: string,
+  maximum = Number.MAX_SAFE_INTEGER,
 ): Promise<number> {
   let applied = 0;
-  for (;;) {
+  while (applied < maximum) {
     const rows = await tx.chatFileMutation.findMany({
       where: { userId, status: "pending" },
       orderBy: { sequence: "asc" },
-      take: 100,
+      take: Math.min(100, maximum - applied),
     });
     if (rows.length === 0) break;
     for (const row of rows) {
@@ -434,13 +435,21 @@ export async function projectChatFileMutations(
   authorityPrisma: ChatPrismaClient = chatProjectorPrisma,
 ): Promise<number> {
   try {
-    return await authorityPrisma.$transaction(
-      async (tx) => {
-        await lockUser(tx, userId);
-        return applyPendingChatFileMutationsTx(tx, userId);
-      },
-      { timeout: companionMemoryProjectionTimeoutMs() },
-    );
+    let applied = 0;
+    for (;;) {
+      // One intent per transaction makes the independent rebuild budget an
+      // actual upper bound. A backlog cannot multiply one sidecar deadline
+      // inside a single interactive transaction.
+      const current = await authorityPrisma.$transaction(
+        async (tx) => {
+          await lockUser(tx, userId);
+          return applyPendingChatFileMutationsTx(tx, userId, 1);
+        },
+        { timeout: companionMemoryProjectionTimeoutMs() },
+      );
+      if (current === 0) return applied;
+      applied += current;
+    }
   } catch (error) {
     const message =
       error instanceof Error ? error.message.slice(0, 1_000) : "projection failed";

@@ -1,9 +1,17 @@
+import { mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CompanionReadiness } from "@idream/shared/chat/companion-runtime";
 import { createCompanionServer, type InvocationService } from "./server";
+import { AttemptWorkspaceStore, relationshipWorkspacePath } from "./workspace";
 
 const servers: Array<ReturnType<typeof createCompanionServer>> = [];
-afterEach(async () => Promise.all(servers.splice(0).map((server) => server.close())));
+const temporary: string[] = [];
+afterEach(async () => {
+  await Promise.all(servers.splice(0).map((server) => server.close()));
+  await Promise.all(temporary.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+});
 
 const readiness = {
   protocolVersion: 1,
@@ -71,12 +79,133 @@ describe("companion HTTP authority boundary", () => {
     const { baseUrl, service } = await start();
     const response = await fetch(`${baseUrl}/v1/workspaces/rebuild`, {
       method: "POST",
-      headers: authorized,
-      body: JSON.stringify({ scope: "relationship", userId: "user-1", characterId: "character-1", messages: [] }),
+      headers: {
+        authorization: "Bearer sidecar-token",
+        "content-type": "application/x-ndjson",
+      },
+      body: [
+        JSON.stringify({
+          protocolVersion: 1,
+          type: "start",
+          scope: "relationship",
+          userId: "user-1",
+          characterId: "character-1",
+          messageCount: 0,
+        }),
+        JSON.stringify({ protocolVersion: 1, type: "complete", messageCount: 0 }),
+        "",
+      ].join("\n"),
     });
     expect(response.status).toBe(200);
     expect(service.rebuild).toHaveBeenCalledOnce();
   });
+
+  it("does not enter workspace authority for a truncated rebuild stream", async () => {
+    const { baseUrl, service } = await start();
+    const response = await fetch(`${baseUrl}/v1/workspaces/rebuild`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer sidecar-token",
+        "content-type": "application/x-ndjson",
+      },
+      body: `${JSON.stringify({
+        protocolVersion: 1,
+        type: "start",
+        scope: "relationship",
+        userId: "user-1",
+        characterId: "character-1",
+        messageCount: 0,
+      })}\n`,
+    });
+
+    expect(response.status).toBe(400);
+    expect(service.rebuild).not.toHaveBeenCalled();
+  });
+
+  it("applies a complete projection beyond legacy body and message caps and replaces deleted memory", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dsh-large-rebuild-"));
+    temporary.push(root);
+    const canonicalRoot = join(root, "canonical");
+    const workspaces = new AttemptWorkspaceStore({
+      canonicalRoot,
+      privateRoot: join(root, "private"),
+      verificationPollMs: 1,
+      memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
+    });
+    const identity = { userId: "user-large", characterId: "character-large" };
+    await workspaces.rebuildRelationship(identity, async (workspace) => {
+      await writeFile(join(workspace, ".igrep", "deleted-memory.txt"), "must disappear");
+    });
+    const service: InvocationService = {
+      ...invocation(),
+      rebuild: vi.fn(async (request) =>
+        workspaces.rebuildRelationship(request, async (workspace) => {
+          await writeFile(
+            join(workspace, ".igrep", "retained-count.txt"),
+            String(request.messages.length),
+          );
+          return { sessions: 1, messages: request.messages.length };
+        })),
+    };
+    const { baseUrl } = await start(service);
+    const messageCount = 20_002;
+    const content = "retained-after-delete:".padEnd(900, "x");
+    const lines = [JSON.stringify({
+      protocolVersion: 1,
+      type: "start",
+      scope: "relationship",
+      ...identity,
+      messageCount,
+    })];
+    for (let index = 0; index < messageCount; index += 1) {
+      lines.push(JSON.stringify({
+        protocolVersion: 1,
+        type: "message",
+        message: {
+          id: `message-${index}`,
+          sessionId: "session-large",
+          role: index % 2 === 0 ? "user" : "assistant",
+          content,
+          createdAt: new Date(1_787_169_600_000 + index).toISOString(),
+        },
+      }));
+    }
+    lines.push(JSON.stringify({
+      protocolVersion: 1,
+      type: "complete",
+      messageCount,
+    }));
+    const body = `${lines.join("\n")}\n`;
+    expect(Buffer.byteLength(body)).toBeGreaterThan(16 * 1_048_576);
+
+    const response = await fetch(`${baseUrl}/v1/workspaces/rebuild`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer sidecar-token",
+        "content-type": "application/x-ndjson",
+      },
+      body,
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      rebuilt: { sessions: 1, messages: messageCount },
+    });
+    const relationship = relationshipWorkspacePath(
+      canonicalRoot,
+      identity.userId,
+      identity.characterId,
+    );
+    const current = resolve(
+      dirname(join(relationship, ".igrep")),
+      await readlink(join(relationship, ".igrep")),
+    );
+    await expect(readFile(join(current, "deleted-memory.txt"), "utf8"))
+      .rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(current, "retained-count.txt"), "utf8"))
+      .resolves.toBe(String(messageCount));
+  }, 30_000);
 
   it("has no legacy import endpoint", async () => {
     const { baseUrl } = await start();

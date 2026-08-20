@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   COMPANION_RUNTIME_PROTOCOL_VERSION,
+  decodeCompanionWorkspaceRebuildFrame,
   encodeCompanionNdjsonFrame,
   releasedKnowledgeDigest,
   type CompanionInvocation,
@@ -372,8 +373,23 @@ describe("DshCompanionRuntime", () => {
     const calls = fetchImpl.mock.calls as unknown[][];
     expect(calls[0]?.[0]).toBe("http://127.0.0.1:3101/v1/workspaces/rebuild");
     const init = calls[0]?.[1] as RequestInit;
-    expect(JSON.parse(String(init.body))).toEqual(request);
+    const wire = await new Response(init.body).text();
+    expect(wire.length).toBeGreaterThan(0);
+    expect(wire.trim().split("\n").map(decodeCompanionWorkspaceRebuildFrame)).toEqual([
+      {
+        protocolVersion: 1,
+        type: "start",
+        scope: "relationship",
+        userId: "user-1",
+        characterId: "char-1",
+        messageCount: 2,
+      },
+      { protocolVersion: 1, type: "message", message: request.messages[0] },
+      { protocolVersion: 1, type: "message", message: request.messages[1] },
+      { protocolVersion: 1, type: "complete", messageCount: 2 },
+    ]);
     expect(new Headers(init.headers).get("authorization")).toBe("Bearer secret");
+    expect(new Headers(init.headers).get("content-type")).toBe("application/x-ndjson");
   });
 
   it("reads one current content-free cutover proof from the sidecar", async () => {

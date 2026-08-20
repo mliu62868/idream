@@ -31,7 +31,10 @@ import {
 } from "../src/chat-fs.js";
 import { obliterate } from "../src/queue.js";
 import { CHAT_QUEUES } from "@idream/shared/contracts";
-import { companionWorkspaceRebuildSchema } from "@idream/shared/chat/companion-runtime";
+import {
+  companionWorkspaceRebuildSchema,
+  decodeCompanionWorkspaceRebuildFrame,
+} from "@idream/shared/chat/companion-runtime";
 import { acceptAgeGate } from "./fixtures.js";
 
 const prisma = createChatPrisma();
@@ -138,9 +141,19 @@ async function companionControlFetch(
   );
   expect(init?.method).toBe("POST");
   expect(new Headers(init?.headers).get("authorization")).toMatch(/^Bearer \S+$/u);
-  const body = JSON.parse(String(init?.body)) as unknown;
   if (url.pathname === "/v1/workspaces/rebuild") {
-    const request = companionWorkspaceRebuildSchema.parse(body);
+    const frames = (await new Response(init?.body).text())
+      .trim()
+      .split("\n")
+      .map(decodeCompanionWorkspaceRebuildFrame);
+    const start = frames[0];
+    if (start?.type !== "start") throw new Error("missing relationship rebuild start frame");
+    const request = companionWorkspaceRebuildSchema.parse({
+      scope: start.scope,
+      userId: start.userId,
+      characterId: start.characterId,
+      messages: frames.flatMap((frame) => frame.type === "message" ? [frame.message] : []),
+    });
     return Response.json({
       ok: true,
       rebuilt: {
@@ -150,6 +163,7 @@ async function companionControlFetch(
     });
   }
   if (url.pathname === "/v1/workspaces/purge") {
+    const body = JSON.parse(String(init?.body)) as unknown;
     expect(body).toEqual(expect.objectContaining({
       scope: expect.stringMatching(/^(?:relationship|user)$/u),
       userId: expect.any(String),

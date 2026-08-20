@@ -1,4 +1,5 @@
 import {
+  COMPANION_WORKSPACE_REBUILD_MAX_TIMEOUT_MS,
   companionWorkspaceRebuildSchema,
   type CompanionWorkspaceRebuild,
   type CompanionWorkspaceRebuildMessage,
@@ -110,7 +111,10 @@ export async function buildCompanionWorkspaceRebuild(
 }
 
 export function companionMemoryProjectionTimeoutMs(): number {
-  return env.COMPANION_RUNTIME_CONFIG.deadlineMs + 30_000;
+  // This transaction encloses the external replacement today. Its deadline
+  // must dominate the largest child rebuild budget and must not inherit the
+  // unrelated model-turn deadline.
+  return COMPANION_WORKSPACE_REBUILD_MAX_TIMEOUT_MS + 30_000;
 }
 
 export async function applyCompanionMemoryProjection(
@@ -127,13 +131,12 @@ export async function applyCompanionMemoryProjection(
         baseUrl: config.sidecarUrl,
         token: config.sidecarToken,
         request,
-        timeoutMs: config.deadlineMs + 15_000,
       }),
       purge: (target: CompanionWorkspacePurgeTarget) => purgeCompanionWorkspace({
         baseUrl: config.sidecarUrl,
         token: config.sidecarToken,
         target,
-        timeoutMs: config.deadlineMs + 15_000,
+        timeoutMs: 60_000,
       }),
     };
   }

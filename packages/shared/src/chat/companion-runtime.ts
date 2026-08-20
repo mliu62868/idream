@@ -317,7 +317,7 @@ export const companionWorkspaceRebuildSchema = z
     scope: z.literal("relationship"),
     userId: nonEmptyStringSchema,
     characterId: nonEmptyStringSchema,
-    messages: z.array(companionWorkspaceRebuildMessageSchema).max(20_000),
+    messages: z.array(companionWorkspaceRebuildMessageSchema),
   })
   .strict()
   .superRefine((value, context) => {
@@ -345,6 +345,93 @@ export const companionWorkspaceRebuildSchema = z
       });
     }
   });
+
+/**
+ * SPEC: relationship rebuilds cross the process boundary as bounded NDJSON
+ * frames, terminated by an explicit count. The stream has no aggregate byte or
+ * message cap because Chat history is the canonical authority and must remain
+ * rebuildable after privacy mutations regardless of relationship age.
+ */
+export const companionWorkspaceRebuildFrameSchema = z.discriminatedUnion("type", [
+  z.object({
+    protocolVersion: z.literal(COMPANION_RUNTIME_PROTOCOL_VERSION),
+    type: z.literal("start"),
+    scope: z.literal("relationship"),
+    userId: nonEmptyStringSchema,
+    characterId: nonEmptyStringSchema,
+    messageCount: nonNegativeIntegerSchema,
+  }).strict(),
+  z.object({
+    protocolVersion: z.literal(COMPANION_RUNTIME_PROTOCOL_VERSION),
+    type: z.literal("message"),
+    message: companionWorkspaceRebuildMessageSchema,
+  }).strict(),
+  z.object({
+    protocolVersion: z.literal(COMPANION_RUNTIME_PROTOCOL_VERSION),
+    type: z.literal("complete"),
+    messageCount: nonNegativeIntegerSchema,
+  }).strict(),
+]);
+
+const COMPANION_WORKSPACE_REBUILD_INGEST_BASE_TIMEOUT_MS = 30_000;
+const COMPANION_WORKSPACE_REBUILD_INGEST_PER_MIB_MS = 5_000;
+const COMPANION_WORKSPACE_REBUILD_MAX_INGEST_TIMEOUT_MS = 1_800_000;
+const COMPANION_WORKSPACE_REBUILD_FIXED_TIMEOUT_MS = 370_000;
+export const COMPANION_WORKSPACE_REBUILD_MAX_TIMEOUT_MS =
+  COMPANION_WORKSPACE_REBUILD_MAX_INGEST_TIMEOUT_MS
+  + COMPANION_WORKSPACE_REBUILD_FIXED_TIMEOUT_MS;
+
+/**
+ * The outer request budget must dominate every sidecar child deadline:
+ * size-aware ingest + 300s maintain + 30s doctor + 10s status + 30s transport.
+ * Three bytes per UTF-16 code unit safely overestimates UTF-8 payload bytes.
+ */
+export function companionWorkspaceRebuildBudget(input: {
+  messages: readonly CompanionWorkspaceRebuildMessage[];
+}): { ingestTimeoutMs: number; totalTimeoutMs: number } {
+  if (input.messages.length === 0) {
+    return { ingestTimeoutMs: 0, totalTimeoutMs: COMPANION_WORKSPACE_REBUILD_FIXED_TIMEOUT_MS };
+  }
+  let estimatedBytes = 0;
+  for (const message of input.messages) {
+    estimatedBytes += 256 + 3 * (
+      message.id.length
+      + message.sessionId.length
+      + message.content.length
+      + message.createdAt.length
+    );
+  }
+  const ingestTimeoutMs = Math.min(
+    COMPANION_WORKSPACE_REBUILD_MAX_INGEST_TIMEOUT_MS,
+    COMPANION_WORKSPACE_REBUILD_INGEST_BASE_TIMEOUT_MS
+      + Math.ceil(estimatedBytes / 1_048_576)
+      * COMPANION_WORKSPACE_REBUILD_INGEST_PER_MIB_MS,
+  );
+  return {
+    ingestTimeoutMs,
+    totalTimeoutMs: ingestTimeoutMs + COMPANION_WORKSPACE_REBUILD_FIXED_TIMEOUT_MS,
+  };
+}
+
+/** Encode one strictly validated relationship-rebuild frame. */
+export function encodeCompanionWorkspaceRebuildFrame(
+  frame: CompanionWorkspaceRebuildFrame,
+): string {
+  return `${JSON.stringify(companionWorkspaceRebuildFrameSchema.parse(frame))}\n`;
+}
+
+/** Decode exactly one relationship-rebuild frame. */
+export function decodeCompanionWorkspaceRebuildFrame(
+  line: string,
+): CompanionWorkspaceRebuildFrame {
+  let value = line;
+  if (value.endsWith("\r\n")) value = value.slice(0, -2);
+  else if (value.endsWith("\n")) value = value.slice(0, -1);
+  if (!value || value.includes("\n") || value.includes("\r")) {
+    throw new Error("expected exactly one relationship rebuild NDJSON frame");
+  }
+  return companionWorkspaceRebuildFrameSchema.parse(JSON.parse(value));
+}
 
 const companionWorkspaceVersionSchema = z.string().regex(
   /^(?:(?:rebuild|commit|migrated)-\d+-)?[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$|^initial-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/,
@@ -917,6 +1004,9 @@ export type CompanionWorkspaceRebuild = z.infer<
 >;
 export type CompanionWorkspaceRebuildMessage = z.infer<
   typeof companionWorkspaceRebuildMessageSchema
+>;
+export type CompanionWorkspaceRebuildFrame = z.infer<
+  typeof companionWorkspaceRebuildFrameSchema
 >;
 export type CompanionMemoryCutoverProof = z.infer<
   typeof companionMemoryCutoverProofSchema

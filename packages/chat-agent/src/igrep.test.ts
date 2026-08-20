@@ -1,7 +1,10 @@
 import { mkdir, mkdtemp, readFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { CompanionWorkspaceRebuild } from "@idream/shared/chat/companion-runtime";
+import {
+  companionWorkspaceRebuildBudget,
+  type CompanionWorkspaceRebuild,
+} from "@idream/shared/chat/companion-runtime";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   IgrepMemoryRebuilder,
@@ -64,8 +67,20 @@ describe("official igrep canonical rebuild", () => {
             source_at: "2026-08-19T12:00:01.000Z",
             source_timezone: "UTC",
           },
+          {
+            role: "user",
+            content: "Remember the winter garden.",
+            source_at: "2026-08-19T12:00:02.000Z",
+            source_timezone: "UTC",
+          },
+          {
+            role: "assistant",
+            content: "Its glass roof caught the snow.",
+            source_at: "2026-08-19T12:00:03.000Z",
+            source_timezone: "UTC",
+          },
         ]);
-        return { events: 2, dialoguePath: ".igrep/mem/memory/dialogues/rebuilt.jsonl" };
+        return { events: 4, dialoguePath: ".igrep/mem/memory/dialogues/rebuilt.jsonl" };
       }
       return { ok: true };
     };
@@ -88,6 +103,20 @@ describe("official igrep canonical rebuild", () => {
           content: "Every blue-lit window.",
           createdAt: "2026-08-19T12:00:01.000Z",
         },
+        {
+          id: "user-2",
+          sessionId: "session-2",
+          role: "user",
+          content: "Remember the winter garden.",
+          createdAt: "2026-08-19T12:00:02.000Z",
+        },
+        {
+          id: "assistant-2",
+          sessionId: "session-2",
+          role: "assistant",
+          content: "Its glass roof caught the snow.",
+          createdAt: "2026-08-19T12:00:03.000Z",
+        },
       ],
     };
     const rebuilder = new IgrepMemoryRebuilder(
@@ -104,8 +133,8 @@ describe("official igrep canonical rebuild", () => {
     );
 
     await expect(rebuilder.rebuild(workspace, request)).resolves.toEqual({
-      sessions: 1,
-      messages: 2,
+      sessions: 2,
+      messages: 4,
     });
     expect(commands.map((command) => command.args.slice(0, 2))).toEqual([
       ["mem", "ingest"],
@@ -114,6 +143,9 @@ describe("official igrep canonical rebuild", () => {
     ]);
     expect(commands[1]?.args).toContain("--rebuild");
     expect(commands[2]?.args).toContain("--strict");
+    expect(commands[0]?.timeoutMs).toBe(
+      companionWorkspaceRebuildBudget(request).ingestTimeoutMs,
+    );
   });
 
   it("fails closed when maintain leaves canonical profile rows pending", async () => {

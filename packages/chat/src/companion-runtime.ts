@@ -2,8 +2,10 @@ import {
   COMPANION_RUNTIME_PROTOCOL_VERSION,
   companionMemoryCutoverSidecarProofSchema,
   companionRuntimeResponseSchema,
+  companionWorkspaceRebuildBudget,
   companionWorkspaceRebuildSchema,
   decodeCompanionNdjsonFrame,
+  encodeCompanionWorkspaceRebuildFrame,
   encodeCompanionNdjsonFrame,
   type CompanionCommitAck,
   type CompanionEvent,
@@ -110,23 +112,70 @@ export async function rebuildCompanionWorkspace(input: {
   timeoutMs?: number;
 }): Promise<{ sessions: number; messages: number }> {
   const request = companionWorkspaceRebuildSchema.parse(input.request);
+  const init: RequestInit & { duplex: "half" } = {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      authorization: `Bearer ${input.token}`,
+      "content-type": "application/x-ndjson",
+    },
+    body: companionWorkspaceRebuildBody(request),
+    duplex: "half",
+    signal: AbortSignal.timeout(
+      input.timeoutMs ?? companionWorkspaceRebuildBudget(request).totalTimeoutMs,
+    ),
+  };
   const response = await (input.fetchImpl ?? fetch)(
     `${input.baseUrl.replace(/\/$/, "")}/v1/workspaces/rebuild`,
-    {
-      method: "POST",
-      headers: {
-        accept: "application/json",
-        authorization: `Bearer ${input.token}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(request),
-      signal: AbortSignal.timeout(input.timeoutMs ?? 330_000),
-    },
+    init,
   );
   if (!response.ok) {
     throw new Error(`companion workspace rebuild failed with HTTP ${response.status}`);
   }
   return companionWorkspaceRebuildResponseSchema.parse(await response.json()).rebuilt;
+}
+
+function companionWorkspaceRebuildBody(
+  request: CompanionWorkspaceRebuild,
+): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  let index = -1;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (index === -1) {
+        index = 0;
+        controller.enqueue(encoder.encode(encodeCompanionWorkspaceRebuildFrame({
+          protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
+          type: "start",
+          scope: "relationship",
+          userId: request.userId,
+          characterId: request.characterId,
+          messageCount: request.messages.length,
+        })));
+        return;
+      }
+      const message = request.messages[index];
+      if (message) {
+        index += 1;
+        controller.enqueue(encoder.encode(encodeCompanionWorkspaceRebuildFrame({
+          protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
+          type: "message",
+          message,
+        })));
+        return;
+      }
+      if (index === request.messages.length) {
+        index += 1;
+        controller.enqueue(encoder.encode(encodeCompanionWorkspaceRebuildFrame({
+          protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
+          type: "complete",
+          messageCount: request.messages.length,
+        })));
+        return;
+      }
+      controller.close();
+    },
+  });
 }
 
 export async function readCompanionMemoryCutoverProof(input: {

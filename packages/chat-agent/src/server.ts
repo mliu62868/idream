@@ -4,6 +4,7 @@ import {
   companionReadinessSchema,
   companionRuntimeRequestSchema,
   companionWorkspaceRebuildSchema,
+  decodeCompanionWorkspaceRebuildFrame,
   encodeCompanionNdjsonFrame,
   type CompanionInvocation,
   type CompanionMemoryCutoverSidecarProof,
@@ -15,7 +16,9 @@ import {
 import type { WorkspacePurgeRequest } from "./workspace";
 
 const MAX_CONTROL_BODY_BYTES = 1_048_576;
-const MAX_REBUILD_BODY_BYTES = 16 * 1_048_576;
+// A durable Chat message is bounded independently; only the aggregate rebuild
+// is intentionally unbounded so old relationships remain privacy-rebuildable.
+const MAX_REBUILD_FRAME_BYTES = 256 * 1_024;
 
 type ControlFrame = Exclude<CompanionRuntimeRequest, { type: "run" }>;
 
@@ -82,6 +85,70 @@ async function readJson(
   }
   if (size === 0) throw new Error("request body is required");
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
+async function* readNdjsonLines(request: IncomingMessage): AsyncGenerator<string> {
+  let pending = Buffer.alloc(0);
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    pending = pending.byteLength === 0 ? buffer : Buffer.concat([pending, buffer]);
+    let delimiter = pending.indexOf(0x0a);
+    while (delimiter >= 0) {
+      if (delimiter > MAX_REBUILD_FRAME_BYTES) {
+        throw new Error(`relationship rebuild frame exceeds ${MAX_REBUILD_FRAME_BYTES} bytes`);
+      }
+      yield pending.subarray(0, delimiter + 1).toString("utf8");
+      pending = pending.subarray(delimiter + 1);
+      delimiter = pending.indexOf(0x0a);
+    }
+    if (pending.byteLength > MAX_REBUILD_FRAME_BYTES) {
+      throw new Error(`relationship rebuild frame exceeds ${MAX_REBUILD_FRAME_BYTES} bytes`);
+    }
+  }
+  if (pending.byteLength > 0) yield pending.toString("utf8");
+}
+
+async function readWorkspaceRebuild(request: IncomingMessage): Promise<CompanionWorkspaceRebuild> {
+  if (request.headers["content-type"]?.split(";", 1)[0]?.trim() !== "application/x-ndjson") {
+    throw new Error("relationship rebuild requires application/x-ndjson");
+  }
+  let start: Extract<
+    ReturnType<typeof decodeCompanionWorkspaceRebuildFrame>,
+    { type: "start" }
+  > | undefined;
+  let complete = false;
+  const messages: CompanionWorkspaceRebuild["messages"] = [];
+  for await (const line of readNdjsonLines(request)) {
+    const frame = decodeCompanionWorkspaceRebuildFrame(line);
+    if (!start) {
+      if (frame.type !== "start") {
+        throw new Error("relationship rebuild must start with a start frame");
+      }
+      start = frame;
+      continue;
+    }
+    if (complete) throw new Error("relationship rebuild has frames after completion");
+    if (frame.type === "start") throw new Error("relationship rebuild has multiple start frames");
+    if (frame.type === "message") {
+      if (messages.length >= start.messageCount) {
+        throw new Error("relationship rebuild exceeds its declared message count");
+      }
+      messages.push(frame.message);
+      continue;
+    }
+    if (frame.messageCount !== start.messageCount || messages.length !== start.messageCount) {
+      throw new Error("relationship rebuild completed with a mismatched message count");
+    }
+    complete = true;
+  }
+  if (!start) throw new Error("relationship rebuild start frame is required");
+  if (!complete) throw new Error("relationship rebuild complete frame is required");
+  return companionWorkspaceRebuildSchema.parse({
+    scope: start.scope,
+    userId: start.userId,
+    characterId: start.characterId,
+    messages,
+  });
 }
 
 function controlRoute(pathname: string): { invocationId: string; type: ControlFrame["type"] } | undefined {
@@ -216,11 +283,7 @@ export function createCompanionServer(options: CompanionServerOptions): Companio
           failure(response, 503, "shutting_down", new Error("sidecar is shutting down"));
           return;
         }
-        const rebuilt = await options.invocation.rebuild(
-          companionWorkspaceRebuildSchema.parse(
-            await readJson(request, MAX_REBUILD_BODY_BYTES),
-          ),
-        );
+        const rebuilt = await options.invocation.rebuild(await readWorkspaceRebuild(request));
         json(response, 200, { ok: true, rebuilt });
         return;
       }

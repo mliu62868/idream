@@ -6,6 +6,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Context } from "@deepseek-ai/cordis";
 import {
+  companionWorkspaceRebuildBudget,
   companionWorkspaceRebuildSchema,
   type CompanionWorkspaceRebuild,
 } from "@idream/shared/chat/companion-runtime";
@@ -196,6 +197,7 @@ export class IgrepMemoryRebuilder {
     input: CompanionWorkspaceRebuild,
   ): Promise<{ sessions: number; messages: number }> {
     const request = companionWorkspaceRebuildSchema.parse(input);
+    const budget = companionWorkspaceRebuildBudget(request);
     // The transcript is transport input, not canonical memory. Keep it beside
     // the candidate .igrep so atomic promotion cannot retain a second copy.
     const transcriptsRoot = join(workspace, ".idream-rebuild-transcripts");
@@ -206,10 +208,16 @@ export class IgrepMemoryRebuilder {
       messages.push(message);
       bySession.set(message.sessionId, messages);
     }
-    for (const [sessionId, messages] of bySession) {
-      const digest = createHash("sha256").update(sessionId).digest("hex");
-      const transcript = join(transcriptsRoot, `session-${digest}.jsonl`);
-      const rows = messages.map((message) => JSON.stringify({
+    if (request.messages.length > 0) {
+      // INTENT: one canonical relationship rebuild is one igrep ingest unit.
+      // Per-Chat-session commands make the global deadline grow as 30s * N;
+      // session identity remains in Chat authority and does not partition this
+      // relationship's generic-memory workspace.
+      const rebuildSessionId = createHash("sha256")
+        .update(`${request.userId}\0${request.characterId}`)
+        .digest("hex");
+      const transcript = join(transcriptsRoot, `relationship-${rebuildSessionId}.jsonl`);
+      const rows = request.messages.map((message) => JSON.stringify({
         role: message.role,
         content: message.content,
         source_at: message.createdAt,
@@ -228,15 +236,15 @@ export class IgrepMemoryRebuilder {
           "--agent",
           "deepseek-harness",
           "--session-id",
-          sessionId,
+          rebuildSessionId,
         ],
-        timeoutMs: 30_000,
+        timeoutMs: budget.ingestTimeoutMs,
       });
       const record = result && typeof result === "object" && !Array.isArray(result)
         ? result as Record<string, unknown>
         : {};
-      if (record.events !== messages.length || typeof record.dialoguePath !== "string") {
-        throw new Error(`igrep ingest did not verify session ${sessionId}`);
+      if (record.events !== request.messages.length || typeof record.dialoguePath !== "string") {
+        throw new Error("igrep ingest did not verify the relationship rebuild transcript");
       }
     }
     await this.run({
@@ -250,9 +258,10 @@ export class IgrepMemoryRebuilder {
       timeoutMs: 30_000,
     });
     const status = await this.probe.status(workspace);
-    if (status.dialogueFiles !== bySession.size) {
+    const expectedDialogueFiles = request.messages.length > 0 ? 1 : 0;
+    if (status.dialogueFiles !== expectedDialogueFiles) {
       throw new Error(
-        `igrep rebuild dialogue count mismatch: expected ${bySession.size}, got ${status.dialogueFiles}`,
+        `igrep rebuild dialogue count mismatch: expected ${expectedDialogueFiles}, got ${status.dialogueFiles}`,
       );
     }
     if ((status.pendingProfileRows ?? 0) > 0) {
