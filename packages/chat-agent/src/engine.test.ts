@@ -99,6 +99,10 @@ class ToolThenTextAdapter extends LlmAdapter {
 class MemorySearchThenTextAdapter extends LlmAdapter {
   private calls = 0;
 
+  constructor(private readonly terminalFailureStatus?: number) {
+    super();
+  }
+
   async *stream(): AsyncIterable<StreamChunk> {
     this.calls += 1;
     if (this.calls === 1) {
@@ -123,6 +127,13 @@ class MemorySearchThenTextAdapter extends LlmAdapter {
       };
       yield { type: "finish", reason: { kind: "tool-calls" } };
       return;
+    }
+    if (this.terminalFailureStatus) {
+      throw new LlmError(
+        "PRIVATE_PROVIDER_BODY_SENTINEL",
+        "PROVIDER_HTTP_ERROR",
+        { status: this.terminalFailureStatus },
+      );
     }
     yield { type: "block-start", index: 0, blockType: "text" };
     yield { type: "text-delta", index: 0, text: "The observatory memory is here." };
@@ -640,6 +651,62 @@ describe("programmatic DSH companion runtime", () => {
         },
       }),
     }));
+    expect(JSON.stringify(observed)).not.toContain("PRIVATE_IGREP_DIAGNOSTIC_SENTINEL");
+  });
+
+  it("reports a terminal provider failure ahead of an earlier igrep tool failure", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chat-agent-mixed-failure-"));
+    temporary.push(root);
+    const engine = new CompanionEngine({
+      workspaces: new AttemptWorkspaceStore({
+        canonicalRoot: join(root, "canonical"),
+        privateRoot: join(root, "private"),
+        memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
+      }),
+      plugin: async () => ({
+        name: "igrep",
+        inject: ["tools"],
+        apply(ctx) {
+          ctx.tools.register(defineTool({
+            name: "memory_search",
+            description: "Search memory.",
+            parameters: { query: { type: "string", required: true } },
+            output: {
+              schema: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  results: { type: "array", required: true, items: { type: "string" } },
+                },
+              },
+              render: () => [],
+            },
+            async execute() {
+              throw new Error("PRIVATE_IGREP_DIAGNOSTIC_SENTINEL");
+            },
+          }));
+        },
+      }),
+      adapter: () => new MemorySearchThenTextAdapter(429),
+      igrepCommand: "igrep",
+      igrepLlm: IGREP_LLM,
+    });
+    const observed: CompanionRuntimeResponse[] = [];
+
+    await engine.run(invocation("normal"), (frame) => observed.push(frame));
+
+    expect(observed).toContainEqual(expect.objectContaining({
+      type: "event",
+      event: expect.objectContaining({
+        type: "failed",
+        error: {
+          code: "provider_http_429",
+          message: "companion provider request failed",
+          retryable: true,
+        },
+      }),
+    }));
+    expect(JSON.stringify(observed)).not.toContain("PRIVATE_PROVIDER_BODY_SENTINEL");
     expect(JSON.stringify(observed)).not.toContain("PRIVATE_IGREP_DIAGNOSTIC_SENTINEL");
   });
 

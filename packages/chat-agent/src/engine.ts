@@ -135,13 +135,6 @@ function invocationFailure(input: {
       retryable: false,
     };
   }
-  if (input.igrepFailure) {
-    return {
-      code: `igrep_${input.igrepFailure}_failed`,
-      message: "companion memory tool failed",
-      retryable: true,
-    };
-  }
   if (input.turnFailure?.code === "PROVIDER_HTTP_ERROR") {
     const status = input.turnFailure.status;
     const validStatus = Number.isInteger(status) && status! >= 100 && status! <= 599;
@@ -165,6 +158,13 @@ function invocationFailure(input: {
       code: providerCode,
       message: "companion provider response failed",
       retryable: providerCode === "provider_empty_response",
+    };
+  }
+  if (input.igrepFailure) {
+    return {
+      code: `igrep_${input.igrepFailure}_failed`,
+      message: "companion memory tool failed",
+      retryable: true,
     };
   }
   return {
