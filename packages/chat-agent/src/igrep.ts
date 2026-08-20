@@ -234,7 +234,8 @@ export class IgrepMemoryRebuilder {
       if (record.events !== session.messageCount || typeof record.dialoguePath !== "string") {
         throw new Error(
           `igrep ingest did not verify session ${session.sessionId}: ` +
-          `expected ${session.messageCount} events, got ${String(record.events ?? "missing")}`,
+          `expected ${session.messageCount} events from ${session.estimatedBytes} bytes, ` +
+          `got ${String(record.events ?? "missing")}`,
         );
       }
     };
