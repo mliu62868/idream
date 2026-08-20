@@ -80,6 +80,9 @@ export interface JsonCommandOptions {
 
 export type RunJsonCommand = (options: JsonCommandOptions) => Promise<unknown>;
 
+const COMMAND_STDOUT_LIMIT_BYTES = 4_194_304;
+const COMMAND_STDERR_LIMIT_BYTES = 65_536;
+
 async function sameRealPath(left: string, right: string): Promise<boolean> {
   try {
     return await realpath(left) === await realpath(right);
@@ -101,12 +104,25 @@ export async function runJsonCommand(options: JsonCommandOptions): Promise<unkno
   const stdout: Buffer[] = [];
   const stderr: Buffer[] = [];
   let stdoutBytes = 0;
+  let stderrBytes = 0;
+  let limitFailure: "stdout" | "stderr" | null = null;
   child.stdout.on("data", (chunk: Buffer) => {
     stdoutBytes += chunk.byteLength;
-    if (stdoutBytes > 4_194_304) child.kill("SIGKILL");
+    if (stdoutBytes > COMMAND_STDOUT_LIMIT_BYTES) {
+      limitFailure ??= "stdout";
+      child.kill("SIGKILL");
+    }
     else stdout.push(chunk);
   });
-  child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+  child.stderr.on("data", (chunk: Buffer) => {
+    const remaining = Math.max(0, COMMAND_STDERR_LIMIT_BYTES - stderrBytes);
+    if (remaining > 0) stderr.push(chunk.subarray(0, remaining));
+    stderrBytes += chunk.byteLength;
+    if (stderrBytes > COMMAND_STDERR_LIMIT_BYTES) {
+      limitFailure ??= "stderr";
+      child.kill("SIGKILL");
+    }
+  });
   child.stdin.end(options.stdin);
   const timeout = setTimeout(() => child.kill("SIGKILL"), options.timeoutMs ?? 10_000);
   const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveResult, reject) => {
@@ -117,10 +133,12 @@ export async function runJsonCommand(options: JsonCommandOptions): Promise<unkno
     options.signal?.removeEventListener("abort", abort);
   });
   throwIfAborted(options.signal);
+  if (limitFailure) {
+    throw new Error(`igrep_command_${limitFailure}_limit_exceeded`);
+  }
   if (result.code !== 0) {
-    throw new Error(
-      `${options.command} ${options.args.join(" ")} failed (${result.code ?? result.signal}): ${Buffer.concat(stderr).toString("utf8").trim()}`,
-    );
+    const stderrDigest = createHash("sha256").update(Buffer.concat(stderr)).digest("hex");
+    throw new Error(`igrep command failed (${result.code ?? result.signal}; stderr sha256 ${stderrDigest})`);
   }
   return JSON.parse(Buffer.concat(stdout).toString("utf8"));
 }

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   IgrepMemoryRebuilder,
   probeIgrepLifecycle,
+  runJsonCommand,
   type JsonCommandOptions,
 } from "./igrep";
 
@@ -13,6 +14,26 @@ const temporary: string[] = [];
 
 afterEach(async () => {
   await Promise.all(temporary.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+});
+
+describe("igrep subprocess bounds", () => {
+  it("kills an unbounded stderr producer and returns only a stable failure code", async () => {
+    const script = `process.stderr.write("PRIVATE_STDERR_SENTINEL".repeat(5000));setInterval(()=>{},1000)`;
+    let thrown: unknown;
+    try {
+      await runJsonCommand({
+        command: process.execPath,
+        args: ["-e", script],
+        timeoutMs: 5_000,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toBe("igrep_command_stderr_limit_exceeded");
+    expect((thrown as Error).message).not.toContain("PRIVATE_STDERR_SENTINEL");
+    expect((thrown as Error).message.length).toBeLessThan(100);
+  });
 });
 
 describe("official igrep canonical rebuild", () => {
