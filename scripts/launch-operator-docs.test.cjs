@@ -35,6 +35,13 @@ test("the root Chat model probe loads the Chat runtime authority", () => {
   );
 });
 
+test("the root DSH image probe runs inside the Main workspace", () => {
+  assert.equal(
+    rootPackage.scripts["launch:probe:chat-dsh-image-tool"],
+    "bun run --cwd packages/main --env-file=.env --env-file=../chat/.env probe:chat-dsh-image-tool --",
+  );
+});
+
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
