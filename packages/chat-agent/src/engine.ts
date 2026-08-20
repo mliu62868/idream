@@ -98,7 +98,9 @@ function stableJson(value: unknown): string {
 // a match count, never the marker or memory_search result bytes.
 function auditRecallEvidenceMatches(value: unknown): number {
   const matches = JSON.stringify(value).match(/\bidreamrecall_[a-f0-9]{32}\b/giu) ?? [];
-  return new Set(matches.map((match) => match.toLowerCase())).size;
+  // The shared evidence wire is deliberately bounded: Gate E needs proof of
+  // at least one result-bound marker, never an unbounded marker inventory.
+  return Math.min(8, new Set(matches.map((match) => match.toLowerCase())).size);
 }
 
 function wireUsage(usage?: TokenUsage) {

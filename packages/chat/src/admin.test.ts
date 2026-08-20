@@ -534,6 +534,9 @@ describe("chat internal admin api", () => {
             provider: "openai",
             model: "fixture-model",
             memory: { outcome: "ingested", settleLagMs: 5 },
+            igrep: {
+              wake: { calls: 1, hit: 1, empty: 0, failure: 0 },
+            },
             sidecar: {
               instanceId: "5dd87053-012f-4ca3-a4d7-5aeb89466d5b",
               startedAt: "2026-08-20T12:00:00.000Z",
@@ -576,6 +579,9 @@ describe("chat internal admin api", () => {
                 provider: "openai",
                 model: "fixture-model",
                 memory: { outcome: "ingested", settleLagMs: 5 },
+                igrep: {
+                  wake: { calls: 1, hit: 1, empty: 0, failure: 0 },
+                },
                 sidecar: {
                   instanceId: "5dd87053-012f-4ca3-a4d7-5aeb89466d5b",
                   startedAt: "2026-08-20T12:00:00.000Z",

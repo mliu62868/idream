@@ -608,6 +608,7 @@ const chatProbeDshEvidenceShape = {
   igrepSearchFailures: optionalCount,
   memorySearchCalls: optionalCount,
   memorySearchHits: optionalCount,
+  memorySearchEvidenceMatches: optionalCount,
   memorySearchFailures: optionalCount,
   error: nullableText,
 };

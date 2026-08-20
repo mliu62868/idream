@@ -12,7 +12,7 @@ import {
   type CompanionRuntimeResponse,
 } from "@idream/shared/chat/companion-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CompanionEngine } from "./engine";
+import { CompanionEngine as RuntimeCompanionEngine } from "./engine";
 import { companionCompositionDigest, companionIgrepConfig } from "./composition";
 import { createCompanionServer, type CompanionServer } from "./server";
 import { AttemptWorkspaceStore, relationshipWorkspacePath } from "./workspace";
@@ -21,6 +21,17 @@ const AUTH_TOKEN = "engine-test-secret";
 const IGREP_LLM = { url: "https://maintenance.example/v1", model: "maintenance-model" };
 const temporary: string[] = [];
 const servers: CompanionServer[] = [];
+
+// Engine unit tests exercise the DSH programmatic loop, not the host's global
+// igrep installation. The real CLI boundary is covered by igrep tests and E2E.
+class CompanionEngine extends RuntimeCompanionEngine {
+  constructor(options: ConstructorParameters<typeof RuntimeCompanionEngine>[0]) {
+    super({
+      observeWake: async () => ({ outcome: "hit", resultCount: 1 }),
+      ...options,
+    });
+  }
+}
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
@@ -528,7 +539,11 @@ describe("programmatic DSH companion runtime", () => {
               render: (_args, value) => [{ type: "text", text: value.results.join("\n") }],
             },
             async execute() {
-              return { results: ["one-result idreamrecall_0123456789abcdef0123456789abcdef"] };
+              return {
+                results: Array.from({ length: 9 }, (_, index) =>
+                  `result-${index} idreamrecall_${index.toString(16).padStart(32, "0")}`
+                ),
+              };
             },
           }));
         },
@@ -594,8 +609,8 @@ describe("programmatic DSH companion runtime", () => {
     )).toMatchObject({
       operation: "memory",
       outcome: "hit",
-      resultCount: 1,
-      evidenceMatches: 1,
+      resultCount: 9,
+      evidenceMatches: 8,
       durationMs: expect.any(Number),
     });
     expect(JSON.stringify(events.filter((event) => event.type === "igrep_observation")))
