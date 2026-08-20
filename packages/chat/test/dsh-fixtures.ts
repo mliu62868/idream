@@ -5,8 +5,10 @@ import {
   COMPANION_IGREP_PLUGIN_VERSION,
   COMPANION_IGREP_VERSION,
   COMPANION_RUNTIME_PROTOCOL_VERSION,
+  companionToolCallSchema,
   type CompanionInvocation,
   type CompanionTerminalCandidate,
+  type CompanionToolCall,
 } from "@idream/shared/chat/companion-runtime";
 import type { ChatPrismaClient } from "../src/db.js";
 import {
@@ -22,6 +24,7 @@ import { probeCompanionSidecar } from "../src/companion-sidecar-readiness.js";
 
 const TEST_DSH_NORMAL_DIGEST = "a".repeat(64);
 const TEST_DSH_PRIVATE_DIGEST = "b".repeat(64);
+const TEST_DSH_TOOL_CALLS_ENV = "CHAT_TEST_DSH_TOOL_CALLS_JSON";
 
 let readinessVerified = false;
 
@@ -60,6 +63,23 @@ export function testCompanionSidecarProbe() {
   };
 }
 
+export async function withTestDshToolCalls<T>(
+  calls: readonly Omit<CompanionToolCall, "attemptId">[],
+  run: () => Promise<T>,
+): Promise<T> {
+  const previous = process.env[TEST_DSH_TOOL_CALLS_ENV];
+  process.env[TEST_DSH_TOOL_CALLS_ENV] = JSON.stringify(calls);
+  try {
+    return await run();
+  } finally {
+    if (previous === undefined) {
+      delete process.env[TEST_DSH_TOOL_CALLS_ENV];
+    } else {
+      process.env[TEST_DSH_TOOL_CALLS_ENV] = previous;
+    }
+  }
+}
+
 class TestDshRuntime implements CompanionRuntime {
   async cancel(): Promise<void> {}
 
@@ -88,6 +108,11 @@ class TestDshRuntime implements CompanionRuntime {
     const lastUser = [...invocation.preparedTurn.messages]
       .reverse()
       .find((message) => message.role === "user");
+    const toolCalls = testToolCalls(invocation);
+    for (const call of toolCalls) {
+      await port.executeTool(call);
+      if (signal?.aborted) throw new Error("test companion invocation aborted");
+    }
     const content = `Mock ${invocation.preparedTurn.characterName || "character"} reply: ${lastUser?.content ?? ""}`.trim();
     await port.emit({ ...eventBase(), type: "text_delta", delta: content });
     const usage = {
@@ -103,12 +128,26 @@ class TestDshRuntime implements CompanionRuntime {
       provider: invocation.preparedTurn.profile.provider,
       model: invocation.preparedTurn.profile.model,
       usage,
-      execution: { steps: 1, toolCalls: 0 },
+      execution: { steps: 1 + toolCalls.length, toolCalls: toolCalls.length },
       completedAt: new Date().toISOString(),
     };
     await port.emit({ ...eventBase(), type: "terminal_candidate", candidate });
     await port.commit(candidate);
   }
+}
+
+function testToolCalls(invocation: CompanionInvocation): CompanionToolCall[] {
+  const raw = process.env[TEST_DSH_TOOL_CALLS_ENV];
+  if (!raw) return [];
+  const configured = JSON.parse(raw) as Array<Omit<CompanionToolCall, "attemptId">>;
+  const allowed = new Set(invocation.preparedTurn.tools.map((tool) => tool.name));
+  return configured.flatMap((call) => {
+    if (!allowed.has(call.name)) return [];
+    return companionToolCallSchema.parse({
+      ...call,
+      attemptId: invocation.attemptId,
+    });
+  });
 }
 
 function testReadiness() {
