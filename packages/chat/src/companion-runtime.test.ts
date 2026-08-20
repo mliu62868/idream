@@ -253,6 +253,30 @@ describe("DshCompanionRuntime", () => {
     })).resolves.toBeUndefined();
   });
 
+  it("bounds an unterminated sidecar frame and cancels the response body", async () => {
+    const input = invocation();
+    let bodyCancelled = false;
+    const runtime = new DshCompanionRuntime({
+      baseUrl: "http://127.0.0.1:3101",
+      token: "secret",
+      fetchImpl: (async () => new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(4 * 1_024 * 1_024 + 1).fill(0x61));
+        },
+        cancel() {
+          bodyCancelled = true;
+        },
+      }), { status: 200 })) as typeof fetch,
+    });
+
+    await expect(runtime.run(input, {
+      emit() {},
+      async executeTool() { throw new Error("unused"); },
+      async commit() { throw new Error("unused"); },
+    })).rejects.toThrow("companion_response_frame_limit");
+    expect(bodyCancelled).toBe(true);
+  });
+
   it("maps Chat shutdown to every active sidecar invocation", async () => {
     let close: (() => void) | undefined;
     const calls: string[] = [];

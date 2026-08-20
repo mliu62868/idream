@@ -53,6 +53,8 @@ const activeDshInvocations = new Map<
   { runtime: DshCompanionRuntime; invocationId: string }
 >();
 const COMPANION_CONTROL_TIMEOUT_MS = 10_000;
+const COMPANION_RESPONSE_FRAME_MAX_BYTES = 4 * 1_024 * 1_024;
+const COMPANION_RESPONSE_TOTAL_MAX_BYTES = 32 * 1_024 * 1_024;
 
 export async function cancelActiveCompanionInvocations(
   reason: "user" | "timeout" | "shutdown",
@@ -348,11 +350,19 @@ async function* responseLines(
 ): AsyncGenerator<string> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
   let pending = "";
+  let totalBytes = 0;
   let completed = false;
   try {
     while (true) {
       const { done, value } = await reader.read();
+      if (value) {
+        totalBytes += value.byteLength;
+        if (totalBytes > COMPANION_RESPONSE_TOTAL_MAX_BYTES) {
+          throw new Error("companion_response_total_limit");
+        }
+      }
       pending += decoder.decode(value, { stream: !done });
       let newline = pending.indexOf("\n");
       while (newline >= 0) {
@@ -360,6 +370,9 @@ async function* responseLines(
         pending = pending.slice(newline + 1);
         if (line) yield line;
         newline = pending.indexOf("\n");
+      }
+      if (encoder.encode(pending).byteLength > COMPANION_RESPONSE_FRAME_MAX_BYTES) {
+        throw new Error("companion_response_frame_limit");
       }
       if (done) break;
     }
