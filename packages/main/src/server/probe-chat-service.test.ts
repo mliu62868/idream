@@ -16,6 +16,7 @@ import {
   chatServiceProbeSettleTimeoutMs,
   assertDedicatedChatProbeActor,
   collectProbeRolloutEvidenceBeforeCleanup,
+  describeDshRecallFailure,
   fetchProbeCompanionAttemptEvidence,
   evaluateDshRecallEvidence,
   parseExpectedCompanionRuntime,
@@ -547,6 +548,14 @@ describe("chat service conversation probe", () => {
       sentinel,
       dsh: projectDshCompanionEvidence(unrelated, "normal"),
     }).ok).toBe(false);
+    expect(describeDshRecallFailure({
+      ok: false,
+      recallMatched: false,
+      wakeObserved: true,
+      memorySearchHit: false,
+    }, projectDshCompanionEvidence(unrelated, "normal"))).toBe(
+      "matched=false;wake=true;memorySearch=false;calls=1;hits=1;evidenceMatches=0",
+    );
   });
 
   it("keeps the SSE observer outside the default DSH execution deadline", () => {

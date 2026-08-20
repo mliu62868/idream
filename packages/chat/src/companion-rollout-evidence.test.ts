@@ -331,4 +331,41 @@ describe("Gate R companion rollout evidence", () => {
     expect(sql).not.toContain("jsonb_typeof");
     expect(sql).not.toContain("primaryTelemetry') ->> 'runtime' IN");
   });
+
+  it("accepts actual wake observations in a strict Gate R attempt", async () => {
+    const prisma = {
+      $queryRaw: vi.fn()
+        .mockResolvedValueOnce([{
+          telemetry: {
+            schemaVersion: 1,
+            runtime: "dsh",
+            startedAt: "2026-08-20T18:33:12.000Z",
+            terminalStatus: "sent",
+            retryCount: 0,
+            igrep: {
+              wake: {
+                calls: 1,
+                hit: 1,
+                empty: 0,
+                failure: 0,
+                resultCount: 1,
+                latencyMs: [12],
+              },
+            },
+          },
+          memoryExtracted: true,
+        }])
+        .mockResolvedValueOnce([]),
+    } as unknown as ChatPrismaClient;
+
+    const result = await collectCompanionRolloutEvidence({
+      window: {
+        from: new Date("2026-08-20T18:33:00.000Z"),
+        to: new Date("2026-08-20T18:34:00.000Z"),
+      },
+    }, prisma);
+
+    expect(result.runtimes.dsh.attempts).toBe(1);
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
+  });
 });

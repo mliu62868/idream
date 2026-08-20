@@ -182,6 +182,20 @@ export function evaluateDshRecallEvidence(input: {
   };
 }
 
+export function describeDshRecallFailure(
+  recall: ReturnType<typeof evaluateDshRecallEvidence>,
+  dsh?: DshCompanionProbeEvidence,
+): string {
+  return [
+    `matched=${recall.recallMatched}`,
+    `wake=${recall.wakeObserved}`,
+    `memorySearch=${recall.memorySearchHit}`,
+    `calls=${dsh?.memorySearchCalls ?? 0}`,
+    `hits=${dsh?.memorySearchHits ?? 0}`,
+    `evidenceMatches=${dsh?.memorySearchEvidenceMatches ?? 0}`,
+  ].join(";");
+}
+
 export async function fetchProbeCompanionAttemptEvidence(input: {
   serviceUrl: string;
   internalToken: string | null;
@@ -783,7 +797,7 @@ async function probeConversation(input: {
     if (recallState.status !== 200 || recallState.settled !== true || !recall.ok || !(recallDsh?.ok ?? true)) {
       throw new Error(
         `cross-session recall failed: HTTP ${recallState.status}; settled=${recallState.settled === true}; ` +
-        `dsh=${recallDsh?.ok ?? "not_required"}; recall=${recall.ok}`,
+        `dsh=${recallDsh?.ok ?? "not_required"}; ${describeDshRecallFailure(recall, recallDsh)}`,
       );
     }
 

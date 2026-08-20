@@ -99,6 +99,7 @@ const telemetrySchema = z.object({
     profileDigest: z.string().regex(/^[a-f0-9]{64}$/),
   }).strict().optional(),
   igrep: z.object({
+    wake: igrepAttemptMetricSchema.optional(),
     search: igrepAttemptMetricSchema.optional(),
     memory: igrepAttemptMetricSchema.optional(),
   }).strict().optional(),
