@@ -528,13 +528,14 @@ describe("programmatic DSH companion runtime", () => {
               render: (_args, value) => [{ type: "text", text: value.results.join("\n") }],
             },
             async execute() {
-              return { results: ["one-result"] };
+              return { results: ["one-result idreamrecall_0123456789abcdef0123456789abcdef"] };
             },
           }));
         },
       }),
       adapter: () => new MemorySearchThenTextAdapter(),
       igrepCommand: "igrep",
+      observeWake: async () => ({ outcome: "hit", resultCount: 1 }),
       igrepLlm: IGREP_LLM,
     });
     const server = createCompanionServer({
@@ -594,10 +595,13 @@ describe("programmatic DSH companion runtime", () => {
       operation: "memory",
       outcome: "hit",
       resultCount: 1,
+      evidenceMatches: 1,
       durationMs: expect.any(Number),
     });
     expect(JSON.stringify(events.filter((event) => event.type === "igrep_observation")))
       .not.toContain("observatory");
+    expect(JSON.stringify(events.filter((event) => event.type === "igrep_observation")))
+      .not.toContain("idreamrecall_0123456789abcdef0123456789abcdef");
   });
 
   it("classifies an igrep memory failure without leaking its error", async () => {

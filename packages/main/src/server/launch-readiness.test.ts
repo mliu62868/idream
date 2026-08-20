@@ -461,6 +461,7 @@ function passingDshEvidence(mode: "normal" | "private") {
           wakeFailures: 0,
           memorySearchCalls: 1,
           memorySearchHits: 1,
+          memorySearchEvidenceMatches: 1,
           memorySearchFailures: 0,
           memoryOutcome: "ingested",
           memoryIngestOutcome: "ingested",

@@ -9,6 +9,15 @@ import {
 function fakePool(events, pending = [{ user_id: "private-user", intent_count: 2 }]) {
   const client = {
     async query(sql) {
+      if (String(sql).includes("projection_claim_")) {
+        throw new Error("old schema has no projection claim columns");
+      }
+      if (String(sql).includes("UPDATE chat.chat_file_mutations")) {
+        assert.match(
+          String(sql),
+          /payload\s*=\s*chat\.redact_file_mutation_payload\(id,\s*kind,\s*payload\)/u,
+        );
+      }
       events.push(String(sql).trim().split(/\s+/u).slice(0, 3).join(" "));
       if (String(sql).includes("UPDATE chat.chat_file_mutations")) {
         return { rowCount: 2, rows: [{ id: "one" }, { id: "two" }] };

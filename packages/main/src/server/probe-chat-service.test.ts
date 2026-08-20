@@ -59,7 +59,15 @@ function completedDshTrace() {
       memory: { outcome: "ingested", settleLagMs: 17 },
       igrep: {
         wake: { calls: 1, hit: 0, empty: 1, failure: 0, resultCount: 0, latencyMs: [2] },
-        memory: { calls: 1, hit: 1, empty: 0, failure: 0, resultCount: 1, latencyMs: [8] },
+          memory: {
+            calls: 1,
+            hit: 1,
+            empty: 0,
+            failure: 0,
+            resultCount: 1,
+            evidenceMatches: 1,
+            latencyMs: [8],
+          },
       },
       sidecar: {
         instanceId: "5dd87053-012f-4ca3-a4d7-5aeb89466d5b",
@@ -91,8 +99,10 @@ function installFailFastProbeFetch(
 ): string[] {
   const requests: string[] = [];
   let sessionListReads = 0;
+  let sessionCreates = 0;
   let messagePosts = 0;
-  let sessionDeleted = false;
+  let seededRecallMarker: string | undefined;
+  const deletedSessions = new Set<string>();
   vi.stubGlobal("fetch", vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
     const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
     const method = init?.method ?? "GET";
@@ -133,14 +143,30 @@ function installFailFastProbeFetch(
       return json({ relationships: [] });
     }
     if (url.pathname === "/api/v1/chat/sessions" && method === "POST") {
-      return json({ id: "session-probe" }, 201);
+      sessionCreates += 1;
+      return json({ id: sessionCreates === 1 ? "session-probe" : "session-recall" }, 201);
     }
     if (url.pathname === "/api/v1/chat/sessions/session-probe/messages" && method === "POST") {
       messagePosts += 1;
       const normal = messagePosts === 1;
+      if (normal) {
+        const content = JSON.parse(String(init?.body)) as { content: string };
+        seededRecallMarker = /idreamrecall_[a-f0-9]{32}/u.exec(content.content)?.[0];
+        expect(seededRecallMarker).toBeTruthy();
+      }
       return json({
         assistantMessageId: normal ? "assistant-normal" : "assistant-future",
         userMessageId: normal ? "user-normal" : "user-future",
+        attempt: 1,
+        status: "pending",
+      }, 202);
+    }
+    if (url.pathname === "/api/v1/chat/sessions/session-recall/messages" && method === "POST") {
+      const content = JSON.parse(String(init?.body)) as { content: string };
+      expect(content.content).not.toContain(seededRecallMarker);
+      return json({
+        assistantMessageId: "assistant-recall",
+        userMessageId: "user-recall",
         attempt: 1,
         status: "pending",
       }, 202);
@@ -183,8 +209,21 @@ function installFailFastProbeFetch(
         "",
           ]);
     }
+    if (url.pathname === "/api/v1/chat/messages/assistant-recall/stream") {
+      return sse([
+        "event: start",
+        'data: {"type":"start","attempt":1}',
+        "",
+        "event: delta",
+        'data: {"type":"delta","attempt":1,"seq":1,"delta":"recalled"}',
+        "",
+        "event: done",
+        'data: {"type":"done","attempt":1,"usage":{}}',
+        "",
+      ]);
+    }
     if (url.pathname === "/api/v1/chat/sessions/session-probe" && method === "GET") {
-      if (sessionDeleted) return json({}, 404);
+      if (deletedSessions.has("session-probe")) return json({}, 404);
       return json({
         messages: [
           {
@@ -217,11 +256,29 @@ function installFailFastProbeFetch(
         ],
       });
     }
+    if (url.pathname === "/api/v1/chat/sessions/session-recall" && method === "GET") {
+      if (deletedSessions.has("session-recall")) return json({}, 404);
+      return json({
+        messages: [{
+          id: "assistant-recall",
+          role: "assistant",
+          status: "sent",
+          content: "recalled",
+          attempt: 1,
+          memoryExtractedAttempt: 1,
+          scene: { version: 0 },
+        }],
+      });
+    }
     if (url.pathname === "/api/v1/chat/sessions/session-probe/memory" && method === "POST") {
       return json({ ok: true });
     }
     if (url.pathname === "/api/v1/chat/sessions/session-probe" && method === "DELETE") {
-      sessionDeleted = true;
+      deletedSessions.add("session-probe");
+      return json({ ok: true });
+    }
+    if (url.pathname === "/api/v1/chat/sessions/session-recall" && method === "DELETE") {
+      deletedSessions.add("session-recall");
       return json({ ok: true });
     }
     return json({ error: "unexpected probe request" }, 500);
@@ -324,6 +381,7 @@ describe("chat service DSH evidence", () => {
       igrepSearchFailures: 0,
       memorySearchCalls: 1,
       memorySearchHits: 1,
+      memorySearchEvidenceMatches: 1,
       memorySearchFailures: 0,
       error: null,
     });
@@ -481,6 +539,13 @@ describe("chat service conversation probe", () => {
       assistantContent: "I cannot recall it.",
       sentinel,
       dsh: projectDshCompanionEvidence(completedDshTrace(), "normal"),
+    }).ok).toBe(false);
+    const unrelated = completedDshTrace();
+    unrelated.primaryTelemetry.igrep.memory.evidenceMatches = 0;
+    expect(evaluateDshRecallEvidence({
+      assistantContent: `You told me ${sentinel}.`,
+      sentinel,
+      dsh: projectDshCompanionEvidence(unrelated, "normal"),
     }).ok).toBe(false);
   });
 
@@ -672,6 +737,7 @@ describe("chat service conversation probe", () => {
       "future scene terminal state failed",
     );
     expect(requests.some((request) => request.includes("/regenerate"))).toBe(false);
+    expect(requests).toContain("POST /api/v1/chat/sessions/session-recall/messages");
     expect(requests.filter((request) =>
       request === "POST /api/v1/chat/sessions/session-probe/messages")).toHaveLength(2);
   });

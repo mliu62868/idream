@@ -219,8 +219,9 @@ feed PM2; Chat and Gen must use their own exact deployed env authorities.
 
 `launch:probe:chat-service` must prove more than BFF reachability: it runs a signed
 conversation smoke (session create, message send, SSE stream, reload, a unique
-prior-turn sentinel recalled through an observed official `wake` + successful
-`memory_search` hit, regenerate, no-memory zero-read/write evidence, and
+prior-session sentinel recalled from a second session through an observed
+official `igrep mem wake` result + `memory_search` result-bound marker match,
+regenerate, no-memory zero-read/write evidence, and
 blocked-input handling). The report keeps only content-free booleans and metric
 counts; it never emits the sentinel, query, result snippet, or internal trace. If
 `CHAT_SERVICE_PROBE_CHARACTER_ID` is unset,

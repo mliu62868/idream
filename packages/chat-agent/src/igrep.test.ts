@@ -5,6 +5,7 @@ import type { CompanionWorkspaceRebuild } from "@idream/shared/chat/companion-ru
 import { afterEach, describe, expect, it } from "vitest";
 import {
   IgrepMemoryRebuilder,
+  observeIgrepWake,
   probeIgrepLifecycle,
   runJsonCommand,
   type JsonCommandOptions,
@@ -34,6 +35,40 @@ describe("igrep subprocess bounds", () => {
       /^child command failed: code=stderr_limit digest=[a-f0-9]{64}$/,
     );
     expect((thrown as Error).message).not.toContain("PRIVATE_STDERR_SENTINEL");
+  });
+});
+
+describe("official igrep wake observation", () => {
+  it("reports the actual command result without retaining its context", async () => {
+    const calls: JsonCommandOptions[] = [];
+    const observed = await observeIgrepWake(
+      "/opt/igrep",
+      "/private/workspace",
+      undefined,
+      async (options) => {
+        calls.push(options);
+        return { markdownContext: "PRIVATE_SENTINEL" };
+      },
+    );
+    expect(observed).toEqual({ outcome: "hit", resultCount: 1 });
+    expect(calls).toEqual([expect.objectContaining({
+      command: "/opt/igrep",
+      args: [
+        "mem", "wake", "--workspace", "/private/workspace",
+        "--max-context-chars", "12000", "--format", "provider-json",
+      ],
+      timeoutMs: 10_000,
+    })]);
+    expect(JSON.stringify(observed)).not.toContain("PRIVATE_SENTINEL");
+  });
+
+  it("fails closed when wake does not return the official result shape", async () => {
+    await expect(observeIgrepWake(
+      "/opt/igrep",
+      "/private/workspace",
+      undefined,
+      async () => ({ warnings: [] }),
+    )).rejects.toThrow("unverifiable evidence");
   });
 });
 

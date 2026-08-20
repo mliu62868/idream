@@ -46,6 +46,7 @@ const igrepAttemptMetricSchema = z.object({
   empty: z.number().int().nonnegative(),
   failure: z.number().int().nonnegative(),
   resultCount: z.number().int().nonnegative(),
+  evidenceMatches: z.number().int().nonnegative().max(8).optional(),
   latencyMs: z.array(z.number().int().nonnegative()).max(64),
 }).strict().refine(
   (value) => value.calls === value.hit + value.empty + value.failure

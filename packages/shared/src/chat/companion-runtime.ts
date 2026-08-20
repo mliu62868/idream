@@ -810,6 +810,7 @@ export const companionEventSchema = z
         operation: z.enum(["wake", "search", "memory"]),
         outcome: z.enum(["hit", "empty", "failure"]),
         resultCount: nonNegativeIntegerSchema.optional(),
+        evidenceMatches: nonNegativeIntegerSchema.max(8).optional(),
         durationMs: nonNegativeIntegerSchema,
       })
       .strict(),
@@ -858,6 +859,16 @@ export const companionEventSchema = z
           code: "custom",
           path: ["resultCount"],
           message: "igrep result count must prove the declared outcome",
+        });
+      }
+      if (
+        event.evidenceMatches !== undefined &&
+        (event.operation !== "memory" || event.outcome !== "hit")
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["evidenceMatches"],
+          message: "audit evidence matches are valid only for successful memory search results",
         });
       }
     }
@@ -1069,6 +1080,7 @@ export const companionProbeDshEvidenceSchema = z
     igrepSearchFailures: nonNegativeIntegerSchema,
     memorySearchCalls: nonNegativeIntegerSchema,
     memorySearchHits: nonNegativeIntegerSchema,
+    memorySearchEvidenceMatches: nonNegativeIntegerSchema,
     memorySearchFailures: nonNegativeIntegerSchema,
     error: z.string().nullable(),
   })
@@ -1197,6 +1209,7 @@ export function projectCompanionProbeDshEvidence(
     igrepSearchFailures: search.failure,
     memorySearchCalls: memorySearch.calls,
     memorySearchHits: memorySearch.hit,
+    memorySearchEvidenceMatches: memorySearch.evidenceMatches,
     memorySearchFailures: memorySearch.failure,
     error: failures.length === 0
       ? null
@@ -1210,15 +1223,18 @@ function probeIgrepMetric(value: unknown): {
   hit: number;
   empty: number;
   failure: number;
+  evidenceMatches: number;
 } {
   if (value === undefined) {
-    return { valid: true, calls: 0, hit: 0, empty: 0, failure: 0 };
+    return { valid: true, calls: 0, hit: 0, empty: 0, failure: 0, evidenceMatches: 0 };
   }
   const metric = probeRecord(value);
-  const values = [metric.calls, metric.hit, metric.empty, metric.failure];
+  const evidenceMatches = metric.evidenceMatches ?? 0;
+  const values = [metric.calls, metric.hit, metric.empty, metric.failure, evidenceMatches];
   const valid = values.every((entry) =>
     typeof entry === "number" && Number.isSafeInteger(entry) && entry >= 0
-  ) && metric.calls === Number(metric.hit) + Number(metric.empty) + Number(metric.failure);
+  ) && Number(evidenceMatches) <= 8
+    && metric.calls === Number(metric.hit) + Number(metric.empty) + Number(metric.failure);
   return valid
     ? {
         valid: true,
@@ -1226,8 +1242,9 @@ function probeIgrepMetric(value: unknown): {
         hit: Number(metric.hit),
         empty: Number(metric.empty),
         failure: Number(metric.failure),
+        evidenceMatches: Number(evidenceMatches),
       }
-    : { valid: false, calls: 0, hit: 0, empty: 0, failure: 0 };
+    : { valid: false, calls: 0, hit: 0, empty: 0, failure: 0, evidenceMatches: 0 };
 }
 
 function probeRecord(value: unknown): Record<string, unknown> {

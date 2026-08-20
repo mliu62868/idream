@@ -172,6 +172,7 @@ export function evaluateDshRecallEvidence(input: {
   const memorySearchHit =
     (input.dsh?.memorySearchCalls ?? 0) > 0 &&
     (input.dsh?.memorySearchHits ?? 0) > 0 &&
+    (input.dsh?.memorySearchEvidenceMatches ?? 0) > 0 &&
     input.dsh?.memorySearchFailures === 0;
   return {
     ok: recallMatched && wakeObserved && memorySearchHit,
@@ -613,6 +614,7 @@ async function probeConversation(input: {
     cleanup: { ok: false, error: "not attempted" },
   };
   let sessionId: string | null = null;
+  let recallSessionId: string | null = null;
   try {
     // A failed prior probe may have left an active audit session. Remove only
     // this dedicated actor's visible state before creating a fresh run.
@@ -633,10 +635,10 @@ async function probeConversation(input: {
     if (!session.id) throw new Error(`create session returned HTTP ${createRes.status}`);
     sessionId = session.id;
 
-    const recallSentinel = `rooftop-${createHash("sha256")
+    const recallSentinel = `idreamrecall_${createHash("sha256")
       .update(input.runId)
       .digest("hex")
-      .slice(0, 16)}`;
+      .slice(0, 32)}`;
 
     // 2) send message and persist one unique fact for the later recall proof.
     const sendRes = await signedFetch({
@@ -715,17 +717,85 @@ async function probeConversation(input: {
       );
     }
 
-    // 5) Create a later Scene revision, then regenerate the first assistant
-    // attempt. The regenerated PreparedTurn must retain the original user
-    // anchor (Scene v0) rather than reading the later Scene head.
+    // 5) Recall from a new session. Its PreparedTurn contains no seed turn, so
+    // the exact marker can arrive only through the relationship igrep workspace.
+    const recallCreateRes = await signedFetch({
+      ...input,
+      method: "POST",
+      path: "/api/v1/chat/sessions",
+      body: JSON.stringify({ characterId: input.characterId }),
+    });
+    const recallSession = (await recallCreateRes.json().catch(() => ({}))) as { id?: string };
+    if (recallCreateRes.status !== 201 || !recallSession.id) {
+      throw new Error(`recall session create failed: HTTP ${recallCreateRes.status}`);
+    }
+    recallSessionId = recallSession.id;
+    const recallSend = await signedFetch({
+      ...input,
+      method: "POST",
+      path: `/api/v1/chat/sessions/${recallSessionId}/messages`,
+      body: JSON.stringify({
+        content:
+          "Use memory_search to recall the exact rooftop probe code word from a prior session and say it exactly.",
+      }),
+      idempotencyKey: `chat-probe:${input.runId}:cross-session-recall`,
+    });
+    const recallTurn = (await recallSend.json().catch(() => ({}))) as {
+      assistantMessageId?: string;
+      attempt?: number;
+    };
+    const recallStream = recallTurn.assistantMessageId
+      ? await probeStream({
+          ...input,
+          assistantMessageId: recallTurn.assistantMessageId,
+          expectedAttempt: recallTurn.attempt ?? 1,
+        })
+      : { ok: false, error: "missing recall assistantMessageId" };
+    if (recallSend.status !== 202 || !recallTurn.assistantMessageId || !recallStream.ok) {
+      throw new Error(
+        recallSend.status !== 202
+          ? `recall send failed: HTTP ${recallSend.status}`
+          : `recall stream failed: ${recallStream.error ?? "terminal event missing"}`,
+      );
+    }
+    const recallState = await waitForSessionMessage({
+      ...input,
+      sessionId: recallSessionId,
+      assistantMessageId: recallTurn.assistantMessageId,
+      requireMemoryExtracted: true,
+    });
+    const recallDsh = input.expectedCompanionRuntime === "dsh"
+      ? await fetchProbeCompanionAttemptEvidence({
+          ...input,
+          sessionId: recallSessionId,
+          messageId: recallTurn.assistantMessageId,
+          attempt: recallTurn.attempt ?? 1,
+          mode: "normal",
+        })
+      : undefined;
+    const recall = input.expectedCompanionRuntime === "dsh"
+      ? evaluateDshRecallEvidence({
+          assistantContent: recallState.message?.content,
+          sentinel: recallSentinel,
+          dsh: recallDsh,
+        })
+      : { ok: true, recallMatched: true, wakeObserved: true, memorySearchHit: true };
+    if (recallState.status !== 200 || recallState.settled !== true || !recall.ok || !(recallDsh?.ok ?? true)) {
+      throw new Error(
+        `cross-session recall failed: HTTP ${recallState.status}; settled=${recallState.settled === true}; ` +
+        `dsh=${recallDsh?.ok ?? "not_required"}; recall=${recall.ok}`,
+      );
+    }
+
+    // 6) Create a later Scene revision in the seed session, then regenerate
+    // the first assistant attempt. The regenerated PreparedTurn must retain
+    // its original user anchor (Scene v0), not the later Scene head.
     const futureSend = await signedFetch({
       ...input,
       method: "POST",
       path: `/api/v1/chat/sessions/${sessionId}/messages`,
       body: JSON.stringify({
-        content:
-          "Use memory_search to recall the exact rooftop probe code word from our prior turn, say it exactly, " +
-          "then move us to the train station at dawn after choosing the train.",
+        content: "Move us to the train station at dawn after choosing the train.",
       }),
       idempotencyKey: `chat-probe:${input.runId}:future-scene`,
     });
@@ -779,13 +849,6 @@ async function probeConversation(input: {
           mode: "normal",
         })
       : undefined;
-    const recall = input.expectedCompanionRuntime === "dsh"
-      ? evaluateDshRecallEvidence({
-          assistantContent: futureState.message?.content,
-          sentinel: recallSentinel,
-          dsh: futureDsh,
-        })
-      : { ok: true, recallMatched: true, wakeObserved: true, memorySearchHit: true };
     const futureReady =
       futureState.status === 200 &&
       futureState.settled === true &&
@@ -930,7 +993,7 @@ async function probeConversation(input: {
 
     const relationshipBefore = await readProbeRelationship(input);
 
-    // 6) no-memory smoke: the assistant row must pin disabled even though the
+    // 7) no-memory smoke: the assistant row must pin disabled even though the
     // session is later restored, with no relationship or memory derivation.
     const disableMemory = await signedFetch({
       ...input, method: "POST", path: `/api/v1/chat/sessions/${sessionId}/memory`,
@@ -1030,7 +1093,7 @@ async function probeConversation(input: {
       throw new Error(evidence.noMemory.error ?? "private no-memory evidence failed");
     }
 
-    // 7) blocked-input smoke: the mock/safety provider blocks the underage keyword.
+    // 8) blocked-input smoke: the mock/safety provider blocks the underage keyword.
     const blockedRes = await signedFetch({
       ...input, method: "POST", path: `/api/v1/chat/sessions/${sessionId}/messages`,
       body: JSON.stringify({ content: "this references csam content" }),
@@ -1059,6 +1122,7 @@ async function probeConversation(input: {
     evidence.cleanup = await cleanupCompletedProbeState({
       ...input,
       sessionId,
+      additionalSessionIds: recallSessionId ? [recallSessionId] : [],
     });
   }
   return finalizeConversation(evidence);
@@ -1255,6 +1319,7 @@ export async function cleanupCompletedProbeState(input: {
   userId: string;
   characterId: string;
   sessionId: string | null;
+  additionalSessionIds?: readonly string[];
 }): Promise<CleanupEvidence> {
   if (!input.sessionId) {
     return {
@@ -1273,20 +1338,27 @@ export async function cleanupCompletedProbeState(input: {
       path: `/api/v1/chat/sessions/${input.sessionId}/memory`,
       body: JSON.stringify({ memoryEnabled: true }),
     });
-    const deleted = await signedFetch({
-      ...input,
-      method: "DELETE",
-      path: `/api/v1/chat/sessions/${input.sessionId}`,
-    });
+    const sessionIds = [input.sessionId, ...(input.additionalSessionIds ?? [])];
+    const deleted: Response[] = [];
+    for (const targetSessionId of sessionIds) {
+      deleted.push(await signedFetch({
+        ...input,
+        method: "DELETE",
+        path: `/api/v1/chat/sessions/${targetSessionId}`,
+      }));
+    }
     const fileAuthority = await clearProbeFileAuthority(input);
-    const verify = await signedFetch({
-      ...input,
-      method: "GET",
-      path: `/api/v1/chat/sessions/${input.sessionId}`,
-    });
-    const sessionDeleted = deleted.status === 200;
+    const verify: Response[] = [];
+    for (const targetSessionId of sessionIds) {
+      verify.push(await signedFetch({
+        ...input,
+        method: "GET",
+        path: `/api/v1/chat/sessions/${targetSessionId}`,
+      }));
+    }
+    const sessionDeleted = deleted.every((response) => response.status === 200);
     const relationshipDeleted = fileAuthority.relationshipsGone === true;
-    const sessionGone = verify.status === 404;
+    const sessionGone = verify.every((response) => response.status === 404);
     const ok =
       restore.status === 200 &&
       sessionDeleted &&
@@ -1295,7 +1367,7 @@ export async function cleanupCompletedProbeState(input: {
       sessionGone;
     return {
       ok,
-      status: verify.status,
+      status: verify[0]?.status,
       sessionDeleted,
       relationshipDeleted,
       relationshipsDeleted: fileAuthority.relationshipsDeleted,
@@ -1303,7 +1375,7 @@ export async function cleanupCompletedProbeState(input: {
       sessionGone,
       error: ok
         ? null
-        : `restore=${restore.status}; delete=${deleted.status}; fileAuthority=${fileAuthority.error ?? fileAuthority.ok}; verify=${verify.status}`,
+        : `restore=${restore.status}; delete=${deleted.map((response) => response.status).join(",")}; fileAuthority=${fileAuthority.error ?? fileAuthority.ok}; verify=${verify.map((response) => response.status).join(",")}`,
     };
   } catch (error) {
     return {

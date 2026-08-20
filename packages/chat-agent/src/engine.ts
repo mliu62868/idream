@@ -40,7 +40,7 @@ import type {
   AttemptWorkspaceStore,
   WorkspacePurgeRequest,
 } from "./workspace";
-import type { IgrepPluginModule } from "./igrep";
+import { observeIgrepWake, type IgrepPluginModule } from "./igrep";
 import type {
   CompanionWorkspaceRebuildPromotion,
   CompanionWorkspaceRebuildSource,
@@ -60,6 +60,7 @@ export interface CompanionEngineOptions {
   plugin(): Promise<IgrepPluginModule>;
   adapter(profile: PreparedTurnProfile): LlmAdapter;
   igrepCommand: string;
+  observeWake?: typeof observeIgrepWake;
   igrepLlm: { url: string; model: string };
   rebuilder?: {
     rebuild(
@@ -93,6 +94,13 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
+// SPEC: signed Gate-E probes use one high-entropy marker family. Persist only
+// a match count, never the marker or memory_search result bytes.
+function auditRecallEvidenceMatches(value: unknown): number {
+  const matches = JSON.stringify(value).match(/\bidreamrecall_[a-f0-9]{32}\b/giu) ?? [];
+  return new Set(matches.map((match) => match.toLowerCase())).size;
+}
+
 function wireUsage(usage?: TokenUsage) {
   return {
     promptTokens: (usage?.inputTokens ?? 0)
@@ -122,7 +130,7 @@ function invocationFailure(input: {
   terminalCommitted: boolean;
   phase: "composition" | "workspace" | "agent" | "memory_commit";
   turnFailure?: LlmFailure;
-  igrepFailure?: "search" | "memory";
+  igrepFailure?: "wake" | "search" | "memory";
   preflightCode?: string;
 }) {
   if (input.terminalCommitted || input.phase === "memory_commit") {
@@ -513,10 +521,8 @@ export class CompanionEngine implements InvocationService {
     let sessionCreated = false;
     let failurePhase: "composition" | "workspace" | "agent" | "memory_commit" = "composition";
     let turnFailure: LlmFailure | undefined;
-    let igrepFailure: "search" | "memory" | undefined;
+    let igrepFailure: "wake" | "search" | "memory" | undefined;
     let preflightCode: string | undefined;
-    let runtimeStarted = false;
-    const pendingOperationalEvents: EventPayload[] = [];
     const event = (payload: EventPayload) => {
       const value = companionEventSchema.parse({
         ...payload,
@@ -563,23 +569,6 @@ export class CompanionEngine implements InvocationService {
       failurePhase = "workspace";
       workspace = await this.options.workspaces.prepare(invocation, active.cancellation.signal);
       failurePhase = "agent";
-      if (mode === "normal") {
-        ctx.on("system-prompt/assemble", async (_assembly, _context, next) => {
-          const startedAt = Date.now();
-          const assembled = await next();
-          const profile = assembled.variables.igrep_memory_profile?.trim() ?? "";
-          const observation = {
-            type: "igrep_observation",
-            operation: "wake",
-            outcome: profile ? "hit" : "empty",
-            resultCount: profile ? 1 : 0,
-            durationMs: Math.max(0, Date.now() - startedAt),
-          } as const satisfies EventPayload;
-          if (runtimeStarted) event(observation);
-          else pendingOperationalEvents.push(observation);
-          return assembled;
-        }, { prepend: true });
-      }
       const igrepStartedAt = new Map<string, number>();
       ctx.on("tools/pre-execute", async (execution, next) => {
         if (execution.name === "igrep_search" || execution.name === "memory_search") {
@@ -601,6 +590,9 @@ export class CompanionEngine implements InvocationService {
             ? result.value as Record<string, unknown>
             : null;
           const resultCount = Array.isArray(value?.results) ? value.results.length : undefined;
+          const evidenceMatches = operation === "memory" && resultCount !== undefined
+            ? auditRecallEvidenceMatches(value)
+            : 0;
           if (result.isError || resultCount === undefined) igrepFailure = operation;
           event({
             type: "igrep_observation",
@@ -611,6 +603,7 @@ export class CompanionEngine implements InvocationService {
                 ? "empty"
                 : "hit",
             ...(result.isError || resultCount === undefined ? {} : { resultCount }),
+            ...(evidenceMatches > 0 ? { evidenceMatches } : {}),
             durationMs: Math.max(0, Date.now() - startedAt),
           });
         }
@@ -771,8 +764,31 @@ export class CompanionEngine implements InvocationService {
       };
       if (active.cancelReason) active.agentCancel(active.cancelReason);
       event({ type: "started", instance: this.instance, profileDigest: compositionPlan.digest });
-      runtimeStarted = true;
-      for (const pending of pendingOperationalEvents.splice(0)) event(pending);
+      if (mode === "normal") {
+        const wakeStartedAt = Date.now();
+        try {
+          const wake = await (this.options.observeWake ?? observeIgrepWake)(
+            this.options.igrepCommand,
+            workspace.path,
+            active.cancellation.signal,
+          );
+          event({
+            type: "igrep_observation",
+            operation: "wake",
+            ...wake,
+            durationMs: Math.max(0, Date.now() - wakeStartedAt),
+          });
+        } catch (error) {
+          igrepFailure = "wake";
+          event({
+            type: "igrep_observation",
+            operation: "wake",
+            outcome: "failure",
+            durationMs: Math.max(0, Date.now() - wakeStartedAt),
+          });
+          throw error;
+        }
+      }
       const current = invocation.preparedTurn.messages.find((message) => message.sourceKind === "current_user");
       if (!current || current.role !== "user") throw new Error("current user message is missing");
       agent.followup(freezeMessage({

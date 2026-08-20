@@ -74,14 +74,10 @@ async function retireUserIntents(pool, userId) {
     const retired = await client.query(
       `UPDATE chat.chat_file_mutations
        SET status = 'applied',
-           payload = jsonb_build_object('kind', kind),
+           payload = chat.redact_file_mutation_payload(id, kind, payload),
            attempts = attempts + 1,
            last_error = NULL,
-           applied_at = timezone('utc', now()),
-           projection_claim_token = NULL,
-           projection_claimed_at = NULL,
-           projection_authority_version = NULL,
-           projection_rebuild_id = NULL
+           applied_at = timezone('utc', now())
        WHERE user_id = $1
          AND status = 'pending'
          AND kind IN ('memory_update', 'memory_delete')

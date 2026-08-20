@@ -397,6 +397,7 @@ describe("companion runtime stable wire contract", () => {
         operation: "memory",
         outcome: "hit",
         resultCount: 2,
+        evidenceMatches: 1,
         durationMs: 12,
       },
       { ...common, type: "heartbeat" },
@@ -701,6 +702,18 @@ describe("companion runtime stable wire contract", () => {
       resultCount: 0,
       durationMs: 0,
     })).toMatchObject({ operation: "wake", outcome: "empty" });
+    expect(companionEventSchema.parse({
+      invocationId: "invocation-1",
+      attemptId: "attempt-1",
+      sequence: 3,
+      occurredAt: now,
+      type: "igrep_observation",
+      operation: "memory",
+      outcome: "hit",
+      resultCount: 1,
+      evidenceMatches: 1,
+      durationMs: 1,
+    })).toMatchObject({ operation: "memory", evidenceMatches: 1 });
   });
 
   it("keeps signed DSH probe evidence content-free and exact", () => {
@@ -716,6 +729,7 @@ describe("companion runtime stable wire contract", () => {
       igrepSearchFailures: 0,
       memorySearchCalls: 0,
       memorySearchHits: 0,
+      memorySearchEvidenceMatches: 0,
       memorySearchFailures: 0,
       error: null,
     };
@@ -749,7 +763,15 @@ describe("companion runtime stable wire contract", () => {
         memory: { outcome: "ingested", settleLagMs: 4 },
         igrep: {
           wake: { calls: 1, hit: 0, empty: 1, failure: 0, resultCount: 0, latencyMs: [1] },
-          memory: { calls: 1, hit: 1, empty: 0, failure: 0, resultCount: 1, latencyMs: [4] },
+          memory: {
+            calls: 1,
+            hit: 1,
+            empty: 0,
+            failure: 0,
+            resultCount: 1,
+            evidenceMatches: 1,
+            latencyMs: [4],
+          },
         },
         sidecar: {
           instanceId: sidecarInstance.id,
@@ -772,6 +794,7 @@ describe("companion runtime stable wire contract", () => {
       wakeFailures: 0,
       memorySearchCalls: 1,
       memorySearchHits: 1,
+      memorySearchEvidenceMatches: 1,
       memorySearchFailures: 0,
     });
     expect(JSON.stringify(projected)).not.toContain("must-not-cross");

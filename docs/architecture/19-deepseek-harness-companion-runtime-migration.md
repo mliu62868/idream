@@ -875,7 +875,7 @@ signed BFF
   -> exact session re-fetch
   -> Chat DB terminal/finalize
   -> Scene/relationship assertions
-  -> igrep recall/wake assertion
+  -> second-session igrep recall + official wake result + result-bound marker assertion
   -> outbox delivered
   -> Main recent_chats projection
 ```

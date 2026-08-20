@@ -111,6 +111,35 @@ export async function runJsonCommand(options: JsonCommandOptions): Promise<unkno
   }
 }
 
+/**
+ * Gate E observes the actual official wake command instead of inferring it
+ * from prompt assembly. Resident profile bytes never leave this process.
+ */
+export async function observeIgrepWake(
+  command: string,
+  workspace: string,
+  signal?: AbortSignal,
+  run: RunJsonCommand = runJsonCommand,
+): Promise<{ outcome: "hit" | "empty"; resultCount: 0 | 1 }> {
+  const payload = objectRecord(await run({
+    command,
+    args: [
+      "mem", "wake",
+      "--workspace", workspace,
+      "--max-context-chars", "12000",
+      "--format", "provider-json",
+    ],
+    timeoutMs: 10_000,
+    signal,
+  }));
+  if (!payload || typeof payload.markdownContext !== "string") {
+    throw new Error("igrep wake returned unverifiable evidence");
+  }
+  return payload.markdownContext.trim()
+    ? { outcome: "hit", resultCount: 1 }
+    : { outcome: "empty", resultCount: 0 };
+}
+
 export class IgrepMemoryProbe implements MemoryProbe {
   constructor(private readonly command: string) {}
 

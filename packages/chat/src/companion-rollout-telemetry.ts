@@ -6,6 +6,7 @@ export interface CompanionIgrepAttemptMetric {
   empty: number;
   failure: number;
   resultCount: number;
+  evidenceMatches?: number;
   latencyMs: number[];
 }
 
@@ -39,11 +40,13 @@ export function recordCompanionOperationalEvent(
     empty: 0,
     failure: 0,
     resultCount: 0,
+    evidenceMatches: 0,
     latencyMs: [],
   };
   metric.calls += 1;
   metric[event.outcome] += 1;
   metric.resultCount += event.resultCount ?? 0;
+  metric.evidenceMatches = (metric.evidenceMatches ?? 0) + (event.evidenceMatches ?? 0);
   metric.latencyMs.push(event.durationMs);
   telemetry.igrep[event.operation] = metric;
 }

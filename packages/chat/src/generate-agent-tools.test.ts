@@ -739,6 +739,7 @@ describe("chat generate agent image tool", () => {
                   empty: 0,
                   failure: 0,
                   resultCount: 2,
+                  evidenceMatches: 0,
                   latencyMs: [12],
                 },
               },

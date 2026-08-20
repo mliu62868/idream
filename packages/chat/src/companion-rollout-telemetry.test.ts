@@ -36,6 +36,7 @@ describe("companion operational telemetry", () => {
       operation: "memory",
       outcome: "hit",
       resultCount: 2,
+      evidenceMatches: 1,
       durationMs: 12,
     });
     recordCompanionOperationalEvent(telemetry, {
@@ -60,6 +61,7 @@ describe("companion operational telemetry", () => {
           empty: 1,
           failure: 0,
           resultCount: 0,
+          evidenceMatches: 0,
           latencyMs: [3],
         },
         memory: {
@@ -68,6 +70,7 @@ describe("companion operational telemetry", () => {
           empty: 0,
           failure: 1,
           resultCount: 2,
+          evidenceMatches: 1,
           latencyMs: [12, 20],
         },
       },
