@@ -12,7 +12,7 @@ afterEach(async () => {
   }));
 });
 
-function adapterFor(baseUrl: string): OpenAiCompatibleAdapter {
+function adapterFor(baseUrl: string, fetchImpl?: typeof fetch): OpenAiCompatibleAdapter {
   return new OpenAiCompatibleAdapter({
     profile: {
       tier: "test",
@@ -32,6 +32,7 @@ function adapterFor(baseUrl: string): OpenAiCompatibleAdapter {
     },
     apiKey: "provider-secret",
     openRouterProviderOnly: ["DeepSeek"],
+    ...(fetchImpl ? { fetch: fetchImpl } : {}),
   });
 }
 
@@ -287,35 +288,15 @@ describe("OpenAI-compatible DSH adapter", () => {
 
   it("never includes a provider error body in the thrown failure", async () => {
     const sentinel = "PRIVATE_USER_PROMPT_SENTINEL";
-    const provider = createServer((_request, response) => {
-      response.writeHead(422, { "content-type": "application/json" });
-      response.end(JSON.stringify({ detail: [{ input: sentinel }] }));
-    });
-    servers.push(provider);
-    provider.listen(0, "127.0.0.1");
-    await once(provider, "listening");
-    const address = provider.address();
-    if (!address || typeof address === "string") throw new Error("missing provider address");
-    const adapter = new OpenAiCompatibleAdapter({
-      profile: {
-        tier: "test",
-        adapter: "openai-compatible-v1",
-        provider: "openrouter",
-        baseUrl: `http://127.0.0.1:${address.port}/v1`,
-        model: "deepseek/test",
-        supportsTools: true,
-        maxOutputTokens: 16,
-        timeout: { firstTokenMs: 1_000, idleMs: 1_000, completionMs: 5_000 },
-        sampling: {
-          temperature: 0.9,
-          topP: 0.95,
-          repetitionPenalty: 1.05,
-          structuredTemperature: 0.2,
-        },
+    let bodyRead = false;
+    const adapter = adapterFor("http://127.0.0.1:1/v1", (async () => ({
+      ok: false,
+      status: 422,
+      async text() {
+        bodyRead = true;
+        return sentinel.repeat(100_000);
       },
-      apiKey: "provider-secret",
-      openRouterProviderOnly: ["DeepSeek"],
-    });
+    }) as Response) as typeof fetch);
 
     let thrown: unknown;
     try {
@@ -330,7 +311,8 @@ describe("OpenAI-compatible DSH adapter", () => {
       thrown = error;
     }
     expect(thrown).toBeInstanceOf(Error);
-    expect((thrown as Error).message).toMatch(/HTTP 422 \(body sha256 [a-f0-9]{64}\)/);
+    expect((thrown as Error).message).toBe("OpenAI-compatible provider returned HTTP 422");
+    expect(bodyRead).toBe(false);
     expect(JSON.stringify(thrown)).not.toContain(sentinel);
     expect((thrown as Error).message).not.toContain(sentinel);
   });
