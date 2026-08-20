@@ -6,11 +6,66 @@ import {
   persistPreparedCompanionProjectionTx,
   promoteCompanionProjectionTx,
   projectChatFileMutations,
+  withTerminalTurnAuthority,
   type CompanionProjectionClaim,
 } from "./file-mutations.js";
 import { lockUser } from "./turn-lock.js";
 
 const now = new Date("2026-08-20T12:00:00.000Z");
+
+describe("terminal turn authority", () => {
+  it("fails closed on a pending projection without trying to drain it", async () => {
+    const run = vi.fn(async () => "committed" as const);
+    const findMany = vi.fn(async () => {
+      throw new Error("terminal authority must not invoke the projector");
+    });
+    const tx = {
+      $queryRaw: vi.fn(async () => [{ locked: 1 }]),
+      chatFileMutation: {
+        count: vi.fn(async () => 1),
+        findMany,
+      },
+    } as unknown as Prisma.TransactionClient;
+    const prisma = {
+      $transaction: vi.fn(async (callback: (client: Prisma.TransactionClient) => Promise<unknown>) =>
+        callback(tx)),
+    } as unknown as ChatPrismaClient;
+
+    await expect(withTerminalTurnAuthority({
+      userId: "user-1",
+      sessionId: "session-1",
+      prisma,
+      deadlineAt: Date.now() + 5_000,
+    }, run)).rejects.toThrow(/projection/i);
+
+    expect(run).not.toHaveBeenCalled();
+    expect(findMany).not.toHaveBeenCalled();
+  });
+
+  it("does not enter the terminal callback when lock wait consumes the deadline", async () => {
+    const run = vi.fn(async () => "committed" as const);
+    const tx = {
+      $queryRaw: vi.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return [{ locked: 1 }];
+      }),
+      chatFileMutation: { count: vi.fn(async () => 0) },
+    } as unknown as Prisma.TransactionClient;
+    const prisma = {
+      $transaction: vi.fn(async (callback: (client: Prisma.TransactionClient) => Promise<unknown>) =>
+        callback(tx)),
+    } as unknown as ChatPrismaClient;
+
+    await expect(withTerminalTurnAuthority({
+      userId: "user-1",
+      sessionId: "session-1",
+      prisma,
+      deadlineAt: Date.now() + 5,
+    }, run)).rejects.toThrow(/deadline/i);
+
+    expect(run).not.toHaveBeenCalled();
+  });
+});
 
 function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void;

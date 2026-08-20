@@ -1216,6 +1216,121 @@ describe("chat generate agent image tool", () => {
     }
   });
 
+  it("does not turn streamed partial text into a ledger terminal after sidecar timeout", async () => {
+    const restoreEnv = installDshRolloutEnv();
+    try {
+      dshRunMock.mockImplementation(async (invocation, port) => {
+        await port.emit({
+          type: "text_delta",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 1,
+          occurredAt: new Date().toISOString(),
+          delta: "partial text before timeout",
+        });
+        await port.emit({
+          type: "cancelled",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 2,
+          occurredAt: new Date().toISOString(),
+          reason: "timeout",
+        });
+      });
+      const { prisma, messageUpdates } = fakePrisma();
+
+      await expect(processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        prisma,
+        { projectorPrisma: prisma, jobAttempt: { attemptsMade: 0, maxAttempts: 5 } },
+      )).resolves.toEqual({ status: "failed" });
+
+      expect(finalizedMessageUpdate(messageUpdates)).toBeUndefined();
+      expect(appendStreamEventMock).toHaveBeenCalledWith(
+        "chat:stream:msg_assistant",
+        expect.objectContaining({
+          type: "error",
+          code: "dsh_deadline_exceeded",
+          retryable: false,
+        }),
+      );
+    } finally {
+      restoreEnv();
+    }
+  });
+
+  it("rolls back a terminal candidate when moderation consumes the absolute DSH deadline", async () => {
+    const restoreEnv = installDshRolloutEnv();
+    process.env.DSH_AGENT_DEADLINE_MS = "100";
+    try {
+      moderationMock.mockImplementation(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        return { status: "passed", confidence: 0.5 };
+      });
+      dshRunMock.mockImplementation(async (invocation, port) => {
+        await port.emit({
+          type: "started",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 1,
+          occurredAt: new Date().toISOString(),
+          instance: {
+            id: "11111111-1111-4111-8111-111111111111",
+            startedAt: "2026-08-19T11:59:00.000Z",
+          },
+          profileDigest: "d".repeat(64),
+        });
+        await port.emit({
+          type: "text_delta",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 2,
+          occurredAt: new Date().toISOString(),
+          delta: "candidate near deadline",
+        });
+        const candidate = {
+          attemptId: invocation.attemptId,
+          content: "candidate near deadline",
+          finishReason: "stop" as const,
+          provider: "mock",
+          model: "local-model",
+          usage: { promptTokens: 10, completionTokens: 4, reasoningTokens: 0 },
+          execution: { steps: 1, toolCalls: 0 },
+          completedAt: new Date().toISOString(),
+        };
+        await port.emit({
+          type: "terminal_candidate",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 3,
+          occurredAt: new Date().toISOString(),
+          candidate,
+        });
+        await port.commit(candidate);
+      });
+      const { prisma, messageUpdates } = fakePrisma();
+
+      await expect(processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        prisma,
+        { projectorPrisma: prisma, jobAttempt: { attemptsMade: 0, maxAttempts: 5 } },
+      )).resolves.toEqual({ status: "failed" });
+
+      expect(finalizedMessageUpdate(messageUpdates)).toBeUndefined();
+      expect(dshCancelMock).toHaveBeenCalledWith("inv:msg_assistant:1", "timeout");
+      expect(appendStreamEventMock).toHaveBeenCalledWith(
+        "chat:stream:msg_assistant",
+        expect.objectContaining({
+          type: "error",
+          code: "dsh_deadline_exceeded",
+          retryable: false,
+        }),
+      );
+    } finally {
+      restoreEnv();
+    }
+  });
+
   it("reuses the durable DSH profile digest when readiness changes before a retry", async () => {
     const restoreEnv = installDshRolloutEnv();
     try {

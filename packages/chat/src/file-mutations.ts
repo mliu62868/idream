@@ -173,9 +173,15 @@ function parsePersistedFileMutation(input: {
   return fileMutationSchema.parse(input.payload);
 }
 
-class ChatFileProjectionRaceError extends Error {
+export class ChatFileProjectionRaceError extends Error {
   constructor(userId: string) {
     super(`chat file projection changed before user lock for ${userId}`);
+  }
+}
+
+export class TerminalTurnDeadlineError extends Error {
+  constructor() {
+    super("terminal turn authority exceeded the companion deadline");
   }
 }
 
@@ -971,6 +977,62 @@ export async function withTurnAuthority<T>(
     await projectChatFileMutations(input.userId, input.projectorPrisma);
   }
   return value;
+}
+
+/**
+ * Commit one already-produced terminal candidate without entering the
+ * potentially multi-minute file projector. A pending projection is durable and
+ * recoverable, so the generation job must retry after the projector settles;
+ * it must never hold the sidecar commit open while rebuilding relationship
+ * memory. The transaction budget is carved from the same absolute companion
+ * deadline, which makes a lock wait or slow terminal CAS roll back instead of
+ * committing after the sidecar has discarded its attempt workspace.
+ */
+export async function withTerminalTurnAuthority<T>(
+  input: {
+    userId: string;
+    sessionId: string;
+    prisma: ChatPrismaClient;
+    deadlineAt: number;
+  },
+  run: (tx: Prisma.TransactionClient) => Promise<T>,
+): Promise<T> {
+  const remainingMs = input.deadlineAt - Date.now();
+  if (remainingMs <= 4) throw new TerminalTurnDeadlineError();
+
+  // Prisma budgets acquisition and execution independently. Reserve maxWait
+  // from the absolute budget so their worst-case sum cannot cross deadlineAt.
+  const maxWait = Math.min(1_000, Math.max(1, Math.floor(remainingMs / 4)));
+  const timeout = remainingMs - maxWait;
+  try {
+    return await input.prisma.$transaction(
+      async (tx) => {
+        if (Date.now() >= input.deadlineAt) throw new TerminalTurnDeadlineError();
+        await lockTurn(tx, input.userId, input.sessionId);
+        if (Date.now() >= input.deadlineAt) throw new TerminalTurnDeadlineError();
+        await assertNoPendingChatFileMutationsTx(tx, input.userId);
+        if (Date.now() >= input.deadlineAt) throw new TerminalTurnDeadlineError();
+        const value = await run(tx);
+        if (Date.now() >= input.deadlineAt) throw new TerminalTurnDeadlineError();
+        return value;
+      },
+      { maxWait, timeout },
+    );
+  } catch (error) {
+    if (
+      error instanceof TerminalTurnDeadlineError ||
+      error instanceof ChatFileProjectionRaceError
+    ) {
+      throw error;
+    }
+    // Prisma reports an interactive-transaction timeout as its own error. If
+    // the reserved execution budget is exhausted, preserve the deadline
+    // taxonomy rather than blaming a healthy DSH provider.
+    if (Date.now() >= input.deadlineAt - maxWait) {
+      throw new TerminalTurnDeadlineError();
+    }
+    throw error;
+  }
 }
 
 /**

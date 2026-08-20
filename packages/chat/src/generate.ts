@@ -28,8 +28,10 @@ import { enqueue, type ChatJob } from "./queue.js";
 import { logger } from "./logger.js";
 import {
   CHAT_CONTEXT_INVALIDATING_FILE_MUTATIONS,
+  ChatFileProjectionRaceError,
   projectChatFileMutations,
-  withTurnAuthority,
+  TerminalTurnDeadlineError,
+  withTerminalTurnAuthority,
 } from "./file-mutations.js";
 import {
   EDIT_LAST_IMAGE_TOOL,
@@ -541,7 +543,6 @@ export async function processGenerate(
     }
     return processDshCompanionTurn({
       prisma,
-      projectorPrisma,
       payload,
       session,
       prepared,
@@ -668,7 +669,6 @@ function digestText(value: string): string {
 
 interface DshTurnInput {
   prisma: ChatPrismaClient;
-  projectorPrisma: ChatPrismaClient;
   payload: GeneratePayload;
   session: FinalizeInput["session"];
   prepared: PreparedTurn;
@@ -689,7 +689,6 @@ async function processDshCompanionTurn(
 ): Promise<{ status: "sent" | "blocked" | "skipped" | "failed" }> {
   const {
     prisma,
-    projectorPrisma,
     payload,
     session,
     prepared,
@@ -1032,6 +1031,9 @@ async function processDshCompanionTurn(
       );
       return commitAck;
     }
+    if (deadlineSignal.aborted || Date.now() >= absoluteDeadlineAt) {
+      throw new TerminalTurnDeadlineError();
+    }
     // INTENT: Chat owns the no-memory promise boundary. Delay delivery until
     // DSH proposes a traceable candidate, then transform it at the commit port
     // so the user sees one stable truth without a native/runtime bypass.
@@ -1043,6 +1045,9 @@ async function processDshCompanionTurn(
       targetType: "text",
       content,
     });
+    if (deadlineSignal.aborted || Date.now() >= absoluteDeadlineAt) {
+      throw new TerminalTurnDeadlineError();
+    }
     const blocked = moderation.status === "blocked";
     const candidateUsage = {
       promptTokens: candidate.usage.promptTokens,
@@ -1123,7 +1128,7 @@ async function processDshCompanionTurn(
       imageToolRequest,
       toolCallTrigger: "agent_fc",
       toolCallIdentity: toolIdentity,
-      projectorPrisma,
+      deadlineAt: absoluteDeadlineAt,
       runtimeTrace: JSON.parse(JSON.stringify(terminalTrace)) as Prisma.InputJsonValue,
     });
     if (finalized !== "finalized") {
@@ -1222,12 +1227,18 @@ async function processDshCompanionTurn(
     }, deadlineSignal);
   } catch (error) {
     runError = error;
-    if (deadlineSignal.aborted) {
+    if (deadlineSignal.aborted || error instanceof TerminalTurnDeadlineError) {
       runErrorTaxonomy = {
         category: "deadline",
         code: "dsh_deadline_exceeded",
       };
       await runtime.cancel(invocationId, "timeout").catch(() => {});
+    } else if (error instanceof ChatFileProjectionRaceError) {
+      runErrorTaxonomy = {
+        category: "projection",
+        code: "chat_file_projection_pending",
+      };
+      await runtime.cancel(invocationId, "transport").catch(() => {});
     } else {
       runErrorTaxonomy ??= { category: "runtime", code: "dsh_runtime_error" };
       await runtime.cancel(invocationId, "transport").catch(() => {});
@@ -1239,14 +1250,16 @@ async function processDshCompanionTurn(
     committedTrace ? "memory_commit_failed" : runErrorTaxonomy?.code ?? "dsh_runtime_error",
   );
 
-  // Once the user has seen text, a
-  // transport/runtime failure may not erase it from the Chat ledger. This is a
-  // Chat-authored truncated terminal, never an accepted sidecar commit, so the
-  // isolated igrep attempt is still discarded.
+  // Before the absolute deadline, a transport failure after visible text can
+  // still become a Chat-authored truncated terminal. A timeout/cancellation is
+  // a hard authority boundary: the sidecar has already discarded its attempt,
+  // so Chat emits the terminal error and never writes a late partial reply.
   const observedCandidate = announcedCandidate as CompanionTerminalCandidate | null;
   const observedUsage = usage as { promptTokens: number; completionTokens: number } | null;
   if (
     runError &&
+    runErrorTaxonomy?.category !== "deadline" &&
+    runErrorTaxonomy?.category !== "cancel" &&
     terminalStatus === null &&
     deliveredChunks.join("").trim() &&
     observedCandidate === null &&
@@ -1314,7 +1327,7 @@ async function processDshCompanionTurn(
       imageToolRequest,
       toolCallTrigger: "agent_fc",
       toolCallIdentity: toolIdentity,
-      projectorPrisma,
+      deadlineAt: absoluteDeadlineAt,
       runtimeTrace: JSON.parse(JSON.stringify(truncatedTrace)) as Prisma.InputJsonValue,
     });
     if (finalized === "finalized") {
@@ -1515,7 +1528,8 @@ async function processDshCompanionTurn(
     runtimeReadiness.recordTurnSuccess();
   } else if (
     rejectionError !== "provider_output_limit" &&
-    error.category !== "cancel"
+    error.category !== "cancel" &&
+    error.category !== "projection"
   ) {
     // Protocol/identity divergence, deadline and transport failures must remain
     // health evidence even when retry policy correctly terminalizes the attempt.
@@ -1570,7 +1584,7 @@ interface FinalizeInput {
   imageToolRequest?: ImageRequestFromCall | null;
   toolCallTrigger: "agent_fc" | "agent_tool_call";
   toolCallIdentity?: { attemptId: string; callId: string } | null;
-  projectorPrisma: ChatPrismaClient;
+  deadlineAt: number;
   /** Non-null only when the pre-stream trace needs correcting (truncated reply). */
   runtimeTrace: Prisma.InputJsonValue | null;
 }
@@ -1578,17 +1592,17 @@ interface FinalizeInput {
 async function finalize(
   input: FinalizeInput,
 ): Promise<"finalized" | "stale" | "skipped"> {
-  const { prisma, payload, session, content, model, usage, moderation, blocked, context, imageToolCall, imageToolRequest = null, toolCallTrigger, toolCallIdentity, projectorPrisma, runtimeTrace } = input;
+  const { prisma, payload, session, content, model, usage, moderation, blocked, context, imageToolCall, imageToolRequest = null, toolCallTrigger, toolCallIdentity, deadlineAt, runtimeTrace } = input;
 
   // Account/session/message privacy operations use the same lock. Re-read all
   // authority after acquiring it so a deleted user turn or session cannot be
   // finalized by a worker that started from an older snapshot.
-  return withTurnAuthority(
+  return withTerminalTurnAuthority(
     {
       userId: session.userId,
       sessionId: session.id,
       prisma,
-      projectorPrisma,
+      deadlineAt,
     },
     async (tx) => {
     const currentUser = await tx.chatUserView.findUnique({
