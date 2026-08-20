@@ -259,7 +259,7 @@ async function stageWorkspaceRebuild(
           throw new Error("relationship rebuild content length is incomplete");
         }
         await writeTranscript(
-          `,"source_at":${JSON.stringify(activeMessage.createdAt)},"source_timezone":"UTC"}\n`,
+          `","source_at":${JSON.stringify(activeMessage.createdAt)},"source_timezone":"UTC"}\n`,
         );
         currentSession.messages += 1;
         currentSession.expectedRole = currentSession.expectedRole === "user"

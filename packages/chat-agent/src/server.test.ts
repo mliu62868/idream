@@ -1,6 +1,8 @@
+import { createReadStream } from "node:fs";
 import { mkdtemp, readFile, readdir, readlink, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { createInterface } from "node:readline";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   COMPANION_WORKSPACE_REBUILD_CONTENT_CHUNK_CHARS,
@@ -317,6 +319,13 @@ describe("companion HTTP authority boundary", () => {
           expect(dirname(transcriptPath)).toBe(join(workspace, ".idream-rebuild-transcripts"));
           expect((await stat(dirname(transcriptPath))).mode & 0o777).toBe(0o700);
           expect((await stat(transcriptPath)).mode & 0o777).toBe(0o600);
+          const rows = createInterface({
+            input: createReadStream(transcriptPath, { encoding: "utf8" }),
+            crlfDelay: Number.POSITIVE_INFINITY,
+          });
+          for await (const row of rows) {
+            expect(() => JSON.parse(row)).not.toThrow();
+          }
           transcriptBytes += (await stat(transcriptPath)).size;
           expect((await stat(workspace)).mode & 0o777).toBe(0o700);
           expect((await stat(join(workspace, ".igrep"))).mode & 0o777).toBe(0o700);
