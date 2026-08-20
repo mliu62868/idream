@@ -10,12 +10,13 @@ import path from "node:path";
 import { Pool } from "pg";
 import { createChatPrisma } from "../src/db.js";
 import { createSession, editUserMessage, sendMessage, regenerate } from "../src/service.js";
-import { processGenerate } from "../src/generate.js";
+import type { GeneratePayload } from "../src/generate.js";
 import { processMemoryExtract } from "../src/memory.js";
 import { drainQueue, obliterate } from "../src/queue.js";
 import { listStreamEvents, streamKey } from "../src/stream.js";
 import { CHAT_QUEUES } from "@idream/shared/contracts";
 import { acceptAgeGate } from "./fixtures.js";
+import { processGenerateWithTestDsh } from "./dsh-fixtures.js";
 
 const prisma = createChatPrisma();
 const superPool = new Pool({ connectionString: process.env.CHAT_TEST_SUPER_URL });
@@ -106,8 +107,8 @@ describe("chat hot path (P0-3)", () => {
     ).toBe(2);
     expect(
       await drainQueue(CHAT_QUEUES.generate, async (job) => {
-        await processGenerate(
-          job.payload as Parameters<typeof processGenerate>[0],
+        await processGenerateWithTestDsh(
+          job.payload as GeneratePayload,
           prisma,
         );
       }),
@@ -140,7 +141,7 @@ describe("chat hot path (P0-3)", () => {
 
     // drain the generate queue with the real worker handler
     const handled = await drainQueue(CHAT_QUEUES.generate, async (job) => {
-      await processGenerate(job.payload as Parameters<typeof processGenerate>[0], prisma);
+      await processGenerateWithTestDsh(job.payload as GeneratePayload, prisma);
     });
     expect(handled).toBe(1);
 
@@ -185,13 +186,13 @@ describe("chat hot path (P0-3)", () => {
       { prisma },
     );
     await drainQueue(CHAT_QUEUES.generate, async (job) => {
-      await processGenerate(job.payload as Parameters<typeof processGenerate>[0], prisma);
+      await processGenerateWithTestDsh(job.payload as GeneratePayload, prisma);
     });
 
     const re = await regenerate({ userId: USER, messageId: res.assistantMessageId }, { prisma });
     expect(re.attempt).toBe(2);
     const handled = await drainQueue(CHAT_QUEUES.generate, async (job) => {
-      await processGenerate(job.payload as Parameters<typeof processGenerate>[0], prisma);
+      await processGenerateWithTestDsh(job.payload as GeneratePayload, prisma);
     });
     expect(handled).toBe(1); // the :attempt key was NOT swallowed
 
@@ -212,7 +213,7 @@ describe("chat hot path (P0-3)", () => {
       { prisma },
     );
     await drainQueue(CHAT_QUEUES.generate, async (job) => {
-      await processGenerate(job.payload as Parameters<typeof processGenerate>[0], prisma);
+      await processGenerateWithTestDsh(job.payload as GeneratePayload, prisma);
     });
     await prisma.message.update({
       where: { id: first.userMessageId },
@@ -238,7 +239,7 @@ describe("chat hot path (P0-3)", () => {
     });
 
     const handled = await drainQueue(CHAT_QUEUES.generate, async (job) => {
-      await processGenerate(job.payload as Parameters<typeof processGenerate>[0], prisma);
+      await processGenerateWithTestDsh(job.payload as GeneratePayload, prisma);
     });
     expect(handled).toBe(1);
 
@@ -267,7 +268,7 @@ describe("chat hot path (P0-3)", () => {
       { prisma },
     );
     await drainQueue(CHAT_QUEUES.generate, async (job) => {
-      await processGenerate(job.payload as Parameters<typeof processGenerate>[0], prisma);
+      await processGenerateWithTestDsh(job.payload as GeneratePayload, prisma);
     });
     await drainQueue(CHAT_QUEUES.memoryExtract, async (job) => {
       await processMemoryExtract(
@@ -282,7 +283,7 @@ describe("chat hot path (P0-3)", () => {
     );
     expect((await prisma.message.findUniqueOrThrow({ where: { id: second.userMessageId } })).sceneVersion).toBe(1);
     await drainQueue(CHAT_QUEUES.generate, async (job) => {
-      await processGenerate(job.payload as Parameters<typeof processGenerate>[0], prisma);
+      await processGenerateWithTestDsh(job.payload as GeneratePayload, prisma);
     });
     await drainQueue(CHAT_QUEUES.memoryExtract, async (job) => {
       await processMemoryExtract(
@@ -296,7 +297,7 @@ describe("chat hot path (P0-3)", () => {
 
     await regenerate({ userId: TURN_USER, messageId: first.assistantMessageId }, { prisma });
     await drainQueue(CHAT_QUEUES.generate, async (job) => {
-      await processGenerate(job.payload as Parameters<typeof processGenerate>[0], prisma);
+      await processGenerateWithTestDsh(job.payload as GeneratePayload, prisma);
     });
 
     const regenerated = await prisma.message.findUnique({ where: { id: first.assistantMessageId } });

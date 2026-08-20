@@ -9,7 +9,7 @@ import path from "node:path";
 import { Pool } from "pg";
 import IORedis from "ioredis";
 import { createChatPrisma } from "../src/db.js";
-import { processGenerate } from "../src/generate.js";
+import type { GeneratePayload } from "../src/generate.js";
 import { processMemoryExtract } from "../src/memory.js";
 import { getRelationshipState } from "../src/relationship.js";
 import { reconcile } from "../src/reconcile.js";
@@ -18,6 +18,7 @@ import { drainQueue, enqueue, obliterate } from "../src/queue.js";
 import { appendStreamEvent, streamKey } from "../src/stream.js";
 import { CHAT_QUEUES } from "@idream/shared/contracts";
 import { acceptAgeGate } from "./fixtures.js";
+import { processGenerateWithTestDsh } from "./dsh-fixtures.js";
 
 const prisma = createChatPrisma();
 const superPool = new Pool({ connectionString: process.env.CHAT_TEST_SUPER_URL });
@@ -194,7 +195,7 @@ describe("core chat command invariants", () => {
     const result = await reconcile(prisma);
     expect(result.requeuedPending).toBeGreaterThanOrEqual(1);
     const handled = await drainQueue(CHAT_QUEUES.generate, async (job) => {
-      await processGenerate(job.payload as Parameters<typeof processGenerate>[0], prisma);
+      await processGenerateWithTestDsh(job.payload as GeneratePayload, prisma);
     });
     expect(handled).toBeGreaterThanOrEqual(1);
     expect((await prisma.message.findUnique({ where: { id: sent.assistantMessageId } }))?.status).toBe("sent");
@@ -222,7 +223,7 @@ describe("core chat command invariants", () => {
     });
 
     await expect(
-      processGenerate(
+      processGenerateWithTestDsh(
         {
           sessionId: session.id,
           assistantMessageId: sent.assistantMessageId,
@@ -238,7 +239,7 @@ describe("core chat command invariants", () => {
     ).toBe("pending");
 
     await expect(
-      processGenerate(
+      processGenerateWithTestDsh(
         {
           sessionId: session.id,
           assistantMessageId: sent.assistantMessageId,
@@ -333,7 +334,12 @@ describe("core context continuity invariants", () => {
         createdAt: user.createdAt,
       },
     });
-    const payload = { sessionId: session.id, assistantMessageId: assistant.id, attempt: 1 };
+    const payload = {
+      sessionId: session.id,
+      userMessageId: user.id,
+      assistantMessageId: assistant.id,
+      attempt: 1,
+    };
 
     await processMemoryExtract(payload, prisma);
     await processMemoryExtract(payload, prisma);

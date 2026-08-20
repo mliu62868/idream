@@ -6,7 +6,7 @@ import path from "node:path";
 import { Pool } from "pg";
 import { createChatPrisma } from "../src/db.js";
 import { dispatchChat } from "../src/router.js";
-import { processGenerate, type GeneratePayload } from "../src/generate.js";
+import type { GeneratePayload } from "../src/generate.js";
 import { processMemoryExtract } from "../src/memory.js";
 import { drainQueue } from "../src/queue.js";
 import {
@@ -19,6 +19,7 @@ import { readWhole, chatFsPaths } from "../src/chat-fs.js";
 import { withReadableChatFileSnapshot } from "../src/file-mutations.js";
 import { CHAT_QUEUES } from "@idream/shared/contracts";
 import { acceptAgeGate } from "./fixtures.js";
+import { processGenerateWithTestDsh } from "./dsh-fixtures.js";
 
 const prisma = createChatPrisma();
 const superPool = new Pool({ connectionString: process.env.CHAT_TEST_SUPER_URL });
@@ -128,7 +129,7 @@ describe("account export (P1-3)", () => {
     expect(sessionCount).toBeGreaterThanOrEqual(0);
   });
 
-  it("aggregates PG messages + file memories + relationship", async () => {
+  it("aggregates PG messages + relationship without generic memory files", async () => {
     const created = await dispatchChat({ method: "POST", path: "/api/v1/chat/sessions", userId: USER, body: { characterId: CHAR } });
     const sessionId = created.kind === "json" ? (created.body as { id: string }).id : "";
     const sent = await dispatchChat({
@@ -137,16 +138,23 @@ describe("account export (P1-3)", () => {
       userId: USER,
       body: { content: "call me Robin and i like jazz" },
     });
-    const assistantMessageId = sent.kind === "json" ? (sent.body as { assistantMessageId: string }).assistantMessageId : "";
+    const { assistantMessageId, userMessageId } = sent.kind === "json"
+      ? (sent.body as { assistantMessageId: string; userMessageId: string })
+      : { assistantMessageId: "", userMessageId: "" };
     await drainQueue(CHAT_QUEUES.generate, async (job) => {
-      await processGenerate(job.payload as GeneratePayload, prisma);
+      await processGenerateWithTestDsh(job.payload as GeneratePayload, prisma);
     });
-    await processMemoryExtract({ sessionId, assistantMessageId, attempt: 1 }, prisma);
+    await processMemoryExtract({
+      sessionId,
+      userMessageId,
+      assistantMessageId,
+      attempt: 1,
+    }, prisma);
 
     const bundle = await exportAccount(USER, new Date(), prisma);
     expect(bundle.userId).toBe(USER);
     expect(bundle.messages.length).toBeGreaterThanOrEqual(2); // user + assistant
-    expect(bundle.memories.some((m) => m.text.includes("Robin"))).toBe(true);
+    expect("memories" in bundle).toBe(false);
     expect(bundle.relationships.some((r) => r.characterId === CHAR)).toBe(true);
     expect(bundle.sessions.some((s) => s.id === sessionId)).toBe(true);
   });

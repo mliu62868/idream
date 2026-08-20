@@ -30,8 +30,8 @@ describe("DSH image tool registry", () => {
     expect(findAgentTool(GENERATE_IMAGE_ASYNC_TOOL)?.parseCall({
       prompt: "A detailed portrait beside a sunlit window",
     })).toEqual({
-      tool: GENERATE_IMAGE_ASYNC_TOOL,
-      args: {
+      name: GENERATE_IMAGE_ASYNC_TOOL,
+      arguments: {
         prompt: "A detailed portrait beside a sunlit window",
         orientation: "4:5",
         outputCount: 1,
@@ -45,8 +45,8 @@ describe("DSH image tool registry", () => {
     expect(findAgentTool(EDIT_LAST_IMAGE_TOOL)?.parseCall({
       instruction: "Change the background to snow",
     })).toEqual({
-      tool: EDIT_LAST_IMAGE_TOOL,
-      args: { instruction: "Change the background to snow" },
+      name: EDIT_LAST_IMAGE_TOOL,
+      arguments: { instruction: "Change the background to snow" },
     });
     expect(findAgentTool(EDIT_LAST_IMAGE_TOOL)?.parseCall({ instruction: "x" }))
       .toBeNull();

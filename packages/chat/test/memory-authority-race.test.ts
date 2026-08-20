@@ -21,7 +21,7 @@ import {
   renderRelationship,
 } from "../src/relationship.js";
 import { editUserMessage, regenerate } from "../src/service.js";
-import { processGenerate } from "../src/generate.js";
+import { processGenerateWithTestDsh } from "./dsh-fixtures.js";
 import { deleteMessage, deleteSession } from "../src/privacy.js";
 import {
   chatFsPaths,
@@ -474,7 +474,7 @@ describe("legacy linkage and context privacy fences", () => {
     });
     const reached = deferred();
     const resume = deferred();
-    const generation = processGenerate(
+    const generation = processGenerateWithTestDsh(
       {
         sessionId: older.sessionId,
         assistantMessageId: currentAssistantMessageId,

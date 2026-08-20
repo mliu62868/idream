@@ -89,43 +89,17 @@ export const env = {
   get CHAT_MODEL_PROVIDER() {
     return resolveChatModelProfile(process.env).provider;
   },
-  // OpenAI-compatible chat model (local mlx via oMLX / LM Studio, or any OpenAI
-  // API). Only read when CHAT_MODEL_PROVIDER=openai. Base URL includes /v1.
+  // Admin health labels and probes must resolve the same DSH provider profile
+  // that readiness pins; Chat never executes the model through these getters.
   get CHAT_MODEL_BASE_URL() {
     return resolveChatModelProfile(process.env).baseUrl;
   },
   get CHAT_MODEL_NAME() {
     return resolveChatModelProfile(process.env).model;
   },
-  get CHAT_MODEL_MAX_TOKENS() {
-    return resolveChatModelProfile(process.env).maxOutputTokens;
-  },
-  // 与 main 的 probe-chat-model 共用同一个解析 —— 探针的预算必须就是生产的预算。
+  // Keep the admin probe bounded below the DSH turn deadline.
   get CHAT_MODEL_TIMEOUT_MS() {
     return resolveChatModelProfile(process.env).idleTimeoutMs;
-  },
-  get CHAT_MODEL_FIRST_TOKEN_TIMEOUT_MS() {
-    return resolveChatModelProfile(process.env).firstTokenTimeoutMs;
-  },
-  get CHAT_MODEL_IDLE_TIMEOUT_MS() {
-    return resolveChatModelProfile(process.env).idleTimeoutMs;
-  },
-  get CHAT_MODEL_COMPLETE_TIMEOUT_MS() {
-    return resolveChatModelProfile(process.env).completionTimeoutMs;
-  },
-  // Tier → real model aliases (design P0-D). The policy resolver maps an
-  // entitlement tier to ONE of these; the provider streams with the resolved
-  // model so Premium/Deluxe "premium chat models" are a real, enforced benefit —
-  // not a label. Each defaults to CHAT_MODEL_NAME so a single-model deploy still
-  // works unchanged.
-  get CHAT_MODEL_FREE() {
-    return resolveChatModelProfile(process.env, "free").model;
-  },
-  get CHAT_MODEL_PREMIUM() {
-    return resolveChatModelProfile(process.env, "premium").model;
-  },
-  get CHAT_MODEL_DELUXE() {
-    return resolveChatModelProfile(process.env, "deluxe").model;
   },
   get CHAT_MODEL_API_KEY() {
     return resolveChatModelProfile(process.env).apiKey;

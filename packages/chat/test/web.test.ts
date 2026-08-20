@@ -8,12 +8,13 @@ import path from "node:path";
 import { Pool } from "pg";
 import { createChatPrisma } from "../src/db.js";
 import { dispatchChat } from "../src/router.js";
-import { processGenerate, type GeneratePayload } from "../src/generate.js";
+import type { GeneratePayload } from "../src/generate.js";
 import { processMemoryExtract } from "../src/memory.js";
 import { drainQueue } from "../src/queue.js";
 import { setNoMemory } from "../src/service.js";
 import { CHAT_QUEUES } from "@idream/shared/contracts";
 import { acceptAgeGate } from "./fixtures.js";
+import { processGenerateWithTestDsh } from "./dsh-fixtures.js";
 
 const superPool = new Pool({ connectionString: process.env.CHAT_TEST_SUPER_URL });
 const prisma = createChatPrisma();
@@ -43,7 +44,7 @@ afterAll(async () => {
 
 async function drainGen() {
   return drainQueue(CHAT_QUEUES.generate, async (job) => {
-    await processGenerate(job.payload as GeneratePayload);
+    await processGenerateWithTestDsh(job.payload as GeneratePayload, prisma);
   });
 }
 
@@ -160,10 +161,17 @@ describe("post-turn Scene/relationship projection", () => {
       userId: USER,
       body: { content: "please call me Alex" },
     });
-    const assistantMessageId = sent.kind === "json" ? (sent.body as { assistantMessageId: string }).assistantMessageId : "";
+    const { assistantMessageId, userMessageId } = sent.kind === "json"
+      ? (sent.body as { assistantMessageId: string; userMessageId: string })
+      : { assistantMessageId: "", userMessageId: "" };
     await drainGen();
 
-    const res = await processMemoryExtract({ sessionId, assistantMessageId, attempt: 1 });
+    const res = await processMemoryExtract({
+      sessionId,
+      userMessageId,
+      assistantMessageId,
+      attempt: 1,
+    }, prisma);
     expect(res).toEqual({ written: 0, skipped: null });
 
     const relationship = await readFile(
@@ -179,7 +187,7 @@ describe("post-turn Scene/relationship projection", () => {
   it("no-memory session: advances Scene but skips cross-session derivation", async () => {
     const created = await dispatchChat({ method: "POST", path: "/api/v1/chat/sessions", userId: USER, body: { characterId: CHAR } });
     const sessionId = created.kind === "json" ? (created.body as { id: string }).id : "";
-    await setNoMemory({ userId: USER, sessionId, memoryEnabled: false });
+    await setNoMemory({ userId: USER, sessionId, memoryEnabled: false }, { prisma });
 
     const sent = await dispatchChat({
       method: "POST",
@@ -187,17 +195,33 @@ describe("post-turn Scene/relationship projection", () => {
       userId: USER,
       body: { content: "call me Secret" },
     });
-    const assistantMessageId = sent.kind === "json" ? (sent.body as { assistantMessageId: string }).assistantMessageId : "";
+    const { assistantMessageId, userMessageId } = sent.kind === "json"
+      ? (sent.body as { assistantMessageId: string; userMessageId: string })
+      : { assistantMessageId: "", userMessageId: "" };
     await drainGen();
 
-    const res = await processMemoryExtract({ sessionId, assistantMessageId, attempt: 1 });
+    await expect(prisma.message.findUnique({
+      where: { id: assistantMessageId },
+      select: { memoryAuthority: true },
+    })).resolves.toEqual({ memoryAuthority: "disabled" });
+    const mutationWhere = {
+      userId: USER,
+      kind: "memory_extract" as const,
+      payload: { path: ["sessionId"], equals: sessionId },
+    };
+    expect(await prisma.chatFileMutation.count({ where: mutationWhere })).toBe(0);
+
+    const res = await processMemoryExtract({
+      sessionId,
+      userMessageId,
+      assistantMessageId,
+      attempt: 1,
+    }, prisma);
     expect(res.skipped).toBe("scene_only_memory_disabled");
     expect(res.written).toBe(0);
     expect(await prisma.chatSceneRevision.count({
       where: { sessionId, sourceAssistantMessageId: assistantMessageId },
     })).toBe(1);
-    expect(await prisma.chatFileMutation.count({
-      where: { userId: USER, kind: "memory_extract" },
-    })).toBe(0);
+    expect(await prisma.chatFileMutation.count({ where: mutationWhere })).toBe(0);
   });
 });

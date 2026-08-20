@@ -7,11 +7,12 @@ import path from "node:path";
 import { Pool } from "pg";
 import { createChatPrisma } from "../src/db.js";
 import { dispatchChat, type ChatResponse } from "../src/router.js";
-import { processGenerate, type GeneratePayload } from "../src/generate.js";
+import type { GeneratePayload } from "../src/generate.js";
 import { processMemoryExtract } from "../src/memory.js";
 import { drainQueue } from "../src/queue.js";
 import { CHAT_QUEUES } from "@idream/shared/contracts";
 import { acceptAgeGate } from "./fixtures.js";
+import { processGenerateWithTestDsh } from "./dsh-fixtures.js";
 
 const prisma = createChatPrisma();
 const superPool = new Pool({ connectionString: process.env.CHAT_TEST_SUPER_URL });
@@ -36,9 +37,14 @@ async function seedTurn(content: string): Promise<{ sessionId: string; userMessa
   });
   const { assistantMessageId, userMessageId } = jbody<{ assistantMessageId: string; userMessageId: string }>(sent);
   await drainQueue(CHAT_QUEUES.generate, async (job) => {
-    await processGenerate(job.payload as GeneratePayload, prisma);
+    await processGenerateWithTestDsh(job.payload as GeneratePayload, prisma);
   });
-  await processMemoryExtract({ sessionId, assistantMessageId, attempt: 1 }, prisma);
+  await processMemoryExtract({
+    sessionId,
+    userMessageId,
+    assistantMessageId,
+    attempt: 1,
+  }, prisma);
   return { sessionId, userMessageId, assistantMessageId };
 }
 

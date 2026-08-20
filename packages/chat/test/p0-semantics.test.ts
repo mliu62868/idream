@@ -9,8 +9,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Pool } from "pg";
 import { createChatPrisma } from "../src/db.js";
-import { ChatError, createSession, sendMessage, setNoMemory } from "../src/service.js";
-import { processGenerate, type GeneratePayload } from "../src/generate.js";
+import { createSession, sendMessage, setNoMemory } from "../src/service.js";
+import { ChatError } from "../src/errors.js";
+import type { GeneratePayload } from "../src/generate.js";
 import { processMemoryExtract } from "../src/memory.js";
 import { reconcile } from "../src/reconcile.js";
 import { modelForTier } from "../src/policy.js";
@@ -18,6 +19,7 @@ import { setRelationshipOnce } from "../src/relationship.js";
 import { drainQueue, obliterate } from "../src/queue.js";
 import { CHAT_QUEUES, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { acceptAgeGate, ingestMainEvent } from "./fixtures.js";
+import { processGenerateWithTestDsh } from "./dsh-fixtures.js";
 
 const prisma = createChatPrisma();
 const superPool = new Pool({ connectionString: process.env.CHAT_TEST_SUPER_URL });
@@ -44,7 +46,7 @@ async function exists(p: string): Promise<boolean> {
 
 async function generateOnce(): Promise<number> {
   return drainQueue(CHAT_QUEUES.generate, async (job) => {
-    await processGenerate(job.payload as GeneratePayload, prisma);
+    await processGenerateWithTestDsh(job.payload as GeneratePayload, prisma);
   });
 }
 
@@ -302,7 +304,12 @@ describe("P0-F: account deletion v2 erases the chat domain", () => {
     );
     expect(await generateOnce()).toBe(1);
     await processMemoryExtract(
-      { sessionId: session.id, assistantMessageId: sent.assistantMessageId, attempt: 1 },
+      {
+        sessionId: session.id,
+        userMessageId: sent.userMessageId,
+        assistantMessageId: sent.assistantMessageId,
+        attempt: 1,
+      },
       prisma,
     );
     // Pre-conditions: rows + files exist.

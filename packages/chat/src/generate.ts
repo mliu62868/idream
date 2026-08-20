@@ -35,7 +35,6 @@ import {
   findAgentTool,
   GENERATE_IMAGE_ASYNC_TOOL,
   imageToolCaption,
-  type AgentToolCallPlan,
   type ImageAgentToolCall,
 } from "./agent-tools.js";
 import {
@@ -53,7 +52,10 @@ import {
   pinCompanionRuntimeForAttempt,
   type CompanionAttemptRuntime,
 } from "./companion-runtime-selection.js";
-import { DshCompanionRuntime } from "./companion-runtime.js";
+import {
+  DshCompanionRuntime,
+  type CompanionRuntime,
+} from "./companion-runtime.js";
 import { verifiedCompanionProfileDigest } from "./companion-sidecar-readiness.js";
 import {
   recordCompanionOperationalEvent,
@@ -90,6 +92,9 @@ export interface GenerateHooks {
   afterContextBuilt?: (context: BuiltContext) => Promise<void> | void;
   jobAttempt?: Pick<ChatJob, "attemptsMade" | "maxAttempts">;
   projectorPrisma?: ChatPrismaClient;
+  // INTENT: DB integration tests exercise the complete Chat terminal protocol
+  // without starting a second model authority or making a paid sidecar call.
+  runtimeFactory?: (input: { baseUrl: string; token: string }) => CompanionRuntime;
 }
 
 interface PrimaryAttemptTelemetry extends CompanionOperationalTelemetry {
@@ -555,6 +560,7 @@ export async function processGenerate(
       attemptRuntime,
       profileDigest: dshProfileDigest,
       sidecarToken: companionRuntimeConfig.sidecarToken,
+      runtimeFactory: hooks.runtimeFactory,
       heartbeat,
       key,
       jobAttempt: hooks.jobAttempt,
@@ -808,6 +814,7 @@ interface DshTurnInput {
   attemptRuntime: CompanionAttemptRuntime;
   profileDigest: string;
   sidecarToken: string;
+  runtimeFactory?: GenerateHooks["runtimeFactory"];
   heartbeat(force?: boolean): Promise<void>;
   key: string;
   jobAttempt: GenerateHooks["jobAttempt"];
@@ -846,7 +853,7 @@ async function processDshCompanionTurn(
     expectedProfileDigest: input.profileDigest,
     deadlineAt: new Date(absoluteDeadlineAt).toISOString(),
   };
-  const runtime = new DshCompanionRuntime({
+  const runtime = (input.runtimeFactory ?? ((config) => new DshCompanionRuntime(config)))({
     baseUrl: attemptRuntime.sidecarUrl,
     token: input.sidecarToken,
   });
@@ -934,7 +941,7 @@ async function processDshCompanionTurn(
       if (!replayed) {
         throw new Error("durable companion tool reservation failed Chat schema validation");
       }
-      imageToolCall = toolCallFromPlan(replayed);
+      imageToolCall = replayed;
       toolIdentity = { attemptId: reserved.attemptId, callId: reserved.callId };
       const result: CompanionToolResult = {
         attemptId: call.attemptId,
@@ -1007,7 +1014,7 @@ async function processDshCompanionTurn(
           },
         };
       } else {
-        imageToolCall = toolCallFromPlan(parsed);
+        imageToolCall = parsed;
         toolIdentity = { attemptId: call.attemptId, callId: call.callId };
         // SPEC: execution here is a durable reservation. The only external
         // image effect is created later inside Chat's terminal CAS transaction.
@@ -1919,20 +1926,6 @@ function chunk(text: string, size: number): string[] {
   for (let i = 0; i < text.length; i += size) out.push(text.slice(i, i + size));
   return out.length ? out : [""];
 }
-// Converts a validated agent tool call plan into the wire shape generate.ts streams/logs.
-function toolCallFromPlan(plan: AgentToolCallPlan): ImageAgentToolCall {
-  switch (plan.tool) {
-    case GENERATE_IMAGE_ASYNC_TOOL:
-      return { name: plan.tool, arguments: plan.args };
-    case EDIT_LAST_IMAGE_TOOL:
-      return { name: plan.tool, arguments: plan.args };
-    default: {
-      const exhaustive: never = plan;
-      throw new Error(`unhandled agent tool plan: ${JSON.stringify(exhaustive)}`);
-    }
-  }
-}
-
 interface ImageRequestFromCall {
   promptHint: string;
   assistantCaption: string | null;

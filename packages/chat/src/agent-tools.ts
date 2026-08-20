@@ -35,15 +35,11 @@ export type ImageAgentToolCall = GenerateImageAsyncToolCall | EditLastImageToolC
 
 // INVARIANT: Chat validates the DSH call against this discriminated form before
 // reserving any image effect in the terminal attempt ledger.
-export type AgentToolCallPlan =
-  | { tool: typeof GENERATE_IMAGE_ASYNC_TOOL; args: GenerateImageAsyncArgs }
-  | { tool: typeof EDIT_LAST_IMAGE_TOOL; args: EditLastImageArgs };
-
 export type AgentTool = {
   name: string;
   description: string;
   toChatTool(): ChatToolDefinition;
-  parseCall(rawArgs: unknown): AgentToolCallPlan | null;
+  parseCall(rawArgs: unknown): ImageAgentToolCall | null;
 };
 
 const generateImageAsyncTool: AgentTool = {
@@ -53,7 +49,7 @@ const generateImageAsyncTool: AgentTool = {
   parseCall: (rawArgs) => {
     const result = generateImageAsyncArgsSchema.safeParse(rawArgs);
     if (!result.success) return null;
-    return { tool: GENERATE_IMAGE_ASYNC_TOOL, args: result.data };
+    return { name: GENERATE_IMAGE_ASYNC_TOOL, arguments: result.data };
   },
   toChatTool: () => ({
     name: GENERATE_IMAGE_ASYNC_TOOL,
@@ -85,7 +81,7 @@ const editLastImageTool: AgentTool = {
   parseCall: (rawArgs) => {
     const result = editLastImageArgsSchema.safeParse(rawArgs);
     if (!result.success) return null;
-    return { tool: EDIT_LAST_IMAGE_TOOL, args: result.data };
+    return { name: EDIT_LAST_IMAGE_TOOL, arguments: result.data };
   },
   toChatTool: () => ({
     name: EDIT_LAST_IMAGE_TOOL,

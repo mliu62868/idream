@@ -18,6 +18,7 @@ import {
   RuntimeReadiness,
   warmRuntime,
 } from "../src/runtime-readiness.js";
+import { testCompanionSidecarProbe } from "./dsh-fixtures.js";
 
 const prisma = createChatPrisma();
 const projectorPrisma = createChatProjectorPrisma();
@@ -425,8 +426,6 @@ describe("chat boundary (chat_service role)", () => {
           turnKey: assistantMessageId,
           attempt: 1,
           summaryDelta: "projector summary",
-          candidates: [],
-          maxStored: 0,
         }),
       );
 
@@ -510,6 +509,7 @@ describe("chat boundary (chat_service role)", () => {
         supportsTools: true,
       }],
       pingRedis: async () => {},
+      probeSidecar: testCompanionSidecarProbe(),
       readiness,
     });
 
