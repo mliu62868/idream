@@ -28,6 +28,7 @@ interface FakeData {
   usage?: unknown;
   lastUser?: unknown;
   messageUpdates?: unknown[];
+  fileIntentWrites?: unknown[][];
 }
 
 function fakePrisma(data: FakeData): ChatPrismaClient {
@@ -74,7 +75,10 @@ function fakePrisma(data: FakeData): ChatPrismaClient {
     chatUsage: { findUnique: unique(data.usage ?? null) },
     messageVersion: { count: async () => 0 },
     $queryRaw: async () => [{ locked: 1 }],
-    $executeRaw: async () => 1,
+    $executeRaw: async (...args: unknown[]) => {
+      data.fileIntentWrites?.push(args);
+      return 1;
+    },
   };
   return {
     ...fake,
@@ -176,6 +180,7 @@ describe("regenerate quota + eligibility guard (P0-C)", () => {
 
   it("allows a free user under the cap and enqueues the new attempt", async () => {
     const messageUpdates: unknown[] = [];
+    const fileIntentWrites: unknown[][] = [];
     const prisma = fakePrisma({
       message: {
         ...assistantMessage,
@@ -188,6 +193,7 @@ describe("regenerate quota + eligibility guard (P0-C)", () => {
       entitlement: freeEntitlement,
       usage: { messagesUsed: 5 },
       messageUpdates,
+      fileIntentWrites,
     });
 
     const result = await regenerate(
@@ -202,6 +208,13 @@ describe("regenerate quota + eligibility guard (P0-C)", () => {
       attempt: 2,
       runtimeTrace: Prisma.DbNull,
     }));
+    expect(fileIntentWrites.some((write) =>
+      write.some((value) => value === "relationship_rebuild") &&
+      write.some((value) =>
+        typeof value === "string" &&
+        value.includes('"kind":"relationship_rebuild"') &&
+        value.includes('"characterId":"c1"')),
+    )).toBe(true);
     expect(enqueueMock).toHaveBeenCalledTimes(1);
   });
 

@@ -1149,7 +1149,7 @@ export async function regenerate(
       prisma,
       projectorPrisma,
     },
-    async (tx) => {
+    async (tx, recordIntent) => {
     await assertActiveUserAuthority(tx, input.userId);
     await assertTurnCapacity(tx, input.userId, session.id, policy, message.id);
     const currentSession = await tx.chatSession.findUnique({
@@ -1217,6 +1217,14 @@ export async function regenerate(
       );
     }
     const nextAttempt = current.attempt + 1;
+    // INVARIANT: the selected Chat Message version is the relationship-memory
+    // authority. Remove the previous reply from igrep before the new attempt
+    // clones the canonical workspace; otherwise regenerate would make both
+    // mutually exclusive replies recallable.
+    await recordIntent({
+      kind: "relationship_rebuild",
+      characterId: currentSession.characterId,
+    });
     await tx.message.update({
       where: { id: message.id },
       data: {
