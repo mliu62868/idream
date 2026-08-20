@@ -239,6 +239,22 @@ describe("DSH image-tool E2E evidence", () => {
     },
   );
 
+  it("binds a provider retry callId to the original durable effect identity", () => {
+    const value = identity("generate_image_async");
+    const trace = completedTrace(value.name);
+    (trace.companion.toolResult as { callId: string }).callId = "provider-retry-call";
+    expect(projectDshImageToolTrace(trace, [completedAttachment(value.name)], {
+      assistantMessageId: value.assistantMessageId,
+      attempt: value.attempt,
+      name: value.name,
+    })).toMatchObject({
+      ok: true,
+      intent: toolIdentity(value.name),
+      result: toolIdentity(value.name),
+      error: null,
+    });
+  });
+
   it("fails closed on stale attempt, bad result identity/name/output, and duplicate attachment", () => {
     const value = identity("generate_image_async");
     expect(projectDshImageToolTrace(completedTrace(value.name), [completedAttachment(value.name)], {
@@ -255,6 +271,8 @@ describe("DSH image-tool E2E evidence", () => {
     for (const mutate of [
       (trace: ReturnType<typeof completedTrace>) => {
         (trace.companion.toolResult as { callId: string }).callId = "wrong-call";
+        (trace.companion.toolResult.output as { effectId: string }).effectId =
+          `${value.attemptId}:wrong-call`;
       },
       (trace: ReturnType<typeof completedTrace>) => {
         (trace.companion.toolResult as { name: string }).name = "edit_last_image";

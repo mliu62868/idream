@@ -75,8 +75,13 @@ export function projectDshImageToolTrace(
   const resultOutput = record(succeededResult?.output);
   const exactResultOutput = succeededResult !== null &&
     resultOutput.status === "accepted_for_terminal_commit" &&
-    resultOutput.effectId === `${succeededResult.attemptId}:${succeededResult.callId}` &&
     Object.keys(resultOutput).sort().join(",") === "effectId,status";
+  const resultBindsIntent = intent !== null &&
+    succeededResult !== null &&
+    succeededResult.attemptId === intent.attemptId &&
+    succeededResult.name === intent.name &&
+    resultOutput.effectId === `${intent.attemptId}:${intent.callId}` &&
+    exactResultOutput;
   const generated = attachments.filter((attachment) => attachment.kind === "generated_image");
   const attachment = generated.length === 1 ? generated[0]! : null;
   const attachmentMetadata = record(attachment?.metadata);
@@ -94,11 +99,7 @@ export function projectDshImageToolTrace(
   );
   expect(intent !== null, "tool_intent_attempt_identity");
   expect(
-    intent !== null &&
-      succeededResult?.attemptId === intent.attemptId &&
-      succeededResult.callId === intent.callId &&
-      succeededResult.name === intent.name &&
-      exactResultOutput,
+    resultBindsIntent,
     "tool_result",
   );
   expect(
@@ -127,10 +128,7 @@ export function projectDshImageToolTrace(
   const generationJobId = text(attachment?.generationJobId);
   const mediaAssetId = text(attachment?.mediaAssetId);
   const attachmentId = text(attachment?.id);
-  const result = intent && succeededResult && exactResultOutput &&
-      succeededResult.attemptId === intent.attemptId &&
-      succeededResult.callId === intent.callId &&
-      succeededResult.name === intent.name
+  const result = resultBindsIntent && intent
     ? {
         ...intent,
         outcome: "succeeded" as const,

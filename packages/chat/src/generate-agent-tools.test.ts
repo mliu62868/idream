@@ -107,6 +107,7 @@ function fakePrisma(
   const attachmentCreates: CreateCall[] = [];
   const outboxCreates: CreateCall[] = [];
   const messageUpdates: CreateCall[] = [];
+  const versionUpdates: CreateCall[] = [];
   const rootMessageUpdates: CreateCall[] = [];
   let currentAssistantStatus: string = assistantState.status ?? "generating";
   const currentAssistantAttempt = assistantState.attempt ?? 1;
@@ -170,6 +171,15 @@ function fakePrisma(
           },
       updateMany: async (call: CreateCall) => {
         messageUpdates.push(call);
+        const nextTrace = call.data.runtimeTrace;
+        if (
+          assistantState.failToolReservation &&
+          nextTrace &&
+          typeof nextTrace === "object" &&
+          "companionTool" in nextTrace
+        ) {
+          return { count: 0 };
+        }
         if (
           assistantState.strictClaimCas &&
           call.data.status === "generating" &&
@@ -198,7 +208,10 @@ function fakePrisma(
     messageVersion: {
       findUnique: async () => ({ runtimeTrace: null }),
       upsert: async () => ({}),
-      updateMany: async () => ({ count: 1 }),
+      updateMany: async (call: CreateCall) => {
+        versionUpdates.push(call);
+        return { count: 1 };
+      },
       update: async () => ({}),
     },
     chatUsage: {
@@ -302,6 +315,7 @@ function fakePrisma(
     attachmentCreates,
     outboxCreates,
     messageUpdates,
+    versionUpdates,
     rootMessageUpdates,
     assistantTrace: () => currentAssistantTrace,
   };
@@ -478,6 +492,64 @@ describe("chat generate agent image tool", () => {
     expect(messageWhere).toMatchObject({ status: "pending" });
     expect(versionUpdate).toEqual({ runtimeTrace: trace });
     expect(versionClaimUpdate).toEqual({ runtimeTrace: trace });
+  });
+
+  it("atomically persists a tool reservation to Message and MessageVersion", async () => {
+    const stored: {
+      messageTrace: Record<string, unknown> | null;
+      versionTrace: Record<string, unknown> | null;
+    } = { messageTrace: null, versionTrace: null };
+    let rejectVersionCas = true;
+    const prisma = {
+      $transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) => {
+        const pending = structuredClone(stored);
+        const tx = {
+          message: {
+            updateMany: vi.fn(async (call: CreateCall) => {
+              pending.messageTrace = call.data.runtimeTrace as Record<string, unknown>;
+              return { count: 1 };
+            }),
+          },
+          messageVersion: {
+            updateMany: vi.fn(async (call: CreateCall) => {
+              if (rejectVersionCas) return { count: 0 };
+              pending.versionTrace = call.data.runtimeTrace as Record<string, unknown>;
+              return { count: 1 };
+            }),
+          },
+        };
+        const result = await callback(tx);
+        Object.assign(stored, pending);
+        return result;
+      }),
+    } as unknown as ChatPrismaClient;
+    const trace = {
+      companionTool: {
+        attemptId: "msg_assistant:1",
+        callId: "call-reserved",
+        name: "generate_image_async",
+        arguments: { prompt: "Mira beside the observatory after a restart" },
+      },
+    };
+    const input = {
+      prisma,
+      payload: {
+        sessionId: "sess_1",
+        assistantMessageId: "msg_assistant",
+        userMessageId: "msg_user",
+        attempt: 1,
+      },
+      expectedMessageStatus: "generating" as const,
+      trace,
+      stage: "tool_reservation" as const,
+    };
+
+    await expect(persistAttemptRuntimeTraceCas(input)).resolves.toBe("failed");
+    expect(stored).toEqual({ messageTrace: null, versionTrace: null });
+
+    rejectVersionCas = false;
+    await expect(persistAttemptRuntimeTraceCas(input)).resolves.toBe("updated");
+    expect(stored).toEqual({ messageTrace: trace, versionTrace: trace });
   });
 
 
@@ -1301,15 +1373,16 @@ describe("chat generate agent image tool", () => {
     "[Gate T] converges a sidecar crash %s and creates one image effect after restart",
     async (crashPoint) => {
     const restoreEnv = installDshRolloutEnv();
-    const reservation = {
+    const firstCall = {
       attemptId: "msg_assistant:1",
-      callId: "call-crash-replay",
+      callId: "call-crash-first",
       name: "generate_image_async" as const,
       arguments: {
         prompt: "Mira beside the observatory window after restart",
         caption: "The same view, recovered.",
       },
     };
+    const retryCall = { ...firstCall, callId: "call-crash-retry" };
     try {
       let runs = 0;
       const toolResults: unknown[] = [];
@@ -1318,7 +1391,7 @@ describe("chat generate agent image tool", () => {
         if (runs === 1 && crashPoint === "before_intent") {
           throw new Error("sidecar disconnected before the tool intent");
         }
-        toolResults.push(await port.executeTool(reservation));
+        toolResults.push(await port.executeTool(runs === 1 ? firstCall : retryCall));
         if (runs === 1) {
           throw new Error("sidecar disconnected after the tool result");
         }
@@ -1350,7 +1423,7 @@ describe("chat generate agent image tool", () => {
         });
         await port.commit(candidate);
       });
-      const { prisma, attachmentCreates, outboxCreates, assistantTrace } =
+      const { prisma, attachmentCreates, outboxCreates, messageUpdates, versionUpdates, assistantTrace } =
         fakePrisma(
           undefined,
           undefined,
@@ -1378,25 +1451,47 @@ describe("chat generate agent image tool", () => {
         { projectorPrisma: prisma, jobAttempt: { attemptsMade: 1, maxAttempts: 2 } },
       )).resolves.toEqual({ status: "sent" });
 
-      expect(toolResults).toEqual(Array.from(
-        { length: crashPoint === "before_intent" ? 1 : 2 },
-        () => expect.objectContaining({
-          outcome: "succeeded",
-          output: expect.objectContaining({ effectId: "msg_assistant:1:call-crash-replay" }),
-        }),
-      ));
+      const durableCall = crashPoint === "before_intent" ? retryCall : firstCall;
+      expect(toolResults).toEqual(
+        crashPoint === "before_intent"
+          ? [expect.objectContaining({
+              callId: retryCall.callId,
+              outcome: "succeeded",
+              output: expect.objectContaining({ effectId: `${retryCall.attemptId}:${retryCall.callId}` }),
+            })]
+          : [
+              expect.objectContaining({
+                callId: firstCall.callId,
+                outcome: "succeeded",
+                output: expect.objectContaining({ effectId: `${firstCall.attemptId}:${firstCall.callId}` }),
+              }),
+              expect.objectContaining({
+                callId: retryCall.callId,
+                outcome: "succeeded",
+                output: expect.objectContaining({ effectId: `${firstCall.attemptId}:${firstCall.callId}` }),
+              }),
+            ],
+      );
       expect(attachmentCreates).toHaveLength(1);
       expect(outboxCreates.filter((call) => call.data.eventType === CHAT_TO_MAIN_EVENTS.imageRequested)).toHaveLength(1);
-      expect(assistantTrace()?.companionTool).toEqual(reservation);
+      const messageReservation = messageUpdates.find((call) =>
+        Boolean((call.data.runtimeTrace as { companionTool?: unknown } | undefined)?.companionTool)
+      );
+      const versionReservation = versionUpdates.find((call) =>
+        Boolean((call.data.runtimeTrace as { companionTool?: unknown } | undefined)?.companionTool)
+      );
+      expect(messageReservation?.data.runtimeTrace).toMatchObject({ companionTool: durableCall });
+      expect(versionReservation?.data.runtimeTrace).toMatchObject({ companionTool: durableCall });
+      expect(assistantTrace()?.companionTool).toEqual(durableCall);
       expect(assistantTrace()?.companion).toMatchObject({
         toolResult: {
-          attemptId: reservation.attemptId,
-          callId: reservation.callId,
-          name: reservation.name,
+          attemptId: retryCall.attemptId,
+          callId: retryCall.callId,
+          name: retryCall.name,
           outcome: "succeeded",
           output: {
             status: "accepted_for_terminal_commit",
-            effectId: "msg_assistant:1:call-crash-replay",
+            effectId: `${durableCall.attemptId}:${durableCall.callId}`,
           },
         },
       });

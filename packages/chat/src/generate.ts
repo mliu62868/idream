@@ -736,6 +736,7 @@ async function persistFailedRuntimeTrace(input: {
 
 type AttemptRuntimeTraceStage =
   | "prepared_turn"
+  | "tool_reservation"
   | "primary_terminal"
   | "primary_failure"
   | "dsh_memory_settlement";
@@ -893,7 +894,11 @@ async function processDshCompanionTurn(
   const executeTool = async (
     call: CompanionToolCall,
   ): Promise<CompanionToolResult> => {
-    const fingerprint = stableJson(call);
+    const fingerprint = stableJson({
+      attemptId: call.attemptId,
+      name: call.name,
+      arguments: call.arguments,
+    });
     const previous = toolResults.get(call.callId);
     if (previous) {
       if (previous.fingerprint === fingerprint) return previous.result;
@@ -911,7 +916,7 @@ async function processDshCompanionTurn(
     }
     if (durableToolReservation.success) {
       const reserved = durableToolReservation.data;
-      if (reserved.callId !== call.callId || reserved.attemptId !== call.attemptId) {
+      if (reserved.attemptId !== call.attemptId) {
         return {
           attemptId: call.attemptId,
           callId: call.callId,
@@ -924,15 +929,24 @@ async function processDshCompanionTurn(
           },
         };
       }
-      if (stableJson(reserved) !== fingerprint) {
+      const reservedFingerprint = stableJson({
+        attemptId: reserved.attemptId,
+        name: reserved.name,
+        arguments: reserved.arguments,
+      });
+      if (reservedFingerprint !== fingerprint) {
         return {
           attemptId: call.attemptId,
           callId: call.callId,
           name: call.name,
           outcome: "unknown",
           error: {
-            code: "tool_identity_conflict",
-            message: "the durable callId reservation has different arguments",
+            code: reserved.callId === call.callId
+              ? "tool_identity_conflict"
+              : "tool_limit_reached",
+            message: reserved.callId === call.callId
+              ? "the durable callId reservation has different arguments"
+              : "this attempt already has a different durable image-tool reservation",
             retryable: false,
           },
         };
@@ -950,10 +964,11 @@ async function processDshCompanionTurn(
         outcome: "succeeded",
         output: {
           status: "accepted_for_terminal_commit",
-          effectId: `${call.attemptId}:${call.callId}`,
+          effectId: `${reserved.attemptId}:${reserved.callId}`,
         },
       };
       toolResults.set(call.callId, { fingerprint, result });
+      toolResults.set(reserved.callId, { fingerprint: reservedFingerprint, result });
       return result;
     }
     const parsed = findAgentTool(call.name)?.parseCall(call.arguments);
@@ -993,15 +1008,14 @@ async function processDshCompanionTurn(
         ...runtimeTraceFacts,
         companionTool: reservation,
       })) as Prisma.InputJsonValue;
-      const reserved = await prisma.message.updateMany({
-        where: {
-          id: payload.assistantMessageId,
-          status: "generating",
-          attempt: payload.attempt,
-        },
-        data: { runtimeTrace: trace },
+      const reserved = await persistAttemptRuntimeTraceCas({
+        prisma,
+        payload,
+        expectedMessageStatus: "generating",
+        trace,
+        stage: "tool_reservation",
       });
-      if (reserved.count !== 1) {
+      if (reserved !== "updated") {
         result = {
           attemptId: call.attemptId,
           callId: call.callId,
