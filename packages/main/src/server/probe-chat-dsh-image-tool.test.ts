@@ -37,6 +37,7 @@ vi.mock("./probe-generation-persistence", () => ({
 }));
 
 import {
+  classifyDshImageToolMainCleanup,
   dshImageToolProbeExitCode,
   runDshImageToolProbe,
 } from "./probe-chat-dsh-image-tool";
@@ -90,6 +91,23 @@ beforeEach(() => {
 });
 
 describe("signed DSH image-tool probe orchestration", () => {
+  it("treats physical RecentChat deletion and redaction metadata as cleanup authority", () => {
+    expect(classifyDshImageToolMainCleanup({
+      recentStatus: null,
+      expectedJobCount: 1,
+      jobSourceMeta: [{
+        sessionId: "deleted-session",
+        privacyRedaction: { reason: "session_deleted" },
+      }],
+    })).toEqual({ recentChatDeleted: true, sourceTextRedacted: true });
+
+    expect(classifyDshImageToolMainCleanup({
+      recentStatus: "active",
+      expectedJobCount: 1,
+      jobSourceMeta: [{ privacyRedaction: { reason: "session_deleted" } }],
+    })).toEqual({ recentChatDeleted: false, sourceTextRedacted: true });
+  });
+
   it("issues one product write, does not retry it, cleans up, and returns content-free red evidence", async () => {
     const report = await runDshImageToolProbe(input);
     const messagePosts = mocks.signedFetch.mock.calls.filter(([request]) =>

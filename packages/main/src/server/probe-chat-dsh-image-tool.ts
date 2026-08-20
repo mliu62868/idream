@@ -628,6 +628,7 @@ async function waitForMainCleanup(input: {
 }) {
   const deadline = Date.now() + input.timeoutMs;
   const generationJobIds = [...new Set(input.generationJobIds)];
+  let observed = { recentChatDeleted: false, sourceTextRedacted: false };
   while (Date.now() < deadline) {
     const [recent, jobs] = await Promise.all([
       prisma.recentChat.findUnique({
@@ -639,21 +640,38 @@ async function waitForMainCleanup(input: {
         select: { sourceMeta: true },
       }),
     ]);
-    const recentChatDeleted = recent?.status === "deleted";
-    const sourceTextRedacted = jobs.length === generationJobIds.length &&
-      jobs.every((job) => {
-        const sourceMeta = record(job.sourceMeta);
-        const redaction = record(sourceMeta.privacyRedaction);
-        return sourceMeta.promptHint === null &&
-          sourceMeta.conversationContext === null &&
-          redaction.reason === "session_deleted";
-      });
+    observed = classifyDshImageToolMainCleanup({
+      recentStatus: recent?.status ?? null,
+      expectedJobCount: generationJobIds.length,
+      jobSourceMeta: jobs.map((job) => job.sourceMeta),
+    });
+    const { recentChatDeleted, sourceTextRedacted } = observed;
     if (recentChatDeleted && sourceTextRedacted) {
       return { recentChatDeleted, sourceTextRedacted };
     }
     await delay(250);
   }
-  return { recentChatDeleted: false, sourceTextRedacted: false };
+  return observed;
+}
+
+export function classifyDshImageToolMainCleanup(input: {
+  recentStatus: string | null;
+  expectedJobCount: number;
+  jobSourceMeta: readonly unknown[];
+}): { recentChatDeleted: boolean; sourceTextRedacted: boolean } {
+  return {
+    // INVARIANT: physical projection deletion is stronger evidence than a
+    // retained tombstone. Both mean Main no longer serves the recent chat.
+    recentChatDeleted: input.recentStatus === null || input.recentStatus === "deleted",
+    sourceTextRedacted: input.jobSourceMeta.length === input.expectedJobCount &&
+      input.jobSourceMeta.every((value) => {
+        const sourceMeta = record(value);
+        const redaction = record(sourceMeta.privacyRedaction);
+        return sourceMeta.promptHint == null &&
+          sourceMeta.conversationContext == null &&
+          redaction.reason === "session_deleted";
+      }),
+  };
 }
 
 function failedReport(input: {

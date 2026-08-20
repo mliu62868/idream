@@ -94,7 +94,7 @@ describe("OpenAI-compatible DSH adapter", () => {
     expect(requestBody).toMatchObject({
       model: "deepseek/test",
       stream: true,
-      temperature: 0.9,
+      temperature: 0.2,
       top_p: 0.95,
       repetition_penalty: 1.05,
       chat_template_kwargs: { enable_thinking: false },
@@ -109,6 +109,56 @@ describe("OpenAI-compatible DSH adapter", () => {
       reason: { kind: "stop" },
       replayState: { response: { id: "provider-request-1", provider: "DeepSeek" } },
     });
+  });
+
+  it("keeps conversational sampling when no tools are exposed", async () => {
+    let requestBody: Record<string, unknown> | undefined;
+    const provider = createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      requestBody = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.end(`data: ${JSON.stringify({
+        id: "provider-request-dialogue",
+        provider: "DeepSeek",
+        choices: [{ delta: { content: "Hello" }, finish_reason: "stop" }],
+      })}\n\ndata: [DONE]\n\n`);
+    });
+    servers.push(provider);
+    provider.listen(0, "127.0.0.1");
+    await once(provider, "listening");
+    const address = provider.address();
+    if (!address || typeof address === "string") throw new Error("missing provider address");
+    const adapter = new OpenAiCompatibleAdapter({
+      profile: {
+        tier: "test",
+        adapter: "openai-compatible-v1",
+        provider: "openrouter",
+        baseUrl: `http://127.0.0.1:${address.port}/v1`,
+        model: "deepseek/test",
+        supportsTools: true,
+        maxOutputTokens: 16,
+        timeout: { firstTokenMs: 1_000, idleMs: 1_000, completionMs: 5_000 },
+        sampling: {
+          temperature: 0.9,
+          topP: 0.95,
+          repetitionPenalty: 1.05,
+          structuredTemperature: 0.2,
+        },
+      },
+      apiKey: "provider-secret",
+      openRouterProviderOnly: ["DeepSeek"],
+    });
+
+    for await (const _chunk of adapter.stream({
+      provider: "openrouter",
+      model: "deepseek/test",
+      messages: [],
+    })) {
+      // Drain the response so the request body is observable.
+    }
+
+    expect(requestBody).toMatchObject({ temperature: 0.9 });
   });
 
   it("fails closed when an OpenRouter stream cannot prove finish and provider attribution", async () => {

@@ -198,7 +198,12 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
       messages: openAiMessages(options.system, options.messages),
       stream: true,
       stream_options: { include_usage: true },
-      temperature: this.profile.sampling.temperature,
+      // INTENT: DSH performs tool selection inside the streamed turn instead of
+      // a separate planner request. Use the profile's schema-obedience sampling
+      // whenever function schemas are exposed; plain dialogue keeps its voice.
+      temperature: options.tools?.length
+        ? this.profile.sampling.structuredTemperature
+        : this.profile.sampling.temperature,
       top_p: this.profile.sampling.topP,
       repetition_penalty: this.profile.sampling.repetitionPenalty,
       max_tokens: options.maxTokens ?? this.profile.maxOutputTokens,
