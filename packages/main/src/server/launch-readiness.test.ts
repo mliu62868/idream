@@ -1934,6 +1934,10 @@ describe("launch readiness", () => {
 
     expect(report.ok).toBe(false);
     expect(failedIds(report)).toContain("chat-fs-root");
+    const check = checkById(report, "chat-fs-root");
+    expect(check?.remediation).toContain("relationship evidence and boundary projections");
+    expect(check?.remediation).toContain("Scene/session/message stay in Postgres");
+    expect(check?.remediation).not.toContain("chat logs and memories");
   });
 
   it("requires public age verification return and callback URLs", () => {

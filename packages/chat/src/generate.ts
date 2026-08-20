@@ -1,12 +1,13 @@
 // SPEC: chat.generate worker (design §3 steps 8-14). Build context → stream model
 // tokens to Redis → output-moderate → IDEMPOTENT finalize TX (chat.* ledger +
-// outbox) → append session.jsonl → enqueue memory.extract.
+// outbox) → enqueue Scene/relationship derivation.
 // INVARIANTS:
 //   - idempotent on message.status: already sent/blocked/deleted ⇒ no-op (no double
 //     usage, no duplicate selected version).
 //   - finalize writes message + selected version + usage + summary + moderation +
 //     outbox in ONE transaction (atomic ledger).
-//   - session.jsonl append is the agent trace (separate fact; user-visible = PG).
+//   - content-free runtime evidence lives atomically on Message + MessageVersion;
+//     prompts, model output, and tool payloads never enter the file ledger.
 import { createHash } from "node:crypto";
 import type { Prisma } from "../generated/client/client.js";
 import type { ChatPrismaClient } from "./db.js";
@@ -1107,25 +1108,6 @@ async function processDshCompanionTurn(
         ...(committedToolResult ? { toolResult: committedToolResult } : {}),
       },
     };
-    const traceEntry: Record<string, unknown> | null = attemptRuntime.private
-      ? null
-      : JSON.parse(JSON.stringify({
-          ts: committedAt,
-          kind: "chat.turn",
-          attempt: payload.attempt,
-          assistantMessageId: payload.assistantMessageId,
-          userMessageId: payload.userMessageId,
-          system: prepared.messages.find((message) => message.role === "system")?.content ?? "",
-          injectedMemories: [],
-          boundaries: context.boundaries,
-          rawOutput: content,
-          toolCalls: imageToolCall ? [imageToolCall] : [],
-          moderation,
-          model: candidate.model,
-          runtime: "dsh",
-          invocationId,
-          preparedTurn: { trace: prepared.trace, budget: prepared.budget },
-        })) as Record<string, unknown>;
     await heartbeat(true);
     const finalized = await finalize({
       prisma,
@@ -1141,7 +1123,6 @@ async function processDshCompanionTurn(
       imageToolRequest,
       toolCallTrigger: "agent_fc",
       toolCallIdentity: toolIdentity,
-      traceEntry,
       projectorPrisma,
       runtimeTrace: JSON.parse(JSON.stringify(terminalTrace)) as Prisma.InputJsonValue,
     });
@@ -1221,7 +1202,9 @@ async function processDshCompanionTurn(
               category: "runtime",
               code: event.error.code,
             };
-            throw new Error(`${event.error.code}: ${event.error.message}`);
+            // The sidecar message is untrusted provider-adjacent text. Keep
+            // only the stable protocol code in BullMQ failures and traces.
+            throw new Error(event.error.code);
           case "cancelled":
             runErrorTaxonomy = event.reason === "timeout"
               ? { category: "deadline", code: "dsh_deadline_exceeded" }
@@ -1250,6 +1233,11 @@ async function processDshCompanionTurn(
       await runtime.cancel(invocationId, "transport").catch(() => {});
     }
   }
+  // INVARIANT: runtime/provider errors can contain request bodies. Only the
+  // stable taxonomy crosses into readiness, logs, BullMQ or durable state.
+  const safeRunError = new Error(
+    committedTrace ? "memory_commit_failed" : runErrorTaxonomy?.code ?? "dsh_runtime_error",
+  );
 
   // Once the user has seen text, a
   // transport/runtime failure may not erase it from the Chat ledger. This is a
@@ -1306,7 +1294,10 @@ async function processDshCompanionTurn(
           ...partialUsage,
           reasoningTokens,
         },
-        failure: runError instanceof Error ? runError.message : String(runError),
+        failure: runErrorTaxonomy ?? {
+          category: "runtime",
+          code: "dsh_runtime_error",
+        },
       },
     };
     const finalized = await finalize({
@@ -1323,7 +1314,6 @@ async function processDshCompanionTurn(
       imageToolRequest,
       toolCallTrigger: "agent_fc",
       toolCallIdentity: toolIdentity,
-      traceEntry: null,
       projectorPrisma,
       runtimeTrace: JSON.parse(JSON.stringify(truncatedTrace)) as Prisma.InputJsonValue,
     });
@@ -1331,9 +1321,7 @@ async function processDshCompanionTurn(
       terminalStatus = blocked ? "blocked" : "sent";
       committedUsage = partialUsage;
       committedTrace = truncatedTrace;
-      runtimeReadiness.recordTurnFailure(
-        runError instanceof Error ? runError : new Error(String(runError)),
-      );
+      runtimeReadiness.recordTurnFailure(safeRunError);
     } else if (finalized === "skipped") {
       terminalStatus = "skipped";
     }
@@ -1396,16 +1384,24 @@ async function processDshCompanionTurn(
     }
     if (runError && terminalStatus === "sent" && memoryIngestOutcome === "discarded_truncated") {
       logger.warn(
-        { err: runError, invocationId, assistantMessageId: payload.assistantMessageId },
+        {
+          failureCode: runErrorTaxonomy?.code ?? "dsh_runtime_error",
+          invocationId,
+          assistantMessageId: payload.assistantMessageId,
+        },
         "DSH reply finalized as truncated; isolated runtime memory discarded",
       );
     } else if (runError && terminalStatus === "sent") {
       // The provider already produced and Chat committed this candidate. Keep its
       // health evidence independent from the failed post-commit memory promotion.
       runtimeReadiness.recordTurnSuccess();
-      runtimeReadiness.recordMemoryPromotionFailure(runError);
+      runtimeReadiness.recordMemoryPromotionFailure(safeRunError);
       logger.warn(
-        { err: runError, invocationId, assistantMessageId: payload.assistantMessageId },
+        {
+          failureCode: runErrorTaxonomy?.code ?? "dsh_runtime_error",
+          invocationId,
+          assistantMessageId: payload.assistantMessageId,
+        },
         "DSH turn committed but isolated memory promotion failed",
       );
     } else if (terminalStatus === "sent") {
@@ -1512,7 +1508,7 @@ async function processDshCompanionTurn(
     // Exact composition identity is an admission invariant, not a noisy turn
     // failure. One mismatch proves this process is serving stale authority.
     runtimeReadiness.invalidate(
-      runError ?? new Error("DSH started with a different profile digest"),
+      runError ? safeRunError : new Error("dsh_profile_digest_mismatch"),
     );
   } else if (completeCandidateLostLocalCas) {
     // CAS loss is local concurrency evidence, not provider health evidence.
@@ -1524,7 +1520,7 @@ async function processDshCompanionTurn(
     // Protocol/identity divergence, deadline and transport failures must remain
     // health evidence even when retry policy correctly terminalizes the attempt.
     runtimeReadiness.recordTurnFailure(
-      runError ?? new Error("DSH returned without a terminal commit"),
+      runError ? safeRunError : new Error("dsh_terminal_missing"),
     );
   }
   if (!retryable) await failAssistant(prisma, payload.assistantMessageId);
@@ -1537,9 +1533,7 @@ async function processDshCompanionTurn(
   failureTelemetry.sseTerminal = "error";
   await persistFailedRuntimeTrace({ prisma, payload, runtimeTraceFacts: failureTrace });
   if (!retryable) return { status: "failed" };
-  throw runError instanceof Error
-    ? runError
-    : new Error("DSH returned without a terminal commit");
+  throw runError ? safeRunError : new Error("dsh_terminal_missing");
 }
 
 function rejectedCommit(
@@ -1576,7 +1570,6 @@ interface FinalizeInput {
   imageToolRequest?: ImageRequestFromCall | null;
   toolCallTrigger: "agent_fc" | "agent_tool_call";
   toolCallIdentity?: { attemptId: string; callId: string } | null;
-  traceEntry: Record<string, unknown> | null;
   projectorPrisma: ChatPrismaClient;
   /** Non-null only when the pre-stream trace needs correcting (truncated reply). */
   runtimeTrace: Prisma.InputJsonValue | null;
@@ -1585,7 +1578,7 @@ interface FinalizeInput {
 async function finalize(
   input: FinalizeInput,
 ): Promise<"finalized" | "stale" | "skipped"> {
-  const { prisma, payload, session, content, model, usage, moderation, blocked, context, imageToolCall, imageToolRequest = null, toolCallTrigger, toolCallIdentity, traceEntry, projectorPrisma, runtimeTrace } = input;
+  const { prisma, payload, session, content, model, usage, moderation, blocked, context, imageToolCall, imageToolRequest = null, toolCallTrigger, toolCallIdentity, projectorPrisma, runtimeTrace } = input;
 
   // Account/session/message privacy operations use the same lock. Re-read all
   // authority after acquiring it so a deleted user turn or session cannot be
@@ -1597,7 +1590,7 @@ async function finalize(
       prisma,
       projectorPrisma,
     },
-    async (tx, recordIntent) => {
+    async (tx) => {
     const currentUser = await tx.chatUserView.findUnique({
       where: { userId: session.userId },
     });
@@ -1871,13 +1864,6 @@ async function finalize(
           payload: imagePayload,
         });
       }
-    }
-    if (traceEntry) {
-      await recordIntent({
-        kind: "trace_append",
-        sessionId: session.id,
-        entry: traceEntry,
-      });
     }
     return "finalized";
     },

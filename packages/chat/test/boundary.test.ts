@@ -168,9 +168,6 @@ describe("chat boundary (chat_service role)", () => {
             'chat_send_receipts',
             'chat_outbox_events'
           ) AND privilege_name = 'SELECT' THEN true
-          WHEN relname = 'chat_sessions'
-            AND attname IN ('log_extracted_seq', 'updated_at')
-            AND privilege_name = 'UPDATE' THEN true
           WHEN relname = 'messages'
             AND attname IN ('memory_extracted_attempt', 'updated_at')
             AND privilege_name = 'UPDATE' THEN true
@@ -436,10 +433,6 @@ describe("chat boundary (chat_service role)", () => {
         where: { id: assistantMessageId },
         select: { memoryExtractedAttempt: true },
       })).resolves.toEqual({ memoryExtractedAttempt: 1 });
-      await expect(prisma.chatSession.findUniqueOrThrow({
-        where: { id: sessionId },
-        select: { logExtractedSeq: true },
-      })).resolves.toEqual({ logExtractedSeq: 1n });
       await expect(prisma.chatOutboxEvent.findFirst({
         where: {
           aggregateId: characterId,

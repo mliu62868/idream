@@ -26,7 +26,7 @@
 | `BULLMQ_PREFIX` | all | 队列前缀；main↔chat 必须一致（见 06 §9） |
 | `CHAT_DATABASE_URL` | all | Chat 请求连接；必须使用 `chat_service` role，只能创建 durable file intent，不能伪造投影完成 |
 | `CHAT_PROJECTOR_DATABASE_URL` | all | Chat 文件投影连接；必须使用独立 `chat_projector` role，完成文件副作用后收敛 mutation receipt |
-| `CHAT_FS_ROOT` | all | Chat 文件权威根（session trace、记忆、关系、边界；必须是 durable volume，见 03 §3.4） |
+| `CHAT_FS_ROOT` | all | Chat relationship/evidence/boundary 投影根（必须是 durable volume；Scene/session/message 在 PG，generic memory 在 DSH/igrep） |
 | `BETTER_AUTH_SECRET` | all | ≥32 字节随机 |
 | `BETTER_AUTH_URL` | all | 站点 URL |
 | `INTERNAL_TOKEN` | all | 保护 `/api/internal/*` |
@@ -241,6 +241,9 @@ must fail if it contains shell, fs/filesystem, subagent, goal, or scheduler.
 set -euo pipefail
 
 bun run dsh-companion:check
+bun run chat:purge-legacy-session-traces
+# Review the content-free count/byte report, then remove the retired raw logs:
+bun run chat:purge-legacy-session-traces -- --apply
 bun run --filter @idream/shared test -- src/chat/companion-runtime.test.ts
 bun run --filter @idream/chat-agent test
 bun run --filter @idream/chat test -- \
@@ -992,7 +995,7 @@ Scene/Soul/runtime trace 与 file mutation 权威；dated SQL 仅保留为历史
 `04_grants.sql` 在一个事务内先撤销历史 broad/default grant，再按运行时代码的实际 SQL surface 重建
 exact allowlist。`chat_service` 仍持有普通 Chat domain 表 CRUD、Scene SELECT/INSERT、file mutation SELECT
 与四列 intent INSERT；`chat_projector` 只有所需表的 SELECT，UPDATE 进一步限于 session
-`log_extracted_seq` + Prisma 自动写入的 `updated_at`、message `memory_extracted_attempt` + `updated_at`
+message `memory_extracted_attempt` + Prisma 自动写入的 `updated_at`
 和 file-mutation receipt 五列，outbox INSERT 也只开放 Prisma `recordOutbox` 实际写入的十列（含其展开的
 `attempts` / `next_run_at` / `created_at` 默认值）。projector 无 sequence 权限；request 仅有 file-mutation sequence USAGE。
 两者均无 schema CREATE、table TRUNCATE/REFERENCES/TRIGGER，且只能 EXECUTE 明列的
@@ -1039,7 +1042,7 @@ PostgreSQL cluster 时只能复用已经 canonical 的四个角色；任一 Chat
 
 ## 7. 备份与容灾
 
-- 一份可恢复的 iDream checkpoint 是同一静默边界下的**一致性集合**：Main PostgreSQL、`CHAT_FS_ROOT` 与媒体 Blob。只备份数据库不能称为完整 current-state backup，因为 Chat 的 session trace / memory / relationship 权威在文件层，local/mock Blob 的媒体字节也不在 PostgreSQL。
+- 一份可恢复的 iDream checkpoint 是同一静默边界下的**一致性集合**：Main/Postgres Chat 权威、`CHAT_FS_ROOT` 的 relationship/evidence/boundary 投影、DSH/igrep workspace 与媒体 Blob。只备份数据库不能称为完整 current-state backup，因为这些文件投影、generic memory 与 local/mock Blob 字节都不在 PostgreSQL。
 - 备份前先停止所有写入进程，并在一个固定 checkpoint 时间上确认没有正在提交的跨权威变更：Main transport outbox 不得为 `dispatched` 或未知状态，Main/Chat inbox 不得为 `processing`，生成队列与 `chat_file_mutations` 不得有正在执行的 mutation；同时确认 Main/Admin/Chat 端口无 listener。稳定的 future-scheduled、pending 或 failed durable intent 属于待恢复的产品事实，必须进入 source/restore counts 并逐字段一致，不能为做备份而提前投递、删除或伪装成已处理。
 - PostgreSQL 使用与目标服务兼容的 `pg_dump` / `pg_restore`；`CHAT_FS_ROOT` 和本地 `BLOB_ROOT` 分别生成归档与逐文件 manifest/checksum。使用 R2/S3 时，live bucket 与独立 recovery endpoint/bucket 都必须启用版本化，并把精确 object-version、metadata、checksum、retention inventory 与 DB/Chat FS checkpoint 绑定；没有第二 authority 时失败关闭，不能把同一 bucket 内的临时复制当容灾证明。
 - 每个 checkpoint 必须写明数据库名/schema migration count、Chat FS root、Blob provider/root、静默时间、artifact id 与 SHA-256；不得覆盖已有备份。

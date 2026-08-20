@@ -1221,9 +1221,7 @@ exit 1
     expect(grants).toContain(
       "REVOKE ALL ON ALL TABLES IN SCHEMA chat\n  FROM PUBLIC, chat_service, chat_projector",
     );
-    expect(grants).toContain(
-      "GRANT UPDATE (log_extracted_seq, updated_at)\n  ON chat.chat_sessions TO chat_projector",
-    );
+    expect(grants).not.toContain("log_extracted_seq");
     expect(grants).toContain(
       "GRANT INSERT (\n  id,\n  event_type,",
     );
@@ -1269,7 +1267,14 @@ exit 1
     expect(apply).toContain('projector sequence usage');
     expect(apply).toContain('projector UPDATE session title');
     expect(apply).toContain('projector INSERT outbox delivered_at');
-    expect(apply).toContain('EXECUTE legacy redactor');
+    expect(apply).toContain('EXECUTE ledger redactor');
+    expect(chatTables).toContain("DROP COLUMN IF EXISTS memory_summary");
+    expect(chatTables).toContain("DROP COLUMN IF EXISTS log_extracted_seq");
+    expect(chatTables).toContain("WHERE kind = 'trace_append'");
+    expect(chatTables).toContain("- 'shadowComparison'");
+    expect(chatTables).toContain("#- '{companionTool,arguments}'");
+    expect(chatTables).toContain("'{companionTool,argumentsDigest}'");
+    expect(apply).toContain("(runtime_trace #> '{companionTool}') ? 'arguments'");
   });
 
   it("refuses production-like database names before destructive provisioning", () => {

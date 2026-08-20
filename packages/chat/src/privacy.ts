@@ -1,8 +1,8 @@
 // SPEC: privacy deletion across PG + file layer (PRD §12, design §5). Deletion
 // lands in the AUTHORITY layers (PG rows / files), not just an index.
 //   - delete message → PG hard-delete + forget derived memory (source link).
-//   - delete session → PG rows + remove sessions/{u}/{s}.jsonl (+ segments).
-//   - delete account → all chat.* rows for user + sessions/{u}/ + mem/{u}/ prefixes
+//   - delete session → PG rows + rebuild the relationship-scoped igrep workspace.
+//   - delete account → all chat.* rows for user + mem/{u}/ prefix
 //     + emit chat.account_erasure.completed.
 import type { Prisma } from "../generated/client/client.js";
 import type { ChatPrismaClient } from "./db.js";
@@ -244,7 +244,6 @@ export async function deleteMessage(
       await tx.chatSession.update({
         where: { id: currentSession.id },
         data: {
-          memorySummary: null,
           contextRevision: { increment: 1 },
         },
       });
@@ -344,7 +343,6 @@ export async function deleteSession(
         data: {
           status: "deleted",
           deletedAt: new Date(),
-          memorySummary: null,
           contextRevision: { increment: 1 },
         },
       });

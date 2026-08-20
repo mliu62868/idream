@@ -13,8 +13,6 @@ export const idempotencyKeys = {
   chatInbox: (eventId: string) => `chat-inbox:${eventId}`,
   chatMemoryExtract: (assistantMessageId: string, attempt: number) =>
     `chat-memory-extract:${assistantMessageId}:${attempt}`,
-  chatSessionAppend: (assistantMessageId: string, attempt: number) =>
-    `chat-session-append:${assistantMessageId}:${attempt}`,
   chatImage: (attachmentId: string) => `chat-image:${attachmentId}`,
   generationAttempt: (jobId: string, attemptNo: number) =>
     `generation:${jobId}:attempt:${attemptNo}`,

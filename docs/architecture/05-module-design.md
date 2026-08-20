@@ -69,7 +69,7 @@
 
 **不变量**：被审核拦截的消息返回安全错误但**保留会话**；user/assistant 内容都产生 chat moderation trace；额度由 Chat 服务端结合主站 entitlement view 判定；Chat outbox 事件按 event id 幂等消费。
 
-**记忆策略**：recent-message window 与 Chat-owned Scene/relationship/boundaries 进入 PreparedTurn；通用记忆仅由 official igrep 管理。历史 `memorySummary` 不再读写，entitlement 不映射为自研 memory cap/top-K。
+**记忆策略**：recent-message window 与 Chat-owned Scene/relationship/boundaries 进入 PreparedTurn；通用记忆仅由 official igrep 管理。旧 `memorySummary` 列已删除，entitlement 不映射为自研 memory cap/top-K。
 
 ---
 

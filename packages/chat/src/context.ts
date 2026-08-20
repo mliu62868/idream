@@ -232,9 +232,9 @@ async function buildContextSnapshot(
     ? ["transcript"]
     : [];
 
-  // P4 Task 5: photo awareness. Only the most recent window of assistant turns is
-  // worth reminding the model about — older deliveries are already summarized away
-  // by the rolling session summary.
+  // Only the bounded recent transcript receives attachment-awareness hints.
+  // Older media remains in MessageAttachment/Main authority and is never
+  // compressed into a second prose-summary authority.
   const photoAwareMessageIds = recentMessages
     .slice(-PHOTO_AWARENESS_MESSAGE_WINDOW)
     .filter((m) => m.role === "assistant")

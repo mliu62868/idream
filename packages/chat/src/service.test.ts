@@ -16,7 +16,7 @@ vi.mock("./queue.js", async (importOriginal) => {
 });
 
 const { ChatError } = await import("./errors.js");
-const { publicRuntimeTrace, regenerate } = await import("./service.js");
+const { regenerate } = await import("./service.js");
 
 interface FakeData {
   message?: unknown;
@@ -117,28 +117,6 @@ const freeEntitlement = {
   unlimitedMessages: false,
   voiceEnabled: false,
 };
-
-describe("public runtime trace", () => {
-  it("returns the single authoritative DSH trace and hides historical Shadow diagnostics", () => {
-    const trace = {
-      attempt: 1,
-      companionRuntime: {
-        runtime: "dsh",
-        memoryBackend: "igrep-dsh",
-        profile: "idream-companion-memory",
-      },
-      shadowAdmission: { status: "admitted" },
-      shadowComparison: {
-        invocationId: "private-invocation",
-        error: { message: "private provider bytes" },
-      },
-    };
-    expect(publicRuntimeTrace(trace)).toEqual({
-      attempt: 1,
-      companionRuntime: trace.companionRuntime,
-    });
-  });
-});
 
 describe("regenerate quota + eligibility guard (P0-C)", () => {
   beforeEach(() => enqueueMock.mockClear());

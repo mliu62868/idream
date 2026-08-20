@@ -155,7 +155,7 @@ Treat these as one quiesced recovery checkpoint:
 | Value | Requirement |
 | --- | --- |
 | Main PostgreSQL | Version-compatible dump plus migration count and restore verification |
-| `CHAT_FS_ROOT` | Archive plus per-file manifest/checksum; contains canonical session, memory, relationship, and boundary state |
+| `CHAT_FS_ROOT` | Archive plus per-file manifest/checksum; contains relationship/evidence/boundary projections only (Scene/session/message stay in PG; generic memory stays in DSH/igrep) |
 | Local `BLOB_ROOT` | Archive plus per-object manifest/checksum when `BLOB_PROVIDER=mock`; for R2/S3 bind the checkpoint to versioned object inventory instead |
 | Checkpoint metadata | Quiesced timestamp, artifact ids, SHA-256 values, provider/root identifiers, and disposable-restore result |
 | `RECOVERY_REHEARSAL_BUNDLE` | Absolute or workspace-relative path to the published flat bundle whose basename prefixes every artifact |

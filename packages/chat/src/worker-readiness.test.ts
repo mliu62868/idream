@@ -55,7 +55,6 @@ vi.mock("./inbox.js", () => ({
   reprocessPendingInbox: vi.fn(),
 }));
 vi.mock("./reconcile.js", () => ({ reconcile: runtime.reconcile }));
-vi.mock("./maintain.js", () => ({ pruneExpiredSegments: vi.fn() }));
 vi.mock("./logger.js", () => ({
   logger: { info: runtime.loggerInfo, warn: vi.fn(), error: vi.fn() },
 }));

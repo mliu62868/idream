@@ -38,8 +38,6 @@ export const CHAT_QUEUES = {
   inboxConsume: "chat.inbox.consume",
   /** Periodic: scan stuck `generating` + pending outbox/inbox; converge. */
   reconcile: "chat.reconcile",
-  /** Periodic: session.jsonl rolling/compaction/TTL + expired Redis streams. */
-  maintain: "chat.maintain",
 } as const;
 
 export const ALL_QUEUE_NAMES = [

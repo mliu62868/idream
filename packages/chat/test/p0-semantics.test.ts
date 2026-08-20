@@ -1,10 +1,10 @@
 // P0 semantic-fix acceptance (CHAT_SERVICE_CAPABILITY_COMPLETION_PLAN §6):
-//   P0-C daily free quota, P0-D policy model written, P0-E no-memory writes no
-//   session.jsonl / derives no memory, P0-F user.deleted erases the chat domain,
+//   P0-C daily free quota, P0-D policy model written, P0-E no-memory derives no
+//   generic memory, P0-F user.deleted erases the chat domain,
 //   P0-G boundaries fail closed. Runs over PG + the file layer like hot-path.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { FREE_DAILY_MESSAGES } from "@idream/shared/chat/limits";
-import { mkdtemp, mkdir, rm, access, readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Pool } from "pg";
@@ -15,7 +15,6 @@ import type { GeneratePayload } from "../src/generate.js";
 import { processMemoryExtract } from "../src/memory.js";
 import { reconcile } from "../src/reconcile.js";
 import { modelForTier } from "../src/policy.js";
-import { setRelationshipOnce } from "../src/relationship.js";
 import { drainQueue, obliterate } from "../src/queue.js";
 import { CHAT_QUEUES, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { acceptAgeGate, ingestMainEvent } from "./fixtures.js";
@@ -104,7 +103,7 @@ describe("P0-C: free daily quota", () => {
 });
 
 describe("P0-E: no-memory / incognito", () => {
-  it("writes no session.jsonl and derives no long-term memory", async () => {
+  it("derives no generic memory", async () => {
     const user = "u_p0_nomem";
     const session = await createSession({ userId: user, characterId: CHAR }, { prisma });
     await setNoMemory({ userId: user, sessionId: session.id, memoryEnabled: false }, { prisma });
@@ -124,10 +123,6 @@ describe("P0-E: no-memory / incognito", () => {
     // still win over this later session preference.
     await setNoMemory({ userId: user, sessionId: session.id, memoryEnabled: true }, { prisma });
     expect(await generateOnce()).toBe(1);
-
-    // No agent trace file for an incognito session.
-    const jsonl = path.join(fsRoot, "sessions", user, `${session.id}.jsonl`);
-    expect(await exists(jsonl)).toBe(false);
 
     // Scene advances off the hot path even in incognito mode. The same job must
     // not write memory, relationship evidence, summary, or file-layer traces.
@@ -274,26 +269,6 @@ describe("P0-G: boundaries fail closed", () => {
   });
 });
 
-describe("P1-B: relationship state is injected into the model context", () => {
-  it("includes the qualitative bond tone + summary in the system prompt", async () => {
-    const user = "u_p1_rel";
-    // Establish a 'close' bond before the turn (file-layer authority).
-    await setRelationshipOnce(user, CHAR, "p1_b_seed", { stage: "close", summary: "We share inside jokes about sailing." });
-
-    const session = await createSession({ userId: user, characterId: CHAR }, { prisma });
-    const sent = await sendMessage({ userId: user, sessionId: session.id, content: "hey you" }, { prisma });
-    expect(await generateOnce()).toBe(1);
-
-    // The agent trace records the exact system prompt the model received.
-    const jsonl = await readFile(path.join(fsRoot, "sessions", user, `${session.id}.jsonl`), "utf8");
-    const turn = JSON.parse(jsonl.trim().split("\n")[0]) as { system: string };
-    expect(turn.system).toContain("Relationship State");
-    expect(turn.system).toContain("comfortable intimacy"); // 'close' stage tone
-    expect(turn.system).toContain("inside jokes about sailing"); // narrative summary
-    expect(sent.status).toBe("generating");
-  });
-});
-
 describe("P0-F: account deletion v2 erases the chat domain", () => {
   it("removes PG rows + file layer and emits request-bound v2 completion", async () => {
     const user = "u_p0_erase";
@@ -312,9 +287,9 @@ describe("P0-F: account deletion v2 erases the chat domain", () => {
       },
       prisma,
     );
-    // Pre-conditions: rows + files exist.
+    // Pre-conditions: rows + retained Chat file projections exist.
     expect(await prisma.chatSession.count({ where: { userId: user } })).toBeGreaterThan(0);
-    expect(await exists(path.join(fsRoot, "sessions", user))).toBe(true);
+    expect(await exists(path.join(fsRoot, "mem", user))).toBe(true);
 
     await ingestMainEvent(
       {
@@ -332,8 +307,7 @@ describe("P0-F: account deletion v2 erases the chat domain", () => {
     // PG: all chat rows for the user are gone.
     expect(await prisma.chatSession.count({ where: { userId: user } })).toBe(0);
     expect(await prisma.chatUsage.count({ where: { userId: user } })).toBe(0);
-    // File layer: both tenant prefixes wiped.
-    expect(await exists(path.join(fsRoot, "sessions", user))).toBe(false);
+    // File layer: the retained tenant projection prefix is wiped.
     expect(await exists(path.join(fsRoot, "mem", user))).toBe(false);
     // Completion event recorded for main to observe.
     const firstCompletion = await prisma.chatOutboxEvent.findFirstOrThrow({

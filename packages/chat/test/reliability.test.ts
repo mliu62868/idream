@@ -1,7 +1,7 @@
-// P0-4 + P0-5 acceptance: inbox idempotency, reconcile convergence, maintain
-// rolling/TTL, privacy deletion across PG + files.
+// P0-4 + P0-5 acceptance: inbox idempotency, reconcile convergence and
+// privacy deletion across PG + files.
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { mkdtemp, rm, readFile, writeFile, mkdir, readdir, utimes } from "node:fs/promises";
+import { mkdtemp, rm, readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { once } from "node:events";
 import { createServer } from "node:http";
@@ -21,7 +21,6 @@ import {
 } from "../src/inbox.js";
 import { reconcile } from "../src/reconcile.js";
 import { settleCompanionMemoryRepairTraces } from "../src/companion-memory-repair.js";
-import { rollSessionLog, pruneExpiredSegments } from "../src/maintain.js";
 import { deleteMessage, deleteSession, deleteAccount } from "../src/privacy.js";
 import { archiveSession } from "../src/service.js";
 import {
@@ -176,9 +175,9 @@ describe("turn authority protocol (withTurnAuthority)", () => {
       },
       async (_tx, recordIntent) => {
         await recordIntent({
-          kind: "trace_append",
-          sessionId,
-          entry: { kind: "chat.turn", marker: "turn-authority-projected" },
+          kind: "relationship_set",
+          characterId: CHAR,
+          summary: "turn-authority-projected",
         });
       },
     );
@@ -188,9 +187,9 @@ describe("turn authority protocol (withTurnAuthority)", () => {
         where: { userId: TURN_AUTHORITY_USER },
         select: { kind: true, status: true },
       }),
-    ).toEqual([{ kind: "trace_append", status: "applied" }]);
+    ).toEqual([{ kind: "relationship_set", status: "applied" }]);
     expect(
-      await readWhole(chatFsPaths.sessionLog(TURN_AUTHORITY_USER, sessionId)),
+      await readWhole(chatFsPaths.relationship(TURN_AUTHORITY_USER, CHAR)),
     ).toContain("turn-authority-projected");
   });
 
@@ -1006,28 +1005,6 @@ describe("reconcile (P0-4 convergence)", () => {
   });
 });
 
-describe("maintain (P0-5 rolling/TTL)", () => {
-  it("rolls the active jsonl when over the size threshold", async () => {
-    const p = chatFsPaths.sessionLog(USER, "rel_roll");
-    await appendLine(p, "x".repeat(2000));
-    const rolled = await rollSessionLog(USER, "rel_roll", 100);
-    expect(rolled).toBe(true);
-    const files = await readdir(path.join(fsRoot, "sessions", USER));
-    expect(files.some((f) => /^rel_roll\.\d+\.jsonl$/.test(f))).toBe(true);
-  });
-
-  it("prunes segments older than the TTL", async () => {
-    const dir = path.join(fsRoot, "sessions", USER);
-    await mkdir(dir, { recursive: true });
-    const seg = path.join(dir, "rel_old.1.jsonl");
-    await writeFile(seg, "old");
-    const old = new Date(Date.now() - 200 * 24 * 60 * 60 * 1000);
-    await utimes(seg, old, old);
-    const removed = await pruneExpiredSegments(180 * 24 * 60 * 60 * 1000);
-    expect(removed).toBeGreaterThanOrEqual(1);
-  });
-});
-
 describe("privacy deletion (P0-5, PG + files)", () => {
   it("projects a pending legacy account deletion intent without blocking the ledger", async () => {
     const suffix = `${process.pid}-${Date.now()}`;
@@ -1083,7 +1060,6 @@ describe("privacy deletion (P0-5, PG + files)", () => {
     await prisma.chatSession.create({
       data: { id: sessionId, userId, characterId: CHAR, status: "active" },
     });
-    await appendLine(chatFsPaths.sessionLog(userId, sessionId), "{}");
     const ack = await persistAccountDeletionRequestV2(
       accountDeletionV2Envelope(userId, sourceEventId),
       prisma,
@@ -1221,7 +1197,7 @@ describe("privacy deletion (P0-5, PG + files)", () => {
     });
   });
 
-  it("deleteSession removes messages + jsonl", async () => {
+  it("deleteSession removes messages", async () => {
     const s = await prisma.chatSession.create({
       data: { id: "rel_del", userId: USER, characterId: CHAR, status: "active" },
     });
@@ -1284,8 +1260,6 @@ describe("privacy deletion (P0-5, PG + files)", () => {
         },
       ],
     });
-    await appendLine(chatFsPaths.sessionLog(USER, s.id), JSON.stringify({ k: 1 }));
-
     await deleteSession({ userId: USER, sessionId: s.id }, prisma);
 
     expect(await prisma.message.findUnique({ where: { id: "rel_del_m" } })).toBeNull();
@@ -1293,8 +1267,6 @@ describe("privacy deletion (P0-5, PG + files)", () => {
       where: { messageId: { in: ["rel_del_m", "rel_del_a"] } },
     })).toBe(0);
     expect((await prisma.chatSession.findUnique({ where: { id: s.id } }))?.status).toBe("deleted");
-    const files = await readdir(path.join(fsRoot, "sessions", USER)).catch(() => []);
-    expect(files).not.toContain(`${s.id}.jsonl`);
     const correction = await prisma.chatOutboxEvent.findFirst({
       where: { eventType: "chat.exchange.corrected.v2", aggregateId: "rel_del_m" },
     });
@@ -1471,7 +1443,7 @@ describe("privacy deletion (P0-5, PG + files)", () => {
     });
   });
 
-  it("deleteAccount wipes chat rows + both file prefixes + emits erasure", async () => {
+  it("deleteAccount wipes chat rows + retained file prefix + emits erasure", async () => {
     const u = "u_erase";
     await superPool.query(
       `INSERT INTO public.users (id,email,status,"createdAt","updatedAt") VALUES ($1,$2,'active',now(),now()) ON CONFLICT (id) DO NOTHING`,
@@ -1480,7 +1452,6 @@ describe("privacy deletion (P0-5, PG + files)", () => {
     await acceptAgeGate(superPool, [u]);
     const s = await prisma.chatSession.create({ data: { id: "erase_s", userId: u, characterId: CHAR, status: "active" } });
     await prisma.message.create({ data: { id: "erase_m", sessionId: s.id, role: "user", content: "x", status: "sent" } });
-    await appendLine(chatFsPaths.sessionLog(u, s.id), "{}");
     await writeFile(path.join(fsRoot, "mem", u, "global", "boundaries.md"), "b").catch(async () => {
       await mkdir(path.join(fsRoot, "mem", u, "global"), { recursive: true });
       await writeFile(path.join(fsRoot, "mem", u, "global", "boundaries.md"), "b");
@@ -1492,7 +1463,6 @@ describe("privacy deletion (P0-5, PG + files)", () => {
     }, prisma);
 
     expect(await prisma.chatSession.findMany({ where: { userId: u } })).toEqual([]);
-    expect(await listPrefix(["sessions", u])).toEqual([]);
     expect(await listPrefix(["mem", u])).toEqual([]);
     const erasure = await prisma.chatOutboxEvent.findFirst({
       where: { aggregateId: u, eventType: "chat.account_erasure.completed" },

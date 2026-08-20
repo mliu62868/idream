@@ -400,8 +400,6 @@ model ChatSession {
   title           String?
   status          String    @default("active")
   memoryEnabled   Boolean   @default(true) @map("memory_enabled")
-  memorySummary   String?   @map("memory_summary") // 历史可空 drain 字段；runtime/public projection 不读写
-  logExtractedSeq BigInt    @default(0) @map("log_extracted_seq")
   lastMessageAt   DateTime? @map("last_message_at")
   // ... createdAt/updatedAt/deletedAt
   @@map("chat_sessions")

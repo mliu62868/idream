@@ -221,7 +221,7 @@ Ourdream.ai 是一个 18+ AI 角色扮演与 AI 伴侣平台，核心价值是�
 | CharacterPreviewJob | id、draftId、status、resultAssetId、error |
 | Character | id、name、age、description、creatorId、visibility、style、tags、advancedDetails、safetyStatus、imageUrl、stats |
 | CharacterVisualProfile | id、characterId、version、status、identityPrompt、anchorAssetIds、referenceAssetIds、defaultSeed、adapterRefs、qualityScore、consistencyScore |
-| ChatSession | id、userId、characterId、title、memoryEnabled、lastMessageAt、visibility（历史 memorySummary 不进入 runtime/public projection） |
+| ChatSession | id、userId、characterId、title、memoryEnabled、contextRevision、lastMessageAt、visibility |
 | Message | id、sessionId、role、content、model、safetyFlags、createdAt |
 | GenerationPreset | id、ownerId、scope、type、category、label、controls、visibility |
 | GenerationJob | id、userId、characterId、mode、prompt、controls、presetIds、model、orientation、count、status、cost、resultAssetIds、error |

@@ -7,7 +7,6 @@ import type { ChatPrismaClient } from "./db.js";
 const moderationMock = vi.hoisted(() => vi.fn());
 const buildContextMock = vi.hoisted(() => vi.fn());
 const appendStreamEventMock = vi.hoisted(() => vi.fn(async () => ({ id: "stream-id", event: {} })));
-const appendLineMock = vi.hoisted(() => vi.fn(async () => {}));
 const enqueueMock = vi.hoisted(() => vi.fn(async () => {}));
 const recordTurnFailureMock = vi.hoisted(() => vi.fn());
 const recordTurnSuccessMock = vi.hoisted(() => vi.fn());
@@ -36,13 +35,6 @@ vi.mock("./context.js", () => ({
 vi.mock("./stream.js", () => ({
   appendStreamEvent: appendStreamEventMock,
   streamKey: (assistantMessageId: string) => `chat:stream:${assistantMessageId}`,
-}));
-vi.mock("./chat-fs.js", () => ({
-  appendLine: appendLineMock,
-  chatFsPaths: {
-    sessionLog: () => "/tmp/session.jsonl",
-  },
-  withFileMutationLock: async (_path: string[], run: () => Promise<unknown>) => run(),
 }));
 vi.mock("./queue.js", () => ({ enqueue: enqueueMock }));
 vi.mock("./runtime-readiness.js", () => ({
@@ -443,7 +435,6 @@ describe("chat generate agent image tool", () => {
     moderationMock.mockReset();
     buildContextMock.mockReset();
     appendStreamEventMock.mockClear();
-    appendLineMock.mockClear();
     enqueueMock.mockClear();
     recordTurnFailureMock.mockClear();
     recordTurnSuccessMock.mockClear();
@@ -876,7 +867,6 @@ describe("chat generate agent image tool", () => {
       expect(attachmentCreates).toHaveLength(0);
       expect(outboxCreates.filter((call) => call.data.eventType === CHAT_TO_MAIN_EVENTS.imageRequested))
         .toHaveLength(0);
-      expect(appendLineMock).not.toHaveBeenCalled();
     } finally {
       restoreEnv();
     }
@@ -933,7 +923,7 @@ describe("chat generate agent image tool", () => {
       expect(recordTurnSuccessMock).toHaveBeenCalledOnce();
       expect(recordTurnFailureMock).not.toHaveBeenCalled();
       expect(recordMemoryPromotionFailureMock).toHaveBeenCalledWith(
-        expect.objectContaining({ message: "igrep promotion failed" }),
+        expect.objectContaining({ message: "memory_commit_failed" }),
       );
       expect(recordMemoryPromotionSuccessMock).not.toHaveBeenCalled();
     } finally {
@@ -1059,7 +1049,7 @@ describe("chat generate agent image tool", () => {
         { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
         prisma,
         { projectorPrisma: prisma },
-      )).rejects.toThrow("sidecar unavailable");
+      )).rejects.toThrow("dsh_runtime_error");
 
       expect([...messageUpdates, ...rootMessageUpdates]).toContainEqual(expect.objectContaining({
         data: expect.objectContaining({
@@ -1284,7 +1274,7 @@ describe("chat generate agent image tool", () => {
         { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
         prisma,
         { projectorPrisma: prisma, jobAttempt: { attemptsMade: 1, maxAttempts: 3 } },
-      )).rejects.toThrow("retry observation complete");
+      )).rejects.toThrow("dsh_runtime_error");
 
       expect(observedDigest).toBe("d".repeat(64));
       expect(Date.parse(observedDeadlineAt ?? "")).toBe(
@@ -1313,7 +1303,7 @@ describe("chat generate agent image tool", () => {
           occurredAt: new Date().toISOString(),
           delta: "visible partial reply",
         });
-        throw new Error("sidecar disconnected");
+        throw new Error("PRIVATE_PROVIDER_BODY_SENTINEL");
       });
       const { prisma, messageUpdates } = fakePrisma();
 
@@ -1339,9 +1329,13 @@ describe("chat generate agent image tool", () => {
           }),
           companion: expect.objectContaining({
             memoryIngestOutcome: "discarded_truncated",
+            failure: { category: "runtime", code: "dsh_runtime_error" },
           }),
         }),
       });
+      expect(JSON.stringify(finalizedMessageUpdate(messageUpdates))).not.toContain(
+        "PRIVATE_PROVIDER_BODY_SENTINEL",
+      );
     } finally {
       restoreEnv();
     }
@@ -1626,11 +1620,7 @@ describe("chat generate agent image tool", () => {
         { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
         prisma,
         { projectorPrisma: prisma, jobAttempt: { attemptsMade: 0, maxAttempts: 2 } },
-      )).rejects.toThrow(
-        crashPoint === "before_intent"
-          ? "sidecar disconnected before the tool intent"
-          : "sidecar disconnected after the tool result",
-      );
+      )).rejects.toThrow("dsh_runtime_error");
       expect(dshCancelMock).toHaveBeenCalledWith("inv:msg_assistant:1", "transport");
       expect(attachmentCreates).toHaveLength(0);
       expect(outboxCreates.filter((call) => call.data.eventType === CHAT_TO_MAIN_EVENTS.imageRequested)).toHaveLength(0);
@@ -1772,7 +1762,7 @@ describe("chat generate agent image tool", () => {
         { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
         prisma,
         { projectorPrisma: prisma, jobAttempt: { attemptsMade: 0, maxAttempts: 2 } },
-      )).rejects.toThrow("sidecar disconnected after edit reservation");
+      )).rejects.toThrow("dsh_runtime_error");
 
       // A different image completes while BullMQ is retrying. The accepted edit
       // intent must still target the source Chat resolved before the crash.

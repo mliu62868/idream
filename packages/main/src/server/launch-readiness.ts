@@ -523,7 +523,7 @@ function addChatServiceChecks(checks: LaunchReadinessCheck[], env: EnvLike) {
       ? "CHAT_FS_ROOT is an absolute durable-storage path."
       : "CHAT_FS_ROOT is missing or not an absolute durable-storage path.",
     remediation:
-      "Set CHAT_FS_ROOT to an absolute path mounted on durable storage for chat logs and memories.",
+      "Set CHAT_FS_ROOT to an absolute durable path for relationship evidence and boundary projections; Scene/session/message stay in Postgres and generic memory stays in DSH/igrep.",
   });
 
   addCheck(checks, {

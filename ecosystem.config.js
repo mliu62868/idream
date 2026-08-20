@@ -13,8 +13,9 @@
 // Production web apps run from immutable .next-runtime releases. Prefer restart
 // after both builds are published; rolling reload still needs deployment-aware
 // routing to keep old clients and workers on the same release during the overlap.
-// ⚠️ chat is instances:1 — it writes Chat-owned session/relationship/boundary
-//    projections. Generic memory lives only in the DSH/igrep workspace. Do NOT
+// ⚠️ chat is instances:1 — it writes Chat-owned relationship evidence and
+//    boundary projections. Scene/session/message authority stays in PG; generic
+//    memory lives only in the DSH/igrep workspace. Do NOT
 //    scale it past 1 without moving CHAT_FS_ROOT to shared storage (D1/C1).
 // ⚠️ script paths point at real node entry files (.mjs / next's CJS bin), NOT the
 //    pnpm `.bin/*` shell shims — pm2's node interpreter cannot parse a /bin/sh shim

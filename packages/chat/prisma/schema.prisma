@@ -122,8 +122,6 @@ model ChatSession {
   title                     String?
   status                    String    @default("active")
   memoryEnabled             Boolean   @default(true) @map("memory_enabled")
-  memorySummary             String?   @map("memory_summary")
-  logExtractedSeq           BigInt    @default(0) @map("log_extracted_seq")
   contextRevision           BigInt    @default(0) @map("context_revision")
   lastMessageAt             DateTime? @map("last_message_at")
   createdAt                 DateTime  @default(now()) @map("created_at")

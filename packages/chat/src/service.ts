@@ -294,26 +294,10 @@ export async function getSession(
     session,
     messages: messages.map((message) => ({
       ...message,
-      runtimeTrace: publicRuntimeTrace(message.runtimeTrace),
       scene: runtimeScene(message.runtimeTrace),
       attachments: byMessage.get(message.id) ?? [],
     })),
   };
-}
-
-/**
- * Historical rows can still contain pre-cutover Shadow diagnostics. Keep those
- * private while exposing the authoritative DSH trace unchanged.
- */
-export function publicRuntimeTrace(value: unknown): unknown {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-  const {
-    shadowAdmission: _shadowAdmission,
-    shadowComparison: _shadowComparison,
-    shadowEvidence: _shadowEvidence,
-    ...trace
-  } = value as Record<string, unknown>;
-  return trace;
 }
 
 function runtimeScene(value: unknown): unknown | null {

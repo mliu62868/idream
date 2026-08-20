@@ -208,7 +208,6 @@ character_id
 title
 status                  active | archived | deleted
 memory_enabled
-memory_summary          # 历史可空 drain 字段；不进入运行时上下文或公共投影
 last_message_at
 created_at
 updated_at
@@ -218,7 +217,7 @@ deleted_at
 说明：
 
 - `user_id` 和 `character_id` 引用主站 ID，但在独立 DB 拓扑下不做跨库 FK。
-- `memory_summary` 只为既有 schema/历史行保留；Phase 6 不再读写它，也不把它投影给产品端。
+- Phase 6 单向删除旧 `memory_summary` 与 session-log watermark；不保留第二套会话摘要权威。
 
 ### 6.2 `chat.messages`
 
@@ -403,7 +402,7 @@ Chat 可以把 persona 转成内部 prompt，但不能修改权威角色设定�
 
 ### 7.4 PreparedTurn context
 
-每轮上下文由 Chat 构建一次不可变 PreparedTurn：已发布 Soul、recent messages、Scene、relationship、boundaries、已发布知识和 entitlement policy。通用记忆由 DSH 内的 igrep plugin 在对应 workspace 召回；历史 `chat_sessions.memory_summary` 不再进入上下文。
+每轮上下文由 Chat 构建一次不可变 PreparedTurn：已发布 Soul、recent messages、Scene、relationship、boundaries、已发布知识和 entitlement policy。通用记忆由 DSH 内的 igrep plugin 在对应 workspace 召回；旧 `chat_sessions.memory_summary` 已单向删除。
 
 ## 8. API 边界
 
@@ -518,7 +517,6 @@ chat.moderation.deep     深度审核补偿
 chat.memory.extract      历史 wire name：按 reply_to_message_id 读取 PG 权威 turn，只派生 Scene/relationship
 chat.outbox.deliver      投递 Chat→Main 跨服务事件
 chat.inbox.consume       消费 Main→Chat 入站事件（chat_inbox_events）
-chat.maintain            session.jsonl 滚动/压缩/TTL + 清理过期 stream
 ```
 
 `chat.generate` payload 可以是 ID-based，因为 Chat worker 能读 Chat DB：

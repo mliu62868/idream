@@ -1,6 +1,6 @@
 // P0-3 acceptance: send a message → enqueue → worker generate → finalize.
-// Asserts: assistant message lands `sent` in PG, usage increments, session.jsonl
-// is written (file layer), and chat→main outbox events are recorded. Also proves
+// Asserts: assistant message lands `sent` in PG, usage increments, no raw
+// session trace is written, and chat→main outbox events are recorded. Also proves
 // regenerate is NOT swallowed by dedupe (carries :attempt) and refresh/replay via
 // the persisted message survives a "dropped" stream.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -166,13 +166,12 @@ describe("chat hot path (P0-3)", () => {
     const usage = await prisma.chatUsage.findFirst({ where: { userId: USER } });
     expect(usage?.messagesUsed).toBeGreaterThanOrEqual(1);
 
-    // session.jsonl written (file layer / agent trace)
-    const jsonl = await readFile(
+    // Runtime evidence is content-free and authoritative in PG; the retired
+    // session JSONL must not receive prompts or model output.
+    await expect(readFile(
       path.join(fsRoot, "sessions", USER, `${session.id}.jsonl`),
       "utf8",
-    );
-    expect(jsonl).toContain("chat.turn");
-    expect(jsonl).toContain(res.assistantMessageId);
+    )).rejects.toMatchObject({ code: "ENOENT" });
 
     // outbox: message.completed + usage.incremented recorded
     const outbox = await prisma.chatOutboxEvent.findMany({ where: { aggregateId: res.assistantMessageId } });
@@ -304,17 +303,10 @@ describe("chat hot path (P0-3)", () => {
     expect(regenerated?.content).toContain("kitchen with apples");
     expect(regenerated?.content).not.toContain("beach with bananas");
     expect((await prisma.message.findUniqueOrThrow({ where: { id: first.userMessageId } })).sceneVersion).toBe(0);
-    const turns = (await readFile(
-      path.join(fsRoot, "sessions", TURN_USER, `${session.id}.jsonl`),
-      "utf8",
-    )).trim().split("\n").map((line) => JSON.parse(line) as {
-      attempt: number;
-      assistantMessageId: string;
-      preparedTurn: { trace: { sceneVersion: number } };
+    expect(regenerated?.runtimeTrace).toMatchObject({
+      attempt: 2,
+      trace: { sceneVersion: 0 },
     });
-    expect(turns.find((turn) =>
-      turn.assistantMessageId === first.assistantMessageId && turn.attempt === 2
-    )?.preparedTurn.trace.sceneVersion).toBe(0);
     await drainQueue(CHAT_QUEUES.memoryExtract, async (job) => {
       await processMemoryExtract(
         job.payload as Parameters<typeof processMemoryExtract>[0],

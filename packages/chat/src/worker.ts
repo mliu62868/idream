@@ -1,6 +1,6 @@
 // SPEC: chat/worker (design §10) — one process consuming every chat queue:
 // generate / Scene+relationship projection / outbox.deliver / inbox.consume / reconcile /
-// maintain. Single instance (writes local files). Graceful shutdown closes all.
+// Single instance (writes local files). Graceful shutdown closes all.
 import type { Worker } from "bullmq";
 import {
   CHAT_QUEUES,
@@ -17,11 +17,9 @@ import { processMemoryExtract } from "./memory.js";
 import { deliverPendingOutbox } from "./outbox.js";
 import { consumeDurableInbox, reprocessPendingInbox } from "./inbox.js";
 import { reconcile } from "./reconcile.js";
-import { pruneExpiredSegments } from "./maintain.js";
 import { runtimeReadiness } from "./runtime-readiness.js";
 
 const RECONCILE_INTERVAL_MS = 30_000;
-const MAINTAIN_INTERVAL_MS = 60 * 60_000;
 
 // INVARIANT: provider readiness is turn admission. Durable convergence workers
 // run independently and retry against the concrete dependency that failed.
@@ -82,16 +80,11 @@ export function startWorker(): { close: () => Promise<void> } {
       .then((counts) => logger.info(counts, "reconcile pass"))
       .catch((err) => logger.error({ err }, "reconcile failed"));
   }, RECONCILE_INTERVAL_MS);
-  const maintainTimer = setInterval(() => {
-    pruneExpiredSegments().catch((err) => logger.error({ err }, "maintain failed"));
-  }, MAINTAIN_INTERVAL_MS);
-
   logger.info("chat/worker started");
 
   return {
     async close() {
       clearInterval(reconcileTimer);
-      clearInterval(maintainTimer);
       await Promise.all(workers.map((w) => w.close()));
     },
   };

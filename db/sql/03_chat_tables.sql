@@ -1,7 +1,8 @@
 -- P0-1 boundary · chat authority tables (PRD §6). RUN AS: chat_owner.
 -- IDs are app-generated cuids (text). No cross-schema FKs (independent-DB ready).
--- companion_memories / relationship_states are intentionally ABSENT — long-term
--- memory & relationship moved to the file layer (design §5). IDEMPOTENT.
+-- companion_memories / relationship_states are intentionally ABSENT. Generic
+-- memory belongs to official igrep; Chat projects Scene/relationship/boundaries
+-- without creating a second memory authority (design §5). IDEMPOTENT.
 \set ON_ERROR_STOP on
 
 -- The ledger trigger must be replaced during upgrades. Keep that replacement
@@ -16,8 +17,6 @@ CREATE TABLE IF NOT EXISTS chat.chat_sessions (
   title              text,
   status             text NOT NULL DEFAULT 'active',   -- active|archived|deleted
   memory_enabled     boolean NOT NULL DEFAULT true,
-  memory_summary     text,                              -- rolling summary (PG)
-  log_extracted_seq  bigint NOT NULL DEFAULT 0,         -- session.jsonl derive watermark (D3)
   context_revision   bigint NOT NULL DEFAULT 0,         -- generation privacy/context fence
   entry_exposure_id  text,                              -- Main-owned exposure attribution
   entry_journey_id   text,
@@ -35,6 +34,11 @@ ALTER TABLE chat.chat_sessions
   ADD COLUMN IF NOT EXISTS entry_exposure_id text,
   ADD COLUMN IF NOT EXISTS entry_journey_id text,
   ADD COLUMN IF NOT EXISTS entry_placement_id text;
+-- Phase 6: official igrep and Message runtime traces replaced both legacy
+-- session summaries and the write-only session-log extraction watermark.
+ALTER TABLE chat.chat_sessions
+  DROP COLUMN IF EXISTS memory_summary,
+  DROP COLUMN IF EXISTS log_extracted_seq;
 CREATE INDEX IF NOT EXISTS chat_sessions_user_last_idx
   ON chat.chat_sessions (user_id, last_message_at DESC);
 CREATE INDEX IF NOT EXISTS chat_sessions_character_idx
@@ -136,7 +140,7 @@ CREATE TABLE IF NOT EXISTS chat.messages (
   character_content_version_id text,                     -- exact immutable content used by this turn
   character_release_id text,                             -- exact release when present; never inferred later
   memory_authority text NOT NULL DEFAULT 'legacy_unknown', -- enabled|disabled captured on the assistant turn
-  memory_extracted_attempt integer NOT NULL DEFAULT 0,  -- latest attempt derived into file memory
+  memory_extracted_attempt integer NOT NULL DEFAULT 0,  -- latest attempt projected into Chat-owned Scene/relationship
   scene_version integer NOT NULL DEFAULT 0,             -- Scene revision visible when this turn began
   runtime_trace jsonb,                                   -- immutable-attempt model/Soul/Scene trace
   created_at    timestamp NOT NULL DEFAULT (timezone('utc', now())),
@@ -256,6 +260,69 @@ CREATE TABLE IF NOT EXISTS chat.message_versions (
 );
 ALTER TABLE chat.message_versions
   ADD COLUMN IF NOT EXISTS runtime_trace jsonb;
+-- Shadow was a migration-only runtime. Its content-adjacent comparison data is
+-- neither product authority nor retained evidence after the DSH cutover.
+UPDATE chat.messages
+SET runtime_trace = runtime_trace
+  - 'shadowAdmission'
+  - 'shadowComparison'
+  - 'shadowEvidence'
+WHERE jsonb_typeof(runtime_trace) = 'object'
+  AND runtime_trace ?| ARRAY[
+    'shadowAdmission',
+    'shadowComparison',
+    'shadowEvidence'
+  ];
+UPDATE chat.message_versions
+SET runtime_trace = runtime_trace
+  - 'shadowAdmission'
+  - 'shadowComparison'
+  - 'shadowEvidence'
+WHERE jsonb_typeof(runtime_trace) = 'object'
+  AND runtime_trace ?| ARRAY[
+    'shadowAdmission',
+    'shadowComparison',
+    'shadowEvidence'
+  ];
+-- A short-lived pre-cutover build persisted raw image prompt/caption fields in
+-- companionTool.arguments. Preserve only enough identity to make a replay fail
+-- closed. The all-zero digest is deliberately not derived from the secret: a
+-- retry cannot match it, so Chat reports an unknown/limit outcome instead of
+-- duplicating an effect whose original payload is no longer retained.
+UPDATE chat.messages
+SET runtime_trace = jsonb_set(
+  runtime_trace #- '{companionTool,arguments}',
+  '{companionTool,argumentsDigest}',
+  to_jsonb(repeat('0', 64)),
+  true
+)
+WHERE jsonb_typeof(runtime_trace #> '{companionTool}') = 'object'
+  AND (runtime_trace #> '{companionTool}') ? 'arguments';
+UPDATE chat.message_versions
+SET runtime_trace = jsonb_set(
+  runtime_trace #- '{companionTool,arguments}',
+  '{companionTool,argumentsDigest}',
+  to_jsonb(repeat('0', 64)),
+  true
+)
+WHERE jsonb_typeof(runtime_trace #> '{companionTool}') = 'object'
+  AND (runtime_trace #> '{companionTool}') ? 'arguments';
+UPDATE chat.messages
+SET runtime_trace = jsonb_set(
+  runtime_trace,
+  '{companion,failure}',
+  '{"category":"runtime","code":"legacy_failure_redacted"}'::jsonb,
+  false
+)
+WHERE jsonb_typeof(runtime_trace #> '{companion,failure}') = 'string';
+UPDATE chat.message_versions
+SET runtime_trace = jsonb_set(
+  runtime_trace,
+  '{companion,failure}',
+  '{"category":"runtime","code":"legacy_failure_redacted"}'::jsonb,
+  false
+)
+WHERE jsonb_typeof(runtime_trace #> '{companion,failure}') = 'string';
 CREATE INDEX IF NOT EXISTS message_versions_message_idx
   ON chat.message_versions (message_id);
 
@@ -466,6 +533,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS chat_file_mutations_sequence_key
 CREATE INDEX IF NOT EXISTS chat_file_mutations_user_pending_idx
   ON chat.chat_file_mutations (user_id, status, sequence);
 
+-- Phase 6 stopped producing raw session traces. Remove every historical
+-- trace intent before the stricter runtime schema is deployed so no pending
+-- projector retry can recreate a purged JSONL file.
+DELETE FROM chat.chat_file_mutations
+WHERE kind = 'trace_append';
+
 CREATE OR REPLACE FUNCTION chat.redact_file_mutation_payload(
   mutation_id text,
   mutation_kind text,
@@ -511,10 +584,6 @@ AS $$
     WHEN 'relationship_rebuild' THEN jsonb_build_object(
       'kind', mutation_kind,
       'characterId', mutation_payload -> 'characterId'
-    )
-    WHEN 'trace_append' THEN jsonb_build_object(
-      'kind', mutation_kind,
-      'sessionId', mutation_payload -> 'sessionId'
     )
     WHEN 'account_delete' THEN jsonb_build_object(
       'kind', mutation_kind,

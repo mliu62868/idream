@@ -99,7 +99,7 @@
 | --- | --- | --- |
 | Chat landing | `/chat` | marketing route |
 | Character chat | `/chat/*` 或角色详情 | ChatSession、Message |
-| Conversation memory | chat | memory summary |
+| Conversation continuity | chat | recent PG transcript + Scene/relationship + official igrep memory |
 | Message quota | chat | plan、usage |
 | Safety moderation | chat | safety flags |
 | Report chat/character | chat/detail | ContentReport |

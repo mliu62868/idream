@@ -455,7 +455,7 @@ export async function assertChatSchemaReady(prisma: ChatPrismaClient): Promise<v
       AND encode(
         sha256(convert_to(redact_proc.prosrc, 'UTF8')),
         'hex'
-      ) = 'afef1ed0c7eafc086327abf80dd899e0bdd2652ec89cb9d1122e4ca9a5540d9b'
+      ) = '7ae851f3380a7d567018dd541a58b80bbafea3a24f40640b894426ad8be7bcc4'
       AND legacy_redact_proc.prolang = (
         SELECT language.oid
         FROM pg_language AS language
@@ -679,9 +679,7 @@ async function connectedDatabaseAuthority(
           OR (
             current_user = 'chat_projector'
             AND (
-              (relation_authority.relname = 'chat_sessions'
-                AND attribute.attname IN ('log_extracted_seq', 'updated_at'))
-              OR (relation_authority.relname = 'messages'
+              (relation_authority.relname = 'messages'
                 AND attribute.attname IN (
                   'memory_extracted_attempt', 'updated_at'
                 ))

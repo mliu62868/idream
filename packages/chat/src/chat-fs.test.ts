@@ -6,7 +6,6 @@ import {
   appendLine,
   chatFsPaths,
   deletePrefix,
-  fileSize,
   listPrefix,
   readWhole,
   writeAtomic,
@@ -23,8 +22,8 @@ afterEach(async () => {
 });
 
 describe("chat-fs", () => {
-  it("appends jsonl lines (append-only trace)", async () => {
-    const p = chatFsPaths.sessionLog("u1", "s1");
+  it("appends relationship evidence lines", async () => {
+    const p = chatFsPaths.relationshipEvidence("u1", "c1");
     await appendLine(p, JSON.stringify({ seq: 1 }));
     await appendLine(p, JSON.stringify({ seq: 2 }));
     const content = await readWhole(p);
@@ -40,26 +39,19 @@ describe("chat-fs", () => {
 
   it("readWhole returns null for missing file", async () => {
     expect(await readWhole(chatFsPaths.boundaries("nobody"))).toBeNull();
-    expect(await fileSize(chatFsPaths.boundaries("nobody"))).toBe(0);
   });
 
   it("listPrefix + deletePrefix cover a user partition (privacy delete)", async () => {
-    await appendLine(chatFsPaths.sessionLog("u9", "s1"), "{}");
+    await appendLine(chatFsPaths.relationshipEvidence("u9", "c1"), "{}");
     await writeAtomic(chatFsPaths.relationship("u9", "c1"), "r");
     await writeAtomic(chatFsPaths.boundaries("u9"), "b");
-    const before = await listPrefix(chatFsPaths.userPrefix("u9"));
-    // listPrefix is rooted at CHAT_FS_ROOT; relationship and boundaries share mem/.
-    expect((await listPrefix(["sessions", "u9"])).length).toBe(1);
-    expect((await listPrefix(["mem", "u9"])).length).toBe(2);
-    void before;
-    await deletePrefix(["sessions", "u9"]);
+    expect((await listPrefix(["mem", "u9"])).length).toBe(3);
     await deletePrefix(["mem", "u9"]);
-    expect(await listPrefix(["sessions", "u9"])).toEqual([]);
     expect(await listPrefix(["mem", "u9"])).toEqual([]);
   });
 
   it("rejects path traversal in ids", async () => {
-    await expect(appendLine(chatFsPaths.sessionLog("../etc", "s"), "x")).rejects.toThrow(
+    await expect(appendLine(chatFsPaths.relationshipEvidence("../etc", "c"), "x")).rejects.toThrow(
       /unsafe path segment/,
     );
   });

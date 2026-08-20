@@ -45,7 +45,6 @@ Postgres cluster (单实例, 多 schema)  ── 账本/事务/计费/查询
   chat.*                            ← Chat Service 拥有（会话/消息/usage/审核/outbox）
 
 文件系统 (本地文件夹, CHAT_FS_ROOT；直接 fs 读写，集中在一个模块) ── Chat 文件投影
-  sessions/{userId}/{sessionId}.jsonl  ← content-free execution trace / diagnosis
   mem/{userId}/{charId}/relationship.md
   mem/{userId}/global/boundaries.md
 
@@ -61,7 +60,7 @@ Redis (Chat Service 专用, CHAT_REDIS_URL): BullMQ 内部队列 + token Stream
 
 **部署单元**（完整 6 进程见 §10 服务目录）
 - `main-web`：主站，含 `/api/v1/chat/*` BFF 反代（只验签 + 转发，不拼 prompt、不写 chat 表）。
-- `chat`：**单进程**，进程内同时起 `chat/web`（chat API + SSE）和 `chat/worker`（消费 `chat.generate`、Scene/relationship 投影、outbox/inbox/reconcile/maintain）。写本地文件 ⇒ `instances:1`。
+- `chat`：**单进程**，进程内同时起 `chat/web`（chat API + SSE）和 `chat/worker`（消费 `chat.generate`、Scene/relationship 投影、outbox/inbox/reconcile）。写本地文件 ⇒ `instances:1`。
 - `chat-agent`：唯一 companion execution engine，运行 DSH AgentLoop + official igrep；PM2 以直接 Node PID、精确 `exec_interpreter`/`node_args` 管理，禁止 shell wrapper 遗留 orphan listener。
 - `main-event-consumer`：主站消费 Chat outbox 投递的事件，更新 library/stats/analytics/safety。
 - **入站通路**：主站权威变更写主站自己的 outbox → 投递到 `chat.chat_inbox_events` → `chat.inbox.consume` 消费（缓存失效/阻断/删除）。所以是**两个 outbox**，不是"唯一通路"。
@@ -79,7 +78,7 @@ Redis (Chat Service 专用, CHAT_REDIS_URL): BullMQ 内部队列 + token Stream
 | `core_owner` | 主站迁移 | core/billing/compliance 全权 + 建只读 view + GRANT |
 | `chat_owner` | chat 迁移 | `chat` schema DDL（建表/索引/迁移） |
 | `chat_service` | 请求/领域事务运行时 | SELECT on Main read views；普通 `chat.*` domain transaction；对 `chat_file_mutations` 仅 SELECT + intent columns INSERT；不能直接完成/删除 intent，账户擦除只走校验 canonical intent 的窄函数；**无** Main base-table 写权 |
-| `chat_projector` | durable file projector | 使用独立连接；只读 sessions/messages/send receipts/file mutation/outbox，UPDATE 仅开放 session `log_extracted_seq` + Prisma 自动写入的 `updated_at`、message `memory_extracted_attempt` + `updated_at` 与 file-mutation receipt 五列，outbox INSERT 仅开放 Prisma `recordOutbox` 实际写入的十列（含展开的三个默认列）；无 sequence/DDL/额外函数能力 |
+| `chat_projector` | durable file projector | 使用独立连接；只读 sessions/messages/send receipts/file mutation/outbox，UPDATE 仅开放 message `memory_extracted_attempt` + Prisma 自动写入的 `updated_at` 与 file-mutation receipt 五列，outbox INSERT 仅开放 Prisma `recordOutbox` 实际写入的十列（含展开的三个默认列）；无 session UPDATE、sequence、DDL 或额外函数能力 |
 
 ```sql
 -- 由 core_owner 执行（主站迁移）：建 schema、view、授权
@@ -152,7 +151,7 @@ chat/worker / chat.generate
  14. enqueue chat.memory.extract（历史 wire name：只派生 Scene/relationship 投影）和 outbox.deliver
 ```
 
-> **regenerate**（`POST /messages/:id/regenerate`）：dedupeKey 必须带 attempt（`chat-generate:<assistantMessageId>:<attempt>`），否则同一 assistant message 重生成会被去重吞掉（**原 `:<assistantMessageId>` 是 bug**）。每次 regenerate 追加新 `message_versions`、翻转 `selected`、按 entitlement 决定是否再计 usage、session.jsonl 追加一轮。
+> **regenerate**（`POST /messages/:id/regenerate`）：dedupeKey 必须带 attempt（`chat-generate:<assistantMessageId>:<attempt>`），否则同一 assistant message 重生成会被去重吞掉（**原 `:<assistantMessageId>` 是 bug**）。每次 regenerate 追加新 `message_versions`、翻转 `selected`、按 entitlement 决定是否再计 usage，并在新 attempt 启动前重建 relationship workspace，确保旧 selected reply 不再可 recall。
 
 **policy resolver（SSoT）**：`resolvePolicy(entitlement) → { model, maxContextMessages, rateLimit, voiceEnabled }`。不把 entitlement 翻译成自研 igrep cap/top-K。
 
@@ -168,7 +167,6 @@ chat-generate:<assistantMessageId>:<attempt>     # 带 attempt，支持 regenera
 chat-outbox:<eventId>
 chat-inbox:<eventId>
 chat-memory-extract:<assistantMessageId>:<attempt>
-chat-session-append:<assistantMessageId>:<attempt>
 ```
 
 **reconciler（P0 必需）**：`chat.reconcile` 周期任务
@@ -189,7 +187,7 @@ chat-session-append:<assistantMessageId>:<attempt>
 | Soul pin、PreparedTurn、Scene revision | Chat DB/编译结果 | attempt 开始后不可变 |
 | relationship 与 boundaries | `CHAT_FS_ROOT` Chat 文件投影 | durable intent + projector；boundaries 每轮全量注入 |
 | 通用 companion memory | DSH sidecar 的 official igrep workspace | Chat 不解析 item，不建 `memory.md`、summary、candidate、cap 或 retrieval fallback |
-| execution trace | Chat session log / message runtime trace | content-free identities/outcomes；不持久化 prompt/tool payload |
+| execution trace | Message / MessageVersion `runtime_trace` | content-free identities/outcomes；不持久化 prompt/tool payload |
 
 **workspace admission**：普通 turn 的 scope 只由 `(userId, characterId)` 派生。已有 canonical/proof 时原样复用；没有 workspace/proof 表示合法的新 relationship，sidecar 原生初始化为空。历史 cutover proof/marker 只供迁移审计，绝不读取旧 `memory.md`，也不作为新关系的 admission 前置。private turn 使用 attempt-local 临时 workspace，不产生 canonical workspace/proof。
 
@@ -246,7 +244,7 @@ CHAT_REDIS_URL=redis://...
 CHAT_BFF_SIGNING_SECRET=...
 CHAT_MODEL_PROVIDER=pipeline
 BULLMQ_PREFIX=idream:chat:prod
-# Chat 文件投影（sessions + Scene/relationship/boundaries；无 generic memory.md）
+# Chat 文件投影（relationship/evidence/boundaries；Scene/session/message 在 PG）
 CHAT_FS_ROOT=./data/chat
 DSH_AGENT_URL=http://127.0.0.1:3101
 DSH_AGENT_TOKEN=...
@@ -263,18 +261,15 @@ DSH_PROFILE_PRIVATE=idream-companion-private
 |---|------|------|
 | D1 | 本地 FS 与横向扩展（C1） | **已定：文件夹模式**（本地 FS，`chat` 进程 **instances:1 单写**，容量上限文档化）。chat 是慢异步层，单实例对当前吞吐够用。**不做 Store 接口抽象**（YAGNI）——fs 读写集中在 `chat-fs.ts`，将来要换共享存储改这一个模块即可。**约束**：仍用本地 FS 时**禁止**把 `chat` 扩多写实例（要扩先拆 web/worker + 换共享存储）。 |
 | D2 | PRD 同步 | **已更新** PRD：Chat 拥有产品/关系边界，official igrep 拥有通用记忆 lifecycle；无 item API。 |
-| D3 | session.jsonl 保留策略 | 见下「session.jsonl 保留策略」。 |
+| D3 | 历史 session.jsonl 清理 | execution evidence 已迁到 content-free Message/MessageVersion trace；历史 raw log 只允许删除，不再新增。 |
 
-### session.jsonl 保留策略（D3）
+### 历史 session.jsonl 清理（D3）
 
-session.jsonl append-only 会无限增长，且含 raw/敏感内容——按"数据最小化 + 派生够用 + 可检索"分级：
-
-1. **投影水位线**：历史 wire name `chat.memory.extract` 每成功处理一个权威 PG turn 就推进相应 Scene/relationship 投影水位；它不代表 generic memory ingest。
-2. **滚动压缩**：单会话 session.jsonl 超过阈值（如 5MB / 30 天）→ 滚动为 `sessions/{user}/{session}.{seq}.jsonl.gz`，活动文件保持小、append 快。
-3. **TTL 硬过期**：原始 session.jsonl 最长保留（如 180 天）后删除；它不是 official igrep memory authority。法务 hold 例外。
-4. **no-memory/incognito**：`memory_enabled=false` attempt 不落持久 tool/prompt 内容，也不产生 canonical DSH workspace/proof。
-5. **隐私耦合**：会话/账号删除清掉**全部** session.jsonl 段（活动 + 归档 .gz）。
-6. **执行者**：`chat.maintain` 周期任务做滚动/压缩/TTL + 清过期 Redis Stream；切对象存储后，TTL/分层可直接交给 bucket lifecycle，GC 逻辑不变。
+旧版本写过含 prompt/output/tool payload 的 session JSONL。Phase 6 后生产路径不再发出
+raw session trace intent；Message 与 selected MessageVersion 上的严格 content-free trace 是唯一 execution
+evidence。迁移时用受控清理命令删除 `CHAT_FS_ROOT/sessions` 下的历史活动段与归档段；它们
+不是消息、Scene、relationship 或 official igrep memory 权威。清理完成后，运行时代码不再
+认识该目录或 `trace_append` intent。
 
 ---
 
@@ -285,7 +280,7 @@ session.jsonl append-only 会无限增长，且含 raw/敏感内容——按"数
 | 服务 | 层 | 职责 | 入口 | 实例 | 主要依赖 |
 |------|----|------|------|------|----------|
 | `main-web` | 快·同步 | 公开页/角色/billing/library/提交 generation/**chat BFF 反代** | Next.js | cluster(max) | PG(core/billing/compliance RW)、Redis、Blob 签 URL |
-| `chat` | 快I/O + 慢生成 | **单进程**：`chat/web` + `chat/worker`(chat.generate / Scene+relationship projector / outbox / inbox / reconcile / maintain) | node | **1（写本地文件 ⇒ 单写节点）** | PG、Redis、Chat 文件投影、`chat-agent` |
+| `chat` | 快I/O + 慢生成 | **单进程**：`chat/web` + `chat/worker`(chat.generate / Scene+relationship projector / outbox / inbox / reconcile) | node | **1（写本地文件 ⇒ 单写节点）** | PG、Redis、Chat 文件投影、`chat-agent` |
 | `chat-agent` | companion execution | DSH AgentLoop + official igrep plugin；actual composition manifest/digest | node | 1 | DSH workspace、model provider |
 | `gen/image` | 慢·异步 | ai.image.generate → Blob（纯生成，无 DB 权威） | node | N 可扩 | Redis、Blob、图像模型 |
 | `gen/video` | 慢·异步 | ai.video.generate → Blob（纯生成，无 DB 权威） | node | N 可扩 | Redis、Blob、视频模型 |

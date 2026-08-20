@@ -1,12 +1,11 @@
 // SPEC: The ONE module that touches the local file store (design §5, D1). Direct
 // fs — no Store interface (YAGNI). To switch to shared storage/S3 later, change
 // only this file. Layout (under CHAT_FS_ROOT, tenant-partitioned):
-//   sessions/{userId}/{sessionId}.jsonl  agent execution trace (append-only)
 //   mem/{userId}/{charId}/relationship.md
 //   mem/{userId}/global/boundaries.md
 // INVARIANTS: append uses O_APPEND; whole-file updates use temp+rename (atomic);
 // ids are sanitized so a crafted id can't escape the root (no path traversal).
-import { appendFile, mkdir, readFile, rename, rm, readdir, writeFile, stat } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, rm, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { env } from "./env.js";
 
@@ -35,11 +34,6 @@ function abs(relParts: string[]): string {
 
 // ---- path builders ----------------------------------------------------------
 export const chatFsPaths = {
-  sessionLog: (userId: string, sessionId: string) => [
-    "sessions",
-    userId,
-    `${safeSegment(sessionId)}.jsonl`,
-  ],
   relationship: (userId: string, charId: string) => ["mem", userId, charId, "relationship.md"],
   relationshipEvidence: (userId: string, charId: string) => [
     "mem",
@@ -48,7 +42,6 @@ export const chatFsPaths = {
     "relationship-evidence.jsonl",
   ],
   boundaries: (userId: string) => ["mem", userId, "global", "boundaries.md"],
-  userPrefix: (userId: string) => [userId],
 } as const;
 
 // ---- primitive ops ----------------------------------------------------------
@@ -131,16 +124,6 @@ export async function listPrefix(prefixParts: string[]): Promise<string[]> {
 /** Recursively delete everything under a prefix (privacy deletion). Idempotent. */
 export async function deletePrefix(prefixParts: string[]): Promise<void> {
   await rm(abs(prefixParts), { recursive: true, force: true });
-}
-
-/** File size in bytes, or 0 if absent (for rolling/compaction thresholds). */
-export async function fileSize(relParts: string[]): Promise<number> {
-  try {
-    return (await stat(abs(relParts))).size;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
-    throw error;
-  }
 }
 
 // Monotonic-ish suffix for temp files without Date.now()/random in hot loops.

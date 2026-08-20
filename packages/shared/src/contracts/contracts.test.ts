@@ -33,6 +33,7 @@ describe("idempotency keys", () => {
   });
   it("chat image requests key on attachment id", () => {
     expect(idempotencyKeys.chatImage("att1")).toBe("chat-image:att1");
+    expect(idempotencyKeys).not.toHaveProperty("chatSessionAppend");
   });
 });
 
@@ -81,6 +82,7 @@ describe("queue names", () => {
   it("are unique and include the cross-service terminal relay queue", () => {
     expect(new Set(ALL_QUEUE_NAMES).size).toBe(ALL_QUEUE_NAMES.length);
     expect(ALL_QUEUE_NAMES).toContain(CHAT_QUEUES.generate);
+    expect(ALL_QUEUE_NAMES).not.toContain("chat.maintain");
     expect(ALL_QUEUE_NAMES).toContain(MAIN_QUEUES.generationTerminalIngest);
   });
 });

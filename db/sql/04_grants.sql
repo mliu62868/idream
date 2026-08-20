@@ -89,9 +89,6 @@ GRANT USAGE ON SEQUENCE chat.chat_file_mutations_sequence_seq TO chat_service;
 -- it validates/advances sessions and messages, resolves send linkage, completes
 -- ledger receipts, and inserts the outbox facts coupled to those completions.
 GRANT SELECT ON chat.chat_sessions TO chat_projector;
--- Prisma's @updatedAt contract adds updated_at to both watermark writes.
-GRANT UPDATE (log_extracted_seq, updated_at)
-  ON chat.chat_sessions TO chat_projector;
 GRANT SELECT ON chat.messages TO chat_projector;
 GRANT UPDATE (memory_extracted_attempt, updated_at)
   ON chat.messages TO chat_projector;

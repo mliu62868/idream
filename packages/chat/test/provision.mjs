@@ -471,11 +471,19 @@ function validateFileMutationAuthorityUpgrade(target, db) {
           'pending'
         ),
         (
-          'legacy_applied_trace',
+          'legacy_applied_memory',
           NULL,
           'legacy_file_user',
+          'memory_extract',
+          '{"kind":"memory_extract","sessionId":"legacy_session","userMessageId":"legacy_user","characterId":"legacy_character","turnKey":"legacy_assistant","attempt":1,"summaryDelta":"legacy-secret-must-redact"}',
+          'applied'
+        ),
+        (
+          'legacy_applied_trace',
+          8,
+          'legacy_file_user',
           'trace_append',
-          '{"kind":"trace_append","sessionId":"legacy_session","entry":{"secret":"legacy-secret-must-redact"}}',
+          '{"kind":"trace_append","sessionId":"legacy_session","entry":{"secret":"legacy-trace-must-delete"}}',
           'applied'
         );
       CREATE FUNCTION chat.purge_applied_relationship_sets(
@@ -540,7 +548,7 @@ function validateFileMutationAuthorityUpgrade(target, db) {
         SELECT sequence
         INTO applied_sequence
         FROM chat.chat_file_mutations
-        WHERE id = 'legacy_applied_trace';
+        WHERE id = 'legacy_applied_memory';
         IF applied_sequence IS NULL
            OR applied_sequence = pending_sequence THEN
           RAISE EXCEPTION
@@ -560,9 +568,16 @@ function validateFileMutationAuthorityUpgrade(target, db) {
         SELECT payload::text
         INTO applied_payload
         FROM chat.chat_file_mutations
-        WHERE id = 'legacy_applied_trace';
+        WHERE id = 'legacy_applied_memory';
         IF applied_payload LIKE '%legacy-secret-must-redact%' THEN
           RAISE EXCEPTION 'applied payload was not redacted';
+        END IF;
+        IF EXISTS (
+          SELECT 1
+          FROM chat.chat_file_mutations
+          WHERE id = 'legacy_applied_trace'
+        ) THEN
+          RAISE EXCEPTION 'legacy raw trace intent was not removed';
         END IF;
 
         SELECT column_default
@@ -684,7 +699,73 @@ export function provisionChatTestDb() {
         },
       },
     );
+    if (pass === 0) {
+      // Rehearse the one-way upgrade from the short-lived raw tool reservation
+      // shape. The second manifest application must scrub the sentinel from
+      // both attempt ledgers without making the reservation replayable.
+      psqlSuper(
+        target,
+        db,
+        `
+          INSERT INTO chat.messages
+            (id, session_id, role, status, runtime_trace)
+          VALUES
+            (
+              'legacy_raw_tool_message',
+              'legacy_raw_tool_session',
+              'assistant',
+              'generating',
+              '{"companionTool":{"attemptId":"legacy-attempt","callId":"legacy-call","name":"generate_image_async","arguments":{"prompt":"legacy-tool-secret-must-redact"}}}'
+            );
+          INSERT INTO chat.message_versions
+            (id, message_id, content, selected, attempt, runtime_trace)
+          VALUES
+            (
+              'legacy_raw_tool_version',
+              'legacy_raw_tool_message',
+              '',
+              true,
+              1,
+              '{"companionTool":{"attemptId":"legacy-attempt","callId":"legacy-call","name":"generate_image_async","arguments":{"prompt":"legacy-tool-secret-must-redact"}}}'
+            );
+        `,
+      );
+    }
   }
+
+  psqlSuper(
+    target,
+    db,
+    `
+      DO $upgrade$
+      BEGIN
+        IF EXISTS (
+          SELECT 1
+          FROM chat.messages
+          WHERE id = 'legacy_raw_tool_message'
+            AND (
+              runtime_trace::text LIKE '%legacy-tool-secret-must-redact%'
+              OR (runtime_trace #> '{companionTool}') ? 'arguments'
+              OR runtime_trace #>> '{companionTool,argumentsDigest}'
+                IS DISTINCT FROM repeat('0', 64)
+            )
+        ) OR EXISTS (
+          SELECT 1
+          FROM chat.message_versions
+          WHERE id = 'legacy_raw_tool_version'
+            AND (
+              runtime_trace::text LIKE '%legacy-tool-secret-must-redact%'
+              OR (runtime_trace #> '{companionTool}') ? 'arguments'
+              OR runtime_trace #>> '{companionTool,argumentsDigest}'
+                IS DISTINCT FROM repeat('0', 64)
+            )
+        ) THEN
+          RAISE EXCEPTION 'legacy raw companion tool reservation was not redacted';
+        END IF;
+      END
+      $upgrade$;
+    `,
+  );
 
   return {
     db,

@@ -254,7 +254,7 @@ async function handle(
   res.end(jsonStringify(result.body));
 }
 
-/** BigInt-safe JSON (chat.* has BigInt columns like logExtractedSeq). */
+/** BigInt-safe JSON (chat.* contains BigInt attempts, sequences and revisions). */
 function jsonStringify(value: unknown): string {
   return JSON.stringify(value, (_k, v) => (typeof v === "bigint" ? Number(v) : v));
 }

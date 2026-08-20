@@ -89,7 +89,7 @@ Chat product data is owned by Chat Service. The main site may proxy these APIs a
 
 | 实体 | 关键字段 |
 | --- | --- |
-| `chat_sessions` | `id`, `user_id`, `character_id`, `title`, `status`, `memory_enabled`, `last_message_at`, `created_at`（`memory_summary` 仅历史 drain） |
+| `chat_sessions` | `id`, `user_id`, `character_id`, `title`, `status`, `memory_enabled`, `context_revision`, `last_message_at`, `created_at` |
 | `messages` | `id`, `session_id`, `role`, `content`, `model`, `status`, `token_count`, `safety_status`, `created_at` |
 | `message_versions` | `id`, `message_id`, `content`, `model`, `created_at`, `selected` |
 | `chat_usage` | `id`, `user_id`, `session_id`, `messages_used`, `period_start`, `period_end` |

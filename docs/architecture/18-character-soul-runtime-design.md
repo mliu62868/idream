@@ -49,7 +49,7 @@ Admin Persona authoring
 5. pinned persona 仍通过 `current Character view + 少数字段覆盖` 形成运行时对象，视觉身份等 mutable 字段的兼容语义不够显式；
 6. `openingSnapshot` 已随版本不可变存储，但 Chat 从未读取它，first message 仍由 main 的可变 `advancedDetails` 提供；
 7. relationship 依赖正则命中和累计分数，缺少可重建的语义证据；
-8. `memorySummary` 只是一段 900 字符的滚动对话尾巴；地点、参与者、未完成剧情当前没有任何载体，只会偶然混进这段 prose；
+8. 迁移前的 `memorySummary` 只是一段 900 字符的滚动对话尾巴；地点、参与者、未完成剧情当时没有任何载体，只会偶然混进这段 prose；
 9. Chat 模型配置在生产 env、model probe、launch readiness、probe runner 四处各自解析，且已产生真实分歧：探针加载不到 chat 的 `.env`、超时语义相反（总时长 vs 空闲）、runner 把 provider 写死为 `pipeline` 而生产是 `openai`；
 10. 进程 health 无条件返回 200，无 readiness 区分、无预热；45s 模型预算实际是“加载 + 首 token”的合并预算，冷启动的第一轮会产出一条空 assistant 消息。
 
@@ -489,7 +489,7 @@ type SceneState = {
 };
 ```
 
-现状没有任何场景载体：`memorySummary` 只是一段 900 字符的滚动对话尾巴，没有结构、没有除原样注入外的消费方，地点和剧情只是偶然混在 prose 里。Scene State 补上这个缺失的载体：
+迁移前没有任何场景载体：`memorySummary` 只是一段 900 字符的滚动对话尾巴，没有结构、没有除原样注入外的消费方，地点和剧情只是偶然混在 prose 里。Scene State 补上这个缺失的载体：
 
 - 只描述当前会话连续性；
 - 不作为长期用户事实；
@@ -498,7 +498,7 @@ type SceneState = {
 - scene 属于会话内连续性，与跨会话抽取分属两个门：no-memory turn 照常更新 Scene（它不出会话、随会话删除），但不产生 memory candidate 与 relationship evidence——§5.3 约束的是后两者；
 - scene 更新必须在 assistant finalize 后基于 exact turn 派生；memory candidates、relationship evidence、scene delta 由同一次抽取调用产出（抽取模型与主生成共享本地算力，一轮至多一次抽取调用），按 `memoryAuthority` 分别落闸，负载高峰可降级延后——抽取是异步 durable intent，延后不影响已完成的 turn。
 
-regenerate 按 anchor 读历史版本，意味着 scene 必须保留版本历史，单个 `sceneSnapshot Json?` 列承载不了。首次实施即建 scene revision 权威（`sessionId + version` 唯一、记录 `sourceAssistantMessageId`），turn 的 user message 行记录 anchor 时刻的 `sceneVersion`——与 release pin 同款语义；不把 JSON 编码进现有 `memorySummary String?`。数据库迁移由迁移脚本描述并由用户执行；不由 agent 直接连库改表。
+regenerate 按 anchor 读历史版本，意味着 scene 必须保留版本历史，单个 `sceneSnapshot Json?` 列承载不了。首次实施即建 scene revision 权威（`sessionId + version` 唯一、记录 `sourceAssistantMessageId`），turn 的 user message 行记录 anchor 时刻的 `sceneVersion`——与 release pin 同款语义；不把 JSON 编码进旧 `memorySummary String?`（该列已在 Phase 6 删除）。数据库迁移由迁移脚本描述并由用户执行；不由 agent 直接连库改表。
 
 ## 7. Release、Serving 与会话迁移
 

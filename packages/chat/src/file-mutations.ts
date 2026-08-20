@@ -1,5 +1,5 @@
 // SPEC: durable file-intent ledger (chat.chat_file_mutations). The file layer
-// (mem/*.md, sessions/*.jsonl) is authority but is NOT transactional, so no
+// (mem/*.md plus the companion workspace) is authority but is NOT transactional, so no
 // domain transaction may touch it directly. A writer commits an INTENT; a
 // separate projector transaction performs the file effect. Recording an intent
 // is therefore a promise with a precise meaning: it will be applied under the
@@ -17,7 +17,7 @@
 //     count must be 1. The file effect itself, however, runs BEFORE that
 //     transaction commits, so a rollback replays it — every applyFileMutation
 //     branch must stay idempotent (updateRelationshipOnce/setRelationshipOnce
-//     keyed by turn/mutation id, appendTraceOnce by fileMutationId).
+//     are keyed by turn/mutation id).
 //   - No self-projection: a writer takes the same user lock and then calls
 //     assertNoPendingChatFileMutationsTx. A newly committed intent aborts and
 //     retries the entire request (runWithProjectedChatFiles) rather than letting
@@ -27,8 +27,8 @@
 //     account-erasure and batch-repair paths deliberately stay outside it:
 //     erasure supersedes every pending intent instead of asserting there are
 //     none, so it must NOT fail closed on a poisoned row.
-//   - Cross-service honesty: watermarks (memoryExtractedAttempt, logExtractedSeq)
-//     and outbox events are written in the SAME transaction that marks the row
+//   - Cross-service honesty: memoryExtractedAttempt and outbox events are
+//     written in the SAME transaction that marks the row
 //     applied, so main is never told about a file effect that did not land.
 //   - Privacy: applying an intent overwrites its payload with an identity-only
 //     receipt (appliedFileMutationReceipt) so the ledger cannot survive as a
@@ -36,20 +36,11 @@
 //     exception — buildRelationshipProjection replays its summary/stage verbatim
 //     — and relationship_delete calls chat.purge_applied_relationship_sets to
 //     drop those retained rows before the reset takes effect.
-import path from "node:path";
 import { z } from "zod";
 import type { Prisma } from "../generated/client/client.js";
 import type { ChatPrismaClient } from "./db.js";
 import { chatPrisma, chatProjectorPrisma } from "./db.js";
-import {
-  appendLine,
-  chatFsPaths,
-  deletePrefix,
-  listPrefix,
-  readWhole,
-  withFileMutationLock,
-  writeAtomic,
-} from "./chat-fs.js";
+import { deletePrefix, writeAtomic } from "./chat-fs.js";
 import { createId } from "./id.js";
 import {
   applyCompanionMemoryProjection,
@@ -135,11 +126,6 @@ const fileMutationSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("relationship_rebuild"),
     characterId: z.string().min(1),
-  }),
-  z.object({
-    kind: z.literal("trace_append"),
-    sessionId: z.string().min(1),
-    entry: z.record(z.string(), z.unknown()),
   }),
 ]);
 
@@ -293,21 +279,6 @@ export async function applyPendingChatFileMutationsTx(
         if (claimed.count !== 1) {
           throw new Error(
             `turn memory authority changed before file completion for ${mutation.turnKey}`,
-          );
-        }
-        const sessionClaimed = await tx.chatSession.updateMany({
-          where: {
-            id: mutation.sessionId,
-            userId,
-            characterId: mutation.characterId,
-            status: { not: "deleted" },
-            deletedAt: null,
-          },
-          data: { logExtractedSeq: { increment: 1 } },
-        });
-        if (sessionClaimed.count !== 1) {
-          throw new Error(
-            `session authority changed before file completion for ${mutation.sessionId}`,
           );
         }
         await recordOutbox(tx, {
@@ -628,17 +599,10 @@ async function applyFileMutation(
 ): Promise<void> {
   switch (mutation.kind) {
     case "turn_forget":
-      // Later trace entries embed model context and injected memories, so a
-      // source message can be copied into rows whose own message ids differ.
-      // Legacy trace has no complete context provenance; privacy deletion/edit
-      // therefore purges the session trace conservatively.
-      await removeSessionTraceFiles(userId, mutation.sessionId);
       return;
     case "session_delete":
-      await removeSessionTraceFiles(userId, mutation.sessionId);
       return;
     case "account_delete":
-      await deletePrefix(["sessions", userId]);
       await deletePrefix(["mem", userId]);
       return;
     case "memory_extract":
@@ -729,14 +693,6 @@ async function applyFileMutation(
         }
       }
       return;
-    case "trace_append":
-      await appendTraceOnce(
-        userId,
-        mutation.sessionId,
-        mutationId,
-        mutation.entry,
-      );
-      return;
   }
 }
 
@@ -772,11 +728,6 @@ export function appliedFileMutationReceipt(
         kind: mutation.kind,
         characterId: mutation.characterId,
       };
-    case "trace_append":
-      return {
-        kind: mutation.kind,
-        sessionId: mutation.sessionId,
-      };
     case "account_delete":
       return {
         kind: mutation.kind,
@@ -784,72 +735,4 @@ export function appliedFileMutationReceipt(
         ...(mutation.requestBound ? { requestBound: true } : {}),
       };
   }
-}
-
-async function appendTraceOnce(
-  userId: string,
-  sessionId: string,
-  mutationId: string,
-  entry: Record<string, unknown>,
-): Promise<void> {
-  const active = chatFsPaths.sessionLog(userId, sessionId);
-  await withFileMutationLock(active, async () => {
-    for (const file of await sessionTraceFiles(userId, sessionId)) {
-      const raw = await readWhole(file);
-      if (
-        raw
-          ?.split("\n")
-          .some((line) => traceMutationId(line) === mutationId)
-      ) {
-        return;
-      }
-    }
-    await appendLine(
-      active,
-      JSON.stringify({ ...entry, fileMutationId: mutationId }),
-    );
-  });
-}
-
-async function removeSessionTraceFiles(
-  userId: string,
-  sessionId: string,
-): Promise<void> {
-  const active = chatFsPaths.sessionLog(userId, sessionId);
-  await withFileMutationLock(active, async () => {
-    for (const file of await sessionTraceFiles(userId, sessionId)) {
-      if (samePath(file, active)) await deletePrefix(file);
-      else await withFileMutationLock(file, () => deletePrefix(file));
-    }
-  });
-}
-
-async function sessionTraceFiles(
-  userId: string,
-  sessionId: string,
-): Promise<string[][]> {
-  const prefix = `${sessionId}.`;
-  return (await listPrefix(["sessions", userId]))
-    .filter((relative) => {
-      const filename = path.basename(relative);
-      return filename === `${sessionId}.jsonl` || filename.startsWith(prefix);
-    })
-    .map((relative) => relative.split(path.sep));
-}
-
-function traceMutationId(line: string): string | null {
-  if (!line.trim()) return null;
-  try {
-    const value = JSON.parse(line) as Record<string, unknown>;
-    return typeof value.fileMutationId === "string"
-      ? value.fileMutationId
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function samePath(left: string[], right: string[]): boolean {
-  return left.length === right.length &&
-    left.every((segment, index) => segment === right[index]);
 }
