@@ -855,6 +855,11 @@ async function probeConversation(input: {
       (message) => message.id === futureTurn.userMessageId,
     )?.sceneVersion ?? null;
     const futureSceneVersion = sceneVersion(futureState.message?.scene);
+    const futureSceneAdvanced =
+      originalSceneVersion === 0 &&
+      typeof futureUserSceneVersion === "number" &&
+      futureUserSceneVersion > originalSceneVersion &&
+      futureSceneVersion === futureUserSceneVersion;
     const futureDsh = input.expectedCompanionRuntime === "dsh"
       ? await fetchProbeCompanionAttemptEvidence({
           ...input,
@@ -867,9 +872,7 @@ async function probeConversation(input: {
     const futureReady =
       futureState.status === 200 &&
       futureState.settled === true &&
-      originalSceneVersion === 0 &&
-      futureUserSceneVersion === 1 &&
-      futureSceneVersion === 1 &&
+      futureSceneAdvanced &&
       recall.ok &&
       (futureDsh?.ok ?? true);
     if (!futureReady) {
@@ -968,9 +971,7 @@ async function probeConversation(input: {
         regenerate.status === 202 &&
         regeneratedStream.ok &&
         regeneratedState.settled === true &&
-        originalSceneVersion === 0 &&
-        futureUserSceneVersion === 1 &&
-        futureSceneVersion === 1 &&
+        futureSceneAdvanced &&
         recall.ok &&
         regeneratedSceneVersion === originalSceneVersion &&
         regeneratedState.message?.attempt === regenerated.attempt &&
@@ -992,9 +993,7 @@ async function probeConversation(input: {
       error:
         futureStream.ok &&
         regeneratedStream.ok &&
-        originalSceneVersion === 0 &&
-        futureUserSceneVersion === 1 &&
-        futureSceneVersion === 1 &&
+        futureSceneAdvanced &&
         recall.ok &&
         regeneratedSceneVersion === originalSceneVersion &&
         (futureDsh?.ok ?? true) &&

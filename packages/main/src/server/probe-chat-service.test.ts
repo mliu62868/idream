@@ -234,7 +234,7 @@ function installFailFastProbeFetch(
             id: "user-future",
             role: "user",
             status: "sent",
-            sceneVersion: 1,
+            sceneVersion: 2,
           },
           {
             id: "assistant-normal",
@@ -253,7 +253,7 @@ function installFailFastProbeFetch(
                 status: "generating",
                 attempt: 1,
                 memoryExtractedAttempt: 0,
-                scene: { version: 1 },
+                scene: { version: 2 },
                 runtimeTrace: { primaryTelemetry: {} },
               }]
             : []),
