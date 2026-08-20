@@ -232,7 +232,10 @@ export class IgrepMemoryRebuilder {
         ? result as Record<string, unknown>
         : {};
       if (record.events !== session.messageCount || typeof record.dialoguePath !== "string") {
-        throw new Error(`igrep ingest did not verify session ${session.sessionId}`);
+        throw new Error(
+          `igrep ingest did not verify session ${session.sessionId}: ` +
+          `expected ${session.messageCount} events, got ${String(record.events ?? "missing")}`,
+        );
       }
     };
     if ("kind" in source) {
