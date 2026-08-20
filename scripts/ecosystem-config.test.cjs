@@ -148,7 +148,7 @@ function onlineProductionProcesses() {
 
 test("development is the source-backed default", () => {
   const config = loadConfig();
-  assert.equal(config.apps.length, 9);
+  assert.equal(config.apps.length, 10);
   for (const app of config.apps) {
     assert.equal(app.env.IDREAM_PM2_MODE, "development");
   }
