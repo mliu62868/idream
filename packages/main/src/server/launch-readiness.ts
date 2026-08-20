@@ -22,23 +22,24 @@ import { PrismaClient } from "@prisma/client";
 import { isPublicHttpsUrl } from "../lib/public-site-origin";
 import { auditCharacterSoulAuthority } from "./modules/admin-v2/characters/soul-authority-audit";
 // SPEC: evidence 契约的家在 readiness/evidence.ts —— 生产端（probe-*.ts）与这里共用同一份声明。
-import type {
-  AdminTextProbeEvidence,
-  AgeVerificationProbeEvidence,
-  BlobStorageProbeEvidence,
-  ChatServiceProbeEvidence,
-  GenBlobAuthorityEvidence,
-  GenerationPersistenceProbeEvidence,
-  ImagePipelineProbeEvidence,
-  PaymentProviderProbeEvidence,
-  ProductConfigProbeEvidence,
-  PublicCatalogProbeEvidence,
-  SafetyGatewayProbeEvidence,
-  SentryCanaryProbeEvidence,
-  SentryCanaryService,
-  VideoGenerationProbeEvidence,
-  VoiceModelProbeEvidence,
-  WebSurfaceProbeEvidence,
+import {
+  isRelativeFutureSceneAnchor,
+  type AdminTextProbeEvidence,
+  type AgeVerificationProbeEvidence,
+  type BlobStorageProbeEvidence,
+  type ChatServiceProbeEvidence,
+  type GenBlobAuthorityEvidence,
+  type GenerationPersistenceProbeEvidence,
+  type ImagePipelineProbeEvidence,
+  type PaymentProviderProbeEvidence,
+  type ProductConfigProbeEvidence,
+  type PublicCatalogProbeEvidence,
+  type SafetyGatewayProbeEvidence,
+  type SentryCanaryProbeEvidence,
+  type SentryCanaryService,
+  type VideoGenerationProbeEvidence,
+  type VoiceModelProbeEvidence,
+  type WebSurfaceProbeEvidence,
 } from "./readiness/evidence";
 // SPEC: “哪个 probe 用哪个 env 变量”只在 readiness/probe-report.ts 定义一次，两端都从那里取。
 import {
@@ -667,9 +668,9 @@ function addChatServiceProbeCheck(
       }
       if (
         probe.conversation.regenerateAnchor?.ok !== true ||
-        probe.conversation.regenerateAnchor.originalSceneVersion !== 0 ||
-        probe.conversation.regenerateAnchor.futureUserSceneVersion !== 1 ||
-        probe.conversation.regenerateAnchor.futureSceneVersion !== 1 ||
+        !isRelativeFutureSceneAnchor(
+          probe.conversation.regenerateAnchor,
+        ) ||
         probe.conversation.regenerateAnchor.regeneratedSceneVersion !== 0 ||
         probe.conversation.regenerateAnchor.recallMatched !== true ||
         probe.conversation.regenerateAnchor.wakeObserved !== true ||

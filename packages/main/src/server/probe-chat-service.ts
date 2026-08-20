@@ -14,7 +14,11 @@ import {
 } from "@idream/shared/chat/companion-runtime";
 import { prisma } from "./lib/db";
 import { publicCharacterAudienceWhere } from "./modules/ourdream/public-content-audience";
-import type { ChatServiceProbeEvidence, ProbeReportOf } from "./readiness/evidence";
+import {
+  isRelativeFutureSceneAnchor,
+  type ChatServiceProbeEvidence,
+  type ProbeReportOf,
+} from "./readiness/evidence";
 import {
   probeCliArg,
   probeReportPath,
@@ -855,11 +859,11 @@ async function probeConversation(input: {
       (message) => message.id === futureTurn.userMessageId,
     )?.sceneVersion ?? null;
     const futureSceneVersion = sceneVersion(futureState.message?.scene);
-    const futureSceneAdvanced =
-      originalSceneVersion === 0 &&
-      typeof futureUserSceneVersion === "number" &&
-      futureUserSceneVersion > originalSceneVersion &&
-      futureSceneVersion === futureUserSceneVersion;
+    const futureSceneAdvanced = isRelativeFutureSceneAnchor({
+      originalSceneVersion,
+      futureUserSceneVersion,
+      futureSceneVersion,
+    });
     const futureDsh = input.expectedCompanionRuntime === "dsh"
       ? await fetchProbeCompanionAttemptEvidence({
           ...input,

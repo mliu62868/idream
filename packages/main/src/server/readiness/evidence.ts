@@ -82,6 +82,19 @@ export type ProbeReportOf<T, Optional extends keyof T = never> = Required<
 > &
   Pick<T, Optional>;
 
+// INVARIANT: a later turn advances Scene from the original anchor, while the
+// user/assistant pair for that turn must expose the same derived version.
+export function isRelativeFutureSceneAnchor(input: {
+  originalSceneVersion?: number | null;
+  futureUserSceneVersion?: number | null;
+  futureSceneVersion?: number | null;
+}): boolean {
+  return input.originalSceneVersion === 0 &&
+    typeof input.futureUserSceneVersion === "number" &&
+    input.futureUserSceneVersion > input.originalSceneVersion &&
+    input.futureSceneVersion === input.futureUserSceneVersion;
+}
+
 // SPEC: 所有 probe 的失败详情都长这样。retryable 由多数 probe 实际写出，消费端目前不读，
 //       但它属于线上契约的一部分，必须被声明，否则生产端写它就是"未声明字段"。
 export interface ProbeErrorEvidence {

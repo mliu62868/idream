@@ -192,6 +192,54 @@ describe("official igrep canonical rebuild", () => {
       messages: [],
     })).rejects.toThrow(/left 2 profile rows pending/);
   });
+
+  it("does not expose malformed ingest output in rebuild errors", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chat-agent-igrep-rebuild-invalid-"));
+    temporary.push(root);
+    await mkdir(join(root, ".igrep"));
+    const rebuilder = new IgrepMemoryRebuilder(
+      "igrep",
+      {
+        status: async () => ({
+          dialogueFiles: 0,
+          pendingProfileRows: 0,
+          processedProfileRows: 0,
+          lastMaintainAt: null,
+        }),
+      },
+      async () => ({
+        events: "PRIVATE_SENTINEL",
+        dialoguePath: ".igrep/mem/memory/dialogues/rebuilt.jsonl",
+      }),
+    );
+
+    let thrown: unknown;
+    try {
+      await rebuilder.rebuild(root, {
+        scope: "relationship",
+        userId: "user-1",
+        characterId: "character-1",
+        messages: [{
+          id: "user-1",
+          sessionId: "session-1",
+          role: "user",
+          content: "Private transcript content.",
+          createdAt: "2026-08-19T12:00:00.000Z",
+        }, {
+          id: "assistant-1",
+          sessionId: "session-1",
+          role: "assistant",
+          content: "Private assistant content.",
+          createdAt: "2026-08-19T12:00:01.000Z",
+        }],
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toContain("got invalid_type");
+    expect((thrown as Error).message).not.toContain("PRIVATE_SENTINEL");
+  });
 });
 
 describe("igrep readiness isolation evidence", () => {

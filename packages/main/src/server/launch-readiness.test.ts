@@ -400,8 +400,8 @@ function passingChatServiceProbe(
         originalAttempt: 1,
         regeneratedAttempt: 2,
         originalSceneVersion: 0,
-        futureUserSceneVersion: 1,
-        futureSceneVersion: 1,
+        futureUserSceneVersion: 2,
+        futureSceneVersion: 2,
         regeneratedSceneVersion: 0,
         recallMatched: true,
         wakeObserved: true,
@@ -2587,6 +2587,23 @@ describe("launch readiness", () => {
       now,
     });
     expect(recallFailure.checks.find(
+      (check) => check.id === "chat-service-live-probe",
+    )?.message).toContain("old-turn Scene anchoring");
+
+    const sceneMismatch = assessLaunchReadiness({
+      env: productionEnv,
+      chatServiceProbe: passingChatServiceProbe({
+        conversation: {
+          ...passing.conversation,
+          regenerateAnchor: {
+            ...passing.conversation?.regenerateAnchor,
+            futureSceneVersion: 3,
+          },
+        },
+      }),
+      now,
+    });
+    expect(sceneMismatch.checks.find(
       (check) => check.id === "chat-service-live-probe",
     )?.message).toContain("old-turn Scene anchoring");
   });

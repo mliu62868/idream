@@ -232,10 +232,15 @@ export class IgrepMemoryRebuilder {
         ? result as Record<string, unknown>
         : {};
       if (record.events !== session.messageCount || typeof record.dialoguePath !== "string") {
+        const actualEvents = Number.isSafeInteger(record.events)
+          ? String(record.events)
+          : record.events === undefined
+            ? "missing"
+            : "invalid_type";
         throw new Error(
           `igrep ingest did not verify session ${session.sessionId}: ` +
           `expected ${session.messageCount} events from ${session.estimatedBytes} bytes, ` +
-          `got ${String(record.events ?? "missing")}`,
+          `got ${actualEvents}`,
         );
       }
     };
