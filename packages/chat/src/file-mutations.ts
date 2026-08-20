@@ -108,10 +108,7 @@ const fileMutationSchema = z.discriminatedUnion("kind", [
     characterId: z.string().min(1),
     turnKey: z.string().min(1),
     attempt: z.number().int().positive(),
-    summaryDelta: z.string(),
-    warmth: z.number().int().min(0).max(1).optional(),
-    familiarity: z.number().int().min(0).max(1).optional(),
-    relationshipEvidence: z.array(relationshipEvidenceSchema).optional(),
+    relationshipEvidence: z.array(relationshipEvidenceSchema),
   }),
   z.object({
     kind: z.literal("relationship_set"),
@@ -606,25 +603,11 @@ async function applyFileMutation(
       await deletePrefix(["mem", userId]);
       return;
     case "memory_extract":
-      if (mutation.relationshipEvidence) {
-        await appendRelationshipEvidenceOnce(
-          userId,
-          mutation.characterId,
-          mutation.relationshipEvidence,
-        );
-      } else {
-        // Explicit schemaVersion 0 adapter for already-committed intents.
-        await updateRelationshipOnce(
-          userId,
-          mutation.characterId,
-          mutation.turnKey,
-          {
-            summaryDelta: mutation.summaryDelta,
-            warmth: mutation.warmth ?? 0,
-            familiarity: mutation.familiarity ?? 0,
-          },
-        );
-      }
+      await appendRelationshipEvidenceOnce(
+        userId,
+        mutation.characterId,
+        mutation.relationshipEvidence,
+      );
       return;
     case "relationship_set":
       await setRelationshipOnce(

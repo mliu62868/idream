@@ -30,7 +30,7 @@ export const GENERATION_CUTOVER_QUEUES = [
 export const CHAT_QUEUES = {
   /** chat/web enqueues; chat/worker consumes — produce the assistant reply. */
   generate: "chat.generate",
-  /** Derive long-term memory/relationship from the exact authoritative PG turn. */
+  /** Stable historical wire id; derive Scene/relationship from the exact PG turn. */
   memoryExtract: "chat.memory.extract",
   /** Deliver chat.chat_outbox_events through Main's HTTP durable ingest. */
   outboxDeliver: "chat.outbox.deliver",

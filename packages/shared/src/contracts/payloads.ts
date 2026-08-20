@@ -42,7 +42,7 @@ export const chatGeneratePayloadSchema = z.object({
   attempt: z.number().int().min(1),
 });
 
-/** Exact source turn used by the asynchronous memory/relationship projector. */
+/** Exact source turn used by the asynchronous Scene/relationship projector. */
 export const chatMemoryExtractPayloadSchema = z.object({
   sessionId: z.string().min(1),
   userMessageId: z.string().min(1),

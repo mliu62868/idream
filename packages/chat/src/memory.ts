@@ -229,7 +229,6 @@ export async function processMemoryExtract(
       characterId: currentSession.characterId,
       turnKey: currentAssistant.id,
       attempt: payload.attempt,
-      summaryDelta: "",
       relationshipEvidence,
     });
 

@@ -422,7 +422,7 @@ describe("chat boundary (chat_service role)", () => {
           characterId,
           turnKey: assistantMessageId,
           attempt: 1,
-          summaryDelta: "projector summary",
+          relationshipEvidence: [],
         }),
       );
 

@@ -149,4 +149,21 @@ describe("companion memory projection", () => {
       characterId: "character-1",
     });
   });
+
+  it("rejects legacy prose-summary memory intents before they enter the durable ledger", async () => {
+    const executeRaw = vi.fn(async (..._args: unknown[]) => 1);
+    const tx = { $executeRaw: executeRaw } as unknown as Prisma.TransactionClient;
+
+    await expect(recordChatFileMutation(tx, "user-1", {
+      kind: "memory_extract",
+      sessionId: "session-1",
+      userMessageId: "user-message-1",
+      characterId: "character-1",
+      turnKey: "assistant-message-1",
+      attempt: 1,
+      summaryDelta: "legacy prose must not become a second memory authority",
+    } as never)).rejects.toThrow();
+
+    expect(executeRaw).not.toHaveBeenCalled();
+  });
 });

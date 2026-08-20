@@ -539,6 +539,23 @@ CREATE INDEX IF NOT EXISTS chat_file_mutations_user_pending_idx
 DELETE FROM chat.chat_file_mutations
 WHERE kind = 'trace_append';
 
+-- Phase 6 has no prose-summary adapter. A pre-cutover pending row without the
+-- evidence ledger cannot be replayed faithfully, so deployment must stop and
+-- let an operator rebuild that relationship from current PG authority.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM chat.chat_file_mutations
+    WHERE kind = 'memory_extract'
+      AND status = 'pending'
+      AND jsonb_typeof(payload -> 'relationshipEvidence') IS DISTINCT FROM 'array'
+  ) THEN
+    RAISE EXCEPTION 'LEGACY_MEMORY_EXTRACT_PENDING';
+  END IF;
+END
+$$;
+
 CREATE OR REPLACE FUNCTION chat.redact_file_mutation_payload(
   mutation_id text,
   mutation_kind text,
