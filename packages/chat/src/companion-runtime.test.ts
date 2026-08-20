@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  COMPANION_NDJSON_FRAME_MAX_BYTES,
   COMPANION_RUNTIME_PROTOCOL_VERSION,
   decodeCompanionWorkspaceRebuildFrame,
   encodeCompanionNdjsonFrame,
@@ -261,7 +262,7 @@ describe("DshCompanionRuntime", () => {
       token: "secret",
       fetchImpl: (async () => new Response(new ReadableStream<Uint8Array>({
         start(controller) {
-          controller.enqueue(new Uint8Array(4 * 1_024 * 1_024 + 1).fill(0x61));
+          controller.enqueue(new Uint8Array(COMPANION_NDJSON_FRAME_MAX_BYTES + 1).fill(0x61));
         },
         cancel() {
           bodyCancelled = true;
@@ -270,6 +271,29 @@ describe("DshCompanionRuntime", () => {
     });
 
     await expect(runtime.run(input, {
+      emit() {},
+      async executeTool() { throw new Error("unused"); },
+      async commit() { throw new Error("unused"); },
+    })).rejects.toThrow("companion_response_frame_limit");
+    expect(bodyCancelled).toBe(true);
+  });
+
+  it("rejects an oversized newline-terminated sidecar frame before decoding it", async () => {
+    let bodyCancelled = false;
+    const runtime = new DshCompanionRuntime({
+      baseUrl: "http://127.0.0.1:3101",
+      token: "secret",
+      fetchImpl: (async () => new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          const bytes = new Uint8Array(COMPANION_NDJSON_FRAME_MAX_BYTES + 2).fill(0x61);
+          bytes[bytes.length - 1] = 0x0a;
+          controller.enqueue(bytes);
+        },
+        cancel() { bodyCancelled = true; },
+      }), { status: 200 })) as typeof fetch,
+    });
+
+    await expect(runtime.run(invocation(), {
       emit() {},
       async executeTool() { throw new Error("unused"); },
       async commit() { throw new Error("unused"); },

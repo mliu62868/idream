@@ -10,6 +10,10 @@ export const COMPANION_DSH_COMMIT =
   "99f6f02fecdb7dff40c3fbc9470f5907c29f74ca" as const;
 export const COMPANION_IGREP_VERSION = "0.1.132" as const;
 export const COMPANION_IGREP_PLUGIN_VERSION = "0.1.0" as const;
+export const COMPANION_TERMINAL_CONTENT_MAX_BYTES = 2_097_152;
+// JSON can expand control bytes sixfold (`\u00xx`); 16 MiB safely carries the
+// largest valid terminal candidate plus protocol metadata.
+export const COMPANION_NDJSON_FRAME_MAX_BYTES = 16 * 1_024 * 1_024;
 
 const nonEmptyStringSchema = z.string().trim().min(1);
 const isoDateTimeSchema = z.string().datetime({ offset: true });
@@ -621,7 +625,11 @@ export const companionUsageSchema = z
 export const companionTerminalCandidateSchema = z
   .object({
     attemptId: nonEmptyStringSchema,
-    content: z.string().min(1),
+    content: z.string().min(1).superRefine((value, context) => {
+      if (new TextEncoder().encode(value).byteLength > COMPANION_TERMINAL_CONTENT_MAX_BYTES) {
+        context.addIssue({ code: "custom", message: "terminal candidate content exceeds wire limit" });
+      }
+    }),
     finishReason: z.enum(["stop", "length"]),
     provider: nonEmptyStringSchema,
     model: nonEmptyStringSchema,

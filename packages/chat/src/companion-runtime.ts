@@ -1,5 +1,6 @@
 import {
   COMPANION_RUNTIME_PROTOCOL_VERSION,
+  COMPANION_NDJSON_FRAME_MAX_BYTES,
   companionMemoryCutoverSidecarProofSchema,
   companionRuntimeResponseSchema,
   companionWorkspaceRebuildBudget,
@@ -53,8 +54,7 @@ const activeDshInvocations = new Map<
   { runtime: DshCompanionRuntime; invocationId: string }
 >();
 const COMPANION_CONTROL_TIMEOUT_MS = 10_000;
-const COMPANION_RESPONSE_FRAME_MAX_BYTES = 4 * 1_024 * 1_024;
-const COMPANION_RESPONSE_TOTAL_MAX_BYTES = 32 * 1_024 * 1_024;
+const COMPANION_RESPONSE_TOTAL_MAX_BYTES = 64 * 1_024 * 1_024;
 
 export async function cancelActiveCompanionInvocations(
   reason: "user" | "timeout" | "shutdown",
@@ -368,10 +368,13 @@ async function* responseLines(
       while (newline >= 0) {
         const line = pending.slice(0, newline).replace(/\r$/, "");
         pending = pending.slice(newline + 1);
+        if (encoder.encode(line).byteLength > COMPANION_NDJSON_FRAME_MAX_BYTES) {
+          throw new Error("companion_response_frame_limit");
+        }
         if (line) yield line;
         newline = pending.indexOf("\n");
       }
-      if (encoder.encode(pending).byteLength > COMPANION_RESPONSE_FRAME_MAX_BYTES) {
+      if (encoder.encode(pending).byteLength > COMPANION_NDJSON_FRAME_MAX_BYTES) {
         throw new Error("companion_response_frame_limit");
       }
       if (done) break;
