@@ -55,17 +55,24 @@ class ToolThenTextAdapter extends LlmAdapter {
     this.calls.push(options);
     if (this.calls.length === 1) {
       const args = JSON.stringify({ prompt: "Mira at the blue-lit observatory tonight" });
-      yield { type: "block-start", index: 0, blockType: "tool-call" };
+      yield { type: "block-start", index: 0, blockType: "text" };
+      yield { type: "text-delta", index: 0, text: "I'll frame it for you. " };
+      yield {
+        type: "block-end",
+        index: 0,
+        block: { type: "text", text: "I'll frame it for you. " },
+      };
+      yield { type: "block-start", index: 1, blockType: "tool-call" };
       yield {
         type: "tool-call-delta",
-        index: 0,
+        index: 1,
         id: "call-image-1" as never,
         name: "generate_image_async",
         argumentsDelta: args,
       };
       yield {
         type: "block-end",
-        index: 0,
+        index: 1,
         block: {
           type: "tool-call",
           id: "call-image-1" as never,
@@ -652,8 +659,20 @@ describe("programmatic DSH companion runtime", () => {
     expect(controls).toEqual([200, 200, 200]);
     expect(collected.filter((frame) => frame.type === "tool_call")).toHaveLength(1);
     expect(collected.find((frame) => frame.type === "commit")).toMatchObject({
-      candidate: { execution: { steps: 2, toolCalls: 1 } },
+      candidate: {
+        content: "I'll frame it for you. I sent the observatory view to the image studio.",
+        execution: { steps: 2, toolCalls: 1 },
+      },
     });
+    const streamed = collected
+      .filter((frame) => frame.type === "event" && frame.event.type === "text_delta")
+      .map((frame) => frame.type === "event" && frame.event.type === "text_delta"
+        ? frame.event.delta
+        : "")
+      .join("");
+    expect(streamed).toBe(
+      "I'll frame it for you. I sent the observatory view to the image studio.",
+    );
     expect(adapter.calls).toHaveLength(2);
     expect(adapter.calls[1]?.messages.at(-1)).toMatchObject({
       role: "user",

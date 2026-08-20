@@ -74,7 +74,66 @@ describe("chat SSE readiness probe", () => {
       },
     });
 
-    expect(result).toMatchObject({ ok: false, fatalError: true, reconnects: 0 });
+    expect(result).toMatchObject({
+      ok: false,
+      fatalError: true,
+      reconnects: 0,
+      error: "blocked",
+    });
     expect(connections).toBe(1);
+  });
+
+  it("never accepts an older regeneration attempt as the requested terminal", async () => {
+    const result = await observeChatSseAcrossReconnects({
+      expectedAttempt: 2,
+      timeoutMs: 1_000,
+      reconnectDelayMs: 0,
+      open: async () => response([
+        "id: 1-0",
+        "event: start",
+        'data: {"type":"start","attempt":1}',
+        "",
+        "id: 2-0",
+        "event: delta",
+        'data: {"type":"delta","attempt":1,"seq":1,"delta":"old"}',
+        "",
+        "id: 3-0",
+        "event: done",
+        'data: {"type":"done","attempt":1,"usage":{}}',
+        "",
+        "id: 4-0",
+        "event: error",
+        'data: {"type":"error","attempt":2,"code":"provider_failed","retryable":false}',
+        "",
+      ].join("\n")),
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      fatalError: true,
+      sawStart: false,
+      sawDelta: false,
+      sawDone: false,
+      lastEventId: "4-0",
+      error: "provider_failed",
+    });
+  });
+
+  it("keeps the last retryable error when the reconnect envelope expires", async () => {
+    const result = await observeChatSseAcrossReconnects({
+      timeoutMs: 5,
+      reconnectDelayMs: 10,
+      open: async () => response([
+        "event: error",
+        'data: {"type":"error","code":"provider_failed","retryable":true}',
+        "",
+      ].join("\n")),
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      fatalError: false,
+      error: "chat SSE did not reach done within 5ms; last error: provider_failed",
+    });
   });
 });

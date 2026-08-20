@@ -17,6 +17,7 @@ const enqueueMock = vi.hoisted(() => vi.fn(async () => {}));
 const supportsToolsState = vi.hoisted(() => ({ value: true }));
 const recordTurnFailureMock = vi.hoisted(() => vi.fn());
 const recordTurnSuccessMock = vi.hoisted(() => vi.fn());
+const invalidateReadinessMock = vi.hoisted(() => vi.fn());
 const recordMemoryPromotionFailureMock = vi.hoisted(() => vi.fn());
 const recordMemoryPromotionSuccessMock = vi.hoisted(() => vi.fn());
 const canAdmitShadowMock = vi.hoisted(() => vi.fn(() => true));
@@ -57,6 +58,7 @@ vi.mock("./chat-fs.js", () => ({
 vi.mock("./queue.js", () => ({ enqueue: enqueueMock }));
 vi.mock("./runtime-readiness.js", () => ({
   runtimeReadiness: {
+    invalidate: invalidateReadinessMock,
     recordTurnFailure: recordTurnFailureMock,
     recordTurnSuccess: recordTurnSuccessMock,
     recordMemoryPromotionFailure: recordMemoryPromotionFailureMock,
@@ -382,12 +384,14 @@ function installDshRolloutEnv(): () => void {
     rolloutSalt: process.env.CHAT_COMPANION_DSH_ROLLOUT_SALT,
     rolloutBps: process.env.CHAT_COMPANION_DSH_ROLLOUT_BPS,
     rolloutAllowlist: process.env.CHAT_COMPANION_DSH_ROLLOUT_ALLOWLIST,
+    deadlineMs: process.env.DSH_AGENT_DEADLINE_MS,
   };
   process.env.CHAT_COMPANION_RUNTIME = "dsh";
   process.env.CHAT_MEMORY_BACKEND = "igrep-dsh";
   process.env.DSH_AGENT_TOKEN = "test-sidecar-token";
   process.env.CHAT_COMPANION_DSH_ROLLOUT_SALT = "phase4-stable-salt";
   process.env.CHAT_COMPANION_DSH_ROLLOUT_BPS = "10000";
+  process.env.DSH_AGENT_DEADLINE_MS = "300000";
   delete process.env.CHAT_COMPANION_DSH_ROLLOUT_ALLOWLIST;
   return () => {
     for (const [name, value] of Object.entries({
@@ -397,6 +401,7 @@ function installDshRolloutEnv(): () => void {
       CHAT_COMPANION_DSH_ROLLOUT_SALT: previous.rolloutSalt,
       CHAT_COMPANION_DSH_ROLLOUT_BPS: previous.rolloutBps,
       CHAT_COMPANION_DSH_ROLLOUT_ALLOWLIST: previous.rolloutAllowlist,
+      DSH_AGENT_DEADLINE_MS: previous.deadlineMs,
     })) {
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
@@ -439,6 +444,7 @@ describe("chat generate agent image tool", () => {
     enqueueMock.mockClear();
     recordTurnFailureMock.mockClear();
     recordTurnSuccessMock.mockClear();
+    invalidateReadinessMock.mockClear();
     recordMemoryPromotionFailureMock.mockClear();
     recordMemoryPromotionSuccessMock.mockClear();
     canAdmitShadowMock.mockReset();
@@ -1605,7 +1611,7 @@ describe("chat generate agent image tool", () => {
         { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
         prisma,
         { projectorPrisma: prisma },
-      )).rejects.toThrow("context_changed");
+      )).resolves.toEqual({ status: "failed" });
 
       expect(recordTurnSuccessMock).toHaveBeenCalledOnce();
       expect(recordTurnFailureMock).not.toHaveBeenCalled();
@@ -1678,11 +1684,116 @@ describe("chat generate agent image tool", () => {
         { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
         prisma,
         { projectorPrisma: prisma },
-      )).rejects.toThrow(/profile digest/i);
+      )).resolves.toEqual({ status: "failed" });
 
       expect(streamMock).not.toHaveBeenCalled();
-      expect(recordTurnFailureMock).toHaveBeenCalledOnce();
+      expect(recordTurnFailureMock).not.toHaveBeenCalled();
       expect(recordTurnSuccessMock).not.toHaveBeenCalled();
+      expect(invalidateReadinessMock).toHaveBeenCalledOnce();
+      expect(appendStreamEventMock).toHaveBeenCalledWith(
+        "chat:stream:msg_assistant",
+        expect.objectContaining({
+          type: "error",
+          code: "dsh_profile_digest_mismatch",
+          retryable: false,
+        }),
+      );
+    } finally {
+      restoreEnv();
+    }
+  });
+
+  it("terminalizes a DSH output-limit rejection without retrying or degrading readiness", async () => {
+    const restoreEnv = installDshRolloutEnv();
+    try {
+      dshRunMock.mockImplementation(async (invocation, port) => {
+        await port.emit({
+          type: "text_delta",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 1,
+          occurredAt: new Date().toISOString(),
+          delta: "incomplete reply",
+        });
+        const candidate = {
+          attemptId: invocation.attemptId,
+          content: "incomplete reply",
+          finishReason: "length" as const,
+          provider: "mock",
+          model: "local-model",
+          usage: { promptTokens: 10, completionTokens: 8, reasoningTokens: 0 },
+          execution: { steps: 1, toolCalls: 0 },
+          completedAt: new Date().toISOString(),
+        };
+        await port.emit({
+          type: "terminal_candidate",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 2,
+          occurredAt: new Date().toISOString(),
+          candidate,
+        });
+        const ack = await port.commit(candidate);
+        if (!ack.accepted) throw new Error(ack.error.code);
+      });
+      const { prisma, rootMessageUpdates } = fakePrisma();
+
+      await expect(processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        prisma,
+        { projectorPrisma: prisma, jobAttempt: { attemptsMade: 0, maxAttempts: 5 } },
+      )).resolves.toEqual({ status: "failed" });
+
+      expect(dshRunMock).toHaveBeenCalledOnce();
+      expect(rootMessageUpdates).toContainEqual(expect.objectContaining({
+        data: expect.objectContaining({ status: "failed" }),
+      }));
+      expect(appendStreamEventMock).toHaveBeenCalledWith(
+        "chat:stream:msg_assistant",
+        expect.objectContaining({
+          type: "error",
+          code: "provider_output_limit",
+          retryable: false,
+        }),
+      );
+      expect(recordTurnFailureMock).not.toHaveBeenCalled();
+      expect(invalidateReadinessMock).not.toHaveBeenCalled();
+    } finally {
+      restoreEnv();
+    }
+  });
+
+  it("terminalizes a sidecar timeout while retaining it as readiness failure evidence", async () => {
+    const restoreEnv = installDshRolloutEnv();
+    try {
+      dshRunMock.mockImplementation(async (invocation, port) => {
+        await port.emit({
+          type: "cancelled",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 1,
+          occurredAt: new Date().toISOString(),
+          reason: "timeout",
+        });
+      });
+      const { prisma } = fakePrisma();
+
+      await expect(processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        prisma,
+        { projectorPrisma: prisma, jobAttempt: { attemptsMade: 0, maxAttempts: 5 } },
+      )).resolves.toEqual({ status: "failed" });
+
+      expect(appendStreamEventMock).toHaveBeenCalledWith(
+        "chat:stream:msg_assistant",
+        expect.objectContaining({
+          type: "error",
+          code: "dsh_deadline_exceeded",
+          retryable: false,
+        }),
+      );
+      expect(recordTurnFailureMock).toHaveBeenCalledOnce();
+      expect(invalidateReadinessMock).not.toHaveBeenCalled();
     } finally {
       restoreEnv();
     }
@@ -1693,8 +1804,11 @@ describe("chat generate agent image tool", () => {
     try {
       let observedDigest: string | undefined;
       verifiedProfileDigestState.value = "e".repeat(64);
+      const durableStartedAt = new Date(Date.now() - 1_000).toISOString();
+      let observedDeadlineAt: string | undefined;
       dshRunMock.mockImplementation(async (invocation) => {
         observedDigest = invocation.expectedProfileDigest;
+        observedDeadlineAt = invocation.deadlineAt;
         throw new Error("retry observation complete");
       });
       const priorTrace = {
@@ -1710,7 +1824,7 @@ describe("chat generate agent image tool", () => {
         primaryTelemetry: {
           schemaVersion: 1,
           runtime: "dsh",
-          startedAt: "2026-08-19T12:00:00.000Z",
+          startedAt: durableStartedAt,
           retryCount: 0,
         },
       };
@@ -1728,6 +1842,9 @@ describe("chat generate agent image tool", () => {
       )).rejects.toThrow("retry observation complete");
 
       expect(observedDigest).toBe("d".repeat(64));
+      expect(Date.parse(observedDeadlineAt ?? "")).toBe(
+        Date.parse(durableStartedAt) + 300_000,
+      );
       expect(messageUpdates[0]?.data.runtimeTrace).toMatchObject({
         companionRuntime: { profileDigest: "d".repeat(64) },
       });
@@ -1821,11 +1938,13 @@ describe("chat generate agent image tool", () => {
         { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
         prisma,
         { projectorPrisma: prisma },
-      )).rejects.toThrow("stream_candidate_mismatch");
+      )).resolves.toEqual({ status: "failed" });
 
       expect(messageUpdates).not.toContainEqual(expect.objectContaining({
         data: expect.objectContaining({ status: "sent" }),
       }));
+      expect(recordTurnFailureMock).toHaveBeenCalledOnce();
+      expect(invalidateReadinessMock).not.toHaveBeenCalled();
     } finally {
       restoreEnv();
     }

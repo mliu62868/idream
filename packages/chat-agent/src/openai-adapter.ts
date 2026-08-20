@@ -202,6 +202,9 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
       top_p: this.profile.sampling.topP,
       repetition_penalty: this.profile.sampling.repetitionPenalty,
       max_tokens: options.maxTokens ?? this.profile.maxOutputTokens,
+      // INVARIANT: the PreparedTurn output budget is for the companion reply,
+      // not hidden chain-of-thought. Native Chat uses the same model contract.
+      chat_template_kwargs: { enable_thinking: false },
       ...(options.stop?.length ? { stop: options.stop } : {}),
       ...(options.tools?.length ? {
         tools: options.tools.map((tool) => ({

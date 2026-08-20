@@ -107,13 +107,6 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function textContent(message: AssistantMessage): string {
-  return message.content
-    .filter((block): block is Extract<(typeof message.content)[number], { type: "text" }> => block.type === "text")
-    .map((block) => block.text)
-    .join("");
-}
-
 function wireUsage(usage?: TokenUsage) {
   return {
     promptTokens: (usage?.inputTokens ?? 0)
@@ -542,6 +535,7 @@ export class CompanionEngine implements InvocationService {
       let latestFinish: StreamChunk & { type: "finish" } | undefined;
       let turnEnd: TurnEndReason | undefined;
       let stepCount = 0;
+      let emittedText = "";
       const seenSessionEventSeqs = new Set<number>();
       const bridge = new ToolBridge(invocation, emit, event);
       active.toolBridge = bridge;
@@ -554,7 +548,10 @@ export class CompanionEngine implements InvocationService {
         seenSessionEventSeqs.add(sessionEvent.seq);
         if (sessionEvent.type === "assistant/chunk") {
           const chunk = sessionEvent.data.chunk;
-          if (chunk.type === "text-delta" && chunk.text) event({ type: "text_delta", delta: chunk.text });
+          if (chunk.type === "text-delta" && chunk.text) {
+            emittedText += chunk.text;
+            event({ type: "text_delta", delta: chunk.text });
+          }
           if (chunk.type === "finish") latestFinish = chunk;
         } else if (sessionEvent.type === "assistant/message") {
           latestAssistant = sessionEvent.data.message;
@@ -632,7 +629,10 @@ export class CompanionEngine implements InvocationService {
 
           agentCtx.on("agent/turn-stopping", async ({ signal }) => {
             if (!latestAssistant || !latestFinish) throw new Error("turn stopped without a terminal assistant candidate");
-            const content = textContent(latestAssistant);
+            // INVARIANT: Chat commits the exact bytes already delivered over
+            // SSE. DSH tool loops may emit visible prose in more than one step,
+            // while latestAssistant contains only the final step.
+            const content = emittedText;
             if (!content) throw new Error("terminal assistant candidate is empty");
             if (latestFinish.reason.kind !== "stop" && latestFinish.reason.kind !== "max-tokens") {
               throw new Error(`non-terminal finish reason ${latestFinish.reason.kind}`);

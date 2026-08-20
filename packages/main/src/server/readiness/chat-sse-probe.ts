@@ -1,5 +1,6 @@
 type ChatSseObservation = {
   readonly fatalError: boolean;
+  readonly error?: string;
   readonly lastEventId: string | null;
   readonly sawDelta: boolean;
   readonly sawDone: boolean;
@@ -17,6 +18,7 @@ type ChatSseProbeOptions = {
   readonly open: (lastEventId: string | null) => Promise<Response>;
   readonly timeoutMs: number;
   readonly reconnectDelayMs?: number;
+  readonly expectedAttempt?: number;
 };
 
 // SPEC: A retryable Chat attempt error is not the terminal user result. The
@@ -32,6 +34,7 @@ export async function observeChatSseAcrossReconnects(
   let sawStart = false;
   let sawDelta = false;
   let sawDone = false;
+  let lastError: string | undefined;
 
   while (Date.now() < deadline) {
     let response: Response;
@@ -67,7 +70,8 @@ export async function observeChatSseAcrossReconnects(
       response,
       Math.max(1, deadline - Date.now()),
     );
-    const observation = inspectChatSse(text);
+    const observation = inspectChatSse(text, options.expectedAttempt);
+    lastError = observation.error ?? lastError;
     lastEventId = observation.lastEventId ?? lastEventId;
     sawStart ||= observation.sawStart;
     sawDelta ||= observation.sawDelta;
@@ -95,6 +99,7 @@ export async function observeChatSseAcrossReconnects(
         sawDone,
         sawStart,
         status: response.status,
+        ...(observation.error ? { error: observation.error } : {}),
       });
     }
 
@@ -110,7 +115,9 @@ export async function observeChatSseAcrossReconnects(
     sawDelta,
     sawDone,
     sawStart,
-    error: `chat SSE did not reach done within ${options.timeoutMs}ms`,
+    error: `chat SSE did not reach done within ${options.timeoutMs}ms${
+      lastError ? `; last error: ${lastError}` : ""
+    }`,
   });
 }
 
@@ -118,8 +125,12 @@ function result(value: ChatSseProbeResult): ChatSseProbeResult {
   return value;
 }
 
-function inspectChatSse(text: string): ChatSseObservation {
+function inspectChatSse(
+  text: string,
+  expectedAttempt: number | undefined,
+): ChatSseObservation {
   let fatalError = false;
+  let error: string | undefined;
   let lastEventId: string | null = null;
   let sawDelta = false;
   let sawDone = false;
@@ -134,16 +145,27 @@ function inspectChatSse(text: string): ChatSseObservation {
       .map((line) => line.slice(5).trimStart())
       .join("\n");
     const payload = jsonRecord(dataText);
+    if (
+      expectedAttempt !== undefined &&
+      payload.attempt !== expectedAttempt
+    ) {
+      // Regeneration reuses the assistant stream key. Advance the Redis cursor
+      // past older attempts, but never let their terminal event prove this one.
+      continue;
+    }
     const event =
       lines.find((line) => line.startsWith("event:"))?.slice(6).trim() ??
       stringValue(payload.type);
     if (event === "start") sawStart = true;
     if (event === "delta") sawDelta = true;
     if (event === "done") sawDone = true;
-    if (event === "error" && payload.retryable !== true) fatalError = true;
+    if (event === "error") {
+      error ??= stringValue(payload.code) ?? stringValue(payload.message) ?? "chat_stream_error";
+      if (payload.retryable !== true) fatalError = true;
+    }
   }
 
-  return { fatalError, lastEventId, sawDelta, sawDone, sawStart };
+  return { fatalError, ...(error ? { error } : {}), lastEventId, sawDelta, sawDone, sawStart };
 }
 
 async function readResponseUntilClose(

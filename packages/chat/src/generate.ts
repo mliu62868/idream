@@ -1671,8 +1671,13 @@ async function processDshCompanionTurn(
     heartbeat,
     key,
   } = input;
+  const primaryTelemetry = runtimeTraceFacts.primaryTelemetry as PrimaryAttemptTelemetry;
+  const primaryStartedAt = Date.parse(primaryTelemetry.startedAt);
   const attemptId = `${payload.assistantMessageId}:${payload.attempt}`;
   const invocationId = `inv:${attemptId}`;
+  // INVARIANT: BullMQ retries are transports for one durable attempt, so they
+  // share its original wall-clock budget instead of minting a new deadline.
+  const absoluteDeadlineAt = primaryStartedAt + attemptRuntime.deadlineMs;
   const invocation: CompanionInvocation = {
     invocationId,
     attemptId,
@@ -1682,7 +1687,7 @@ async function processDshCompanionTurn(
     preparedTurn: toPreparedTurnWire(prepared),
     memoryMode: attemptRuntime.private ? "private" : "normal",
     expectedProfileDigest: input.profileDigest,
-    deadlineAt: new Date(Date.now() + attemptRuntime.deadlineMs).toISOString(),
+    deadlineAt: new Date(absoluteDeadlineAt).toISOString(),
   };
   const runtime = new DshCompanionRuntime({
     baseUrl: attemptRuntime.sidecarUrl,
@@ -1706,8 +1711,6 @@ async function processDshCompanionTurn(
   let terminalStatus: "sent" | "blocked" | "skipped" | null = null;
   let committedUsage: { promptTokens: number; completionTokens: number } | null = null;
   let committedTrace: Record<string, unknown> | null = null;
-  const primaryTelemetry = runtimeTraceFacts.primaryTelemetry as PrimaryAttemptTelemetry;
-  const primaryStartedAt = Date.parse(primaryTelemetry.startedAt);
   let primaryFirstTokenMs: number | undefined;
 
   const emitDelta = async (delta: string): Promise<void> => {
@@ -2007,13 +2010,20 @@ async function processDshCompanionTurn(
 
   let runError: unknown = null;
   let runErrorTaxonomy: PrimaryAttemptTelemetry["error"] | null = null;
-  const deadlineSignal = AbortSignal.timeout(attemptRuntime.deadlineMs);
+  let sidecarRetryable: boolean | undefined;
+  const deadlineSignal = AbortSignal.timeout(
+    Math.max(1, absoluteDeadlineAt - Date.now()),
+  );
   try {
     await runtime.run(invocation, {
       async emit(event: CompanionEvent) {
         switch (event.type) {
           case "started":
             if (event.profileDigest !== input.profileDigest) {
+              runErrorTaxonomy = {
+                category: "runtime",
+                code: "dsh_profile_digest_mismatch",
+              };
               throw new Error("started profile digest differs from the pinned companion composition");
             }
             recordCompanionOperationalEvent(primaryTelemetry, event);
@@ -2041,16 +2051,19 @@ async function processDshCompanionTurn(
             announcedCandidate = event.candidate;
             return;
           case "failed":
+            sidecarRetryable = event.error.retryable;
             runErrorTaxonomy = {
               category: "runtime",
               code: event.error.code,
             };
             throw new Error(`${event.error.code}: ${event.error.message}`);
           case "cancelled":
-            runErrorTaxonomy = {
-              category: "cancel",
-              code: `dsh_cancelled_${event.reason}`,
-            };
+            runErrorTaxonomy = event.reason === "timeout"
+              ? { category: "deadline", code: "dsh_deadline_exceeded" }
+              : {
+                  category: "cancel",
+                  code: `dsh_cancelled_${event.reason}`,
+                };
             throw new Error(`companion invocation cancelled: ${event.reason}`);
           default:
             return;
@@ -2287,7 +2300,6 @@ async function processDshCompanionTurn(
     if (observedCandidate) runtimeReadiness.recordTurnSuccess();
     return { status: "skipped" };
   }
-  const retryable = hasWorkerRetryRemaining(input.jobAttempt);
   const rejectionError = settledAck && !settledAck.accepted
     ? settledAck.error.code
     : null;
@@ -2301,6 +2313,13 @@ async function processDshCompanionTurn(
         code: rejectionError,
       }
     : runErrorTaxonomy ?? { category: "runtime", code: "dsh_terminal_missing" };
+  const deterministicFailure = rejectionError !== null
+    || error.code === "dsh_profile_digest_mismatch";
+  const terminalCancellation = error.category === "deadline" || error.category === "cancel";
+  const retryable = !deterministicFailure
+    && !terminalCancellation
+    && sidecarRetryable !== false
+    && hasWorkerRetryRemaining(input.jobAttempt);
   const failureTelemetry: PrimaryAttemptTelemetry = {
     ...primaryTelemetry,
     ...(primaryFirstTokenMs === undefined ? {} : { firstTokenMs: primaryFirstTokenMs }),
@@ -2322,10 +2341,21 @@ async function processDshCompanionTurn(
   await persistFailedRuntimeTrace({ prisma, payload, runtimeTraceFacts: failureTrace });
   const completeCandidateLostLocalCas = observedCandidate !== null
     && (rejectionError === "context_changed" || rejectionError === "terminal_cas_conflict");
-  if (completeCandidateLostLocalCas) {
+  if (error.code === "dsh_profile_digest_mismatch") {
+    // Exact composition identity is an admission invariant, not a noisy turn
+    // failure. One mismatch proves this process is serving stale authority.
+    runtimeReadiness.invalidate(
+      runError ?? new Error("DSH started with a different profile digest"),
+    );
+  } else if (completeCandidateLostLocalCas) {
     // CAS loss is local concurrency evidence, not provider health evidence.
     runtimeReadiness.recordTurnSuccess();
-  } else {
+  } else if (
+    rejectionError !== "provider_output_limit" &&
+    error.category !== "cancel"
+  ) {
+    // Protocol/identity divergence, deadline and transport failures must remain
+    // health evidence even when retry policy correctly terminalizes the attempt.
     runtimeReadiness.recordTurnFailure(
       runError ?? new Error("DSH returned without a terminal commit"),
     );
@@ -2334,11 +2364,12 @@ async function processDshCompanionTurn(
   await appendStreamEvent(key, {
     type: "error",
     attempt: payload.attempt,
-    code: rejectionError ?? "provider_failed",
+    code: rejectionError ?? runErrorTaxonomy?.code ?? "provider_failed",
     retryable,
   });
   failureTelemetry.sseTerminal = "error";
   await persistFailedRuntimeTrace({ prisma, payload, runtimeTraceFacts: failureTrace });
+  if (!retryable) return { status: "failed" };
   throw runError instanceof Error
     ? runError
     : new Error("DSH returned without a terminal commit");

@@ -29,6 +29,7 @@ export default defineConfig({
       "src/server/probe-generation-persistence.test.ts",
       "src/server/probe-chat-service.test.ts",
       "src/server/probe-sentry.test.ts",
+      "src/server/readiness/chat-sse-probe.test.ts",
       "src/server/readiness/probe-report.test.ts",
       "src/server/readiness/migration-authority.test.ts",
       "src/server/readiness/migration-authority-lifecycle.test.ts",

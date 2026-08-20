@@ -1,8 +1,22 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const db = vi.hoisted(() => ({
+  findUser: vi.fn(),
+}));
+
+vi.mock("./lib/db", () => ({
+  prisma: {
+    user: { findUnique: db.findUser },
+    $disconnect: vi.fn(async () => undefined),
+  },
+}));
+
 import {
+  DEFAULT_CHAT_SERVICE_PROBE_STREAM_TIMEOUT_MS,
   assertDedicatedChatProbeActor,
   parseExpectedCompanionRuntime,
   projectDshCompanionEvidence,
+  runProbe,
   selectSoulReadyProbeCharacter,
 } from "./probe-chat-service";
 
@@ -13,6 +27,139 @@ const auditActor = {
   status: "active",
   deletedAt: null,
 };
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+  db.findUser.mockReset();
+});
+
+function installFailFastProbeFetch(
+  scenario: "normal_fatal" | "future_fatal" | "future_unsettled",
+): string[] {
+  const requests: string[] = [];
+  let sessionListReads = 0;
+  let messagePosts = 0;
+  let sessionDeleted = false;
+  vi.stubGlobal("fetch", vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+    const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+    const method = init?.method ?? "GET";
+    requests.push(`${method} ${url.pathname}`);
+    const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
+      status,
+      headers: { "content-type": "application/json" },
+    });
+    const sse = (events: string[]) => new Response(events.join("\n"), { status: 200 });
+    if (url.pathname === "/healthz") return json({ ok: true, service: "chat" });
+    if (url.pathname === "/api/v1/chat/runtime-authority") {
+      return json({ chatFsRootFingerprint: "a".repeat(64), sourceRevision: "probe-revision" });
+    }
+    if (url.pathname === "/api/v1/chat/sessions" && method === "GET") {
+      sessionListReads += 1;
+      return sessionListReads === 2 ? json({}, 401) : json([]);
+    }
+    if (url.pathname === "/api/v1/chat/memories" && method === "GET") {
+      return json({ memories: [] });
+    }
+    if (url.pathname === "/api/v1/chat/relationships" && method === "GET") {
+      return json({ relationships: [] });
+    }
+    if (url.pathname === "/api/v1/chat/sessions" && method === "POST") {
+      return json({ id: "session-probe" }, 201);
+    }
+    if (url.pathname === "/api/v1/chat/sessions/session-probe/messages" && method === "POST") {
+      messagePosts += 1;
+      const normal = messagePosts === 1;
+      return json({
+        assistantMessageId: normal ? "assistant-normal" : "assistant-future",
+        userMessageId: normal ? "user-normal" : "user-future",
+        attempt: 1,
+        status: "pending",
+      }, 202);
+    }
+    if (url.pathname === "/api/v1/chat/messages/assistant-normal/stream") {
+      return scenario === "normal_fatal"
+        ? sse([
+            "event: error",
+            'data: {"type":"error","attempt":1,"code":"provider_failed","retryable":false}',
+            "",
+          ])
+        : sse([
+            "event: start",
+            'data: {"type":"start","attempt":1}',
+            "",
+            "event: delta",
+            'data: {"type":"delta","attempt":1,"seq":1,"delta":"ok"}',
+            "",
+            "event: done",
+            'data: {"type":"done","attempt":1,"usage":{}}',
+            "",
+          ]);
+    }
+    if (url.pathname === "/api/v1/chat/messages/assistant-future/stream") {
+      return scenario === "future_fatal"
+        ? sse([
+            "event: error",
+            'data: {"type":"error","attempt":1,"code":"provider_failed","retryable":false}',
+            "",
+          ])
+        : sse([
+        "event: start",
+        'data: {"type":"start","attempt":1}',
+        "",
+        "event: delta",
+        'data: {"type":"delta","attempt":1,"seq":1,"delta":"future"}',
+        "",
+        "event: done",
+        'data: {"type":"done","attempt":1,"usage":{}}',
+        "",
+          ]);
+    }
+    if (url.pathname === "/api/v1/chat/sessions/session-probe" && method === "GET") {
+      if (sessionDeleted) return json({}, 404);
+      return json({
+        messages: [
+          {
+            id: "user-future",
+            role: "user",
+            status: "sent",
+            sceneVersion: 1,
+          },
+          {
+            id: "assistant-normal",
+            role: "assistant",
+            status: "sent",
+            content: "ok",
+            attempt: 1,
+            memoryExtractedAttempt: 1,
+            scene: { version: 0 },
+            runtimeTrace: { primaryTelemetry: { sseTerminal: "done" } },
+          },
+          ...(messagePosts > 1
+            ? [{
+                id: "assistant-future",
+                role: "assistant",
+                status: "generating",
+                attempt: 1,
+                memoryExtractedAttempt: 0,
+                scene: { version: 1 },
+                runtimeTrace: { primaryTelemetry: {} },
+              }]
+            : []),
+        ],
+      });
+    }
+    if (url.pathname === "/api/v1/chat/sessions/session-probe/memory" && method === "POST") {
+      return json({ ok: true });
+    }
+    if (url.pathname === "/api/v1/chat/sessions/session-probe" && method === "DELETE") {
+      sessionDeleted = true;
+      return json({ ok: true });
+    }
+    return json({ error: "unexpected probe request" }, 500);
+  }));
+  return requests;
+}
 
 describe("chat service probe actor authority", () => {
   it("accepts only the dedicated active audit actor", () => {
@@ -226,7 +373,7 @@ describe("chat service DSH evidence", () => {
     expect(evidence.error).toContain("companion.attribution");
   });
 
-  it("fails closed when the DSH private pin did not enforce the no-memory boundary", () => {
+  it("accepts model output authority for a private turn but rejects a writable memory outcome", () => {
     const evidence = projectDshCompanionEvidence({
       companionRuntime: {
         runtime: "dsh",
@@ -255,7 +402,82 @@ describe("chat service DSH evidence", () => {
     }, "private");
 
     expect(evidence.ok).toBe(false);
-    expect(evidence.error).toContain("outputAuthority");
+    expect(evidence.error).not.toContain("outputAuthority");
     expect(evidence.error).toContain("primaryTelemetry.memory.outcome");
+  });
+});
+
+describe("chat service conversation probe", () => {
+  it("keeps the SSE observer outside the default DSH execution deadline", () => {
+    expect(DEFAULT_CHAT_SERVICE_PROBE_STREAM_TIMEOUT_MS).toBe(330_000);
+  });
+
+  it("stops before the future turn when the normal stream is terminally failed", async () => {
+    db.findUser.mockResolvedValue(auditActor);
+    vi.stubEnv("CHAT_SERVICE_PROBE_SETTLE_TIMEOUT_MS", "1");
+    vi.stubEnv("CHAT_SERVICE_PROBE_STREAM_TIMEOUT_MS", "100");
+    const requests = installFailFastProbeFetch("normal_fatal");
+
+    const report = await runProbe({
+      serviceUrl: "http://127.0.0.1:3100",
+      secret: "probe-secret",
+      userId: auditActor.id,
+      characterId: "lola-moonstruck",
+    });
+
+    expect(report.conversation?.error).toBe("normal stream failed: provider_failed");
+    expect(requests.filter((request) =>
+      request === "POST /api/v1/chat/sessions/session-probe/messages")).toHaveLength(1);
+    expect(requests.some((request) => request.includes("/regenerate"))).toBe(false);
+  });
+
+  it("stops before regeneration when the future terminal state never settles", async () => {
+    db.findUser.mockResolvedValue(auditActor);
+    vi.stubEnv("CHAT_SERVICE_PROBE_SETTLE_TIMEOUT_MS", "1");
+    vi.stubEnv("CHAT_SERVICE_PROBE_STREAM_TIMEOUT_MS", "100");
+    const requests = installFailFastProbeFetch("future_unsettled");
+
+    const report = await runProbe({
+      serviceUrl: "http://127.0.0.1:3100",
+      secret: "probe-secret",
+      userId: auditActor.id,
+      characterId: "lola-moonstruck",
+    });
+
+    expect(report.conversation?.regenerateAnchor?.error).toContain(
+      "future scene terminal state failed",
+    );
+    expect(requests.some((request) => request.includes("/regenerate"))).toBe(false);
+    expect(requests.filter((request) =>
+      request === "POST /api/v1/chat/sessions/session-probe/messages")).toHaveLength(2);
+  });
+
+  it("stops after a fatal future-turn stream error and preserves its code", async () => {
+    db.findUser.mockResolvedValue(auditActor);
+    vi.stubEnv("CHAT_SERVICE_PROBE_SETTLE_TIMEOUT_MS", "1");
+    vi.stubEnv("CHAT_SERVICE_PROBE_STREAM_TIMEOUT_MS", "100");
+    const requests = installFailFastProbeFetch("future_fatal");
+
+    const report = await runProbe({
+      serviceUrl: "http://127.0.0.1:3100",
+      secret: "probe-secret",
+      userId: auditActor.id,
+      characterId: "lola-moonstruck",
+    });
+    expect(report.conversation).not.toBeNull();
+    const conversation = report.conversation!;
+
+    expect(conversation.regenerateAnchor).toMatchObject({
+      ok: false,
+      assistantMessageId: "assistant-future",
+      error: "future scene stream failed: provider_failed",
+    });
+    expect(conversation.error).toBe("future scene stream failed: provider_failed");
+    expect(requests.some((request) => request.includes("/regenerate"))).toBe(false);
+    expect(
+      requests.filter((request) =>
+        request === "POST /api/v1/chat/sessions/session-probe/messages"),
+    ).toHaveLength(2);
+    expect(conversation.cleanup?.ok).toBe(true);
   });
 });

@@ -97,6 +97,7 @@ describe("OpenAI-compatible DSH adapter", () => {
       temperature: 0.9,
       top_p: 0.95,
       repetition_penalty: 1.05,
+      chat_template_kwargs: { enable_thinking: false },
       provider: { only: ["DeepSeek"], allow_fallbacks: false },
     });
     expect(chunks).toContainEqual({
