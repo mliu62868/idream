@@ -538,20 +538,6 @@ export async function processGenerate(
     if (!dshProfileDigest) {
       throw new Error("DSH attempt is missing its readiness-verified profile digest");
     }
-    if (authoritativeNoMemoryReply) {
-      return processNoMemoryBoundaryTurn({
-        prisma,
-        projectorPrisma,
-        payload,
-        session,
-        prepared,
-        context,
-        runtimeTraceFacts,
-        content: authoritativeNoMemoryReply,
-        heartbeat,
-        key,
-      });
-    }
     return processDshCompanionTurn({
       prisma,
       projectorPrisma,
@@ -567,139 +553,11 @@ export async function processGenerate(
       heartbeat,
       key,
       jobAttempt: hooks.jobAttempt,
+      authoritativePolicyReply: authoritativeNoMemoryReply,
     });
   } finally {
     clearInterval(heartbeatTimer);
   }
-}
-
-interface NoMemoryBoundaryTurnInput {
-  prisma: ChatPrismaClient;
-  projectorPrisma: ChatPrismaClient;
-  payload: GeneratePayload;
-  session: FinalizeInput["session"];
-  prepared: PreparedTurn;
-  context: BuiltContext;
-  runtimeTraceFacts: Record<string, unknown>;
-  content: string;
-  heartbeat(force?: boolean): Promise<void>;
-  key: string;
-}
-
-/** A deterministic privacy reply is policy output, not a second model runtime. */
-async function processNoMemoryBoundaryTurn(
-  input: NoMemoryBoundaryTurnInput,
-): Promise<{ status: "sent" | "blocked" | "skipped" | "failed" }> {
-  const startedAt = Date.parse(
-    (input.runtimeTraceFacts.primaryTelemetry as PrimaryAttemptTelemetry).startedAt,
-  );
-  let sequence = 0;
-  for (const delta of chunk(input.content, 96)) {
-    await input.heartbeat();
-    sequence += 1;
-    await appendStreamEvent(input.key, {
-      type: "delta",
-      attempt: input.payload.attempt,
-      seq: sequence,
-      delta,
-    });
-  }
-  const moderation = await providers.moderation.check({
-    targetType: "text",
-    content: input.content,
-  });
-  const blocked = moderation.status === "blocked";
-  const usage = {
-    promptTokens: input.prepared.budget.usedInputTokens,
-    completionTokens: estimateTokens(input.content),
-  };
-  const telemetry: PrimaryAttemptTelemetry = {
-    ...(input.runtimeTraceFacts.primaryTelemetry as PrimaryAttemptTelemetry),
-    totalMs: Math.max(0, Date.now() - startedAt),
-    terminalStatus: blocked ? "blocked" : "sent",
-    truncated: false,
-    provider: input.prepared.profile.provider,
-    model: input.prepared.model,
-    usage,
-    steps: 0,
-    toolCalls: 0,
-    memory: { outcome: blocked ? "discarded_blocked" : "disabled" },
-  };
-  input.runtimeTraceFacts.primaryTelemetry = telemetry;
-  input.runtimeTraceFacts.companionWorkspace = { cleanupRequired: false };
-  const finalTrace = JSON.parse(JSON.stringify(
-    input.runtimeTraceFacts,
-  )) as Prisma.InputJsonValue;
-  await input.heartbeat(true);
-  const finalized = await finalize({
-    prisma: input.prisma,
-    projectorPrisma: input.projectorPrisma,
-    payload: input.payload,
-    session: input.session,
-    content: blocked ? "" : input.content,
-    model: input.prepared.model,
-    usage,
-    moderation,
-    blocked,
-    context: input.context,
-    imageToolCall: null,
-    toolCallTrigger: "agent_tool_call",
-    traceEntry: null,
-    runtimeTrace: finalTrace,
-  });
-  if (finalized === "stale") {
-    telemetry.terminalStatus = "failed";
-    telemetry.error = { category: "cas", code: "context_changed" };
-    await persistFailedRuntimeTrace({
-      prisma: input.prisma,
-      payload: input.payload,
-      runtimeTraceFacts: input.runtimeTraceFacts,
-    });
-    await appendStreamEvent(input.key, {
-      type: "error",
-      attempt: input.payload.attempt,
-      code: "context_changed",
-      retryable: true,
-    }).catch(() => undefined);
-    return { status: "failed" };
-  }
-  if (finalized === "skipped") return { status: "skipped" };
-
-  await appendStreamEvent(input.key, {
-    type: "done",
-    attempt: input.payload.attempt,
-    usage,
-  });
-  telemetry.sseTerminal = "done";
-  await persistTerminalRuntimeTrace({
-    prisma: input.prisma,
-    payload: input.payload,
-    messageStatus: blocked ? "blocked" : "sent",
-    runtimeTraceFacts: input.runtimeTraceFacts,
-    truncated: false,
-  });
-  if (!blocked) {
-    await enqueue({
-      queue: CHAT_QUEUES.memoryExtract,
-      payload: {
-        sessionId: input.session.id,
-        assistantMessageId: input.payload.assistantMessageId,
-        userMessageId: input.payload.userMessageId,
-        attempt: input.payload.attempt,
-      } satisfies ChatMemoryExtractPayload,
-      dedupeKey: idempotencyKeys.chatMemoryExtract(
-        input.payload.assistantMessageId,
-        input.payload.attempt,
-      ),
-    }).catch((error) => {
-      logger.warn(
-        { err: error, assistantMessageId: input.payload.assistantMessageId },
-        "scene extraction enqueue deferred",
-      );
-    });
-  }
-  await scheduleOutboxDelivery();
-  return { status: blocked ? "blocked" : "sent" };
 }
 
 async function persistTerminalRuntimeTrace(input: {
@@ -822,6 +680,7 @@ interface DshTurnInput {
   heartbeat(force?: boolean): Promise<void>;
   key: string;
   jobAttempt: GenerateHooks["jobAttempt"];
+  authoritativePolicyReply: string | null;
 }
 
 async function processDshCompanionTurn(
@@ -852,7 +711,11 @@ async function processDshCompanionTurn(
     sessionId: payload.sessionId,
     userId: session.userId,
     characterId: session.characterId,
-    preparedTurn: toPreparedTurnWire(prepared),
+    // INVARIANT: policy-owned replies still execute through DSH, but cannot
+    // reserve a product side effect that the fixed terminal reply would hide.
+    preparedTurn: input.authoritativePolicyReply
+      ? { ...toPreparedTurnWire(prepared), tools: [] }
+      : toPreparedTurnWire(prepared),
     memoryMode: attemptRuntime.private ? "private" : "normal",
     expectedProfileDigest: input.profileDigest,
     deadlineAt: new Date(absoluteDeadlineAt).toISOString(),
@@ -861,7 +724,8 @@ async function processDshCompanionTurn(
     baseUrl: attemptRuntime.sidecarUrl,
     token: input.sidecarToken,
   });
-  const chunks: string[] = [];
+  const providerChunks: string[] = [];
+  const deliveredChunks: string[] = [];
   let sequence = 0;
   let usage: { promptTokens: number; completionTokens: number } | null = null;
   let reasoningTokens = 0;
@@ -887,7 +751,7 @@ async function processDshCompanionTurn(
     await heartbeat();
     primaryFirstTokenMs ??= Math.max(0, Date.now() - primaryStartedAt);
     sequence += 1;
-    chunks.push(delta);
+    deliveredChunks.push(delta);
     await appendStreamEvent(key, {
       type: "delta",
       attempt: payload.attempt,
@@ -896,9 +760,31 @@ async function processDshCompanionTurn(
     });
   };
 
+  const observeProviderDelta = async (delta: string): Promise<void> => {
+    providerChunks.push(delta);
+    if (input.authoritativePolicyReply) {
+      await heartbeat();
+      return;
+    }
+    await emitDelta(delta);
+  };
+
   const executeTool = async (
     call: CompanionToolCall,
   ): Promise<CompanionToolResult> => {
+    if (input.authoritativePolicyReply) {
+      return {
+        attemptId: call.attemptId,
+        callId: call.callId,
+        name: call.name,
+        outcome: "failed",
+        error: {
+          code: "policy_owned_turn_has_no_tools",
+          message: "Chat policy owns this terminal reply and exposes no product tools",
+          retryable: false,
+        },
+      };
+    }
     const parsedCall = findAgentTool(call.name)?.parseCall(call.arguments) ?? null;
     const fingerprint = stableJson({
       attemptId: call.attemptId,
@@ -1105,11 +991,11 @@ async function processDshCompanionTurn(
       );
       return commitAck;
     }
-    if (candidate.content !== chunks.join("")) {
+    if (candidate.content !== providerChunks.join("")) {
       commitAck = rejectedCommit(
         attemptId,
         "stream_candidate_mismatch",
-        "terminal candidate differs from the text delivered over SSE",
+        "terminal candidate differs from the provider text observed by Chat",
       );
       return commitAck;
     }
@@ -1132,7 +1018,13 @@ async function processDshCompanionTurn(
       );
       return commitAck;
     }
-    const content = candidate.content;
+    // INTENT: Chat owns the no-memory promise boundary. Delay delivery until
+    // DSH proposes a traceable candidate, then transform it at the commit port
+    // so the user sees one stable truth without a native/runtime bypass.
+    const content = input.authoritativePolicyReply ?? candidate.content;
+    if (input.authoritativePolicyReply) {
+      for (const delta of chunk(content, 96)) await emitDelta(delta);
+    }
     const moderation = await providers.moderation.check({
       targetType: "text",
       content,
@@ -1186,6 +1078,18 @@ async function processDshCompanionTurn(
         execution: candidate.execution,
         usage: candidate.usage,
         ...(candidate.attribution ? { attribution: candidate.attribution } : {}),
+        ...(input.authoritativePolicyReply
+          ? {
+              policyOutput: {
+                authority: "chat",
+                code: "no_memory_future_recall",
+                transform: "replace_terminal_candidate",
+                providerCandidateDigest: digestText(candidate.content),
+                deliveredContentDigest: digestText(content),
+                providerFinishReason: candidate.finishReason,
+              },
+            }
+          : {}),
         ...(toolIdentity ? { toolIdentity } : {}),
         ...(committedToolResult ? { toolResult: committedToolResult } : {}),
       },
@@ -1280,7 +1184,7 @@ async function processDshCompanionTurn(
             recordCompanionOperationalEvent(primaryTelemetry, event);
             return;
           case "text_delta":
-            await emitDelta(event.delta);
+            await observeProviderDelta(event.delta);
             return;
           case "usage":
             usage = {
@@ -1342,11 +1246,11 @@ async function processDshCompanionTurn(
   if (
     runError &&
     terminalStatus === null &&
-    chunks.join("").trim() &&
+    deliveredChunks.join("").trim() &&
     observedCandidate === null &&
     commitAck === null
   ) {
-    const content = chunks.join("");
+    const content = deliveredChunks.join("");
     const moderation = await providers.moderation.check({
       targetType: "text",
       content,
@@ -1506,7 +1410,7 @@ async function processDshCompanionTurn(
       attempt: payload.attempt,
       usage: committedUsage ?? usage ?? {
         promptTokens: prepared.budget.usedInputTokens,
-        completionTokens: estimateTokens(chunks.join("")),
+        completionTokens: estimateTokens(deliveredChunks.join("")),
       },
     });
     const deliveredTrace = committedTrace as Record<string, unknown> | null;

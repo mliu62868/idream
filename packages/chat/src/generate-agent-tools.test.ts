@@ -752,6 +752,120 @@ describe("chat generate agent image tool", () => {
     }
   });
 
+  it("commits the no-memory future-recall policy reply through DSH without exposing provider prose", async () => {
+    const restoreEnv = installDshRolloutEnv();
+    const userContent = "Remember this phrase next month: amber compass. Promise me.";
+    const providerContent = "Of course — I'll remember amber compass next month.";
+    const policyContent = "I can’t retain that across sessions. If you want to use it later, tell me again then.";
+    try {
+      buildContextMock.mockResolvedValue({
+        ...context,
+        policy: {
+          ...context.policy,
+          memoryEnabled: false,
+        },
+        recentMessages: [
+          { id: "msg_user", role: "user", content: userContent },
+        ],
+      });
+      dshRunMock.mockImplementation(async (invocation, port) => {
+        expect(invocation.memoryMode).toBe("private");
+        expect(invocation.preparedTurn.tools).toEqual([]);
+        await port.emit({
+          type: "started",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 1,
+          occurredAt: new Date().toISOString(),
+          instance: {
+            id: "11111111-1111-4111-8111-111111111111",
+            startedAt: "2026-08-19T11:59:00.000Z",
+          },
+          profileDigest: "d".repeat(64),
+        });
+        await port.emit({
+          type: "text_delta",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 2,
+          occurredAt: new Date().toISOString(),
+          delta: providerContent,
+        });
+        const candidate = {
+          attemptId: invocation.attemptId,
+          content: providerContent,
+          finishReason: "stop" as const,
+          provider: "mock",
+          model: "local-model",
+          usage: { promptTokens: 14, completionTokens: 11, reasoningTokens: 0 },
+          execution: { steps: 1, toolCalls: 0 },
+          attribution: { requestId: "req-no-memory-policy", actualProvider: "local-mlx" },
+          completedAt: new Date().toISOString(),
+        };
+        await port.emit({
+          type: "terminal_candidate",
+          invocationId: invocation.invocationId,
+          attemptId: invocation.attemptId,
+          sequence: 3,
+          occurredAt: new Date().toISOString(),
+          candidate,
+        });
+        await expect(port.commit(candidate)).resolves.toMatchObject({
+          accepted: true,
+          status: "committed",
+        });
+      });
+      const { prisma, messageUpdates, attachmentCreates, outboxCreates } = fakePrisma(
+        undefined,
+        undefined,
+        { content: userContent, memoryAuthority: "disabled" },
+      );
+
+      await expect(processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        prisma,
+        { projectorPrisma: prisma },
+      )).resolves.toEqual({ status: "sent" });
+
+      expect(dshRunMock).toHaveBeenCalledOnce();
+      expect(finalizedMessageUpdate(messageUpdates)).toMatchObject({
+        status: "sent",
+        content: policyContent,
+        runtimeTrace: expect.objectContaining({
+          outputAuthority: "no_memory_boundary",
+          companionRuntime: expect.objectContaining({ private: true }),
+          dsh: expect.objectContaining({
+            memoryMode: "private",
+            provider: "mock",
+            model: "local-model",
+          }),
+          companion: expect.objectContaining({
+            memoryIngestOutcome: "disabled",
+            attribution: { requestId: "req-no-memory-policy", actualProvider: "local-mlx" },
+            policyOutput: expect.objectContaining({
+              authority: "chat",
+              code: "no_memory_future_recall",
+              transform: "replace_terminal_candidate",
+            }),
+          }),
+        }),
+      });
+      const deliveredDeltas = (appendStreamEventMock.mock.calls as unknown[][])
+        .map((call) => call[1] as { type?: string; delta?: string })
+        .filter((event) => event.type === "delta")
+        .map((event) => event.delta)
+        .join("");
+      expect(deliveredDeltas).toBe(policyContent);
+      expect(deliveredDeltas).not.toContain(providerContent);
+      expect(attachmentCreates).toHaveLength(0);
+      expect(outboxCreates.filter((call) => call.data.eventType === CHAT_TO_MAIN_EVENTS.imageRequested))
+        .toHaveLength(0);
+      expect(appendLineMock).not.toHaveBeenCalled();
+    } finally {
+      restoreEnv();
+    }
+  });
+
   it("records post-commit memory promotion failure without misclassifying the provider", async () => {
     const restoreEnv = installDshRolloutEnv();
     try {
@@ -1546,7 +1660,7 @@ describe("chat generate agent image tool", () => {
       expect(assistantTrace()?.companion).toMatchObject({
         toolResult: {
           attemptId: retryCall.attemptId,
-          callId: retryCall.callId,
+          callId: durableCall.callId,
           name: retryCall.name,
           outcome: "succeeded",
           output: {
