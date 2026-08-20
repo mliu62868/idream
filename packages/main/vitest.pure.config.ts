@@ -28,6 +28,8 @@ export default defineConfig({
       "src/server/probe-age-verification.test.ts",
       "src/server/probe-generation-persistence.test.ts",
       "src/server/probe-chat-service.test.ts",
+      "src/server/dsh-image-tool-e2e-evidence.test.ts",
+      "src/server/probe-chat-dsh-image-tool.test.ts",
       "src/server/probe-sentry.test.ts",
       "src/server/readiness/chat-sse-probe.test.ts",
       "src/server/readiness/probe-report.test.ts",
