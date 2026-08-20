@@ -549,6 +549,13 @@ export interface ChatServiceProbeEvidence {
       status_?: string | null;
       error?: string | null;
     } | null;
+    rolloutEvidence?: {
+      ok?: boolean;
+      status?: number;
+      collectedAt?: string;
+      aggregate?: unknown;
+      error?: string | null;
+    } | null;
     cleanup?: {
       ok?: boolean;
       status?: number;
@@ -726,6 +733,11 @@ const chatServiceProbeEvidenceSchema: z.ZodType<ChatServiceProbeEvidence> = z.ob
       shadow: nullableObject(chatProbeDshShadowEvidenceShape),
     }),
     blockedInput: nullableObject({ ...chatProbeOperationShape, status_: nullableText }),
+    rolloutEvidence: nullableObject({
+      ...chatProbeOperationShape,
+      collectedAt: optionalText,
+      aggregate: z.unknown().optional(),
+    }),
     cleanup: nullableObject({
       ...chatProbeOperationShape,
       relationshipDeleted: flag,

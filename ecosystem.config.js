@@ -24,6 +24,9 @@
 // the pm2 daemon's cwd under `--only`, which silently breaks per-app .env loading.
 const { existsSync, readFileSync } = require("node:fs");
 const path = require("path");
+const {
+  resolveCompanionSidecarEnabled,
+} = require("./scripts/companion-sidecar-topology.cjs");
 const dir = (rel) => path.join(__dirname, rel);
 const runtimeMode = process.env.IDREAM_PM2_MODE ?? "development";
 if (runtimeMode !== "development" && runtimeMode !== "production") {
@@ -72,7 +75,10 @@ const genVideoProvider =
   localEnvValue(dir("packages/gen/.env"), "GEN_VIDEO_PROVIDER") ??
   "mock";
 const videoWorkerEnabled = genVideoProvider !== "mock";
-const companionSidecarEnabled = process.env.DSH_AGENT_ENABLED === "1";
+const companionSidecarEnabled = resolveCompanionSidecarEnabled(
+  process.env.DSH_AGENT_ENABLED,
+  localEnvValue(dir("packages/chat/.env"), "DSH_AGENT_ENABLED"),
+);
 const chatShadowEnabled =
   process.env.CHAT_COMPANION_DSH_SHADOW_ENABLED ??
   localEnvValue(

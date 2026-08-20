@@ -25,6 +25,7 @@ import { observeChatSseAcrossReconnects } from "./readiness/chat-sse-probe";
 type ProbeOptions = {
   report: string | null;
   serviceUrl: string | null;
+  internalToken: string | null;
   userId: string;
   characterId: string | null;
   expectedCompanionRuntime: "dsh" | null;
@@ -101,6 +102,33 @@ type CleanupEvidence = OperationEvidence & {
   sessionGone?: boolean;
 };
 
+type ProbeRolloutAggregate = {
+  schemaVersion: 1;
+  generatedAt?: string;
+  window: { from: string; to: string; durationMs?: number };
+  comparisonStatus?: string;
+  sampleEvidence?: unknown;
+  releaseDecision: { status: "not_evaluated"; reason?: string };
+  runtimes: {
+    native: { attempts: number };
+    dsh: { attempts: number };
+  };
+  dataScope: {
+    userAuthority: "core.chat_user_view";
+    scope: "internal-audit";
+    includedDataClass: "audit";
+    activeCustomersOnly: false;
+    exactAuditActorOnly: true;
+    userFilterApplied: true;
+    windowBasis: "message_versions.created_at";
+  };
+};
+
+type ProbeRolloutEvidence = OperationEvidence & {
+  collectedAt?: string;
+  aggregate?: ProbeRolloutAggregate;
+};
+
 // End-to-end conversation smoke (design §10.4): create → send → stream → get,
 // plus a no-memory smoke and a blocked-input smoke. Each sub-step carries its own
 // evidence so a failure is diagnosable from the report alone.
@@ -122,6 +150,7 @@ type ConversationEvidence = {
   regenerateAnchor: RegenerateAnchorEvidence;
   noMemory: NoMemoryEvidence;
   blockedInput: OperationEvidence & { status_?: string };
+  rolloutEvidence: ProbeRolloutEvidence;
   cleanup: CleanupEvidence;
   error?: string | null;
 };
@@ -166,7 +195,7 @@ export function projectDshCompanionEvidence(
   expect(runtime.profile === expectedProfile, "companionRuntime.profile");
   expect(runtime.private === (mode === "private"), "companionRuntime.private");
   expect(
-    assignment.policyVersion === 1 && assignment.reason === "allowlist",
+    validDshAssignment(assignment),
     "companionRuntime.assignment",
   );
   expect(dsh.memoryMode === mode, "dsh.memoryMode");
@@ -247,6 +276,22 @@ export function projectDshCompanionEvidence(
       ? null
       : `DSH ${mode} evidence failed: ${failures.join(", ")}`,
   });
+}
+
+function validDshAssignment(assignment: Record<string, unknown>): boolean {
+  if (assignment.policyVersion !== 1) return false;
+  if (assignment.reason === "allowlist") return true;
+  if (assignment.reason !== "threshold") return false;
+  const bucketBps = assignment.bucketBps;
+  const thresholdBps = assignment.thresholdBps;
+  return typeof bucketBps === "number" &&
+    typeof thresholdBps === "number" &&
+    Number.isInteger(bucketBps) &&
+    Number.isInteger(thresholdBps) &&
+    bucketBps >= 0 &&
+    thresholdBps > 0 &&
+    thresholdBps <= 10_000 &&
+    bucketBps < thresholdBps;
 }
 
 /**
@@ -363,6 +408,7 @@ function readOptions(): ProbeOptions {
   return {
     report: probeReportPath("chatServiceProbe"),
     serviceUrl: probeCliArg("service-url") ?? process.env.CHAT_SERVICE_URL ?? null,
+    internalToken: process.env.INTERNAL_TOKEN ?? null,
     userId: probeCliArg("user-id") ?? process.env.CHAT_SERVICE_PROBE_USER_ID ?? CHAT_PROBE_USER_ID,
     characterId: probeCliArg("character-id") ?? process.env.CHAT_SERVICE_PROBE_CHARACTER_ID ?? null,
     expectedCompanionRuntime: parseExpectedCompanionRuntime(
@@ -402,6 +448,7 @@ async function main() {
       userId: options.userId,
       characterId: options.characterId,
       secret: process.env.CHAT_BFF_SIGNING_SECRET ?? null,
+      internalToken: options.internalToken,
       expectedCompanionRuntime: options.expectedCompanionRuntime,
       expectedCompanionShadow: options.expectedCompanionShadow,
     });
@@ -431,6 +478,7 @@ function skippedConversation(reason: string): ConversationEvidence {
     regenerateAnchor: SKIPPED_OP,
     noMemory: SKIPPED_OP,
     blockedInput: SKIPPED_OP,
+    rolloutEvidence: SKIPPED_OP,
     cleanup: SKIPPED_OP,
     error: reason,
   };
@@ -470,6 +518,7 @@ export async function runProbe(input: {
   userId: string;
   characterId: string | null;
   secret: string | null;
+  internalToken?: string | null;
   expectedCompanionRuntime?: "dsh" | null;
   expectedCompanionShadow?: "dsh" | null;
 }): Promise<ChatServiceProbeReport> {
@@ -552,9 +601,11 @@ export async function runProbe(input: {
       conversation = await probeConversation({
         serviceUrl: input.serviceUrl,
         secret: input.secret,
+        internalToken: input.internalToken ?? null,
         userId: input.userId,
         characterId: character.id,
         runId: randomUUID(),
+        checkedAt,
         expectedCompanionRuntime: input.expectedCompanionRuntime ?? null,
         expectedCompanionShadow: input.expectedCompanionShadow ?? null,
       });
@@ -737,9 +788,11 @@ async function signedFetch(input: {
 async function probeConversation(input: {
   serviceUrl: string;
   secret: string;
+  internalToken: string | null;
   userId: string;
   characterId: string;
   runId: string;
+  checkedAt: string;
   expectedCompanionRuntime: "dsh" | null;
   expectedCompanionShadow: "dsh" | null;
 }): Promise<ConversationEvidence> {
@@ -754,6 +807,7 @@ async function probeConversation(input: {
     regenerateAnchor: { ok: false, error: "not attempted" },
     noMemory: { ok: false, error: "not attempted" },
     blockedInput: { ok: false, error: "not attempted" },
+    rolloutEvidence: { ok: false, error: "not attempted" },
     cleanup: { ok: false, error: "not attempted" },
   };
   let sessionId: string | null = null;
@@ -1185,6 +1239,17 @@ async function probeConversation(input: {
   } catch (error) {
     evidence.error = error instanceof Error ? error.message : String(error);
   } finally {
+    evidence.rolloutEvidence = await collectProbeRolloutEvidenceBeforeCleanup({
+      serviceUrl: input.serviceUrl,
+      internalToken: input.internalToken,
+      userId: input.userId,
+      checkedAt: input.checkedAt,
+      expectedCompanionRuntime: input.expectedCompanionRuntime,
+    });
+    if (!evidence.rolloutEvidence.ok && !evidence.error) {
+      evidence.error =
+        evidence.rolloutEvidence.error ?? "pre-cleanup Gate R evidence failed";
+    }
     evidence.cleanup = await cleanupCompletedProbeState({
       ...input,
       sessionId,
@@ -1205,6 +1270,119 @@ type ProbeSessionMessage = {
   scene?: unknown;
   runtimeTrace?: unknown;
 };
+
+/**
+ * SPEC: Gate E must snapshot Gate R's aggregate audit evidence before privacy
+ * cleanup removes the probe MessageVersions. The exact audit actor and window
+ * are part of the request authority; neither raw turns nor actor ids enter the
+ * returned report.
+ */
+export async function collectProbeRolloutEvidenceBeforeCleanup(input: {
+  serviceUrl: string;
+  internalToken: string | null;
+  userId: string;
+  checkedAt: string;
+  expectedCompanionRuntime: "dsh" | null;
+  now?: () => Date;
+  fetchImpl?: typeof fetch;
+}): Promise<ProbeRolloutEvidence> {
+  const collectedAt = (input.now ?? (() => new Date()))().toISOString();
+  let status: number | undefined;
+  try {
+    if (input.userId !== CHAT_PROBE_USER_ID) {
+      throw new Error("Gate R internal-audit aggregate requires the dedicated probe actor");
+    }
+    if (!input.internalToken?.trim()) {
+      throw new Error("INTERNAL_TOKEN is required for pre-cleanup Gate R evidence");
+    }
+    if (!isIsoDate(input.checkedAt) || Date.parse(collectedAt) <= Date.parse(input.checkedAt)) {
+      throw new Error("Gate R internal-audit aggregate requires a non-empty checkedAt window");
+    }
+    const url = new URL(
+      "/internal/admin/companion-rollout-evidence",
+      normalizedBase(input.serviceUrl),
+    );
+    url.searchParams.set("from", input.checkedAt);
+    url.searchParams.set("to", collectedAt);
+    url.searchParams.set("scope", "internal-audit");
+    url.searchParams.set("userId", CHAT_PROBE_USER_ID);
+    const response = await (input.fetchImpl ?? fetch)(url, {
+      method: "GET",
+      headers: { "x-internal-token": input.internalToken },
+    });
+    status = response.status;
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(`Gate R internal-audit aggregate returned HTTP ${response.status}`);
+    }
+    const aggregate = validateProbeRolloutAggregate(body, {
+      from: input.checkedAt,
+      to: collectedAt,
+      expectedRuntime:
+        input.expectedCompanionRuntime === "dsh" ? "dsh" : "native",
+    });
+    return {
+      ok: true,
+      status: response.status,
+      collectedAt,
+      aggregate,
+      error: null,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      ...(status === undefined ? {} : { status }),
+      collectedAt,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function validateProbeRolloutAggregate(
+  value: unknown,
+  expected: { from: string; to: string; expectedRuntime: "native" | "dsh" },
+): ProbeRolloutAggregate {
+  const aggregate = isRecord(value) ? value : {};
+  const window = isRecord(aggregate.window) ? aggregate.window : {};
+  const decision = isRecord(aggregate.releaseDecision)
+    ? aggregate.releaseDecision
+    : {};
+  const runtimes = isRecord(aggregate.runtimes) ? aggregate.runtimes : {};
+  const native = isRecord(runtimes.native) ? runtimes.native : {};
+  const dsh = isRecord(runtimes.dsh) ? runtimes.dsh : {};
+  const scope = isRecord(aggregate.dataScope) ? aggregate.dataScope : {};
+  const nativeAttempts = native.attempts;
+  const dshAttempts = dsh.attempts;
+  const expectedAttempts = expected.expectedRuntime === "dsh"
+    ? dshAttempts
+    : nativeAttempts;
+  const valid =
+    aggregate.schemaVersion === 1 &&
+    window.from === expected.from &&
+    window.to === expected.to &&
+    decision.status === "not_evaluated" &&
+    typeof nativeAttempts === "number" &&
+    Number.isInteger(nativeAttempts) &&
+    nativeAttempts >= 0 &&
+    typeof dshAttempts === "number" &&
+    Number.isInteger(dshAttempts) &&
+    dshAttempts >= 0 &&
+    typeof expectedAttempts === "number" &&
+    expectedAttempts > 0 &&
+    scope.userAuthority === "core.chat_user_view" &&
+    scope.scope === "internal-audit" &&
+    scope.includedDataClass === "audit" &&
+    scope.activeCustomersOnly === false &&
+    scope.exactAuditActorOnly === true &&
+    scope.userFilterApplied === true &&
+    scope.windowBasis === "message_versions.created_at";
+  if (!valid) {
+    throw new Error(
+      `Gate R internal-audit aggregate is not attributable to the probe window/runtime (${expected.expectedRuntime})`,
+    );
+  }
+  return value as ProbeRolloutAggregate;
+}
 
 async function cleanupExistingProbeState(input: {
   serviceUrl: string;
@@ -1649,6 +1827,7 @@ function finalizeConversation(evidence: ConversationEvidence): ConversationEvide
     evidence.regenerateAnchor.ok &&
     evidence.noMemory.ok &&
     evidence.blockedInput.ok &&
+    evidence.rolloutEvidence.ok &&
     evidence.cleanup.ok;
   return evidence;
 }

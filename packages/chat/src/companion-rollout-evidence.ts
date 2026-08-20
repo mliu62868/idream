@@ -11,6 +11,11 @@ import type {
 // INVARIANT: inputs and output contain aggregate telemetry only—no ids, content,
 // prompts, tool arguments, profile text, or provider secrets.
 export type EvidenceRuntime = "native" | "dsh";
+export type CompanionEvidenceScope = "customers" | "internal-audit";
+
+// INVARIANT: the signed Gate-E probe is the only audit actor whose turns may
+// enter Gate-R evidence. Customer telemetry remains the default authority.
+export const DEDICATED_CHAT_PROBE_USER_ID = "seed-chat-probe-user";
 
 export interface EvidenceTelemetry extends CompanionOperationalTelemetry {
   schemaVersion: 1;
@@ -113,12 +118,28 @@ interface RawOutboxEvidenceRow {
 // INTENT: query only the small aggregate telemetry envelope. Message content,
 // ids, prompts, tool arguments and outbox payloads never cross this boundary.
 export async function collectCompanionRolloutEvidence(
-  input: { window: { from: Date; to: Date }; userId?: string },
+  input: {
+    window: { from: Date; to: Date };
+    scope?: CompanionEvidenceScope;
+    userId?: string;
+  },
   prisma: ChatPrismaClient = chatPrisma,
 ) {
+  const scope = input.scope ?? "customers";
+  if (
+    scope === "internal-audit" &&
+    input.userId !== DEDICATED_CHAT_PROBE_USER_ID
+  ) {
+    throw new Error(
+      `internal-audit evidence requires userId=${DEDICATED_CHAT_PROBE_USER_ID}`,
+    );
+  }
   const userFilter = input.userId
     ? Prisma.sql`AND s.user_id = ${input.userId}`
     : Prisma.empty;
+  const audienceFilter = scope === "internal-audit"
+    ? Prisma.sql`AND u.data_class = 'audit'`
+    : Prisma.sql`AND u.data_class = 'customer'`;
   const primaryTelemetry = Prisma.sql`mv.runtime_trace -> 'primaryTelemetry'`;
   // INVARIANT: memory_extracted_attempt is the current Message watermark, not
   // a historical attempt ledger. Only the selected current sent attempt can be
@@ -145,7 +166,7 @@ export async function collectCompanionRolloutEvidence(
       AND ${primaryTelemetry} ->> 'runtime' IN ('native', 'dsh')
       AND u.status = 'active'
       AND u.deleted_at IS NULL
-      AND u.data_class = 'customer'
+      ${audienceFilter}
       ${userFilter}
   `);
   const evidenceAttempts: AttemptEvidenceRow[] = [];
@@ -176,7 +197,7 @@ export async function collectCompanionRolloutEvidence(
         AND ${primaryTelemetry} ->> 'runtime' IN ('native', 'dsh')
         AND u.status = 'active'
         AND u.deleted_at IS NULL
-        AND u.data_class = 'customer'
+        ${audienceFilter}
         ${userFilter}
     )
     SELECT
@@ -221,7 +242,10 @@ export async function collectCompanionRolloutEvidence(
     }),
     dataScope: {
       userAuthority: "core.chat_user_view",
-      activeCustomersOnly: true,
+      scope,
+      includedDataClass: scope === "internal-audit" ? "audit" : "customer",
+      activeCustomersOnly: scope === "customers",
+      exactAuditActorOnly: scope === "internal-audit",
       userFilterApplied: input.userId !== undefined,
       windowBasis: "message_versions.created_at",
     },

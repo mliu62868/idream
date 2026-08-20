@@ -1,16 +1,39 @@
 const { spawnSync } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
+const { existsSync, readFileSync } = require("node:fs");
 const path = require("node:path");
 const {
   loadGenEnvironment,
 } = require("./check-gen-image-worker-ownership.cjs");
+const {
+  resolveCompanionSidecarEnabled,
+} = require("./companion-sidecar-topology.cjs");
 const { computeSourceRevision } = require("./source-revision.cjs");
 
 const repoRoot = path.resolve(__dirname, "..");
 const productionGateCwd = path.join(repoRoot, "packages/main");
 const productionGenCwd = path.join(repoRoot, "packages/gen");
 const productionChatAgentCwd = path.join(repoRoot, "packages/chat-agent");
-const companionSidecarEnabled = process.env.DSH_AGENT_ENABLED === "1";
+
+function localEnvValue(envPath, key) {
+  if (!existsSync(envPath)) return undefined;
+  for (const line of readFileSync(envPath, "utf8").split(/\r?\n/)) {
+    const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)?\s*$/);
+    if (!match || match[1] !== key) continue;
+    const rawValue = (match[2] ?? "").trim();
+    const quote = rawValue[0];
+    if ((quote === '"' || quote === "'") && rawValue.at(-1) === quote) {
+      return rawValue.slice(1, -1);
+    }
+    return rawValue.replace(/\s+#.*$/, "");
+  }
+  return undefined;
+}
+
+const companionSidecarEnabled = resolveCompanionSidecarEnabled(
+  process.env.DSH_AGENT_ENABLED,
+  localEnvValue(path.join(repoRoot, "packages/chat/.env"), "DSH_AGENT_ENABLED"),
+);
 const genImageOwnershipProbe = path.join(
   repoRoot,
   "scripts/check-gen-image-worker-ownership.cjs",
@@ -776,6 +799,7 @@ module.exports = {
   productionProcessDefinition,
   productionDefinitionPlan,
   productionVideoWorkerCount,
+  resolveCompanionSidecarEnabled,
   repoRoot,
   matchesProductionProcessDefinition,
   resolveCurrentPm2Mode,

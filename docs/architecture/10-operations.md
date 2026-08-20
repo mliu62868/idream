@@ -311,6 +311,103 @@ restore_shadow
 trap - EXIT
 ```
 
+ADR-19 primary DSH validation is a separate gate. First prove the installed
+composition and the code-owned C/S/M/T contracts, then observe the already
+deployed relationship-sticky DSH route. `DSH_AGENT_ENABLED` uses the same
+shell-over-`packages/chat/.env` precedence as Chat; a plain gated restart must
+therefore retain the sidecar without an ad-hoc export on every invocation.
+
+```bash
+set -euo pipefail
+
+bun run dsh-companion:check
+bun run --filter @idream/shared test -- src/chat/companion-runtime.test.ts
+bun run --filter @idream/chat-agent test
+bun run --filter @idream/chat test -- \
+  src/companion-runtime-selection.test.ts \
+  src/companion-sidecar-readiness.test.ts \
+  src/generate-agent-tools.test.ts \
+  test/reliability.test.ts
+
+# This observes either an exact allowlist canary or a proven threshold cohort.
+# It never changes rollout state and fails closed if the selected relationship
+# is not actually DSH/igrep-dsh with the expected profile/provider evidence.
+bun run --filter @idream/main probe:chat-service -- \
+  --service-url http://127.0.0.1:3100 \
+  --user-id seed-chat-probe-user \
+  --character-id lola-moonstruck \
+  --expected-companion-runtime dsh \
+  --report .tmp/launch-chat-dsh-probe.json
+```
+
+Gate R is observed aggregate evidence, not an automatic release verdict. For a
+customer canary, collect the exact observation window through Chat's internal
+read-only endpoint. The endpoint continues to return
+`releaseDecision.status=not_evaluated`; operators must compare the resulting
+native/DSH samples against the approved baseline thresholds and observation
+window before any Phase-6 deletion.
+
+```bash
+set -euo pipefail
+
+: "${GATE_R_FROM:?set the approved baseline window start (ISO-8601)}"
+: "${GATE_R_TO:?set the approved baseline window end (ISO-8601)}"
+mkdir -p .tmp
+
+node --env-file=packages/main/.env --input-type=module \
+  - "$GATE_R_FROM" "$GATE_R_TO" <<'NODE' > .tmp/dsh-gate-r-customer.json
+const [from, to] = process.argv.slice(2);
+if (!process.env.INTERNAL_TOKEN) throw new Error("INTERNAL_TOKEN is required");
+const url = new URL(
+  "/internal/admin/companion-rollout-evidence",
+  "http://127.0.0.1:3100",
+);
+url.searchParams.set("from", from);
+url.searchParams.set("to", to);
+url.searchParams.set("scope", "customers");
+const response = await fetch(url, {
+  headers: { "x-internal-token": process.env.INTERNAL_TOKEN },
+});
+const body = await response.json();
+if (!response.ok) throw new Error(`Gate R collector HTTP ${response.status}`);
+if (body.dataScope?.scope !== "customers") {
+  throw new Error("Gate R collector returned the wrong audience scope");
+}
+if (body.window?.from !== from || body.window?.to !== to) {
+  throw new Error("Gate R collector returned the wrong observation window");
+}
+if (
+  body.comparisonStatus !== "observed" ||
+  !(body.runtimes?.native?.attempts > 0) ||
+  !(body.runtimes?.dsh?.attempts > 0)
+) {
+  throw new Error("Gate R requires non-empty native baseline and DSH canary samples");
+}
+if (body.releaseDecision?.status !== "not_evaluated") {
+  throw new Error("Gate R collector must not manufacture a release decision");
+}
+process.stdout.write(`${JSON.stringify(body, null, 2)}\n`);
+NODE
+```
+
+`scope=internal-audit` is deliberately narrower: it is accepted only with
+`userId=seed-chat-probe-user` and never mixes audit turns into customer facts.
+The signed probe uses `INTERNAL_TOKEN` to capture that aggregate automatically
+from its `checkedAt` boundary immediately before final cleanup, verifies a
+non-zero sample for the expected primary runtime, and embeds it at
+`conversation.rolloutEvidence.aggregate`. Collection failure fails the probe;
+the session and MessageVersions are still deleted. A separate post-probe
+zero-sample query is therefore expected and is not evidence. The customer
+observation window above is unaffected because normal customer canary history
+remains under product retention authority.
+
+Local loopback oMLX is self-hosted, but the current attempt trace does not yet
+persist a verified cost authority. Gate R must therefore keep
+`providerCost.status=insufficient`; token usage is only a local capacity proxy,
+not public cost proof. Do not relabel it `not_applicable_self_hosted` until both
+the persisted attempt trace and runtime readiness independently prove the
+self-hosted loopback authority. No synthetic currency amount is permitted.
+
 Sentry readiness requires four distinct, fresh reports from the package-bound
 `probe:sentry` entrypoints. The CLI intentionally rejects a relabeled `--service`;
 each package loads its own SDK/runtime and binds the captured event plus resolved

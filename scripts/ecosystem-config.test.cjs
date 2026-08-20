@@ -17,6 +17,7 @@ const {
   productionProcessDefinition,
   productionDefinitionPlan,
   productionVideoWorkerCount,
+  resolveCompanionSidecarEnabled,
   matchesProductionProcessDefinition,
   resolveCurrentPm2Mode,
   runPm2Ecosystem,
@@ -226,6 +227,17 @@ test("the DSH companion sidecar is explicit, single-instance and starts before C
   assert.equal(sidecar.instances, 1);
   assert.equal(sidecar.exec_mode, "fork");
   assert.ok(enabled.apps.indexOf(sidecar) < enabled.apps.indexOf(chat));
+});
+
+test("the DSH topology switch uses shell-over-Chat-env authority and rejects drift", () => {
+  assert.equal(resolveCompanionSidecarEnabled(undefined, undefined), false);
+  assert.equal(resolveCompanionSidecarEnabled(undefined, "1"), true);
+  assert.equal(resolveCompanionSidecarEnabled("0", "1"), false);
+  assert.equal(resolveCompanionSidecarEnabled("1", "0"), true);
+  assert.throws(
+    () => resolveCompanionSidecarEnabled(undefined, "true"),
+    /DSH_AGENT_ENABLED.*0 or 1/,
+  );
 });
 
 test("the gated PM2 wrapper projects the explicit Chat Shadow switch", () => {

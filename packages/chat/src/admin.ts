@@ -11,7 +11,10 @@ import { chatPrisma } from "./db.js";
 import { env } from "./env.js";
 import { FREE_DAILY_MESSAGES } from "@idream/shared/chat/limits";
 import { pipelineEndpoint } from "@idream/shared/env";
-import { collectCompanionRolloutEvidence } from "./companion-rollout-evidence.js";
+import {
+  DEDICATED_CHAT_PROBE_USER_ID,
+  collectCompanionRolloutEvidence,
+} from "./companion-rollout-evidence.js";
 
 export interface ChatAdminRequest {
   method: string;
@@ -418,6 +421,7 @@ const moderationEventsQuerySchema = z.object({
 const companionRolloutEvidenceQuerySchema = z.object({
   from: z.string().datetime({ offset: true }).transform((value) => new Date(value)),
   to: z.string().datetime({ offset: true }).transform((value) => new Date(value)),
+  scope: z.enum(["customers", "internal-audit"]).default("customers"),
   userId: z.string().trim().min(1).max(200).optional(),
 }).strict().superRefine((query, context) => {
   if (query.from >= query.to) {
@@ -427,12 +431,24 @@ const companionRolloutEvidenceQuerySchema = z.object({
       message: "to must be later than from",
     });
   }
+  if (
+    query.scope === "internal-audit" &&
+    query.userId !== DEDICATED_CHAT_PROBE_USER_ID
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["userId"],
+      message:
+        `internal-audit scope requires userId=${DEDICATED_CHAT_PROBE_USER_ID}`,
+    });
+  }
 });
 
 async function companionRolloutEvidence(rawQuery?: Record<string, string>) {
   const query = companionRolloutEvidenceQuerySchema.parse(rawQuery ?? {});
   return collectCompanionRolloutEvidence({
     window: { from: query.from, to: query.to },
+    scope: query.scope,
     ...(query.userId ? { userId: query.userId } : {}),
   });
 }

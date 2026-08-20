@@ -10,6 +10,8 @@ const AUTHORITY_USER = `${P}u1`;
 const ORPHAN_USER = `${P}u2`;
 const PAGINATION_USER = `${P}u3`;
 const AUDIT_USER = `${P}audit`;
+const DEDICATED_PROBE_USER = "seed-chat-probe-user";
+const DEDICATED_PROBE_EMAIL = `${P}probe@chat-admin.test`;
 const EVIDENCE_BASE = new Date(Date.now() - 60_000);
 const superPool = new Pool({ connectionString: process.env.CHAT_TEST_SUPER_URL });
 
@@ -20,7 +22,10 @@ async function purge() {
   await chatPrisma.chatUsage.deleteMany({ where: { id: { startsWith: P } } });
   await chatPrisma.message.deleteMany({ where: { id: { startsWith: P } } });
   await chatPrisma.chatSession.deleteMany({ where: { id: { startsWith: P } } });
-  await superPool.query(`DELETE FROM public.users WHERE id LIKE $1`, [`${P}%`]);
+  await superPool.query(
+    `DELETE FROM public.users WHERE id LIKE $1 OR (id = $2 AND email = $3)`,
+    [`${P}%`, DEDICATED_PROBE_USER, DEDICATED_PROBE_EMAIL],
+  );
 }
 
 function today() {
@@ -45,8 +50,15 @@ beforeAll(async () => {
   await superPool.query(
     `INSERT INTO public.users
        (id,email,status,"dataClass","createdAt","updatedAt")
-     VALUES ($1,$2,'active','audit',now(),now())`,
-    [AUDIT_USER, `${AUDIT_USER}@chat-admin.test`],
+     VALUES
+       ($1,$2,'active','audit',now(),now()),
+       ($3,$4,'active','audit',now(),now())`,
+    [
+      AUDIT_USER,
+      `${AUDIT_USER}@chat-admin.test`,
+      DEDICATED_PROBE_USER,
+      DEDICATED_PROBE_EMAIL,
+    ],
   );
   await chatPrisma.chatSession.create({
     data: {
@@ -55,6 +67,14 @@ beforeAll(async () => {
       characterId: `${P}c1`,
       status: "active",
       lastMessageAt: new Date("2099-01-01T00:00:00.000Z"),
+    },
+  });
+  await chatPrisma.chatSession.create({
+    data: {
+      id: `${P}s-dedicated-probe`,
+      userId: DEDICATED_PROBE_USER,
+      characterId: `${P}c-dedicated-probe`,
+      status: "active",
     },
   });
   await chatPrisma.chatSession.create({
@@ -174,6 +194,44 @@ beforeAll(async () => {
       },
     });
   }
+  const probeTelemetry = {
+    schemaVersion: 1,
+    runtime: "dsh",
+    startedAt: new Date(EVIDENCE_BASE.getTime() + 4_000).toISOString(),
+    terminalStatus: "sent",
+    truncated: false,
+    provider: "local-openai",
+    model: "probe-model",
+    retryCount: 0,
+    sseTerminal: "done",
+    memory: { outcome: "ingested" },
+  } as const;
+  await chatPrisma.message.create({
+    data: {
+      id: `${P}m-dedicated-probe`,
+      sessionId: `${P}s-dedicated-probe`,
+      role: "assistant",
+      content: SECRET,
+      status: "sent",
+      safetyStatus: "passed",
+      attempt: 1,
+      memoryAuthority: "enabled",
+      memoryExtractedAttempt: 1,
+      runtimeTrace: { primaryTelemetry: probeTelemetry },
+      createdAt: new Date(EVIDENCE_BASE.getTime() + 4_000),
+    },
+  });
+  await chatPrisma.messageVersion.create({
+    data: {
+      id: `${P}mv-dedicated-probe`,
+      messageId: `${P}m-dedicated-probe`,
+      content: SECRET,
+      selected: true,
+      attempt: 1,
+      runtimeTrace: { primaryTelemetry: probeTelemetry },
+      createdAt: new Date(EVIDENCE_BASE.getTime() + 4_000),
+    },
+  });
   await chatPrisma.chatOutboxEvent.create({
     data: {
       id: `${P}outbox-native`,
@@ -396,7 +454,10 @@ describe("chat internal admin api", () => {
       releaseDecision: { status: "not_evaluated" },
       dataScope: {
         userAuthority: "core.chat_user_view",
+        scope: "customers",
+        includedDataClass: "customer",
         activeCustomersOnly: true,
+        exactAuditActorOnly: false,
         userFilterApplied: true,
         windowBasis: "message_versions.created_at",
       },
@@ -502,6 +563,50 @@ describe("chat internal admin api", () => {
         to: "2026-08-19T00:00:00.000Z",
       },
     })).resolves.toMatchObject({ status: 400 });
+  });
+
+  it("admits only the exact dedicated actor into internal-audit Gate R evidence", async () => {
+    const window = {
+      from: new Date(EVIDENCE_BASE.getTime() - 1_000).toISOString(),
+      to: new Date(EVIDENCE_BASE.getTime() + 60_000).toISOString(),
+    };
+    await expect(dispatchChatAdmin({
+      method: "GET",
+      path: "/internal/admin/companion-rollout-evidence",
+      query: { ...window, scope: "internal-audit" },
+    })).resolves.toMatchObject({ status: 400 });
+    await expect(dispatchChatAdmin({
+      method: "GET",
+      path: "/internal/admin/companion-rollout-evidence",
+      query: { ...window, scope: "internal-audit", userId: AUDIT_USER },
+    })).resolves.toMatchObject({ status: 400 });
+
+    const accepted = await dispatchChatAdmin({
+      method: "GET",
+      path: "/internal/admin/companion-rollout-evidence",
+      query: {
+        ...window,
+        scope: "internal-audit",
+        userId: DEDICATED_PROBE_USER,
+      },
+    });
+    expect(accepted).toMatchObject({
+      status: 200,
+      body: {
+        releaseDecision: { status: "not_evaluated" },
+        dataScope: {
+          scope: "internal-audit",
+          includedDataClass: "audit",
+          activeCustomersOnly: false,
+          exactAuditActorOnly: true,
+          userFilterApplied: true,
+        },
+        runtimes: { native: { attempts: 0 }, dsh: { attempts: 1 } },
+      },
+    });
+    const serialized = JSON.stringify(accepted.body);
+    expect(serialized).not.toContain(DEDICATED_PROBE_USER);
+    expect(serialized).not.toContain(SECRET);
   });
 
   it("sessions are metadata-only (no plaintext content) and filter by user", async () => {
