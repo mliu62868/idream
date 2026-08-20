@@ -1,5 +1,5 @@
 import {
-  companionToolCallSchema,
+  companionToolReservationSchema,
   companionToolResultSchema,
 } from "@idream/shared";
 
@@ -61,7 +61,7 @@ export function projectDshImageToolTrace(
   const companion = record(trace.companion);
   const execution = record(companion.execution);
   const primaryTelemetry = record(trace.primaryTelemetry);
-  const intentResult = companionToolCallSchema.safeParse(trace.companionTool);
+  const intentResult = companionToolReservationSchema.safeParse(trace.companionTool);
   const toolResult = companionToolResultSchema.safeParse(companion.toolResult);
   const expectedAttemptId = `${expected.assistantMessageId}:${expected.attempt}`;
   const intent = intentResult.success &&

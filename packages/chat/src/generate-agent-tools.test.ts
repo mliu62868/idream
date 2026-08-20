@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import { CHAT_TO_MAIN_EVENTS } from "@idream/shared/contracts";
 import { releasedKnowledgeDigest } from "@idream/shared/chat/companion-runtime";
 import type { ChatPrismaClient } from "./db.js";
@@ -71,6 +72,21 @@ const {
 } = await import("./generate.js");
 
 type CreateCall = { data: Record<string, unknown>; where?: Record<string, unknown> };
+
+function stableJsonForTest(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJsonForTest).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${stableJsonForTest(entry)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+function toolArgumentsDigest(value: unknown): string {
+  return createHash("sha256").update(stableJsonForTest(value)).digest("hex");
+}
 
 /** The one in-transaction write that carries the turn's terminal ledger row. */
 function finalizedMessageUpdate(
@@ -547,7 +563,7 @@ describe("chat generate agent image tool", () => {
         attemptId: "msg_assistant:1",
         callId: "call-reserved",
         name: "generate_image_async",
-        arguments: { prompt: "Mira beside the observatory after a restart" },
+        argumentsDigest: "a".repeat(64),
       },
     };
     const input = {
@@ -1394,12 +1410,14 @@ describe("chat generate agent image tool", () => {
       },
     };
     const durableReservation = {
-      ...reservation,
-      arguments: {
+      attemptId: reservation.attemptId,
+      callId: reservation.callId,
+      name: reservation.name,
+      argumentsDigest: toolArgumentsDigest({
         ...reservation.arguments,
         orientation: "4:5",
         outputCount: 1,
-      },
+      }),
     };
     try {
       let replayResult: unknown;
@@ -1623,8 +1641,10 @@ describe("chat generate agent image tool", () => {
       )).resolves.toEqual({ status: "sent" });
 
       const durableCall = {
-        ...(crashPoint === "before_intent" ? retryCall : firstCall),
-        arguments: retryCall.arguments,
+        attemptId: retryCall.attemptId,
+        callId: crashPoint === "before_intent" ? retryCall.callId : firstCall.callId,
+        name: retryCall.name,
+        argumentsDigest: toolArgumentsDigest(retryCall.arguments),
       };
       expect(toolResults).toEqual(
         crashPoint === "before_intent"
@@ -1657,6 +1677,8 @@ describe("chat generate agent image tool", () => {
       expect(messageReservation?.data.runtimeTrace).toMatchObject({ companionTool: durableCall });
       expect(versionReservation?.data.runtimeTrace).toMatchObject({ companionTool: durableCall });
       expect(assistantTrace()?.companionTool).toEqual(durableCall);
+      expect(JSON.stringify(assistantTrace())).not.toContain(firstCall.arguments.prompt);
+      expect(JSON.stringify(assistantTrace())).not.toContain(firstCall.arguments.caption);
       expect(assistantTrace()?.companion).toMatchObject({
         toolResult: {
           attemptId: retryCall.attemptId,

@@ -216,11 +216,7 @@ describe("signed DSH image-tool probe orchestration", () => {
               companionRuntime: { runtime: "dsh", memoryBackend: "igrep-dsh" },
               companionTool: {
                 ...generateIdentity,
-                arguments: {
-                  prompt: "private generated image prompt",
-                  orientation: "4:5",
-                  outputCount: 1,
-                },
+                argumentsDigest: "a".repeat(64),
               },
               companion: {
                 execution: { steps: 2, toolCalls: 1 },

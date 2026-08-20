@@ -66,7 +66,7 @@ import {
   COMPANION_DSH_VERSION,
   COMPANION_IGREP_PLUGIN_VERSION,
   COMPANION_IGREP_VERSION,
-  companionToolCallSchema,
+  companionToolReservationSchema,
   type CompanionCommitAck,
   type CompanionEvent,
   type CompanionInvocation,
@@ -737,7 +737,7 @@ async function processDshCompanionTurn(
     string,
     { fingerprint: string; result: CompanionToolResult }
   >();
-  const durableToolReservation = companionToolCallSchema.safeParse(
+  const durableToolReservation = companionToolReservationSchema.safeParse(
     runtimeTraceFacts.companionTool,
   );
   let commitAck: CompanionCommitAck | null = null;
@@ -786,10 +786,13 @@ async function processDshCompanionTurn(
       };
     }
     const parsedCall = findAgentTool(call.name)?.parseCall(call.arguments) ?? null;
+    const argumentsDigest = parsedCall
+      ? createHash("sha256").update(stableJson(parsedCall.arguments)).digest("hex")
+      : null;
     const fingerprint = stableJson({
       attemptId: call.attemptId,
       name: call.name,
-      arguments: parsedCall?.arguments ?? call.arguments,
+      argumentsDigest,
     });
     const previous = toolResults.get(call.callId);
     if (previous) {
@@ -834,10 +837,20 @@ async function processDshCompanionTurn(
           },
         };
       }
-      const replayed = findAgentTool(reserved.name)?.parseCall(reserved.arguments);
-      if (!replayed) {
-        throw new Error("durable companion tool reservation failed Chat schema validation");
+      if (!parsedCall || reserved.name !== call.name || argumentsDigest === null) {
+        return {
+          attemptId: call.attemptId,
+          callId: call.callId,
+          name: call.name,
+          outcome: "failed",
+          error: {
+            code: "invalid_tool_arguments",
+            message: "tool arguments failed the Chat-owned schema",
+            retryable: false,
+          },
+        };
       }
+      const replayed = parsedCall;
       const effectPin = parseImageToolEffectPin(
         runtimeTraceFacts.companionToolEffect,
         reserved,
@@ -851,7 +864,7 @@ async function processDshCompanionTurn(
       const reservedFingerprint = stableJson({
         attemptId: reserved.attemptId,
         name: reserved.name,
-        arguments: replayed.arguments,
+        argumentsDigest: reserved.argumentsDigest,
       });
       if (reservedFingerprint !== fingerprint) {
         return {
@@ -922,7 +935,7 @@ async function processDshCompanionTurn(
         attemptId: call.attemptId,
         callId: call.callId,
         name: parsed.name,
-        arguments: parsed.arguments,
+        argumentsDigest: argumentsDigest!,
       };
       const trace = JSON.parse(JSON.stringify({
         ...runtimeTraceFacts,

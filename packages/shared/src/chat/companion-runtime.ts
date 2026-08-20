@@ -475,6 +475,17 @@ export const companionToolCallSchema = z.discriminatedUnion("name", [
     .strict(),
 ]);
 
+// INVARIANT: durable/public attempt traces contain only effect identity and a
+// canonical argument digest. Raw prompts, captions and edit instructions stay
+// inside the live Chat↔sidecar call boundary.
+export const companionToolReservationSchema = z
+  .object({
+    ...companionToolIdentity,
+    name: companionToolNameSchema,
+    argumentsDigest: sha256Schema,
+  })
+  .strict();
+
 const companionToolResultIdentity = {
   ...companionToolIdentity,
   name: companionToolNameSchema,
@@ -916,6 +927,7 @@ export type CompanionMemoryCutoverSidecarProof = z.infer<
 export type CompanionInvocation = z.infer<typeof companionInvocationSchema>;
 export type CompanionToolName = z.infer<typeof companionToolNameSchema>;
 export type CompanionToolCall = z.infer<typeof companionToolCallSchema>;
+export type CompanionToolReservation = z.infer<typeof companionToolReservationSchema>;
 export type CompanionToolResult = z.infer<typeof companionToolResultSchema>;
 export type CompanionUsage = z.infer<typeof companionUsageSchema>;
 export type CompanionTerminalCandidate = z.infer<

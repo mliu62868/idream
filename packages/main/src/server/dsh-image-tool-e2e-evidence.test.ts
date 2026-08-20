@@ -37,17 +37,7 @@ function completedTrace(name: DshImageToolName) {
       attemptId: value.attemptId,
       callId: value.callId,
       name,
-      arguments: name === "generate_image_async"
-        ? {
-            prompt: "PRIVATE PROMPT MUST NEVER ENTER THE REPORT",
-            caption: "PRIVATE CAPTION MUST NEVER ENTER THE REPORT",
-            orientation: "4:5",
-            outputCount: 1,
-          }
-        : {
-            instruction: "PRIVATE EDIT INSTRUCTION MUST NEVER ENTER THE REPORT",
-            caption: "PRIVATE EDIT CAPTION MUST NEVER ENTER THE REPORT",
-          },
+      argumentsDigest: "a".repeat(64),
     },
     companion: {
       toolResult: {

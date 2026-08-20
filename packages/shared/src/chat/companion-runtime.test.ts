@@ -15,6 +15,7 @@ import {
   companionReadinessSchema,
   companionTerminalCandidateSchema,
   companionToolCallSchema,
+  companionToolReservationSchema,
   companionToolResultSchema,
   companionWorkspaceRebuildSchema,
   decodeCompanionNdjsonFrame,
@@ -336,6 +337,20 @@ describe("companion runtime stable wire contract", () => {
       ]);
     },
   );
+
+  it("keeps durable tool reservations content-free", () => {
+    const reservation = companionToolReservationSchema.parse({
+      attemptId: "attempt-1",
+      callId: "call-7",
+      name: "generate_image_async",
+      argumentsDigest: "a".repeat(64),
+    });
+    expect(reservation).not.toHaveProperty("arguments");
+    expect(companionToolReservationSchema.safeParse({
+      ...reservation,
+      arguments: { prompt: "PRIVATE SENTINEL" },
+    }).success).toBe(false);
+  });
 
   it("accepts all and only the stable product event vocabulary", () => {
     const common = {
