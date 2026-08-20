@@ -440,7 +440,7 @@ async function collectLegSnapshot(input: CollectedTurn & {
     ? await prisma.inboundEventReceipt.findUnique({
         where: {
           sourceService_sourceEventId: {
-            sourceService: "chat_projection:chat",
+            sourceService: chatProjectionReceiptSourceService("chat"),
             sourceEventId: outboxId,
           },
         },
@@ -581,6 +581,10 @@ async function collectLegSnapshot(input: CollectedTurn & {
     mainCallbacks,
     persistenceOk: persistence?.ok === true,
   };
+}
+
+export function chatProjectionReceiptSourceService(sourceService: string): string {
+  return `main.product_projection:${sourceService.trim() || "chat"}`;
 }
 
 async function readChatRequestOutboxes(

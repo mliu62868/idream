@@ -317,6 +317,21 @@ describe("chat service DSH evidence", () => {
     expect(JSON.stringify(evidence)).not.toContain("must-not-leak");
   });
 
+  it("accepts the canonical rebuild outcome after durable memory repair", () => {
+    const trace = completedDshTrace() as Record<string, unknown>;
+    const telemetry = trace.primaryTelemetry as Record<string, unknown>;
+    telemetry.memory = { outcome: "ingested_rebuilt", settleLagMs: 34_000 };
+    const companion = trace.companion as Record<string, unknown>;
+    companion.memoryIngestOutcome = "ingested_rebuilt";
+
+    expect(projectDshCompanionEvidence(trace, "normal")).toMatchObject({
+      ok: true,
+      memoryOutcome: "ingested_rebuilt",
+      memoryIngestOutcome: "ingested_rebuilt",
+      error: null,
+    });
+  });
+
   it("fails closed when the started sidecar digest differs from the durable attempt pin", () => {
     const evidence = projectDshCompanionEvidence({
       companionRuntime: {

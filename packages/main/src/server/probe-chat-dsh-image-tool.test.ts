@@ -37,6 +37,7 @@ vi.mock("./probe-generation-persistence", () => ({
 }));
 
 import {
+  chatProjectionReceiptSourceService,
   classifyDshImageToolMainCleanup,
   dshImageToolProbeExitCode,
   runDshImageToolProbe,
@@ -91,6 +92,12 @@ beforeEach(() => {
 });
 
 describe("signed DSH image-tool probe orchestration", () => {
+  it("uses the product projector receipt namespace", () => {
+    expect(chatProjectionReceiptSourceService("chat")).toBe(
+      "main.product_projection:chat",
+    );
+  });
+
   it("treats physical RecentChat deletion and redaction metadata as cleanup authority", () => {
     expect(classifyDshImageToolMainCleanup({
       recentStatus: null,

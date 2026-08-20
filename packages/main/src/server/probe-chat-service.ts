@@ -186,13 +186,20 @@ export function projectDshCompanionEvidence(
 
   if (mode === "normal") {
     expect(companion.profile === expectedProfile, "companion.profile");
-    expect(memory.outcome === "ingested", "primaryTelemetry.memory.outcome");
+    expect(
+      memory.outcome === "ingested" || memory.outcome === "ingested_rebuilt",
+      "primaryTelemetry.memory.outcome",
+    );
     expect(
       typeof memory.settleLagMs === "number" &&
         Number.isFinite(memory.settleLagMs) && memory.settleLagMs >= 0,
       "primaryTelemetry.memory.settleLagMs",
     );
-    expect(companion.memoryIngestOutcome === "ingested", "companion.memoryIngestOutcome");
+    expect(
+      companion.memoryIngestOutcome === "ingested" ||
+        companion.memoryIngestOutcome === "ingested_rebuilt",
+      "companion.memoryIngestOutcome",
+    );
     expect(isIsoDate(companion.memoryIngestSettledAt), "companion.memoryIngestSettledAt");
     expect(
       typeof sidecar.instanceId === "string" &&
