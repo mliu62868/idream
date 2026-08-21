@@ -192,6 +192,7 @@ const VERIFIED_VIDEO = {
   height: 1152,
   durationSeconds: 4,
   framesPerSecond: 25,
+  frameCount: 100,
   hasAudio: true,
 };
 

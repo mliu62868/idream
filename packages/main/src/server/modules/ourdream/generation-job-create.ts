@@ -121,6 +121,7 @@ export async function createGenerationJobForUser(
     requestedLookReferenceAssetId,
     requestedSourceImageAssetId,
     selectedLook,
+    videoRecipe,
     workflowDescriptor,
   } = plan;
   const lookSnapshot = selectedLook ? characterLookSnapshot(selectedLook) : null;
@@ -388,6 +389,7 @@ export async function createGenerationJobForUser(
     }
     const controls = pruneUndefined({
       ...body.controls,
+      seconds: videoRecipe?.durationSeconds ?? body.controls.seconds,
       orientation,
       model: profile.profileKey,
       profileId: profile.profileKey,

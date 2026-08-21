@@ -36,6 +36,8 @@ export const characterVideoProductionRecipe = {
   comfyWorkflowName: "iDream LTX 2.3 GTAnimation I2V",
   outputFilenamePrefix: "idream-ltx23-gtanimation",
   durationSeconds: 4,
+  expectedDurationSeconds: 4,
+  frameCount: null,
   fps: 25,
   width: 768,
   height: 1152,
@@ -54,6 +56,7 @@ export const characterVideoProductionRecipe = {
   requiredEntitlement: "video_generation",
   concurrencyLimit: 1,
   rolloutPercent: 100,
+  explicitSelectionOnly: false,
   capabilities: [
     "video",
     "img2video",
@@ -63,6 +66,75 @@ export const characterVideoProductionRecipe = {
   ],
   evaluatorDimensions: ["artifact", "identity", "intent"],
 } as const;
+
+// SPEC: H3 is a second pinned production recipe, not a mutable variant of LTX.
+// INTENT: H3's trained frame grid starts at 124 frames, so the request remains
+// the integer five-second contract while output verification uses 124 / 24.
+export const minimaxH3VideoProductionRecipe = {
+  recipeVersion: 1,
+  profileKey: "profile_video_h3_v1",
+  modelLabel: "MiniMax H3 RedCraft A2A",
+  runner: "comfyui",
+  pipelineModel: "minimax-h3-redcraft-a2a-int8-convrot",
+  workflowKey: "minimax-h3-redcraft-i2v",
+  workflowVersion: 1,
+  sourceModelPath:
+    "diffusion_models/REDMix-MiniMaxH3-A2Ab1-pruned-int8-convrot-ComfyMCP.safetensors",
+  checkpointFilename:
+    "REDMix-MiniMaxH3-A2Ab1-pruned-int8-convrot-ComfyMCP.safetensors",
+  textEncoderFilename: "qwen3vl-32B-MiniMax-H3-Q4_K_M.gguf",
+  videoVaeFilename: "minimax_h3_video_vae_fp16.safetensors",
+  audioVaeFilename: "minimax_h3_audio_vae_fp32.safetensors",
+  shiftVideo: 12,
+  shiftAudio: 3,
+  modelFormat: "safetensors",
+  comfyWorkflowId: "4d20caa6-ecab-4c24-8be0-41ef1da93f34",
+  comfyWorkflowName: "iDream MiniMax H3 RedCraft I2V",
+  outputFilenamePrefix: "idream-minimax-h3-redcraft",
+  durationSeconds: 5,
+  expectedDurationSeconds: 124 / 24,
+  frameCount: 124,
+  fps: 24,
+  width: 512,
+  height: 512,
+  orientation: "1:1",
+  outputCount: 1,
+  sourceImageCount: 1,
+  steps: 8,
+  sampler: "euler",
+  scheduler: "simple",
+  cfgScale: 1,
+  workflowGraphSha256:
+    "bb2429ba7e32820a93fcc56cf2f1de4bd39ba21661093876b989b29d618dcba8",
+  requiredEntitlement: "video_generation",
+  concurrencyLimit: 1,
+  rolloutPercent: 100,
+  explicitSelectionOnly: true,
+  capabilities: [
+    "video",
+    "img2video",
+    "referenceImages",
+    "stableSeed",
+    "audio",
+  ],
+  evaluatorDimensions: ["artifact", "identity", "intent"],
+} as const;
+
+export const characterVideoProductionRecipes = [
+  characterVideoProductionRecipe,
+  minimaxH3VideoProductionRecipe,
+] as const;
+
+export type CharacterVideoProductionRecipe =
+  (typeof characterVideoProductionRecipes)[number];
+
+export function characterVideoProductionRecipeForWorkflow(
+  workflowKey: string,
+): CharacterVideoProductionRecipe | null {
+  return characterVideoProductionRecipes.find(
+    (recipe) => recipe.workflowKey === workflowKey,
+  ) ?? null;
+}
 export const characterRouteEvaluationOutputsPerDirection = 4;
 export const characterRouteEvaluationMatrixDirections = [
   {

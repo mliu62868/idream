@@ -4,8 +4,7 @@ import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import {
-  isProductionLtxVideoProfile,
-  PRODUCTION_LTX_VIDEO_PROFILE,
+  isProductionVideoProfile,
 } from "@/server/modules/generation/production-video-profile";
 import { isExecutableGenerationProfile } from "./generation-profile-catalog";
 
@@ -214,14 +213,6 @@ export async function selectGenerationProfile(
     mode,
     status: "active",
     enabled: true,
-    ...(mode === "video"
-      ? {
-          profileKey: PRODUCTION_LTX_VIDEO_PROFILE.profileKey,
-          runner: PRODUCTION_LTX_VIDEO_PROFILE.runner,
-          pipelineModel: PRODUCTION_LTX_VIDEO_PROFILE.pipelineModel,
-          workflowKey: PRODUCTION_LTX_VIDEO_PROFILE.workflowKey,
-        }
-      : {}),
     OR: requested
       ? [
           { profileKey: requested },
@@ -245,7 +236,7 @@ export async function selectGenerationProfile(
     mode === "video"
       ? automaticCandidates.filter(
           (candidate) =>
-            isProductionLtxVideoProfile(candidate) &&
+            isProductionVideoProfile(candidate) &&
             isExecutableGenerationProfile(candidate),
         )
       : catalogScope === "public_text_to_image"

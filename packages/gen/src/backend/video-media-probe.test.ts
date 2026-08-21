@@ -41,6 +41,7 @@ describe("createVideoMediaProbe", () => {
       height: 1152,
       durationSeconds: 4.04,
       framesPerSecond: 25,
+      frameCount: 101,
       hasAudio: true,
     });
     expect(runner).toHaveBeenCalledTimes(2);

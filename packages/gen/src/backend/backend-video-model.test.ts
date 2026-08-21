@@ -4,6 +4,7 @@ import { BackendInvocationError, type GenBackend } from "./types";
 import { workflowDescriptorSchema } from "./workflow";
 import type { VerifiedVideoMedia } from "./video-media-probe";
 import productionDescriptor from "../../workflows/ltx23-gtanimation-i2v.json";
+import h3ProductionDescriptor from "../../workflows/minimax-h3-redcraft-i2v.json";
 
 const MP4 = new Uint8Array([
   0x00, 0x00, 0x00, 0x18,
@@ -15,11 +16,13 @@ const MP4 = new Uint8Array([
 ]);
 
 const descriptor = workflowDescriptorSchema.parse(productionDescriptor);
+const h3Descriptor = workflowDescriptorSchema.parse(h3ProductionDescriptor);
 const VERIFIED_VIDEO: VerifiedVideoMedia = {
   width: 768,
   height: 1152,
   durationSeconds: 4.04,
   framesPerSecond: 25,
+  frameCount: 101,
   hasAudio: true,
 };
 
@@ -136,6 +139,110 @@ describe("BackendVideoModel", () => {
         },
       }),
     );
+  });
+
+  it("binds MiniMax H3 image-to-video to its native 124-frame envelope", async () => {
+    const verifiedH3: VerifiedVideoMedia = {
+      width: 512,
+      height: 512,
+      durationSeconds: 124 / 24,
+      framesPerSecond: 24,
+      frameCount: 124,
+      hasAudio: true,
+    };
+    const stub = backend(verifiedH3);
+    const model = new BackendVideoModel({
+      resolveForModel: vi.fn(() => ({
+        backend: stub,
+        descriptor: h3Descriptor,
+      })),
+    });
+
+    const result = await model.generate({
+      prompt: "She smiles and moves naturally.",
+      seconds: 5,
+      seed: "42",
+      model: "minimax-h3-redcraft-i2v",
+      requestId: "request-h3-video-1",
+      controls: {
+        workflowKey: "minimax-h3-redcraft-i2v",
+        workflowVersion: 1,
+        width: 512,
+        height: 512,
+        fps: 24,
+      },
+      referenceImages: [{
+        assetId: "source-h3-1",
+        role: "source_image",
+        b64Json: "aW1hZ2U=",
+      }],
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        asset: {
+          seconds: 124 / 24,
+          contentType: "video/mp4",
+        },
+      },
+    });
+    expect(stub.submit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        descriptor: h3Descriptor,
+        slots: expect.objectContaining({
+          prompt: "She smiles and moves naturally.",
+          width: 512,
+          height: 512,
+          fps: 24,
+          length: 124,
+          seed: 42,
+        }),
+      }),
+    );
+  });
+
+  it("rejects MiniMax H3 output outside its exact 124-frame grid", async () => {
+    const stub = backend({
+      width: 512,
+      height: 512,
+      durationSeconds: 124 / 24,
+      framesPerSecond: 24,
+      frameCount: 123,
+      hasAudio: true,
+    });
+    const model = new BackendVideoModel({
+      resolveForModel: vi.fn(() => ({
+        backend: stub,
+        descriptor: h3Descriptor,
+      })),
+    });
+
+    const result = await model.generate({
+      prompt: "She moves naturally.",
+      seconds: 5,
+      model: "minimax-h3-redcraft-i2v",
+      controls: {
+        workflowKey: "minimax-h3-redcraft-i2v",
+        workflowVersion: 1,
+        width: 512,
+        height: 512,
+      },
+      referenceImages: [{
+        assetId: "source-h3-1",
+        role: "source_image",
+        b64Json: "aW1hZ2U=",
+      }],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "invalid_video_output",
+        message: expect.stringContaining("123 frames; expected 124"),
+        outcome: "definitive",
+      },
+    });
   });
 
   it.each([

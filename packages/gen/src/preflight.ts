@@ -21,6 +21,10 @@ import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { env } from "./env";
+import {
+  modelLoaderNodeForReference,
+  requiredComfyNodeTypes,
+} from "./preflight-model-reference";
 
 type Descriptor = {
   workflowKey?: string;
@@ -32,13 +36,6 @@ type Problem = { workflow: string; detail: string };
 
 // ComfyUI exposes each loader's selectable files through /object_info, keyed by
 // the input name. That listing is authority on what the runner can actually see.
-const SLOT_TO_NODE: Record<string, string> = {
-  ckpt_name: "CheckpointLoaderSimple",
-  unet_name: "UNETLoader",
-  clip_name: "CLIPLoader",
-  vae_name: "VAELoader",
-};
-
 const FP8_DTYPES = new Set(["fp8_e4m3fn", "fp8_e4m3fn_fast", "fp8_e5m2"]);
 
 async function objectInfo(base: string, node: string): Promise<Record<string, unknown> | null> {
@@ -89,8 +86,10 @@ async function main() {
     }
   }
   const cache = new Map<string, Set<string> | null>();
+  const nodeTypeAvailability = new Map<string, boolean>();
   let needsFp8Shim = false;
   let checked = 0;
+  let checkedNodeTypes = 0;
 
   for (const file of files) {
     let descriptor: Descriptor;
@@ -102,13 +101,33 @@ async function main() {
     }
     if (descriptor.backendKind !== "comfyui" || !descriptor.apiPrompt) continue;
 
+    for (const nodeType of requiredComfyNodeTypes(descriptor.apiPrompt)) {
+      if (!nodeTypeAvailability.has(nodeType)) {
+        nodeTypeAvailability.set(
+          nodeType,
+          await objectInfo(base, nodeType) !== null,
+        );
+        checkedNodeTypes++;
+      }
+      if (!nodeTypeAvailability.get(nodeType)) {
+        problems.push({
+          workflow: file,
+          detail: `required node type ${nodeType} is not registered by ${base}`,
+        });
+      }
+    }
+
     for (const [nodeId, node] of Object.entries(descriptor.apiPrompt)) {
-      for (const [slot, nodeType] of Object.entries(SLOT_TO_NODE)) {
-        const value = node.inputs?.[slot];
+      for (const [slot, value] of Object.entries(node.inputs ?? {})) {
+        const nodeType = modelLoaderNodeForReference(node.class_type, slot);
+        if (!nodeType) continue;
         if (typeof value !== "string" || value === "") continue;
         checked++;
-        if (!cache.has(slot)) cache.set(slot, await availableFiles(base, nodeType, slot));
-        const available = cache.get(slot);
+        const cacheKey = `${nodeType}:${slot}`;
+        if (!cache.has(cacheKey)) {
+          cache.set(cacheKey, await availableFiles(base, nodeType, slot));
+        }
+        const available = cache.get(cacheKey);
         if (!available) {
           problems.push({ workflow: file, detail: `cannot read ${nodeType}.${slot} from ${base}` });
           continue;
@@ -161,7 +180,7 @@ async function main() {
 
   for (const p of problems) process.stdout.write(`FAIL  ${p.workflow}: ${p.detail}\n`);
   process.stdout.write(
-    `preflight: ${files.length} descriptors, ${checked} model refs checked, ${problems.length} problem(s)\n`,
+    `preflight: ${files.length} descriptors, ${checkedNodeTypes} node types and ${checked} model refs checked, ${problems.length} problem(s)\n`,
   );
   if (needsFp8Shim) {
     process.stdout.write(

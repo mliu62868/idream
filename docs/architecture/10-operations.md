@@ -188,6 +188,8 @@ pipeline voice adapter 仍保留为回滚路径，但不再是当前默认；已
 bun run launch:probe:pipeline
 bun run --filter @idream/gen probe:image -- --model <active-product-config-model> --report .tmp/launch-image-probe.json
 bun run launch:probe:video -- --model ltx23-gtanimation-i2v --reference <reviewed-character-image> --report .tmp/launch-video-probe.json
+# Explicit MiniMax H3 route; omitting --model keeps LTX as the default.
+bun run launch:probe:video -- --model minimax-h3-redcraft-i2v --reference <reviewed-character-image> --seed h3-launch-v1 --report .tmp/launch-video-h3-probe.json
 bun run launch:probe:generation-model-candidates -- --report .tmp/launch-generation-model-candidates.json
 bun run launch:probe:web-surface -- --report .tmp/launch-web-surface-probe.json
 bun run launch:probe:product-config -- --report .tmp/launch-product-config-probe.json

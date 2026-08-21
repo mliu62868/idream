@@ -3,12 +3,19 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { characterVideoProductionRecipe } from "@idream/shared";
+import {
+  characterVideoProductionRecipe,
+  characterVideoProductionRecipeForWorkflow,
+  characterVideoProductionRecipes,
+  type CharacterVideoProductionRecipe,
+} from "@idream/shared";
 import type {
+  GenerationTerminalRecord,
   GenerationTerminalRecordIngest,
   VideoGeneratePayload,
 } from "@idream/shared/contracts";
 import { loadWorkflowDescriptors } from "./backend/workflow";
+import { probeVideoMedia } from "./backend/video-media-probe";
 import { env } from "./env";
 import { processVideoGenerate } from "./pipeline";
 
@@ -18,6 +25,7 @@ type ProbeOptions = {
   readonly negativePrompt: string | null;
   readonly referencePath: string;
   readonly report: string | null;
+  readonly seed: string;
 };
 
 function readArg(name: string) {
@@ -47,6 +55,10 @@ function readOptions(): ProbeOptions {
       "Subtle natural breathing and eye movement, fixed portrait camera",
     negativePrompt: readArg("negative-prompt") ?? null,
     referencePath: resolveWorkspacePath(referencePath),
+    seed:
+      readArg("seed") ??
+      process.env.VIDEO_GENERATION_PROBE_SEED ??
+      "probe-video-v1",
     report:
       readArg("report") ??
       process.env.VIDEO_GENERATION_PROBE_REPORT ??
@@ -59,14 +71,16 @@ async function main() {
   const startedAt = Date.now();
   const generationJobId = `probe_video_${randomUUID()}`;
   const attemptId = `attempt_${randomUUID()}`;
+  const requestId = `req_${generationJobId}`;
   const referenceBody = await readFile(options.referencePath);
   const binding = await resolveBackendBinding(options.model);
+  const recipe = binding.recipe;
   const terminalIngests: GenerationTerminalRecordIngest[] = [];
   const controls = {
     source: "probe-video-generation",
-    width: characterVideoProductionRecipe.width,
-    height: characterVideoProductionRecipe.height,
-    fps: characterVideoProductionRecipe.fps,
+    width: recipe.width,
+    height: recipe.height,
+    fps: recipe.fps,
     ...(binding.workflowKey && binding.workflowVersion
       ? {
           workflowKey: binding.workflowKey,
@@ -77,7 +91,7 @@ async function main() {
   const payload: VideoGeneratePayload = {
     version: 1,
     kind: "video",
-    requestId: `req_${generationJobId}`,
+    requestId,
     generationJobId,
     attemptId,
     attemptNo: 1,
@@ -87,8 +101,8 @@ async function main() {
     prompt: options.prompt,
     negativePrompt: options.negativePrompt,
     controls,
-    seconds: characterVideoProductionRecipe.durationSeconds,
-    seed: `probe-${Date.now()}`,
+    seconds: recipe.durationSeconds,
+    seed: options.seed,
     model: options.model,
     outputPrefix: `probe/${generationJobId}/`,
     referenceImages: [
@@ -123,6 +137,7 @@ async function main() {
       : terminalRecord?.outcome === "blocked"
         ? terminalRecord.block
         : null;
+  const artifact = await artifactEvidence(terminalRecord);
   const report = {
     ok,
     sourceRevision: env.SOURCE_REVISION?.trim() || null,
@@ -134,10 +149,14 @@ async function main() {
     workflowKey: binding.workflowKey,
     workflowVersion: binding.workflowVersion,
     model: options.model,
-    seconds: characterVideoProductionRecipe.durationSeconds,
+    seconds: recipe.durationSeconds,
+    seed: options.seed,
+    requestId,
+    attemptId,
     referenceSha256: createHash("sha256").update(referenceBody).digest("hex"),
     blobAuthority: env.BLOB_AUTHORITY,
     generationJobId,
+    artifact,
     terminal: terminalIngest
       ? {
           ref: terminalIngest.terminalRecordRef,
@@ -145,6 +164,7 @@ async function main() {
           outcome: terminalRecord?.outcome,
           assets,
           error,
+          providerRequestId: terminalRecord?.providerRequestId ?? null,
         }
       : null,
   };
@@ -158,6 +178,34 @@ async function main() {
   if (!ok) process.exitCode = 1;
 }
 
+async function artifactEvidence(
+  terminalRecord: GenerationTerminalRecord | undefined,
+) {
+  if (terminalRecord?.outcome !== "succeeded") return null;
+  const asset = terminalRecord.assets[0];
+  if (!asset) return null;
+  const authority = env.BLOB_AUTHORITY;
+  const localPath = authority.root
+    ? path.join(authority.root, asset.key)
+    : null;
+  const body = localPath ? await readFile(localPath) : null;
+  return {
+    key: asset.key,
+    providerKey: asset.providerKey ?? null,
+    contentType: asset.contentType,
+    seconds: asset.seconds ?? null,
+    localPath,
+    sizeBytes: body?.byteLength ?? null,
+    sha256: body
+      ? createHash("sha256").update(body).digest("hex")
+      : null,
+    verifiedVideo:
+      body && env.VIDEO_PROVIDER === "backend"
+        ? await probeVideoMedia(body)
+        : null,
+  };
+}
+
 async function resolveBackendBinding(model: string) {
   if (env.VIDEO_PROVIDER !== "backend") {
     return {
@@ -165,6 +213,7 @@ async function resolveBackendBinding(model: string) {
       backendTarget: null,
       workflowKey: null,
       workflowVersion: null,
+      recipe: productionRecipeForModel(model) ?? characterVideoProductionRecipe,
     } as const;
   }
   const descriptors = await loadWorkflowDescriptors(env.GEN_WORKFLOW_DIR);
@@ -177,6 +226,14 @@ async function resolveBackendBinding(model: string) {
       `Video launch probe model ${model} has no workflow descriptor in ${env.GEN_WORKFLOW_DIR}`,
     );
   }
+  const recipe = characterVideoProductionRecipeForWorkflow(
+    descriptor.workflowKey,
+  );
+  if (!recipe) {
+    throw new Error(
+      `Video launch probe model ${model} is not an authorized production video recipe`,
+    );
+  }
   return {
     backendKind: descriptor.backendKind,
     backendTarget:
@@ -185,7 +242,19 @@ async function resolveBackendBinding(model: string) {
         : env.DRAWTHINGS_CLI,
     workflowKey: descriptor.workflowKey,
     workflowVersion: descriptor.version,
+    recipe,
   } as const;
+}
+
+function productionRecipeForModel(
+  model: string,
+): CharacterVideoProductionRecipe | null {
+  return characterVideoProductionRecipes.find(
+    (recipe) =>
+      recipe.workflowKey === model ||
+      recipe.pipelineModel === model ||
+      recipe.profileKey === model,
+  ) ?? null;
 }
 
 function contentTypeFromPath(filePath: string) {

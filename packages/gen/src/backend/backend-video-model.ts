@@ -1,4 +1,4 @@
-import { characterVideoProductionRecipe } from "@idream/shared";
+import type { CharacterVideoProductionRecipe } from "@idream/shared";
 import type { VideoGeneratePayload } from "@idream/shared/contracts";
 import { env } from "../env";
 import {
@@ -32,9 +32,11 @@ export class BackendVideoModel implements VideoModel {
     }
 
     const { backend, descriptor } = resolved;
-    const descriptorError = validateProductionVideoDescriptor(descriptor);
-    if (descriptorError) {
-      return failure("unsupported_video_workflow", descriptorError, false);
+    let recipe: CharacterVideoProductionRecipe;
+    try {
+      recipe = assertCharacterVideoProductionDescriptor(descriptor);
+    } catch (error) {
+      return failure("unsupported_video_workflow", error, false);
     }
     const workflowPinError = validateWorkflowPin(descriptor, input.controls);
     if (workflowPinError) {
@@ -47,10 +49,10 @@ export class BackendVideoModel implements VideoModel {
     if (referenceError) {
       return failure("unsupported_video_workflow", referenceError, false);
     }
-    if (input.seconds !== characterVideoProductionRecipe.durationSeconds) {
+    if (input.seconds !== recipe.durationSeconds) {
       return failure(
         "unsupported_video_duration",
-        "LTX 2.3 production video generation requires exactly four seconds",
+        `${recipe.modelLabel} production video generation requires exactly ${recipe.durationSeconds} seconds`,
         false,
       );
     }
@@ -59,33 +61,28 @@ export class BackendVideoModel implements VideoModel {
     const height = numericControl(input.controls, "height");
     const requestedFps = numericControl(input.controls, "fps");
     if (
-      width !== characterVideoProductionRecipe.width ||
-      height !== characterVideoProductionRecipe.height ||
+      width !== recipe.width ||
+      height !== recipe.height ||
       (
         requestedFps !== undefined &&
-        requestedFps !== characterVideoProductionRecipe.fps
+        requestedFps !== recipe.fps
       )
     ) {
       return failure(
         "unsupported_video_envelope",
-        "LTX 2.3 production video generation requires 768x1152 at 25fps",
+        `${recipe.modelLabel} production video generation requires ${recipe.width}x${recipe.height} at ${recipe.fps}fps`,
         false,
       );
     }
-    const seconds = characterVideoProductionRecipe.durationSeconds;
-    const fps = characterVideoProductionRecipe.fps;
     const seed =
       stableNumericSeed(input.seed ?? input.requestId ?? "video") ?? 0;
-    const slots: SlotValues = {
+    const slots = productionVideoSlots(recipe, {
       prompt: input.prompt,
-      negative: input.negativePrompt ?? "",
+      negativePrompt: input.negativePrompt,
       width,
       height,
-      seconds,
-      fps,
       seed,
-      refinerSeed: seed + 1,
-    };
+    });
     let providerRequestId: string | null = null;
     try {
       const handle = await backend.submit({
@@ -108,7 +105,11 @@ export class BackendVideoModel implements VideoModel {
           providerRequestId,
         );
       }
-      const mediaError = validateProductionVideoOutput(asset, descriptor);
+      const mediaError = validateProductionVideoOutput(
+        asset,
+        descriptor,
+        recipe,
+      );
       if (mediaError) {
         return failure(
           "invalid_video_output",
@@ -150,29 +151,36 @@ export class BackendVideoModel implements VideoModel {
 function validateProductionVideoOutput(
   asset: BackendAsset,
   descriptor: ReturnType<BackendRegistry["resolveForModel"]>["descriptor"],
+  recipe: CharacterVideoProductionRecipe,
 ) {
   const media = asset.verifiedVideo;
   if (!media) {
     return "ComfyUI video output has no verified decode metadata";
   }
   if (
-    media.width !== characterVideoProductionRecipe.width ||
-    media.height !== characterVideoProductionRecipe.height
+    media.width !== recipe.width ||
+    media.height !== recipe.height
   ) {
-    return `Decoded video is ${media.width}x${media.height}; expected ${characterVideoProductionRecipe.width}x${characterVideoProductionRecipe.height}`;
+    return `Decoded video is ${media.width}x${media.height}; expected ${recipe.width}x${recipe.height}`;
   }
   if (
     Math.abs(
-      media.durationSeconds - characterVideoProductionRecipe.durationSeconds,
+      media.durationSeconds - recipe.expectedDurationSeconds,
     ) > PRODUCTION_DURATION_TOLERANCE_SECONDS
   ) {
-    return `Decoded video duration is ${media.durationSeconds}s; expected approximately ${characterVideoProductionRecipe.durationSeconds}s`;
+    return `Decoded video duration is ${media.durationSeconds}s; expected approximately ${recipe.expectedDurationSeconds}s`;
   }
   if (
-    Math.abs(media.framesPerSecond - characterVideoProductionRecipe.fps) >
+    Math.abs(media.framesPerSecond - recipe.fps) >
       PRODUCTION_FPS_TOLERANCE
   ) {
-    return `Decoded video frame rate is ${media.framesPerSecond}fps; expected ${characterVideoProductionRecipe.fps}fps`;
+    return `Decoded video frame rate is ${media.framesPerSecond}fps; expected ${recipe.fps}fps`;
+  }
+  if (
+    recipe.frameCount !== null &&
+    media.frameCount !== recipe.frameCount
+  ) {
+    return `Decoded video has ${media.frameCount ?? "unknown"} frames; expected ${recipe.frameCount}`;
   }
   if (descriptor.capabilities.includes("audio") && !media.hasAudio) {
     return "Decoded video has no audio stream required by the production recipe";
@@ -193,17 +201,6 @@ function backendFailure(
     fallbackPhase,
     fallbackPhase === "post_submit" ? "ambiguous" : "definitive",
   );
-}
-
-function validateProductionVideoDescriptor(
-  descriptor: ReturnType<BackendRegistry["resolveForModel"]>["descriptor"],
-) {
-  try {
-    assertCharacterVideoProductionDescriptor(descriptor);
-    return null;
-  } catch (error) {
-    return error instanceof Error ? error.message : String(error);
-  }
 }
 
 function validateVideoReferences(
@@ -227,6 +224,34 @@ function validateVideoReferences(
     return `Workflow ${descriptor.workflowKey} requires exactly one source_image`;
   }
   return null;
+}
+
+function productionVideoSlots(
+  recipe: CharacterVideoProductionRecipe,
+  input: {
+    readonly prompt: string;
+    readonly negativePrompt?: string | null;
+    readonly width: number;
+    readonly height: number;
+    readonly seed: number;
+  },
+): SlotValues {
+  const common = {
+    prompt: input.prompt,
+    width: input.width,
+    height: input.height,
+    fps: recipe.fps,
+    seed: input.seed,
+  };
+  if (recipe.frameCount !== null) {
+    return { ...common, length: recipe.frameCount };
+  }
+  return {
+    ...common,
+    negative: input.negativePrompt ?? "",
+    seconds: recipe.durationSeconds,
+    refinerSeed: input.seed + 1,
+  };
 }
 
 function numericControl(

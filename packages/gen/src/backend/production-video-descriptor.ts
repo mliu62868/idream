@@ -1,8 +1,13 @@
 import { createHash } from "node:crypto";
-import { characterVideoProductionRecipe } from "@idream/shared";
+import {
+  characterVideoProductionRecipe,
+  characterVideoProductionRecipeForWorkflow,
+  minimaxH3VideoProductionRecipe,
+  type CharacterVideoProductionRecipe,
+} from "@idream/shared";
 import type { WorkflowDescriptor } from "./workflow";
 
-const runtimeInputs = [
+const ltxRuntimeInputs = [
   { key: "prompt", type: "text", target: { nodeId: "320:303", field: "text" } },
   { key: "negative", type: "text", target: { nodeId: "320:313", field: "text" } },
   {
@@ -40,79 +45,79 @@ const runtimeInputs = [
   { key: "refinerSeed", type: "int", target: { nodeId: "320:276", field: "noise_seed" } },
 ] as const;
 
+const h3RuntimeInputs = [
+  { key: "prompt", type: "text", target: { nodeId: "6", field: "prompt" } },
+  {
+    key: "source_image",
+    type: "image",
+    required: true,
+    referenceRoles: ["source_image"],
+    target: { nodeId: "16", field: "image" },
+  },
+  {
+    key: "width",
+    type: "int",
+    default: minimaxH3VideoProductionRecipe.width,
+    target: { nodeId: "6", field: "width" },
+  },
+  {
+    key: "height",
+    type: "int",
+    default: minimaxH3VideoProductionRecipe.height,
+    target: { nodeId: "6", field: "height" },
+  },
+  {
+    key: "length",
+    type: "int",
+    default: minimaxH3VideoProductionRecipe.frameCount,
+    target: { nodeId: "6", field: "length" },
+  },
+  {
+    key: "fps",
+    type: "int",
+    default: minimaxH3VideoProductionRecipe.fps,
+    target: { nodeId: "14", field: "fps" },
+  },
+  { key: "seed", type: "int", target: { nodeId: "7", field: "noise_seed" } },
+] as const;
+
 export function assertCharacterVideoProductionDescriptor(
   descriptor: WorkflowDescriptor,
-): void {
+): CharacterVideoProductionRecipe {
+  const recipe = characterVideoProductionRecipeForWorkflow(
+    descriptor.workflowKey,
+  );
   if (
-    descriptor.backendKind !== characterVideoProductionRecipe.runner ||
-    descriptor.workflowKey !== characterVideoProductionRecipe.workflowKey ||
-    descriptor.modelId !== characterVideoProductionRecipe.pipelineModel ||
-    descriptor.version !== characterVideoProductionRecipe.workflowVersion
+    !recipe ||
+    descriptor.backendKind !== recipe.runner ||
+    descriptor.modelId !== recipe.pipelineModel ||
+    descriptor.version !== recipe.workflowVersion
   ) {
     throw new Error(
-      `Only ${characterVideoProductionRecipe.workflowKey}@${characterVideoProductionRecipe.workflowVersion} with ${characterVideoProductionRecipe.pipelineModel} is authorized for production video`,
+      `Workflow ${descriptor.workflowKey}@${descriptor.version} is not an authorized production video recipe`,
     );
   }
+  const runtimeInputs = runtimeInputsForRecipe(recipe);
   if (stableJson(descriptor.inputs) !== stableJson(runtimeInputs)) {
     throw new Error("Production video runtime input bindings do not match the immutable recipe");
   }
 
   const graph = executableGraph(descriptor);
-  assertGraphValue(graph, "320:333", "class_type", "UNETLoader");
-  assertGraphInput(
-    graph,
-    "320:333",
-    "unet_name",
-    characterVideoProductionRecipe.checkpointFilename,
-  );
-  assertGraphValue(graph, "75", "class_type", "SaveVideo");
-  assertGraphInput(
-    graph,
-    "75",
-    "filename_prefix",
-    characterVideoProductionRecipe.outputFilenamePrefix,
-  );
-  for (const nodeId of ["320:280", "320:291"] as const) {
-    assertGraphValue(graph, nodeId, "class_type", "KSamplerSelect");
-    assertGraphInput(
-      graph,
-      nodeId,
-      "sampler_name",
-      characterVideoProductionRecipe.sampler,
-    );
-  }
-  for (const nodeId of ["320:282", "320:314"] as const) {
-    assertGraphValue(graph, nodeId, "class_type", "CFGGuider");
-    assertGraphInput(
-      graph,
-      nodeId,
-      "cfg",
-      characterVideoProductionRecipe.cfgScale,
-    );
-  }
-  if (characterVideoProductionRecipe.scheduler !== "manual_sigmas") {
-    throw new Error("Production video recipe requires manual sigma scheduling");
-  }
-  const sigmaSteps = ["320:281", "320:306"].reduce((total, nodeId) => {
-    assertGraphValue(graph, nodeId, "class_type", "ManualSigmas");
-    const value = graphInput(graph, nodeId, "sigmas");
-    if (typeof value !== "string") {
-      throw new Error(`Production video node ${nodeId}.inputs.sigmas is invalid`);
-    }
-    return total + value.split(",").map((part) => part.trim()).filter(Boolean).length;
-  }, 0);
-  if (sigmaSteps !== characterVideoProductionRecipe.steps) {
-    throw new Error(
-      `Production video sigma schedule has ${sigmaSteps} steps; expected ${characterVideoProductionRecipe.steps}`,
-    );
+  if (recipe.workflowKey === characterVideoProductionRecipe.workflowKey) {
+    assertLtxGraph(graph);
+  } else if (
+    recipe.workflowKey === minimaxH3VideoProductionRecipe.workflowKey
+  ) {
+    assertH3Graph(graph);
   }
 
   const fingerprint = characterVideoProductionDescriptorFingerprint(descriptor);
-  if (fingerprint !== characterVideoProductionRecipe.workflowGraphSha256) {
+  if (fingerprint !== recipe.workflowGraphSha256) {
     throw new Error(
       `Production video workflow graph fingerprint ${fingerprint} does not match the immutable recipe`,
     );
   }
+  return recipe;
 }
 
 export function characterVideoProductionDescriptorFingerprint(
@@ -121,8 +126,16 @@ export function characterVideoProductionDescriptorFingerprint(
   if (descriptor.backendKind !== "comfyui") {
     throw new Error("Production video workflow must use ComfyUI");
   }
+  const recipe = characterVideoProductionRecipeForWorkflow(
+    descriptor.workflowKey,
+  );
+  if (!recipe) {
+    throw new Error(
+      `Workflow ${descriptor.workflowKey} is not an authorized production video recipe`,
+    );
+  }
   const graph = executableGraph(descriptor);
-  for (const input of runtimeInputs) {
+  for (const input of runtimeInputsForRecipe(recipe)) {
     const node = graph[input.target.nodeId];
     const inputs = recordValue(node?.inputs);
     if (!node || !Object.hasOwn(inputs, input.target.field)) {
@@ -147,6 +160,76 @@ export function characterVideoProductionDescriptorFingerprint(
       apiPrompt: graph,
     }))
     .digest("hex");
+}
+
+function runtimeInputsForRecipe(recipe: CharacterVideoProductionRecipe) {
+  return recipe.workflowKey === minimaxH3VideoProductionRecipe.workflowKey
+    ? h3RuntimeInputs
+    : ltxRuntimeInputs;
+}
+
+function assertLtxGraph(
+  graph: Record<string, Record<string, unknown>>,
+) {
+  const recipe = characterVideoProductionRecipe;
+  assertGraphValue(graph, "320:333", "class_type", "UNETLoader");
+  assertGraphInput(graph, "320:333", "unet_name", recipe.checkpointFilename);
+  assertGraphValue(graph, "75", "class_type", "SaveVideo");
+  assertGraphInput(graph, "75", "filename_prefix", recipe.outputFilenamePrefix);
+  for (const nodeId of ["320:280", "320:291"] as const) {
+    assertGraphValue(graph, nodeId, "class_type", "KSamplerSelect");
+    assertGraphInput(graph, nodeId, "sampler_name", recipe.sampler);
+  }
+  for (const nodeId of ["320:282", "320:314"] as const) {
+    assertGraphValue(graph, nodeId, "class_type", "CFGGuider");
+    assertGraphInput(graph, nodeId, "cfg", recipe.cfgScale);
+  }
+  if (recipe.scheduler !== "manual_sigmas") {
+    throw new Error("Production LTX video recipe requires manual sigma scheduling");
+  }
+  const sigmaSteps = ["320:281", "320:306"].reduce((total, nodeId) => {
+    assertGraphValue(graph, nodeId, "class_type", "ManualSigmas");
+    const value = graphInput(graph, nodeId, "sigmas");
+    if (typeof value !== "string") {
+      throw new Error(`Production video node ${nodeId}.inputs.sigmas is invalid`);
+    }
+    return total + value.split(",").map((part) => part.trim()).filter(Boolean).length;
+  }, 0);
+  if (sigmaSteps !== recipe.steps) {
+    throw new Error(
+      `Production video sigma schedule has ${sigmaSteps} steps; expected ${recipe.steps}`,
+    );
+  }
+}
+
+function assertH3Graph(
+  graph: Record<string, Record<string, unknown>>,
+) {
+  const recipe = minimaxH3VideoProductionRecipe;
+  assertGraphValue(graph, "1", "class_type", "UNETLoader");
+  assertGraphInput(graph, "1", "unet_name", recipe.checkpointFilename);
+  assertGraphValue(graph, "2", "class_type", "MiniMaxH3SigmaShift");
+  assertGraphInput(graph, "2", "shift_video", recipe.shiftVideo);
+  assertGraphInput(graph, "2", "shift_audio", recipe.shiftAudio);
+  assertGraphValue(graph, "3", "class_type", "CLIPLoaderGGUF");
+  assertGraphInput(graph, "3", "clip_name", recipe.textEncoderFilename);
+  assertGraphInput(graph, "3", "type", "minimax");
+  assertGraphValue(graph, "4", "class_type", "VAELoader");
+  assertGraphInput(graph, "4", "vae_name", recipe.videoVaeFilename);
+  assertGraphValue(graph, "5", "class_type", "VAELoader");
+  assertGraphInput(graph, "5", "vae_name", recipe.audioVaeFilename);
+  assertGraphValue(graph, "6", "class_type", "MiniMaxH3ImageToVideo");
+  assertGraphValue(graph, "8", "class_type", "KSamplerSelect");
+  assertGraphInput(graph, "8", "sampler_name", recipe.sampler);
+  assertGraphValue(graph, "9", "class_type", "BasicScheduler");
+  assertGraphInput(graph, "9", "scheduler", recipe.scheduler);
+  assertGraphInput(graph, "9", "steps", recipe.steps);
+  assertGraphInput(graph, "9", "denoise", 1);
+  assertGraphValue(graph, "10", "class_type", "BasicGuider");
+  assertGraphValue(graph, "14", "class_type", "CreateVideo");
+  assertGraphInput(graph, "14", "bit_depth", 8);
+  assertGraphValue(graph, "15", "class_type", "SaveVideo");
+  assertGraphInput(graph, "15", "filename_prefix", recipe.outputFilenamePrefix);
 }
 
 function executableGraph(descriptor: WorkflowDescriptor) {

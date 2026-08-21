@@ -1,39 +1,60 @@
 import { isDeepStrictEqual } from "node:util";
-import { characterVideoProductionRecipe } from "@idream/shared";
+import {
+  characterVideoProductionRecipe,
+  characterVideoProductionRecipes,
+  minimaxH3VideoProductionRecipe,
+  type CharacterVideoProductionRecipe,
+} from "@idream/shared";
 
-export const PRODUCTION_LTX_VIDEO_PROFILE = {
-  profileKey: characterVideoProductionRecipe.profileKey,
-  runner: characterVideoProductionRecipe.runner,
-  pipelineModel: characterVideoProductionRecipe.pipelineModel,
-  workflowKey: characterVideoProductionRecipe.workflowKey,
-  sourceModelPath: characterVideoProductionRecipe.sourceModelPath,
-  modelFormat: characterVideoProductionRecipe.modelFormat,
-  runnerConfig: {
-    workflowVersion: characterVideoProductionRecipe.workflowVersion,
-    capabilities: {
-      textToImage: false,
-      stableSeed: true,
-      referenceImages: false,
-      initImage: true,
-      imageToVideo: true,
-      audio: true,
-      fps: characterVideoProductionRecipe.fps,
-      maxDurationSeconds: characterVideoProductionRecipe.durationSeconds,
+function productionVideoProfile(recipe: CharacterVideoProductionRecipe) {
+  return {
+    profileKey: recipe.profileKey,
+    runner: recipe.runner,
+    pipelineModel: recipe.pipelineModel,
+    workflowKey: recipe.workflowKey,
+    sourceModelPath: recipe.sourceModelPath,
+    modelFormat: recipe.modelFormat,
+    runnerConfig: {
+      workflowVersion: recipe.workflowVersion,
+      capabilities: {
+        textToImage: false,
+        stableSeed: true,
+        referenceImages: false,
+        initImage: true,
+        imageToVideo: true,
+        audio: true,
+        fps: recipe.fps,
+        maxDurationSeconds: recipe.durationSeconds,
+      },
+      ...(recipe.explicitSelectionOnly
+        ? { publicSelection: { explicitOnly: true } }
+        : {}),
     },
-  },
-  defaultWidth: characterVideoProductionRecipe.width,
-  defaultHeight: characterVideoProductionRecipe.height,
-  allowedOrientations: [characterVideoProductionRecipe.orientation],
-  steps: characterVideoProductionRecipe.steps,
-  sampler: characterVideoProductionRecipe.sampler,
-  scheduler: characterVideoProductionRecipe.scheduler,
-  cfgScale: characterVideoProductionRecipe.cfgScale,
-  requiredEntitlement: characterVideoProductionRecipe.requiredEntitlement,
-  maxCount: characterVideoProductionRecipe.outputCount,
-  concurrencyLimit: characterVideoProductionRecipe.concurrencyLimit,
-  rolloutPercent: characterVideoProductionRecipe.rolloutPercent,
-  version: characterVideoProductionRecipe.recipeVersion,
-} as const;
+    defaultWidth: recipe.width,
+    defaultHeight: recipe.height,
+    allowedOrientations: [recipe.orientation],
+    steps: recipe.steps,
+    sampler: recipe.sampler,
+    scheduler: recipe.scheduler,
+    cfgScale: recipe.cfgScale,
+    requiredEntitlement: recipe.requiredEntitlement,
+    maxCount: recipe.outputCount,
+    concurrencyLimit: recipe.concurrencyLimit,
+    rolloutPercent: recipe.rolloutPercent,
+    version: recipe.recipeVersion,
+  } as const;
+}
+
+export const PRODUCTION_LTX_VIDEO_PROFILE = productionVideoProfile(
+  characterVideoProductionRecipe,
+);
+export const PRODUCTION_H3_VIDEO_PROFILE = productionVideoProfile(
+  minimaxH3VideoProductionRecipe,
+);
+
+const PRODUCTION_VIDEO_PROFILE_AUTHORITIES = characterVideoProductionRecipes.map(
+  (recipe) => ({ recipe, profile: productionVideoProfile(recipe) }),
+);
 
 type ProductionVideoProfileCandidate = {
   readonly mode: string;
@@ -67,7 +88,27 @@ type ProductionVideoProfileCandidate = {
 export function isProductionLtxVideoProfile(
   profile: ProductionVideoProfileCandidate,
 ) {
-  const authority = PRODUCTION_LTX_VIDEO_PROFILE;
+  return profileMatchesAuthority(profile, PRODUCTION_LTX_VIDEO_PROFILE);
+}
+
+export function productionVideoRecipeForProfile(
+  profile: ProductionVideoProfileCandidate,
+): CharacterVideoProductionRecipe | null {
+  return PRODUCTION_VIDEO_PROFILE_AUTHORITIES.find(
+    ({ profile: authority }) => profileMatchesAuthority(profile, authority),
+  )?.recipe ?? null;
+}
+
+export function isProductionVideoProfile(
+  profile: ProductionVideoProfileCandidate,
+) {
+  return productionVideoRecipeForProfile(profile) !== null;
+}
+
+function profileMatchesAuthority(
+  profile: ProductionVideoProfileCandidate,
+  authority: ReturnType<typeof productionVideoProfile>,
+) {
   return (
     profile.mode === "video" &&
     profile.profileKey === authority.profileKey &&

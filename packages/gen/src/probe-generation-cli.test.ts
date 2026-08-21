@@ -92,6 +92,51 @@ describe("generation launch probe CLIs", () => {
       },
     });
   });
+
+  it("uses the MiniMax H3 five-second recipe when that workflow is probed", () => {
+    const directory = temporaryDirectory();
+    const reportPath = path.join(directory, "h3-video-report.json");
+    const referencePath = path.join(
+      repoRoot,
+      "packages/main/public/images/ourdream/card-alexa-reeves.webp",
+    );
+    const result = runProbe("probe-video-pipeline.ts", [
+      "--reference",
+      referencePath,
+      "--model",
+      "minimax-h3-redcraft-i2v",
+      "--seed",
+      "h3-probe-seed-v1",
+      "--report",
+      reportPath,
+    ], {
+      GEN_VIDEO_PROVIDER: "mock",
+      GEN_BLOB_PROVIDER: "mock",
+      BLOB_ROOT: path.join(directory, "blob"),
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(readFileSync(reportPath, "utf8"))).toMatchObject({
+      ok: true,
+      model: "minimax-h3-redcraft-i2v",
+      seconds: 5,
+      seed: "h3-probe-seed-v1",
+      requestId: expect.stringMatching(/^req_probe_video_/),
+      attemptId: expect.stringMatching(/^attempt_/),
+      artifact: {
+        key: expect.stringMatching(/video\.mp4$/),
+        localPath: expect.stringMatching(/video\.mp4$/),
+        sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        sizeBytes: expect.any(Number),
+        verifiedVideo: null,
+      },
+      terminal: {
+        outcome: "succeeded",
+        assets: 1,
+        providerRequestId: null,
+      },
+    });
+  });
 });
 
 function temporaryDirectory() {

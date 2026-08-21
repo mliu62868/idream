@@ -229,12 +229,13 @@ the model is resident.
 
 ## Production video backend (`GEN_VIDEO_PROVIDER=backend`)
 
-The production video worker uses the same backend registry, but resolves the
-video-only `ltx23-gtanimation-i2v` descriptor through `BackendVideoModel`.
-This route requires exactly one `source_image` reference. Before blob persistence,
+The production video worker uses the same backend registry and resolves one of
+the pinned video descriptors through `BackendVideoModel`. Both routes require
+exactly one `source_image` reference. Before blob persistence,
 `ffprobe` reads the actual stream envelope and `ffmpeg` fully decodes the file;
-the worker rejects corrupt media or anything other than 768x1152, about four
-seconds, 25 fps, and an audio stream. Missing verification binaries fail closed.
+the worker rejects corrupt media or output that drifts from its recipe-specific
+dimensions, duration, fps, or required audio stream. Missing verification
+binaries fail closed.
 
 The checked-in descriptor pins the exact Civitai LTX 2.3 GTAnimation INT4
 ConvRot workflow tested on ComfyUI/MPS:
@@ -249,11 +250,20 @@ COMFYUI_API_URL=http://127.0.0.1:8188
 ```
 
 ```text
-model: ltx23-gtanimation-int4-convrot
-workflow: ltx23-gtanimation-i2v
+default model: ltx23-gtanimation-int4-convrot
+default workflow: ltx23-gtanimation-i2v
+default output: 768x1152, about 4 seconds, 25 fps, MP4 with audio
+
+explicit model: minimax-h3-redcraft-a2a-int8-convrot
+explicit workflow: minimax-h3-redcraft-i2v
+explicit output: 512x512, 124 frames / 5.167 seconds, 24 fps, MP4 with audio
 input: one published source image
-output: 768x1152, 25 fps, MP4 with audio
 ```
+
+MiniMax H3 is registered as `profile_video_h3_v1` with
+`publicSelection.explicitOnly=true`; it never replaces the LTX default when a
+caller omits the model. Its request contract is the integer value `seconds=5`,
+which the worker binds to H3's native 124-frame grid.
 
 Regenerate the descriptor from the validated ComfyUI API prompt with:
 
@@ -262,8 +272,8 @@ bun packages/gen/scripts/build-ltx23-gtanimation-workflow.mjs
 bun run sync:comfyui-workflows
 ```
 
-The 30-minute provider timeout is intentional: the full 768x1152 route takes
-roughly 10–15 minutes on the current M4 Max/MPS host.
+The 30-minute provider timeout is intentional: both MPS routes take roughly
+10–15 minutes on the current M4 Max host.
 
 The PM2 `gen-video` process intentionally runs with `watch: false` in both
 development and production. A source-file restart can otherwise interrupt an

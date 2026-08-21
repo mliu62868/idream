@@ -640,6 +640,53 @@ describe("seed data provenance", () => {
     });
   }, 15_000);
 
+  it("seeds MiniMax H3 as an explicit-only production video profile", async () => {
+    await execFileAsync("bun", ["run", "db:seed"], {
+      cwd: fileURLToPath(new URL("..", import.meta.url)),
+      env: process.env,
+    });
+
+    const profile = await prisma.generationModelProfile.findUniqueOrThrow({
+      where: { id: "seed-profile-video-h3-v1" },
+      select: {
+        profileKey: true,
+        runner: true,
+        pipelineModel: true,
+        workflowKey: true,
+        sourceModelPath: true,
+        runnerConfig: true,
+        defaultWidth: true,
+        defaultHeight: true,
+        allowedOrientations: true,
+        steps: true,
+        rolloutPercent: true,
+      },
+    });
+    expect(profile).toMatchObject({
+      profileKey: "profile_video_h3_v1",
+      runner: "comfyui",
+      pipelineModel: "minimax-h3-redcraft-a2a-int8-convrot",
+      workflowKey: "minimax-h3-redcraft-i2v",
+      sourceModelPath:
+        "diffusion_models/REDMix-MiniMaxH3-A2Ab1-pruned-int8-convrot-ComfyMCP.safetensors",
+      runnerConfig: {
+        workflowVersion: 1,
+        capabilities: {
+          imageToVideo: true,
+          audio: true,
+          fps: 24,
+          maxDurationSeconds: 5,
+        },
+        publicSelection: { explicitOnly: true },
+      },
+      defaultWidth: 512,
+      defaultHeight: 512,
+      allowedOrientations: ["1:1"],
+      steps: 8,
+      rolloutPercent: 100,
+    });
+  }, 15_000);
+
   it("preserves an operator-edited legacy video beta route", async () => {
     const profileId = "seed-profile-video-beta-v1";
     await writeLegacyVideoBetaProfile(1.25);

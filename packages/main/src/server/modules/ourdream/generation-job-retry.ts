@@ -6,7 +6,7 @@ import {
 } from "@/server/modules/generation/attempt-dispatch";
 import { dispatchGenerationAttemptOutbox } from "@/server/modules/generation/generation-attempt-authority";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
-import { isProductionLtxVideoProfile } from "@/server/modules/generation/production-video-profile";
+import { isProductionVideoProfile } from "@/server/modules/generation/production-video-profile";
 import {
   lockCharacterGenerationAuthority,
   lockCharacterMediaAssetAuthorities,
@@ -201,7 +201,7 @@ async function resolveGenerationRetryAuthority(
   const profile =
     exactProfile &&
     isExecutableGenerationProfile(exactProfile) &&
-    (job.mode !== "video" || isProductionLtxVideoProfile(exactProfile))
+    (job.mode !== "video" || isProductionVideoProfile(exactProfile))
     ? exactProfile
     : generationJobRequiresPinnedLegacyAuthority(job) &&
         !job.profileId &&

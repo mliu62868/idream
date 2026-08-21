@@ -1,5 +1,8 @@
 import { Prisma, PrismaClient } from "@prisma/client";
-import { compileCharacterSoul } from "@idream/shared";
+import {
+  compileCharacterSoul,
+  minimaxH3VideoProductionRecipe,
+} from "@idream/shared";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -1790,6 +1793,68 @@ async function seedAdminControlPlane() {
       },
       publishedAt: new Date("2026-07-25T00:00:00.000Z"),
     },
+    });
+  }
+
+  if (!existingProfileKeys.has(minimaxH3VideoProductionRecipe.profileKey)) {
+    const recipe = minimaxH3VideoProductionRecipe;
+    await prisma.generationModelProfile.upsert({
+      where: { id: "seed-profile-video-h3-v1" },
+      update: {},
+      create: {
+        id: "seed-profile-video-h3-v1",
+        profileKey: recipe.profileKey,
+        label: recipe.modelLabel,
+        mode: "video",
+        runner: recipe.runner,
+        pipelineModel: recipe.pipelineModel,
+        workflowKey: recipe.workflowKey,
+        sourceModelPath: recipe.sourceModelPath,
+        convertedModelPath: null,
+        modelFormat: recipe.modelFormat,
+        runnerConfig: {
+          workflowVersion: recipe.workflowVersion,
+          capabilities: {
+            textToImage: false,
+            stableSeed: true,
+            referenceImages: false,
+            initImage: true,
+            imageToVideo: true,
+            audio: true,
+            fps: recipe.fps,
+            maxDurationSeconds: recipe.durationSeconds,
+          },
+          publicSelection: { explicitOnly: true },
+        },
+        defaultWidth: recipe.width,
+        defaultHeight: recipe.height,
+        allowedOrientations: [recipe.orientation],
+        steps: recipe.steps,
+        sampler: recipe.sampler,
+        scheduler: recipe.scheduler,
+        cfgScale: recipe.cfgScale,
+        costMultiplier: 1,
+        requiredEntitlement: recipe.requiredEntitlement,
+        maxCount: recipe.outputCount,
+        concurrencyLimit: recipe.concurrencyLimit,
+        enabled: true,
+        rolloutPercent: recipe.rolloutPercent,
+        version: recipe.recipeVersion,
+        status: "active",
+        dryRunSummary: {
+          status: "passed",
+          source: "local_mps_exact_model_probe",
+          testedAt: "2026-08-19",
+          resolution: `${recipe.width}x${recipe.height}`,
+          frames: recipe.frameCount,
+          seconds: recipe.expectedDurationSeconds,
+          fps: recipe.fps,
+          wallTimeSeconds: 792.917,
+          notes:
+            "Exact RedCraft MiniMax H3 INT8 ConvRot workflow completed I2V with AAC audio on Apple Silicon MPS.",
+        },
+        publishedAt: new Date("2026-08-19T00:00:00.000Z"),
+      },
     });
   }
 

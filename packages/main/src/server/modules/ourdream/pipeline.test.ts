@@ -1128,6 +1128,18 @@ describe("local AI service pipeline", () => {
       expect(config.data.video.models[0].id).toBe(
         "profile_video_beta_v1",
       );
+      const invalidDurationQuote = await api("POST", "generation/quote", {
+        userId,
+        ageGate: true,
+        body: {
+          mode: "video",
+          characterId: CHAR,
+          controls: { seconds: 6 },
+          outputCount: 1,
+        },
+      });
+      expectError(invalidDurationQuote, 400, "bad_request");
+
       const alternateRoute = await api("POST", "generation/jobs", {
         userId,
         ageGate: true,
@@ -1178,6 +1190,106 @@ describe("local AI service pipeline", () => {
       await prisma.generationModelProfile.update({
         where: { id: "seed-profile-video-beta-v1" },
         data: previousVideoProfile,
+      });
+    }
+  });
+
+  it("queues MiniMax H3 only when its explicit video profile is requested", async () => {
+    const userId = `${P}h3-video-user`;
+    await createUser({ id: userId });
+    await grantCoins(userId, 300, "seed");
+    await prisma.entitlement.createMany({
+      data: [
+        { userId, key: "video_generation", value: true, source: "test" },
+        { userId, key: "premium_controls", value: true, source: "test" },
+      ],
+    });
+    const previousFlag = await prisma.featureFlag.findUniqueOrThrow({
+      where: { key: "video_gen" },
+      select: { enabled: true, rolloutPercent: true },
+    });
+    const previousH3Profile =
+      await prisma.generationModelProfile.findUniqueOrThrow({
+        where: { id: "seed-profile-video-h3-v1" },
+        select: { rolloutPercent: true },
+      });
+    await prisma.featureFlag.update({
+      where: { key: "video_gen" },
+      data: { enabled: true, rolloutPercent: 100 },
+    });
+    await prisma.generationModelProfile.update({
+      where: { id: "seed-profile-video-h3-v1" },
+      data: { rolloutPercent: 100 },
+    });
+
+    try {
+      const config = await api("GET", "generation/config", {
+        userId,
+        ageGate: true,
+      });
+      expectOk(config);
+      expect(config.data.video.models.map((model: { id: string }) => model.id))
+        .not.toContain("profile_video_h3_v1");
+
+      const invalidQuote = await api("POST", "generation/quote", {
+        userId,
+        ageGate: true,
+        body: {
+          mode: "video",
+          characterId: CHAR,
+          model: "profile_video_h3_v1",
+          controls: { seconds: 4 },
+          outputCount: 1,
+        },
+      });
+      expectError(invalidQuote, 400, "bad_request");
+
+      const invalidSubmit = await api("POST", "generation/jobs", {
+        userId,
+        ageGate: true,
+        body: {
+          mode: "video",
+          characterId: CHAR,
+          model: "profile_video_h3_v1",
+          controls: { seconds: 4 },
+          outputCount: 1,
+        },
+      });
+      expectError(invalidSubmit, 400, "bad_request");
+
+      const created = await api("POST", "generation/jobs", {
+        userId,
+        ageGate: true,
+        body: {
+          mode: "video",
+          characterId: CHAR,
+          model: "profile_video_h3_v1",
+          controls: { seconds: 5 },
+          outputCount: 1,
+        },
+      });
+      expectOk(created, 202);
+      expect(created.data.job).toMatchObject({
+        mode: "video",
+        profileId: "profile_video_h3_v1",
+        model: "minimax-h3-redcraft-i2v",
+        orientation: "1:1",
+        controls: expect.objectContaining({
+          seconds: 5,
+          width: 512,
+          height: 512,
+          workflowKey: "minimax-h3-redcraft-i2v",
+          workflowVersion: 1,
+        }),
+      });
+    } finally {
+      await prisma.featureFlag.update({
+        where: { key: "video_gen" },
+        data: previousFlag,
+      });
+      await prisma.generationModelProfile.update({
+        where: { id: "seed-profile-video-h3-v1" },
+        data: previousH3Profile,
       });
     }
   });

@@ -13,6 +13,7 @@ export type VerifiedVideoMedia = {
   readonly height: number;
   readonly durationSeconds: number;
   readonly framesPerSecond: number;
+  readonly frameCount: number | null;
   readonly hasAudio: boolean;
 };
 
@@ -130,6 +131,8 @@ function parseVideoMediaMetadata(raw: string): VerifiedVideoMedia {
   const height = positiveInteger(video.height);
   const framesPerSecond = positiveRate(video.avg_frame_rate) ??
     positiveRate(video.r_frame_rate);
+  const frameCount = positiveInteger(video.nb_read_frames) ??
+    positiveInteger(video.nb_frames);
   const format = recordValue(root.format);
   const durationSeconds = positiveNumber(format.duration) ??
     positiveNumber(video.duration);
@@ -143,6 +146,7 @@ function parseVideoMediaMetadata(raw: string): VerifiedVideoMedia {
     height,
     durationSeconds,
     framesPerSecond,
+    frameCount,
     hasAudio: streams.some((stream) => stream.codec_type === "audio"),
   };
 }

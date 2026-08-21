@@ -62,17 +62,6 @@ export const generationJobSchema = z
         message: "Visual profile can only be used with a character",
       });
     }
-    if (
-      value.mode === "video" &&
-      value.controls.seconds !== undefined &&
-      value.controls.seconds !== 4
-    ) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["controls", "seconds"],
-        message: "LTX 2.3 video generation requires exactly four seconds",
-      });
-    }
   });
 
 export type GenerationCreateBody = z.infer<typeof generationJobSchema>;

@@ -41,6 +41,7 @@ import {
 } from "./generation-profile-selection";
 import { entitlementMap } from "./subscription-lifecycle";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
+import { productionVideoRecipeForProfile } from "@/server/modules/generation/production-video-profile";
 import type { GenerationQuoteAuthority } from "./generation-quote-contract";
 
 export {
@@ -221,6 +222,32 @@ export async function resolveGenerationPlan(
       entitlement: profile.requiredEntitlement,
     });
   }
+  const videoRecipe = body.mode === "video"
+    ? productionVideoRecipeForProfile(profile)
+    : null;
+  if (body.mode === "video" && !videoRecipe) {
+    throw Errors.conflict(
+      "Selected video profile is not an authorized production recipe",
+      {
+        profileId: profile.profileKey,
+        profileVersion: profile.version,
+      },
+    );
+  }
+  if (
+    videoRecipe &&
+    body.controls.seconds !== undefined &&
+    body.controls.seconds !== videoRecipe.durationSeconds
+  ) {
+    throw Errors.badRequest(
+      `${videoRecipe.modelLabel} video generation requires exactly ${videoRecipe.durationSeconds} seconds`,
+      {
+        requestedSeconds: body.controls.seconds,
+        requiredSeconds: videoRecipe.durationSeconds,
+        profileId: profile.profileKey,
+      },
+    );
+  }
 
   const workflowDescriptor = await generationWorkflowDescriptor(
     profile.workflowKey ?? profile.pipelineModel,
@@ -262,6 +289,7 @@ export async function resolveGenerationPlan(
     requestedSourceImageAssetId,
     selectedLook,
     selectedModel,
+    videoRecipe,
     visualProfile,
     workflowDescriptor,
   };

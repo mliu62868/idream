@@ -4,7 +4,9 @@ import {
   characterRouteEvaluationMatrixKey,
   characterRouteEvaluationOutputsPerDirection,
   characterRouteEvaluationSampleCount,
+  characterVideoProductionRecipeForWorkflow,
   characterVideoProductionRecipe,
+  minimaxH3VideoProductionRecipe,
   creativePlacementWithdrawalRequestSchema,
   creativePlacementWithdrawalResultSchema,
   creativeRunCreateOptionsSchema,
@@ -46,6 +48,35 @@ describe("Creative Run create contract", () => {
       scheduler: "manual_sigmas",
       cfgScale: 1,
     });
+  });
+
+  it("keeps MiniMax H3 as a separate explicit five-second video recipe", () => {
+    expect(characterVideoProductionRecipe).not.toBe(
+      minimaxH3VideoProductionRecipe,
+    );
+    expect(minimaxH3VideoProductionRecipe).toMatchObject({
+      profileKey: "profile_video_h3_v1",
+      pipelineModel: "minimax-h3-redcraft-a2a-int8-convrot",
+      workflowKey: "minimax-h3-redcraft-i2v",
+      workflowVersion: 1,
+      checkpointFilename:
+        "REDMix-MiniMaxH3-A2Ab1-pruned-int8-convrot-ComfyMCP.safetensors",
+      width: 512,
+      height: 512,
+      fps: 24,
+      durationSeconds: 5,
+      expectedDurationSeconds: 124 / 24,
+      frameCount: 124,
+      steps: 8,
+      sampler: "euler",
+      scheduler: "simple",
+      explicitSelectionOnly: true,
+    });
+    expect(
+      characterVideoProductionRecipeForWorkflow(
+        minimaxH3VideoProductionRecipe.workflowKey,
+      ),
+    ).toBe(minimaxH3VideoProductionRecipe);
   });
 
   it("accepts an explicit, bounded brief", () => {
