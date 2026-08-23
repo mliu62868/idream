@@ -165,9 +165,10 @@ Gen worker:
   1) claim transport work，并向 Main 记录 running TransportExecution
   2) moderation.input(prompt+controls)；阻断时产出 blocked terminal record
   3) GenBackend.generate(...)；只在明确可重试且 provider 支持确定幂等时重试
-  4) moderation.output + artifact verification + BlobStore.putPrivate(bytes)；生产 LTX
-     视频必须先由 ffprobe 读取实测 envelope、ffmpeg 完整解码，并匹配
-     768×1152 / 4s / 25fps / audio
+  4) moderation.output + artifact verification + BlobStore.putPrivate(bytes)；生产视频必须先
+     校验 recipe 固定的全部模型资产 SHA-256，再由 ffprobe 读取实测 envelope、ffmpeg
+     完整解码，并匹配 LTX 768×1152 / 4s / 25fps / audio 或 H3
+     512×512 / 124 frames / 24fps / audio 的精确契约
   5) 先持久化 immutable terminal record，再以 Attempt key 投递到 Main-owned durable relay
 Main finalizer:
   1) 消费独立 terminal relay，按 attemptId + terminal-record hash durable ingest；相同 replay，冲突 fail closed

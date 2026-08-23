@@ -189,6 +189,10 @@ export const env = {
   get COMFYUI_API_URL(): string {
     return process.env.COMFYUI_API_URL ?? "http://127.0.0.1:8188";
   },
+  /** Exact ComfyUI models root whose bytes are attested by video launch probes. */
+  get COMFYUI_MODEL_ROOT(): string {
+    return process.env.COMFYUI_MODEL_ROOT ?? "/Users/kk/ComfyUI-Shared/models";
+  },
   /** Official Draw Things automation CLI, used by drawthings workflows. */
   get DRAWTHINGS_CLI(): string {
     return process.env.DRAWTHINGS_CLI ?? "draw-things-cli";

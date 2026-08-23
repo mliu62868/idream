@@ -265,6 +265,12 @@ MiniMax H3 is registered as `profile_video_h3_v1` with
 caller omits the model. Its request contract is the integer value `seconds=5`,
 which the worker binds to H3's native 124-frame grid.
 
+Both recipes pin every executable checkpoint, text encoder, VAE, and LTX
+upscaler by relative model path plus SHA-256. Set `COMFYUI_MODEL_ROOT` to the
+exact model directory used by the target runner. Each release probe hashes the
+actual bytes from that root; matching filenames are not sufficient for the
+launch gate.
+
 Regenerate the descriptor from the validated ComfyUI API prompt with:
 
 ```bash

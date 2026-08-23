@@ -220,6 +220,7 @@ export interface VideoGenerationProbeEvidence {
   model?: string | null;
   seconds?: number;
   referenceSha256?: string | null;
+  modelAssets?: Array<{ path?: string; sha256?: string }>;
   generationJobId?: string;
   blobAuthority?: GenBlobAuthorityEvidence | null;
   loadError?: string;
@@ -248,6 +249,7 @@ const videoGenerationProbeEvidenceSchema: z.ZodType<VideoGenerationProbeEvidence
   model: nullableText,
   seconds: optionalCount,
   referenceSha256: nullableText,
+  modelAssets: z.array(z.object({ path: optionalText, sha256: optionalText })).optional(),
   generationJobId: optionalText,
   blobAuthority: genBlobAuthorityEvidence,
   terminal: nullableObject({
@@ -264,6 +266,12 @@ const videoGenerationProbeEvidenceSchema: z.ZodType<VideoGenerationProbeEvidence
 });
 
 export function decodeVideoGenerationProbeEvidence(
+  value: unknown,
+): VideoGenerationProbeEvidence {
+  return decodeTopLevel(videoGenerationProbeEvidenceSchema, value);
+}
+
+export function decodeVideoH3GenerationProbeEvidence(
   value: unknown,
 ): VideoGenerationProbeEvidence {
   return decodeTopLevel(videoGenerationProbeEvidenceSchema, value);
@@ -344,6 +352,10 @@ export function decodeImageGenerationPersistenceProbeEvidence(value: unknown) {
 }
 
 export function decodeVideoGenerationPersistenceProbeEvidence(value: unknown) {
+  return decodeGenerationPersistenceProbeEvidence(value);
+}
+
+export function decodeVideoH3GenerationPersistenceProbeEvidence(value: unknown) {
   return decodeGenerationPersistenceProbeEvidence(value);
 }
 
@@ -1118,6 +1130,14 @@ export interface ProductConfigProbeEvidence {
   activeImageFreeplayTemplates?: number;
   activeImagePricingRules?: number;
   activeVideoProfiles?: number;
+  activeVideoExecutionBindings?: Array<{
+    profileId?: string;
+    profileKey?: string;
+    model?: string;
+    workflowKey?: string;
+    workflowVersion?: number | null;
+  }>;
+  invalidActiveVideoProfileIds?: string[];
   activeVideoCharacterTemplates?: number;
   activeVideoFreeplayTemplates?: number;
   activeVideoPricingRules?: number;
@@ -1156,6 +1176,18 @@ const productConfigProbeEvidenceSchema: z.ZodType<ProductConfigProbeEvidence> = 
   activeImageFreeplayTemplates: optionalCount,
   activeImagePricingRules: optionalCount,
   activeVideoProfiles: optionalCount,
+  activeVideoExecutionBindings: z
+    .array(
+      z.object({
+        profileId: optionalText,
+        profileKey: optionalText,
+        model: optionalText,
+        workflowKey: optionalText,
+        workflowVersion: z.number().nullish().catch(null).transform((value) => value ?? null),
+      }),
+    )
+    .optional(),
+  invalidActiveVideoProfileIds: z.array(z.string()).optional(),
   activeVideoCharacterTemplates: optionalCount,
   activeVideoFreeplayTemplates: optionalCount,
   activeVideoPricingRules: optionalCount,

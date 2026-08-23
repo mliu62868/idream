@@ -48,6 +48,15 @@ describe("Creative Run create contract", () => {
       scheduler: "manual_sigmas",
       cfgScale: 1,
     });
+    expect(characterVideoProductionRecipe.modelAssets).toHaveLength(6);
+    expect(characterVideoProductionRecipe.modelAssets).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: characterVideoProductionRecipe.sourceModelPath,
+          sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        }),
+      ]),
+    );
   });
 
   it("keeps MiniMax H3 as a separate explicit five-second video recipe", () => {
@@ -77,6 +86,12 @@ describe("Creative Run create contract", () => {
         minimaxH3VideoProductionRecipe.workflowKey,
       ),
     ).toBe(minimaxH3VideoProductionRecipe);
+    expect(minimaxH3VideoProductionRecipe.modelAssets).toHaveLength(4);
+    expect(
+      minimaxH3VideoProductionRecipe.modelAssets.every((asset) =>
+        /^[a-f0-9]{64}$/.test(asset.sha256),
+      ),
+    ).toBe(true);
   });
 
   it("accepts an explicit, bounded brief", () => {

@@ -3,7 +3,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
-import { chatFsRootFingerprint } from "@idream/shared";
+import {
+  characterVideoProductionRecipe,
+  chatFsRootFingerprint,
+  minimaxH3VideoProductionRecipe,
+  type CharacterVideoProductionRecipe,
+} from "@idream/shared";
 import { describe, expect, it, vi } from "vitest";
 import {
   assessLaunchReadiness as assessLaunchReadinessRaw,
@@ -103,10 +108,13 @@ const productionEnv = {
   COMFYUI_API_URL: "https://comfyui-video.ourdream.internal",
   PIPELINE_IMAGE_PROBE_REPORT: ".tmp/launch-image-probe.json",
   VIDEO_GENERATION_PROBE_REPORT: ".tmp/launch-video-probe.json",
+  VIDEO_H3_GENERATION_PROBE_REPORT: ".tmp/launch-video-h3-probe.json",
   GENERATION_IMAGE_PERSISTENCE_PROBE_REPORT:
     ".tmp/launch-image-persistence-probe.json",
   GENERATION_VIDEO_PERSISTENCE_PROBE_REPORT:
     ".tmp/launch-video-persistence-probe.json",
+  GENERATION_VIDEO_H3_PERSISTENCE_PROBE_REPORT:
+    ".tmp/launch-video-h3-persistence-probe.json",
   VOICE_MODEL_PROBE_REPORT: ".tmp/launch-voice-probe.json",
   BLOB_STORAGE_PROBE_REPORT: ".tmp/launch-blob-probe.json",
   BTCPAY_BASE_URL: "https://btcpay.ourdream.ai",
@@ -202,6 +210,7 @@ function passingBackendImageProbe(
 
 function passingVideoProbe(
   override: Partial<VideoGenerationProbeEvidence> = {},
+  recipe: CharacterVideoProductionRecipe = characterVideoProductionRecipe,
 ): VideoGenerationProbeEvidence {
   return {
     ok: true,
@@ -210,11 +219,12 @@ function passingVideoProbe(
     provider: "backend",
     backendKind: "comfyui",
     backendTarget: productionEnv.COMFYUI_API_URL,
-    workflowKey: "ltx23-gtanimation-i2v",
-    workflowVersion: 1,
-    model: "ltx23-gtanimation-i2v",
-    seconds: 4,
+    workflowKey: recipe.workflowKey,
+    workflowVersion: recipe.workflowVersion,
+    model: recipe.workflowKey,
+    seconds: recipe.durationSeconds,
     referenceSha256: "c".repeat(64),
+    modelAssets: recipe.modelAssets.map((asset) => ({ ...asset })),
     generationJobId: "probe_video_123",
     blobAuthority: {
       provider: productionEnv.BLOB_PROVIDER,
@@ -231,6 +241,12 @@ function passingVideoProbe(
     },
     ...override,
   };
+}
+
+function passingH3VideoProbe(
+  override: Partial<VideoGenerationProbeEvidence> = {},
+) {
+  return passingVideoProbe(override, minimaxH3VideoProductionRecipe);
 }
 
 function passingGenerationPersistenceProbe(
@@ -595,6 +611,8 @@ function passingProductConfigProbe(
     activeImageFreeplayTemplates: 1,
     activeImagePricingRules: 1,
     activeVideoProfiles: 0,
+    activeVideoExecutionBindings: [],
+    invalidActiveVideoProfileIds: [],
     activeVideoCharacterTemplates: 0,
     activeVideoFreeplayTemplates: 0,
     activeVideoPricingRules: 0,
@@ -604,6 +622,29 @@ function passingProductConfigProbe(
     error: null,
     ...override,
   };
+}
+
+function passingVideoEnabledProductConfigProbe(
+  override: Partial<ProductConfigProbeEvidence> = {},
+) {
+  return passingProductConfigProbe({
+    videoFeatureEnabled: true,
+    activeVideoProfiles: 2,
+    activeVideoExecutionBindings: [
+      characterVideoProductionRecipe,
+      minimaxH3VideoProductionRecipe,
+    ].map((recipe) => ({
+      profileId: recipe.profileKey,
+      profileKey: recipe.profileKey,
+      model: recipe.workflowKey,
+      workflowKey: recipe.workflowKey,
+      workflowVersion: recipe.workflowVersion,
+    })),
+    invalidActiveVideoProfileIds: [],
+    activeVideoCharacterTemplates: 1,
+    activeVideoPricingRules: 1,
+    ...override,
+  });
 }
 
 function passingBackendProductConfigProbe(
@@ -835,6 +876,16 @@ function assessLaunchReadiness(
       passingGenerationPersistenceProbe("image"),
     videoGenerationPersistenceProbe:
       passingGenerationPersistenceProbe("video"),
+    videoH3GenerationProbe: passingH3VideoProbe(),
+    videoH3GenerationPersistenceProbe: passingGenerationPersistenceProbe(
+      "video",
+      {
+        generationJobId: "job_video_h3_123",
+        attemptId: "attempt_video_h3_123",
+        profileKey: minimaxH3VideoProductionRecipe.profileKey,
+        workflowKey: minimaxH3VideoProductionRecipe.workflowKey,
+      },
+    ),
     ...options,
   } as Record<string, unknown>;
   for (const name of PROBE_NAMES) {
@@ -1285,9 +1336,8 @@ describe("launch readiness", () => {
       chatServiceProbe: passingChatServiceProbe(),
       paymentProviderProbe: passingPaymentProbe(),
       safetyGatewayProbe: passingSafetyProbe(),
-      productConfigProbe: passingProductConfigProbe({
+      productConfigProbe: passingVideoEnabledProductConfigProbe({
         videoFeatureEnabled: true,
-        activeVideoProfiles: 1,
         activeVideoCharacterTemplates: 1,
         activeVideoFreeplayTemplates: 1,
         activeVideoPricingRules: 1,
@@ -1337,9 +1387,8 @@ describe("launch readiness", () => {
       chatServiceProbe: passingChatServiceProbe(),
       paymentProviderProbe: passingPaymentProbe(),
       safetyGatewayProbe: passingSafetyProbe(),
-      productConfigProbe: passingProductConfigProbe({
+      productConfigProbe: passingVideoEnabledProductConfigProbe({
         videoFeatureEnabled: true,
-        activeVideoProfiles: 1,
         activeVideoCharacterTemplates: 1,
         activeVideoFreeplayTemplates: 1,
         activeVideoPricingRules: 1,
@@ -1382,9 +1431,8 @@ describe("launch readiness", () => {
       chatServiceProbe: passingChatServiceProbe(),
       paymentProviderProbe: passingPaymentProbe(),
       safetyGatewayProbe: passingSafetyProbe(),
-      productConfigProbe: passingProductConfigProbe({
+      productConfigProbe: passingVideoEnabledProductConfigProbe({
         videoFeatureEnabled: true,
-        activeVideoProfiles: 1,
         activeVideoCharacterTemplates: 1,
         activeVideoFreeplayTemplates: 1,
         activeVideoPricingRules: 1,
@@ -4073,9 +4121,8 @@ describe("launch readiness", () => {
       chatServiceProbe: passingChatServiceProbe(),
       paymentProviderProbe: passingPaymentProbe(),
       safetyGatewayProbe: passingSafetyProbe(),
-      productConfigProbe: passingProductConfigProbe({
+      productConfigProbe: passingVideoEnabledProductConfigProbe({
         videoFeatureEnabled: true,
-        activeVideoProfiles: 1,
         activeVideoCharacterTemplates: 1,
         activeVideoFreeplayTemplates: 1,
         activeVideoPricingRules: 1,
@@ -4138,9 +4185,8 @@ describe("launch readiness", () => {
       voiceModelProbe: passingVoiceProbe(),
       paymentProviderProbe: passingPaymentProbe(),
       safetyGatewayProbe: passingSafetyProbe(),
-      productConfigProbe: passingProductConfigProbe({
+      productConfigProbe: passingVideoEnabledProductConfigProbe({
         videoFeatureEnabled: true,
-        activeVideoProfiles: 1,
         activeVideoCharacterTemplates: 1,
         activeVideoFreeplayTemplates: 1,
         activeVideoPricingRules: 1,
@@ -4155,6 +4201,99 @@ describe("launch readiness", () => {
     expect(checkById(report, "pipeline-image-live-probe")?.status).toBe("pass");
     expect(checkById(report, "video-generation-live-probe")?.status).toBe(
       "pass",
+    );
+    expect(checkById(report, "video-h3-generation-live-probe")?.status).toBe(
+      "pass",
+    );
+    expect(
+      checkById(report, "generation-video-h3-main-persistence")?.status,
+    ).toBe("pass");
+  });
+
+  it("fails closed when H3 lacks its own direct and Main persistence evidence", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      imagePipelineProbe: passingImageProbe(),
+      videoGenerationProbe: passingVideoProbe(),
+      videoH3GenerationProbe: null,
+      videoH3GenerationPersistenceProbe: null,
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingVideoEnabledProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(checkById(report, "video-generation-live-probe")?.status).toBe("pass");
+    expect(checkById(report, "video-h3-generation-live-probe")?.status).toBe("fail");
+    expect(checkById(report, "generation-video-h3-main-persistence")?.status).toBe("fail");
+  });
+
+  it("rejects H3 evidence when a pinned model asset has different bytes", () => {
+    const modelAssets = minimaxH3VideoProductionRecipe.modelAssets.map(
+      (asset, index) => ({
+        ...asset,
+        sha256: index === 0 ? "0".repeat(64) : asset.sha256,
+      }),
+    );
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      imagePipelineProbe: passingImageProbe(),
+      videoGenerationProbe: passingVideoProbe(),
+      videoH3GenerationProbe: passingH3VideoProbe({ modelAssets }),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingVideoEnabledProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(checkById(report, "video-h3-generation-live-probe")?.message).toContain(
+      "model asset bytes do not match",
+    );
+  });
+
+  it("rejects product config that enables video without the H3 profile binding", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      imagePipelineProbe: passingImageProbe(),
+      videoGenerationProbe: passingVideoProbe(),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingVideoEnabledProductConfigProbe({
+        activeVideoProfiles: 1,
+        activeVideoExecutionBindings: [{
+          profileId: characterVideoProductionRecipe.profileKey,
+          profileKey: characterVideoProductionRecipe.profileKey,
+          model: characterVideoProductionRecipe.workflowKey,
+          workflowKey: characterVideoProductionRecipe.workflowKey,
+          workflowVersion: characterVideoProductionRecipe.workflowVersion,
+        }],
+      }),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(checkById(report, "product-config-live-probe")?.message).toContain(
+      minimaxH3VideoProductionRecipe.profileKey,
     );
   });
 
@@ -4177,9 +4316,8 @@ describe("launch readiness", () => {
       voiceModelProbe: passingVoiceProbe(),
       paymentProviderProbe: passingPaymentProbe(),
       safetyGatewayProbe: passingSafetyProbe(),
-      productConfigProbe: passingProductConfigProbe({
+      productConfigProbe: passingVideoEnabledProductConfigProbe({
         videoFeatureEnabled: true,
-        activeVideoProfiles: 1,
         activeVideoCharacterTemplates: 1,
         activeVideoPricingRules: 1,
       }),
@@ -4213,9 +4351,8 @@ describe("launch readiness", () => {
       voiceModelProbe: passingVoiceProbe(),
       paymentProviderProbe: passingPaymentProbe(),
       safetyGatewayProbe: passingSafetyProbe(),
-      productConfigProbe: passingProductConfigProbe({
+      productConfigProbe: passingVideoEnabledProductConfigProbe({
         videoFeatureEnabled: true,
-        activeVideoProfiles: 1,
         activeVideoCharacterTemplates: 1,
         activeVideoPricingRules: 1,
       }),
@@ -4242,9 +4379,8 @@ describe("launch readiness", () => {
       voiceModelProbe: passingVoiceProbe(),
       paymentProviderProbe: passingPaymentProbe(),
       safetyGatewayProbe: passingSafetyProbe(),
-      productConfigProbe: passingProductConfigProbe({
+      productConfigProbe: passingVideoEnabledProductConfigProbe({
         videoFeatureEnabled: true,
-        activeVideoProfiles: 1,
         activeVideoCharacterTemplates: 1,
         activeVideoFreeplayTemplates: 1,
         activeVideoPricingRules: 1,

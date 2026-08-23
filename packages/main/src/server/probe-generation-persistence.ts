@@ -1,5 +1,6 @@
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { minimaxH3VideoProductionRecipe } from "@idream/shared";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "./lib/db";
 import { canonicalSha256 } from "./modules/admin-v2/shared/canonical-json";
@@ -10,11 +11,28 @@ import type {
 import {
   probeCliArg,
   probeReportPath,
+  type ProbeName,
   writeProbeReport,
 } from "./readiness/probe-report";
 
 type GenerationPersistenceReport =
   ProbeReportOf<GenerationPersistenceProbeEvidence>;
+
+export function generationPersistenceProbeName(
+  report: Pick<
+    GenerationPersistenceReport,
+    "mode" | "profileKey" | "workflowKey"
+  >,
+): ProbeName {
+  if (report.mode !== "video") return "imageGenerationPersistenceProbe";
+  if (
+    report.workflowKey === minimaxH3VideoProductionRecipe.workflowKey ||
+    report.profileKey === minimaxH3VideoProductionRecipe.profileKey
+  ) {
+    return "videoH3GenerationPersistenceProbe";
+  }
+  return "videoGenerationPersistenceProbe";
+}
 
 export type GenerationPersistenceSnapshot = {
   checkedAt: string;
@@ -377,10 +395,7 @@ async function main() {
     );
   }
   const report = await inspectGenerationPersistence(generationJobId);
-  const probeName =
-    report.mode === "video"
-      ? "videoGenerationPersistenceProbe"
-      : "imageGenerationPersistenceProbe";
+  const probeName = generationPersistenceProbeName(report);
   const reportPath = probeReportPath(probeName);
   if (reportPath) await writeProbeReport(reportPath, report);
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);

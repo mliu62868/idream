@@ -395,8 +395,9 @@ runtime report keeps the launch gate closed.
 
 `probe:image` 必须使用 production Gen adapter/blob env，且 model/workflow/version 必须与
 `probe:product-config` 返回的全部公开图片 execution bindings 一致；报告包含 immutable
-TerminalRecord ref/checksum。Video 启用时还必须用审核过的角色源图运行 `probe:video`，
-完成固定 LTX workflow、MP4 decode 检查和 TerminalRecord 持久化。以下 8091 显式命令只用于需要审计旧 OpenAI-compatible image adapter 的场景；
+TerminalRecord ref/checksum。Video 启用时还必须用审核过的角色源图分别运行 LTX 与 H3
+`probe:video`，报告实际模型资产 SHA-256，并分别完成固定 workflow、MP4 decode 检查、
+TerminalRecord 和 Main Artifact/Delivery/Settlement 持久化；四份 fresh 报告缺一即 fail closed。以下 8091 显式命令只用于需要审计旧 OpenAI-compatible image adapter 的场景；
 它要求另行提供外部 gateway，仓库没有可启动它的 `serve:sdcpp-image` 脚本。当前
 workflow-native backend 的工程 smoke 使用本节顶部 `smoke:backend` 命令，但公开上线
 门禁只接受上述 workflow-bound `probe:image` / `probe:video` 报告。
@@ -770,7 +771,7 @@ Next.js 服务：
 | `admin-web` | `packages/admin` | `3001` | 内部管理后台和 `/api/v1/admin/*` 控制面 API |
 | `chat` | `packages/chat` | `CHAT_PORT` | chat API/SSE + worker，单实例本地文件写入 |
 | `gen-image` | `packages/gen` | n/a | 异步图片生成 worker（当前 2 实例） |
-| `gen-video` | `packages/gen` | n/a | 异步视频生成 worker；当前 `backend -> ComfyUI :8188 -> LTX 2.3 GTAnimation I2V` |
+| `gen-video` | `packages/gen` | n/a | 异步视频生成 worker；当前 `backend -> ComfyUI :8188 -> LTX 2.3 默认 / MiniMax H3 显式 I2V` |
 | `gen-finalizer` / `main-event-consumer` | `packages/main` | n/a | 主站侧权威写回和事件消费 |
 | `admin-command-worker` | `packages/main` | n/a | Admin durable command 执行 |
 
@@ -789,8 +790,8 @@ bun run pm2:status
 默认开发模式下，`main-web` / `admin-web` 直接运行 `next dev`，页面源码由
 Fast Refresh 更新；`chat`、`gen-image`、`gen-finalizer`、
 `main-event-consumer`、`admin-command-worker` 由 PM2 监听对应源码目录并
-自动重启。`gen-video` 即使在开发模式也固定关闭 watch：当前 768×1152 LTX
-任务约需 10–15 分钟，源码监听重启会截断已扣费的长任务。日常改代码无需
+自动重启。`gen-video` 即使在开发模式也固定关闭 watch：当前 LTX / H3
+任务都是长任务，源码监听重启会截断已扣费的生成。日常改代码无需
 build；`.env`、Prisma Client、Next 配置等启动级
 变化执行 `bun run pm2:restart`。
 

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -75,6 +75,16 @@ async function main() {
   const referenceBody = await readFile(options.referencePath);
   const binding = await resolveBackendBinding(options.model);
   const recipe = binding.recipe;
+  const modelAssets = binding.backendKind === "comfyui"
+    ? await Promise.all(
+        recipe.modelAssets.map(async (asset) => ({
+          path: asset.path,
+          sha256: await sha256File(
+            path.join(env.COMFYUI_MODEL_ROOT, asset.path),
+          ),
+        })),
+      )
+    : [];
   const terminalIngests: GenerationTerminalRecordIngest[] = [];
   const controls = {
     source: "probe-video-generation",
@@ -154,6 +164,7 @@ async function main() {
     requestId,
     attemptId,
     referenceSha256: createHash("sha256").update(referenceBody).digest("hex"),
+    modelAssets,
     blobAuthority: env.BLOB_AUTHORITY,
     generationJobId,
     artifact,
@@ -176,6 +187,14 @@ async function main() {
   }
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   if (!ok) process.exitCode = 1;
+}
+
+export async function sha256File(filePath: string) {
+  const digest = createHash("sha256");
+  for await (const chunk of createReadStream(filePath)) {
+    digest.update(chunk);
+  }
+  return digest.digest("hex");
 }
 
 async function artifactEvidence(

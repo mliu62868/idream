@@ -1,6 +1,9 @@
 import { prisma } from "@/server/lib/db";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
-import { isProductionLtxVideoProfile } from "@/server/modules/generation/production-video-profile";
+import {
+  productionVideoRecipeForProfile,
+} from "@/server/modules/generation/production-video-profile";
+import { characterVideoProductionRecipes } from "@idream/shared";
 import {
   filterPublicTextToImageGenerationProfiles,
   generationProfileDeclaresTextToImage,
@@ -133,9 +136,30 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
       .filter(generationProfileDeclaresTextToImage)
       .filter((profile) => !eligibleImageProfileIds.has(profile.id))
       .map((profile) => profile.id);
-    const activeVideoProfiles = activeVideoProfileCandidates.filter(
-      isProductionLtxVideoProfile,
-    ).length;
+    const activeVideoExecutionBindings = activeVideoProfileCandidates.flatMap(
+      (profile) => {
+        const recipe = productionVideoRecipeForProfile(profile);
+        return recipe
+          ? [{
+              profileId: profile.id,
+              profileKey: recipe.profileKey,
+              model: recipe.workflowKey,
+              workflowKey: recipe.workflowKey,
+              workflowVersion: recipe.workflowVersion,
+            }]
+          : [];
+      },
+    );
+    const activeVideoProfiles = activeVideoExecutionBindings.length;
+    const invalidActiveVideoProfileIds = activeVideoProfileCandidates
+      .filter((profile) => productionVideoRecipeForProfile(profile) === null)
+      .map((profile) => profile.id);
+    const activeVideoProfileKeys = new Set(
+      activeVideoExecutionBindings.map((binding) => binding.profileKey),
+    );
+    const missingVideoProfileKeys = characterVideoProductionRecipes
+      .map((recipe) => recipe.profileKey)
+      .filter((profileKey) => !activeVideoProfileKeys.has(profileKey));
     const failureReasons = [
       activeImageProfiles < 1 ? "missing active image model profile" : null,
       invalidActiveImageProfileIds.length > 0
@@ -150,8 +174,11 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
       activeImagePricingRules !== 1
         ? `image pricing requires exactly one active rule (found ${activeImagePricingRules})`
         : null,
-      videoFeatureEnabled && activeVideoProfiles < 1
-        ? "video_gen enabled without the exact production LTX video profile"
+      videoFeatureEnabled && missingVideoProfileKeys.length > 0
+        ? `video_gen enabled without production video profiles: ${missingVideoProfileKeys.join(", ")}`
+        : null,
+      videoFeatureEnabled && invalidActiveVideoProfileIds.length > 0
+        ? `active video profiles do not match production authority: ${invalidActiveVideoProfileIds.join(", ")}`
         : null,
       videoFeatureEnabled && activeVideoCharacterTemplates < 1
         ? "video_gen enabled without active video character prompt template"
@@ -179,6 +206,8 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
       activeImageFreeplayTemplates,
       activeImagePricingRules,
       activeVideoProfiles,
+      activeVideoExecutionBindings,
+      invalidActiveVideoProfileIds,
       activeVideoCharacterTemplates,
       activeVideoFreeplayTemplates,
       activeVideoPricingRules,
@@ -208,6 +237,8 @@ async function runProbe(): Promise<ProductConfigProbeReport> {
       activeImageFreeplayTemplates: 0,
       activeImagePricingRules: 0,
       activeVideoProfiles: 0,
+      activeVideoExecutionBindings: [],
+      invalidActiveVideoProfileIds: [],
       activeVideoCharacterTemplates: 0,
       activeVideoFreeplayTemplates: 0,
       activeVideoPricingRules: 0,

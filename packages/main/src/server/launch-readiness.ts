@@ -6,6 +6,9 @@ import {
   chatFsRootFingerprint,
   resolveChatFsRoot,
   characterVideoProductionRecipe,
+  characterVideoProductionRecipes,
+  minimaxH3VideoProductionRecipe,
+  type CharacterVideoProductionRecipe,
 } from "@idream/shared";
 import {
   defaultBullmqPrefix,
@@ -1589,20 +1592,22 @@ function addVideoGenerationProbeCheck(
   productConfigProbe: ProductConfigProbeEvidence | null,
   probe: VideoGenerationProbeEvidence | null,
   now: Date,
+  recipe: CharacterVideoProductionRecipe,
+  probeName: ProbeName,
+  checkId: string,
 ) {
   const genComfyuiApiUrl = genAuthorityValue(
     env,
     "IDREAM_GEN_COMFYUI_API_URL",
     "COMFYUI_API_URL",
   );
-  const probeName: ProbeName = "videoGenerationProbe";
   if (
     productConfigProbe?.ok === true &&
     !productConfigProbe.loadError &&
     productConfigProbe.videoFeatureEnabled === false
   ) {
     addCheck(checks, {
-      id: "video-generation-live-probe",
+      id: checkId,
       area: "Generation",
       status: "pass",
       message:
@@ -1643,28 +1648,43 @@ function addVideoGenerationProbeCheck(
         "probe ComfyUI target does not match Gen ComfyUI authority",
       );
     }
-    if (probe.workflowKey !== characterVideoProductionRecipe.workflowKey) {
+    if (probe.workflowKey !== recipe.workflowKey) {
       problems.push(
         "probe workflow does not match the production video recipe",
       );
     }
     if (
-      probe.workflowVersion !== characterVideoProductionRecipe.workflowVersion
+      probe.workflowVersion !== recipe.workflowVersion
     ) {
       problems.push(
         "probe workflow version does not match the production video recipe",
       );
     }
-    if (probe.model !== characterVideoProductionRecipe.workflowKey) {
+    if (probe.model !== recipe.workflowKey) {
       problems.push("probe model does not match the production video recipe");
     }
-    if (probe.seconds !== characterVideoProductionRecipe.durationSeconds) {
+    if (probe.seconds !== recipe.durationSeconds) {
       problems.push(
         "probe duration does not match the production video recipe",
       );
     }
     if (!/^[a-f0-9]{64}$/.test(probe.referenceSha256 ?? "")) {
       problems.push("probe does not identify the exact source image bytes");
+    }
+    if (!Array.isArray(probe.modelAssets)) {
+      problems.push("probe predates exact model byte evidence");
+    } else {
+      for (const expected of recipe.modelAssets) {
+        const observed = probe.modelAssets.find(
+          (asset) => asset.path === expected.path,
+        );
+        if (observed?.sha256 !== expected.sha256) {
+          problems.push(`model asset bytes do not match ${expected.path}`);
+        }
+      }
+      if (probe.modelAssets.length !== recipe.modelAssets.length) {
+        problems.push("probe model asset count does not match the production recipe");
+      }
     }
     addGenBlobAuthorityProblems(problems, env, probe.blobAuthority);
     if (!probe.terminal) {
@@ -1694,17 +1714,17 @@ function addVideoGenerationProbeCheck(
   }
 
   addCheck(checks, {
-    id: "video-generation-live-probe",
+    id: checkId,
     area: "Generation",
     status: problems.length === 0 ? "pass" : "fail",
     message:
       problems.length === 0
-        ? "Recent video probe completed the exact production LTX workflow through the shared Blob authority and emitted a successful immutable terminal record."
+        ? `Recent video probe completed the exact production ${recipe.modelLabel} workflow and model bytes through the shared Blob authority and emitted a successful immutable terminal record.`
         : `Video generation probe evidence is missing or invalid: ${problems.join("; ")}.`,
     remediation:
       problems.length === 0
         ? undefined
-        : `Run \`bun run --filter @idream/gen probe:video -- --model ${characterVideoProductionRecipe.workflowKey} --reference <reviewed-character-image> --report .tmp/launch-video-probe.json\` against production ComfyUI and Blob, then set ${PROBE_REPORTS[probeName].reportEnvKey} before check:launch.`,
+        : `Run \`bun run --filter @idream/gen probe:video -- --model ${recipe.workflowKey} --reference <reviewed-character-image> --report .tmp/launch-${recipe.profileKey}-probe.json\` against production ComfyUI and Blob, then set ${PROBE_REPORTS[probeName].reportEnvKey} before check:launch.`,
   });
 }
 
@@ -1716,12 +1736,16 @@ function addGenerationPersistenceProbeCheck(
   directProbe: ImagePipelineProbeEvidence | VideoGenerationProbeEvidence | null,
   productConfigProbe: ProductConfigProbeEvidence | null,
   now: Date,
+  videoBinding?: {
+    probeName: ProbeName;
+    checkId: string;
+  },
 ) {
   const probeName: ProbeName =
     mode === "image"
       ? "imageGenerationPersistenceProbe"
-      : "videoGenerationPersistenceProbe";
-  const checkId = `generation-${mode}-main-persistence`;
+      : (videoBinding?.probeName ?? "videoGenerationPersistenceProbe");
+  const checkId = videoBinding?.checkId ?? `generation-${mode}-main-persistence`;
   if (
     mode === "video" &&
     productConfigProbe?.ok === true &&
@@ -1889,9 +1913,44 @@ function addProductConfigProbeCheck(
     }
 
     if (probe.videoFeatureEnabled === true) {
-      if ((probe.activeVideoProfiles ?? 0) < 1) {
+      if (!Array.isArray(probe.activeVideoExecutionBindings)) {
         problems.push(
-          "video_gen is enabled but no active video model profile is configured",
+          "video_gen is enabled but the probe predates video execution binding evidence",
+        );
+      } else {
+        for (const recipe of characterVideoProductionRecipes) {
+          const binding = probe.activeVideoExecutionBindings.find(
+            (candidate) => candidate.profileKey === recipe.profileKey,
+          );
+          if (
+            binding?.model !== recipe.workflowKey ||
+            binding.workflowKey !== recipe.workflowKey ||
+            binding.workflowVersion !== recipe.workflowVersion
+          ) {
+            problems.push(
+              `video_gen is enabled without exact execution binding ${recipe.profileKey}`,
+            );
+          }
+        }
+        if (
+          probe.activeVideoExecutionBindings.length !==
+          characterVideoProductionRecipes.length
+        ) {
+          problems.push(
+            "video execution binding count does not match production recipes",
+          );
+        }
+      }
+      if ((probe.activeVideoProfiles ?? 0) !== characterVideoProductionRecipes.length) {
+        problems.push(
+          "video_gen is enabled without every production video model profile",
+        );
+      }
+      if (!Array.isArray(probe.invalidActiveVideoProfileIds)) {
+        problems.push("probe predates invalid video profile evidence");
+      } else if (probe.invalidActiveVideoProfileIds.length > 0) {
+        problems.push(
+          `active video profiles do not match production authority: ${probe.invalidActiveVideoProfileIds.join(", ")}`,
         );
       }
       if ((probe.activeVideoCharacterTemplates ?? 0) < 1) {
@@ -2552,6 +2611,8 @@ function requiredRevisionProbeNames(
   ) {
     names.add("videoGenerationProbe");
     names.add("videoGenerationPersistenceProbe");
+    names.add("videoH3GenerationProbe");
+    names.add("videoH3GenerationPersistenceProbe");
   }
   if (
     (env.MODERATION_PROVIDER ?? "mock") !== "mock" ||
@@ -2866,6 +2927,19 @@ export function assessLaunchReadiness(
     probes.productConfigProbe,
     probes.videoGenerationProbe,
     now,
+    characterVideoProductionRecipe,
+    "videoGenerationProbe",
+    "video-generation-live-probe",
+  );
+  addVideoGenerationProbeCheck(
+    checks,
+    env,
+    probes.productConfigProbe,
+    probes.videoH3GenerationProbe,
+    now,
+    minimaxH3VideoProductionRecipe,
+    "videoH3GenerationProbe",
+    "video-h3-generation-live-probe",
   );
   addGenerationPersistenceProbeCheck(
     checks,
@@ -2875,6 +2949,19 @@ export function assessLaunchReadiness(
     probes.videoGenerationProbe,
     probes.productConfigProbe,
     now,
+  );
+  addGenerationPersistenceProbeCheck(
+    checks,
+    env,
+    "video",
+    probes.videoH3GenerationPersistenceProbe,
+    probes.videoH3GenerationProbe,
+    probes.productConfigProbe,
+    now,
+    {
+      probeName: "videoH3GenerationPersistenceProbe",
+      checkId: "generation-video-h3-main-persistence",
+    },
   );
   addVoiceModelProbeCheck(checks, env, probes.voiceModelProbe, now);
 

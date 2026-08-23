@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   evaluateGenerationPersistenceSnapshot,
+  generationPersistenceProbeName,
   type GenerationPersistenceSnapshot,
 } from "./probe-generation-persistence";
 
@@ -70,6 +71,24 @@ function successfulSnapshot(): GenerationPersistenceSnapshot {
 }
 
 describe("generation persistence probe", () => {
+  it("routes MiniMax H3 persistence evidence to its independent launch report", () => {
+    expect(
+      generationPersistenceProbeName({
+        mode: "video",
+        profileKey: "profile_video_h3_v1",
+        workflowKey: "minimax-h3-redcraft-i2v",
+      }),
+    ).toBe("videoH3GenerationPersistenceProbe");
+
+    expect(
+      generationPersistenceProbeName({
+        mode: "video",
+        profileKey: "profile_video_beta_v1",
+        workflowKey: "ltx23-gtanimation-i2v",
+      }),
+    ).toBe("videoGenerationPersistenceProbe");
+  });
+
   it("accepts one exact Main terminal projection", async () => {
     const snapshot = successfulSnapshot();
     const { canonicalSha256 } = await import(

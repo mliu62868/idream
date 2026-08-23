@@ -1210,10 +1210,19 @@ describe("local AI service pipeline", () => {
       where: { key: "video_gen" },
       select: { enabled: true, rolloutPercent: true },
     });
+    const previousLtxProfile =
+      await prisma.generationModelProfile.findUniqueOrThrow({
+        where: { id: "seed-profile-video-beta-v1" },
+        select: { label: true, costMultiplier: true },
+      });
     const previousH3Profile =
       await prisma.generationModelProfile.findUniqueOrThrow({
         where: { id: "seed-profile-video-h3-v1" },
-        select: { rolloutPercent: true },
+        select: {
+          label: true,
+          costMultiplier: true,
+          rolloutPercent: true,
+        },
       });
     await prisma.featureFlag.update({
       where: { key: "video_gen" },
@@ -1221,7 +1230,18 @@ describe("local AI service pipeline", () => {
     });
     await prisma.generationModelProfile.update({
       where: { id: "seed-profile-video-h3-v1" },
-      data: { rolloutPercent: 100 },
+      data: {
+        label: "AAA explicit H3 route",
+        costMultiplier: 0.01,
+        rolloutPercent: 100,
+      },
+    });
+    await prisma.generationModelProfile.update({
+      where: { id: "seed-profile-video-beta-v1" },
+      data: {
+        label: "ZZZ implicit LTX route",
+        costMultiplier: 9,
+      },
     });
 
     try {
@@ -1288,6 +1308,88 @@ describe("local AI service pipeline", () => {
           workflowVersion: 1,
         }),
       });
+      const jobId = created.data.job.id as string;
+      cleanupJobDedupeKeys.push(
+        `generation:${jobId}`,
+        `generation-finalize:${jobId}:completed`,
+      );
+      cleanupModerationTargetIds.push(jobId);
+
+      const queued = await jobQueue.getByDedupeKey(
+        "ai.video.generate",
+        `generation:${jobId}:attempt:1`,
+      );
+      expect(queued?.payload).toMatchObject({
+        kind: "video",
+        generationJobId: jobId,
+        model: "minimax-h3-redcraft-i2v",
+        controls: expect.objectContaining({
+          profileId: "profile_video_h3_v1",
+          workflowKey: "minimax-h3-redcraft-i2v",
+          workflowVersion: 1,
+        }),
+      });
+
+      await runQueuedGenerationJobs(8);
+
+      const completed = await api("GET", `generation/jobs/${jobId}`, {
+        userId,
+        ageGate: true,
+      });
+      expectOk(completed);
+      expect(completed.data.job).toMatchObject({
+        status: "completed",
+        profileId: "profile_video_h3_v1",
+        model: "minimax-h3-redcraft-i2v",
+      });
+      expect(completed.data.assets).toHaveLength(1);
+
+      const attempt = await prisma.generationAttempt.findFirstOrThrow({
+        where: { requestId: jobId, attemptNo: 1 },
+      });
+      expect(attempt).toMatchObject({
+        provider: "comfyui",
+        profileKey: "profile_video_h3_v1",
+        profileVersion: 1,
+        workflowKey: "minimax-h3-redcraft-i2v",
+        workflowVersion: 1,
+        status: "succeeded",
+        terminalRecordRef: expect.any(String),
+      });
+      await expect(prisma.generationTransportExecution.findMany({
+        where: { attemptId: attempt.id },
+      })).resolves.toEqual([
+        expect.objectContaining({ status: "succeeded", terminalRecordRef: attempt.terminalRecordRef }),
+      ]);
+      const artifact = await prisma.generationArtifact.findFirstOrThrow({
+        where: { attemptId: attempt.id },
+      });
+      expect(artifact).toMatchObject({
+        ordinal: 0,
+        validationState: "valid",
+        assetId: expect.any(String),
+        terminalRecordChecksum: expect.stringMatching(/^[a-f0-9]{64}$/),
+      });
+      await expect(prisma.generationDelivery.findMany({
+        where: { requestId: jobId },
+      })).resolves.toEqual([
+        expect.objectContaining({ artifactId: artifact.id, status: "delivered" }),
+      ]);
+      await expect(prisma.generationSettlementLink.count({
+        where: { requestId: jobId, kind: "generation_spend" },
+      })).resolves.toBe(1);
+      await expect(prisma.mediaAsset.findUniqueOrThrow({
+        where: { id: artifact.assetId! },
+      })).resolves.toMatchObject({ sourceJobId: jobId, type: "video" });
+      await expect(prisma.mainOutboxEvent.findFirst({
+        where: {
+          aggregateType: "generation_attempt",
+          aggregateId: attempt.id,
+        },
+      })).resolves.toMatchObject({ status: "delivered" });
+      expect(await dreamcoinBalance(userId)).toBe(
+        300 - (created.data.job.costDreamcoins as number),
+      );
     } finally {
       await prisma.featureFlag.update({
         where: { key: "video_gen" },
@@ -1297,16 +1399,46 @@ describe("local AI service pipeline", () => {
         where: { id: "seed-profile-video-h3-v1" },
         data: previousH3Profile,
       });
+      await prisma.generationModelProfile.update({
+        where: { id: "seed-profile-video-beta-v1" },
+        data: previousLtxProfile,
+      });
     }
   });
 
-  it("fails closed when a video retry no longer matches its pinned workflow", async () => {
-    const userId = `${P}video-retry-authority-user`;
-    const retryKey = `${P}video-retry-authority-key`;
+  it.each([
+    {
+      label: "LTX",
+      profileRowId: "seed-profile-video-beta-v1",
+      requestedModel: undefined,
+      seconds: 4,
+      profileKey: "profile_video_beta_v1",
+      workflowKey: "ltx23-gtanimation-i2v",
+    },
+    {
+      label: "MiniMax H3",
+      profileRowId: "seed-profile-video-h3-v1",
+      requestedModel: "profile_video_h3_v1",
+      seconds: 5,
+      profileKey: "profile_video_h3_v1",
+      workflowKey: "minimax-h3-redcraft-i2v",
+    },
+  ])("fails closed on stale $label workflow pins and preserves exact retry authority", async ({
+    profileRowId,
+    requestedModel,
+    seconds,
+    profileKey,
+    workflowKey,
+  }) => {
+    const userId = `${P}video-retry-authority-${profileKey}`;
+    const retryKey = `${P}video-retry-authority-${profileKey}`;
     await createUser({ id: userId });
     await grantCoins(userId, 300, "seed");
-    await prisma.entitlement.create({
-      data: { userId, key: "video_generation", value: true, source: "test" },
+    await prisma.entitlement.createMany({
+      data: [
+        { userId, key: "video_generation", value: true, source: "test" },
+        { userId, key: "premium_controls", value: true, source: "test" },
+      ],
     });
     const previousFlag = await prisma.featureFlag.findUniqueOrThrow({
       where: { key: "video_gen" },
@@ -1314,7 +1446,7 @@ describe("local AI service pipeline", () => {
     });
     const previousVideoProfile =
       await prisma.generationModelProfile.findUniqueOrThrow({
-        where: { id: "seed-profile-video-beta-v1" },
+        where: { id: profileRowId },
         select: { rolloutPercent: true },
       });
     await prisma.featureFlag.update({
@@ -1322,7 +1454,7 @@ describe("local AI service pipeline", () => {
       data: { enabled: true, rolloutPercent: 100 },
     });
     await prisma.generationModelProfile.update({
-      where: { id: "seed-profile-video-beta-v1" },
+      where: { id: profileRowId },
       data: { rolloutPercent: 100 },
     });
 
@@ -1333,7 +1465,8 @@ describe("local AI service pipeline", () => {
         body: {
           mode: "video",
           characterId: CHAR,
-          controls: { seconds: 4 },
+          ...(requestedModel ? { model: requestedModel } : {}),
+          controls: { seconds },
           outputCount: 1,
         },
       });
@@ -1405,18 +1538,40 @@ describe("local AI service pipeline", () => {
         },
       );
       expectOk(retried, 202);
+      expect(retried.data.job).toMatchObject({
+        profileId: profileKey,
+        model: workflowKey,
+      });
       expect(retried.data.job.controls).toMatchObject({
-        workflowKey: "ltx23-gtanimation-i2v",
+        seconds,
+        workflowKey,
         workflowVersion: 1,
       });
-      cleanupJobDedupeKeys.push(`generation:${retried.data.job.id as string}`);
+      const retriedJobId = retried.data.job.id as string;
+      cleanupJobDedupeKeys.push(`generation:${retriedJobId}`);
+      await expect(
+        jobQueue.getByDedupeKey(
+          "ai.video.generate",
+          `generation:${retriedJobId}:attempt:1`,
+        ),
+      ).resolves.toMatchObject({
+        payload: {
+          model: workflowKey,
+          controls: expect.objectContaining({
+            seconds,
+            profileId: profileKey,
+            workflowKey,
+            workflowVersion: 1,
+          }),
+        },
+      });
     } finally {
       await prisma.featureFlag.update({
         where: { key: "video_gen" },
         data: previousFlag,
       });
       await prisma.generationModelProfile.update({
-        where: { id: "seed-profile-video-beta-v1" },
+        where: { id: profileRowId },
         data: previousVideoProfile,
       });
     }

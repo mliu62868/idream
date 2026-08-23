@@ -20,6 +20,8 @@ import {
   decodeVoiceModelProbeEvidence,
   decodeVideoGenerationProbeEvidence,
   decodeVideoGenerationPersistenceProbeEvidence,
+  decodeVideoH3GenerationProbeEvidence,
+  decodeVideoH3GenerationPersistenceProbeEvidence,
   decodeWebSurfaceProbeEvidence,
 } from "./evidence";
 
@@ -51,6 +53,11 @@ export const PROBE_REPORTS = {
     maxAgeEnvKey: "VIDEO_GENERATION_PROBE_MAX_AGE_MINUTES",
     decode: decodeVideoGenerationProbeEvidence,
   },
+  videoH3GenerationProbe: {
+    reportEnvKey: "VIDEO_H3_GENERATION_PROBE_REPORT",
+    maxAgeEnvKey: "VIDEO_H3_GENERATION_PROBE_MAX_AGE_MINUTES",
+    decode: decodeVideoH3GenerationProbeEvidence,
+  },
   imageGenerationPersistenceProbe: {
     reportEnvKey: "GENERATION_IMAGE_PERSISTENCE_PROBE_REPORT",
     maxAgeEnvKey: "GENERATION_IMAGE_PERSISTENCE_PROBE_MAX_AGE_MINUTES",
@@ -60,6 +67,11 @@ export const PROBE_REPORTS = {
     reportEnvKey: "GENERATION_VIDEO_PERSISTENCE_PROBE_REPORT",
     maxAgeEnvKey: "GENERATION_VIDEO_PERSISTENCE_PROBE_MAX_AGE_MINUTES",
     decode: decodeVideoGenerationPersistenceProbeEvidence,
+  },
+  videoH3GenerationPersistenceProbe: {
+    reportEnvKey: "GENERATION_VIDEO_H3_PERSISTENCE_PROBE_REPORT",
+    maxAgeEnvKey: "GENERATION_VIDEO_H3_PERSISTENCE_PROBE_MAX_AGE_MINUTES",
+    decode: decodeVideoH3GenerationPersistenceProbeEvidence,
   },
   blobStorageProbe: {
     reportEnvKey: "BLOB_STORAGE_PROBE_REPORT",

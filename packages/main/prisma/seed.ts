@@ -8,6 +8,7 @@ import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
 import { categoryFilters } from "../src/lib/ourdream-data";
 import { createPrismaClientOptions } from "../src/server/lib/prisma-adapter";
+import { PRODUCTION_H3_VIDEO_PROFILE } from "../src/server/modules/generation/production-video-profile";
 import { safetyDocuments } from "../src/lib/ourdream-safety-data";
 import {
   officialCharacterSeeds,
@@ -1814,48 +1815,18 @@ async function seedAdminControlPlane() {
 
   if (!existingProfileKeys.has(minimaxH3VideoProductionRecipe.profileKey)) {
     const recipe = minimaxH3VideoProductionRecipe;
+    const profile = PRODUCTION_H3_VIDEO_PROFILE;
     await prisma.generationModelProfile.upsert({
       where: { id: "seed-profile-video-h3-v1" },
       update: {},
       create: {
         id: "seed-profile-video-h3-v1",
-        profileKey: recipe.profileKey,
+        ...profile,
         label: recipe.modelLabel,
         mode: "video",
-        runner: recipe.runner,
-        pipelineModel: recipe.pipelineModel,
-        workflowKey: recipe.workflowKey,
-        sourceModelPath: recipe.sourceModelPath,
         convertedModelPath: null,
-        modelFormat: recipe.modelFormat,
-        runnerConfig: {
-          workflowVersion: recipe.workflowVersion,
-          capabilities: {
-            textToImage: false,
-            stableSeed: true,
-            referenceImages: false,
-            initImage: true,
-            imageToVideo: true,
-            audio: true,
-            fps: recipe.fps,
-            maxDurationSeconds: recipe.durationSeconds,
-          },
-          publicSelection: { explicitOnly: true },
-        },
-        defaultWidth: recipe.width,
-        defaultHeight: recipe.height,
-        allowedOrientations: [recipe.orientation],
-        steps: recipe.steps,
-        sampler: recipe.sampler,
-        scheduler: recipe.scheduler,
-        cfgScale: recipe.cfgScale,
         costMultiplier: 1,
-        requiredEntitlement: recipe.requiredEntitlement,
-        maxCount: recipe.outputCount,
-        concurrencyLimit: recipe.concurrencyLimit,
         enabled: true,
-        rolloutPercent: recipe.rolloutPercent,
-        version: recipe.recipeVersion,
         status: "active",
         dryRunSummary: {
           status: "passed",

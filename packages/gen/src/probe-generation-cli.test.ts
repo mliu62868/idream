@@ -1,9 +1,10 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
+import { sha256File } from "./probe-video-pipeline";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -22,6 +23,16 @@ afterEach(() => {
 });
 
 describe("generation launch probe CLIs", () => {
+  it("hashes model assets through a file stream", async () => {
+    const directory = temporaryDirectory();
+    const assetPath = path.join(directory, "model.safetensors");
+    writeFileSync(assetPath, "streamed model bytes");
+
+    expect(await sha256File(assetPath)).toBe(
+      "6a2f2277fac614b3a8ace8c7355c970cb055f15987c04c041dc3610a2896c197",
+    );
+  });
+
   it("keeps the image probe aligned with Attempt and immutable TerminalRecord contracts", () => {
     const directory = temporaryDirectory();
     const reportPath = path.join(directory, "image-report.json");

@@ -53,6 +53,14 @@ export const characterVideoProductionRecipe = {
   // excluded; checkpoint, wiring, sampler, sigma schedule and bindings are not.
   workflowGraphSha256:
     "ef8ff05606ca85d714b4ecf7dc5ed6c4758f543b545e313f875469564d08184a",
+  modelAssets: [
+    { path: "diffusion_models/ltx23Gtanimation25Frames_ltxv23INT4Convrot.safetensors", sha256: "fa457f3fb702a24cfefa1167db5ce11d8c8994023120b560e34d778cfa071d1d" },
+    { path: "latent_upscale_models/ltx-2.3-spatial-upscaler-x2-1.1.safetensors", sha256: "5f416311fa8172b65af67530758964708d29a317b830d689a51143b7f91913ed" },
+    { path: "vae/LTX23_audio_vae_bf16.safetensors", sha256: "5bc10fa4adecf99dda132d916e23048cbd56797702c5fa50eb5d2079048a38c3" },
+    { path: "vae/LTX23_video_vae_bf16.safetensors", sha256: "01ea62d09bc139f95c5dee7b5c062ad6a3e6cd8be910a1983ac02e7eb5b8ee3b" },
+    { path: "text_encoders/gemma-3-12b-it-heretic-v2_int8.safetensors", sha256: "5ec38ee58d20b884eca5f2569b8750dcc36c6e3013be55e58ebc38b9d4948174" },
+    { path: "text_encoders/ltx-2.3_text_projection_bf16.safetensors", sha256: "911d59bb4cb7708179c9a0045ea0fe41212ecfb77aed3a02702b7c0a8274911f" },
+  ],
   requiredEntitlement: "video_generation",
   concurrencyLimit: 1,
   rolloutPercent: 100,
@@ -106,6 +114,12 @@ export const minimaxH3VideoProductionRecipe = {
   cfgScale: 1,
   workflowGraphSha256:
     "bb2429ba7e32820a93fcc56cf2f1de4bd39ba21661093876b989b29d618dcba8",
+  modelAssets: [
+    { path: "diffusion_models/REDMix-MiniMaxH3-A2Ab1-pruned-int8-convrot-ComfyMCP.safetensors", sha256: "fc99ff051283ee05f29b1ebcb14e0d7b36c03e93512ac5479411cdfa2e284122" },
+    { path: "text_encoders/qwen3vl-32B-MiniMax-H3-Q4_K_M.gguf", sha256: "1bf75e038c5895b97b6ea16cc1e3d32076254b06ec3df10657650d86dc82279e" },
+    { path: "vae/minimax_h3_video_vae_fp16.safetensors", sha256: "7c1f131492e7eddacaac9069a61b81bdd39de5cc96561e677c5eab1cdce5e522" },
+    { path: "vae/minimax_h3_audio_vae_fp32.safetensors", sha256: "8e505d95dd1561d47abd43d4238fd40d9bb1ae9e147ed0a4cba778d76ae4db48" },
+  ],
   requiredEntitlement: "video_generation",
   concurrencyLimit: 1,
   rolloutPercent: 100,
