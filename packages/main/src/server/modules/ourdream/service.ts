@@ -16,7 +16,8 @@ import path from "node:path";
 import { z } from "zod";
 import type { ChatImageRequestedPayload } from "@/server/ai/schemas";
 import {
-  isProductionLtxVideoProfile,
+  isProductionVideoProfile,
+  productionVideoRecipeForProfile,
 } from "@/server/modules/generation/production-video-profile";
 import {
   generationQuoteAuthoritySchema,
@@ -1861,11 +1862,23 @@ async function generationConfig(request: Request) {
     await projectPublicImageEditGenerationProfiles(
       profiles.filter((profile) => profile.mode === "image"),
     );
-  const executableVideoProfiles = profiles.filter(
-    (profile) =>
-      isProductionLtxVideoProfile(profile) &&
-      isExecutableGenerationProfile(profile),
-  );
+  const executableVideoProfiles = profiles
+    .filter(
+      (profile) =>
+        isProductionVideoProfile(profile) &&
+        isExecutableGenerationProfile(profile),
+    )
+    // INVARIANT: explicit-only profiles are discoverable but never become the
+    // implicit UI default, even if an operator changes labels or pricing.
+    .sort(
+      (left, right) =>
+        Number(
+          productionVideoRecipeForProfile(left)?.explicitSelectionOnly ?? true,
+        ) -
+        Number(
+          productionVideoRecipeForProfile(right)?.explicitSelectionOnly ?? true,
+        ),
+    );
   const visibleImageProfiles = publicImageProfiles.filter((profile) =>
     profile.requiredEntitlement
       ? Boolean(entitlements[profile.requiredEntitlement])

@@ -687,6 +687,67 @@ describe("seed data provenance", () => {
     });
   }, 15_000);
 
+  it("preserves a modern operator release while still seeding MiniMax H3", async () => {
+    const character = await prisma.character.findUniqueOrThrow({
+      where: { id: "alexa-reeves" },
+      select: {
+        imageAssetId: true,
+        serving: { select: { currentReleaseId: true } },
+      },
+    });
+    const releaseId = character.serving?.currentReleaseId;
+    expect(releaseId).toBeTruthy();
+    const release = await prisma.characterRelease.findUniqueOrThrow({
+      where: { id: releaseId! },
+      select: { legacy: true },
+    });
+
+    await prisma.characterRelease.update({
+      where: { id: releaseId! },
+      data: { legacy: false },
+    });
+    await prisma.character.update({
+      where: { id: "alexa-reeves" },
+      data: { imageAssetId: "seed-image-sarah-mercer" },
+    });
+    await prisma.generationModelProfile.delete({
+      where: { id: "seed-profile-video-h3-v1" },
+    });
+
+    try {
+      await execFileAsync("bun", ["run", "db:seed"], {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        env: process.env,
+      });
+
+      await expect(
+        prisma.generationModelProfile.findUniqueOrThrow({
+          where: { id: "seed-profile-video-h3-v1" },
+          select: { profileKey: true },
+        }),
+      ).resolves.toEqual({ profileKey: "profile_video_h3_v1" });
+      await expect(
+        prisma.character.findUniqueOrThrow({
+          where: { id: "alexa-reeves" },
+          select: { imageAssetId: true },
+        }),
+      ).resolves.toEqual({ imageAssetId: "seed-image-sarah-mercer" });
+    } finally {
+      await prisma.character.update({
+        where: { id: "alexa-reeves" },
+        data: { imageAssetId: character.imageAssetId },
+      });
+      await prisma.characterRelease.update({
+        where: { id: releaseId! },
+        data: { legacy: release.legacy },
+      });
+      await execFileAsync("bun", ["run", "db:seed"], {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        env: process.env,
+      });
+    }
+  }, 30_000);
+
   it("preserves an operator-edited legacy video beta route", async () => {
     const profileId = "seed-profile-video-beta-v1";
     await writeLegacyVideoBetaProfile(1.25);

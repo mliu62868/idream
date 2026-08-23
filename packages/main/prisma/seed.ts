@@ -762,6 +762,22 @@ async function seedCharacters() {
 
 async function seedOfficialCatalogQualifications() {
   for (const card of officialCharacterSeeds) {
+    const currentRelease = await prisma.character.findUnique({
+      where: { id: card.id },
+      select: {
+        serving: {
+          select: {
+            currentRelease: { select: { legacy: true } },
+          },
+        },
+      },
+    });
+    // INVARIANT: a modern operator Release supersedes the cold-start editorial
+    // import. Repeat seeds must not replace it merely because its avatar is no
+    // longer the original seed asset.
+    if (currentRelease?.serving?.currentRelease?.legacy === false) {
+      continue;
+    }
     await ensureOfficialEditorialCatalogQualification(prisma, {
       characterId: card.id,
       expectedAssetId: `seed-image-${card.id}`,

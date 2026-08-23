@@ -1124,10 +1124,12 @@ describe("local AI service pipeline", () => {
         ageGate: true,
       });
       expectOk(config);
-      expect(config.data.video.models).toHaveLength(1);
-      expect(config.data.video.models[0].id).toBe(
+      expect(
+        config.data.video.models.map((model: { id: string }) => model.id),
+      ).toEqual([
         "profile_video_beta_v1",
-      );
+        "profile_video_h3_v1",
+      ]);
       const invalidDurationQuote = await api("POST", "generation/quote", {
         userId,
         ageGate: true,
@@ -1228,8 +1230,12 @@ describe("local AI service pipeline", () => {
         ageGate: true,
       });
       expectOk(config);
-      expect(config.data.video.models.map((model: { id: string }) => model.id))
-        .not.toContain("profile_video_h3_v1");
+      expect(
+        config.data.video.models.map((model: { id: string }) => model.id),
+      ).toEqual([
+        "profile_video_beta_v1",
+        "profile_video_h3_v1",
+      ]);
 
       const invalidQuote = await api("POST", "generation/quote", {
         userId,
