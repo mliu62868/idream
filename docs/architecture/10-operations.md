@@ -464,6 +464,11 @@ bun run check:launch:direct -- \
 对实际部署服务的精确导出；可分别参考对应 package 的 production example，且都不得提交到 git。Main 文件
 必须包含 `APP_ENV=production`、Main provider/密钥/外部服务配置，以及
 `PIPELINE_IMAGE_PROBE_REPORT=.tmp/launch-image-probe.json` 和
+`GENERATION_IMAGE_PERSISTENCE_PROBE_REPORT=.tmp/launch-image-persistence-probe.json`、
+`VIDEO_GENERATION_PROBE_REPORT=.tmp/launch-video-probe.json`、
+`VIDEO_H3_GENERATION_PROBE_REPORT=.tmp/launch-video-h3-probe.json`、
+`GENERATION_VIDEO_PERSISTENCE_PROBE_REPORT=.tmp/launch-video-persistence-probe.json`、
+`GENERATION_VIDEO_H3_PERSISTENCE_PROBE_REPORT=.tmp/launch-video-h3-persistence-probe.json`、
 `WEB_SURFACE_PROBE_REPORT=.tmp/launch-web-surface-probe.json`、
 `PRODUCT_CONFIG_PROBE_REPORT=.tmp/launch-product-config-probe.json`、
 `PUBLIC_CATALOG_PROBE_REPORT=.tmp/public-catalog-probe.json`、
