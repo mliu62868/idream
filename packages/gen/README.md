@@ -292,11 +292,13 @@ bun run sync:comfyui-workflows
 
 The 30-minute provider timeout is intentional. On the current M4 Max host, the
 executor-bound `0fdf96b06508` evidence snapshot measured MiniMax H3 direct at
-667.438 seconds total (565 seconds for 8-step sampling) and the real Main H3
-job at 745.752 seconds. The historical LTX 2.3 browser job took 623.715 seconds,
-but it used a different 768x1152 / 4-second contract and a different warm/cold
-state, so the delta is an operating baseline rather than a controlled model
-benchmark.
+667.438 seconds total (565 seconds for 8-step sampling). The final dual-route
+product closure measured LTX at 381.205 seconds and MiniMax H3 at 722.188
+seconds; each completed one Main Attempt, delivered one MediaAsset, and created
+exactly one 100-Dreamcoin spend settlement. An earlier real Main H3 job took
+745.752 seconds, while the historical LTX 2.3 browser job took 623.715 seconds.
+The routes use different resolution/frame contracts and warm/cold states, so
+these values are operating baselines rather than a controlled model benchmark.
 
 The PM2 `gen-video` process intentionally runs with `watch: false` in both
 development and production. A source-file restart can otherwise interrupt an

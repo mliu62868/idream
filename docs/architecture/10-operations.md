@@ -1024,7 +1024,28 @@ key；Sentry DSN、browser env/DSN 与 Main/Admin/Chat/Gen 四 runtime canary。
 与本地真实 Chat/Image/Video/Voice probes 已绑定统一 source revision；四包 Sentry probes 也以同一 revision 记录了当前无外部凭据时的明确失败，因此 source-revision authority 通过，而 Sentry live canary 仍失败。
 新 Gate JSON 自带 `generatedAt`、expected release、probe evidence digest 与脱敏 environment digest；公开上线仍是 NO-GO。
 
-最终自动化证据为 Shared 46 files / 254 tests、Gen 21 / 202、Main 315 passed files + 2 skipped /
+### 2026-08-23 executor-bound 迁移闭环快照
+
+最终迁移复验统一绑定 `IDREAM_SOURCE_REVISION=idream-worktree-0fdf96b06508a8838f5d4fadb9157ad293e22ffb8f6b3737fba35f1768862069`。目标 PostgreSQL 精确匹配 71 条 repository migration、checksum 与 launch-critical schema postcondition；根级自动化为 7/7 test tasks、`4,508 passed / 3 skipped`、typecheck 7/7、build 6/6、lint 0 error / 21 个既有 warning、PM2 配置 92/92，Gen preflight 为 `8 descriptors / 47 node types / 16 model refs / 10 pinned model bytes / 0 problems`。
+
+运行证据必须作为一组保留，不能混配不同 revision：
+
+| 权威 | 报告 | 终态 |
+| --- | --- | --- |
+| Product Config | `.tmp/launch-product-config-probe-2026-08-22-executor-final.json` | video enabled；LTX/H3 两个 active binding；16/16 public character system prompt |
+| Chat signed E2E | `.tmp/launch-chat-service-probe-2026-08-22-executor-final.json` | BFF/SSE/DB/Scene/DSH/igrep/outbox/Main/cleanup PASS |
+| LTX direct | `.tmp/launch-video-probe-2026-08-22-executor-final.json` | exact workflow/model bytes/listener binding/TerminalRecord/MP4 decode PASS |
+| H3 direct | `.tmp/launch-video-h3-probe-2026-08-22-executor-final.json` | exact workflow/model bytes/listener binding/TerminalRecord/MP4 decode PASS |
+| LTX Main persistence | `.tmp/launch-video-persistence-probe-2026-08-23-executor-final.json` | receipt processed；outbox delivered；transport/artifact/delivery/media/settlement PASS |
+| H3 Main persistence | `.tmp/launch-video-h3-persistence-probe-2026-08-23-executor-final.json` | receipt processed；outbox delivered；transport/artifact/delivery/media/settlement PASS |
+| 双视频产品旅程 | `.tmp/launch-product-video-e2e-2026-08-23-executor-final.json` | LTX/H3 completed；各 100 Dreamcoins；各交付 1 个 MediaAsset |
+| 总门禁 | `.tmp/check-launch-video-runtime-migration-2026-08-23-executor-final.json` | 37 pass / 31 fail / 0 warn；迁移关键 5 项 PASS；public production NO-GO |
+
+产品任务为 LTX `cmt5gl1zz008qhql7xt8dgfu9` / Attempt `cmt5gl20c008whql7wohvbtmd` / MediaAsset `media_o1gqsj9hbyjmt5gt63b` / `381.205 秒`，以及 H3 `cmt5gt85x008yhql73a8xmcjx` / Attempt `cmt5gt8650094hql71ar09rih` / MediaAsset `media_3a9jkvfp6demt5h8lbi` / `722.188 秒`；两者都只产生一条 spend Settlement。最终 PM2 服务全 online，Main 200，Admin 登录跳转后 200，Chat 与 authenticated sidecar full readiness 200，ComfyUI running/pending 均为 0。
+
+该组证据在后续 docs-only 更新后自动成为历史快照，因为 worktree revision 包含文档。发布新 revision 时按本节 drain fence 重启，再重跑要求 fresh 的 direct、persistence、Chat 与 launch gate；不得把 `0fdf…` 报告改写为新 revision。
+
+2026-08-14 自动化证据为 Shared 46 files / 254 tests、Gen 21 / 202、Main 315 passed files + 2 skipped /
 2,479 passed tests + 3 skipped、Chat 37 / 348、Admin 118 / 586；合计 537 passed files + 2 skipped /
 3,869 passed tests + 3 skipped。Turbo test tasks 6/6（`@idream/chat#test` 设为 `cache:false` 并真实执行）、
 typecheck 6/6、lint 2/2、production build tasks 5/5、PM2/operator/source-revision tests 84/84。最终后端补丁后，真实 Chrome 重跑

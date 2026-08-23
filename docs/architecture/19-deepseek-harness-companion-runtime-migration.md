@@ -1,7 +1,8 @@
 # ADR-19：以 DeepSeek Harness + igrep 构建陪伴式 Chat 执行内核
 
-> 状态：Accepted / Phase 6 code implemented；最终验收 NO-GO（Gate R 尾延迟未达标，禁止扩大流量或宣称迁移完成）
+> 状态：Accepted / Phase 6 功能迁移与受控本地 E2E 已完成；public production NO-GO（Gate R 尾延迟、正式客户观察窗、成本与 production envelope 未达标，禁止扩大流量）
 > 调研快照：2026-08-19
+> 最终复验快照：2026-08-23，executor revision `idream-worktree-0fdf96b06508a8838f5d4fadb9157ad293e22ffb8f6b3737fba35f1768862069`
 > 适用范围：`packages/chat`、Chat BFF、Gen 工具桥、角色 Soul/关系/场景、长期记忆与 RAG
 > 版本基线：DeepSeek Harness `0.1.0-rc.7` / `99f6f02`；`igrep-tme 0.1.132`；`@igrep/dsh-plugin 0.1.0`
 
@@ -1017,9 +1018,9 @@ CHAT_MEMORY_BACKEND=legacy|igrep-dsh
 
 ---
 
-## 18. 最终验收定义
+## 18. 功能迁移完成与公开放量门禁
 
-只有同时满足以下条件，迁移才算完成：
+功能迁移完成与公开放量是两层结论。第 1–7、9、10 项定义代码、数据和受控运行时迁移是否闭合；第 8 项 Gate R 只决定能否扩大正式客户流量，不倒推否定已经完成的单一运行时迁移，也不能被本地功能成功替代。
 
 1. 生产 Chat 用户可见 turn 由 DSH AgentLoop 执行；
 2. Soul/PreparedTurn/Scene/relationship/terminal/outbox 权威仍在原位置；
@@ -1028,11 +1029,15 @@ CHAT_MEMORY_BACKEND=legacy|igrep-dsh
 5. `no-memory`、删除、重建、跨租户/跨角色隔离有真实负向证据；
 6. Chat commit ACK 必定早于 igrep ingest；
 7. signed BFF -> SSE -> DB -> igrep -> outbox -> Main 全链路通过；
-8. canary 指标满足已制定的 Gate R；
+8. 公开放量前，正式客户 canary 指标满足已制定的 Gate R；
 9. DSH/igrep exact version、profile 与 provider/model 可从每个 attempt trace 追溯；
 10. 回滚演练证明不会在半个 attempt 中切 runtime，也不会重复工具副作用。
 
-在 Phase 6 前，`CURRENT_FUNCTIONAL_COVERAGE.md` 只能写“迁移中/受控 beta”，不能写“已完成 DSH 迁移”。
+2026-08-23 的最终受控复验满足第 1–7、9、10 项：signed BFF → SSE → DB terminal → official igrep recall/wake → outbox → Main 全链通过；normal/private profile、commit-before-ingest、no-memory、重复 ingest、cross-scope 隔离、Scene regenerate 与清理均有运行证据。报告为 `.tmp/launch-chat-service-probe-2026-08-22-executor-final.json`，总耗时 `55.368 秒`，5/5 attempts terminal sent，4 条 memory outcome ingested、1 条 disabled；最终 Chat 与 authenticated sidecar full readiness 都为 200。
+
+第 8 项仍不满足：既有 Gate R 的 first-token/total 尾延迟、正式客户观察窗、provider cost authority 与 public production envelope 未闭合。最终全站 gate `.tmp/check-launch-video-runtime-migration-2026-08-23-executor-final.json` 为 `37 pass / 31 fail / 0 warn`，其中 `chat-service-live-probe` PASS，但 `publicProductionReady=false`。因此当前准确口径是“DSH/igrep 功能迁移已完成，本地受控 E2E 通过；公开放量 NO-GO”。
+
+在 Phase 6 前，`CURRENT_FUNCTIONAL_COVERAGE.md` 只能写“迁移中/受控 beta”；Phase 6 后也必须把功能迁移结论与 Gate R/public-production 结论分开记录。
 
 ---
 
