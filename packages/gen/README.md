@@ -275,6 +275,12 @@ sufficient for the launch gate. Every new immutable TerminalRecord also pins
 the Gen execution source revision, so a new checker cannot relabel an old run
 as current launch evidence.
 
+`IDREAM_SOURCE_REVISION` uses `idream_worktree_sha256_v1`: it includes every
+Git-tracked file and every non-ignored untracked file, including documentation.
+A docs-only edit therefore invalidates freshness exactly like a code edit. Keep
+the old report as historical evidence, restart through the queue drain wrapper,
+and rerun both the direct and Main-persistence probes for release authority.
+
 Regenerate the descriptor from the validated ComfyUI API prompt with:
 
 ```bash
@@ -282,8 +288,13 @@ bun packages/gen/scripts/build-ltx23-gtanimation-workflow.mjs
 bun run sync:comfyui-workflows
 ```
 
-The 30-minute provider timeout is intentional: both MPS routes take roughly
-10–15 minutes on the current M4 Max host.
+The 30-minute provider timeout is intentional. On the current M4 Max host, the
+executor-bound `0fdf96b06508` evidence snapshot measured MiniMax H3 direct at
+667.438 seconds total (565 seconds for 8-step sampling) and the real Main H3
+job at 745.752 seconds. The historical LTX 2.3 browser job took 623.715 seconds,
+but it used a different 768x1152 / 4-second contract and a different warm/cold
+state, so the delta is an operating baseline rather than a controlled model
+benchmark.
 
 The PM2 `gen-video` process intentionally runs with `watch: false` in both
 development and production. A source-file restart can otherwise interrupt an

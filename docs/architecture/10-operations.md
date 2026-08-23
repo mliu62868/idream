@@ -191,6 +191,11 @@ bun run --filter @idream/gen probe:image -- --model <active-product-config-model
 bun run launch:probe:video -- --model ltx23-gtanimation-i2v --reference <reviewed-character-image> --report .tmp/launch-video-probe.json
 # Explicit MiniMax H3 route; omitting --model keeps LTX as the default.
 bun run launch:probe:video -- --model minimax-h3-redcraft-i2v --reference <reviewed-character-image> --seed h3-launch-v1 --report .tmp/launch-video-h3-probe.json
+# Persistence probes write through their probe-specific environment authority.
+GENERATION_VIDEO_PERSISTENCE_PROBE_REPORT=.tmp/launch-video-persistence-probe.json \
+  bun run launch:probe:generation-persistence -- --job-id <completed-ltx-generation-job-id>
+GENERATION_VIDEO_H3_PERSISTENCE_PROBE_REPORT=.tmp/launch-video-h3-persistence-probe.json \
+  bun run launch:probe:generation-persistence -- --job-id <completed-h3-generation-job-id>
 bun run launch:probe:generation-model-candidates -- --report .tmp/launch-generation-model-candidates.json
 bun run launch:probe:web-surface -- --report .tmp/launch-web-surface-probe.json
 bun run launch:probe:product-config -- --report .tmp/launch-product-config-probe.json
@@ -400,7 +405,12 @@ TerminalRecord ref/checksum。Video 启用时还必须用审核过的角色源�
 `probe:video`，报告实际模型资产 SHA-256，并分别完成固定 workflow、MP4 decode 检查、
 TerminalRecord 和 Main Artifact/Delivery/Settlement 持久化；TerminalRecord 内的 Gen execution
 revision 必须与当前运行态精确一致，不能用新探针重验旧 Job 冒充新执行证据；四份 fresh 报告缺一即
-fail closed。以下 8091 显式命令只用于需要审计旧 OpenAI-compatible image adapter 的场景；
+fail closed。`idream_worktree_sha256_v1` 会哈希 Git 已跟踪文件和全部未忽略文件，docs-only
+更新同样会改变 revision；更新文档、测试或本地未忽略资产后必须按安全 drain 路径重启运行态，
+再重跑 direct + persistence，旧报告只能保留为历史快照。使用显式 `--launch-env-file` / service
+env files 时，环境加载器会隔离 ambient 产品变量，因此 `VIDEO_H3_GENERATION_PROBE_REPORT`、
+`GENERATION_VIDEO_H3_PERSISTENCE_PROBE_REPORT` 等报告路径必须写入 Main launch env authority，
+不能只临时 export 到外层 shell。以下 8091 显式命令只用于需要审计旧 OpenAI-compatible image adapter 的场景；
 它要求另行提供外部 gateway，仓库没有可启动它的 `serve:sdcpp-image` 脚本。当前
 workflow-native backend 的工程 smoke 使用本节顶部 `smoke:backend` 命令，但公开上线
 门禁只接受上述 workflow-bound `probe:image` / `probe:video` 报告。
