@@ -275,8 +275,8 @@ sufficient for the launch gate. Every new immutable TerminalRecord also pins
 the Gen execution source revision, so a new checker cannot relabel an old run
 as current launch evidence.
 
-Unless startup receives an explicit `IDREAM_SOURCE_REVISION` or
-`SENTRY_RELEASE`, the PM2 wrapper computes `IDREAM_SOURCE_REVISION` with
+Unless startup receives an explicit `IDREAM_SOURCE_REVISION`, the PM2 wrapper
+computes `IDREAM_SOURCE_REVISION` with
 `idream_worktree_sha256_v1`. That computed form includes every Git-tracked file
 and every non-ignored untracked file, including documentation, so a docs-only
 edit invalidates its freshness exactly like a code edit. Explicit immutable
