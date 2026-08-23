@@ -1,5 +1,5 @@
-/* eslint-disable @typescript-eslint/no-require-imports -- This Node bootstrap must load Next's CommonJS CLI in the same process after Prisma generation. */
-const { spawnSync } = require("node:child_process");
+/* eslint-disable @typescript-eslint/no-require-imports -- PM2 executes this CommonJS bootstrap directly. */
+const { spawn, spawnSync } = require("node:child_process");
 const path = require("node:path");
 
 const packageRoot = path.resolve(__dirname, "..");
@@ -10,11 +10,11 @@ const nextCli = require.resolve("next/dist/bin/next", {
   paths: [packageRoot],
 });
 
-function runDevelopment(options = {}) {
-  const spawn = options.spawnSync ?? spawnSync;
+async function runDevelopment(options = {}) {
+  const runSync = options.spawnSync ?? spawnSync;
+  const runChild = options.spawn ?? spawn;
   const runtime = options.process ?? process;
-  const loadNext = options.loadNext ?? ((entrypoint) => require(entrypoint));
-  const generated = spawn(runtime.execPath, [prismaCli, "generate"], {
+  const generated = runSync(runtime.execPath, [prismaCli, "generate"], {
     cwd: packageRoot,
     env: runtime.env,
     stdio: "inherit",
@@ -36,16 +36,73 @@ function runDevelopment(options = {}) {
     runtime.env.IDREAM_NEXT_DIST_DIR = ".next-development";
   }
 
-  // INVARIANT: Next must load only after Prisma Client matches the checked-out
-  // schema. Turbopack does not reliably evict a Client already loaded from
-  // node_modules when schema.prisma changes during a dev process.
-  runtime.argv = [runtime.execPath, nextCli, "dev", ...runtime.argv.slice(2)];
-  loadNext(nextCli);
-  return 0;
+  // INVARIANT: Next starts only after Prisma Client matches the checked-out
+  // schema, and this wrapper remains PM2's parent authority until the exact CLI
+  // exits. Requiring Next's CLI lets its asynchronous dev bootstrap outlive this
+  // process during a restart, leaving an unowned listener on the product port.
+  const child = runChild(
+    runtime.execPath,
+    [nextCli, "dev", ...runtime.argv.slice(2)],
+    {
+      cwd: packageRoot,
+      env: runtime.env,
+      stdio: "inherit",
+    },
+  );
+  return waitForChild(child, runtime);
+}
+
+function waitForChild(child, runtime) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let forwardedSignal = null;
+    const signals = ["SIGINT", "SIGTERM"];
+    const handlers = new Map();
+    const cleanup = () => {
+      for (const [signal, handler] of handlers) {
+        runtime.off(signal, handler);
+      }
+    };
+    const settle = (status) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(status);
+    };
+
+    for (const signal of signals) {
+      const handler = () => {
+        forwardedSignal = signal;
+        try {
+          child.kill(signal);
+        } catch {
+          settle(1);
+        }
+      };
+      handlers.set(signal, handler);
+      runtime.once(signal, handler);
+    }
+
+    child.once("error", () => settle(1));
+    child.once("exit", (code, signal) => {
+      if (forwardedSignal && signal === forwardedSignal) {
+        settle(0);
+        return;
+      }
+      settle(Number.isInteger(code) ? code : 1);
+    });
+  });
 }
 
 if (require.main === module) {
-  process.exitCode = runDevelopment();
+  void runDevelopment()
+    .then((status) => {
+      process.exitCode = status;
+    })
+    .catch((error) => {
+      process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`);
+      process.exitCode = 1;
+    });
 }
 
 module.exports = {
