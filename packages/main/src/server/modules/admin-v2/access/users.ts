@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Prisma } from "@prisma/client";
-import { z } from "zod";
+import { Prisma } from "@prisma/client";
 import {
   applyOverrides,
   isPermissionKey,
@@ -280,8 +279,18 @@ export async function updateUserStatus(request: Request, userId: string) {
     userId,
     payload: body,
     execute: async (tx, requestId) => {
+      // INVARIANT: deletion and status changes serialize on the User row. A
+      // plain read followed by update can otherwise observe active, wait for a
+      // concurrent deletion to commit, and then revive the deleted account.
+      await tx.$queryRaw(
+        Prisma.sql`SELECT "id" FROM "users" WHERE "id" = ${userId} FOR UPDATE`,
+      );
       const before = await tx.user.findUnique({ where: { id: userId } });
       if (!before) throw Errors.notFound("User not found");
+      // INVARIANT: deletion is a cross-service lifecycle; this narrow status command cannot revive or rewrite it.
+      if (before.status === "deleted" || before.deletedAt) {
+        throw Errors.conflict("Deleted users are controlled by account deletion authority");
+      }
       const updated = await tx.user.update({
         where: { id: userId },
         data: { status: body.status, deletedAt: body.status === "active" ? null : undefined },

@@ -81,6 +81,49 @@ describe("failed generation source recovery", () => {
     expect(retry).not.toHaveBeenCalled();
   });
 
+  it("quarantines an unchanged poison row but reports it again after mutation", async () => {
+    const providers = createMockGenProviders();
+    const value = payload(`poison-${crypto.randomUUID()}`);
+    const row: QueueJobSnapshot = {
+      ...failedRow(value),
+      payload: { unexpected: true },
+    };
+    const quarantine = new Set<string>();
+    const queue = {
+      inspectFailed: async () => [row],
+      isPaused: async () => false,
+      retry: vi.fn(async () => ({ status: "retried" as const, job: null })),
+    };
+
+    const first = await recoverFailedGenerationSourceJobs({
+      mode: "image",
+      blob: providers.blob,
+      cursor: { offset: 0 },
+      quarantine,
+      queue,
+    });
+    const second = await recoverFailedGenerationSourceJobs({
+      mode: "image",
+      blob: providers.blob,
+      cursor: { offset: 0 },
+      quarantine,
+      queue,
+    });
+    row.payload = { unexpected: "changed" };
+    const changed = await recoverFailedGenerationSourceJobs({
+      mode: "image",
+      blob: providers.blob,
+      cursor: { offset: 0 },
+      quarantine,
+      queue,
+    });
+
+    expect(first.invalid).toEqual([{ bullJobId: row.id, reason: "invalid_schema" }]);
+    expect(second).toMatchObject({ quarantined: 1, invalid: [] });
+    expect(changed.invalid).toEqual([{ bullJobId: row.id, reason: "invalid_schema" }]);
+    expect(queue.retry).not.toHaveBeenCalled();
+  });
+
   it("retries only an exact failed source row backed by its Blob terminal record", async () => {
     const providers = createMockGenProviders();
     const suffix = crypto.randomUUID();

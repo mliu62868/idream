@@ -125,6 +125,63 @@ describe("idempotent user authority commands", () => {
     await expect(prisma.user.findUnique({ where: { id: targetId } })).resolves.toMatchObject({ status: "suspended" });
   });
 
+  // INVARIANT: account deletion has its own cross-service lifecycle; a status toggle cannot revive it.
+  it("refuses status changes for an account already owned by deletion authority", async () => {
+    const targetId = `${P}deleted-status-target`;
+    await createUser({ id: targetId, status: "deleted" });
+    await prisma.user.update({ where: { id: targetId }, data: { deletedAt: new Date("2026-08-19T00:00:00.000Z") } });
+
+    const response = await callStatus(targetId, {
+      status: "suspended",
+      reason: "must not bypass account deletion authority",
+      confirmation: `${targetId}:suspended`,
+    }, `${P}deleted-status-key`, `${P}deleted-status-request`);
+
+    expect(response.status).toBe(409);
+    await expect(prisma.user.findUnique({ where: { id: targetId } })).resolves.toMatchObject({
+      status: "deleted",
+      deletedAt: new Date("2026-08-19T00:00:00.000Z"),
+    });
+    await expect(prisma.controlPlaneCommand.count({ where: { actorId, targetId } })).resolves.toBe(0);
+  });
+
+  it("cannot revive an account deleted concurrently with a status command", async () => {
+    const targetId = `${P}concurrent-deletion-target`;
+    const deletedAt = new Date("2026-08-20T00:00:00.000Z");
+    await createUser({ id: targetId });
+
+    let releaseDeletion!: () => void;
+    const release = new Promise<void>((resolve) => { releaseDeletion = resolve; });
+    let deletionLocked!: () => void;
+    const locked = new Promise<void>((resolve) => { deletionLocked = resolve; });
+    const deletion = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "users" WHERE "id" = ${targetId} FOR UPDATE`;
+      deletionLocked();
+      await release;
+      await tx.user.update({
+        where: { id: targetId },
+        data: { status: "deleted", deletedAt },
+      });
+    });
+    await locked;
+
+    const status = callStatus(targetId, {
+      status: "suspended",
+      reason: "must serialize behind account deletion",
+      confirmation: `${targetId}:suspended`,
+    }, `${P}concurrent-deletion-key`, `${P}concurrent-deletion-request`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    releaseDeletion();
+    await deletion;
+
+    expect((await status).status).toBe(409);
+    await expect(prisma.user.findUnique({ where: { id: targetId } })).resolves.toMatchObject({
+      status: "deleted",
+      deletedAt,
+    });
+    await expect(prisma.controlPlaneCommand.count({ where: { actorId, targetId } })).resolves.toBe(0);
+  });
+
   it("deduplicates role and permission commands without duplicate Audit or Outbox", async () => {
     const targetId = `${P}role-permission-target`;
     await createUser({ id: targetId });

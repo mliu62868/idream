@@ -21,9 +21,18 @@ describe("Prisma transaction conflict classification", () => {
         cause: { kind: "TransactionWriteConflict" },
       },
     );
+    const rawQueryConflict = new Prisma.PrismaClientKnownRequestError(
+      "Raw query failed: could not serialize access due to concurrent update",
+      {
+        clientVersion: Prisma.prismaVersion.client,
+        code: "P2010",
+        meta: { code: "40001" },
+      },
+    );
 
     expect(isSerializableWriteConflict(prismaConflict)).toBe(true);
     expect(isSerializableWriteConflict(adapterConflict)).toBe(true);
+    expect(isSerializableWriteConflict(rawQueryConflict)).toBe(true);
   });
 
   it("keeps unique and unrelated failures distinct", () => {

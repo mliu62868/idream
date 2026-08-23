@@ -22,6 +22,7 @@ type GenerationMode = "image" | "video";
 type SourcePayload = ImageGeneratePayload | VideoGeneratePayload;
 
 export type FailedSourceScanCursor = { offset: number };
+export type FailedSourceQuarantine = Set<string>;
 
 export type FailedSourceRecoveryQueue = {
   inspectFailed(
@@ -55,6 +56,7 @@ export async function recoverFailedGenerationSourceJobs(input: {
   readonly blob: BlobStore;
   readonly queue?: FailedSourceRecoveryQueue;
   readonly cursor?: FailedSourceScanCursor;
+  readonly quarantine?: FailedSourceQuarantine;
   readonly limit?: number;
 }) {
   const queue = input.queue ?? bullQueue;
@@ -74,6 +76,7 @@ export async function recoverFailedGenerationSourceJobs(input: {
   const retryErrors: Array<{ bullJobId: string; error: string }> = [];
   let recovered = 0;
   let deferredPaused = 0;
+  let quarantined = 0;
   for (const row of rows) {
     try {
       const validation = await validateRecoverableSourceRow(
@@ -82,6 +85,12 @@ export async function recoverFailedGenerationSourceJobs(input: {
         row,
       );
       if (!validation.valid) {
+        const fingerprint = failedSourceFingerprint(row, validation.reason);
+        if (input.quarantine?.has(fingerprint)) {
+          quarantined += 1;
+          continue;
+        }
+        input.quarantine?.add(fingerprint);
         invalid.push({ bullJobId: row.id, reason: validation.reason });
         continue;
       }
@@ -106,9 +115,23 @@ export async function recoverFailedGenerationSourceJobs(input: {
     scanned: rows.length,
     recovered,
     deferredPaused,
+    quarantined,
     invalid,
     retryErrors,
   } as const;
+}
+
+function failedSourceFingerprint(row: QueueJobSnapshot, reason: string) {
+  return JSON.stringify([
+    row.queue,
+    row.id,
+    row.state,
+    row.attemptsMade,
+    row.maxAttempts,
+    row.dedupeKey,
+    reason,
+    row.payload,
+  ]);
 }
 
 async function validateRecoverableSourceRow(
@@ -167,9 +190,13 @@ export function startGenerationSourceRecovery(input: {
 }) {
   let closed = false;
   let running: Promise<void> | null = null;
+  // SPEC: retained Bull evidence remains inspectable, but an unchanged poison
+  // row is reported only once per worker lifetime. Any row mutation produces a
+  // new fingerprint and is surfaced again.
+  const quarantine: FailedSourceQuarantine = new Set();
   const scan = () => {
     if (closed || running) return;
-    running = recoverFailedGenerationSourceJobs(input)
+    running = recoverFailedGenerationSourceJobs({ ...input, quarantine })
       .then((result) => input.onResult?.(result))
       .catch((error) => input.onError?.(error))
       .finally(() => { running = null; });

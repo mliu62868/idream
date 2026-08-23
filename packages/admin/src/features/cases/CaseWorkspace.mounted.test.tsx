@@ -197,6 +197,50 @@ describe("CaseWorkspace browser URL interactions", () => {
     expect(container.querySelector("#case-detail-title")?.textContent).toBe("user-1");
   });
 
+  // SPEC: Today / search / audit links may open a Case that is outside the operator's current queue.
+  // INVARIANT: the detail remains visible even when the default `mine` list is empty.
+  it("keeps a deep-linked case visible when the current queue is empty", async () => {
+    adminV2Request.mockImplementation(async (path) => {
+      if (path.startsWith("/api/v2/admin/collaboration/case/case-1/activity?")) {
+        return { items: [], actors: [], watching: false, watcherIds: [], pageInfo: { endCursor: null, hasNextPage: false } };
+      }
+      if (path === "/api/v2/admin/cases/case-1") {
+        return { case: adminCase, evidence: [], decisions: [], activity: [] };
+      }
+      return { ...listResponse("mine"), items: [] };
+    });
+    window.history.replaceState(null, "", "/admin/cases/case-1");
+    container.innerHTML = renderToString(
+      <CaseWorkspace canAssign={false} canDecide={false} initialCaseId="case-1" />,
+    );
+
+    await act(async () => {
+      root = hydrateRoot(
+        container,
+        <CaseWorkspace canAssign={false} canDecide={false} initialCaseId="case-1" />,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    await waitUntil(() => adminV2Request.mock.calls.some(([path]) => path === "/api/v2/admin/cases/case-1"));
+    await waitUntil(() => container.querySelector("#case-detail-title") !== null);
+    const inspector = container.querySelector<HTMLElement>('[aria-labelledby="case-detail-title"]');
+    const results = container.querySelector<HTMLElement>('[aria-label="Case results"]');
+    expect(inspector?.textContent).toContain("user-1");
+    expect(inspector?.className).toContain("lg:sticky");
+    expect(inspector?.parentElement?.parentElement?.className).toContain("lg:grid-cols");
+    expect(inspector?.parentElement?.nextElementSibling).toBe(results);
+    expect(results?.className).toContain("lg:order-first");
+
+    const tabletToggle = [...container.querySelectorAll("button")].find(
+      (button) => button.className.includes("lg:hidden") && button.textContent === "Case results",
+    );
+    expect(tabletToggle?.getAttribute("aria-expanded")).toBe("true");
+    await act(async () => tabletToggle?.click());
+    expect(tabletToggle?.getAttribute("aria-expanded")).toBe("false");
+    expect(inspector?.parentElement?.className).toContain("md:hidden lg:block");
+  });
+
   function findButton(label: string) {
     return [...container.querySelectorAll("button")].find(
       (button) => button.textContent === label,
@@ -247,6 +291,25 @@ describe("CaseWorkspace decision loop", () => {
     expect(panel).toContain("Audit trail");
     expect(panel).toContain("case.decision.recorded");
     expect(panel).toContain("Provider confirmed the duplicate charge.");
+  });
+
+  it("exposes mobile Summary, Evidence, and Decision steps with a bottom action bar", async () => {
+    await mount({ canAssign: true, canDecide: true });
+    const summary = container.querySelector<HTMLElement>('[data-case-step="summary"]');
+    const evidence = container.querySelector<HTMLElement>('[data-case-step="evidence"]');
+    const decision = container.querySelector<HTMLElement>('[data-case-step="decision"]');
+    const evidenceTab = container.querySelector<HTMLButtonElement>('[data-case-mobile-step="evidence"]');
+    const decisionTab = container.querySelector<HTMLButtonElement>('[data-case-mobile-step="decision"]');
+
+    expect(summary?.className).not.toContain("max-md:hidden");
+    expect(evidence?.className).toContain("max-md:hidden");
+    expect(container.querySelector('[data-case-mobile-actions]')?.className).toContain("md:hidden");
+    await act(async () => evidenceTab?.click());
+    expect(summary?.className).toContain("max-md:hidden");
+    expect(evidence?.className).not.toContain("max-md:hidden");
+    await act(async () => decisionTab?.click());
+    expect(decision?.className).not.toContain("max-md:hidden");
+    expect(container.querySelector('[data-case-mobile-actions]')?.textContent).toContain("Record action");
   });
 
   // 回归：reason 输入框此前只在 canAssign 的「分配」表单里，而关闭按钮要求 reason≥3——
