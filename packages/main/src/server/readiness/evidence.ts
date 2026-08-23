@@ -249,6 +249,7 @@ const videoGenerationProbeEvidenceSchema: z.ZodType<VideoGenerationProbeEvidence
   checkedAt: nullableText,
   durationMs: optionalCount,
   provider: nullableText,
+  sourceRevision: nullableText,
   backendKind: nullableText,
   backendTarget: nullableText,
   workflowKey: nullableText,
