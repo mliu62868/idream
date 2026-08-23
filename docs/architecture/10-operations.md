@@ -398,7 +398,9 @@ runtime report keeps the launch gate closed.
 `probe:product-config` 返回的全部公开图片 execution bindings 一致；报告包含 immutable
 TerminalRecord ref/checksum。Video 启用时还必须用审核过的角色源图分别运行 LTX 与 H3
 `probe:video`，报告实际模型资产 SHA-256，并分别完成固定 workflow、MP4 decode 检查、
-TerminalRecord 和 Main Artifact/Delivery/Settlement 持久化；四份 fresh 报告缺一即 fail closed。以下 8091 显式命令只用于需要审计旧 OpenAI-compatible image adapter 的场景；
+TerminalRecord 和 Main Artifact/Delivery/Settlement 持久化；TerminalRecord 内的 Gen execution
+revision 必须与当前运行态精确一致，不能用新探针重验旧 Job 冒充新执行证据；四份 fresh 报告缺一即
+fail closed。以下 8091 显式命令只用于需要审计旧 OpenAI-compatible image adapter 的场景；
 它要求另行提供外部 gateway，仓库没有可启动它的 `serve:sdcpp-image` 脚本。当前
 workflow-native backend 的工程 smoke 使用本节顶部 `smoke:backend` 命令，但公开上线
 门禁只接受上述 workflow-bound `probe:image` / `probe:video` 报告。

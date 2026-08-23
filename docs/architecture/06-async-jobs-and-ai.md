@@ -170,9 +170,11 @@ Gen worker:
      Gen preflight 校验 recipe 固定的全部模型资产 SHA-256；每个视频产物仍由 ffprobe
      读取实测 envelope、ffmpeg 完整解码，并匹配 LTX 768×1152 / 4s / 25fps / audio 或 H3
      512×512 / 124 frames / 24fps / audio 的精确契约
-  5) 先持久化 immutable terminal record，再以 Attempt key 投递到 Main-owned durable relay
+  5) 先持久化含 Gen execution source revision 的 immutable terminal record，再以 Attempt key
+     投递到 Main-owned durable relay
 Main finalizer:
-  1) 消费独立 terminal relay，按 attemptId + terminal-record hash durable ingest；相同 replay，冲突 fail closed
+  1) 消费独立 terminal relay，按 attemptId + terminal-record hash durable ingest；相同 replay，冲突 fail closed；
+     source revision 随 hash 固定并进入 Attempt ingest event
   2) 同事务写 TransportExecution/Artifact/Delivery/finalize outbox
   3) 通过 `postDreamcoinEntry` SETTLE/REFUND；同一业务 intent 不重复扣退
   4) Main 短时不可用只重试 relay row；relay admission 中断时 Gen 回读并重投同一 terminal record，不再调用 provider

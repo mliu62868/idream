@@ -271,7 +271,9 @@ Both recipes pin every executable checkpoint, text encoder, VAE, and LTX
 upscaler by relative model path plus SHA-256. Set `COMFYUI_MODEL_ROOT` to the
 exact model directory used by the target runner. Startup preflight and each
 release probe hash the actual bytes from that root; matching filenames are not
-sufficient for the launch gate.
+sufficient for the launch gate. Every new immutable TerminalRecord also pins
+the Gen execution source revision, so a new checker cannot relabel an old run
+as current launch evidence.
 
 Regenerate the descriptor from the validated ComfyUI API prompt with:
 
