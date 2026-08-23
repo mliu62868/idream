@@ -217,6 +217,7 @@ function passingVideoProbe(
     checkedAt: "2026-06-24T23:55:30.000Z",
     durationMs: 620_000,
     provider: "backend",
+    sourceRevision: productionEnv.IDREAM_GEN_SOURCE_REVISION,
     backendKind: "comfyui",
     backendTarget: productionEnv.COMFYUI_API_URL,
     workflowKey: recipe.workflowKey,
@@ -247,6 +248,7 @@ function passingVideoProbe(
     terminal: {
       ref: "gen/terminal-records/attempt_video_probe/terminal.json",
       checksum: "d".repeat(64),
+      sourceRevision: productionEnv.IDREAM_GEN_SOURCE_REVISION,
       outcome: "succeeded",
       assets: 1,
       error: null,
@@ -281,6 +283,7 @@ function passingGenerationPersistenceProbe(
     jobStatus: "completed",
     attemptStatus: "succeeded",
     provider: "backend",
+    executionSourceRevision: productionEnv.IDREAM_GEN_SOURCE_REVISION,
     profileKey: isVideo
       ? characterVideoProductionRecipe.profileKey
       : "image-premium",
@@ -4285,6 +4288,70 @@ describe("launch readiness", () => {
     expect(
       checkById(report, "generation-video-h3-main-persistence")?.message,
     ).toContain("does not match the exact production profile");
+  });
+
+  it("rejects H3 persistence rechecked from a different Gen revision", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      imagePipelineProbe: passingImageProbe(),
+      videoGenerationProbe: passingVideoProbe(),
+      videoH3GenerationProbe: passingH3VideoProbe(),
+      videoH3GenerationPersistenceProbe: passingGenerationPersistenceProbe(
+        "video",
+        {
+          generationJobId: "job_video_h3_old_revision",
+          attemptId: "attempt_video_h3_old_revision",
+          profileKey: minimaxH3VideoProductionRecipe.profileKey,
+          workflowKey: minimaxH3VideoProductionRecipe.workflowKey,
+          executionSourceRevision: "idream@old-gen-revision",
+        },
+      ),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingVideoEnabledProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(
+      checkById(report, "generation-video-h3-main-persistence")?.message,
+    ).toContain("execution revision does not match");
+  });
+
+  it("rejects a direct H3 report whose TerminalRecord came from another Gen revision", () => {
+    const current = passingH3VideoProbe();
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      imagePipelineProbe: passingImageProbe(),
+      videoGenerationProbe: passingVideoProbe(),
+      videoH3GenerationProbe: passingH3VideoProbe({
+        terminal: {
+          ...current.terminal,
+          sourceRevision: "idream@old-gen-revision",
+        },
+      }),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingVideoEnabledProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(
+      checkById(report, "video-h3-generation-live-probe")?.message,
+    ).toContain("terminal execution revision does not match");
   });
 
   it("rejects H3 evidence when a pinned model asset has different bytes", () => {

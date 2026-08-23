@@ -184,6 +184,7 @@ async function main() {
       ? {
           ref: terminalIngest.terminalRecordRef,
           checksum: terminalIngest.terminalRecordChecksum,
+          sourceRevision: terminalRecord?.sourceRevision ?? null,
           outcome: terminalRecord?.outcome,
           assets,
           error,

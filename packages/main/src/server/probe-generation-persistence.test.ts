@@ -35,7 +35,11 @@ function successfulSnapshot(): GenerationPersistenceSnapshot {
       payload: { terminalRecordChecksum: checksum },
     },
     ingestEvent: {
-      payload: { terminalRecordRef: ref, terminalRecordChecksum: checksum },
+      payload: {
+        terminalRecordRef: ref,
+        terminalRecordChecksum: checksum,
+        sourceRevision: "idream@generation-revision",
+      },
     },
     receipt: {
       id: "receipt_1",
@@ -106,6 +110,7 @@ describe("generation persistence probe", () => {
       ok: true,
       mode: "image",
       generationJobId: "job_1",
+      executionSourceRevision: "idream@generation-revision",
       observedAt: "2026-08-12T12:00:00.000Z",
       terminal: {
         receiptState: "processed",
@@ -156,6 +161,25 @@ describe("generation persistence probe", () => {
     const report = evaluateGenerationPersistenceSnapshot(snapshot);
     expect(report.ok).toBe(false);
     expect(report.error?.message).toContain("generation spend settlement");
+  });
+
+  it("fails when immutable terminal evidence has no Gen execution revision", async () => {
+    const snapshot = successfulSnapshot();
+    const { canonicalSha256 } = await import(
+      "./modules/admin-v2/shared/canonical-json"
+    );
+    snapshot.receipt!.payloadHash = canonicalSha256({
+      terminalRecordRef: snapshot.attempt!.terminalRecordRef,
+      terminalRecordChecksum: "a".repeat(64),
+    });
+    snapshot.ingestEvent!.payload = {
+      terminalRecordRef: snapshot.attempt!.terminalRecordRef,
+      terminalRecordChecksum: "a".repeat(64),
+    };
+
+    const report = evaluateGenerationPersistenceSnapshot(snapshot);
+    expect(report.ok).toBe(false);
+    expect(report.error?.message).toContain("execution source revision");
   });
 
   it("fails when the projected MediaAsset is not the artifact asset", async () => {

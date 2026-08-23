@@ -72,6 +72,9 @@ const generationTerminalRecordBaseSchema = z.object({
   generationJobId: z.string().min(1),
   mode: z.enum(["image", "video"]),
   provider: z.string().min(1),
+  // SPEC: immutable Gen execution authority. Optional only so historical
+  // terminal records remain readable; current launch evidence requires it.
+  sourceRevision: z.string().trim().min(1).nullable().optional(),
   // INVARIANT: Main may project provider transport/usage only when Gen actually
   // crossed the provider invocation boundary.
   providerInvoked: z.boolean(),

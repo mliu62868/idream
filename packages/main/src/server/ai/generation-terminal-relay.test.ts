@@ -183,7 +183,7 @@ describe("generation terminal relay consumer", () => {
     expect(result).toMatchObject({ redriven: 1, retryErrors: [] });
     expect(result.invalid).toEqual([{
       bullJobId: poison.id,
-      reason: "unsupported_kind",
+      reason: "invalid_schema",
     }]);
     expect(retry).toHaveBeenCalledOnce();
   });

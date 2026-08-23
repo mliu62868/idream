@@ -38,6 +38,7 @@ const terminalRecordBase = {
   generationJobId: terminalRecordJobId(),
   mode: "image" as const,
   provider: "mock-image",
+  sourceRevision: "idream@gen-terminal-test",
   providerInvoked: true,
   model: "mock-image-v2",
   providerRequestId: "provider-1",
@@ -127,6 +128,9 @@ describe("generation terminal record durable ingest", () => {
         sequence: 1,
         eventType: "generation.attempt.terminal_record_ingested.v1",
         outcome: null,
+        payload: expect.objectContaining({
+          sourceRevision: "idream@gen-terminal-test",
+        }),
       }),
     ]);
     expect(await prisma.generationTransportExecution.findUnique({ where: { attemptId_transportAttemptNo: { attemptId, transportAttemptNo: 2 } } })).toMatchObject({

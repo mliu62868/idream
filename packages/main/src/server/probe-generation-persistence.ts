@@ -125,6 +125,10 @@ export function evaluateGenerationPersistenceSnapshot(
     snapshot.ingestEvent?.payload,
     "terminalRecordRef",
   );
+  const executionSourceRevision = jsonText(
+    snapshot.ingestEvent?.payload,
+    "sourceRevision",
+  );
   const terminalRef = attempt?.terminalRecordRef ?? null;
 
   if (job?.status !== "completed" || !job.completedAt) {
@@ -142,6 +146,9 @@ export function evaluateGenerationPersistenceSnapshot(
     ingestChecksum !== terminalChecksum
   ) {
     problems.push("terminal ingest and terminal outcome are not identical");
+  }
+  if (!executionSourceRevision) {
+    problems.push("Gen execution source revision is missing from terminal evidence");
   }
   const expectedReceiptHash =
     terminalRef && terminalChecksum
@@ -238,6 +245,7 @@ export function evaluateGenerationPersistenceSnapshot(
     jobStatus: job?.status ?? null,
     attemptStatus: attempt?.status ?? null,
     provider: attempt?.provider ?? null,
+    executionSourceRevision,
     profileKey: attempt?.profileKey ?? null,
     profileVersion: attempt?.profileVersion ?? null,
     workflowKey: attempt?.workflowKey ?? null,

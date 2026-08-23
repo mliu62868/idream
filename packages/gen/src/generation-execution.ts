@@ -24,6 +24,7 @@ import {
   persistTerminalRecord,
   reserveGenerationInvocation,
 } from "./terminal-record";
+import { env } from "./env";
 
 type GenerationPayload = ImageGeneratePayload | VideoGeneratePayload;
 type GenerationModel = ImageModel | VideoModel;
@@ -337,6 +338,7 @@ export class GenerationExecution {
       generationJobId: payload.generationJobId,
       mode: payload.kind,
       provider: this.options.provider,
+      sourceRevision: env.SOURCE_REVISION?.trim() || null,
       providerInvoked: evidence.providerInvoked ?? false,
       model: payload.model,
       providerRequestId: evidence.providerRequestId ?? null,

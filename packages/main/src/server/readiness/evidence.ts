@@ -213,6 +213,7 @@ export interface VideoGenerationProbeEvidence {
   checkedAt?: string | null;
   durationMs?: number;
   provider?: string | null;
+  sourceRevision?: string | null;
   backendKind?: string | null;
   backendTarget?: string | null;
   workflowKey?: string | null;
@@ -236,6 +237,7 @@ export interface VideoGenerationProbeEvidence {
   terminal?: {
     ref?: string | null;
     checksum?: string | null;
+    sourceRevision?: string | null;
     outcome?: string | null;
     assets?: number;
     error?: ProbeErrorEvidence | null;
@@ -276,6 +278,7 @@ const videoGenerationProbeEvidenceSchema: z.ZodType<VideoGenerationProbeEvidence
   terminal: nullableObject({
     ref: nullableText,
     checksum: nullableText,
+    sourceRevision: nullableText,
     outcome: nullableText,
     assets: z
       .number()
@@ -313,6 +316,7 @@ export interface GenerationPersistenceProbeEvidence {
   jobStatus?: string | null;
   attemptStatus?: string | null;
   provider?: string | null;
+  executionSourceRevision?: string | null;
   profileKey?: string | null;
   profileVersion?: number | null;
   workflowKey?: string | null;
@@ -347,6 +351,7 @@ const generationPersistenceProbeEvidenceSchema: z.ZodType<GenerationPersistenceP
     jobStatus: nullableText,
     attemptStatus: nullableText,
     provider: nullableText,
+    executionSourceRevision: nullableText,
     profileKey: nullableText,
     profileVersion: z.number().int().positive().nullish().catch(null),
     workflowKey: nullableText,

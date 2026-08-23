@@ -1738,6 +1738,15 @@ function addVideoGenerationProbeCheck(
       ) {
         problems.push("probe terminal record reference or checksum is invalid");
       }
+      if (
+        probe.terminal.sourceRevision !==
+          env.IDREAM_GEN_SOURCE_REVISION?.trim() ||
+        probe.terminal.sourceRevision !== probe.sourceRevision
+      ) {
+        problems.push(
+          "probe terminal execution revision does not match Gen runtime authority",
+        );
+      }
       if (probe.terminal.outcome !== "succeeded") {
         problems.push(
           `probe terminal outcome is ${probe.terminal.outcome ?? "unknown"}, not succeeded`,
@@ -1816,6 +1825,14 @@ function addGenerationPersistenceProbeCheck(
     if (probe.mode !== mode) problems.push(`probe mode is not ${mode}`);
     if (!hasMinLength(probe.generationJobId ?? undefined, 1)) {
       problems.push("generation job id is missing");
+    }
+    if (
+      probe.executionSourceRevision !==
+      env.IDREAM_GEN_SOURCE_REVISION?.trim()
+    ) {
+      problems.push(
+        "Gen execution revision does not match the current runtime authority",
+      );
     }
     if (
       !hasMinLength(probe.attemptId ?? undefined, 1) ||

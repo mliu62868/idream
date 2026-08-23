@@ -287,6 +287,7 @@ export async function ingestGenerationTerminalRecord(
         requestId: input.terminalRecord.generationJobId,
         terminalRecordRef: input.terminalRecordRef,
         terminalRecordChecksum: input.terminalRecordChecksum,
+        sourceRevision: input.terminalRecord.sourceRevision ?? null,
         provider: input.terminalRecord.provider,
         providerRequestId: input.terminalRecord.providerRequestId,
         transportAttemptNo: input.terminalRecord.transportAttemptNo,
@@ -953,6 +954,7 @@ function finalizePayload(input: GenerationTerminalRecordIngest) {
     attemptNo: record.attemptNo,
     terminalRecordRef: input.terminalRecordRef,
     terminalRecordChecksum: input.terminalRecordChecksum,
+    sourceRevision: record.sourceRevision ?? null,
     mode: record.mode,
   } as const;
   if (record.outcome === "succeeded") {

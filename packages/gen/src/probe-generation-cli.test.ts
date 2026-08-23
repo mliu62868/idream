@@ -2,7 +2,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { afterEach, describe, expect, it } from "vitest";
 import { sha256File } from "./model-asset-attestation";
 
@@ -31,6 +32,38 @@ describe("generation launch probe CLIs", () => {
     expect(await sha256File(assetPath)).toBe(
       "6a2f2277fac614b3a8ace8c7355c970cb055f15987c04c041dc3610a2896c197",
     );
+  });
+
+  it("fails preflight when backend production recipe bytes are absent", async () => {
+    const directory = temporaryDirectory();
+    const server = spawn(
+      process.execPath,
+      [
+        "-e",
+        'const http=require("node:http");const server=http.createServer((request,response)=>{if(request.url==="/system_stats"){response.writeHead(200,{"content-type":"application/json"});response.end("{}");return;}response.writeHead(404);response.end();});server.listen(0,"127.0.0.1",()=>console.log(server.address().port));',
+      ],
+      { stdio: ["ignore", "pipe", "inherit"] },
+    );
+    try {
+      const [chunk] = await once(server.stdout!, "data");
+      const port = Number(String(chunk).trim());
+      const result = runProbe("preflight.ts", [], {
+        GEN_VIDEO_PROVIDER: "backend",
+        COMFYUI_API_URL: `http://127.0.0.1:${port}`,
+        COMFYUI_MODEL_ROOT: path.join(directory, "models"),
+        GEN_WORKFLOW_DIR: directory,
+        GEN_FFPROBE_BIN: "/usr/bin/true",
+        GEN_FFMPEG_BIN: "/usr/bin/true",
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain("FAIL  (video model bytes)");
+      expect(result.stdout).toContain("10 pinned model bytes checked");
+    } finally {
+      const exited = once(server, "exit");
+      server.kill();
+      await exited;
+    }
   });
 
   it("keeps the image probe aligned with Attempt and immutable TerminalRecord contracts", () => {
@@ -123,6 +156,7 @@ describe("generation launch probe CLIs", () => {
     ], {
       GEN_VIDEO_PROVIDER: "mock",
       GEN_BLOB_PROVIDER: "mock",
+      IDREAM_SOURCE_REVISION: "idream@h3-probe-test",
       BLOB_ROOT: path.join(directory, "blob"),
     });
 
@@ -132,6 +166,7 @@ describe("generation launch probe CLIs", () => {
       model: "minimax-h3-redcraft-i2v",
       seconds: 5,
       seed: "h3-probe-seed-v1",
+      sourceRevision: "idream@h3-probe-test",
       requestId: expect.stringMatching(/^req_probe_video_/),
       attemptId: expect.stringMatching(/^attempt_/),
       artifact: {
@@ -142,6 +177,7 @@ describe("generation launch probe CLIs", () => {
         verifiedVideo: null,
       },
       terminal: {
+        sourceRevision: "idream@h3-probe-test",
         outcome: "succeeded",
         assets: 1,
         providerRequestId: null,
