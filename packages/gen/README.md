@@ -275,11 +275,13 @@ sufficient for the launch gate. Every new immutable TerminalRecord also pins
 the Gen execution source revision, so a new checker cannot relabel an old run
 as current launch evidence.
 
-`IDREAM_SOURCE_REVISION` uses `idream_worktree_sha256_v1`: it includes every
-Git-tracked file and every non-ignored untracked file, including documentation.
-A docs-only edit therefore invalidates freshness exactly like a code edit. Keep
-the old report as historical evidence, restart through the queue drain wrapper,
-and rerun both the direct and Main-persistence probes for release authority.
+Unless startup receives an explicit `IDREAM_SOURCE_REVISION` or
+`SENTRY_RELEASE`, the PM2 wrapper computes `IDREAM_SOURCE_REVISION` with
+`idream_worktree_sha256_v1`. That computed form includes every Git-tracked file
+and every non-ignored untracked file, including documentation, so a docs-only
+edit invalidates its freshness exactly like a code edit. Explicit immutable
+release revisions remain opaque exact-match authority. See
+`docs/architecture/10-operations.md` for the drain and reprobe procedure.
 
 Regenerate the descriptor from the validated ComfyUI API prompt with:
 
