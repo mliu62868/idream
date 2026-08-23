@@ -70,8 +70,8 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
   const { t, value: enumLabel } = useAdminI18n();
   const format = useAdminFormat();
   const { toast } = useToast();
-  const [query, setQuery] = useState<DeadLetterQuery>(() => currentQuery());
-  const [draft, setDraft] = useState<DeadLetterQuery>(() => currentQuery());
+  const [query, setQuery] = useState<DeadLetterQuery>(defaultDeadLetterQuery);
+  const [draft, setDraft] = useState<DeadLetterQuery>(defaultDeadLetterQuery);
   const [data, setData] = useState<ListResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
@@ -79,7 +79,6 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
   const [selected, setSelected] = useState<string[]>([]);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
   const requestGate = useRef(createLatestRequestGate());
-  const initialQuery = useRef(query);
 
   const load = useCallback(async (next: DeadLetterQuery) => {
     const request = requestGate.current.begin();
@@ -100,9 +99,9 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
 
   useEffect(() => {
     const gate = requestGate.current;
-    void load(initialQuery.current);
     const restore = () => restoreFromUrl(load, setQuery, setDraft);
     const refresh = () => restoreFromUrl(load, setQuery, setDraft);
+    restore();
     window.addEventListener("popstate", restore);
     window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
     return () => {

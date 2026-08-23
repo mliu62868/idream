@@ -77,8 +77,8 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
   const { t, value } = useAdminI18n();
   const format = useAdminFormat();
   const { toast } = useToast();
-  const [query, setQuery] = useState<ModerationQuery>(() => currentQuery());
-  const [draft, setDraft] = useState<ModerationQuery>(() => currentQuery());
+  const [query, setQuery] = useState<ModerationQuery>(defaultModerationQuery);
+  const [draft, setDraft] = useState<ModerationQuery>(defaultModerationQuery);
   const [reports, setReports] = useState<AuthorityState>(emptyState);
   const [media, setMedia] = useState<AuthorityState>(emptyState);
   const [appeals, setAppeals] = useState<AuthorityState>(emptyState);
@@ -92,7 +92,6 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
     media: createLatestRequestGate(),
     appeals: createLatestRequestGate(),
   });
-  const initialQuery = useRef(query);
 
   const loadScope = useCallback(
     async (next: ModerationQuery, scope: ModerationScope) => {
@@ -154,7 +153,6 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
 
   useEffect(() => {
     const requestGates = gates.current;
-    load(initialQuery.current);
     const restore = () => {
       const next = currentQuery();
       setQuery(next);
@@ -162,6 +160,7 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
       setTrails(emptyTrails);
       load(next);
     };
+    restore();
     window.addEventListener("popstate", restore);
     window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, restore);
     return () => {

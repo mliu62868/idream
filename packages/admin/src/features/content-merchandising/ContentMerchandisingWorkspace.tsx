@@ -108,8 +108,8 @@ export function ContentMerchandisingWorkspace({
   const { t } = useAdminI18n();
   const { toast } = useToast();
   const failureToast = useFailureToast();
-  const [query, setQuery] = useState<ContentQuery>(() => currentQuery());
-  const [draft, setDraft] = useState<ContentQuery>(() => currentQuery());
+  const [query, setQuery] = useState<ContentQuery>(() => contentQueryFromSearch(""));
+  const [draft, setDraft] = useState<ContentQuery>(() => contentQueryFromSearch(""));
   const [characters, setCharacters] =
     useState(() => createAuthorityState<CharacterResponse>());
   const [featured, setFeatured] =
@@ -129,7 +129,6 @@ export function ContentMerchandisingWorkspace({
   const characterGate = useRef(createLatestRequestGate());
   const featuredGate = useRef(createLatestRequestGate());
   const featuredKey = useRef<string | null>(null);
-  const initialQuery = useRef(query);
 
   const loadCharacters = useCallback(async (next: ContentQuery) => {
     const queryKey = contentListPath(next);
@@ -193,7 +192,7 @@ export function ContentMerchandisingWorkspace({
       setCursorTrail([]);
       load(next);
     };
-    load(initialQuery.current);
+    restore();
     window.addEventListener("popstate", restore);
     window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, restore);
     return () => {

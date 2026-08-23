@@ -67,6 +67,9 @@ function successfulSnapshot(): GenerationPersistenceSnapshot {
     ],
     deliveries: [{ artifactId: "artifact_1", status: "delivered" }],
     mediaAssets: [{ id: "asset_1", type: "image", deletedAt: null }],
+    settlements: [
+      { ledgerEntryId: "ledger_spend_1", kind: "generation_spend" },
+    ],
   };
 }
 
@@ -110,6 +113,8 @@ describe("generation persistence probe", () => {
         artifactCount: 1,
         deliveredCount: 1,
         mediaAssetCount: 1,
+        settlementCount: 1,
+        spendSettlementCount: 1,
       },
       error: null,
     });
@@ -135,6 +140,22 @@ describe("generation persistence probe", () => {
     expect(report.error?.message).toContain(
       "MediaAsset projection does not match delivered artifacts",
     );
+  });
+
+  it("fails when the completed generation has no captured spend settlement", async () => {
+    const snapshot = successfulSnapshot();
+    const { canonicalSha256 } = await import(
+      "./modules/admin-v2/shared/canonical-json"
+    );
+    snapshot.receipt!.payloadHash = canonicalSha256({
+      terminalRecordRef: snapshot.attempt!.terminalRecordRef,
+      terminalRecordChecksum: "a".repeat(64),
+    });
+    snapshot.settlements = [];
+
+    const report = evaluateGenerationPersistenceSnapshot(snapshot);
+    expect(report.ok).toBe(false);
+    expect(report.error?.message).toContain("generation spend settlement");
   });
 
   it("fails when the projected MediaAsset is not the artifact asset", async () => {

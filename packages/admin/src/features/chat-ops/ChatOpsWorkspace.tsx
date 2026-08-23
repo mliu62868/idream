@@ -202,8 +202,8 @@ export function ChatOpsWorkspace({
   canDiscardMissingMainOutbox?: boolean;
 }) {
   const { t } = useAdminI18n();
-  const [query, setQuery] = useState<ChatOpsQuery>(() => currentQuery());
-  const [draft, setDraft] = useState<ChatOpsQuery>(() => currentQuery());
+  const [query, setQuery] = useState<ChatOpsQuery>(defaultChatOpsQuery);
+  const [draft, setDraft] = useState<ChatOpsQuery>(defaultChatOpsQuery);
   const [states, setStates] =
     useState<Record<ChatOpsAuthority, AuthorityState>>(initialStates);
   const gates = useRef(
@@ -211,7 +211,6 @@ export function ChatOpsWorkspace({
       authorities.map((authority) => [authority, createLatestRequestGate()]),
     ) as Record<ChatOpsAuthority, ReturnType<typeof createLatestRequestGate>>,
   );
-  const initialQuery = useRef(query);
 
   const loadAuthority = useCallback(
     async (next: ChatOpsQuery, authority: ChatOpsAuthority) => {
@@ -255,13 +254,13 @@ export function ChatOpsWorkspace({
 
   useEffect(() => {
     const requestGates = gates.current;
-    load(initialQuery.current);
     const restore = () => {
       const next = currentQuery();
       setQuery(next);
       setDraft(next);
       load(next);
     };
+    restore();
     window.addEventListener("popstate", restore);
     window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, restore);
     return () => {

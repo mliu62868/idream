@@ -221,6 +221,15 @@ export interface VideoGenerationProbeEvidence {
   seconds?: number;
   referenceSha256?: string | null;
   modelAssets?: Array<{ path?: string; sha256?: string }>;
+  runtimeModelRoot?: {
+    authority?: string | null;
+    backendTarget?: string | null;
+    listenerPid?: number;
+    processCommandSha256?: string | null;
+    expectedModelRoot?: string | null;
+    configuredModelRoots?: string[];
+    assetBindings?: Array<{ path?: string; runtimePath?: string }>;
+  } | null;
   generationJobId?: string;
   blobAuthority?: GenBlobAuthorityEvidence | null;
   loadError?: string;
@@ -250,6 +259,18 @@ const videoGenerationProbeEvidenceSchema: z.ZodType<VideoGenerationProbeEvidence
   seconds: optionalCount,
   referenceSha256: nullableText,
   modelAssets: z.array(z.object({ path: optionalText, sha256: optionalText })).optional(),
+  runtimeModelRoot: nullableObject({
+    authority: nullableText,
+    backendTarget: nullableText,
+    listenerPid: optionalCount,
+    processCommandSha256: nullableText,
+    expectedModelRoot: nullableText,
+    configuredModelRoots: z.array(z.string()).optional().catch(undefined),
+    assetBindings: z.array(z.object({
+      path: optionalText,
+      runtimePath: optionalText,
+    })).optional().catch(undefined),
+  }),
   generationJobId: optionalText,
   blobAuthority: genBlobAuthorityEvidence,
   terminal: nullableObject({
@@ -307,6 +328,8 @@ export interface GenerationPersistenceProbeEvidence {
     artifactCount?: number;
     deliveredCount?: number;
     mediaAssetCount?: number;
+    settlementCount?: number;
+    spendSettlementCount?: number;
   } | null;
   loadError?: string;
   error?: ProbeErrorEvidence | null;
@@ -339,6 +362,8 @@ const generationPersistenceProbeEvidenceSchema: z.ZodType<GenerationPersistenceP
       artifactCount: optionalCount,
       deliveredCount: optionalCount,
       mediaAssetCount: optionalCount,
+      settlementCount: optionalCount,
+      spendSettlementCount: optionalCount,
     }),
     error: probeError,
   });

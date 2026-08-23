@@ -107,7 +107,8 @@ pm2 restart comfyui-idream
 cd packages/gen && bun run preflight && bun run smoke:backend
 ```
 
-- `preflight` 硬检查节点目录（经 `.env` 的 `COMFYUI_VENV_PYTHON` 推导）与模型可见性，
+- `preflight` 硬检查节点目录（经 `.env` 的 `COMFYUI_VENV_PYTHON` 推导）、模型可见性，
+  并把全部 production video recipe 的 SHA-256 与 `COMFYUI_MODEL_ROOT` 下真实字节逐一对账；
   异常 exit 1；
 - `smoke:backend` 用生产 fp8 模型（默认 `redcraft-krea2-redmix3-fp8`）真实出图。
 
@@ -886,8 +887,8 @@ PM2 wrapper；只有 cutover、运行态 readiness 与 ready ownership 全部通
 
 PM2 action 返回 0 仍不等于发布成功：wrapper 会继续有限时轮询
 目标 logical app（video 开启时 9 个、关闭时 8 个）的精确期望实例数，全部 `online` 后验证 Main/Admin HTTP、Chat `/readyz`、
-Fish `/health`，并运行 Gen `preflight` 检查 ComfyUI model refs 和视频验真所需的
-`ffprobe` / `ffmpeg`；全部通过才 resume 四条 queue。
+Fish `/health`，并运行 Gen `preflight` 检查 ComfyUI model refs、production video model
+SHA-256 和视频验真所需的 `ffprobe` / `ffmpeg`；全部通过才 resume 四条 queue。
 若活动 Request 的最新 queued/running Attempt 已绑定 `terminalRecordRef`，门禁还要求 terminal Outbox
 内容精确且对应 finalize Bull row 仍为非终态；row 缺失、failed 或 completed 都按 stranded
 finalization 阻断。对于合法 `unknown` Attempt，门禁验证 delivered exact Outbox、Attempt unknown

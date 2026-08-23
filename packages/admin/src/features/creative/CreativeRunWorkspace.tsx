@@ -1417,20 +1417,13 @@ function RunDetail({
   const [retryProjectionRefreshing, setRetryProjectionRefreshing] =
     useState(false);
   const [retryCommand, setRetryCommand] =
-    useState<CreativeRetryCommandState | null>(
-      () => readCreativeRetryCommand(id, actorId),
-    );
-  const retryResumeOnMount = useRef(Boolean(
-    retryCommand &&
-    retryCommand.commandId === null &&
-    (retryCommand.status === "submitting" ||
-      retryCommand.status === "submission_unknown"),
-  ));
+    useState<CreativeRetryCommandState | null>(null);
+  const retryResumeOnMount = useRef(false);
   const [retryIdempotencyKey, setRetryIdempotencyKey] = useState(
-    () => retryCommand?.idempotencyKey ?? crypto.randomUUID(),
+    () => crypto.randomUUID(),
   );
   const retryCommandRef =
-    useRef<CreativeRetryCommandState | null>(retryCommand);
+    useRef<CreativeRetryCommandState | null>(null);
   const retrySubmissionLock = useRef(false);
   const retryCommandLocksNewIntent = Boolean(
     retryCommand &&
@@ -1448,6 +1441,21 @@ function RunDetail({
   const reloadAfterCommit = useCallback(async () => {
     setRunProjection(await fetchRun());
   }, [fetchRun, setRunProjection]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const restored = readCreativeRetryCommand(id, actorId);
+      if (!restored) return;
+      retryCommandRef.current = restored;
+      retryResumeOnMount.current = Boolean(
+        restored.commandId === null &&
+        (restored.status === "submitting" ||
+          restored.status === "submission_unknown"),
+      );
+      setRetryCommand(restored);
+      setRetryIdempotencyKey(restored.idempotencyKey);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [actorId, id]);
   const submitRetryIntent = useCallback(async (intent: {
     readonly idempotencyKey: string;
     readonly entityVersion: number;

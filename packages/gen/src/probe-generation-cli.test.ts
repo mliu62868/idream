@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
-import { sha256File } from "./probe-video-pipeline";
+import { sha256File } from "./model-asset-attestation";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),

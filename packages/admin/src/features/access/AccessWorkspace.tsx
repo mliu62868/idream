@@ -87,8 +87,8 @@ export function AccessWorkspace({
   const { t, value: valueLabel } = useAdminI18n();
   const format = useAdminFormat();
   const { toast } = useToast();
-  const [query, setQuery] = useState<AccessQuery>(() => currentQuery());
-  const [draft, setDraft] = useState<AccessQuery>(() => currentQuery());
+  const [query, setQuery] = useState<AccessQuery>(defaultAccessQuery);
+  const [draft, setDraft] = useState<AccessQuery>(defaultAccessQuery);
   const [data, setData] = useState<AccessUserListResponse | null>(null);
   // 游标分页没有页码，只有「上一页用的是哪个游标」。这条轨迹就是 Pagination 的第 N 页。
   const [cursorTrail, setCursorTrail] = useState<string[]>([]);
@@ -101,7 +101,6 @@ export function AccessWorkspace({
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
   const gate = useRef(createLatestRequestGate());
   const permissionGate = useRef(createLatestRequestGate());
-  const initialQuery = useRef(query);
   const targetUserId = permissionDraft.userId.trim();
 
   const load = useCallback(async (next: AccessQuery) => {
@@ -132,7 +131,6 @@ export function AccessWorkspace({
 
   useEffect(() => {
     const requestGate = gate.current;
-    void load(initialQuery.current);
     const restore = () => {
       const next = currentQuery();
       setQuery(next);
@@ -141,6 +139,7 @@ export function AccessWorkspace({
       setCursorTrail([]);
       void load(next);
     };
+    restore();
     window.addEventListener("popstate", restore);
     window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, restore);
     return () => {

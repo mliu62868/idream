@@ -50,13 +50,41 @@ function unsafeUseStateInitializers(text: string, fileName: string): string[] {
     fileName.endsWith("x") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   );
   const found: string[] = [];
+  const localFunctions = new Map<string, ts.Node>();
+
+  for (const statement of source.statements) {
+    if (ts.isFunctionDeclaration(statement) && statement.name) {
+      localFunctions.set(statement.name.text, statement);
+      continue;
+    }
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (
+        ts.isIdentifier(declaration.name) &&
+        declaration.initializer &&
+        (ts.isArrowFunction(declaration.initializer) ||
+          ts.isFunctionExpression(declaration.initializer))
+      ) {
+        localFunctions.set(declaration.name.text, declaration.initializer);
+      }
+    }
+  }
 
   function containsBrowserAuthority(node: ts.Node) {
     let unsafe = false;
+    const visitedFunctions = new Set<string>();
     function visit(candidate: ts.Node) {
       if (
         ts.isIdentifier(candidate) &&
         ["window", "document"].includes(candidate.text)
+      ) {
+        unsafe = true;
+      }
+      if (
+        ts.isIdentifier(candidate) &&
+        candidate.text === "location" &&
+        (!ts.isPropertyAccessExpression(candidate.parent) ||
+          candidate.parent.expression === candidate)
       ) {
         unsafe = true;
       }
@@ -77,6 +105,17 @@ function unsafeUseStateInitializers(text: string, fileName: string): string[] {
       ) {
         unsafe = true;
       }
+      if (
+        ts.isCallExpression(candidate) &&
+        ts.isIdentifier(candidate.expression)
+      ) {
+        const name = candidate.expression.text;
+        const localFunction = localFunctions.get(name);
+        if (localFunction && !visitedFunctions.has(name)) {
+          visitedFunctions.add(name);
+          visit(localFunction);
+        }
+      }
       if (!unsafe) ts.forEachChild(candidate, visit);
     }
     visit(node);
@@ -86,8 +125,11 @@ function unsafeUseStateInitializers(text: string, fileName: string): string[] {
   function visit(node: ts.Node) {
     if (
       ts.isCallExpression(node) &&
-      ts.isIdentifier(node.expression) &&
-      node.expression.text === "useState" &&
+      ((ts.isIdentifier(node.expression) && node.expression.text === "useState") ||
+        (ts.isPropertyAccessExpression(node.expression) &&
+          ts.isIdentifier(node.expression.expression) &&
+          node.expression.expression.text === "React" &&
+          node.expression.name.text === "useState")) &&
       node.arguments[0] &&
       containsBrowserAuthority(node.arguments[0])
     ) {
@@ -104,6 +146,15 @@ describe("SSR-safe initial state", () => {
     const offenders: string[] = [];
     const files = sourceFiles(SRC);
     expect(files.length).toBeGreaterThan(20);
+    expect(files.map((file) => file.replace(SRC, ""))).toEqual(
+      expect.arrayContaining([
+        "features/cases/CaseWorkspace.tsx",
+        "features/config/GenerationConfigWorkspace.tsx",
+        "features/customers/CustomerWorkspace.tsx",
+        "features/incidents/IncidentWorkspace.tsx",
+        "features/overviews/OverviewWorkspaces.tsx",
+      ]),
+    );
     for (const file of files) {
       const text = readFileSync(file, "utf8");
       if (!text.includes("useState")) continue;
@@ -127,6 +178,14 @@ describe("SSR-safe initial state", () => {
       `const state = useState(() => window["location"].search);`,
       "element-access.tsx",
     )).toEqual([`() => window["location"].search`]);
+    expect(unsafeUseStateInitializers(
+      `function stateFromLocation() { return window.location.search; }\nconst state = useState(() => stateFromLocation());`,
+      "helper.tsx",
+    )).toEqual(["() => stateFromLocation()"]);
+    expect(unsafeUseStateInitializers(
+      `const path = React.useState(() => location.pathname);\nconst hash = useState(() => location.hash);`,
+      "location.tsx",
+    )).toEqual(["() => location.pathname", "() => location.hash"]);
   });
 
   it("refuses to follow symlinked source entries", () => {

@@ -84,7 +84,7 @@ export function IncidentWorkspace({
   const { locale, t } = useAdminI18n();
   const { toast } = useToast();
   const failureToast = useFailureToast();
-  const [initialUrlState] = useState(() => stateFromLocation(initialIncidentId));
+  const [initialUrlState] = useState(() => initialIncidentWorkspaceState(initialIncidentId));
   const [query, setQuery] = useState<IncidentQueryDraft>(initialUrlState.query);
   const [list, setList] = useState<IncidentList | null>(null);
   const [selectedId, setSelectedId] = useState(initialUrlState.selectedId);
@@ -95,7 +95,6 @@ export function IncidentWorkspace({
   const [busy, setBusy] = useState(false);
   // 只装读取失败：写操作的失败走 useFailureToast()（错误码映射 + 复制给工程）。
   const [error, setError] = useState<unknown>(null);
-  const firstQuery = useRef(query);
   const history = useRef(createWorkspaceHistoryController(initialUrlState));
   const listRequestId = useRef(0);
   const detailRequestId = useRef(0);
@@ -134,12 +133,18 @@ export function IncidentWorkspace({
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      if (!initialIncidentId) history.current.replace(initialUrlState, writeIncidentUrl);
-      void loadList(firstQuery.current);
-      if (initialUrlState.selectedId) void loadDetail(initialUrlState.selectedId);
+      const restored = stateFromLocation(initialIncidentId);
+      history.current.restore(restored);
+      setQuery(restored.query);
+      setSelectedSavedViewId(restored.savedViewId);
+      setSelectedId(restored.selectedId);
+      setDetail(null);
+      if (!initialIncidentId) history.current.replace(restored, writeIncidentUrl);
+      void loadList(restored.query);
+      if (restored.selectedId) void loadDetail(restored.selectedId);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [initialIncidentId, initialUrlState, loadDetail, loadList]);
+  }, [initialIncidentId, loadDetail, loadList]);
 
   useEffect(() => {
     return observeWorkspacePopState(window, () => stateFromLocation(null), (restored) => {
@@ -750,7 +755,9 @@ function Stat({ label, value }: { label: string; value: React.ReactNode }) {
   return <div><dt className="text-[10px] font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">{t(label)}</dt><dd className="mt-1 font-mono text-sm text-[var(--ad-ink)]">{value}</dd></div>;
 }
 
-function stateFromLocation(initialIncidentId: string | null) { const parsed = typeof window === "undefined" ? { query: defaultIncidentQuery, selectedId: null, savedViewId: null } : parseIncidentWorkspaceParams(new URLSearchParams(window.location.search)); return { ...parsed, selectedId: initialIncidentId ?? parsed.selectedId ?? (typeof window === "undefined" ? null : workspaceDetailId(window.location.pathname, "/admin/ops/incidents")) }; }
+// INVARIANT: server and first browser render must agree; the address bar is restored after hydration.
+function initialIncidentWorkspaceState(initialIncidentId: string | null): IncidentWorkspaceUrlState { return { query: defaultIncidentQuery, selectedId: initialIncidentId, savedViewId: null }; }
+function stateFromLocation(initialIncidentId: string | null) { const parsed = parseIncidentWorkspaceParams(new URLSearchParams(window.location.search)); return { ...parsed, selectedId: initialIncidentId ?? parsed.selectedId ?? workspaceDetailId(window.location.pathname, "/admin/ops/incidents") }; }
 
 function writeIncidentUrl(state: IncidentWorkspaceUrlState, mode: "push" | "replace") { setWorkspaceUrl(buildIncidentWorkspaceParams(state), { mode, pathname: incidentWorkspacePath(state.selectedId) }); }
 

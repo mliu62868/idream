@@ -38,8 +38,8 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
   const format = useAdminFormat();
   const { toast } = useToast();
   const failureToast = useFailureToast();
-  const [query, setQuery] = useState<PricingQuery>(() => currentQuery());
-  const [queryDraft, setQueryDraft] = useState<PricingQuery>(() => currentQuery());
+  const [query, setQuery] = useState<PricingQuery>(defaultPricingQuery);
+  const [queryDraft, setQueryDraft] = useState<PricingQuery>(defaultPricingQuery);
   const [pricingDraft, setPricingDraft] = useState<PricingDraft>(defaultPricingDraft);
   const [rows, setRows] = useState<PricingRecord[] | null>(null);
   const [pageInfo, setPageInfo] = useState<PageInfo>(emptyPageInfo);
@@ -52,7 +52,6 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
   const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
   const requestGate = useRef(createLatestRequestGate());
-  const initialQuery = useRef(query);
 
   const load = useCallback(async (next: PricingQuery) => {
     const request = requestGate.current.begin();
@@ -77,7 +76,6 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
 
   useEffect(() => {
     const gate = requestGate.current;
-    void load(initialQuery.current);
     const restore = () => {
       const restored = currentQuery();
       setQuery(restored);
@@ -86,6 +84,7 @@ export function PricingWorkspace({ canWrite }: { canWrite: boolean }) {
       setCursorTrail([]);
       void load(restored);
     };
+    restore();
     window.addEventListener("popstate", restore);
     window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, restore);
     return () => {

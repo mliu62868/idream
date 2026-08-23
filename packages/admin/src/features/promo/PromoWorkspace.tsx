@@ -56,8 +56,8 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
   const { t, value: valueLabel } = useAdminI18n();
   const format = useAdminFormat();
   const { toast } = useToast();
-  const [query, setQuery] = useState<PromoQuery>(() => currentQuery());
-  const [draft, setDraft] = useState<PromoQuery>(() => currentQuery());
+  const [query, setQuery] = useState<PromoQuery>(defaultPromoQuery);
+  const [draft, setDraft] = useState<PromoQuery>(defaultPromoQuery);
   const [codes, setCodes] = useState<AuthorityState>(emptyAuthority);
   const [referrals, setReferrals] = useState<AuthorityState>(emptyAuthority);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
@@ -67,7 +67,6 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
     codes: createLatestRequestGate(),
     referrals: createLatestRequestGate(),
   });
-  const initialQuery = useRef(query);
 
   const loadScope = useCallback(async (next: PromoQuery, scope: PromoScope) => {
     const request = gates.current[scope].begin();
@@ -108,7 +107,6 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
 
   useEffect(() => {
     const requestGates = gates.current;
-    load(initialQuery.current);
     const restore = () => {
       const next = currentQuery();
       setQuery(next);
@@ -117,6 +115,7 @@ export function PromoWorkspace({ canWrite }: { canWrite: boolean }) {
       setTrails(emptyTrails);
       load(next);
     };
+    restore();
     window.addEventListener("popstate", restore);
     window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, restore);
     return () => {

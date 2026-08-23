@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream, existsSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -17,6 +17,10 @@ import type {
 import { loadWorkflowDescriptors } from "./backend/workflow";
 import { probeVideoMedia } from "./backend/video-media-probe";
 import { env } from "./env";
+import {
+  attestLocalComfyUiModelRoot,
+  sha256File,
+} from "./model-asset-attestation";
 import { processVideoGenerate } from "./pipeline";
 
 type ProbeOptions = {
@@ -75,6 +79,13 @@ async function main() {
   const referenceBody = await readFile(options.referencePath);
   const binding = await resolveBackendBinding(options.model);
   const recipe = binding.recipe;
+  const runtimeModelRoot = binding.backendKind === "comfyui"
+    ? await attestLocalComfyUiModelRoot({
+        apiUrl: binding.backendTarget,
+        assetPaths: recipe.modelAssets.map((asset) => asset.path),
+        modelRoot: env.COMFYUI_MODEL_ROOT,
+      })
+    : null;
   const modelAssets = binding.backendKind === "comfyui"
     ? await Promise.all(
         recipe.modelAssets.map(async (asset) => ({
@@ -165,6 +176,7 @@ async function main() {
     attemptId,
     referenceSha256: createHash("sha256").update(referenceBody).digest("hex"),
     modelAssets,
+    runtimeModelRoot,
     blobAuthority: env.BLOB_AUTHORITY,
     generationJobId,
     artifact,
@@ -187,14 +199,6 @@ async function main() {
   }
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   if (!ok) process.exitCode = 1;
-}
-
-export async function sha256File(filePath: string) {
-  const digest = createHash("sha256");
-  for await (const chunk of createReadStream(filePath)) {
-    digest.update(chunk);
-  }
-  return digest.digest("hex");
 }
 
 async function artifactEvidence(

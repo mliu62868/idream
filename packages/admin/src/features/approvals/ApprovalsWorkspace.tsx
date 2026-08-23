@@ -86,8 +86,8 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
   const { t } = useAdminI18n();
   const format = useAdminFormat();
   const { toast } = useToast();
-  const [query, setQuery] = useState<ApprovalQuery>(() => currentQuery());
-  const [draft, setDraft] = useState<ApprovalQuery>(() => currentQuery());
+  const [query, setQuery] = useState<ApprovalQuery>(defaultApprovalQuery);
+  const [draft, setDraft] = useState<ApprovalQuery>(defaultApprovalQuery);
   const [data, setData] = useState<ListResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -99,7 +99,6 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
   //         翻页栈是本地的，所以第一页时 hasPrevious 为假 —— 置灰而不是给一个会 400 的按钮。
   const [cursorTrail, setCursorTrail] = useState<string[]>([]);
   const gate = useRef(createLatestRequestGate());
-  const initialQuery = useRef(query);
 
   const load = useCallback(async (next: ApprovalQuery) => {
     const request = gate.current.begin();
@@ -127,7 +126,6 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
 
   useEffect(() => {
     const requestGate = gate.current;
-    void load(initialQuery.current);
     const restore = () => {
       const next = currentQuery();
       setQuery(next);
@@ -135,6 +133,7 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
       setCursorTrail([]);
       void load(next);
     };
+    restore();
     window.addEventListener("popstate", restore);
     window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, restore);
     return () => {

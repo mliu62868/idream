@@ -1686,6 +1686,48 @@ function addVideoGenerationProbeCheck(
         problems.push("probe model asset count does not match the production recipe");
       }
     }
+    const runtimeModelRoot = probe.runtimeModelRoot;
+    if (!runtimeModelRoot) {
+      problems.push(
+        "probe does not bind model hashes to the target ComfyUI listener",
+      );
+    } else {
+      if (runtimeModelRoot.authority !== "local_listener_process") {
+        problems.push("probe model-root authority is not a listener process");
+      }
+      if (!sameUrl(runtimeModelRoot.backendTarget, probe.backendTarget)) {
+        problems.push("probe model-root target does not match the exercised ComfyUI listener");
+      }
+      if (!Number.isInteger(runtimeModelRoot.listenerPid) || (runtimeModelRoot.listenerPid ?? 0) <= 0) {
+        problems.push("probe model-root evidence has no listener PID");
+      }
+      if (!/^[a-f0-9]{64}$/.test(runtimeModelRoot.processCommandSha256 ?? "")) {
+        problems.push("probe model-root evidence has no process command fingerprint");
+      }
+      const expectedRoot = runtimeModelRoot.expectedModelRoot ?? "";
+      if (
+        !path.isAbsolute(expectedRoot) ||
+        !runtimeModelRoot.configuredModelRoots?.includes(expectedRoot)
+      ) {
+        problems.push("probe model root is not configured on the exercised ComfyUI listener");
+      }
+      for (const expected of recipe.modelAssets) {
+        const binding = runtimeModelRoot.assetBindings?.find(
+          (candidate) => candidate.path === expected.path,
+        );
+        if (
+          !binding?.runtimePath ||
+          binding.runtimePath !== path.join(expectedRoot, expected.path)
+        ) {
+          problems.push(`runtime model path does not match ${expected.path}`);
+        }
+      }
+      if (
+        runtimeModelRoot.assetBindings?.length !== recipe.modelAssets.length
+      ) {
+        problems.push("runtime model binding count does not match the production recipe");
+      }
+    }
     addGenBlobAuthorityProblems(problems, env, probe.blobAuthority);
     if (!probe.terminal) {
       problems.push("probe has no immutable terminal record evidence");
@@ -1739,6 +1781,7 @@ function addGenerationPersistenceProbeCheck(
   videoBinding?: {
     probeName: ProbeName;
     checkId: string;
+    recipe: CharacterVideoProductionRecipe;
   },
 ) {
   const probeName: ProbeName =
@@ -1792,6 +1835,20 @@ function addGenerationPersistenceProbeCheck(
     ) {
       problems.push("provider and pinned generation profile are incomplete");
     }
+    if (
+      videoBinding &&
+      (probe.profileKey !== videoBinding.recipe.profileKey ||
+        probe.profileVersion !== videoBinding.recipe.recipeVersion)
+    ) {
+      problems.push("Main Attempt does not match the exact production profile");
+    }
+    if (
+      videoBinding &&
+      (probe.workflowKey !== videoBinding.recipe.workflowKey ||
+        probe.workflowVersion !== videoBinding.recipe.workflowVersion)
+    ) {
+      problems.push("Main Attempt does not match the exact production workflow");
+    }
     if (directProbe?.workflowKey) {
       if (
         probe.workflowKey !== directProbe.workflowKey ||
@@ -1830,6 +1887,12 @@ function addGenerationPersistenceProbeCheck(
       ) {
         problems.push("artifact, delivery, and MediaAsset counts do not match");
       }
+      if (
+        (terminal.settlementCount ?? 0) < 1 ||
+        terminal.spendSettlementCount !== 1
+      ) {
+        problems.push("generation spend Settlement is missing or ambiguous");
+      }
     }
     addProbeFreshnessProblems(problems, env, probeName, probe.checkedAt, now);
     addProbeFreshnessProblems(problems, env, probeName, probe.observedAt, now);
@@ -1851,8 +1914,18 @@ function addGenerationPersistenceProbeCheck(
     remediation:
       problems.length === 0
         ? undefined
-        : `Complete a real product ${mode} job, then run \`bun run --filter @idream/main probe:generation-persistence -- --job-id <generation-job-id> --report .tmp/launch-${mode}-persistence-probe.json\` and set ${PROBE_REPORTS[probeName].reportEnvKey} before check:launch.`,
+        : `Complete a real product ${mode} job, then run \`bun run --filter @idream/main probe:generation-persistence -- --job-id <generation-job-id> --report ${generationPersistenceRemediationReport(mode, probeName)}\` and set ${PROBE_REPORTS[probeName].reportEnvKey} before check:launch.`,
   });
+}
+
+function generationPersistenceRemediationReport(
+  mode: "image" | "video",
+  probeName: ProbeName,
+) {
+  if (probeName === "videoH3GenerationPersistenceProbe") {
+    return ".tmp/launch-video-h3-persistence-probe.json";
+  }
+  return `.tmp/launch-${mode}-persistence-probe.json`;
 }
 
 function addProductConfigProbeCheck(
@@ -2949,6 +3022,11 @@ export function assessLaunchReadiness(
     probes.videoGenerationProbe,
     probes.productConfigProbe,
     now,
+    {
+      probeName: "videoGenerationPersistenceProbe",
+      checkId: "generation-video-main-persistence",
+      recipe: characterVideoProductionRecipe,
+    },
   );
   addGenerationPersistenceProbeCheck(
     checks,
@@ -2961,6 +3039,7 @@ export function assessLaunchReadiness(
     {
       probeName: "videoH3GenerationPersistenceProbe",
       checkId: "generation-video-h3-main-persistence",
+      recipe: minimaxH3VideoProductionRecipe,
     },
   );
   addVoiceModelProbeCheck(checks, env, probes.voiceModelProbe, now);

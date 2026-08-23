@@ -225,6 +225,18 @@ function passingVideoProbe(
     seconds: recipe.durationSeconds,
     referenceSha256: "c".repeat(64),
     modelAssets: recipe.modelAssets.map((asset) => ({ ...asset })),
+    runtimeModelRoot: {
+      authority: "local_listener_process",
+      backendTarget: productionEnv.COMFYUI_API_URL,
+      listenerPid: 123,
+      processCommandSha256: "e".repeat(64),
+      expectedModelRoot: "/srv/comfy/models",
+      configuredModelRoots: ["/srv/comfy/models"],
+      assetBindings: recipe.modelAssets.map((asset) => ({
+        path: asset.path,
+        runtimePath: path.join("/srv/comfy/models", asset.path),
+      })),
+    },
     generationJobId: "probe_video_123",
     blobAuthority: {
       provider: productionEnv.BLOB_PROVIDER,
@@ -269,7 +281,9 @@ function passingGenerationPersistenceProbe(
     jobStatus: "completed",
     attemptStatus: "succeeded",
     provider: "backend",
-    profileKey: isVideo ? "video-default" : "image-premium",
+    profileKey: isVideo
+      ? characterVideoProductionRecipe.profileKey
+      : "image-premium",
     profileVersion: 1,
     workflowKey: isVideo
       ? "ltx23-gtanimation-i2v"
@@ -288,6 +302,8 @@ function passingGenerationPersistenceProbe(
       artifactCount: 1,
       deliveredCount: 1,
       mediaAssetCount: 1,
+      settlementCount: 1,
+      spendSettlementCount: 1,
     },
     error: null,
     ...override,
@@ -4233,6 +4249,42 @@ describe("launch readiness", () => {
     expect(checkById(report, "video-generation-live-probe")?.status).toBe("pass");
     expect(checkById(report, "video-h3-generation-live-probe")?.status).toBe("fail");
     expect(checkById(report, "generation-video-h3-main-persistence")?.status).toBe("fail");
+    expect(
+      checkById(report, "generation-video-h3-main-persistence")?.remediation,
+    ).toContain(".tmp/launch-video-h3-persistence-probe.json");
+  });
+
+  it("rejects H3 Main persistence evidence from the wrong pinned profile", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      imagePipelineProbe: passingImageProbe(),
+      videoGenerationProbe: passingVideoProbe(),
+      videoH3GenerationProbe: passingH3VideoProbe(),
+      videoH3GenerationPersistenceProbe: passingGenerationPersistenceProbe(
+        "video",
+        {
+          generationJobId: "job_video_h3_wrong_profile",
+          attemptId: "attempt_video_h3_wrong_profile",
+          profileKey: characterVideoProductionRecipe.profileKey,
+          workflowKey: minimaxH3VideoProductionRecipe.workflowKey,
+        },
+      ),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingVideoEnabledProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(
+      checkById(report, "generation-video-h3-main-persistence")?.message,
+    ).toContain("does not match the exact production profile");
   });
 
   it("rejects H3 evidence when a pinned model asset has different bytes", () => {
@@ -4308,6 +4360,7 @@ describe("launch readiness", () => {
       videoGenerationProbe: passingVideoProbe({
         workflowVersion: 2,
         referenceSha256: "not-a-source-hash",
+        runtimeModelRoot: null,
       }),
       ageVerificationProbe: passingAgeProbe(),
       blobStorageProbe: passingBlobProbe(),
@@ -4332,6 +4385,9 @@ describe("launch readiness", () => {
     );
     expect(checkById(report, "video-generation-live-probe")?.message).toContain(
       "exact source image bytes",
+    );
+    expect(checkById(report, "video-generation-live-probe")?.message).toContain(
+      "does not bind model hashes to the target ComfyUI listener",
     );
   });
 

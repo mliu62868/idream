@@ -88,6 +88,7 @@ export type GenerationPersistenceSnapshot = {
   }>;
   deliveries: Array<{ artifactId: string; status: string }>;
   mediaAssets: Array<{ id: string; type: string; deletedAt: Date | null }>;
+  settlements: Array<{ ledgerEntryId: string; kind: string }>;
 };
 
 function jsonRecord(value: Prisma.JsonValue | null | undefined) {
@@ -216,6 +217,14 @@ export function evaluateGenerationPersistenceSnapshot(
   ) {
     problems.push("MediaAsset projection does not match delivered artifacts");
   }
+  const spendSettlements = snapshot.settlements.filter(
+    (settlement) =>
+      settlement.kind === "generation_spend" &&
+      settlement.ledgerEntryId.length > 0,
+  );
+  if (spendSettlements.length !== 1) {
+    problems.push("generation spend settlement is absent or ambiguous");
+  }
 
   const observedAt = job?.completedAt?.toISOString() ?? null;
   return {
@@ -248,6 +257,8 @@ export function evaluateGenerationPersistenceSnapshot(
               (delivery) => delivery.status === "delivered",
             ).length,
             mediaAssetCount: snapshot.mediaAssets.length,
+            settlementCount: snapshot.settlements.length,
+            spendSettlementCount: spendSettlements.length,
           }
         : null,
     error:
@@ -365,6 +376,10 @@ export async function inspectGenerationPersistence(
         where: { sourceJobId: generationJobId },
         select: { id: true, type: true, deletedAt: true },
       });
+      const settlements = await tx.generationSettlementLink.findMany({
+        where: { requestId: generationJobId },
+        select: { ledgerEntryId: true, kind: true },
+      });
       return {
         checkedAt,
         job,
@@ -377,6 +392,7 @@ export async function inspectGenerationPersistence(
         artifacts,
         deliveries,
         mediaAssets,
+        settlements,
       };
     },
     { isolationLevel: "RepeatableRead", maxWait: 5_000, timeout: 30_000 },

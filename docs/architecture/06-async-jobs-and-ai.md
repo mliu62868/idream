@@ -82,7 +82,8 @@ Bull row 已 completed 或按保留策略移除。
 4. 以 `pm2 jlist` 确认非 voice 进程为 `stopped / errored / absent`，执行只读 authority gate；
 5. PM2 action 返回 0 后仍保持 queue paused；有限时轮询 `pm2 jlist`，要求 ecosystem
    的期望实例数全部 `online`，再验证 Main/Admin HTTP、Chat `/healthz`、Fish `/health`
-   与 Gen `preflight`（ComfyUI model refs + `ffprobe`/`ffmpeg`）；全部通过后才显式
+   与 Gen `preflight`（ComfyUI model refs + production video model SHA-256 +
+   `ffprobe`/`ffmpeg`）；全部通过后才显式
    resume 四条 queue。
 
 pause/drain、stop、静止确认、门禁、PM2 action、运行态 readiness 或 resume 任一步失败，都不会开放生成队列；resume
@@ -165,9 +166,9 @@ Gen worker:
   1) claim transport work，并向 Main 记录 running TransportExecution
   2) moderation.input(prompt+controls)；阻断时产出 blocked terminal record
   3) GenBackend.generate(...)；只在明确可重试且 provider 支持确定幂等时重试
-  4) moderation.output + artifact verification + BlobStore.putPrivate(bytes)；生产视频必须先
-     校验 recipe 固定的全部模型资产 SHA-256，再由 ffprobe 读取实测 envelope、ffmpeg
-     完整解码，并匹配 LTX 768×1152 / 4s / 25fps / audio 或 H3
+  4) moderation.output + artifact verification + BlobStore.putPrivate(bytes)；生产流量开放前，
+     Gen preflight 校验 recipe 固定的全部模型资产 SHA-256；每个视频产物仍由 ffprobe
+     读取实测 envelope、ffmpeg 完整解码，并匹配 LTX 768×1152 / 4s / 25fps / audio 或 H3
      512×512 / 124 frames / 24fps / audio 的精确契约
   5) 先持久化 immutable terminal record，再以 Attempt key 投递到 Main-owned durable relay
 Main finalizer:

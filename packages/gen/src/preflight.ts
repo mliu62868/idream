@@ -20,7 +20,9 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { characterVideoProductionRecipes } from "@idream/shared";
 import { env } from "./env";
+import { attestPinnedModelAssets } from "./model-asset-attestation";
 import {
   modelLoaderNodeForReference,
   requiredComfyNodeTypes,
@@ -90,6 +92,7 @@ async function main() {
   let needsFp8Shim = false;
   let checked = 0;
   let checkedNodeTypes = 0;
+  let checkedModelAssets = 0;
 
   for (const file of files) {
     let descriptor: Descriptor;
@@ -144,6 +147,21 @@ async function main() {
     }
   }
 
+  if (env.VIDEO_PROVIDER === "backend") {
+    const pinnedModelAssets: Array<{ path: string; sha256: string }> = [];
+    for (const recipe of characterVideoProductionRecipes) {
+      pinnedModelAssets.push(...recipe.modelAssets);
+    }
+    const attestation = await attestPinnedModelAssets({
+      modelRoot: env.COMFYUI_MODEL_ROOT,
+      assets: pinnedModelAssets,
+    });
+    checkedModelAssets = attestation.checked;
+    for (const detail of attestation.problems) {
+      problems.push({ workflow: "(video model bytes)", detail });
+    }
+  }
+
   // The shim has no HTTP surface, so probe the capability it enables: a runner
   // without it lists fp8 dtypes but dies when the sampler casts to MPS.
   if (needsFp8Shim) {
@@ -180,7 +198,7 @@ async function main() {
 
   for (const p of problems) process.stdout.write(`FAIL  ${p.workflow}: ${p.detail}\n`);
   process.stdout.write(
-    `preflight: ${files.length} descriptors, ${checkedNodeTypes} node types and ${checked} model refs checked, ${problems.length} problem(s)\n`,
+    `preflight: ${files.length} descriptors, ${checkedNodeTypes} node types, ${checked} model refs and ${checkedModelAssets} pinned model bytes checked, ${problems.length} problem(s)\n`,
   );
   if (needsFp8Shim) {
     process.stdout.write(

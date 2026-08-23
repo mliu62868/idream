@@ -36,7 +36,7 @@ import {
 export function CustomerWorkspace({ initialCustomerId = null }: { initialCustomerId?: string | null }) {
   const { t } = useAdminI18n();
   const format = useAdminFormat();
-  const [initialUrlState] = useState(() => stateFromLocation(initialCustomerId));
+  const [initialUrlState] = useState(() => initialCustomerWorkspaceState(initialCustomerId));
   const [query, setQuery] = useState<CustomerQuery>(initialUrlState.query);
   const [list, setList] = useState<CustomerListResponse | null>(null);
   const [selectedId, setSelectedId] = useState(initialUrlState.selectedId);
@@ -48,7 +48,6 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
   // INTENT: 后端确实支持反向 keyset，但页码只有翻页栈知道 —— 用同一份栈同时回答
   //         「能不能回去」和「这是第几页」，两个读数就不会互相打架。栈空即第一页，置灰。
   const [cursorTrail, setCursorTrail] = useState<string[]>([]);
-  const firstQuery = useRef(query);
   const history = useRef(createWorkspaceHistoryController(initialUrlState));
   const listRequestId = useRef(0);
   const detailRequestId = useRef(0);
@@ -90,12 +89,17 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      if (!initialCustomerId) history.current.replace(initialUrlState, writeCustomerUrl);
-      void loadList(firstQuery.current);
-      if (initialUrlState.selectedId) void loadDetail(initialUrlState.selectedId);
+      const restored = stateFromLocation(initialCustomerId);
+      history.current.restore(restored);
+      setQuery(restored.query);
+      setSelectedId(restored.selectedId);
+      setDetail(null);
+      if (!initialCustomerId) history.current.replace(restored, writeCustomerUrl);
+      void loadList(restored.query);
+      if (restored.selectedId) void loadDetail(restored.selectedId);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [initialCustomerId, initialUrlState, loadDetail, loadList]);
+  }, [initialCustomerId, loadDetail, loadList]);
 
   useEffect(() => {
     return observeWorkspacePopState(window, () => stateFromLocation(null), (restored) => {
@@ -256,5 +260,7 @@ function CustomerInspector({ detail, onClose }: { detail: Customer360; onClose: 
 function DetailSection({ children, title }: { children: React.ReactNode; title: string }) { return <section className="border-t border-[var(--ad-border)] pt-4"><h4 className="mb-3 text-sm font-semibold">{title}</h4>{children}</section>; }
 function EmptyRows() { const { t } = useAdminI18n(); return <p className="text-xs text-[var(--ad-text-muted)]">{t("No records.")}</p>; }
 function ListStat({ label, value }: { label: string; value: React.ReactNode }) { return <span><span className="block text-[10px] font-semibold uppercase tracking-wide text-[var(--ad-text-muted)]">{label}</span><span className="mt-1 block font-mono text-sm">{value}</span></span>; }
-function stateFromLocation(initialCustomerId: string | null) { const parsed = typeof window === "undefined" ? { query: defaultCustomerQuery, selectedId: null } : parseCustomerWorkspaceParams(new URLSearchParams(window.location.search)); return { ...parsed, selectedId: initialCustomerId ?? parsed.selectedId ?? (typeof window === "undefined" ? null : workspaceDetailId(window.location.pathname, "/admin/customers")) }; }
+// INVARIANT: server and first browser render must agree; the address bar is restored after hydration.
+function initialCustomerWorkspaceState(initialCustomerId: string | null): CustomerWorkspaceUrlState { return { query: defaultCustomerQuery, selectedId: initialCustomerId }; }
+function stateFromLocation(initialCustomerId: string | null) { const parsed = parseCustomerWorkspaceParams(new URLSearchParams(window.location.search)); return { ...parsed, selectedId: initialCustomerId ?? parsed.selectedId ?? workspaceDetailId(window.location.pathname, "/admin/customers") }; }
 function writeCustomerUrl(state: CustomerWorkspaceUrlState, mode: "push" | "replace") { setWorkspaceUrl(buildCustomerWorkspaceParams(state), { mode, pathname: customerWorkspacePath(state.selectedId) }); }

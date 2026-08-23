@@ -67,8 +67,10 @@ After every ComfyUI upgrade (then `pm2 restart comfyui-idream`):
 cd packages/gen && bun run preflight && bun run smoke:backend
 ```
 
-`preflight` hard-checks the node directory (via `COMFYUI_VENV_PYTHON`) and
-model visibility; `smoke:backend` proves fp8 end-to-end with a real image. If
+`preflight` hard-checks the node directory (via `COMFYUI_VENV_PYTHON`), model
+visibility, and every production video recipe's pinned model SHA-256 against
+the bytes under `COMFYUI_MODEL_ROOT`; `smoke:backend` proves fp8 end-to-end
+with a real image. If
 smoke fails after an upgrade, update the node itself and restart:
 
 ```bash
@@ -267,9 +269,9 @@ which the worker binds to H3's native 124-frame grid.
 
 Both recipes pin every executable checkpoint, text encoder, VAE, and LTX
 upscaler by relative model path plus SHA-256. Set `COMFYUI_MODEL_ROOT` to the
-exact model directory used by the target runner. Each release probe hashes the
-actual bytes from that root; matching filenames are not sufficient for the
-launch gate.
+exact model directory used by the target runner. Startup preflight and each
+release probe hash the actual bytes from that root; matching filenames are not
+sufficient for the launch gate.
 
 Regenerate the descriptor from the validated ComfyUI API prompt with:
 
