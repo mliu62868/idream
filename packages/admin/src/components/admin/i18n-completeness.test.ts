@@ -86,7 +86,7 @@ function auditAdminTranslations() {
         const callee = node.expression.getText(sourceFile);
         const keyArgument = callee === "translateAdmin" ? node.arguments[1] : node.arguments[0];
         if (
-          (callee === "t" || callee === "translateAdmin") &&
+          (callee === "t" || callee === "translateAdmin" || callee === "adminRouteMetadata") &&
           keyArgument &&
           (ts.isStringLiteral(keyArgument) || ts.isNoSubstitutionTemplateLiteral(keyArgument)) &&
           !hasAdminZh(keyArgument.text)
@@ -156,7 +156,10 @@ function auditAdminTranslations() {
         if (
           jsxExpression &&
           !translated &&
-          !ts.isJsxAttribute(jsxExpression.parent)
+          (
+            !ts.isJsxAttribute(jsxExpression.parent) ||
+            jsxExpression.parent.name.getText(sourceFile) === "aria-label"
+          )
         ) {
           untranslatedJsx.push(
             `${sourceLocation(sourceFile, node)} conditional=${JSON.stringify(node.getText(sourceFile))}`,

@@ -3,6 +3,7 @@ import {
   buildGenerationJobQuery,
   changedGenerationJobFilters,
   defaultGenerationJobQuery,
+  generationJobsWorkspaceUrl,
   isGenerationJobQueryFiltered,
   parseGenerationJobQuery,
 } from "./query";
@@ -39,6 +40,26 @@ describe("Generation Jobs URL query", () => {
       limit: 25,
       cursor: undefined,
     });
+  });
+
+  it("preserves, replaces, and closes an adjacent job deep link while normalising filters", () => {
+    expect(generationJobsWorkspaceUrl(
+      "/admin/ops/jobs",
+      "?job=failed-job-1&junk=stale",
+      defaultGenerationJobQuery,
+    )).toBe("/admin/ops/jobs?mode=image&sort=created_desc&limit=25&job=failed-job-1");
+    expect(generationJobsWorkspaceUrl(
+      "/admin/ops/jobs",
+      "?job=failed-job-1",
+      defaultGenerationJobQuery,
+      { jobId: "failed-job-2" },
+    )).toBe("/admin/ops/jobs?mode=image&sort=created_desc&limit=25&job=failed-job-2");
+    expect(generationJobsWorkspaceUrl(
+      "/admin/ops/jobs",
+      "?job=failed-job-1",
+      defaultGenerationJobQuery,
+      { jobId: null },
+    )).toBe("/admin/ops/jobs?mode=image&sort=created_desc&limit=25");
   });
 });
 

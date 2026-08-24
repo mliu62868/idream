@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { todayOperationalText } from "./format";
 import { TodayView, type TodayData, type TodayLegacyData } from "./TodayView";
-import { groupTodayQueueItems } from "./WorkQueue";
+import { groupTodayQueueItems, todayWorkItemTitle } from "./WorkQueue";
 
 const legacy: TodayLegacyData = {
   metrics: {
@@ -66,6 +66,23 @@ function render(projection: Partial<TodayData["projection"]> = {}, workMode: "su
 }
 
 describe("Today authoritative projection", () => {
+  it("localizes system-generated titles without rewriting operator-authored titles", () => {
+    const t = (key: string, values?: Record<string, string | number>) => {
+      const template = ({
+        "content report case": "内容举报案件",
+        "Incident: {signature}": "事故：{signature}",
+      } as Record<string, string>)[key] ?? key;
+      return Object.entries(values ?? {}).reduce(
+        (translated, [name, value]) => translated.replaceAll(`{${name}}`, String(value)),
+        template,
+      );
+    };
+
+    expect(todayWorkItemTitle({ ...item, title: "content report case" }, t)).toBe("内容举报案件");
+    expect(todayWorkItemTitle({ ...item, sourceType: "ops_incident", title: "medium incident: provider-timeout" }, t)).toBe("事故：provider-timeout");
+    expect(todayWorkItemTitle({ ...item, sourceType: "creative_run", title: "Summer campaign refresh" }, t)).toBe("Summer campaign refresh");
+  });
+
   it("localizes structured operational copy without translating record titles or identifiers", () => {
     expect(todayOperationalText("generation · reviewing", "zh")).toBe("生成 · 审核中");
     expect(todayOperationalText("customer user-1 is waiting", "zh")).toBe("客户 user-1 · 等待中");

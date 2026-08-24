@@ -62,6 +62,12 @@ describe("canonical Admin route shell", () => {
     }
   });
 
+  it("names the shared Jobs route from its adjacent workspace query", async () => {
+    const source = await readFile(path.join(adminRoot, "ops/jobs/page.tsx"), "utf8");
+
+    expect(source).toContain('adminRouteLabel(["ops", "jobs"], await searchParams)');
+  });
+
   it("retains the optional catch-all as compatibility glue over the shared renderer", async () => {
     const source = await readFile(path.join(adminRoot, "[[...section]]/page.tsx"), "utf8");
     const renderer = await readFile(path.join(adminRoot, "_server/render-admin-route.tsx"), "utf8");
@@ -89,6 +95,21 @@ describe("canonical Admin route shell", () => {
     const markup = renderToString(<AdminConsoleClient {...shellProps()} />);
 
     expect(markup).toMatch(/<section[^>]*id="admin-main-content"[^>]*tabindex="-1"/);
+  });
+
+  // SPEC: the page scroll belongs to the document so the global sticky header keeps its context.
+  // INTENT: overflow-x-hidden also computes overflow-y:auto and silently breaks nested sticky positioning.
+  it("clips horizontal overflow without creating a false vertical scroll container", () => {
+    const markup = renderToString(<AdminConsoleClient {...shellProps()} />);
+
+    expect(markup).toContain("overflow-x-clip");
+    expect(markup).not.toContain("min-h-screen overflow-x-hidden");
+  });
+
+  it("keeps icon-only header actions named on narrow screens", () => {
+    const markup = renderToString(<AdminConsoleClient {...shellProps()} />);
+
+    expect(markup).toContain('aria-label="Refresh"');
   });
 
   it("renders the canonical character review route as the pending submissions queue", () => {

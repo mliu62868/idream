@@ -25,7 +25,9 @@ const { adminV2Request, translate, displayValue } = vi.hoisted(() => ({
   adminV2Request: vi.fn<
     (path: string, options?: AdminRequestOptions) => Promise<unknown>
   >(),
-  translate: (value: string) => value,
+  translate: (value: string, params?: Record<string, string | number>) =>
+    value.replace(/\{(\w+)\}/g, (token, key: string) =>
+      params?.[key] === undefined ? token : String(params[key])),
   displayValue: (value: string) => value.replaceAll("_", " "),
 }));
 

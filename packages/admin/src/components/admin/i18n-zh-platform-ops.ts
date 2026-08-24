@@ -224,6 +224,7 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Correlated failures, frozen mitigation scope, and recovery evidence in one operational root.":
     "在一个运营根节点中统一查看关联故障、冻结的缓解范围和恢复证据。",
   "Incident correlation failed delivery": "事故关联交付失败",
+  "Incident Detail": "事故详情",
   "Inspect terminally failed generation-to-Incident carriers and return only exact eligible revisions to the worker queue.":
     "检查生成到事故关联的终态失败载体，仅将精确且符合条件的版本送回 worker 队列。",
   "Incident correlation replay result · {summary}.": "事故关联重放结果 · {summary}。",

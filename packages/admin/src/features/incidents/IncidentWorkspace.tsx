@@ -284,8 +284,16 @@ export function IncidentWorkspace({
       {loading && !list ? <LoadingWorkspace label="Loading correlated incidents" /> : list && list.items.length === 0 ? (
         <EmptyWorkspace filtered={filtered} onClear={clearFilters} />
       ) : (
-        <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,0.92fr)_minmax(440px,1.08fr)]">
-          <div className="space-y-2" aria-label={t("Incident results")}>
+        <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,0.92fr)_minmax(440px,1.08fr)]">
+          {selectedId ? (
+            detailLoading && !detail ? <LoadingWorkspace label="Loading incident detail" /> : detail ? (
+              <IncidentInspector asOf={list?.asOf ?? detail.incident.updatedAt} busy={busy} canManage={canManage} detail={detail} key={detail.incident.id} onClose={() => selectIncident(null)} onCommand={command} onMutate={mutate} />
+            ) : null
+          ) : (
+            <aside className="hidden rounded-xl bg-[var(--ad-surface-subtle)] p-8 text-sm text-[var(--ad-text-muted)] lg:block">{t("Select an incident to inspect occurrences, mitigation scope, and recovery evidence.")}</aside>
+          )}
+
+          <div className="space-y-2 lg:order-first" aria-label={t("Incident results")}>
             {list?.items.map((incident) => (
               <button
                 aria-current={selectedId === incident.id ? "true" : undefined}
@@ -309,13 +317,6 @@ export function IncidentWorkspace({
             ) : null}
           </div>
 
-          {selectedId ? (
-            detailLoading && !detail ? <LoadingWorkspace label="Loading incident detail" /> : detail ? (
-              <IncidentInspector asOf={list?.asOf ?? detail.incident.updatedAt} busy={busy} canManage={canManage} detail={detail} key={detail.incident.id} onClose={() => selectIncident(null)} onCommand={command} onMutate={mutate} />
-            ) : null
-          ) : (
-            <aside className="hidden rounded-xl bg-[var(--ad-surface-subtle)] p-8 text-sm text-[var(--ad-text-muted)] xl:block">{t("Select an incident to inspect occurrences, mitigation scope, and recovery evidence.")}</aside>
-          )}
         </div>
       )}
 
@@ -441,7 +442,7 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
   }
 
   return (
-    <aside aria-labelledby="incident-detail-title" className="rounded-xl bg-[var(--ad-surface)] shadow-[0_18px_50px_rgb(45_42_34/0.08)] xl:sticky xl:top-40">
+    <aside aria-labelledby="incident-detail-title" className="rounded-xl bg-[var(--ad-surface)] shadow-[0_18px_50px_rgb(45_42_34/0.08)] lg:sticky lg:top-40">
       <header className="flex items-start justify-between gap-4 border-b border-[var(--ad-border)] p-5">
         <div className="min-w-0"><p className="font-mono text-xs text-[var(--ad-text-muted)]">{incident.id}</p><h3 className="mt-1 text-lg font-semibold" id="incident-detail-title">{incident.suspectedCause ?? t("Incident under investigation")}</h3><div className="mt-3 flex flex-wrap gap-2"><StatusBadge value={incident.severity} /><StatusBadge value={incident.status} /></div></div>
         <button aria-label={t("Close incident detail")} className="grid min-h-11 min-w-11 place-items-center rounded-md hover:bg-black/[0.04]" onClick={onClose} type="button"><X className="h-4 w-4" /></button>

@@ -607,9 +607,9 @@ function userTableRows(
         // 列头已经写着 Dreamcoins，每格再缀一遍单位是噪音。
         <span className="tabular-nums" key="dreamcoins">{format.dreamcoins(user.dreamcoins, { unit: false })}</span>,
         format.dateTime(user.createdAt),
-        canChangeStatus ? (
+        canChangeStatus && status !== "deleted" ? (
           <button
-            aria-label={next === "active" ? "Restore" : "Suspend"}
+            aria-label={next === "active" ? t("Restore") : t("Suspend")}
             className="inline-flex min-h-9 items-center gap-1 rounded border px-2"
             onClick={() =>
               confirm({
@@ -643,7 +643,7 @@ function userTableRows(
             {next === "active" ? t("Restore") : t("Suspend")}
           </button>
         ) : (
-          <AdminText key="read-only" text="Read only" />
+          <AdminText key="read-only" text={status === "deleted" ? "Controlled by account deletion" : "Read only"} />
         ),
       ],
     };

@@ -1692,16 +1692,16 @@ function RunDetail({
     retryCommand?.status === "verifying";
   const retryLabel =
     retrySubmitting || retryCommand?.status === "submitting"
-    ? "Submitting retry…"
+    ? t("Submitting retry…")
     : retryBusy
-      ? "Retry in progress"
+      ? t("Retry in progress")
       : retryProjectionPending
-        ? "Retry completed"
+        ? t("Retry completed")
         : retrySubmissionUnknown
-          ? "Resume retry submission"
+          ? t("Resume retry submission")
           : retryFailedTerminal
-            ? `Retry ${retryCount} again`
-            : `Retry ${retryCount} eligible failed`;
+            ? t("Retry {count} again", { count: retryCount })
+            : t("Retry {count} eligible failed", { count: retryCount });
   const retryStatusDescription = retryFailedTerminal
     ? "Fix the reported cause, then choose Retry again to create a new command."
     : retrySubmissionUnknown

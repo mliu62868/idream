@@ -97,6 +97,23 @@ export function buildGenerationJobQuery(query: GenerationJobQueryDraft) {
   return params.toString();
 }
 
+// SPEC: `job` is adjacent workspace state, not a list filter. Filter normalization must preserve
+// it so links from Incidents, Customers, and Dead-letter still open the requested authority record.
+export function generationJobsWorkspaceUrl(
+  pathname: string,
+  search: string,
+  query: GenerationJobQueryDraft,
+  options: { jobId?: string | null } = {},
+) {
+  const params = new URLSearchParams(buildGenerationJobQuery(query));
+  const adjacentJobId = options.jobId === undefined
+    ? new URLSearchParams(search).get("job")?.trim() || null
+    : options.jobId?.trim() || null;
+  if (adjacentJobId) params.set("job", adjacentJobId);
+  else params.delete("job");
+  return `${pathname}?${params}`;
+}
+
 export function parseGenerationJobQuery(params: URLSearchParams): GenerationJobQueryDraft {
   const mode = params.get("mode");
   const legacyStatus = params.get("legacyStatus");

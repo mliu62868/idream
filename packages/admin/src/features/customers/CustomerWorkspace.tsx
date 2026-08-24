@@ -185,14 +185,18 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
         <WorkspaceButton tone="primary" type="submit">{t("Apply")}</WorkspaceButton>
       </form>
 
-      <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(420px,0.9fr)]">
-        <section aria-label={t("Customer results")} className="overflow-hidden rounded-xl bg-[var(--ad-surface)]">
+      <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(420px,0.9fr)]">
+        {selectedId ? (
+          detailLoading && !detail ? <LoadingWorkspace label="Loading Customer 360…" /> : detail ? <CustomerInspector detail={detail} onClose={() => selectCustomer(null)} /> : null
+        ) : <aside className="hidden rounded-xl bg-[var(--ad-surface-subtle)] p-8 text-sm text-[var(--ad-text-muted)] lg:block">{t("Select a customer to inspect their complete operational context.")}</aside>}
+
+        <section aria-label={t("Customer results")} className="overflow-hidden rounded-xl bg-[var(--ad-surface)] lg:order-first">
           {list && list.items.length > 0 ? (
             <ul className="divide-y divide-[var(--ad-border)]">
               {list.items.map((customer) => (
                 <li key={customer.id}>
                   <button aria-current={selectedId === customer.id ? "true" : undefined} className={`grid min-h-24 w-full gap-3 p-4 text-left hover:bg-black/[0.025] focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--ad-ink)] sm:grid-cols-[minmax(0,1fr)_repeat(3,110px)] ${selectedId === customer.id ? "bg-black/[0.04]" : ""}`} onClick={() => selectCustomer(customer.id)} type="button">
-                    <span className="min-w-0"><span className="flex items-center gap-2 font-semibold"><UserRound className="h-4 w-4" />{customer.displayName ?? customer.email}</span><span className="mt-1 block truncate text-xs text-[var(--ad-text-muted)]">{customer.email} · {customer.id}</span><span className="mt-2 flex gap-2"><StatusBadge value={customer.status} />{customer.subscriptionStatus ? <StatusBadge value={customer.subscriptionStatus} /> : null}</span></span>
+                    <span className="min-w-0"><span className="flex items-center gap-2 font-semibold"><UserRound className="h-4 w-4" />{customer.displayName ?? customer.email}</span><span className="mt-1 block truncate text-xs text-[var(--ad-text-muted)]">{customer.email} · {customer.id}</span><span className="mt-2 flex flex-wrap items-center gap-2"><StatusBadge value={customer.status} />{customer.subscriptionStatus ? <span className="inline-flex items-center gap-1 text-xs text-[var(--ad-text-muted)]">{t("Subscription")}<StatusBadge value={customer.subscriptionStatus} /></span> : null}</span></span>
                     <ListStat label={t("Balance")} value={format.dreamcoins(customer.balanceDreamcoins)} />
                     <ListStat label={t("Active Cases")} value={customer.activeCaseCount} />
                     <ListStat label={t("Failed 30d")} value={customer.failedGenerationCount30d} />
@@ -222,9 +226,6 @@ export function CustomerWorkspace({ initialCustomerId = null }: { initialCustome
           ) : null}
         </section>
 
-        {selectedId ? (
-          detailLoading && !detail ? <LoadingWorkspace label="Loading Customer 360…" /> : detail ? <CustomerInspector detail={detail} onClose={() => selectCustomer(null)} /> : null
-        ) : <aside className="hidden rounded-xl bg-[var(--ad-surface-subtle)] p-8 text-sm text-[var(--ad-text-muted)] xl:block">{t("Select a customer to inspect their complete operational context.")}</aside>}
       </div>
     </div>
   );
@@ -238,7 +239,7 @@ function CustomerInspector({ detail, onClose }: { detail: Customer360; onClose: 
   const format = useAdminFormat();
   const subscription = detail.subscription;
   return (
-    <aside aria-labelledby="customer-detail-title" className="space-y-5 rounded-xl bg-[var(--ad-surface)] p-5 xl:sticky xl:top-40">
+    <aside aria-labelledby="customer-detail-title" className="space-y-5 rounded-xl bg-[var(--ad-surface)] p-5 lg:sticky lg:top-40">
       {/* SPEC: 封禁 / 注销状态必须出现在详情头 —— 列表里有、详情里没有，等于客服点开一个已封禁
           的客户后看不到他被封了，照常按正常流程答复。开户时间同理：是分辨"新号刷量"的第一眼依据。 */}
       <header className="flex items-start justify-between gap-4"><div className="min-w-0"><p className="truncate font-mono text-xs text-[var(--ad-text-muted)]">{detail.customer.id}</p><h3 className="mt-1 text-lg font-semibold" id="customer-detail-title">{detail.customer.displayName ?? detail.customer.email}</h3><p className="break-all text-xs text-[var(--ad-text-muted)]">{detail.customer.email}</p><div className="mt-2 flex flex-wrap items-center gap-2"><StatusBadge value={detail.customer.status} /><span className="text-xs text-[var(--ad-text-muted)]">{t("Customer since")} <time dateTime={detail.customer.createdAt}>{format.date(detail.customer.createdAt)}</time></span></div></div><button aria-label={t("Close customer detail")} className="grid min-h-11 min-w-11 place-items-center rounded-md hover:bg-black/[0.04]" onClick={onClose} type="button"><ArrowLeft className="h-4 w-4" /></button></header>

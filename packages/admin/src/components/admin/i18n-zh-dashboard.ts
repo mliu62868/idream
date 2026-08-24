@@ -18,6 +18,7 @@ export const adminZhDashboard: Record<string, string> = {
   "Coin economy by reason": "金币经济按原因",
   "Coins net": "金币净值",
   "Common tasks": "常用任务",
+  "content report case": "内容举报案件",
   "Compare certified product metrics with separately sourced legacy operational diagnostics.":
     "对比经认证的产品指标和独立来源的旧版运营诊断数据。",
   "Compare provider success, cost, and completion latency over a server-defined time window.":
@@ -25,7 +26,10 @@ export const adminZhDashboard: Record<string, string> = {
   "Every item you are authorized to work on, filtered and ranked as in Summary.":
     "你有权处理的全部事项，筛选与排序规则同「摘要」。",
   "Domain": "领域",
+  "appeal case": "申诉案件",
+  "billing dispute case": "账务争议案件",
   "Health overview": "健康概览",
+  "Incident: {signature}": "事故：{signature}",
   "Investigate monitor evidence and keep or rollback": "检查监控证据，并决定保留或回滚",
   "Inspect owner-scoped financial abuse signals while keeping response actions in their source domains.":
     "检查负责人范围内的财务滥用信号，同时将处置操作保留在各自来源领域。",
@@ -58,6 +62,7 @@ export const adminZhDashboard: Record<string, string> = {
   "Removed from Watching": "已取消关注",
   "Showing {shown} of {total}": "显示 {shown}/{total}",
   "Signups": "注册",
+  "support request case": "支持请求案件",
   "The ten highest-ranked items you are authorized to work on.": "你有权处理的事项中排序最靠前的十条。",
   "This authority is not available to the current operator.": "当前操作员无权访问此权威数据。",
   "Today refresh failed. Showing the last loaded snapshot.": "今日工作刷新失败，当前显示上次加载的快照。",

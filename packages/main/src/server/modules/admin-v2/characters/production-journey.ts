@@ -142,16 +142,19 @@ function journeySteps(input: {
 }) {
   const tabLink = (tab: Parameters<typeof characterWorkspaceTabLink>[1]) =>
     characterWorkspaceTabLink(input.characterId, tab);
-  const state = (index: number, release = false) => index === input.activeIndex
+  // SPEC: Once a Character is live, Preview, Release, and Live monitoring have all been reached.
+  // INTENT: A later draft asset iteration can make Image assets current again, but it must not
+  //         rewrite the already-live downstream stages as "Not started".
+  const state = (index: number) => index === input.activeIndex
       ? input.blocked ? "blocked" as const : "current" as const
-      : index < input.activeIndex || (input.live && release)
+      : index < input.activeIndex || input.live
         ? "complete" as const
         : "upcoming" as const;
   return [
     { code: "visual_identity", state: state(0), deepLink: tabLink("visual") },
     { code: "image_assets", state: state(1), deepLink: tabLink("assets") },
     { code: "preview_qa", state: state(2), deepLink: tabLink("preview") },
-    { code: "release", state: state(3, true), deepLink: tabLink("release") },
+    { code: "release", state: state(3), deepLink: tabLink("release") },
     { code: "live_monitor", state: state(4), deepLink: tabLink("monitor") },
   ] as const;
 }

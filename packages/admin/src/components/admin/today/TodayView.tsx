@@ -21,7 +21,7 @@ import {
   type TodayFilterKey,
   type TodayUrlState,
 } from "./query";
-import { WorkQueue, type WorkDensity } from "./WorkQueue";
+import { todayWorkItemTitle, WorkQueue, type WorkDensity } from "./WorkQueue";
 
 type Row = Record<string, unknown>;
 
@@ -343,7 +343,7 @@ function HealthBanner({
       {focus ? (
         <p className="mt-2 flex flex-wrap items-baseline gap-x-2 text-xs">
           <span className="font-semibold text-[var(--ad-text-muted)]">{t("Start here")}</span>
-          <Link className="font-semibold underline underline-offset-2" href={focus.deepLink}>{t(focus.title)}</Link>
+          <Link className="font-semibold underline underline-offset-2" href={focus.deepLink}>{todayWorkItemTitle(focus, t)}</Link>
           {overdueFocus ? <span className="text-[var(--ad-red-text)]">{t("SLA due {elapsed}", { elapsed: formatRelativeTime(overdueFocus, now.toISOString(), locale) })}</span> : null}
         </p>
       ) : null}

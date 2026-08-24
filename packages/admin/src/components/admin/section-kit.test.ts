@@ -85,6 +85,18 @@ describe("syncListUrl", () => {
     expect(replaceState.mock.calls[0]?.[2]).toBe("/admin/generation/recipes?limit=25&search=alex");
   });
 
+  it("keeps an adjacent shared-route view while normalising list filters", () => {
+    window.history.replaceState(null, "", "/admin/ops/recipes?view=presets");
+    replaceState.mockClear();
+
+    syncListUrl(new URLSearchParams({ limit: "25" }), 1);
+
+    expect(replaceState).toHaveBeenCalledTimes(1);
+    expect(replaceState.mock.calls[0]?.[2]).toBe(
+      "/admin/ops/recipes?limit=25&view=presets",
+    );
+  });
+
   it("pushes when Back has landed on page 1 and the operator pages forward again", () => {
     window.history.replaceState(null, "", "/admin/generation/recipes?limit=25");
     replaceState.mockClear();

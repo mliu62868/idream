@@ -61,8 +61,14 @@ export function listUrlSearch(apiParams: URLSearchParams, page: number): string 
 // INTENT: 翻页是运营心里的一次导航，后退必须回得来（这五个列表页此前一律 replaceState，
 //   后退连上一页都回不去）；而搜索框每敲一个字符就压一条历史，等于把后退键废掉。
 export function syncListUrl(apiParams: URLSearchParams, page: number): void {
-  const next = `${window.location.pathname}${listUrlSearch(apiParams, page)}`;
   const current = new URLSearchParams(window.location.search);
+  // SPEC: `view` chooses the workspace mounted at a shared route; it is not an API filter.
+  // INTENT: Presets lives beside Recipes at /admin/ops/recipes. Dropping `view=presets`
+  //         leaves the current render intact but turns refresh/back into the wrong workspace.
+  const nextParams = new URLSearchParams(apiParams);
+  const adjacentView = current.get("view")?.trim();
+  if (adjacentView) nextParams.set("view", adjacentView);
+  const next = `${window.location.pathname}${listUrlSearch(nextParams, page)}`;
   const paged = apiParams.get("cursor") !== current.get("cursor")
     || String(page) !== (current.get("page") ?? "1");
   window.history[paged ? "pushState" : "replaceState"](null, "", next);

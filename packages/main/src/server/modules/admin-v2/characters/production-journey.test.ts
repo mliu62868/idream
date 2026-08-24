@@ -146,7 +146,13 @@ describe("Character Production Journey", () => {
       assetPack: { live: { completed: 1, missingPurposes: ["character_hero", "character_chat"] } },
       release: { servingState: "live", currentReleaseId: "release-live" },
     });
-    expect(result.steps[3]).toMatchObject({ code: "release", state: "complete" });
+    expect(result.steps).toMatchObject([
+      { code: "visual_identity", state: "complete" },
+      { code: "image_assets", state: "current" },
+      { code: "preview_qa", state: "complete" },
+      { code: "release", state: "complete" },
+      { code: "live_monitor", state: "complete" },
+    ]);
   });
 
   it("moves a completed draft through Release review, then monitors an unchanged live pack", () => {

@@ -152,10 +152,23 @@ describe("CustomerWorkspace 360", () => {
     expect(container.querySelector('select[aria-label="Customer status"]')).not.toBeNull();
   });
 
+  // INTENT: account and subscription can both be `active`; two identical unlabeled badges are ambiguous.
+  it("labels the subscription status separately from account standing", async () => {
+    await mount();
+    const row = container.querySelector<HTMLElement>('[aria-label="Customer results"] button');
+    expect(row?.textContent).toContain("Subscriptionactive");
+  });
+
   it("shows account standing, subscription end state, and operator history in the 360 panel", async () => {
     await mount();
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Customer results"] button')?.click());
     await waitUntil(() => container.querySelector("#customer-detail-title") !== null);
+    const inspector = container.querySelector<HTMLElement>('[aria-labelledby="customer-detail-title"]');
+    const results = container.querySelector<HTMLElement>('[aria-label="Customer results"]');
+    expect(inspector?.className).toContain("lg:sticky");
+    expect(inspector?.parentElement?.className).toContain("lg:grid-cols");
+    expect(inspector?.nextElementSibling).toBe(results);
+    expect(results?.className).toContain("lg:order-first");
     const panel = container.textContent ?? "";
     // 封禁状态在详情头（此前只有列表里有）
     expect(panel).toContain("suspended");

@@ -117,6 +117,13 @@ describe("IncidentWorkspace mitigation safety", () => {
     });
     await waitUntil(() => findButton("Execute frozen plan", container) !== null);
 
+    const inspector = container.querySelector<HTMLElement>('[aria-labelledby="incident-detail-title"]');
+    const results = container.querySelector<HTMLElement>('[aria-label="Incident results"]');
+    expect(inspector?.className).toContain("lg:sticky");
+    expect(inspector?.parentElement?.className).toContain("lg:grid-cols");
+    expect(inspector?.nextElementSibling).toBe(results);
+    expect(results?.className).toContain("lg:order-first");
+
     // 冻结计划来自 detail.actionPlans，所以别的浏览器冻的那份在这里也看得见。
     expect(container.textContent).toContain("125,000 μ");
     expect(container.textContent).toContain("2 eligible");

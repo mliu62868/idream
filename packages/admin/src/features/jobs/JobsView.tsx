@@ -38,6 +38,7 @@ import {
   generationJobModeOptions,
   generationJobSortOptions,
   generationJobStatusOptions,
+  generationJobsWorkspaceUrl,
   GENERATION_JOBS_REFRESH_EVENT,
   isGenerationJobQueryFiltered,
   parseGenerationJobQuery,
@@ -112,13 +113,17 @@ export function JobsView() {
   const filters = useUrlFilters<GenerationJobQueryDraft>({
     initial: defaultGenerationJobQuery,
     parse: parseGenerationJobQuery,
-    toUrl: (query, location) => `${location.pathname}?${buildGenerationJobQuery(query)}`,
+    toUrl: (query, location) => generationJobsWorkspaceUrl(
+      location.pathname,
+      location.search,
+      query,
+    ),
     load: (query, params) => {
       void loadJobs(query);
       void showJobDetail(params.get("job")?.trim() || null);
     },
   });
-  const { apply, draft, pushUrl, query, reload, setDraft, urlFor } = filters;
+  const { apply, draft, pushUrl, query, reload, setDraft } = filters;
 
   useEffect(() => {
     const gate = jobsGate.current;
@@ -139,12 +144,22 @@ export function JobsView() {
   function openJobDetail(id: string, trigger: HTMLButtonElement) {
     if (!id) return;
     detailTriggerRef.current = trigger;
-    pushUrl(`${urlFor(query)}&job=${encodeURIComponent(id)}`);
+    pushUrl(generationJobsWorkspaceUrl(
+      window.location.pathname,
+      window.location.search,
+      query,
+      { jobId: id },
+    ));
     void showJobDetail(id);
   }
 
   function closeJobDetail() {
-    pushUrl(urlFor(query), "replace");
+    pushUrl(generationJobsWorkspaceUrl(
+      window.location.pathname,
+      window.location.search,
+      query,
+      { jobId: null },
+    ), "replace");
     void showJobDetail(null);
     window.requestAnimationFrame(() => detailTriggerRef.current?.focus());
   }
@@ -506,4 +521,3 @@ function Metric({ label, meta, value }: { label: string; meta: string; value: Re
 function shortId(value: string) {
   return value.length > 12 ? `${value.slice(0, 8)}…` : value || "—";
 }
-

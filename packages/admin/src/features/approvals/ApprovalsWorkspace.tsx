@@ -225,7 +225,7 @@ export function ApprovalsWorkspace({ canReview }: { canReview: boolean }) {
         <span>
 
           {t("Approval authority ·")}{" "}
-          {freshness(data, loading, error, refreshedAt ? format.time(refreshedAt) : null)}
+          {freshness(data, loading, error, refreshedAt ? format.time(refreshedAt) : null, t)}
         </span>
         {!canReview ? <PermissionNotice permission="admin.approval.review" /> : null}
       </div>
@@ -576,10 +576,12 @@ function freshness(
   loading: boolean,
   error: string | null,
   time: string | null,
+  t: (key: string, values?: Record<string, string | number>) => string,
 ) {
-  if (loading && data) return `refreshing · as of ${time ?? "unknown"}`;
-  if (error && data) return `stale · last good ${time ?? "unknown"}`;
-  if (error) return "unavailable";
-  if (data) return `as of ${time ?? "unknown"}`;
-  return "loading…";
+  const value = time ?? t("unknown");
+  if (loading && data) return t("Refreshing · as of {time}", { time: value });
+  if (error && data) return t("Stale · last good {time}", { time: value });
+  if (error) return t("unavailable");
+  if (data) return t("As of {time}", { time: value });
+  return t("loading…");
 }

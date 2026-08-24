@@ -137,6 +137,7 @@ export const adminZhSystem: Record<string, string> = {
   "Show pending approvals": "查看待审批队列",
   // 团队访问的数据新鲜度行。原来是四句裸英文，中文界面里照样印英文。
   "As of {time}": "截至 {time}",
+  "Controlled by account deletion": "由账号删除流程管理",
   // 功能开关表从手写 <table> 换成 DataTable 后，列头才第一次过 t()。
   "Hard policy": "硬策略",
   "Refreshing · as of {time}": "正在刷新 · 截至 {time}",

@@ -27,6 +27,18 @@ export function workItemKey(item: TodayWorkItem) {
   return `${item.sourceType}:${item.sourceId}`;
 }
 
+type Translate = (key: string, values?: Record<string, string | number>) => string;
+
+// SPEC: Today 生成的系统标题必须跟随界面语言；运营人员自己写的标题保持原文。
+// INTENT: 事故严重度已经由紧邻标题的色标表达，标题再重复 medium/high 只增加扫读噪音。
+export function todayWorkItemTitle(item: TodayWorkItem, t: Translate) {
+  if (item.sourceType === "ops_incident") {
+    const incident = /^(?:critical|high|medium|low) incident:\s*(.+)$/i.exec(item.title);
+    if (incident) return t("Incident: {signature}", { signature: incident[1] });
+  }
+  return t(item.title);
+}
+
 function writePreference(item: TodayWorkItem, patch: PreferencePatch, expectedVersion: number) {
   return adminV2Request("/api/v2/admin/today/preferences", {
     method: "PUT",
@@ -282,6 +294,7 @@ function RelatedCreativeRuns({
 
 function WorkItem({ density, item, locale, now, onFeedback, onPreferenceChanged, onToggleSelected, selected, watchedQueue }: WorkItemProps) {
   const { t } = useAdminI18n();
+  const title = todayWorkItemTitle(item, t);
   const [busy, setBusy] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -378,7 +391,7 @@ function WorkItem({ density, item, locale, now, onFeedback, onPreferenceChanged,
       <div className={`flex items-center gap-2 px-3 py-1.5 transition-colors hover:bg-black/[0.025] ${selected ? "bg-[var(--ad-blue-bg)]" : ""}`}>
         {onToggleSelected ? (
           <input
-            aria-label={t("Select {title}", { title: item.title })}
+            aria-label={t("Select {title}", { title })}
             checked={selected}
             className="h-4 w-4 shrink-0"
             onChange={(event) => onToggleSelected(item, event.target.checked)}
@@ -388,7 +401,7 @@ function WorkItem({ density, item, locale, now, onFeedback, onPreferenceChanged,
         <SeverityChip severity={item.severity} />
         <Link className="max-w-[36%] shrink-0 truncate text-sm font-medium hover:underline" href={item.deepLink}>
           {item.pinned ? <Pin aria-hidden className="mr-1 inline h-3 w-3" /> : null}
-          {t(item.title)}
+          {title}
         </Link>
         <span className="hidden min-w-0 flex-1 truncate text-xs text-[var(--ad-text-muted)] sm:block">
           {todayOperationalText(item.summary, locale)}
@@ -407,7 +420,7 @@ function WorkItem({ density, item, locale, now, onFeedback, onPreferenceChanged,
       <div className="flex items-start gap-2">
         {onToggleSelected ? (
           <input
-            aria-label={t("Select {title}", { title: item.title })}
+            aria-label={t("Select {title}", { title })}
             checked={selected}
             className="mt-1 h-4 w-4 shrink-0"
             onChange={(event) => onToggleSelected(item, event.target.checked)}
@@ -422,7 +435,7 @@ function WorkItem({ density, item, locale, now, onFeedback, onPreferenceChanged,
             {item.pinned ? <span className="text-[10px] font-semibold uppercase">{t("Pinned")}</span> : null}
           </div>
           <Link className="group mt-2 flex items-center gap-2 text-sm font-semibold" href={item.deepLink}>
-            <span className="truncate">{t(item.title)}</span>
+            <span className="truncate">{title}</span>
             <ArrowRight aria-hidden className="h-4 w-4 shrink-0 text-[var(--ad-text-muted)] transition-transform group-hover:translate-x-0.5" />
           </Link>
           <p className="mt-1 text-xs leading-5 text-[var(--ad-text-muted)]">{todayOperationalText(item.summary, locale)}</p>

@@ -3,6 +3,7 @@
 // INVARIANT: key 在所有 i18n-zh-*.ts 之间互斥——同一个 key 只能有一个域文件持有；
 // 由 i18n-zh-exclusivity.test.ts 强制。新增文案放它所属的域文件，不要另开「杂项」文件。
 export const adminZhCustomers: Record<string, string> = {
+  "Case Detail": "案件详情",
   ". This records an already-completed provider refund and closes the late-settlement exception; it does not issue a refund.":
     "。此操作只记录供应商已完成的退款并关闭延迟结算异常，不会实际发起退款。",
   "Acknowledge provider refund for {id}": "确认 {id} 的支付方退款",
