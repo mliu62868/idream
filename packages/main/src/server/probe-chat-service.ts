@@ -200,7 +200,10 @@ export function describeDshRecallFailure(
   ].join(";");
 }
 
-export async function fetchProbeCompanionAttemptEvidence(input: {
+const COMPANION_MEMORY_SETTLE_TIMEOUT_MS = 90_000;
+const COMPANION_MEMORY_SETTLE_POLL_MS = 500;
+
+interface CompanionAttemptEvidenceInput {
   serviceUrl: string;
   internalToken: string | null;
   userId: string;
@@ -212,7 +215,32 @@ export async function fetchProbeCompanionAttemptEvidence(input: {
     input: URL | RequestInfo,
     init?: RequestInit,
   ) => Promise<Response>;
-}): Promise<DshCompanionProbeEvidence> {
+}
+
+/**
+ * SPEC: SSE `done` closes the user-visible turn at Chat's terminal CAS; the
+ * sidecar's memory settlement (ingest + profile maintenance) lands on the
+ * attempt trace afterwards. Evidence is therefore polled until the memory
+ * outcome leaves `pending`, the same way Scene derivation is awaited above.
+ */
+export async function fetchProbeCompanionAttemptEvidence(
+  input: CompanionAttemptEvidenceInput & {
+    settleTimeoutMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+  },
+): Promise<DshCompanionProbeEvidence> {
+  const deadline = Date.now() + (input.settleTimeoutMs ?? COMPANION_MEMORY_SETTLE_TIMEOUT_MS);
+  const sleep = input.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  for (;;) {
+    const evidence = await fetchProbeCompanionAttemptEvidenceOnce(input);
+    if (evidence.memoryOutcome !== "pending" || Date.now() >= deadline) return evidence;
+    await sleep(COMPANION_MEMORY_SETTLE_POLL_MS);
+  }
+}
+
+async function fetchProbeCompanionAttemptEvidenceOnce(
+  input: CompanionAttemptEvidenceInput,
+): Promise<DshCompanionProbeEvidence> {
   if (input.userId !== CHAT_PROBE_USER_ID || !input.internalToken?.trim()) {
     throw new Error("content-free DSH attempt evidence requires the dedicated audit actor and INTERNAL_TOKEN");
   }

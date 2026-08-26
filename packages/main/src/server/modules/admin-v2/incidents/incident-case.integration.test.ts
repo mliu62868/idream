@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { incidentActionPlanSchema } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { backfillGenerationIncidents, backfillReviewCases } from "@/server/modules/admin-v2/backfill/production-runner";
 import {
@@ -31,6 +32,7 @@ describe("Incident and P0 Review Case authority loops", () => {
   const userB = `incident-user-b-${suffix}`;
   const requestA = `incident-job-a-${suffix}`;
   const requestB = `incident-job-b-${suffix}`;
+  const nonCustomerRequest = `incident-job-non-customer-${suffix}`;
   const attemptA = `incident-attempt-a-${suffix}`;
   const attemptB = `incident-attempt-b-${suffix}`;
   const incompleteAttempt = `incident-attempt-incomplete-${suffix}`;
@@ -41,6 +43,7 @@ describe("Incident and P0 Review Case authority loops", () => {
   const reportB = `report-b-${suffix}`;
   const terminalReport = `report-terminal-${suffix}`;
   const actor = { id: adminId, role: "admin" } as const;
+  const routeActionProfileKey = `incident-route-action-${suffix}`;
   const createdIncidentIds: string[] = [];
   const createdCaseIds: string[] = [];
 
@@ -209,8 +212,11 @@ describe("Incident and P0 Review Case authority loops", () => {
     await prisma.incidentActionPlan.deleteMany({ where: { incidentId: { in: incidentIds } } });
     await prisma.opsIncidentOccurrence.deleteMany({ where: { incidentId: { in: incidentIds } } });
     await prisma.opsIncident.deleteMany({ where: { id: { in: incidentIds } } });
+    await prisma.generationProviderRoute.deleteMany({ where: { profileKey: routeActionProfileKey } });
     await prisma.generationAttempt.deleteMany({ where: { id: { in: [attemptA, attemptB, incompleteAttempt, boundaryAttemptA, boundaryAttemptB] } } });
-    await prisma.generationJob.deleteMany({ where: { id: { in: [requestA, requestB] } } });
+    await prisma.generationJob.deleteMany({
+      where: { id: { in: [requestA, requestB, nonCustomerRequest] } },
+    });
     await prisma.contentReport.deleteMany({ where: { id: { in: [reportA, reportB, terminalReport] } } });
     await prisma.user.deleteMany({ where: { id: { in: [adminId, supportId, userA, userB] } } });
     await prisma.$disconnect();
@@ -230,14 +236,22 @@ describe("Incident and P0 Review Case authority loops", () => {
       actorId: adminId,
     });
     expect(plan.incidentVersion).toBe(2);
-    expect(plan.eligibleIds).toHaveLength(2);
+    expect(plan.eligibleOccurrenceIds).toHaveLength(2);
+    // SPEC: 预览的返回值必须原样通得过路由声明的响应契约。
+    // INTENT: 这里以前返回 Prisma 行，列名（eligibleIds / eligibleIdsHash / impactSnapshot /
+    //         createdById）和 .strict() 的契约对不上，Date 也没转 ISO ——
+    //         于是 `POST /incidents/:id/action-plans/preview` 在**写已经提交之后**返回 500，
+    //         实测连打两次得到两个 500 和两行垃圾 incident_action_plans。运营拿不到 planId，
+    //         `/action-plans/:planId/execute` 的确认串 `${incidentId}:${planId}:${action}` 就
+    //         永远拼不出来，整条事故缓解链路在控制台里不可达。
+    expect(() => incidentActionPlanSchema.parse(plan)).not.toThrow();
     const refundPlan = await previewIncidentActionPlan({
       incidentId: first.id,
       action: "refund",
       actorId: adminId,
     });
-    expect(refundPlan.eligibleIds).toHaveLength(1);
-    expect(refundPlan.skippedIds).toHaveLength(1);
+    expect(refundPlan.eligibleOccurrenceIds).toHaveLength(1);
+    expect(refundPlan.skippedOccurrenceIds).toHaveLength(1);
     const executed = await executeIncidentActionPlan({
       incidentId: first.id,
       actionPlanId: plan.id,
@@ -343,7 +357,6 @@ describe("Incident and P0 Review Case authority loops", () => {
         observedAt: incident.lastSeen,
       },
     });
-
     const failed = await verifyIncidentRecovery({
       incidentId: incident.id,
       actor,
@@ -413,6 +426,68 @@ describe("Incident and P0 Review Case authority loops", () => {
       attemptId: incompleteAttempt,
       reason: "insufficient_stable_signature",
     });
+  });
+
+  it("recommends pause_route only while the Incident is open and an enabled route exists", async () => {
+    const incident = await prisma.opsIncident.create({
+      data: {
+        signature: `route-action-${suffix}`,
+        signatureVersion: "generation-error-v1",
+        activeCorrelationKey: `route-action-${suffix}`,
+        status: "mitigating",
+        severity: "high",
+        ownerId: adminId,
+        firstSeen: new Date(),
+        lastSeen: new Date(),
+        impact: { affectedRequests: 1, affectedUsers: 1, failedCostMicros: 0, refundMicros: 0 },
+        mitigation: {
+          recommendedActions: ["pause_route"],
+          signatureComponents: { profileKey: routeActionProfileKey, provider: "comfyui" },
+        },
+      },
+    });
+    createdIncidentIds.push(incident.id);
+    await prisma.opsIncidentOccurrence.create({
+      data: {
+        incidentId: incident.id,
+        requestId: requestA,
+        attemptId: attemptA,
+        occurrenceKey: `route-action:${suffix}`,
+        observedAt: new Date(),
+      },
+    });
+
+    const unavailable = await getIncident(authRequest(`/api/v2/admin/incidents/${incident.id}`), {
+      params: Promise.resolve({ id: incident.id }),
+    });
+    expect((await unavailable.json()).data.incident.recommendedActions).not.toContain("pause_route");
+    await expect(previewIncidentActionPlan({
+      incidentId: incident.id,
+      action: "pause_route",
+      actorId: adminId,
+    })).rejects.toThrow("Incident route action has no available authority target");
+
+    await prisma.generationProviderRoute.create({
+      data: { profileKey: routeActionProfileKey, provider: "comfyui", enabled: true },
+    });
+    await expect(previewIncidentActionPlan({
+      incidentId: incident.id,
+      action: "pause_route",
+      actorId: adminId,
+    })).resolves.toMatchObject({ action: "pause_route" });
+    const available = await getIncident(authRequest(`/api/v2/admin/incidents/${incident.id}`), {
+      params: Promise.resolve({ id: incident.id }),
+    });
+    expect((await available.json()).data.incident.recommendedActions).toContain("pause_route");
+
+    await prisma.opsIncident.update({
+      where: { id: incident.id },
+      data: { status: "resolved", activeCorrelationKey: null },
+    });
+    const terminal = await getIncident(authRequest(`/api/v2/admin/incidents/${incident.id}`), {
+      params: Promise.resolve({ id: incident.id }),
+    });
+    expect((await terminal.json()).data.incident.recommendedActions).toEqual([]);
   });
 
   it("backfills terminal Review sources as closed Evidence without reopening them", async () => {
@@ -529,6 +604,34 @@ describe("Incident and P0 Review Case authority loops", () => {
   it("serves authority detail read models with Evidence, decisions, plans, and activity", async () => {
     const incidentId = createdIncidentIds[0]!;
     const caseId = createdCaseIds[0]!;
+    await prisma.generationJob.create({
+      data: {
+        id: nonCustomerRequest,
+        userId: supportId,
+        mode: "image",
+        controls: {},
+        presetIds: [],
+        status: "failed",
+      },
+    });
+    await prisma.opsIncidentOccurrence.create({
+      data: {
+        incidentId,
+        requestId: nonCustomerRequest,
+        occurrenceKey: `non-customer:${suffix}`,
+        observedAt: new Date(),
+      },
+    });
+    // SPEC: requestId 没有外键，事故详情必须把反查不到用户的 occurrence 单独计数。
+    // INTENT: 不把它塞进某个用户，也不静默丢掉，运营才能知道名单并不完整。
+    await prisma.opsIncidentOccurrence.create({
+      data: {
+        incidentId,
+        requestId: `missing-generation-job-${suffix}`,
+        occurrenceKey: `unattributable:${suffix}`,
+        observedAt: new Date(),
+      },
+    });
     const incidentResponse = await getIncident(authRequest(`/api/v2/admin/incidents/${incidentId}`), {
       params: Promise.resolve({ id: incidentId }),
     });
@@ -540,7 +643,14 @@ describe("Incident and P0 Review Case authority loops", () => {
     const incidentBody = await incidentResponse.json();
     const caseBody = await caseResponse.json();
     expect(incidentBody.data.incident).toMatchObject({ id: incidentId, status: "resolved" });
-    expect(incidentBody.data.occurrences).toHaveLength(2);
+    expect(incidentBody.data.incident.recommendedActions).toEqual([]);
+    expect(incidentBody.data.occurrences).toHaveLength(4);
+    expect(incidentBody.data.affectedUsers).toEqual([
+      { userId: supportId, occurrenceCount: 1, customerRecordAvailable: false },
+      { userId: userA, occurrenceCount: 1, customerRecordAvailable: true },
+      { userId: userB, occurrenceCount: 1, customerRecordAvailable: true },
+    ]);
+    expect(incidentBody.data.unattributableOccurrences).toBe(1);
     expect(incidentBody.data.actionPlans).toHaveLength(2);
     expect(incidentBody.data.activity.length).toBeGreaterThanOrEqual(3);
     expect(caseBody.data.case).toMatchObject({ id: caseId, status: "closed", reportCount: 2 });

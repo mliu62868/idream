@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
+import { officialCharacterSeeds } from "@/lib/official-cold-start-content";
 
 const curatedCharacterIds = [
   "melissa-burke",
@@ -117,6 +118,8 @@ describe("seed data provenance", () => {
         source: true,
         creatorId: true,
         relationship: true,
+        style: true,
+        appearance: true,
         advancedDetails: true,
         imageAssetId: true,
         imageAsset: {
@@ -167,6 +170,18 @@ describe("seed data provenance", () => {
 
     expect(characters).toHaveLength(16);
     expect(characters.every((character) => character.source === "official")).toBe(true);
+    const expectedVisualIdentity = new Map(
+      officialCharacterSeeds.map((character) => [character.id, character]),
+    );
+    for (const character of characters) {
+      const expected = expectedVisualIdentity.get(character.id);
+      expect(expected, character.id).toBeDefined();
+      expect(character.style, character.id).toBe(expected?.style);
+      expect(character.appearance, character.id).toMatchObject({
+        identityAnchor: expected?.identityAnchor,
+        stableTraits: expected?.stableTraits,
+      });
+    }
     expect(
       characters.every(
         (character) =>

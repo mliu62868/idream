@@ -15,6 +15,7 @@ import {
 } from "./companion-runtime.js";
 import {
   loadRelationshipLinkages,
+  loadRelationshipResetAt,
   type RelationshipLinkage,
   type RelationshipMessage,
 } from "./relationship-authority.js";
@@ -27,6 +28,8 @@ type CompanionProjectionMutation =
   | {
       kind: "relationship_delete";
       characterId: string;
+      /** Ledger mutation id; names the quarantined sidecar workspace and relationship files alike. */
+      quarantine: string;
     }
   | { kind: "account_delete" };
 
@@ -53,10 +56,20 @@ function eligible(message: RelationshipMessage): boolean {
     && message.content.trim().length > 0;
 }
 
-/** Chat rows are authority; only complete, unambiguous selected exchanges are replayable. */
+/**
+ * Chat rows are authority; only complete, unambiguous selected exchanges are replayable.
+ * `resetAt` is the relationship-reset watermark: a user who reset this bond asked the
+ * companion to stop knowing everything said before that moment, so a replay must not
+ * hand those exchanges back. Both halves of an exchange must clear the watermark —
+ * a turn straddling the reset is pre-reset content.
+ */
 export function canonicalCompanionMessages(
   sessions: readonly CanonicalSession[],
+  resetAt: Date | null = null,
 ): CompanionWorkspaceRebuildMessage[] {
+  const epochStart = resetAt?.getTime() ?? null;
+  const inEpoch = (message: RelationshipMessage): boolean =>
+    epochStart === null || message.createdAt.getTime() > epochStart;
   const result: CompanionWorkspaceRebuildMessage[] = [];
   for (const session of sessions) {
     const assistants = session.messages
@@ -64,11 +77,13 @@ export function canonicalCompanionMessages(
         message.role === "assistant"
         && message.memoryAuthority === "enabled"
         && eligible(message)
+        && inEpoch(message)
         && session.linkage.sources.has(message.id))
       .sort(compareMessages);
     for (const assistant of assistants) {
       const source = session.linkage.sources.get(assistant.id);
       if (!source || source.role !== "user" || !eligible(source)) continue;
+      if (!inEpoch(source)) continue;
       result.push(
         {
           id: source.id,
@@ -95,11 +110,12 @@ export async function buildCompanionWorkspaceRebuild(
   input: { userId: string; characterId: string },
 ): Promise<CompanionWorkspaceRebuild> {
   const sessions = await loadRelationshipLinkages(tx, input);
+  const resetAt = await loadRelationshipResetAt(tx, input);
   const messages: CompanionWorkspaceRebuildMessage[] = [];
   // Content strings are reused, not cloned. The result array is the only
   // additional aggregate transcript retained at the Chat transport seam.
   for (const session of sessions) {
-    const projected = canonicalCompanionMessages([session]);
+    const projected = canonicalCompanionMessages([session], resetAt);
     for (const message of projected) messages.push(message);
   }
   return {
@@ -163,9 +179,16 @@ export async function applyCompanionMemoryProjection(
     await activePort.rebuild(request);
     return;
   }
+  // A reset retires the relationship workspace for engineering analysis; an
+  // account purge destroys the whole user directory, quarantine included.
   await activePort.purge(mutation.kind === "account_delete"
     ? { scope: "user", userId }
-    : { scope: "relationship", userId, characterId: mutation.characterId });
+    : {
+        scope: "relationship",
+        userId,
+        characterId: mutation.characterId,
+        quarantine: mutation.quarantine,
+      });
 }
 
 function compareMessages(left: RelationshipMessage, right: RelationshipMessage): number {

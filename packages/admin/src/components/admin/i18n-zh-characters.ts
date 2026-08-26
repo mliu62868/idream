@@ -1317,6 +1317,23 @@ export const adminZhCharacters: Record<string, string> = {
   "qualification invalid": "公开目录资格无效",
   "reference images": "张参考图",
   "refresh the active image route before the next Release": "在下个发布版本前刷新在用的图片线路",
+  // 角色级的聊天内生图开关。chat 侧 policy.ts:56 真的在读它。
+  "In-chat image generation": "聊天内生图",
+  "Enable in-chat image generation": "开启聊天内生图",
+  "Disable in-chat image generation": "关闭聊天内生图",
+  "Enable image tool": "开启生图工具",
+  "Disable image tool": "关闭生图工具",
+  "Chat tool state is unavailable": "读不到聊天工具的开关状态",
+  "The chat agent may generate images in conversations with this Character.":
+    "在与这个角色的对话里，聊天 Agent 可以生成图片。",
+  "The chat agent cannot generate images in conversations with this Character.":
+    "在与这个角色的对话里，聊天 Agent 不能生成图片。",
+  "The chat agent regains its image tool on the next turn of every session with this Character.":
+    "与这个角色的所有会话，下一轮起重新挂上生图工具。",
+  "The chat agent loses its image tool on the next turn of every session with this Character. Images already sent stay.":
+    "与这个角色的所有会话，下一轮起不再挂生图工具。已经发出的图片保留。",
+  "This route no longer meets its qualification. Re-qualifying needs engineering.":
+    "这条线路已不再满足资质要求。重新资质化需要工程介入，后台没有这个动作。",
   "retired": "已停用",
   "revision {version}": "修订版 {version}",
   "route qualification": "图片线路资格",

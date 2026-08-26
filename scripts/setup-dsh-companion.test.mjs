@@ -388,12 +388,14 @@ function createFixture(options = {}) {
             wake: false,
           }
         : {
-            search: true,
+            search: false,
             webProvider: false,
             webTool: false,
             memory: true,
             ingest: true,
             wake: true,
+            memorySearchMode: "fast",
+            timeoutMs: 10000,
           };
       return success([
         `# profile ${profile}`,

@@ -107,7 +107,7 @@ describe("SSE stream aliases (PRD §8.2)", () => {
 });
 
 describe("relationship management API", () => {
-  it("lists, reads, edits, and resets the companion bond", async () => {
+  it("lists, reads, rejects client edits, and resets the companion bond", async () => {
     await seedTurn("hey there, nice to meet you");
 
     const listed = jbody<{ relationships: Array<{ characterId: string; stage: string }> }>(
@@ -115,17 +115,26 @@ describe("relationship management API", () => {
     );
     expect(listed.relationships.some((r) => r.characterId === CHAR)).toBe(true);
 
-    const one = jbody<{ characterId: string; version: number }>(
+    const one = jbody<{ characterId: string; summary: string; stage: string; version: number }>(
       await dispatchChat({ method: "GET", path: `/api/v1/chat/relationships/${CHAR}`, userId: USER }),
     );
     expect(one.characterId).toBe(CHAR);
 
-    const patched = jbody<{ summary: string; stage: string; version: number }>(
-      await dispatchChat({ method: "PATCH", path: `/api/v1/chat/relationships/${CHAR}`, userId: USER, body: { summary: "We are close friends.", stage: "close" } }),
+    const patched = await dispatchChat({
+      method: "PATCH",
+      path: `/api/v1/chat/relationships/${CHAR}`,
+      userId: USER,
+      body: { summary: "We are close friends.", stage: "close" },
+    });
+    expect(patched.kind === "json" && patched.status).toBe(405);
+    const unchanged = jbody<{ summary: string; stage: string; version: number }>(
+      await dispatchChat({ method: "GET", path: `/api/v1/chat/relationships/${CHAR}`, userId: USER }),
     );
-    expect(patched.summary).toBe("We are close friends.");
-    expect(patched.stage).toBe("close");
-    expect(patched.version).toBe(one.version + 1);
+    expect(unchanged).toMatchObject({
+      summary: one.summary,
+      stage: one.stage,
+      version: one.version,
+    });
 
     const del = await dispatchChat({ method: "DELETE", path: `/api/v1/chat/relationships/${CHAR}`, userId: USER });
     expect(del.kind === "json" && del.status).toBe(200);

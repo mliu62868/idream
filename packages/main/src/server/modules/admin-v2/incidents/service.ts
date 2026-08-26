@@ -6,10 +6,17 @@ import { canonicalSha256 } from "../shared/canonical-json";
 import { toInputJson } from "../shared/prisma-json";
 import { isIncidentTransitionAllowed } from "../shared/state-transition-authority";
 import { transitionIncident } from "./transition";
+import {
+  eligibleOccurrenceIds,
+  incidentCanCreateActionPlan,
+  incidentRouteActionAvailable,
+  occurrenceSnapshot,
+  OPEN_INCIDENT_STATUSES,
+} from "./eligibility";
+import { serializeIncidentActionPlan } from "./query";
 
 const INCIDENT_SIGNATURE_VERSION = "generation-error-v1";
 const INCIDENT_CORRELATION_POLICY_VERSION = "generation-correlation-v1";
-const OPEN_INCIDENT_STATUSES = ["detected", "triaged", "mitigating", "monitoring"] as const;
 const DEFAULT_JOIN_GAP_MS = 24 * 60 * 60 * 1_000;
 export const INCIDENT_CORRELATION_MAX_ATTEMPTS = 8;
 const INCIDENT_CORRELATION_POLICIES = {
@@ -409,57 +416,6 @@ export async function dispatchGenerationIncidentCorrelation(
   return { examined: rows.length, correlated, unavailable, failed };
 }
 
-function eligibleOccurrenceIds(
-  action: string,
-  occurrences: ReadonlyArray<{
-    id: string;
-    attempt: FailedAttemptSource | null;
-    capturedSpend: number;
-    refunded: number;
-  }>,
-) {
-  if (action === "refund") {
-    return occurrences
-      .filter((row) => row.capturedSpend > row.refunded)
-      .map((row) => row.id)
-      .sort();
-  }
-  if (action !== "retry_eligible") return occurrences.map((row) => row.id).sort();
-  return occurrences
-    .filter(
-      (row) =>
-        row.attempt &&
-        ["failed", "unknown"].includes(row.attempt.status) &&
-        ["retryable", "auto_retry", "operator_retry"].includes(row.attempt.retryability ?? ""),
-    )
-    .map((row) => row.id)
-    .sort();
-}
-
-async function occurrenceSnapshot(db: Db, incidentId: string) {
-  const occurrences = await db.opsIncidentOccurrence.findMany({
-    where: { incidentId },
-    orderBy: [{ observedAt: "asc" }, { id: "asc" }],
-  });
-  const attemptIds = occurrences.flatMap((row) => (row.attemptId ? [row.attemptId] : []));
-  const requestIds = occurrences.flatMap((row) => (row.requestId ? [row.requestId] : []));
-  const attempts = attemptIds.length
-    ? await db.generationAttempt.findMany({ where: { id: { in: attemptIds } } })
-    : [];
-  const ledger = requestIds.length
-    ? await db.dreamcoinLedger.findMany({
-        where: { sourceId: { in: requestIds }, reason: { in: ["generation_spend", "refund"] } },
-        select: { sourceId: true, reason: true, delta: true },
-      })
-    : [];
-  const attemptsById = new Map(attempts.map((attempt) => [attempt.id, attempt]));
-  return occurrences.map((row) => ({
-    id: row.id,
-    attempt: row.attemptId ? attemptsById.get(row.attemptId) ?? null : null,
-    capturedSpend: -ledger.filter((entry) => entry.sourceId === row.requestId && entry.reason === "generation_spend" && entry.delta < 0).reduce((sum, entry) => sum + entry.delta, 0),
-    refunded: ledger.filter((entry) => entry.sourceId === row.requestId && entry.reason === "refund" && entry.delta > 0).reduce((sum, entry) => sum + entry.delta, 0),
-  }));
-}
 
 export async function previewIncidentActionPlan(input: {
   readonly incidentId: string;
@@ -472,11 +428,21 @@ export async function previewIncidentActionPlan(input: {
   const execute = async (tx: Prisma.TransactionClient) => {
     const incident = await tx.opsIncident.findUnique({ where: { id: input.incidentId } });
     if (!incident) throw Errors.notFound("Incident not found", { incidentId: input.incidentId });
-    if (![...OPEN_INCIDENT_STATUSES].includes(incident.status as (typeof OPEN_INCIDENT_STATUSES)[number])) {
+    if (!incidentCanCreateActionPlan(incident.status)) {
       throw Errors.conflict("Terminal incidents cannot create action plans");
     }
     if (input.action === "rollback" && !input.targetVersion) {
       throw Errors.badRequest("Rollback preview requires an immutable targetVersion");
+    }
+    if (
+      (input.action === "pause_route" || input.action === "rollback") &&
+      !await incidentRouteActionAvailable(tx, {
+        action: input.action,
+        mitigation: incident.mitigation,
+        targetVersion: input.targetVersion,
+      })
+    ) {
+      throw Errors.conflict("Incident route action has no available authority target");
     }
     const snapshot = await occurrenceSnapshot(tx, input.incidentId);
     const eligibleIds = eligibleOccurrenceIds(input.action, snapshot);
@@ -533,7 +499,11 @@ export async function previewIncidentActionPlan(input: {
         }),
       },
     });
-    return plan;
+    // INVARIANT: 必须返回契约形状，不能把 Prisma 行原样抛出去。路由声明的响应契约是
+    //            incidentActionPlanSchema（api-manifest.ts:345），而它是 .strict() 的，
+    //            列名也和表不一样——直接返回 row 会在**写已经提交之后**报 500，
+    //            运营拿不到 planId，`/action-plans/:planId/execute` 就永远调不到。
+    return serializeIncidentActionPlan(plan);
   };
   return db ? execute(db) : prisma.$transaction(execute);
 }
@@ -673,7 +643,7 @@ export async function splitIncidentOccurrences(input: {
     const source = await tx.opsIncident.findUnique({ where: { id: input.incidentId } });
     if (!source) throw Errors.notFound("Incident not found");
     if (source.version !== input.expectedVersion) throw Errors.conflict("Incident changed before split");
-    if (![...OPEN_INCIDENT_STATUSES].includes(source.status as (typeof OPEN_INCIDENT_STATUSES)[number])) throw Errors.conflict("Only active Incidents can be split");
+    if (!incidentCanCreateActionPlan(source.status)) throw Errors.conflict("Only active Incidents can be split");
     const allOccurrences = await tx.opsIncidentOccurrence.findMany({ where: { incidentId: source.id }, orderBy: [{ observedAt: "asc" }, { id: "asc" }] });
     const selected = allOccurrences.filter((row) => selectedIds.includes(row.id));
     if (selected.length !== selectedIds.length) throw Errors.conflict("One or more selected occurrences no longer belong to the Incident");
@@ -726,7 +696,7 @@ export async function mergeIncidents(input: {
     const target = rows.find((row) => row.id === input.targetIncidentId);
     if (!target) throw Errors.notFound("Merge target Incident not found");
     if (target.version !== input.expectedVersion) throw Errors.conflict("Merge target changed before execution");
-    if (![...OPEN_INCIDENT_STATUSES].includes(target.status as (typeof OPEN_INCIDENT_STATUSES)[number])) throw Errors.conflict("Merge target must be an active Incident");
+    if (!incidentCanCreateActionPlan(target.status)) throw Errors.conflict("Merge target must be an active Incident");
     const sources = sourceIds.map((id) => rows.find((row) => row.id === id));
     if (sources.some((row) => !row)) throw Errors.notFound("One or more merge source Incidents were not found");
     for (const source of sources) {

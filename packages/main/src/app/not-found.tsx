@@ -1,8 +1,20 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { ArrowRight, Compass } from "lucide-react";
 import { AppSidebar } from "@/components/ourdream/AppSidebar";
 import { MobileBottomNav } from "@/components/ourdream/MobileBottomNav";
 import { SiteFooter } from "@/components/ourdream/SiteFooter";
+
+// SPEC: 不存在的路由不得请求收录，也不得冒用首页的 canonical。
+// INTENT: root layout 把 `canonical: "/"` 和 `robots: index,follow` 当默认值下发。
+//   真实页面各自覆盖掉了，但 `notFound()` 之后就只剩这套默认值 —— 于是每一条渲染
+//   不出内容的路由都在对爬虫说「收录我，我的正主是首页」，是教科书式的软 404。
+//   这里把两项都显式反掉；`canonical: null` 是 Next 用来退订继承值的写法。
+export const metadata: Metadata = {
+  title: "Page not found | ourdream.ai",
+  robots: { index: false, follow: false },
+  alternates: { canonical: null },
+};
 
 // SPEC: App-shell 404 so unknown routes keep the sidebar/footer/nav instead of
 //       Next's bare default. activeHref="" leaves every nav item inactive.

@@ -11,6 +11,25 @@ export type OfficialCharacterSeed = {
   readonly exampleDialogue: readonly string[];
   readonly originalCreator: string;
   readonly image: string;
+  /**
+   * SPEC: 这张卡图画的是什么风格 —— 决定角色的 `style`。
+   * INTENT: 以前是从标题里猜的（`title.includes("anime")`）。16 张卡图里有 3 张
+   *   是动漫画风，可标题里一个 "anime" 都没有，于是 sophie / diana-weird-girl /
+   *   lola-moonstruck 被登记成 realistic —— 生图提示词逐字写着 "Subject: adult,
+   *   female, realistic"，永远画不出卡图那个人。风格是图的属性，不是标题的属性。
+   */
+  readonly style: "realistic" | "anime";
+  /**
+   * SPEC: 这个角色**看起来**是什么样 —— 一句人物识别句 + 一串稳定视觉特征。
+   * INTENT: 卡图是这些角色唯一的视觉权威，而文生图读不到图片。没有这两个字段时，
+   *   提示词里关于长相的信息量是零，生成的人和卡上的人没有任何关系。字段名不是
+   *   新造的：`buildEditorialPortraitIdentity` 早就按 `appearance.identityAnchor`
+   *   / `stableTraits` 构造 Visual Profile，只是从来没人往里填。
+   * INVARIANT: 只写**看得见**的东西。性格、身世、关系、场景剧情一律不进这里 ——
+   *   它们已经在 persona 里了，混进来只会让图像模型去画一段小说。
+   */
+  readonly identityAnchor: string;
+  readonly stableTraits: readonly string[];
   readonly vivid?: boolean;
 };
 
@@ -33,6 +52,19 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     ],
     originalCreator: "@some1cool",
     image: "/images/ourdream/card-melissa-burke.webp",
+    style: "realistic",
+    identityAnchor:
+      "Woman in her late thirties with dark chocolate-brown hair worn in a low twisted chignon, warm fair skin, and a soft mature hourglass figure.",
+    stableTraits: [
+      "dark chocolate-brown hair",
+      "low twisted chignon with loose wisps at the nape",
+      "warm fair skin",
+      "strong dark eyebrows",
+      "deep brown eyes",
+      "full soft mouth",
+      "mature curvy hourglass build",
+      "cream satin off-shoulder robe",
+    ],
   },
   {
     id: "summoned-world",
@@ -50,6 +82,17 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     ],
     originalCreator: "@fuze",
     image: "/images/ourdream/card-summoned-world.webp",
+    style: "realistic",
+    identityAnchor:
+      "A place rather than a face: a moonlit vaulted stone hall where a vertical column of glowing blue rune sigils rises out of a golden summoning circle inscribed on the floor.",
+    stableTraits: [
+      "moonlit vaulted stone hall",
+      "pale marble columns",
+      "vertical column of glowing blue rune sigils",
+      "golden summoning circle on the floor",
+      "deep blue and warm gold palette",
+      "painterly cinematic high-fantasy illustration",
+    ],
   },
   {
     id: "sarah-mercer",
@@ -67,6 +110,20 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     ],
     originalCreator: "@some1cool",
     image: "/images/ourdream/card-sarah-mercer.webp",
+    style: "realistic",
+    identityAnchor:
+      "Woman in her late twenties with long dark chestnut-brown waves swept over one shoulder, warm fair skin, and a bright open smile.",
+    stableTraits: [
+      "long dark chestnut-brown hair",
+      "loose waves swept over the left shoulder",
+      "warm fair skin",
+      "dark brown eyes",
+      "thick dark eyebrows",
+      "bright white toothy smile",
+      "full lips",
+      "curvy hourglass build",
+      "navy square-neck sleeveless dress",
+    ],
     vivid: true,
   },
   {
@@ -85,6 +142,19 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     ],
     originalCreator: "@archerz",
     image: "/images/ourdream/card-alexa-reeves.webp",
+    style: "realistic",
+    identityAnchor:
+      "Nineteen-year-old with long straight golden-blonde hair, sun-tanned skin, bright blue eyes, and light freckles across the nose.",
+    stableTraits: [
+      "long straight golden-blonde hair",
+      "centre part",
+      "sun-tanned golden skin",
+      "bright blue eyes",
+      "light freckles across the nose and cheeks",
+      "bright white smile",
+      "athletic curvy build",
+      "white string bikini",
+    ],
     vivid: true,
   },
   {
@@ -103,6 +173,20 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     ],
     originalCreator: "@wordshitmelikeablow",
     image: "/images/ourdream/card-tamsin-jacobs.webp",
+    style: "realistic",
+    identityAnchor:
+      "Twenty-year-old with shoulder-length wavy golden-blonde hair over very fair porcelain skin, with dark eyebrows that contrast the light hair.",
+    stableTraits: [
+      "shoulder-length wavy golden-blonde hair",
+      "deep side part",
+      "very fair porcelain skin",
+      "light freckles across the nose and chest",
+      "thick dark eyebrows",
+      "hazel-brown eyes",
+      "soft round face with a small nose",
+      "full pink lips",
+      "dusty-rose satin robe",
+    ],
     vivid: true,
   },
   {
@@ -121,6 +205,19 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     ],
     originalCreator: "@thebigbadwolf",
     image: "/images/ourdream/card-truth-confessional.webp",
+    style: "realistic",
+    identityAnchor:
+      "Eighteen-year-old with long dark-brown hair lightened at the ends, tanned golden skin, and pale blue-grey eyes.",
+    stableTraits: [
+      "long dark-brown hair with sun-lightened ends",
+      "centre part",
+      "tanned golden skin",
+      "pale blue-grey eyes",
+      "dark defined eyebrows",
+      "bright warm smile",
+      "small silver heart pendant necklace",
+      "navel piercing",
+    ],
   },
   {
     id: "truth-stepmother",
@@ -138,6 +235,19 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     ],
     originalCreator: "@loudshrike",
     image: "/images/ourdream/card-truth-stepmother.webp",
+    style: "realistic",
+    identityAnchor:
+      "Woman in her mid-thirties with long straight golden-blonde hair, fair skin, and blue-green eyes.",
+    stableTraits: [
+      "long straight golden-blonde hair",
+      "centre part",
+      "fair skin",
+      "blue-green eyes",
+      "warm open smile",
+      "gold chain bracelet",
+      "taupe blouse knotted at the waist",
+      "denim shorts",
+    ],
     vivid: true,
   },
   {
@@ -156,6 +266,19 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     ],
     originalCreator: "@jlg619",
     image: "/images/ourdream/card-stephanie.webp",
+    style: "realistic",
+    identityAnchor:
+      "Eighteen-year-old with long platinum-blonde hair cut into a blunt straight fringe, glowing tanned skin, and bright blue eyes.",
+    stableTraits: [
+      "long straight platinum-blonde hair",
+      "blunt straight fringe across the brows",
+      "glowing tanned skin",
+      "bright blue eyes",
+      "full glossy lips",
+      "blue manicured nails",
+      "gold wristwatch",
+      "white cropped tank top and blue pleated skirt",
+    ],
   },
   {
     id: "kennedy-graham",
@@ -173,6 +296,19 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     ],
     originalCreator: "@jmathersmind",
     image: "/images/ourdream/card-kennedy-graham.webp",
+    style: "realistic",
+    identityAnchor:
+      "Twenty-one-year-old with long honey-blonde waves, sun-kissed fair skin, and pale blue-green eyes.",
+    stableTraits: [
+      "long honey-blonde hair with lighter highlights",
+      "big soft waves with a deep side part",
+      "sun-kissed fair skin",
+      "pale blue-green eyes",
+      "strong dark-blonde eyebrows",
+      "high cheekbones",
+      "bright white toothy smile",
+      "white off-shoulder top",
+    ],
     vivid: true,
   },
   {
@@ -191,6 +327,20 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     ],
     originalCreator: "@dreambig",
     image: "/images/ourdream/card-eleanor-dawn.webp",
+    style: "realistic",
+    identityAnchor:
+      "Twenty-one-year-old with tousled dirty-blonde waves, fair skin, blue eyes, and a dark script tattoo on the left forearm.",
+    stableTraits: [
+      "shoulder-length dirty-blonde wavy hair",
+      "centre part with a damp tousled finish",
+      "fair skin",
+      "blue eyes",
+      "thick dark-blonde eyebrows",
+      "dark script tattoo on the left forearm",
+      "long white French-tip nails",
+      "thin gold chain necklace",
+      "white off-shoulder top",
+    ],
     vivid: true,
   },
   {
@@ -209,6 +359,19 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     ],
     originalCreator: "@towle12",
     image: "/images/ourdream/card-bailey-price.webp",
+    style: "realistic",
+    identityAnchor:
+      "Nineteen-year-old with long straight strawberry-blonde hair, very fair freckled skin, and light blue-green eyes.",
+    stableTraits: [
+      "long straight strawberry-blonde hair",
+      "centre part",
+      "very fair skin",
+      "freckles across the nose and cheeks",
+      "light blue-green eyes",
+      "slim build",
+      "black hooded jacket over a white tank top",
+      "denim shorts",
+    ],
     vivid: true,
   },
   {
@@ -227,6 +390,19 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     ],
     originalCreator: "@stzy1",
     image: "/images/ourdream/card-sophie.webp",
+    style: "anime",
+    identityAnchor:
+      "Anime-styled woman with long dark-brown hair, blunt straight bangs, and striking golden-amber eyes.",
+    stableTraits: [
+      "long dark-brown hair",
+      "blunt straight bangs with long side locks",
+      "golden-amber eyes",
+      "fair skin",
+      "gold hoop earrings",
+      "gold heart-shaped locket on a chain",
+      "curvy full-figured build",
+      "olive tank top and black athletic shorts",
+    ],
   },
   {
     id: "raya-reyes",
@@ -244,6 +420,19 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     ],
     originalCreator: "@some1cool",
     image: "/images/ourdream/card-raya-reyes.webp",
+    style: "realistic",
+    identityAnchor:
+      "Nineteen-year-old with very long near-black wavy hair, fair olive skin, and dark brown eyes.",
+    stableTraits: [
+      "very long near-black dark-brown hair",
+      "loose waves with a deep side part",
+      "fair olive skin",
+      "dark brown eyes",
+      "thick dark eyebrows",
+      "small straight nose",
+      "full lips",
+      "white cropped t-shirt",
+    ],
   },
   {
     id: "emily-coming-home",
@@ -261,6 +450,19 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     ],
     originalCreator: "@thebigbadwolf",
     image: "/images/ourdream/card-emily-coming-home.webp",
+    style: "realistic",
+    identityAnchor:
+      "Woman in her early thirties with long ash-brown waves and bright blue eyes on fair skin.",
+    stableTraits: [
+      "long ash-brown hair with lighter highlights",
+      "loose waves with a side part",
+      "fair skin",
+      "bright blue eyes",
+      "straight nose and full lips",
+      "slender build",
+      "cream cable-knit sweater",
+      "blue jeans",
+    ],
   },
   {
     id: "diana-weird-girl",
@@ -278,6 +480,19 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     ],
     originalCreator: "@mau4971",
     image: "/images/ourdream/card-diana-weird-girl.webp",
+    style: "anime",
+    identityAnchor:
+      "Anime-styled young woman with very long black hair over a crimson under-layer, round thin-framed glasses, and red eyes.",
+    stableTraits: [
+      "very long straight black hair",
+      "crimson red under-layer beneath the black",
+      "long side bangs covering one eye",
+      "round thin-framed glasses",
+      "red eyes",
+      "pale skin",
+      "freckles across the nose",
+      "white school shirt and pale grey pleated skirt",
+    ],
   },
   {
     id: "lola-moonstruck",
@@ -295,6 +510,19 @@ export const officialCharacterSeeds: readonly OfficialCharacterSeed[] = [
     ],
     originalCreator: "@anonarona",
     image: "/images/ourdream/card-lola-moonstruck.webp",
+    style: "anime",
+    identityAnchor:
+      "Anime-styled twenty-year-old with long black hair and blunt bangs under a wide white headband, and bright blue eyes.",
+    stableTraits: [
+      "long straight black hair",
+      "blunt straight bangs",
+      "wide white headband",
+      "bright blue eyes",
+      "pale skin",
+      "large gold hoop earrings",
+      "gold pendant necklace with an amber teardrop stone",
+      "white off-shoulder cropped turtleneck sweater",
+    ],
   },
 ] as const;
 

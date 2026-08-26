@@ -1,10 +1,12 @@
 "use client";
 
-import { FileText, Loader2, RefreshCcw, X } from "lucide-react";
+import { Ban, FileText, Loader2, RefreshCcw, X } from "lucide-react";
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import {
   generationJobDetailResponseSchema,
   generationJobListResponseSchema,
+  generationRequestCancelResultSchema,
+  isGenerationRequestCancellableStatus,
   retryGenerationRequestResultSchema,
   type GenerationJobDetailResponse,
   type GenerationJobListItem,
@@ -12,6 +14,7 @@ import {
 } from "@idream/shared/admin";
 import { apiGet } from "@/components/admin/api";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
+import { useToast } from "@/components/admin/ui/Toast";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { CopyableId } from "@/components/admin/ui/CopyableId";
 import { DataTable, type DataTableHeader, type DataTableRow } from "@/components/admin/ui/DataTable";
@@ -66,6 +69,7 @@ export function JobsView() {
   const [detail, setDetail] = useState<GenerationJobDetailResponse | null>(null);
   const [detailBusy, setDetailBusy] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
+  const { toast } = useToast();
   const [retrySpec, setRetrySpec] = useState<ConfirmSpec | null>(null);
   const [selectedRows, setSelectedRows] = useState<string[]>([]);
   // 游标分页没有页码，只有「上一页用的是哪个游标」。这条轨迹就是 Pagination 的第 N 页。
@@ -231,6 +235,51 @@ export function JobsView() {
                     confirmation: `${item.id}:retry`,
                   },
                   schema: retryGenerationRequestResultSchema,
+                });
+                await loadJobs(query);
+              },
+            })}
+          />
+        ) : null}
+        {/* SPEC: 还在飞的请求要有一个人工中止阀。
+            INTENT: 这一页此前只有 Retry（仅 failed）和 unknown 对账，对着一个排队一小时、
+            或 running 不动的请求，运营的选项是零个。后端 `POST /generation/requests/:id/commands/cancel`
+            （generation-request-lifecycle.ts:19）一直在那儿且做的是完整收尾：Serializable 事务里
+            迁到 cancelled、写终态 attempt 事件、取消 dispatch outbox、退还 Dreamcoin、把队列 job 摘掉；
+            但控制台一次都没调过它。
+            INVARIANT: 显示条件按 legacyStatus 取，和后端允许的迁移源
+            `["queued","moderating_input","running","moderating_output"]` 逐字对齐——
+            按 requestOutcome 判会把 needs_reconciliation 这类也放进来，点下去必然 conflict。 */}
+        {isGenerationRequestCancellableStatus(item.legacyStatus) ? (
+          <IconAction
+            icon={<Ban className="h-4 w-4" />}
+            // INVARIANT: 不要用通用的 "Cancel"。它在字典里是「取消」，和弹窗上那个"取消/不做了"
+            //            是同一个词；摆在「详情」旁边的操作列里，运营会把"中止这次生成"读成
+            //            "关掉这一行"。这里要的是一个只有一种意思的动词。
+            label="Abort"
+            onClick={() => setRetrySpec({
+              title: t("Cancel Generation Request {id}", { id: shortId(item.id) }),
+              summary: t("Stops the in-flight request, marks it cancelled, and refunds the reserved Dreamcoins."),
+              consequence: {
+                effect: t("The user's request ends with no output. Re-running means a new request at full price."),
+                reversible: false,
+              },
+              destructive: { expectedName: `${item.id}:cancel` },
+              submitLabel: t("Cancel request"),
+              onSubmit: async (reason) => {
+                const result = await adminV2Request(`/api/v2/admin/generation/requests/${encodeURIComponent(item.id)}/commands/cancel`, {
+                  method: "POST",
+                  idempotencyKey: crypto.randomUUID(),
+                  body: {
+                    entityVersion: item.version,
+                    reason,
+                    confirmation: `${item.id}:cancel`,
+                  },
+                  schema: generationRequestCancelResultSchema,
+                });
+                toast({
+                  tone: "success",
+                  title: t("Request cancelled · {amount} Dreamcoins refunded", { amount: result.refundAmount }),
                 });
                 await loadJobs(query);
               },
@@ -405,7 +454,22 @@ function GenerationJobInspector({ detail, error, jobId, loading, onClose, onReco
     <section aria-labelledby="generation-job-detail-title" className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[var(--ad-border)] p-4">
         <div className="min-w-0"><p className="text-xs font-semibold uppercase text-[var(--ad-text-muted)]">{t("Generation Request authority")}</p><h2 className="mt-1 truncate font-mono text-base font-semibold" id="generation-job-detail-title">{shortId(jobId)}</h2></div>
-        <button aria-label={t("Close")} autoFocus className="grid h-8 w-8 place-items-center rounded-lg border border-[var(--ad-border)] text-[var(--ad-text-muted)] hover:bg-black/[0.04]" onClick={onClose} type="button"><X className="h-4 w-4" /></button>
+        <div className="flex shrink-0 items-center gap-2">
+          {/* SPEC: 这一页把机器侧的事实列全了，人侧的一条没有——运营动过什么，只在审计日志里。
+              INTENT: 实测把一个 23 天前的死信重新入队后，页面上凭空多出一个 Attempt #2，
+              而七张证据表没有一处说得出是谁、什么时候、为什么让它重跑：requeue 走的是
+              writeDeadLetterAudit（generation/dead-letter.ts:374），落在 adminAuditLog 上，
+              且 `generation_attempts.sourceCommandId` 实测 119 条全是 NULL，连不回命令。
+              审计接口按 targetId 全文检索是通的（search=<jobId> 实测精确命中那条 requeue），
+              所以这里给一条带筛选的直达链接，而不是在详情接口里再复制一份人侧事实。 */}
+          <a
+            className="rounded-lg border border-[var(--ad-border)] px-2.5 py-1.5 text-xs text-[var(--ad-text-muted)] hover:bg-black/[0.04] hover:text-[var(--ad-ink)]"
+            href={`/admin/system/audit?auditSearch=${encodeURIComponent(jobId)}`}
+          >
+            {t("Operator actions on this job")}
+          </a>
+          <button aria-label={t("Close")} autoFocus className="grid h-8 w-8 place-items-center rounded-lg border border-[var(--ad-border)] text-[var(--ad-text-muted)] hover:bg-black/[0.04]" onClick={onClose} type="button"><X className="h-4 w-4" /></button>
+        </div>
       </div>
       {loading ? <div className="flex h-28 items-center justify-center text-sm text-[var(--ad-text-muted)]" role="status"><Loader2 className="mr-2 h-4 w-4 animate-spin" />{t("Loading Request, Attempt, Delivery, and Settlement facts")}</div> : null}
       {error ? <div className="m-4 rounded-lg border border-[var(--ad-red-text)]/20 bg-[var(--ad-red-bg)] px-3 py-2 text-sm text-[var(--ad-red-text)]" role="alert">{error}</div> : null}
@@ -456,6 +520,28 @@ function GenerationJobInspector({ detail, error, jobId, loading, onClose, onReco
               rows={detail.deliveries.map((delivery) => [shortId(delivery.artifactId), `${delivery.targetType}:${shortId(delivery.targetId)}`, value(delivery.status), delivery.deliveredAt ? format.dateTime(delivery.deliveredAt) : "—"])}
             />
           </div>
+          {/* SPEC: 用户对这次生成打的分——运营手上唯一的第一手「产出到底行不行」信号。
+              INTENT: `GenerationFeedback` 表在 admin-v2 里此前零引用：主站一直在收
+              （`modules/ourdream/media-feedback.ts:160`），实测库里 4 条真实反馈、其中一条
+              `identity/mismatch`，而后台任何一页都看不到。运营处理一次生成投诉时，读得到机器侧
+              全部事实，唯独读不到用户自己怎么说的。
+              INVARIANT: 同时给 revision 与「是否有效」。用户能改评价（supersedesId 链），
+              只显示最新一条会抹掉"先说不像、后来改口"，只显示全部又分不清哪条算数。 */}
+          <AuthorityTable
+            caption="User feedback on this generation"
+            headers={["Feedback", "User", "Asset", "Verdict", "Surface", "Standing", "Recorded"]}
+            rows={detail.feedback.map((entry) => [
+              shortId(entry.id),
+              shortId(entry.actorId),
+              shortId(entry.mediaAssetId),
+              `${value(entry.dimension)} · ${value(entry.value)}`,
+              value(entry.sourceSurface),
+              entry.active
+                ? t("Current (rev {revision})", { revision: entry.revision })
+                : t("Superseded (rev {revision})", { revision: entry.revision }),
+              format.dateTime(entry.createdAt),
+            ])}
+          />
           <AuthorityTable
             caption="Immutable Attempt events"
             headers={["Sequence", "Attempt", "Typed event", "Outcome", "Occurred"]}

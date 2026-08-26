@@ -58,6 +58,19 @@ export function chatStreamMessagesNeedReconciliation(
   return messages.some(chatStreamMessageIsInProgress);
 }
 
+/**
+ * SPEC: 只有「当前这一轮」失败才提示重试。
+ * INTENT: 判据必须锚在最后一条消息上 —— 历史上任何一次失败的空回复都会永久留在
+ *         会话里，扫描整个 messages 会让一条正常会话被那条旧记录永远钉上错误提示。
+ */
+export function chatStreamLatestReplyFailed(
+  messages: readonly ChatStreamMessage[],
+) {
+  const latest = messages.at(-1);
+  if (!latest) return false;
+  return chatStreamMessageIsTerminal(latest) && !latest.content.trim();
+}
+
 // A stream terminal frame is transport evidence, not the canonical message
 // state. Retry transient read failures and stop only when Chat reports a
 // terminal row; partial text must never be mistaken for terminal authority.

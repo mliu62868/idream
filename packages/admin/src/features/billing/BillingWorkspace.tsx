@@ -660,7 +660,25 @@ export function BillingWorkspace({
           />
           </> : null}
           {subscriptionState.data ? <>
-          <DataTable caption="Customer subscriptions" empty={<BillingEmpty filtered={Boolean(query.search || query.subscriptionStatus)} kind="subscriptions" onClear={clearFilters} />} headers={["ID", "User", "Email", "Plan", "Period", "Provider", "Status", "Period end", "Cancel at end", "Refund state", "Action"]} minimumWidthClassName="min-w-[1360px]" rows={subscriptionRows} stickyLastColumn />
+          {/* SPEC: width 是**文本盒**宽度，单元格左右还各有 1rem 内边距，真实列宽 ≈ width + 2rem；
+              十一列合计 1456px，就是下面的 minimumWidthClassName。
+              INTENT: 这里原来只给了总宽、没给每列宽度，浏览器就按内容自由分配：邮箱一列吃掉大半，
+              「状态」「周期结束」「全额退款」各剩两个字的位置——中文竖排成「启/用」「周/期/结/束」
+              「全/额/退/款」，日期还被折成「20/年/11/14」。 */}
+          <DataTable caption="Customer subscriptions" empty={<BillingEmpty filtered={Boolean(query.search || query.subscriptionStatus)} kind="subscriptions" onClear={clearFilters} />} headers={[
+            { label: "ID", truncate: true, width: "7rem" },
+            { label: "User", truncate: true, width: "7rem" },
+            { label: "Email", truncate: true, width: "11rem" },
+            { label: "Plan", truncate: true, width: "4rem" },
+            { label: "Period", truncate: true, width: "4.5rem" },
+            { label: "Provider", truncate: true, width: "4rem" },
+            { label: "Status", truncate: true, width: "3.5rem" },
+            { label: "Period end", truncate: true, width: "9.5rem" },
+            { label: "Cancel at end", truncate: true, width: "5.5rem" },
+            { label: "Refund state", truncate: true, width: "6rem" },
+            // 「全额退款」四个汉字 + 图标 + 按钮内边距实测 ~112px；6rem 时它会折成两行。
+            { label: "Action", width: "7rem" },
+          ]} minimumWidthClassName="min-w-[1456px]" rows={subscriptionRows} stickyLastColumn />
           <ListPagination
             cursor={query.subscriptionCursor}
             loading={subscriptionState.loading}
@@ -671,7 +689,17 @@ export function BillingWorkspace({
           />
           </> : null}
           {ledgerState.data ? <>
-          <DataTable caption="Customer ledger" empty={<BillingEmpty filtered={Boolean(query.search || query.ledgerReason)} kind="ledger" onClear={clearFilters} />} headers={["ID", "User", "Email", "Delta", "Balance after", "Reason", "Source", "Created"]} minimumWidthClassName="min-w-[1040px]" rows={ledgerRows} />
+          <DataTable caption="Customer ledger" empty={<BillingEmpty filtered={Boolean(query.search || query.ledgerReason)} kind="ledger" onClear={clearFilters} />} headers={[
+            { label: "ID", truncate: true, width: "7rem" },
+            { label: "User", truncate: true, width: "7rem" },
+            { label: "Email", truncate: true, width: "11rem" },
+            // 两个金额列右对齐（DataTable 的 right 自带 tabular-nums，数字能上下对齐着扫）。
+            { label: "Delta", align: "right", width: "5rem" },
+            { label: "Balance after", align: "right", width: "5.5rem" },
+            { label: "Reason", truncate: true, width: "7rem" },
+            { label: "Source", truncate: true, width: "6rem" },
+            { label: "Created", truncate: true, width: "9.5rem" },
+          ]} minimumWidthClassName="min-w-[1184px]" rows={ledgerRows} />
           <ListPagination
             cursor={query.ledgerCursor}
             loading={ledgerState.loading}

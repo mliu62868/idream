@@ -52,7 +52,6 @@ const profile = {
     temperature: 0.9,
     topP: 0.95,
     repetitionPenalty: 1.05,
-    structuredTemperature: 0.2,
   },
 };
 

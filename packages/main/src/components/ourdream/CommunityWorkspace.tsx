@@ -34,6 +34,7 @@ import {
 } from "./authority-state";
 import { authHrefForTarget } from "./authRedirect";
 import { publicOptimisticMutationFailure } from "./optimistic-write-state";
+import { useReportDialog } from "./ReportDialog";
 
 // SPEC: campaign 投放位曝光/点击埋点，经既有 POST /api/v1/events/track。
 // INTENT: 只覆盖有公开渲染面的 campaign 槽位；feed_card/homepage_strip 等无渲染面槽位不造埋点（诚实数据）。
@@ -174,6 +175,7 @@ export function CommunityWorkspace() {
     () => new Set(),
   );
   const [status, setStatus] = useState("");
+  const { openReport, reportDialog } = useReportDialog(setStatus);
   const [leaderboardsAuthority, setLeaderboardsAuthority] = useState(initialAuthorityStatus);
   const [collectionsAuthority, setCollectionsAuthority] = useState(initialAuthorityStatus);
   const [leaderboardsReloadToken, setLeaderboardsReloadToken] = useState(0);
@@ -506,29 +508,6 @@ export function CommunityWorkspace() {
     }
   }
 
-  async function reportDreamer(dreamerId: string) {
-    const response = await fetch("/api/v1/reports", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        targetType: "user_profile",
-        targetId: dreamerId,
-        category: "other_prohibited_content",
-        description: "User profile report",
-      }),
-    });
-    setStatus(response.ok ? "Profile report submitted." : "Profile report failed.");
-  }
-
-  async function report(characterId: string) {
-    const response = await fetch(`/api/v1/characters/${characterId}/report`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ category: "other_prohibited_content", description: "Community report" }),
-    });
-    setStatus(response.ok ? "Report submitted." : "Report failed.");
-  }
-
   return (
     <section className="px-4 py-8 md:px-[60px] md:py-12">
       <div className="mx-auto max-w-6xl">
@@ -697,7 +676,13 @@ export function CommunityWorkspace() {
                   dreamer={dreamer}
                   followPending={followPendingIds.has(dreamer.id)}
                   key={dreamer.id}
-                  onReport={reportDreamer}
+                  onReport={(dreamerId) =>
+                    openReport({
+                      kind: "record",
+                      targetType: "user_profile",
+                      targetId: dreamerId,
+                    })
+                  }
                   onToggleFollow={toggleFollowCreator}
                 />
               ))
@@ -737,7 +722,7 @@ export function CommunityWorkspace() {
                   )}
                   key={character.id}
                   onEligibleImpression={recordRankingExposure}
-                  onReport={report}
+                  onReport={(characterId) => openReport({ kind: "character", id: characterId })}
                   onToggleFollow={toggleFollowCreator}
                 />
               ))
@@ -844,6 +829,7 @@ export function CommunityWorkspace() {
           ) : null}
         </section>
       </div>
+      {reportDialog}
     </section>
   );
 }
@@ -856,7 +842,7 @@ export function CommunityDreamerCard({
 }: {
   dreamer: Dreamer;
   followPending: boolean;
-  onReport: (dreamerId: string) => Promise<void>;
+  onReport: (dreamerId: string) => void;
   onToggleFollow: (creatorId: string, isFollowing: boolean) => Promise<void>;
 }) {
   return (
@@ -925,7 +911,7 @@ export function CommunityDreamerCard({
         <button
           aria-label={`Report user profile ${dreamer.displayName}`}
           className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[rgb(36,36,36)] text-white"
-          onClick={() => void onReport(dreamer.id)}
+          onClick={() => onReport(dreamer.id)}
           title="Report profile"
           type="button"
         >
@@ -946,7 +932,7 @@ export function CommunityCharacterCard({
   character: CommunityCharacter;
   followPending: boolean;
   onEligibleImpression: () => void;
-  onReport: (characterId: string) => Promise<void>;
+  onReport: (characterId: string) => void;
   onToggleFollow: (creatorId: string, isFollowing: boolean) => Promise<void>;
 }) {
   const cardRef = useRef<HTMLElement | null>(null);
@@ -1085,7 +1071,7 @@ export function CommunityCharacterCard({
           <button
             aria-label={`Report ${character.title}`}
             className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[rgb(36,36,36)] text-white"
-            onClick={() => void onReport(character.id)}
+            onClick={() => onReport(character.id)}
             type="button"
           >
             <Flag className="h-4 w-4" />

@@ -327,10 +327,18 @@ function purgeRequest(value: unknown): WorkspacePurgeRequest {
   if (record.scope === "relationship") {
     const characterId = typeof record.characterId === "string" ? record.characterId.trim() : "";
     if (!characterId) throw new Error("relationship purge characterId must be a non-empty string");
-    if (Object.keys(record).sort().join(",") !== "characterId,scope,userId") {
-      throw new Error("relationship workspace purge accepts only scope, userId and characterId");
+    const keys = Object.keys(record).sort().join(",");
+    if (keys === "characterId,scope,userId") {
+      return { scope: "relationship", userId, characterId };
     }
-    return { scope: "relationship", userId, characterId };
+    if (keys === "characterId,quarantine,scope,userId") {
+      const quarantineLabel = record.quarantine;
+      if (typeof quarantineLabel !== "string" || !/^[A-Za-z0-9._-]{1,80}$/u.test(quarantineLabel)) {
+        throw new Error("relationship purge quarantine label must match [A-Za-z0-9._-]{1,80}");
+      }
+      return { scope: "relationship", userId, characterId, quarantineLabel };
+    }
+    throw new Error("relationship workspace purge accepts only scope, userId, characterId and quarantine");
   }
   throw new Error("workspace purge scope must be user or relationship");
 }

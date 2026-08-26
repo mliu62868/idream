@@ -58,6 +58,7 @@ import {
   fetchProtectedForViewer,
   type ViewerFetcher,
 } from "./viewer-auth";
+import { useReportDialog } from "./ReportDialog";
 import { activeEntitlementSummary } from "./entitlement-copy";
 import { LegacyTestAssetBadge } from "./LegacyTestAssetBadge";
 
@@ -282,6 +283,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
   const [deleteConfirmMediaId, setDeleteConfirmMediaId] = useState<string | null>(null);
   const [deleteConfirmCharacterId, setDeleteConfirmCharacterId] = useState<string | null>(null);
   const [status, setStatus] = useState("");
+  const { openReport, reportDialog } = useReportDialog(setStatus);
   const [referralUrl, setReferralUrl] = useState("");
   const [failedImageIds, setFailedImageIds] = useState<Set<string>>(new Set());
   const [invalidPreviewImageIds, setInvalidPreviewImageIds] = useState<Set<string>>(new Set());
@@ -824,25 +826,6 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
           : "Character set to private.",
       );
       await refreshLibrary(tab);
-    } catch {
-      setStatus("Network error. Please try again.");
-    }
-  }
-
-  async function reportMedia(id: string) {
-    setStatus("");
-    try {
-      const response = await fetch("/api/v1/reports", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          targetType: "media",
-          targetId: id,
-          category: "other_prohibited_content",
-          description: "Media report",
-        }),
-      });
-      setStatus(response.ok ? "Report submitted." : "Report failed.");
     } catch {
       setStatus("Network error. Please try again.");
     }
@@ -1502,7 +1485,9 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
                       return next;
                     })
                   }
-                  onReport={reportMedia}
+                  onReport={(id: string) =>
+                    openReport({ kind: "record", targetType: "media", targetId: id })
+                  }
                   collections={mediaCollections}
                   onCreateCollection={createMediaCollection}
                   onAddToCollection={addMediaToCollection}
@@ -1543,6 +1528,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
           ) : null}
         </div>
       </div>
+      {reportDialog}
     </section>
   );
 }

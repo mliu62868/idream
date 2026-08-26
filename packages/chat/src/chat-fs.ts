@@ -5,7 +5,7 @@
 //   mem/{userId}/global/boundaries.md
 // INVARIANTS: append uses O_APPEND; whole-file updates use temp+rename (atomic);
 // ids are sanitized so a crafted id can't escape the root (no path traversal).
-import { appendFile, mkdir, readFile, rename, rm, readdir, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { env } from "./env.js";
 
@@ -42,6 +42,14 @@ export const chatFsPaths = {
     "relationship-evidence.jsonl",
   ],
   boundaries: (userId: string) => ["mem", userId, "global", "boundaries.md"],
+  /** Retired relationship files kept for engineering analysis; nothing in the product reads them. */
+  relationshipQuarantine: (userId: string, charId: string, label: string) => [
+    "mem",
+    userId,
+    ".reset-quarantine",
+    charId,
+    label,
+  ],
 } as const;
 
 // ---- primitive ops ----------------------------------------------------------
@@ -119,6 +127,19 @@ export async function listPrefix(prefixParts: string[]): Promise<string[]> {
   }
   await walk(base);
   return out.sort();
+}
+
+/** Move a file or directory to another relative path, creating parents. A missing source is a no-op. */
+export async function movePrefix(fromParts: string[], toParts: string[]): Promise<boolean> {
+  const to = abs(toParts);
+  await mkdir(path.dirname(to), { recursive: true });
+  try {
+    await rename(abs(fromParts), to);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
 }
 
 /** Recursively delete everything under a prefix (privacy deletion). Idempotent. */

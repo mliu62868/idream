@@ -18,6 +18,58 @@ export {
   syntheticMediaAssetWhere,
 } from "@/server/lib/media-asset-authority";
 
+/**
+ * SPEC: 用户静音一个标签后，所有面向他的公开角色列表都不该再推该标签的角色。
+ *
+ * INTENT: 这段排除条件原先只写在 explore 的 listCharacters 里，Feed / Community /
+ * 创作者主页三处公开查询一次都没引用 —— 实测静音 `elf` 后 /characters 从 16 条降到
+ * 15 条，而 /feed 和 /community/leaderboard 照旧把那个角色推给他。提成一处共享，
+ * 避免再各写一份或漏写。
+ *
+ * 返回 undefined 表示无需排除（未登录或没有静音标签），可直接展开进 where。
+ */
+/** 与 service.ts 的 tag 写入端同一套规则：写进 tags 的和这里读出来的必须能对上。 */
+function slugify(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+/**
+ * INTENT: 这三个原本埋在 service.ts 里私有，导致 discovery 的公开查询想用又不能用
+ * （反向 import 有台账守卫），于是 Feed / Community / 创作者主页干脆漏掉了静音过滤。
+ * 搬到受众模块：谁能看到什么，本来就该由这里回答。
+ */
+export function normalizeMutedTagSlugs(values: readonly string[]) {
+  return Array.from(
+    new Set(values.map((value) => slugify(String(value))).filter(Boolean)),
+  ).slice(0, 80);
+}
+
+export async function mutedTagSlugsForUser(userId: string): Promise<string[]> {
+  const preferences = await prisma.userPreferences.findUnique({
+    where: { userId },
+    select: { mutedTags: true },
+  });
+  const raw = preferences?.mutedTags;
+  return normalizeMutedTagSlugs(Array.isArray(raw) ? (raw as unknown[]).map(String) : []);
+}
+
+export function mutedTagExclusionWhere(mutedTagSlugs: readonly string[]) {
+  if (mutedTagSlugs.length === 0) return undefined;
+  return {
+    tags: {
+      some: {
+        tag: {
+          slug: { in: [...mutedTagSlugs] },
+        },
+      },
+    },
+  };
+}
+
 export const activeCustomerUserWhere = {
   dataClass: "customer",
   role: "user",

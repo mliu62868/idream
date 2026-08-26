@@ -183,6 +183,8 @@ import {
 } from "./generation-profile-selection";
 import {
   isCustomerEngagementActor,
+  mutedTagSlugsForUser,
+  normalizeMutedTagSlugs,
   publicCharacterAudienceWhere,
   publicFeedbackAudienceWhere,
   publicReadableMediaAssetWhere,
@@ -1264,7 +1266,7 @@ async function listCharacters(request: Request) {
   if (nameFilter) {
     where.OR = [
       { name: nameFilter },
-      { description: { contains: q.trim() } },
+      { description: { contains: q.trim(), mode: "insensitive" } },
     ];
   }
 
@@ -1599,7 +1601,7 @@ async function suggest(request: Request) {
         AND: [
           publicCharacterAudienceWhere,
           {
-            name: { contains: normalized },
+            name: { contains: normalized, mode: "insensitive" },
             NOT:
               mutedTagSlugs.length > 0
                 ? {
@@ -1622,7 +1624,7 @@ async function suggest(request: Request) {
     prisma.tag.findMany({
       where: {
         isMutedByDefault: false,
-        label: { contains: normalized },
+        label: { contains: normalized, mode: "insensitive" },
         slug: mutedTagSlugs.length > 0 ? { notIn: mutedTagSlugs } : undefined,
       },
       orderBy: [{ category: "asc" }, { label: "asc" }],
@@ -2290,7 +2292,7 @@ async function listPresets(request: Request) {
       OR: ctx.userId
         ? [{ ownerId: ctx.userId }, { scope: { in: ["built_in", "community"] } }]
         : [{ scope: "built_in" }],
-      label: q ? { contains: q } : undefined,
+      label: q ? { contains: q, mode: "insensitive" } : undefined,
     },
     orderBy: [{ scope: "asc" }, { type: "asc" }, { label: "asc" }],
   });
@@ -2467,8 +2469,11 @@ async function listMedia(request: Request) {
     const referenceRequirements = imageEditCharacterId
       ? imageEditReferenceRequirementsByCharacterId.get(imageEditCharacterId)
       : [];
+    // 只有图片能被图生图编辑。过去这里不看 type，于是语音和视频资产也带着一份
+    // 可用编辑模型清单发给客户端 —— 前端靠自己按 type 过滤才没露出坏控件，
+    // 但契约上说不通，也让「这份资产能不能编辑」有了两个互相矛盾的答案。
     const imageEditModelIds =
-      referenceRequirements === undefined
+      asset.type !== "image" || referenceRequirements === undefined
         ? []
         : publicImageEditProfiles.flatMap(
           ({ profile, workflowDescriptor }) =>
@@ -3509,7 +3514,12 @@ async function library(request: Request, tab: string) {
         take: 12,
       }),
       prisma.characterLike.findMany({
-        where: { userId: user.id },
+        // INVARIANT: a stale like is not a visibility grant. Library must use
+        // the same Release-backed audience predicate as every public surface.
+        where: {
+          userId: user.id,
+          character: publicCharacterAudienceWhere,
+        },
         include: { character: { include: characterInclude(user.id) } },
         orderBy: { createdAt: "desc" },
         take: 12,
@@ -3566,7 +3576,10 @@ async function library(request: Request, tab: string) {
 
   if (tab === "characters") {
     const likes = await prisma.characterLike.findMany({
-      where: { userId: user.id },
+      where: {
+        userId: user.id,
+        character: publicCharacterAudienceWhere,
+      },
       include: { character: { include: characterInclude(user.id) } },
       orderBy: { createdAt: "desc" },
     });
@@ -3669,7 +3682,7 @@ async function updatePreferences(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
   const body = preferencesPatchSchema.parse(await jsonBody(request));
-  const mutedTags = body.mutedTags ? normalizeMutedTags(body.mutedTags) : undefined;
+  const mutedTags = body.mutedTags ? normalizeMutedTagSlugs(body.mutedTags) : undefined;
   const preferences = await prisma.userPreferences.upsert({
     where: { userId: user.id },
     update: {
@@ -4817,15 +4830,6 @@ function parseRequestCookies(request: Request) {
     if (name) cookies.set(name, decodeURIComponent(value.join("=")));
   }
   return cookies;
-}
-
-function normalizeMutedTags(values: readonly string[]) {
-  return Array.from(new Set(values.map(slugify).filter(Boolean))).slice(0, 80);
-}
-
-async function mutedTagSlugsForUser(userId: string) {
-  const preferences = await readPreferences(userId);
-  return normalizeMutedTags(jsonStringArray(preferences.mutedTags));
 }
 
 function suggestRoutes(query: string, limit: number): SearchRouteSuggestion[] {

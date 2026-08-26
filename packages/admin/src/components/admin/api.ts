@@ -14,9 +14,11 @@ export function apiGet<T>(path: string): Promise<T> {
   return adminV2Request<T>(path);
 }
 
+// DELETE 也在这里而不是 apiDelete：撤销类命令同样要带 reason + confirmation 的 body，
+// 而 apiDelete 是给「路径本身就是全部意图」的删除用的。
 export function apiWrite<T>(
   path: string,
-  method: "POST" | "PATCH" | "PUT",
+  method: "POST" | "PATCH" | "PUT" | "DELETE",
   body: Record<string, unknown>,
   headers?: Record<string, string>,
 ): Promise<T> {

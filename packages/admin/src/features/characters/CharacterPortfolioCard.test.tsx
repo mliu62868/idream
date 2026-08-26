@@ -100,6 +100,28 @@ describe("Character Portfolio card", () => {
   });
 
 
+  // SPEC: 草稿主图的可见性由「能不能看素材」决定，与看的是哪个视图无关。
+  // INTENT: 「角色表现」曾把 canOpenAssets 硬编码成 false，于是主图来源为 draft 的角色
+  //         在那里只剩灰色占位（同一角色在「角色」里有图），requiresAssets 的下一步动作
+  //         也一并降级成「仅表现数据」。这两个症状同源，一起钉住。
+  it("shows a draft portrait in performance mode to an operator who may open assets", () => {
+    const draftItem = {
+      ...item,
+      visualProduction: { ...item.visualProduction, primaryImageSource: "draft" },
+    } as unknown as CharacterPortfolioItem;
+    const withAssets = renderToStaticMarkup(
+      <CharacterPortfolioCard canOpenAssets canOpenProject item={draftItem} mode="performance" />,
+    );
+    const withoutAssets = renderToStaticMarkup(
+      <CharacterPortfolioCard canOpenAssets={false} canOpenProject item={draftItem} mode="performance" />,
+    );
+
+    expect(withAssets).toContain("/media/mara.webp");
+    expect(withAssets).not.toContain("No primary role portrait");
+    expect(withoutAssets).not.toContain("/media/mara.webp");
+    expect(withoutAssets).toContain("No primary role portrait");
+  });
+
   it("treats an existing live portrait as enablement instead of first-time setup", () => {
     const action = resolveCharacterPortfolioPrimaryAction({
       ...item,

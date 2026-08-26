@@ -4,6 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { ArrowRight, X } from "lucide-react";
 import { useEffect, useState } from "react";
+import { resolveViewerAuthority } from "./viewer-auth";
 
 const DISMISS_KEY = "od-upgrade-toast-dismissed";
 
@@ -12,17 +13,31 @@ export function PromoToast() {
   const [visible, setVisible] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
     // localStorage 仅浏览器可用，挂载后再决定可见性；用 setTimeout(0) 推迟到
     // effect 体外，避免同步 setState 触发级联渲染。
     const timer = window.setTimeout(() => {
+      let dismissed = false;
       try {
-        setVisible(localStorage.getItem(DISMISS_KEY) !== "true");
+        dismissed = localStorage.getItem(DISMISS_KEY) === "true";
       } catch {
-        // localStorage 不可用时默认展示。
-        setVisible(true);
+        // localStorage 不可用时按未关闭处理。
       }
+      if (dismissed) return;
+      // SPEC: 已经在付费档上的人不该再被这张卡挡住角色。
+      // INTENT: 这张卡是浮在内容之上的，过去只看 localStorage 有没有关过 ——
+      //   于是最高档订阅者一边付着钱，一边被一张「Compare the current plans」
+      //   压住角色卡。拿不到身份时保持隐藏：宁可少展示，也不要推销给已经买了的人。
+      void resolveViewerAuthority()
+        .then((viewer) => {
+          if (!cancelled && !viewer.entitlements?.plan) setVisible(true);
+        })
+        .catch(() => undefined);
     }, 0);
-    return () => window.clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, []);
 
   function dismiss() {

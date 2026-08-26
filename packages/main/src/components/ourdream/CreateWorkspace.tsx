@@ -729,7 +729,10 @@ export function CreateWorkspace() {
           ))}
         </ol>
 
-        <div className="mt-8 grid gap-4 md:grid-cols-[360px_1fr]">
+        {/* 与 /generate 同一处根因：md(768) 起 220px 侧栏就常驻，再叠一个固定 360px
+            的预览栏，iPad 竖屏装不下 —— 整页溢出 141px，且右栏被压到把 select 的
+            选中值裁掉（"Female" 显示成 "Femal"）。双栏推到 lg(1024)。 */}
+        <div className="mt-8 grid gap-4 lg:grid-cols-[360px_1fr]">
           <div className="relative min-h-[560px] overflow-hidden rounded-[20px] bg-[rgb(18,18,18)]">
             <Image
               alt=""

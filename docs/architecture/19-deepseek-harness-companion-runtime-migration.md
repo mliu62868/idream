@@ -428,17 +428,18 @@ plugin 注入上下文、tool result、assistant chunk 与 reasoning 不进入�
 ```yaml
 igrep:
   command: igrep
-  search: true
-  searchMode: normal
-  maxResults: 8
+  search: false          # 2026-08-24：knowledge/ 只有 Soul 已含的 canon，且工具指引是 coding-agent 口吻
   webProvider: false
   webTool: false
   memory: true
-  memorySearchMode: ultra
+  memorySearchMode: fast # 2026-08-24：ultra 在本地模型上 4–40 s；fast 0.7 s
   memoryMaxResults: 6
+  timeoutMs: 10000
   ingest: true
   wake: true
 ```
+
+> 2026-08-24 审计后 sidecar 还在 agent scope 遮蔽插件的 `tool:memory_search` 段与 `igrep_memory_profile` 变量，并在模型开口前用 `mem-api memory-search`(fast) 做推式召回；见 `docs/product/CHAT_AGENT_COMPANION_AUDIT_2026-08-24.md`。
 
 #### `idream-companion-private`
 

@@ -381,6 +381,8 @@ export interface GenerationQuotePayload {
   readonly maxCount: number;
   readonly costs: { readonly outputCount: number; readonly costDreamcoins: number }[];
   readonly balance: number;
+  /** 这一单会不会带着角色的身份参考去生成。见构造处的 SPEC。 */
+  readonly identityLocked: boolean;
 }
 
 // SPEC: 握手的第一步 —— 解析计划、算两个指纹、给出各张数档位的价格与余额。
@@ -457,6 +459,13 @@ export async function quoteGeneration(input: {
       maxCount: plan.profile.maxCount,
       costs,
       balance,
+      // SPEC: 这一单到底会不会带着角色的身份参考去生成。
+      // INTENT: 界面过去用「这个角色有没有 visual profile 行」来决定要不要说
+      //   「Identity locked · We keep them recognizable」。那个判据是错的 ——
+      //   仍挂在 legacy editorial Release 上的角色即使有身份档案，路由也会退回
+      //   纯文生图（见 loadLockedLiveEditorialLegacyGenerationAuthority）。
+      //   于是界面会替一次不会发生的事情打包票。这里报的是实际选中的那条路线。
+      identityLocked: plan.referenceRequirements.length > 0,
     },
   };
 }

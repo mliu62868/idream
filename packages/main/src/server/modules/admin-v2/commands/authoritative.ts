@@ -600,6 +600,16 @@ export function changeCharacterServingState(
   });
 }
 
+// SPEC: 会话只能被迁到 chat 认得的「已发布」态 Release 上。
+// INTENT: 这份集合必须和 chat 的 `RELEASED_STATES` 逐字一致
+//         （packages/chat/src/released-knowledge.ts:26）。那边不认的状态会在
+//         `buildReleasedKnowledgeSnapshot` 里抛 `character release ... is not released` ——
+//         而那是在**每一轮对话**里抛，不是在迁移时抛。
+// INVARIANT: 不要用 main 里另一个长得很像的集合 `["published","superseded","withdrawn"]`
+//            （today/query.ts:58 等处的「已了结」）。`withdrawn` 是已了结但**不是**已发布，
+//            chat 一样会拒 —— 用错集合等于把同一个 bug 换个状态重演一遍。
+const MIGRATABLE_RELEASE_STATUSES = ["published", "superseded"];
+
 const migrateSessionReleaseDefinition = {
   commandType: "chat.session_release.migrate",
   targetType: "chat_session",
@@ -655,6 +665,21 @@ export function migrateChatSessionRelease(request: Request, sessionId: string) {
         {
           code: "release_content_mismatch",
           message: "Target Release does not pin the requested immutable content version.",
+        },
+      ]);
+    }
+    // SPEC: 目标 Release 必须处于 chat 认得的已发布态。
+    // INTENT: 此前只校了「归属正确」与「pin 了请求的内容版本」，没校状态。于是把一个会话迁到
+    //         draft / approved / scheduled 上，命令**返回成功**，然后这个会话每说一句话都在
+    //         chat 侧抛 `character release ... is not released`；而那个 pin 只有删除会话时才清
+    //         （chat/src/privacy.ts:321）—— 一次正常的运营操作永久打死一个会话，且无从撤销。
+    //         实测库里就有 1 条 `approved` 的 Release 可以触发它。
+    //         校验放在权威侧而不是消费侧：迁移时报错运营能换一个，每轮报错运营什么都做不了。
+    if (!MIGRATABLE_RELEASE_STATUSES.includes(release.status)) {
+      throw new InvariantFailedError([
+        {
+          code: "release_not_published",
+          message: `Target Release is ${release.status}; only published or superseded Releases can serve a session.`,
         },
       ]);
     }

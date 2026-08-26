@@ -27,7 +27,6 @@ function adapterFor(baseUrl: string, fetchImpl?: typeof fetch): OpenAiCompatible
         temperature: 0.9,
         topP: 0.95,
         repetitionPenalty: 1.05,
-        structuredTemperature: 0.2,
       },
     },
     apiKey: "provider-secret",
@@ -98,7 +97,6 @@ describe("OpenAI-compatible DSH adapter", () => {
           temperature: 0.9,
           topP: 0.95,
           repetitionPenalty: 1.05,
-          structuredTemperature: 0.2,
         },
       },
       apiKey: "provider-secret",
@@ -128,7 +126,7 @@ describe("OpenAI-compatible DSH adapter", () => {
     expect(requestBody).toMatchObject({
       model: "deepseek/test",
       stream: true,
-      temperature: 0.2,
+      temperature: 0.9,
       top_p: 0.95,
       repetition_penalty: 1.05,
       chat_template_kwargs: { enable_thinking: false },
@@ -145,7 +143,7 @@ describe("OpenAI-compatible DSH adapter", () => {
     });
   });
 
-  it("keeps conversational sampling when no tools are exposed", async () => {
+  it("keeps the same conversational sampling when no tools are exposed", async () => {
     let requestBody: Record<string, unknown> | undefined;
     const provider = createServer(async (request, response) => {
       const chunks: Buffer[] = [];
@@ -177,7 +175,6 @@ describe("OpenAI-compatible DSH adapter", () => {
           temperature: 0.9,
           topP: 0.95,
           repetitionPenalty: 1.05,
-          structuredTemperature: 0.2,
         },
       },
       apiKey: "provider-secret",
@@ -222,7 +219,6 @@ describe("OpenAI-compatible DSH adapter", () => {
           temperature: 0.9,
           topP: 0.95,
           repetitionPenalty: 1.05,
-          structuredTemperature: 0.2,
         },
       },
       apiKey: "provider-secret",
@@ -268,7 +264,6 @@ describe("OpenAI-compatible DSH adapter", () => {
           temperature: 0.9,
           topP: 0.95,
           repetitionPenalty: 1.05,
-          structuredTemperature: 0.2,
         },
       },
       apiKey: "provider-secret",

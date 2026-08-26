@@ -148,7 +148,13 @@ export function MonitorPanel({
                         monitor.verification.recommendation ??
                           (window === "route_qualification" &&
                           monitor.status === "action_required"
-                            ? "refresh the active image route before the next Release"
+                            // INVARIANT: 不要在这里写运营做不到的动作。实测后台没有任何重新资质化
+                            //            的写入口——唯一能写 GenerationRouteQualification 的端点
+                            //            `POST /characters/route-qualifications/commands/evaluate`
+                            //            在 packages/admin 里零引用，下面这个工作台通篇只读。
+                            //            原文案是「在下个发布版本前刷新在用的图片线路」，指着一个
+                            //            不存在的按钮；下面的「打开图片线路」仍然有用——它是去看证据的。
+                            ? "This route no longer meets its qualification. Re-qualifying needs engineering."
                             : "continue_monitoring"),
                       ),
                     )}

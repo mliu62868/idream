@@ -741,6 +741,7 @@ async function processDshCompanionTurn(
     runtimeTraceFacts.companionTool,
   );
   let commitAck: CompanionCommitAck | null = null;
+  let sseDoneEmitted = false;
   let announcedCandidate: CompanionTerminalCandidate | null = null;
   let terminalStatus: "sent" | "blocked" | "skipped" | null = null;
   let committedUsage: { promptTokens: number; completionTokens: number } | null = null;
@@ -1143,6 +1144,22 @@ async function processDshCompanionTurn(
     terminalStatus = blocked ? "blocked" : "sent";
     committedUsage = candidateUsage;
     committedTrace = terminalTrace;
+    // SPEC: the user-visible turn ends at Chat's terminal CAS. The sidecar still
+    // has to ingest and run profile maintenance before its stream closes (2–5 s,
+    // up to a minute under GPU contention); the client must not keep the typing
+    // indicator up for that. Memory settlement is recorded on the trace later.
+    await appendStreamEvent(key, { type: "done", attempt: payload.attempt, usage: candidateUsage });
+    sseDoneEmitted = true;
+    // The delivered terminal is durable evidence in its own right; probes and
+    // audits read it before the sidecar's memory settlement arrives.
+    terminalTelemetry.sseTerminal = "done";
+    await persistAttemptRuntimeTraceCas({
+      prisma,
+      payload,
+      expectedMessageStatus: terminalStatus,
+      trace: JSON.parse(JSON.stringify(terminalTrace)) as Prisma.InputJsonValue,
+      stage: "primary_terminal",
+    });
     commitAck = blocked
       ? rejectedCommit(
           attemptId,
@@ -1428,14 +1445,16 @@ async function processDshCompanionTurn(
       // in-progress provider failure streak just as a sent reply does.
       runtimeReadiness.recordTurnSuccess();
     }
-    await appendStreamEvent(key, {
-      type: "done",
-      attempt: payload.attempt,
-      usage: committedUsage ?? usage ?? {
-        promptTokens: prepared.budget.usedInputTokens,
-        completionTokens: estimateTokens(deliveredChunks.join("")),
-      },
-    });
+    if (!sseDoneEmitted) {
+      await appendStreamEvent(key, {
+        type: "done",
+        attempt: payload.attempt,
+        usage: committedUsage ?? usage ?? {
+          promptTokens: prepared.budget.usedInputTokens,
+          completionTokens: estimateTokens(deliveredChunks.join("")),
+        },
+      });
+    }
     const deliveredTrace = committedTrace as Record<string, unknown> | null;
     if (deliveredTrace) {
       const deliveredTelemetry = deliveredTrace.primaryTelemetry as PrimaryAttemptTelemetry;

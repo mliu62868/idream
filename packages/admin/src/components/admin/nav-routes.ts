@@ -14,7 +14,7 @@ export const ADMIN_SECTION_IDS = [
   "cases", "users", "billing", "compliance",
   "analytics", "insights", "growth/characters", "experiments", "content",
   "announcements", "cms", "pricing", "promo",
-  "ops/incidents", "generation/jobs", "generation/dead-letter", "ops/providers",
+  "ops/incidents", "ops/invariants", "generation/jobs", "generation/dead-letter", "ops/providers",
   "generation/backends", "generation/metrics", "generation/config",
   "generation/recipes", "generation/presets", "generation/workflows", "chat",
   "approvals", "system/access", "audit-log",

@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
+import {
+  MAIN_TO_CHAT_EVENTS,
+  contentReportReasonSchema,
+  isUnderageReportReason,
+} from "@idream/shared/contracts";
 import { z } from "zod";
 import { dispatchPendingChatEvents, recordMainToChatEvent } from "@/processes/chat-outbox";
 import { getAuthCtx } from "@/server/lib/auth";
@@ -16,7 +20,10 @@ import { trackEvent } from "./product-events";
 const reportSchema = z.object({
   targetType: z.string().trim().min(1).max(80),
   targetId: z.string().trim().min(1).max(160),
-  category: z.string().trim().min(1).max(120),
+  // INTENT: 收成枚举是为了让「按理由分流」在真实用户路径上真的成立 —— 自由字符串时代
+  // 每个入口都写死同一个值，priority/自动下架分支永远打不到。
+  // 只约束写入；库里的历史 category 仍是自由字符串，读取路径不经过这里。
+  category: contentReportReasonSchema,
   description: z.string().trim().max(2_000).optional(),
 });
 
@@ -73,7 +80,7 @@ export async function submitReport(
   if (!targetType || !targetId || !body.category) {
     throw Errors.badRequest("targetType, targetId, and category are required");
   }
-  const underage = body.category.includes("underage");
+  const underage = isUnderageReportReason(body.category);
   const priority = underage ? 1 : 3;
   const report = await prisma.$transaction(async (tx) => {
     const created = await tx.contentReport.create({

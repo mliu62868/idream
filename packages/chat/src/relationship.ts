@@ -10,6 +10,7 @@ import {
   chatFsPaths,
   listPrefix,
   deletePrefix,
+  movePrefix,
   withFileMutationLock,
 } from "./chat-fs.js";
 
@@ -358,11 +359,30 @@ export async function resetRelationshipEvidenceBaseline(
   });
 }
 
-export async function deleteRelationshipEvidence(
+/**
+ * SPEC: a reset retires this character's relationship state instead of
+ * destroying it: `relationship.md` and its evidence log move under
+ * `.reset-quarantine/<characterId>/<label>/`, where nothing in the product
+ * reads them (listing, export and the prompt only see
+ * `mem/<user>/<character>/`), an account purge removes them, and there is no
+ * restore. INTENT: engineering analysis only, no TTL — product decision
+ * 2026-08-24. The label is the ledger mutation id, the same label the sidecar
+ * uses for the retired igrep workspace.
+ */
+export async function quarantineRelationshipFiles(
   userId: string,
   characterId: string,
+  label: string,
 ): Promise<void> {
-  await deletePrefix(chatFsPaths.relationshipEvidence(userId, characterId));
+  const rel = chatFsPaths.relationship(userId, characterId);
+  await withFileMutationLock(rel, async () => {
+    const target = chatFsPaths.relationshipQuarantine(userId, characterId, label);
+    await movePrefix(rel, [...target, "relationship.md"]);
+    await movePrefix(
+      chatFsPaths.relationshipEvidence(userId, characterId),
+      [...target, "relationship-evidence.jsonl"],
+    );
+  });
 }
 
 function parseEvidenceLog(raw: string | null): RelationshipEvidenceLogRecord[] {
@@ -510,7 +530,9 @@ export async function listRelationships(userId: string): Promise<RelationshipVie
   const out: RelationshipView[] = [];
   for (const rel of rels) {
     const parts = rel.split(path.sep);
-    if (parts[parts.length - 1] !== "relationship.md") continue;
+    // Only mem/<user>/<character>/relationship.md is a live bond; quarantined
+    // copies sit one level deeper and are not the product's to show.
+    if (parts.length !== 4 || parts[parts.length - 1] !== "relationship.md") continue;
     const characterId = parts[2];
     if (!characterId || characterId === "global") continue;
     const state = parseRelationship(await readWhole(parts));

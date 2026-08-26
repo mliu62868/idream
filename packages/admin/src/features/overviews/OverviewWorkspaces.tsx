@@ -1,5 +1,6 @@
 "use client";
 
+import { metricQualityBlocked, primaryMetricQualityReason, summariseMetricQualityReasons } from "./metric-quality-reasons";
 import { useAdminI18n } from "@/components/admin/i18n";
 import type { MetricDashboardResponse } from "@idream/shared/admin";
 import { ExternalLink } from "lucide-react";
@@ -212,7 +213,7 @@ export function ProviderOverviewWorkspace({ canRead }: { canRead: boolean }) {
               ["latencyP95Ms", "Latency p95 (ms)"],
               ["latencySamples", "Latency samples"],
             ]}
-            rows={data.providers}
+            rows={data.providers.map(withReportableLatency)}
             caption="Provider health & cost"
           />
         </>
@@ -221,6 +222,21 @@ export function ProviderOverviewWorkspace({ canRead }: { canRead: boolean }) {
       title={t("Providers")}
     />
   );
+}
+
+// SPEC: 样本数撑不起百分位时，延迟两列一律显示为不可用。
+// INTENT: 实测线上有一行 `unknown` 供应商：25 次请求失败 14 次，延迟样本只有 1 个，
+//         表里却照样印出 p50 1ms / p95 1ms —— 一个单点被当成两个百分位展示。运营扫这张表
+//         得出的结论会是"unknown 很快"，而事实是它一半以上的请求根本没跑完。
+// INTENT: 不另造"样本不足"文案，直接落到与 0 样本相同的"—"。两者在语义上是同一件事
+//         （这个数字不可用），而**为什么**不可用，相邻的「延迟样本数」列已经如实写着。
+// INVARIANT: 阈值按 p95 定 —— 两列同时给出，就得按更严的那个来，否则一列可信一列不可信。
+const LATENCY_PERCENTILE_MINIMUM_SAMPLES = 20;
+
+export function withReportableLatency(row: Row): Row {
+  const samples = row.latencySamples;
+  if (typeof samples !== "number" || samples >= LATENCY_PERCENTILE_MINIMUM_SAMPLES) return row;
+  return { ...row, latencyP50Ms: null, latencyP95Ms: null };
 }
 
 function SingleOverview<T>({
@@ -493,10 +509,65 @@ function CanonicalMetrics({ data }: { data: MetricDashboardResponse }) {
               v{card.definitionVersion}  {t("· sample")} {card.sampleSize} ·{" "}
               {value(card.qualityState)}
             </p>
+            {/* 后端已经算出这张卡为什么不可用，只是从来没有人把它显示出来。 */}
+            <MetricQualityLine decisionUse={card.decisionUse} evidence={card.qualityEvidence} />
           </div>
         ))}
       </div>
+      <MetricQualitySummary cards={data.cards} />
     </section>
+  );
+}
+
+// SPEC: 卡面只放最靠近根因的那一条原因；完整清单留给章节级汇总。
+// INTENT: 判据是 decisionUse 而不是 qualityState。`directional` 也不是 certified，但它是认证
+//         **通过**的一种（decisionUse=directional_only），evidence 里装的是正面证据或散文；
+//         按 qualityState 判，成本卡这种恒为 directional 的卡就会永远挂着一句
+//         「未识别的认证失败」——一条不存在的故障。只有 blocked 才真的有失败原因可讲。
+function MetricQualityLine({
+  decisionUse,
+  evidence,
+}: {
+  decisionUse: string;
+  evidence: readonly string[];
+}) {
+  const { t } = useAdminI18n();
+  if (!metricQualityBlocked({ decisionUse })) return null;
+  const reason = primaryMetricQualityReason(evidence);
+  if (!reason) return null;
+  return (
+    <p className="mt-1 text-xs text-[var(--ad-text-muted)]">{t(reason.title)}</p>
+  );
+}
+
+// SPEC: 章节级汇总回答的是"到底有几件事坏了"，而不是把 120 行失败码摊开。
+// INTENT: 全部认证通过时不渲染——没坏就不该占版面。
+function MetricQualitySummary({ cards }: { cards: MetricDashboardResponse["cards"] }) {
+  const { t } = useAdminI18n();
+  const unusable = cards.filter(metricQualityBlocked);
+  if (unusable.length === 0) return null;
+  const reasons = summariseMetricQualityReasons(unusable);
+  return (
+    <details className="mt-4 rounded-md border border-[var(--ad-border)] p-3">
+      <summary className="cursor-pointer text-xs font-semibold text-[var(--ad-ink)]">
+        {t("{count} of {total} metrics cannot be used for decisions", {
+          count: unusable.length,
+          total: cards.length,
+        })}
+      </summary>
+      <ul className="mt-3 space-y-2">
+        {reasons.map((reason) => (
+          <li className="text-xs" key={reason.title}>
+            <span className="font-semibold text-[var(--ad-ink)]">{t(reason.title)}</span>
+            <span className="text-[var(--ad-text-muted)]">
+              {" · "}
+              {t("{count} metrics", { count: reason.cardCount })}
+            </span>
+            <span className="mt-0.5 block text-[var(--ad-text-muted)]">{t(reason.hint)}</span>
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }
 

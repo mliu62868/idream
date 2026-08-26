@@ -76,7 +76,6 @@ function invocation(memoryMode: "normal" | "private"): CompanionInvocation {
           temperature: 0.9,
           topP: 0.95,
           repetitionPenalty: 1.05,
-          structuredTemperature: 0.2,
         },
       },
       budget: { maxInputTokens: 2_000, usedInputTokens: 100, dropped: [] },
@@ -372,6 +371,55 @@ describe("DSH workspace authority", () => {
     expect(await readdir(join(relationship, ".attempts"))).toEqual([]);
   });
 
+  it("promotes once the profile pass has finished even when it left rows pending", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dsh-workspace-pending-rows-"));
+    temporary.push(root);
+    let probes = 0;
+    const workspaces = store(root, {
+      status: async () => probes++ === 0
+        ? { dialogueFiles: 0, pendingProfileRows: 0, processedProfileRows: 4, lastMaintainAt: "2026-08-24T10:00:00Z" }
+        // The turn's dialogue landed and the maintenance pass ran but could not
+        // fold the new rows (LLM pressure): a finished pass, rows retried next turn.
+        : { dialogueFiles: 1, pendingProfileRows: 2, processedProfileRows: 4, lastMaintainAt: "2026-08-24T10:00:05Z" },
+    });
+
+    const workspace = await workspaces.prepare(invocation("normal"));
+    await writeFile(join(workspace.path, ".igrep", "dialogue.jsonl"), "{}\n");
+    await expect(workspace.commit()).resolves.toBeUndefined();
+
+    const pointer = join(
+      relationshipWorkspacePath(join(root, "canonical"), "user-1", "character-1"),
+      ".igrep",
+    );
+    expect(await readdir(resolve(dirname(pointer), await readlink(pointer))))
+      .toContain("dialogue.jsonl");
+  });
+
+  it("never promotes while the profile pass is still running", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dsh-workspace-running-pass-"));
+    temporary.push(root);
+    const workspaces = new AttemptWorkspaceStore({
+      canonicalRoot: join(root, "canonical"),
+      privateRoot: join(root, "private"),
+      verificationPollMs: 1,
+      verificationTimeoutMs: 60,
+      // Rows stay pending and lastMaintainAt never moves: the pass has not finished.
+      memoryProbe: {
+        status: async () => ({ dialogueFiles: 1, pendingProfileRows: 2, processedProfileRows: 4, lastMaintainAt: "2026-08-24T10:00:00Z" }),
+      },
+    });
+
+    const workspace = await workspaces.prepare(invocation("normal"));
+    await writeFile(join(workspace.path, ".igrep", "dialogue.jsonl"), "{}\n");
+    await expect(workspace.commit()).rejects.toThrow(/not observable/);
+
+    const relationship = relationshipWorkspacePath(join(root, "canonical"), "user-1", "character-1");
+    expect(await readdir(join(relationship, ".attempts"))).toEqual([]);
+    const pointer = join(relationship, ".igrep");
+    expect(await readdir(resolve(dirname(pointer), await readlink(pointer))))
+      .not.toContain("dialogue.jsonl");
+  });
+
   it("reuses an already-migrated canonical workspace and exposes its historical proof read-only", async () => {
     const root = await mkdtemp(join(tmpdir(), "dsh-workspace-migrated-"));
     temporary.push(root);
@@ -490,5 +538,79 @@ describe("DSH workspace authority", () => {
     expect(await workspaces.purge(request)).toBe(1);
     expect(await workspaces.purge(request)).toBe(0);
     await expect(lstat(markerPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+});
+
+describe("relationship reset quarantine", () => {
+  it("retires the workspace and its cutover marker inside the user directory instead of destroying them", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dsh-workspace-quarantine-"));
+    temporary.push(root);
+    let probes = 0;
+    const workspaces = store(root, {
+      status: async () => ({ dialogueFiles: probes++ === 0 ? 0 : 1 }),
+    });
+    const workspace = await workspaces.prepare(invocation("normal"));
+    await writeFile(join(workspace.path, ".igrep", "dialogue.jsonl"), "{}\n");
+    await workspace.commit();
+    const canonical = join(root, "canonical");
+    const relationship = relationshipWorkspacePath(canonical, "user-1", "character-1");
+    const markerPath = memoryCutoverMarkerPath(canonical, "user-1", "character-1");
+    await mkdir(dirname(markerPath), { recursive: true });
+    await writeFile(markerPath, "{}");
+
+    const request = {
+      scope: "relationship" as const,
+      userId: "user-1",
+      characterId: "character-1",
+      quarantineLabel: "filemut_reset_1",
+    };
+    expect(await workspaces.purge(request)).toBe(1);
+
+    await expect(lstat(relationship)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(markerPath)).rejects.toMatchObject({ code: "ENOENT" });
+    const quarantineRoot = join(userWorkspacePath(canonical, "user-1"), ".reset-quarantine");
+    const retired = await readdir(quarantineRoot);
+    expect(retired).toHaveLength(1);
+    expect(retired[0]).toMatch(/^relationship-[a-f0-9]{64}-filemut_reset_1-[0-9a-f-]{36}$/);
+    const retiredRoot = join(quarantineRoot, retired[0]!);
+    expect((await stat(retiredRoot)).mode & 0o777).toBe(0o700);
+    expect(await readdir(retiredRoot)).toEqual(expect.arrayContaining([
+      ".igrep",
+      ".igrep.versions",
+      "cutover-marker.json",
+      "quarantine.json",
+    ]));
+    expect(JSON.parse(await readFile(join(retiredRoot, "quarantine.json"), "utf8")))
+      .toMatchObject({ label: "filemut_reset_1" });
+    // The retired pointer still resolves inside the retired tree, never back
+    // into the live authority.
+    expect(await readdir(resolve(retiredRoot, await readlink(join(retiredRoot, ".igrep")))))
+      .toContain("dialogue.jsonl");
+
+    // A repeated reset of an already-retired relationship changes nothing.
+    expect(await workspaces.purge(request)).toBe(0);
+    expect(await readdir(quarantineRoot)).toHaveLength(1);
+
+    // The next turn starts from an empty relationship, not from the quarantine.
+    const fresh = await workspaces.prepare(invocation("normal"));
+    expect(await readdir(join(fresh.path, ".igrep"))).toEqual([]);
+    await fresh.discard();
+
+    // Account erasure destroys the quarantine with the rest of the user directory.
+    expect(await workspaces.purge({ scope: "user", userId: "user-1" })).toBe(1);
+    await expect(lstat(quarantineRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects a quarantine label that could escape or collide", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dsh-workspace-quarantine-label-"));
+    temporary.push(root);
+    const workspaces = store(root);
+    await (await workspaces.prepare(invocation("normal"))).discard();
+    await expect(workspaces.purge({
+      scope: "relationship",
+      userId: "user-1",
+      characterId: "character-1",
+      quarantineLabel: "../escape",
+    })).rejects.toThrow("quarantine label is invalid");
   });
 });

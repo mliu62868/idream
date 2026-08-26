@@ -83,10 +83,76 @@ const detail = {
     { id: "occurrence-1", incidentId: incident.id, requestId: "job-1", attemptId: "attempt-1", transportExecutionId: null, observedAt: "2026-08-11T12:00:00.000Z", assignmentHistory: [] },
     { id: "occurrence-2", incidentId: incident.id, requestId: "job-2", attemptId: "attempt-2", transportExecutionId: null, observedAt: "2026-08-11T12:10:00.000Z", assignmentHistory: [] },
   ],
+  // 两条 occurrence 分属两个用户，外加一条反查不到的——三种情况在一个夹具里都覆盖到。
+  affectedUsers: [
+    { userId: "customer-a", occurrenceCount: 2, customerRecordAvailable: true },
+    { userId: "customer-b", occurrenceCount: 1, customerRecordAvailable: false },
+  ],
+  unattributableOccurrences: 1,
   actionPlans: [plan],
   postmortem: null,
   activity: [],
 };
+
+// SPEC: 事故详情要给出「打到了谁」的名单，并如实说明有多少条反查不到。
+// INTENT: `impact.affectedUsers` 一直只是个计数，运营要联系受影响的人时没有名单可用。
+//         这里同时钉住那条容易被"顺手清理掉"的诚实性要求：反查不到的 occurrence 必须单独说，
+//         既不能并进名单（会指错人），也不能悄悄丢掉（会让运营以为已经联系全了）。
+describe("IncidentWorkspace affected users", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    window.history.replaceState(null, "", "/admin/ops/incidents");
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    adminV2Request.mockReset();
+    setWorkspaceUrl.mockReset();
+    adminV2Request.mockImplementation(async (path: string) =>
+      path.startsWith("/api/v2/admin/incidents?") ? list : detail,
+    );
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  async function mountInspector() {
+    await act(async () => {
+      root.render(<IncidentWorkspace canManage initialIncidentId={incident.id} />);
+    });
+    await waitUntil(() => (container.textContent ?? "").includes("customer-a"));
+  }
+
+  it("lists each affected user and says how many occurrences could not be traced", async () => {
+    await mountInspector();
+    expect(adminV2Request).toHaveBeenCalledWith(
+      `/api/v2/admin/incidents/${incident.id}`,
+      expect.objectContaining({ schema: expect.any(Object) }),
+    );
+    const text = container.textContent ?? "";
+    expect(text).toContain("customer-a");
+    expect(text).toContain("customer-b");
+    // 反查不到的那条必须自己出现，且不能被并进任何一个用户的计数。
+    expect(text).toContain("could not be traced back to a user");
+    expect(text).toContain("2 occurrences");
+    expect(text).toContain("1 occurrences");
+    expect(text).toContain("No customer record");
+  });
+
+  it("links each affected user to their customer record", async () => {
+    await mountInspector();
+    expect(
+      container.querySelector('a[href*="/admin/customers?search=customer-a"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('a[href*="/admin/customers?search=customer-b"]'),
+    ).toBeNull();
+  });
+});
 
 describe("IncidentWorkspace mitigation safety", () => {
   let container: HTMLDivElement;

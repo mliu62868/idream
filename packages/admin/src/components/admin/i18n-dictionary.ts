@@ -235,6 +235,15 @@ const zhValues: Record<string, string> = {
   no_violation: "未违规",
   recently_resolved: "最近已解决",
   escalated: "已升级",
+  // GenerationFeedback 的三个闭集（media-feedback.ts:25/104/265 是唯一发出点）：
+  //   dimension 只有 identity；value 只有 match|mismatch；sourceSurface 只有 chat|generator|gallery。
+  // 走 zhValues 而不是 zh —— 作业详情的证据表用 value() 渲染它们，少了就把原始码印给运营。
+  identity: "身份一致性",
+  match: "一致",
+  mismatch: "不一致",
+  generator: "生成器",
+  gallery: "图库",
+  chat: "聊天",
   // 账本原因（CoinLedger.reason）与订阅生命周期状态。走 zhValues 而不是 zh：它们是枚举，
   // 账本「原因」列、订阅「状态」列和两个筛选下拉共用同一份译文（value() / adminValueLabel）。
   // 少了它们，中文后台的账本页会把原始枚举码 admin_adjust / generation_spend 直接印给运营看。
@@ -271,6 +280,10 @@ const zhValues: Record<string, string> = {
   support: "客服",
   ops: "运维",
   analyst: "分析师",
+  // 授权包 key（ADMIN_GRANT_BUNDLES）—— 角色之上可叠加的能力集合。
+  character_producer: "角色制作",
+  creative_operator: "创意运营",
+  growth_operator: "增长运营",
   admin: "管理员",
   // People workspaces (support / moderation / cases / customers) 的枚举值。走 zhValues 通道，
   // 让 <option>、StatusPill 与详情页共用同一份译文；主表 zh 不重复收这些词。
@@ -314,10 +327,15 @@ const zhValues: Record<string, string> = {
   message: "消息",
   media: "媒体",
   generation_job: "生成任务",
-  // 举报分类与工单分类（两边都是自由字符串字段，取值来自各自的提交入口；
-  // 未收录的取值 value() 原样返回，不会把数据吃掉）
+  // 举报分类与工单分类（工单侧是自由字符串；举报侧的取值是 CONTENT_REPORT_REASONS
+  // 这份共享枚举，i18n-report-reasons.test.ts 钉死了它的中文覆盖。
+  // 未收录的取值 value() 原样返回，不会把数据吃掉 —— 库里的历史 category 靠它显示）
   other_prohibited_content: "其他违禁内容",
   underage_content: "未成年内容",
+  // 枚举收口之前入库的裸取值：没有它，审核队列的分类列对这些历史行直接漏出英文。
+  underage: "未成年内容",
+  nonconsensual_real_person: "未经同意的真人形象",
+  harassment_or_hate: "骚扰或仇恨内容",
   policy_violation: "违反政策",
   prohibited: "违禁内容",
   spam: "垃圾信息",

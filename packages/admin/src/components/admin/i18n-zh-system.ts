@@ -149,4 +149,33 @@ export const adminZhSystem: Record<string, string> = {
   // canonicalListEmptyTitle("approvals") 的两个标题 —— 审批队列空态此前直接印英文。
   "No approval requests are pending": "当前没有待审批请求",
   "No approval requests match these filters": "没有审批请求符合当前筛选",
+  // —— 角色与授权包（features/access）——
+  // INTENT: 后端 users/:id/role 与 users/:id/grant-bundles 一直都在，界面上此前没有入口，
+  //         运营只能一条一条打权限覆盖补丁。这批文案是那两个入口的。
+  "Role and grant bundles": "角色与授权包",
+  "Target user: {userId}": "目标用户：{userId}",
+  "Enter a user ID in Permission override above to act on someone.": "先在上方「权限覆盖」里填用户 ID，才能对某个人操作。",
+  "Change role": "变更角色",
+  "Role changed to {role}.": "角色已变更为{role}。",
+  "Replaces every capability the old role granted.": "原角色带来的全部能力都会被替换掉。",
+  "Grant bundle": "授权包",
+  "Assigned character IDs": "指派的角色 ID",
+  "{count} characters in scope": "范围内 {count} 个角色",
+  "This bundle only grants access to the characters listed here.": "这个授权包只对这里列出的角色生效。",
+  "Granted {bundle}.": "已授予{bundle}。",
+  "Adds every capability in the bundle on top of the role.": "在角色之上叠加这个包里的全部能力。",
+  "Revoke bundle": "撤销授权包",
+  "Revoked {bundle}.": "已撤销{bundle}。",
+  "Removes every capability the bundle added.": "移除这个包带来的全部能力。",
+  "Revoke {bundle}": "撤销{bundle}",
+  "Loading grant bundles…": "正在加载授权包…",
+  "Grant bundles for this user could not be read.": "读不到这个用户的授权包。",
+  "No bundle is granted; the role decides every capability today.": "尚未授予任何包；当前全部能力都由角色决定。",
+  // —— 审计日志的重复折叠（features/audit/collapse-runs.ts）——
+  // INTENT: 一次批量操作会往审计日志写几十条只有 ID 与毫秒不同的记录，首屏被它吃光。
+  //         折叠是展示层的，所以"折了多少、怎么撤销"必须写在界面上。
+  "{count} repeats of the row above are hidden": "已折叠 {count} 条与上一行同类的记录",
+  "{count} rows repeat the row above": "有 {count} 条与上一行同类的记录",
+  "Show every row": "显示全部",
+  "Hide repeats": "折叠重复",
 };

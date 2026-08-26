@@ -337,10 +337,27 @@ describe("reports, queue, and reporter anonymity", () => {
 
     const report = await prisma.contentReport.findUnique({ where: { id: reportId } });
     expect(report?.priority).toBe(1);
+    // 用户写的说明必须原样落库 —— 这是运营在队列里唯一能读到的「到底怎么了」。
+    expect(report?.description).toBe("looks underage");
 
     // Immediate hide (compliance, roadmap M9): target is no longer approved.
     const hidden = await prisma.character.findUnique({ where: { id: target } });
     expect(hidden?.status).not.toBe("approved");
+  });
+
+  // INTENT: category 曾是自由字符串，于是每个前端入口都写死同一个值，priority/自动下架
+  //         这条按理由分流的链路在真实用户路径上永远打不到。收成枚举后要守住写入口。
+  it("rejects a category outside the shared reason set", async () => {
+    const reporter = await freshUser("reporter-freeform");
+    const result = await api("POST", `characters/${CHAR}/report`, {
+      userId: reporter,
+      ageGate: true,
+      body: { category: "totally made up", description: "free-form" },
+    });
+    expect(result.status).toBe(400);
+    expect(
+      await prisma.contentReport.count({ where: { category: "totally made up" } }),
+    ).toBe(0);
   });
 
   it("serializes automatic media takedown with every MediaAsset authority consumer", async () => {
@@ -430,7 +447,7 @@ describe("admin moderation queue + audit", () => {
     const filed = await api("POST", `characters/${target}/report`, {
       userId: reporter,
       ageGate: true,
-      body: { category: "prohibited", description: "bad" },
+      body: { category: "other_prohibited_content", description: "bad" },
     });
     const reportId = filed.data.report.id as string;
 

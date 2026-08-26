@@ -18,6 +18,7 @@ import { createCompanionServer, type CompanionServer } from "./server";
 import { AttemptWorkspaceStore, relationshipWorkspacePath } from "./workspace";
 
 const AUTH_TOKEN = "engine-test-secret";
+const EMPTY_RECALL = async () => ({ outcome: "empty" as const, resultCount: 0, results: [], notes: [] });
 const IGREP_LLM = { url: "https://maintenance.example/v1", model: "maintenance-model" };
 const temporary: string[] = [];
 const servers: CompanionServer[] = [];
@@ -27,7 +28,7 @@ const servers: CompanionServer[] = [];
 class CompanionEngine extends RuntimeCompanionEngine {
   constructor(options: ConstructorParameters<typeof RuntimeCompanionEngine>[0]) {
     super({
-      observeWake: async () => ({ outcome: "hit", resultCount: 1 }),
+      observeWake: async () => ({ outcome: "hit", resultCount: 1, profile: "" }),
       ...options,
     });
   }
@@ -264,7 +265,6 @@ function invocation(memoryMode: "normal" | "private" = "private"): CompanionInvo
           temperature: 0.9,
           topP: 0.95,
           repetitionPenalty: 1.05,
-          structuredTemperature: 0.2,
         },
       },
       budget: { maxInputTokens: 8_000, usedInputTokens: 120, dropped: [] },
@@ -373,6 +373,14 @@ describe("programmatic DSH companion runtime", () => {
   it("keeps failed invocation frames content-free", async () => {
     const root = await mkdtemp(join(tmpdir(), "chat-agent-private-failure-"));
     temporary.push(root);
+    // stderr 与 wire 是同一类外泄面：provider 报文不能出现在任何一边。
+    const logged: string[] = [];
+    const writeSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation((chunk: unknown) => {
+        logged.push(String(chunk));
+        return true;
+      });
     const engine = new CompanionEngine({
       workspaces: new AttemptWorkspaceStore({
         canonicalRoot: join(root, "canonical"),
@@ -382,6 +390,7 @@ describe("programmatic DSH companion runtime", () => {
       plugin: async () => ({ name: "igrep", apply() {} }),
       adapter: () => new PrivateFailureAdapter(),
       igrepCommand: "igrep",
+      recallMemory: EMPTY_RECALL,
       igrepLlm: IGREP_LLM,
     });
     const observed: CompanionRuntimeResponse[] = [];
@@ -403,6 +412,19 @@ describe("programmatic DSH companion runtime", () => {
       },
     });
     expect(JSON.stringify(observed)).not.toContain("PRIVATE_PROVIDER_BODY_SENTINEL");
+
+    // 失败日志要能定位（异常类型 + 阶段），但同样不许带报文。
+    const failureLog = logged.find((line) =>
+      line.includes("companion_invocation_failed")
+    );
+    writeSpy.mockRestore();
+    expect(failureLog).toBeDefined();
+    expect(failureLog).not.toContain("PRIVATE_PROVIDER_BODY_SENTINEL");
+    expect(JSON.parse(failureLog!)).toMatchObject({
+      code: "invocation_failed",
+      phase: "agent",
+      errorType: "Error",
+    });
   });
 
   it.each([
@@ -420,6 +442,7 @@ describe("programmatic DSH companion runtime", () => {
       plugin: async () => ({ name: "igrep", apply() {} }),
       adapter: () => new ProviderHttpFailureAdapter(status),
       igrepCommand: "igrep",
+      recallMemory: EMPTY_RECALL,
       igrepLlm: IGREP_LLM,
     });
     const observed: CompanionRuntimeResponse[] = [];
@@ -470,6 +493,7 @@ describe("programmatic DSH companion runtime", () => {
           return adapter;
         },
         igrepCommand: "igrep",
+        recallMemory: EMPTY_RECALL,
         igrepLlm: IGREP_LLM,
       });
       const run = invocation(memoryMode);
@@ -550,7 +574,8 @@ describe("programmatic DSH companion runtime", () => {
       }),
       adapter: () => new MemorySearchThenTextAdapter(),
       igrepCommand: "igrep",
-      observeWake: async () => ({ outcome: "hit", resultCount: 1 }),
+      recallMemory: EMPTY_RECALL,
+      observeWake: async () => ({ outcome: "hit", resultCount: 1, profile: "" }),
       igrepLlm: IGREP_LLM,
     });
     const server = createCompanionServer({
@@ -604,9 +629,10 @@ describe("programmatic DSH companion runtime", () => {
       resultCount: 1,
       durationMs: expect.any(Number),
     });
-    expect(events.find((event) =>
+    // Pre-recall reports first; the model-invoked tool observation is the last one.
+    expect(events.filter((event) =>
       event.type === "igrep_observation" && event.operation === "memory"
-    )).toMatchObject({
+    ).at(-1)).toMatchObject({
       operation: "memory",
       outcome: "hit",
       resultCount: 9,
@@ -654,6 +680,7 @@ describe("programmatic DSH companion runtime", () => {
       }),
       adapter: () => new MemorySearchThenTextAdapter(),
       igrepCommand: "igrep",
+      recallMemory: EMPTY_RECALL,
       igrepLlm: IGREP_LLM,
     });
     const run = invocation("normal");
@@ -724,6 +751,7 @@ describe("programmatic DSH companion runtime", () => {
       }),
       adapter: () => new MemorySearchThenTextAdapter(429),
       igrepCommand: "igrep",
+      recallMemory: EMPTY_RECALL,
       igrepLlm: IGREP_LLM,
     });
     const observed: CompanionRuntimeResponse[] = [];
@@ -758,6 +786,7 @@ describe("programmatic DSH companion runtime", () => {
       plugin: async () => ({ name: "igrep", apply() {} }),
       adapter: () => adapter,
       igrepCommand: "igrep",
+      recallMemory: EMPTY_RECALL,
       igrepLlm: IGREP_LLM,
     });
     const server = createCompanionServer({
@@ -852,6 +881,7 @@ describe("programmatic DSH companion runtime", () => {
       plugin: async () => ({ name: "igrep", apply() {} }),
       adapter: () => adapter,
       igrepCommand: "igrep",
+      recallMemory: EMPTY_RECALL,
       igrepLlm: IGREP_LLM,
     });
     const server = createCompanionServer({
@@ -972,6 +1002,7 @@ describe("programmatic DSH companion runtime", () => {
       plugin: async () => ({ name: "igrep", apply() {} }),
       adapter: () => adapter,
       igrepCommand: "igrep",
+      recallMemory: EMPTY_RECALL,
       igrepLlm: IGREP_LLM,
     });
     const server = createCompanionServer({
@@ -1089,6 +1120,7 @@ describe("programmatic DSH companion runtime", () => {
       plugin: async () => ({ name: "igrep", apply() {} }),
       adapter: () => adapter,
       igrepCommand: "igrep",
+      recallMemory: EMPTY_RECALL,
       igrepLlm: IGREP_LLM,
     });
     const server = createCompanionServer({
@@ -1170,6 +1202,7 @@ describe("programmatic DSH companion runtime", () => {
       plugin: async () => disposalWritingPlugin(configs),
       adapter: () => new OneStepAdapter(),
       igrepCommand: "igrep",
+      recallMemory: EMPTY_RECALL,
       igrepLlm: IGREP_LLM,
     });
     const server = createCompanionServer({
@@ -1235,6 +1268,7 @@ describe("programmatic DSH companion runtime", () => {
       plugin: async () => disposalWritingPlugin([]),
       adapter: () => new OneStepAdapter(),
       igrepCommand: "igrep",
+      recallMemory: EMPTY_RECALL,
       igrepLlm: IGREP_LLM,
     });
     const server = createCompanionServer({
@@ -1308,6 +1342,7 @@ describe("programmatic DSH companion runtime", () => {
       plugin: async () => ({ name: "igrep", apply() {} }),
       adapter: () => new BlockingAdapter(),
       igrepCommand: "igrep",
+      recallMemory: EMPTY_RECALL,
       igrepLlm: IGREP_LLM,
     });
     const server = createCompanionServer({
@@ -1364,6 +1399,7 @@ describe("programmatic DSH companion runtime", () => {
           return new BlockingAdapter();
         },
         igrepCommand: "igrep",
+        recallMemory: EMPTY_RECALL,
         igrepLlm: IGREP_LLM,
       });
       const first = invocation("normal");
@@ -1373,11 +1409,10 @@ describe("programmatic DSH companion runtime", () => {
       const firstRun = engine.run(first, (frame) => firstFrames.push(frame));
 
       try {
+        // `started` now precedes workspace acquisition; the adapter factory runs
+        // only after the relationship workspace is held, so it is the proof.
         await vi.waitFor(() => {
-          expect(firstFrames).toContainEqual(expect.objectContaining({
-            type: "event",
-            event: expect.objectContaining({ type: "started" }),
-          }));
+          expect(adapterFactoryCalls).toBe(1);
         });
 
         const second = invocation("normal");
@@ -1423,12 +1458,8 @@ describe("programmatic DSH companion runtime", () => {
         const successorFrames: CompanionRuntimeResponse[] = [];
         const successorRun = engine.run(successor, (frame) => successorFrames.push(frame));
         await vi.waitFor(() => {
-          expect(successorFrames).toContainEqual(expect.objectContaining({
-            type: "event",
-            event: expect.objectContaining({ type: "started" }),
-          }));
+          expect(adapterFactoryCalls).toBe(2);
         });
-        expect(adapterFactoryCalls).toBe(2);
         await engine.accept({
           protocolVersion: 1,
           type: "cancel",
@@ -1458,6 +1489,7 @@ describe("programmatic DSH companion runtime", () => {
       plugin: async () => ({ name: "igrep", apply() {} }),
       adapter: () => new BlockingAdapter(),
       igrepCommand: "igrep",
+      recallMemory: EMPTY_RECALL,
       igrepLlm: IGREP_LLM,
     });
     const server = createCompanionServer({
@@ -1500,6 +1532,7 @@ describe("programmatic DSH companion runtime", () => {
       plugin: async () => ({ name: "igrep", apply() {} }),
       adapter: () => new OneStepAdapter(),
       igrepCommand: "igrep",
+      recallMemory: EMPTY_RECALL,
       igrepLlm: IGREP_LLM,
       rebuilder: {
         rebuild: async (workspace) => {
@@ -1539,6 +1572,7 @@ describe("programmatic DSH companion runtime", () => {
       plugin: async () => ({ name: "igrep", apply() {} }),
       adapter: () => new BlockingAdapter(),
       igrepCommand: "igrep",
+      recallMemory: EMPTY_RECALL,
       igrepLlm: IGREP_LLM,
       maxConcurrentAgents: { normal: 1, private: 1 },
     });
@@ -1564,5 +1598,203 @@ describe("programmatic DSH companion runtime", () => {
 
     await engine.shutdown();
     await Promise.all([privateRun, normalRun]);
+  });
+});
+
+describe("companion memory prompt", () => {
+  it("shadows the plugin's coding-agent guidance, injects the awaited profile and seeds pre-recall notes content-free", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chat-agent-companion-prompt-"));
+    temporary.push(root);
+    const adapter = new OneStepAdapter();
+    let statusCalls = 0;
+    const engine = new CompanionEngine({
+      workspaces: new AttemptWorkspaceStore({
+        canonicalRoot: join(root, "canonical"),
+        privateRoot: join(root, "private"),
+        memoryProbe: { status: async () => ({ dialogueFiles: statusCalls++ === 0 ? 0 : 1 }) },
+      }),
+      plugin: async () => ({
+        name: "igrep",
+        inject: ["tools", "systemPrompt"],
+        apply(ctx) {
+          ctx.systemPrompt.section({
+            name: "tool:memory_search",
+            order: 122,
+            text: "Before answering about prior work, dates, decisions, people, preferences, or todos, use memory_search. {{igrep_memory_profile}}",
+          });
+          ctx.systemPrompt.variable("igrep_memory_profile", () => "PLUGIN_CACHED_PROFILE");
+          ctx.tools.register(defineTool({
+            name: "memory_search",
+            description: "Search memory.",
+            parameters: { query: { type: "string", required: true } },
+            output: {
+              schema: {
+                type: "object",
+                additionalProperties: false,
+                properties: { results: { type: "array", required: true, items: { type: "string" } } },
+              },
+              render: (_args, value) => [{ type: "text", text: value.results.join("\n") }],
+            },
+            async execute() {
+              return { results: [] };
+            },
+          }));
+        },
+      }),
+      adapter: () => adapter,
+      igrepCommand: "igrep",
+      observeWake: async () => ({
+        outcome: "hit",
+        resultCount: 1,
+        profile: "# User Profile\n\n- Owns a dog named PRIVATE_PROFILE_SENTINEL.",
+      }),
+      recallMemory: async (_command, _workspace, query) => ({
+        outcome: "hit",
+        resultCount: 2,
+        results: [
+          {
+            citation: "bank/cards/profile.md#L1-L2",
+            snippet: "L1: # User Profile\nL2: - Owns a dog named PRIVATE_PROFILE_SENTINEL.",
+            sourceClass: "profile",
+          },
+          {
+            citation: "memory/dialogues/a.jsonl#L1-L1",
+            snippet: `L1: [user @ 2026-08-20] RECALL_NOTE_SENTINEL about ${query}`,
+            sourceClass: "dialogue",
+          },
+        ],
+        notes: [`[user @ 2026-08-20] RECALL_NOTE_SENTINEL about ${query}`],
+      }),
+      igrepLlm: IGREP_LLM,
+    });
+    const server = createCompanionServer({
+      authToken: AUTH_TOKEN,
+      readiness: async () => { throw new Error("not used"); },
+      invocation: engine,
+    });
+    servers.push(server);
+    const baseUrl = await listen(server);
+    const run = invocation("normal");
+    const response = await fetch(`${baseUrl}/v1/invocations`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${AUTH_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({ protocolVersion: 1, type: "run", invocation: run }),
+    });
+    expect(response.status).toBe(200);
+    const collected = await frames(response, async (frame) => {
+      if (frame.type !== "commit") return;
+      await fetch(`${baseUrl}/v1/invocations/${run.invocationId}/commit`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${AUTH_TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          protocolVersion: 1,
+          type: "commit_ack",
+          invocationId: run.invocationId,
+          ack: {
+            attemptId: run.attemptId,
+            accepted: true,
+            status: "committed",
+            terminalMessageId: "assistant-terminal-1",
+            committedAt: new Date().toISOString(),
+          },
+        }),
+      });
+    });
+
+    const call = adapter.calls[0];
+    expect(call?.system).toContain("Weave it in the way a close companion would");
+    expect(call?.system).toContain("PRIVATE_PROFILE_SENTINEL");
+    expect(call?.system).not.toContain("prior work, dates, decisions");
+    expect(call?.system).not.toContain("PLUGIN_CACHED_PROFILE");
+    const projected = call?.messages.map((message) => [
+      message.role,
+      (message as { source?: { kind?: string } }).source?.kind,
+      (message.content[0] as { text?: string }).text,
+    ]);
+    expect(projected?.at(-1)).toEqual(["user", "user", "What does it look like tonight?"]);
+    expect(projected?.at(-2)?.[0]).toBe("user");
+    expect(projected?.at(-2)?.[1]).toBe("plugin");
+    expect(projected?.at(-2)?.[2]).toContain("RECALL_NOTE_SENTINEL about What does it look like tonight?");
+    expect(projected?.at(-2)?.[2]).toContain("Moments from earlier conversations");
+
+    const events = collected.flatMap((frame) => frame.type === "event" ? [frame.event] : []);
+    expect(events[0]?.type).toBe("started");
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "igrep_observation",
+      operation: "wake",
+      outcome: "hit",
+      resultCount: 1,
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "igrep_observation",
+      operation: "memory",
+      outcome: "hit",
+      resultCount: 2,
+    }));
+    const wire = JSON.stringify(collected);
+    expect(wire).not.toContain("PRIVATE_PROFILE_SENTINEL");
+    expect(wire).not.toContain("RECALL_NOTE_SENTINEL");
+    expect(collected.some((frame) => frame.type === "commit")).toBe(true);
+  });
+
+  it("keeps a turn alive when pre-recall fails and skips recall for a message too short to search", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chat-agent-companion-recall-degrade-"));
+    temporary.push(root);
+    let recallCalls = 0;
+    const adapter = new OneStepAdapter();
+    const engine = new CompanionEngine({
+      workspaces: new AttemptWorkspaceStore({
+        canonicalRoot: join(root, "canonical"),
+        privateRoot: join(root, "private"),
+        memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
+      }),
+      plugin: async () => ({ name: "igrep", apply() {} }),
+      adapter: () => adapter,
+      igrepCommand: "igrep",
+      observeWake: async () => ({ outcome: "empty", resultCount: 0, profile: "" }),
+      recallMemory: async () => {
+        recallCalls += 1;
+        throw new Error("PRIVATE_RECALL_FAILURE_SENTINEL");
+      },
+      igrepLlm: IGREP_LLM,
+    });
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      for (const [content, expectedCalls] of [["ok", 0], ["Do you remember my sister's name?", 1]] as const) {
+        const run = invocation("normal");
+        run.invocationId = `inv-recall-${expectedCalls}`;
+        run.attemptId = `attempt-recall-${expectedCalls}`;
+        const current = run.preparedTurn.messages.find((message) => message.sourceKind === "current_user");
+        if (current) current.content = content;
+        const collected: CompanionRuntimeResponse[] = [];
+        await engine.run(run, (frame) => {
+          collected.push(frame);
+          if (frame.type === "commit") {
+            void engine.accept({
+              protocolVersion: 1,
+              type: "commit_ack",
+              invocationId: run.invocationId,
+              ack: {
+                attemptId: run.attemptId,
+                accepted: false,
+                status: "rejected",
+                error: { code: "terminal_cas_conflict", message: "test rejection" },
+              },
+            });
+          }
+        });
+        expect(recallCalls).toBe(expectedCalls);
+        expect(collected.some((frame) => frame.type === "commit")).toBe(true);
+        const events = collected.flatMap((frame) => frame.type === "event" ? [frame.event] : []);
+        expect(events.filter((event) => event.type === "igrep_observation" && event.operation === "memory"))
+          .toEqual(expectedCalls === 0 ? [] : [expect.objectContaining({ outcome: "failure" })]);
+        expect(JSON.stringify(collected)).not.toContain("PRIVATE_RECALL_FAILURE_SENTINEL");
+      }
+      expect(stderr.mock.calls.map((call) => String(call[0])).join("")).not.toContain("PRIVATE_RECALL_FAILURE_SENTINEL");
+      expect(stderr.mock.calls.map((call) => String(call[0])).join("")).toContain("companion_recall_failed");
+    } finally {
+      stderr.mockRestore();
+      await engine.shutdown();
+    }
   });
 });

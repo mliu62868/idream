@@ -33,7 +33,7 @@ const NAV_IDS = [
   "announcements", "analytics", "insights", "experiments", "compliance", "ops/incidents",
   "approvals", "system/access", "audit-log",
 ];
-const TARGET_ONLY_NAV_IDS = ["growth/characters"];
+const TARGET_ONLY_NAV_IDS = ["growth/characters", "ops/invariants"];
 
 describe("admin navigation information architecture", () => {
   it("publishes every decision workspace exactly once inside the seven workspaces", () => {

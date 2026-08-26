@@ -65,7 +65,15 @@ export interface AttemptWorkspaceStoreOptions {
 
 export type WorkspacePurgeRequest =
   | { scope: "user"; userId: string }
-  | { scope: "relationship"; userId: string; characterId: string };
+  | {
+      scope: "relationship";
+      userId: string;
+      characterId: string;
+      /** Present on a product reset: retire the workspace under quarantine instead of destroying it. */
+      quarantineLabel?: string;
+    };
+
+const QUARANTINE_LABEL = /^[A-Za-z0-9._-]{1,80}$/u;
 
 interface LockWaiter {
   promise: Promise<void>;
@@ -179,7 +187,17 @@ export class AttemptWorkspaceStore {
     this.options = {
       ...options,
       privateRoot: options.privateRoot ?? tmpdir(),
-      verificationTimeoutMs: options.verificationTimeoutMs ?? 5_000,
+      // SPEC: promotion waits for the official plugin's post-turn ingest and
+      // profile maintenance to become observable through memory-status.
+      // INTENT: maintenance is two LLM calls on the shared local GPU — 1.7–3.3 s
+      // alone, p90 14.5 s and max 27 s with six relationships in flight
+      // (measured 2026-08-24). The old 5 s budget sat inside that distribution:
+      // 25% of normal turns timed out, failed their memory commit and triggered
+      // a 13–150 s canonical rebuild that blocked the relationship's next turn
+      // and added more LLM load — the cascade the burn tests reproduced. The
+      // budget is therefore well outside the loaded tail; the plugin itself
+      // kills a runaway maintenance at 300 s.
+      verificationTimeoutMs: options.verificationTimeoutMs ?? 120_000,
       verificationPollMs: options.verificationPollMs ?? 50,
     };
     void this.discoverRebuildGarbage()
@@ -226,11 +244,22 @@ export class AttemptWorkspaceStore {
           exists(privateTarget),
           exists(cutoverMarker),
         ]);
-        await Promise.all([
-          rm(canonicalTarget, { recursive: true, force: true }),
-          rm(privateTarget, { recursive: true, force: true }),
-          rm(cutoverMarker, { force: true }),
-        ]);
+        const quarantineLabel = request.quarantineLabel;
+        if (quarantineLabel === undefined) {
+          await Promise.all([
+            rm(canonicalTarget, { recursive: true, force: true }),
+            rm(cutoverMarker, { force: true }),
+          ]);
+        } else if (found[0] || found[2]) {
+          await this.quarantineRelationship(
+            request.userId,
+            quarantineLabel,
+            canonicalTarget,
+            cutoverMarker,
+          );
+        }
+        // Private attempts hold no memory; there is nothing to analyse.
+        await rm(privateTarget, { recursive: true, force: true });
         await Promise.all([
           rmdir(userWorkspacePath(this.options.canonicalRoot, request.userId)),
           rmdir(privateUserWorkspacePath(this.options.privateRoot, request.userId)),
@@ -266,6 +295,48 @@ export class AttemptWorkspaceStore {
       }),
     ]);
     return relationshipNames.size;
+  }
+
+  /**
+   * SPEC: a relationship reset retires the workspace instead of destroying it,
+   * so engineers can inspect what the companion had accumulated. The quarantine
+   * lives inside the user's authority directory — an account purge removes it —
+   * is never a retrieval root or a rebuild source, and has no restore path.
+   * INTENT: no TTL by product decision (2026-08-24); it exists for analysis.
+   * The label is Chat's ledger mutation id, shared with the retired
+   * relationship files on the Chat side so one reset is one artefact pair.
+   */
+  private async quarantineRelationship(
+    userId: string,
+    label: string,
+    canonicalTarget: string,
+    cutoverMarker: string,
+  ): Promise<void> {
+    if (!QUARANTINE_LABEL.test(label)) {
+      throw new Error("relationship quarantine label is invalid");
+    }
+    const quarantineRoot = join(
+      userWorkspacePath(this.options.canonicalRoot, userId),
+      ".reset-quarantine",
+    );
+    const target = join(quarantineRoot, `${basename(canonicalTarget)}-${label}-${randomUUID()}`);
+    assertWithin(quarantineRoot, target);
+    await mkdir(quarantineRoot, { recursive: true, mode: 0o700 });
+    await chmod(quarantineRoot, 0o700);
+    if (await exists(canonicalTarget)) {
+      await rename(canonicalTarget, target);
+    } else {
+      await mkdir(target, { mode: 0o700 });
+    }
+    await chmod(target, 0o700);
+    if (await exists(cutoverMarker)) {
+      await rename(cutoverMarker, join(target, "cutover-marker.json"));
+    }
+    await writeFile(
+      join(target, "quarantine.json"),
+      `${JSON.stringify({ quarantinedAt: new Date().toISOString(), label })}\n`,
+      { encoding: "utf8", flag: "wx", mode: 0o600 },
+    );
   }
 
   async rebuildRelationship<T>(
@@ -1155,23 +1226,21 @@ export class AttemptWorkspaceStore {
       latest = await this.options.memoryProbe.status(workspace);
       if ((latest.pendingProfileRows ?? 0) > 0) sawPendingProfileRows = true;
       const ingestObserved = latest.dialogueFiles > before.dialogueFiles;
-      const maintainFinishedWithPendingRows = tracksMaintenance
-        && latest.lastMaintainAt !== null
-        && latest.lastMaintainAt !== before.lastMaintainAt
-        && (latest.pendingProfileRows ?? 0) > 0;
-      if (maintainFinishedWithPendingRows) {
-        throw new Error(
-          `igrep maintain left ${latest.pendingProfileRows} profile rows pending`,
-        );
-      }
-      const maintainObserved = !tracksMaintenance || (
-        latest.pendingProfileRows === 0
-        && latest.lastMaintainAt !== null
+      // SPEC: promotion needs the turn's dialogue ingested and the plugin's
+      // profile pass finished — finished, not necessarily clean. Rows the LLM
+      // pass could not fold stay pending and the next turn's pass retries them.
+      // INTENT: rejecting the whole attempt for leftover rows only produced a
+      // canonical rebuild that re-ran the same LLM work under the same GPU
+      // pressure. The rename below must still never race a running pass, so
+      // "finished" is evidenced by memory-status, not by elapsed time.
+      const maintainFinished = !tracksMaintenance || (
+        latest.lastMaintainAt !== null
+        && latest.lastMaintainAt !== undefined
         && (latest.lastMaintainAt !== before.lastMaintainAt
-          || sawPendingProfileRows
-          || (latest.processedProfileRows ?? 0) > (before.processedProfileRows ?? 0))
+          || (latest.processedProfileRows ?? 0) > (before.processedProfileRows ?? 0)
+          || (sawPendingProfileRows && (latest.pendingProfileRows ?? 0) === 0))
       );
-      if (ingestObserved && maintainObserved) return;
+      if (ingestObserved && maintainFinished) return;
       await new Promise((resolve) => setTimeout(resolve, this.options.verificationPollMs));
     } while (Date.now() < deadline);
     throw new Error(

@@ -613,6 +613,50 @@ describe("library tabs", () => {
     expect(recentItems.map((item) => item.id)).toContain(CHAR);
     expect(recentItems.map((item) => item.id)).toContain(`${P}lib-media`);
   });
+
+  it("does not return liked characters that are unavailable to the current customer", async () => {
+    const userId = `${P}lib-unavailable-user`;
+    const unavailable = [
+      `${P}lib-deleted-character`,
+      `${P}lib-private-character`,
+      `${P}lib-unreleased-character`,
+    ];
+    await createUser({ id: userId });
+    await api("POST", `characters/${CHAR}/like`, { userId, ageGate: true });
+    await createCharacter({
+      id: unavailable[0],
+      creatorId: SYS,
+      visibility: "public",
+      status: "approved",
+    });
+    await prisma.character.update({
+      where: { id: unavailable[0] },
+      data: { deletedAt: new Date("2026-08-25T00:00:00.000Z") },
+    });
+    await createCharacter({
+      id: unavailable[1],
+      creatorId: SYS,
+      visibility: "private",
+      status: "approved",
+    });
+    await createCharacter({
+      id: unavailable[2],
+      creatorId: SYS,
+      visibility: "public",
+      status: "approved",
+    });
+    await prisma.characterLike.createMany({
+      data: unavailable.map((characterId) => ({ userId, characterId })),
+    });
+
+    for (const tab of ["recent", "characters"] as const) {
+      const response = await api("GET", `library/${tab}`, { userId, ageGate: true });
+      expectOk(response);
+      const ids = (response.data.items as Array<{ id: string }>).map((item) => item.id);
+      expect(ids, tab).toContain(CHAR);
+      expect(ids, tab).not.toEqual(expect.arrayContaining(unavailable));
+    }
+  });
 });
 
 describe("feed actions", () => {

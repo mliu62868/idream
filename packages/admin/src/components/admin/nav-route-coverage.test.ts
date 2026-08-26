@@ -2,6 +2,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { navItems } from "./nav-config";
+import { adminDynamicRouteLabel } from "@/app/admin/_server/render-admin-route";
 
 // SPEC: 导航里的每个目的地都必须落到它自己的路由，不能被同级的动态段吃掉。
 //
@@ -44,6 +45,23 @@ function swallowedByDynamicSegment(href: string) {
     ? null
     : { href, missing: join(directory, "page.tsx"), swallowedBy: [] };
 }
+
+// SPEC: 被同级动态段接住的**列表别名**，标题必须仍是列表的名字。
+// INTENT: 上面那条不变式只覆盖 nav href。`characters/releases` 与 `characters/calendar` 不是
+//         nav href，而是 nav-routes 里的列表别名，于是它们绕过守卫掉进 `characters/[id]`，
+//         页面渲染角色列表、标签页却自称「Character Detail」——同一类 bug 的第二种形态。
+describe("dynamic-segment route titles", () => {
+  it("keeps the list name for list aliases the [id] directory catches", () => {
+    for (const alias of ["releases", "calendar"]) {
+      expect(adminDynamicRouteLabel(["characters", alias], "Character Detail")).toBe("Characters");
+    }
+  });
+
+  it("still names a real detail route by its detail label", () => {
+    expect(adminDynamicRouteLabel(["characters", "cmsozhlsn0023i2l7m71veczu"], "Character Detail"))
+      .toBe("Character Detail");
+  });
+});
 
 describe("admin navigation route coverage", () => {
   it("never lets a dynamic segment swallow a navigable destination", () => {

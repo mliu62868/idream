@@ -518,6 +518,14 @@ const viewerAuthorityResponseSchema = successEnvelope(
         })
         .strict()
         .optional(),
+      // `plan` 在就说明这个人已经在某个付费档上了。其余权益键按需读取，
+      // 所以只声明用得到的那一个，不把整份权益表钉进契约。
+      entitlements: z
+        .object({
+          plan: z.object({ slug: nonEmptyString }).passthrough().nullish(),
+        })
+        .passthrough()
+        .optional(),
     })
     .passthrough(),
 );
@@ -1007,6 +1015,9 @@ const generationQuoteSchema = z
       .min(1)
       .max(8),
     balance: nonNegativeInteger,
+    // 这一单会不会带角色身份参考去生成。旧服务端不返回时按 false 处理 ——
+    // 不知道就不许界面打包票。
+    identityLocked: z.boolean().default(false),
   })
   .strict()
   .superRefine((quote, ctx) => {
@@ -1670,11 +1681,19 @@ function parseContract<T extends z.ZodType>(
   throw new PublicApiContractError(contractName, parsed.error);
 }
 
+// SPEC: 契约解析失败时给用户一句人话，技术细节留在 contractName / cause 里。
+// INTENT: `message` 曾是 `Invalid ${contractName} response`，而多处错误卡片直接把
+//   它渲染出来 —— 用户看到的是 "Invalid viewer authority response" 这种内部术语，
+//   既读不懂也不知道下一步做什么。契约名对排查有用，但那是日志和 Sentry 的事。
+// INVARIANT: 不要在这句话里编造原因。我们只知道「响应形状和本页的预期对不上」，
+//   不知道是服务端改了、代理插了一手、还是版本不匹配，所以只说现象加下一步。
 export class PublicApiContractError extends Error {
   readonly contractName: string;
 
   constructor(contractName: string, cause: z.ZodError) {
-    super(`Invalid ${contractName} response`, { cause });
+    super("The server sent a response this page could not read. Try again.", {
+      cause,
+    });
     this.name = "PublicApiContractError";
     this.contractName = contractName;
   }

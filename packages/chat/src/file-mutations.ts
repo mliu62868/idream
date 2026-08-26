@@ -60,7 +60,7 @@ import { recordOutbox } from "./outbox.js";
 import {
   appendRelationshipEvidenceOnce,
   deleteRelationship,
-  deleteRelationshipEvidence,
+  quarantineRelationshipFiles,
   rebuildRelationshipFromEvidence,
   resetRelationshipEvidenceBaseline,
   restoreRelationshipCutoverBaseline,
@@ -288,7 +288,15 @@ export async function applyPendingChatFileMutationsTx(
         || mutation.kind === "account_delete"
       ) {
         if (row.id !== options.companionAlreadyAppliedMutationId) {
-          await applyCompanionMemoryProjection(tx, userId, mutation);
+          await applyCompanionMemoryProjection(
+            tx,
+            userId,
+            mutation.kind === "relationship_delete"
+              // The ledger row id labels the quarantine, so the retired sidecar
+              // workspace and the retired relationship files share one name.
+              ? { ...mutation, quarantine: row.id }
+              : mutation,
+          );
         }
       }
       if (mutation.kind === "memory_extract") {
@@ -437,7 +445,11 @@ export async function runWithProjectedChatFiles<T>(
 const COMPANION_PROJECTION_CLAIM_LEASE_MS = 120_000;
 const COMPANION_PROJECTION_HEARTBEAT_MS = 30_000;
 
-class CompanionProjectionClaimBusyError extends Error {}
+// SPEC: 关系工作区的重建租约还被上一轮持有——短暂、可自愈、客户端稍后重试即可。
+// INTENT: 导出它是为了让 router 能把它翻成一个正经的领域错误。过去它落进 500
+//   兜底分支，用户收到的是 "relationship rebuild filemut_… is owned by a live
+//   projection claim" —— 既是内部实现细节，又把一个等几十秒就好的状态说成了服务器故障。
+export class CompanionProjectionClaimBusyError extends Error {}
 
 export interface CompanionProjectionClaim {
   mutationId: string;
@@ -1152,8 +1164,7 @@ async function applyFileMutation(
       );
       return;
     case "relationship_delete":
-      await deleteRelationship(userId, mutation.characterId);
-      await deleteRelationshipEvidence(userId, mutation.characterId);
+      await quarantineRelationshipFiles(userId, mutation.characterId, mutationId);
       return;
     case "relationship_rebuild":
       if (!validRelationshipEvidenceSourceIds) {

@@ -50,6 +50,8 @@ import {
 import {
   activeCustomerUserWhere,
   isCustomerEngagementActor,
+  mutedTagExclusionWhere,
+  mutedTagSlugsForUser,
   publicCharacterAudienceWhere,
   publicCollectionAudienceWhere,
 } from "./public-content-audience";
@@ -96,7 +98,14 @@ export async function feed(request: Request, segments: string[]) {
     }
     const requestedItemId =
       cursorState?.scopeItemId ?? requestedScopeItemId;
-    const publicWhere = publicCharacterAudienceWhere;
+    // 用户静音的标签在 Feed 同样生效 —— 之前只有 explore 施加了这条，
+    // 于是静音后首页照旧把该标签的角色推给他。
+    const feedMutedExclusion = mutedTagExclusionWhere(
+      ctx.userId ? await mutedTagSlugsForUser(ctx.userId) : [],
+    );
+    const publicWhere: Prisma.CharacterWhereInput = feedMutedExclusion
+      ? { ...publicCharacterAudienceWhere, NOT: feedMutedExclusion }
+      : publicCharacterAudienceWhere;
 
     if (cursorState) {
       const stablePage = await prisma.character.findMany({
@@ -656,6 +665,9 @@ export async function community(request: Request, segments: string[]) {
     }
   }
   const publicCharacterWhere = publicCharacterAudienceWhere;
+  // 用户静音的标签在 Community 榜单同样生效 —— 之前只有 explore 施加了这条。
+  const mutedTagSlugs = ctx.userId ? await mutedTagSlugsForUser(ctx.userId) : [];
+  const mutedExclusion = mutedTagExclusionWhere(mutedTagSlugs);
   const followedCreatorIds = ctx.userId ? await communityFollowedCreatorIds(ctx.userId) : [];
   const [characters, topDreamerRows, followedDreamerRows] = await Promise.all([
     prisma.character.findMany({
@@ -667,9 +679,12 @@ export async function community(request: Request, segments: string[]) {
           url.searchParams.get("release") === "30d"
             ? { gte: new Date(Date.now() - 1000 * 60 * 60 * 24 * 30) }
             : undefined,
+        NOT: mutedExclusion,
       },
       include: characterInclude(ctx.userId),
-      orderBy: [{ stats: { likesCount: "desc" } }],
+      // INVARIANT: likesCount 会大面积并列（当前公开角色全是 0），只按它排会让榜单
+      // 每次刷新顺序随机抖动、take:20 的进榜集合都可能变。末尾补唯一列定序。
+      orderBy: [{ stats: { likesCount: "desc" } }, { id: "desc" }],
       take: 20,
     }),
     communityDreamerRows(),
@@ -923,17 +938,23 @@ export async function creatorProfile(request: Request, creatorId: string) {
     select: { id: true, displayName: true, name: true, image: true, createdAt: true },
   });
   if (!creator) throw Errors.notFound("Creator not found");
+  // 用户静音的标签在创作者主页同样生效。
+  const creatorMutedExclusion = mutedTagExclusionWhere(
+    ctx.userId ? await mutedTagSlugsForUser(ctx.userId) : [],
+  );
   const publicCreatorCharacterWhere: Prisma.CharacterWhereInput = {
     AND: [
       publicCharacterAudienceWhere,
       { creatorId },
+      ...(creatorMutedExclusion ? [{ NOT: creatorMutedExclusion }] : []),
     ],
   };
   const [characters, characterCount, characterTotals, followers, following] = await Promise.all([
     prisma.character.findMany({
       where: publicCreatorCharacterWhere,
       include: characterInclude(ctx.userId),
-      orderBy: [{ stats: { likesCount: "desc" } }, { createdAt: "desc" }],
+      // 末位补唯一列：likesCount 与 createdAt 都可能并列，只靠它们排序不稳定。
+      orderBy: [{ stats: { likesCount: "desc" } }, { createdAt: "desc" }, { id: "desc" }],
       take: 24,
     }),
     prisma.character.count({ where: publicCreatorCharacterWhere }),
@@ -944,13 +965,10 @@ export async function creatorProfile(request: Request, creatorId: string) {
     prisma.follow.count({
       where: {
         followeeId: creatorId,
-        follower: {
-          is: {
-            dataClass: "customer",
-            status: "active",
-            deletedAt: null,
-          },
-        },
+        // INVARIANT: 与 activeFollowerCount / communityDreamerRows 用同一份判定。
+        // 这里原先手抄了一份且漏掉 role:"user"，于是同一个人的粉丝数在创作者主页、
+        // 关注接口和社区榜单之间对不上（库里 dataClass=customer 而 role<>user 的有 5 个）。
+        follower: { is: activeCustomerUserWhere },
       },
     }),
     ctx.userId

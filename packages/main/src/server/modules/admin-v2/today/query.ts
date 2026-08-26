@@ -45,6 +45,13 @@ const RANKING_POLICY_VERSION = "today-ranking-v1";
 const ACTIVE_CASE_STATUSES = ["new", "triaged", "in_progress", "waiting", "reopened"];
 const ACTIVE_INCIDENT_STATUSES = ["detected", "triaged", "mitigating", "monitoring"];
 const ACTIVE_COMMAND_STATUSES = ["accepted", "running", "verifying", "failed"];
+// SPEC: 成功但仍需对账的命令是**没做完的工作**，不是已解决的工作。
+// INTENT: 它的 status 是 succeeded，落不进 ACTIVE_COMMAND_STATUSES，于是此前只出现在
+//         recentlyResolved 里——而那个队列只回看 24 小时。实测库里有两条
+//         billing.subscription.refund 带着 needsReconciliation 停了 9 天，
+//         后台任何一页都看不到它们，尽管系统自己给出的下一步就是
+//         「Reconcile the uncertain downstream effect」。
+const UNRECONCILED_COMMAND_WHERE = { status: "succeeded", needsReconciliation: true } as const;
 const RESOLVED_CASE_STATUSES = ["resolved", "closed"];
 const RESOLVED_INCIDENT_STATUSES = ["resolved", "closed"];
 const ACTIVE_RELEASE_STATUSES = ["draft", "validating", "in_review", "approved"];
@@ -1201,8 +1208,8 @@ export async function buildTodayProjection(input: {
     : null;
   const actorCommandWhere = {
     actorId: input.actor.id,
-    status: { in: ACTIVE_COMMAND_STATUSES },
     id: withoutIds(snoozedCommandIds),
+    OR: [{ status: { in: ACTIVE_COMMAND_STATUSES } }, { ...UNRECONCILED_COMMAND_WHERE }],
   } satisfies Prisma.ControlPlaneCommandWhereInput;
   const activeReleaseSelection = releaseReadable
     ? {
@@ -1290,7 +1297,12 @@ export async function buildTodayProjection(input: {
       incidentSelection: incidentReadable
         ? { scope: "recently_resolved", actor: input.actor, recentCutoff }
         : null,
-      commandWhere: { actorId: input.actor.id, status: "succeeded", finishedAt: { gte: recentCutoff } },
+      // SPEC: 命令不进「已解决」——它是推进工作的手段，不是被解决的工作。
+      // INTENT: 这里原来收下我自己**每一条**成功的命令，于是「24 小时内已解决」在我仅仅
+      //         点了一次「认领」之后就 +1；真正解决一个工单还会 +2（工单一次、命令一次）。
+      //         这个数字是运营首屏唯一的产出指标，自我膨胀 + 重复计数之后就不能用了。
+      //         需要对账的那一类已经改由 myShift / nextBestActions 收，不会因此消失。
+      commandWhere: null,
       releaseSelection: releaseReadable ? { scope: "recently_resolved", recentCutoff } : null,
       creativeWhere: creativeReadable
         ? { lifecycleState: { in: ["closed", "archived"] }, verificationState: { in: ["passed", "overridden"] }, updatedAt: { gte: recentCutoff } }
@@ -1512,13 +1524,23 @@ export async function buildTodayAllWork(input: {
   const severityScopedCommandStatuses = query.severity
     ? ACTIVE_COMMAND_STATUSES.filter((status) => COMMAND_SEVERITY.of({ status }) === query.severity)
     : ACTIVE_COMMAND_STATUSES;
+  // INVARIANT: 「全部工作」必须和首屏的待处理数字同口径 —— 未对账的成功命令在投影里算工作，
+  //            这里也必须算，否则 KPI 点进去的列表会比数字少两条。
+  const unreconciledMatchesSeverity =
+    !query.severity || COMMAND_SEVERITY.of(UNRECONCILED_COMMAND_WHERE) === query.severity;
+  const commandStatusBranches: Prisma.ControlPlaneCommandWhereInput[] = [
+    ...(severityScopedCommandStatuses.length > 0
+      ? [{ status: { in: severityScopedCommandStatuses } }]
+      : []),
+    ...(unreconciledMatchesSeverity ? [{ ...UNRECONCILED_COMMAND_WHERE }] : []),
+  ];
   const commandEligible = (!query.domain || query.domain === "control_plane_command")
     && requestedOwnerId !== null
     && (requestedOwnerId === undefined || requestedOwnerId === input.actor.id)
-    && severityScopedCommandStatuses.length > 0;
+    && (query.status ? true : commandStatusBranches.length > 0);
   const commandWhere = commandEligible ? {
     actorId: input.actor.id,
-    status: query.status ?? { in: severityScopedCommandStatuses },
+    ...(query.status ? { status: query.status } : { OR: commandStatusBranches }),
     id: withoutIds(idsFor("control_plane_command", "snoozed")),
     ...(query.sla ? { leaseExpiresAt: slaWhere } : {}),
   } satisfies Prisma.ControlPlaneCommandWhereInput : null;

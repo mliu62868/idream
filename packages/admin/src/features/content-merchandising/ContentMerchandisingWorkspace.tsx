@@ -105,7 +105,8 @@ export function ContentMerchandisingWorkspace({
 }: {
   canWrite: boolean;
 }) {
-  const { t } = useAdminI18n();
+  const { t, value: valueLabel } = useAdminI18n();
+  const format = useAdminFormat();
   const { toast } = useToast();
   const failureToast = useFailureToast();
   const [query, setQuery] = useState<ContentQuery>(() => contentQueryFromSearch(""));
@@ -304,7 +305,7 @@ export function ContentMerchandisingWorkspace({
   }
 
   const characterRows = (characters.data?.items ?? []).map((row) =>
-    characterTableRow(row, canWrite, command),
+    characterTableRow(row, canWrite, command, valueLabel, format.dateTime),
   );
   const featuredRows = (featured.data?.items ?? []).map((item) =>
     featuredTableRow(item, t),
@@ -584,16 +585,24 @@ export function ContentMerchandisingWorkspace({
       {characters.data ? <DataTable
         caption="Characters"
         empty={<EmptyState title={t("No characters match these filters")} />}
+        // SPEC: width 是**文本盒**宽度，单元格左右还各有 1rem 内边距，真实列宽 ≈ width + 2rem；
+        //       八列合计 1224px，就是下面的 minimumWidthClassName。
+        // INTENT: 八列原来全传字符串、也没给最小宽度，于是角色 ID 吃掉大半，三个操作按钮各剩
+        //         两个字的位置——「取消/公开/列出」「设/为/私/密」「移/除」竖排，行高被撑到三倍。
         headers={[
-          "ID",
-          "Name",
-          "Gender",
-          "Style",
-          "Visibility",
-          "Status",
-          "Created",
-          "Actions",
+          { label: "ID", truncate: true, width: "10rem" },
+          { label: "Name", truncate: true, width: "9rem" },
+          // 四个枚举列：中文最长两字（女性 / 写实 / 私密 / 已通过三字），truncate 保证不折行。
+          { label: "Gender", truncate: true, width: "3.5rem" },
+          { label: "Style", truncate: true, width: "4rem" },
+          // 「不公开列出」是五个汉字，4rem 会把它截成「不公开…」。
+          { label: "Visibility", truncate: true, width: "5.5rem" },
+          { label: "Status", truncate: true, width: "4rem" },
+          { label: "Created", truncate: true, width: "9.5rem" },
+          // 三个按钮（取消公开列出 / 设为私密 / 移除）连同间距实测 ~240px。
+          { label: "Actions", width: "15rem" },
         ]}
+        minimumWidthClassName="min-w-[1224px]"
         rows={characterRows}
       /> : null}
       {characters.data ? (
@@ -908,10 +917,17 @@ export function contentCommandLabel(
   return value === "unlisted" ? "Unlist" : "Make private";
 }
 
+// SPEC: 枚举走字典、时间走 format —— 和后台其他表一致。
+// INTENT: 这张表原来所有单元格都走同一个 `cell()` 直接 String() 出去，于是中文界面上
+//         性别 / 风格 / 可见性 / 状态 印的是 female / realistic / unlisted / approved，
+//         创建时间印的是 `2026-08-11T18:18:31.703Z`。这几个取值在 zhValues 里早就有中文，
+//         只是这张表没接上去。i18n 审计查不到这类漏翻——它来自数据，不是字面量。
 export function characterTableRow(
   row: Row,
   canWrite: boolean,
   command: (id: string, field: "visibility" | "status", value: string) => void,
+  valueLabel: (value: string) => string = (value) => value,
+  dateTime: (value: unknown) => string = (value) => cell(value),
 ): DataTableRow {
   const id = stringValue(row.id);
   const actions: ReactNode = (
@@ -950,14 +966,18 @@ export function characterTableRow(
     cells: [
       cell(row.id),
       cell(row.name),
-      cell(row.gender),
-      cell(row.style),
-      cell(row.visibility),
-      cell(row.status),
-      cell(row.createdAt),
+      enumCell(row.gender, valueLabel),
+      enumCell(row.style, valueLabel),
+      enumCell(row.visibility, valueLabel),
+      enumCell(row.status, valueLabel),
+      dateTime(row.createdAt),
       actions,
     ],
   };
+}
+
+function enumCell(value: unknown, valueLabel: (value: string) => string) {
+  return typeof value === "string" && value ? valueLabel(value) : cell(value);
 }
 
 function cell(value: unknown) {

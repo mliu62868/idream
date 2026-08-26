@@ -6,11 +6,13 @@ import {
   CHARACTER_VISIBILITY,
   GENDERS,
   GENERATION_JOB_STATUSES,
+  GENERATION_REQUEST_CANCELLABLE_STATUSES,
   MEDIA_ASSET_VISIBILITY,
   PRODUCT_FEEDBACK_STATUSES,
   SUPPORT_REQUEST_CATEGORIES,
   TERMINAL_GENERATION_JOB_STATUSES,
   isCatalogMember,
+  isGenerationRequestCancellableStatus,
   isTerminalGenerationJobStatus,
 } from "./index";
 
@@ -55,6 +57,17 @@ describe("catalog", () => {
       ),
     ).toEqual(new Set(["queued", "moderating_input", "running", "moderating_output"]));
     expect(isTerminalGenerationJobStatus("nonsense")).toBe(false);
+  });
+
+  it("keeps cancellation as an explicit write-transition authority", () => {
+    expect([...GENERATION_REQUEST_CANCELLABLE_STATUSES]).toEqual([
+      "queued",
+      "moderating_input",
+      "running",
+      "moderating_output",
+    ]);
+    expect(GENERATION_JOB_STATUSES.filter(isGenerationRequestCancellableStatus))
+      .toEqual([...GENERATION_REQUEST_CANCELLABLE_STATUSES]);
   });
 
   it("keeps under_review in the feedback status set", () => {

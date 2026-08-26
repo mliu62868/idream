@@ -393,6 +393,41 @@ export type RelationshipProjectionOperation =
       stage?: "new" | "familiar" | "close" | "committed";
     };
 
+/**
+ * SPEC: 关系重置的时间水位 —— 这个角色最后一次 relationship_delete 的落库时刻，
+ * 没有重置过则为 null。
+ * INTENT: 重置纪元本来就存在 —— buildRelationshipProjection 用 `lastReset` 的
+ * ledger sequence 把重置前的 memory_extract 全部排除在外，所以 relationship.md
+ * 重置后确实是空的。但伴侣记忆（侧车工作区）走的是另一条投影路径，它此前完全
+ * 不知道纪元的存在：relationship_delete 会 purge 工作区，可**下一次**
+ * relationship_rebuild（删一条消息、删一个会话都会触发）又把重置前的全部会话
+ * 重新喂回去，用户重置掉的事实原样长回来。同一个纪元必须对两条投影都成立，
+ * 否则"重置"只在下一次 rebuild 之前有效。
+ * INVARIANT: 只认 status="applied" —— 与 buildRelationshipProjection 的谓词逐字
+ * 一致。pending 的重置还没产生任何文件效果，属于它的 rebuild 也还没跑；两条投影
+ * 对"纪元何时开始"必须给出同一个答案。
+ */
+export async function loadRelationshipResetAt(
+  tx: Prisma.TransactionClient,
+  input: { userId: string; characterId: string },
+): Promise<Date | null> {
+  const resets = await tx.chatFileMutation.findMany({
+    where: {
+      userId: input.userId,
+      status: "applied",
+      kind: "relationship_delete",
+    },
+    select: { sequence: true, createdAt: true, payload: true },
+    orderBy: { sequence: "desc" },
+  });
+  for (const reset of resets) {
+    if (jsonObject(reset.payload).characterId === input.characterId) {
+      return reset.createdAt;
+    }
+  }
+  return null;
+}
+
 export async function buildRelationshipProjection(
   tx: Prisma.TransactionClient,
   input: {

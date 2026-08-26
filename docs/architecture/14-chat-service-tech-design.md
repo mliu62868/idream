@@ -195,7 +195,7 @@ chat-memory-extract:<assistantMessageId>:<attempt>
 
 **实际 execution composition Gate C**：证据来自 sidecar 代码实际装配并执行的 programmatic manifest/digest，而不是 installer profile dump。最终 manifest 必须只包含批准的 DSH/igrep 能力，并断言没有 `shell`、`fs/filesystem`、`subagent`、`goal`、`scheduler`。
 
-**用户控制**：`memory_enabled=false` 只创建临时 workspace；whole-relationship reset 通过一个 durable mutation 同时清除 Chat relationship 投影与 purge canonical DSH workspace。official plugin 没有逐条 list/edit/delete seam，因此 `/memories` item API 与对应 UI 不存在。
+**用户控制**：`memory_enabled=false` 只创建临时 workspace；whole-relationship reset 通过 durable mutation 归档活跃会话，把旧 Chat relationship/文件层记忆和 canonical DSH workspace 永久移入隔离区，再建立空 relationship 投影；rebuild 不得重新摄入隔离内容。official plugin 没有逐条 list/edit/delete seam，因此 `/memories` item API 与对应 UI 不存在。
 
 **隐私删除**：删消息改变 Chat transcript 与后续 PreparedTurn/rebuild input；删会话清其 Chat session artifacts；删账号清 Chat DB/文件前缀并 purge 用户的 DSH workspaces。需要清除已 ingest 的通用记忆时使用 whole-relationship/account purge，不伪造 item 级撤销。
 

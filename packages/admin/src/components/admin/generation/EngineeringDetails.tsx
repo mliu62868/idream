@@ -5,14 +5,33 @@
 // WHY(chevron): 右侧曾无条件打印字面量 "Engineering details"，和调用方自己的 summary 叠加成
 //   「Connection details … Engineering details」「Engineering details … Engineering details」。
 //   可展开的提示交给 chevron——它不会和任何 summary 撞车。
-import type { ReactNode } from "react";
+import { useRef, type ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
 import { useAdminI18n } from "@/components/admin/i18n";
 
-export function EngineeringDetails({ summary, children }: { summary: ReactNode; children: ReactNode }) {
+// WHY(onOpen): 有些工程详情的数据只有展开时才值得去取（workflow 的完整 ComfyUI 图一条 4KB，
+//   目录页 8 行全预取就是 8 个白花的请求）。回调只在**第一次**展开时触发一次，
+//   之后由浏览器管开合状态——这样懒加载不必各自再造一个 <details>。
+export function EngineeringDetails({
+  summary,
+  children,
+  onOpen,
+}: {
+  summary: ReactNode;
+  children: ReactNode;
+  onOpen?: () => void;
+}) {
   const { t } = useAdminI18n();
+  const opened = useRef(false);
   return (
-    <details className="rounded-lg group border border-[var(--ad-border)] bg-black/[0.03] text-xs">
+    <details
+      className="rounded-lg group border border-[var(--ad-border)] bg-black/[0.03] text-xs"
+      onToggle={(event) => {
+        if (!event.currentTarget.open || opened.current) return;
+        opened.current = true;
+        onOpen?.();
+      }}
+    >
       <summary
         aria-label={t("Engineering details")}
         className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-[var(--ad-text-muted)] [&::-webkit-details-marker]:hidden"

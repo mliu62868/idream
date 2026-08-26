@@ -77,7 +77,9 @@ export function SiteFooter() {
   );
 
   return (
-    <footer className="w-full bg-[rgb(13,13,13)] text-white">
+    // 手机端底部导航是 fixed、64px 高、md 以下常驻，会盖住页脚最后一行版权。
+    // 给页脚留出等高的底部内边距（含安全区），桌面端 md 起导航消失即归零。
+    <footer className="w-full bg-[rgb(13,13,13)] pb-[calc(64px+env(safe-area-inset-bottom))] text-white md:pb-0">
       <div className="mx-auto grid w-full max-w-[1120px] gap-10 px-4 py-12 md:grid-cols-[1fr_1fr_1fr_1.2fr] md:px-5 md:py-16">
         {groups.map((group) => (
           <div key={group.title}>

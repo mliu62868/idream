@@ -307,6 +307,22 @@ export const incidentPostmortemSchema = z.object({
 export const incidentDetailSchema = z.object({
   incident: incidentSchema,
   occurrences: z.array(incidentDetailOccurrenceSchema).readonly(),
+  // SPEC: 这次事故打到了谁 —— 去重到人，不是一个计数。
+  // INTENT: `impact.affectedUsers` 一直只是个数字，occurrences 里只有 requestId/attemptId。
+  //         于是「事故之后主动联系受影响的人」这个动作在后台是做不了的：要还原名单只能
+  //         拿着每个 requestId 去逐条反查。这里把那次反查做掉。
+  // INVARIANT: 反查不到的 occurrence 单独计数，不许悄悄丢掉。`generation_attempts.requestId`
+  //            是裸 String 没有外键（见不变式 `attempt_without_request`），所以"请求行已经不在了"
+  //            是真实存在的状态；把它们从名单里抹掉，会让运营以为已经联系全了。
+  affectedUsers: z.array(z.object({
+    userId: adminIdSchema,
+    occurrenceCount: z.number().int().positive(),
+    // A Generation Request can belong to audit/internal actors too. Their ID is
+    // still incident evidence, but the customer workspace intentionally cannot
+    // resolve it.
+    customerRecordAvailable: z.boolean(),
+  }).strict()).readonly(),
+  unattributableOccurrences: z.number().int().nonnegative(),
   actionPlans: z.array(incidentActionPlanSchema).readonly(),
   postmortem: incidentPostmortemSchema.nullable(),
   activity: z.array(adminAuditEntrySchema).readonly(),
@@ -456,6 +472,7 @@ export const incidentCorrelationOutboxAttemptMissingDiscardResultSchema = z
   .strict();
 
 export type OpsIncident = z.infer<typeof incidentSchema>;
+export type IncidentDetail = z.infer<typeof incidentDetailSchema>;
 export type IncidentOccurrence = z.infer<typeof incidentOccurrenceSchema>;
 export type IncidentActionPlan = z.infer<typeof incidentActionPlanSchema>;
 export type IncidentQuery = z.infer<typeof incidentQuerySchema>;

@@ -1,4 +1,5 @@
 import { z } from "zod";
+export { isGenerationRequestCancellableStatus } from "../../catalog";
 import {
   adminCursorQuerySchema,
   adminIdSchema,
@@ -18,6 +19,7 @@ export const generationJobStatusSchema = z.enum([
   "refunded",
   "cancelled",
 ]);
+
 export const generationJobSortSchema = z.enum([
   "created_desc",
   "created_asc",
@@ -299,6 +301,25 @@ export const generationJobDetailResponseSchema = z.object({
       "request_not_reconcilable",
     ]).nullable(),
   }).strict().nullable(),
+  // SPEC: 用户对这次生成打的分。运营侧唯一能看到「产出到底行不行」的第一手信号。
+  // INTENT: `GenerationFeedback` 表在 admin-v2 里此前**零引用** —— 主站一直在收
+  //         （`modules/ourdream/media-feedback.ts:160`），实测库里 4 条真实反馈、
+  //         其中 1 条 `identity/mismatch`，而后台任何一页都看不到。
+  //         而身份一致性正是路由资质那条 `identityMatch >= 0.9` 闸门要判的东西。
+  // INVARIANT: 带上 `active` 与 `revision`。用户可以改评价（`supersedesId` 链），
+  //            只显示最新一条会让"他一开始说不像、后来改口"这件事消失；只显示全部又分不清
+  //            哪条算数。两个都给，由调用点表达。
+  feedback: z.array(z.object({
+    id: adminIdSchema,
+    actorId: adminIdSchema,
+    mediaAssetId: z.string().trim().min(1),
+    dimension: z.string().trim().min(1),
+    value: z.string().trim().min(1),
+    revision: z.number().int().positive(),
+    sourceSurface: z.string().trim().min(1),
+    active: z.boolean(),
+    createdAt: adminIsoDateTimeSchema,
+  }).strict()).readonly(),
   asOf: adminIsoDateTimeSchema,
   freshness: z.literal("fresh"),
 }).strict();

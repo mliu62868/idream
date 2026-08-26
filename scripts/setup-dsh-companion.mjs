@@ -22,14 +22,19 @@ const PLUGIN_PEERS = Object.freeze([
 const STATE_FILENAME = "idream-companion-bootstrap.json";
 const STATE_SCHEMA_VERSION = 1;
 const COMMAND_TIMEOUT_MS = 120_000;
+// INVARIANT: mirrors NORMAL_IGREP_CONFIG / PRIVATE_IGREP_CONFIG in
+// packages/chat-agent/src/igrep.ts; readiness greps every entry out of the
+// installed profile dump, so the two tables must stay identical.
 const PROFILE_CAPABILITIES = Object.freeze({
   normal: Object.freeze({
-    search: true,
+    search: false,
     webProvider: false,
     webTool: false,
     memory: true,
     ingest: true,
     wake: true,
+    memorySearchMode: "fast",
+    timeoutMs: 10000,
   }),
   private: Object.freeze({
     search: false,

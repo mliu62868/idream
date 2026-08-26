@@ -8,3 +8,4 @@ export * from "./main-to-chat-authority";
 export * from "./metric-events";
 export * from "./voice";
 export * from "./generation-identity";
+export * from "./content-report";

@@ -40,8 +40,18 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
   const dialogRef = useRef<HTMLDivElement | null>(null);
 
   const requireReason = spec.requireReason ?? true;
-  const reasonLabel = spec.reasonLabel ?? t("Reason (≥3)");
-  const destructiveInputLabel = spec.destructive?.inputLabel ?? t("Type the name to confirm");
+  // SPEC: 文案类字段一律在这里过 t()，调用点传 i18n key 就够，不必自己翻。
+  // INTENT: reasonLabel / inputLabel / submitLabel / title 是**对象属性**而不是 JSX 属性，
+  //         i18n-completeness 的审计只走 JSX 属性，结构上看不见它们——于是 moderation、
+  //         config、support、pricing 四处一路传着裸英文，中文界面上的确认框写着
+  //         「Reason」「Confirmation」「Confirm」，谁都没发现。收口在这一处，
+  //         调用点从此默认正确，新加的调用点也不会再漏。
+  // INVARIANT: 只翻文案，绝不翻 destructive.expectedName —— 那是要逐字符比对的确认串。
+  //            对已经翻好的串再过一次 t() 是恒等（字典里查不到就原样返回）。
+  const reasonLabel = spec.reasonLabel ? t(spec.reasonLabel) : t("Reason (≥3)");
+  const destructiveInputLabel = spec.destructive?.inputLabel
+    ? t(spec.destructive.inputLabel)
+    : t("Type the name to confirm");
   const nameOk = !spec.destructive || nameInput.trim() === spec.destructive.expectedName;
   const reasonOk = !requireReason || reason.trim().length >= 3;
   const canSubmit = !busy && reasonOk && nameOk;
@@ -119,7 +129,7 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
         ref={dialogRef}
         role="dialog"
       >
-        <h3 className="text-sm font-semibold text-[var(--ad-ink)]" id={titleId}>{spec.title}</h3>
+        <h3 className="text-sm font-semibold text-[var(--ad-ink)]" id={titleId}>{t(spec.title)}</h3>
         {spec.summary ? (
           <div className="mt-2 text-sm text-[var(--ad-text-muted)]" id={descriptionId}>{spec.summary}</div>
         ) : null}
@@ -132,7 +142,7 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
               <span className="block font-semibold">
                 {spec.consequence.reversible ? t("This can be undone later.") : t("This cannot be undone.")}
               </span>
-              <span className="mt-1 block">{spec.consequence.effect}</span>
+              <span className="mt-1 block">{t(spec.consequence.effect)}</span>
             </span>
           </div>
         ) : null}
@@ -169,7 +179,7 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
           </GhostButton>
           <SubmitButton disabled={!canSubmit} irreversible={spec.consequence?.reversible === false} onClick={() => void submit()}>
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-            {spec.submitLabel}
+            {t(spec.submitLabel)}
           </SubmitButton>
         </div>
       </div>

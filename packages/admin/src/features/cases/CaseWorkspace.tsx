@@ -1,6 +1,7 @@
 "use client";
 
 import { useAdminI18n } from "@/components/admin/i18n";
+import { EmptyState } from "@/components/admin/ui/EmptyState";
 import Link from "next/link";
 import type { FormEvent, KeyboardEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -267,7 +268,7 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
             <div className="flex items-end gap-2"><WorkspaceButton tone="primary" type="submit">{t("Apply")}</WorkspaceButton>{filtered ? <WorkspaceButton onClick={clearFilters}>{t("Clear")}</WorkspaceButton> : null}</div>
           </form>
           {loading && !list ? <LoadingWorkspace label="Loading cases" /> : null}
-          {list && list.items.length === 0 ? <EmptyWorkspace filtered={filtered} onClear={clearFilters} /> : null}
+          {list && list.items.length === 0 ? <CaseQueueEmpty filtered={filtered} onClear={clearFilters} onSelectView={selectView} view={query.view} /> : null}
           {list?.items.map((adminCase) => <CaseRow adminCase={adminCase} active={selectedId === adminCase.id} key={adminCase.id} onSelect={() => selectCase(adminCase.id)} referenceTime={list.asOf} />)}
           {list && list.items.length > 0 ? (
             <Pagination
@@ -289,6 +290,45 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
         </div>
       </div>
     </section>
+  );
+}
+
+// SPEC: 队列视图为空 ≠ 没有工作。视图是范围（归属/时效），不是筛选条件。
+// INTENT: 「我的」空着而全站有十几条无人认领时，通用空态那句"新工作会显示在这里"是**假的**
+//         ——工作已经在了，只是不归我。运营照着它就会以为今天没活。空态必须说清空的是哪个
+//         范围，并把人送到下一个真有活的范围去（「我的」→「未分配」，其余 →「全部」）。
+//         筛选造成的空仍旧走原来的清除筛选出口，两种空不能混为一谈。
+const BROADER_VIEW: Record<string, string> = { mine: "unassigned" };
+
+function CaseQueueEmpty({
+  filtered,
+  onClear,
+  onSelectView,
+  view,
+}: {
+  filtered: boolean;
+  onClear: () => void;
+  onSelectView: (view: string) => void;
+  view: string;
+}) {
+  const { t, value } = useAdminI18n();
+  if (filtered || view === "all") {
+    return <EmptyWorkspace filtered={filtered} onClear={onClear} />;
+  }
+  const nextView = BROADER_VIEW[view] ?? "all";
+  return (
+    <EmptyState
+      action={
+        <WorkspaceButton onClick={() => onSelectView(nextView)} tone="primary">
+          {t("Open {view}", { view: value(nextView) })}
+        </WorkspaceButton>
+      }
+      hint="A queue view is a scope, not a filter — work outside it is still waiting."
+      // EmptyState 内部还会再 t() 一次；已翻译的串在字典里查不到，原样返回。这里显式
+      // 走 t() 是为了让 i18n 审计能认出这个 key —— title 同时也是 HTML 属性名，审计对
+      // 它的字面量一律判违规，不给"已收录中文"的豁免。
+      title={t("This queue view is empty")}
+    />
   );
 }
 

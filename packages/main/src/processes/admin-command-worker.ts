@@ -10,6 +10,7 @@ import {
   dispatchStaleReleaseRoutes,
 } from "@/server/modules/admin-v2/characters/release-monitor";
 import { dispatchDueCharacterReleasePublishes } from "@/server/modules/admin-v2/characters/scheduled-release-dispatcher";
+import { dispatchStaleUnknownGenerationRequests } from "@/server/modules/admin-v2/jobs/stale-unknown-dispatcher";
 import { executeAcceptedAdminCommand } from "@/server/modules/admin-v2/commands/executor";
 import { reconcileExpiredCommandLeases } from "@/server/modules/admin-v2/shared/control-plane-command";
 import {
@@ -50,7 +51,21 @@ const RECONCILE_INTERVAL_MS = 60_000;
 
 let running = true;
 let lastReconcileAt = 0;
+// SPEC: unknown 生成结算的巡检节流。
+// INTENT: 它的宽限期是 30 分钟，没有任何理由挤在主循环的忙碌间隔里跑 ——
+//   那个间隔是 50ms，等于每秒扫二十次 generation_attempts。与同循环里的
+//   lease 回收用同一套节流约定。
+let lastStaleUnknownSweepAt = 0;
+const STALE_UNKNOWN_SWEEP_INTERVAL_MS = 60_000;
 let routeQualificationCursor: string | null = null;
+
+export function shouldDispatchStaleUnknownSweep(
+  lastSweepAt: number,
+  now: number,
+  intervalMs = STALE_UNKNOWN_SWEEP_INTERVAL_MS,
+) {
+  return now - lastSweepAt >= intervalMs;
+}
 
 interface AdminCommandChaosConfig {
   readonly commandId: string;
@@ -263,6 +278,15 @@ export async function runAdminCommandWorkerLoop() {
         lastReconcileAt = now;
         const reconciled = await reconcileExpiredCommandLeases(prisma, new Date(now));
         if (reconciled.examined > 0) logger.info(reconciled, "admin command leases reconciled");
+      }
+      if (!chaos && shouldDispatchStaleUnknownSweep(lastStaleUnknownSweepAt, now)) {
+        lastStaleUnknownSweepAt = now;
+        const settled = await dispatchStaleUnknownGenerationRequests(prisma, {
+          now: new Date(now),
+        });
+        if (settled.settled > 0 || settled.skipped > 0) {
+          logger.info(settled, "stale unknown Generation Requests settled");
+        }
       }
     } catch (error) {
       logger.error({ error, workerId }, "admin command worker iteration failed");

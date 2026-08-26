@@ -937,7 +937,7 @@ describe("feed share and remix provenance", () => {
     const report = await api("POST", `feed/items/${encodeURIComponent(itemId)}/report`, {
       userId,
       ageGate: true,
-      body: { category: "underage", description: "collection feed report" },
+      body: { category: "underage_content", description: "collection feed report" },
     });
     expectOk(report);
     expect(await prisma.contentReport.count({ where: { targetType: "feed_item", targetId: itemId } })).toBe(1);

@@ -197,6 +197,35 @@ describe("CaseWorkspace browser URL interactions", () => {
     expect(container.querySelector("#case-detail-title")?.textContent).toBe("user-1");
   });
 
+  // SPEC: 视图为空要说清空的是哪个范围，并把运营送到下一个真有活的范围。
+  // INVARIANT: 「我的」空着时通用的"队列已清空"是假的——工作可能只是还没人认领。
+  it("sends an operator from an empty mine queue to the unassigned queue", async () => {
+    adminV2Request.mockImplementation(async (path) => {
+      if (path.includes("/api/v2/admin/cases?")) {
+        const view = new URL(path, "http://admin.local").searchParams.get("view") ?? "mine";
+        return view === "mine" ? { ...listResponse("mine"), items: [] } : listResponse(view);
+      }
+      return listResponse("mine");
+    });
+    window.history.replaceState(null, "", "/admin/cases?view=mine");
+    container.innerHTML = renderToString(<CaseWorkspace canAssign={false} canDecide={false} />);
+
+    await act(async () => {
+      root = hydrateRoot(container, <CaseWorkspace canAssign={false} canDecide={false} />);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    await waitUntil(() => container.textContent?.includes("This queue view is empty") ?? false);
+    expect(container.textContent).not.toContain("The queue is clear");
+
+    const openUnassigned = findButton("Open unassigned");
+    expect(openUnassigned).toBeTruthy();
+    await act(async () => openUnassigned?.click());
+    await waitUntil(() => adminV2Request.mock.calls.some(([path]) => path.includes("view=unassigned")));
+    expect(findButton("unassigned")?.getAttribute("aria-pressed")).toBe("true");
+    expect(container.textContent).not.toContain("This queue view is empty");
+  });
+
   // SPEC: Today / search / audit links may open a Case that is outside the operator's current queue.
   // INVARIANT: the detail remains visible even when the default `mine` list is empty.
   it("keeps a deep-linked case visible when the current queue is empty", async () => {

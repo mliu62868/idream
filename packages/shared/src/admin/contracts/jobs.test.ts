@@ -6,6 +6,7 @@ import {
   generationJobDetailResponseSchema,
   generationJobListResponseSchema,
   generationJobQuerySchema,
+  isGenerationRequestCancellableStatus,
   unknownGenerationReconciliationCommandSchema,
   unknownGenerationReconciliationResultSchema,
 } from "./jobs";
@@ -32,6 +33,25 @@ describe("Generation Jobs v2 contracts", () => {
     expect(generationJobQuerySchema.safeParse({ status: "failed" }).success).toBe(false);
     expect(generationJobQuerySchema.safeParse({ sort: "random" }).success).toBe(false);
     expect(generationJobQuerySchema.safeParse({ limit: 201 }).success).toBe(false);
+  });
+
+  it("derives cancellable request states from the shared terminal-state authority", () => {
+    expect([
+      "queued",
+      "moderating_input",
+      "running",
+      "moderating_output",
+      "completed",
+      "failed",
+      "blocked",
+      "refunded",
+      "cancelled",
+    ].filter(isGenerationRequestCancellableStatus)).toEqual([
+      "queued",
+      "moderating_input",
+      "running",
+      "moderating_output",
+    ]);
   });
 
   it("accepts every authoritative Delivery terminal state and rejects unknown values", () => {

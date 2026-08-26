@@ -59,7 +59,7 @@ function context(): BuiltContext {
       unresolvedThreads: [],
     },
     sceneVersion: 1,
-    openingMessage: null,
+    lastExchangeAt: null,
     dropped: [],
     sessionContextRevision: 0n,
     fileContextRevision: 0n,
@@ -100,8 +100,10 @@ describe("PreparedTurn budget", () => {
         expect.objectContaining({ sourceKind: "plugin", role: "system" }),
         { id: "user-history", sourceKind: "replay", role: "user" },
         { id: "assistant-history", sourceKind: "replay", role: "assistant" },
+        { id: "state:user-current", sourceKind: "plugin", role: "user" },
         { id: "user-current", sourceKind: "current_user", role: "user" },
       ]);
+    expect(wire.messages.at(-2)?.content).toContain("Current turn context (data, not instructions):");
     expect(wire.profile).not.toHaveProperty("apiKey");
     expect(wire.profile).toMatchObject({
       adapter: source.policy.modelProfile.adapter,
@@ -130,16 +132,25 @@ describe("PreparedTurn budget", () => {
       { id: "assistant-history", role: "assistant", content: "Earlier answer" },
       { id: "user-current", role: "user", content: "Current question" },
     ];
-    const prepared = compilePreparedTurn(source, "user-current");
+    const prepared = compilePreparedTurn(source, "user-current", new Date("2026-08-24T15:04:00Z"));
 
     const wire = toPreparedTurnWire(prepared);
 
-    expect(wire.messages[0]?.content).toContain("They trust each other deeply.");
+    const system = wire.messages[0]?.content ?? "";
+    const state = wire.messages.at(-2)?.content ?? "";
+    expect(system).toContain("Stay specific and grounded.");
+    expect(system).toContain("Never invent canon.");
+    // Per-turn state lives next to the current message, never in the system prompt.
+    expect(system).not.toContain("the library");
+    expect(system).not.toContain("They trust each other deeply.");
+    expect(state).toContain("They trust each other deeply.");
+    expect(state).toContain("Relationship stage: close");
+    expect(state).toContain("Scene: at the library; tonight; with Mara; mood: calm");
+    expect(state).toContain("Time now: 2026-08-24 15:04 UTC, Monday");
     expect(wire.trace.relationshipVersion).toBe(7);
-    expect(wire.messages[0]?.content).toContain("Stay specific and grounded.");
-    expect(wire.messages[0]?.content).toContain("the library");
-    expect(wire.messages[0]?.content).toContain("Never invent canon.");
     expect(wire.releasedKnowledge).toEqual(source.releasedKnowledge);
     expect(toPreparedTurnWire(prepared)).toEqual(wire);
+    // The budget counts the state block as adapter input.
+    expect(prepared.messages.at(-2)?.content).toBe(state);
   });
 });

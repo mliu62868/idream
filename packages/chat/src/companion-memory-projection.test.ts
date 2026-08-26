@@ -85,7 +85,7 @@ describe("companion memory projection", () => {
     await applyCompanionMemoryProjection(
       {} as Prisma.TransactionClient,
       "user-1",
-      { kind: "relationship_delete", characterId: "character-1" },
+      { kind: "relationship_delete", characterId: "character-1", quarantine: "filemut_reset_1" },
       { purge, rebuild },
     );
     await applyCompanionMemoryProjection(
@@ -95,8 +95,10 @@ describe("companion memory projection", () => {
       { purge, rebuild },
     );
 
+    // A reset retires the relationship workspace under the ledger id; an
+    // account purge destroys the user directory, quarantine included.
     expect(purge.mock.calls).toEqual([
-      [{ scope: "relationship", userId: "user-1", characterId: "character-1" }],
+      [{ scope: "relationship", userId: "user-1", characterId: "character-1", quarantine: "filemut_reset_1" }],
       [{ scope: "user", userId: "user-1" }],
     ]);
     expect(rebuild).not.toHaveBeenCalled();
@@ -109,6 +111,7 @@ describe("companion memory projection", () => {
       chatSession: { findMany: vi.fn(async () => []) },
       message: { findMany: vi.fn(async () => []) },
       chatSendReceipt: { findMany: vi.fn(async () => []) },
+      chatFileMutation: { findMany: vi.fn(async () => []) },
     } as unknown as Prisma.TransactionClient;
 
     await applyCompanionMemoryProjection(
@@ -127,7 +130,7 @@ describe("companion memory projection", () => {
     });
   });
 
-  it("loads a relationship with many sessions in a fixed three-query snapshot", async () => {
+  it("loads a relationship with many sessions in a fixed four-query snapshot", async () => {
     const sessionCount = 10_001;
     const sessions = Array.from({ length: sessionCount }, (_, index) => ({
       id: `session-${index}`,
@@ -153,10 +156,12 @@ describe("companion memory projection", () => {
     const findSessions = vi.fn(async () => sessions);
     const findMessages = vi.fn(async () => messages);
     const findReceipts = vi.fn(async () => []);
+    const findResets = vi.fn(async () => []);
     const tx = {
       chatSession: { findMany: findSessions },
       message: { findMany: findMessages },
       chatSendReceipt: { findMany: findReceipts },
+      chatFileMutation: { findMany: findResets },
     } as unknown as Prisma.TransactionClient;
 
     const rebuilt = await buildCompanionWorkspaceRebuild(tx, {
@@ -172,6 +177,97 @@ describe("companion memory projection", () => {
     expect(findSessions).toHaveBeenCalledOnce();
     expect(findMessages).toHaveBeenCalledOnce();
     expect(findReceipts).toHaveBeenCalledOnce();
+    expect(findResets).toHaveBeenCalledOnce();
+  });
+
+  it("drops everything said before a relationship reset, and keeps what came after", async () => {
+    const resetAt = new Date("2026-08-19T12:30:00.000Z");
+    const before = message({
+      id: "user-1",
+      role: "user",
+      createdAt: new Date("2026-08-19T12:00:00.000Z"),
+    });
+    const beforeReply = message({
+      id: "assistant-2",
+      role: "assistant",
+      replyToMessageId: before.id,
+      createdAt: new Date("2026-08-19T12:00:01.000Z"),
+    });
+    const after = message({
+      id: "user-3",
+      role: "user",
+      createdAt: new Date("2026-08-19T13:00:00.000Z"),
+    });
+    const afterReply = message({
+      id: "assistant-4",
+      role: "assistant",
+      replyToMessageId: after.id,
+      createdAt: new Date("2026-08-19T13:00:01.000Z"),
+    });
+    const sessions = [{ id: "session-1" }];
+    const messages = [before, beforeReply, after, afterReply];
+    const tx = {
+      chatSession: { findMany: vi.fn(async () => sessions) },
+      message: { findMany: vi.fn(async () => messages) },
+      chatSendReceipt: { findMany: vi.fn(async () => []) },
+      chatFileMutation: {
+        findMany: vi.fn(async () => [
+          {
+            sequence: 7n,
+            createdAt: resetAt,
+            payload: { characterId: "character-1" },
+          },
+        ]),
+      },
+    } as unknown as Prisma.TransactionClient;
+
+    const rebuilt = await buildCompanionWorkspaceRebuild(tx, {
+      userId: "user-1",
+      characterId: "character-1",
+    });
+
+    expect(rebuilt.messages.map((entry) => entry.id)).toEqual([
+      "user-3",
+      "assistant-4",
+    ]);
+  });
+
+  it("keeps a reset scoped to its own character", async () => {
+    const early = message({
+      id: "user-1",
+      role: "user",
+      createdAt: new Date("2026-08-19T12:00:00.000Z"),
+    });
+    const reply = message({
+      id: "assistant-2",
+      role: "assistant",
+      replyToMessageId: early.id,
+      createdAt: new Date("2026-08-19T12:00:01.000Z"),
+    });
+    const tx = {
+      chatSession: { findMany: vi.fn(async () => [{ id: "session-1" }]) },
+      message: { findMany: vi.fn(async () => [early, reply]) },
+      chatSendReceipt: { findMany: vi.fn(async () => []) },
+      chatFileMutation: {
+        findMany: vi.fn(async () => [
+          {
+            sequence: 7n,
+            createdAt: new Date("2026-08-19T12:30:00.000Z"),
+            payload: { characterId: "someone-else" },
+          },
+        ]),
+      },
+    } as unknown as Prisma.TransactionClient;
+
+    const rebuilt = await buildCompanionWorkspaceRebuild(tx, {
+      userId: "user-1",
+      characterId: "character-1",
+    });
+
+    expect(rebuilt.messages.map((entry) => entry.id)).toEqual([
+      "user-1",
+      "assistant-2",
+    ]);
   });
 
   it("keeps DB projection transactions short and independent of turn deadlines", () => {

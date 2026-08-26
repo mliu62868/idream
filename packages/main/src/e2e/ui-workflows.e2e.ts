@@ -2137,19 +2137,38 @@ async function seedStrictPublicCharacterAuthority(input: {
   };
 }
 
-async function expectContentReport(targetType: string, targetId: string) {
+async function expectContentReport(
+  targetType: string,
+  targetId: string,
+  expected?: { category: string; description: string },
+) {
   await expect
     .poll(
       async () => {
         const report = await prisma.contentReport.findFirst({
           where: { targetType, targetId },
-          select: { id: true },
+          orderBy: { createdAt: "desc" },
+          select: { category: true, description: true },
         });
-        return Boolean(report);
+        if (!report) return null;
+        return expected
+          ? { category: report.category, description: report.description ?? "" }
+          : { found: true };
       },
       { timeout: 10_000 },
     )
-    .toBe(true);
+    .toEqual(expected ?? { found: true });
+}
+
+// SPEC: 举报现在先开弹窗 —— 用户选一个理由，可选地写一段说明，再提交。
+// INTENT: 六个入口共用同一个弹窗，所以这里也只写一遍。以前每个入口都是一键提交，
+//         后台永远只看得到写死的 other_prohibited_content 和一句系统文案。
+async function submitReportDialog(page: Page, reasonLabel: string, note: string) {
+  const dialog = page.getByTestId("report-dialog");
+  await expect(dialog).toBeVisible({ timeout: 10_000 });
+  await dialog.getByRole("radio", { name: reasonLabel }).check();
+  await dialog.getByRole("textbox").fill(note);
+  await dialog.getByRole("button", { name: "Submit report" }).click();
 }
 
 async function latestGenerationJob(ctx: APIRequestContext, mode: "image" | "video") {
@@ -3414,10 +3433,14 @@ test("chat UI starts from character detail, sends a message, and persists histor
   const reportedMessageId = await reportedMessage.getAttribute("data-message-id");
   expect(reportedMessageId).toBeTruthy();
   await reportedMessage.getByRole("button", { name: "Report message" }).click();
+  await submitReportDialog(page, "Harassment, hate, or threats", "E2E: chat message report note.");
   await expect(page.getByText("Report submitted.")).toBeVisible({ timeout: 10_000 });
   await expect(page.getByTestId("chat-session-status")).toHaveAttribute("role", "status");
   await expect(page.getByTestId("chat-session-status")).toHaveAttribute("aria-live", "polite");
-  await expectContentReport("chat_message", reportedMessageId ?? "");
+  await expectContentReport("chat_message", reportedMessageId ?? "", {
+    category: "harassment_or_hate",
+    description: "E2E: chat message report note.",
+  });
   const assistantReply = await expectAssistantReplyVisible(page);
   await expect(reportedMessage).toHaveClass(/pr-\[108px\]/);
   await expect(assistantReply).toHaveClass(/pr-\[140px\]/);
@@ -4276,8 +4299,12 @@ test("generator UI queues an image job and surfaces completed media in the galle
   await expect(generatedMediaCard.getByRole("button", { name: "Doesn't match character" })).toBeVisible();
   await expect(generatedMediaCard.getByRole("button", { name: "Create variation" })).toBeVisible();
   await generatedMediaCard.getByRole("button", { name: "Report" }).click();
+  await submitReportDialog(page, "Broken or unusable result", "E2E: generated media report note.");
   await expect(page.getByText("Report submitted.")).toBeVisible({ timeout: 10_000 });
-  await expectContentReport("media", generatedMediaId ?? "");
+  await expectContentReport("media", generatedMediaId ?? "", {
+    category: "quality",
+    description: "E2E: generated media report note.",
+  });
 
   await generatedMediaCard.getByRole("button", { name: "Download" }).click();
   await expect(page.getByText("Download started.")).toBeVisible({ timeout: 10_000 });
@@ -4790,10 +4817,14 @@ test("community UI lists dreamers and reports user profiles", async ({ page }) =
   const dreamerCard = page.getByTestId("community-dreamer-card").filter({ hasText: dreamer.displayName });
   await expect(dreamerCard).toBeVisible({ timeout: 10_000 });
   await dreamerCard.getByRole("button", { name: `Report user profile ${dreamer.displayName}` }).click();
-  await expect(page.getByText("Profile report submitted.")).toBeVisible({ timeout: 10_000 });
+  await submitReportDialog(page, "Spam, scam, or advertising", "E2E: dreamer profile report note.");
+  await expect(page.getByText("Report submitted.")).toBeVisible({ timeout: 10_000 });
   await expect(page.getByTestId("community-status")).toHaveAttribute("role", "status");
   await expect(page.getByTestId("community-status")).toHaveAttribute("aria-live", "polite");
-  await expectContentReport("user_profile", dreamer.id);
+  await expectContentReport("user_profile", dreamer.id, {
+    category: "spam",
+    description: "E2E: dreamer profile report note.",
+  });
 
   // Creator public profile (§G): name links to /creators/:id, follow toggles to Following.
   await dreamerCard.getByRole("link", { name: dreamer.displayName }).click();
@@ -5233,10 +5264,14 @@ test("feed UI supports share, report, and remix actions", async ({ page }) => {
   const focusedCollectionCard = page.getByTestId("feed-collection-card").filter({ hasText: collection.name });
   await expect(focusedCollectionCard).toHaveAttribute("data-focused", "true", { timeout: 10_000 });
   await focusedCollectionCard.getByRole("button", { name: "Report" }).click();
+  await submitReportDialog(page, "Something else against the rules", "E2E: collection feed report note.");
   await expect(page.getByText("Report submitted.")).toBeVisible({ timeout: 10_000 });
   await expect(page.getByTestId("feed-status")).toHaveAttribute("role", "status");
   await expect(page.getByTestId("feed-status")).toHaveAttribute("aria-live", "polite");
-  await expectContentReport("feed_item", collection.itemId);
+  await expectContentReport("feed_item", collection.itemId, {
+    category: "other_prohibited_content",
+    description: "E2E: collection feed report note.",
+  });
 
   await page.locator('aside nav a[href="/feed"]').click();
   await expect.poll(() => {
@@ -5315,10 +5350,14 @@ test("feed UI supports share, report, and remix actions", async ({ page }) => {
   expect(new Set(paginatedFeedHrefs).size).toBe(paginatedFeedHrefs.length);
 
   await sharedFeedCard.getByRole("button", { name: "Report" }).click();
+  await submitReportDialog(page, "Spam, scam, or advertising", "E2E: shared feed card report note.");
   await expect(page.getByText("Report submitted.")).toBeVisible({ timeout: 10_000 });
   await expect(page.getByTestId("feed-status")).toHaveAttribute("role", "status");
   await expect(page.getByTestId("feed-status")).toHaveAttribute("aria-live", "polite");
-  await expectContentReport("feed_item", `character:${characterId}`);
+  await expectContentReport("feed_item", `character:${characterId}`, {
+    category: "spam",
+    description: "E2E: shared feed card report note.",
+  });
 
   await sharedFeedCard.getByRole("button", { name: "Remix" }).click();
   await expect.poll(() => new URL(page.url()).pathname).toBe("/generate");
@@ -5535,8 +5574,12 @@ test("profile UI handles redeem, referral, billing, and media actions", async ({
   await expect(mediaCard).toBeVisible({ timeout: 10_000 });
 
   await mediaCard.getByRole("button", { name: "Report media" }).click();
+  await submitReportDialog(page, "A real person, used without consent", "E2E: profile media report note.");
   await expect(page.getByText("Report submitted.")).toBeVisible({ timeout: 10_000 });
-  await expectContentReport("media", mediaId);
+  await expectContentReport("media", mediaId, {
+    category: "nonconsensual_real_person",
+    description: "E2E: profile media report note.",
+  });
 
   await mediaCard.getByRole("button", { name: "Download media" }).click();
   await expect(page.getByText("Download started.")).toBeVisible({ timeout: 10_000 });

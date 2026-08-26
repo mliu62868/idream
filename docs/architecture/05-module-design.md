@@ -65,7 +65,7 @@
 - `POST /chat/sessions/:id/messages`：Chat 校验 owner、entitlement/usage、角色状态、输入审核 → 事务落 user message + assistant placeholder → 入 Chat 内部 `chat.generate` → 返回 `assistantMessageId + streamUrl`。
 - Chat worker：冻结 PreparedTurn（released Soul + recent messages + Scene/relationship/boundaries + released knowledge + entitlement + workspace scope）→ DSH AgentLoop（official igrep wake/search）→ Redis Stream/SSE → 输出审核 → 事务落 assistant `Message` + `MessageVersion(selected)`、`chat_usage`、moderation/outbox；terminal commit ACK 后才允许 official plugin ingest。
 - `POST /messages/:id/regenerate`：新增 `MessageVersion`，**不改审计历史**。
-- 删除会话 = 软删 `status=deleted`；产品不暴露 memory item API，只支持 memory on/off 与 whole-relationship reset，后者同时清除 relationship 投影并 purge DSH workspace。
+- 删除会话 = 软删 `status=deleted`；产品不暴露 memory item API，只支持 memory on/off 与 whole-relationship reset。reset 归档活跃会话、重建空 relationship 投影，并把旧 DSH workspace 与文件层记忆永久移入隔离区；rebuild 不得重新摄入隔离内容。
 
 **不变量**：被审核拦截的消息返回安全错误但**保留会话**；user/assistant 内容都产生 chat moderation trace；额度由 Chat 服务端结合主站 entitlement view 判定；Chat outbox 事件按 event id 幂等消费。
 

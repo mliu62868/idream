@@ -506,3 +506,45 @@ describe("companion HTTP authority boundary", () => {
     });
   });
 });
+
+describe("workspace purge request contract", () => {
+  it("forwards a reset quarantine label and rejects an unsafe one", async () => {
+    const { baseUrl, service } = await start();
+    const purge = async (body: Record<string, unknown>) => fetch(`${baseUrl}/v1/workspaces/purge`, {
+      method: "POST",
+      headers: authorized,
+      body: JSON.stringify(body),
+    });
+
+    const accepted = await purge({
+      scope: "relationship",
+      userId: "user-1",
+      characterId: "character-1",
+      quarantine: "filemut_reset_1",
+    });
+    expect(accepted.status).toBe(200);
+    expect(service.purge).toHaveBeenLastCalledWith({
+      scope: "relationship",
+      userId: "user-1",
+      characterId: "character-1",
+      quarantineLabel: "filemut_reset_1",
+    });
+
+    const destroy = await purge({ scope: "relationship", userId: "user-1", characterId: "character-1" });
+    expect(destroy.status).toBe(200);
+    expect(service.purge).toHaveBeenLastCalledWith({
+      scope: "relationship",
+      userId: "user-1",
+      characterId: "character-1",
+    });
+
+    const unsafe = await purge({
+      scope: "relationship",
+      userId: "user-1",
+      characterId: "character-1",
+      quarantine: "../escape",
+    });
+    expect(unsafe.status).toBe(400);
+    expect(service.purge).toHaveBeenCalledTimes(2);
+  });
+});

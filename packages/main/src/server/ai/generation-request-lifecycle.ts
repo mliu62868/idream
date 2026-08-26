@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
+import { GENERATION_REQUEST_CANCELLABLE_STATUSES } from "@idream/shared/catalog";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
@@ -42,7 +43,7 @@ export async function cancelGenerationRequest(input: {
       requestId: job.id,
       to: "cancelled",
       expected: {
-        from: ["queued", "moderating_input", "running", "moderating_output"],
+        from: GENERATION_REQUEST_CANCELLABLE_STATUSES,
         version: input.expectedVersion,
       },
       data: {

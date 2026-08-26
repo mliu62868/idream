@@ -45,6 +45,7 @@ const quote: RuntimeGenerationQuote = {
     { outputCount: 2, costDreamcoins: 14 },
   ],
   balance: 20,
+  identityLocked: false,
 };
 
 const retryQuote: RuntimeGenerationRetryQuote = {

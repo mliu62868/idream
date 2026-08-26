@@ -37,6 +37,28 @@ type WorkflowSlot = {
   default?: string | number;
 };
 
+// SPEC: 只有详情接口才给的字段。列表返回的是摘要（workflowKey/modelId/backendKind/version/
+//       capabilities/inputs），身份能力、质量口径与完整 ComfyUI 图都只在 `/workflows/:id` 里。
+// INTENT: 实测 `GET /generation/workflows` 与 `GET /generation/workflows/:id` 的字段差集就是
+//         `identity` / `quality` / `apiPrompt` / `comfyWorkflow` —— 而排查「这条路由为什么不接受
+//         参考图」「为什么身份不一致」靠的正是这四样。这一页自称工程排查视图，此前只取了摘要。
+type WorkflowIdentity = {
+  mode: string;
+  maxReferences: number;
+  acceptedRoles: string[];
+  supportsLookReference: boolean;
+  supportsSourceImageWithIdentity?: boolean;
+};
+
+type WorkflowQuality = { maxCandidates: number; evaluatorDimensions: string[] };
+
+type WorkflowDetail = {
+  identity?: WorkflowIdentity | null;
+  quality?: WorkflowQuality | null;
+  apiPrompt?: Record<string, { class_type?: string }> | null;
+  comfyWorkflow?: { id?: string; name?: string } | null;
+};
+
 type WorkflowRow = {
   workflowKey: string;
   modelId: string;
@@ -100,6 +122,7 @@ export function WorkflowsView() {
         ))}
       </div>,
       <SlotList key="slots" slots={workflow.inputs} />,
+      <WorkflowDiagnostics key="diagnostics" workflowKey={workflow.workflowKey} />,
     ],
   }));
 
@@ -132,6 +155,7 @@ export function WorkflowsView() {
             { label: t("Version"), align: "right" },
             t("Capabilities"),
             { label: t("Slots"), width: "20rem" },
+            { label: t("Identity & quality"), width: "22rem" },
           ]}
           loading={authority.loading}
           rows={rows}
@@ -159,6 +183,62 @@ function SlotList({ slots }: { slots: WorkflowSlot[] }) {
           </li>
         ))}
       </ul>
+    </EngineeringDetails>
+  );
+}
+
+// SPEC: 展开才去取详情——一条完整 ComfyUI 图 4KB，目录页 8 行全预取就是 8 个白花的请求。
+// INVARIANT: 取不到就说取不到，绝不留空。空白会被读成「这条路由没有身份能力」，
+//            而那是一个和「没查到」完全相反的结论。
+function WorkflowDiagnostics({ workflowKey }: { workflowKey: string }) {
+  const { t } = useAdminI18n();
+  const [state, setState] = useState<
+    { kind: "idle" } | { kind: "loading" } | { kind: "error"; message: string } | { kind: "ready"; detail: WorkflowDetail }
+  >({ kind: "idle" });
+
+  async function load() {
+    setState({ kind: "loading" });
+    try {
+      const data = await apiGet<{ workflow: WorkflowDetail }>(
+        `/api/v2/admin/generation/workflows/${encodeURIComponent(workflowKey)}`,
+      );
+      setState({ kind: "ready", detail: data.workflow });
+    } catch (err) {
+      setState({ kind: "error", message: requestErrorMessage(err, t) });
+    }
+  }
+
+  return (
+    <EngineeringDetails onOpen={() => void load()} summary={t("Identity, quality, and graph")}>
+      {state.kind === "loading" || state.kind === "idle" ? (
+        <span role="status">{t("Loading…")}</span>
+      ) : state.kind === "error" ? (
+        <span role="alert">{state.message}</span>
+      ) : (
+        <ul className="space-y-1">
+          <li>
+            {t("Identity")}: {state.detail.identity
+              ? `${state.detail.identity.mode} · ${t("{count} reference slots", { count: state.detail.identity.maxReferences })} · ${state.detail.identity.acceptedRoles.join(", ")}`
+              : t("not declared")}
+          </li>
+          <li>
+            {t("Look reference")}: {state.detail.identity
+              ? (state.detail.identity.supportsLookReference ? t("supported") : t("not supported"))
+              : t("not declared")}
+          </li>
+          <li>
+            {t("Quality")}: {state.detail.quality
+              ? `${t("{count} candidates", { count: state.detail.quality.maxCandidates })} · ${state.detail.quality.evaluatorDimensions.join(", ")}`
+              : t("not declared")}
+          </li>
+          <li>
+            {t("Graph")}: {state.detail.comfyWorkflow?.name ?? t("not declared")}
+            {state.detail.apiPrompt
+              ? ` · ${t("{count} nodes", { count: Object.keys(state.detail.apiPrompt).length })}`
+              : ""}
+          </li>
+        </ul>
+      )}
     </EngineeringDetails>
   );
 }

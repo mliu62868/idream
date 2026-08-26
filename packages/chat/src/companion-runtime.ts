@@ -79,7 +79,13 @@ export async function cancelActiveCompanionInvocations(
 
 export type CompanionWorkspacePurgeTarget =
   | { scope: "user"; userId: string }
-  | { scope: "relationship"; userId: string; characterId: string };
+  | {
+      scope: "relationship";
+      userId: string;
+      characterId: string;
+      /** Reset: the sidecar retires the workspace under this label instead of destroying it. */
+      quarantine?: string;
+    };
 
 export async function purgeCompanionWorkspace(input: {
   baseUrl: string;
@@ -165,9 +171,21 @@ async function sendCompanionWorkspaceRebuild(
     init,
   );
   if (!response.ok) {
-    throw new Error(`companion workspace rebuild failed with HTTP ${response.status}`);
+    // SPEC: rebuild errors are the sidecar's own structural messages (fence,
+    // ingest/maintain verification, staging); they never embed transcript or
+    // provider bytes, so surfacing them is the only way to diagnose a 400.
+    throw new Error(
+      `companion workspace rebuild failed with HTTP ${response.status}: ${await sidecarErrorSummary(response)}`,
+    );
   }
   return response;
+}
+
+async function sidecarErrorSummary(response: Response): Promise<string> {
+  const body = await response.json().catch(() => null) as { error?: { code?: unknown; message?: unknown } } | null;
+  const code = typeof body?.error?.code === "string" ? body.error.code : "unknown";
+  const message = typeof body?.error?.message === "string" ? body.error.message.slice(0, 300) : "";
+  return message ? `${code}: ${message}` : code;
 }
 
 export async function promoteCompanionWorkspaceRebuild(input: {

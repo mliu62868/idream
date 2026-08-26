@@ -33,8 +33,11 @@ import { MemoryPanel } from "./chat/MemoryPanel";
 import { MessageActions } from "./chat/MessageActions";
 import { authHrefForTarget } from "./authRedirect";
 import { LegacyTestAssetBadge } from "./LegacyTestAssetBadge";
+import { useReportDialog } from "./ReportDialog";
+import { chatFailureCopy } from "@/lib/chat-failure-copy";
 import {
   chatStreamErrorDisposition,
+  chatStreamLatestReplyFailed,
   chatStreamMessageIsInProgress,
   chatStreamMessageIsTerminal,
   chatStreamMessagesNeedReconciliation,
@@ -163,6 +166,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   const [content, setContent] = useState("");
   const [pending, setPending] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  const { openReport, reportDialog } = useReportDialog(setStatus);
   const [upgradeReason, setUpgradeReason] = useState<ChatUpgradeReason | null>(null);
   const [characterId, setCharacterId] = useState<string | null>(null);
   const [canUpdateIdentity, setCanUpdateIdentity] = useState(false);
@@ -330,14 +334,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
         }
         applySession(session);
         failureCount = 0;
-        const failedEmptyReply = session.messages.some(
-          (message) =>
-            message.role === "assistant" &&
-            !message.content.trim() &&
-            Boolean(message.status) &&
-            !["generating", "pending"].includes(message.status ?? ""),
-        );
-        if (failedEmptyReply) {
+        if (chatStreamLatestReplyFailed(session.messages)) {
           setStatus("Reply failed to load. Please try again.");
         }
       } catch (error) {
@@ -567,7 +564,10 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
         return;
       }
       if (!response.ok) {
-        setStatus("Message failed to send. Please try again.");
+        setStatus(chatFailureCopy(
+          await response.json().catch(() => null),
+          "Message failed to send. Please try again.",
+        ));
         setContent(text);
         setMessages(dropOptimisticMessage);
         return;
@@ -610,24 +610,10 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     }
   }
 
-  async function reportMessage(messageId: string) {
+  function reportMessage(messageId: string) {
     setStatus(null);
     setDeleteConfirmMessageId(null);
-    try {
-      const response = await fetch("/api/v1/reports", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          targetType: "chat_message",
-          targetId: messageId,
-          category: "other_prohibited_content",
-          description: "Chat message report",
-        }),
-      });
-      setStatus(response.ok ? "Report submitted." : "Report failed.");
-    } catch {
-      setStatus("Report failed.");
-    }
+    openReport({ kind: "record", targetType: "chat_message", targetId: messageId });
   }
 
   function beginEdit(message: ChatMessage) {
@@ -662,7 +648,10 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
         return;
       }
       if (!response.ok) {
-        setStatus("Couldn't edit the message. Please try again.");
+        setStatus(chatFailureCopy(
+          await response.json().catch(() => null),
+          "Couldn't edit the message. Please try again.",
+        ));
         return;
       }
       const payload = (await response.json()) as {
@@ -717,7 +706,9 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       recoveredStream = true;
     }
     if (recoveredStream) setStatus(null);
-    setTitle(session.title ?? session.character.name);
+    // 角色行可能已经不存在了（创作者注销会硬删他的角色，且不通知 chat）。
+    // BFF 在那种情况下把 name 兜成空串，直接用会渲染出一个无名会话头。
+    setTitle(session.title || session.character.name || "Unavailable character");
     setMessages((current) => [
       ...applyLocalStreamState(session.messages, localStreamStateRef.current),
       // An optimistic turn is not in the session yet; a poll or a recovery read
@@ -771,7 +762,10 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
         setMessages((current) => current.filter((message) => message.id !== messageId));
         setDeleteConfirmMessageId(null);
       } else {
-        setStatus("Couldn't delete the message. Please try again.");
+        setStatus(chatFailureCopy(
+          await response.json().catch(() => null),
+          "Couldn't delete the message. Please try again.",
+        ));
         setDeleteConfirmMessageId(null);
       }
     } catch {
@@ -880,7 +874,10 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
         { method: "POST" },
       );
       if (!response.ok) {
-        setStatus("Couldn't regenerate. Please try again.");
+        setStatus(chatFailureCopy(
+          await response.json().catch(() => null),
+          "Couldn't regenerate. Please try again.",
+        ));
         return;
       }
       const payload = (await response.json()) as {
@@ -1332,6 +1329,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
         onToggleMemory={toggleMemory}
         onRelationshipReset={() => setRelationshipRefreshKey((key) => key + 1)}
       />
+      {reportDialog}
     </main>
   );
 }
@@ -1506,11 +1504,14 @@ function ChatImageAttachmentCard({
 
   if (attachment.status === "completed" && attachment.mediaUrl && source && !invalidPreview) {
     return (
-      <figure className="relative overflow-hidden rounded-[12px] border border-white/10 bg-black/20">
+      // 宽度约束必须在 figure 上：过去只有 <img> 带 max-w，figure 仍撑满气泡宽度，
+      // 于是图片右侧露出一大片深色底，操作条也跟着拉宽。同组件的等待/失败分支
+      // 本来就是 `w-full max-w-[260px]`，这里只是漏了。
+      <figure className="relative w-full max-w-[260px] overflow-hidden rounded-[12px] border border-white/10 bg-black/20">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           alt={attachment.promptHint ? `Generated image: ${attachment.promptHint}` : "Generated chat image"}
-          className="aspect-[4/5] w-full max-w-[260px] object-cover"
+          className="aspect-[4/5] w-full object-cover"
           data-asset-id={attachment.mediaAssetId ?? undefined}
           data-testid="chat-image-attachment"
           height={attachment.height ?? 640}
@@ -1620,9 +1621,10 @@ function ChatImageAttachmentActions({
 }>) {
   return (
     <div className="grid gap-2 border-t border-white/10 p-2">
-      <div className="grid grid-cols-2 gap-2" aria-label="Character identity feedback">
+      {/* 单列：卡片收窄到 260px 后，两列会让「Looks like them」在固定 h-8 的按钮里折行溢出。 */}
+      <div className="grid grid-cols-1 gap-2" aria-label="Character identity feedback">
         <button
-          className="inline-flex h-8 items-center justify-center gap-1.5 rounded-full bg-emerald-400/15 px-3 text-[11px] font-bold text-emerald-100"
+          className="inline-flex h-8 items-center justify-center gap-1.5 whitespace-nowrap rounded-full bg-emerald-400/15 px-3 text-[11px] font-bold text-emerald-100"
           onClick={onIdentityMatch}
           type="button"
         >
@@ -1630,7 +1632,7 @@ function ChatImageAttachmentActions({
           Looks like them
         </button>
         <button
-          className="inline-flex h-8 items-center justify-center gap-1.5 rounded-full bg-rose-400/15 px-3 text-[11px] font-bold text-rose-100"
+          className="inline-flex h-8 items-center justify-center gap-1.5 whitespace-nowrap rounded-full bg-rose-400/15 px-3 text-[11px] font-bold text-rose-100"
           onClick={onIdentityMismatch}
           type="button"
         >

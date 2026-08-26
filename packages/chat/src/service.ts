@@ -259,7 +259,16 @@ export async function listSessions(userId: string, override?: Partial<ChatContex
       memoryEnabled: true,
       lastMessageAt: true,
     },
-    orderBy: { lastMessageAt: "desc" },
+    // SPEC: 最近对话按「最后一条消息」倒序。
+    // INVARIANT: lastMessageAt 可空（会话建好还没发言就是 NULL），而 Postgres 的
+    // DESC 默认 NULLS FIRST —— 不写 nulls:"last" 的话，从没说过话的空会话会永远
+    // 置顶在真实对话之上，take:50 还会把真实对话挤出列表。末尾的 id 是 tiebreaker：
+    // 同一毫秒的两条不加它翻页顺序不稳定。
+    orderBy: [
+      { lastMessageAt: { sort: "desc", nulls: "last" } },
+      { createdAt: "desc" },
+      { id: "desc" },
+    ],
     take: 50,
   });
 }
@@ -1263,64 +1272,75 @@ export async function archiveSession(
   override?: Partial<ChatContext>,
 ) {
   const { prisma } = ctx(override);
-  return prisma.$transaction(async (tx) => {
-    await tx.$queryRaw(
-      Prisma.sql`
-        SELECT id
-        FROM chat.chat_sessions
-        WHERE id = ${input.sessionId}
-        FOR UPDATE
-      `,
-    );
-    // BUGFIX: 此前这里只查归属、不查生命周期，于是一个**已被擦除**的会话可以被它的
-    // 主人 archive 回来 —— status 从 "deleted" 翻成 "archived"，而 listSessions 只按
-    // status 过滤，被擦除的会话就带着空消息列表重新出现在抽屉里。擦除必须是终态。
-    const session = await requireSession(tx, input, {
-      require: "not_deleted",
-      denial: { kind: "not_found" },
-    });
+  return prisma.$transaction((tx) => archiveSessionTx(tx, input));
+}
 
-    // INVARIANT: a user archive ordered after a moderation removal overrides
-    // that exact causal event. Appeal restoration may not revive this session.
-    const removalSnapshots = await tx.chatModerationEvent.findMany({
-      where: {
-        targetType: "session",
-        targetId: session.id,
-        layer: "main_moderation_removal",
-        status: "archived_by_removal",
+/**
+ * SPEC: 归档一个会话的全部权威动作，跑在调用方给的事务里。
+ * INTENT: 关系重置也要归档这个角色的活跃会话（"start over" 的字面意思），而它
+ * 已经握着用户级排他锁并开着事务了。把这段抄第二遍就等于把上面那条
+ * "用户归档覆盖审核下架" 的因果不变式抄第二遍 —— 抄漏一次就是一个静默的权威分叉。
+ */
+export async function archiveSessionTx(
+  tx: Prisma.TransactionClient,
+  input: { userId: string; sessionId: string },
+) {
+  await tx.$queryRaw(
+    Prisma.sql`
+      SELECT id
+      FROM chat.chat_sessions
+      WHERE id = ${input.sessionId}
+      FOR UPDATE
+    `,
+  );
+  // BUGFIX: 此前这里只查归属、不查生命周期，于是一个**已被擦除**的会话可以被它的
+  // 主人 archive 回来 —— status 从 "deleted" 翻成 "archived"，而 listSessions 只按
+  // status 过滤，被擦除的会话就带着空消息列表重新出现在抽屉里。擦除必须是终态。
+  const session = await requireSession(tx, input, {
+    require: "not_deleted",
+    denial: { kind: "not_found" },
+  });
+
+  // INVARIANT: a user archive ordered after a moderation removal overrides
+  // that exact causal event. Appeal restoration may not revive this session.
+  const removalSnapshots = await tx.chatModerationEvent.findMany({
+    where: {
+      targetType: "session",
+      targetId: session.id,
+      layer: "main_moderation_removal",
+      status: "archived_by_removal",
+    },
+    select: { details: true },
+  });
+  const overriddenRemovalEventIds = removalSnapshots.flatMap((snapshot) => {
+    const details = snapshot.details;
+    if (!details || typeof details !== "object" || Array.isArray(details)) {
+      throw new Error("character removal session evidence is invalid");
+    }
+    const sourceEventId = (details as Record<string, unknown>).sourceEventId;
+    if (typeof sourceEventId !== "string" || !sourceEventId) {
+      throw new Error("character removal session evidence has no source event");
+    }
+    return sourceEventId;
+  });
+  await tx.chatModerationEvent.create({
+    data: {
+      id: createId("mod"),
+      targetType: "session",
+      targetId: session.id,
+      layer: "user_session_lifecycle",
+      status: "user_archived",
+      details: {
+        version: 1,
+        overriddenRemovalEventIds: [
+          ...new Set(overriddenRemovalEventIds),
+        ].sort(),
       },
-      select: { details: true },
-    });
-    const overriddenRemovalEventIds = removalSnapshots.flatMap((snapshot) => {
-      const details = snapshot.details;
-      if (!details || typeof details !== "object" || Array.isArray(details)) {
-        throw new Error("character removal session evidence is invalid");
-      }
-      const sourceEventId = (details as Record<string, unknown>).sourceEventId;
-      if (typeof sourceEventId !== "string" || !sourceEventId) {
-        throw new Error("character removal session evidence has no source event");
-      }
-      return sourceEventId;
-    });
-    await tx.chatModerationEvent.create({
-      data: {
-        id: createId("mod"),
-        targetType: "session",
-        targetId: session.id,
-        layer: "user_session_lifecycle",
-        status: "user_archived",
-        details: {
-          version: 1,
-          overriddenRemovalEventIds: [
-            ...new Set(overriddenRemovalEventIds),
-          ].sort(),
-        },
-      },
-    });
-    return tx.chatSession.update({
-      where: { id: session.id },
-      data: { status: "archived" },
-    });
+    },
+  });
+  return tx.chatSession.update({
+    where: { id: session.id },
+    data: { status: "archived" },
   });
 }
 

@@ -4,7 +4,7 @@
 import type { ChatPrismaClient } from "./db.js";
 import type { ChatToolDefinition, ModelMessage } from "@idream/shared";
 import { buildContext, type BuiltContext } from "./context.js";
-import { buildCompanionSystemPrompt } from "./prompt.js";
+import { buildCompanionSystemPrompt, buildTurnStateBlock } from "./prompt.js";
 import { registryChatTools } from "./agent-tools.js";
 import {
   preparedTurnWireSchema,
@@ -34,7 +34,6 @@ export interface PreparedTurn {
       temperature: number;
       topP: number;
       repetitionPenalty: number;
-      structuredTemperature: number;
     };
   };
   budget: {
@@ -68,6 +67,7 @@ export interface PrepareCompanionTurnInput {
 interface PreparedTurnRuntimeState {
   context: BuiltContext;
   currentUserMessageId: string;
+  turnState: string;
 }
 
 const runtimeByPreparedTurn = new WeakMap<PreparedTurn, PreparedTurnRuntimeState>();
@@ -76,15 +76,16 @@ export async function prepareCompanionTurn(
   input: PrepareCompanionTurnInput,
 ): Promise<PreparedTurn> {
   const context = await buildContext(input);
-  return compilePreparedTurn(context, input.userMessageId);
+  return compilePreparedTurn(context, input.userMessageId, new Date());
 }
 
 /** Compile a pure, pinned generation snapshot from an already-authoritative context. */
 export function compilePreparedTurn(
   context: BuiltContext,
   currentUserMessageId: string,
+  now: Date = new Date(),
 ): PreparedTurn {
-  const fitted = fitPreparedTurnBudget(context);
+  const fitted = fitPreparedTurnBudget(context, now);
   const modelProfile = fitted.context.policy.modelProfile;
   const profile: PreparedTurn["profile"] = {
     tier: fitted.context.policy.tier,
@@ -103,7 +104,6 @@ export function compilePreparedTurn(
       temperature: modelProfile.temperature ?? 0.9,
       topP: modelProfile.topP ?? 0.95,
       repetitionPenalty: modelProfile.repetitionPenalty ?? 1.05,
-      structuredTemperature: modelProfile.structuredTemperature ?? 0.2,
     },
   };
   const prepared: PreparedTurn = {
@@ -130,6 +130,7 @@ export function compilePreparedTurn(
   runtimeByPreparedTurn.set(prepared, {
     context: fitted.context,
     currentUserMessageId,
+    turnState: fitted.turnState,
   });
   return prepared;
 }
@@ -148,7 +149,7 @@ export function preparedTurnRuntime(prepared: PreparedTurn): BuiltContext {
 export function toPreparedTurnWire(prepared: PreparedTurn): PreparedTurnWire {
   const runtime = runtimeByPreparedTurn.get(prepared);
   if (!runtime) throw new Error("PreparedTurn was not produced by prepareCompanionTurn");
-  const { context, currentUserMessageId } = runtime;
+  const { context, currentUserMessageId, turnState } = runtime;
   const messages: PreparedTurnWire["messages"] = [
     {
       id: [
@@ -162,19 +163,21 @@ export function toPreparedTurnWire(prepared: PreparedTurn): PreparedTurnWire {
       content: prepared.messages[0]?.content ?? "",
     },
   ];
-  if (context.openingMessage) {
-    messages.push({
-      id: `opening:${prepared.trace.characterReleaseId ?? prepared.trace.characterContentVersionId}`,
-      sourceKind: "plugin",
-      role: "assistant",
-      content: context.openingMessage,
-    });
-  }
   for (const message of context.recentMessages) {
+    const isCurrent = message.id === currentUserMessageId;
+    if (isCurrent) {
+      // The per-turn state is a plugin-sourced context message, so DSH seeds it
+      // as history the model reads last and igrep never ingests it.
+      messages.push({
+        id: `state:${currentUserMessageId}`,
+        sourceKind: "plugin",
+        role: "user",
+        content: turnState,
+      });
+    }
     messages.push({
       id: message.id,
-      sourceKind:
-        message.id === currentUserMessageId ? "current_user" : "replay",
+      sourceKind: isCurrent ? "current_user" : "replay",
       role: message.role,
       content: message.photoSummary
         ? `${message.content}\n[You sent a photo: ${message.photoSummary}]`
@@ -195,18 +198,21 @@ export function toPreparedTurnWire(prepared: PreparedTurn): PreparedTurnWire {
   });
 }
 
-function buildModelMessages(context: BuiltContext): ModelMessage[] {
+function buildModelMessages(context: BuiltContext, turnState: string): ModelMessage[] {
+  const transcript: ModelMessage[] = context.recentMessages.map((message) => ({
+    role: message.role,
+    content: message.photoSummary
+      ? `${message.content}\n[You sent a photo: ${message.photoSummary}]`
+      : message.content,
+  }));
+  // The state block sits directly before the current user message (the
+  // transcript anchor); a transcript that does not end with a user turn keeps
+  // the state last so its position stays "right before the model speaks".
+  const anchorIndex = transcript.at(-1)?.role === "user" ? transcript.length - 1 : transcript.length;
+  transcript.splice(anchorIndex, 0, { role: "user", content: turnState });
   return [
     { role: "system", content: buildCompanionSystemPrompt(context) },
-    ...(context.openingMessage
-      ? [{ role: "assistant" as const, content: context.openingMessage }]
-      : []),
-    ...context.recentMessages.map((message) => ({
-      role: message.role,
-      content: message.photoSummary
-        ? `${message.content}\n[You sent a photo: ${message.photoSummary}]`
-        : message.content,
-    })),
+    ...transcript,
   ];
 }
 
@@ -214,11 +220,12 @@ function buildModelMessages(context: BuiltContext): ModelMessage[] {
  * INVARIANT: the tier budget covers every adapter byte. Degradation order is
  * fixed and observable: drop only the oldest complete transcript exchange.
  */
-export function fitPreparedTurnBudget(context: BuiltContext): {
+export function fitPreparedTurnBudget(context: BuiltContext, now: Date = new Date()): {
   context: BuiltContext;
   messages: ModelMessage[];
   tools: ChatToolDefinition[];
   budget: PreparedTurn["budget"];
+  turnState: string;
 } {
   const fitted: BuiltContext = {
     ...context,
@@ -228,8 +235,9 @@ export function fitPreparedTurnBudget(context: BuiltContext): {
   const tools = fitted.policy.imageToolEnabled ? registryChatTools() : [];
   const maxInputTokens = Math.max(1, Math.ceil(fitted.policy.maxContextChars / 4));
   const dropped = new Set(fitted.dropped);
+  const turnState = buildTurnStateBlock(fitted, now);
   const calculate = () => {
-    const messages = buildModelMessages(fitted);
+    const messages = buildModelMessages(fitted, turnState);
     const usedInputTokens = estimateTokens(
       `${messages.map((message) => message.content).join("\n")}\n${JSON.stringify(tools)}`,
     );
@@ -261,6 +269,7 @@ export function fitPreparedTurnBudget(context: BuiltContext): {
     context: fitted,
     messages: calculated.messages,
     tools,
+    turnState,
     budget: {
       maxInputTokens,
       usedInputTokens: calculated.usedInputTokens,

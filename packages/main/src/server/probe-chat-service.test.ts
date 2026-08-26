@@ -665,6 +665,37 @@ describe("chat service conversation probe", () => {
     expect(JSON.stringify(evidence)).not.toContain("must-not-leak");
   });
 
+  it("polls attempt evidence until the sidecar memory settlement leaves pending", async () => {
+    const pending = completedDshTrace();
+    (pending.primaryTelemetry as { memory: { outcome: string } }).memory = { outcome: "pending" };
+    (pending.companion as { memoryIngestOutcome: string }).memoryIngestOutcome = "pending";
+    const traces = [pending, pending, completedDshTrace()];
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      messageId: "assistant-normal",
+      attempt: 1,
+      status: "sent",
+      memoryExtractedAttempt: 1,
+      dsh: projectDshCompanionEvidence(traces.shift() ?? completedDshTrace(), "normal"),
+    }), { status: 200 }));
+    const sleeps: number[] = [];
+
+    const evidence = await fetchProbeCompanionAttemptEvidence({
+      serviceUrl: "http://127.0.0.1:3100",
+      internalToken: "internal-probe-token",
+      userId: auditActor.id,
+      sessionId: "session-probe",
+      messageId: "assistant-normal",
+      attempt: 1,
+      mode: "normal",
+      fetchImpl,
+      sleep: async (ms) => { sleeps.push(ms); },
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(sleeps).toEqual([500, 500]);
+    expect(evidence).toMatchObject({ ok: true, memoryOutcome: "ingested" });
+  });
+
   it("fails closed when pre-cleanup Gate R evidence is not attributable", async () => {
     const evidence = await collectProbeRolloutEvidenceBeforeCleanup({
       serviceUrl: "http://127.0.0.1:3100",

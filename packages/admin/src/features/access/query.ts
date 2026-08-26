@@ -64,6 +64,28 @@ export function accessStatusConfirmation(userId: string, status: string) {
   return `${userId}:${status}`;
 }
 
+/**
+ * SPEC: 角色与授权包两条写命令的确认串 —— 服务端按字面比对
+ *       （`access/users.ts:updateUserRole` 的 `${userId}:${role}`、
+ *        `permissions/grant-bundles.ts` 的 `${userId}:${bundleKey}:grant|revoke`），
+ *       差一个字符就是 400。
+ * INTENT: 和 accessStatusConfirmation / accessPermissionConfirmation 同住一处，因为它们是
+ *         同一件事：确认串的形状由后端定，不是界面文案。
+ * INVARIANT: 不对 userId 做 trim —— 服务端拿的是路径参数，这里多 trim 一次反而会在
+ *            带空格的输入上静默对不上。调用点负责传已经规整过的 ID。
+ */
+export function accessRoleConfirmation(userId: string, role: string) {
+  return `${userId}:${role}`;
+}
+
+export function accessBundleConfirmation(
+  userId: string,
+  bundleKey: string,
+  action: "grant" | "revoke",
+) {
+  return `${userId}:${bundleKey}:${action}`;
+}
+
 function withQuery(path: string, values: Record<string, string>) {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(values)) set(params, key, value);

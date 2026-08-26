@@ -126,6 +126,40 @@ const TABLE: Record<string, Omit<FailureReason, "code">> = {
     severity: "waiting",
   },
 
+  // --- 实测出现在死信队列里、但此前没登记的码（2026-08-24 按 generation_jobs.errorCode 统计） ---
+  // packages/gen/src/backend/types.ts:43 —— submit/poll 期间抛出的任何其他错误都归到这里。
+  backend_error: {
+    title: "The generation backend threw an error",
+    hint: "Safe to retry; if it repeats, needs engineering",
+    severity: "retry",
+  },
+  // admin-v2/jobs/unknown-reconciliation.ts:234 —— 运营对一个 unknown 结果裁定为"确实失败了"。
+  operator_confirmed_provider_failure: {
+    title: "An operator confirmed the provider failed",
+    hint: "No action needed — the unknown outcome was already reconciled",
+    severity: "waiting",
+  },
+  // packages/gen/src/backend/backend-video-model.ts:31 —— 配置里指的模型后端不认识，不可重试。
+  unknown_model: {
+    title: "The backend does not know this model",
+    hint: "A route or profile points at a model the backend cannot load — needs engineering",
+    severity: "engineering",
+  },
+  // server/lib/constants.ts:47 —— 输入没通过年龄安全检查，已退币。
+  age_under_18: {
+    title: "Blocked by the age safety check",
+    hint: "No action needed — nothing was generated and the coins were returned",
+    severity: "waiting",
+  },
+  // TRAP: 这一条在当前服务端源码里查不到字面量发出点，但库里真实存在（实测 1 条，2026-07-25），
+  //       且主站的用户侧文案表 `main/src/lib/generation-failure-copy.ts:21` 也登记了它——
+  //       也就是说用户看得到人话、运营看到的是裸码。按"运营遇得到就得有人话"登记。
+  identity_calibration_route_incompatible: {
+    title: "The Character's identity references do not fit the selected route",
+    hint: "Point the Character at a route that accepts its reference roles, then retry",
+    severity: "engineering",
+  },
+
   // --- creative runs + character release ---
   generation_failed: {
     title: "The generation step failed",

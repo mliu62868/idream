@@ -265,6 +265,7 @@ describe("generator exact quote authority", () => {
     maxCount: 1,
     costs: [{ outputCount: 1, costDreamcoins: 7 }],
     balance: 5,
+    identityLocked: false,
   };
 
   it("has no exact authority for a count above the resolved route limit", () => {
@@ -310,6 +311,7 @@ describe("generator exact quote authority", () => {
               quote: {
                 ...quote,
                 balance: 20,
+                identityLocked: false,
               },
             },
           });

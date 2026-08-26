@@ -27,6 +27,8 @@ import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { useToast } from "@/components/admin/ui/Toast";
 import { createLatestRequestGate } from "@/lib/latest-request";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
+import { canActionReportTarget } from "./actionable-targets";
+import { siblingReportCounts } from "./sibling-reports";
 import {
   defaultModerationQuery,
   MODERATION_PAGE_SIZE,
@@ -218,6 +220,7 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
     endpoint: string;
     method: "POST" | "PATCH";
     payload: (reason: string) => Record<string, unknown>;
+    siblingCount?: number;
     title: string;
   }) {
     if (!canDecide) return;
@@ -226,7 +229,7 @@ export function ModerationWorkspace({ canDecide }: { canDecide: boolean }) {
     setConfirmation({
       title: input.title,
       destructive: { expectedName: expected, inputLabel: "Confirmation" },
-      consequence: moderationConsequence(input.kind, t),
+      consequence: moderationConsequence(input.kind, t, input.siblingCount ?? 0),
       reasonLabel: "Reason",
       submitLabel: "Confirm",
       onSubmit: async (reason) => {
@@ -417,6 +420,8 @@ type ConfirmDecision = (input: {
   endpoint: string;
   method: "POST" | "PATCH";
   payload: (reason: string) => Record<string, unknown>;
+  /** 本页还有几条举报指向同一个对象。只影响后果文案，不影响请求。 */
+  siblingCount?: number;
   title: string;
 }) => void;
 
@@ -521,8 +526,10 @@ function reportRows(
   value: (key: string) => string,
   format: AdminFormat,
 ): DataTableRow[] {
+  const siblings = siblingReportCounts(rows);
   return rows.map((row, index) => {
     const id = format.text(row.id);
+    const siblingCount = siblings.get(id) ?? 0;
     return {
       id: id || `report-${index}`,
       cells: [
@@ -530,6 +537,7 @@ function reportRows(
         <TargetCell
           id={format.text(row.targetId)}
           key="target"
+          siblingCount={siblingCount}
           type={format.text(row.targetType)}
         />,
         value(format.text(row.category)) || "—",
@@ -547,6 +555,14 @@ function reportRows(
         format.dateTime(row.createdAt),
         canDecide ? (
           <div className="flex gap-1">
+            {/* SPEC: 裁定端只实现了 character / media / feed_item 三类处置。
+                INTENT: 举报提交端对 targetType 是故意宽松的自由字符串，于是队列里会出现
+                `chat_message` 这种没有处置实现的目标（实测 6 条真实 open 举报里有 1 条，
+                另有同类是队友的审计探针）。主站每条聊天消息都有举报按钮且提交成功，只会更多。
+                点「处置」→ applyModerationAction 抛 400 → **整个事务回滚**：复核不落、
+                状态不改、Case 决定不写、审计不写。审核员敲完确认串、写完原因，只拿到一个错误，
+                队列一动不动。所以这里不给那个按钮，并说清为什么只剩「关闭」。 */}
+            {canActionReportTarget(format.text(row.targetType)) ? (
             <Action
               icon={<ClipboardCheck className="h-4 w-4" />}
               label="Action"
@@ -556,6 +572,7 @@ function reportRows(
                   id,
                   endpoint: `/api/v2/admin/moderation/reports/${id}/decision`,
                   method: "POST",
+                  siblingCount,
                   title: t("Action report {id}", { id }),
                   payload: () => ({
                     decision: "actioned",
@@ -564,6 +581,14 @@ function reportRows(
                 })
               }
             />
+            ) : (
+              <span
+                className="self-center whitespace-nowrap text-xs text-[var(--ad-text-muted)]"
+                title={t("Takedown is not implemented for this target type; only closing the report is available.")}
+              >
+                {t("No takedown")}
+              </span>
+            )}
             <Action
               icon={<Check className="h-4 w-4" />}
               label="Close"
@@ -573,6 +598,7 @@ function reportRows(
                   id,
                   endpoint: `/api/v2/admin/moderation/reports/${id}/decision`,
                   method: "POST",
+                  siblingCount,
                   title: t("Close report {id}", { id }),
                   payload: () => ({ decision: "no_violation" }),
                 })
@@ -710,7 +736,11 @@ function AuthoritySection({
               "Status",
               "Priority",
               "Created",
-              "Actions",
+              // SPEC: 只给「操作」列留宽，其余列继续按内容自适应。
+              // INTENT: 中文标签比英文长，「处理」「关闭」两个按钮在自适应宽度下被挤到逐字竖排
+              //         （实测 1440 视口，行高被撑到 67px）。给整张表钉列宽反而把「状态 / 优先级 /
+              //         创建时间」推出横向滚动区——那是拿一个毛病换另一个，所以只治按钮这一处。
+              { label: "Actions", width: "9.5rem" },
             ]
           : caption === "Appeals"
             ? [
@@ -769,8 +799,17 @@ function CaseText({ label, value }: { label: string; value: string }) {
 
 // INTENT: 举报的目标以前是一串裸 ID，审核员要看被举报的东西得自己复制去搜。角色有详情页就
 //         直接给链接；其它 target 类型后台还没有落地页，所以只把类型标出来，不编一个会 404 的链接。
-function TargetCell({ id, type }: { id: string; type: string }) {
-  const { value } = useAdminI18n();
+function TargetCell({
+  id,
+  siblingCount = 0,
+  type,
+}: {
+  id: string;
+  /** 本页指向同一个对象的**其他**举报条数；0 表示这一页只有这一条。 */
+  siblingCount?: number;
+  type: string;
+}) {
+  const { t, value } = useAdminI18n();
   if (!id) return <>—</>;
   return (
     <span className="block">
@@ -784,6 +823,13 @@ function TargetCell({ id, type }: { id: string; type: string }) {
       ) : (
         <span className="block break-words">{id}</span>
       )}
+      {/* INVARIANT: 文案必须说「本页」。队列是游标分页的，前端只数得清已加载的这一页，
+          把它说成全量计数就是编一个自己没查过的数字。 */}
+      {siblingCount > 0 ? (
+        <span className="mt-1 inline-block rounded-md bg-[var(--ad-yellow-bg)] px-1.5 py-0.5 text-xs text-[var(--ad-yellow-text)]">
+          {t("+{count} more on this page", { count: siblingCount })}
+        </span>
+      ) : null}
     </span>
   );
 }
@@ -870,7 +916,7 @@ function Action({
   return (
     <button
       aria-label={t(label)}
-      className="inline-flex min-h-9 items-center gap-1 rounded border px-2"
+      className="inline-flex min-h-9 items-center gap-1 whitespace-nowrap rounded border px-2"
       onClick={onClick}
       type="button"
     >
@@ -937,6 +983,27 @@ function Select({
 //         一个是把已经撤走的放回去；运营敲确认串之前必须先读到这个区别。
 // INVARIANT: 七种 kind 全部有条目——漏一种就会退回没有后果说明的旧行为，由 mounted 测试守住。
 function moderationConsequence(
+  kind: ModerationDecisionKind,
+  t: (key: string, values?: Record<string, string | number>) => string,
+  siblingCount = 0,
+): { effect: string; reversible: boolean } {
+  const consequence = moderationEffect(kind, t);
+  // SPEC: 同目标还有别的举报时，先说清这次**只**落这一条。
+  // INTENT: `actioned` 会 applyModerationAction(targetType, targetId) 把整个对象处置掉
+  //         （moderation/decision.ts:238），但剩下那几条举报的 status 一个字都不改。
+  //         审核员以为"处理完了"，队列里其实还留着同一个对象的活，几分钟后再点开一条，
+  //         对着已下架的对象重新裁决——两条互相矛盾的审计记录落在同一个 targetId 上。
+  if (siblingCount <= 0) return consequence;
+  return {
+    ...consequence,
+    effect: `${consequence.effect} ${t(
+      "{count} more report(s) on this page name the same target and are not decided by this action.",
+      { count: siblingCount },
+    )}`,
+  };
+}
+
+function moderationEffect(
   kind: ModerationDecisionKind,
   t: (key: string) => string,
 ): { effect: string; reversible: boolean } {

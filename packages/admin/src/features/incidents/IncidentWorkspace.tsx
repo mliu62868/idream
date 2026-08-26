@@ -5,9 +5,11 @@ import type { FormEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, ArrowRight, CheckCircle2, RefreshCcw, X } from "lucide-react";
 import {
+  incidentDetailSchema,
   incidentListResponseSchema,
   type AdminListResponse,
   type IncidentActionPlan,
+  type IncidentDetail,
   type OpsIncident,
 } from "@idream/shared/admin";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
@@ -43,23 +45,6 @@ import {
 import { IncidentCorrelationOutbox } from "./IncidentCorrelationOutbox";
 
 type IncidentList = AdminListResponse<OpsIncident>;
-
-type IncidentDetail = {
-  incident: OpsIncident;
-  occurrences: Array<{
-    id: string;
-    requestId: string;
-    attemptId: string | null;
-    observedAt: string;
-    assignmentHistory: Array<{ id: string; fromIncidentId: string; toIncidentId: string; action: string; reason: string; createdAt: string }>;
-  }>;
-  actionPlans: IncidentActionPlan[];
-  postmortem: { id: string; summary: string; rootCause: string; contributingFactors: string[]; correctiveActions: string[]; evidenceRefs: string[]; createdById: string; createdAt: string } | null;
-  activity: IncidentActivityEntry[];
-};
-
-// adminAuditEntrySchema 的子集——这里只读得到操作、执行人、原因和时间。
-type IncidentActivityEntry = { id: string; action: string; actorId: string; reason: string | null; createdAt: string };
 
 type PlanAction = IncidentActionPlan["action"];
 
@@ -122,7 +107,10 @@ export function IncidentWorkspace({
     setDetailLoading(true);
     setError(null);
     try {
-      const response = await adminV2Request<IncidentDetail>(`/api/v2/admin/incidents/${encodeURIComponent(incidentId)}`);
+      const response = await adminV2Request<IncidentDetail>(
+        `/api/v2/admin/incidents/${encodeURIComponent(incidentId)}`,
+        { schema: incidentDetailSchema },
+      );
       if (requestId === detailRequestId.current) setDetail(response);
     } catch (loadError) {
       if (requestId === detailRequestId.current) setError(loadError);
@@ -471,6 +459,51 @@ function IncidentInspector({ asOf, busy, canManage, detail, onClose, onCommand, 
             </p>
           ) : null}
         </section>
+
+        {/* SPEC: 这次事故打到了谁 —— 名单，不是计数。
+            INTENT: `impact.affectedUsers` 一直只是个数字，occurrences 里只有 requestId；
+            于是"事故之后主动联系受影响的人"在后台做不了，要还原名单只能逐条反查 requestId。
+            INVARIANT: 反查不到的单独说，不并进名单也不丢 —— requestId 是裸 String 没有外键
+            （不变式 `attempt_without_request` 就在数这类孤儿），"请求行已经不在了"是真实状态，
+            抹掉会让运营以为名单是全的。 */}
+        {detail.affectedUsers.length > 0 || detail.unattributableOccurrences > 0 ? (
+          <section aria-labelledby="incident-affected-title" className="rounded-lg bg-[var(--ad-surface-subtle)] p-4">
+            <h4 className="text-sm font-semibold" id="incident-affected-title">{t("Who this hit")}</h4>
+            {detail.affectedUsers.length > 0 ? (
+              <ul className="mt-2 space-y-1 text-sm">
+                {detail.affectedUsers.map((affected) => (
+                  <li className="flex flex-wrap items-center gap-2" key={affected.userId}>
+                    {affected.customerRecordAvailable ? (
+                      <a
+                        className="font-mono text-xs underline underline-offset-4"
+                        href={`/admin/customers?search=${encodeURIComponent(affected.userId)}`}
+                      >
+                        {affected.userId}
+                      </a>
+                    ) : (
+                      <span className="font-mono text-xs">{affected.userId}</span>
+                    )}
+                    <span className="text-xs text-[var(--ad-text-muted)]">
+                      {t("{count} occurrences", { count: affected.occurrenceCount })}
+                    </span>
+                    {!affected.customerRecordAvailable ? (
+                      <span className="text-xs text-[var(--ad-text-muted)]">
+                        {t("No customer record")}
+                      </span>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {detail.unattributableOccurrences > 0 ? (
+              <p className="mt-2 text-xs text-[var(--ad-text-muted)]">
+                {t("{count} occurrences could not be traced back to a user — their Request row is gone.", {
+                  count: detail.unattributableOccurrences,
+                })}
+              </p>
+            ) : null}
+          </section>
+        ) : null}
 
         {/* 权威已经给出的建议动作与运行手册；之前整块被丢掉，运营只能自己想下一步。 */}
         {incident.recommendedActions.length > 0 || incident.runbookUrl || incident.causeConfidence !== null ? (

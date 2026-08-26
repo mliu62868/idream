@@ -114,12 +114,14 @@ describe("fail-closed companion readiness", () => {
     expect(readiness.profiles.normal.executionCompositionDigest).toBe(
       companionCompositionDigest("normal", plugin.module.resolveConfig({
         command: config.igrepCommand,
-        search: true,
+        search: false,
         webProvider: false,
         webTool: false,
         memory: true,
         ingest: true,
         wake: true,
+        memorySearchMode: "fast",
+        timeoutMs: 10_000,
       }), { maxSteps: config.maxSteps, igrepLlm: config.igrepLlm }),
     );
     expect(readiness.profiles.normal.executionCompositionDigest).not.toBe(normalDigest);

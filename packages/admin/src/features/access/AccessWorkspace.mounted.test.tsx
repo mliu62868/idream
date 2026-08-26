@@ -45,6 +45,184 @@ async function typeUserId(container: HTMLElement, userId: string) {
   });
 }
 
+// SPEC: 角色与授权包的入口必须真的发出后端要的那条命令 —— 确认串差一个字符就是 400。
+// INTENT: 这两个 API（users/:id/role、users/:id/grant-bundles）后端一直都在，界面上却没有入口，
+//         运营只能一条一条打权限覆盖补丁。补入口的同时把确认串的形状钉死：它由服务端定
+//         （`${userId}:${role}` / `${userId}:${bundleKey}:grant|revoke`），不是界面文案。
+describe("role and grant bundle commands", () => {
+  let container: HTMLDivElement;
+  let root: Root | null;
+
+  beforeEach(() => {
+    apiGet.mockReset();
+    apiWrite.mockReset();
+    apiGet.mockImplementation(async (path: string) => {
+      if (path.includes("/grant-bundles")) {
+        return {
+          user: { id: "user-9", role: "support", status: "active" },
+          items: [
+            {
+              id: "bundle-1",
+              userId: "user-9",
+              bundleKey: "creative_operator",
+              scope: null,
+              expiresAt: null,
+              revokedAt: null,
+              createdAt: "2026-08-01T00:00:00.000Z",
+              updatedAt: "2026-08-01T00:00:00.000Z",
+              state: "active",
+              permissions: ["creative.run.read"],
+            },
+            // 已撤销的仍在列表里，但不该再给撤销按钮。
+            {
+              id: "bundle-2",
+              userId: "user-9",
+              bundleKey: "growth_operator",
+              scope: null,
+              expiresAt: null,
+              revokedAt: "2026-08-10T00:00:00.000Z",
+              createdAt: "2026-08-01T00:00:00.000Z",
+              updatedAt: "2026-08-10T00:00:00.000Z",
+              state: "revoked",
+              permissions: ["growth.promo.read"],
+            },
+          ],
+        };
+      }
+      if (path.includes("/permissions")) {
+        return { user: { id: "user-9", role: "support", status: "active" }, overrides: [], effective: [] };
+      }
+      return emptyUserList;
+    });
+    apiWrite.mockResolvedValue({});
+    window.history.replaceState(null, "", "/admin/system/access");
+    container = document.createElement("div");
+    document.body.append(container);
+    root = null;
+  });
+
+  afterEach(async () => {
+    await act(async () => root?.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  async function mountWithTarget() {
+    await act(async () => {
+      root = createRoot(container);
+      root.render(
+        <AccessWorkspace permissions={{ changeStatus: true, managePermissions: true }} />,
+      );
+    });
+    await typeUserId(container, "user-9");
+    await waitUntil(() =>
+      apiGet.mock.calls.some(([path]) => String(path).includes("/grant-bundles")),
+    );
+  }
+
+  // ConfirmDialog 渲染在 document 上而不是 container 里，两个输入框靠 aria-label 区分。
+  function clickButton(label: string) {
+    const button = [...document.querySelectorAll("button")].find(
+      (candidate) =>
+        candidate.textContent?.trim() === label ||
+        candidate.getAttribute("aria-label") === label,
+    );
+    if (!button) throw new Error(`Button not found: ${label}`);
+    return act(async () => button.click());
+  }
+
+  async function confirmDialog(reason: string, confirmation: string) {
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    const reasonField = document.querySelector<HTMLInputElement>('input[aria-label="Reason"]');
+    const confirmField = document.querySelector<HTMLInputElement>('input[aria-label="Confirmation"]');
+    if (!reasonField || !confirmField) throw new Error("Confirm dialog fields are missing");
+    await act(async () => {
+      setter?.call(reasonField, reason);
+      reasonField.dispatchEvent(new Event("input", { bubbles: true }));
+      setter?.call(confirmField, confirmation);
+      confirmField.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await clickButton("Confirm");
+  }
+
+  it("offers revoke only for the bundles that are still active", async () => {
+    await mountWithTarget();
+    const revokeLabels = [...container.querySelectorAll("button")]
+      .map((button) => button.getAttribute("aria-label"))
+      .filter((label): label is string => Boolean(label?.startsWith("Revoke ")));
+
+    expect(revokeLabels).toEqual(["Revoke creative_operator"]);
+  });
+
+  it("sends the role command with the confirmation string the authority compares", async () => {
+    await mountWithTarget();
+    await clickButton("Change role");
+    await confirmDialog("Promoting to ops on-call", "user-9:support");
+
+    await waitUntil(() => apiWrite.mock.calls.length > 0);
+    const [path, method, body] = apiWrite.mock.calls[0];
+    expect(path).toBe("/api/v2/admin/users/user-9/role");
+    expect(method).toBe("POST");
+    expect(body).toMatchObject({ role: "support", confirmation: "user-9:support" });
+  });
+
+  // SPEC: character_producer 必须带上非空 scope.characterIds 才授得出去。
+  // INTENT: 服务端 `permissions/grant-bundles.ts:assertBundleScope` 对它强制要求非空范围，
+  //         而它恰好是 ADMIN_GRANT_BUNDLES 里的第一个 key，也就是下拉框的默认值——没有范围
+  //         输入框时，这个默认选项发出去必定是一条 400，运营看到的是"确认串没问题却失败了"。
+  it("carries the character scope the authority requires for character_producer", async () => {
+    await mountWithTarget();
+    const scopeInput = [...container.querySelectorAll("label")]
+      .find((label) => label.textContent?.includes("Assigned character IDs"))
+      ?.querySelector("input");
+    if (!scopeInput) throw new Error("Character scope field is missing for character_producer");
+    const grant = [...container.querySelectorAll("button")].find(
+      (candidate) => candidate.textContent?.trim() === "Grant bundle",
+    );
+    // 范围为空时不给按 —— 与其发一条注定 400 的命令，不如先要范围。
+    expect((grant as HTMLButtonElement).disabled).toBe(true);
+
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    await act(async () => {
+      setter?.call(scopeInput, "char-1, char-2");
+      scopeInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await clickButton("Grant bundle");
+    await confirmDialog("Joining the character rota", "user-9:character_producer:grant");
+
+    await waitUntil(() => apiWrite.mock.calls.length > 0);
+    const [path, method, body] = apiWrite.mock.calls[0];
+    expect(path).toBe("/api/v2/admin/users/user-9/grant-bundles");
+    expect(method).toBe("POST");
+    expect(body).toMatchObject({
+      bundleKey: "character_producer",
+      confirmation: "user-9:character_producer:grant",
+      scope: { characterIds: ["char-1", "char-2"] },
+    });
+  });
+
+  it("revokes a bundle with a DELETE that still carries reason and confirmation", async () => {
+    await mountWithTarget();
+    await clickButton("Revoke creative_operator");
+    await confirmDialog("Left the creative rota", "user-9:creative_operator:revoke");
+
+    await waitUntil(() => apiWrite.mock.calls.length > 0);
+    const [path, method, body] = apiWrite.mock.calls[0];
+    expect(path).toBe("/api/v2/admin/users/user-9/grant-bundles/creative_operator");
+    expect(method).toBe("DELETE");
+    expect(body).toMatchObject({
+      reason: "Left the creative rota",
+      confirmation: "user-9:creative_operator:revoke",
+    });
+  });
+});
+
 describe("permission override impact", () => {
   let container: HTMLDivElement;
   let root: Root | null;

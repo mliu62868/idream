@@ -488,6 +488,7 @@ export async function getGenerationJobV2(request: Request, requestId: string) {
     settlementLinks,
     unknownAuthorityEvents,
     terminalReceipts,
+    feedback,
   ] = await Promise.all([
     attemptIds.length > 0 ? prisma.generationAttemptEvent.findMany({
       where: { attemptId: { in: attemptIds } },
@@ -531,6 +532,14 @@ export async function getGenerationJobV2(request: Request, requestId: string) {
         sourceEventId: { in: attemptIds },
       },
     }) : [],
+    // SPEC: 这次生成的用户评价。索引 [generationJobId, createdAt] 就是为这条查询建的。
+    // INTENT: 主站一直在收（media-feedback.ts:160），admin-v2 此前零引用——
+    //         运营查一次生成投诉时，唯一的第一手"产出行不行"的信号看不到。
+    prisma.generationFeedback.findMany({
+      where: { generationJobId: requestId },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: 50,
+    })
   ]);
   const ledgerEntries = settlementLinks.length > 0 ? await prisma.dreamcoinLedger.findMany({
     where: { id: { in: settlementLinks.map((link) => link.ledgerEntryId) } },
@@ -806,6 +815,17 @@ export async function getGenerationJobV2(request: Request, requestId: string) {
       }];
     }),
     unknownTerminalEvidence,
+    feedback: feedback.map((row) => ({
+      id: row.id,
+      actorId: row.actorId,
+      mediaAssetId: row.mediaAssetId,
+      dimension: row.dimension,
+      value: row.value,
+      revision: row.revision,
+      sourceSurface: row.sourceSurface,
+      active: row.active,
+      createdAt: row.createdAt.toISOString(),
+    })),
     asOf: detailNow.toISOString(),
     freshness: "fresh",
   });

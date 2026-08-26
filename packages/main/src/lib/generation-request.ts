@@ -1,5 +1,6 @@
 "use client";
 
+import { generationFailureCopy } from "./generation-failure-copy";
 import { isTerminalGenerationJobStatus } from "@idream/shared/catalog";
 import {
   parseGenerationQuoteResponse,
@@ -416,11 +417,12 @@ export function pendingGenerationJobIds(
 }
 
 export function settledGenerationStatusMessage(job: GenerationJobFact) {
+  const reason = generationFailureCopy(job.errorCode);
   if (job.status === "blocked") {
-    return job.errorCode ? `Blocked: ${job.errorCode}` : "Blocked.";
+    return reason ? `Blocked: ${reason}` : "Blocked.";
   }
   if (job.status === "failed") {
-    return job.errorCode ? `Failed: ${job.errorCode}` : "Failed.";
+    return reason ? `Failed: ${reason}` : "Failed.";
   }
   if (job.status === "refunded") return "Refunded.";
   return "Generation stopped.";

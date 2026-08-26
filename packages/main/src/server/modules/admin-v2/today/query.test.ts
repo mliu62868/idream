@@ -938,3 +938,88 @@ describe("Today All Work severity selection matches projection", () => {
       .toEqual(new Set(unfiltered.items.map((item) => item.sourceId)));
   });
 });
+
+// SPEC: 命令按「还要不要人做」分流，不按「状态是不是 succeeded」分流。
+// INTENT: 实测运行库里有两条 billing.subscription.refund 成功了但 needsReconciliation=true，
+//         9 天前完成 —— 它们的 status 落不进 ACTIVE_COMMAND_STATUSES，只出现在
+//         recentlyResolved 里，而那个队列只回看 24 小时，于是后台任何一页都看不到它们。
+//         同时，我自己每点一次「认领」都会往 recentlyResolved 里加一条成功命令，
+//         首屏「24 小时内已解决」因此自我膨胀，真正解决一个工单还会重复计数。
+describe("Today command classification", () => {
+  const suffix = randomUUID();
+  const actorId = `today-command-class-${suffix}`;
+  const staleCommandId = `today-unreconciled-${suffix}`;
+  const doneCommandId = `today-reconciled-${suffix}`;
+  const now = new Date("2026-07-11T12:00:00.000Z");
+  const longAgo = new Date("2026-07-02T12:00:00.000Z");
+
+  beforeAll(async () => {
+    await prisma.user.create({
+      data: { id: actorId, email: `${actorId}@example.test`, role: "support", status: "active" },
+    });
+    await prisma.controlPlaneCommand.createMany({
+      data: [staleCommandId, doneCommandId].map((id) => ({
+        id,
+        scope: `${id}-scope`,
+        idempotencyKey: id,
+        commandType: "billing.subscription.refund",
+        targetType: "subscription",
+        targetId: `${id}-target`,
+        actorId,
+        requestId: `${id}-request`,
+        requestHash: `${id}-hash`,
+        requestPayload: {},
+        status: "succeeded",
+        needsReconciliation: id === staleCommandId,
+        finishedAt: longAgo,
+        createdAt: longAgo,
+        updatedAt: longAgo,
+      })),
+    });
+  });
+
+  afterAll(async () => {
+    await prisma.controlPlaneCommand.deleteMany({ where: { actorId } });
+    await prisma.user.delete({ where: { id: actorId } });
+  });
+
+  async function projection() {
+    return buildTodayProjection({
+      db: prisma,
+      actor: { id: actorId, role: "support" },
+      permissions: resolvePermissions("support"),
+      now,
+      workMode: "support",
+    });
+  }
+
+  it("keeps an unreconciled command visible as work long after it succeeded", async () => {
+    const today = await projection();
+    const inMyShift = today.myShift.items.find((item) => item.sourceId === staleCommandId);
+
+    expect(inMyShift).toBeDefined();
+    expect(inMyShift?.recommendedAction).toBe("Reconcile the uncertain downstream effect");
+    expect(today.nextBestActions.items.some((item) => item.sourceId === staleCommandId)).toBe(true);
+  });
+
+  it("never counts a command as resolved work", async () => {
+    const today = await projection();
+
+    expect(today.recentlyResolved.items.some((item) => item.sourceType === "control_plane_command"))
+      .toBe(false);
+    expect(today.myShift.items.some((item) => item.sourceId === doneCommandId)).toBe(false);
+  });
+
+  it("shows the same unreconciled command in all-work so the KPI and the list agree", async () => {
+    const page = await buildTodayAllWork({
+      db: prisma,
+      actor: { id: actorId, role: "support" },
+      permissions: resolvePermissions("support"),
+      now,
+      query: allWorkQuery({ domain: "control_plane_command" }),
+    });
+
+    expect(page.items.map((item) => item.sourceId)).toEqual([staleCommandId]);
+    expect(page.totalCount).toBe(1);
+  });
+});

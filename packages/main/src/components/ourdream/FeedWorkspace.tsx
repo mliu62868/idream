@@ -14,6 +14,7 @@ import { useAgeGateAccess } from "./AgeGateBoundary";
 import { authHrefForTarget } from "./authRedirect";
 import { countLabel } from "./workspace-helpers";
 import { feedLoadFailure, shouldApplyFeedResponse } from "./feed-load-state";
+import { useReportDialog } from "./ReportDialog";
 
 type FeedCharacterItem = Extract<PublicFeedItem, { type: "character" }>;
 type FeedCollectionItem = Extract<PublicFeedItem, { type: "collection" }>;
@@ -40,6 +41,7 @@ export function FeedWorkspace() {
   const sharedItemId = searchParams.get("item")?.trim() ?? "";
   const [items, setItems] = useState<FeedItem[]>([]);
   const [status, setStatus] = useState("");
+  const { openReport, reportDialog } = useReportDialog(setStatus);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -244,42 +246,32 @@ export function FeedWorkspace() {
     }
   }
 
-  async function action(itemId: string, name: "share" | "report") {
+  async function share(itemId: string) {
     try {
-      const response = await fetch(`/api/v1/feed/items/${encodeURIComponent(itemId)}/${name}`, {
+      const response = await fetch(`/api/v1/feed/items/${encodeURIComponent(itemId)}/share`, {
         method: "POST",
-        headers: name === "report" ? { "content-type": "application/json" } : undefined,
-        body:
-          name === "report"
-            ? JSON.stringify({ category: "other_prohibited_content", description: "Feed report" })
-            : undefined,
       });
       const payload = (await response.json()) as FeedActionPayload;
-      if (!response.ok || payload.ok !== true) {
-        setStatus(payload.error?.message ?? `${name} failed`);
+      if (!response.ok || payload.ok !== true || !payload.data?.shareUrl) {
+        setStatus(payload.error?.message ?? "Share unavailable.");
         return;
       }
-      if (name === "share") {
-        if (!payload.data?.shareUrl) {
-          setStatus("Share unavailable.");
-          return;
-        }
-        const shareUrl = new URL(payload.data.shareUrl, window.location.origin).toString();
-        const copied = await copyShareUrl(shareUrl);
-        setStatus(copied ? "Share link copied." : `Share link: ${shareUrl}`);
-        return;
-      }
-      setStatus("Report submitted.");
+      const shareUrl = new URL(payload.data.shareUrl, window.location.origin).toString();
+      const copied = await copyShareUrl(shareUrl);
+      setStatus(copied ? "Share link copied." : `Share link: ${shareUrl}`);
     } catch {
-      setStatus(`${name} failed`);
+      setStatus("share failed");
     }
   }
 
   return (
     <section className="px-4 py-8 md:px-[60px] md:py-12">
       <div className="mx-auto max-w-5xl">
-        <div className="mb-6 flex items-end justify-between gap-4">
-          <div>
+        {/* 手机端（390px）标题与 Restart 并排放不下：标题容器没有 min-w-0 就不肯收缩，
+            把按钮整个顶出视口，整页横向溢出 63px。允许换行 + 允许标题收缩即可，
+            桌面端宽度足够时行为不变。 */}
+        <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+          <div className="min-w-0">
             <p className="text-[12px] font-black uppercase text-[rgb(253,95,194)]">
               Feed
             </p>
@@ -288,7 +280,7 @@ export function FeedWorkspace() {
             </h1>
           </div>
           <button
-            className="inline-flex h-10 items-center gap-2 rounded-full bg-[rgb(36,36,36)] px-4 text-[13px] font-bold text-white"
+            className="inline-flex h-10 shrink-0 items-center gap-2 rounded-full bg-[rgb(36,36,36)] px-4 text-[13px] font-bold text-white"
             disabled={loading || loadingMore}
             onClick={() => {
               setStatus("");
@@ -334,8 +326,8 @@ export function FeedWorkspace() {
                   likePending={likePending.has(item.id)}
                   onLike={() => toggleLike(item.id)}
                   onRemix={() => void remix(item)}
-                  onReport={() => action(item.id, "report")}
-                  onShare={() => action(item.id, "share")}
+                  onReport={() => openReport({ kind: "feedItem", id: item.id })}
+                  onShare={() => share(item.id)}
                   onStartChat={() => startChat(item.character.id)}
                 />
               ) : (
@@ -343,8 +335,8 @@ export function FeedWorkspace() {
                   eager={index < 4}
                   focused={item.id === focusedItemId}
                   item={item}
-                  onReport={() => action(item.id, "report")}
-                  onShare={() => action(item.id, "share")}
+                  onReport={() => openReport({ kind: "feedItem", id: item.id })}
+                  onShare={() => share(item.id)}
                 />
               )}
               {item.id === focusedItemId && (
@@ -363,6 +355,36 @@ export function FeedWorkspace() {
             No dreams yet. <Link className="underline" href="/explore">Explore characters</Link> to get started.
           </div>
         )}
+        {/* SPEC: 加载失败且一条都没拿到时，要给一张有出口的卡片，不是一条灰条。
+            INTENT: 原先失败只渲染上面那条 `feed-status` pill —— 没有标题、没有重试。
+            页头的 Restart 虽然能重试，但它在手机上会被挤出视口（见同文件页头的
+            min-w-0 修复），于是「出错了 + 没有出口」在小屏上同时成立。空状态本来
+            就有 CTA，错误态没道理没有。 */}
+        {!loading && items.length === 0 && Boolean(status) && (
+          <div
+            className="mt-6 rounded-[12px] border border-[rgb(255,184,112)]/30 bg-[rgb(18,18,18)] p-6 text-center"
+            data-testid="feed-error"
+            role="alert"
+          >
+            <p className="text-[15px] font-black uppercase text-white">
+              Feed could not load
+            </p>
+            <p className="mx-auto mt-2 max-w-md text-[13px] font-medium leading-6 text-[rgb(170,170,170)]">
+              {status}
+            </p>
+            <button
+              className="mt-5 inline-flex h-11 items-center justify-center rounded-full bg-white px-6 text-[13px] font-black text-[rgb(13,13,13)] disabled:opacity-60"
+              disabled={loading || loadingMore}
+              onClick={() => {
+                setStatus("");
+                void loadFeed();
+              }}
+              type="button"
+            >
+              Try again
+            </button>
+          </div>
+        )}
         {!loading && nextCursor && (
           <div className="flex h-24 items-center justify-center">
             <button
@@ -378,6 +400,7 @@ export function FeedWorkspace() {
           </div>
         )}
       </div>
+      {reportDialog}
     </section>
   );
 }

@@ -676,6 +676,110 @@ const sqlChecks: readonly SqlInvariant[] = [
       SELECT id, count(*) OVER()::int AS total FROM violations ORDER BY id LIMIT 20
     `,
   },
+  // SPEC: 每一条已到期的 outbox 事件都必须至少被投递器取过一次。
+  // INTENT: main_outbox_events 是一张多路复用表——每个消费者按 eventType 各取各的
+  //         （chat-outbox 只取 MAIN_TO_CHAT_EVENTS 那 14 种，event-consumer 只取
+  //         product.event.persisted.v2……）。写入方新增一种事件却没人订阅时，行就永远躺在
+  //         pending：没有失败、没有告警、没有任何一页显示它，表还在无界增长。
+  //         实测 101 行 / 32 种类型、最早 2026-07-23，全部 attempts=0。
+  // INVARIANT: 判据里没有时间阈值 —— attempts=0 且已过 nextRunAt，说明**一次都没被取过**，
+  //            这是结构事实不是"积压多久算久"的口味问题。nextRunAt 仍在未来的不算：
+  //            账号删除请求就是靠它实现 30 天宽限期，那批是正常等待，不是无人认领。
+  {
+    key: "outbox_event_never_dispatched",
+    description: "Every due Main outbox event must have been attempted at least once",
+    evidence: "main_outbox_events pending past nextRunAt with attempts = 0",
+    query: Prisma.sql`
+      WITH violations AS (
+        SELECT min(id) AS id
+        FROM main_outbox_events
+        WHERE status = 'pending' AND attempts = 0 AND "nextRunAt" <= now()
+        GROUP BY "eventType"
+      )
+      SELECT id, count(*) OVER()::int AS total FROM violations ORDER BY id LIMIT 20
+    `,
+  },
+  // SPEC: 每一条案件证据都必须挂在一个真实存在的 Case 上。
+  // INTENT: 与 attempt_without_request 同形 —— `case_evidence."caseId"` 同样没有外键。
+  //         但这里的比例说明它不是偶发：实测 55 条证据里 33 条指向已不存在的 Case（60%）。
+  //         成因在账号擦除：因为这些列没有 FK，级联删除只能手写（account-deletion-authority.ts
+  //         的 90 行删除序列），而 case_evidence 与 admin_cases 既不在那份手写清单里，
+  //         也没有 users 上的 onDelete: Cascade 兜底 —— 于是每擦除一个用户就稳定量产一批孤儿。
+  //         这是"缺 FK → 必须手写级联 → 手写必然漏 → 量产孤儿"的自我强化循环。
+  // INVARIANT: 判据只问「挂靠的 Case 在不在」。审核证据一旦与案件失联，就再也无法
+  //            证明当初那个决定的依据 —— 对一个要处理举报与申诉的系统，这是审计链的断裂。
+  {
+    key: "case_evidence_without_case",
+    description: "Every Case evidence row must reference a Case that exists",
+    evidence: "case_evidence whose caseId has no admin_cases row",
+    query: Prisma.sql`
+      WITH violations AS (
+        SELECT e.id
+        FROM case_evidence e
+        LEFT JOIN admin_cases c ON c.id = e."caseId"
+        WHERE c.id IS NULL
+      )
+      SELECT id, count(*) OVER()::int AS total FROM violations ORDER BY id LIMIT 20
+    `,
+  },
+  // SPEC: 一个已扣费的生成请求必须在有限时间内到达终态。
+  // INTENT: 这是这条链上唯一一条 liveness 断言。24 条不变式里跟钱相关的那几条，
+  //         判据全长成 `WHERE outcome = 'succeeded'` —— 检查的是「已终结的单结算对不对」，
+  //         从不问「这单为什么还没终结」。于是一个永远开着的请求不违反任何一条：
+  //         它对整套对账体系隐形，而用户那边是一个不报错、不能重试、不退币的「排队中」，
+  //         还永久占着 MAX_INFLIGHT_JOBS_PER_USER 的名额（卡满就再也发不出生成）。
+  //
+  //         已知至少四类分支会走到这里，而两个 sweeper 拼起来正好漏掉它们：
+  //         · terminal record 已接收但 finalize 没跑完 —— stale 隔离器显式要求
+  //           `terminalRecordRef IS NULL`（local-pipeline.ts:174,283）把它排除，
+  //           unknown 清扫器又只认 `status='unknown'`；此时唯一凭据只在 Redis 里
+  //         · stale 隔离器自身四条无时限的 `return none`（源队列仍活、探针不可达、
+  //           缺 dispatch 事实、重投活锁 —— 重投无次数上限且每次都刷新证据时间）
+  //         · unknown 收到迟到成功证据后，confirm_failed 每 60 秒抛一次、永远
+  //         · 零 Attempt 的 Request（reconcileStaleGenerationJobs 直接 return none）
+  //
+  // INVARIANT: 判据与失败原因无关 —— 只问「开了多久」，不枚举「为什么卡住」。
+  //            与原因无关的断言才拦得住还没被想到的失败模式，上面四类无需逐条建规则。
+  //            6 小时远超任何正常路径（图片 stale 阈值 10 分钟、视频 provider 上限
+  //            30 分钟、unknown 宽限 30 分钟），所以这条不会因为「跑得慢」而误报。
+  {
+    key: "open_request_exceeds_settlement_deadline",
+    description: "Every charged generation Request must reach a terminal state",
+    evidence: "generation_jobs still in a non-terminal status long past any provider deadline",
+    query: Prisma.sql`
+      WITH violations AS (
+        SELECT j.id
+        FROM generation_jobs j
+        WHERE j.status IN ('queued', 'moderating_input', 'running', 'moderating_output')
+          AND j."updatedAt" < now() - interval '6 hours'
+      )
+      SELECT id, count(*) OVER()::int AS total FROM violations ORDER BY id LIMIT 20
+    `,
+  },
+  // SPEC: 每一条执行记录都必须指向一个真实存在的 Generation Request。
+  // INTENT: generation_attempts."requestId" 是裸 String —— 没有 Prisma relation，
+  //         也没有数据库外键。所以「删掉 Request 但留下 Attempt」是一个合法写入，
+  //         数据库不拦、应用层没人查。实测 3 条 status='running'、finishedAt 为 null、
+  //         创建于 2026-07-25，对应的 generation_jobs 行根本不存在。
+  //         它们对收口机制是双重隐形：stale-unknown-dispatcher 只查 status='unknown'
+  //         （这些是 running），而且要按 requestId 反查 Request（查不到就被过滤掉）。
+  //         于是系统至今认为有三次执行正在进行中。
+  // INVARIANT: 判据只问「指向的 Request 在不在」，不问「为什么卡住」——
+  //            与失败原因无关的断言才拦得住还没被想到的失败模式。
+  {
+    key: "attempt_without_request",
+    description: "Every Generation Attempt must reference a Request that exists",
+    evidence: "generation_attempts whose requestId has no generation_jobs row",
+    query: Prisma.sql`
+      WITH violations AS (
+        SELECT a.id
+        FROM generation_attempts a
+        LEFT JOIN generation_jobs j ON j.id = a."requestId"
+        WHERE j.id IS NULL
+      )
+      SELECT id, count(*) OVER()::int AS total FROM violations ORDER BY id LIMIT 20
+    `,
+  },
   {
     key: "occurrence_in_multiple_active_incidents",
     description: "One occurrence identity must not belong to multiple active Incidents",

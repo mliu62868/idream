@@ -4,8 +4,11 @@
 // userId — the router re-checks authz against views inside each service call.
 import type { Prisma } from "../generated/client/client.js";
 import { ChatError } from "./errors.js";
+import { CompanionProjectionClaimBusyError } from "./file-mutations.js";
+import { logger } from "./logger.js";
 import {
   archiveSession,
+  archiveSessionTx,
   assertMessageStreamAccess,
   confirmImageAttachment,
   createSession,
@@ -22,7 +25,6 @@ import { deleteMessage, deleteSession } from "./privacy.js";
 import {
   getRelationshipState,
   listRelationships,
-  type RelationshipStage,
 } from "./relationship.js";
 import { chatPrisma } from "./db.js";
 import {
@@ -58,10 +60,23 @@ export async function dispatchChat(req: ChatRequest): Promise<ChatResponse> {
     if (error instanceof ChatError) {
       return { kind: "json", status: error.status, body: { error: error.code, message: error.message } };
     }
+    if (error instanceof CompanionProjectionClaimBusyError) {
+      return {
+        kind: "json",
+        status: 409,
+        body: {
+          error: "relationship_busy",
+          message: "the previous turn is still being saved; try again in a moment",
+        },
+      };
+    }
+    // INVARIANT: 未分类的异常不把 message 交给客户端 —— 它可能带着内部标识符或
+    // provider 报文。原文进日志，客户端只拿到一个稳定的 code。
+    logger.error({ err: error }, "unhandled chat request failure");
     return {
       kind: "json",
       status: 500,
-      body: { error: "internal", message: error instanceof Error ? error.message : "error" },
+      body: { error: "internal", message: "the chat service could not complete this request" },
     };
   }
 }
@@ -185,6 +200,12 @@ async function route(req: ChatRequest): Promise<ChatResponse> {
   }
   if (segs[0] === "relationships" && segs.length === 2) {
     const characterId = segs[1];
+    // SPEC: stage/summary are derived Chat authority, never client-authored state.
+    // INTENT: the old PATCH route let any signed-in client jump straight from
+    // `new` to `committed` and inject text that later entered the model prompt.
+    if (method === "PATCH") {
+      return json(405, { error: "method_not_allowed" });
+    }
     if (method === "GET") {
       const relationship = await withReadableChatFileSnapshot(
         userId,
@@ -192,36 +213,33 @@ async function route(req: ChatRequest): Promise<ChatResponse> {
       );
       return json(200, relationship);
     }
-    if (method === "PATCH") {
-      const b = body(req);
-      const summary = optLimitedStr(
-        b.summary,
-        1_200,
-        "relationship summary",
-      );
-      const stage = optStr(b.stage) as RelationshipStage | undefined;
-      await withActiveUserFileIntent(userId, async (tx) => {
-        await recordChatFileMutation(tx, userId, {
-          kind: "relationship_set",
-          characterId,
-          ...(summary !== undefined ? { summary } : {}),
-          ...(stage !== undefined ? { stage } : {}),
-        });
-      });
-      const relationship = await withReadableChatFileSnapshot(
-        userId,
-        () => getRelationshipState(userId, characterId),
-      );
-      return json(200, relationship);
-    }
     if (method === "DELETE") {
-      await withActiveUserFileIntent(userId, async (tx) => {
+      // SPEC: 重置 = 忘掉这个角色记住的一切，并从一段新对话重新开始。
+      // INTENT: 只清文件层是**看不出来**的 —— 角色的记忆有两条通道，长期记忆
+      // （侧车工作区，现已按重置纪元投影）和眼前这段会话的上下文。用户重置后
+      // 若仍留在原会话里，模型照样读着整段记录，重置在他看来什么也没发生。
+      // 归档而不是删除：历史仍在抽屉里读得到，只是不再进入下一轮上下文。
+      const archived = await withActiveUserFileIntent(userId, async (tx) => {
+        const active = await tx.chatSession.findMany({
+          where: {
+            userId,
+            characterId,
+            status: "active",
+            deletedAt: null,
+          },
+          select: { id: true },
+          orderBy: { createdAt: "asc" },
+        });
+        for (const session of active) {
+          await archiveSessionTx(tx, { userId, sessionId: session.id });
+        }
         await recordChatFileMutation(tx, userId, {
           kind: "relationship_delete",
           characterId,
         });
+        return active.length;
       });
-      return json(200, { ok: true });
+      return json(200, { ok: true, archivedSessions: archived });
     }
   }
 
@@ -265,7 +283,4 @@ function limitedStr(v: unknown, max: number, field: string): string {
   const value = str(v);
   if (value.length > max) throw new ChatError("bad_request", `${field} exceeds ${max} characters`, 400);
   return value;
-}
-function optLimitedStr(v: unknown, max: number, field: string): string | undefined {
-  return typeof v === "string" ? limitedStr(v, max, field) : undefined;
 }

@@ -584,15 +584,20 @@ async function seedCharacters() {
       firstMessage: card.firstMessage,
       exampleDialogue: [...card.exampleDialogue],
     };
+    const seedAppearance: Prisma.InputJsonObject = {
+      sourceImage: card.image,
+      identityAnchor: card.identityAnchor,
+      stableTraits: [...card.stableTraits],
+    };
     const compiledSoul = compileCharacterSoul({
       name: card.title,
       age,
       description: card.description,
       relationship: card.relationship,
-      style: card.title.toLowerCase().includes("anime") ? "anime" : "realistic",
+      style: card.style,
       gender: "female",
       tags,
-      appearance: { sourceImage: card.image },
+      appearance: seedAppearance,
       advancedDetails: personaDetails,
     });
     if (!compiledSoul.ok) {
@@ -610,6 +615,7 @@ async function seedCharacters() {
         where: { id: card.id },
         select: {
           advancedDetails: true,
+          appearance: true,
           relationship: true,
           systemPrompt: true,
         },
@@ -619,6 +625,10 @@ async function seedCharacters() {
     const existingAdvancedDetails = inputJsonObject(
       existingCharacter?.advancedDetails,
     );
+    const officialAppearance: Prisma.InputJsonObject = {
+      ...inputJsonObject(existingCharacter?.appearance),
+      ...seedAppearance,
+    };
     const existingProvenance = inputJsonObject(
       existingAdvancedDetails.provenance,
     );
@@ -687,6 +697,8 @@ async function seedCharacters() {
       where: { id: card.id },
       update: {
         creatorId: SYSTEM_USER_ID,
+        style: card.style,
+        appearance: officialAppearance,
         relationship:
           existingCharacter?.relationship?.trim() || card.relationship,
         systemPrompt:
@@ -706,14 +718,12 @@ async function seedCharacters() {
         visibility: "public",
         status: "approved",
         source: "official",
-        style: card.title.toLowerCase().includes("anime") ? "anime" : "realistic",
+        style: card.style,
         gender: "female",
         relationship: card.relationship,
         imageAssetId: mediaAssetId,
         vivid: card.vivid ?? false,
-        appearance: {
-          sourceImage: card.image,
-        },
+        appearance: officialAppearance,
         advancedDetails: officialAdvancedDetails,
       },
     });

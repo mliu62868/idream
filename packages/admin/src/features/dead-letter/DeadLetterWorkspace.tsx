@@ -5,6 +5,7 @@ import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, RefreshCcw, Trash2, X } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
+import { FailureReason } from "@/components/admin/generation/FailureReason";
 import { AuthorityRequestError } from "@/components/admin/ui/AuthorityRequestError";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
 import { DataTable, type DataTableHeader, type DataTableRow } from "@/components/admin/ui/DataTable";
@@ -186,7 +187,14 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
         enumOr(row.mode),
         enumOr(row.status),
         format.display(row.provider),
-        text(row.errorCode) || "—",
+        // SPEC: 失败原因出人话，和「生成任务」列表用同一个 FailureReason（JobsView.tsx:211）。
+        // INTENT: 这一格此前直接印裸码。实测死信队列里真实出现 provider_timeout / backend_error /
+        //         operator_confirmed_provider_failure / age_under_18 / unknown_model /
+        //         identity_calibration_route_incompatible —— 后五个连字典里都没有，
+        //         运营看到的是一串没人解释的下划线，而原始码仍由 FailureReason 折在工程详情里。
+        row.errorCode
+          ? <FailureReason code={text(row.errorCode)} key="failure" />
+          : <span className="text-[var(--ad-text-muted)]" key="failure">—</span>,
         <RetryAuthority key="retry" verdict={retryVerdict(row.retryEligibility)} />,
         enumOr(row.ledgerState),
         format.display(row.costDreamcoins),

@@ -188,7 +188,6 @@ export const preparedTurnProfileSchema = z
         temperature: z.number().finite().min(0).max(2),
         topP: z.number().finite().gt(0).max(1),
         repetitionPenalty: z.number().finite().gt(0).max(2),
-        structuredTemperature: z.number().finite().min(0).max(2),
       })
       .strict(),
   })

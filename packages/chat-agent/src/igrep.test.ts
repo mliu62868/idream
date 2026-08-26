@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   IgrepMemoryRebuilder,
   observeIgrepWake,
+  recallIgrepMemory,
   probeIgrepLifecycle,
   runJsonCommand,
   type JsonCommandOptions,
@@ -39,7 +40,7 @@ describe("igrep subprocess bounds", () => {
 });
 
 describe("official igrep wake observation", () => {
-  it("reports the actual command result without retaining its context", async () => {
+  it("reports the actual command result and keeps the profile bytes in-process", async () => {
     const calls: JsonCommandOptions[] = [];
     const observed = await observeIgrepWake(
       "/opt/igrep",
@@ -50,7 +51,7 @@ describe("official igrep wake observation", () => {
         return { markdownContext: "PRIVATE_SENTINEL" };
       },
     );
-    expect(observed).toEqual({ outcome: "hit", resultCount: 1 });
+    expect(observed).toEqual({ outcome: "hit", resultCount: 1, profile: "PRIVATE_SENTINEL" });
     expect(calls).toEqual([expect.objectContaining({
       command: "/opt/igrep",
       args: [
@@ -59,7 +60,15 @@ describe("official igrep wake observation", () => {
       ],
       timeoutMs: 10_000,
     })]);
-    expect(JSON.stringify(observed)).not.toContain("PRIVATE_SENTINEL");
+  });
+
+  it("reports an empty wake as no profile", async () => {
+    await expect(observeIgrepWake(
+      "/opt/igrep",
+      "/private/workspace",
+      undefined,
+      async () => ({ markdownContext: "  \n" }),
+    )).resolves.toEqual({ outcome: "empty", resultCount: 0, profile: "" });
   });
 
   it("fails closed when wake does not return the official result shape", async () => {
@@ -68,6 +77,67 @@ describe("official igrep wake observation", () => {
       "/private/workspace",
       undefined,
       async () => ({ warnings: [] }),
+    )).rejects.toThrow("unverifiable evidence");
+  });
+});
+
+describe("official igrep pre-recall", () => {
+  it("searches memory in fast mode and renders dialogue notes without profile hits", async () => {
+    const calls: JsonCommandOptions[] = [];
+    const recall = await recallIgrepMemory(
+      "/opt/igrep",
+      "/private/workspace",
+      "what is my dog's name",
+      { referenceAt: "2026-08-24T10:00:00.000Z" },
+      async (options) => {
+        calls.push(options);
+        return {
+          provider: "igrep",
+          results: [
+            {
+              citation: "bank/cards/profile.md#L1-L6",
+              snippet: "L1: # User Profile\nL6: - Owns a dog named Kestrel.",
+              sourceClass: "profile",
+            },
+            {
+              citation: "memory/dialogues/x.jsonl#L1-L2",
+              snippet: "L1: [user @ 2026-08-24] my dog is Kestrel\nL2: [assistant @ 2026-08-24] Kestrel it is.",
+              sourceClass: "dialogue",
+            },
+          ],
+          warnings: [],
+          markdownContext: "",
+        };
+      },
+    );
+    expect(calls).toEqual([expect.objectContaining({
+      command: "/opt/igrep",
+      args: ["mem-api", "memory-search", "--payload", "-"],
+      timeoutMs: 10_000,
+    })]);
+    expect(JSON.parse(calls[0]?.stdin ?? "{}")).toEqual({
+      workspace: "/private/workspace",
+      query: "what is my dog's name",
+      max_results: 6,
+      search_mode: "fast",
+      reference_at: "2026-08-24T10:00:00.000Z",
+    });
+    expect(recall).toMatchObject({
+      outcome: "hit",
+      resultCount: 2,
+      notes: ["[user @ 2026-08-24] my dog is Kestrel [assistant @ 2026-08-24] Kestrel it is."],
+    });
+  });
+
+  it("reports an empty page and fails closed on an error envelope", async () => {
+    await expect(recallIgrepMemory("igrep", "/w", "query", {}, async () => ({ results: [] })))
+      .resolves.toMatchObject({ outcome: "empty", resultCount: 0, notes: [] });
+    await expect(recallIgrepMemory(
+      "igrep",
+      "/w",
+      "query",
+      {},
+      async () => ({ error: { code: "RUNTIME_ERROR", message: "PRIVATE_SENTINEL" } }),
     )).rejects.toThrow("unverifiable evidence");
   });
 });

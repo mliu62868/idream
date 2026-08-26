@@ -57,7 +57,6 @@ function readinessProfile(config: SidecarConfig): PreparedTurnProfile {
       temperature: 0,
       topP: 1,
       repetitionPenalty: 1,
-      structuredTemperature: 0,
     },
   };
 }
@@ -347,8 +346,9 @@ export function createReadinessProbe(
       "private",
       options.config.igrepCommand,
     );
-    if (normal.ingest !== true || normal.wake !== true || normal.memory !== true || normal.search !== true
-      || normal.webProvider !== false || normal.webTool !== false) {
+    if (normal.ingest !== true || normal.wake !== true || normal.memory !== true || normal.search !== false
+      || normal.webProvider !== false || normal.webTool !== false
+      || normal.memorySearchMode !== "fast") {
       throw new Error("normal igrep profile did not normalize to the pinned capability set");
     }
     if (privateProfile.ingest !== false || privateProfile.wake !== false

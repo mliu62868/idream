@@ -638,14 +638,14 @@ export function ReleasePanel({
                   ))}
                 </select>
                 {latestAuthorityQaRun?.status === "failed" ? (
-                  <span className="mt-2 block font-normal text-[var(--ad-amber-text)]">
+                  <span className="mt-2 block font-normal text-[var(--ad-yellow-text)]">
                     {t(
                       "The latest QA Run for this snapshot failed. Earlier passed runs cannot authorize release.",
                     )}
                   </span>
                 ) : data.qaRuns.some((run) => run.status === "passed") &&
                   eligibleQaRuns.length === 0 ? (
-                  <span className="mt-2 block font-normal text-[var(--ad-amber-text)]">
+                  <span className="mt-2 block font-normal text-[var(--ad-yellow-text)]">
                     {t(
                       "Earlier QA evidence is stale after the latest draft or release review change.",
                     )}

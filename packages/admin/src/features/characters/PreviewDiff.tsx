@@ -726,7 +726,7 @@ export function PreviewDiff({
                             </div>
                           </div>
                         ) : (
-                          <p className="mt-3 text-[var(--ad-amber-text)]">
+                          <p className="mt-3 text-[var(--ad-yellow-text)]">
                             {t("Historical QA Run predates pairwise distinctiveness evidence.")}
                           </p>
                         )}

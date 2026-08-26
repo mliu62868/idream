@@ -567,3 +567,85 @@ describe("ModerationWorkspace queue cells under the zh locale", () => {
     expect(container.textContent).not.toContain("Read only");
   });
 });
+
+// SPEC: 同一个对象被举报多次时，队列必须让审核员在裁决前就看见这件事。
+// INTENT: `POST /api/v1/reports` 匿名可提交且不去重，实测（排除队友的审计探针后）
+//         `feed_item:character:lola-moonstruck` 有 3 条举报、全部来自同一个人——一次投诉在队列里
+//         变成三份独立的活。而 `actioned` 会 applyModerationAction(targetType, targetId)
+//         把整个对象处置掉，剩下几条举报的 status 却一个字都不改——审核员几分钟后再点开一条，
+//         会对着一个已经下架的对象重新裁决。
+describe("ModerationWorkspace duplicate reports on one target", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  const target = { targetType: "character", targetId: "alexa-reeves" };
+  const reports = [
+    { id: "report-dup-a", ...target, category: "spam", status: "open", priority: 1, createdAt: "2026-08-24T10:00:00.000Z" },
+    { id: "report-dup-b", ...target, category: "spam", status: "open", priority: 1, createdAt: "2026-08-24T11:00:00.000Z" },
+    { id: "report-solo", targetType: "chat_message", targetId: "msg-solo", category: "spam", status: "open", priority: 3, createdAt: "2026-08-24T12:00:00.000Z" },
+  ];
+
+  beforeEach(async () => {
+    window.history.replaceState(null, "", "/admin/moderation");
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    apiGet.mockReset();
+    apiWrite.mockReset();
+    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(idempotencyKey);
+    apiGet.mockImplementation(async (path) => {
+      if (path.includes("scope=reports")) return { reports, pageInfo: { reports: pageInfo } };
+      if (path.includes("scope=media")) return { mediaReview: [], pageInfo: { mediaReview: pageInfo } };
+      if (path.includes("scope=appeals")) return { appeals: [], pageInfo: { appeals: pageInfo } };
+      throw new Error(`Unexpected moderation request: ${path}`);
+    });
+    await act(async () => {
+      root.render(
+        <AdminI18nProvider locale="zh">
+          <ToastProvider>
+            <ModerationWorkspace canDecide />
+          </ToastProvider>
+        </AdminI18nProvider>,
+      );
+    });
+    await waitUntil(() => container.textContent?.includes("report-dup-a") === true);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  // 两条同目标各自看见"另有 1 条"，而唯一那条一个字都不多说。
+  it("marks only the rows whose target is reported more than once", () => {
+    const badges = [...container.querySelectorAll("span")].filter((node) =>
+      node.textContent?.trim() === "本页另有 1 条同目标",
+    );
+    expect(badges).toHaveLength(2);
+    expect(container.textContent).not.toContain("本页另有 2 条同目标");
+  });
+
+  // INVARIANT: 裁决请求只带这一条的 id —— 提示是给人看的，不许偷偷变成批量写。
+  it("still decides exactly one report and says so before the operator confirms", async () => {
+    apiWrite.mockResolvedValue({});
+    const row = [...container.querySelectorAll("tr")].find((node) =>
+      node.textContent?.includes("report-dup-a"),
+    );
+    await click(findButton("关闭", row ?? undefined));
+    const dialog = await waitForDialog();
+
+    expect(dialog.textContent).toContain(
+      "本页另有 1 条举报指向同一个对象，这次裁决不会连带处理它们。",
+    );
+
+    await enter(dialog.querySelector<HTMLInputElement>('input[aria-label="确认文本"]'), "report-dup-a");
+    await enter(dialog.querySelector<HTMLInputElement>('input[aria-label="原因"]'), "duplicate of report-dup-b");
+    await click(findButton("确认", dialog));
+
+    expect(apiWrite).toHaveBeenCalledTimes(1);
+    expect(apiWrite.mock.calls[0]?.[0]).toBe(
+      "/api/v2/admin/moderation/reports/report-dup-a/decision",
+    );
+  });
+});

@@ -401,6 +401,8 @@ generation worker 不再分别调用 context builder、prompt builder、tool pro
 7. recent transcript；
 8. tool contract。
 
+> 2026-08-24 调整：3–4（Scene、Relationship）与当前时间一起作为 per-turn state 消息放在 7 之后、当前用户消息之前；system prompt 只保留 1、2、5。原因是本地模型服务器按 2048 token 块缓存前缀，逐轮变化的状态放在 system prompt 中会让整段缓存每轮失效；放在当前消息旁也更贴近模型的 recency。层次与信任级别不变，见 `docs/product/CHAT_AGENT_COMPANION_AUDIT_2026-08-24.md`。
+
 信任规则：
 
 - Runtime policy 是最高优先级指令；

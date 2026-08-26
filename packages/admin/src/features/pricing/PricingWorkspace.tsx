@@ -243,14 +243,37 @@ function PricingTable({ canWrite, onAction, rows }: { canWrite: boolean; onActio
     // INTENT: 「哪一版在售」是这张表唯一要一眼看出来的东西，所以在售那一行的状态加粗。
     return { id: text(row.id) || `pricing-${index}`, cells: [<code key="id">{text(row.id) || "—"}</code>, text(row.ruleKey) || "—", text(row.label) || "—", text(row.mode) ? valueLabel(text(row.mode)) : "—", <span className="tabular-nums" key="base">{format.display(row.baseCost)}</span>, <span className="tabular-nums" key="multiplier">{format.display(row.multiplier)}</span>, status ? <span className={status === "active" ? "font-semibold" : undefined} key="status">{valueLabel(status)}</span> : "—", format.display(row.version), format.dateTime(row.effectiveFrom), format.dateTime(row.publishedAt), actions] };
   });
-  return <DataTable caption="Pricing rule versions" headers={["ID", "Rule key", "Label", "Mode", "Base cost", "Multiplier", "Status", "Version", "Effective", "Published", "Action"]} rows={tableRows} />;
+  // SPEC: width 是**文本盒**宽度，单元格左右还各有 1rem 内边距，真实列宽 ≈ width + 2rem；
+  //       十一列合计 1432px，就是下面的 minimumWidthClassName。
+  // INTENT: 这十一列原来全传字符串、也没传最小宽度，于是用默认的 min-w-[640px] 去挤内容区：
+  //         ID 与规则键把宽度吃光，「模式」「状态」和「回滚」按钮各剩两个字的位置，
+  //         中文被压成「图/片」「启/用」「回/滚」的竖排。
+  // INTENT: 宁可横向多滚 ~200px 也不让枚举列竖排——十一列的表本来就要横滚，竖排却是读不了。
+  return <DataTable caption="Pricing rule versions" headers={[
+    // ID / 规则键 / 标签：钳在宽度内出省略号，完整值走 title 悬停。
+    { label: "ID", truncate: true, width: "7rem" },
+    { label: "Rule key", truncate: true, width: "9rem" },
+    { label: "Label", truncate: true, width: "8rem" },
+    // 枚举列：中文最长两字（图片 / 视频 / 语音、草稿 / 启用 / 归档），truncate 保证不折行。
+    { label: "Mode", truncate: true, width: "3.5rem" },
+    { label: "Base cost", align: "right", width: "5rem" },
+    { label: "Multiplier", align: "right", width: "4rem" },
+    { label: "Status", truncate: true, width: "3.5rem" },
+    { label: "Version", align: "right", width: "3.5rem" },
+    // 中文 dateStyle:medium + timeStyle:short 实测 ~142px；truncate 在这里的作用是不折行。
+    { label: "Effective", truncate: true, width: "9rem" },
+    { label: "Published", truncate: true, width: "9rem" },
+    // 单个按钮（发布 / 回滚），给够一行的量，否则「回滚」两个字会竖着排。
+    { label: "Action", width: "6rem" },
+  ]} minimumWidthClassName="min-w-[1432px]" rows={tableRows} />;
 }
 
 // label 一律在接收方过 t()：草稿表单七个输入框、两个筛选下拉和两个行内动作按钮共用这三个原语。
 function ActionButton({ icon, label, onClick }: { icon: ReactNode; label: string; onClick: () => void }) { const { t } = useAdminI18n(); return <button className="inline-flex min-h-11 items-center gap-2 rounded-md border border-[var(--ad-border)] px-3 text-xs font-semibold" onClick={onClick} type="button">{icon}{t(label)}</button>; }
-function Field({ label, onChange, placeholder, value }: { label: string; onChange: (value: string) => void; placeholder?: string; value: string }) { const { t } = useAdminI18n(); return <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t(label)}<input className="min-h-11 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus-visible:outline-2 focus-visible:outline-offset-2" onChange={(event) => onChange(event.target.value)} placeholder={placeholder} value={value} /></label>; }
+// min-w-0：grid 子项默认 min-width:auto，七列并排时输入框不肯收缩，最后两个会撑出卡片右边界。
+function Field({ label, onChange, placeholder, value }: { label: string; onChange: (value: string) => void; placeholder?: string; value: string }) { const { t } = useAdminI18n(); return <label className="grid min-w-0 gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t(label)}<input className="min-h-11 w-full min-w-0 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm outline-none focus-visible:outline-2 focus-visible:outline-offset-2" onChange={(event) => onChange(event.target.value)} placeholder={placeholder} value={value} /></label>; }
 // optionLabel 缺省时退回 value()：草稿表单的 mode 下拉没传它，image/video/voice 会原样印出来。
-function Select({ label, onChange, optionLabel, options, value }: { label: string; onChange: (value: string) => void; optionLabel?: (option: string) => string; options: readonly string[]; value: string }) { const { t, value: enumLabel } = useAdminI18n(); return <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t(label)}<select className="min-h-11 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm" onChange={(event) => onChange(event.target.value)} value={value}>{options.map((option) => <option key={option || "all"} value={option}>{option ? (optionLabel ?? enumLabel)(option) : t("All")}</option>)}</select></label>; }
+function Select({ label, onChange, optionLabel, options, value }: { label: string; onChange: (value: string) => void; optionLabel?: (option: string) => string; options: readonly string[]; value: string }) { const { t, value: enumLabel } = useAdminI18n(); return <label className="grid min-w-0 gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t(label)}<select className="min-h-11 w-full min-w-0 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm" onChange={(event) => onChange(event.target.value)} value={value}>{options.map((option) => <option key={option || "all"} value={option}>{option ? (optionLabel ?? enumLabel)(option) : t("All")}</option>)}</select></label>; }
 function PricingLoading() {
   const { t } = useAdminI18n(); return <div aria-label={t("Loading prices…")} className="overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]" role="status"><span className="sr-only">{t("Loading prices…")}</span>{[0, 1, 2, 3].map((row) => <div className="grid min-h-14 animate-pulse grid-cols-5 gap-4 border-b border-[var(--ad-border)] px-4 py-3 last:border-0" key={row}>{[0, 1, 2, 3, 4].map((cell) => <span className="h-4 rounded bg-black/5" key={cell} />)}</div>)}</div>; }
 /**

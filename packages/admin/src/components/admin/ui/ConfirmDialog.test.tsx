@@ -4,6 +4,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
+import { AdminI18nProvider } from "@/components/admin/i18n";
+import { translateAdmin } from "@/components/admin/i18n-dictionary";
 import { ConfirmDialog, type ConfirmSpec } from "./ConfirmDialog";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -29,6 +31,46 @@ describe("ConfirmDialog", () => {
     await act(async () => root.unmount());
     container.remove();
     vi.restoreAllMocks();
+  });
+
+  // SPEC: 文案类字段在这里过 t()，确认串不过。
+  // INTENT: reasonLabel / inputLabel / submitLabel / title 是对象属性而不是 JSX 属性，
+  //         i18n-completeness 的审计结构上扫不到它们——moderation / config / support / pricing
+  //         四处因此一路传裸英文，中文界面的确认框写着「Reason」「Confirmation」「Confirm」。
+  //         收口在这里之后调用点默认正确；这条用例保证以后不会又被拆开。
+  it("translates its copy but never the confirmation string", async () => {
+    // 确认串刻意取成一个**字典里有中文的**词，这样一旦哪天有人把它也翻了，这条会立刻红。
+    await act(async () => {
+      root.render(
+        <AdminI18nProvider locale="zh">
+          <ConfirmDialog
+            onClose={() => undefined}
+            spec={{
+              ...baseSpec,
+              title: "Reason",
+              reasonLabel: "Reason",
+              submitLabel: "Confirm",
+              destructive: { expectedName: "Reason", inputLabel: "Confirmation" },
+              consequence: { effect: "Cancel", reversible: true },
+            }}
+          />
+        </AdminI18nProvider>,
+      );
+    });
+
+    const zh = (key: string) => translateAdmin("zh", key);
+    expect(zh("Reason")).not.toBe("Reason");
+
+    // 标题、原因标签、提交按钮、后果文案都翻了。
+    const text = dialog().textContent ?? "";
+    expect(text).toContain(zh("Reason"));
+    expect(text).toContain(zh("Confirm"));
+    expect(text).toContain(zh("Cancel"));
+
+    // 确认串必须原样出现在 placeholder 里 —— 它要逐字符比对，翻译等于把功能改坏。
+    const nameInput = [...dialog().querySelectorAll<HTMLInputElement>("input")]
+      .find((input) => input.placeholder.includes(zh("Confirmation")));
+    expect(nameInput?.placeholder).toBe(`${zh("Confirmation")}: Reason`);
   });
 
   it("blocks submission until the operator types the exact confirmation string", async () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   chatStreamErrorDisposition,
+  chatStreamLatestReplyFailed,
   chatStreamMessageIsInProgress,
   chatStreamMessageIsTerminal,
   chatStreamMessagesNeedReconciliation,
@@ -75,5 +76,36 @@ describe("chat stream recovery", () => {
     expect(read).toHaveBeenCalledTimes(3);
     expect(apply).toHaveBeenCalledTimes(2);
     expect(wait).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("chatStreamLatestReplyFailed", () => {
+  it("flags the current turn when its reply came back empty", () => {
+    expect(
+      chatStreamLatestReplyFailed([
+        { role: "user", content: "hi" },
+        { role: "assistant", content: "", status: "failed" },
+      ]),
+    ).toBe(true);
+  });
+
+  it("does not keep flagging a healthy session because an older turn failed", () => {
+    expect(
+      chatStreamLatestReplyFailed([
+        { role: "user", content: "hi" },
+        { role: "assistant", content: "", status: "failed" },
+        { role: "user", content: "again" },
+        { role: "assistant", content: "Here I am.", status: "sent" },
+      ]),
+    ).toBe(false);
+  });
+
+  it("stays quiet while the reply is still generating", () => {
+    expect(
+      chatStreamLatestReplyFailed([
+        { role: "user", content: "hi" },
+        { role: "assistant", content: "", status: "generating" },
+      ]),
+    ).toBe(false);
   });
 });

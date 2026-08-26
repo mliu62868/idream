@@ -42,6 +42,16 @@ type WorkflowSync = (input: {
 // timeoutMs so a stuck ComfyUI process fails the probe quickly.
 const HEALTH_TIMEOUT_MS = 5_000;
 
+// SPEC: timeoutMs is an *execution* budget, not a wall-clock one.
+// INTENT: ComfyUI serialises prompts in its own queue, so with more in-flight jobs
+//   than the instance can run at once, a prompt can burn the whole budget waiting
+//   its turn and be declared timed out having never executed. That failure is
+//   classified ambiguous/not_retryable upstream, which strands the job and the
+//   spend. Queue wait therefore does not consume the execution budget.
+// INVARIANT: the wait is still bounded — a prompt that never leaves the queue trips
+//   the total-wait cap below, so a wedged ComfyUI still fails instead of hanging.
+const COMFY_TOTAL_WAIT_BUDGET_MULTIPLIER = 6;
+
 type ComfyImageOutput = {
   filename: string;
   subfolder: string;
@@ -185,7 +195,12 @@ export class ComfyUIBackend implements GenBackend {
     const pending = this.pending.get(handle.id);
     const timeoutMs = pending?.timeoutMs ?? 600_000;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    // The outer guard has to cover queue wait too, otherwise it aborts the poll
+    // at exactly the execution budget and re-creates the bug waitForOutput fixes.
+    const timeout = setTimeout(
+      () => controller.abort(),
+      timeoutMs * COMFY_TOTAL_WAIT_BUDGET_MULTIPLIER,
+    );
     try {
       const output = await this.waitForOutput(handle.id, timeoutMs, controller.signal);
       const bytes = await this.fetchComfyOutput(output, controller.signal);
@@ -390,7 +405,11 @@ export class ComfyUIBackend implements GenBackend {
     signal: AbortSignal,
   ): Promise<ComfyImageOutput> {
     const startedAt = Date.now();
-    while (Date.now() - startedAt < timeoutMs) {
+    const totalWaitDeadlineAt =
+      startedAt + timeoutMs * COMFY_TOTAL_WAIT_BUDGET_MULTIPLIER;
+    let executionDeadlineAt = startedAt + timeoutMs;
+    let observedExecuting = false;
+    while (Date.now() < executionDeadlineAt && Date.now() < totalWaitDeadlineAt) {
       if (signal.aborted) break;
       const response = await fetch(`${this.apiUrl}/history/${encodeURIComponent(promptId)}`, { signal });
       const history = (await response.json().catch(() => ({}))) as JsonRecord;
@@ -424,14 +443,50 @@ export class ComfyUIBackend implements GenBackend {
         }
         return output;
       }
+      if (!observedExecuting) {
+        const placement = await this.queuePlacement(promptId, signal);
+        if (placement === "pending") {
+          executionDeadlineAt = Date.now() + timeoutMs;
+        } else if (placement === "running") {
+          observedExecuting = true;
+          executionDeadlineAt = Date.now() + timeoutMs;
+        }
+        // "absent" covers both "already finished" (the next /history read returns
+        // it) and "/queue unreadable" — neither is evidence of queue wait, so the
+        // budget stands and behaviour falls back to the plain execution deadline.
+      }
       await sleep(this.pollIntervalMs);
     }
+    const waitedMs = Date.now() - startedAt;
+    // 两条上限只会跳其中一条：没开始执行过、又把总等待耗光了，才是「一直没排上」。
+    const neverLeftQueue = !observedExecuting && Date.now() >= totalWaitDeadlineAt;
     throw new BackendInvocationError(
       "timeout",
-      `ComfyUI prompt timed out after ${timeoutMs}ms: ${promptId}`,
+      neverLeftQueue
+        ? `ComfyUI prompt never left the queue within ${waitedMs}ms: ${promptId}`
+        : `ComfyUI prompt timed out after ${timeoutMs}ms of execution (waited ${waitedMs}ms): ${promptId}`,
       "post_submit",
       "ambiguous",
     );
+  }
+
+  // SPEC: where the prompt sits in ComfyUI's own queue — "running" once it is
+  // executing, "pending" while it waits behind other prompts, "absent" when
+  // ComfyUI no longer lists it or /queue cannot be read.
+  private async queuePlacement(
+    promptId: string,
+    signal: AbortSignal,
+  ): Promise<"running" | "pending" | "absent"> {
+    try {
+      const response = await fetch(`${this.apiUrl}/queue`, { signal });
+      if (!response.ok) return "absent";
+      const queue = jsonRecord(await response.json());
+      if (queueListsPrompt(queue.queue_running, promptId)) return "running";
+      if (queueListsPrompt(queue.queue_pending, promptId)) return "pending";
+      return "absent";
+    } catch {
+      return "absent";
+    }
   }
 
   private async fetchComfyOutput(image: ComfyImageOutput, signal: AbortSignal): Promise<Uint8Array> {
@@ -450,6 +505,14 @@ export class ComfyUIBackend implements GenBackend {
     }
     return new Uint8Array(await response.arrayBuffer());
   }
+}
+
+// ComfyUI reports each queue slot as a tuple whose second element is the prompt id.
+function queueListsPrompt(entries: unknown, promptId: string): boolean {
+  if (!Array.isArray(entries)) return false;
+  return entries.some(
+    (entry) => Array.isArray(entry) && entry[1] === promptId,
+  );
 }
 
 function outputKindFromFilename(filename: string): "image" | "video" {

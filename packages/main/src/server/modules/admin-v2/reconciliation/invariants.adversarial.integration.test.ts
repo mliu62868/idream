@@ -42,6 +42,16 @@ describe("Admin cutover invariant adversarial release authority", () => {
   const partialRequestId = `${prefix}-partial-request`;
   const missingPartialFactRequestId = `${prefix}-partial-without-fact`;
   const creativeMismatchId = `${prefix}-creative-mismatch`;
+  // SPEC: 执行记录必须指向真实存在的 Request。requestId 没有外键，所以「孤儿 attempt」
+  // 是一个合法写入 —— 运行库里实测有 3 条这样的行，running 且从未 finish，30 天无人发现。
+  // SPEC: 已扣费的 Request 必须在有限时间内终结。造一个远超任何 provider 期限
+  // 仍开着的单 —— 它不违反任何一条结算类不变式（那些都以「已终结」为前提），
+  // 所以只有 liveness 这条拦得住。
+  // SPEC: 审核证据必须挂在真实存在的 Case 上。与 attempt 同形，但库里 33/55 是孤儿。
+  const orphanEvidenceId = `${prefix}-orphan-evidence`;
+  const stalledOpenRequestId = `${prefix}-stalled-open-request`;
+  const orphanAttemptId = `${prefix}-orphan-attempt`;
+  const orphanMissingRequestId = `${prefix}-request-that-never-existed`;
   const overRefundRequestId = `${prefix}-over-refund-request`;
   const capturedLedgerId = `${prefix}-captured-ledger`;
   const refundLedgerId = `${prefix}-refund-ledger`;
@@ -335,6 +345,17 @@ describe("Admin cutover invariant adversarial release authority", () => {
       data: { characterId: servingCharacterId },
     });
 
+    // 故意不建对应的 adminCase：caseId 没有外键，数据库不拦。
+    await prisma.caseEvidence.create({
+      data: {
+        id: orphanEvidenceId,
+        caseId: `${prefix}-case-that-never-existed`,
+        sourceType: "content_report",
+        sourceId: `${prefix}-evidence-source`,
+        snapshot: {},
+        occurredAt: new Date(),
+      },
+    });
     await prisma.generationJob.create({
       data: {
         id: partialRequestId,
@@ -480,10 +501,28 @@ describe("Admin cutover invariant adversarial release authority", () => {
         },
       ],
     });
+    await prisma.generationJob.create({
+      data: {
+        id: stalledOpenRequestId,
+        userId,
+        mode: "image",
+        status: "running",
+        prompt: "stalled open request",
+        controls: {},
+        presetIds: [],
+        outputCount: 1,
+        costDreamcoins: 5,
+        // 远超图片 stale 阈值(10min)、视频 provider 上限(30min)与 unknown 宽限(30min)
+        createdAt: new Date(Date.now() - 8 * 60 * 60 * 1000),
+        updatedAt: new Date(Date.now() - 7 * 60 * 60 * 1000),
+      },
+    });
     await prisma.generationAttempt.createMany({
       data: [
         { id: cancelledAttemptId, requestId: cancelledRequestId, attemptNo: 1, status: "running" },
         { id: mismatchedSucceededAttemptId, requestId: mismatchedSucceededRequestId, attemptNo: 1, status: "running" },
+        // 故意不建对应的 generationJob：数据库不拦，这正是缺少外键的后果。
+        { id: orphanAttemptId, requestId: orphanMissingRequestId, attemptNo: 1, status: "running" },
       ],
     });
     await prisma.$transaction(async (tx) => {
@@ -563,13 +602,15 @@ describe("Admin cutover invariant adversarial release authority", () => {
     await prisma.dreamcoinLedger.deleteMany({ where: { id: unlinkedSettlementLedgerId } });
     await prisma.generationDelivery.deleteMany({ where: { requestId: mismatchedSucceededRequestId } });
     await prisma.generationAttemptEvent.deleteMany({ where: { attemptId: { in: [cancelledAttemptId, mismatchedSucceededAttemptId] } } });
-    await prisma.generationAttempt.deleteMany({ where: { id: { in: [cancelledAttemptId, mismatchedSucceededAttemptId] } } });
+    await prisma.generationAttempt.deleteMany({ where: { id: { in: [cancelledAttemptId, mismatchedSucceededAttemptId, orphanAttemptId] } } });
     await prisma.generationSettlementLink.deleteMany({ where: { requestId: overRefundRequestId } });
     await prisma.dreamcoinLedger.deleteMany({ where: { id: { in: [capturedLedgerId, refundLedgerId] } } });
     await prisma.generationFulfillmentFact.deleteMany({ where: { id: partialFactId } });
     await prisma.generationDelivery.deleteMany({
       where: { requestId: { in: [partialRequestId, missingPartialFactRequestId] } },
     });
+    await prisma.caseEvidence.deleteMany({ where: { id: orphanEvidenceId } });
+    await prisma.generationJob.deleteMany({ where: { id: stalledOpenRequestId } });
     await prisma.generationJob.deleteMany({
       where: { id: { in: [partialRequestId, missingPartialFactRequestId, overRefundRequestId, cancelledRequestId, mismatchedSucceededRequestId, unlinkedSettlementRequestId] } },
     });
@@ -663,6 +704,21 @@ describe("Admin cutover invariant adversarial release authority", () => {
         key: "creative_run_child_projection_mismatch",
         status: "failed",
         sampleIds: expect.arrayContaining([creativeMismatchId]),
+      }),
+      expect.objectContaining({
+        key: "case_evidence_without_case",
+        status: "failed",
+        sampleIds: expect.arrayContaining([orphanEvidenceId]),
+      }),
+      expect.objectContaining({
+        key: "open_request_exceeds_settlement_deadline",
+        status: "failed",
+        sampleIds: expect.arrayContaining([stalledOpenRequestId]),
+      }),
+      expect.objectContaining({
+        key: "attempt_without_request",
+        status: "failed",
+        sampleIds: expect.arrayContaining([orphanAttemptId]),
       }),
       expect.objectContaining({
         key: "generation_refund_exceeds_captured_spend",

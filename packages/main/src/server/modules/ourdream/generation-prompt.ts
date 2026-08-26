@@ -5,6 +5,11 @@ import type {
   GenerationPromptCharacter,
   GenerationVisualProfile,
 } from "./generation-character-authority";
+import {
+  assembleIdentityPrompt,
+  toTraitRecord,
+  type IdentityTraits,
+} from "./identity-assembler";
 import type {
   GenerationCreateBody,
   GenerationSource,
@@ -73,28 +78,37 @@ function buildImageGenerationPrompt(input: {
 
   const character = input.character;
   const visualProfile = input.visualProfile;
-  const details = [
-    cleanPromptText(character.description, 500),
-    ...promptDetails(character.appearance, "Appearance"),
-    ...promptDetails(character.advancedDetails, "Character detail"),
-  ].filter(Boolean);
   const presentation = [
     "adult",
     cleanPromptText(character.gender, 80),
     cleanPromptText(character.style, 80),
   ].filter(Boolean);
+  // INTENT: 一个角色只有一种描述法。Release 有没有 pin 身份，决定的是**走不走参考图路由**
+  // （那是 Release 权威，不在这里）；它不该决定这个角色在提示词里被怎么描述。此前没有
+  // Visual Profile 的角色走另一条分支：把整个 advancedDetails 摊平当描述，并且**整段丢掉
+  // 一致性片段** —— 于是「Identity variation: strict/balanced/creative」这个用户点得到的
+  // 控件，对 16 个公开角色里的 15 个逐字节无效，点了等于没点。
+  // 标签保持两种，因为它们说的是两件不同的真事：pin 了 Visual Profile 时那段文字是密封
+  // 版本化的，确实"锁定"；没 pin 时只是从角色内容现推的描述，叫 locked 就是撒谎。
+  const direction = visualDirectionOf(character);
+  const identityPrompt = visualProfile
+    ? cleanPromptText(visualProfile.identityPrompt, 900)
+    : assembleIdentityPrompt(direction.traits).identityPrompt;
+  const identityLabel = visualProfile ? "Locked identity" : "Character identity";
 
   return clampPrompt(
     [
       `High quality in-character portrait photo of ${cleanPromptText(character.name, 120)}`,
       presentation.length ? `Subject: ${presentation.join(", ")}` : null,
-      visualProfile
-        ? `Locked identity: ${cleanPromptText(visualProfile.identityPrompt, 900)}`
-        : details.length
-          ? `Character: ${details.join("; ")}`
-          : null,
-      visualProfile ? consistencyPromptFragment(input.consistencyMode) : null,
-      visualProfile && details.length ? `Character notes: ${details.join("; ")}` : null,
+      identityPrompt ? `${identityLabel}: ${identityPrompt}` : null,
+      direction.anchor ? `Visual identity anchor: ${direction.anchor}` : null,
+      direction.stableTraits.length
+        ? `Stable visual traits: ${direction.stableTraits.join(", ")}`
+        : null,
+      consistencyPromptFragment(input.consistencyMode),
+      cleanPromptText(character.description, 500)
+        ? `Character notes: ${cleanPromptText(character.description, 500)}`
+        : null,
       `Requested scene: ${request}`,
       "single coherent subject, face and body matching the character, expressive eyes, natural pose, well-lit visible face, properly exposed, sharp focus, detailed skin and hair, clean photographic composition",
     ]
@@ -104,9 +118,82 @@ function buildImageGenerationPrompt(input: {
   );
 }
 
+/**
+ * SPEC: 读角色**视觉方向**的规范形状 —— `appearance` 的 `identityAnchor` /
+ * `stableTraits` / `faceTraits` / `hairTraits` / `bodyTraits` / `signatureTraits`
+ * （后四者可以直接挂在 appearance 上，也可以嵌在 `appearance.structured` 下）。
+ * INTENT: 这套字段名不是我发明的 —— `buildEditorialPortraitIdentity`
+ * （admin-v2/characters/image-readiness-repair.ts）早就按它构造 Visual Profile 的
+ * identityPrompt，并在注释里立了那条边界：「biography, premise, and scene text must
+ * never become visual identity」。图片提示词这条路径此前不知道这套形状的存在，于是
+ * 退回去摊平整包 `advancedDetails`，把 tone / backstory / firstMessage、甚至
+ * `provenance.seedSource: src/lib/…` 发给了图像供应商，还把 2000 字预算吃光。
+ * 两条路径现在读同一套字段、用同一套措辞，改一处时另一处要跟。
+ * INVARIANT: `signature` 只认 `advancedDetails.signature`，不做「退回整个记录」的兜底 ——
+ * 那个兜底正是人设泄进图片提示词的入口。`appearance` 保留兜底：它本来就是外貌记录，
+ * 用户向导建的角色把外貌平铺在顶层是合法形状；只排掉 `sourceImage` 这类路径字段。
+ */
+function visualDirectionOf(character: GenerationPromptCharacter): {
+  anchor: string;
+  stableTraits: string[];
+  traits: IdentityTraits;
+} {
+  const appearance = isRecord(character.appearance) ? character.appearance : {};
+  const structured = isRecord(appearance.structured) ? appearance.structured : {};
+  const group = (key: string) =>
+    namedGroup(appearance[key] ?? structured[key]);
+  return {
+    anchor: cleanPromptText(
+      typeof appearance.identityAnchor === "string" ? appearance.identityAnchor : "",
+      400,
+    ),
+    stableTraits: (Array.isArray(appearance.stableTraits) ? appearance.stableTraits : [])
+      .filter((trait): trait is string => typeof trait === "string")
+      .map((trait) => cleanPromptText(trait, 120))
+      .filter(Boolean)
+      .slice(0, 12),
+    traits: {
+      face: toTraitRecord(group("faceTraits") ?? visualGroup(character.appearance, "face")),
+      hair: toTraitRecord(group("hairTraits") ?? visualGroup(character.appearance, "hair")),
+      body: toTraitRecord(group("bodyTraits") ?? visualGroup(character.appearance, "body")),
+      signature: toTraitRecord(
+        group("signatureTraits")
+          ?? namedGroup((isRecord(character.advancedDetails) ? character.advancedDetails : {}).signature),
+      ),
+      style: toTraitRecord({
+        style: character.style ?? "realistic",
+        gender: character.gender ?? "female",
+        age: String(character.age),
+        name: character.name,
+      }),
+    },
+  };
+}
+
+/** 规范形状里的 traits 组：只有真的是记录才算数，空记录当作「没有」交给兜底。 */
+function namedGroup(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  return Object.keys(value).length > 0 ? value : null;
+}
+
+function visualGroup(value: Prisma.JsonValue, key: string): Record<string, unknown> {
+  if (!isRecord(value)) return {};
+  const direct = value[key];
+  if (isRecord(direct)) return direct;
+  return Object.fromEntries(
+    Object.entries(value).filter(
+      ([childKey, child]) =>
+        childKey !== "sourceImage" &&
+        !["identityAnchor", "stableTraits", "referenceDirection"].includes(childKey) &&
+        ["string", "number", "boolean"].includes(typeof child),
+    ),
+  );
+}
+
+// 措辞不再提"locked identity" —— 同一段文字现在也服务于没有 pin 身份的角色，说"locked"就是撒谎。
 function consistencyPromptFragment(mode: "balanced" | "strict" | "creative") {
   if (mode === "strict") {
-    return "Identity consistency: strict; preserve the same face, hairstyle, eye color, body type, and signature traits from the locked identity";
+    return "Identity consistency: strict; preserve the same face, hairstyle, eye color, body type, and signature traits described above";
   }
   if (mode === "creative") {
     return "Identity consistency: creative; allow scene and styling variation while preserving the core face, hair, and signature traits";
@@ -173,40 +260,6 @@ export function defaultImageNegativePrompt(templateNegative: string | null, sour
   const uiBlockers =
     "logo, user interface, app screen, phone screenshot, chat bubbles, buttons, icons, blurry, underexposed, silhouette, overly dark";
   return sourceType === "chat_image" ? `${base}, ${uiBlockers}` : `${base}, ${uiBlockers}`;
-}
-
-function promptDetails(value: Prisma.JsonValue, label: string) {
-  if (!isRecord(value)) return [];
-  return Object.entries(value)
-    .flatMap(([key, raw]) => promptDetailValue(`${label}.${key}`, raw))
-    .filter(Boolean)
-    .slice(0, 8);
-}
-
-function promptDetailValue(key: string, value: unknown): string[] {
-  const cleanKey = cleanPromptText(key.replace(/[_.]+/g, " "), 80);
-  if (!cleanKey || /source\s*image/i.test(cleanKey)) return [];
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    const cleanValue = cleanPromptText(String(value), 180);
-    if (!cleanValue || /^https?:\/\//i.test(cleanValue) || cleanValue.startsWith("/")) return [];
-    return [`${cleanKey}: ${cleanValue}`];
-  }
-  if (Array.isArray(value)) {
-    const values = value
-      .filter((item): item is string | number | boolean =>
-        ["string", "number", "boolean"].includes(typeof item),
-      )
-      .map((item) => cleanPromptText(String(item), 120))
-      .filter((item) => item && !/^https?:\/\//i.test(item) && !item.startsWith("/"))
-      .slice(0, 5);
-    return values.length ? [`${cleanKey}: ${values.join(", ")}`] : [];
-  }
-  if (isRecord(value)) {
-    return Object.entries(value)
-      .flatMap(([childKey, raw]) => promptDetailValue(`${key}.${childKey}`, raw))
-      .slice(0, 8);
-  }
-  return [];
 }
 
 export function cleanPromptText(value: string | null | undefined, max = 2_000) {

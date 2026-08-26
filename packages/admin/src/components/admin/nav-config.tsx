@@ -12,6 +12,7 @@ import {
   ImageIcon,
   Inbox,
   Layers,
+  ListChecks,
   Library,
   MessageSquare,
   Play,
@@ -62,6 +63,7 @@ import { IncidentWorkspace } from "@/features/incidents/IncidentWorkspace";
 import { CaseWorkspace } from "@/features/cases/CaseWorkspace";
 import { CustomerWorkspace } from "@/features/customers/CustomerWorkspace";
 import { CharacterPerformanceWorkspace, CharacterWorkspace } from "@/features/characters/CharacterWorkspace";
+import { InvariantsWorkspace } from "@/features/reconciliation/InvariantsWorkspace";
 import { CreativeRunWorkspace } from "@/features/creative/CreativeRunWorkspace";
 import { JobsView as GenerationJobsWorkspace } from "@/features/jobs/JobsView";
 import { AuditWorkspace } from "@/features/audit/AuditWorkspace";
@@ -173,8 +175,8 @@ function apiTargetItem(
   return targetItem({ ...input, read: ADMIN_V2_WORKSPACE_ACCESS[input.apiWorkspace] });
 }
 
-// SSoT for the migration shell. `id` remains the legacy implementation key so all
-// 34 shipped capabilities stay reachable; `href` is the canonical decision-workspace URL.
+// SSoT for the migration shell. `id` remains the legacy implementation key so every
+// shipped capability stays reachable; `href` is the canonical decision-workspace URL.
 // Permissions are existing effective keys, not client-side role guesses.
 export const navItems: NavItem[] = [
   apiItem({ id: "dashboard", label: "Today", href: "/admin/today", icon: Gauge, group: "Today", apiWorkspace: "today",
@@ -258,6 +260,12 @@ export const navItems: NavItem[] = [
       initialIncidentId={detailId(ctx.view)}
       key={detailId(ctx.view) ?? "incident-list"}
     /> }),
+  // SPEC: 跨表一致性是运维的一等公民 —— 它和事故并列，因为它回答的正是「有没有事故还没被
+  //       任何人发现」。targetItem：id 与 href 同形，不需要再造一条同名的 legacy 别名。
+  // INTENT: 权威早就在算这 31 条检查（reconciliation/invariants，实测 17 条违规、
+  //         decisionUse=blocked），此前整个控制台零引用 —— 结论算出来却没有任何一页显示它。
+  targetItem({ id: "ops/invariants", label: "Data Integrity", href: "/admin/ops/invariants", icon: ListChecks, group: "Platform Operations", read: read("analytics.metric.read"),
+    render: (ctx) => <InvariantsWorkspace canRead={ctx.canRead} /> }),
   apiItem({ id: "generation/jobs", label: "Generation Jobs", href: "/admin/ops/jobs", icon: Activity, group: "Platform Operations", apiWorkspace: "generation_jobs",
     render: () => <GenerationJobsWorkspace /> }),
   item({ id: "generation/dead-letter", label: "Dead-letter", href: "/admin/ops/jobs?view=dead-letter", icon: Inbox, group: "Platform Operations", read: read("ops.queue.read"),

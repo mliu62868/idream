@@ -1,3 +1,4 @@
+import { emptySceneState } from "./scene.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { CHAT_TO_MAIN_EVENTS } from "@idream/shared/contracts";
@@ -395,8 +396,8 @@ const context = {
   ],
   boundaries: [],
   relationship: null,
-  openingMessage: null,
-  scene: null,
+  lastExchangeAt: null,
+  scene: emptySceneState(),
   sceneVersion: 0,
   dropped: [],
   sessionContextRevision: 0n,

@@ -306,6 +306,13 @@ export const adminZhCustomers: Record<string, string> = {
   "Reported content": "举报内容",
   "Reporter": "举报人",
   "Reporter statement": "举报人陈述",
+  "No takedown": "无法处置",
+  "Takedown is not implemented for this target type; only closing the report is available.":
+    "这类目标还没有实现处置动作，只能把举报关闭。点「处置」会让整笔裁决回滚。",
+  // 只数得清已加载的这一页，所以中文也必须带上「本页」。
+  "+{count} more on this page": "本页另有 {count} 条同目标",
+  "{count} more report(s) on this page name the same target and are not decided by this action.":
+    "本页另有 {count} 条举报指向同一个对象，这次裁决不会连带处理它们。",
   "These filters match nothing right now. Clearing them shows the whole queue.":
     "当前筛选条件没有匹配到任何内容。清除后可以看到完整队列。",
   // 客服台：SLA 倒计时与「卡了多久」。
@@ -354,4 +361,8 @@ export const adminZhCustomers: Record<string, string> = {
   "Customer action": "客户侧动作",
   "{days}d ago": "{days} 天前",
   "{hours}h left": "剩余 {hours} 小时",
+  // 队列视图为空 ≠ 没有工作：视图是范围，不是筛选条件。
+  "This queue view is empty": "这个队列视图是空的",
+  "A queue view is a scope, not a filter — work outside it is still waiting.": "队列视图划定的是范围而不是筛选条件；范围之外的工作仍在等人处理。",
+  "Open {view}": "去看{view}",
 };

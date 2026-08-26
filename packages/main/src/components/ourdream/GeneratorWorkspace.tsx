@@ -37,6 +37,7 @@ import {
   isBuiltInMediaPlaceholderUrl,
   isPrivateMediaUrl,
 } from "@/lib/image-delivery";
+import { generationFailureCopy } from "@/lib/generation-failure-copy";
 import {
   parseCharacterDetailResponse,
   parseCharacterLooksResponse,
@@ -78,6 +79,7 @@ import {
 } from "@/lib/generation-request";
 import { useGenerationRequest } from "@/hooks/useGenerationRequest";
 import { publicOptimisticMutationFailure } from "./optimistic-write-state";
+import { useReportDialog } from "./ReportDialog";
 import { canStartAgeGatedLoad } from "@/lib/age-gate";
 
 type MediaItem = {
@@ -479,6 +481,7 @@ export function GeneratorWorkspace() {
   const [galleryTab, setGalleryTab] = useState<GalleryTab>("image");
   const [view, setView] = useState<WorkspaceView>("create");
   const [status, setStatus] = useState("");
+  const { openReport, reportDialog } = useReportDialog(setStatus);
   const [configError, setConfigError] = useState("");
   const [failedMediaIds, setFailedMediaIds] = useState<Set<string>>(() => new Set());
   const [invalidPreviewMediaIds, setInvalidPreviewMediaIds] = useState<Set<string>>(() => new Set());
@@ -730,14 +733,24 @@ export function GeneratorWorkspace() {
     () => characters.find((character) => character.id === characterId) ?? null,
     [characterId, characters],
   );
+  // SPEC: 只有当这一单真的会带身份参考去生成时，界面才允许说「Identity locked」。
+  // INTENT: 判据必须是报价解析出来的实际路线，不是「这个角色有没有 visual profile
+  //   行」—— 仍挂在 legacy editorial Release 上的角色两者会分叉：有身份档案，
+  //   但生成仍退回纯文生图。报价还没回来时按未锁定处理，不知道就不打包票。
+  const identityRoutingLocked = Boolean(generationQuote?.identityLocked);
   const videoModeCopy = generatorVideoModeCopy(
     selectedCharacter?.title ?? "character",
   );
+  // 锚点几乎总是同时出现在参考集里（编辑角色的身份修复就是 anchor === reference），
+  // 两个数组直接相加会把同一张图数两遍 —— 界面上写的是「N images」，得是真实张数。
   const identityReferenceCount = useMemo(() => {
     const profile = selectedCharacter?.visualProfile;
-    const anchorCount = Array.isArray(profile?.anchorAssetIds) ? profile.anchorAssetIds.length : 0;
-    const referenceCount = Array.isArray(profile?.referenceAssetIds) ? profile.referenceAssetIds.length : 0;
-    return anchorCount + referenceCount;
+    const ids = new Set<string>();
+    for (const list of [profile?.anchorAssetIds, profile?.referenceAssetIds]) {
+      if (!Array.isArray(list)) continue;
+      for (const id of list) if (typeof id === "string") ids.add(id);
+    }
+    return ids.size;
   }, [selectedCharacter]);
   const identityTimeline = useMemo(
     () =>
@@ -1559,20 +1572,6 @@ export function GeneratorWorkspace() {
     }
   }
 
-  async function reportMedia(id: string) {
-    const response = await fetch("/api/v1/reports", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        targetType: "media",
-        targetId: id,
-        category: "other_prohibited_content",
-        description: "Gallery media report",
-      }),
-    });
-    setStatus(response.ok ? "Report submitted." : "Report failed.");
-  }
-
   async function recordIdentityFeedback(
     item: MediaItem,
     feedbackType: "identity_match" | "identity_mismatch",
@@ -1876,7 +1875,10 @@ export function GeneratorWorkspace() {
   return (
     <section className="px-4 py-8 md:px-[60px] md:py-12">
       <div className="mx-auto max-w-6xl" ref={workspaceTopRef}>
-        <div className="mb-4 grid grid-cols-3 gap-2 md:hidden">
+        {/* 切换器必须和面板用同一个断点：面板已从 md 推到 lg，这里若还停在 md，
+            768–1023 之间就会「切换器没了、面板也被 view 挡住」，用户够不到
+            Jobs / Gallery。 */}
+        <div className="mb-4 grid grid-cols-3 gap-2 lg:hidden">
           {(["create", "jobs", "gallery"] as const).map((item) => (
             <button
               className={`h-10 rounded-full text-[12px] font-bold ${
@@ -1922,9 +1924,12 @@ export function GeneratorWorkspace() {
           </div>
         )}
 
-        <div className="grid gap-5 md:grid-cols-[390px_1fr]">
+        {/* 双栏从 md(768) 推到 lg(1024)：md 起左侧 220px 侧栏就已常驻，再叠一个
+            固定 390px 的表单栏，768px 下装不下，整页横向溢出 60px（iPad 竖屏）。
+            1024 起才有余量，之前的宽度一律走单栏。 */}
+        <div className="grid gap-5 lg:grid-cols-[390px_1fr]">
           <form
-            className={`${view === "create" ? "block" : "hidden"} rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-4 md:block`}
+            className={`${view === "create" ? "block" : "hidden"} rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-4 lg:block`}
             onSubmit={submit}
           >
             <div className="flex items-center justify-between gap-3">
@@ -2218,7 +2223,7 @@ export function GeneratorWorkspace() {
                   <span className="inline-flex min-w-0 items-center gap-2 font-bold text-white">
                     <ImageIcon className="h-4 w-4 shrink-0 text-[rgb(255,64,180)]" />
                     <span className="truncate">
-                      {selectedCharacter?.visualProfile
+                      {identityRoutingLocked
                         ? "Identity locked"
                         : selectedCharacter?.canEditIdentity
                           ? "Set up identity image"
@@ -2226,18 +2231,18 @@ export function GeneratorWorkspace() {
                     </span>
                   </span>
                   <span className="shrink-0 text-[rgb(170,170,170)]">
-                    {selectedCharacter?.visualProfile
+                    {identityRoutingLocked
                       ? "We keep them recognizable"
                       : selectedCharacter?.canEditIdentity
                         ? "No anchor"
                         : "Published character"}
                   </span>
                 </div>
-                {!selectedCharacter?.visualProfile && (
+                {!identityRoutingLocked && (
                   <div className="mt-2 rounded-[10px] border border-[rgb(255,184,112)]/30 bg-[rgb(36,28,18)] p-3 text-[12px] font-semibold leading-5 text-[rgb(255,184,112)]">
                     {selectedCharacter?.canEditIdentity
                       ? "This legacy character has no confirmed identity image. Set one up before relying on consistent results."
-                      : "This published character has no locked identity profile. Generation can continue, but visual consistency may vary."}
+                      : "This published character is not on the identity-locked route yet. Generation can continue, but visual consistency may vary."}
                   </div>
                 )}
                 {anonymousViewer ? (
@@ -2922,7 +2927,7 @@ export function GeneratorWorkspace() {
               </section>
             )}
             <section
-              className={`${view === "jobs" ? "block" : "hidden"} rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-4 md:block`}
+              className={`${view === "jobs" ? "block" : "hidden"} rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-4 lg:block`}
             >
               <div className="mb-4 flex items-center justify-between gap-3">
                 <h2 className="text-[16px] font-black text-white">Active Jobs</h2>
@@ -3054,7 +3059,7 @@ export function GeneratorWorkspace() {
             </section>
 
             <section
-              className={`${view === "gallery" ? "block" : "hidden"} rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-4 md:block`}
+              className={`${view === "gallery" ? "block" : "hidden"} rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-4 lg:block`}
             >
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                 <h2 className="text-[16px] font-black text-white">Gallery</h2>
@@ -3358,7 +3363,16 @@ export function GeneratorWorkspace() {
                             <IconButton label="Download" onClick={() => downloadMedia(item.id)}>
                               <Download className="h-4 w-4" />
                             </IconButton>
-                            <IconButton label="Report" onClick={() => reportMedia(item.id)}>
+                            <IconButton
+                              label="Report"
+                              onClick={() =>
+                                openReport({
+                                  kind: "record",
+                                  targetType: "media",
+                                  targetId: item.id,
+                                })
+                              }
+                            >
                               <Flag className="h-4 w-4" />
                             </IconButton>
                             <button
@@ -3403,6 +3417,7 @@ export function GeneratorWorkspace() {
           </div>
         </div>
       </div>
+      {reportDialog}
     </section>
   );
 }
@@ -3843,7 +3858,8 @@ export function generatorJobStatusLabel(
     return "Rendering source image · usually 6–10 min";
   }
   const label = jobStatusLabels[status];
-  return errorCode && (status === "blocked" || status === "failed")
-    ? `${label}: ${errorCode}`
+  const reason = generationFailureCopy(errorCode);
+  return reason && (status === "blocked" || status === "failed")
+    ? `${label}: ${reason}`
     : label;
 }

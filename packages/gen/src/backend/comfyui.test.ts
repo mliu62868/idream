@@ -358,6 +358,85 @@ describe("ComfyUIBackend", () => {
       outcome: "ambiguous",
     });
   });
+  it("does not spend the execution budget while ComfyUI still has the prompt queued", async () => {
+    // 排队等待不吃执行预算：单实例 ComfyUI 串行执行，排在后面的 prompt 过去会在
+    // 一次都没执行的情况下被判超时，然后被上游归成 ambiguous/not_retryable。
+    let queuedPolls = 0;
+    const routed = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/prompt")) {
+        return new Response(JSON.stringify({ prompt_id: "p-queued" }), { status: 200 });
+      }
+      if (url.includes("/history/")) {
+        if (queuedPolls < 12) return new Response(JSON.stringify({}), { status: 200 });
+        return new Response(JSON.stringify({
+          "p-queued": {
+            status: { completed: true },
+            outputs: { "9": { images: [{ filename: "a.png", subfolder: "", type: "output" }] } },
+          },
+        }), { status: 200 });
+      }
+      if (url.endsWith("/queue")) {
+        queuedPolls += 1;
+        return new Response(JSON.stringify({
+          queue_running: [],
+          queue_pending: [[0, "p-queued"]],
+        }), { status: 200 });
+      }
+      return new Response(PNG, { status: 200, headers: { "content-type": "image/png" } });
+    });
+    vi.stubGlobal("fetch", routed);
+    const backend = new ComfyUIBackend({
+      apiUrl: "http://x",
+      pollIntervalMs: 1,
+      workflowSync: testWorkflowSync,
+    });
+    const handle = await backend.submit({
+      descriptor,
+      slots: { prompt: "cat" },
+      // 预算刻意小于「排队 12 轮」的实际耗时，只有排队不计费才可能成功。
+      timeoutMs: 8,
+    });
+
+    const result = await backend.poll(handle);
+
+    expect(result.assets).toHaveLength(1);
+    expect(queuedPolls).toBeGreaterThanOrEqual(12);
+  });
+
+  it("still times out a prompt that never leaves the ComfyUI queue", async () => {
+    const routed = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/prompt")) {
+        return new Response(JSON.stringify({ prompt_id: "p-stuck" }), { status: 200 });
+      }
+      if (url.endsWith("/queue")) {
+        return new Response(JSON.stringify({
+          queue_running: [],
+          queue_pending: [[0, "p-stuck"]],
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    });
+    vi.stubGlobal("fetch", routed);
+    const backend = new ComfyUIBackend({
+      apiUrl: "http://x",
+      pollIntervalMs: 1,
+      workflowSync: testWorkflowSync,
+    });
+    const handle = await backend.submit({
+      descriptor,
+      slots: { prompt: "cat" },
+      timeoutMs: 5,
+    });
+
+    await expect(backend.poll(handle)).rejects.toMatchObject({
+      name: "BackendInvocationError",
+      code: "timeout",
+      outcome: "ambiguous",
+    });
+  });
+
   it("marks a post-submit history connection reset as ambiguous", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ prompt_id: "p-reset" }), { status: 200 }))

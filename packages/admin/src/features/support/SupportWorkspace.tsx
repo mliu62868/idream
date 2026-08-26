@@ -495,23 +495,35 @@ export function SupportWorkspace({
       ) : data ? (
         <DataTable
           caption="Support Requests"
+          // SPEC: width 是**文本盒**宽度，单元格左右还各有 1rem 内边距，真实列宽 ≈ width + 2rem；
+          //       十四列合计 ~2688px，就是下面的 minimumWidthClassName。
+          // INTENT: 原来十四列全传字符串，2000px 由浏览器按内容自由分配：邮箱一列 421px、
+          //         处理结论 239px，而「分类」只剩 58px——中文竖排成「技/术/问/题」，行高 141px。
+          //         列宽定死之后每列各得其所，代价是横向多滚 ~700px；十四列的表这笔账划算。
           headers={[
-            "Ticket",
-            "User",
-            "Category",
-            "Subject",
-            "Description",
-            "Status",
-            "Priority",
-            "SLA",
-            "Escalation",
-            "Assigned",
-            "Last update",
-            "Resolution",
-            "Created",
-            "Actions",
+            // 工单号 / 邮箱 / 主题 / 处理结论：钳在宽度内出省略号，完整值走 title 悬停。
+            { label: "Ticket", truncate: true, width: "9rem" },
+            { label: "User", truncate: true, width: "11rem" },
+            // 枚举列：中文最长四字（技术问题 / 账务争议），truncate 保证它不竖排。
+            { label: "Category", truncate: true, width: "5rem" },
+            { label: "Subject", truncate: true, width: "11rem" },
+            // 不 truncate：CaseText 自己管折叠（>90 字收进 details），钳死会把展开后的正文也截掉。
+            // 宽度与 CaseText 的 max-w-[12rem] 对齐——不对齐时正文会溢出单元格，被右侧 sticky 列压住。
+            { label: "Description", width: "12rem" },
+            { label: "Status", truncate: true, width: "5rem" },
+            { label: "Priority", truncate: true, width: "5rem" },
+            // SLA / 升级记录 / 最近更新是多行单元格，truncate 会把第二三行吞掉，只给宽度。
+            { label: "SLA", width: "9rem" },
+            { label: "Escalation", width: "10rem" },
+            { label: "Assigned", truncate: true, width: "10rem" },
+            { label: "Last update", width: "9.5rem" },
+            { label: "Resolution", truncate: true, width: "11rem" },
+            { label: "Created", truncate: true, width: "9.5rem" },
+            // 最多五个动作按钮（升级 / 打开 / 等待用户 / 解决 / 关闭）实测 365px；给够一行的量，
+            // 否则按钮换行成 2×2，把行高撑成三倍。这一列是 sticky 的，宽度就是常驻遮挡面积。
+            { label: "Actions", width: "23rem" },
           ]}
-          minimumWidthClassName="min-w-[2000px]"
+          minimumWidthClassName="min-w-[2688px]"
           rows={supportRows(rows, canWrite, confirmAction, t, value, format, refreshedAt ?? "")}
           stickyLastColumn
         />
@@ -780,7 +792,8 @@ function supportRows(
         format.display(row.resolutionNotes),
         format.dateTime(row.createdAt),
         canWrite ? (
-          <div className="flex flex-wrap gap-1">
+          // 列宽已按五个按钮一行留足；这里禁掉换行，免得窄一像素就退回 2×2 网格。
+          <div className="flex flex-nowrap gap-1">
             {actions.map((action) => (
               <TicketAction
                 icon={action.icon}
@@ -882,7 +895,7 @@ function EscalationCell({ at, reason }: { at: string; reason: string }) {
   return (
     <span className="block">
       <span className="block text-xs font-semibold">{format.dateTime(at)}</span>
-      <span className="block max-w-[16rem] break-words text-xs text-[var(--ad-text-muted)]">
+      <span className="block max-w-[10rem] break-words text-xs text-[var(--ad-text-muted)]">
         {reason || t("No reason recorded")}
       </span>
     </span>
@@ -900,7 +913,7 @@ function LastUpdateCell({ referenceTime, value }: { referenceTime: string; value
   const days = Math.floor((new Date(referenceTime).getTime() - new Date(value).getTime()) / 86_400_000);
   return (
     <span className="block">
-      <span className="block">{format.dateTime(value)}</span>
+      <span className="block whitespace-nowrap">{format.dateTime(value)}</span>
       {Number.isFinite(days) && days >= 1 ? (
         <span className="block text-xs text-[var(--ad-text-muted)]">
           {t("{days}d ago", { days })}
@@ -916,10 +929,11 @@ function CaseText({ value }: { value: string }) {
   const { t } = useAdminI18n();
   if (!value.trim())
     return <span className="text-[var(--ad-text-muted)]">{t("Nothing written")}</span>;
+  // max-w 与「描述」列的 width 对齐：宽过列宽时正文会溢出单元格，被右侧 sticky 的操作列压住裁切。
   if (value.length <= 90)
-    return <span className="block max-w-xs break-words">{value}</span>;
+    return <span className="block max-w-[12rem] break-words">{value}</span>;
   return (
-    <details className="max-w-xs">
+    <details className="max-w-[12rem]">
       <summary
         aria-label={t("Support description")}
         className="cursor-pointer rounded break-words focus-visible:outline focus-visible:outline-2"

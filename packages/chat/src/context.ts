@@ -34,6 +34,9 @@ export interface BuiltContext {
      * agent's own recollection of what it sent, injected as a context line by
      * generate.ts's buildModelMessages (not stored, not user-visible). */
     photoSummary?: string;
+    /** The pinned opening line that started this session; it is conversation
+     * content, not an orphaned reply, so transcript clipping keeps it. */
+    opening?: true;
   }>;
   boundaries: string[];
   /** Qualitative companion bond for tone/continuity (P1-B). Null when none/incognito. */
@@ -41,8 +44,8 @@ export interface BuiltContext {
   /** Immutable Scene revision pinned by the user turn being answered. */
   scene: SceneState;
   sceneVersion: number;
-  /** Immutable pinned opening, injected only for the first turn. */
-  openingMessage: string | null;
+  /** When the previous exchange happened, so the turn state can say how long it has been. */
+  lastExchangeAt: Date | null;
   /** Budget degradation is explicit; callers must surface it in PreparedTurn. */
   dropped: Array<"transcript">;
   /** Privacy/context fence revalidated after the model returns. */
@@ -188,22 +191,6 @@ async function buildContextSnapshot(
       `scene revision ${sceneVersion} is unavailable for session ${sessionId}`,
     );
   }
-  const priorUserMessage = anchor
-    ? await prisma.message.findFirst({
-        where: {
-          sessionId,
-          role: "user",
-          status: "sent",
-          deletedAt: null,
-          createdAt: { lt: anchor.createdAt },
-        },
-        select: { id: true },
-      })
-    : null;
-  const openingMessage = anchor && !priorUserMessage
-    ? openingMessageFromSnapshot(contentVersion?.openingSnapshot)
-    : null;
-
   const policy = resolvePolicy(snapshotFromView(entitlementRow), {
     memoryEnabled: turnMemoryEnabled,
     characterImageToolEnabled: persona.imageToolEnabled,
@@ -223,9 +210,16 @@ async function buildContextSnapshot(
     orderBy: [{ createdAt: "desc" }, { role: "asc" }],
     take: policy.maxContextMessages,
   });
+  const previousExchange = recent.find((m) => m.id !== anchor?.id);
+  const lastExchangeAt = anchor ? previousExchange?.createdAt ?? null : null;
   const orderedRecent: BuiltContext["recentMessages"] = recent
     .reverse()
-    .map((m) => ({ id: m.id, role: m.role as "user" | "assistant", content: m.content }));
+    .map((m) => ({
+      id: m.id,
+      role: m.role as "user" | "assistant",
+      content: m.content,
+      ...(isOpeningMessage(m.runtimeTrace) ? { opening: true as const } : {}),
+    }));
   const fittedTranscript = fitRecentTranscript(orderedRecent, policy.maxContextChars);
   const recentMessages = fittedTranscript.messages;
   const dropped: BuiltContext["dropped"] = fittedTranscript.dropped
@@ -303,7 +297,7 @@ async function buildContextSnapshot(
     relationship,
     scene,
     sceneVersion,
-    openingMessage,
+    lastExchangeAt,
     dropped,
     sessionContextRevision: session?.contextRevision ?? 0n,
     fileContextRevision: latestInvalidatingMutation?.sequence ?? 0n,
@@ -311,12 +305,10 @@ async function buildContextSnapshot(
   };
 }
 
-function openingMessageFromSnapshot(value: unknown): string | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const firstMessage = (value as Record<string, unknown>).firstMessage;
-  return typeof firstMessage === "string" && firstMessage.trim()
-    ? firstMessage.trim()
-    : null;
+/** service.ts records the pinned opening as an assistant message with this trace kind. */
+function isOpeningMessage(runtimeTrace: unknown): boolean {
+  return typeof runtimeTrace === "object" && runtimeTrace !== null && !Array.isArray(runtimeTrace)
+    && (runtimeTrace as Record<string, unknown>).messageKind === "opening";
 }
 
 function personaFromImmutableContent(
@@ -348,7 +340,7 @@ function personaFromImmutableContent(
   };
 }
 
-function fitRecentTranscript(
+export function fitRecentTranscript(
   messages: BuiltContext["recentMessages"],
   maxChars: number,
 ): { messages: BuiltContext["recentMessages"]; dropped: boolean } {
@@ -367,8 +359,11 @@ function fitRecentTranscript(
     selected.unshift(message);
     used += message.content.length;
   }
-  // Never begin a clipped context with an orphan assistant response.
-  if (selected.length > 1 && selected[0]?.role === "assistant") selected.shift();
+  // Never begin a clipped context with an orphan assistant response. The
+  // session's pinned opening is the one assistant line that legitimately
+  // starts a conversation; dropping it made the character forget how the
+  // scene opened from the second turn on.
+  if (selected.length > 1 && selected[0]?.role === "assistant" && !selected[0].opening) selected.shift();
   return { messages: selected, dropped: selected.length < messages.length };
 }
 

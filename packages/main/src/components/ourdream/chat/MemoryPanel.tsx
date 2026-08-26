@@ -26,7 +26,12 @@ export function MemoryPanel({
 }>) {
   const [resetting, setResetting] = useState(false);
   const [resetConfirm, setResetConfirm] = useState(false);
+  const [resetFailed, setResetFailed] = useState(false);
 
+  // SPEC: 重置成功后把用户送进一段全新对话。
+  // INTENT: 服务端会归档这个角色的活跃会话，所以留在原地的用户下一条消息必然被
+  // 拒（"This chat has been archived."）。重置的承诺是"start over"，那就真的把人
+  // 带到新对话里；开不出新会话时才退回原地刷新，至少长期记忆已经清干净了。
   async function resetRelationship() {
     if (!characterId) return;
     if (!resetConfirm) {
@@ -34,15 +39,35 @@ export function MemoryPanel({
       return;
     }
     setResetting(true);
+    setResetFailed(false);
     try {
       const response = await fetch(
         `/api/v1/chat/relationships/${encodeURIComponent(characterId)}`,
         { method: "DELETE" },
       );
-      if (response.ok) {
-        setResetConfirm(false);
-        onRelationshipReset();
+      if (!response.ok) {
+        setResetFailed(true);
+        return;
       }
+      setResetConfirm(false);
+      const started = await fetch("/api/v1/chat/sessions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ characterId }),
+      });
+      if (started.ok) {
+        const payload = (await started.json().catch(() => null)) as
+          | { data?: { session?: { id?: unknown } } }
+          | null;
+        const sessionId = payload?.data?.session?.id;
+        if (typeof sessionId === "string" && sessionId) {
+          window.location.href = `/chat/${sessionId}`;
+          return;
+        }
+      }
+      onRelationshipReset();
+    } catch {
+      setResetFailed(true);
     } finally {
       setResetting(false);
     }
@@ -99,7 +124,9 @@ export function MemoryPanel({
             Relationship
           </h3>
           <p className="mb-3 text-[12px] leading-4 text-[rgb(114,113,112)]">
-            Reset the entire relationship and its companion memory to start over.
+            {resetConfirm
+              ? "This clears everything this character remembers about you and moves your current chats with them to the archive. You'll start a new conversation. Your old chats stay readable."
+              : "Clear everything this character remembers about you and start a new conversation."}
           </p>
           <button
             aria-label={resetConfirm ? "Confirm reset relationship" : "Reset relationship"}
@@ -112,6 +139,15 @@ export function MemoryPanel({
             <RotateCcw className="h-4 w-4" />
             {resetConfirm ? "Confirm reset" : "Reset relationship"}
           </button>
+          {resetFailed ? (
+            <p
+              className="mt-2 text-[12px] leading-4 text-[rgb(255,138,128)]"
+              data-testid="relationship-reset-error"
+              role="status"
+            >
+              Couldn&apos;t reset the relationship. Nothing was changed — try again.
+            </p>
+          ) : null}
         </div>
       </div>
     </div>

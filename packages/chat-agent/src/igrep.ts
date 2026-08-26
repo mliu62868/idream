@@ -22,13 +22,26 @@ import type {
   MemoryStatus,
 } from "./workspace";
 
+// SPEC: the normal profile exposes exactly one model-visible igrep surface:
+// memory (wake profile + memory_search + ingest). `igrep_search` is off.
+// INTENT: the working-tree search tool only ever saw `knowledge/canon.md`,
+// whose bytes are already inside the compiled Soul, while its coding-agent
+// guidance ("grep, glob, bash, repository facts") landed verbatim in every
+// companion prompt. Removing the capability removes the tool, the guidance,
+// the routing skill and the failure-moment reminder in one place.
+// INTENT: memorySearchMode "fast": the plugin default "ultra" spends 4–40 s
+// inside an LLM evidence controller that times out against the local model
+// (measured 2026-08-24); "fast" returned the same hits in 0.7 s over a
+// relationship-sized corpus. The tool subprocess budget shrinks with it.
 export const NORMAL_IGREP_CONFIG = Object.freeze({
-  search: true,
+  search: false,
   webProvider: false,
   webTool: false,
   memory: true,
   ingest: true,
   wake: true,
+  memorySearchMode: "fast",
+  timeoutMs: 10_000,
 });
 
 export const PRIVATE_IGREP_CONFIG = Object.freeze({
@@ -111,16 +124,25 @@ export async function runJsonCommand(options: JsonCommandOptions): Promise<unkno
   }
 }
 
+export interface IgrepWake {
+  outcome: "hit" | "empty";
+  resultCount: 0 | 1;
+  /** Resident profile markdown for this turn's prompt; never placed on the wire. */
+  profile: string;
+}
+
 /**
  * Gate E observes the actual official wake command instead of inferring it
- * from prompt assembly. Resident profile bytes never leave this process.
+ * from prompt assembly. The profile bytes stay in this process: the engine
+ * injects them through the plugin's own prompt variable so the prompt cannot
+ * race the plugin's asynchronous wake cache, and the wire event carries counts.
  */
 export async function observeIgrepWake(
   command: string,
   workspace: string,
   signal?: AbortSignal,
   run: RunJsonCommand = runJsonCommand,
-): Promise<{ outcome: "hit" | "empty"; resultCount: 0 | 1 }> {
+): Promise<IgrepWake> {
   const payload = objectRecord(await run({
     command,
     args: [
@@ -135,9 +157,92 @@ export async function observeIgrepWake(
   if (!payload || typeof payload.markdownContext !== "string") {
     throw new Error("igrep wake returned unverifiable evidence");
   }
-  return payload.markdownContext.trim()
-    ? { outcome: "hit", resultCount: 1 }
-    : { outcome: "empty", resultCount: 0 };
+  const profile = payload.markdownContext.trim();
+  return profile
+    ? { outcome: "hit", resultCount: 1, profile }
+    : { outcome: "empty", resultCount: 0, profile: "" };
+}
+
+export interface IgrepRecallHit {
+  citation: string;
+  snippet: string;
+  sourceClass: string;
+}
+
+export interface IgrepRecall {
+  outcome: "hit" | "empty";
+  resultCount: number;
+  /** Projected hits, kept for content-free evidence accounting. */
+  results: IgrepRecallHit[];
+  /** Prompt-ready dialogue notes; profile hits are excluded because wake already carries the profile. */
+  notes: string[];
+}
+
+const RECALL_MAX_RESULTS = 6;
+const RECALL_NOTE_MAX_CHARS = 320;
+
+/**
+ * SPEC: recall is pushed, not pulled. Before the model speaks, the current
+ * user message is searched against the relationship memory with the same
+ * public `memory-search` seam the plugin tool uses, so a companion remembers
+ * without spending a tool round-trip (one extra model step) on every turn.
+ * INTENT: "fast" mode is the only mode whose latency fits in front of first
+ * token (0.7 s measured); the model-invoked memory_search remains for explicit
+ * lookups the message itself does not surface.
+ */
+export async function recallIgrepMemory(
+  command: string,
+  workspace: string,
+  query: string,
+  options: { referenceAt?: string; signal?: AbortSignal } = {},
+  run: RunJsonCommand = runJsonCommand,
+): Promise<IgrepRecall> {
+  const payload = objectRecord(await run({
+    command,
+    args: ["mem-api", "memory-search", "--payload", "-"],
+    stdin: `${JSON.stringify({
+      workspace,
+      query,
+      max_results: RECALL_MAX_RESULTS,
+      search_mode: "fast",
+      reference_at: options.referenceAt ?? new Date().toISOString(),
+    })}\n`,
+    timeoutMs: 10_000,
+    signal: options.signal,
+  }));
+  if (!payload || payload.failed === true || payload.error || !Array.isArray(payload.results)) {
+    throw new Error("igrep memory-search returned unverifiable evidence");
+  }
+  const results = payload.results.map((hit): IgrepRecallHit => {
+    const record = objectRecord(hit) ?? {};
+    return {
+      citation: typeof record.citation === "string" ? record.citation : "",
+      snippet: typeof record.snippet === "string" ? record.snippet : "",
+      sourceClass: typeof record.sourceClass === "string" ? record.sourceClass : "",
+    };
+  });
+  const notes = results
+    .filter((hit) => hit.sourceClass !== "profile")
+    .map((hit) => recallNote(hit.snippet))
+    .filter((note) => note.length > 0);
+  return {
+    outcome: results.length > 0 ? "hit" : "empty",
+    resultCount: results.length,
+    results,
+    notes,
+  };
+}
+
+/** `L12: [user @ 2026-08-24] text` lines become `[user @ 2026-08-24] text`. */
+function recallNote(snippet: string): string {
+  const text = snippet
+    .split("\n")
+    .map((line) => line.replace(/^L\d+:\s*/u, "").trim())
+    .filter(Boolean)
+    .join(" ");
+  return text.length > RECALL_NOTE_MAX_CHARS
+    ? `${text.slice(0, RECALL_NOTE_MAX_CHARS - 1)}…`
+    : text;
 }
 
 export class IgrepMemoryProbe implements MemoryProbe {

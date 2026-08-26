@@ -52,6 +52,19 @@ export const GENERATION_JOB_STATUSES = [
 ] as const;
 export type GenerationJobStatus = (typeof GENERATION_JOB_STATUSES)[number];
 
+// Cancellation is a write-transition authority, not the inverse of the viewer's
+// terminal polling set. Keep it explicit even while the two sets happen to be complements.
+export const GENERATION_REQUEST_CANCELLABLE_STATUSES = [
+  "queued",
+  "moderating_input",
+  "running",
+  "moderating_output",
+] as const satisfies readonly GenerationJobStatus[];
+
+export function isGenerationRequestCancellableStatus(status: string) {
+  return (GENERATION_REQUEST_CANCELLABLE_STATUSES as readonly string[]).includes(status);
+}
+
 // A job in one of these states will never change again — polling can stop.
 // NOTE: `failed` is deliberately terminal HERE while the server's transition
 // authority allows failed → queued on an operator retry. The two answer

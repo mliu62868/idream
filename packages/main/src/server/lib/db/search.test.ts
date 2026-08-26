@@ -6,7 +6,13 @@ describe("db search helpers", () => {
     expect(normalizeSearchQuery("  Melissa   Burke  ")).toBe("Melissa Burke");
     expect(nameMatch("  Melissa   Burke  ")).toEqual({
       contains: "Melissa Burke",
+      mode: "insensitive",
     });
     expect(nameMatch("   ")).toBeUndefined();
+  });
+
+  it("matches regardless of the case the reader typed", () => {
+    // 搜索框里输入 "alexa" 必须找到 "Alexa Reeves"。
+    expect(nameMatch("alexa")?.mode).toBe("insensitive");
   });
 });

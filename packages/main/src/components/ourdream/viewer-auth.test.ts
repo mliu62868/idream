@@ -114,7 +114,7 @@ describe("protected viewer requests", () => {
 
     await expect(
       fetchProtectedForViewer("/api/v1/profile", undefined, fetcher),
-    ).rejects.toThrow("Invalid viewer authority response");
+    ).rejects.toThrow("The server sent a response this page could not read");
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 });

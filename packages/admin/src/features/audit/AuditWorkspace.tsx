@@ -8,6 +8,7 @@ import { apiGet } from "@/components/admin/api";
 import { CopyableId } from "@/components/admin/ui/CopyableId";
 import { csvFilename, downloadCsv, toCsv, type CsvColumn } from "@/components/admin/ui/csv";
 import { DataTable, type DataTableHeader, type DataTableRow } from "@/components/admin/ui/DataTable";
+import { collapseAuditRuns } from "./collapse-runs";
 import { EmptyState } from "@/components/admin/ui/EmptyState";
 import { FilterBar, type FilterChip } from "@/components/admin/ui/FilterBar";
 import { useAdminFormat, text } from "@/components/admin/ui/format";
@@ -62,6 +63,8 @@ export function AuditWorkspace() {
   const { t } = useAdminI18n();
   const format = useAdminFormat();
   const [records, setRecords] = useState<AuditRecord[] | null>(null);
+  // SPEC: 默认折叠 —— 首屏被一次批量操作吃掉是常态，不是例外。
+  const [collapseRepeats, setCollapseRepeats] = useState(true);
   const [pageInfo, setPageInfo] = useState(emptyPageInfo);
   const [command, setCommand] = useState<AdminCommandStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -158,8 +161,10 @@ export function AuditWorkspace() {
     onClear: () => applyQuery({ ...query, ...filter.reset, cursor: "" }),
   }));
 
-  const rows: DataTableRow[] = (records ?? []).map((row, index) => ({
-    id: text(row.id) || `audit-${index}`,
+  const collapsed = collapseAuditRuns(records ?? []);
+  const shown = collapseRepeats ? collapsed.visible : (records ?? []);
+  const rows: DataTableRow[] = shown.map((row, index) => ({
+    id: auditRowId(row, index),
     cells: [
       <CopyableId key="id" value={text(row.id)} />,
       <CopyableId key="actor" value={text(row.actorId) || "system"} />,
@@ -183,6 +188,32 @@ export function AuditWorkspace() {
         <p className="text-xs text-[var(--ad-text-muted)]" role="status">
           {refreshedAt ? <>{t("Refreshed")} <time dateTime={refreshedAt}>{format.time(refreshedAt)}</time></> : null}
           {exportNote ? <span className="ml-3">{exportNote}</span> : null}
+          {/* 折叠了多少、以及怎么撤销，必须就写在这里 —— 悄悄少显示几行是审计日志最不能做的事。 */}
+          {collapsed.hidden > 0 ? (
+            <span className="ml-3">
+              {collapseRepeats
+                ? t("{count} repeats of the row above are hidden", { count: collapsed.hidden })
+                : t("{count} rows repeat the row above", { count: collapsed.hidden })}
+              <button
+                className="ml-2 underline"
+                // INVARIANT: 折起来的行必须同时退出勾选。DataTable 的「全选」只作用于可见行，
+                //            于是"展开→勾一批→折叠"之后，「复制选中 ID」会复制到屏幕上根本
+                //            看不见的行 —— 审计日志上，复制到自己没看过的 ID 是硬伤。
+                onClick={() => {
+                  setCollapseRepeats((value) => {
+                    if (!value) {
+                      const visible = new Set(collapsed.visible.map(auditRowId));
+                      setSelectedRows((ids) => ids.filter((id) => visible.has(id)));
+                    }
+                    return !value;
+                  });
+                }}
+                type="button"
+              >
+                {collapseRepeats ? t("Show every row") : t("Hide repeats")}
+              </button>
+            </span>
+          ) : null}
         </p>
         <button
           className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm font-semibold disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
@@ -263,21 +294,35 @@ export function AuditWorkspace() {
           page={cursorTrail.length + 1}
           pageSize={query.limit}
           pageSizeOptions={auditLimitOptions}
-          rowCount={rows.length}
+          rowCount={records?.length ?? 0}
         />
       ) : null}
     </section>
   );
 }
 
+// SPEC: width 说的是**文本盒**宽度，单元格左右还各有 0.75rem 内边距（compact），
+//       所以真实列宽 ≈ width + 1.5rem。
+// INTENT: 原来七列合计 82rem + 内边距 ≈ 1520px，比 1512 视口下的内容区（实测 1204px）宽 300 多，
+//         「发生时间」被挤出可视区，而 macOS 的浮层滚动条不出现时连"还能横滚"都看不出来。
+//         这里把预算压回 ~1184px：ID 三列只留够印它们真正印出来的那点内容，省下的给散文列。
+/** 表格行 ID —— 勾选集合与折叠裁剪必须用同一个推法，否则裁的和勾的对不上。 */
+function auditRowId(row: AuditRecord, index: number) {
+  return text(row.id) || `audit-${index}`;
+}
+
 const AUDIT_HEADERS: DataTableHeader[] = [
-  { label: "Event", width: "9rem" },
-  { label: "Actor", width: "9rem" },
-  { label: "Role", width: "7rem" },
-  { label: "Action", truncate: true, width: "14rem" },
-  { label: "Target", truncate: true, width: "14rem" },
-  { label: "Reason", truncate: true, width: "18rem" },
-  { label: "Occurred", width: "11rem" },
+  // CopyableId 只印 8 位 + 复制钮（实测 86px），再宽就是从「处理 / 目标 / 原因」里抢。
+  { label: "Event", width: "5.5rem" },
+  { label: "Actor", width: "5.5rem" },
+  // 角色是枚举，中文最长三字；truncate 顺带保证它不会被压成竖排。
+  { label: "Role", truncate: true, width: "3.5rem" },
+  // 三列散文：钳在宽度内出省略号，完整值走 title 悬停与 CSV 导出，不许撑宽整张表。
+  { label: "Action", truncate: true, width: "13rem" },
+  { label: "Target", truncate: true, width: "12rem" },
+  { label: "Reason", truncate: true, width: "12rem" },
+  // 中文 dateStyle:medium + timeStyle:short 实测 ~142px；给足一行的量，dateCell 负责不折行。
+  { label: "Occurred", width: "9.5rem" },
 ];
 
 function CommandContext({ command }: { command: AdminCommandStatus }) {

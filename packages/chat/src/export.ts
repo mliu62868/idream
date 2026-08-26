@@ -37,7 +37,10 @@ export async function exportAccount(
         : [];
       const usage = await tx.chatUsage.findMany({ where: { userId } });
 
-      const memFiles = await listPrefix(["mem", userId]);
+      // Quarantined (reset) relationship files are an engineering artefact,
+      // not part of the account's live data.
+      const memFiles = (await listPrefix(["mem", userId]))
+        .filter((rel) => !rel.split("/").includes(".reset-quarantine"));
       const relationships: AccountExport["relationships"] = [];
       for (const rel of memFiles) {
         const parts = rel.split("/");

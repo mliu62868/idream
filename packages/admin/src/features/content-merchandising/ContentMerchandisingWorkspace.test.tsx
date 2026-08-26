@@ -72,6 +72,37 @@ describe("Content merchandising takedown targets", () => {
     expect(html).toContain("Remove");
   });
 
+  // SPEC: 中文界面上不许出现裸枚举与裸 ISO 时间戳。
+  // INTENT: 这张表原来所有单元格共用一个 String() 出口，于是性别 / 风格 / 可见性 / 状态 印的是
+  //         female / realistic / unlisted / approved，创建时间印的是 2026-08-11T18:18:31.703Z。
+  //         这几个取值在 zhValues 里早就有中文，只是没接上去——i18n 审计查不到这类漏翻，
+  //         因为它来自数据而不是字面量，只能靠这条用例钉住。
+  it("routes enum cells through the value dictionary and the date through format", () => {
+    const row = characterTableRow(
+      {
+        id: "character-1",
+        name: "Launch validation",
+        gender: "female",
+        style: "realistic",
+        visibility: "unlisted",
+        status: "approved",
+        createdAt: "2026-08-11T18:18:31.703Z",
+      },
+      false,
+      () => undefined,
+      (value) => `zh:${value}`,
+      () => "2026年8月11日 18:18",
+    );
+
+    expect(row.cells.slice(2, 7)).toEqual([
+      "zh:female",
+      "zh:realistic",
+      "zh:unlisted",
+      "zh:approved",
+      "2026年8月11日 18:18",
+    ]);
+  });
+
   it("disables every row action without content.takedown.write", () => {
     const row = characterTableRow(
       { id: "character-1", name: "Launch validation", visibility: "public" },

@@ -115,7 +115,7 @@ describe("SupportWorkspace mounted URL state", () => {
     );
     expect(
       container.querySelector('[aria-label="Support Requests scrollable table"] table')?.className,
-    ).toContain("min-w-[2000px]");
+    ).toContain("min-w-[2688px]");
     expect(consoleError).not.toHaveBeenCalled();
   });
 });

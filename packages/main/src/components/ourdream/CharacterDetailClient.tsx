@@ -7,13 +7,13 @@ import {
   parseCharacterDetailResponse,
   parseCharacterLikeResponse,
   parseChatSessionCreateResponse,
-  parseReportResponse,
   type PublicCharacterDetail,
 } from "@/lib/public-api-contracts";
 import {
   CharacterDetailHero,
 } from "./CharacterDetailHero";
 import { useAgeGateAccess } from "./AgeGateBoundary";
+import { useReportDialog } from "./ReportDialog";
 import { AppSidebar } from "./AppSidebar";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { SiteFooter } from "./SiteFooter";
@@ -29,6 +29,7 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
   const [character, setCharacter] = useState<CharacterDetail>();
   const [status, setStatus] = useState("Loading character...");
   const [busy, setBusy] = useState(false);
+  const { openReport, reportDialog } = useReportDialog(setStatus);
 
   useEffect(() => {
     if (!ageGateAccepted) return;
@@ -121,36 +122,6 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
     }
   }
 
-  async function reportCharacter() {
-    if (!character) return;
-    setBusy(true);
-    setStatus("");
-    try {
-      const response = await fetch(`/api/v1/characters/${character.id}/report`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          category: "other_prohibited_content",
-          description: "User submitted from character detail.",
-        }),
-      });
-      if (response.status === 401) {
-        window.location.assign(signupUrlForCurrentCharacter());
-        return;
-      }
-      if (!response.ok) {
-        setStatus("Could not submit the report. Please try again.");
-        return;
-      }
-      parseReportResponse(await response.json());
-      setStatus("Report submitted for review.");
-    } catch {
-      setStatus("Could not submit the report. Please try again.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
     <main className="min-h-screen bg-[rgb(13,13,13)] text-white">
       <div className="flex min-h-screen w-full">
@@ -196,7 +167,7 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
                   <button
                     className="inline-flex h-12 items-center justify-center gap-2 rounded-full bg-[rgb(36,36,36)] px-5 text-[14px] font-bold text-white"
                     disabled={busy}
-                    onClick={reportCharacter}
+                    onClick={() => openReport({ kind: "character", id: character.id })}
                     type="button"
                   >
                     <Flag className="h-4 w-4" />
@@ -230,6 +201,7 @@ function CharacterDetailView({ id }: Readonly<{ id: string }>) {
       </div>
       <SiteFooter />
       <MobileBottomNav activeHref="/" />
+      {reportDialog}
     </main>
   );
 }

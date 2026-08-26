@@ -42,6 +42,23 @@ export function adminRouteLabel(
   return parseAdminPath(withSearchParams(section.join("/"), query))?.item.label ?? "Admin";
 }
 
+/**
+ * SPEC: 动态段路由的标题跟着**解析出来的视图**走，不跟着文件路径走。
+ * INTENT: nav-routes 的 CANONICAL_LIST_SECTIONS 把 `characters/releases` 与 `characters/calendar`
+ *         解析成角色**列表**，但 Next 的匹配优先级让它们落进 `characters/[id]` 目录，于是页面
+ *         渲染的是列表、标签页却写着「角色详情」。为这两条各建一个目录只挡得住今天这两条；
+ *         判 view.kind 能挡住往后新增的每一条列表别名。
+ * INVARIANT: 名字仍然只来自 nav-config —— 只有真正的详情视图才换成更具体的 detailLabel。
+ */
+export function adminDynamicRouteLabel(
+  section: readonly string[],
+  detailLabel: string,
+) {
+  const match = parseAdminPath(section.join("/"));
+  if (!match) return detailLabel;
+  return match.view.kind === "detail" ? detailLabel : match.item.label;
+}
+
 export async function renderAdminRoute(
   section: readonly string[],
   searchParams: AdminSearchParams,

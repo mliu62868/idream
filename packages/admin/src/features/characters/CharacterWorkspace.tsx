@@ -1098,9 +1098,15 @@ export function CharacterPerformanceWorkspace({
 }: {
   permissions: ReadonlySet<AdminPermissionKey>;
 }) {
+  // SPEC: 草稿主图的可见性跟着「能不能看素材」这个权限走，不跟着看的是哪个页面走。
+  // INTENT: 这里曾经硬编码 false，于是 CharacterPortfolioVisual 的
+  //         `canOpenAssets || primaryImageSource !== "draft"` 恒假，主图来源为 draft 的角色
+  //         在「角色表现」里一律显示灰色占位——同一个角色在「角色」里却有图。同一个标志还
+  //         压着 canOpenNextAction，requiresAssets 的下一步动作被降级成「仅表现数据」。
+  //         视图不该替权限做决定：有 creative.run.read 就看得见，没有才占位。
   return (
     <CharacterPortfolio
-      canOpenAssets={false}
+      canOpenAssets={permissions.has("creative.run.read")}
       canCreate={false}
       canOpenProjects={adminV2OperationAllowed(
         "GET /api/v2/admin/characters/:id",

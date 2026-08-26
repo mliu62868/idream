@@ -65,7 +65,7 @@ describe.each(protectedRouteLoaders)(
       );
 
       await expect(loadForViewer(fetcher)).rejects.toThrow(
-        "Invalid viewer authority response",
+        "The server sent a response this page could not read. Try again.",
       );
       expect(fetcher).toHaveBeenCalledTimes(1);
     });
