@@ -52,8 +52,18 @@ function createCharacterVisualProfile(request: Request, characterId: string) {
 }
 
 
-const { multiReferenceWorkflowKey } = vi.hoisted(() => ({
+const { generationBackendHealth, multiReferenceWorkflowKey } = vi.hoisted(() => ({
+  generationBackendHealth: vi.fn<
+    () => Promise<{ ok: boolean; detail?: string }>
+  >(async () => ({ ok: true })),
   multiReferenceWorkflowKey: "test-qwen-image-edit-multi-reference",
+}));
+
+vi.mock("@/server/modules/admin-v2/generation/diagnostics", async (importOriginal) => ({
+  ...await importOriginal<
+    typeof import("@/server/modules/admin-v2/generation/diagnostics")
+  >(),
+  generationBackendHealth,
 }));
 
 vi.mock("@/server/modules/generation/generation-catalog", async (importOriginal) => {
@@ -776,6 +786,25 @@ describe("Character image Creative Run authority", () => {
       priority: "normal",
       reason: "Create the reviewed first identity anchor",
     };
+    generationBackendHealth.mockResolvedValueOnce({
+      ok: false,
+      detail: "connect ECONNREFUSED 127.0.0.1:8188",
+    });
+    const unavailable = await createCreativeRun(request(
+      bootstrapRequest,
+      `character-image-bootstrap-unavailable-${suffix}`,
+    ));
+    expect(unavailable.status).toBe(503);
+    await expect(unavailable.json()).resolves.toMatchObject({
+      error: {
+        code: "unavailable",
+        message: expect.stringContaining("No Run was created"),
+      },
+    });
+    await expect(prisma.contentProductionBatch.count({
+      where: { title: "Mara first identity portrait" },
+    })).resolves.toBe(0);
+
     const responses = await Promise.all([
       createCreativeRun(request(bootstrapRequest, `character-image-bootstrap-a-${suffix}`)),
       createCreativeRun(request(bootstrapRequest, `character-image-bootstrap-b-${suffix}`)),

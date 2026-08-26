@@ -23,6 +23,7 @@ import {
 } from "@/server/modules/generation/generation-attempt-authority";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
+import { generationBackendHealth } from "@/server/modules/admin-v2/generation/diagnostics";
 import {
   ensureOperationalGenerationRoute,
   findOperationalGenerationRoute,
@@ -188,6 +189,16 @@ export async function createCreativeRun(
   );
   if (workflowVersion === null) {
     throw Errors.conflict("The exact production workflow version is unavailable", { workflowKey });
+  }
+  if (body.bootstrapIdentity && workflow) {
+    const backendHealth = await generationBackendHealth(
+      workflow.backendKind,
+    );
+    if (!backendHealth.ok) {
+      throw Errors.unavailable(
+        `The ${workflow.backendKind} image-generation runtime is not ready. Restore backend health, then generate again. No Run was created.`,
+      );
+    }
   }
   const recipe = await resolveProductionRecipe(
     body.recipeId,

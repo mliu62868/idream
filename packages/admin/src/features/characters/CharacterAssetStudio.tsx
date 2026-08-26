@@ -125,7 +125,9 @@ export function CharacterAssetStudio({
     "character_chat",
   );
   const [briefs, setBriefs] = useState<Record<CharacterAssetPurpose, string>>(() => ({
-    character_cover: t("Create a definitive primary portrait of {name}, preserving the locked identity and personality.", { name: subject.name }),
+    character_cover: data.visual.identityBootstrap.allowed
+      ? t("Create the first definitive portrait of {name} from the approved visual direction. This portrait will define the identity for future images.", { name: subject.name })
+      : t("Create a definitive primary portrait of {name}, preserving the locked identity and personality.", { name: subject.name }),
     character_hero: t("Create a cinematic but natural hero scene for {name}, preserving the locked identity and personality.", { name: subject.name }),
     character_chat: t("Create a warm, candid conversational moment with {name}, preserving the locked identity and emotional presence.", { name: subject.name }),
   }));
@@ -853,13 +855,25 @@ export function CharacterAssetStudio({
         body,
       });
     } catch (cause) {
+      const rejectedByRuntimePreflight =
+        cause instanceof AdminV2RequestError &&
+        cause.status === 503 &&
+        cause.code === "unavailable" &&
+        cause.message.includes("No Run was created");
       if (
         cause instanceof AdminV2RequestError &&
-        [400, 401, 403, 404, 409, 422].includes(cause.status)
+        (
+          [400, 401, 403, 404, 409, 422].includes(cause.status) ||
+          rejectedByRuntimePreflight
+        )
       ) {
         clearDurableMutationIntent(intent);
         updateRunCreationIntentState(null);
-        setError(cause.message);
+        setError(
+          rejectedByRuntimePreflight
+            ? "Image generation is offline. Restore backend health, then generate again. No Run was created."
+            : cause.message,
+        );
       } else {
         const unknown = updateDurableMutationIntent(intent, {
           status: "outcome_unknown",
@@ -1797,7 +1811,7 @@ export function CharacterAssetStudio({
                     ? "Refresh the workspace before starting another generation."
                     : !qualifiedRoute && !bootstrapMode
                       ? "Qualify a generation route for this Character first."
-                      : "The generation action is available.";
+                      : "The generation runtime is checked before any Run is created.";
 
   return (
     <div className="space-y-4 pb-12">
@@ -1877,13 +1891,20 @@ export function CharacterAssetStudio({
               ? "bg-[var(--ad-blue-bg)] text-[var(--ad-blue-text)]"
               : "bg-[var(--ad-yellow-bg)] text-[var(--ad-yellow-text)]",
           )}>
-            {bootstrapProfile
-              ? `${bootstrapProfile.label} · ${bootstrapProfile.orientation} · ${t(
-                  identityBootstrap.state === "recoverable_empty_history"
-                    ? `no reference input. The reviewed result will supersede the unanchored candidate history as identity version ${identityBootstrap.nextIdentityVersion}.`
-                    : "no reference input. The reviewed result becomes the reference authority.",
-                )}`
-              : t("No active text-to-image bootstrap profile is available. Generation remains blocked until one is published.")}
+            <p>
+              {bootstrapProfile
+                ? `${bootstrapProfile.label} · ${bootstrapProfile.orientation} · ${t(
+                    identityBootstrap.state === "recoverable_empty_history"
+                      ? `no reference input. The reviewed result will supersede the unanchored candidate history as identity version ${identityBootstrap.nextIdentityVersion}.`
+                      : "no reference input. The reviewed result becomes the reference authority.",
+                  )}`
+                : t("No active text-to-image bootstrap profile is available. Generation remains blocked until one is published.")}
+            </p>
+            {bootstrapProfile ? (
+              <p className="mt-1 text-xs">
+                {t("The generation runtime is checked before any Run is created.")}
+              </p>
+            ) : null}
           </div>
         ) : data.project.draftAssetRouteAuthority?.status === "stale" ? (
           <div className="mx-4 mb-4 flex flex-col gap-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)] sm:mx-5 sm:flex-row sm:items-center sm:justify-between">

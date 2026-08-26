@@ -281,7 +281,7 @@ export function CharacterPortfolio({
   const filterForm = (
     <form
       aria-label={t("Search and filter characters")}
-      className="relative z-20 flex w-full flex-col gap-2 sm:flex-row sm:items-center"
+      className="relative z-20 grid w-full gap-2 sm:grid-cols-[minmax(0,1fr)_auto] 2xl:grid-cols-[minmax(22rem,1fr)_auto_auto_auto_auto] 2xl:items-center"
       onSubmit={(event) => {
         event.preventDefault();
         apply();
@@ -332,7 +332,7 @@ export function CharacterPortfolio({
       >
         {t("Needs attention")}
       </button>
-      <details className="group shrink-0 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
+      <details className="group shrink-0 justify-self-start rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
         <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 text-sm font-semibold">
           <SlidersHorizontal aria-hidden="true" className="h-4 w-4" />
           <span>{t("Filters")}</span>

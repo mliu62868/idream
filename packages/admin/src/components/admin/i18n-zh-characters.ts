@@ -12,6 +12,8 @@ export const adminZhCharacters: Record<string, string> = {
     "已激活新的不可变视觉身份和 Reference Set；旧身份保留为历史版本，线上图片未自动替换。",
   "Active visual identity baseline": "当前活动视觉身份基准",
   "Actual seed": "实际种子",
+  "Add at least one stable visual trait.": "至少添加一项稳定视觉特征。",
+  "Add either a personality or a tone.": "性格或语气至少填写一项。",
   "Add reference image": "添加参考图",
   "Adding…": "正在添加…",
   "Adopt this image": "采用这张图",
@@ -25,9 +27,24 @@ export const adminZhCharacters: Record<string, string> = {
   "Aspect ratio": "构图比例",
   "Backstory (optional)": "背景故事（选填）",
   "Body traits (one per line)": "身形特征（每行一个）",
+  "Changes to this private draft autosave. Nothing goes live until a Release is published.":
+    "对私密草稿的修改会自动保存；发布 Release 前不会有任何内容上线。",
+  "Define who the Character is and what they look like. Final confirmation creates a private, inactive draft; nothing is published.":
+    "定义角色是谁、长什么样。最终确认只会创建私密、停用的草稿，不会发布任何内容。",
+  "Describe the portrait's visual direction.": "描述肖像的视觉方向。",
+  "Describe the relationship this character offers.": "描述这个角色提供的关系定位。",
+  "Describe the visual identity to establish.": "描述要建立的视觉身份。",
+  "Enter a character name.": "填写角色名称。",
+  "Establish identity": "建立身份",
   "Candidate adopted. Complete the identity details and activate the new visual identity version.":
     "已采用这张候选图；请完成身份信息并激活新的视觉身份版本。",
   "Candidate could not be activated": "候选身份激活失败",
+  "Complete image pack": "补齐图片资产包",
+  "Correct the highlighted fields to continue.": "修正高亮字段后即可继续。",
+  "Creating saves a private, inactive draft. It does not publish a Release or change what customers see. Next, establish the portrait identity.":
+    "创建后只会保存为私密、停用的草稿，不会发布 Release，也不会改变用户当前看到的内容。下一步是建立肖像身份。",
+  "Create the first definitive portrait of {name} from the approved visual direction. This portrait will define the identity for future images.":
+    "依据已确认的视觉方向，为 {name} 创建第一张定稿肖像；这张肖像将定义后续图片使用的角色身份。",
   "Candidate could not be adopted": "候选身份采用失败",
   "Candidate {number} from run {run}": "第 {run} 次创作的候选图 {number}",
   "Characters with an activated voice keep it. Already generated audio is not replaced.":
@@ -164,7 +181,6 @@ export const adminZhCharacters: Record<string, string> = {
     "本轮已完成 {count} 张候选图；参数与实际种子已冻结，当前视觉身份未改动。",
   "Tick the release confirmation before running this action.": "执行此操作前请先勾选发布确认。",
   "Tone (optional)": "语气（选填）",
-  "Two steps: who the character is, and what they look like. Audience, launch brief and QA plan are filled in later under the character's details.": "两步：这个角色是谁，长什么样。受众、上线简报和 QA 计划在创建后到角色的「编辑详情」里补。",
   "Type the publication preparation confirmation": "输入发布准备确认文本",
   "A newer Soul or Project version exists. Reload before creating another version.": "存在更新的 Soul 或项目版本。请刷新后再创建版本。",
   "Cadence": "节奏",
@@ -354,6 +370,7 @@ export const adminZhCharacters: Record<string, string> = {
   "Character videos could not be loaded": "角色视频加载失败",
   "Character videos could not be refreshed": "角色视频刷新失败",
   "Character voice": "角色声音",
+  "Age must be a whole number from 18 to 120.": "年龄必须是 18 到 120 之间的整数。",
   "Character workspace": "角色工作区",
   "New Character": "新建角色",
   "Character-specific cloned voice": "角色专属克隆声音",
@@ -592,6 +609,13 @@ export const adminZhCharacters: Record<string, string> = {
   "If this approved candidate will not be used, record a superseding rejection so its Run can close with an explicit outcome. The original score, identity result, and visible-quality evidence stay preserved.":
     "若不再使用此已通过候选图，请记录一条取代它的拒绝决定，使生产批次以明确结果结束；原始评分、身份结果和可见质量证据会继续保留。",
   "Image assets": "图片资产",
+  "Image generation is offline. Restore backend health, then generate again. No Run was created.":
+    "图片生成运行时离线。恢复后端健康后再生成；本次没有创建生产批次。",
+  "Open run details": "打开生产批次详情",
+  "No Character has been created yet.": "尚未创建角色。",
+  "Private draft setup": "私密草稿设置",
+  "Private server draft": "私密服务端草稿",
+  "Private server draft · version {version}": "私密服务端草稿 · 版本 {version}",
   "Image generation route": "图片生成线路",
   "Image in progress": "图片生成中",
   "Image inspector mode": "图片检查面板",
@@ -906,9 +930,9 @@ export const adminZhCharacters: Record<string, string> = {
   "Record renderer and conversation QA evidence": "记录用户界面与会话 QA 证据",
   "Release change summary": "发布变更摘要",
   "Record the visible review evidence": "记录可见审核证据",
-  "Recoverable draft": "可恢复草稿",
   "Reference Set": "参考集",
   "Reference direction": "参考图方向",
+  "Write the promise this character makes to users.": "填写这个角色向用户提供的核心承诺。",
   "Reference identity": "参考声音身份",
   "Reference identity template": "参考图身份模板",
   "Reference transcript": "参考音频转录文本",
@@ -1114,7 +1138,8 @@ export const adminZhCharacters: Record<string, string> = {
   "The experiences that shaped this character's point of view": "塑造该角色观点的经历",
   "The face customers recognize across discovery and the character profile.":
     "用于发现页与角色资料页、让用户能够识别角色的主面孔。",
-  "The generation action is available.": "可以开始生成。",
+  "The generation runtime is checked before any Run is created.":
+    "系统会在创建任何生产批次前检查生成运行时。",
   "The generation run still succeeded — this is a playback problem.": "生成批次本身是成功的 —— 这是播放环节的问题。",
   "The identity portrait is locked. Activate a compatible image route before creating an image.":
     "身份肖像已锁定；启用兼容的图片线路后即可创建图片。",
@@ -1170,7 +1195,6 @@ export const adminZhCharacters: Record<string, string> = {
     "此已保存审核已过期或不再符合当前契约。再次决定前，请先核对其服务端回执。",
   "This saved selection is aged or no longer matches the active contract. Reconcile its server receipt before another selection.":
     "此已保存选择已过期或不再符合当前契约。再次选择前，请先核对其服务端回执。",
-  "This server draft autosaves immutable Project and content revisions.": "此服务端草稿会自动保存不可变的项目和内容修订。",
   "This transcript is stored with the voice reference and sent to oMLX when synthesizing.":
     "转录文本会随声音参考一起保存，并在合成时发送给 oMLX。",
   "This transcript is stored with the voice reference and used by Fish Audio when synthesizing.":

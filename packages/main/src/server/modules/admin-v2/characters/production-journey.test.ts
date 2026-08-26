@@ -109,15 +109,20 @@ describe("Character Production Journey", () => {
   });
 
   it("uses a live portrait to establish identity instead of starting from zero", () => {
-    expect(journey({
+    const result = journey({
       hasVisualProfile: false,
       servingState: "live",
       currentReleaseId: "release-live",
       livePurposes: ["character_cover"],
-    })).toMatchObject({
+    });
+    expect(result).toMatchObject({
       stage: "visual_setup",
       primaryAction: { code: "prepare_image_production" },
       release: { servingState: "live", currentReleaseId: "release-live" },
+    });
+    expect(result.steps[0]).toMatchObject({
+      code: "visual_identity",
+      deepLink: "/admin/characters/character-1?tab=assets",
     });
   });
 
@@ -128,6 +133,9 @@ describe("Character Production Journey", () => {
       deepLink: "/admin/characters/character-1?tab=visual#visual-reference-set",
     });
     expect(result.steps[0]).toMatchObject({ code: "visual_identity", state: "blocked" });
+    expect(result.steps[0].deepLink).toBe(
+      "/admin/characters/character-1?tab=visual",
+    );
   });
 
   it("continues the active run before selecting another missing purpose", () => {

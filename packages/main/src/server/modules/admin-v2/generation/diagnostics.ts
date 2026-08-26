@@ -16,7 +16,7 @@ import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority"
 // timeout rather than borrowing the pipeline's minute-scale one.
 const HEALTH_TIMEOUT_MS = 3_000;
 
-type BackendHealth = { ok: boolean; detail?: string; latencyMs?: number };
+export type BackendHealth = { ok: boolean; detail?: string; latencyMs?: number };
 
 async function comfyuiHealth(endpoint: string): Promise<BackendHealth> {
   const controller = new AbortController();
@@ -53,6 +53,26 @@ async function executableHealth(command: string): Promise<BackendHealth> {
   }
 }
 
+/** 当前请求真正依赖的生成后端就绪度；写入口用它在创建任何权威记录前失败关闭。 */
+export function generationBackendHealth(
+  backendKind: string,
+): Promise<BackendHealth> {
+  if (backendKind === "comfyui") {
+    return comfyuiHealth(
+      process.env.COMFYUI_API_URL ?? "http://127.0.0.1:8188",
+    );
+  }
+  if (backendKind === "drawthings") {
+    return executableHealth(
+      process.env.DRAWTHINGS_CLI ?? "draw-things-cli",
+    );
+  }
+  return Promise.resolve({
+    ok: false,
+    detail: `Unknown generation backend: ${backendKind}`,
+  });
+}
+
 // INVARIANT: env is read inside the handler, never as a module constant, so a test can set
 // COMFYUI_API_URL / DRAWTHINGS_CLI after importing this module.
 export async function listGenerationBackends(request: Request) {
@@ -61,8 +81,8 @@ export async function listGenerationBackends(request: Request) {
   const drawThingsCli = process.env.DRAWTHINGS_CLI ?? "draw-things-cli";
   const drawThingsModelsDir = process.env.DRAWTHINGS_MODELS_DIR;
   const [comfyui, drawthings] = await Promise.all([
-    comfyuiHealth(comfyuiEndpoint),
-    executableHealth(drawThingsCli),
+    generationBackendHealth("comfyui"),
+    generationBackendHealth("drawthings"),
   ]);
   return {
     items: [

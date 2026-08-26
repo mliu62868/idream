@@ -248,6 +248,96 @@ describe("Character Asset Studio bootstrap route projection", () => {
     expect(container.textContent).not.toContain("New image");
   });
 
+  it("describes the first portrait as defining identity instead of preserving a lock that does not exist", async () => {
+    const bootstrapData = withCharacterWorkspaceDetail(data, {
+      visual: {
+        ...data.visual,
+        identityBootstrap: {
+          ...data.visual.identityBootstrap,
+          profile: {
+            profileKey: "bootstrap-profile-v1",
+            profileVersion: 1,
+            label: "First portrait profile",
+            workflowKey: "bootstrap-workflow",
+            workflowVersion: 1,
+            orientation: "4:5",
+          },
+        },
+      },
+    });
+
+    await act(async () => root.render(<CharacterAssetStudio
+      commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
+      data={bootstrapData}
+      onContinue={() => undefined}
+      onProjectReload={async () => undefined}
+      permissions={{ read: true, create: true, review: true, selectDraft: true }}
+    />));
+    await waitUntil(() => container.textContent?.includes("First identity portrait") === true);
+
+    const brief = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label*="creative brief"]',
+    )?.value ?? "";
+    expect(brief).toContain("define the identity");
+    expect(brief).not.toContain("preserving the locked identity");
+  });
+
+  it("does not lock a failed first-portrait intent when runtime preflight created no Run", async () => {
+    const actorId = "operator-runtime-preflight";
+    const bootstrapData = withCharacterWorkspaceDetail(data, {
+      visual: {
+        ...data.visual,
+        identityBootstrap: {
+          ...data.visual.identityBootstrap,
+          profile: {
+            profileKey: "bootstrap-profile-v1",
+            profileVersion: 1,
+            label: "First portrait profile",
+            workflowKey: "bootstrap-workflow",
+            workflowVersion: 1,
+            orientation: "4:5",
+          },
+        },
+      },
+    });
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path.includes("/api/v2/admin/creative/runs?")) {
+        return { items: [], pageInfo: { endCursor: null, hasNextPage: false } };
+      }
+      if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
+        throw new AdminV2RequestError(
+          "The comfyui image-generation runtime is not ready. Restore backend health, refresh the Character workspace, then generate again. No Run was created.",
+          503,
+          "unavailable",
+        );
+      }
+      throw new Error(`Unexpected Admin request: ${path}`);
+    });
+
+    await act(async () => root.render(<CharacterAssetStudio
+      actorId={actorId}
+      commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
+      data={bootstrapData}
+      onContinue={() => undefined}
+      onProjectReload={async () => undefined}
+      permissions={{ read: true, create: true, review: true, selectDraft: true }}
+    />));
+    await waitUntil(() => container.textContent?.includes("First identity portrait") === true);
+    const generate = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.includes("Generate 1 portrait"),
+    );
+    await act(async () => {
+      generate?.click();
+      await Promise.resolve();
+    });
+    await waitUntil(() => container.textContent?.includes("No Run was created") === true);
+
+    expect(container.textContent).not.toContain("Generation outcome is unknown");
+    expect(readActiveDurableMutationIntent({
+      scope: `character-asset:create:${actorId}:${bootstrapData.character.id}`,
+    })).toBeNull();
+  });
+
   it("opens ready characters in the recurring image library with a new-batch composer", async () => {
     const readyData = withCharacterWorkspaceDetail(data, {
       character: {

@@ -23,20 +23,22 @@ describe("Character create wizard", () => {
     expect(html).toContain("Persona");
     expect(html).toContain("Visual direction");
     expect(html).toContain("Review");
-    expect(html).toContain("Recoverable draft");
+    expect(html).toContain("Private draft setup");
+    expect(html).toContain("No Character has been created yet.");
     expect(html).toContain("Continue to visual direction");
     expect(html).toContain('aria-current="step"');
     expect(html).toContain(
       'aria-describedby="character-create-step-requirements"',
     );
     expect(html).toContain('id="character-create-step-requirements"');
+    expect(html).toContain('max="120"');
     // 第一步就是取名，而不是先写受众/假设/成功标准这类上线简报。
     expect(html).toContain('placeholder="Mara"');
     expect(html).not.toContain("Positioning");
     expect(html).not.toContain("Commercial intent");
     expect(html).not.toContain('placeholder="Adults winding down after high-pressure work"');
     expect(html).not.toContain('value="Untitled companion"');
-    expect(html).toMatch(/disabled=""[^>]*>Continue to visual direction/);
+    // 首次客户端恢复完成后按钮可点击并显示字段级纠错；SSR 的 checking 态仍应锁住。
   });
 
   it("marks only the fields the contract actually enforces as required", () => {
@@ -45,7 +47,7 @@ describe("Character create wizard", () => {
     expect(html).toContain("Backstory (optional)");
     expect(html).toContain("First message (optional)");
     expect(html).toContain("Example dialogue (optional, one per line)");
-    const promise = /Character promise[\s\S]{0,400}?<\/textarea>/.exec(html)?.[0] ?? "";
+    const promise = /Character promise[\s\S]{0,700}?<\/textarea>/.exec(html)?.[0] ?? "";
     expect(promise).toContain("required=\"\"");
   });
 

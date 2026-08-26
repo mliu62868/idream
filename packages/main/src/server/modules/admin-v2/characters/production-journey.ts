@@ -136,6 +136,7 @@ function commandDeepLink(characterId: string, commandType: string) {
 
 function journeySteps(input: {
   characterId: string;
+  hasVisualProfile: boolean;
   activeIndex: number;
   blocked: boolean;
   live: boolean;
@@ -151,7 +152,13 @@ function journeySteps(input: {
         ? "complete" as const
         : "upcoming" as const;
   return [
-    { code: "visual_identity", state: state(0), deepLink: tabLink("visual") },
+    {
+      code: "visual_identity",
+      state: state(0),
+      // 没有身份时，建立身份的唯一动作就是在 Assets 生成并审核第一张肖像；
+      // 有身份后，补参考集/路线才回到 Visual。进度条必须和主动作落到同一处。
+      deepLink: tabLink(input.hasVisualProfile ? "visual" : "assets"),
+    },
     { code: "image_assets", state: state(1), deepLink: tabLink("assets") },
     { code: "preview_qa", state: state(2), deepLink: tabLink("preview") },
     { code: "release", state: state(3), deepLink: tabLink("release") },
@@ -281,6 +288,7 @@ export function projectCharacterProductionJourneySnapshot(input: {
     status,
     steps: journeySteps({
       characterId: input.characterId,
+      hasVisualProfile: input.hasVisualProfile,
       activeIndex: activeStep ?? actionIndex(primaryAction.code),
       blocked: status === "blocked",
       live: input.servingState === "live",

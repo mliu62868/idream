@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { useAdminI18n } from "@/components/admin/i18n";
 import type { CharacterWorkspaceDetail, CreativeRunDetail } from "@idream/shared/admin";
 import Link from "next/link";
+import { FailureReason } from "@/components/admin/generation/FailureReason";
 import {
   candidateState,
   characterAssetReadinessSummary,
@@ -275,31 +276,21 @@ export function CandidateBatchGrid({
           </p>
         </div>
       ) : null}
-      {/* SPEC: 失败候选必须说清原因，并给出一条能真正重跑的去处。
-          INTENT: 之前失败只映射成 "Generation failed" 五个字，契约里的 failure.errorCode /
-          operatorGuidance 全仓只有视觉实验台读；重试入口在 characters/ 下一个都没有。
-          重试本身是一台带幂等键与本地落盘的持久命令机（CreativeRunWorkspace），不在这里
-          复制第二份 —— 直接把运营送到那台机器上。 */}
+      {/* SPEC: 首屏只说人能行动的失败原因；机器码折进技术详情。
+          INTENT: provider 未就绪时不能承诺「重试」一定有意义，这里只送运营去看完整 Run 状态。 */}
       {activeItem?.executionState === "failed" ? (
         <div
           className="mt-3 rounded-lg bg-[var(--ad-red-bg)] p-3 text-xs text-[var(--ad-red-text)]"
           role="alert"
         >
-          <p className="font-semibold">
-            {activeItem.failure?.operatorGuidance ?? t("Generation failed")}
-          </p>
+          <FailureReason code={activeItem.failure?.errorCode} />
           <div className="mt-2 flex flex-wrap items-center gap-3">
-            {activeItem.failure ? (
-              <code className="font-mono text-[11px]">
-                {activeItem.failure.errorCode}
-              </code>
-            ) : null}
             {runId ? (
               <Link
                 className="font-semibold underline"
                 href={`/admin/creative/runs/${encodeURIComponent(runId)}`}
               >
-                {t("Open run to retry")}
+                {t("Open run details")}
               </Link>
             ) : null}
           </div>

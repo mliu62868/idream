@@ -67,8 +67,8 @@ function creativeItemFailure(
     operatorGuidance:
       attempt?.operatorGuidance?.trim() ||
       (errorCode === "asset_quality_failed"
-        ? "系统质量检查未通过；合图、空白图或损坏图片不会进入候选。请载入本轮参数，修改提示词后重新生成。"
-        : "本轮没有产生可审核图片。请载入本轮参数，调整后重新生成。"),
+        ? "The output failed the quality check. Blank, collaged, or corrupt images are excluded from review. Load this Run's settings, adjust the brief, and generate again."
+        : "This Run did not produce a reviewable image. Open the Run details to inspect the failure before deciding whether to retry."),
   };
 }
 

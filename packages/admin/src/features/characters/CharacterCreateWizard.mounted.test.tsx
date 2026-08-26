@@ -104,6 +104,16 @@ function createMemoryStorage(): Storage {
   };
 }
 
+async function openReviewSection(
+  container: HTMLElement,
+  sectionIndex: number,
+) {
+  const edit = [...container.querySelectorAll("button")].filter(
+    (button) => button.textContent?.trim() === "Edit",
+  )[sectionIndex];
+  await act(async () => edit?.click());
+}
+
 describe("Character create wizard restore authority", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -185,17 +195,71 @@ describe("Character create wizard restore authority", () => {
         await new Promise((resolve) => setTimeout(resolve, 0));
       });
       await waitUntil(() =>
-        hydrationContainer.querySelector("textarea")?.value ===
-          "A dependable conversational presence"
+        hydrationContainer.textContent?.includes(
+          "Creating saves a private, inactive draft",
+        ) === true
       );
       expect(hydrationContainer.textContent).toContain(
         "Required information complete.",
+      );
+      expect(hydrationContainer.textContent).toContain("Review & create");
+      expect(hydrationContainer.textContent).toContain("Saved locally");
+      expect(hydrationContainer.textContent).toContain(
+        "Creating saves a private, inactive draft",
       );
       expect(consoleError).not.toHaveBeenCalled();
     } finally {
       await act(async () => hydrationRoot?.unmount());
       hydrationContainer.remove();
     }
+  });
+
+  it("explains invalid persona fields and moves focus to the first correction", async () => {
+    await act(async () => {
+      root.render(
+        <CharacterCreateWizard actorId="operator-validation" canCreate />,
+      );
+    });
+    await waitUntil(() =>
+      container.textContent?.includes("Continue to visual direction") === true
+    );
+
+    const age = container.querySelector<HTMLInputElement>(
+      'input[name="persona.age"]',
+    );
+    await act(async () => {
+      if (age) {
+        Object.getOwnPropertyDescriptor(
+          HTMLInputElement.prototype,
+          "value",
+        )?.set?.call(age, "121");
+        age.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    });
+    const next = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.includes("Continue to visual direction"),
+    );
+    expect(next?.disabled).toBe(false);
+
+    await act(async () => {
+      next?.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const name = container.querySelector<HTMLInputElement>(
+      'input[name="persona.name"]',
+    );
+    expect(name?.getAttribute("aria-invalid")).toBe("true");
+    expect(document.activeElement).toBe(name);
+    expect(age?.getAttribute("aria-invalid")).toBe("true");
+    expect(age?.max).toBe("120");
+    expect(container.textContent).toContain("Enter a character name.");
+    expect(container.textContent).toContain(
+      "Age must be a whole number from 18 to 120.",
+    );
+    expect(container.textContent).toContain(
+      "Add either a personality or a tone.",
+    );
   });
 
   it("keeps edits in memory without claiming local persistence when browser storage rejects writes", async () => {
@@ -216,9 +280,11 @@ describe("Character create wizard restore authority", () => {
       );
     });
     await waitUntil(() =>
-      container.querySelector("textarea")?.value ===
-        "A dependable conversational presence"
+      container.textContent?.includes(
+        "Creating saves a private, inactive draft",
+      ) === true
     );
+    await openReviewSection(container, 0);
 
     const audience = container.querySelector("textarea");
     await act(async () => {
@@ -321,7 +387,7 @@ describe("Character create wizard restore authority", () => {
       (button) => button.textContent?.toLowerCase().includes("continue"),
     );
     expect(container.querySelector("textarea")?.value).toBe("");
-    expect(blankNext?.disabled).toBe(true);
+    expect(blankNext?.disabled).toBe(false);
     expect(adminV2Request.mock.calls.some(([path, options]) =>
       path === "/api/v2/admin/characters" &&
       options?.method === "POST"
@@ -382,9 +448,11 @@ describe("Character create wizard restore authority", () => {
       await Promise.resolve();
     });
     await waitUntil(() =>
-      container.querySelector("textarea")?.value ===
-        "A dependable conversational presence"
+      container.textContent?.includes(
+        "Creating saves a private, inactive draft",
+      ) === true
     );
+    await openReviewSection(container, 0);
     const audience = container.querySelector("textarea");
     await act(async () => {
       if (audience) {
@@ -452,21 +520,8 @@ describe("Character create wizard restore authority", () => {
         <CharacterCreateWizard actorId="operator-a" canCreate />,
       );
     });
-    await waitUntil(() =>
-      container.querySelector("textarea")?.value ===
-        "A dependable conversational presence"
-    );
-    for (let index = 0; index < 2; index += 1) {
-      const advance = [...container.querySelectorAll("button")].find(
-        (button) =>
-          button.textContent?.toLowerCase().includes("continue") &&
-          !button.disabled,
-      );
-      await act(async () => advance?.click());
-    }
-
     await waitUntil(() => container.textContent?.includes(
-      "Visual identity",
+      "Creating saves a private, inactive draft",
     ) === true);
     const finish = [...container.querySelectorAll("button")].find(
       (button) => button.textContent?.includes(
@@ -475,9 +530,10 @@ describe("Character create wizard restore authority", () => {
     );
     // SPEC: 遗留草稿里的 instructional sentinel 仍然拦住最终创建，即使它落在向导已不再渲染的
     // positioning 字段上——production-ready 校验吃的是整份草稿，不是当前这一屏。
-    expect(finish?.disabled).toBe(true);
+    expect(finish?.disabled).toBe(false);
+    await act(async () => finish?.click());
     expect(container.textContent).toContain(
-      "Review the character before creating it.",
+      "Correct the highlighted fields to continue.",
     );
     expect(adminV2Request.mock.calls.some(([path, options]) =>
       path === "/api/v2/admin/characters" &&
@@ -528,10 +584,10 @@ describe("Character create wizard restore authority", () => {
         <CharacterCreateWizard actorId="operator-a" canCreate />,
       );
     });
-    await waitUntil(() =>
-      container.querySelector("textarea")?.value ===
-        "A dependable conversational presence"
-    );
+    await waitUntil(() => container.textContent?.includes(
+      "Creating saves a private, inactive draft",
+    ) === true);
+    await openReviewSection(container, 0);
     expect(container.querySelector("textarea")?.disabled).toBe(false);
     expect(container.textContent).not.toContain(
       "A Character creation request is unresolved",
@@ -574,23 +630,9 @@ describe("Character create wizard restore authority", () => {
         <CharacterCreateWizard actorId="operator-a" canCreate />,
       );
     });
-    for (const label of ["Continue to visual direction", "Continue"]) {
-      await waitUntil(() =>
-        [...container.querySelectorAll("button")].some((button) =>
-          button.textContent?.includes(label) &&
-          !button.disabled
-        )
-      );
-      const advance = [...container.querySelectorAll("button")].find(
-        (button) =>
-          button.textContent?.includes(label) &&
-          !button.disabled,
-      );
-      await act(async () => {
-        advance?.click();
-        await Promise.resolve();
-      });
-    }
+    await waitUntil(() => container.textContent?.includes(
+      "Creating saves a private, inactive draft",
+    ) === true);
     await waitUntil(() =>
       [...container.querySelectorAll("button")].some((button) =>
         button.textContent?.includes(
@@ -622,7 +664,7 @@ describe("Character create wizard restore authority", () => {
         options?.method === "POST"
       )
     );
-    expect(container.textContent).toContain("Project version 1");
+    expect(container.textContent).toContain("Private server draft · version 1");
     expect(readActiveDurableMutationIntent({
       scope: "character-project:create:operator-a",
     })).toBeNull();

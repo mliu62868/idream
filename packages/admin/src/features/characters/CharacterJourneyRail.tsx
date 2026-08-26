@@ -18,8 +18,8 @@ type CharacterJourney = CharacterWorkspaceDetail["journey"];
 type JourneyStep = CharacterJourney["steps"][number];
 
 const STEP_LABEL: Record<JourneyStep["code"], string> = {
-  visual_identity: "Visual identity",
-  image_assets: "Image assets",
+  visual_identity: "Establish identity",
+  image_assets: "Complete image pack",
   preview_qa: "Launch preview",
   release: "Release",
   live_monitor: "Live monitoring",

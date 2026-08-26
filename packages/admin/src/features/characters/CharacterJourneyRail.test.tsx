@@ -46,8 +46,8 @@ describe("Character journey rail", () => {
     );
 
     for (const label of [
-      "Visual identity",
-      "Image assets",
+      "Establish identity",
+      "Complete image pack",
       "Launch preview",
       "Release",
       "Live monitoring",
@@ -92,7 +92,8 @@ describe("Character journey rail", () => {
     );
 
     expect(html).toContain("生产进度");
-    expect(html).toContain("视觉身份");
+    expect(html).toContain("建立身份");
+    expect(html).toContain("补齐图片资产包");
     expect(html).toContain("已完成");
     expect(html).toContain("1 项待处理");
   });
