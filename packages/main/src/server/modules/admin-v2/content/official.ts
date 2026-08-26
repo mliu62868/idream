@@ -106,6 +106,7 @@ const LEGACY_SOUL_DETAIL_KEYS = [
   "canon",
   "negativeDialogue",
 ] as const;
+const SOUL_DETAILS_MARKDOWN_MAX_LENGTH = 24_000;
 
 function hasOwn(row: Record<string, unknown>, key: string) {
   return Object.prototype.hasOwnProperty.call(row, key);
@@ -113,6 +114,22 @@ function hasOwn(row: Record<string, unknown>, key: string) {
 
 function touchesSoulDetails(row: Record<string, unknown>) {
   return hasOwn(row, "detailsMarkdown") || LEGACY_SOUL_DETAIL_KEYS.some((key) => hasOwn(row, key));
+}
+
+function officialSoulDetailsMarkdown(row: Record<string, unknown>) {
+  if (
+    hasOwn(row, "detailsMarkdown") &&
+    typeof row.detailsMarkdown !== "string"
+  ) {
+    throw Errors.badRequest("detailsMarkdown must be a string");
+  }
+  const markdown = legacySoulDetailsMarkdown(row);
+  if (markdown.length > SOUL_DETAILS_MARKDOWN_MAX_LENGTH) {
+    throw Errors.badRequest("detailsMarkdown must not exceed 24000 characters", {
+      maxLength: SOUL_DETAILS_MARKDOWN_MAX_LENGTH,
+    });
+  }
+  return markdown;
 }
 
 function sameStrings(left: readonly string[], right: readonly string[]) {
@@ -203,7 +220,7 @@ export async function createOfficialCharacter(input: {
         gender: body.gender,
         relationshipArchetype,
         characterPromise: body.description,
-        detailsMarkdown: legacySoulDetailsMarkdown(advanced),
+        detailsMarkdown: officialSoulDetailsMarkdown(advanced),
         firstMessage,
       },
       visualDirection: {
@@ -277,7 +294,7 @@ export async function updateOfficialCharacter(input: {
       // SPEC: detailsMarkdown is an explicit complete replacement. Structured
       // legacy fields are rejected above because partial Markdown inference
       // cannot preserve omitted author intent.
-      ? { detailsMarkdown: legacySoulDetailsMarkdown(advanced) }
+      ? { detailsMarkdown: officialSoulDetailsMarkdown(advanced) }
       : {}),
     ...(text(advanced.firstMessage) ? { firstMessage: text(advanced.firstMessage) } : {}),
   };

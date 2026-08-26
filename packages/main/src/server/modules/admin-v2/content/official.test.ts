@@ -303,6 +303,18 @@ describe("official character CMS", () => {
     })));
     expect(rejected.status).toBe(400);
 
+    for (const detailsMarkdown of [null, 7, {}, "x".repeat(24_001)]) {
+      const invalid = await call(officialApi(makeRequest("PATCH", `/${id}`, {
+        userId: admin,
+        role: "admin",
+        body: {
+          advancedDetails: { detailsMarkdown },
+          reason: "reject an invalid complete Markdown document",
+        },
+      })));
+      expect(invalid.status).toBe(400);
+    }
+
     const patch = {
       advancedDetails: {
         detailsMarkdown: [
