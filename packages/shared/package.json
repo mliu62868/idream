@@ -17,6 +17,7 @@
     "./admin/api-manifest": "./src/admin/api-manifest.ts",
     "./chat/limits": "./src/chat/limits.ts",
     "./chat/companion-runtime": "./src/chat/companion-runtime.ts",
+    "./chat/persona-render": "./src/chat/persona-render.ts",
     "./bff": "./src/bff/signing.ts",
     "./media/generated-image-sanity": "./src/media/generated-image-sanity.ts",
     "./storage": "./src/storage/s3-blob.ts",

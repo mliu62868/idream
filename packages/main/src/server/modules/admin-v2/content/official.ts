@@ -265,7 +265,9 @@ export async function updateOfficialCharacter(input: {
     ...(body.description !== undefined ? { characterPromise: body.description } : {}),
     ...(text(advanced.relationshipArchetype) ? { relationshipArchetype: text(advanced.relationshipArchetype) } : {}),
     ...(touchesSoulDetails(advanced)
-      ? { detailsMarkdown: legacySoulDetailsMarkdown(advanced, resumed.draft.persona.detailsMarkdown) }
+      // SPEC: advancedDetails is one replacement document at this legacy
+      // boundary. Replaying the same PATCH must not append duplicate sections.
+      ? { detailsMarkdown: legacySoulDetailsMarkdown(advanced) }
       : {}),
     ...(text(advanced.firstMessage) ? { firstMessage: text(advanced.firstMessage) } : {}),
   };

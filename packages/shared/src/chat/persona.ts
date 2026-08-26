@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { renderCharacterSoulMarkdown } from "./persona-render";
 
 export const CHARACTER_SOUL_SCHEMA_VERSION = 2 as const;
 export const CHARACTER_SOUL_COMPILER_VERSION = "character-soul-2" as const;
@@ -158,7 +159,7 @@ export function compileCharacterSoul(
   const soul = decodeSoul(soulRoot, diagnostics);
   if (hasErrors(diagnostics)) return { ok: false, diagnostics };
 
-  const systemPrompt = renderSoulMarkdown(soul);
+  const systemPrompt = renderCharacterSoulMarkdown(soul);
   const estimatedTokens = estimateTokens(systemPrompt);
   if (estimatedTokens > PROMPT_WARNING_TOKENS) {
     diagnostics.push({
@@ -190,13 +191,12 @@ export function compileCharacterSoul(
  */
 export function legacySoulDetailsMarkdown(
   value: unknown,
-  existingMarkdown = "",
 ): string {
   const row = record(value) ?? {};
   const sections: string[] = [];
   const explicitDetails = hasOwn(row, "detailsMarkdown")
     ? markdownText(row.detailsMarkdown)
-    : markdownText(existingMarkdown);
+    : "";
   if (explicitDetails) sections.push(explicitDetails);
 
   appendDetailSection(sections, "Personality", [optionalText(row.personality)]);
@@ -277,7 +277,7 @@ export function loadCharacterSoulSnapshot(
   const soul = decodeSoul(record(root.soul) ?? {}, diagnostics);
   const compiled = decodeCompiled(root.compiled, diagnostics);
   if (hasErrors(diagnostics) || !compiled) return { ok: false, diagnostics };
-  const renderedMarkdown = renderSoulMarkdown(soul);
+  const renderedMarkdown = renderCharacterSoulMarkdown(soul);
   if (
     compiled.compilerVersion !== CHARACTER_SOUL_COMPILER_VERSION ||
     compiled.systemPrompt !== renderedMarkdown
@@ -379,7 +379,7 @@ function loadV1Snapshot(root: Record<string, unknown>): CharacterSoulResult {
   return {
     ok: true,
     snapshot: { schemaVersion: 1, soul, compiled },
-    renderedMarkdown: renderSoulMarkdown(soul),
+    renderedMarkdown: renderCharacterSoulMarkdown(soul),
     diagnostics,
   };
 }
@@ -561,7 +561,7 @@ function loadLegacySnapshot(root: Record<string, unknown>): CharacterSoulResult 
   return {
     ok: true,
     snapshot: { schemaVersion: 0, soul, compiled },
-    renderedMarkdown: renderSoulMarkdown(soul),
+    renderedMarkdown: renderCharacterSoulMarkdown(soul),
     diagnostics: [{
       code: "legacy_snapshot_loaded",
       path: ["schemaVersion"],
@@ -604,23 +604,6 @@ function legacyPromptAuthoringFields(systemPrompt: string): Partial<{
     if (key === "exampleDialogue") fields.exampleDialogue = value;
   }
   return fields;
-}
-
-function renderSoulMarkdown(soul: CharacterSoul): string {
-  return [
-    `# ${soul.name} — Character Soul`,
-    "",
-    `You are ${soul.name}. Speak and act consistently with this character.`,
-    "",
-    "## Basic information",
-    `- Age: ${soul.age}`,
-    `- Gender: ${soul.gender}`,
-    `- Relationship: ${soul.relationshipArchetype}`,
-    `- Character: ${soul.characterPromise}`,
-    ...(soul.detailsMarkdown
-      ? ["", "## Additional details", "", soul.detailsMarkdown]
-      : []),
-  ].join("\n").trim();
 }
 
 function decodeCompiled(

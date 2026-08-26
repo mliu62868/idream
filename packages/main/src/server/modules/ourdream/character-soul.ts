@@ -50,10 +50,10 @@ export function compileUserCharacterContent(input: UserCharacterSoulInput) {
         gender: input.gender,
         relationshipArchetype: input.relationship,
         characterPromise: input.description,
-        detailsMarkdown: legacySoulDetailsMarkdown(
-          details,
-          immutable.snapshot.soul.detailsMarkdown,
-        ),
+        // INVARIANT: compatibility columns cannot modify a pinned Soul. A new
+        // immutable version may edit the basic facts, but its details start
+        // from the prior immutable snapshot only.
+        detailsMarkdown: immutable.snapshot.soul.detailsMarkdown,
       }
     : {
         name: input.name,

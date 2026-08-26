@@ -8,6 +8,7 @@ import {
   type CharacterProjectDraft,
   type CharacterProjectDraftAuthority,
 } from "@idream/shared/admin";
+import { renderCharacterSoulMarkdown } from "@idream/shared/chat/persona-render";
 import { ArrowLeft, ArrowRight, Check, Loader2, ShieldAlert } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
@@ -1176,7 +1177,7 @@ function ReviewStep({ draft, onEdit }: { draft: Draft; onEdit: (step: number) =>
           {t("SOUL.md · exact Agent prompt")}
         </h3>
         <pre className="max-h-96 overflow-auto whitespace-pre-wrap p-3 text-xs leading-6 text-[var(--ad-text)]">
-          {renderCharacterDraftSoulMarkdown(draft.persona)}
+          {renderCharacterSoulMarkdown(draft.persona)}
         </pre>
       </section>
       {sections.map((section) => (
@@ -1211,34 +1212,6 @@ function ReviewStep({ draft, onEdit }: { draft: Draft; onEdit: (step: number) =>
       ))}
     </div>
   );
-}
-
-export function renderCharacterDraftSoulMarkdown(
-  persona: Draft["persona"],
-): string {
-  const name = compactSoulPreviewText(persona.name);
-  return [
-    `# ${name} — Character Soul`,
-    "",
-    `You are ${name}. Speak and act consistently with this character.`,
-    "",
-    "## Basic information",
-    `- Age: ${persona.age}`,
-    `- Gender: ${persona.gender}`,
-    `- Relationship: ${compactSoulPreviewText(persona.relationshipArchetype)}`,
-    `- Character: ${compactSoulPreviewText(persona.characterPromise)}`,
-    ...(markdownSoulPreviewText(persona.detailsMarkdown)
-      ? ["", "## Additional details", "", markdownSoulPreviewText(persona.detailsMarkdown)]
-      : []),
-  ].join("\n");
-}
-
-function compactSoulPreviewText(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
-}
-
-function markdownSoulPreviewText(value: string): string {
-  return value.replaceAll("\r\n", "\n").replaceAll("\r", "\n").trim();
 }
 
 function lines(value: string) {

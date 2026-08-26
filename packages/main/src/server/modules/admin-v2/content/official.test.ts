@@ -268,6 +268,56 @@ describe("official character CMS", () => {
     });
   });
 
+  it("treats repeated legacy Soul PATCH input as one idempotent replacement", async () => {
+    const admin = await seedActor("admin", "legacy-patch-idempotence");
+    const created = await call(officialApi(makeRequest("POST", "", {
+      userId: admin,
+      role: "admin",
+      body: {
+        name: `${P}Idempotent`,
+        age: 28,
+        gender: "female",
+        style: "realistic",
+        description: "An official companion with stable Soul edits.",
+        advancedDetails: {
+          relationshipArchetype: "trusted confidante",
+          firstMessage: "What should we make space for?",
+        },
+        reason: "seed idempotent Soul update",
+      },
+    })));
+    const id = (created.data?.character as { id: string }).id;
+    const patch = {
+      advancedDetails: {
+        relationshipArchetype: "trusted confidante",
+        personality: "Observant and candid.",
+        cadence: "Measured and exact.",
+      },
+      reason: "replace legacy Soul details",
+    };
+
+    expect((await call(officialApi(makeRequest("PATCH", `/${id}`, {
+      userId: admin,
+      role: "admin",
+      body: patch,
+    })))).ok).toBe(true);
+    expect((await call(officialApi(makeRequest("PATCH", `/${id}`, {
+      userId: admin,
+      role: "admin",
+      body: patch,
+    })))).ok).toBe(true);
+
+    const latest = await prisma.characterContentVersion.findFirstOrThrow({
+      where: { characterId: id },
+      orderBy: { version: "desc" },
+    });
+    const details = (latest.personaSnapshot as {
+      soul: { detailsMarkdown: string };
+    }).soul.detailsMarkdown;
+    expect(details.match(/Observant and candid\./g)).toHaveLength(1);
+    expect(details.match(/Measured and exact\./g)).toHaveLength(1);
+  });
+
   it("rejects age < 18 at the zod boundary (400)", async () => {
     const admin = await seedActor("admin", "underage");
     const result = await call(

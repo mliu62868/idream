@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Check, ImageIcon, Loader2, Sparkles, Wand2 } from "lucide-react";
 import { CHARACTER_VISIBILITY, isCatalogMember } from "@idream/shared/catalog";
+import { renderCharacterSoulMarkdown } from "@idream/shared/chat/persona-render";
 import {
   characterStyleFormOptions,
   genderFormOptions,
@@ -106,35 +107,6 @@ export function viewerScopeFromAuthority(input: {
 }
 
 const STEPS = ["Identity", "Appearance", "Soul", "Preview", "Publish"] as const;
-
-export function renderCreateSoulMarkdown(input: Pick<
-  WizardState,
-  "name" | "age" | "gender" | "relationshipArchetype" | "description" | "detailsMarkdown"
->): string {
-  const name = compactSoulPreviewText(input.name);
-  return [
-    `# ${name} — Character Soul`,
-    "",
-    `You are ${name}. Speak and act consistently with this character.`,
-    "",
-    "## Basic information",
-    `- Age: ${input.age}`,
-    `- Gender: ${input.gender}`,
-    `- Relationship: ${compactSoulPreviewText(input.relationshipArchetype)}`,
-    `- Character: ${compactSoulPreviewText(input.description)}`,
-    ...(markdownSoulPreviewText(input.detailsMarkdown)
-      ? ["", "## Additional details", "", markdownSoulPreviewText(input.detailsMarkdown)]
-      : []),
-  ].join("\n");
-}
-
-function compactSoulPreviewText(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
-}
-
-function markdownSoulPreviewText(value: string): string {
-  return value.replaceAll("\r\n", "\n").replaceAll("\r", "\n").trim();
-}
 
 export type WizardState = {
   draftId: string;
@@ -1014,7 +986,14 @@ export function CreateWorkspace() {
                     SOUL.md · exact Agent prompt
                   </p>
                   <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap rounded-[12px] border border-white/10 bg-[rgb(13,13,13)] p-4 font-mono text-[12px] font-medium leading-6 text-white">
-                    {renderCreateSoulMarkdown(state)}
+                    {renderCharacterSoulMarkdown({
+                      name: state.name,
+                      age: state.age,
+                      gender: state.gender,
+                      relationshipArchetype: state.relationshipArchetype,
+                      characterPromise: state.description,
+                      detailsMarkdown: state.detailsMarkdown,
+                    })}
                   </pre>
                 </section>
                 <p className="text-[13px] font-medium text-[rgb(170,170,170)]">

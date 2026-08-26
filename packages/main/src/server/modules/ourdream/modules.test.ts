@@ -62,6 +62,46 @@ describe("user Character Soul compatibility", () => {
     expect(content.personaSnapshot.soul.detailsMarkdown).toContain("Warm and concise.");
     expect(content.personaSnapshot.soul.detailsMarkdown).toContain("She hosts a radio show.");
   });
+
+  it("keeps immutable Soul details authoritative over mutable compatibility fields", () => {
+    const pinned = compileUserCharacterContent({
+      name: "Pinned Soul",
+      age: 28,
+      gender: "female",
+      relationship: "trusted confidante",
+      description: "A precise companion.",
+      style: "realistic",
+      appearance: {},
+      advancedDetails: {
+        detailsMarkdown: "## Voice\nPinned and precise.",
+        firstMessage: "You made it.",
+      },
+    });
+    const edited = compileUserCharacterContent({
+      name: "Pinned Soul",
+      age: 28,
+      gender: "female",
+      relationship: "trusted confidante",
+      description: "A more precise companion.",
+      style: "realistic",
+      appearance: {},
+      advancedDetails: {
+        detailsMarkdown: "## Voice\nMutable drift.",
+        personality: "Must not be appended.",
+        firstMessage: "Mutable opening drift.",
+      },
+      immutableContentSnapshot: {
+        personaSnapshot: pinned.personaSnapshot,
+        openingSnapshot: pinned.openingSnapshot,
+        appearanceSnapshot: pinned.appearanceSnapshot,
+      },
+    });
+
+    expect(edited.personaSnapshot.soul.detailsMarkdown).toBe(
+      "## Voice\nPinned and precise.",
+    );
+    expect(edited.openingSnapshot).toEqual(pinned.openingSnapshot);
+  });
 });
 
 async function seedCurrentPublicCharacterAuthority(input: {

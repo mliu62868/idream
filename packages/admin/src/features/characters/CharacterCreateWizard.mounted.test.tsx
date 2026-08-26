@@ -297,6 +297,15 @@ describe("Character create wizard restore authority", () => {
         "Creating saves a private, inactive draft",
       ) === true
     );
+    const soulPreview = container.querySelector(
+      '[data-testid="character-create-soul-preview"]',
+    );
+    expect(soulPreview?.textContent).toContain("# Mira — Character Soul");
+    expect(soulPreview?.textContent).toContain(
+      "- Relationship: steady confidante",
+    );
+    expect(soulPreview?.textContent).toContain("## Additional details");
+    expect(soulPreview?.textContent).toContain("Warm and observant.");
     await openReviewSection(container, 0);
 
     const audience = container.querySelector("textarea");
