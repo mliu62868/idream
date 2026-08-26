@@ -238,8 +238,8 @@ describe("official igrep canonical rebuild", () => {
     expect(commands[0]?.timeoutMs).toBeGreaterThan(30_000);
   });
 
-  it("fails closed when maintain leaves canonical profile rows pending", async () => {
-    const root = await mkdtemp(join(tmpdir(), "chat-agent-igrep-rebuild-fail-"));
+  it("accepts a completed rebuild when profile rows remain pending", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chat-agent-igrep-rebuild-pending-"));
     temporary.push(root);
     await mkdir(join(root, ".igrep"));
     const rebuilder = new IgrepMemoryRebuilder(
@@ -260,7 +260,7 @@ describe("official igrep canonical rebuild", () => {
       userId: "user-1",
       characterId: "character-1",
       messages: [],
-    })).rejects.toThrow(/left 2 profile rows pending/);
+    })).resolves.toEqual({ sessions: 0, messages: 0 });
   });
 
   it("does not expose malformed ingest output in rebuild errors", async () => {

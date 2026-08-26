@@ -423,9 +423,11 @@ export class IgrepMemoryRebuilder {
         `igrep rebuild dialogue count mismatch: expected ${expectedDialogueFiles}, got ${status.dialogueFiles}`,
       );
     }
-    if ((status.pendingProfileRows ?? 0) > 0) {
-      throw new Error(`igrep maintain left ${status.pendingProfileRows} profile rows pending`);
-    }
+    // INTENT: A finished profile pass may leave retryable rows pending when the
+    // maintenance model is unavailable or under pressure. The rebuilt
+    // workspace already contains only the canonical Chat transcript, so
+    // rejecting it here makes privacy deletion depend on optional derivation
+    // work and permanently blocks every later mutation for the same user.
     if (metrics.messageCount > 0 && !status.lastMaintainAt) {
       throw new Error("igrep rebuild did not expose a completed maintain pass");
     }
