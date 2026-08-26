@@ -17,6 +17,10 @@ const recordMemoryPromotionSuccessMock = vi.hoisted(() => vi.fn());
 const dshRunMock = vi.hoisted(() => vi.fn());
 const dshCancelMock = vi.hoisted(() => vi.fn(async () => {}));
 const verifiedProfileDigestState = vi.hoisted(() => ({ value: "d".repeat(64) }));
+const verifiedRuntimeVersionsState = vi.hoisted(() => ({
+  igrepVersion: "9.8.7",
+  pluginVersion: "0.1.0",
+}));
 
 vi.mock("./db.js", () => ({ chatPrisma: {} }));
 vi.mock("./providers.js", () => ({
@@ -55,6 +59,7 @@ vi.mock("./companion-runtime.js", () => ({
 }));
 vi.mock("./companion-sidecar-readiness.js", () => ({
   verifiedCompanionProfileDigest: () => verifiedProfileDigestState.value,
+  verifiedCompanionRuntimeVersions: () => ({ ...verifiedRuntimeVersionsState }),
 }));
 const {
   claimGenerateAttemptAuthority,
@@ -445,6 +450,8 @@ describe("chat generate agent image tool", () => {
     dshRunMock.mockReset();
     dshCancelMock.mockClear();
     verifiedProfileDigestState.value = "d".repeat(64);
+    verifiedRuntimeVersionsState.igrepVersion = "9.8.7";
+    verifiedRuntimeVersionsState.pluginVersion = "0.1.0";
     buildContextMock.mockResolvedValue(context);
     moderationMock.mockResolvedValue({ status: "passed", confidence: 0.5 });
   });
@@ -681,7 +688,7 @@ describe("chat generate agent image tool", () => {
           }),
           dsh: expect.objectContaining({
             version: "0.1.0-rc.7",
-            igrepVersion: "0.1.132",
+            igrepVersion: "9.8.7",
             memoryMode: "normal",
             profileDigest: "d".repeat(64),
           }),
@@ -1333,7 +1340,7 @@ describe("chat generate agent image tool", () => {
     }
   });
 
-  it("reuses the durable DSH profile digest when readiness changes before a retry", async () => {
+  it("reuses durable DSH evidence and rejects an igrep upgrade before a retry", async () => {
     const restoreEnv = installDshRolloutEnv();
     try {
       let observedDigest: string | undefined;
@@ -1353,25 +1360,14 @@ describe("chat generate agent image tool", () => {
           memoryBackend: "igrep-dsh",
           profile: "idream-companion-memory",
           private: false,
+          sidecarUrl: "http://127.0.0.1:3101",
+          deadlineMs: 300_000,
           profileDigest: "d".repeat(64),
-          memoryCutover: {
-            schemaVersion: 1,
-            status: "cutover_ready",
-            mode: "empty",
-            legacySourceChecksum: "a".repeat(64),
-            importChecksum: "b".repeat(64),
-            igrepVersion: "0.1.132",
-            cutoverWorkspaceVersion:
-              "rebuild-1787169600000-11111111-1111-4111-8111-111111111111",
-            workspaceVersion:
-              "rebuild-1787169600000-11111111-1111-4111-8111-111111111111",
-            recallParity: {
-              probeSetChecksum: "c".repeat(64),
-              total: 0,
-              passed: 0,
-            },
-            completedAt: "2026-08-19T12:00:00.000Z",
-          },
+        },
+        companionWorkspace: { cleanupRequired: true },
+        dsh: {
+          igrepVersion: "9.8.7",
+          pluginVersion: "0.1.0",
         },
         primaryTelemetry: {
           schemaVersion: 1,
@@ -1400,9 +1396,27 @@ describe("chat generate agent image tool", () => {
       expect(messageUpdates[0]?.data.runtimeTrace).toMatchObject({
         companionRuntime: {
           profileDigest: "d".repeat(64),
-          memoryCutover: { status: "cutover_ready" },
+        },
+        dsh: {
+          igrepVersion: "9.8.7",
+          pluginVersion: "0.1.0",
         },
       });
+
+      verifiedRuntimeVersionsState.igrepVersion = "9.8.8";
+      dshRunMock.mockClear();
+      const upgraded = fakePrisma(
+        undefined,
+        undefined,
+        undefined,
+        priorTrace,
+      );
+      await expect(processGenerate(
+        { sessionId: "sess_1", assistantMessageId: "msg_assistant", userMessageId: "msg_user", attempt: 1 },
+        upgraded.prisma,
+        { projectorPrisma: upgraded.prisma, jobAttempt: { attemptsMade: 1, maxAttempts: 3 } },
+      )).rejects.toThrow("cannot continue across an igrep runtime upgrade");
+      expect(dshRunMock).not.toHaveBeenCalled();
     } finally {
       restoreEnv();
     }

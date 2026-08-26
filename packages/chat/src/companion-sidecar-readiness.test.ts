@@ -3,12 +3,12 @@ import {
   COMPANION_DSH_COMMIT,
   COMPANION_DSH_VERSION,
   COMPANION_IGREP_PLUGIN_VERSION,
-  COMPANION_IGREP_VERSION,
   COMPANION_RUNTIME_PROTOCOL_VERSION,
 } from "@idream/shared/chat/companion-runtime";
 import {
   probeCompanionSidecar,
   verifiedCompanionProfileDigest,
+  verifiedCompanionRuntimeVersions,
 } from "./companion-sidecar-readiness.js";
 
 function ready() {
@@ -19,7 +19,7 @@ function ready() {
     checkedAt: new Date().toISOString(),
     dshVersion: COMPANION_DSH_VERSION,
     dshCommit: COMPANION_DSH_COMMIT,
-    igrepVersion: COMPANION_IGREP_VERSION,
+    igrepVersion: "9.8.7",
     pluginVersion: COMPANION_IGREP_PLUGIN_VERSION,
     instance: {
       id: "11111111-1111-4111-8111-111111111111",
@@ -58,7 +58,7 @@ function ready() {
 }
 
 describe("companion sidecar readiness", () => {
-  it("authenticates and returns only an exact pinned readiness document", async () => {
+  it("authenticates and preserves the system igrep version as runtime evidence", async () => {
     const fetchImpl = vi.fn(async () => Response.json(ready()));
     await expect(probeCompanionSidecar({
       baseUrl: "http://127.0.0.1:3101",
@@ -76,6 +76,8 @@ describe("companion sidecar readiness", () => {
       .toBe("Bearer probe-token");
     expect(verifiedCompanionProfileDigest("http://127.0.0.1:3101/", "normal"))
       .toBe("a".repeat(64));
+    expect(verifiedCompanionRuntimeVersions("http://127.0.0.1:3101/"))
+      .toEqual({ igrepVersion: "9.8.7", pluginVersion: "0.1.0" });
   });
 
   it("fails closed when the sidecar resolves a different model", async () => {

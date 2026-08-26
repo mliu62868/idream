@@ -59,7 +59,10 @@ import {
   DshCompanionRuntime,
   type CompanionRuntime,
 } from "./companion-runtime.js";
-import { verifiedCompanionProfileDigest } from "./companion-sidecar-readiness.js";
+import {
+  verifiedCompanionProfileDigest,
+  verifiedCompanionRuntimeVersions,
+} from "./companion-sidecar-readiness.js";
 import {
   recordCompanionOperationalEvent,
   type CompanionOperationalTelemetry,
@@ -67,8 +70,6 @@ import {
 import {
   COMPANION_DSH_COMMIT,
   COMPANION_DSH_VERSION,
-  COMPANION_IGREP_PLUGIN_VERSION,
-  COMPANION_IGREP_VERSION,
   companionToolReservationSchema,
   type CompanionCommitAck,
   type CompanionEvent,
@@ -397,6 +398,26 @@ export async function processGenerate(
           attemptRuntime.sidecarUrl,
           attemptRuntime.private ? "private" : "normal",
         );
+  const verifiedRuntimeVersions = verifiedCompanionRuntimeVersions(
+    attemptRuntime.sidecarUrl,
+  );
+  const priorDshRuntime = jsonObject(priorRuntimeTrace?.dsh);
+  const companionRuntimeVersions = priorRuntimeTrace
+    ? {
+        igrepVersion: typeof priorDshRuntime?.igrepVersion === "string"
+          ? priorDshRuntime.igrepVersion
+          : (() => { throw new Error("existing DSH attempt is missing its igrep version pin"); })(),
+        pluginVersion: typeof priorDshRuntime?.pluginVersion === "string"
+          ? priorDshRuntime.pluginVersion
+          : (() => { throw new Error("existing DSH attempt is missing its plugin version pin"); })(),
+      }
+    : verifiedRuntimeVersions;
+  if (
+    companionRuntimeVersions.igrepVersion !== verifiedRuntimeVersions.igrepVersion ||
+    companionRuntimeVersions.pluginVersion !== verifiedRuntimeVersions.pluginVersion
+  ) {
+    throw new Error("existing DSH attempt cannot continue across an igrep runtime upgrade");
+  }
   const priorPrimaryTelemetry = jsonObject(priorRuntimeTrace?.primaryTelemetry);
   const priorPrimaryStartedAt =
     priorPrimaryTelemetry?.schemaVersion === 1 &&
@@ -433,6 +454,10 @@ export async function processGenerate(
       userMessageId: payload.userMessageId,
       companionRuntime: companionRuntimePin,
       companionWorkspace: { cleanupRequired: true },
+      dsh: {
+        igrepVersion: companionRuntimeVersions.igrepVersion,
+        pluginVersion: companionRuntimeVersions.pluginVersion,
+      },
       primaryTelemetry: primaryTelemetryBase,
     },
   )) as Prisma.InputJsonValue;
@@ -506,8 +531,8 @@ export async function processGenerate(
         version: COMPANION_DSH_VERSION,
         commit: COMPANION_DSH_COMMIT,
         sessionId: `${payload.assistantMessageId}:${payload.attempt}`,
-        igrepVersion: COMPANION_IGREP_VERSION,
-        pluginVersion: COMPANION_IGREP_PLUGIN_VERSION,
+        igrepVersion: companionRuntimeVersions.igrepVersion,
+        pluginVersion: companionRuntimeVersions.pluginVersion,
         profileDigest: dshProfileDigest,
         workspaceKeyHash: digestWorkspaceKey(session.userId, session.characterId),
         memoryMode: attemptRuntime.private ? "private" : "normal",

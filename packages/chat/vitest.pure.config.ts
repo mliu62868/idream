@@ -9,6 +9,7 @@ export default defineConfig({
     include: [
       "src/generate-agent-tools.test.ts",
       "src/runtime-readiness.test.ts",
+      "src/companion-sidecar-readiness.test.ts",
       "src/companion-runtime-selection.test.ts",
       "src/companion-runtime.test.ts",
       "src/companion-memory-cutover.test.ts",

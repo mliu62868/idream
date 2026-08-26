@@ -8,7 +8,6 @@ export const COMPANION_RUNTIME_PROTOCOL_VERSION = 1 as const;
 export const COMPANION_DSH_VERSION = "0.1.0-rc.7" as const;
 export const COMPANION_DSH_COMMIT =
   "99f6f02fecdb7dff40c3fbc9470f5907c29f74ca" as const;
-export const COMPANION_IGREP_VERSION = "0.1.132" as const;
 export const COMPANION_IGREP_PLUGIN_VERSION = "0.1.0" as const;
 export const COMPANION_TERMINAL_CONTENT_MAX_BYTES = 2_097_152;
 // JSON can expand control bytes sixfold (`\u00xx`); 16 MiB safely carries the
@@ -20,6 +19,9 @@ const isoDateTimeSchema = z.string().datetime({ offset: true });
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const nonNegativeIntegerSchema = z.number().int().nonnegative();
 const positiveIntegerSchema = z.number().int().positive();
+// SPEC: igrep is installed and upgraded by the host. The product contract pins
+// required behavior below, while evidence records whichever release supplied it.
+export const companionIgrepVersionSchema = z.string().regex(/^\d+\.\d+\.\d+$/);
 const companionSidecarInstanceSchema = z
   .object({
     id: z.string().uuid(),
@@ -537,7 +539,7 @@ export const companionMemoryCutoverProofSchema = z.object({
   mode: z.enum(["imported", "empty"]),
   legacySourceChecksum: sha256Schema,
   importChecksum: sha256Schema,
-  igrepVersion: z.literal(COMPANION_IGREP_VERSION),
+  igrepVersion: companionIgrepVersionSchema,
   cutoverWorkspaceVersion: companionWorkspaceVersionSchema,
   workspaceVersion: companionWorkspaceVersionSchema,
   recallParity: companionMemoryRecallParitySummarySchema,
@@ -556,7 +558,7 @@ export const companionMemoryCutoverSidecarProofSchema = z.object({
   entries: nonNegativeIntegerSchema,
   legacySourceChecksum: sha256Schema,
   checksum: sha256Schema,
-  igrepVersion: z.literal(COMPANION_IGREP_VERSION),
+  igrepVersion: companionIgrepVersionSchema,
   cutoverWorkspaceVersion: companionWorkspaceVersionSchema,
   workspaceVersion: companionWorkspaceVersionSchema,
   status: z.literal("cutover_ready"),
@@ -1007,7 +1009,7 @@ export const companionReadinessSchema = z
     checkedAt: isoDateTimeSchema,
     dshVersion: z.literal(COMPANION_DSH_VERSION),
     dshCommit: z.literal(COMPANION_DSH_COMMIT),
-    igrepVersion: z.literal(COMPANION_IGREP_VERSION),
+    igrepVersion: companionIgrepVersionSchema,
     pluginVersion: z.literal(COMPANION_IGREP_PLUGIN_VERSION),
     instance: companionSidecarInstanceSchema,
     provider: z

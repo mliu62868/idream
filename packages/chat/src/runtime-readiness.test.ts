@@ -5,7 +5,6 @@ import {
   COMPANION_DSH_COMMIT,
   COMPANION_DSH_VERSION,
   COMPANION_IGREP_PLUGIN_VERSION,
-  COMPANION_IGREP_VERSION,
   COMPANION_RUNTIME_PROTOCOL_VERSION,
 } from "@idream/shared/chat/companion-runtime";
 import { ACCOUNT_DELETION_V2_INGEST_PATH } from "@idream/shared/contracts";
@@ -21,6 +20,8 @@ import {
   warmRuntime,
 } from "./runtime-readiness.js";
 
+const TEST_IGREP_VERSION = "9.8.7";
+
 function readySidecar() {
   return {
     protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
@@ -29,7 +30,7 @@ function readySidecar() {
     checkedAt: "2026-08-20T00:00:00.000Z",
     dshVersion: COMPANION_DSH_VERSION,
     dshCommit: COMPANION_DSH_COMMIT,
-    igrepVersion: COMPANION_IGREP_VERSION,
+    igrepVersion: TEST_IGREP_VERSION,
     pluginVersion: COMPANION_IGREP_PLUGIN_VERSION,
     instance: {
       id: "11111111-1111-4111-8111-111111111111",
@@ -1044,7 +1045,7 @@ describe("RuntimeReadiness", () => {
       ready: true,
       warmedProfiles: expect.arrayContaining([
         `dsh:${COMPANION_DSH_VERSION}:${COMPANION_DSH_COMMIT}`,
-        `igrep:${COMPANION_IGREP_VERSION}:${COMPANION_IGREP_PLUGIN_VERSION}`,
+        `igrep:${TEST_IGREP_VERSION}:${COMPANION_IGREP_PLUGIN_VERSION}`,
         `composition:normal:${"a".repeat(64)}`,
         `composition:private:${"b".repeat(64)}`,
       ]),

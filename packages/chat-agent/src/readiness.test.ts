@@ -39,8 +39,8 @@ const igrepVerification = {
 const successfulRuntimeEvidence = {
   instance: sidecarInstance,
   readBootstrapState: async () => ({
-    schemaVersion: 1 as const,
-    pins: { dsh: "0.1.0-rc.7", igrep: "0.1.132", plugin: "0.1.0" },
+    schemaVersion: 2 as const,
+    pins: { dsh: "0.1.0-rc.7", plugin: "0.1.0" },
     profiles: {
       normal: {
         name: "idream-companion-memory",
@@ -85,7 +85,7 @@ describe("fail-closed companion readiness", () => {
     const readiness = await createReadinessProbe({
       config,
       plugin: async () => plugin,
-      resolveIgrepVersion: async () => "0.1.132",
+      resolveIgrepVersion: async () => "0.1.134",
       ...successfulRuntimeEvidence,
       bridgeProbe: async (invocation) => {
         bridgeProfileDigest = invocation.expectedProfileDigest;
@@ -95,7 +95,7 @@ describe("fail-closed companion readiness", () => {
       ready: true,
       dshVersion: "0.1.0-rc.7",
       dshCommit: "99f6f02fecdb7dff40c3fbc9470f5907c29f74ca",
-      igrepVersion: "0.1.132",
+      igrepVersion: "0.1.134",
       pluginVersion: "0.1.0",
       instance: sidecarInstance,
       provider: {
@@ -133,13 +133,24 @@ describe("fail-closed companion readiness", () => {
     expect(bridgeProfileDigest).toBe(readiness.profiles.private.executionCompositionDigest);
   });
 
-  it("fails closed when the executable version or normalized profile drifts", async () => {
+  it("accepts and reports the installed igrep release without a repository pin", async () => {
+    const readiness = await createReadinessProbe({
+      config,
+      plugin: async () => plugin,
+      resolveIgrepVersion: async () => "9.8.7",
+      ...successfulRuntimeEvidence,
+    })();
+
+    expect(readiness.igrepVersion).toBe("9.8.7");
+  });
+
+  it("fails closed when the executable version is invalid or normalized profile drifts", async () => {
     await expect(createReadinessProbe({
       config,
       plugin: async () => plugin,
-      resolveIgrepVersion: async () => "0.1.133",
+      resolveIgrepVersion: async () => "latest",
       ...successfulRuntimeEvidence,
-    })()).rejects.toThrow(/igrep version drifted/);
+    })()).rejects.toThrow(/igrepVersion/);
     await expect(createReadinessProbe({
       config,
       plugin: async () => ({
@@ -149,7 +160,7 @@ describe("fail-closed companion readiness", () => {
           resolveConfig: (raw: Record<string, unknown>) => ({ ...raw, wake: true }),
         },
       }),
-      resolveIgrepVersion: async () => "0.1.132",
+      resolveIgrepVersion: async () => "0.1.134",
       ...successfulRuntimeEvidence,
     })()).rejects.toThrow(/profile did not normalize/);
   });
@@ -165,7 +176,7 @@ describe("fail-closed companion readiness", () => {
       await expect(createReadinessProbe({
         config,
         plugin: async () => plugin,
-        resolveIgrepVersion: async () => "0.1.132",
+        resolveIgrepVersion: async () => "0.1.134",
         ...successfulRuntimeEvidence,
         [failed]: async () => { throw new Error(`${failed} failed`); },
       })()).rejects.toThrow(`${failed} failed`);
@@ -178,7 +189,7 @@ describe("fail-closed companion readiness", () => {
     const probe = createReadinessProbe({
       config,
       plugin: async () => plugin,
-      resolveIgrepVersion: async () => "0.1.132",
+      resolveIgrepVersion: async () => "0.1.134",
       ...successfulRuntimeEvidence,
       providerWarmup: async () => {
         warmups += 1;

@@ -7,7 +7,6 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 export const DSH_VERSION = "0.1.0-rc.7";
-export const IGREP_VERSION = "0.1.132";
 export const IGREP_PLUGIN_VERSION = "0.1.0";
 export const PROFILE_NAMES = Object.freeze({
   normal: "idream-companion-memory",
@@ -20,7 +19,7 @@ const PLUGIN_PEERS = Object.freeze([
   "@deepseek-ai/dsh-tools",
 ]);
 const STATE_FILENAME = "idream-companion-bootstrap.json";
-const STATE_SCHEMA_VERSION = 1;
+const STATE_SCHEMA_VERSION = 2;
 const COMMAND_TIMEOUT_MS = 120_000;
 // INVARIANT: mirrors NORMAL_IGREP_CONFIG / PRIVATE_IGREP_CONFIG in
 // packages/chat-agent/src/igrep.ts; readiness greps every entry out of the
@@ -265,10 +264,10 @@ function readIgrepVersion(dependencies) {
     dependencies.env,
   ).trim();
   const match = /^igrep\s+(\S+)(?:\s|$)/.exec(output);
-  if (match?.[1] !== IGREP_VERSION) {
+  if (!/^\d+\.\d+\.\d+$/.test(match?.[1] ?? "")) {
     throw new BootstrapError(
-      "IGREP_VERSION_MISMATCH",
-      `igrep version mismatch; expected ${IGREP_VERSION}`,
+      "IGREP_VERSION_INVALID",
+      "igrep did not report a valid release version",
     );
   }
   return match[1];
@@ -731,7 +730,6 @@ function writeBootstrapState(profiles, dependencies, dshHome) {
     schemaVersion: STATE_SCHEMA_VERSION,
     pins: {
       dsh: DSH_VERSION,
-      igrep: IGREP_VERSION,
       plugin: IGREP_PLUGIN_VERSION,
     },
     profiles: Object.fromEntries(
@@ -768,15 +766,19 @@ function readBootstrapState(fs, dshHome) {
     ["schemaVersion", "pins", "profiles"],
     "BOOTSTRAP_STATE_INVALID",
   );
+  assertExactKeys(
+    state.pins,
+    ["dsh", "plugin"],
+    "BOOTSTRAP_STATE_INVALID",
+  );
   if (
     state.schemaVersion !== STATE_SCHEMA_VERSION ||
     state.pins?.dsh !== DSH_VERSION ||
-    state.pins?.igrep !== IGREP_VERSION ||
     state.pins?.plugin !== IGREP_PLUGIN_VERSION
   ) {
     throw new BootstrapError(
       "BOOTSTRAP_STATE_INVALID",
-      "companion bootstrap state does not match the pinned runtime versions",
+      "companion bootstrap state does not match the pinned DSH/plugin versions",
     );
   }
   for (const memoryMode of Object.keys(PROFILE_NAMES)) {

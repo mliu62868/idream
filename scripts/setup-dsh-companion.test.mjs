@@ -6,7 +6,6 @@ import test from "node:test";
 import {
   DSH_VERSION,
   IGREP_PLUGIN_VERSION,
-  IGREP_VERSION,
   PROFILE_NAMES,
   executeCli,
   isSupportedNodeVersion,
@@ -17,6 +16,20 @@ import {
 const DSH_HOME = "/virtual/dsh-home";
 const PLUGIN_SOURCE =
   "/virtual/igrep/lib/python3.14/site-packages/igrep/data/deepseek-harness/igrep-dsh";
+const FIXTURE_IGREP_VERSION = "9.8.7";
+
+test("accepts and reports the system-installed igrep release without a repository pin", () => {
+  const fixture = createFixture({
+    igrepVersion: "9.8.7",
+    materialized: false,
+  });
+  const report = runDshCompanionBootstrap(
+    { check: false },
+    fixture.dependencies,
+  );
+
+  assert.equal(report.versions.igrep, "9.8.7");
+});
 
 test("accepts only the pinned Node engine range", () => {
   assert.equal(isSupportedNodeVersion("v22.18.9"), false);
@@ -67,7 +80,7 @@ test("setup materializes both official profiles, dumps with the same DSH_HOME, a
     node: "22.22.3",
     python: "3.14.3",
     dsh: DSH_VERSION,
-    igrep: IGREP_VERSION,
+    igrep: FIXTURE_IGREP_VERSION,
     plugin: IGREP_PLUGIN_VERSION,
   });
   assert.deepEqual(
@@ -106,7 +119,11 @@ test("setup materializes both official profiles, dumps with the same DSH_HOME, a
   );
 
   const state = fixture.fs.readJson(path.join(DSH_HOME, "idream-companion-bootstrap.json"));
-  assert.equal(state.schemaVersion, 1);
+  assert.equal(state.schemaVersion, 2);
+  assert.deepEqual(state.pins, {
+    dsh: DSH_VERSION,
+    plugin: IGREP_PLUGIN_VERSION,
+  });
   assert.equal(JSON.stringify(state).includes("super-secret-token"), false);
   assert.equal(JSON.stringify(report).includes("super-secret-token"), false);
   const normalPatch = fixture.fs.readFileSync(path.join(
@@ -185,6 +202,21 @@ test("--check is read-only and verifies the persisted dump/input digests", () =>
   );
 });
 
+test("--check accepts a newer system igrep after setup when capabilities are unchanged", () => {
+  const fixture = createFixture({ materialized: false });
+  runDshCompanionBootstrap({ check: false }, fixture.dependencies);
+  fixture.control.igrepVersion = "9.8.8";
+  fixture.fs.resetMutations();
+
+  const report = runDshCompanionBootstrap(
+    { check: true },
+    fixture.dependencies,
+  );
+
+  assert.equal(report.versions.igrep, "9.8.8");
+  assert.deepEqual(fixture.fs.mutations, []);
+});
+
 test("--check fails closed when profile inputs drift after setup", () => {
   const fixture = createFixture({ materialized: false });
   runDshCompanionBootstrap({ check: false }, fixture.dependencies);
@@ -254,10 +286,10 @@ test("fails closed on runtime, igrep, Python, command, and plugin identity misma
     );
   });
   await t.test("igrep", () => {
-    const fixture = createFixture({ igrepVersion: "0.1.133" });
+    const fixture = createFixture({ igrepVersion: "latest" });
     assert.throws(
       () => runDshCompanionBootstrap({ check: false }, fixture.dependencies),
-      (error) => error?.code === "IGREP_VERSION_MISMATCH",
+      (error) => error?.code === "IGREP_VERSION_INVALID",
     );
   });
   await t.test("Python", () => {
@@ -312,7 +344,10 @@ test("fails closed on runtime, igrep, Python, command, and plugin identity misma
 function createFixture(options = {}) {
   const fs = createMemoryFs();
   const calls = [];
-  const control = { dumpDrift: false };
+  const control = {
+    dumpDrift: false,
+    igrepVersion: options.igrepVersion ?? FIXTURE_IGREP_VERSION,
+  };
   const igrepExecutable = "/virtual/bin/igrep";
   const pythonExecutable = "/virtual/python3.14";
   fs.seed(igrepExecutable, `#!${pythonExecutable}\n`);
@@ -338,7 +373,7 @@ function createFixture(options = {}) {
       return success(`Python ${options.pythonVersion ?? "3.14.3"}\n`);
     }
     if (label === "igrep version") {
-      return success(`igrep ${options.igrepVersion ?? IGREP_VERSION}\n`);
+      return success(`igrep ${control.igrepVersion}\n`);
     }
     if (label === "dsh version") {
       return success(`${options.dshVersion ?? DSH_VERSION}\n`);

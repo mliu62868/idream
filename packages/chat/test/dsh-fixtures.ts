@@ -3,7 +3,6 @@ import {
   COMPANION_DSH_COMMIT,
   COMPANION_DSH_VERSION,
   COMPANION_IGREP_PLUGIN_VERSION,
-  COMPANION_IGREP_VERSION,
   COMPANION_RUNTIME_PROTOCOL_VERSION,
   companionToolCallSchema,
   type CompanionInvocation,
@@ -24,6 +23,7 @@ import { probeCompanionSidecar } from "../src/companion-sidecar-readiness.js";
 
 const TEST_DSH_NORMAL_DIGEST = "a".repeat(64);
 const TEST_DSH_PRIVATE_DIGEST = "b".repeat(64);
+const TEST_IGREP_VERSION = "9.8.7";
 const TEST_DSH_TOOL_CALLS_ENV = "CHAT_TEST_DSH_TOOL_CALLS_JSON";
 
 let readinessVerified = false;
@@ -197,7 +197,7 @@ function testReadiness() {
     checkedAt: new Date().toISOString(),
     dshVersion: COMPANION_DSH_VERSION,
     dshCommit: COMPANION_DSH_COMMIT,
-    igrepVersion: COMPANION_IGREP_VERSION,
+    igrepVersion: TEST_IGREP_VERSION,
     pluginVersion: COMPANION_IGREP_PLUGIN_VERSION,
     instance: {
       id: "11111111-1111-4111-8111-111111111111",

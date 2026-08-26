@@ -56,3 +56,15 @@ export function verifiedCompanionProfileDigest(
   if (!readiness) throw new Error("companion profile digest is not readiness-verified");
   return readiness.profiles[mode].executionCompositionDigest;
 }
+
+/** Runtime traces record the host-provided igrep release proven by readiness. */
+export function verifiedCompanionRuntimeVersions(
+  baseUrl: string,
+): Pick<CompanionReadiness, "igrepVersion" | "pluginVersion"> {
+  const readiness = verifiedByEndpoint.get(endpoint(baseUrl));
+  if (!readiness) throw new Error("companion runtime versions are not readiness-verified");
+  return {
+    igrepVersion: readiness.igrepVersion,
+    pluginVersion: readiness.pluginVersion,
+  };
+}

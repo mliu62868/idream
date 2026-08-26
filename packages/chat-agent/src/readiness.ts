@@ -8,7 +8,6 @@ import {
   COMPANION_DSH_COMMIT,
   COMPANION_DSH_VERSION,
   COMPANION_IGREP_PLUGIN_VERSION,
-  COMPANION_IGREP_VERSION,
   companionReadinessSchema,
   releasedKnowledgeDigest,
   type CompanionReadiness,
@@ -69,8 +68,8 @@ interface BootstrapProfile {
 }
 
 interface BootstrapState {
-  schemaVersion: 1;
-  pins: { dsh: string; igrep: string; plugin: string };
+  schemaVersion: 2;
+  pins: { dsh: string; plugin: string };
   profiles: { normal: BootstrapProfile; private: BootstrapProfile };
 }
 
@@ -85,10 +84,10 @@ async function bootstrapState(path: string): Promise<BootstrapState> {
   exactKeys(parsed, ["schemaVersion", "pins", "profiles"], "bootstrap state");
   const pins = parsed.pins as Record<string, unknown>;
   const profiles = parsed.profiles as Record<string, unknown>;
-  if (!pins || !profiles || parsed.schemaVersion !== 1) throw new Error("bootstrap state shape is invalid");
-  exactKeys(pins, ["dsh", "igrep", "plugin"], "bootstrap pins");
+  if (!pins || !profiles || parsed.schemaVersion !== 2) throw new Error("bootstrap state shape is invalid");
+  exactKeys(pins, ["dsh", "plugin"], "bootstrap pins");
   exactKeys(profiles, ["normal", "private"], "bootstrap profiles");
-  if (pins.dsh !== COMPANION_DSH_VERSION || pins.igrep !== COMPANION_IGREP_VERSION
+  if (pins.dsh !== COMPANION_DSH_VERSION
     || pins.plugin !== COMPANION_IGREP_PLUGIN_VERSION) {
     throw new Error("bootstrap state version pins drifted");
   }
@@ -333,9 +332,6 @@ export function createReadinessProbe(
       throw new Error(`igrep plugin version drifted to ${plugin.version}`);
     }
     const resolvedIgrepVersion = await (options.resolveIgrepVersion ?? igrepVersion)(options.config.igrepCommand);
-    if (resolvedIgrepVersion !== COMPANION_IGREP_VERSION) {
-      throw new Error(`igrep version drifted to ${resolvedIgrepVersion}`);
-    }
     const normal = resolvedCompanionIgrepConfig(
       plugin.module,
       "normal",
@@ -349,11 +345,11 @@ export function createReadinessProbe(
     if (normal.ingest !== true || normal.wake !== true || normal.memory !== true || normal.search !== false
       || normal.webProvider !== false || normal.webTool !== false
       || normal.memorySearchMode !== "fast") {
-      throw new Error("normal igrep profile did not normalize to the pinned capability set");
+      throw new Error("normal igrep profile did not normalize to the required capability set");
     }
     if (privateProfile.ingest !== false || privateProfile.wake !== false
       || privateProfile.memory !== false || privateProfile.search !== false) {
-      throw new Error("private igrep profile did not normalize to the pinned capability set");
+      throw new Error("private igrep profile did not normalize to the required capability set");
     }
     const profile = readinessProfile(options.config);
     const state = await (options.readBootstrapState ?? bootstrapState)(options.config.bootstrapStatePath);
@@ -382,7 +378,7 @@ export function createReadinessProbe(
       checkedAt: new Date().toISOString(),
       dshVersion: COMPANION_DSH_VERSION,
       dshCommit: COMPANION_DSH_COMMIT,
-      igrepVersion: COMPANION_IGREP_VERSION,
+      igrepVersion: resolvedIgrepVersion,
       pluginVersion: COMPANION_IGREP_PLUGIN_VERSION,
       instance: options.instance,
       provider: {

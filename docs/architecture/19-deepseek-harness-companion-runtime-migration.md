@@ -2,9 +2,9 @@
 
 > 状态：Accepted / Phase 6 功能迁移与受控本地 E2E 已完成；public production NO-GO（Gate R 尾延迟、正式客户观察窗、成本与 production envelope 未达标，禁止扩大流量）
 > 调研快照：2026-08-19
-> 最终复验快照：2026-08-23，executor revision `idream-worktree-0fdf96b06508a8838f5d4fadb9157ad293e22ffb8f6b3737fba35f1768862069`
+> 最终复验快照：2026-08-23，executor revision `idream-worktree-0fdf96b06508a8838f5d4fadb9157ad293e22ffb8f6b3737fba35f1768862069`（igrep `0.1.132` 历史证据）
 > 适用范围：`packages/chat`、Chat BFF、Gen 工具桥、角色 Soul/关系/场景、长期记忆与 RAG
-> 版本基线：DeepSeek Harness `0.1.0-rc.7` / `99f6f02`；`igrep-tme 0.1.132`；`@igrep/dsh-plugin 0.1.0`
+> 当前运行策略：DeepSeek Harness `0.1.0-rc.7` / `99f6f02` 与 `@igrep/dsh-plugin 0.1.0` 固定；igrep 由系统安装最新 release（本次核验快照为 `0.1.134`）
 
 ## 0. 决策摘要
 
@@ -76,7 +76,7 @@ DSH 提供了成熟度更高的 Agent loop、事件日志、工具流水线、�
 
 ### 2.2 igrep 与 DSH 插件
 
-核验版本为 [`igrep-tme 0.1.132`](https://pypi.org/project/igrep-tme/0.1.132/)。PyPI 官方说明明确列出：
+当前核验版本为 [`igrep-tme 0.1.134`](https://pypi.org/project/igrep-tme/0.1.134/)。PyPI 官方说明明确列出：
 
 ```text
 DeepSeek Harness | search + web search + memory | igrep setup deepseek-harness
@@ -105,15 +105,20 @@ dsh plugin --profile headless add file:<igrep-wheel>/igrep-dsh
 
 正式实施应为 iDream 创建专用 profile，再执行同一官方安装命令；不得复制插件源码进项目维护。
 
-### 2.3 版本锁定表
+### 2.3 版本策略表
 
-| 组件 | 首次迁移固定值 | 升级条件 |
+| 组件 | 运行策略 | 升级条件 |
 |---|---:|---|
 | Node.js | `22.22.x` 或已验证的兼容版本 | DSH engine + 全套契约测试通过 |
 | DSH | `0.1.0-rc.7` | 新版本 diff 审计、profile dump diff、live contract gate |
 | DSH source | `99f6f02...` | 只随已批准的 DSH 版本变更 |
-| igrep | `0.1.132` | plugin load、memory lifecycle、删除/重建、隔离门通过 |
+| igrep | 系统最新 release；本次快照 `0.1.134` | 系统负责升级；项目校验 plugin load、memory lifecycle、删除/重建与隔离能力 |
 | `@igrep/dsh-plugin` | wheel 内置 `0.1.0` | 跟随 igrep wheel，不独立 fork |
+
+项目不 pin igrep 版本。readiness 接受系统提供的合法 release 版本并记录实际值，
+同时继续对 DSH/plugin 身份、profile digest、能力集合、memory lifecycle、删除/重建、
+bridge 与隔离证明 fail-closed。immutable cutover proof 永久保留创建 lineage 时的实际
+igrep 版本，但该历史值不能反向证明当前 sidecar 已就绪。
 
 ---
 
@@ -1061,7 +1066,7 @@ CHAT_MEMORY_BACKEND=legacy|igrep-dsh
 
 ### igrep
 
-- [`igrep-tme 0.1.132` PyPI 项目页](https://pypi.org/project/igrep-tme/0.1.132/)
+- [`igrep-tme 0.1.134` PyPI 项目页](https://pypi.org/project/igrep-tme/0.1.134/)
 - PyPI 页面“接入编码 Agent”表明确列出 DeepSeek Harness：search + web search + memory。
 - 随 wheel 发布的 `@igrep/dsh-plugin` README、`package.json`、`cordis.patch.yml`、`memory-lifecycle.mjs` 与 `index.mjs` 已在本次调研中逐文件核验；这些是插件实际发行 artifact，比另行推测 API 更权威。
 

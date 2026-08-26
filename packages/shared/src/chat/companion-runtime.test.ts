@@ -3,7 +3,6 @@ import {
   COMPANION_DSH_COMMIT,
   COMPANION_DSH_VERSION,
   COMPANION_IGREP_PLUGIN_VERSION,
-  COMPANION_IGREP_VERSION,
   COMPANION_RUNTIME_PROTOCOL_VERSION,
   companionCommitAckSchema,
   companionEventSchema,
@@ -30,6 +29,7 @@ import {
 } from "./companion-runtime";
 
 const now = "2026-08-19T12:00:00.000Z";
+const TEST_IGREP_VERSION = "9.8.7";
 const sidecarInstance = {
   id: "11111111-1111-4111-8111-111111111111",
   startedAt: "2026-08-19T11:59:00.000Z",
@@ -614,7 +614,7 @@ describe("companion runtime stable wire contract", () => {
     }).success).toBe(false);
   });
 
-  it("requires pinned runtime versions and both memory profile capability probes", () => {
+  it("requires pinned DSH/plugin identities and igrep capability probes", () => {
     const readiness = {
       protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
       service: "dsh-companion" as const,
@@ -622,7 +622,7 @@ describe("companion runtime stable wire contract", () => {
       checkedAt: now,
       dshVersion: COMPANION_DSH_VERSION,
       dshCommit: COMPANION_DSH_COMMIT,
-      igrepVersion: COMPANION_IGREP_VERSION,
+      igrepVersion: TEST_IGREP_VERSION,
       pluginVersion: COMPANION_IGREP_PLUGIN_VERSION,
       instance: sidecarInstance,
       provider: {
@@ -665,6 +665,10 @@ describe("companion runtime stable wire contract", () => {
     expect(companionReadinessSchema.safeParse({
       ...readiness,
       dshVersion: "latest",
+    }).success).toBe(false);
+    expect(companionReadinessSchema.safeParse({
+      ...readiness,
+      igrepVersion: "latest",
     }).success).toBe(false);
     expect(companionReadinessSchema.safeParse({
       ...readiness,
