@@ -107,6 +107,35 @@ export function viewerScopeFromAuthority(input: {
 
 const STEPS = ["Identity", "Appearance", "Soul", "Preview", "Publish"] as const;
 
+export function renderCreateSoulMarkdown(input: Pick<
+  WizardState,
+  "name" | "age" | "gender" | "relationshipArchetype" | "description" | "detailsMarkdown"
+>): string {
+  const name = compactSoulPreviewText(input.name);
+  return [
+    `# ${name} — Character Soul`,
+    "",
+    `You are ${name}. Speak and act consistently with this character.`,
+    "",
+    "## Basic information",
+    `- Age: ${input.age}`,
+    `- Gender: ${input.gender}`,
+    `- Relationship: ${compactSoulPreviewText(input.relationshipArchetype)}`,
+    `- Character: ${compactSoulPreviewText(input.description)}`,
+    ...(markdownSoulPreviewText(input.detailsMarkdown)
+      ? ["", "## Additional details", "", markdownSoulPreviewText(input.detailsMarkdown)]
+      : []),
+  ].join("\n");
+}
+
+function compactSoulPreviewText(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function markdownSoulPreviewText(value: string): string {
+  return value.replaceAll("\r\n", "\n").replaceAll("\r", "\n").trim();
+}
+
 export type WizardState = {
   draftId: string;
   previewBatch: CreatePreviewBatch | null;
@@ -980,6 +1009,14 @@ export function CreateWorkspace() {
 
             {step === 3 && (
               <div className="grid gap-4" data-testid="create-step-preview">
+                <section className="rounded-[14px] bg-[rgb(36,36,36)] p-4 text-left text-white" data-testid="create-soul-preview">
+                  <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+                    SOUL.md · exact Agent prompt
+                  </p>
+                  <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap rounded-[12px] border border-white/10 bg-[rgb(13,13,13)] p-4 font-mono text-[12px] font-medium leading-6 text-white">
+                    {renderCreateSoulMarkdown(state)}
+                  </pre>
+                </section>
                 <p className="text-[13px] font-medium text-[rgb(170,170,170)]">
                   Generate four identity candidates, then choose the image that should define how {state.name} looks.
                 </p>

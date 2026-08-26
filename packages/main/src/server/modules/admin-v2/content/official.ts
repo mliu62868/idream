@@ -8,6 +8,7 @@
 //   - update / setState 仅作用于 source==="official" 的角色，否则 404。
 //   - 文本（name/description/advancedDetails）变更必重新 moderate。
 import { randomUUID } from "node:crypto";
+import { legacySoulDetailsMarkdown } from "@idream/shared";
 import type { Prisma } from "@prisma/client";
 import type {
   ContentOfficialCreateRequest,
@@ -110,34 +111,6 @@ function hasOwn(row: Record<string, unknown>, key: string) {
   return Object.prototype.hasOwnProperty.call(row, key);
 }
 
-// INTENT: 旧 official API 只在这个输入边界折叠历史字段；新的编辑器和存储只认识一段 Markdown。
-function detailsMarkdown(value: unknown) {
-  const row = jsonRecord(value);
-  if (hasOwn(row, "detailsMarkdown")) return text(row.detailsMarkdown);
-
-  const sections: string[] = [];
-  const paragraphs = [
-    ["Personality", text(row.personality)],
-    ["Voice", text(row.tone) || text(row.speakingStyle)],
-    ["Backstory", text(row.backstory)],
-  ] as const;
-  for (const [heading, content] of paragraphs) {
-    if (content) sections.push(`## ${heading}\n${content}`);
-  }
-
-  const lists = [
-    ["Values", stringList(row.values)],
-    ["Wants", stringList(row.wants)],
-    ["Fears", stringList(row.fears)],
-    ["Contradictions", stringList(row.contradictions)],
-    ["Example dialogue", stringList(row.exampleDialogue)],
-  ] as const;
-  for (const [heading, items] of lists) {
-    if (items.length > 0) sections.push(`## ${heading}\n${items.map((item) => `- ${item}`).join("\n")}`);
-  }
-  return sections.join("\n\n");
-}
-
 function touchesSoulDetails(row: Record<string, unknown>) {
   return hasOwn(row, "detailsMarkdown") || LEGACY_SOUL_DETAIL_KEYS.some((key) => hasOwn(row, key));
 }
@@ -201,6 +174,17 @@ export async function createOfficialCharacter(input: {
 
   const advanced = jsonRecord(body.advancedDetails);
   const appearance = jsonRecord(body.appearance);
+  const relationshipArchetype = text(advanced.relationshipArchetype) || text(advanced.relationship);
+  const firstMessage = text(advanced.firstMessage);
+  const missingFields = [
+    ...(!relationshipArchetype ? ["relationshipArchetype"] : []),
+    ...(!firstMessage ? ["firstMessage"] : []),
+  ];
+  if (missingFields.length > 0) {
+    throw Errors.badRequest("Complete the official Character Soul before creating it", {
+      missingFields,
+    });
+  }
   const created = await createCharacterProject({
     actor,
     idempotencyKey,
@@ -217,10 +201,10 @@ export async function createOfficialCharacter(input: {
         name: body.name,
         age: body.age,
         gender: body.gender,
-        relationshipArchetype: text(advanced.relationshipArchetype) || text(advanced.relationship) || "Unspecified relationship archetype",
+        relationshipArchetype,
         characterPromise: body.description,
-        detailsMarkdown: detailsMarkdown(advanced),
-        firstMessage: text(advanced.firstMessage) || "Draft opening message; complete before release.",
+        detailsMarkdown: legacySoulDetailsMarkdown(advanced),
+        firstMessage,
       },
       visualDirection: {
         identityAnchor: text(appearance.identityAnchor) || `${body.name} canonical identity anchor requires production evidence`,
@@ -280,7 +264,9 @@ export async function updateOfficialCharacter(input: {
     ...(body.gender !== undefined ? { gender: body.gender } : {}),
     ...(body.description !== undefined ? { characterPromise: body.description } : {}),
     ...(text(advanced.relationshipArchetype) ? { relationshipArchetype: text(advanced.relationshipArchetype) } : {}),
-    ...(touchesSoulDetails(advanced) ? { detailsMarkdown: detailsMarkdown(advanced) } : {}),
+    ...(touchesSoulDetails(advanced)
+      ? { detailsMarkdown: legacySoulDetailsMarkdown(advanced, resumed.draft.persona.detailsMarkdown) }
+      : {}),
     ...(text(advanced.firstMessage) ? { firstMessage: text(advanced.firstMessage) } : {}),
   };
   const visualDirection = {

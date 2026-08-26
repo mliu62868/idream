@@ -7,6 +7,7 @@ import {
   characterCreateStepRequirements,
   characterCreateSteps,
   isCharacterCreateStepComplete,
+  renderCharacterDraftSoulMarkdown,
 } from "./CharacterCreateWizard";
 import { hasAdminZh } from "@/components/admin/i18n";
 import type { AdminPermissionKey } from "@idream/shared/admin";
@@ -50,6 +51,32 @@ describe("Character create wizard", () => {
     expect(promise).toContain("required=\"\"");
     const opening = /First message[\s\S]{0,700}?<\/textarea>/.exec(html)?.[0] ?? "";
     expect(opening).toContain("required=\"\"");
+  });
+
+  it("renders the exact SOUL.md preview before creation", () => {
+    expect(renderCharacterDraftSoulMarkdown({
+      name: "Mara",
+      age: 28,
+      gender: "female",
+      relationshipArchetype: "steady confidante",
+      characterPromise: "A precise place to put the day down.",
+      detailsMarkdown: "## Voice\nWarm and concise.",
+      firstMessage: "You made it.",
+    })).toBe([
+      "# Mara — Character Soul",
+      "",
+      "You are Mara. Speak and act consistently with this character.",
+      "",
+      "## Basic information",
+      "- Age: 28",
+      "- Gender: female",
+      "- Relationship: steady confidante",
+      "- Character: A precise place to put the day down.",
+      "",
+      "## Additional details",
+      "",
+      "## Voice\nWarm and concise.",
+    ].join("\n"));
   });
 
   it("keeps the wizard's dynamic step labels translated", () => {

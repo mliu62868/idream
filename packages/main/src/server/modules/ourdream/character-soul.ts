@@ -1,5 +1,6 @@
 import {
   compileCharacterSoul,
+  legacySoulDetailsMarkdown,
   loadCharacterSoulSnapshot,
   type CharacterSoulSnapshot,
   type SoulDiagnostic,
@@ -49,9 +50,10 @@ export function compileUserCharacterContent(input: UserCharacterSoulInput) {
         gender: input.gender,
         relationshipArchetype: input.relationship,
         characterPromise: input.description,
-        detailsMarkdown: Object.hasOwn(details, "detailsMarkdown")
-          ? text(details.detailsMarkdown)
-          : immutable.snapshot.soul.detailsMarkdown,
+        detailsMarkdown: legacySoulDetailsMarkdown(
+          details,
+          immutable.snapshot.soul.detailsMarkdown,
+        ),
       }
     : {
         name: input.name,
@@ -59,7 +61,7 @@ export function compileUserCharacterContent(input: UserCharacterSoulInput) {
         gender: input.gender,
         relationshipArchetype: input.relationship,
         characterPromise: input.description,
-        detailsMarkdown: text(details.detailsMarkdown),
+        detailsMarkdown: legacySoulDetailsMarkdown(details),
       };
   const compiled = compileCharacterSoul(draft);
   if (!compiled.ok) throw new UserCharacterSoulCompileError(compiled.diagnostics);

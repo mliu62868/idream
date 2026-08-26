@@ -39,6 +39,31 @@ const P = "zt-mod-";
 const SYS = `${P}sys`;
 const CHAR = `${P}char`;
 
+describe("user Character Soul compatibility", () => {
+  it("folds a saved legacy server draft into v2 details instead of dropping it", () => {
+    const content = compileUserCharacterContent({
+      name: "Legacy Draft",
+      age: 28,
+      gender: "female",
+      relationship: "trusted confidante",
+      description: "A precise companion.",
+      style: "realistic",
+      appearance: {},
+      advancedDetails: {
+        personality: "Observant and candid.",
+        tone: "Warm and concise.",
+        canon: { facts: ["She hosts a radio show."] },
+        firstMessage: "You made it.",
+      },
+    });
+
+    expect(content.personaSnapshot.schemaVersion).toBe(2);
+    expect(content.personaSnapshot.soul.detailsMarkdown).toContain("Observant and candid.");
+    expect(content.personaSnapshot.soul.detailsMarkdown).toContain("Warm and concise.");
+    expect(content.personaSnapshot.soul.detailsMarkdown).toContain("She hosts a radio show.");
+  });
+});
+
 async function seedCurrentPublicCharacterAuthority(input: {
   characterId: string;
   ownerId: string;

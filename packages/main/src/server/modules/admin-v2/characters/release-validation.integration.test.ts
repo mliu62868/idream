@@ -262,6 +262,51 @@ describe("Character Release validation authority", () => {
     await prisma.characterContentVersion.delete({ where: { id: partialContentId } });
   });
 
+  it("allows historical v1 reads but blocks them from a newly governed Release", async () => {
+    const legacySoul = {
+      identity: {
+        name: "Historical Soul", age: 29, gender: "female",
+        relationshipArchetype: "trusted companion",
+        characterPromise: "A pinned historical companion.",
+      },
+      innerLife: { personality: "Observant.", values: [], wants: [], fears: [], contradictions: [], backstory: "" },
+      voice: { tone: "Warm.", cadence: "", vocabulary: [], habits: [], avoid: [] },
+      interaction: { initiative: "", curiosity: "", pacing: "", affection: "", conflict: "", repair: "" },
+      canon: { facts: [], unknowns: [] },
+      dialogue: { positive: [], negative: [] },
+    } as const;
+    const compilerVersion = "character-soul-1";
+    const systemPrompt = "Historical immutable prompt bytes.";
+    const historicalContentId = id("historical-v1-content");
+    await prisma.characterContentVersion.create({
+      data: {
+        id: historicalContentId,
+        characterId,
+        version: 4,
+        contentHash: historicalContentId,
+        personaSnapshot: toInputJson({
+          schemaVersion: 1,
+          soul: legacySoul,
+          compiled: {
+            compilerVersion,
+            systemPrompt,
+            fingerprint: canonicalSha256({ soul: legacySoul, compilerVersion, systemPrompt }),
+            estimatedTokens: 9,
+          },
+        }),
+        openingSnapshot: { firstMessage: "Hello" },
+        appearanceSnapshot: { style: "realistic" },
+        sourceType: "test",
+        createdById: actorId,
+      },
+    });
+    await expect(failedKeys({ characterContentVersionId: historicalContentId }))
+      .resolves.toContain("soul_release_policy");
+    await expect(failedKeys({ characterContentVersionId: historicalContentId, legacy: true }))
+      .resolves.not.toContain("soul_release_policy");
+    await prisma.characterContentVersion.delete({ where: { id: historicalContentId } });
+  });
+
   it("fails soul_behavior_evaluation when the evidence came from a retired evaluator", async () => {
     const run = await prisma.characterQaRun.findUniqueOrThrow({ where: { id: qaRunId } });
     const behavior = run.behaviorEvaluation as Record<string, unknown>;

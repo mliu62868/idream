@@ -1,4 +1,5 @@
 import { dispatchGenerationAttemptOutbox } from "@/server/modules/generation/generation-attempt-authority";
+import { legacySoulDetailsMarkdown } from "@idream/shared";
 import { lockCharacterMediaAssetAuthorities } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
@@ -277,7 +278,7 @@ export async function submitCharacterDraft(input: {
   }
   Object.assign(storedAdvancedDetails, {
     relationshipArchetype: relationship,
-    detailsMarkdown: jsonNonBlankString(advancedDetails.detailsMarkdown) ?? "",
+    detailsMarkdown: legacySoulDetailsMarkdown(advancedDetails),
     firstMessage: jsonNonBlankString(advancedDetails.firstMessage),
   });
   const moderation = await moderateText(

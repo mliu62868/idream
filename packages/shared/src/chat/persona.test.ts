@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   compileCharacterSoul,
   companionRole,
+  legacySoulDetailsMarkdown,
   loadCharacterSoulSnapshot,
   looksLikeMockChatResponse,
 } from "./persona";
@@ -158,6 +159,49 @@ describe("CharacterSoul", () => {
       "soul_relationship_required",
       "soul_character_promise_required",
     ]));
+  });
+
+  it("rejects deleted authoring fields even when every v2 field is valid", () => {
+    const result = compileCharacterSoul({
+      ...minimalSoulDraft,
+      personality: "This must be migrated explicitly, never dropped.",
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unknown Soul fields must fail closed");
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({
+      code: "soul_field_unknown",
+      path: ["soul", "personality"],
+    }));
+  });
+
+  it("folds every supported legacy flat dimension into Markdown without losing content", () => {
+    const markdown = legacySoulDetailsMarkdown({
+      personality: "Observant.",
+      values: ["honesty"],
+      wants: ["mutual trust"],
+      fears: ["breaking confidence"],
+      contradictions: ["careful but playful"],
+      backstory: "Community work shaped her.",
+      tone: "Warm.",
+      cadence: "Measured.",
+      vocabulary: ["grounded"],
+      voiceHabits: ["one focused follow-up"],
+      voiceAvoid: ["generic reassurance"],
+      interaction: { repair: "Acknowledge impact." },
+      canon: { facts: ["She volunteers."], unknowns: ["Private history."] },
+      exampleDialogue: ["Tell me the hard part."],
+      negativeDialogue: [{ assistant: "Everything is fine.", reason: "Too generic." }],
+    });
+
+    for (const value of [
+      "Observant.", "honesty", "mutual trust", "breaking confidence",
+      "careful but playful", "Community work shaped her.", "Warm.",
+      "Measured.", "grounded", "one focused follow-up",
+      "generic reassurance", "Acknowledge impact.", "She volunteers.",
+      "Private history.", "Tell me the hard part.", "Everything is fine.",
+      "Too generic.",
+    ]) expect(markdown).toContain(value);
   });
 
   it("loads v2 compiled bytes without recompiling and rejects tampering", () => {

@@ -28,14 +28,15 @@ export function characterSoulVersionSnapshots(content: {
   persona: CharacterDraftPersona;
   appearanceSnapshot: unknown;
 }) {
-  const compiled = compileCharacterSoul(content.persona);
+  const { firstMessage, ...soul } = content.persona;
+  const compiled = compileCharacterSoul(soul);
   if (!compiled.ok) {
     throw new Error(
       `Character Soul compilation failed: ${compiled.diagnostics.map((item) => `${item.path.join(".")}: ${item.message}`).join("; ")}`,
     );
   }
   const personaSnapshot = compiled.snapshot;
-  const openingSnapshot = { firstMessage: content.persona.firstMessage };
+  const openingSnapshot = { firstMessage };
   const appearanceSnapshot = content.appearanceSnapshot;
   return {
     personaSnapshot,

@@ -709,12 +709,14 @@ export async function evaluateCharacterReleaseSnapshot(
     },
     {
       key: "soul_release_policy",
-      // Legacy Releases retain their explicit immutable prompt through the
-      // schemaVersion 0 decoder. Every newly governed Release must finish all
-      // Soul authoring dimensions rather than hide gaps behind generic filler.
+      // Historical snapshots remain readable for already-pinned sessions and
+      // explicitly legacy Releases. Every newly governed Release must pin v2.
       passed:
         soulResult?.ok === true &&
-        (release.legacy || soulResult.diagnostics.length === 0),
+        (release.legacy || (
+          soulResult.snapshot.schemaVersion === 2 &&
+          soulResult.diagnostics.length === 0
+        )),
       evidence: {
         legacyRelease: release.legacy,
         warningCodes: soulResult?.ok

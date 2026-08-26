@@ -1171,6 +1171,14 @@ function ReviewStep({ draft, onEdit }: { draft: Draft; onEdit: (step: number) =>
       <p className="rounded-lg bg-[var(--ad-blue-bg)] p-3 text-sm leading-6 text-[var(--ad-blue-text)]">
         {t("Creating saves a private, inactive draft. It does not publish a Release or change what customers see. Next, establish the portrait identity.")}
       </p>
+      <section className="overflow-hidden rounded-lg border border-[var(--ad-border)]" data-testid="character-create-soul-preview">
+        <h3 className="border-b border-[var(--ad-border)] bg-black/[0.025] px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-[var(--ad-text-muted)]">
+          {t("SOUL.md · exact Agent prompt")}
+        </h3>
+        <pre className="max-h-96 overflow-auto whitespace-pre-wrap p-3 text-xs leading-6 text-[var(--ad-text)]">
+          {renderCharacterDraftSoulMarkdown(draft.persona)}
+        </pre>
+      </section>
       {sections.map((section) => (
         <section
           className="overflow-hidden rounded-lg border border-[var(--ad-border)]"
@@ -1203,6 +1211,34 @@ function ReviewStep({ draft, onEdit }: { draft: Draft; onEdit: (step: number) =>
       ))}
     </div>
   );
+}
+
+export function renderCharacterDraftSoulMarkdown(
+  persona: Draft["persona"],
+): string {
+  const name = compactSoulPreviewText(persona.name);
+  return [
+    `# ${name} — Character Soul`,
+    "",
+    `You are ${name}. Speak and act consistently with this character.`,
+    "",
+    "## Basic information",
+    `- Age: ${persona.age}`,
+    `- Gender: ${persona.gender}`,
+    `- Relationship: ${compactSoulPreviewText(persona.relationshipArchetype)}`,
+    `- Character: ${compactSoulPreviewText(persona.characterPromise)}`,
+    ...(markdownSoulPreviewText(persona.detailsMarkdown)
+      ? ["", "## Additional details", "", markdownSoulPreviewText(persona.detailsMarkdown)]
+      : []),
+  ].join("\n");
+}
+
+function compactSoulPreviewText(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function markdownSoulPreviewText(value: string): string {
+  return value.replaceAll("\r\n", "\n").replaceAll("\r", "\n").trim();
 }
 
 function lines(value: string) {

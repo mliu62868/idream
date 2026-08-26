@@ -131,6 +131,10 @@ describe("official character CMS", () => {
             gender: "female",
             style: "anime",
             description: "A cheerful official companion.",
+            advancedDetails: {
+              relationshipArchetype: "cheerful confidante",
+              firstMessage: "Tell me what brightened your day.",
+            },
             tags: ["Bubbly", "Bubbly", "Sci Fi"],
             reason: "seed official roster",
           },
@@ -188,6 +192,28 @@ describe("official character CMS", () => {
     expect(listed?.visualProfile).toBeNull();
   });
 
+  it("rejects official creation when required Soul facts are missing", async () => {
+    const admin = await seedActor("admin", "missing-soul");
+    const result = await call(officialApi(makeRequest("POST", "", {
+      userId: admin,
+      role: "admin",
+      body: {
+        name: `${P}Incomplete`,
+        age: 27,
+        gender: "female",
+        style: "realistic",
+        description: "A draft that must not receive invented Soul facts.",
+        reason: "verify fail closed",
+      },
+    })));
+
+    expect(result.status).toBe(400);
+    expect(result.errorCode).toBe("bad_request");
+    expect(result.errorDetails).toMatchObject({
+      missingFields: ["relationshipArchetype", "firstMessage"],
+    });
+  });
+
   it("versions immutable draft content without fabricating a qualified Visual Identity", async () => {
     const admin = await seedActor("admin", "visual-version");
     const created = await call(
@@ -201,6 +227,10 @@ describe("official character CMS", () => {
             gender: "female",
             style: "realistic",
             description: "An official companion with silver hair.",
+            advancedDetails: {
+              relationshipArchetype: "trusted confidante",
+              firstMessage: "What should we make space for?",
+            },
             reason: "seed visual profile",
           },
         }),
@@ -336,6 +366,10 @@ describe("official character CMS", () => {
             style: "realistic",
             description:
               "An official companion used to verify publish/archive.",
+            advancedDetails: {
+              relationshipArchetype: "trusted confidante",
+              firstMessage: "Sit down and tell me what happened.",
+            },
             reason: "seed for state toggle",
           },
         }),
@@ -496,6 +530,18 @@ describe("official character CMS", () => {
     const contentVersion = await prisma.characterContentVersion.findUniqueOrThrow({
       where: { id: revision.characterContentVersionId },
     });
+    const migratedSoulBytes = JSON.stringify(contentVersion.personaSnapshot);
+    for (const expected of [
+      "Measured sentences with occasional dry humor.",
+      "grounded",
+      "asks one focused follow-up",
+      "generic reassurance",
+      "Offer a concrete next step.",
+      "She works with local community groups.",
+      "The user's private history unless disclosed.",
+      "Everything will be fine.",
+      "Generic reassurance ignores the user's actual concern.",
+    ]) expect(migratedSoulBytes).toContain(expected);
     const soulQaEvidence = characterSoulQaEvidence({
       characterContentVersionId: contentVersion.id,
       personaSnapshot: contentVersion.personaSnapshot,

@@ -236,6 +236,7 @@ export const adminZhCharacters: Record<string, string> = {
   "Historical QA Run predates pairwise distinctiveness evidence.": "该历史 QA 批次早于两两区分度证据。",
   "Structured Soul editor": "结构化 Soul 编辑器",
   "Soul editor": "Soul 编辑器",
+  "SOUL.md · exact Agent prompt": "SOUL.md · Agent 实际提示词",
   "The basics are rendered into SOUL.md automatically. Additional details are appended as Markdown without another schema.":
     "基本信息会自动渲染为 SOUL.md；扩展信息直接作为 Markdown 附加，不再套另一层结构。",
   "Write personality, voice, backstory, boundaries, examples, or any other useful context in your own structure.":

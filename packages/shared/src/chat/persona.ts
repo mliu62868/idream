@@ -110,6 +110,14 @@ type LegacyV1Soul = {
 };
 
 const PROMPT_WARNING_TOKENS = 6_000;
+const CHARACTER_SOUL_FIELDS = new Set([
+  "name",
+  "age",
+  "gender",
+  "relationshipArchetype",
+  "characterPromise",
+  "detailsMarkdown",
+]);
 
 /**
  * SPEC: Character Soul authoring has five required facts and one optional
@@ -128,7 +136,26 @@ export function compileCharacterSoul(
     );
   }
   const diagnostics: SoulDiagnostic[] = [];
-  const soul = decodeSoul(record(root.soul) ?? root, diagnostics);
+  let soulRoot = root;
+  if (hasOwn(root, "soul")) {
+    for (const key of Object.keys(root).filter((key) => key !== "soul")) {
+      diagnostics.push(unknownSoulField([key]));
+    }
+    const wrapped = record(root.soul);
+    if (!wrapped) {
+      diagnostics.push(errorDiagnostic(
+        "soul_draft_invalid",
+        ["soul"],
+        "Character Soul must be an object.",
+      ));
+      return { ok: false, diagnostics };
+    }
+    soulRoot = wrapped;
+  }
+  for (const key of Object.keys(soulRoot).filter((key) => !CHARACTER_SOUL_FIELDS.has(key))) {
+    diagnostics.push(unknownSoulField(["soul", key]));
+  }
+  const soul = decodeSoul(soulRoot, diagnostics);
   if (hasErrors(diagnostics)) return { ok: false, diagnostics };
 
   const systemPrompt = renderSoulMarkdown(soul);
@@ -154,6 +181,65 @@ export function compileCharacterSoul(
     renderedMarkdown: systemPrompt,
     diagnostics,
   };
+}
+
+/**
+ * Historical write boundaries call this before v2 compilation. It folds every
+ * flat Soul field shipped by the old clients into one Markdown value; the v2
+ * compiler itself stays strict and never guesses whether an unknown key matters.
+ */
+export function legacySoulDetailsMarkdown(
+  value: unknown,
+  existingMarkdown = "",
+): string {
+  const row = record(value) ?? {};
+  const sections: string[] = [];
+  const explicitDetails = hasOwn(row, "detailsMarkdown")
+    ? markdownText(row.detailsMarkdown)
+    : markdownText(existingMarkdown);
+  if (explicitDetails) sections.push(explicitDetails);
+
+  appendDetailSection(sections, "Personality", [optionalText(row.personality)]);
+  appendBulletSection(sections, "Values", legacyStringList(row.values));
+  appendBulletSection(sections, "Wants", legacyStringList(row.wants));
+  appendBulletSection(sections, "Fears", legacyStringList(row.fears));
+  appendBulletSection(sections, "Contradictions", legacyStringList(row.contradictions));
+  appendDetailSection(sections, "Background", [optionalText(row.backstory)]);
+  appendDetailSection(sections, "Voice", [
+    field("Tone", optionalText(row.tone) || optionalText(row.speakingStyle)),
+    field("Cadence", optionalText(row.cadence)),
+    list("Vocabulary", legacyStringList(row.vocabulary)),
+    list("Habits", legacyStringList(row.voiceHabits ?? row.habits)),
+    list("Avoid", legacyStringList(row.voiceAvoid ?? row.avoid)),
+  ]);
+
+  const interaction = record(row.interaction) ?? {};
+  appendDetailSection(
+    sections,
+    "Interaction",
+    Object.entries(interaction).flatMap(([key, entry]) => {
+      const content = legacyValueText(entry);
+      return content ? [field(title(key), content)] : [];
+    }),
+  );
+  const canon = record(row.canon) ?? {};
+  appendBulletSection(sections, "Canon facts", legacyStringList(canon.facts));
+  appendBulletSection(sections, "Canon unknowns", legacyStringList(canon.unknowns));
+  appendBulletSection(sections, "Dialogue examples", legacyStringList(row.exampleDialogue));
+
+  const negativeDialogue = Array.isArray(row.negativeDialogue)
+    ? row.negativeDialogue.flatMap((entry) => {
+        const example = record(entry);
+        if (!example) return [];
+        const assistant = optionalText(example.assistant);
+        const reason = optionalText(example.reason);
+        return assistant || reason
+          ? [[assistant ? `Assistant: ${assistant}` : "", reason ? `Reason: ${reason}` : ""].filter(Boolean).join("\n")]
+          : [];
+      })
+    : [];
+  appendDetailSection(sections, "Dialogue counterexamples", negativeDialogue);
+  return sections.join("\n\n");
 }
 
 /**
@@ -587,6 +673,14 @@ function fingerprintMismatch(): SoulDiagnostic {
   );
 }
 
+function unknownSoulField(path: string[]): SoulDiagnostic {
+  return errorDiagnostic(
+    "soul_field_unknown",
+    path,
+    `${path.join(".")} is not part of the Character Soul v2 contract; migrate it into soul.detailsMarkdown.`,
+  );
+}
+
 function positiveDialogue(
   value: unknown,
   diagnostics: SoulDiagnostic[],
@@ -653,6 +747,24 @@ function stringArray(
     }
   });
   return result;
+}
+
+function legacyStringList(value: unknown): string[] {
+  if (typeof value === "string") {
+    const normalized = value.trim();
+    return normalized ? [normalized] : [];
+  }
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const normalized = optionalText(item);
+    return normalized ? [normalized] : [];
+  });
+}
+
+function legacyValueText(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) return legacyStringList(value).join("; ");
+  return "";
 }
 
 function appendDetailSection(target: string[], heading: string, values: string[]): void {
@@ -767,6 +879,10 @@ function record(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
+}
+
+function hasOwn(value: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
 }
 
 function cleanText(value: unknown): string {
