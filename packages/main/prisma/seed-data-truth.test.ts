@@ -189,32 +189,14 @@ describe("seed data provenance", () => {
           Boolean(character.relationship?.trim()) &&
           Boolean(
             (character.advancedDetails as {
-              personality?: string;
-              tone?: string;
-              backstory?: string;
+              detailsMarkdown?: string;
               firstMessage?: string;
-              exampleDialogue?: string[];
-            }).personality?.trim(),
-          ) &&
-          Boolean(
-            (character.advancedDetails as {
-              tone?: string;
-            }).tone?.trim(),
-          ) &&
-          Boolean(
-            (character.advancedDetails as {
-              backstory?: string;
-            }).backstory?.trim(),
+            }).detailsMarkdown?.trim(),
           ) &&
           Boolean(
             (character.advancedDetails as {
               firstMessage?: string;
             }).firstMessage?.trim(),
-          ) &&
-          Boolean(
-            (character.advancedDetails as {
-              exampleDialogue?: string[];
-            }).exampleDialogue?.length,
           ) &&
           (character.advancedDetails as {
             provenance?: { ownership?: string; originalCreator?: string };

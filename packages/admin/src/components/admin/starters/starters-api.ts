@@ -31,10 +31,8 @@ export type StarterDraft = {
   creativeBrief: string;
   archetype: string;
   relationship: string;
-  personality: string;
-  speakingStyle: string;
+  detailsMarkdown: string;
   firstMessage: string;
-  exampleDialogue: string;
   appearanceNotes: string;
   visualBrief: string;
   reason: string;
@@ -44,6 +42,20 @@ export function starterTextField(value: unknown, key: string): string {
   if (!value || typeof value !== "object" || Array.isArray(value)) return "";
   const field = (value as Record<string, unknown>)[key];
   return typeof field === "string" ? field : "";
+}
+
+export function starterDetailsMarkdown(value: unknown): string {
+  const current = starterTextField(value, "detailsMarkdown");
+  if (current) return current;
+  const sections = [
+    ["Personality", starterTextField(value, "personality")],
+    ["Voice", starterTextField(value, "speakingStyle")],
+    ["Dialogue examples", starterTextField(value, "exampleDialogue")],
+  ] as const;
+  return sections
+    .filter(([, content]) => content)
+    .map(([heading, content]) => `## ${heading}\n${content}`)
+    .join("\n\n");
 }
 
 function intFromText(text: string, fallback: number): number {
@@ -71,10 +83,8 @@ export function starterPayload(draft: StarterDraft): Record<string, unknown> {
       creativeBrief: draft.creativeBrief.trim(),
       archetype: draft.archetype.trim(),
       relationship: draft.relationship.trim(),
-      personality: draft.personality.trim(),
-      speakingStyle: draft.speakingStyle.trim(),
+      detailsMarkdown: draft.detailsMarkdown.trim(),
       firstMessage: draft.firstMessage.trim(),
-      exampleDialogue: draft.exampleDialogue.trim(),
       visualBrief: draft.visualBrief.trim(),
     },
     sortOrder: intFromText(draft.sortOrder, 0),

@@ -32,6 +32,7 @@ export interface UserCharacterSoulInput {
 }
 
 export function compileUserCharacterContent(input: UserCharacterSoulInput) {
+  const details = record(input.advancedDetails);
   const immutable = input.immutableContentSnapshot === undefined
     ? null
     : loadCharacterSoulSnapshot(input.immutableContentSnapshot.personaSnapshot);
@@ -42,30 +43,27 @@ export function compileUserCharacterContent(input: UserCharacterSoulInput) {
   }
   const draft = immutable?.ok
     ? {
-        soul: {
-          ...immutable.snapshot.soul,
-          identity: {
-            ...immutable.snapshot.soul.identity,
-            name: input.name,
-            age: input.age,
-            gender: input.gender,
-            relationshipArchetype: input.relationship,
-            characterPromise: input.description,
-          },
-        },
+        ...immutable.snapshot.soul,
+        name: input.name,
+        age: input.age,
+        gender: input.gender,
+        relationshipArchetype: input.relationship,
+        characterPromise: input.description,
+        detailsMarkdown: Object.hasOwn(details, "detailsMarkdown")
+          ? text(details.detailsMarkdown)
+          : immutable.snapshot.soul.detailsMarkdown,
       }
     : {
         name: input.name,
         age: input.age,
         gender: input.gender,
-        relationship: input.relationship,
-        description: input.description,
-        advancedDetails: input.advancedDetails,
+        relationshipArchetype: input.relationship,
+        characterPromise: input.description,
+        detailsMarkdown: text(details.detailsMarkdown),
       };
   const compiled = compileCharacterSoul(draft);
   if (!compiled.ok) throw new UserCharacterSoulCompileError(compiled.diagnostics);
 
-  const details = record(input.advancedDetails);
   const openingSnapshot = input.immutableContentSnapshot?.openingSnapshot ?? {
     firstMessage: text(details.firstMessage) || null,
   };

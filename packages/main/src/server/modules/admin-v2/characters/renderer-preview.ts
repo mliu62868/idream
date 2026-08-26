@@ -1,4 +1,5 @@
 import type { Prisma } from "@prisma/client";
+import { loadCharacterSoulSnapshot } from "@idream/shared";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { verifyCharacterPreviewToken } from "./preview-token";
@@ -23,10 +24,6 @@ function record(value: Prisma.JsonValue): Record<string, unknown> {
 
 function text(value: unknown) {
   return typeof value === "string" ? value : "";
-}
-
-function stringList(value: unknown) {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
 function draftAssetPack(value: Prisma.JsonValue): Partial<PreviewAssetPack> {
@@ -109,7 +106,9 @@ export async function loadCharacterRendererPreview(token: string) {
       !isMediaAssetOperationalForAuthority(asset.metadata);
   })) return null;
 
-  const persona = record(content.personaSnapshot);
+  const loadedSoul = loadCharacterSoulSnapshot(content.personaSnapshot);
+  if (!loadedSoul.ok) return null;
+  const soul = loadedSoul.snapshot.soul;
   const opening = record(content.openingSnapshot);
   const appearance = record(content.appearanceSnapshot);
   const exactAssets = Object.fromEntries(previewPurposes.map((purpose) => {
@@ -134,9 +133,9 @@ export async function loadCharacterRendererPreview(token: string) {
     assetPack: exactAssets,
     character: {
       id: character.id,
-      title: text(persona.name) || character.name,
-      age: String(character.age),
-      description: text(persona.description) || character.description,
+      title: soul.name,
+      age: String(soul.age),
+      description: soul.characterPromise,
       likes: String(character.stats?.likesCount ?? 0),
       chats: String(character.stats?.chatsCount ?? 0),
       creator,
@@ -146,11 +145,10 @@ export async function loadCharacterRendererPreview(token: string) {
       heroImageAssetId: exactAssets.character_hero.assetId,
       vivid: character.vivid,
       style: character.style,
-      gender: character.gender,
+      gender: soul.gender,
       tags: character.tags.map(({ tag }) => ({ label: tag.label, slug: tag.slug })),
     },
     openingMessage: text(opening.firstMessage) || "Opening message unavailable",
-    exampleDialogue: stringList(persona.exampleDialogue),
     appearance,
   };
 }

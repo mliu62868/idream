@@ -81,11 +81,8 @@ describe("character AI assist", () => {
       if (systemPrompt.includes("background bio")) {
         return "Mara restores old paintings by day and sketches rain-soaked streets at night.";
       }
-      if (systemPrompt.includes("personality traits")) {
-        return "observant, gentle, quietly witty";
-      }
-      if (systemPrompt.includes("speaking style")) {
-        return "She speaks in measured, warm sentences. She often notices one small sensory detail.";
+      if (systemPrompt.includes("Markdown details")) {
+        return "## Personality\nObservant, gentle, quietly witty.\n\n## Voice\nMeasured, warm sentences with one sensory detail.";
       }
       if (systemPrompt.includes("first message")) {
         return "You caught me watching the rain again. Want to keep me company for a minute?";
@@ -115,9 +112,7 @@ describe("character AI assist", () => {
         "Mara restores old paintings by day and sketches rain-soaked streets at night.",
       nameIdeas: ["Mara Vale", "Elin Rowe", "Nora Voss"],
       advancedDetails: {
-        personality: "observant, gentle, quietly witty",
-        speakingStyle:
-          "She speaks in measured, warm sentences. She often notices one small sensory detail.",
+        detailsMarkdown: "## Personality\nObservant, gentle, quietly witty.\n\n## Voice\nMeasured, warm sentences with one sensory detail.",
         firstMessage:
           "You caught me watching the rain again. Want to keep me company for a minute?",
         visualBrief:
@@ -136,8 +131,7 @@ describe("character AI assist", () => {
     let maxActive = 0;
     const responseFor = (systemPrompt: string) => {
       if (systemPrompt.includes("background bio")) return "A concise adult companion biography.";
-      if (systemPrompt.includes("personality traits")) return "observant, warm, precise";
-      if (systemPrompt.includes("speaking style")) return "Warm and measured. She notices details.";
+      if (systemPrompt.includes("Markdown details")) return "## Personality\nObservant, warm, precise.\n\n## Voice\nWarm and measured.";
       if (systemPrompt.includes("first message")) return "Come sit with me for a while.";
       if (systemPrompt.includes("visual art direction")) return "Dark hair, tailored coat, amber light.";
       if (systemPrompt.includes("exactly 3 distinctive character names")) return "Mara Vale\nElin Rowe\nNora Voss";

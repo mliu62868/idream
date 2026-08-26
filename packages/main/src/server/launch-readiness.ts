@@ -800,8 +800,7 @@ function addAdminTextProbeCheck(
       probe.characterAssist.status !== 200 ||
       (probe.characterAssist.descriptionCharacters ?? 0) < 1 ||
       (probe.characterAssist.nameIdeas ?? 0) < 1 ||
-      (probe.characterAssist.personalityCharacters ?? 0) < 1 ||
-      (probe.characterAssist.speakingStyleCharacters ?? 0) < 1 ||
+      (probe.characterAssist.detailsMarkdownCharacters ?? 0) < 1 ||
       (probe.characterAssist.firstMessageCharacters ?? 0) < 1 ||
       (probe.characterAssist.visualBriefCharacters ?? 0) < 1
     ) {

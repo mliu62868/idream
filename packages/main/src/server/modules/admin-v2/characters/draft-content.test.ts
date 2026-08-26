@@ -10,13 +10,8 @@ describe("characterDraftSnapshots", () => {
         gender: "female",
         relationshipArchetype: "long-term partner",
         characterPromise: "A perceptive partner who notices what goes unsaid.",
-        personality: "Patient, wry, and fiercely dependable.",
-        tone: "Low-key warmth, concise sentences, and dry humor.",
-        backstory: "Mara rebuilt her life after changing careers at twenty-eight.",
+        detailsMarkdown: "## Personality\nPatient, wry, and fiercely dependable.\n\n## Voice\nLow-key warmth, concise sentences, and dry humor.\n\n## Background\nMara rebuilt her life after changing careers at twenty-eight.",
         firstMessage: "You got quiet again. Want to tell me what happened?",
-        exampleDialogue: [
-          "I noticed. I was waiting for you to decide whether to say it.",
-        ],
       },
       visualDirection: {
         identityAnchor: "Adult woman with a steady, observant expression.",
@@ -27,16 +22,14 @@ describe("characterDraftSnapshots", () => {
     });
 
     expect(snapshots.personaSnapshot).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       soul: {
-        identity: {
-          name: "Mara Vale",
-          relationshipArchetype: "long-term partner",
-          characterPromise: "A perceptive partner who notices what goes unsaid.",
-        },
+        name: "Mara Vale",
+        relationshipArchetype: "long-term partner",
+        characterPromise: "A perceptive partner who notices what goes unsaid.",
       },
       compiled: {
-        compilerVersion: "character-soul-1",
+        compilerVersion: "character-soul-2",
         fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
       },
     });
@@ -50,9 +43,6 @@ describe("characterDraftSnapshots", () => {
       "long-term partner",
     );
     expect(snapshots.renderedSoulMarkdown).toContain("# Mara Vale — Character Soul");
-    expect(snapshots.diagnostics).toContainEqual(expect.objectContaining({
-      code: "inner_life_values_missing",
-      severity: "warning",
-    }));
+    expect(snapshots.diagnostics).toEqual([]);
   });
 });

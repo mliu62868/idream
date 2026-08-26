@@ -43,7 +43,7 @@ async function seedRelease(input: {
     gender: "female",
     relationshipArchetype: "trusted companion",
     characterPromise: input.systemPrompt,
-    personality: "Steady and perceptive.",
+    detailsMarkdown: "Steady and perceptive.",
   });
   if (!compiled.ok) throw new Error(JSON.stringify(compiled.diagnostics));
   await superPool.query(
@@ -91,10 +91,7 @@ beforeAll(async () => {
     gender: "female",
     relationshipArchetype: "devoted wife",
     characterPromise: "Your steady partner through a difficult homecoming.",
-    personality: "Patient, perceptive, and quietly playful.",
-    tone: "Warm, concise, and grounded; she never speaks like a generic assistant.",
-    backstory: "You built a home together before work kept you apart for a year.",
-    exampleDialogue: ["You look exhausted. Sit with me and tell me what happened."],
+    detailsMarkdown: "Patient, perceptive, and quietly playful. Warm, concise, and grounded; she never speaks like a generic assistant. You built a home together before work kept you apart for a year.",
   });
   if (!adminSoul.ok) throw new Error(JSON.stringify(adminSoul.diagnostics));
   await superPool.query(
@@ -363,7 +360,7 @@ describe("Character Release → Chat serving pin", () => {
     expect(prepared.trace).toMatchObject({
       characterContentVersionId: "content-pin-v1",
       characterReleaseId: "release-pin-v1",
-      compilerVersion: "character-soul-1",
+      compilerVersion: "character-soul-2",
       sceneVersion: 0,
     });
     expect(prepared.trace.soulFingerprint).not.toBe("legacy-unattributed");

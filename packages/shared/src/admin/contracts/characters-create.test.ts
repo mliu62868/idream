@@ -22,11 +22,14 @@ const validCreate = {
     gender: "female",
     relationshipArchetype: "steady confidante",
     characterPromise: "A precise, warm place to put the day down",
-    personality: "Observant, measured, gently challenging",
-    tone: "Warm, concise, grounded",
-    backstory: "A night-shift radio host who learned how to listen between words.",
+    detailsMarkdown: [
+      "## Personality and voice",
+      "Observant, measured, gently challenging, warm, and concise.",
+      "",
+      "## Background",
+      "A night-shift radio host who learned how to listen between words.",
+    ].join("\n"),
     firstMessage: "You made it. What do you need to put down tonight?",
-    exampleDialogue: ["Tell me the part you keep replaying."],
   },
   visualDirection: {
     identityAnchor: "Composed late-night radio host",
@@ -185,26 +188,19 @@ describe("Character Project create contract", () => {
     ).toBe(true);
   });
 
-  it("requires a personality or a tone so Soul compilation cannot fail server-side", () => {
-    // SPEC: compileCharacterSoul 唯一的 error 级诊断就是这一条；契约不表达它，请求就会在服务端
-    //       throw 成 500，运营只看到「创建结果未知」。
-    const persona = { ...validCreate.persona, personality: "", tone: "" };
-    expect(
-      characterProjectCreateRequestSchema.safeParse({ ...validCreate, persona })
-        .success,
-    ).toBe(false);
-    expect(
-      characterProjectCreateRequestSchema.safeParse({
-        ...validCreate,
-        persona: { ...persona, personality: "Observant and measured" },
-      }).success,
-    ).toBe(true);
-    expect(
-      characterProjectCreateRequestSchema.safeParse({
-        ...validCreate,
-        persona: { ...persona, tone: "Warm, concise, grounded" },
-      }).success,
-    ).toBe(true);
+  it("keeps Additional details optional and rejects deleted structured persona fields", () => {
+    expect(characterProjectCreateRequestSchema.safeParse({
+      ...validCreate,
+      persona: { ...validCreate.persona, detailsMarkdown: "" },
+    }).success).toBe(true);
+    expect(characterProjectCreateRequestSchema.safeParse({
+      ...validCreate,
+      persona: { ...validCreate.persona, personality: "legacy field" },
+    }).success).toBe(false);
+    expect(characterProjectCreateRequestSchema.safeParse({
+      ...validCreate,
+      persona: { ...validCreate.persona, firstMessage: "" },
+    }).success).toBe(false);
   });
 
   it("accepts immutable content autosave through the versioned Project PATCH contract", () => {

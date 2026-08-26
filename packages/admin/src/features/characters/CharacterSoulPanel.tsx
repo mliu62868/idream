@@ -40,7 +40,6 @@ export function CharacterSoulPanel({
   //         的门槛完全倒置。
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [dialogueError, setDialogueError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(() =>
     initialPersona ? null : t("Character Soul could not be loaded"),
   );
@@ -60,21 +59,6 @@ export function CharacterSoulPanel({
     setPersonaDraft((current) => current
       ? { ...current, ...patch }
       : current);
-  const setInteraction = (
-    key: keyof NonNullable<typeof persona.interaction>,
-    value: string,
-  ) => setPersona({
-    interaction: {
-      initiative: "",
-      curiosity: "",
-      pacing: "",
-      affection: "",
-      conflict: "",
-      repair: "",
-      ...persona.interaction,
-      [key]: value,
-    },
-  });
 
   const createVersion = async (reason: string) => {
     setBusy(true);
@@ -168,8 +152,8 @@ export function CharacterSoulPanel({
       ) : null}
 
       <section className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5">
-        <h3 className="text-lg font-semibold">{t("Structured Soul editor")}</h3>
-        <p className="mt-1 text-sm text-[var(--ad-text-muted)]">{t("Creating a version is explicit. Existing sessions keep their pinned bytes.")}</p>
+        <h3 className="text-lg font-semibold">{t("Soul editor")}</h3>
+        <p className="mt-1 text-sm text-[var(--ad-text-muted)]">{t("Keep the basics clear. Put anything else in Markdown. Creating a version is explicit, and existing sessions keep their pinned bytes.")}</p>
         <div className="mt-5 grid gap-5 lg:grid-cols-2">
           <Field label={t("Name")} value={persona.name} onChange={(value) => setPersona({ name: value })} />
           <Field label={t("Age")} type="number" value={String(persona.age)} onChange={(value) => setPersona({ age: Number(value) })} />
@@ -183,47 +167,14 @@ export function CharacterSoulPanel({
           </label>
           <Field label={t("Relationship archetype")} value={persona.relationshipArchetype} onChange={(value) => setPersona({ relationshipArchetype: value })} />
           <Field label={t("Character promise")} value={persona.characterPromise} onChange={(value) => setPersona({ characterPromise: value })} />
-          <Area label={t("Personality")} value={persona.personality} onChange={(value) => setPersona({ personality: value })} />
-          <Area label={t("Backstory")} value={persona.backstory} onChange={(value) => setPersona({ backstory: value })} />
-          <ListField label={t("Values")} lineSuffix={t("one per line")} value={persona.values} onChange={(value) => setPersona({ values: value })} />
-          <ListField label={t("Wants")} lineSuffix={t("one per line")} value={persona.wants} onChange={(value) => setPersona({ wants: value })} />
-          <ListField label={t("Fears")} lineSuffix={t("one per line")} value={persona.fears} onChange={(value) => setPersona({ fears: value })} />
-          <ListField label={t("Contradictions")} lineSuffix={t("one per line")} value={persona.contradictions} onChange={(value) => setPersona({ contradictions: value })} />
-          <Area label={t("Voice tone")} value={persona.tone} onChange={(value) => setPersona({ tone: value })} />
-          <Area label={t("Cadence")} value={persona.cadence ?? ""} onChange={(value) => setPersona({ cadence: value })} />
-          <ListField label={t("Vocabulary")} lineSuffix={t("one per line")} value={persona.vocabulary} onChange={(value) => setPersona({ vocabulary: value })} />
-          <ListField label={t("Voice habits")} lineSuffix={t("one per line")} value={persona.voiceHabits} onChange={(value) => setPersona({ voiceHabits: value })} />
-          <ListField label={t("Voice avoids")} lineSuffix={t("one per line")} value={persona.voiceAvoid} onChange={(value) => setPersona({ voiceAvoid: value })} />
-          {(["initiative", "curiosity", "pacing", "affection", "conflict", "repair"] as const).map((key) => (
-            <Area key={key} label={`${t("Interaction")} · ${t(key)}`} value={persona.interaction?.[key] ?? ""} onChange={(value) => setInteraction(key, value)} />
-          ))}
-          <ListField label={t("Canon facts")} lineSuffix={t("one per line")} value={persona.canon?.facts} onChange={(facts) => setPersona({ canon: { facts, unknowns: persona.canon?.unknowns ?? [] } })} />
-          <ListField label={t("Canon unknowns")} lineSuffix={t("one per line")} value={persona.canon?.unknowns} onChange={(unknowns) => setPersona({ canon: { facts: persona.canon?.facts ?? [], unknowns } })} />
-          <PositiveDialogueField
-            label={t("Positive dialogue examples · JSON")}
-            value={persona.positiveDialogue ?? []}
-            onError={setDialogueError}
-            onChange={(positiveDialogue) => setPersona({
-              positiveDialogue,
-              exampleDialogue: positiveDialogue.map((item) => item.assistant),
-            })}
-          />
-          <Area
-            label={t("Negative dialogue · assistant text :: reason · one per line")}
-            value={(persona.negativeDialogue ?? []).map((item) => `${item.assistant} :: ${item.reason}`).join("\n")}
-            onChange={(value) => setPersona({
-              negativeDialogue: value.split("\n").map((line) => {
-                const [assistant, ...reason] = line.split("::");
-                return { assistant: assistant?.trim() ?? "", reason: reason.join("::").trim() };
-              }).filter((item) => item.assistant && item.reason),
-            })}
-          />
           <Area label={t("Opening message")} value={persona.firstMessage} onChange={(value) => setPersona({ firstMessage: value })} />
+          <div className="lg:col-span-2">
+            <Area label={t("Additional details · Markdown (optional)")} value={persona.detailsMarkdown} onChange={(value) => setPersona({ detailsMarkdown: value })} />
+          </div>
         </div>
-        {dialogueError ? <p className="mt-3 text-sm text-[var(--ad-red-text)]" role="alert">{dialogueError}</p> : null}
         {error ? <p className="mt-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}
         <div className="mt-5">
-          <WorkspaceButton disabled={!canWrite || busy || Boolean(dialogueError)} onClick={() => setConfirmOpen(true)} tone="primary">
+          <WorkspaceButton disabled={!canWrite || busy} onClick={() => setConfirmOpen(true)} tone="primary">
             {busy ? t("Creating version…") : t("Create Soul version")}
           </WorkspaceButton>
         </div>
@@ -267,46 +218,17 @@ export function CharacterSoulPanel({
 }
 
 export function soulDraftFromWorkspace(data: CharacterWorkspaceDetail): CharacterDraftPersona | null {
-  const soul = data.soul.current.soul;
-  if (!soul) return null;
-  const identity = asRecord(soul.identity);
-  const innerLife = asRecord(soul.innerLife);
-  const voice = asRecord(soul.voice);
-  const interaction = asRecord(soul.interaction);
-  const canon = asRecord(soul.canon);
-  const dialogue = asRecord(soul.dialogue);
+  const soul = asRecord(data.soul.current.soul);
+  if (Object.keys(soul).length === 0) return null;
   const opening = data.preview.draft.opening;
   const parsed = characterDraftPersonaSchema.safeParse({
-    name: identity.name,
-    age: identity.age,
-    gender: identity.gender,
-    relationshipArchetype: identity.relationshipArchetype,
-    characterPromise: identity.characterPromise,
-    personality: innerLife.personality ?? "",
-    values: stringList(innerLife.values),
-    wants: stringList(innerLife.wants),
-    fears: stringList(innerLife.fears),
-    contradictions: stringList(innerLife.contradictions),
-    tone: voice.tone ?? "",
-    cadence: typeof voice.cadence === "string" ? voice.cadence : "",
-    vocabulary: stringList(voice.vocabulary),
-    voiceHabits: stringList(voice.habits),
-    voiceAvoid: stringList(voice.avoid),
-    backstory: innerLife.backstory ?? "",
+    name: soul.name,
+    age: soul.age,
+    gender: soul.gender,
+    relationshipArchetype: soul.relationshipArchetype,
+    characterPromise: soul.characterPromise,
+    detailsMarkdown: typeof soul.detailsMarkdown === "string" ? soul.detailsMarkdown : "",
     firstMessage: typeof opening.firstMessage === "string" ? opening.firstMessage : "",
-    exampleDialogue: Array.isArray(dialogue.positive)
-      ? dialogue.positive.flatMap((value) => {
-          const item = asRecord(value);
-          return typeof item.assistant === "string" ? [item.assistant] : [];
-        })
-      : [],
-    positiveDialogue: Array.isArray(dialogue.positive) ? dialogue.positive : [],
-    interaction,
-    canon: {
-      facts: stringList(canon.facts),
-      unknowns: stringList(canon.unknowns),
-    },
-    negativeDialogue: Array.isArray(dialogue.negative) ? dialogue.negative : [],
   });
   return parsed.success ? parsed.data : null;
 }
@@ -315,12 +237,6 @@ function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
-}
-
-function stringList(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string")
-    : [];
 }
 
 function Field({ label, value, onChange, type = "text" }: {
@@ -334,39 +250,6 @@ function Field({ label, value, onChange, type = "text" }: {
 
 function Area({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
   return <label className="text-sm font-medium">{label}<textarea className={`${textAreaClass} mt-2 min-h-24`} onChange={(event) => onChange(event.target.value)} value={value} /></label>;
-}
-
-function PositiveDialogueField({ label, value, onChange, onError }: {
-  label: string;
-  value: NonNullable<CharacterDraftPersona["positiveDialogue"]>;
-  onChange: (value: NonNullable<CharacterDraftPersona["positiveDialogue"]>) => void;
-  onError: (value: string | null) => void;
-}) {
-  const [raw, setRaw] = useState(() => JSON.stringify(value, null, 2));
-  const parse = (next: string) => {
-    setRaw(next);
-    try {
-      const candidate = characterDraftPersonaSchema.shape.positiveDialogue.safeParse(JSON.parse(next));
-      if (!candidate.success) {
-        onError(candidate.error.issues[0]?.message ?? "Invalid positive dialogue");
-        return;
-      }
-      onError(null);
-      onChange(candidate.data ?? []);
-    } catch {
-      onError("Positive dialogue must be valid JSON");
-    }
-  };
-  return (
-    <label className="text-sm font-medium">
-      {label}
-      <textarea className={`${textAreaClass} mt-2 min-h-56 font-mono text-xs`} onChange={(event) => parse(event.target.value)} value={raw} />
-    </label>
-  );
-}
-
-function ListField({ label, lineSuffix, value = [], onChange }: { label: string; lineSuffix: string; value?: readonly string[]; onChange: (value: string[]) => void }) {
-  return <Area label={`${label} · ${lineSuffix}`} value={value.join("\n")} onChange={(next) => onChange(next.split("\n").map((item) => item.trim()).filter(Boolean))} />;
 }
 
 function ReadOnlyArtifact({ title, unavailableLabel, value }: { title: string; unavailableLabel: string; value: string | null }) {

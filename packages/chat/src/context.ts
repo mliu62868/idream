@@ -160,7 +160,6 @@ async function buildContextSnapshot(
       ? {
           contentVersionId: contentVersion.contentVersionId,
           characterId: contentVersion.characterId,
-          personaSnapshot: contentVersion.personaSnapshot,
         }
       : null,
     release: release
@@ -325,14 +324,14 @@ function personaFromImmutableContent(
       `character content ${pin.characterContentVersionId} has no complete immutable Soul: ${loaded.diagnostics.map((item) => item.code).join(",")}`,
     );
   }
-  const identity = loaded.snapshot.soul.identity;
+  const soul = loaded.snapshot.soul;
   return {
     ...current,
-    name: identity.name,
-    age: identity.age,
-    description: identity.characterPromise,
+    name: soul.name,
+    age: soul.age,
+    description: soul.characterPromise,
     systemPrompt: loaded.snapshot.compiled.systemPrompt,
-    relationship: identity.relationshipArchetype,
+    relationship: soul.relationshipArchetype,
     characterContentVersionId: pin.characterContentVersionId,
     characterReleaseId: pin.characterReleaseId,
     soulFingerprint: loaded.snapshot.compiled.fingerprint,

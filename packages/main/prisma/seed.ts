@@ -576,13 +576,18 @@ async function seedCharacters() {
     const mediaAssetId = `seed-image-${card.id}`;
     const age = parseAge(card.age);
     const tags = inferredTagSlugs(card);
+    const detailsMarkdown = [
+      `## Personality\n${card.personality}`,
+      `## Voice\n${card.tone}`,
+      `## Background\n${card.backstory}`,
+      card.exampleDialogue.length > 0
+        ? `## Dialogue examples\n${card.exampleDialogue.map((line) => `- ${line}`).join("\n")}`
+        : "",
+    ].filter(Boolean).join("\n\n");
     const personaDetails: Prisma.InputJsonObject = {
       relationshipArchetype: card.relationship,
-      personality: card.personality,
-      tone: card.tone,
-      backstory: card.backstory,
+      detailsMarkdown,
       firstMessage: card.firstMessage,
-      exampleDialogue: [...card.exampleDialogue],
     };
     const seedAppearance: Prisma.InputJsonObject = {
       sourceImage: card.image,
@@ -592,13 +597,10 @@ async function seedCharacters() {
     const compiledSoul = compileCharacterSoul({
       name: card.title,
       age,
-      description: card.description,
-      relationship: card.relationship,
-      style: card.style,
       gender: "female",
-      tags,
-      appearance: seedAppearance,
-      advancedDetails: personaDetails,
+      relationshipArchetype: card.relationship,
+      characterPromise: card.description,
+      detailsMarkdown,
     });
     if (!compiledSoul.ok) {
       throw new Error(
@@ -635,16 +637,10 @@ async function seedCharacters() {
     const hasExistingStructuredPersona =
       Boolean(existingCharacter?.relationship?.trim()) &&
       [
-        "personality",
-        "tone",
-        "backstory",
+        "detailsMarkdown",
         "firstMessage",
       ].every((key) =>
         Boolean(nonBlankJsonString(existingAdvancedDetails[key])),
-      ) &&
-      Array.isArray(existingAdvancedDetails.exampleDialogue) &&
-      existingAdvancedDetails.exampleDialogue.some(
-        (line) => typeof line === "string" && line.trim(),
       );
     const originalOwnerId =
       nonBlankJsonString(existingMetadata.originalOwnerId) ??

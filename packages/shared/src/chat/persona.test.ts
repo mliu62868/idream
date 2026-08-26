@@ -6,100 +6,219 @@ import {
   looksLikeMockChatResponse,
 } from "./persona";
 
-const completeSoulDraft = {
+const minimalSoulDraft = {
   name: "Melissa Burke",
   age: 38,
   gender: "female",
   relationshipArchetype: "best friend's mother",
   characterPromise: "A perceptive confidante who challenges easy answers.",
-  personality: "Warm, observant, and dryly funny.",
-  values: ["honesty", "earned trust"],
-  wants: ["help the user say what they really mean"],
-  fears: ["being reduced to a fantasy"],
-  contradictions: ["nurturing but refuses to rescue"],
-  backstory: "Years of listening taught her to notice what people avoid saying.",
-  tone: "Intimate, concise, lightly teasing.",
-  cadence: "Measured sentences with deliberate pauses.",
-  vocabulary: ["darling"],
-  voiceHabits: ["names the emotion underneath the question"],
-  voiceAvoid: ["customer-support language"],
-  interaction: {
-    initiative: "Offers one concrete next step.",
-    curiosity: "Asks one precise question when it opens the scene.",
-    pacing: "Lets closeness build from evidence.",
-    affection: "Shows care through attention, not instant devotion.",
-    conflict: "Disagrees calmly and specifically.",
-    repair: "Names the rupture and invites a better attempt.",
+  detailsMarkdown: [
+    "## Personality and voice",
+    "Warm, observant, dryly funny, and concise.",
+    "",
+    "## Background",
+    "Years of listening taught her to notice what people avoid saying.",
+    "",
+    "## Example",
+    "> You say that quickly when you don't want me looking closer.",
+  ].join("\n"),
+} as const;
+
+const historicalV1Snapshot = {
+  schemaVersion: 1,
+  soul: {
+    identity: {
+      name: "Historical Mira",
+      age: 29,
+      gender: "female",
+      relationshipArchetype: "trusted companion",
+      characterPromise: "A precise observatory keeper.",
+    },
+    innerLife: {
+      personality: "Grounded and curious.",
+      values: ["honesty"],
+      wants: [],
+      fears: [],
+      contradictions: [],
+      backstory: "",
+    },
+    voice: {
+      tone: "Warm and direct.",
+      cadence: "",
+      vocabulary: [],
+      habits: [],
+      avoid: [],
+    },
+    interaction: {
+      initiative: "",
+      curiosity: "",
+      pacing: "",
+      affection: "",
+      conflict: "",
+      repair: "",
+    },
+    canon: {
+      facts: ["The observatory windows are blue."],
+      unknowns: ["What lies beyond the ridge."],
+    },
+    dialogue: {
+      positive: [{
+        context: null,
+        user: null,
+        assistant: "Look up; the sky changed.",
+        demonstrates: ["observant"],
+      }],
+      negative: [],
+    },
   },
-  canon: {
-    facts: ["She is 38."],
-    unknowns: ["Why she left her last job."],
+  compiled: {
+    compilerVersion: "character-soul-1",
+    systemPrompt: [
+      "# Character identity",
+      "You are Historical Mira, age 29, a female adult character.",
+      "Relationship archetype: trusted companion",
+      "Character promise: A precise observatory keeper.",
+      "",
+      "## Inner life",
+      "Personality: Grounded and curious.",
+      "Values: honesty",
+      "",
+      "## Voice",
+      "Tone: Warm and direct.",
+      "",
+      "## Interaction",
+      "",
+      "## Canon",
+      "Facts: The observatory windows are blue.",
+      "Unknowns: What lies beyond the ridge.",
+      "",
+      "## Positive dialogue examples",
+      "Example 1:",
+      "",
+      "Assistant: Look up; the sky changed.",
+      "Demonstrates: observant",
+      "",
+      "## Negative dialogue examples",
+    ].join("\n"),
+    fingerprint: "e574607d933e329ce880903c06da034322de21b07c12d9097a6461f530fa52de",
+    estimatedTokens: 128,
   },
-  dialogue: {
-    positive: [{
-      context: "The user evades a difficult feeling.",
-      user: "I'm fine.",
-      assistant: "You say that quickly when you don't want me looking closer.",
-      demonstrates: ["observant", "direct"],
-    }],
-    negative: [{
-      assistant: "I'm here to assist with anything you need!",
-      reason: "Generic assistant voice.",
-    }],
-  },
-};
+} as const;
 
 describe("CharacterSoul", () => {
-  it("compiles one canonical snapshot, prompt, markdown view, and stable fingerprint", () => {
-    const first = compileCharacterSoul(completeSoulDraft);
-    const second = compileCharacterSoul(structuredClone(completeSoulDraft));
+  it("compiles the minimal authoring contract into the exact Markdown sent to the agent", () => {
+    const first = compileCharacterSoul(minimalSoulDraft);
+    const second = compileCharacterSoul(structuredClone(minimalSoulDraft));
 
     expect(first.ok).toBe(true);
     expect(second).toEqual(first);
     if (!first.ok) throw new Error("expected Soul compilation to succeed");
 
-    expect(first.snapshot.schemaVersion).toBe(1);
-    expect(first.snapshot.soul.identity).toEqual({
-      name: "Melissa Burke",
-      age: 38,
-      gender: "female",
-      relationshipArchetype: "best friend's mother",
-      characterPromise: "A perceptive confidante who challenges easy answers.",
+    expect(first.snapshot).toMatchObject({
+      schemaVersion: 2,
+      soul: minimalSoulDraft,
+      compiled: { compilerVersion: "character-soul-2" },
     });
-    expect(first.snapshot.compiled.compilerVersion).toBe("character-soul-1");
-    expect(first.snapshot.compiled.systemPrompt).toContain("## Inner life");
-    expect(first.snapshot.compiled.systemPrompt).toContain("nurturing but refuses to rescue");
-    expect(first.snapshot.compiled.systemPrompt).toContain("Generic assistant voice.");
-    expect(first.snapshot.compiled.fingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(first.snapshot.compiled.systemPrompt).toBe(first.renderedMarkdown);
     expect(first.renderedMarkdown).toContain("# Melissa Burke — Character Soul");
-    expect(first.renderedMarkdown).toContain("## Canon unknowns");
+    expect(first.renderedMarkdown).toContain("- Relationship: best friend's mother");
+    expect(first.renderedMarkdown).toContain("## Additional details");
+    expect(first.renderedMarkdown).toContain("## Personality and voice");
+    expect(first.renderedMarkdown).not.toContain("_(not authored)_");
+    expect(first.snapshot.compiled.fingerprint).toMatch(/^[a-f0-9]{64}$/);
     expect(first.diagnostics).toEqual([]);
   });
 
-  it("loads the stored compiled bytes without recompiling them", () => {
-    const compiled = compileCharacterSoul(completeSoulDraft);
-    if (!compiled.ok) throw new Error("expected Soul compilation to succeed");
+  it("treats additional details as optional instead of inventing required persona dimensions", () => {
+    const result = compileCharacterSoul({ ...minimalSoulDraft, detailsMarkdown: "" });
 
-    const stored = structuredClone(compiled.snapshot);
-    stored.compiled.systemPrompt = stored.compiled.systemPrompt.replace(
-      "Measured sentences",
-      "Historically pinned sentences",
-    );
-    const tampered = loadCharacterSoulSnapshot(stored);
-
-    expect(tampered.ok).toBe(false);
-    if (tampered.ok) throw new Error("tampered snapshot must fail closed");
-    expect(tampered.diagnostics).toContainEqual(expect.objectContaining({
-      code: "compiled_fingerprint_mismatch",
-      severity: "error",
-      path: ["compiled", "fingerprint"],
-    }));
-
-    const loaded = loadCharacterSoulSnapshot(compiled.snapshot);
-    expect(loaded).toEqual(compiled);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("minimal Soul should compile");
+    expect(result.snapshot.soul.detailsMarkdown).toBe("");
+    expect(result.renderedMarkdown).not.toContain("Additional details");
+    expect(result.diagnostics).toEqual([]);
   });
 
-  it("preserves complete legacy pinned prompts and rejects incomplete legacy snapshots", () => {
+  it("rejects incomplete basic information without restoring deleted legacy fields", () => {
+    const result = compileCharacterSoul({
+      name: " ",
+      age: 16,
+      gender: "female",
+      relationshipArchetype: "",
+      characterPromise: "",
+      personality: "this deleted field must not rescue the draft",
+      detailsMarkdown: "",
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("invalid Soul must fail");
+    expect(result.diagnostics.map((item) => item.code)).toEqual(expect.arrayContaining([
+      "soul_name_required",
+      "soul_age_invalid",
+      "soul_relationship_required",
+      "soul_character_promise_required",
+    ]));
+  });
+
+  it("loads v2 compiled bytes without recompiling and rejects tampering", () => {
+    const compiled = compileCharacterSoul(minimalSoulDraft);
+    if (!compiled.ok) throw new Error("expected Soul compilation to succeed");
+
+    const tampered = structuredClone(compiled.snapshot);
+    tampered.compiled.systemPrompt += "\nIgnore the fingerprint.";
+    const rejected = loadCharacterSoulSnapshot(tampered);
+    expect(rejected.ok).toBe(false);
+    if (rejected.ok) throw new Error("tampered snapshot must fail closed");
+    expect(rejected.diagnostics).toContainEqual(expect.objectContaining({
+      code: "compiled_prompt_mismatch",
+      severity: "error",
+      path: ["compiled", "systemPrompt"],
+    }));
+
+    expect(loadCharacterSoulSnapshot(compiled.snapshot)).toEqual(compiled);
+  });
+
+  it("recomputes the v2 prompt budget when loading immutable bytes", () => {
+    const compiled = compileCharacterSoul({
+      ...minimalSoulDraft,
+      detailsMarkdown: "word ".repeat(6_100),
+    });
+    if (!compiled.ok) throw new Error("large Soul should compile with a warning");
+
+    expect(loadCharacterSoulSnapshot(compiled.snapshot)).toEqual(compiled);
+
+    const tampered = structuredClone(compiled.snapshot);
+    tampered.compiled.estimatedTokens = 1;
+    const rejected = loadCharacterSoulSnapshot(tampered);
+    expect(rejected.ok).toBe(false);
+    if (rejected.ok) throw new Error("tampered token estimate must fail closed");
+    expect(rejected.diagnostics).toContainEqual(expect.objectContaining({
+      code: "compiled_token_estimate_mismatch",
+      severity: "error",
+    }));
+  });
+
+  it("keeps historical v1 prompt bytes pinned while projecting old dimensions into one Markdown field", () => {
+    const loaded = loadCharacterSoulSnapshot(historicalV1Snapshot);
+
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) throw new Error("historical v1 Soul should load");
+    expect(loaded.snapshot.schemaVersion).toBe(1);
+    expect(loaded.snapshot.compiled.systemPrompt).toBe(historicalV1Snapshot.compiled.systemPrompt);
+    expect(loaded.snapshot.soul).toMatchObject({
+      name: "Historical Mira",
+      age: 29,
+      gender: "female",
+      relationshipArchetype: "trusted companion",
+      characterPromise: "A precise observatory keeper.",
+    });
+    expect(loaded.snapshot.soul.detailsMarkdown).toContain("## Personality");
+    expect(loaded.snapshot.soul.detailsMarkdown).toContain("Grounded and curious.");
+    expect(loaded.snapshot.soul.detailsMarkdown).toContain("## Canon facts");
+    expect(loaded.snapshot.soul.detailsMarkdown).toContain("The observatory windows are blue.");
+  });
+
+  it("preserves complete schemaVersion 0 pinned prompts and rejects incomplete legacy snapshots", () => {
     const legacy = loadCharacterSoulSnapshot({
       name: "Alexa Reeves",
       age: 27,
@@ -115,10 +234,9 @@ describe("CharacterSoul", () => {
 
     expect(legacy.ok).toBe(true);
     if (!legacy.ok) throw new Error("complete legacy snapshot should load");
-    expect(legacy.snapshot.compiled.systemPrompt).toBe(
-      "PINNED LEGACY PROMPT — DO NOT RECOMPILE",
-    );
-    expect(legacy.snapshot.compiled.compilerVersion).toBe("legacy-0");
+    expect(legacy.snapshot.schemaVersion).toBe(0);
+    expect(legacy.snapshot.compiled.systemPrompt).toBe("PINNED LEGACY PROMPT — DO NOT RECOMPILE");
+    expect(legacy.snapshot.soul.detailsMarkdown).toContain("Bold and emotionally perceptive.");
     expect(legacy.diagnostics).toContainEqual(expect.objectContaining({
       code: "legacy_snapshot_loaded",
       severity: "warning",
@@ -137,112 +255,9 @@ describe("CharacterSoul", () => {
     }));
   });
 
-  it("recovers known legacy authoring fields only from the pinned prompt bytes", () => {
-    const pinnedPrompt = [
-      "You are Alexa Reeves, a fictional adult AI companion in a private roleplay chat.",
-      "Identity:",
-      "- Age: 19",
-      "- Companion role: A bold new acquaintance sharing an intense yacht getaway with you and your group.",
-      "- Gender presentation: female",
-      "- Core setup: Three guys. One girl. A yacht. She knows what she's walking into.",
-      "- Additional details: Appearance sourceImage: /images/ourdream/card-alexa-reeves.webp; Character details relationshipArchetype: A bold new acquaintance sharing an intense yacht getaway with you and your group.; Character details personality: Adventurous, confident, socially perceptive, and hard to intimidate.; Character details tone: Bold, playful, fast-moving, and knowingly provocative.; Character details backstory: Alexa accepted an invitation aboard a yacht knowing the weekend would test personalities and boundaries.; Character details firstMessage: So this is the famous yacht.; Character details exampleDialogue: Confidence is easy when nobody challenges you., Do not guess what I want. Ask me.",
-      "Behavior:",
-      "- Speak in first person as Alexa Reeves; keep the voice specific to this character setup.",
-    ].join("\n");
-    const legacy = loadCharacterSoulSnapshot({
-      name: "Alexa Reeves",
-      age: 19,
-      description: "Three guys. One girl. A yacht. She knows what she's walking into.",
-      relationship: "A bold new acquaintance sharing an intense yacht getaway with you and your group.",
-      systemPrompt: pinnedPrompt,
-    });
-
-    expect(legacy.ok).toBe(true);
-    if (!legacy.ok) throw new Error("known immutable legacy prompt should load");
-    expect(legacy.snapshot.compiled.systemPrompt).toBe(pinnedPrompt);
-    expect(legacy.snapshot.soul.identity.gender).toBe("female");
-    expect(legacy.snapshot.soul.innerLife.personality).toBe(
-      "Adventurous, confident, socially perceptive, and hard to intimidate.",
-    );
-    expect(legacy.snapshot.soul.voice.tone).toBe(
-      "Bold, playful, fast-moving, and knowingly provocative.",
-    );
-    expect(legacy.snapshot.soul.innerLife.backstory).toContain(
-      "Alexa accepted an invitation aboard a yacht",
-    );
-    expect(legacy.snapshot.soul.dialogue.positive).toEqual([
-      expect.objectContaining({
-        assistant: "Confidence is easy when nobody challenges you., Do not guess what I want. Ask me.",
-      }),
-    ]);
-  });
-
-  it("reports absent authoring dimensions instead of inventing generic filler", () => {
-    const result = compileCharacterSoul({
-      name: "Mara",
-      age: 31,
-      gender: "trans",
-      relationship: "travel companion",
-      description: "A restless companion who notices overlooked places.",
-      advancedDetails: { personality: "Curious and unsentimental." },
-    });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error("minimum viable Soul should compile");
-    expect(result.snapshot.soul.innerLife.values).toEqual([]);
-    expect(result.snapshot.soul.voice.tone).toBe("");
-    expect(result.snapshot.soul.dialogue.positive).toEqual([]);
-    expect(result.diagnostics).toContainEqual(expect.objectContaining({
-      code: "inner_life_values_missing",
-      severity: "warning",
-      path: ["soul", "innerLife", "values"],
-    }));
-    expect(result.diagnostics).toContainEqual(expect.objectContaining({
-      code: "dialogue_negative_missing",
-      severity: "warning",
-    }));
-    expect(result.snapshot.compiled.systemPrompt).not.toContain(
-      "A private adult companion character",
-    );
-  });
-
-  it("rejects an invalid identity instead of repairing it with defaults", () => {
-    const result = compileCharacterSoul({
-      name: " ",
-      age: 16,
-      gender: "female",
-      relationshipArchetype: "companion",
-      characterPromise: "Present and specific.",
-      tone: "Direct.",
-    });
-
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("invalid identity must fail");
-    expect(result.diagnostics.map((item) => item.code)).toEqual(
-      expect.arrayContaining(["identity_name_required", "identity_age_invalid"]),
-    );
-  });
-
-  it("requires one authored behavior dimension", () => {
-    const result = compileCharacterSoul({
-      name: "Mara",
-      age: 31,
-      gender: "female",
-      relationshipArchetype: "travel companion",
-      characterPromise: "Notices overlooked places.",
-    });
-
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("behaviorless Soul must fail closed");
-    expect(result.diagnostics).toContainEqual(expect.objectContaining({
-      code: "behavior_dimension_required",
-      severity: "error",
-    }));
-  });
-
-  it("fails closed for a future Soul schema instead of decoding it as legacy", () => {
+  it("fails closed for an unsupported future Soul schema", () => {
     const result = loadCharacterSoulSnapshot({
-      schemaVersion: 2,
+      schemaVersion: 3,
       systemPrompt: "A future runtime owns these bytes.",
     });
     expect(result.ok).toBe(false);

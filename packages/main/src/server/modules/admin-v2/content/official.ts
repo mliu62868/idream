@@ -87,31 +87,59 @@ function stringList(value: unknown) {
     : [];
 }
 
-function negativeDialogue(value: unknown) {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((item) => {
-    const row = jsonRecord(item);
-    const assistant = text(row.assistant);
-    const reason = text(row.reason);
-    return assistant && reason ? [{ assistant, reason }] : [];
-  });
+const LEGACY_SOUL_DETAIL_KEYS = [
+  "personality",
+  "values",
+  "wants",
+  "fears",
+  "contradictions",
+  "tone",
+  "speakingStyle",
+  "cadence",
+  "vocabulary",
+  "voiceHabits",
+  "voiceAvoid",
+  "backstory",
+  "exampleDialogue",
+  "interaction",
+  "canon",
+  "negativeDialogue",
+] as const;
+
+function hasOwn(row: Record<string, unknown>, key: string) {
+  return Object.prototype.hasOwnProperty.call(row, key);
 }
 
-function interactionDetails(value: unknown) {
+// INTENT: 旧 official API 只在这个输入边界折叠历史字段；新的编辑器和存储只认识一段 Markdown。
+function detailsMarkdown(value: unknown) {
   const row = jsonRecord(value);
-  return {
-    initiative: text(row.initiative),
-    curiosity: text(row.curiosity),
-    pacing: text(row.pacing),
-    affection: text(row.affection),
-    conflict: text(row.conflict),
-    repair: text(row.repair),
-  };
+  if (hasOwn(row, "detailsMarkdown")) return text(row.detailsMarkdown);
+
+  const sections: string[] = [];
+  const paragraphs = [
+    ["Personality", text(row.personality)],
+    ["Voice", text(row.tone) || text(row.speakingStyle)],
+    ["Backstory", text(row.backstory)],
+  ] as const;
+  for (const [heading, content] of paragraphs) {
+    if (content) sections.push(`## ${heading}\n${content}`);
+  }
+
+  const lists = [
+    ["Values", stringList(row.values)],
+    ["Wants", stringList(row.wants)],
+    ["Fears", stringList(row.fears)],
+    ["Contradictions", stringList(row.contradictions)],
+    ["Example dialogue", stringList(row.exampleDialogue)],
+  ] as const;
+  for (const [heading, items] of lists) {
+    if (items.length > 0) sections.push(`## ${heading}\n${items.map((item) => `- ${item}`).join("\n")}`);
+  }
+  return sections.join("\n\n");
 }
 
-function canonDetails(value: unknown) {
-  const row = jsonRecord(value);
-  return { facts: stringList(row.facts), unknowns: stringList(row.unknowns) };
+function touchesSoulDetails(row: Record<string, unknown>) {
+  return hasOwn(row, "detailsMarkdown") || LEGACY_SOUL_DETAIL_KEYS.some((key) => hasOwn(row, key));
 }
 
 function sameStrings(left: readonly string[], right: readonly string[]) {
@@ -191,24 +219,8 @@ export async function createOfficialCharacter(input: {
         gender: body.gender,
         relationshipArchetype: text(advanced.relationshipArchetype) || text(advanced.relationship) || "Unspecified relationship archetype",
         characterPromise: body.description,
-        personality: text(advanced.personality) || "Unspecified personality; complete before release",
-        values: stringList(advanced.values),
-        wants: stringList(advanced.wants),
-        fears: stringList(advanced.fears),
-        contradictions: stringList(advanced.contradictions),
-        tone: text(advanced.tone) || "Unspecified tone; complete before release",
-        backstory: text(advanced.backstory) || "Unspecified backstory; complete before release",
+        detailsMarkdown: detailsMarkdown(advanced),
         firstMessage: text(advanced.firstMessage) || "Draft opening message; complete before release.",
-        exampleDialogue: stringList(advanced.exampleDialogue).length > 0
-          ? stringList(advanced.exampleDialogue)
-          : ["Draft example dialogue; complete before release."],
-        cadence: text(advanced.cadence),
-        vocabulary: stringList(advanced.vocabulary),
-        voiceHabits: stringList(advanced.voiceHabits),
-        voiceAvoid: stringList(advanced.voiceAvoid),
-        interaction: interactionDetails(advanced.interaction),
-        canon: canonDetails(advanced.canon),
-        negativeDialogue: negativeDialogue(advanced.negativeDialogue),
       },
       visualDirection: {
         identityAnchor: text(appearance.identityAnchor) || `${body.name} canonical identity anchor requires production evidence`,
@@ -261,9 +273,6 @@ export async function updateOfficialCharacter(input: {
   const resumed = await getCharacterProjectDraftForResume(id);
   const advanced = jsonRecord(body.advancedDetails);
   const appearance = jsonRecord(body.appearance);
-  const interaction = interactionDetails(advanced.interaction);
-  const canon = canonDetails(advanced.canon);
-  const dialogueAvoid = negativeDialogue(advanced.negativeDialogue);
   const persona = {
     ...resumed.draft.persona,
     ...(body.name !== undefined ? { name: body.name } : {}),
@@ -271,36 +280,8 @@ export async function updateOfficialCharacter(input: {
     ...(body.gender !== undefined ? { gender: body.gender } : {}),
     ...(body.description !== undefined ? { characterPromise: body.description } : {}),
     ...(text(advanced.relationshipArchetype) ? { relationshipArchetype: text(advanced.relationshipArchetype) } : {}),
-    ...(text(advanced.personality) ? { personality: text(advanced.personality) } : {}),
-    ...(stringList(advanced.values).length > 0 ? { values: stringList(advanced.values) } : {}),
-    ...(stringList(advanced.wants).length > 0 ? { wants: stringList(advanced.wants) } : {}),
-    ...(stringList(advanced.fears).length > 0 ? { fears: stringList(advanced.fears) } : {}),
-    ...(stringList(advanced.contradictions).length > 0 ? { contradictions: stringList(advanced.contradictions) } : {}),
-    ...(text(advanced.tone) ? { tone: text(advanced.tone) } : {}),
-    ...(text(advanced.cadence) ? { cadence: text(advanced.cadence) } : {}),
-    ...(stringList(advanced.vocabulary).length > 0 ? { vocabulary: stringList(advanced.vocabulary) } : {}),
-    ...(stringList(advanced.voiceHabits).length > 0 ? { voiceHabits: stringList(advanced.voiceHabits) } : {}),
-    ...(stringList(advanced.voiceAvoid).length > 0 ? { voiceAvoid: stringList(advanced.voiceAvoid) } : {}),
-    ...(text(advanced.backstory) ? { backstory: text(advanced.backstory) } : {}),
+    ...(touchesSoulDetails(advanced) ? { detailsMarkdown: detailsMarkdown(advanced) } : {}),
     ...(text(advanced.firstMessage) ? { firstMessage: text(advanced.firstMessage) } : {}),
-    ...(stringList(advanced.exampleDialogue).length > 0 ? { exampleDialogue: stringList(advanced.exampleDialogue) } : {}),
-    ...(Object.values(interaction).some(Boolean)
-      ? { interaction: {
-          initiative: interaction.initiative || resumed.draft.persona.interaction?.initiative || "",
-          curiosity: interaction.curiosity || resumed.draft.persona.interaction?.curiosity || "",
-          pacing: interaction.pacing || resumed.draft.persona.interaction?.pacing || "",
-          affection: interaction.affection || resumed.draft.persona.interaction?.affection || "",
-          conflict: interaction.conflict || resumed.draft.persona.interaction?.conflict || "",
-          repair: interaction.repair || resumed.draft.persona.interaction?.repair || "",
-        } }
-      : {}),
-    ...(canon.facts.length > 0 || canon.unknowns.length > 0
-      ? { canon: {
-          facts: canon.facts.length > 0 ? canon.facts : resumed.draft.persona.canon?.facts ?? [],
-          unknowns: canon.unknowns.length > 0 ? canon.unknowns : resumed.draft.persona.canon?.unknowns ?? [],
-        } }
-      : {}),
-    ...(dialogueAvoid.length > 0 ? { negativeDialogue: dialogueAvoid } : {}),
   };
   const visualDirection = {
     ...resumed.draft.visualDirection,

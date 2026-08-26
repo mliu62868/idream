@@ -3049,8 +3049,8 @@ test("create UI walks the multi-step builder and shows the character in My AI", 
   // Step 2 — Appearance
   await expect(page.getByTestId("create-step-appearance")).toBeVisible();
   await page.getByTestId("create-next").click();
-  // Step 3 — Personality
-  await expect(page.getByTestId("create-step-personality")).toBeVisible();
+  // Step 3 — Soul
+  await expect(page.getByTestId("create-step-soul")).toBeVisible();
   await page.getByLabel("Advanced Details").fill(
     "A complete E2E-created companion used to verify the creator and My AI loop.",
   );
@@ -3197,7 +3197,7 @@ test("create UI resumes a draft and submits public characters for review", async
 
   await page.getByLabel("Appearance").fill("editorial portrait lighting with a confident smile");
   await page.getByTestId("create-next").click();
-  await expect(page.getByTestId("create-step-personality")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByTestId("create-step-soul")).toBeVisible({ timeout: 10_000 });
   await page.getByLabel("Advanced Details").fill(
     "A public review submission that verifies failed preview recovery and pending review UX.",
   );

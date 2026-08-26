@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { compileCharacterSoul } from "@idream/shared";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
@@ -125,13 +126,22 @@ describe.sequential("Character Asset Studio draft image authority", () => {
         activeKey: `asset-studio:${characterId}`,
       },
     });
+    const soul = compileCharacterSoul({
+      name: "Aria",
+      age: 27,
+      gender: "female",
+      relationshipArchetype: "storytelling companion",
+      characterPromise: "A warm, observant storyteller.",
+      detailsMarkdown: "Attentive, imaginative, and grounded.",
+    });
+    if (!soul.ok) throw new Error("Asset Studio Soul fixture must compile");
     await prisma.characterContentVersion.create({
       data: {
         id: contentId,
         characterId,
         version: 1,
-        contentHash: `asset-studio-content-hash-${suffix}`,
-        personaSnapshot: { name: "Aria", description: "A warm, observant storyteller." },
+        contentHash: soul.snapshot.compiled.fingerprint,
+        personaSnapshot: toInputJson(soul.snapshot),
         openingSnapshot: { firstMessage: "Tell me what caught your attention today." },
         appearanceSnapshot: { style: "realistic" },
         sourceType: "asset_studio_test",

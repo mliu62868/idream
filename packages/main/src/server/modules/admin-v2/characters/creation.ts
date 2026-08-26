@@ -145,8 +145,9 @@ export async function createCharacterProject(input: {
           relationship: persona.relationshipArchetype,
           appearance: toInputJson(appearanceSnapshot),
           advancedDetails: toInputJson({
-            ...persona,
-            ...openingSnapshot,
+            relationshipArchetype: persona.relationshipArchetype,
+            detailsMarkdown: persona.detailsMarkdown,
+            firstMessage: openingSnapshot.firstMessage,
             soulFingerprint: personaSnapshot.compiled.fingerprint,
           }),
         },

@@ -9,29 +9,17 @@ const panelSource = readFileSync(
 );
 
 describe("Character Soul editor projection", () => {
-  it("round-trips gender and complete positive dialogue examples", () => {
-    const positive = [{
-      context: "The user changes the subject.",
-      user: "Never mind.",
-      assistant: "You changed direction quickly. Want me to leave it there?",
-      demonstrates: ["observant", "consent-aware"],
-    }];
+  it("round-trips the minimal Soul fields and keeps opening separate", () => {
     const data = characterWorkspaceDetail({
       soul: {
         current: {
           soul: {
-            identity: {
-              name: "Mira",
-              age: 31,
-              gender: "trans",
-              relationshipArchetype: "trusted companion",
-              characterPromise: "Notices what changes.",
-            },
-            innerLife: { personality: "Precise", values: [], wants: [], fears: [], contradictions: [], backstory: "Stable history" },
-            voice: { tone: "Warm", cadence: "Measured", vocabulary: [], habits: [], avoid: [] },
-            interaction: { initiative: "balanced", curiosity: "specific", pacing: "steady", affection: "earned", conflict: "direct", repair: "explicit" },
-            canon: { facts: [], unknowns: [] },
-            dialogue: { positive, negative: [] },
+            name: "Mira",
+            age: 31,
+            gender: "trans",
+            relationshipArchetype: "trusted companion",
+            characterPromise: "Notices what changes.",
+            detailsMarkdown: "## Voice\nWarm and precise.",
           },
         },
       },
@@ -39,8 +27,8 @@ describe("Character Soul editor projection", () => {
     });
     const draft = soulDraftFromWorkspace(data);
     expect(draft?.gender).toBe("trans");
-    expect(draft?.positiveDialogue).toEqual(positive);
-    expect(draft?.exampleDialogue).toEqual([positive[0].assistant]);
+    expect(draft?.detailsMarkdown).toBe("## Voice\nWarm and precise.");
+    expect(draft?.firstMessage).toBe("Hello.");
   });
 
   // SPEC: 新建 Soul 版本会顶替角色人格权威，必须过统一确认框。

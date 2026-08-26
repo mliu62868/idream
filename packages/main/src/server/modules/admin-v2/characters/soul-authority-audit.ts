@@ -15,8 +15,8 @@ interface SnapshotRow {
 export interface SoulSnapshotAudit {
   referenced: number;
   valid: number;
-  v1: number;
-  legacy: number;
+  v2: number;
+  historical: number;
   invalid: Array<{
     ownerType: SoulReference["ownerType"];
     ownerId: string;
@@ -33,8 +33,8 @@ export function auditSoulSnapshots(
   const report: SoulSnapshotAudit = {
     referenced: references.length,
     valid: 0,
-    v1: 0,
-    legacy: 0,
+    v2: 0,
+    historical: 0,
     invalid: [],
   };
   for (const reference of references) {
@@ -51,8 +51,8 @@ export function auditSoulSnapshots(
     const root = stored && typeof stored === "object" && !Array.isArray(stored)
       ? stored as Record<string, unknown>
       : {};
-    if (root.schemaVersion === 1) report.v1 += 1;
-    else report.legacy += 1;
+    if (root.schemaVersion === 2) report.v2 += 1;
+    else report.historical += 1;
   }
   return report;
 }
@@ -211,11 +211,11 @@ export async function auditCharacterSoulAuthority(
       })
     : [];
   const snapshotAudit = auditSoulSnapshots(references, snapshots);
-  const isV1 = (contentVersionId: string) => {
+  const isCurrentSoul = (contentVersionId: string) => {
     const stored = snapshots.find((row) => row.id === contentVersionId)?.personaSnapshot;
     return Boolean(
       stored && typeof stored === "object" && !Array.isArray(stored) &&
-      (stored as Record<string, unknown>).schemaVersion === 1,
+      (stored as Record<string, unknown>).schemaVersion === 2,
     );
   };
   const pinnedIds = new Set(pinned.map((row) => row.ownerId));
@@ -223,10 +223,10 @@ export async function auditCharacterSoulAuthority(
     reference.ownerType === "pinned_session" &&
     pinnedIds.has(reference.ownerId) &&
     snapshotAudit.invalid.every((invalid) => invalid.ownerId !== reference.ownerId) &&
-    !isV1(reference.contentVersionId)
+    !isCurrentSoul(reference.contentVersionId)
   ).length;
-  const legacyServingSnapshots = serving.filter((row) => !isV1(row.contentVersionId)).length;
-  const legacyCurrentPointers = pointers.filter((row) => !isV1(row.contentVersionId)).length;
+  const legacyServingSnapshots = serving.filter((row) => !isCurrentSoul(row.contentVersionId)).length;
+  const legacyCurrentPointers = pointers.filter((row) => !isCurrentSoul(row.contentVersionId)).length;
   const ok = characterSoulAuthorityIsLaunchSafe({
     topologyMode: mode,
     parityMismatches: parityRows.length,

@@ -46,7 +46,7 @@ class ReconciledUncommittedCharacter extends Error {}
 // INTENT: 此前是五步：受众/陪伴需求/假设/差异化四段市场简报排在最前，角色的名字要翻到第二步才
 // 出现，全程 13 个必填自由文本才换来一个角色。那七项上线简报字段发布闸一道都不查，而且角色页的
 // 「编辑详情」里本来就有一份同样的编辑器——这堵墙只是把同一张表单挪到了最早的位置。现在它们回到
-// 创建之后按需填写，创建口只留 6 个真必填。
+// 创建之后按需填写，创建口只留对话成立与视觉辨识真正需要的字段。
 export const characterCreateSteps = ["Persona", "Visual direction", "Review & create"] as const;
 const steps = characterCreateSteps;
 
@@ -63,11 +63,8 @@ const initialDraft: Draft = {
     gender: "female",
     relationshipArchetype: "",
     characterPromise: "",
-    personality: "",
-    tone: "",
-    backstory: "",
+    detailsMarkdown: "",
     firstMessage: "",
-    exampleDialogue: [],
   },
   visualDirection: {
     identityAnchor: "",
@@ -86,10 +83,9 @@ const initialDraft: Draft = {
 };
 
 // SPEC: 每一句只说这一步真正拦人的东西，不多列一项。
-// INTENT: 旧文案写「补齐每个必填人格字段并至少加一条对话示例」，但 exampleDialogue 在契约里没有
-// 下限，性格/语气/开场白也都不是必填——那句话把不存在的门槛说成了门槛。
+// INTENT: Soul 只有基本信息与一个可选 Markdown 扩展，不再要求用户拆填人格、语气与示例对话。
 export const characterCreateStepRequirements = [
-  "Give the character a name, a relationship, a promise, and either a personality or a tone.",
+  "Give the character a name, relationship, promise, and opening message.",
   "Define the identity anchor, stable traits, style, and reference direction.",
   "Review the character before creating it.",
 ] as const;
@@ -117,7 +113,7 @@ const characterCreateFieldErrorCopy: Record<string, string> = {
   age: "Age must be a whole number from 18 to 120.",
   relationshipArchetype: "Describe the relationship this character offers.",
   characterPromise: "Write the promise this character makes to users.",
-  personality: "Add either a personality or a tone.",
+  firstMessage: "Write the first message users will receive.",
   identityAnchor: "Describe the visual identity to establish.",
   stableTraits: "Add at least one stable visual trait.",
   referenceDirection: "Describe the portrait's visual direction.",
@@ -155,6 +151,10 @@ export function characterAssetsDeepLink(deepLink: string) {
 }
 
 function localDraftStorageKey(actorId: string) {
+  return `idream.admin.character-create-draft.v2:${actorId}`;
+}
+
+function legacyLocalDraftStorageKey(actorId: string) {
   return `idream.admin.character-create-draft.v1:${actorId}`;
 }
 
@@ -187,9 +187,7 @@ function isRecoverableLocalDraft(value: unknown): value is Draft {
     persona.name,
     persona.relationshipArchetype,
     persona.characterPromise,
-    persona.personality,
-    persona.tone,
-    persona.backstory,
+    persona.detailsMarkdown,
     persona.firstMessage,
     visualDirection.identityAnchor,
     visualDirection.referenceDirection,
@@ -201,7 +199,6 @@ function isRecoverableLocalDraft(value: unknown): value is Draft {
     ["realistic", "anime", "hybrid", "other"].includes(
       String(visualDirection.style),
     ) &&
-    isStringArray(persona.exampleDialogue) &&
     isStringArray(visualDirection.stableTraits) &&
     isStringArray(commercialIntent.targetPlacementKeys) &&
     isStringArray(commercialIntent.successCriteria) &&
@@ -215,13 +212,48 @@ function isRecoverableLocalDraft(value: unknown): value is Draft {
     );
 }
 
+function migrateLegacyLocalDraft(value: unknown): Draft | null {
+  if (!isRecord(value) || !isRecord(value.persona)) return null;
+  const persona = value.persona;
+  const paragraphs = [
+    typeof persona.personality === "string" && persona.personality.trim()
+      ? `## Personality\n${persona.personality.trim()}`
+      : "",
+    typeof persona.tone === "string" && persona.tone.trim()
+      ? `## Voice\n${persona.tone.trim()}`
+      : "",
+    typeof persona.backstory === "string" && persona.backstory.trim()
+      ? `## Background\n${persona.backstory.trim()}`
+      : "",
+    isStringArray(persona.exampleDialogue) && persona.exampleDialogue.length > 0
+      ? `## Dialogue examples\n${persona.exampleDialogue.map((line) => `- ${line}`).join("\n")}`
+      : "",
+  ].filter(Boolean).join("\n\n");
+  const migrated = {
+    ...value,
+    persona: {
+      name: persona.name,
+      age: persona.age,
+      gender: persona.gender,
+      relationshipArchetype: persona.relationshipArchetype,
+      characterPromise: persona.characterPromise,
+      detailsMarkdown: paragraphs,
+      firstMessage: persona.firstMessage,
+    },
+  };
+  return isRecoverableLocalDraft(migrated) ? migrated : null;
+}
+
 function readLocalDraft(actorId: string) {
   if (typeof window === "undefined" || requestedDraftTarget()) return null;
   try {
-    const raw = window.localStorage.getItem(localDraftStorageKey(actorId));
-    if (!raw) return null;
-    const value: unknown = JSON.parse(raw);
-    return isRecoverableLocalDraft(value) ? value : null;
+    const currentRaw = window.localStorage.getItem(localDraftStorageKey(actorId));
+    if (currentRaw) {
+      const value: unknown = JSON.parse(currentRaw);
+      if (isRecoverableLocalDraft(value)) return value;
+    }
+    const legacyRaw = window.localStorage.getItem(legacyLocalDraftStorageKey(actorId));
+    return legacyRaw ? migrateLegacyLocalDraft(JSON.parse(legacyRaw)) : null;
   } catch {
     return null;
   }
@@ -243,6 +275,7 @@ function saveLocalDraft(actorId: string, draft: Draft): boolean {
 function clearLocalDraft(actorId: string) {
   try {
     window.localStorage.removeItem(localDraftStorageKey(actorId));
+    window.localStorage.removeItem(legacyLocalDraftStorageKey(actorId));
   } catch {
     // Nothing else is required when browser storage is unavailable.
   }
@@ -1072,16 +1105,33 @@ type StepProps = {
   update: <K extends keyof Draft>(section: K, value: Draft[K]) => void;
 };
 
-// SPEC: 必填 = name / relationshipArchetype / characterPromise + (personality 或 tone 至少一个)。
-// INTENT: 这六项此前全部渲染成 required，但 backstory / firstMessage / exampleDialogue 在 persona
-// 契约里都没有下限，步骤完成度也只走 zod——星号是假的，写不写都能过。开场白与人格深度真正的闸在
-// 发布侧（opening_complete / soul_* 四道门），不该在创建口假装拦一次。
-// personality/tone 是唯一的例外：Soul 编译器要求两者至少有一个，两个都空会在服务端 throw，所以
-// 这条规则已经进了 persona 契约，这里按对方是否已填互相切换 required。
+// SPEC: 基本信息与开场白必填；其余角色细节只是一段可选 Markdown。
 function PersonaStep({ draft, errors, update }: StepProps) {
   const { t } = useAdminI18n();
   const set = <K extends keyof Draft["persona"]>(field: K, value: Draft["persona"][K]) => update("persona", { ...draft.persona, [field]: value });
-  return <div className="space-y-4"><Grid><Field error={errors.name} label="Name" name="persona.name" onChange={(value) => set("name", value)} placeholder={t("Mara")} value={draft.persona.name} /><Field error={errors.age} label="Age (18+)" name="persona.age" onChange={(value) => set("age", Number(value))} type="number" value={draft.persona.age} /><label className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("Gender")}<select className={`${fieldClass} mt-1`} onChange={(event) => set("gender", event.target.value as Draft["persona"]["gender"])} value={draft.persona.gender}><option value="female">{t("Female")}</option><option value="male">{t("Male")}</option><option value="trans">{t("Trans")}</option></select></label><Field error={errors.relationshipArchetype} label="Relationship archetype" name="persona.relationshipArchetype" onChange={(value) => set("relationshipArchetype", value)} placeholder={t("Steady confidante")} value={draft.persona.relationshipArchetype} /></Grid><Grid><Area error={errors.characterPromise} label="Character promise" name="persona.characterPromise" onChange={(value) => set("characterPromise", value)} placeholder={t("A precise, warm place to put the day down")} value={draft.persona.characterPromise} /><Area error={errors.personality} label="Personality" name="persona.personality" onChange={(value) => set("personality", value)} placeholder={t("Observant, measured, gently challenging")} required={draft.persona.tone.length === 0} value={draft.persona.personality} /><Area label="Tone" name="persona.tone" onChange={(value) => set("tone", value)} placeholder={t("Warm, concise, grounded")} required={draft.persona.personality.length === 0} value={draft.persona.tone} /><Area label="Backstory (optional)" name="persona.backstory" onChange={(value) => set("backstory", value)} placeholder={t("The experiences that shaped this character's point of view")} required={false} value={draft.persona.backstory} /><Area label="First message (optional)" name="persona.firstMessage" onChange={(value) => set("firstMessage", value)} placeholder={t("You made it. What do you need to put down tonight?")} required={false} value={draft.persona.firstMessage} /><Area label="Example dialogue (optional, one per line)" name="persona.exampleDialogue" onChange={(value) => set("exampleDialogue", lines(value))} placeholder={t("Tell me the part you keep replaying.")} required={false} value={draft.persona.exampleDialogue.join("\n")} /></Grid><p className="text-xs leading-5 text-[var(--ad-text-muted)]">{t("Optional fields can be written now or later in Soul. Publishing checks the opening line and Soul quality separately.")}</p></div>;
+  return (
+    <div className="space-y-4">
+      <Grid>
+        <Field error={errors.name} label="Name" name="persona.name" onChange={(value) => set("name", value)} placeholder={t("Mara")} value={draft.persona.name} />
+        <Field error={errors.age} label="Age (18+)" name="persona.age" onChange={(value) => set("age", Number(value))} type="number" value={draft.persona.age} />
+        <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
+          {t("Gender")}
+          <select className={`${fieldClass} mt-1`} onChange={(event) => set("gender", event.target.value as Draft["persona"]["gender"])} value={draft.persona.gender}>
+            <option value="female">{t("Female")}</option>
+            <option value="male">{t("Male")}</option>
+            <option value="trans">{t("Trans")}</option>
+          </select>
+        </label>
+        <Field error={errors.relationshipArchetype} label="Relationship archetype" name="persona.relationshipArchetype" onChange={(value) => set("relationshipArchetype", value)} placeholder={t("Steady confidante")} value={draft.persona.relationshipArchetype} />
+      </Grid>
+      <Grid>
+        <Area error={errors.characterPromise} label="Character promise" name="persona.characterPromise" onChange={(value) => set("characterPromise", value)} placeholder={t("A precise, warm place to put the day down")} value={draft.persona.characterPromise} />
+        <Area error={errors.firstMessage} label="First message" name="persona.firstMessage" onChange={(value) => set("firstMessage", value)} placeholder={t("You made it. What do you need to put down tonight?")} value={draft.persona.firstMessage} />
+      </Grid>
+      <Area label="Additional details · Markdown (optional)" name="persona.detailsMarkdown" onChange={(value) => set("detailsMarkdown", value)} placeholder={t("Write personality, voice, backstory, boundaries, examples, or any other useful context in your own structure.")} required={false} value={draft.persona.detailsMarkdown} />
+      <p className="text-xs leading-5 text-[var(--ad-text-muted)]">{t("The basics are rendered into SOUL.md automatically. Additional details are appended as Markdown without another schema.")}</p>
+    </div>
+  );
 }
 
 function VisualStep({ draft, errors, update }: StepProps) {
@@ -1102,11 +1152,8 @@ function ReviewStep({ draft, onEdit }: { draft: Draft; onEdit: (step: number) =>
         ],
         ["Relationship", draft.persona.relationshipArchetype],
         ["Promise", draft.persona.characterPromise],
-        ["Personality", draft.persona.personality],
-        ["Tone", draft.persona.tone],
-        ["Backstory", draft.persona.backstory],
         ["First message", draft.persona.firstMessage],
-        ["Example dialogue", draft.persona.exampleDialogue.join("\n")],
+        ["Additional details", draft.persona.detailsMarkdown],
       ],
     },
     {

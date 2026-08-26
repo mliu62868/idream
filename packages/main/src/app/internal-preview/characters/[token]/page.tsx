@@ -19,7 +19,6 @@ export default async function CharacterRendererPreviewPage({
   const { token } = await params;
   const preview = await loadCharacterRendererPreview(token);
   if (!preview) notFound();
-  const dialogue = preview.exampleDialogue.slice(0, 5);
   return (
     <main className="min-h-screen bg-[rgb(13,13,13)] px-4 py-6 text-white md:px-10" data-testid="character-renderer-preview">
       <header className="sticky top-0 z-20 -mx-4 -mt-6 flex flex-wrap items-center justify-between gap-2 border-b border-amber-300/30 bg-amber-300 px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-black md:-mx-10 md:px-10">
@@ -47,7 +46,7 @@ export default async function CharacterRendererPreviewPage({
             <div className="grid gap-2" key={index}>
               <p className="ml-auto max-w-[80%] rounded-2xl bg-[rgb(253,95,194)] px-4 py-3 text-sm font-medium text-black">QA turn {index + 1}</p>
               <p className="max-w-[80%] rounded-2xl bg-[rgb(36,36,36)] px-4 py-3 text-sm leading-6">
-                {dialogue[index] ?? `Response evidence for turn ${index + 1} must be attached before release validation.`}
+                {`Response evidence for turn ${index + 1} must be attached before release validation.`}
               </p>
             </div>
           ))}

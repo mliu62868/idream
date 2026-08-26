@@ -11,8 +11,8 @@ import { SCOPES, STARTER_GENDERS, STARTER_STYLES, STARTERS_LIST, starterPayload,
 const EMPTY_DRAFT: StarterDraft = {
   name: "", summary: "", gender: "", style: "",
   scope: "built_in", tags: "", sortOrder: "0",
-  creativeBrief: "", archetype: "", relationship: "", personality: "",
-  speakingStyle: "", firstMessage: "", exampleDialogue: "",
+  creativeBrief: "", archetype: "", relationship: "", detailsMarkdown: "",
+  firstMessage: "",
   appearanceNotes: "", visualBrief: "", reason: "Create starter template draft",
 };
 
@@ -40,22 +40,20 @@ export function StartersNewPage() {
     try {
       const data = await apiWrite<{
         description: string;
-        advancedDetails: { personality: string; speakingStyle: string; firstMessage: string; visualBrief: string };
+        advancedDetails: { detailsMarkdown: string; firstMessage: string; visualBrief: string };
       }>(
         "/api/v2/admin/content/character-assist", "POST", { seed: seed.trim() },
         { "idempotency-key": crypto.randomUUID() },
       );
       const summary = data.description.slice(0, 200);
-      const traits = tagsFromText(data.advancedDetails?.personality ?? "");
       const existing = tagsFromText(draft.tags);
       patch({
         summary,
         creativeBrief: seed.trim(),
-        personality: data.advancedDetails.personality,
-        speakingStyle: data.advancedDetails.speakingStyle,
+        detailsMarkdown: data.advancedDetails.detailsMarkdown,
         firstMessage: data.advancedDetails.firstMessage,
         visualBrief: data.advancedDetails.visualBrief,
-        tags: [...new Set([...existing, ...traits])].slice(0, 12).join(", "),
+        tags: existing.join(", "),
       });
     } catch (assistError) {
       setAssistError(requestErrorMessage(assistError, t));
@@ -151,17 +149,11 @@ export function StartersNewPage() {
         <Field label={t("Relationship")}>
           <input className={INPUT_CLASS} onChange={(e) => patch({ relationship: e.target.value })} value={draft.relationship} />
         </Field>
-        <Field full label={t("Personality")}>
-          <textarea className={TEXTAREA_CLASS} onChange={(e) => patch({ personality: e.target.value })} value={draft.personality} />
-        </Field>
-        <Field full label={t("Speaking style")}>
-          <textarea className={TEXTAREA_CLASS} onChange={(e) => patch({ speakingStyle: e.target.value })} value={draft.speakingStyle} />
+        <Field full label={t("Additional details · Markdown (optional)")}>
+          <textarea className={TEXTAREA_CLASS} onChange={(e) => patch({ detailsMarkdown: e.target.value })} value={draft.detailsMarkdown} />
         </Field>
         <Field full label={t("First message")}>
           <textarea className={TEXTAREA_CLASS} onChange={(e) => patch({ firstMessage: e.target.value })} value={draft.firstMessage} />
-        </Field>
-        <Field full label={t("Example dialogue")}>
-          <textarea className={TEXTAREA_CLASS} onChange={(e) => patch({ exampleDialogue: e.target.value })} value={draft.exampleDialogue} />
         </Field>
       </FormSection>
       <FormSection title={t("Reusable visual direction")}>

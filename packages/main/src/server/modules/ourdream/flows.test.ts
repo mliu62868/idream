@@ -348,12 +348,13 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
         advancedDetails: {
           description: "My private companion.",
           relationshipArchetype: "childhood friend",
-          personality: "Bold, observant, and protective.",
-          tone: "Direct, teasing, and emotionally attentive.",
-          backstory: "You grew up on the same street and never lost touch.",
-          exampleDialogue: [
-            "I know that look. Tell me what you are avoiding.",
-          ],
+          detailsMarkdown: [
+            "## Personality and voice",
+            "Bold, observant, protective, direct, and teasing.",
+            "",
+            "## Background",
+            "You grew up on the same street and never lost touch.",
+          ].join("\n"),
           firstMessage: "There you are. What took you so long?",
         },
       },
@@ -436,13 +437,11 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
     expect(createdCharacter).toMatchObject({
       relationship: "childhood friend",
       advancedDetails: expect.objectContaining({
-        personality: "Bold, observant, and protective.",
-        tone: "Direct, teasing, and emotionally attentive.",
-        backstory: "You grew up on the same street and never lost touch.",
+        detailsMarkdown: expect.stringContaining("Bold, observant, protective"),
         firstMessage: "There you are. What took you so long?",
       }),
       systemPrompt: expect.stringContaining(
-        "Bold, observant, and protective.",
+        "Bold, observant, protective, direct, and teasing.",
       ),
     });
     expect(createdCharacter.currentContentVersionId).toEqual(expect.any(String));
@@ -454,9 +453,9 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
       version: 1,
       sourceType: "user",
       personaSnapshot: expect.objectContaining({
-        schemaVersion: 1,
+        schemaVersion: 2,
         compiled: expect.objectContaining({
-          compilerVersion: "character-soul-1",
+          compilerVersion: "character-soul-2",
           fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
         }),
       }),
@@ -480,9 +479,7 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
     expect(contentHistory[1]?.appearanceSnapshot).toEqual(firstContent.appearanceSnapshot);
     expect(contentHistory[1]?.personaSnapshot).toMatchObject({
       soul: {
-        identity: {
-          characterPromise: "My private companion, now ready for a new journey.",
-        },
+        characterPromise: "My private companion, now ready for a new journey.",
       },
     });
 
@@ -545,11 +542,7 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
       missingFields: [
         "description",
         "relationship",
-        "personality",
-        "tone",
-        "backstory",
         "firstMessage",
-        "exampleDialogue",
       ],
     });
 
@@ -560,11 +553,8 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
         advancedDetails: {
           description: "A sharp-witted investigative reporter who values honest answers.",
           relationshipArchetype: "trusted confidante",
-          personality: "Curious, perceptive, and quietly protective.",
-          tone: "Direct, warm, and lightly teasing.",
-          backstory: "You met while chasing the same late-night story and stayed close.",
+          detailsMarkdown: "",
           firstMessage: "You are late. Tell me what happened.",
-          exampleDialogue: ["Start with the detail everyone else missed."],
         },
       },
     });

@@ -43,12 +43,13 @@ describe("Character create wizard", () => {
 
   it("marks only the fields the contract actually enforces as required", () => {
     const html = renderToStaticMarkup(createElement(CharacterCreateWizard, { canCreate: true }));
-    // 背景/开场白/对话示例在 persona 契约里没有下限，不该渲染成 required。
-    expect(html).toContain("Backstory (optional)");
-    expect(html).toContain("First message (optional)");
-    expect(html).toContain("Example dialogue (optional, one per line)");
+    expect(html).toContain("Additional details · Markdown (optional)");
+    expect(html).not.toContain("Backstory (optional)");
+    expect(html).not.toContain("Example dialogue (optional, one per line)");
     const promise = /Character promise[\s\S]{0,700}?<\/textarea>/.exec(html)?.[0] ?? "";
     expect(promise).toContain("required=\"\"");
+    const opening = /First message[\s\S]{0,700}?<\/textarea>/.exec(html)?.[0] ?? "";
+    expect(opening).toContain("required=\"\"");
   });
 
   it("keeps the wizard's dynamic step labels translated", () => {
@@ -76,11 +77,8 @@ describe("Character create wizard", () => {
         gender: "female" as const,
         relationshipArchetype: "",
         characterPromise: "",
-        personality: "",
-        tone: "",
-        backstory: "",
+        detailsMarkdown: "",
         firstMessage: "",
-        exampleDialogue: [],
       },
       visualDirection: {
         identityAnchor: "",
@@ -102,7 +100,8 @@ describe("Character create wizard", () => {
       name: "Mara",
       relationshipArchetype: "steady confidante",
       characterPromise: "A precise, warm place to put the day down",
-      personality: "Observant, measured, gently challenging",
+      detailsMarkdown: "Observant, measured, gently challenging",
+      firstMessage: "You made it. What should we make space for?",
     };
     const visualDirection = {
       identityAnchor: "Composed late-night radio host",
@@ -113,20 +112,19 @@ describe("Character create wizard", () => {
 
     expect(isCharacterCreateStepComplete(blank, 0)).toBe(false);
     expect(isCharacterCreateStepComplete({ ...blank, persona }, 0)).toBe(true);
-    // SPEC: Soul 编译器要求 personality 或 tone 至少有一个，两个都空在服务端会 throw。
-    // 这条规则现在活在 persona 契约里，所以向导在这一步就拦住，而不是让运营看到「创建结果未知」。
+    // 扩展 Markdown 可完全为空，基本信息和开场白才是创建门槛。
     expect(
       isCharacterCreateStepComplete(
-        { ...blank, persona: { ...persona, personality: "" } },
-        0,
-      ),
-    ).toBe(false);
-    expect(
-      isCharacterCreateStepComplete(
-        { ...blank, persona: { ...persona, personality: "", tone: "Warm, concise" } },
+        { ...blank, persona: { ...persona, detailsMarkdown: "" } },
         0,
       ),
     ).toBe(true);
+    expect(
+      isCharacterCreateStepComplete(
+        { ...blank, persona: { ...persona, firstMessage: "" } },
+        0,
+      ),
+    ).toBe(false);
     expect(isCharacterCreateStepComplete({ ...blank, persona }, 1)).toBe(false);
     expect(
       isCharacterCreateStepComplete({ ...blank, persona, visualDirection }, 1),
@@ -151,11 +149,8 @@ describe("Character create wizard", () => {
         gender: "female" as const,
         relationshipArchetype: "steady confidante",
         characterPromise: "A precise, warm place to put the day down",
-        personality: "Observant, measured, gently challenging",
-        tone: "",
-        backstory: "",
-        firstMessage: "",
-        exampleDialogue: [],
+        detailsMarkdown: "",
+        firstMessage: "You made it. What should we make space for?",
       },
       visualDirection: {
         identityAnchor: "Composed late-night radio host",
@@ -192,12 +187,8 @@ describe("Character create wizard", () => {
         gender: "female" as const,
         relationshipArchetype: "trusted companion",
         characterPromise: "A specific, dependable companionship promise",
-        personality: "Warm, observant, and consistent",
-        tone: "Natural, concise, and emotionally present",
-        backstory:
-          "Draft the experiences that shape this character's point of view.",
+        detailsMarkdown: "Warm, observant, and consistent. Natural, concise, and emotionally present.",
         firstMessage: "I'm here. Where should we begin?",
-        exampleDialogue: ["Tell me what matters most about that."],
       },
       visualDirection: {
         identityAnchor: "A recognizable adult companion identity",

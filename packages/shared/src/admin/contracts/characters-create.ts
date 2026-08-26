@@ -19,60 +19,10 @@ export const characterDraftPersonaSchema = z
     gender: z.enum(["female", "male", "trans"]),
     relationshipArchetype: z.string().trim().min(1).max(500),
     characterPromise: z.string().trim().min(1).max(1_000),
-    personality: z.string().trim().max(4_000),
-    tone: z.string().trim().max(2_000),
-    backstory: z.string().trim().max(8_000),
-    values: z.array(z.string().trim().min(1).max(500)).max(24).optional(),
-    wants: z.array(z.string().trim().min(1).max(500)).max(24).optional(),
-    fears: z.array(z.string().trim().min(1).max(500)).max(24).optional(),
-    contradictions: z.array(z.string().trim().min(1).max(500)).max(24).optional(),
-    firstMessage: z.string().trim().max(4_000),
-    exampleDialogue: z.array(z.string().trim().min(1).max(2_000)).max(24),
-    positiveDialogue: z.array(z.object({
-      context: z.string().trim().max(2_000).nullable(),
-      user: z.string().trim().max(2_000).nullable(),
-      assistant: z.string().trim().min(1).max(2_000),
-      demonstrates: z.array(z.string().trim().min(1).max(500)).max(24),
-    }).strict()).max(24).optional(),
-    cadence: z.string().trim().max(2_000).optional(),
-    vocabulary: z.array(z.string().trim().min(1).max(300)).max(48).optional(),
-    voiceHabits: z.array(z.string().trim().min(1).max(500)).max(24).optional(),
-    voiceAvoid: z.array(z.string().trim().min(1).max(500)).max(24).optional(),
-    interaction: z.object({
-      initiative: z.string().trim().max(2_000),
-      curiosity: z.string().trim().max(2_000),
-      pacing: z.string().trim().max(2_000),
-      affection: z.string().trim().max(2_000),
-      conflict: z.string().trim().max(2_000),
-      repair: z.string().trim().max(2_000),
-    }).strict().optional(),
-    canon: z.object({
-      facts: z.array(z.string().trim().min(1).max(1_000)).max(48),
-      unknowns: z.array(z.string().trim().min(1).max(1_000)).max(48),
-    }).strict().optional(),
-    negativeDialogue: z.array(z.object({
-      assistant: z.string().trim().min(1).max(2_000),
-      reason: z.string().trim().min(1).max(1_000),
-    }).strict()).max(24).optional(),
+    detailsMarkdown: z.string().trim().max(24_000),
+    firstMessage: z.string().trim().min(1).max(4_000),
   })
-  .strict()
-  /**
-   * SPEC: 一个角色至少要有性格或语气其中之一。
-   *
-   * INTENT: 这条此前只活在服务端——createCharacterProject 会调 compileCharacterSoul，而它唯一的
-   * error 级诊断就是「At least innerLife.personality or voice.tone is required」，其余 15 条都是
-   * warning。契约不表达这条，于是两个都留空的请求能通过全部前端校验，再在服务端 throw 成 500，
-   * 运营只看到「创建结果未知」。规则搬回契约后，同一份 schema 同时管住向导的步骤完成度和请求准入，
-   * 拦截发生在能读懂的地方。
-   */
-  .superRefine((persona, ctx) => {
-    if (persona.personality.length > 0 || persona.tone.length > 0) return;
-    ctx.addIssue({
-      code: "custom",
-      path: ["personality"],
-      message: "Give the character a personality or a tone",
-    });
-  });
+  .strict();
 
 export const characterDraftVisualDirectionSchema = z
   .object({
@@ -92,7 +42,8 @@ export const characterDraftVisualDirectionSchema = z
  * (CharacterProject.hypothesis/differentiation 是 String?)，且角色页的「编辑详情」里早就有一份
  * 一模一样的编辑器。也就是说这堵墙既不保护发布，也不是唯一入口，只是把表单挪到了最早的位置。
  * 现在它们在创建后按需填写；真正定义「一个角色之所以是角色」的仍然必填：name /
- * relationshipArchetype / characterPromise / identityAnchor / stableTraits / referenceDirection。
+ * relationshipArchetype / characterPromise / firstMessage / identityAnchor / stableTraits /
+ * referenceDirection。其余人格内容只有一个可选 detailsMarkdown 字段。
  *
  * INVARIANT: 只放宽下限，max 长度与下面的 instructional sentinel 拒绝原样保留——sentinel 比的是
  * 精确相等，空串永远不等于任何 sentinel，所以「不许把提示文案当数据存进去」这条继续成立。
@@ -132,9 +83,6 @@ export const characterCreateInstructionalSentinels = [
   [["persona", "name"], "Untitled companion"],
   [["persona", "relationshipArchetype"], "trusted companion"],
   [["persona", "characterPromise"], "A specific, dependable companionship promise"],
-  [["persona", "personality"], "Warm, observant, and consistent"],
-  [["persona", "tone"], "Natural, concise, and emotionally present"],
-  [["persona", "backstory"], "Draft the experiences that shape this character's point of view."],
   [["persona", "firstMessage"], "I'm here. Where should we begin?"],
   [["visualDirection", "identityAnchor"], "A recognizable adult companion identity"],
   [["visualDirection", "referenceDirection"], "Describe lighting, framing, wardrobe, and reference direction."],
@@ -175,7 +123,6 @@ const rejectCharacterCreateInstructionalSentinels: Parameters<
     }
   }
   const listSentinels = [
-    ["persona", "exampleDialogue", "Tell me what matters most about that."],
     ["visualDirection", "stableTraits", "consistent face"],
     ["visualDirection", "stableTraits", "recognizable silhouette"],
     ["commercialIntent", "successCriteria", "Define one measurable success criterion"],

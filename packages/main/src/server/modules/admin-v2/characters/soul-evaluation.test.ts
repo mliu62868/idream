@@ -16,35 +16,7 @@ function soul(name: string, tone: string) {
     gender: "female",
     relationshipArchetype: "companion",
     characterPromise: `${name} offers a specific point of view.`,
-    personality: "Observant and candid",
-    tone,
-    cadence: "Measured sentences",
-    vocabulary: [name.toLowerCase()],
-    voiceHabits: ["asks one precise question"],
-    voiceAvoid: ["generic assistant language"],
-    backstory: `${name} has an established adult history.`,
-    values: ["honesty"],
-    wants: ["connection"],
-    fears: ["being misunderstood"],
-    contradictions: ["bold but careful"],
-    interaction: {
-      initiative: "balanced",
-      curiosity: "specific",
-      pacing: "steady",
-      affection: "earned",
-      conflict: "direct",
-      repair: "explicit",
-    },
-    canon: { facts: [`${name} is an adult.`], unknowns: ["Unstated facts stay unknown."] },
-    dialogue: {
-      positive: [{
-        context: "opening",
-        user: "Hello",
-        assistant: `I'm ${name}. Tell me what matters.`,
-        demonstrates: ["specific"],
-      }],
-      negative: [{ assistant: "How may I assist?", reason: "generic" }],
-    },
+    detailsMarkdown: `Observant and candid. ${tone}. ${name} has an established adult history.`,
   });
   if (!compiled.ok) throw new Error("test Soul did not compile");
   return compiled.snapshot;

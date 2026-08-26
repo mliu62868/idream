@@ -80,23 +80,7 @@ describe("Character QA evidence authority", () => {
     gender: "female",
     relationshipArchetype: "trusted companion",
     characterPromise: "A precise and dependable companion",
-    personality: "Observant and direct",
-    tone: "Warm and concise",
-    cadence: "Measured sentences",
-    vocabulary: ["tell me"],
-    voiceHabits: ["asks one precise question"],
-    voiceAvoid: ["generic assistant language"],
-    backstory: "An adult companion with a stable history",
-    values: ["honesty"],
-    wants: ["connection"],
-    fears: ["misunderstanding"],
-    contradictions: ["bold but careful"],
-    interaction: { initiative: "balanced", curiosity: "specific", pacing: "steady", affection: "earned", conflict: "direct", repair: "explicit" },
-    canon: { facts: ["Adult"], unknowns: ["Unstated facts stay unknown"] },
-    dialogue: {
-      positive: [{ context: "opening", user: "Hello", assistant: "Tell me what matters.", demonstrates: ["direct"] }],
-      negative: [{ assistant: "How may I assist?", reason: "generic" }],
-    },
+    detailsMarkdown: "Observant and direct. Warm and concise. An adult companion with a stable history.",
   });
   if (!compiledSoul.ok || compiledSoul.diagnostics.length > 0) {
     throw new Error("QA fixture Soul failed to compile");

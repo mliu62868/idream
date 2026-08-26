@@ -105,12 +105,12 @@ function releasedCharacterProjection(content: {
       { diagnostics: soulResult.diagnostics.map((item) => item.code) },
     );
   }
-  const { identity } = soulResult.snapshot.soul;
-  const name = identity.name;
-  const description = identity.characterPromise;
-  const age = identity.age;
-  const gender = identity.gender;
-  const relationship = identity.relationshipArchetype;
+  const soul = soulResult.snapshot.soul;
+  const name = soul.name;
+  const description = soul.characterPromise;
+  const age = soul.age;
+  const gender = soul.gender;
+  const relationship = soul.relationshipArchetype;
   const style = stringValue(appearance.style);
   const firstMessage = stringValue(opening.firstMessage);
   if (!name || !description || age === null || !gender || !relationship || !style || !firstMessage) {
@@ -131,8 +131,9 @@ function releasedCharacterProjection(content: {
     relationship,
     appearance: toInputJson(appearance),
     advancedDetails: toInputJson({
-      soul: soulResult.snapshot.soul,
-      opening,
+      relationshipArchetype: soulResult.snapshot.soul.relationshipArchetype,
+      detailsMarkdown: soulResult.snapshot.soul.detailsMarkdown,
+      firstMessage,
       soulFingerprint: soulResult.snapshot.compiled.fingerprint,
       compilerVersion: soulResult.snapshot.compiled.compilerVersion,
     }),

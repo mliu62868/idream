@@ -718,8 +718,7 @@ export const contentCharacterAssistResponseSchema = z.object({
   description: z.string(),
   nameIdeas: z.array(z.string()),
   advancedDetails: z.object({
-    personality: z.string(),
-    speakingStyle: z.string(),
+    detailsMarkdown: z.string(),
     firstMessage: z.string(),
     visualBrief: z.string(),
   }).strict(),

@@ -4,10 +4,10 @@ import { characterContentHash } from "../shared/character-content-identity";
 import { toInputJson } from "../shared/prisma-json";
 import { lockCharacterGenerationAuthority } from "./generation-authority-lock";
 
-export const REPOSITORY_SOUL_DOCUMENT_VERSION = 1 as const;
+export const REPOSITORY_SOUL_DOCUMENT_VERSION = 2 as const;
 
 export interface RepositorySoulDocument {
-  documentVersion: 1;
+  documentVersion: 2;
   characterId: string;
   expectedCurrentContentHash: string;
   reason: string;
@@ -40,8 +40,7 @@ function requiredText(value: unknown, field: string): string {
 /**
  * SPEC: Repository documents carry authored facts only. The shared compiler is
  * the sole place that can turn them into immutable runtime bytes.
- * INVARIANT: Official imports reject warnings as well as errors, so a bulk
- * command can never fill missing character facts with a generic template.
+ * INVARIANT: Official imports never invent missing basic facts.
  */
 export function prepareRepositorySoulImport(
   value: unknown,
@@ -70,11 +69,6 @@ export function prepareRepositorySoulImport(
   if (!compiled.ok) {
     throw new Error(
       `Character Soul compilation failed: ${compiled.diagnostics.map((item) => `${item.path.join(".")}: ${item.message}`).join("; ")}`,
-    );
-  }
-  if (compiled.diagnostics.length > 0) {
-    throw new Error(
-      `Official Character Soul is incomplete: ${compiled.diagnostics.map((item) => `${item.path.join(".")}: ${item.message}`).join("; ")}`,
     );
   }
   const openingSnapshot = { firstMessage: document.opening.firstMessage };

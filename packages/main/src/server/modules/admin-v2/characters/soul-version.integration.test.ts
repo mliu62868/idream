@@ -106,11 +106,8 @@ describe("Character Soul version authority", () => {
         gender: "female",
         relationshipArchetype: "late-night confidante",
         characterPromise: "A precise place to put the day down.",
-        personality: "Measured, observant, and gently challenging.",
-        tone: "Warm and concise.",
-        backstory: "A former night-shift radio host.",
+        detailsMarkdown: "Measured, observant, and gently challenging. Warm and concise. A former night-shift radio host.",
         firstMessage: "What followed you home tonight?",
-        exampleDialogue: ["Start with the part that still has heat."],
       },
       reason: "Create reviewed Soul version",
       requestId: `soul-version-request-${suffix}`,
@@ -135,7 +132,7 @@ describe("Character Soul version authority", () => {
     const loaded = loadCharacterSoulSnapshot(versions[1]?.personaSnapshot);
     expect(loaded.ok).toBe(true);
     if (!loaded.ok) throw new Error("created Soul must load through runtime authority");
-    expect(loaded.snapshot.soul.identity.characterPromise).toBe(
+    expect(loaded.snapshot.soul.characterPromise).toBe(
       "A precise place to put the day down.",
     );
     expect(await prisma.character.findUniqueOrThrow({ where: { id: characterId } })).toMatchObject({
@@ -161,11 +158,8 @@ describe("Character Soul version authority", () => {
         gender: "female",
         relationshipArchetype: "late-night confidante",
         characterPromise: "A precise place to put the day down.",
-        personality: "Measured, observant, and gently challenging.",
-        tone: "Warm, concise, and newly candid.",
-        backstory: "A former night-shift radio host.",
+        detailsMarkdown: "Measured, observant, and gently challenging. Warm, concise, and newly candid. A former night-shift radio host.",
         firstMessage: "What followed you home tonight?",
-        exampleDialogue: ["Start with the part that still has heat."],
       },
       reason: "Verify idempotent Soul version creation",
     };

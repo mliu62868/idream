@@ -252,6 +252,34 @@ export async function submitCharacterDraft(input: {
     relationship,
     advancedDetails,
   });
+  const storedAdvancedDetails = { ...advancedDetails };
+  for (const key of [
+    "description",
+    "relationship",
+    "personality",
+    "tone",
+    "speakingStyle",
+    "backstory",
+    "exampleDialogue",
+    "values",
+    "wants",
+    "fears",
+    "contradictions",
+    "cadence",
+    "vocabulary",
+    "voiceHabits",
+    "voiceAvoid",
+    "interaction",
+    "canon",
+    "negativeDialogue",
+  ]) {
+    delete storedAdvancedDetails[key];
+  }
+  Object.assign(storedAdvancedDetails, {
+    relationshipArchetype: relationship,
+    detailsMarkdown: jsonNonBlankString(advancedDetails.detailsMarkdown) ?? "",
+    firstMessage: jsonNonBlankString(advancedDetails.firstMessage),
+  });
   const moderation = await moderateText(
     "character_draft",
     id,
@@ -337,7 +365,7 @@ export async function submitCharacterDraft(input: {
         relationship,
         imageAssetId: anchorAssetId,
         appearance: toInputJson(draft.appearance ?? {}),
-        advancedDetails: toInputJson(draft.advancedDetails ?? {}),
+        advancedDetails: toInputJson(storedAdvancedDetails),
       },
     });
 
@@ -416,13 +444,8 @@ function requiredCharacterPersonaFields(input: {
   const missingFields: string[] = [];
   if (!input.description) missingFields.push("description");
   if (!input.relationship) missingFields.push("relationship");
-  for (const field of ["personality", "tone", "backstory", "firstMessage"] as const) {
-    if (!jsonNonBlankString(input.advancedDetails[field])) missingFields.push(field);
+  if (!jsonNonBlankString(input.advancedDetails.firstMessage)) {
+    missingFields.push("firstMessage");
   }
-  const exampleDialogue = input.advancedDetails.exampleDialogue;
-  const hasExampleDialogue =
-    jsonNonBlankString(exampleDialogue) !== null ||
-    jsonStringArray(exampleDialogue).some((line) => line.trim().length > 0);
-  if (!hasExampleDialogue) missingFields.push("exampleDialogue");
   return missingFields;
 }

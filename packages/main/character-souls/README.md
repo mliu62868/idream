@@ -8,17 +8,17 @@ Required shape:
 
 ```json
 {
-  "documentVersion": 1,
+  "documentVersion": 2,
   "characterId": "existing-official-character-id",
   "expectedCurrentContentHash": "optimistic-lock-from-current-content-version",
   "reason": "character-specific review reason",
   "soul": {
-    "identity": {},
-    "innerLife": {},
-    "voice": {},
-    "interaction": {},
-    "canon": {},
-    "dialogue": { "positive": [], "negative": [] }
+    "name": "Mara",
+    "age": 31,
+    "gender": "female",
+    "relationshipArchetype": "old friend",
+    "characterPromise": "A precise confidante who notices what others miss.",
+    "detailsMarkdown": "## Voice\nDry warmth and concise questions."
   },
   "opening": { "firstMessage": "Explicitly authored opening" }
 }

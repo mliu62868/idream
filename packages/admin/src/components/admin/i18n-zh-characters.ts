@@ -61,6 +61,8 @@ export const adminZhCharacters: Record<string, string> = {
   "Current look": "当前形象",
   "D7 {value}": "D7 {value}",
   "Define the identity anchor, stable traits, style, and reference direction.": "定义身份锚点、稳定特征、风格与参考方向。",
+  "Additional details": "扩展信息",
+  "Additional details · Markdown (optional)": "扩展信息 · Markdown（选填）",
   "Describe the look you want": "描述这次想要的画面",
   "Done": "已完成",
   "Draft {completed}/{total}": "草稿 {completed}/{total}",
@@ -79,6 +81,8 @@ export const adminZhCharacters: Record<string, string> = {
   "Generation results could not be refreshed": "无法刷新生成结果",
   "Give the character a name, a relationship, a promise, and either a personality or a tone.":
     "给角色取个名字，定下关系定位和角色承诺；性格与语气至少填一个。",
+  "Give the character a name, relationship, promise, and opening message.":
+    "给角色取名，明确关系、角色承诺和开场白。",
   "Hair traits (one per line)": "头发特征（每行一个）",
   "I confirm creating a new visual identity version. Live images are not replaced automatically.":
     "我确认要创建新的视觉身份版本。线上图片不会自动替换。",
@@ -94,6 +98,8 @@ export const adminZhCharacters: Record<string, string> = {
   "It does not publish a Release. Live chat keeps the released Soul until a Release ships this version.":
     "此操作不发布 Release。线上对话仍使用已发布的灵魂版本，直到有 Release 带上这一版。",
   "Keep adjusting from this one": "从这张继续调整",
+  "Keep the basics clear. Put anything else in Markdown. Creating a version is explicit, and existing sessions keep their pinned bytes.":
+    "基本信息保持清晰，其余内容写进 Markdown。新建版本需要明确确认，现有会话继续使用已固定的内容。",
   "Live {completed}/{total}": "线上 {completed}/{total}",
   "Loaded this run's parameter snapshot. Adjust it to create a new run.": "已载入这一轮的参数快照；修改后可创建新一轮。",
   "Loading creation history…": "正在读取历史创作…",
@@ -229,6 +235,11 @@ export const adminZhCharacters: Record<string, string> = {
     "提交 QA 后，服务端会运行版本化行为评测器和每个不同的生产 Chat 配置，并自动记录对话、耗时、适配器身份与哈希。",
   "Historical QA Run predates pairwise distinctiveness evidence.": "该历史 QA 批次早于两两区分度证据。",
   "Structured Soul editor": "结构化 Soul 编辑器",
+  "Soul editor": "Soul 编辑器",
+  "The basics are rendered into SOUL.md automatically. Additional details are appended as Markdown without another schema.":
+    "基本信息会自动渲染为 SOUL.md；扩展信息直接作为 Markdown 附加，不再套另一层结构。",
+  "Write personality, voice, backstory, boundaries, examples, or any other useful context in your own structure.":
+    "可按自己的结构填写性格、语气、背景、边界、示例或任何有用信息。",
   "Total ms": "总耗时毫秒数",
   "Unavailable until the Soul compiles.": "Soul 编译成功后可用。",
   "Upload image": "上传图片",

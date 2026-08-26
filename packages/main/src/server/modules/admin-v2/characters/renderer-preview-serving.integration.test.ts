@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { compileCharacterSoul } from "@idream/shared";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { dispatchV1 } from "@/server/modules/ourdream/service";
 import { getCharacterWorkspace } from "./workspace";
 import { issueCharacterPreviewToken } from "./preview-token";
+import { toInputJson } from "../shared/prisma-json";
 import {
   characterPreviewMediaUrl,
   loadCharacterRendererPreview,
@@ -104,17 +106,22 @@ describe.sequential("Character renderer preview Serving authority", () => {
         activeKey: `renderer-serving:${characterId}`,
       },
     });
+    const compiledSoul = compileCharacterSoul({
+      name: "Serving Truth",
+      age: 28,
+      gender: "female",
+      relationshipArchetype: "trusted companion",
+      characterPromise: "A fixture whose preview follows the real Serving pointer.",
+      detailsMarkdown: "The active pointer is the truth.",
+    });
+    if (!compiledSoul.ok) throw new Error("renderer preview Soul fixture must compile");
     await prisma.characterContentVersion.create({
       data: {
         id: contentId,
         characterId,
         version: 1,
         contentHash: `renderer-serving-content-hash-${suffix}`,
-        personaSnapshot: {
-          name: "Serving Truth",
-          description: "A fixture whose preview follows the real Serving pointer.",
-          exampleDialogue: ["The active pointer is the truth."],
-        },
+        personaSnapshot: toInputJson(compiledSoul.snapshot),
         openingSnapshot: { firstMessage: "Only the active Release is live." },
         appearanceSnapshot: { style: "realistic" },
         sourceType: "renderer_serving_test",

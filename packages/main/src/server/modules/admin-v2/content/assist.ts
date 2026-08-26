@@ -8,7 +8,7 @@ import {
 } from "./text-generation";
 import { moderateText } from "@/server/moderation/text-authority";
 
-// SPEC: AI 辅助生成 —— 一句话 seed → 可分区编辑的角色创作底稿。
+// SPEC: AI 辅助生成 —— 一句话 seed → 基本信息 + 一段可自由编辑的 Soul Markdown。
 // INTENT: 仅产出建议，不落库；admin 在 UI 里二次编辑后再走 official / template 的创建流。
 // INVARIANT: seed 与生成结果都要过 moderation，blocked → 403。
 
@@ -45,22 +45,12 @@ export async function generateCharacterDraft(
       { role: "user", content: context },
     ],
   }, runtime);
-  const personality = await generateAdminText({
+  const detailsMarkdown = await generateAdminText({
     messages: [
       {
         role: "system",
         content:
-          "List 3-5 concise personality traits (comma-separated) for an ADULT (18+) AI companion based on the user's seed. Output the comma-separated traits only.",
-      },
-      { role: "user", content: context },
-    ],
-  }, runtime);
-  const speakingStyle = await generateAdminText({
-    messages: [
-      {
-        role: "system",
-        content:
-          "Describe this ADULT (18+) AI companion's speaking style in 2 concise sentences. Cover rhythm, vocabulary, warmth, and one distinctive verbal habit. Prose only.",
+          "Write concise Markdown details for an ADULT (18+) AI companion based on the user's seed. Use only useful sections such as Personality, Voice, Background, Boundaries, or Dialogue examples. Do not repeat name, age, gender, relationship, or the short character promise. Output Markdown only.",
       },
       { role: "user", content: context },
     ],
@@ -101,7 +91,7 @@ export async function generateCharacterDraft(
   const moderation = await moderateText(
     "character_assist",
     "draft",
-    `${body.seed} ${description} ${personality} ${speakingStyle} ${firstMessage} ${visualBrief} ${nameIdeas.join(" ")}`,
+    `${body.seed} ${description} ${detailsMarkdown} ${firstMessage} ${visualBrief} ${nameIdeas.join(" ")}`,
     "input",
   );
   if (moderation.status === "blocked") {
@@ -111,7 +101,7 @@ export async function generateCharacterDraft(
   return {
     description,
     nameIdeas,
-    advancedDetails: { personality, speakingStyle, firstMessage, visualBrief },
+    advancedDetails: { detailsMarkdown, firstMessage, visualBrief },
     runtime: adminTextRuntimeIdentity(runtime),
   };
 }

@@ -36,8 +36,7 @@ export type AdminTextProbeReport = {
   characterAssist: (ProbeOperation & {
     descriptionCharacters: number;
     nameIdeas: number;
-    personalityCharacters: number;
-    speakingStyleCharacters: number;
+    detailsMarkdownCharacters: number;
     firstMessageCharacters: number;
     visualBriefCharacters: number;
     runtime: AdminTextRuntimeIdentity | null;
@@ -203,8 +202,7 @@ async function probeCharacterAssist(
       adminSourceRevision,
       descriptionCharacters: textLength(data?.description),
       nameIdeas,
-      personalityCharacters: textLength(advanced?.personality),
-      speakingStyleCharacters: textLength(advanced?.speakingStyle),
+      detailsMarkdownCharacters: textLength(advanced?.detailsMarkdown),
       firstMessageCharacters: textLength(advanced?.firstMessage),
       visualBriefCharacters: textLength(advanced?.visualBrief),
       runtime,
@@ -215,8 +213,7 @@ async function probeCharacterAssist(
       envelope?.ok === true &&
       result.descriptionCharacters > 0 &&
       result.nameIdeas > 0 &&
-      result.personalityCharacters > 0 &&
-      result.speakingStyleCharacters > 0 &&
+      result.detailsMarkdownCharacters > 0 &&
       result.firstMessageCharacters > 0 &&
       result.visualBriefCharacters > 0 &&
       isUsablePipelineIdentity(runtime);
@@ -228,8 +225,7 @@ async function probeCharacterAssist(
       adminSourceRevision: null,
       descriptionCharacters: 0,
       nameIdeas: 0,
-      personalityCharacters: 0,
-      speakingStyleCharacters: 0,
+      detailsMarkdownCharacters: 0,
       firstMessageCharacters: 0,
       visualBriefCharacters: 0,
       runtime: null,

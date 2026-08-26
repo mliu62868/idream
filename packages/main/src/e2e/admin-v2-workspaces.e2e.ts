@@ -4,6 +4,7 @@ import {
   characterReleaseAssetPlacement,
   parseCharacterReleaseAssetManifest,
 } from "@idream/shared/admin";
+import { compileCharacterSoul } from "@idream/shared";
 import axe, { type AxeResults } from "axe-core";
 import { prisma } from "@/server/lib/db";
 import { executeCharacterReleaseCommand } from "@/server/modules/admin-v2/characters/release-executor";
@@ -412,18 +413,11 @@ async function completeCharacterCreateDraft(
   await page.getByLabel("Character promise").fill(
     "A warm, precise place to put the day down",
   );
-  await page.getByLabel("Personality").fill(
-    "Observant, measured, and gently challenging",
-  );
-  await page.getByLabel("Tone").fill("Warm, concise, and grounded");
-  await page.getByLabel("Backstory").fill(
-    "Years hosting a late-night radio show taught her to notice what people leave unsaid.",
-  );
   await page.getByLabel("First message").fill(
     "You made it. What do you need to put down tonight?",
   );
-  await page.getByLabel("Example dialogue (one per line)").fill(
-    "Tell me the part you keep replaying.",
+  await page.getByLabel("Additional details · Markdown (optional)").fill(
+    "## Personality and voice\nObservant, measured, warm, and gently challenging.\n\n## Background\nYears hosting a late-night radio show taught her to notice what people leave unsaid.",
   );
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await assertNotCreated();
@@ -1236,24 +1230,23 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         expiresAt: new Date("2030-01-01T00:00:00.000Z"),
       },
     });
+    const compiledSoulResult = compileCharacterSoul({
+      name: releaseCharacterName,
+      age: 29,
+      gender: "female",
+      relationshipArchetype: "trusted confidante",
+      characterPromise: "A grounded daily reflection partner.",
+      detailsMarkdown: "Attentive, warm, and concise. A host who remembers the important details.",
+    });
+    if (!compiledSoulResult.ok) throw new Error("E2E Soul fixture must compile");
+    const compiledSoul = compiledSoulResult.snapshot;
     await prisma.characterContentVersion.create({
       data: {
         id: releaseContentId,
         characterId: releaseCharacterId,
         version: 1,
         contentHash: `e2e-content-hash-${suffix}`,
-        personaSnapshot: {
-          name: releaseCharacterName,
-          age: 29,
-          gender: "female",
-          relationshipArchetype: "trusted confidante",
-          characterPromise: "A grounded daily reflection partner.",
-          personality: "Attentive and calm.",
-          tone: "Warm and concise.",
-          backstory: "A host who remembers the important details.",
-          systemPrompt: "Stay warm, concise, and grounded.",
-          description: "An attentive companion with immutable release evidence.",
-        },
+        personaSnapshot: compiledSoul as unknown as Prisma.InputJsonValue,
         openingSnapshot: { firstMessage: "Welcome back. What should we make space for today?" },
         appearanceSnapshot: { style: "realistic", eyes: "amber" },
         sourceType: "playwright",

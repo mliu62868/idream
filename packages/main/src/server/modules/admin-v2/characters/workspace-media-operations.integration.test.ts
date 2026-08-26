@@ -42,7 +42,7 @@ describe("Character media operations projection", () => {
       gender: "female",
       relationshipArchetype: "trusted companion",
       characterPromise: "Character media operations projection fixture.",
-      personality: "Observant and direct.",
+      detailsMarkdown: "Observant and direct.",
     });
     if (!compiledSoul.ok) throw new Error("media operations fixture Soul must compile");
     await prisma.characterContentVersion.create({

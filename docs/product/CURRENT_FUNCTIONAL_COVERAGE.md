@@ -1,12 +1,19 @@
 # iDream 当前功能覆盖审计
 
-更新日期：2026-08-23
+更新日期：2026-08-25
 
 ## 结论
 
 这份文档是当前代码态的功能覆盖表，覆盖的是“用户能否完整使用”和“有没有测试证据”。它补充并修正 `ProductFeatureMap.md` 里 2026-06-13 的旧状态描述。
 
-当前状态：**Character Soul Runtime 的仓库实现、开发库迁移、生产构建、真实 Admin 发布与签名 Chat 对话闭环已经完成。Alexa 的 schema v1 Soul v3 已连同三槽精确素材包通过 evaluator-4 QA、Release 提议、独立批准、固定快照校验和 Publish，当前 Serving 指向 Admin Release #5（`cmsi6ziej000offl7v0y4wr6d`）/ ContentVersion `cmsh1x0h6014zmul7b05gdna3`。旧会话继续固定各自创建时的 Release，新会话固定 Release #5、`character-soul-1` fingerprint 与精确 Qwen profile；公开详情页读取 Release 固定的 hero。final Gate 的 Character Soul 权威审计为 26/26 引用快照可加载、0 parity mismatch、0 invalid snapshot；15 个可解析 legacy Serving 与 271 个历史 null pin 作为迁移期 drain 指标保留，不被误判为损坏状态。历史运行证据证明本地核心链与三权威 Recovery，最新 Gate 则明确拒绝把缺 release 绑定的旧 probes 当作当前 revision；公开上线保持 NO-GO。**
+当前代码状态：**Character Soul authoring 已收口到 schema v2 / `character-soul-2`：5 个基本事实 + 1 段可选 Markdown；开场白、外观、关系状态、Scene 与用户记忆保持独立。用户页、Admin、Starter、AI assist、不可变存储、Release 投影、Chat 与 Agent 已改用同一契约。schema v0/v1 只在读取边界保留，已固定会话继续使用历史 prompt 字节。下述 Alexa Release #5、evaluator-4 与 `character-soul-1` 是上一次真实运行验证的历史证据，不是当前源码 revision 的运行证明；当前 revision 必须重新启动并重跑 Soul/Chat/浏览器验证后才能更新运行时结论。公开上线仍为 NO-GO。**
+
+## 2026-08-25 Character Soul 极简化
+
+- **页面**：用户 Create 的第三步改为 Soul；基本信息、开场白和一块可选 Markdown 取代 personality/tone/backstory/example dialogue 分栏。Admin 创建向导、Soul 版本编辑器和 Starter 模板使用同一结构；历史浏览器草稿和历史模板只在读取时合并到 Markdown。
+- **后台与存储**：Shared 的新写契约严格拒绝旧字段；Main 写入 schema v2 immutable ContentVersion，`SOUL.md` 与 `compiled.systemPrompt` 是同一文本。`Character.advancedDetails` 只保留关系、Markdown、开场白和运行标识等轻量投影；现有 JSON 列足够，不新增表或 DB migration。
+- **Chat 与 Agent**：Chat 从 pinned ContentVersion 读取扁平 Soul；PreparedTurn 继续在外层添加 runtime policy / boundaries / turn state，但不改变 Soul 文本。Soul 不再复制为 `canon.md` knowledge 文件，避免同一角色事实形成两份提示词权威。
+- **历史与发布**：schema v0/v1 保留只读 adapter，编辑后只产生 v2。v2 load 同时校验 compiler 版本、确定性渲染文本和 fingerprint。行为评测器升为 evaluator-5，canon 场景不再假设可选扩展里一定存在结构化 canon。
 
 ## 2026-08-23 最终迁移与真实端到端验证快照
 

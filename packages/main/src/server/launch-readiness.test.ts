@@ -552,8 +552,7 @@ function passingAdminTextProbe(
       status: 200,
       descriptionCharacters: 72,
       nameIdeas: 3,
-      personalityCharacters: 31,
-      speakingStyleCharacters: 54,
+      detailsMarkdownCharacters: 86,
       firstMessageCharacters: 46,
       visualBriefCharacters: 62,
       runtime: {

@@ -233,9 +233,7 @@ describe("official character CMS", () => {
     });
     expect(latest.personaSnapshot).toMatchObject({
       soul: {
-        identity: {
-          characterPromise: "An official companion with silver hair and amber eyes.",
-        },
+        characterPromise: "An official companion with silver hair and amber eyes.",
       },
     });
   });

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
-export const CHARACTER_SOUL_SCHEMA_VERSION = 1 as const;
-export const CHARACTER_SOUL_COMPILER_VERSION = "character-soul-1" as const;
+export const CHARACTER_SOUL_SCHEMA_VERSION = 2 as const;
+export const CHARACTER_SOUL_COMPILER_VERSION = "character-soul-2" as const;
 
 export type CharacterSoulGender = "female" | "male" | "trans";
 
@@ -12,68 +12,46 @@ export interface SoulDiagnostic {
   message: string;
 }
 
-export interface CharacterSoulSnapshot {
-  schemaVersion: 1;
-  soul: {
-    identity: {
-      name: string;
-      age: number;
-      gender: CharacterSoulGender;
-      relationshipArchetype: string;
-      characterPromise: string;
-    };
-    innerLife: {
-      personality: string;
-      values: string[];
-      wants: string[];
-      fears: string[];
-      contradictions: string[];
-      backstory: string;
-    };
-    voice: {
-      tone: string;
-      cadence: string;
-      vocabulary: string[];
-      habits: string[];
-      avoid: string[];
-    };
-    interaction: {
-      initiative: string;
-      curiosity: string;
-      pacing: string;
-      affection: string;
-      conflict: string;
-      repair: string;
-    };
-    canon: {
-      facts: string[];
-      unknowns: string[];
-    };
-    dialogue: {
-      positive: Array<{
-        context: string | null;
-        user: string | null;
-        assistant: string;
-        demonstrates: string[];
-      }>;
-      negative: Array<{
-        assistant: string;
-        reason: string;
-      }>;
-    };
-  };
-  compiled: {
-    compilerVersion: string;
-    systemPrompt: string;
-    fingerprint: string;
-    estimatedTokens: number;
-  };
+export interface CharacterSoul {
+  name: string;
+  age: number;
+  gender: CharacterSoulGender;
+  relationshipArchetype: string;
+  characterPromise: string;
+  detailsMarkdown: string;
 }
 
-export type CharacterSoulResult =
+export interface CompiledCharacterSoul {
+  compilerVersion: string;
+  systemPrompt: string;
+  fingerprint: string;
+  estimatedTokens: number;
+}
+
+export interface CharacterSoulSnapshot {
+  schemaVersion: 2;
+  soul: CharacterSoul;
+  compiled: CompiledCharacterSoul;
+}
+
+/**
+ * Historical snapshots keep their stored schema marker and compiled bytes.
+ * Their old authoring dimensions are projected into the one current details
+ * field only for editing and operator display; Chat still receives the pinned
+ * historical system prompt.
+ */
+export interface LoadedCharacterSoulSnapshot {
+  schemaVersion: 0 | 1 | 2;
+  soul: CharacterSoul;
+  compiled: CompiledCharacterSoul;
+}
+
+export type CharacterSoulResult<
+  TSnapshot extends LoadedCharacterSoulSnapshot = LoadedCharacterSoulSnapshot,
+> =
   | {
       ok: true;
-      snapshot: CharacterSoulSnapshot;
+      snapshot: TSnapshot;
       renderedMarkdown: string;
       diagnostics: SoulDiagnostic[];
     }
@@ -82,37 +60,85 @@ export type CharacterSoulResult =
       diagnostics: SoulDiagnostic[];
     };
 
-type Soul = CharacterSoulSnapshot["soul"];
+type LegacyV1Soul = {
+  identity: {
+    name: string;
+    age: number;
+    gender: CharacterSoulGender;
+    relationshipArchetype: string;
+    characterPromise: string;
+  };
+  innerLife: {
+    personality: string;
+    values: string[];
+    wants: string[];
+    fears: string[];
+    contradictions: string[];
+    backstory: string;
+  };
+  voice: {
+    tone: string;
+    cadence: string;
+    vocabulary: string[];
+    habits: string[];
+    avoid: string[];
+  };
+  interaction: {
+    initiative: string;
+    curiosity: string;
+    pacing: string;
+    affection: string;
+    conflict: string;
+    repair: string;
+  };
+  canon: {
+    facts: string[];
+    unknowns: string[];
+  };
+  dialogue: {
+    positive: Array<{
+      context: string | null;
+      user: string | null;
+      assistant: string;
+      demonstrates: string[];
+    }>;
+    negative: Array<{
+      assistant: string;
+      reason: string;
+    }>;
+  };
+};
 
 const PROMPT_WARNING_TOKENS = 6_000;
 
 /**
- * SPEC: Compile mutable authoring data into the one immutable Soul contract.
- * INTENT: Authoring adapters may map old flat fields, but missing facts remain
- * empty and visible as diagnostics; the compiler never invents personality.
+ * SPEC: Character Soul authoring has five required facts and one optional
+ * Markdown field. The compiler owns validation, rendering, token estimation,
+ * and fingerprinting behind this one interface.
  */
-export function compileCharacterSoul(draft: unknown): CharacterSoulResult {
-  const diagnostics: SoulDiagnostic[] = [];
+export function compileCharacterSoul(
+  draft: unknown,
+): CharacterSoulResult<CharacterSoulSnapshot> {
   const root = record(draft);
   if (!root) {
-    return failed("soul_draft_invalid", [], "Character Soul draft must be an object.");
+    return failed(
+      "soul_draft_invalid",
+      [],
+      "Character Soul draft must be an object.",
+    );
   }
-
-  const soul = root.soul
-    ? decodeSoul(root.soul, diagnostics)
-    : adaptAuthoringDraft(root, diagnostics);
+  const diagnostics: SoulDiagnostic[] = [];
+  const soul = decodeSoul(record(root.soul) ?? root, diagnostics);
   if (hasErrors(diagnostics)) return { ok: false, diagnostics };
 
-  addCompletenessWarnings(soul, diagnostics);
-  if (hasErrors(diagnostics)) return { ok: false, diagnostics };
-  const systemPrompt = compileSystemPrompt(soul);
+  const systemPrompt = renderSoulMarkdown(soul);
   const estimatedTokens = estimateTokens(systemPrompt);
   if (estimatedTokens > PROMPT_WARNING_TOKENS) {
     diagnostics.push({
       code: "compiled_prompt_budget_exceeded",
       path: ["compiled", "estimatedTokens"],
       severity: "warning",
-      message: `Compiled Soul is approximately ${estimatedTokens} tokens; review it instead of silently truncating it.`,
+      message: `Compiled Soul is approximately ${estimatedTokens} tokens; shorten Additional details before release.`,
     });
   }
   const compilerVersion = CHARACTER_SOUL_COMPILER_VERSION;
@@ -122,28 +148,37 @@ export function compileCharacterSoul(draft: unknown): CharacterSoulResult {
     soul,
     compiled: { compilerVersion, systemPrompt, fingerprint, estimatedTokens },
   };
-
   return {
     ok: true,
     snapshot,
-    renderedMarkdown: renderSoulMarkdown(soul),
+    renderedMarkdown: systemPrompt,
     diagnostics,
   };
 }
 
 /**
- * SPEC: Decode immutable stored bytes without running the current compiler.
- * INVARIANT: A v1 fingerprint mismatch fails closed; legacy decoding preserves
- * its explicit stored prompt and never borrows mutable Character fields.
+ * SPEC: immutable v2 bytes are verified, never recompiled. Historical v0/v1
+ * bytes remain readable so existing sessions keep their exact pinned prompt.
  */
-export function loadCharacterSoulSnapshot(stored: unknown): CharacterSoulResult {
+export function loadCharacterSoulSnapshot(
+  stored: unknown,
+): CharacterSoulResult {
   const root = record(stored);
   if (!root) {
-    return failed("soul_snapshot_invalid", [], "Character Soul snapshot must be an object.");
+    return failed(
+      "soul_snapshot_invalid",
+      [],
+      "Character Soul snapshot must be an object.",
+    );
   }
-  if (root.schemaVersion === undefined || root.schemaVersion === null || root.schemaVersion === 0) {
+  if (
+    root.schemaVersion === undefined ||
+    root.schemaVersion === null ||
+    root.schemaVersion === 0
+  ) {
     return loadLegacySnapshot(root);
   }
+  if (root.schemaVersion === 1) return loadV1Snapshot(root);
   if (root.schemaVersion !== CHARACTER_SOUL_SCHEMA_VERSION) {
     return failed(
       "soul_schema_version_unsupported",
@@ -153,63 +188,50 @@ export function loadCharacterSoulSnapshot(stored: unknown): CharacterSoulResult 
   }
 
   const diagnostics: SoulDiagnostic[] = [];
-  const soul = decodeSoul(root.soul, diagnostics);
-  const compiled = record(root.compiled);
-  if (!compiled) {
+  const soul = decodeSoul(record(root.soul) ?? {}, diagnostics);
+  const compiled = decodeCompiled(root.compiled, diagnostics);
+  if (hasErrors(diagnostics) || !compiled) return { ok: false, diagnostics };
+  const renderedMarkdown = renderSoulMarkdown(soul);
+  if (
+    compiled.compilerVersion !== CHARACTER_SOUL_COMPILER_VERSION ||
+    compiled.systemPrompt !== renderedMarkdown
+  ) {
     diagnostics.push(errorDiagnostic(
-      "compiled_artifact_missing",
-      ["compiled"],
-      "Stored Soul is missing its immutable compiled artifact.",
+      "compiled_prompt_mismatch",
+      ["compiled", "systemPrompt"],
+      "Stored Soul prompt does not match the schema v2 compiler output.",
     ));
     return { ok: false, diagnostics };
   }
-  const compilerVersion = requiredText(
-    compiled.compilerVersion,
-    diagnostics,
-    "compiled_compiler_version_required",
-    ["compiled", "compilerVersion"],
-  );
-  const systemPrompt = requiredText(
-    compiled.systemPrompt,
-    diagnostics,
-    "compiled_system_prompt_required",
-    ["compiled", "systemPrompt"],
-    false,
-  );
-  const fingerprint = requiredText(
-    compiled.fingerprint,
-    diagnostics,
-    "compiled_fingerprint_required",
-    ["compiled", "fingerprint"],
-  );
-  const estimatedTokens = positiveInteger(
-    compiled.estimatedTokens,
-    diagnostics,
-    "compiled_token_estimate_invalid",
-    ["compiled", "estimatedTokens"],
-  );
-  if (hasErrors(diagnostics)) return { ok: false, diagnostics };
-
-  const expected = soulFingerprint({ soul, compilerVersion, systemPrompt });
-  if (fingerprint !== expected) {
+  if (compiled.fingerprint !== soulFingerprint({
+    soul,
+    compilerVersion: compiled.compilerVersion,
+    systemPrompt: compiled.systemPrompt,
+  })) {
+    diagnostics.push(fingerprintMismatch());
+    return { ok: false, diagnostics };
+  }
+  const estimatedTokens = estimateTokens(compiled.systemPrompt);
+  if (compiled.estimatedTokens !== estimatedTokens) {
     diagnostics.push(errorDiagnostic(
-      "compiled_fingerprint_mismatch",
-      ["compiled", "fingerprint"],
-      "Stored Soul fingerprint does not match its canonical Soul and compiled prompt bytes.",
+      "compiled_token_estimate_mismatch",
+      ["compiled", "estimatedTokens"],
+      "Stored Soul token estimate does not match its compiled prompt bytes.",
     ));
     return { ok: false, diagnostics };
   }
-
-  addCompletenessWarnings(soul, diagnostics);
-  if (hasErrors(diagnostics)) return { ok: false, diagnostics };
+  if (estimatedTokens > PROMPT_WARNING_TOKENS) {
+    diagnostics.push({
+      code: "compiled_prompt_budget_exceeded",
+      path: ["compiled", "estimatedTokens"],
+      severity: "warning",
+      message: `Compiled Soul is approximately ${estimatedTokens} tokens; shorten Additional details before release.`,
+    });
+  }
   return {
     ok: true,
-    snapshot: {
-      schemaVersion: CHARACTER_SOUL_SCHEMA_VERSION,
-      soul,
-      compiled: { compilerVersion, systemPrompt, fingerprint, estimatedTokens },
-    },
-    renderedMarkdown: renderSoulMarkdown(soul),
+    snapshot: { schemaVersion: 2, soul, compiled },
+    renderedMarkdown,
     diagnostics,
   };
 }
@@ -225,54 +247,58 @@ export function looksLikeMockChatResponse(text: string): boolean {
   return /^Mock\s+/i.test(normalized) || /^Mock probe response:/i.test(normalized);
 }
 
-function adaptAuthoringDraft(
+function decodeSoul(
   root: Record<string, unknown>,
   diagnostics: SoulDiagnostic[],
-): Soul {
-  const advanced = record(root.advancedDetails) ?? {};
-  const interaction = record(root.interaction) ?? record(advanced.interaction) ?? {};
-  const canon = record(root.canon) ?? record(advanced.canon) ?? {};
-  const dialogue = record(root.dialogue) ?? record(advanced.dialogue) ?? {};
-  const examples = root.exampleDialogue ?? advanced.exampleDialogue;
-
-  return decodeSoul({
-    identity: {
-      name: root.name,
-      age: root.age,
-      gender: root.gender,
-      relationshipArchetype:
-        root.relationshipArchetype ?? root.relationship ?? advanced.relationshipArchetype ?? advanced.relationship,
-      characterPromise: root.characterPromise ?? root.description ?? advanced.description,
-    },
-    innerLife: {
-      personality: root.personality ?? advanced.personality,
-      values: root.values ?? advanced.values,
-      wants: root.wants ?? advanced.wants,
-      fears: root.fears ?? advanced.fears,
-      contradictions: root.contradictions ?? advanced.contradictions,
-      backstory: root.backstory ?? advanced.backstory,
-    },
-    voice: {
-      tone: root.tone ?? advanced.tone ?? advanced.speakingStyle,
-      cadence: root.cadence ?? advanced.cadence,
-      vocabulary: root.vocabulary ?? advanced.vocabulary,
-      habits: root.voiceHabits ?? root.habits ?? advanced.voiceHabits ?? advanced.habits,
-      avoid: root.voiceAvoid ?? root.avoid ?? advanced.voiceAvoid ?? advanced.avoid,
-    },
-    interaction,
-    canon,
-    dialogue: {
-      positive:
-        dialogue.positive ??
-        root.positiveDialogue ??
-        advanced.positiveDialogue ??
-        legacyDialogueExamples(examples),
-      negative: dialogue.negative ?? root.negativeDialogue ?? advanced.negativeDialogue,
-    },
-  }, diagnostics);
+): CharacterSoul {
+  return {
+    name: requiredText(
+      root.name,
+      diagnostics,
+      "soul_name_required",
+      ["soul", "name"],
+    ),
+    age: adultAge(root.age, diagnostics, ["soul", "age"]),
+    gender: gender(root.gender, diagnostics, ["soul", "gender"]),
+    relationshipArchetype: requiredText(
+      root.relationshipArchetype,
+      diagnostics,
+      "soul_relationship_required",
+      ["soul", "relationshipArchetype"],
+    ),
+    characterPromise: requiredText(
+      root.characterPromise,
+      diagnostics,
+      "soul_character_promise_required",
+      ["soul", "characterPromise"],
+    ),
+    detailsMarkdown: markdownText(root.detailsMarkdown),
+  };
 }
 
-function decodeSoul(value: unknown, diagnostics: SoulDiagnostic[]): Soul {
+function loadV1Snapshot(root: Record<string, unknown>): CharacterSoulResult {
+  const diagnostics: SoulDiagnostic[] = [];
+  const legacySoul = decodeV1Soul(root.soul, diagnostics);
+  const compiled = decodeCompiled(root.compiled, diagnostics);
+  if (hasErrors(diagnostics) || !compiled) return { ok: false, diagnostics };
+  if (compiled.fingerprint !== soulFingerprint({
+    soul: legacySoul,
+    compilerVersion: compiled.compilerVersion,
+    systemPrompt: compiled.systemPrompt,
+  })) {
+    diagnostics.push(fingerprintMismatch());
+    return { ok: false, diagnostics };
+  }
+  const soul = projectV1Soul(legacySoul);
+  return {
+    ok: true,
+    snapshot: { schemaVersion: 1, soul, compiled },
+    renderedMarkdown: renderSoulMarkdown(soul),
+    diagnostics,
+  };
+}
+
+function decodeV1Soul(value: unknown, diagnostics: SoulDiagnostic[]): LegacyV1Soul {
   const root = record(value) ?? {};
   const identity = record(root.identity) ?? {};
   const innerLife = record(root.innerLife) ?? {};
@@ -280,12 +306,11 @@ function decodeSoul(value: unknown, diagnostics: SoulDiagnostic[]): Soul {
   const interaction = record(root.interaction) ?? {};
   const canon = record(root.canon) ?? {};
   const dialogue = record(root.dialogue) ?? {};
-
   return {
     identity: {
       name: requiredText(identity.name, diagnostics, "identity_name_required", ["soul", "identity", "name"]),
-      age: adultAge(identity.age, diagnostics),
-      gender: gender(identity.gender, diagnostics),
+      age: adultAge(identity.age, diagnostics, ["soul", "identity", "age"]),
+      gender: gender(identity.gender, diagnostics, ["soul", "identity", "gender"]),
       relationshipArchetype: requiredText(
         identity.relationshipArchetype,
         diagnostics,
@@ -333,41 +358,94 @@ function decodeSoul(value: unknown, diagnostics: SoulDiagnostic[]): Soul {
   };
 }
 
+function projectV1Soul(legacy: LegacyV1Soul): CharacterSoul {
+  return {
+    name: legacy.identity.name,
+    age: legacy.identity.age,
+    gender: legacy.identity.gender,
+    relationshipArchetype: legacy.identity.relationshipArchetype,
+    characterPromise: legacy.identity.characterPromise,
+    detailsMarkdown: renderV1DetailsMarkdown(legacy),
+  };
+}
+
+function renderV1DetailsMarkdown(soul: LegacyV1Soul): string {
+  const sections: string[] = [];
+  appendDetailSection(sections, "Personality", [
+    field("Personality", soul.innerLife.personality),
+    list("Values", soul.innerLife.values),
+    list("Wants", soul.innerLife.wants),
+    list("Fears", soul.innerLife.fears),
+    list("Contradictions", soul.innerLife.contradictions),
+    field("Backstory", soul.innerLife.backstory),
+  ]);
+  appendDetailSection(sections, "Voice", [
+    field("Tone", soul.voice.tone),
+    field("Cadence", soul.voice.cadence),
+    list("Vocabulary", soul.voice.vocabulary),
+    list("Habits", soul.voice.habits),
+    list("Avoid", soul.voice.avoid),
+  ]);
+  appendDetailSection(
+    sections,
+    "Interaction",
+    Object.entries(soul.interaction).map(([key, value]) => field(title(key), value)),
+  );
+  appendBulletSection(sections, "Canon facts", soul.canon.facts);
+  appendBulletSection(sections, "Canon unknowns", soul.canon.unknowns);
+  appendDetailSection(
+    sections,
+    "Dialogue examples",
+    soul.dialogue.positive.flatMap((example) => [
+      example.context ? `Context: ${example.context}` : "",
+      example.user ? `User: ${example.user}` : "",
+      `Assistant: ${example.assistant}`,
+      list("Demonstrates", example.demonstrates),
+    ]),
+  );
+  appendDetailSection(
+    sections,
+    "Dialogue counterexamples",
+    soul.dialogue.negative.map((example) => `${example.assistant}\nReason: ${example.reason}`),
+  );
+  return sections.join("\n\n");
+}
+
 function loadLegacySnapshot(root: Record<string, unknown>): CharacterSoulResult {
   const legacyPrompt = typeof root.systemPrompt === "string"
     ? root.systemPrompt.trim()
     : "";
   const promptFields = legacyPrompt ? legacyPromptAuthoringFields(legacyPrompt) : {};
-  const legacyDraft = {
-    ...root,
-    gender: optionalText(root.gender) || promptFields.gender,
-    relationshipArchetype:
-      optionalText(root.relationshipArchetype) ||
-      optionalText(root.relationship) ||
-      promptFields.relationshipArchetype,
-    characterPromise:
-      optionalText(root.characterPromise) ||
-      optionalText(root.description) ||
-      promptFields.characterPromise,
-    personality: optionalText(root.personality) || promptFields.personality,
-    tone: optionalText(root.tone) || promptFields.tone,
-    backstory: optionalText(root.backstory) || promptFields.backstory,
-    exampleDialogue:
-      root.exampleDialogue ??
-      (promptFields.exampleDialogue ? [promptFields.exampleDialogue] : undefined),
-  };
-  const relationship = optionalText(legacyDraft.relationshipArchetype);
-  const description = optionalText(legacyDraft.characterPromise);
-  const behavior = optionalText(legacyDraft.personality) || optionalText(legacyDraft.tone);
+  const name = optionalText(root.name);
+  const age = root.age;
+  const genderValue = optionalText(root.gender) || promptFields.gender;
+  const relationshipArchetype =
+    optionalText(root.relationshipArchetype) ||
+    optionalText(root.relationship) ||
+    promptFields.relationshipArchetype ||
+    "";
+  const characterPromise =
+    optionalText(root.characterPromise) ||
+    optionalText(root.description) ||
+    promptFields.characterPromise ||
+    "";
+  const personality = optionalText(root.personality) || promptFields.personality || "";
+  const tone = optionalText(root.tone) || promptFields.tone || "";
+  const backstory = optionalText(root.backstory) || promptFields.backstory || "";
+  const examples = Array.isArray(root.exampleDialogue)
+    ? root.exampleDialogue.flatMap((item) => optionalText(item) ? [optionalText(item)] : [])
+    : promptFields.exampleDialogue ? [promptFields.exampleDialogue] : [];
   if (
-    !optionalText(root.name) ||
-    typeof root.age !== "number" ||
-    !Number.isInteger(root.age) ||
-    root.age < 18 ||
-    !description ||
-    !relationship ||
-    !behavior ||
-    !legacyPrompt
+    !name ||
+    typeof age !== "number" ||
+    !Number.isInteger(age) ||
+    age < 18 ||
+    age > 120 ||
+    !relationshipArchetype ||
+    !characterPromise ||
+    (!personality && !tone) ||
+    !legacyPrompt ||
+    !isGender(genderValue)
   ) {
     return failed(
       "legacy_snapshot_incomplete",
@@ -375,42 +453,38 @@ function loadLegacySnapshot(root: Record<string, unknown>): CharacterSoulResult 
       "Legacy pinned Soul must contain identity, behavior, relationship, and explicit compiled prompt bytes.",
     );
   }
-
-  const diagnostics: SoulDiagnostic[] = [];
-  const soul = adaptAuthoringDraft(legacyDraft, diagnostics);
-  if (hasErrors(diagnostics)) return { ok: false, diagnostics };
-  addCompletenessWarnings(soul, diagnostics);
-  diagnostics.push({
-    code: "legacy_snapshot_loaded",
-    path: ["schemaVersion"],
-    severity: "warning",
-    message: "Loaded an immutable schemaVersion 0 Soul through the explicit legacy adapter.",
-  });
+  const details: string[] = [];
+  appendDetailSection(details, "Personality and voice", [personality, tone]);
+  appendDetailSection(details, "Background", [backstory]);
+  appendBulletSection(details, "Dialogue examples", examples);
+  const soul: CharacterSoul = {
+    name,
+    age,
+    gender: genderValue,
+    relationshipArchetype,
+    characterPromise,
+    detailsMarkdown: details.join("\n\n"),
+  };
   const compilerVersion = "legacy-0";
-  const fingerprint = soulFingerprint({ soul, compilerVersion, systemPrompt: legacyPrompt });
-  const snapshot: CharacterSoulSnapshot = {
-    schemaVersion: CHARACTER_SOUL_SCHEMA_VERSION,
-    soul,
-    compiled: {
-      compilerVersion,
-      systemPrompt: legacyPrompt,
-      fingerprint,
-      estimatedTokens: estimateTokens(legacyPrompt),
-    },
+  const compiled = {
+    compilerVersion,
+    systemPrompt: legacyPrompt,
+    fingerprint: soulFingerprint({ soul, compilerVersion, systemPrompt: legacyPrompt }),
+    estimatedTokens: estimateTokens(legacyPrompt),
   };
   return {
     ok: true,
-    snapshot,
+    snapshot: { schemaVersion: 0, soul, compiled },
     renderedMarkdown: renderSoulMarkdown(soul),
-    diagnostics,
+    diagnostics: [{
+      code: "legacy_snapshot_loaded",
+      path: ["schemaVersion"],
+      severity: "warning",
+      message: "Loaded an immutable schemaVersion 0 Soul through the historical read adapter.",
+    }],
   };
 }
 
-/**
- * INTENT: schemaVersion 0 stored a flattened prompt beside a sparse snapshot.
- * Recover only labels emitted by that exact historical compiler; never consult
- * the mutable Character projection and never manufacture a missing value.
- */
 function legacyPromptAuthoringFields(systemPrompt: string): Partial<{
   gender: CharacterSoulGender;
   relationshipArchetype: string;
@@ -420,22 +494,13 @@ function legacyPromptAuthoringFields(systemPrompt: string): Partial<{
   backstory: string;
   exampleDialogue: string;
 }> {
-  const fields: Partial<{
-    gender: CharacterSoulGender;
-    relationshipArchetype: string;
-    characterPromise: string;
-    personality: string;
-    tone: string;
-    backstory: string;
-    exampleDialogue: string;
-  }> = {};
+  const fields: ReturnType<typeof legacyPromptAuthoringFields> = {};
   const genderMatch = systemPrompt.match(/^- Gender presentation:\s*(female|male|trans)\s*$/im);
   if (genderMatch?.[1]) fields.gender = genderMatch[1].toLowerCase() as CharacterSoulGender;
   const relationshipMatch = systemPrompt.match(/^- Companion role:\s*(.+)$/im);
   if (relationshipMatch?.[1]) fields.relationshipArchetype = cleanText(relationshipMatch[1]);
   const promiseMatch = systemPrompt.match(/^- Core setup:\s*(.+)$/im);
   if (promiseMatch?.[1]) fields.characterPromise = cleanText(promiseMatch[1]);
-
   const additional = systemPrompt.match(/^- Additional details:\s*(.+)$/im)?.[1] ?? "";
   const marker = /Character details (relationshipArchetype|personality|tone|backstory|firstMessage|exampleDialogue):\s*/g;
   const matches = [...additional.matchAll(marker)];
@@ -455,143 +520,77 @@ function legacyPromptAuthoringFields(systemPrompt: string): Partial<{
   return fields;
 }
 
-function addCompletenessWarnings(soul: Soul, diagnostics: SoulDiagnostic[]): void {
-  if (!soul.innerLife.personality && !soul.voice.tone) {
-    diagnostics.push(errorDiagnostic(
-      "behavior_dimension_required",
-      ["soul"],
-      "At least innerLife.personality or voice.tone is required.",
-    ));
-  }
-  const missing: Array<[boolean, string, string[]]> = [
-    [soul.innerLife.values.length === 0, "inner_life_values_missing", ["soul", "innerLife", "values"]],
-    [soul.innerLife.wants.length === 0, "inner_life_wants_missing", ["soul", "innerLife", "wants"]],
-    [soul.innerLife.fears.length === 0, "inner_life_fears_missing", ["soul", "innerLife", "fears"]],
-    [soul.innerLife.contradictions.length === 0, "inner_life_contradictions_missing", ["soul", "innerLife", "contradictions"]],
-    [!soul.innerLife.backstory, "inner_life_backstory_missing", ["soul", "innerLife", "backstory"]],
-    [!soul.voice.tone, "voice_tone_missing", ["soul", "voice", "tone"]],
-    [!soul.voice.cadence, "voice_cadence_missing", ["soul", "voice", "cadence"]],
-    [soul.voice.vocabulary.length === 0, "voice_vocabulary_missing", ["soul", "voice", "vocabulary"]],
-    [soul.voice.habits.length === 0, "voice_habits_missing", ["soul", "voice", "habits"]],
-    [soul.voice.avoid.length === 0, "voice_avoid_missing", ["soul", "voice", "avoid"]],
-    [Object.values(soul.interaction).some((item) => !item), "interaction_dimension_missing", ["soul", "interaction"]],
-    [soul.canon.facts.length === 0, "canon_facts_missing", ["soul", "canon", "facts"]],
-    [soul.canon.unknowns.length === 0, "canon_unknowns_missing", ["soul", "canon", "unknowns"]],
-    [soul.dialogue.positive.length === 0, "dialogue_positive_missing", ["soul", "dialogue", "positive"]],
-    [soul.dialogue.negative.length === 0, "dialogue_negative_missing", ["soul", "dialogue", "negative"]],
-  ];
-  for (const [isMissing, code, path] of missing) {
-    if (!isMissing) continue;
-    diagnostics.push({
-      code,
-      path,
-      severity: "warning",
-      message: `${path.join(".")} is empty; author it explicitly or keep the gap visible.`,
-    });
-  }
-}
-
-function compileSystemPrompt(soul: Soul): string {
-  const lines = [
-    `# Character identity`,
-    `You are ${soul.identity.name}, age ${soul.identity.age}, a ${soul.identity.gender} adult character.`,
-    `Relationship archetype: ${soul.identity.relationshipArchetype}`,
-    `Character promise: ${soul.identity.characterPromise}`,
-    "",
-    "## Inner life",
-    line("Personality", soul.innerLife.personality),
-    listLine("Values", soul.innerLife.values),
-    listLine("Wants", soul.innerLife.wants),
-    listLine("Fears", soul.innerLife.fears),
-    listLine("Contradictions", soul.innerLife.contradictions),
-    line("Backstory", soul.innerLife.backstory),
-    "",
-    "## Voice",
-    line("Tone", soul.voice.tone),
-    line("Cadence", soul.voice.cadence),
-    listLine("Vocabulary", soul.voice.vocabulary),
-    listLine("Habits", soul.voice.habits),
-    listLine("Avoid", soul.voice.avoid),
-    "",
-    "## Interaction",
-    ...Object.entries(soul.interaction).map(([key, value]) => line(title(key), value)),
-    "",
-    "## Canon",
-    listLine("Facts", soul.canon.facts),
-    listLine("Unknowns", soul.canon.unknowns),
-    "",
-    "## Positive dialogue examples",
-    ...soul.dialogue.positive.flatMap((example, index) => [
-      `Example ${index + 1}:`,
-      line("Context", example.context ?? ""),
-      line("User", example.user ?? ""),
-      `Assistant: ${example.assistant}`,
-      listLine("Demonstrates", example.demonstrates),
-    ]),
-    "",
-    "## Negative dialogue examples",
-    ...soul.dialogue.negative.flatMap((example, index) => [
-      `Counterexample ${index + 1}: ${example.assistant}`,
-      `Reason: ${example.reason}`,
-    ]),
-  ];
-  return lines.filter((value, index, all) => value || all[index - 1] !== "").join("\n").trim();
-}
-
-function renderSoulMarkdown(soul: Soul): string {
+function renderSoulMarkdown(soul: CharacterSoul): string {
   return [
-    `# ${soul.identity.name} — Character Soul`,
+    `# ${soul.name} — Character Soul`,
     "",
-    "## Identity",
-    `- Age: ${soul.identity.age}`,
-    `- Gender: ${soul.identity.gender}`,
-    `- Relationship archetype: ${soul.identity.relationshipArchetype}`,
-    `- Character promise: ${soul.identity.characterPromise}`,
+    `You are ${soul.name}. Speak and act consistently with this character.`,
     "",
-    "## Inner life",
-    markdownField("Personality", soul.innerLife.personality),
-    markdownList("Values", soul.innerLife.values),
-    markdownList("Wants", soul.innerLife.wants),
-    markdownList("Fears", soul.innerLife.fears),
-    markdownList("Contradictions", soul.innerLife.contradictions),
-    markdownField("Backstory", soul.innerLife.backstory),
-    "",
-    "## Voice",
-    markdownField("Tone", soul.voice.tone),
-    markdownField("Cadence", soul.voice.cadence),
-    markdownList("Vocabulary", soul.voice.vocabulary),
-    markdownList("Habits", soul.voice.habits),
-    markdownList("Avoid", soul.voice.avoid),
-    "",
-    "## Interaction",
-    ...Object.entries(soul.interaction).map(([key, value]) => markdownField(title(key), value)),
-    "",
-    "## Canon facts",
-    ...markdownBullets(soul.canon.facts),
-    "",
-    "## Canon unknowns",
-    ...markdownBullets(soul.canon.unknowns),
-    "",
-    "## Positive dialogue",
-    ...soul.dialogue.positive.flatMap((example) => [
-      example.context ? `- Context: ${example.context}` : "",
-      example.user ? `  - User: ${example.user}` : "",
-      `  - Assistant: ${example.assistant}`,
-      ...example.demonstrates.map((item) => `  - Demonstrates: ${item}`),
-    ]).filter(Boolean),
-    "",
-    "## Negative dialogue",
-    ...soul.dialogue.negative.flatMap((example) => [
-      `- Assistant: ${example.assistant}`,
-      `  - Reason: ${example.reason}`,
-    ]),
+    "## Basic information",
+    `- Age: ${soul.age}`,
+    `- Gender: ${soul.gender}`,
+    `- Relationship: ${soul.relationshipArchetype}`,
+    `- Character: ${soul.characterPromise}`,
+    ...(soul.detailsMarkdown
+      ? ["", "## Additional details", "", soul.detailsMarkdown]
+      : []),
   ].join("\n").trim();
+}
+
+function decodeCompiled(
+  value: unknown,
+  diagnostics: SoulDiagnostic[],
+): CompiledCharacterSoul | null {
+  const compiled = record(value);
+  if (!compiled) {
+    diagnostics.push(errorDiagnostic(
+      "compiled_artifact_missing",
+      ["compiled"],
+      "Stored Soul is missing its immutable compiled artifact.",
+    ));
+    return null;
+  }
+  const compilerVersion = requiredText(
+    compiled.compilerVersion,
+    diagnostics,
+    "compiled_compiler_version_required",
+    ["compiled", "compilerVersion"],
+  );
+  const systemPrompt = requiredText(
+    compiled.systemPrompt,
+    diagnostics,
+    "compiled_system_prompt_required",
+    ["compiled", "systemPrompt"],
+    false,
+  );
+  const fingerprint = requiredText(
+    compiled.fingerprint,
+    diagnostics,
+    "compiled_fingerprint_required",
+    ["compiled", "fingerprint"],
+  );
+  const estimatedTokens = positiveInteger(
+    compiled.estimatedTokens,
+    diagnostics,
+    "compiled_token_estimate_invalid",
+    ["compiled", "estimatedTokens"],
+  );
+  if (hasErrors(diagnostics)) return null;
+  return { compilerVersion, systemPrompt, fingerprint, estimatedTokens };
+}
+
+function fingerprintMismatch(): SoulDiagnostic {
+  return errorDiagnostic(
+    "compiled_fingerprint_mismatch",
+    ["compiled", "fingerprint"],
+    "Stored Soul fingerprint does not match its canonical Soul and compiled prompt bytes.",
+  );
 }
 
 function positiveDialogue(
   value: unknown,
   diagnostics: SoulDiagnostic[],
-): Soul["dialogue"]["positive"] {
+): LegacyV1Soul["dialogue"]["positive"] {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) {
     diagnostics.push(errorDiagnostic("dialogue_positive_invalid", ["soul", "dialogue", "positive"], "Positive dialogue must be an array."));
@@ -616,7 +615,7 @@ function positiveDialogue(
 function negativeDialogue(
   value: unknown,
   diagnostics: SoulDiagnostic[],
-): Soul["dialogue"]["negative"] {
+): LegacyV1Soul["dialogue"]["negative"] {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) {
     diagnostics.push(errorDiagnostic("dialogue_negative_invalid", ["soul", "dialogue", "negative"], "Negative dialogue must be an array."));
@@ -634,17 +633,11 @@ function negativeDialogue(
   });
 }
 
-function legacyDialogueExamples(value: unknown): unknown[] {
-  if (!Array.isArray(value)) return [];
-  return value.map((item) => ({
-    context: null,
-    user: null,
-    assistant: item,
-    demonstrates: [],
-  }));
-}
-
-function stringArray(value: unknown, diagnostics: SoulDiagnostic[], path: string[]): string[] {
+function stringArray(
+  value: unknown,
+  diagnostics: SoulDiagnostic[],
+  path: string[],
+): string[] {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) {
     diagnostics.push(errorDiagnostic("soul_string_list_invalid", path, `${path.join(".")} must be an array of strings.`));
@@ -662,6 +655,25 @@ function stringArray(value: unknown, diagnostics: SoulDiagnostic[], path: string
   return result;
 }
 
+function appendDetailSection(target: string[], heading: string, values: string[]): void {
+  const present = values.filter(Boolean);
+  if (present.length === 0) return;
+  target.push(`## ${heading}`, "", present.join("\n"));
+}
+
+function appendBulletSection(target: string[], heading: string, values: string[]): void {
+  if (values.length === 0) return;
+  target.push(`## ${heading}`, "", values.map((value) => `- ${value}`).join("\n"));
+}
+
+function field(label: string, value: string): string {
+  return value ? `- ${label}: ${value}` : "";
+}
+
+function list(label: string, values: string[]): string {
+  return values.length > 0 ? `- ${label}: ${values.join("; ")}` : "";
+}
+
 function requiredText(
   value: unknown,
   diagnostics: SoulDiagnostic[],
@@ -676,25 +688,51 @@ function requiredText(
   return text;
 }
 
-function adultAge(value: unknown, diagnostics: SoulDiagnostic[]): number {
-  if (typeof value === "number" && Number.isInteger(value) && value >= 18 && value <= 120) return value;
-  diagnostics.push(errorDiagnostic("identity_age_invalid", ["soul", "identity", "age"], "Soul identity age must be an integer from 18 to 120."));
+function adultAge(
+  value: unknown,
+  diagnostics: SoulDiagnostic[],
+  path: string[],
+): number {
+  if (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 18 &&
+    value <= 120
+  ) return value;
+  diagnostics.push(errorDiagnostic("soul_age_invalid", path, "Soul age must be an integer from 18 to 120."));
   return 0;
 }
 
-function gender(value: unknown, diagnostics: SoulDiagnostic[]): CharacterSoulGender {
-  if (value === "female" || value === "male" || value === "trans") return value;
-  diagnostics.push(errorDiagnostic("identity_gender_invalid", ["soul", "identity", "gender"], "Soul identity gender must be female, male, or trans."));
+function gender(
+  value: unknown,
+  diagnostics: SoulDiagnostic[],
+  path: string[],
+): CharacterSoulGender {
+  if (isGender(value)) return value;
+  diagnostics.push(errorDiagnostic("soul_gender_invalid", path, "Soul gender must be female, male, or trans."));
   return "female";
 }
 
-function positiveInteger(value: unknown, diagnostics: SoulDiagnostic[], code: string, path: string[]): number {
+function isGender(value: unknown): value is CharacterSoulGender {
+  return value === "female" || value === "male" || value === "trans";
+}
+
+function positiveInteger(
+  value: unknown,
+  diagnostics: SoulDiagnostic[],
+  code: string,
+  path: string[],
+): number {
   if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
   diagnostics.push(errorDiagnostic(code, path, `${path.join(".")} must be a positive integer.`));
   return 0;
 }
 
-function failed(code: string, path: string[], message: string): CharacterSoulResult {
+function failed(
+  code: string,
+  path: string[],
+  message: string,
+): CharacterSoulResult<never> {
   return { ok: false, diagnostics: [errorDiagnostic(code, path, message)] };
 }
 
@@ -706,7 +744,11 @@ function hasErrors(diagnostics: SoulDiagnostic[]): boolean {
   return diagnostics.some((item) => item.severity === "error");
 }
 
-function soulFingerprint(input: { soul: Soul; compilerVersion: string; systemPrompt: string }): string {
+function soulFingerprint(input: {
+  soul: CharacterSoul | LegacyV1Soul;
+  compilerVersion: string;
+  systemPrompt: string;
+}): string {
   return createHash("sha256").update(canonicalJson(input)).digest("hex");
 }
 
@@ -735,26 +777,12 @@ function optionalText(value: unknown): string {
   return cleanText(value);
 }
 
-function line(label: string, value: string): string {
-  return value ? `${label}: ${value}` : "";
-}
-
-function listLine(label: string, values: string[]): string {
-  return values.length ? `${label}: ${values.join(" | ")}` : "";
+function markdownText(value: unknown): string {
+  return typeof value === "string"
+    ? value.replaceAll("\r\n", "\n").replaceAll("\r", "\n").trim()
+    : "";
 }
 
 function title(value: string): string {
   return value.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/^./, (letter) => letter.toUpperCase());
-}
-
-function markdownField(label: string, value: string): string {
-  return `- ${label}: ${value || "_(not authored)_"}`;
-}
-
-function markdownList(label: string, values: string[]): string {
-  return `- ${label}: ${values.length ? values.join("; ") : "_(not authored)_"}`;
-}
-
-function markdownBullets(values: string[]): string[] {
-  return values.length ? values.map((value) => `- ${value}`) : ["- _(not authored)_"];
 }

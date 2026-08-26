@@ -26,11 +26,8 @@ describe("Character Project creation authority", () => {
       gender: "female",
       relationshipArchetype: "steady confidante",
       characterPromise: "A precise, warm place to put the day down",
-      personality: "Observant, measured, gently challenging",
-      tone: "Warm, concise, grounded",
-      backstory: "A night-shift radio host who learned how to listen between words.",
+      detailsMarkdown: "Observant, measured, gently challenging. Warm, concise, grounded. A night-shift radio host who learned how to listen between words.",
       firstMessage: "You made it. What do you need to put down tonight?",
-      exampleDialogue: ["Tell me the part you keep replaying."],
     },
     visualDirection: {
       identityAnchor: "Composed late-night radio host",

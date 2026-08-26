@@ -46,11 +46,8 @@ const restoredDraft = {
     gender: "female",
     relationshipArchetype: "steady confidante",
     characterPromise: "A dependable conversational presence",
-    personality: "Warm and observant",
-    tone: "Natural and concise",
-    backstory: "A complete restored backstory.",
+    detailsMarkdown: "## Personality\nWarm and observant.\n\n## Voice\nNatural and concise.\n\n## Background\nA complete restored backstory.",
     firstMessage: "Where should we begin?",
-    exampleDialogue: ["Tell me what matters most."],
   },
   visualDirection: {
     identityAnchor: "A recognizable adult companion",
@@ -65,6 +62,22 @@ const restoredDraft = {
     successCriteria: ["Restore without duplication"],
     productionPackage: "Portrait, hero, and chat assets",
     qaPlan: "Verify desktop and mobile",
+  },
+};
+
+const legacyRestoredDraft = {
+  ...restoredDraft,
+  persona: {
+    name: "Mira",
+    age: 24,
+    gender: "female",
+    relationshipArchetype: "steady confidante",
+    characterPromise: "A dependable conversational presence",
+    personality: "Warm and observant",
+    tone: "Natural and concise",
+    backstory: "A complete restored backstory.",
+    firstMessage: "Where should we begin?",
+    exampleDialogue: ["Tell me what matters most."],
   },
 };
 
@@ -176,7 +189,7 @@ describe("Character create wizard restore authority", () => {
     expect(window).toBe(browserWindow);
     window.localStorage.setItem(
       "idream.admin.character-create-draft.v1:operator-hydration",
-      JSON.stringify(restoredDraft),
+      JSON.stringify(legacyRestoredDraft),
     );
 
     const hydrationContainer = document.createElement("div");
@@ -258,13 +271,13 @@ describe("Character create wizard restore authority", () => {
       "Age must be a whole number from 18 to 120.",
     );
     expect(container.textContent).toContain(
-      "Add either a personality or a tone.",
+      "Write the first message users will receive.",
     );
   });
 
   it("keeps edits in memory without claiming local persistence when browser storage rejects writes", async () => {
     window.localStorage.setItem(
-      "idream.admin.character-create-draft.v1:operator-storage-denied",
+      "idream.admin.character-create-draft.v2:operator-storage-denied",
       JSON.stringify(restoredDraft),
     );
     vi.spyOn(window.localStorage, "setItem").mockImplementation(() => {
@@ -603,7 +616,7 @@ describe("Character create wizard restore authority", () => {
 
   it("clears the committed creation receipt before non-authoritative URL synchronization", async () => {
     window.localStorage.setItem(
-      "idream.admin.character-create-draft.v1:operator-a",
+      "idream.admin.character-create-draft.v2:operator-a",
       JSON.stringify(restoredDraft),
     );
     adminV2Request.mockImplementation(async (path, options) => {
@@ -679,7 +692,7 @@ describe("Character create wizard restore authority", () => {
       "/admin/characters/created-character?tab=assets",
     );
     expect(window.localStorage.getItem(
-      "idream.admin.character-create-draft.v1:operator-a",
+      "idream.admin.character-create-draft.v2:operator-a",
     )).toBeNull();
   });
 

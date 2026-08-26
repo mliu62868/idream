@@ -39,7 +39,7 @@ function context(): BuiltContext {
       characterContentVersionId: "content-1",
       characterReleaseId: "release-1",
       soulFingerprint: "fingerprint",
-      compilerVersion: "character-soul-1",
+      compilerVersion: "character-soul-2",
     },
     policy,
     recentMessages: Array.from({ length: 8 }, (_, index) => ({

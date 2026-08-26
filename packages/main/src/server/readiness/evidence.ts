@@ -835,8 +835,7 @@ export interface AdminTextProbeEvidence {
     adminSourceRevision?: string | null;
     descriptionCharacters?: number;
     nameIdeas?: number;
-    personalityCharacters?: number;
-    speakingStyleCharacters?: number;
+    detailsMarkdownCharacters?: number;
     firstMessageCharacters?: number;
     visualBriefCharacters?: number;
     runtime?: {
@@ -892,8 +891,7 @@ const adminTextProbeEvidenceSchema: z.ZodType<AdminTextProbeEvidence> = z.object
     adminSourceRevision: nullableText,
     descriptionCharacters: optionalCount,
     nameIdeas: optionalCount,
-    personalityCharacters: optionalCount,
-    speakingStyleCharacters: optionalCount,
+    detailsMarkdownCharacters: optionalCount,
     firstMessageCharacters: optionalCount,
     visualBriefCharacters: optionalCount,
     runtime: nullableObject({

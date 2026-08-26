@@ -5,10 +5,8 @@ const creativeFields = {
   creativeBrief: "",
   archetype: "",
   relationship: "",
-  personality: "",
-  speakingStyle: "",
+  detailsMarkdown: "",
   firstMessage: "",
-  exampleDialogue: "",
   appearanceNotes: "",
   visualBrief: "",
 };
@@ -25,8 +23,8 @@ describe("starterPayload", () => {
       scope: "built_in", tags: ["cute", "elf"], sortOrder: 3, reason: "ok3",
       appearance: { notes: "", visualBrief: "" },
       advancedDetails: {
-        creativeBrief: "", archetype: "", relationship: "", personality: "",
-        speakingStyle: "", firstMessage: "", exampleDialogue: "", visualBrief: "",
+        creativeBrief: "", archetype: "", relationship: "", detailsMarkdown: "",
+        firstMessage: "", visualBrief: "",
       },
     });
   });

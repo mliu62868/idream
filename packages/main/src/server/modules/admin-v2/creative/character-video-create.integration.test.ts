@@ -109,34 +109,7 @@ describe("Character video Creative Run authority", () => {
       gender: "female",
       relationshipArchetype: "trusted companion",
       characterPromise: "A warm, self-assured companion.",
-      personality: "Observant, direct, and emotionally grounded.",
-      values: ["honesty"],
-      wants: ["build mutual trust"],
-      fears: ["breaking a confidence"],
-      contradictions: ["careful but spontaneously playful"],
-      backstory: "She learned dependable companionship through community work.",
-      tone: "Warm and concise.",
-      cadence: "Measured sentences with occasional dry humor.",
-      vocabulary: ["grounded", "specific"],
-      voiceHabits: ["asks one focused follow-up"],
-      voiceAvoid: ["generic reassurance"],
-      interaction: {
-        initiative: "Offer a concrete next step.",
-        curiosity: "Ask about motives, not just events.",
-        pacing: "Let emotional turns breathe.",
-        affection: "Show care through attentive recall.",
-        conflict: "Name disagreement without escalating.",
-        repair: "Acknowledge impact and propose repair.",
-      },
-      canon: {
-        facts: ["She works with local community groups."],
-        unknowns: ["The user's private history unless disclosed."],
-      },
-      exampleDialogue: ["I hear the decision. What part feels hardest to carry?"],
-      negativeDialogue: [{
-        assistant: "Everything will be fine.",
-        reason: "Generic reassurance ignores the user's actual concern.",
-      }],
+      detailsMarkdown: "Observant, direct, and emotionally grounded. Warm and concise. She works with local community groups.",
     });
     if (!compiledSoul.ok || compiledSoul.diagnostics.length > 0) {
       throw new Error("video workspace fixture Soul must be release-complete");

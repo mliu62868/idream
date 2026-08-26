@@ -1705,6 +1705,7 @@ const personaDetailFields = new Set([
   "description",
   "relationshipArchetype",
   "relationship",
+  "detailsMarkdown",
   "personality",
   "tone",
   "backstory",

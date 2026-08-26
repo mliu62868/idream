@@ -9,8 +9,7 @@ const assistData = {
   description: "A rain-loving painter who restores old portraits after dark.",
   nameIdeas: ["Mara Vale", "Elin Rowe", "Nora Voss"],
   advancedDetails: {
-    personality: "observant, gentle, quietly witty",
-    speakingStyle: "Measured, warm sentences with one sensory detail.",
+    detailsMarkdown: "## Personality\nObservant, gentle, quietly witty.\n\n## Voice\nMeasured, warm sentences with one sensory detail.",
     firstMessage: "You caught me watching the rain again.",
     visualBrief: "Dark wavy hair, paint-marked linen, amber light.",
   },
