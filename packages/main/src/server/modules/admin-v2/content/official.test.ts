@@ -3,6 +3,7 @@
 //       update 非 official 角色 404、state 发布 / 暂停 / 恢复。
 // INVARIANTS: dev auth headers（x-idream-user-id/role）仅因 APP_ENV=test 生效。
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { legacySoulDetailsMarkdown } from "@idream/shared";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import {
@@ -268,7 +269,7 @@ describe("official character CMS", () => {
     });
   });
 
-  it("treats repeated legacy Soul PATCH input as one idempotent replacement", async () => {
+  it("rejects partial legacy Soul detail PATCHes and keeps explicit Markdown idempotent", async () => {
     const admin = await seedActor("admin", "legacy-patch-idempotence");
     const created = await call(officialApi(makeRequest("POST", "", {
       userId: admin,
@@ -281,26 +282,39 @@ describe("official character CMS", () => {
         description: "An official companion with stable Soul edits.",
         advancedDetails: {
           relationshipArchetype: "trusted confidante",
+          detailsMarkdown: "## Personality\nOriginal and complete.",
           firstMessage: "What should we make space for?",
         },
         reason: "seed idempotent Soul update",
       },
     })));
     const id = (created.data?.character as { id: string }).id;
-    const patch = {
+    const legacyPatch = {
       advancedDetails: {
-        relationshipArchetype: "trusted confidante",
-        personality: "Observant and candid.",
         cadence: "Measured and exact.",
       },
-      reason: "replace legacy Soul details",
+      reason: "must not erase existing Soul details",
     };
 
-    expect((await call(officialApi(makeRequest("PATCH", `/${id}`, {
+    const rejected = await call(officialApi(makeRequest("PATCH", `/${id}`, {
       userId: admin,
       role: "admin",
-      body: patch,
-    })))).ok).toBe(true);
+      body: legacyPatch,
+    })));
+    expect(rejected.status).toBe(400);
+
+    const patch = {
+      advancedDetails: {
+        detailsMarkdown: [
+          "## Personality",
+          "Original and complete.",
+          "",
+          "## Voice",
+          "- Cadence: Measured and exact.",
+        ].join("\n"),
+      },
+      reason: "replace the complete Markdown document",
+    };
     expect((await call(officialApi(makeRequest("PATCH", `/${id}`, {
       userId: admin,
       role: "admin",
@@ -314,7 +328,7 @@ describe("official character CMS", () => {
     const details = (latest.personaSnapshot as {
       soul: { detailsMarkdown: string };
     }).soul.detailsMarkdown;
-    expect(details.match(/Observant and candid\./g)).toHaveLength(1);
+    expect(details.match(/Original and complete\./g)).toHaveLength(1);
     expect(details.match(/Measured and exact\./g)).toHaveLength(1);
   });
 
@@ -504,36 +518,38 @@ describe("official character CMS", () => {
             referenceDirection: "Canonical front-facing identity reference",
           },
           advancedDetails: {
-            personality: "composed, observant",
             relationshipArchetype: "trusted confidante",
-            values: ["honesty"],
-            wants: ["build mutual trust"],
-            fears: ["breaking a confidence"],
-            contradictions: ["careful but spontaneously playful"],
-            backstory: "She learned dependable companionship through years of community work.",
-            tone: "Warm and concise.",
-            cadence: "Measured sentences with occasional dry humor.",
-            vocabulary: ["grounded", "specific"],
-            voiceHabits: ["asks one focused follow-up"],
-            voiceAvoid: ["generic reassurance"],
-            interaction: {
-              initiative: "Offer a concrete next step.",
-              curiosity: "Ask about motives, not just events.",
-              pacing: "Let emotional turns breathe.",
-              affection: "Show care through attentive recall.",
-              conflict: "Name disagreement without escalating.",
-              repair: "Acknowledge impact and propose repair.",
-            },
-            canon: {
-              facts: ["She works with local community groups."],
-              unknowns: ["The user's private history unless disclosed."],
-            },
             firstMessage: "You made it. Sit down and tell me what happened.",
-            exampleDialogue: ["I hear the decision. What part feels hardest to carry?"],
-            negativeDialogue: [{
-              assistant: "Everything will be fine.",
-              reason: "Generic reassurance ignores the user's actual concern.",
-            }],
+            detailsMarkdown: legacySoulDetailsMarkdown({
+              personality: "composed, observant",
+              values: ["honesty"],
+              wants: ["build mutual trust"],
+              fears: ["breaking a confidence"],
+              contradictions: ["careful but spontaneously playful"],
+              backstory: "She learned dependable companionship through years of community work.",
+              tone: "Warm and concise.",
+              cadence: "Measured sentences with occasional dry humor.",
+              vocabulary: ["grounded", "specific"],
+              voiceHabits: ["asks one focused follow-up"],
+              voiceAvoid: ["generic reassurance"],
+              interaction: {
+                initiative: "Offer a concrete next step.",
+                curiosity: "Ask about motives, not just events.",
+                pacing: "Let emotional turns breathe.",
+                affection: "Show care through attentive recall.",
+                conflict: "Name disagreement without escalating.",
+                repair: "Acknowledge impact and propose repair.",
+              },
+              canon: {
+                facts: ["She works with local community groups."],
+                unknowns: ["The user's private history unless disclosed."],
+              },
+              exampleDialogue: ["I hear the decision. What part feels hardest to carry?"],
+              negativeDialogue: [{
+                assistant: "Everything will be fine.",
+                reason: "Generic reassurance ignores the user's actual concern.",
+              }],
+            }),
             visualBrief: "Warm cinematic portrait with a stable silhouette.",
           },
           reason: "complete release fields",

@@ -105,6 +105,7 @@ export async function duplicateCharacterForUser(input: {
       appearance: lockedSource.appearance,
       advancedDetails: lockedSource.advancedDetails,
       immutableContentSnapshot,
+      immutableSoulOverrides: { name },
     });
     const created = await tx.character.create({
       data: {

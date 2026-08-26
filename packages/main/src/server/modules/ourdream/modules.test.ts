@@ -78,11 +78,11 @@ describe("user Character Soul compatibility", () => {
       },
     });
     const edited = compileUserCharacterContent({
-      name: "Pinned Soul",
-      age: 28,
-      gender: "female",
-      relationship: "trusted confidante",
-      description: "A more precise companion.",
+      name: "Mutable projected name",
+      age: 44,
+      gender: "male",
+      relationship: "mutable projected relationship",
+      description: "Mutable projected promise.",
       style: "realistic",
       appearance: {},
       advancedDetails: {
@@ -95,11 +95,17 @@ describe("user Character Soul compatibility", () => {
         openingSnapshot: pinned.openingSnapshot,
         appearanceSnapshot: pinned.appearanceSnapshot,
       },
+      immutableSoulOverrides: { name: "Pinned Soul Copy" },
     });
 
-    expect(edited.personaSnapshot.soul.detailsMarkdown).toBe(
-      "## Voice\nPinned and precise.",
-    );
+    expect(edited.personaSnapshot.soul).toMatchObject({
+      name: "Pinned Soul Copy",
+      age: 28,
+      gender: "female",
+      relationshipArchetype: "trusted confidante",
+      characterPromise: "A precise companion.",
+      detailsMarkdown: "## Voice\nPinned and precise.",
+    });
     expect(edited.openingSnapshot).toEqual(pinned.openingSnapshot);
   });
 });

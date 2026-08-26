@@ -30,6 +30,10 @@ export interface UserCharacterSoulInput {
     openingSnapshot: unknown;
     appearanceSnapshot: unknown;
   };
+  immutableSoulOverrides?: {
+    name?: string;
+    characterPromise?: string;
+  };
 }
 
 export function compileUserCharacterContent(input: UserCharacterSoulInput) {
@@ -45,15 +49,10 @@ export function compileUserCharacterContent(input: UserCharacterSoulInput) {
   const draft = immutable?.ok
     ? {
         ...immutable.snapshot.soul,
-        name: input.name,
-        age: input.age,
-        gender: input.gender,
-        relationshipArchetype: input.relationship,
-        characterPromise: input.description,
-        // INVARIANT: compatibility columns cannot modify a pinned Soul. A new
-        // immutable version may edit the basic facts, but its details start
-        // from the prior immutable snapshot only.
-        detailsMarkdown: immutable.snapshot.soul.detailsMarkdown,
+        // INVARIANT: only values named by the current command may override a
+        // pinned Soul. Mutable Character columns are compatibility projections,
+        // never a source from which missing immutable facts are reconstructed.
+        ...input.immutableSoulOverrides,
       }
     : {
         name: input.name,

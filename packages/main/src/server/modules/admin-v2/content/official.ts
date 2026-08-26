@@ -257,6 +257,15 @@ export async function updateOfficialCharacter(input: {
   const resumed = await getCharacterProjectDraftForResume(id);
   const advanced = jsonRecord(body.advancedDetails);
   const appearance = jsonRecord(body.appearance);
+  const legacySoulDetailKeys = LEGACY_SOUL_DETAIL_KEYS.filter((key) =>
+    hasOwn(advanced, key)
+  );
+  if (legacySoulDetailKeys.length > 0) {
+    throw Errors.badRequest(
+      "Legacy Soul detail fields cannot be patched safely; submit the complete detailsMarkdown document",
+      { legacyFields: legacySoulDetailKeys },
+    );
+  }
   const persona = {
     ...resumed.draft.persona,
     ...(body.name !== undefined ? { name: body.name } : {}),
@@ -265,8 +274,9 @@ export async function updateOfficialCharacter(input: {
     ...(body.description !== undefined ? { characterPromise: body.description } : {}),
     ...(text(advanced.relationshipArchetype) ? { relationshipArchetype: text(advanced.relationshipArchetype) } : {}),
     ...(touchesSoulDetails(advanced)
-      // SPEC: advancedDetails is one replacement document at this legacy
-      // boundary. Replaying the same PATCH must not append duplicate sections.
+      // SPEC: detailsMarkdown is an explicit complete replacement. Structured
+      // legacy fields are rejected above because partial Markdown inference
+      // cannot preserve omitted author intent.
       ? { detailsMarkdown: legacySoulDetailsMarkdown(advanced) }
       : {}),
     ...(text(advanced.firstMessage) ? { firstMessage: text(advanced.firstMessage) } : {}),

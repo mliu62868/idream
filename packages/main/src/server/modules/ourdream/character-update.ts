@@ -60,6 +60,12 @@ export async function updateCharacterForUser(input: {
           appearance: existing.appearance,
           advancedDetails: existing.advancedDetails,
           immutableContentSnapshot: immutableContentSnapshot ?? undefined,
+          immutableSoulOverrides: {
+            ...(body.name !== undefined ? { name: nextName } : {}),
+            ...(body.description !== undefined
+              ? { characterPromise: nextDescription }
+              : {}),
+          },
         })
       : null;
     const activeProfile = shouldRebuildPrompt
