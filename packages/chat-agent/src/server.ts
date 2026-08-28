@@ -1,6 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { chmod, mkdir, mkdtemp, open, rm, type FileHandle } from "node:fs/promises";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -27,6 +26,21 @@ const MAX_CONTROL_BODY_BYTES = 1_048_576;
 // Content is carried in Shared-owned 16Ki-character chunks, making the frame
 // cap independent of the unbounded durable message and relationship sizes.
 const MAX_REBUILD_FRAME_BYTES = 256 * 1_024;
+
+interface BunHttpServer {
+  readonly port: number | undefined;
+  readonly url: URL;
+  timeout(request: Request, seconds: number): void;
+  stop(closeActiveConnections?: boolean): Promise<void>;
+}
+
+declare const Bun: {
+  serve(options: {
+    hostname?: string;
+    port?: number;
+    fetch(request: Request, server: BunHttpServer): Response | Promise<Response>;
+  }): BunHttpServer;
+};
 
 type ControlFrame = Exclude<CompanionRuntimeRequest, { type: "run" }>;
 
@@ -62,10 +76,12 @@ export interface CompanionServerOptions {
   readiness(force?: boolean): Promise<CompanionReadiness>;
   invocation: InvocationService;
   rebuildSpoolRoot?: string;
+  hostname?: string;
+  port?: number;
 }
 
 export interface CompanionServer {
-  readonly http: Server;
+  readonly http: BunHttpServer;
   close(): Promise<void>;
 }
 
@@ -73,58 +89,83 @@ function tokenDigest(value: string): Buffer {
   return createHash("sha256").update(value).digest();
 }
 
-function isAuthorized(request: IncomingMessage, expectedDigest: Buffer): boolean {
-  const header = request.headers.authorization;
+function isAuthorized(request: Request, expectedDigest: Buffer): boolean {
+  const header = request.headers.get("authorization");
   if (typeof header !== "string" || !header.startsWith("Bearer ")) return false;
   return timingSafeEqual(tokenDigest(header.slice("Bearer ".length)), expectedDigest);
 }
 
-function json(response: ServerResponse, status: number, value: unknown): void {
-  response.writeHead(status, {
-    "content-type": "application/json; charset=utf-8",
-    "cache-control": "no-store",
+function json(status: number, value: unknown): Response {
+  return new Response(`${JSON.stringify(value)}\n`, {
+    status,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+    },
   });
-  response.end(`${JSON.stringify(value)}\n`);
 }
 
-function failure(response: ServerResponse, status: number, code: string, error: unknown): void {
+function failure(status: number, code: string, error: unknown): Response {
   const message = error instanceof Error ? error.message : String(error);
-  json(response, status, { error: { code, message } });
+  return json(status, { error: { code, message } });
 }
 
 async function readJson(
-  request: IncomingMessage,
+  request: Request,
   maxBytes = MAX_CONTROL_BODY_BYTES,
 ): Promise<unknown> {
-  const chunks: Buffer[] = [];
+  if (!request.body) throw new Error("request body is required");
+  const reader = request.body.getReader();
+  const decoder = new TextDecoder();
   let size = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    size += buffer.byteLength;
-    if (size > maxBytes) throw new Error(`request body exceeds ${maxBytes} bytes`);
-    chunks.push(buffer);
+  let body = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes) throw new Error(`request body exceeds ${maxBytes} bytes`);
+      body += decoder.decode(value, { stream: true });
+    }
+    body += decoder.decode();
+  } catch (error) {
+    await reader.cancel(error).catch(() => undefined);
+    throw error;
+  } finally {
+    reader.releaseLock();
   }
   if (size === 0) throw new Error("request body is required");
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  return JSON.parse(body);
 }
 
-async function* readNdjsonLines(request: IncomingMessage): AsyncGenerator<string> {
+async function* readNdjsonLines(request: Request): AsyncGenerator<string> {
+  if (!request.body) throw new Error("request body is required");
+  const reader = request.body.getReader();
   let pending = Buffer.alloc(0);
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    pending = pending.byteLength === 0 ? buffer : Buffer.concat([pending, buffer]);
-    let delimiter = pending.indexOf(0x0a);
-    while (delimiter >= 0) {
-      if (delimiter > MAX_REBUILD_FRAME_BYTES) {
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const buffer = Buffer.from(value);
+      pending = pending.byteLength === 0 ? buffer : Buffer.concat([pending, buffer]);
+      let delimiter = pending.indexOf(0x0a);
+      while (delimiter >= 0) {
+        if (delimiter > MAX_REBUILD_FRAME_BYTES) {
+          throw new Error(`relationship rebuild frame exceeds ${MAX_REBUILD_FRAME_BYTES} bytes`);
+        }
+        yield pending.subarray(0, delimiter + 1).toString("utf8");
+        pending = pending.subarray(delimiter + 1);
+        delimiter = pending.indexOf(0x0a);
+      }
+      if (pending.byteLength > MAX_REBUILD_FRAME_BYTES) {
         throw new Error(`relationship rebuild frame exceeds ${MAX_REBUILD_FRAME_BYTES} bytes`);
       }
-      yield pending.subarray(0, delimiter + 1).toString("utf8");
-      pending = pending.subarray(delimiter + 1);
-      delimiter = pending.indexOf(0x0a);
     }
-    if (pending.byteLength > MAX_REBUILD_FRAME_BYTES) {
-      throw new Error(`relationship rebuild frame exceeds ${MAX_REBUILD_FRAME_BYTES} bytes`);
-    }
+  } catch (error) {
+    await reader.cancel(error).catch(() => undefined);
+    throw error;
+  } finally {
+    reader.releaseLock();
   }
   if (pending.byteLength > 0) yield pending.toString("utf8");
 }
@@ -135,10 +176,10 @@ interface StagedWorkspaceRebuild {
 }
 
 async function stageWorkspaceRebuild(
-  request: IncomingMessage,
+  request: Request,
   spoolBase: string,
 ): Promise<StagedWorkspaceRebuild> {
-  if (request.headers["content-type"]?.split(";", 1)[0]?.trim() !== "application/x-ndjson") {
+  if (request.headers.get("content-type")?.split(";", 1)[0]?.trim() !== "application/x-ndjson") {
     throw new Error("relationship rebuild requires application/x-ndjson");
   }
   await mkdir(spoolBase, { recursive: true, mode: 0o700 });
@@ -327,18 +368,10 @@ function purgeRequest(value: unknown): WorkspacePurgeRequest {
   if (record.scope === "relationship") {
     const characterId = typeof record.characterId === "string" ? record.characterId.trim() : "";
     if (!characterId) throw new Error("relationship purge characterId must be a non-empty string");
-    const keys = Object.keys(record).sort().join(",");
-    if (keys === "characterId,scope,userId") {
-      return { scope: "relationship", userId, characterId };
+    if (Object.keys(record).sort().join(",") !== "characterId,scope,userId") {
+      throw new Error("relationship workspace purge accepts only scope, userId and characterId");
     }
-    if (keys === "characterId,quarantine,scope,userId") {
-      const quarantineLabel = record.quarantine;
-      if (typeof quarantineLabel !== "string" || !/^[A-Za-z0-9._-]{1,80}$/u.test(quarantineLabel)) {
-        throw new Error("relationship purge quarantine label must match [A-Za-z0-9._-]{1,80}");
-      }
-      return { scope: "relationship", userId, characterId, quarantineLabel };
-    }
-    throw new Error("relationship workspace purge accepts only scope, userId, characterId and quarantine");
+    return { scope: "relationship", userId, characterId };
   }
   throw new Error("workspace purge scope must be user or relationship");
 }
@@ -358,105 +391,127 @@ function rebuildPromotionRequest(value: unknown): CompanionWorkspaceRebuildPromo
   return companionWorkspaceRebuildPromotionSchema.parse(value);
 }
 
+function isAdmissionRequest(method: string, pathname: string): boolean {
+  return (method === "GET" && pathname === "/readyz") ||
+    (method === "POST" && (
+      pathname === "/v1/invocations" ||
+      pathname === "/v1/workspaces/purge" ||
+      pathname === "/v1/workspaces/rebuild/prepare" ||
+      pathname === "/v1/workspaces/rebuild/promote" ||
+      pathname === "/v1/workspaces/rebuild/discard" ||
+      pathname === "/v1/workspaces/memory-cutover-proof"
+    ));
+}
+
 export function createCompanionServer(options: CompanionServerOptions): CompanionServer {
   if (!options.authToken) throw new Error("companion auth token is required");
   const expectedDigest = tokenDigest(options.authToken);
   let closing = false;
 
-  const http = createServer(async (request, response) => {
+  const handleRequest = async (
+    request: Request,
+    server: BunHttpServer,
+  ): Promise<Response> => {
     try {
-      const url = new URL(request.url ?? "/", "http://sidecar.local");
+      const url = new URL(request.url);
       if (request.method === "GET" && url.pathname === "/healthz") {
-        json(response, 200, { ok: true });
-        return;
+        return json(200, { ok: true });
       }
 
       if ((url.pathname === "/readyz" || url.pathname.startsWith("/v1/"))
         && !isAuthorized(request, expectedDigest)) {
-        json(response, 401, { error: { code: "unauthorized", message: "unauthorized" } });
-        return;
+        return json(401, { error: { code: "unauthorized", message: "unauthorized" } });
+      }
+
+      if (closing && isAdmissionRequest(request.method, url.pathname)) {
+        return failure(503, "shutting_down", new Error("sidecar is shutting down"));
       }
 
       if (request.method === "GET" && url.pathname === "/readyz") {
-        if (closing) {
-          failure(response, 503, "shutting_down", new Error("sidecar is shutting down"));
-          return;
+        if (url.searchParams.get("full") === "1") {
+          // Full readiness runs bounded provider/composition/lifecycle probes.
+          // Keep it finite while allowing the observed ~20s cold verification.
+          server.timeout(request, 30);
         }
         try {
           const ready = companionReadinessSchema.parse(
             await options.readiness(url.searchParams.get("full") === "1"),
           );
-          json(response, 200, ready);
+          return json(200, ready);
         } catch (error) {
-          failure(response, 503, "not_ready", error);
+          return failure(503, "not_ready", error);
         }
-        return;
       }
 
       if (request.method === "POST" && url.pathname === "/v1/invocations") {
-        if (closing) {
-          failure(response, 503, "shutting_down", new Error("sidecar is shutting down"));
-          return;
-        }
+        // SPEC: only the authenticated long-lived NDJSON response disables
+        // Bun's request timeout. Ordinary JSON/readiness requests stay finite.
+        server.timeout(request, 0);
         const frame = companionRuntimeRequestSchema.parse(await readJson(request));
         if (frame.type !== "run") throw new Error("POST /v1/invocations requires a run frame");
-        response.writeHead(200, {
-          "content-type": "application/x-ndjson; charset=utf-8",
-          "cache-control": "no-store",
-          connection: "keep-alive",
-        });
-        response.flushHeaders();
         let running = true;
-        const cancelOnDisconnect = () => {
-          if (!running) return;
-          void options.invocation.accept({
-            protocolVersion: 1,
-            type: "cancel",
-            invocationId: frame.invocation.invocationId,
-            reason: "user",
-          }).catch(() => undefined);
-        };
-        response.once("close", cancelOnDisconnect);
-        try {
-          await options.invocation.run(frame.invocation, (outbound) => {
-            if (!response.destroyed && !response.writableEnded) {
-              response.write(encodeCompanionNdjsonFrame(outbound));
-            }
-          });
-        } finally {
-          running = false;
-          response.removeListener("close", cancelOnDisconnect);
-        }
-        response.end();
-        return;
+        let cancelled = false;
+        const encoder = new TextEncoder();
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            void Promise.resolve().then(() => options.invocation.run(
+              frame.invocation,
+              (outbound) => {
+                if (!cancelled) {
+                  controller.enqueue(encoder.encode(encodeCompanionNdjsonFrame(outbound)));
+                }
+              },
+            )).then(
+              () => {
+                running = false;
+                if (!cancelled) controller.close();
+              },
+              (error) => {
+                running = false;
+                if (!cancelled) controller.error(error);
+              },
+            );
+          },
+          async cancel() {
+            cancelled = true;
+            if (!running) return;
+            await options.invocation.accept({
+              protocolVersion: 1,
+              type: "cancel",
+              invocationId: frame.invocation.invocationId,
+              reason: "user",
+            }).catch(() => undefined);
+          },
+        });
+        return new Response(body, {
+          status: 200,
+          headers: {
+            "content-type": "application/x-ndjson; charset=utf-8",
+            "cache-control": "no-store",
+            connection: "keep-alive",
+          },
+        });
       }
 
       if (request.method === "POST" && url.pathname === "/v1/workspaces/purge") {
-        if (closing) {
-          failure(response, 503, "shutting_down", new Error("sidecar is shutting down"));
-          return;
-        }
         const purged = await options.invocation.purge(purgeRequest(await readJson(request)));
-        json(response, 200, { ok: true, purged });
-        return;
+        return json(200, { ok: true, purged });
       }
 
       if (request.method === "POST" && url.pathname === "/v1/workspaces/rebuild/prepare") {
-        if (closing) {
-          failure(response, 503, "shutting_down", new Error("sidecar is shutting down"));
-          return;
-        }
+        // The rebuild upload is a bounded-frame NDJSON stream whose aggregate
+        // size is intentionally unbounded; its domain abort signal owns time.
+        server.timeout(request, 0);
         const staged = await stageWorkspaceRebuild(
           request,
           options.rebuildSpoolRoot ?? join(tmpdir(), "idream-chat-rebuilds"),
         );
         const controller = new AbortController();
-        let rebuilding = true;
         const abortOnDisconnect = () => {
-          if (rebuilding) controller.abort(new Error("relationship rebuild client disconnected"));
+          controller.abort(new Error("relationship rebuild client disconnected"));
         };
-        request.once("aborted", abortOnDisconnect);
-        response.once("close", abortOnDisconnect);
+        if (request.signal.aborted) abortOnDisconnect();
+        else request.signal.addEventListener("abort", abortOnDisconnect, { once: true });
         const rebuilt = await (async () => {
           try {
             if (!staged.source.fence) {
@@ -466,70 +521,52 @@ export function createCompanionServer(options: CompanionServerOptions): Companio
               staged.source,
               controller.signal,
             );
-            rebuilding = false;
             return result;
           } finally {
-            rebuilding = false;
-            request.removeListener("aborted", abortOnDisconnect);
-            response.removeListener("close", abortOnDisconnect);
+            request.signal.removeEventListener("abort", abortOnDisconnect);
             await staged.dispose();
           }
         })();
         // INVARIANT: a successful response acknowledges a fully verified staged
         // candidate and removal of the request-owned plaintext spool. It does
         // not promote; Chat must still pass the final DB authority fence.
-        json(response, 200, { ok: true, rebuilt });
-        return;
+        return json(200, { ok: true, rebuilt });
       }
 
       if (request.method === "POST" && (
         url.pathname === "/v1/workspaces/rebuild/promote"
         || url.pathname === "/v1/workspaces/rebuild/discard"
       )) {
-        if (closing) {
-          failure(response, 503, "shutting_down", new Error("sidecar is shutting down"));
-          return;
-        }
         const promotion = rebuildPromotionRequest(await readJson(request));
         if (url.pathname.endsWith("/discard")) {
           await options.invocation.discardRebuild(promotion);
-          json(response, 200, { ok: true });
+          return json(200, { ok: true });
         } else {
           const controller = new AbortController();
-          let promoting = true;
           const abortOnDisconnect = () => {
-            if (promoting) controller.abort(new Error("relationship promotion client disconnected"));
+            controller.abort(new Error("relationship promotion client disconnected"));
           };
-          request.once("aborted", abortOnDisconnect);
-          response.once("close", abortOnDisconnect);
+          if (request.signal.aborted) abortOnDisconnect();
+          else request.signal.addEventListener("abort", abortOnDisconnect, { once: true });
           try {
             const rebuilt = await options.invocation.promoteRebuild(
               promotion,
               controller.signal,
             );
-            promoting = false;
-            json(response, 200, { ok: true, rebuilt });
+            return json(200, { ok: true, rebuilt });
           } finally {
-            promoting = false;
-            request.removeListener("aborted", abortOnDisconnect);
-            response.removeListener("close", abortOnDisconnect);
+            request.signal.removeEventListener("abort", abortOnDisconnect);
           }
         }
-        return;
       }
 
       if (request.method === "POST" && url.pathname === "/v1/workspaces/memory-cutover-proof") {
-        if (closing) {
-          failure(response, 503, "shutting_down", new Error("sidecar is shutting down"));
-          return;
-        }
         const relationship = relationshipRequest(await readJson(request));
         const proof = await options.invocation.memoryCutoverProof({
           userId: relationship.userId,
           characterId: relationship.characterId,
         });
-        json(response, 200, { ok: true, proof });
-        return;
+        return json(200, { ok: true, proof });
       }
       const route = request.method === "POST" ? controlRoute(url.pathname) : undefined;
       if (route) {
@@ -541,15 +578,19 @@ export function createCompanionServer(options: CompanionServerOptions): Companio
           throw new Error("path and frame invocation ids must match");
         }
         await options.invocation.accept(frame);
-        json(response, 200, { ok: true });
-        return;
+        return json(200, { ok: true });
       }
 
-      json(response, 404, { error: { code: "not_found", message: "not found" } });
+      return json(404, { error: { code: "not_found", message: "not found" } });
     } catch (error) {
-      if (!response.headersSent) failure(response, 400, "invalid_request", error);
-      else response.destroy(error instanceof Error ? error : new Error(String(error)));
+      return failure(400, "invalid_request", error);
     }
+  };
+
+  const http = Bun.serve({
+    ...(options.hostname ? { hostname: options.hostname } : {}),
+    ...(options.port !== undefined ? { port: options.port } : {}),
+    fetch: handleRequest,
   });
 
   return {
@@ -558,11 +599,7 @@ export function createCompanionServer(options: CompanionServerOptions): Companio
       if (closing) return;
       closing = true;
       await options.invocation.shutdown();
-      if (!http.listening) return;
-      await new Promise<void>((resolve, reject) => {
-        http.close((error) => error ? reject(error) : resolve());
-        http.closeIdleConnections();
-      });
+      await http.stop(true);
     },
   };
 }

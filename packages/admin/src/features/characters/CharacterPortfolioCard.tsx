@@ -3,8 +3,7 @@
 import { useAdminI18n } from "@/components/admin/i18n";
 import Link from "next/link";
 import type { CharacterPortfolioItem } from "@idream/shared/admin";
-import { ArrowRight } from "lucide-react";
-import { useAdminFormat } from "@/components/admin/ui/format";
+import { ArrowRight, ImageIcon } from "lucide-react";
 import { StatusBadge } from "@/features/operations/WorkspaceUi";
 import { cn } from "@/lib/utils";
 import { percent } from "./character-workspace-format";
@@ -90,16 +89,16 @@ const characterPortfolioPrimaryActionCopy: Record<
     label: "Continue filling image pack",
     requiresAssets: true,
   },
-  run_preview_qa: {
-    description: "Check the customer-facing draft before publishing.",
-    eyebrow: "Ready for launch review",
-    label: "Review launch preview",
+  preview_character: {
+    description: "Preview the customer-facing draft before publishing.",
+    eyebrow: "Ready to preview",
+    label: "Preview Character",
     requiresAssets: false,
   },
-  review_candidate_release: {
-    description: "Confirm the candidate version and release evidence.",
-    eyebrow: "Release in progress",
-    label: "Continue release review",
+  publish_character: {
+    description: "Publish the prepared immutable Character snapshot.",
+    eyebrow: "Ready to publish",
+    label: "Publish Character",
     requiresAssets: false,
   },
   monitor_live_character: {
@@ -113,10 +112,57 @@ const characterPortfolioPrimaryActionCopy: Record<
 export function resolveCharacterPortfolioPrimaryAction(
   item: CharacterPortfolioItem,
 ): CharacterPortfolioPrimaryAction {
-  return {
+  const journeyAction = {
     ...characterPortfolioPrimaryActionCopy[item.journey.primaryAction.code],
     href: item.journey.primaryAction.deepLink,
   };
+  // SPEC: 卡片主动作只服从这个优先级：未完成命令/旅程阻塞 → Release 阻塞 → 线上零观测
+  //       → 待发布版本 → 线上图片包缺失 → 普通制作旅程。
+  // INTENT: 生成批次只是生产过程，不能盖过线上故障或发布决策。
+  if (
+    item.journey.primaryAction.code === "recover_active_command" ||
+    item.journey.status === "blocked"
+  ) {
+    return journeyAction;
+  }
+  if (item.readiness === "blocked") {
+    return {
+      description:
+        "Resolve the current live Release blocker before continuing routine production.",
+      eyebrow: "Live release blocked",
+      href:
+        item.operationalState.blockers[0]?.deepLink ??
+        `/admin/characters/${encodeURIComponent(item.characterId)}?tab=monitor`,
+      label: "Resolve live release blocker",
+      requiresAssets: false,
+    };
+  }
+  if (item.needsAttention) {
+    return {
+      description:
+        "This live Character has no exposure or funnel events after the 7-day observation window.",
+      eyebrow: "No telemetry after 7 days",
+      href: `/admin/characters/${encodeURIComponent(item.characterId)}?tab=monitor`,
+      label: "Inspect live monitoring",
+      requiresAssets: false,
+    };
+  }
+  if (item.journey.primaryAction.code === "publish_character") {
+    return journeyAction;
+  }
+  if (
+    item.serving.state === "live" &&
+    item.journey.assetPack.live.completed < item.journey.assetPack.live.total
+  ) {
+    return {
+      description: "Complete the portrait, hero, and chat image set.",
+      eyebrow: "Live with an incomplete image pack",
+      href: item.visualProduction.deepLink,
+      label: "Complete image pack",
+      requiresAssets: true,
+    };
+  }
+  return journeyAction;
 }
 
 export function characterPortfolioState(item: CharacterPortfolioItem) {
@@ -124,27 +170,38 @@ export function characterPortfolioState(item: CharacterPortfolioItem) {
     item.serving.state === "live" ||
     item.journey.stage === "live_operations"
   ) {
-    return { label: "Live", tone: "text-[var(--ad-green-text)]" } as const;
+    return {
+      badge: "bg-[var(--ad-green-bg)] text-[var(--ad-green-text)]",
+      label: "Live",
+      tone: "text-[var(--ad-green-text)]",
+    } as const;
   }
   if (item.journey.stage === "image_production") {
     return {
+      badge: "bg-[var(--ad-blue-bg)] text-[var(--ad-blue-text)]",
       label: "In production",
       tone: "text-[var(--ad-blue-text)]",
     } as const;
   }
-  if (item.journey.stage === "preview_qa") {
+  if (item.journey.stage === "preview") {
     return {
+      badge: "bg-[var(--ad-blue-bg)] text-[var(--ad-blue-text)]",
       label: "Ready for preview",
       tone: "text-[var(--ad-blue-text)]",
     } as const;
   }
-  if (item.journey.stage === "release_review") {
+  if (item.journey.stage === "publishing") {
     return {
-      label: "Pending release",
+      badge: "bg-[var(--ad-yellow-bg)] text-[var(--ad-yellow-text)]",
+      label: "Ready to publish",
       tone: "text-[var(--ad-yellow-text)]",
     } as const;
   }
-  return { label: "Draft", tone: "text-[var(--ad-text-muted)]" } as const;
+  return {
+    badge: "bg-[var(--ad-surface-subtle)] text-[var(--ad-text-muted)]",
+    label: "Draft",
+    tone: "text-[var(--ad-text-muted)]",
+  } as const;
 }
 
 export function CharacterPortfolioCard({
@@ -161,7 +218,6 @@ export function CharacterPortfolioCard({
   mode: "studio" | "performance";
 }) {
   const { t } = useAdminI18n();
-  const format = useAdminFormat();
   const performanceMode = mode === "performance";
   const performance =
     item.performance.find(
@@ -198,10 +254,6 @@ export function CharacterPortfolioCard({
             <StatusBadge value={item.serving.state} />
             <StatusBadge value={item.readiness} />
           </div>
-          <p className="mt-2 text-sm text-[var(--ad-text-muted)]">
-            {t(item.project.audience)} ·{" "}
-            {t(item.project.phase.replaceAll("_", " "))}
-          </p>
           <p className="mt-2 text-xs text-[var(--ad-text-muted)]">
             {characterPortfolioPerformanceLabel(t, performance)}
           </p>
@@ -224,18 +276,13 @@ export function CharacterPortfolioCard({
             </span>
           )}
           <p className="mt-1 leading-5">{t(primaryAction.description)}</p>
-          {item.latestDecision ? (
-            <span className="mt-2 block border-t border-[var(--ad-border)] pt-2">
-              {t("Latest decision:")} {item.latestDecision.decision}
-            </span>
-          ) : null}
         </div>
       </article>
     );
   }
 
   const state = characterPortfolioState(item);
-  const { assetPack, blockers } = item.journey;
+  const { assetPack } = item.journey;
   const characterHref = `/admin/characters/${encodeURIComponent(item.characterId)}`;
   const identity = (
     <>
@@ -247,11 +294,35 @@ export function CharacterPortfolioCard({
         variant="tile"
         visualProduction={item.visualProduction}
       />
-      <div className="pt-3">
-        <h3 className="truncate text-base font-semibold text-[var(--ad-ink)]">
-          {item.name}
-        </h3>
-        <p className={cn("mt-1 text-sm", state.tone)}>{t(state.label)}</p>
+      <div className="p-4 pb-3">
+        <div className="flex min-w-0 items-center justify-between gap-3">
+          <h3 className="truncate text-base font-semibold text-[var(--ad-ink)]">
+            {item.name}
+          </h3>
+          <span
+            className={cn(
+              "shrink-0 rounded-md px-2 py-1 text-xs font-semibold",
+              state.badge,
+            )}
+          >
+            {t(state.label)}
+          </span>
+        </div>
+        <p className="mt-3 flex items-center gap-2 text-xs text-[var(--ad-text-muted)]">
+          <ImageIcon aria-hidden="true" className="h-3.5 w-3.5" />
+          <span>
+            {[
+              t("Draft {completed}/{total}", {
+                completed: assetPack.draft.completed,
+                total: assetPack.draft.total,
+              }),
+              t("Live {completed}/{total}", {
+                completed: assetPack.live.completed,
+                total: assetPack.live.total,
+              }),
+            ].join(" · ")}
+          </span>
+        </p>
       </div>
     </>
   );
@@ -260,11 +331,14 @@ export function CharacterPortfolioCard({
   // INTENT: 整张卡片曾是一个 <Link>，任何深链都只能是嵌套 <a>（非法 HTML）。要把 journey
   //         的下一步动作放上来，就必须先把外层链接收窄到"这是谁"那一块。
   return (
-    <article className="flex flex-col" data-layout="roster">
+    <article
+      className="flex min-w-0 flex-col overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] transition-[border-color,transform] hover:-translate-y-0.5 hover:border-black/25"
+      data-layout="roster"
+    >
       {canOpenProject ? (
         <Link
           aria-label={t("Open {name}", { name: item.name })}
-          className="group block rounded-lg transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[var(--ad-ink)]"
+          className="group block focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-3px] focus-visible:outline-[var(--ad-ink)]"
           href={characterHref}
         >
           {identity}
@@ -272,47 +346,20 @@ export function CharacterPortfolioCard({
       ) : (
         identity
       )}
-      <div className="mt-3 border-t border-[var(--ad-border)] pt-3 text-xs">
-        <p className="font-semibold uppercase tracking-[0.14em] text-[var(--ad-text-muted)]">
-          {t(primaryAction.eyebrow)}
-        </p>
+      <div className="mt-auto border-t border-[var(--ad-border)] px-4 py-3 text-xs">
         {canOpenNextAction ? (
           <Link
-            className="mt-1 inline-flex min-h-8 items-center gap-1.5 text-sm font-semibold text-[var(--ad-ink)] hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
+            className="flex min-h-8 items-center justify-between gap-3 text-sm font-semibold text-[var(--ad-ink)] hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
             href={primaryAction.href}
           >
-            {t(primaryAction.label)}
-            <ArrowRight aria-hidden="true" className="h-4 w-4" />
+            <span className="truncate">{t(primaryAction.label)}</span>
+            <ArrowRight aria-hidden="true" className="h-4 w-4 shrink-0" />
           </Link>
         ) : (
-          <p className="mt-1 text-sm font-semibold text-[var(--ad-ink)]">
+          <p className="flex min-h-8 items-center text-sm font-semibold text-[var(--ad-ink)]">
             {t(primaryAction.label)}
           </p>
         )}
-        {blockers.length > 0 ? (
-          <p className="mt-1 line-clamp-2 text-[var(--ad-red-text)]">
-            {blockers.length > 1
-              ? t("{message} · +{count} more", {
-                  count: blockers.length - 1,
-                  message: t(blockers[0].message),
-                })
-              : t(blockers[0].message)}
-          </p>
-        ) : null}
-        <p className="mt-2 truncate text-[var(--ad-text-muted)]">
-          {[
-            item.project.ownerId ?? t("Unassigned"),
-            t("Draft {completed}/{total}", {
-              completed: assetPack.draft.completed,
-              total: assetPack.draft.total,
-            }),
-            t("Live {completed}/{total}", {
-              completed: assetPack.live.completed,
-              total: assetPack.live.total,
-            }),
-            format.date(item.project.updatedAt),
-          ].join(" · ")}
-        </p>
       </div>
     </article>
   );

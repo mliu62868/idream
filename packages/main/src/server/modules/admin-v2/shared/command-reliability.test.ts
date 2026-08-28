@@ -117,7 +117,7 @@ describe("Admin v2 command reliability", () => {
       canonicalRequestHash(base),
     );
     for (const changed of [
-      { ...base, commandType: "character.release.schedule" },
+      { ...base, commandType: "character.release.rollback" },
       { ...base, target: { ...base.target, id: "release-2" } },
       { ...base, target: { ...base.target, type: "character_serving" } },
       { ...base, expectedVersion: 8 },

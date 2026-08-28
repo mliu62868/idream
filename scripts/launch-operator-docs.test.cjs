@@ -32,14 +32,7 @@ test("the raw provider diagnostic is not exposed as a Chat launch gate", () => {
   assert.equal(rootPackage.scripts["launch:probe:chat"], undefined);
   assert.equal(
     rootPackage.scripts["diagnose:chat-provider"],
-    "node --env-file=packages/main/.env --env-file=packages/chat/.env packages/main/node_modules/.bin/tsx packages/main/src/server/probe-chat-model.ts",
-  );
-});
-
-test("the root DSH image probe runs inside the Main workspace", () => {
-  assert.equal(
-    rootPackage.scripts["launch:probe:chat-dsh-image-tool"],
-    "bun run --cwd packages/main --env-file=.env --env-file=../chat/.env probe:chat-dsh-image-tool --",
+    "bun --env-file=packages/main/.env --env-file=packages/chat/.env packages/main/src/server/probe-chat-model.ts",
   );
 });
 

@@ -8,7 +8,6 @@ import {
 } from "./release-snapshot";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
 import { loadCharacterIdentityBootstrapAuthority } from "./identity-bootstrap-authority";
-import { recordCreativeReviewDecision } from "@/server/modules/admin-v2/creative/review-decision";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 
 describe("Character first identity bootstrap authority", () => {
@@ -52,8 +51,7 @@ describe("Character first identity bootstrap authority", () => {
         runId,
         itemId,
         assetId,
-        reviewDecisionId: decisionId,
-        reason: "Establish the first reviewed portrait as the Character identity anchor",
+        reason: "Establish the selected portrait as the Character identity anchor",
         confirmation,
       }),
     });
@@ -86,9 +84,6 @@ describe("Character first identity bootstrap authority", () => {
       data: {
         id: projectId,
         characterId,
-        phase: "producing",
-        audience: {},
-        successCriteria: ["Identity is recognizable across customer surfaces"],
         activeKey: `identity-bootstrap:${characterId}`,
       },
     });
@@ -278,7 +273,7 @@ describe("Character first identity bootstrap authority", () => {
     })).resolves.toMatchObject({ status: "active" });
   });
 
-  it("rejects an approved decision after a newer review supersedes it", async () => {
+  it("does not make a historical review the gate for selecting the first identity", async () => {
     await prisma.creativeReviewDecision.create({
       data: {
         id: supersedingDecisionId,
@@ -299,12 +294,38 @@ describe("Character first identity bootstrap authority", () => {
         request(`BOOTSTRAP IDENTITY ${characterId}`, `identity-bootstrap-stale-review-${suffix}`),
         { params: Promise.resolve({ id: characterId }) },
       );
-      expect(response.status).toBe(409);
-      expect(await prisma.characterVisualProfile.count({ where: { characterId } })).toBe(1);
-      await expect(prisma.characterVisualProfile.findUniqueOrThrow({
-        where: { id: legacyEmptyProfileId },
-      })).resolves.toMatchObject({ status: "active" });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        data: { characterId, anchorAssetId: assetId, replayed: false },
+      });
     } finally {
+      await prisma.referenceCandidate.deleteMany({ where: { mediaAssetId: assetId } });
+      const createdProfiles = await prisma.characterVisualProfile.findMany({
+        where: { characterId, id: { not: legacyEmptyProfileId } },
+        select: { id: true },
+      });
+      await prisma.referenceSetRevision.deleteMany({
+        where: { visualProfileId: { in: createdProfiles.map(({ id }) => id) } },
+      });
+      await prisma.characterVisualProfile.deleteMany({
+        where: { id: { in: createdProfiles.map(({ id }) => id) } },
+      });
+      await prisma.characterVisualProfile.update({
+        where: { id: legacyEmptyProfileId },
+        data: { status: "active" },
+      });
+      await prisma.characterProject.update({
+        where: { id: projectId },
+        data: { version: 1, draftImageAssetId: null, draftAssetPack: {} },
+      });
+      await prisma.controlPlaneCommand.deleteMany({
+        where: { actorId, commandType: "character.identity.bootstrap" },
+      });
+      await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: projectId } });
+      await prisma.adminCollaborationActivity.deleteMany({ where: { targetId: projectId } });
+      await prisma.adminAuditLog.deleteMany({
+        where: { actorId, action: "character.identity.bootstrapped" },
+      });
       await prisma.creativeReviewDecision.deleteMany({ where: { id: supersedingDecisionId } });
     }
   });
@@ -496,7 +517,7 @@ describe("Character first identity bootstrap authority", () => {
     }
   });
 
-  it("atomically supersedes recoverable empty history with sealed reviewed identity authority", async () => {
+  it("atomically supersedes recoverable empty history with sealed identity authority", async () => {
     await prisma.characterProject.update({
       where: { id: projectId },
       data: {
@@ -612,30 +633,6 @@ describe("Character first identity bootstrap authority", () => {
     expect(await prisma.mainOutboxEvent.count({
       where: { aggregateId: projectId, eventType: "character.identity.bootstrapped.v2" },
     })).toBe(1);
-  });
-
-  it("prevents review revocation while the portrait is active Character authority", async () => {
-    await expect(recordCreativeReviewDecision({
-      runId,
-      itemId,
-      actor: { id: actorId, role: "admin" },
-      expectedVersion: 1,
-      supersedesDecisionId: decisionId,
-      decision: "rejected",
-      identityConsistency: "unscored",
-      quality: {
-        artifactFree: true,
-        singleSubject: true,
-        intentMatch: true,
-        noVisibleText: true,
-      },
-      reason: "A bound identity anchor must be withdrawn before its review can change",
-      requestId: `identity-bootstrap-bound-review-${suffix}`,
-    })).rejects.toMatchObject({ status: 409 });
-    await expect(prisma.creativeReviewDecision.findFirst({
-      where: { runItemId: itemId },
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    })).resolves.toMatchObject({ id: decisionId, decision: "approved" });
   });
 
   it("replays the same atomic command without duplicating profile or reference revisions", async () => {

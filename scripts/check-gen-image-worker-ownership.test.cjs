@@ -12,7 +12,13 @@ const {
 
 const repoRoot = path.resolve(__dirname, "..");
 const genCwd = path.join(repoRoot, "packages/gen");
-const execPath = path.join(genCwd, "node_modules/tsx/dist/cli.mjs");
+const bunPath = "/runtime/bun";
+const imageEntrypoint = path.join(genCwd, "src/image.ts");
+const videoEntrypoint = path.join(genCwd, "src/video.ts");
+const legacyTsxEntrypoint = path.join(genCwd, "node_modules/tsx/dist/cli.mjs");
+const pm2BunProcessContainer = require.resolve(
+  "pm2/lib/ProcessContainerForkBun.js",
+);
 
 function pm2(pid, slot, status = "online", runId = "release1") {
   return {
@@ -22,8 +28,10 @@ function pm2(pid, slot, status = "online", runId = "release1") {
     pm2_env: {
       status,
       pm_cwd: genCwd,
-      pm_exec_path: execPath,
-      args: ["src/image.ts"],
+      pm_exec_path: imageEntrypoint,
+      args: [],
+      exec_interpreter: bunPath,
+      IDREAM_PM2_MODE: "development",
       ...(runId ? { GEN_IMAGE_WORKER_RUN_ID: runId } : {}),
       NODE_APP_INSTANCE: slot,
     },
@@ -38,8 +46,10 @@ function videoPm2(pid, slot = 0, status = "online", runId = "release1") {
     pm2_env: {
       status,
       pm_cwd: genCwd,
-      pm_exec_path: execPath,
-      args: ["src/video.ts"],
+      pm_exec_path: videoEntrypoint,
+      args: [],
+      exec_interpreter: bunPath,
+      IDREAM_PM2_MODE: "development",
       ...(runId ? { GEN_VIDEO_WORKER_RUN_ID: runId } : {}),
       NODE_APP_INSTANCE: slot,
     },
@@ -50,11 +60,23 @@ function row(pid, ppid, pgid, command) {
   return { pid, ppid, pgid, startedAt: "Tue Aug 11 06:00:00 2026", command };
 }
 
-function wrapper(pid, daemonPid = 100) {
-  return row(pid, daemonPid, pid, `node ${execPath}`);
+function imageRuntime(pid, daemonPid = 100) {
+  return row(pid, daemonPid, pid, `${bunPath} src/image.ts`);
 }
 
-function runtime(pid, wrapperPid) {
+function videoRuntime(pid, daemonPid = 100) {
+  return row(pid, daemonPid, pid, `${bunPath} src/video.ts`);
+}
+
+function pm2BunRuntime(pid, daemonPid = 100) {
+  return row(pid, daemonPid, pid, `${bunPath} ${pm2BunProcessContainer}`);
+}
+
+function legacyWrapper(pid, daemonPid = 100) {
+  return row(pid, daemonPid, pid, `node ${legacyTsxEntrypoint}`);
+}
+
+function legacyImageRuntime(pid, wrapperPid) {
   return row(
     pid,
     wrapperPid,
@@ -63,7 +85,7 @@ function runtime(pid, wrapperPid) {
   );
 }
 
-function videoRuntime(pid, wrapperPid) {
+function legacyVideoRuntime(pid, wrapperPid) {
   return row(
     pid,
     wrapperPid,
@@ -92,10 +114,10 @@ test("parses PM2 warning prefixes and ps process identity", () => {
     [pm2(200, 0)],
   );
   const parsed = parsePsSnapshot(
-    `200 100 200 Tue Aug 11 06:00:00 2026 node ${execPath}\n`,
+    `200 100 200 Tue Aug 11 06:00:00 2026 ${bunPath} src/image.ts\n`,
   );
   assert.equal(parsed[0].pid, 200);
-  assert.equal(parsed[0].command, `node ${execPath}`);
+  assert.equal(parsed[0].command, `${bunPath} src/image.ts`);
   assert.throws(() => parsePsSnapshot("collector format drift"));
 });
 
@@ -106,12 +128,10 @@ test("accepts exact PM2, OS and Redis ownership", () => {
     pm2Processes: [pm2(200, 0), pm2(300, 1)],
     psRows: [
       row(100, 1, 100, "PM2 v6.0.14: God Daemon (/tmp/.pm2)"),
-      wrapper(200),
-      runtime(201, 200),
-      wrapper(300),
-      runtime(301, 300),
+      imageRuntime(200),
+      imageRuntime(300),
     ],
-    redisWorkers: [redis("release1", 0, 201), redis("release1", 1, 301)],
+    redisWorkers: [redis("release1", 0, 200), redis("release1", 1, 300)],
   });
 
   assert.equal(report.ok, true);
@@ -132,15 +152,12 @@ test("accepts exact image and video PM2, OS and Redis ownership together", () =>
     ],
     psRows: [
       row(100, 1, 100, "PM2 v6.0.14: God Daemon (/tmp/.pm2)"),
-      wrapper(200),
-      runtime(201, 200),
-      wrapper(300),
-      runtime(301, 300),
-      wrapper(400),
-      videoRuntime(401, 400),
+      imageRuntime(200),
+      imageRuntime(300),
+      videoRuntime(400),
     ],
-    redisWorkers: [redis("release1", 0, 201), redis("release1", 1, 301)],
-    videoRedisWorkers: [videoRedis("release1", 0, 401)],
+    redisWorkers: [redis("release1", 0, 200), redis("release1", 1, 300)],
+    videoRedisWorkers: [videoRedis("release1", 0, 400)],
   });
   assert.equal(ready.ok, true);
   assert.equal(ready.image.groups.length, 2);
@@ -159,6 +176,39 @@ test("accepts exact image and video PM2, OS and Redis ownership together", () =>
   assert.equal(quiescent.video.groups.length, 0);
 });
 
+test("accepts PM2 ProcessContainerForkBun as the registered Bun runtime", () => {
+  const report = classifyOwnership({
+    mode: "ready",
+    expected: 2,
+    expectedVideo: 1,
+    runId: "release1",
+    videoRunId: "release1",
+    pm2Processes: [pm2(200, 0), pm2(300, 1), videoPm2(400)],
+    psRows: [
+      row(100, 1, 100, "PM2 v6.0.14: God Daemon (/tmp/.pm2)"),
+      pm2BunRuntime(200),
+      pm2BunRuntime(300),
+      pm2BunRuntime(400),
+    ],
+    redisWorkers: [redis("release1", 0, 200), redis("release1", 1, 300)],
+    videoRedisWorkers: [videoRedis("release1", 0, 400)],
+  });
+
+  assert.equal(report.ok, true);
+  assert.deepEqual(
+    report.image.groups.map(({ rootPid, runtimePid, classification }) => ({
+      rootPid,
+      runtimePid,
+      classification,
+    })),
+    [
+      { rootPid: 200, runtimePid: 200, classification: "registered" },
+      { rootPid: 300, runtimePid: 300, classification: "registered" },
+    ],
+  );
+  assert.equal(report.video.groups[0].runtimePid, 400);
+});
+
 test("ready accepts a validated zero-video topology while image remains live", () => {
   const report = classifyOwnership({
     mode: "ready",
@@ -169,10 +219,9 @@ test("ready accepts a validated zero-video topology while image remains live", (
     pm2Processes: [pm2(200, 0)],
     psRows: [
       row(100, 1, 100, "PM2 v6.0.14: God Daemon (/tmp/.pm2)"),
-      wrapper(200),
-      runtime(201, 200),
+      imageRuntime(200),
     ],
-    redisWorkers: [redis("release1", 0, 201)],
+    redisWorkers: [redis("release1", 0, 200)],
     videoRedisWorkers: [],
   });
 
@@ -192,21 +241,18 @@ test("video orphan, dormant runtime and Redis identity drift all fail closed", (
     pm2Processes: [pm2(200, 0), videoPm2(400)],
     psRows: [
       row(100, 1, 100, "PM2 v6.0.14: God Daemon (/tmp/.pm2)"),
-      wrapper(200),
-      runtime(201, 200),
-      wrapper(400),
-      videoRuntime(401, 400),
+      imageRuntime(200),
+      videoRuntime(400),
     ],
-    redisWorkers: [redis("release1", 0, 201)],
-    videoRedisWorkers: [videoRedis("release1", 0, 401)],
+    redisWorkers: [redis("release1", 0, 200)],
+    videoRedisWorkers: [videoRedis("release1", 0, 400)],
   };
 
   const orphan = classifyOwnership({
     ...base,
     psRows: [
       ...base.psRows,
-      wrapper(500),
-      videoRuntime(501, 500),
+      videoRuntime(500),
     ],
   });
   assert.equal(orphan.ok, false);
@@ -214,16 +260,16 @@ test("video orphan, dormant runtime and Redis identity drift all fail closed", (
 
   const dormant = classifyOwnership({
     ...base,
-    psRows: base.psRows.filter((process) => process.pid !== 401),
+    psRows: base.psRows.filter((process) => process.pid !== 400),
   });
   assert.equal(dormant.ok, false);
-  assert.ok(dormant.issues.includes("video:ambiguous_worker_group"));
+  assert.ok(dormant.issues.includes("video:registered_root_missing_runtime"));
 
   const wrongRedis = classifyOwnership({
     ...base,
     targetRedisDb: 4,
-    redisWorkers: [redis("release1", 0, 201, 4)],
-    videoRedisWorkers: [videoRedis("wrong-release", 0, 401, 0)],
+    redisWorkers: [redis("release1", 0, 200, 4)],
+    videoRedisWorkers: [videoRedis("wrong-release", 0, 400, 0)],
   });
   assert.equal(wrongRedis.ok, false);
   assert.ok(wrongRedis.issues.includes("video:redis_database_mismatch"));
@@ -233,16 +279,14 @@ test("video orphan, dormant runtime and Redis identity drift all fail closed", (
 test("reports daemon orphan groups without counting wrapper and child twice", () => {
   const psRows = [
     row(100, 1, 100, "PM2 v6.0.14: God Daemon (/tmp/.pm2)"),
-    wrapper(200),
-    runtime(201, 200),
-    wrapper(300),
-    runtime(301, 300),
+    imageRuntime(200),
+    imageRuntime(300),
   ];
   for (let index = 0; index < 8; index += 1) {
     const root = 400 + index * 2;
-    psRows.push(wrapper(root), runtime(root + 1, root));
+    psRows.push(legacyWrapper(root), legacyImageRuntime(root + 1, root));
   }
-  const redisWorkers = [redis("release1", 0, 201), redis("release1", 1, 301)];
+  const redisWorkers = [redis("release1", 0, 200), redis("release1", 1, 300)];
   for (let index = 0; index < 8; index += 1) {
     redisWorkers.push({ rawname: "idream:development:ai.image.generate" });
   }
@@ -266,26 +310,20 @@ test("reports daemon orphan groups without counting wrapper and child twice", ()
   assert.ok(report.issues.includes("anonymous_or_invalid_redis_worker"));
 });
 
-test("fails closed on a dormant registered image wrapper without a runtime child", () => {
+test("fails closed on a registered Bun worker without an OS runtime", () => {
   const report = classifyOwnership({
     expected: 2,
     runId: "release1",
     pm2Processes: [pm2(200, 0), pm2(300, 1)],
     psRows: [
       row(100, 1, 100, "PM2 v6.0.14: God Daemon (/tmp/.pm2)"),
-      wrapper(200),
-      runtime(201, 200),
-      wrapper(300),
+      imageRuntime(200),
     ],
-    redisWorkers: [redis("release1", 0, 201)],
+    redisWorkers: [redis("release1", 0, 200)],
   });
 
   assert.equal(report.ok, false);
-  assert.ok(report.issues.includes("ambiguous_worker_group"));
-  assert.equal(
-    report.groups.find(({ rootPid }) => rootPid === 300)?.classification,
-    "ambiguous",
-  );
+  assert.ok(report.issues.includes("registered_root_missing_runtime"));
 });
 
 test("steady development ownership maps named workers without a release run id", () => {
@@ -298,12 +336,10 @@ test("steady development ownership maps named workers without a release run id",
     ],
     psRows: [
       row(100, 1, 100, "PM2 v6.0.14: God Daemon (/tmp/.pm2)"),
-      wrapper(200),
-      runtime(201, 200),
-      wrapper(300),
-      runtime(301, 300),
+      imageRuntime(200),
+      imageRuntime(300),
     ],
-    redisWorkers: [redis("dev-a", 0, 201), redis("dev-b", 1, 301)],
+    redisWorkers: [redis("dev-a", 0, 200), redis("dev-b", 1, 300)],
   });
 
   assert.equal(report.ok, true);
@@ -317,22 +353,20 @@ test("rejects workers from a different Redis logical database", () => {
     pm2Processes: [pm2(200, 0), pm2(300, 1)],
     psRows: [
       row(100, 1, 100, "PM2 v6.0.14: God Daemon (/tmp/.pm2)"),
-      wrapper(200),
-      runtime(201, 200),
-      wrapper(300),
-      runtime(301, 300),
+      imageRuntime(200),
+      imageRuntime(300),
     ],
   };
   const wrong = classifyOwnership({
     ...base,
-    redisWorkers: [redis("release1", 0, 201, 0), redis("release1", 1, 301, 0)],
+    redisWorkers: [redis("release1", 0, 200, 0), redis("release1", 1, 300, 0)],
   });
   assert.equal(wrong.ok, false);
   assert.ok(wrong.issues.includes("redis_database_mismatch"));
 
   const exact = classifyOwnership({
     ...base,
-    redisWorkers: [redis("release1", 0, 201, 4), redis("release1", 1, 301, 4)],
+    redisWorkers: [redis("release1", 0, 200, 4), redis("release1", 1, 300, 4)],
   });
   assert.equal(exact.ok, true);
 });
@@ -345,12 +379,10 @@ test("classifier rejects a contradictory ownership phase even without the CLI", 
     pm2Processes: [pm2(200, 0), pm2(300, 1)],
     psRows: [
       row(100, 1, 100, "PM2 v6.0.14: God Daemon (/tmp/.pm2)"),
-      wrapper(200),
-      runtime(201, 200),
-      wrapper(300),
-      runtime(301, 300),
+      imageRuntime(200),
+      imageRuntime(300),
     ],
-    redisWorkers: [redis("release1", 0, 201), redis("release1", 1, 301)],
+    redisWorkers: [redis("release1", 0, 200), redis("release1", 1, 300)],
   });
 
   assert.equal(report.ok, false);
@@ -373,8 +405,7 @@ test("quiescent requires zero identity in every source", () => {
     pm2Processes: [pm2(0, 0, "stopped")],
     psRows: [
       row(100, 1, 100, "PM2 v6.0.14: God Daemon (/tmp/.pm2)"),
-      wrapper(400),
-      runtime(401, 400),
+      imageRuntime(400),
     ],
     redisWorkers: [
       { rawname: "idream:development:ai.image.generate", db: "0" },

@@ -1,8 +1,9 @@
 // SPEC: CompanionTurn is the single generation-facing seam. It owns pinned Soul,
-// Scene, relationship, memory, transcript, prompt order, tool exposure, budget,
+// Scene, memory, transcript, prompt order, tool exposure, budget,
 // and trace assembly; the worker must not rebuild any of those independently.
-import type { ChatPrismaClient } from "./db.js";
 import type { ChatToolDefinition, ModelMessage } from "@idream/shared";
+import type { ChatAuthoritySnapshot } from "@idream/shared/bff";
+import type { ChatExecutionSnapshot } from "@idream/shared/contracts";
 import { buildContext, type BuiltContext } from "./context.js";
 import { buildCompanionSystemPrompt, buildTurnStateBlock } from "./prompt.js";
 import { registryChatTools } from "./agent-tools.js";
@@ -48,20 +49,15 @@ export interface PreparedTurn {
     soulFingerprint: string;
     compilerVersion: string;
     sceneVersion: number;
-    relationshipVersion: number | null;
-    fileContextRevision: string;
+    contextRevision: string;
     releasedKnowledgeDigest: string;
     profile: PreparedTurn["profile"];
   };
 }
 
 export interface PrepareCompanionTurnInput {
-  prisma: ChatPrismaClient;
-  userId: string;
-  characterId: string;
-  sessionId: string;
-  turnMemoryEnabled: boolean;
-  userMessageId: string;
+  snapshot: ChatExecutionSnapshot;
+  authority: ChatAuthoritySnapshot;
 }
 
 interface PreparedTurnRuntimeState {
@@ -76,7 +72,7 @@ export async function prepareCompanionTurn(
   input: PrepareCompanionTurnInput,
 ): Promise<PreparedTurn> {
   const context = await buildContext(input);
-  return compilePreparedTurn(context, input.userMessageId, new Date());
+  return compilePreparedTurn(context, input.snapshot.userMessageId, new Date());
 }
 
 /** Compile a pure, pinned generation snapshot from an already-authoritative context. */
@@ -116,13 +112,12 @@ export function compilePreparedTurn(
     releasedKnowledge: fitted.context.releasedKnowledge,
     trace: {
       characterContentVersionId:
-        fitted.context.persona.characterContentVersionId ?? "legacy-unattributed",
+        fitted.context.persona.characterContentVersionId ?? fail("Character content version is required"),
       characterReleaseId: fitted.context.persona.characterReleaseId,
-      soulFingerprint: fitted.context.persona.soulFingerprint ?? "legacy-unattributed",
-      compilerVersion: fitted.context.persona.compilerVersion ?? "legacy-unattributed",
+      soulFingerprint: fitted.context.persona.soulFingerprint ?? fail("Soul fingerprint is required"),
+      compilerVersion: fitted.context.persona.compilerVersion ?? fail("Soul compiler version is required"),
       sceneVersion: fitted.context.sceneVersion,
-      relationshipVersion: fitted.context.relationship?.version ?? null,
-      fileContextRevision: fitted.context.fileContextRevision.toString(),
+      contextRevision: fitted.context.contextRevision.toString(),
       releasedKnowledgeDigest: fitted.context.releasedKnowledge.digest,
       profile,
     },
@@ -156,7 +151,6 @@ export function toPreparedTurnWire(prepared: PreparedTurn): PreparedTurnWire {
         "system",
         prepared.trace.soulFingerprint,
         prepared.trace.sceneVersion,
-        prepared.trace.relationshipVersion ?? "none",
       ].join(":"),
       sourceKind: "plugin",
       role: "system",
@@ -186,7 +180,7 @@ export function toPreparedTurnWire(prepared: PreparedTurn): PreparedTurnWire {
   }
   const { profile: _runtimeProfile, ...wireTrace } = prepared.trace;
   return preparedTurnWireSchema.parse({
-    version: 2,
+    version: 3,
     model: prepared.model,
     characterName: prepared.characterName,
     messages,
@@ -280,4 +274,8 @@ export function fitPreparedTurnBudget(context: BuiltContext, now: Date = new Dat
 
 function estimateTokens(text: string): number {
   return Math.max(1, Math.ceil(text.length / 4));
+}
+
+function fail(message: string): never {
+  throw new Error(message);
 }

@@ -11,7 +11,6 @@ import {
   referenceSetSnapshotHash,
 } from "./release-snapshot";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
-import { creativeReviewQualityPassed } from "@/server/modules/admin-v2/shared/creative-review-quality";
 import { loadCharacterIdentityBootstrapAuthority } from "./identity-bootstrap-authority";
 import { lockCharacterGenerationAndMediaAssetAuthorities } from "./generation-authority-lock";
 import {
@@ -80,23 +79,18 @@ export async function bootstrapCharacterIdentity(input: {
       currentVersion: project.version,
     });
   }
-  if (!["idea", "planned", "producing"].includes(project.phase)) {
-    throw Errors.conflict("Character identity bootstrap is only allowed during planning or production", {
-      phase: project.phase,
-    });
-  }
   if (!bootstrapAuthority.allowed) {
     throw Errors.conflict("This Character already has identity authority that cannot be bootstrapped", {
       blockers: bootstrapAuthority.blockers,
     });
   }
-  if (serving?.currentReleaseId || serving?.scheduledReleaseId) {
+  if (serving?.currentReleaseId) {
     throw Errors.conflict("Identity cannot be bootstrapped after a Character Release has entered serving");
   }
   const activeRelease = await input.tx.characterRelease.findFirst({
     where: {
       projectId: project.id,
-      status: { in: ["draft", "validating", "in_review", "approved"] },
+      status: "approved",
     },
     select: { id: true, status: true },
   });
@@ -173,33 +167,25 @@ export async function bootstrapCharacterIdentity(input: {
     mediaAsset.characterId !== input.characterId ||
     mediaAsset.sourceJobId !== job.id
   ) {
-    throw Errors.conflict("The reviewed bootstrap asset is unavailable or its generation lineage is invalid");
+    throw Errors.conflict("The bootstrap asset is unavailable or its generation lineage is invalid");
   }
-  if (!["approved", "published"].includes(item.status)) {
-    throw Errors.conflict("Identity bootstrap asset must be approved before it becomes authority", {
+  if (!["generated", "approved", "published"].includes(item.status)) {
+    throw Errors.conflict("Identity bootstrap requires a completed portrait asset", {
       status: item.status,
     });
   }
-  const decision = await input.tx.creativeReviewDecision.findFirst({
-    where: {
-      id: request.reviewDecisionId,
-      runItemId: item.id,
-      artifactId: mediaAsset.id,
-    },
-  });
-  const latestDecision = await input.tx.creativeReviewDecision.findFirst({
-    where: { runItemId: item.id },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    select: { id: true },
-  });
-  if (
-    !decision ||
-    latestDecision?.id !== decision.id ||
-    decision.decision !== "approved" ||
-    decision.identityConsistency !== "unscored" ||
-    !creativeReviewQualityPassed(decision.evidence)
-  ) {
-    throw Errors.conflict("The first identity portrait requires an approved bootstrap review");
+  // 旧决策只保留为可选历史证据；“把这张首图设为身份”本身就是当前运营动作。
+  const decision = request.reviewDecisionId
+    ? await input.tx.creativeReviewDecision.findFirst({
+        where: {
+          id: request.reviewDecisionId,
+          runItemId: item.id,
+          artifactId: mediaAsset.id,
+        },
+      })
+    : null;
+  if (request.reviewDecisionId && !decision) {
+    throw Errors.badRequest("The supplied historical review does not belong to this portrait");
   }
 
   const persona = record(content.personaSnapshot);
@@ -294,7 +280,7 @@ export async function bootstrapCharacterIdentity(input: {
           ...reference,
           selectorVersion,
           selectionReason: request.reason,
-          qualityScore: decision.score,
+          qualityScore: decision?.score ?? null,
         })),
       },
     },
@@ -305,7 +291,7 @@ export async function bootstrapCharacterIdentity(input: {
       mediaAssetId: mediaAsset.id,
       sourceJobId: job.id,
       proposedRole: "primary_face",
-      qualityScore: decision.score,
+      qualityScore: decision?.score ?? null,
       source: "identity_bootstrap",
       status: "promoted",
       promotedRevisionId: referenceSet.id,
@@ -317,7 +303,7 @@ export async function bootstrapCharacterIdentity(input: {
       assetId: mediaAsset.id,
       runId: batch.id,
       itemId: item.id,
-      reviewDecisionId: decision.id,
+      ...(decision ? { reviewDecisionId: decision.id } : {}),
       generationJobId: job.id,
       bootstrapIdentity: true,
     },
@@ -361,22 +347,6 @@ export async function bootstrapCharacterIdentity(input: {
         generationJobId: job.id,
       }),
       requestId: input.requestId,
-    },
-  });
-  await input.tx.adminCollaborationActivity.create({
-    data: {
-      targetType: "character_project",
-      targetId: project.id,
-      kind: "status_change",
-      actorId: input.actor.id,
-      body: "Established the reviewed first portrait as the Character identity anchor",
-      metadata: toInputJson({
-        visualProfileId: visualProfile.id,
-        referenceSetRevisionId: referenceSet.id,
-        anchorAssetId: mediaAsset.id,
-        projectVersion: updatedProject.version,
-      }),
-      idempotencyKey: `character_identity_bootstrap:${input.requestId}`,
     },
   });
   await input.tx.mainOutboxEvent.create({

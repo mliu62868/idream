@@ -1,10 +1,8 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
-import { PrismaPg } from "@prisma/adapter-pg";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { deflateSync } from "node:zlib";
 import path from "node:path";
 import {
-  CHAT_TO_MAIN_EVENTS,
   MAIN_TO_CHAT_EVENTS,
   mockVideoMp4Bytes,
 } from "@idream/shared";
@@ -22,12 +20,6 @@ import {
 import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
 import { redeemCodeHash } from "@/server/lib/redeem-codes";
-import { PrismaClient as ChatPrismaClient } from "../../../chat/generated/client/client";
-import { assertPlaywrightChatDatabaseUrl } from "../../playwright-environment";
-
-const chatPrisma = new ChatPrismaClient({
-  adapter: new PrismaPg({ connectionString: chatDatabaseUrl(), max: 5 }),
-});
 const accountErasureCompletionReceiptSource =
   "main.product_projection:chat.account_erasure_completion_v2";
 
@@ -38,21 +30,6 @@ test.beforeAll(async () => {
 test.afterEach(async () => {
   await cleanupPublicE2EFixtures();
 });
-
-test.afterAll(async () => {
-  await chatPrisma.$disconnect();
-});
-
-function chatDatabaseUrl() {
-  const authority = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL;
-  const value = process.env.CHAT_DATABASE_URL;
-  if (!authority || !value) {
-    throw new Error(
-      "Managed Playwright TEST_DATABASE_URL and CHAT_DATABASE_URL are required for chat e2e fixtures",
-    );
-  }
-  return assertPlaywrightChatDatabaseUrl(value, authority);
-}
 
 function uniqueEmail(tag: string) {
   return `e2e-ui-${tag}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@customer.invalid`;
@@ -657,22 +634,25 @@ async function seedCompletedChatImageAttachment(input: {
       metadata: { e2e: true, fixture: `completed-chat-image-${fixture}` },
     },
   });
-  await chatPrisma.messageAttachment.create({
+  const turn = await prisma.chatTurn.findFirstOrThrow({
+    where: { sessionId: input.sessionId, assistantMessageId: input.messageId },
+    select: { id: true },
+  });
+  await prisma.chatTurnAttachment.create({
     data: {
       id: attachmentId,
-      sessionId: input.sessionId,
-      messageId: input.messageId,
+      turnId: turn.id,
       kind: "generated_image",
       status: "completed",
+      generationJobId,
       mediaAssetId: mediaId,
-      costDreamcoins: 5,
       promptHint:
         fixture === "blank"
           ? "E2E blank in-character image from this chat moment"
           : "E2E completed in-character image from this chat moment",
       width: fixture === "blank" ? 16 : 512,
       height: fixture === "blank" ? 16 : 640,
-      metadata: { e2e: true, fixture: `completed-chat-image-${fixture}` },
+      metadata: { e2e: true, fixture: `completed-chat-image-${fixture}`, costDreamcoins: 5 },
     },
   });
   return { attachmentId, mediaId };
@@ -708,38 +688,34 @@ async function seedCompletedVoiceChat(email: string, characterId: string) {
   const assistantText =
     "Here is a calm voice playback fixture for the browser. It should become playable and stay tied to this assistant turn.";
   const now = new Date();
-  await chatPrisma.chatSession.create({
+  await prisma.recentChat.create({
     data: {
-      id: sessionId,
+      sessionId,
       userId: user.id,
       characterId,
       title: "Voice playback fixture",
       status: "active",
+      activeKey: `${user.id}:${characterId}`,
       lastMessageAt: now,
     },
   });
-  await chatPrisma.message.createMany({
-    data: [
-      {
-        id: userMessageId,
-        sessionId,
-        role: "user",
-        content: "Read this reply aloud.",
-        status: "completed",
-        safetyStatus: "passed",
-        createdAt: new Date(now.getTime() - 1_000),
-      },
-      {
-        id: assistantMessageId,
-        sessionId,
-        role: "assistant",
-        content: assistantText,
-        model: "e2e-fixture",
-        status: "completed",
-        safetyStatus: "passed",
-        createdAt: now,
-      },
-    ],
+  await prisma.chatTurn.create({
+    data: {
+      id: `e2e-ui-voice-turn-${suffix}`,
+      sessionId,
+      idempotencyKey: `e2e-ui-voice-${suffix}`,
+      requestHash: `e2e-ui-voice-${suffix}`,
+      userMessageId,
+      assistantMessageId,
+      userContent: "Read this reply aloud.",
+      userStatus: "sent",
+      assistantContent: assistantText,
+      assistantStatus: "sent",
+      model: "e2e-fixture",
+      memoryEnabled: true,
+      terminalAt: now,
+      createdAt: new Date(now.getTime() - 1_000),
+    },
   });
   return { assistantMessageId, assistantText, sessionId };
 }
@@ -750,18 +726,34 @@ async function seedChatDailyQuotaAtLimit(email: string) {
     select: { id: true },
   });
   const now = new Date();
-  const periodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-  const periodEnd = new Date(periodStart.getTime() + 24 * 60 * 60 * 1000);
-  await chatPrisma.chatUsage.upsert({
-    where: { userId_periodStart: { userId: user.id, periodStart } },
-    update: { messagesUsed: 30, periodEnd },
-    create: {
-      id: `e2e-ui-chat-quota-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
+  const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  const sessionId = `e2e-ui-chat-quota-session-${suffix}`;
+  await prisma.recentChat.create({
+    data: {
+      sessionId,
       userId: user.id,
-      messagesUsed: 30,
-      periodStart,
-      periodEnd,
+      characterId: "melissa-burke",
+      title: "Quota fixture",
+      activeKey: `${user.id}:melissa-burke`,
+      lastMessageAt: now,
     },
+  });
+  await prisma.chatTurn.createMany({
+    data: Array.from({ length: 30 }, (_, index) => ({
+      id: `e2e-ui-chat-quota-turn-${suffix}-${index}`,
+      sessionId,
+      idempotencyKey: `e2e-ui-chat-quota-${suffix}-${index}`,
+      requestHash: `e2e-ui-chat-quota-${suffix}-${index}`,
+      userMessageId: `e2e-ui-chat-quota-user-${suffix}-${index}`,
+      assistantMessageId: `e2e-ui-chat-quota-assistant-${suffix}-${index}`,
+      userContent: `quota fixture ${index}`,
+      userStatus: "sent",
+      assistantContent: `quota reply ${index}`,
+      assistantStatus: "sent",
+      memoryEnabled: true,
+      terminalAt: now,
+      createdAt: now,
+    })),
   });
   return user.id;
 }
@@ -846,7 +838,7 @@ async function fileExists(target: string) {
   }
 }
 
-async function seedChatRelationshipFile(email: string, characterId: string) {
+async function seedLegacyRelationshipFile(email: string, characterId: string) {
   const user = await prisma.user.findUniqueOrThrow({
     where: { email },
     select: { id: true },
@@ -1035,44 +1027,7 @@ async function cleanupPublicE2EFixtures() {
 
 async function cleanupChatDatabaseFixtures(userIds: string[]) {
   if (userIds.length === 0) return;
-
-  const sessions = await chatPrisma.chatSession.findMany({
-    where: { userId: { in: userIds } },
-    select: { id: true },
-  });
-  const sessionIds = sessions.map((session) => session.id);
-  if (sessionIds.length > 0) {
-    const [messages, attachments] = await Promise.all([
-      chatPrisma.message.findMany({
-        where: { sessionId: { in: sessionIds } },
-        select: { id: true },
-      }),
-      chatPrisma.messageAttachment.findMany({
-        where: { sessionId: { in: sessionIds } },
-        select: { id: true },
-      }),
-    ]);
-    const messageIds = messages.map((message) => message.id);
-    const attachmentIds = attachments.map((attachment) => attachment.id);
-    const aggregateIds = [...sessionIds, ...messageIds, ...attachmentIds, ...userIds];
-
-    if (aggregateIds.length > 0) {
-      await chatPrisma.chatOutboxEvent.deleteMany({
-        where: { aggregateId: { in: aggregateIds } },
-      });
-    }
-    if (messageIds.length > 0) {
-      await Promise.all([
-        chatPrisma.messageVersion.deleteMany({ where: { messageId: { in: messageIds } } }),
-        chatPrisma.chatModerationEvent.deleteMany({ where: { targetId: { in: messageIds } } }),
-      ]);
-    }
-    await chatPrisma.messageAttachment.deleteMany({ where: { sessionId: { in: sessionIds } } });
-    await chatPrisma.message.deleteMany({ where: { sessionId: { in: sessionIds } } });
-    await chatPrisma.chatSession.deleteMany({ where: { id: { in: sessionIds } } });
-  }
-
-  await chatPrisma.chatUsage.deleteMany({ where: { userId: { in: userIds } } });
+  await prisma.recentChat.deleteMany({ where: { userId: { in: userIds } } });
 }
 
 test("help desk submits a tracked support request", async ({ page }) => {
@@ -2058,9 +2013,6 @@ async function seedStrictPublicCharacterAuthority(input: {
     data: {
       id: projectId,
       characterId: input.characterId,
-      phase: "live_management",
-      audience: {},
-      successCriteria: [],
     },
   });
   await prisma.characterRelease.create({
@@ -3970,19 +3922,30 @@ test("chat session drawer renames, archives, and redirects after deleting the cu
   });
 });
 
-test("chat memory panel controls memory mode and resets the whole relationship", async ({
+test("chat memory panel controls memory mode and clears character memory", async ({
   page,
 }) => {
   const { email } = await startSignedInAdultSession(page, "chat-memory-panel");
-  await seedChatRelationshipFile(email, "melissa-burke");
+  await seedLegacyRelationshipFile(email, "melissa-burke");
+  const user = await prisma.user.findUniqueOrThrow({
+    where: { email },
+    select: { id: true },
+  });
+  const legacyRelationshipPath = path.join(
+    chatFsRoot(),
+    "mem",
+    user.id,
+    "melissa-burke",
+    "relationship.md",
+  );
 
   await page.goto("/characters/melissa-burke");
   await expect(page.getByRole("heading", { name: "Melissa Burke" })).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: "Chat" }).click();
   await expect(page).toHaveURL(/\/chat\/[^/]+$/);
-  await expect(page.getByTestId("relationship-badge")).toContainText("Close", {
-    timeout: 10_000,
-  });
+  const originalSessionUrl = page.url();
+  await expect(page.getByTestId("relationship-badge")).toHaveCount(0);
+  await expect(page.getByTestId("relationship-reset")).toHaveCount(0);
 
   await page.getByTestId("memory-panel-open").click();
   const memoryToggle = page.getByTestId("memory-toggle").last();
@@ -3992,16 +3955,16 @@ test("chat memory panel controls memory mode and resets the whole relationship",
   await memoryToggle.click();
   await expect(memoryToggle).toHaveAttribute("aria-pressed", "true", { timeout: 10_000 });
 
-  await page.getByTestId("relationship-reset").click();
-  await expect(page.getByRole("button", { name: "Confirm reset relationship" })).toBeVisible({
+  await page.getByTestId("memory-clear").click();
+  await expect(page.getByRole("button", { name: "Confirm clear memory" })).toBeVisible({
     timeout: 10_000,
   });
-  await expect(page.getByTestId("relationship-badge")).toContainText("Close");
-  await page.getByRole("button", { name: "Confirm reset relationship" }).click();
-  await page.getByRole("button", { name: "Close memory settings" }).click();
-  await expect(page.getByTestId("relationship-badge")).toContainText("Getting to know each other", {
-    timeout: 10_000,
-  });
+  await expect.poll(() => fileExists(legacyRelationshipPath)).toBe(true);
+  await page.getByRole("button", { name: "Confirm clear memory" }).click();
+  await expect(page).toHaveURL(/\/chat\/[^/]+$/, { timeout: 10_000 });
+  expect(page.url()).not.toBe(originalSessionUrl);
+  await expect.poll(() => fileExists(legacyRelationshipPath)).toBe(false);
+  await expect(page.getByTestId("relationship-badge")).toHaveCount(0);
 });
 
 test("generator UI explains config load failures instead of showing a fake zero balance", async ({
@@ -4171,9 +4134,6 @@ test("generator Image Edit queues a variation from a gallery source", async ({ p
   await expect(sourceCard).toBeVisible({ timeout: 10_000 });
   await sourceCard.click();
   await expect(sourceCard).toHaveAttribute("aria-pressed", "true");
-  const modelSelect = page.getByLabel("Model");
-  await expect(modelSelect).toBeVisible();
-  await modelSelect.selectOption("character-image-variation-darkbeast");
   const createEdit = page.getByRole("button", {
     name: /^Create edit · \d[\d,]* coins$/,
   });
@@ -4193,7 +4153,7 @@ test("generator Image Edit queues a variation from a gallery source", async ({ p
     },
   });
   expect(stored.outputCount).toBe(1);
-  expect(stored.profileId).toBe("character-image-variation-darkbeast");
+  expect(stored.profileId).toBe("character-image-variation");
   expect(stored.sourceType).toBe("media_variation");
   expect(stored.sourceId).toContain(`media:${sourceMediaId}:variation:`);
   expect(stored.sourceMeta).toMatchObject({ sourceMediaId });
@@ -5822,41 +5782,51 @@ test("profile account management signs out sessions and deletes the account", as
   expect(media.storageKey).not.toBeNull();
   const blobPath = resolveLocalBlobPath(media.storageKey!);
   const chatSessionId = `e2e-ui-account-delete-session-${Date.now()}`;
-  await chatPrisma.chatSession.create({
+  await prisma.recentChat.create({
     data: {
-      id: chatSessionId,
+      sessionId: chatSessionId,
       userId: user.id,
-      characterId: "e2e-ui-account-delete-character",
+      characterId: "melissa-burke",
       title: "Account deletion terminal canary",
+      activeKey: `${user.id}:melissa-burke`,
     },
   });
-  await chatPrisma.message.create({
+  const chatTurnId = `${chatSessionId}-turn`;
+  const chatAssistantMessageId = `${chatSessionId}-assistant`;
+  await prisma.chatTurn.create({
     data: {
-      id: `${chatSessionId}-message`,
+      id: chatTurnId,
       sessionId: chatSessionId,
-      role: "user",
-      content: "account deletion terminal canary",
-      status: "sent",
-    },
-  });
-  await chatPrisma.chatUsage.create({
-    data: {
-      id: `${chatSessionId}-usage`,
-      userId: user.id,
-      sessionId: chatSessionId,
-      messagesUsed: 1,
-      periodStart: new Date(Date.now() - 60_000),
-      periodEnd: new Date(Date.now() + 60_000),
+      idempotencyKey: `${chatSessionId}-idempotency`,
+      requestHash: `${chatSessionId}-hash`,
+      userMessageId: `${chatSessionId}-user`,
+      assistantMessageId: chatAssistantMessageId,
+      userContent: "account deletion terminal canary",
+      userStatus: "sent",
+      assistantContent: "terminal canary reply",
+      assistantStatus: "sent",
+      memoryEnabled: true,
+      terminalAt: new Date(),
     },
   });
   const chatLogPath = path.join(
     chatFsRoot(),
-    "sessions",
-    user.id,
-    `${chatSessionId}.jsonl`,
+    "runs",
+    chatTurnId,
+    "1",
+    "input.json",
   );
   await mkdir(path.dirname(chatLogPath), { recursive: true });
-  await writeFile(chatLogPath, '{"kind":"account-delete-canary"}\n');
+  await writeFile(chatLogPath, `${JSON.stringify({
+    schemaVersion: 1,
+    admittedAt: new Date().toISOString(),
+    snapshot: {
+      turnId: chatTurnId,
+      attempt: 1,
+      assistantMessageId: chatAssistantMessageId,
+      userId: user.id,
+    },
+  })}\n`);
   const chatRelationshipPath = path.join(
     chatFsRoot(),
     "mem",
@@ -5919,7 +5889,7 @@ test("profile account management signs out sessions and deletes the account", as
     prisma.session.count({ where: { userId: user.id } }),
   ).resolves.toBe(0);
   await expect(
-    chatPrisma.chatSession.findUnique({ where: { id: chatSessionId } }),
+    prisma.recentChat.findUnique({ where: { sessionId: chatSessionId } }),
   ).resolves.not.toBeNull();
   expect(await fileExists(chatLogPath)).toBe(true);
   expect(await fileExists(chatRelationshipPath)).toBe(true);
@@ -5980,54 +5950,20 @@ test("profile account management signs out sessions and deletes the account", as
   await expect(
     prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: requestEventId } }),
   ).resolves.toMatchObject({ status: "delivered", deliveredAt: expect.any(Date) });
-  await expect(
-    chatPrisma.chatInboxEvent.findUniqueOrThrow({
-      where: {
-        sourceService_sourceEventId: {
-          sourceService: "main",
-          sourceEventId: requestEventId,
-        },
-      },
-    }),
-  ).resolves.toMatchObject({ status: "consumed_v2", consumedAt: expect.any(Date) });
-  await expect(
-    chatPrisma.chatSession.findUnique({ where: { id: chatSessionId } }),
-  ).resolves.toBeNull();
-  await expect(
-    chatPrisma.message.count({ where: { sessionId: chatSessionId } }),
-  ).resolves.toBe(0);
-  await expect(
-    chatPrisma.chatUsage.count({ where: { userId: user.id } }),
-  ).resolves.toBe(0);
-  await expect(
-    chatPrisma.chatFileMutation.count({ where: { userId: user.id } }),
-  ).resolves.toBe(0);
   expect(await fileExists(chatLogPath)).toBe(false);
   expect(await fileExists(chatRelationshipPath)).toBe(false);
 
-  const completion = await chatPrisma.chatOutboxEvent.findFirstOrThrow({
-    where: {
-      eventType: CHAT_TO_MAIN_EVENTS.accountErasureCompletedV2,
-      aggregateId: user.id,
-    },
+  const advancedDeletion = await prisma.accountDeletion.findUniqueOrThrow({
+    where: { id: deletion.id },
+    select: { chatCompletionEventId: true },
   });
-  expect(completion).toMatchObject({
-    schemaVersion: 2,
-    status: "delivered",
-    deliveredAt: expect.any(Date),
-    payload: expect.objectContaining({
-      version: 2,
-      binding: "request_bound",
-      userId: user.id,
-      deletionRequestEventId: requestEventId,
-    }),
-  });
+  expect(advancedDeletion.chatCompletionEventId).toMatch(/^chat_account_erasure_v2_/);
   await expect(
     prisma.inboundEventReceipt.findUniqueOrThrow({
       where: {
         sourceService_sourceEventId: {
           sourceService: accountErasureCompletionReceiptSource,
-          sourceEventId: completion.id,
+          sourceEventId: advancedDeletion.chatCompletionEventId!,
         },
       },
     }),
@@ -6039,7 +5975,7 @@ test("profile account management signs out sessions and deletes the account", as
     prisma.accountDeletion.findUniqueOrThrow({ where: { id: deletion.id } }),
   ).resolves.toMatchObject({
     status: "deleting_blobs",
-    chatCompletionEventId: completion.id,
+    chatCompletionEventId: advancedDeletion.chatCompletionEventId,
     chatCompletedAt: expect.any(Date),
     blobExpectedCount: 1,
     blobDeletedCount: 0,

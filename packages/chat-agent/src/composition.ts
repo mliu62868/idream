@@ -20,11 +20,21 @@ import {
 export const COMPANION_CORE_PACKAGES = [
   "@deepseek-ai/dsh-agent",
   "@deepseek-ai/dsh-agent-loop",
+  "@deepseek-ai/dsh-attachment",
+  "@deepseek-ai/dsh-brand",
+  "@deepseek-ai/dsh-code-runtime",
+  "@deepseek-ai/dsh-invariants",
   "@deepseek-ai/dsh-llm",
+  "@deepseek-ai/dsh-scope",
   "@deepseek-ai/dsh-session",
+  "@deepseek-ai/dsh-session-persistence",
+  "@deepseek-ai/dsh-settings",
   "@deepseek-ai/dsh-system-prompt",
+  "@deepseek-ai/dsh-timeout",
   "@deepseek-ai/dsh-tool-call-timeout-policy",
   "@deepseek-ai/dsh-tools",
+  "@deepseek-ai/dsh-typert-protocol",
+  "@deepseek-ai/dsh-user-approval",
 ] as const;
 
 const SYSTEM_PROMPT_OPTIONS = Object.freeze({

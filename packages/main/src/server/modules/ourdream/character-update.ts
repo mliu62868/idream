@@ -54,7 +54,6 @@ export async function updateCharacterForUser(input: {
           name: nextName,
           age: existing.age,
           description: nextDescription,
-          relationship: existing.relationship,
           style: existing.style,
           gender: existing.gender,
           appearance: existing.appearance,
@@ -142,29 +141,8 @@ export async function updateCharacterForUser(input: {
           to: "paused",
           expectedVersion: serving.version,
           expectedCurrentReleaseId: serving.currentReleaseId,
-          data: {
-            scheduledReleaseId: null,
-            scheduledAt: null,
-          },
+          data: {},
         });
-      } else if (serving && (serving.scheduledReleaseId || serving.scheduledAt)) {
-        // INVARIANT: a private Character cannot retain a future publish command.
-        // Inactive and paused Serving remain non-live; only the mutable schedule is cancelled.
-        const cancelled = await tx.characterServing.updateMany({
-          where: {
-            id: serving.id,
-            state: serving.state,
-            version: serving.version,
-          },
-          data: {
-            scheduledReleaseId: null,
-            scheduledAt: null,
-            version: { increment: 1 },
-          },
-        });
-        if (cancelled.count !== 1) {
-          throw Errors.conflict("Character Serving changed before privacy update");
-        }
       }
     }
     const updated = await tx.character.update({

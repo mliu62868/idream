@@ -171,12 +171,6 @@ async function ensureProjectAndRevision(
     create: {
       id: projectId,
       characterId: character.id,
-      phase:
-        character.source === "official" && character.status === "approved"
-          ? "live_management"
-          : "idea",
-      audience: { state: "unavailable", source: "legacy_backfill" },
-      successCriteria: [],
       activeKey: `official:${character.id}`,
     },
     update: {},
@@ -191,8 +185,6 @@ async function ensureProjectAndRevision(
       characterContentVersionId: contentVersionId,
       projectSnapshot: {
         source: "legacy_backfill",
-        audience: { state: "unavailable" },
-        successCriteria: [],
       },
     },
     update: {},
@@ -344,7 +336,6 @@ async function applyCharacter(
     const generationProvenance = {
       source: "legacy_backfill",
       routeQualification: "unavailable",
-      characterQa: "unavailable",
     };
     const releasePlacementManifest = { state: "unavailable", placements: [] };
     const snapshotHash = characterReleaseSnapshotHash({

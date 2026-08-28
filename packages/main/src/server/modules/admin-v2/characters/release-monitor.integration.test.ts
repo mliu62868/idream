@@ -87,7 +87,7 @@ describe("Release route qualification and post-publish monitor", () => {
       data: { characterId },
     });
     await prisma.characterProject.create({
-      data: { id: projectId, characterId, phase: "live_management", audience: {}, successCriteria: [] },
+      data: { id: projectId, characterId },
     });
     await prisma.characterContentVersion.create({ data: {
       id: contentId,

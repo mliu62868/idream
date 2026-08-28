@@ -38,6 +38,8 @@ const engine = new CompanionEngine({
 });
 const server = createCompanionServer({
   authToken: config.authToken,
+  hostname: config.host,
+  port: config.port,
   readiness: createReadinessProbe({
     config,
     instance,
@@ -47,15 +49,14 @@ const server = createCompanionServer({
   invocation: engine,
 });
 
-server.http.listen(config.port, config.host, () => {
-  process.stdout.write(`dsh companion listening on http://${config.host}:${config.port}\n`);
-});
+process.stdout.write(`dsh companion listening on ${server.http.url.origin}\n`);
 
 let stopping = false;
 const stop = async () => {
   if (stopping) return;
   stopping = true;
   await server.close();
+  process.exit(0);
 };
 process.once("SIGTERM", () => { void stop(); });
 process.once("SIGINT", () => { void stop(); });

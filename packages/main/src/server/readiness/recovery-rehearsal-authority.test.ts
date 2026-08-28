@@ -108,6 +108,7 @@ function writeRecoveryBundle(overrides?: {
       main_outbox_transport_pending: 0,
       main_outbox_transport_failed: 0,
       main_outbox_dispatched: 0,
+      main_outbox_processing: 0,
       main_outbox_transport_unknown: 0,
       inbound_event_received: 0,
       inbound_event_processing: 0,

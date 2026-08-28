@@ -76,7 +76,7 @@ describe("local stream state over polled session rows", () => {
       new Map([["assistant-1", { content: "Once upon", stopped: true }]]),
     );
     expect(reply?.content).toBe("Once upon");
-    expect(reply?.status).toBe("stopped");
+    expect(reply?.status).toBe("cancelled");
   });
 
   it("leaves untracked messages untouched", () => {

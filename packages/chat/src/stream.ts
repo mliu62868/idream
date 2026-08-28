@@ -68,47 +68,70 @@ export async function listStreamEvents(key: string, afterId?: string | null): Pr
 }
 
 /** SSE Response that tails the stream with XREAD BLOCK from lastEventId. */
-export function createSseResponse(key: string, lastEventId?: string | null): Response {
+export function createSseResponse(
+  key: string,
+  lastEventId?: string | null,
+  expectedAttempt?: number,
+): Response {
   const encoder = new TextEncoder();
   const redis = createRedis();
   let closed = false;
+  let cancelled = false;
   let cursor = lastEventId && lastEventId.length > 0 ? lastEventId : "0";
 
-  const body = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      controller.enqueue(encoder.encode(": connected\n\n"));
-      const deadline = Date.now() + SSE_DEADLINE_MS;
-      try {
-        while (!closed && Date.now() < deadline) {
-          // XREAD BLOCK waits for new entries without busy-polling.
-          const res = (await redis.xread("BLOCK", BLOCK_MS, "STREAMS", key, cursor)) as
-            | Array<[string, Array<[string, string[]]>]>
-            | null;
-          if (!res) {
-            controller.enqueue(encoder.encode(": keepalive\n\n"));
-            continue;
-          }
-          for (const [, entries] of res) {
-            for (const row of entries) {
-              const stored = parseRow(row);
-              for (const s of stored) {
-                cursor = s.id;
-                controller.enqueue(encoder.encode(formatSse(s)));
-                if (s.event.type === "done" || s.event.type === "error") {
-                  closed = true;
-                }
+  async function pump(controller: ReadableStreamDefaultController<Uint8Array>): Promise<void> {
+    const deadline = Date.now() + SSE_DEADLINE_MS;
+    let failed = false;
+    try {
+      while (!closed && Date.now() < deadline) {
+        // XREAD BLOCK waits for new entries without busy-polling.
+        const res = (await redis.xread("BLOCK", BLOCK_MS, "STREAMS", key, cursor)) as
+          | Array<[string, Array<[string, string[]]>]>
+          | null;
+        if (closed) break;
+        if (!res) {
+          controller.enqueue(encoder.encode(": keepalive\n\n"));
+          continue;
+        }
+        for (const [, entries] of res) {
+          for (const row of entries) {
+            const stored = parseRow(row);
+            for (const s of stored) {
+              cursor = s.id;
+              // A regenerated reply reuses the durable assistant message and
+              // Redis stream. Older terminal events must advance the cursor,
+              // but must not close the new attempt's SSE connection.
+              if (!streamEventMatchesAttempt(s.event, expectedAttempt)) continue;
+              controller.enqueue(encoder.encode(formatSse(s)));
+              if (s.event.type === "done" || s.event.type === "error") {
+                closed = true;
               }
             }
           }
         }
-      } finally {
-        await redis.quit();
-        controller.close();
       }
+    } catch (error) {
+      if (!cancelled) {
+        failed = true;
+        controller.error(error);
+      }
+    } finally {
+      if (!cancelled) await redis.quit().catch(() => redis.disconnect());
+      if (!cancelled && !failed) controller.close();
+    }
+  }
+
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode(": connected\n\n"));
+      // INTENT: start must return immediately so Web Streams can deliver
+      // consumer cancellation while Redis is blocked in XREAD.
+      void pump(controller);
     },
-    async cancel() {
+    cancel() {
+      cancelled = true;
       closed = true;
-      await redis.quit();
+      redis.disconnect();
     },
   });
 
@@ -120,6 +143,13 @@ export function createSseResponse(key: string, lastEventId?: string | null): Res
       "x-accel-buffering": "no",
     },
   });
+}
+
+export function streamEventMatchesAttempt(
+  event: ChatStreamEvent,
+  expectedAttempt?: number,
+): boolean {
+  return expectedAttempt === undefined || event.attempt === expectedAttempt;
 }
 
 function parseRow(row: [string, string[]]): StoredStreamEvent[] {

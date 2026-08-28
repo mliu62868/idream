@@ -28,7 +28,6 @@ import { fail, ok } from "@/server/lib/http";
 import { actorWithPermission, queryParams } from "@/server/modules/admin-v2/shared/authority";
 import {
   CASE_SEVERITY,
-  CHARACTER_PROJECT_MENTION_SEVERITY,
   COMMAND_FAILED_STATUSES,
   COMMAND_SEVERITY,
   CREATIVE_RUN_SEVERITY,
@@ -54,7 +53,7 @@ const ACTIVE_COMMAND_STATUSES = ["accepted", "running", "verifying", "failed"];
 const UNRECONCILED_COMMAND_WHERE = { status: "succeeded", needsReconciliation: true } as const;
 const RESOLVED_CASE_STATUSES = ["resolved", "closed"];
 const RESOLVED_INCIDENT_STATUSES = ["resolved", "closed"];
-const ACTIVE_RELEASE_STATUSES = ["draft", "validating", "in_review", "approved"];
+const ACTIVE_RELEASE_STATUSES = ["approved"];
 const RESOLVED_RELEASE_STATUSES = ["published", "superseded", "withdrawn"];
 
 type ProjectableRow =
@@ -79,7 +78,7 @@ type ProjectableRow =
   | {
       sourceType: "character_release";
       row: CharacterRelease;
-      project: { ownerId: string | null; characterId: string; phase: string; plannedLaunchAt: Date | null; version: number };
+      project: { characterId: string };
       monitorActionRequired?: boolean;
     }
   | { sourceType: "creative_run"; row: ContentProductionBatch };
@@ -409,13 +408,6 @@ async function findBoundedReleaseRows(input: {
   if (!input.selection) {
     return { totalCount: 0, rows: [] as Array<Extract<ProjectableRow, { sourceType: "character_release" }> extends { row: infer Row; project: infer Project } ? { row: Row; project: Project; monitorActionRequired?: boolean } : never> };
   }
-  const ownerSql = input.selection.scope === "active"
-    ? input.selection.owner === "all"
-      ? Prisma.empty
-      : input.selection.owner === "unassigned"
-        ? Prisma.sql`AND project."ownerId" IS NULL`
-        : Prisma.sql`AND project."ownerId" = ${input.selection.owner.actorId}`
-    : Prisma.empty;
   const snoozedSql = input.selection.scope === "active" && input.selection.snoozedIds.length > 0
     ? Prisma.sql`AND release.id NOT IN (${Prisma.join(input.selection.snoozedIds)})`
     : Prisma.empty;
@@ -430,8 +422,14 @@ async function findBoundedReleaseRows(input: {
   const activeStatusFilterSql = input.selection.scope === "active" && input.selection.filters?.status
     ? Prisma.sql`AND release.status = ${input.selection.filters.status}`
     : Prisma.empty;
-  const activeSlaFilterSql = input.selection.scope === "active" && input.selection.filters
-    ? sqlSlaFilter(Prisma.sql`project."plannedLaunchAt"`, input.selection.filters.sla, input.selection.filters.now)
+  // INTENT: Character releases are product state, not assignable scheduled tasks.
+  // Owner/SLA filters therefore exclude them unless those filters are neutral.
+  const activeOwnerFilterSql = input.selection.scope === "active" && input.selection.owner !== "all"
+    ? Prisma.sql`AND FALSE`
+    : Prisma.empty;
+  const activeSlaFilterSql = input.selection.scope === "active" && input.selection.filters?.sla
+    && input.selection.filters.sla !== "none"
+    ? Prisma.sql`AND FALSE`
     : Prisma.empty;
   const eligibilitySql = input.selection.scope === "active"
     ? Prisma.sql`
@@ -479,12 +477,12 @@ async function findBoundedReleaseRows(input: {
         ${monitorActionSql} AS monitor_action_required,
         ${pinnedRankSql} AS pinned_rank,
         ${severityRankSql} AS severity_rank,
-        project."plannedLaunchAt" AS due_at,
+        NULL::timestamp AS due_at,
         release."updatedAt" AS changed_at
       FROM "character_releases" release
       JOIN "character_projects" project ON project.id = release."projectId"
       WHERE TRUE
-        ${ownerSql}
+        ${activeOwnerFilterSql}
         ${snoozedSql}
         ${eligibilitySql}
         ${severityFilterSql}
@@ -518,7 +516,7 @@ async function findBoundedReleaseRows(input: {
   });
   const projects = await input.db.characterProject.findMany({
     where: { id: { in: releaseRows.map((row) => row.projectId) } },
-    select: { id: true, ownerId: true, characterId: true, phase: true, plannedLaunchAt: true, version: true },
+    select: { id: true, characterId: true },
     ...(input.limit === undefined ? {} : { take: input.limit }),
   });
   const releasesById = new Map(releaseRows.map((row) => [row.id, row]));
@@ -674,7 +672,7 @@ function projectRow(
       title: `Character release ${item.status.replaceAll("_", " ")}`,
       summary: row.monitorActionRequired
         ? `${row.project.characterId} · published monitor requires action`
-        : `${row.project.characterId} · ${row.project.phase.replaceAll("_", " ")} · readiness ${item.readiness}`,
+        : `${row.project.characterId} · readiness ${item.readiness}`,
       severity,
       priority: severity === "high" ? "high" : "normal",
       impactSnapshot: {
@@ -683,8 +681,8 @@ function projectRow(
         readiness: item.readiness,
         snapshotHash: item.snapshotHash,
       },
-      ownerId: row.project.ownerId,
-      slaDueAt: row.project.plannedLaunchAt?.toISOString() ?? null,
+      ownerId: null,
+      slaDueAt: null,
       recommendedAction: row.monitorActionRequired ? "Investigate monitor evidence and keep or rollback" : item.readiness === "blocked" ? "Resolve release readiness blockers" : "Advance release checks",
       openedAt: item.createdAt.toISOString(),
       deepLink: `/admin/characters/${encodeURIComponent(row.project.characterId)}?tab=release&releaseId=${encodeURIComponent(item.id)}`,
@@ -694,9 +692,7 @@ function projectRow(
       dataClass: "internal",
       pinned: pinnedKeys.has(`${row.sourceType}:${item.id}`),
       preferenceVersion: preferenceVersions.get(`${row.sourceType}:${item.id}`) ?? 0,
-      claim: row.project.ownerId === null && permissions.has("character.project.write")
-        ? { entityVersion: row.project.version }
-        : null,
+      claim: null,
     };
   }
   if (row.sourceType === "creative_run") {
@@ -845,7 +841,7 @@ function sourceRows(
   commands: ControlPlaneCommand[],
   releases: Array<{
     row: CharacterRelease;
-    project: { ownerId: string | null; characterId: string; phase: string; plannedLaunchAt: Date | null; version: number };
+    project: { characterId: string };
     monitorActionRequired?: boolean;
   }> = [],
   creativeRuns: ContentProductionBatch[] = [],
@@ -1022,19 +1018,6 @@ async function findRankedMentionIds(input: {
         ${exclusionSql} ${onlySql}
     `);
   }
-  if (input.permissions.has("character.project.read")) {
-    const projectRank = CHARACTER_PROJECT_MENTION_SEVERITY.rankSql(Prisma.sql`target`, input.now);
-    sources.push(Prisma.sql`
-      SELECT activity.id, ${pinnedRank} AS pinned_rank,
-        ${projectRank} AS severity_rank,
-        ${projectRank} AS priority_rank,
-        target."plannedLaunchAt" AS due_at, activity."createdAt" AS changed_at
-      FROM "admin_collaboration_activities" activity
-      JOIN "character_projects" target ON target.id = activity."targetId"
-      WHERE activity."targetType" = 'character_project' AND ${input.actor.id} = ANY(activity."mentionedIds")
-        ${exclusionSql} ${onlySql}
-    `);
-  }
   if (sources.length === 0) return { totalCount: 0, ids: [] as string[] };
   const severityRank = input.filters?.severity ? SEVERITY_RANK[input.filters.severity] : null;
   const severityFilterSql = severityRank ? Prisma.sql`AND severity_rank = ${severityRank}` : Prisma.empty;
@@ -1095,7 +1078,6 @@ async function findMentionRows(input: {
     .map((activity) => activity.targetId);
   const caseIds = ids("case");
   const incidentIds = ids("incident");
-  const projectIds = ids("character_project");
   const creativeIds = ids("creative_run");
   const cases = input.permissions.has("case.read") && caseIds.length > 0
     ? await input.db.adminCase.findMany({ where: { id: { in: caseIds } }, ...(input.limit === undefined ? {} : { take: input.limit }) })
@@ -1103,15 +1085,11 @@ async function findMentionRows(input: {
   const incidents = input.permissions.has("ops.incident.read") && incidentIds.length > 0
     ? await input.db.opsIncident.findMany({ where: { id: { in: incidentIds } }, ...(input.limit === undefined ? {} : { take: input.limit }) })
     : [];
-  const projects = input.permissions.has("character.project.read") && projectIds.length > 0
-    ? await input.db.characterProject.findMany({ where: { id: { in: projectIds } }, ...(input.limit === undefined ? {} : { take: input.limit }) })
-    : [];
   const creativeRuns = input.permissions.has("creative.run.read") && creativeIds.length > 0
     ? await input.db.contentProductionBatch.findMany({ where: { id: { in: creativeIds } }, ...(input.limit === undefined ? {} : { take: input.limit }) })
     : [];
   const casesById = new Map(cases.map((row) => [row.id, row]));
   const incidentsById = new Map(incidents.map((row) => [row.id, row]));
-  const projectsById = new Map(projects.map((row) => [row.id, row]));
   const creativeById = new Map(creativeRuns.map((row) => [row.id, row]));
   const noPins = new Set<string>();
 
@@ -1134,24 +1112,7 @@ async function findMentionRows(input: {
       const item = projectRow({ sourceType: "creative_run", row: target }, noPins);
       return [{ sourceType: "collaboration_mention", row, target: mentionTargetFromItem(item, input.actor.id) }];
     }
-    const project = projectsById.get(row.targetId);
-    if (!project) return [];
-    const severity = CHARACTER_PROJECT_MENTION_SEVERITY.of(project, input.now);
-    return [{
-      sourceType: "collaboration_mention",
-      row,
-      target: {
-        label: `Character project ${project.characterId}`,
-        deepLink: `/admin/characters/${encodeURIComponent(project.characterId)}?tab=project`,
-        severity,
-        priority: severity === "high" ? "high" : "normal",
-        impactSnapshot: { projectId: project.id, characterId: project.characterId, phase: project.phase },
-        ownerId: input.actor.id,
-        slaDueAt: project.plannedLaunchAt,
-        verificationState: "pending",
-        dataClass: "internal",
-      },
-    }];
+    return [];
   });
   return { totalCount: ranked.totalCount, rows };
 }
@@ -1318,7 +1279,6 @@ export async function buildTodayProjection(input: {
   const watchedCommandIds = watchedPreferences.filter((item) => item.sourceType === "control_plane_command").map((item) => item.sourceId);
   const watchedMentionIds = new Set(watchedPreferences.filter((item) => item.sourceType === "collaboration_mention").map((item) => item.sourceId));
   const directlyWatchedReleaseIds = watchedPreferences.filter((item) => item.sourceType === "character_release").map((item) => item.sourceId);
-  const watchedProjectIds = watchedPreferences.filter((item) => item.sourceType === "character_project").map((item) => item.sourceId);
   const watchedCreativeIds = watchedPreferences.filter((item) => item.sourceType === "creative_run").map((item) => item.sourceId);
   const watchedMentionRows = await findMentionRows({
     db,
@@ -1341,11 +1301,11 @@ export async function buildTodayProjection(input: {
     commandWhere: watchedCommandIds.length > 0
       ? { id: { in: watchedCommandIds }, actorId: input.actor.id }
       : null,
-    releaseSelection: releaseReadable && (directlyWatchedReleaseIds.length > 0 || watchedProjectIds.length > 0)
+    releaseSelection: releaseReadable && directlyWatchedReleaseIds.length > 0
       ? {
           scope: "watching",
           releaseIds: directlyWatchedReleaseIds,
-          projectIds: input.permissions.has("character.project.read") ? watchedProjectIds : [],
+          projectIds: [],
         }
       : null,
     creativeWhere: creativeReadable && watchedCreativeIds.length > 0

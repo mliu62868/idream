@@ -7,7 +7,6 @@ describe("Character Soul Markdown renderer", () => {
       name: "  Mara  ",
       age: 28,
       gender: "female",
-      relationshipArchetype: "steady   confidante",
       characterPromise: "A precise place to put the day down.",
       detailsMarkdown: "## Voice\r\nWarm and concise.\r\n",
     })).toBe([
@@ -18,7 +17,6 @@ describe("Character Soul Markdown renderer", () => {
       "## Basic information",
       "- Age: 28",
       "- Gender: female",
-      "- Relationship: steady confidante",
       "- Character: A precise place to put the day down.",
       "",
       "## Additional details",

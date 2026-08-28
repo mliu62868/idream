@@ -4,8 +4,6 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   assertPlaywrightBlobRoot,
-  assertPlaywrightChatDatabaseUrl,
-  assertPlaywrightChatProjectorDatabaseUrl,
   assertPlaywrightDatabaseUrl,
   managedPlaywrightWebServers,
   resolvePlaywrightEnvironment,
@@ -34,8 +32,6 @@ describe("managed Playwright environment", () => {
       PW_BASE_URL: "http://127.0.0.1:3110",
       PW_ADMIN_BASE_URL: "http://127.0.0.1:3111",
       CHAT_SERVICE_URL: "http://127.0.0.1:3100",
-      CHAT_DATABASE_URL:
-        "postgresql://chat_service:chat_service_change_me@localhost:5433/idream",
       BLOB_ROOT: path.resolve(import.meta.dirname, "../../../..", "data/blob"),
       PW_RUN_ID: "a1b2c3d4",
     });
@@ -47,10 +43,6 @@ describe("managed Playwright environment", () => {
       PW_RUN_ID: "a1b2c3d4",
     });
     const databaseName = decodeURIComponent(new URL(first.databaseURL).pathname.slice(1));
-    const chatDatabase = new URL(first.chatDatabaseURL);
-    const chatProjectorDatabase = new URL(
-      first.chatProjectorDatabaseURL,
-    );
     const servers = managedPlaywrightWebServers(first);
 
     expect(first.databaseURL).toBe(second.databaseURL);
@@ -58,15 +50,8 @@ describe("managed Playwright environment", () => {
     expect(databaseName).toMatch(/(^|[_-])test([_-]|$)/i);
     expect(databaseName).toMatch(/(^|[_-])playwright([_-]|$)/i);
     expect(databaseName.length).toBeLessThanOrEqual(63);
-    expect(chatDatabase.pathname).toBe(new URL(first.databaseURL).pathname);
-    expect(chatDatabase.username).toBe("chat_service");
-    expect(chatProjectorDatabase.pathname).toBe(
-      new URL(first.databaseURL).pathname,
-    );
-    expect(chatProjectorDatabase.username).toBe("chat_projector");
     expect(first.chatBaseURL).toBe("http://127.0.0.1:3113");
     expect(first.chatBaseURL).not.toBe("http://127.0.0.1:3100");
-    expect(chatDatabase.pathname).not.toBe("/idream");
     expect(servers).toHaveLength(6);
     expect(servers.every((server) => server.reuseExistingServer === false)).toBe(true);
     expect(servers.map((server) => server.url)).toEqual([
@@ -83,10 +68,6 @@ describe("managed Playwright environment", () => {
       signal: "SIGTERM",
       timeout: 30_000,
     });
-    expect(servers[0]?.env.CHAT_DATABASE_URL).toBe(first.chatDatabaseURL);
-    expect(servers[0]?.env.CHAT_PROJECTOR_DATABASE_URL).toBe(
-      first.chatProjectorDatabaseURL,
-    );
     expect(servers[0]?.env.CHAT_REDIS_URL).toBe(first.redisURL);
     expect(servers[0]?.env.CHAT_FS_ROOT).toBe(first.chatFsRoot);
     expect(servers[0]?.env.BLOB_ROOT).toBe(first.blobRoot);
@@ -292,7 +273,6 @@ describe("managed Playwright environment", () => {
 
     expect(first.databaseURL).not.toBe(second.databaseURL);
     expect(first.databaseURL).not.toBe(third.databaseURL);
-    expect(first.chatDatabaseURL).not.toBe(second.chatDatabaseURL);
     expect(first.chatBaseURL).not.toBe(second.chatBaseURL);
     expect(first.chatFsRoot).not.toBe(second.chatFsRoot);
     expect(first.chatFsRoot).not.toBe(third.chatFsRoot);
@@ -323,40 +303,12 @@ describe("managed Playwright environment", () => {
     expect(assertPlaywrightDatabaseUrl(authority)).toContain(
       "idream_test_playwright_manual",
     );
-    expect(assertPlaywrightChatDatabaseUrl(
-      "postgresql://chat_service:chat_service_change_me@localhost:5433/idream_test_playwright_manual",
-      authority,
-    )).toContain("idream_test_playwright_manual");
-    expect(assertPlaywrightChatProjectorDatabaseUrl(
-      "postgresql://chat_projector:chat_projector_change_me@localhost:5433/idream_test_playwright_manual",
-      authority,
-    )).toContain("idream_test_playwright_manual");
     expect(() => assertPlaywrightDatabaseUrl(
       "postgresql://postgres:postgres@localhost:5433/idream_test",
     )).toThrow("both test and playwright");
     expect(() => assertPlaywrightDatabaseUrl(
       "postgresql://postgres:postgres@localhost:5433/idream",
     )).toThrow("both test and playwright");
-    expect(() => assertPlaywrightChatDatabaseUrl(
-      "postgresql://chat_service:chat_service_change_me@localhost:5433/idream",
-      authority,
-    )).toThrow("both test and playwright");
-    expect(() => assertPlaywrightChatDatabaseUrl(
-      "postgresql://chat_service:chat_service_change_me@localhost:5433/idream_test_playwright_other",
-      authority,
-    )).toThrow("same database");
-    expect(() => assertPlaywrightChatDatabaseUrl(
-      authority,
-      authority,
-    )).toThrow("chat_service role");
-    expect(() => assertPlaywrightChatProjectorDatabaseUrl(
-      "postgresql://chat_service:chat_service_change_me@localhost:5433/idream_test_playwright_manual",
-      authority,
-    )).toThrow("chat_projector role");
-    expect(() => assertPlaywrightChatProjectorDatabaseUrl(
-      "postgresql://chat_projector:chat_projector_change_me@localhost:5433/idream_test_playwright_other",
-      authority,
-    )).toThrow("same database");
   });
 
   it("rejects external services, ambient overrides, and unmanaged mode", () => {
@@ -372,7 +324,7 @@ describe("managed Playwright environment", () => {
     expect(() => resolvePlaywrightEnvironment({
       PW_CHAT_DATABASE_URL:
         "postgresql://chat_service:chat_service_change_me@localhost:5433/idream_test_playwright_manual",
-    })).toThrow("derived");
+    })).toThrow("retired");
     expect(() => resolvePlaywrightEnvironment({
       PW_REDIS_URL: "redis://127.0.0.1:6379/0",
     })).toThrow("dedicated non-zero");

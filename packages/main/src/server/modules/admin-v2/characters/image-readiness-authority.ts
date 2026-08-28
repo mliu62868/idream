@@ -54,7 +54,6 @@ export type CharacterImageReadinessFingerprintInput = {
   readonly draftAssetPack: unknown;
   readonly serving: {
     readonly currentReleaseId: string | null;
-    readonly scheduledReleaseId: string | null;
     readonly version: number;
   } | null;
   readonly currentRelease: {

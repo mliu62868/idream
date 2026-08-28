@@ -2,17 +2,17 @@ import { describe, expect, it } from "vitest";
 import {
   CHARACTER_PORTFOLIO_DEFAULT_SORT,
   CHARACTER_PORTFOLIO_SORTS,
+  characterPortfolioEmptyView,
   characterPortfolioQuery,
   parseCharacterPortfolioUrl,
 } from "./portfolio-query";
 
 describe("Character Portfolio URL authority", () => {
-  it("restores supported filters and cursor from a shareable canonical URL", () => {
+  it("restores product-state filters and ignores the retired project phase", () => {
     expect(parseCharacterPortfolioUrl(
       "?search=aurora%20sky&phase=launch_ready&servingState=paused&readiness=blocked&cursor=opaque",
     )).toEqual({
       search: "aurora sky",
-      phase: "launch_ready",
       servingState: "paused",
       readiness: "blocked",
       cursor: "opaque",
@@ -26,7 +26,7 @@ describe("Character Portfolio URL authority", () => {
     expect(restored).toEqual({ search: "needle" });
     expect(characterPortfolioQuery(restored)).toBe("search=needle");
     expect(characterPortfolioQuery(restored, true)).toBe(
-      "limit=25&sort=project_id_asc&search=needle",
+      "limit=25&sort=updated_desc&search=needle",
     );
   });
 
@@ -36,6 +36,41 @@ describe("Character Portfolio URL authority", () => {
     expect(characterPortfolioQuery({ search: "", attention: true })).toBe("attention=true");
     expect(parseCharacterPortfolioUrl("?attention=1").attention).toBeUndefined();
     expect(characterPortfolioQuery({ search: "" })).toBe("");
+  });
+
+  it("round-trips the incomplete live image-pack work queue", () => {
+    expect(
+      parseCharacterPortfolioUrl(
+        "?workQueue=live_asset_pack_incomplete",
+      ),
+    ).toMatchObject({ workQueue: "live_asset_pack_incomplete" });
+    expect(
+      characterPortfolioQuery({
+        search: "",
+        workQueue: "live_asset_pack_incomplete",
+      }),
+    ).toBe("workQueue=live_asset_pack_incomplete");
+    expect(
+      parseCharacterPortfolioUrl("?workQueue=unknown").workQueue,
+    ).toBeUndefined();
+  });
+
+  it("does not claim a work queue is clear when an extra search hides its rows", () => {
+    expect(
+      characterPortfolioEmptyView({
+        search: "missing role",
+        workQueue: "live_asset_pack_incomplete",
+      }),
+    ).toBe("filtered");
+    expect(
+      characterPortfolioEmptyView({
+        search: "",
+        workQueue: "live_asset_pack_incomplete",
+      }),
+    ).toBe("live_asset_pack_incomplete");
+    expect(
+      characterPortfolioEmptyView({ search: "", attention: true }),
+    ).toBe("attention");
   });
 
   // SPEC: 排序键必须能分享和刷新 —— 它决定 keyset 游标的含义，跟筛选一样是查询的一部分。

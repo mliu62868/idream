@@ -3,7 +3,6 @@ import {
   characterContributionMarginSchema,
   characterPerformanceSummarySchema,
   characterPortfolioItemSchema,
-  characterPortfolioDecisionRequestSchema,
   characterPortfolioQuerySchema,
   characterReleaseChangeMarkerSchema,
 } from "./characters-performance";
@@ -34,63 +33,118 @@ describe("Character Portfolio v2 contracts", () => {
       totalPurposes: 3,
       deepLink: "/admin/characters/character-1?tab=assets",
     };
-    const result = characterPortfolioItemSchema.shape.visualProduction.parse(
-      visualProduction,
-    );
+    const result =
+      characterPortfolioItemSchema.shape.visualProduction.parse(
+        visualProduction,
+      );
     expect(result).toEqual(visualProduction);
-    expect(characterPortfolioItemSchema.shape.visualProduction.safeParse({
-      ...visualProduction,
-      draftPurposes: ["character_cover", "character_cover"],
-    }).success).toBe(false);
-    expect(characterPortfolioItemSchema.shape.visualProduction.safeParse({
-      ...visualProduction,
-      livePurposes: ["character_cover", "character_cover"],
-    }).success).toBe(false);
-    expect(characterPortfolioItemSchema.shape.visualProduction.safeParse({
-      ...visualProduction,
-      draftPurposes: ["character_chat"],
-    }).success).toBe(false);
-    expect(characterPortfolioItemSchema.shape.visualProduction.safeParse({
-      ...visualProduction,
-      primaryImageSource: "live",
-      livePurposes: ["character_hero"],
-    }).success).toBe(false);
-    expect(characterPortfolioItemSchema.shape.journey.parse({
-      projectionVersion: 1,
-      asOf: "2026-07-31T12:00:00.000Z",
-      stage: "visual_setup",
-      status: "in_progress",
-      steps: [
-        { code: "visual_identity", state: "current", deepLink: "/admin/characters/character-1?tab=visual" },
-        { code: "image_assets", state: "upcoming", deepLink: "/admin/characters/character-1?tab=assets" },
-        { code: "preview_qa", state: "upcoming", deepLink: "/admin/characters/character-1?tab=preview" },
-        { code: "release", state: "upcoming", deepLink: "/admin/characters/character-1?tab=release" },
-        { code: "live_monitor", state: "upcoming", deepLink: "/admin/characters/character-1?tab=monitor" },
-      ],
-      blockers: [{
-        code: "visual_identity_missing",
-        message: "A reusable visual identity has not been established.",
-        deepLink: "/admin/characters/character-1?tab=assets",
-      }],
-      primaryAction: {
-        code: "prepare_image_production",
-        deepLink: "/admin/characters/character-1?tab=assets",
-        command: null,
-      },
-      assetPack: {
-        draft: { availablePurposes: [], missingPurposes: ["character_cover", "character_hero", "character_chat"], completed: 0, total: 3 },
-        live: { availablePurposes: ["character_cover"], missingPurposes: ["character_hero", "character_chat"], completed: 1, total: 3 },
-      },
-      release: { servingState: "live", currentReleaseId: "release-1", candidateReleaseId: null },
-    }).primaryAction).toMatchObject({ code: "prepare_image_production" });
+    expect(
+      characterPortfolioItemSchema.shape.visualProduction.safeParse({
+        ...visualProduction,
+        draftPurposes: ["character_cover", "character_cover"],
+      }).success,
+    ).toBe(false);
+    expect(
+      characterPortfolioItemSchema.shape.visualProduction.safeParse({
+        ...visualProduction,
+        livePurposes: ["character_cover", "character_cover"],
+      }).success,
+    ).toBe(false);
+    expect(
+      characterPortfolioItemSchema.shape.visualProduction.safeParse({
+        ...visualProduction,
+        draftPurposes: ["character_chat"],
+      }).success,
+    ).toBe(false);
+    expect(
+      characterPortfolioItemSchema.shape.visualProduction.safeParse({
+        ...visualProduction,
+        primaryImageSource: "live",
+        livePurposes: ["character_hero"],
+      }).success,
+    ).toBe(false);
+    expect(
+      characterPortfolioItemSchema.shape.journey.parse({
+        projectionVersion: 1,
+        asOf: "2026-07-31T12:00:00.000Z",
+        stage: "visual_setup",
+        status: "in_progress",
+        steps: [
+          {
+            code: "visual_identity",
+            state: "current",
+            deepLink: "/admin/characters/character-1?tab=visual",
+          },
+          {
+            code: "image_assets",
+            state: "upcoming",
+            deepLink: "/admin/characters/character-1?tab=assets",
+          },
+          {
+            code: "preview",
+            state: "upcoming",
+            deepLink: "/admin/characters/character-1?tab=preview",
+          },
+          {
+            code: "release",
+            state: "upcoming",
+            deepLink: "/admin/characters/character-1?tab=release",
+          },
+          {
+            code: "live_monitor",
+            state: "upcoming",
+            deepLink: "/admin/characters/character-1?tab=monitor",
+          },
+        ],
+        blockers: [
+          {
+            code: "visual_identity_missing",
+            message: "A reusable visual identity has not been established.",
+            deepLink: "/admin/characters/character-1?tab=assets",
+          },
+        ],
+        primaryAction: {
+          code: "prepare_image_production",
+          deepLink: "/admin/characters/character-1?tab=assets",
+          command: null,
+        },
+        assetPack: {
+          draft: {
+            availablePurposes: [],
+            missingPurposes: [
+              "character_cover",
+              "character_hero",
+              "character_chat",
+            ],
+            completed: 0,
+            total: 3,
+          },
+          live: {
+            availablePurposes: ["character_cover"],
+            missingPurposes: ["character_hero", "character_chat"],
+            completed: 1,
+            total: 3,
+          },
+        },
+        release: {
+          servingState: "live",
+          currentReleaseId: "release-1",
+          candidateReleaseId: null,
+        },
+      }).primaryAction,
+    ).toMatchObject({ code: "prepare_image_production" });
   });
 
   it("fails closed when contribution margin has no audited revenue authority", () => {
-    expect(characterContributionMarginSchema.parse(invalidMargin)).toEqual(invalidMargin);
-    expect(characterContributionMarginSchema.safeParse({
-      ...invalidMargin,
-      valueMicros: -42,
-    }).success).toBe(false);
+    expect(characterContributionMarginSchema.parse(invalidMargin)).toEqual(
+      invalidMargin,
+    );
+    expect(
+      characterContributionMarginSchema.safeParse({
+        ...invalidMargin,
+        valueMicros: -42,
+      }).success,
+    ).toBe(false);
   });
 
   it("rejects rates whose numerators do not belong to their denominators", () => {
@@ -155,69 +209,86 @@ describe("Character Portfolio v2 contracts", () => {
     expect(result.success).toBe(true);
   });
 
-  it("requires evidence and review criteria for all five portfolio decisions", () => {
-    for (const decision of ["Promote", "Maintain", "Improve", "Pause", "Retire"] as const) {
-      expect(characterPortfolioDecisionRequestSchema.parse({
-        releaseId: "release-v2",
-        decision,
-        question: "What should we do with this supply investment?",
-        evidenceRefs: ["performance:release-v2:28d"],
-        evidenceLevel: "observational",
-        successCriteria: ["QCE rate improves without D7 regression"],
-      }).decision).toBe(decision);
-    }
-  });
-
   it("does not expose version deltas when releases are not comparable", () => {
-    expect(characterReleaseChangeMarkerSchema.safeParse({
-      currentReleaseId: "release-v2",
-      previousReleaseId: "release-v1",
-      changedAt: "2026-07-01T00:00:00.000Z",
-      window: "28d",
-      comparable: false,
-      qceRateDelta: 0.1,
-      sameCharacterD7Delta: null,
-      contributionMarginDeltaMicros: null,
-      evidence: ["previous release has insufficient sample"],
-    }).success).toBe(false);
+    expect(
+      characterReleaseChangeMarkerSchema.safeParse({
+        currentReleaseId: "release-v2",
+        previousReleaseId: "release-v1",
+        changedAt: "2026-07-01T00:00:00.000Z",
+        window: "28d",
+        comparable: false,
+        qceRateDelta: 0.1,
+        sameCharacterD7Delta: null,
+        contributionMarginDeltaMicros: null,
+        evidence: ["previous release has insufficient sample"],
+      }).success,
+    ).toBe(false);
   });
 
   it("requires a parent exposure for detail-view attribution", () => {
-    expect(characterExposureRecordedV2Schema.safeParse({
-      exposureId: "detail-1",
-      eventType: "detail_view",
-      journeyId: "journey-1",
-      characterId: "character-1",
-      characterContentVersionId: "content-1",
-      characterReleaseId: "release-1",
-      placementId: "feed.hero",
-      userId: "user-1",
-      visibleRatio: 1,
-      visibleDurationMs: 0,
-    }).success).toBe(false);
+    expect(
+      characterExposureRecordedV2Schema.safeParse({
+        exposureId: "detail-1",
+        eventType: "detail_view",
+        journeyId: "journey-1",
+        characterId: "character-1",
+        characterContentVersionId: "content-1",
+        characterReleaseId: "release-1",
+        placementId: "feed.hero",
+        userId: "user-1",
+        visibleRatio: 1,
+        visibleDurationMs: 0,
+      }).success,
+    ).toBe(false);
   });
 
   it("requires complete entry attribution on chat exchange outcomes", () => {
-    expect(chatExchangeCompletedV2Schema.safeParse({
-      exchangeId: "exchange-1",
-      userMessageId: "user-message-1",
-      assistantMessageId: "assistant-message-1",
-      selectedAssistantMessageId: "assistant-message-1",
-      assistantAttemptNo: 1,
-      isRegeneration: false,
-      sessionId: "session-1",
-      engagementSessionId: "engagement-1",
-      userId: "user-1",
-      characterId: "character-1",
-      characterContentVersionId: "content-1",
-      characterReleaseId: "release-1",
-      entryExposureId: "detail-1",
-    }).success).toBe(false);
+    expect(
+      chatExchangeCompletedV2Schema.safeParse({
+        exchangeId: "exchange-1",
+        userMessageId: "user-message-1",
+        assistantMessageId: "assistant-message-1",
+        selectedAssistantMessageId: "assistant-message-1",
+        assistantAttemptNo: 1,
+        isRegeneration: false,
+        sessionId: "session-1",
+        engagementSessionId: "engagement-1",
+        userId: "user-1",
+        characterId: "character-1",
+        characterContentVersionId: "content-1",
+        characterReleaseId: "release-1",
+        entryExposureId: "detail-1",
+      }).success,
+    ).toBe(false);
   });
 
   it("accepts a backward cursor only on the operations whose authority honours it", () => {
-    expect(characterPortfolioQuerySchema.safeParse({ before: "cursor-1", sort: "updated_desc" }).success).toBe(true);
+    expect(
+      characterPortfolioQuerySchema.safeParse({
+        before: "cursor-1",
+        sort: "updated_desc",
+      }).success,
+    ).toBe(true);
     // 没实现反向分页的 operation 必须 400，而不是把 before 忽略掉、静默返回第一页。
-    expect(adminCursorQuerySchema.safeParse({ before: "cursor-1" }).success).toBe(false);
+    expect(
+      adminCursorQuerySchema.safeParse({ before: "cursor-1" }).success,
+    ).toBe(false);
+  });
+
+  it("defaults the operator portfolio to the most recently updated Characters", () => {
+    expect(characterPortfolioQuerySchema.parse({}).sort).toBe("updated_desc");
+  });
+
+  it("keeps live image-pack remediation separate from telemetry attention", () => {
+    expect(
+      characterPortfolioQuerySchema.parse({
+        workQueue: "live_asset_pack_incomplete",
+      }),
+    ).toMatchObject({ workQueue: "live_asset_pack_incomplete" });
+    expect(
+      characterPortfolioQuerySchema.safeParse({
+        workQueue: "attention",
+      }).success,
+    ).toBe(false);
   });
 });

@@ -43,8 +43,6 @@ export const ADMIN_PERMISSION_KEYS = [
   "character.project.read",
   "character.project.write",
   "character.release.read",
-  "character.release.propose",
-  "character.release.review",
   "character.release.publish",
   "character.performance.read",
   "creative.run.read",
@@ -67,7 +65,14 @@ export const ADMIN_PERMISSION_KEYS = [
 export const adminPermissionKeySchema = z.enum(ADMIN_PERMISSION_KEYS);
 export type AdminPermissionKey = z.infer<typeof adminPermissionKeySchema>;
 
-export const adminActorRoleSchema = z.enum(["user", "moderator", "support", "ops", "analyst", "admin"]);
+export const adminActorRoleSchema = z.enum([
+  "user",
+  "moderator",
+  "support",
+  "ops",
+  "analyst",
+  "admin",
+]);
 export type AdminActorRole = z.infer<typeof adminActorRoleSchema>;
 
 export const ADMIN_ROLE_PERMISSIONS = {
@@ -154,7 +159,10 @@ export const adminPermissionScopeSchema = z.enum([
 export type AdminPermissionScope = z.infer<typeof adminPermissionScopeSchema>;
 
 export const ADMIN_ROLE_PERMISSION_SCOPES: Partial<
-  Record<AdminActorRole, Partial<Record<AdminPermissionKey, AdminPermissionScope>>>
+  Record<
+    AdminActorRole,
+    Partial<Record<AdminPermissionKey, AdminPermissionScope>>
+  >
 > = {
   support: {
     "ops.incident.read": "assigned_or_customer_linked_incidents",
@@ -173,8 +181,7 @@ export const ADMIN_GRANT_BUNDLES = {
       "character.project.read",
       "character.project.write",
       "character.release.read",
-      "character.release.propose",
-      "character.release.review",
+      "character.release.publish",
       "character.performance.read",
     ],
     scopes: { "character.performance.read": "assigned_characters" },
@@ -210,7 +217,9 @@ export const adminPermissionOverrideSchema = z
     effect: z.enum(["grant", "revoke"]),
   })
   .strict();
-export type AdminPermissionOverride = z.infer<typeof adminPermissionOverrideSchema>;
+export type AdminPermissionOverride = z.infer<
+  typeof adminPermissionOverrideSchema
+>;
 
 const permissionKeySet = new Set<string>(ADMIN_PERMISSION_KEYS);
 
@@ -218,10 +227,13 @@ export function isAdminPermissionKey(key: string): key is AdminPermissionKey {
   return permissionKeySet.has(key);
 }
 
-export function expandAdminGrantBundles(bundleKeys: readonly AdminGrantBundleKey[]): Set<AdminPermissionKey> {
+export function expandAdminGrantBundles(
+  bundleKeys: readonly AdminGrantBundleKey[],
+): Set<AdminPermissionKey> {
   const permissions = new Set<AdminPermissionKey>();
   for (const bundleKey of bundleKeys) {
-    for (const permission of ADMIN_GRANT_BUNDLES[bundleKey].permissions) permissions.add(permission);
+    for (const permission of ADMIN_GRANT_BUNDLES[bundleKey].permissions)
+      permissions.add(permission);
   }
   return permissions;
 }
@@ -231,8 +243,11 @@ export function resolveAdminPermissions(input: {
   grantBundles?: readonly AdminGrantBundleKey[];
   overrides?: ReadonlyArray<{ permissionKey: string; effect: string }>;
 }): Set<AdminPermissionKey> {
-  const resolved = new Set<AdminPermissionKey>(input.role ? ADMIN_ROLE_PERMISSIONS[input.role] : []);
-  for (const permission of expandAdminGrantBundles(input.grantBundles ?? [])) resolved.add(permission);
+  const resolved = new Set<AdminPermissionKey>(
+    input.role ? ADMIN_ROLE_PERMISSIONS[input.role] : [],
+  );
+  for (const permission of expandAdminGrantBundles(input.grantBundles ?? []))
+    resolved.add(permission);
   for (const override of input.overrides ?? []) {
     if (!isAdminPermissionKey(override.permissionKey)) continue;
     if (override.effect === "grant") resolved.add(override.permissionKey);

@@ -1,5 +1,6 @@
 // SPEC: 角色模板 Starters 三件套的共享契约 —— 类型/端点/payload 构造（SSoT，三页共用）。
 // INVARIANTS: payload 字段与旧单页角色模板视图的 POST/PATCH body 完全一致（后端不变）。
+import { legacySoulDetailsMarkdown } from "@idream/shared/chat/persona";
 
 export type Starter = {
   id: string;
@@ -28,9 +29,6 @@ export type StarterDraft = {
   scope: (typeof SCOPES)[number];
   tags: string;
   sortOrder: string;
-  creativeBrief: string;
-  archetype: string;
-  relationship: string;
   detailsMarkdown: string;
   firstMessage: string;
   appearanceNotes: string;
@@ -45,17 +43,14 @@ export function starterTextField(value: unknown, key: string): string {
 }
 
 export function starterDetailsMarkdown(value: unknown): string {
-  const current = starterTextField(value, "detailsMarkdown");
-  if (current) return current;
-  const sections = [
-    ["Personality", starterTextField(value, "personality")],
-    ["Voice", starterTextField(value, "speakingStyle")],
-    ["Dialogue examples", starterTextField(value, "exampleDialogue")],
-  ] as const;
-  return sections
-    .filter(([, content]) => content)
-    .map(([heading, content]) => `## ${heading}\n${content}`)
-    .join("\n\n");
+  const current = legacySoulDetailsMarkdown(value);
+  const creativeBrief = starterTextField(value, "creativeBrief").trim();
+  const archetype = starterTextField(value, "archetype").trim();
+  return [
+    current,
+    creativeBrief ? `## Creative brief\n\n${creativeBrief}` : "",
+    archetype ? `## Archetype\n\n${archetype}` : "",
+  ].filter(Boolean).join("\n\n");
 }
 
 function intFromText(text: string, fallback: number): number {
@@ -80,12 +75,8 @@ export function starterPayload(draft: StarterDraft): Record<string, unknown> {
       visualBrief: draft.visualBrief.trim(),
     },
     advancedDetails: {
-      creativeBrief: draft.creativeBrief.trim(),
-      archetype: draft.archetype.trim(),
-      relationship: draft.relationship.trim(),
       detailsMarkdown: draft.detailsMarkdown.trim(),
       firstMessage: draft.firstMessage.trim(),
-      visualBrief: draft.visualBrief.trim(),
     },
     sortOrder: intFromText(draft.sortOrder, 0),
     reason: draft.reason.trim(),

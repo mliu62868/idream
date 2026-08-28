@@ -16,7 +16,9 @@
     "./admin/permissions": "./src/admin/permissions.ts",
     "./admin/api-manifest": "./src/admin/api-manifest.ts",
     "./chat/limits": "./src/chat/limits.ts",
+    "./chat/image-action": "./src/chat/image-action.ts",
     "./chat/companion-runtime": "./src/chat/companion-runtime.ts",
+    "./chat/persona": "./src/chat/persona.ts",
     "./chat/persona-render": "./src/chat/persona-render.ts",
     "./bff": "./src/bff/signing.ts",
     "./media/generated-image-sanity": "./src/media/generated-image-sanity.ts",
@@ -30,7 +32,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
-    "build": "echo 'source-only package, no build'"
+    "build": "bun build src/index.ts --target=bun --packages=external --outdir dist --sourcemap=external"
   },
   "dependencies": {
     "zod": "^4.4.3"

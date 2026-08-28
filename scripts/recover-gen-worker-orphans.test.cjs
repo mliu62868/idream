@@ -106,6 +106,38 @@ test("builds a stable, exact and confirmable orphan recovery plan", () => {
   assert.match(plan.targets[0].members[0].commandSha256, /^[a-f0-9]{64}$/);
 });
 
+test("builds an exact recovery target for a direct Bun worker orphan", () => {
+  const snapshot = orphanSnapshot();
+  snapshot.ownership.image.groups = [
+    {
+      rootPid: 200,
+      runtimePid: 200,
+      pgid: 200,
+      startedAt: "Tue Aug 11 06:01:00 2026",
+      classification: "daemon_orphan",
+      slot: null,
+    },
+  ];
+  snapshot.psRows = [
+    snapshot.psRows[0],
+    {
+      pid: 200,
+      ppid: 100,
+      pgid: 200,
+      startedAt: "Tue Aug 11 06:01:00 2026",
+      command: "/runtime/bun src/image.ts",
+    },
+  ];
+
+  const plan = buildRecoveryPlan(snapshot, structuredClone(snapshot));
+
+  assert.equal(plan.safeToApply, true);
+  assert.equal(plan.targets[0].rootPid, 200);
+  assert.equal(plan.targets[0].runtimePid, 200);
+  assert.equal(plan.targets[0].members.length, 1);
+  assert.equal(plan.targets[0].members[0].role, "image_bun_runtime");
+});
+
 test("refuses a plan while queues or registered Generation workers are live", () => {
   const snapshot = orphanSnapshot({
     queues: queuesPaused.map((row, index) =>

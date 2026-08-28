@@ -5,6 +5,21 @@ import {
 
 const verifiedByEndpoint = new Map<string, CompanionReadiness>();
 
+export class CompanionSidecarUnavailableError extends Error {
+  override readonly name = "CompanionSidecarUnavailableError";
+  readonly code = "companion_sidecar_unavailable" as const;
+}
+
+export function isCompanionSidecarUnavailableError(
+  error: unknown,
+): error is CompanionSidecarUnavailableError {
+  return Boolean(
+    error &&
+      typeof error === "object" &&
+      (error as { code?: unknown }).code === "companion_sidecar_unavailable",
+  );
+}
+
 function endpoint(value: string): string {
   return value.replace(/\/$/, "");
 }
@@ -21,17 +36,30 @@ export async function probeCompanionSidecar(input: {
 }): Promise<CompanionReadiness> {
   const fetchImpl = input.fetchImpl ?? fetch;
   const baseUrl = endpoint(input.baseUrl);
-  const response = await fetchImpl(
-    `${baseUrl}/readyz${input.full ? "?full=1" : ""}`,
-    {
-      headers: {
-        accept: "application/json",
-        authorization: `Bearer ${input.token}`,
+  let response: Response;
+  try {
+    response = await fetchImpl(
+      `${baseUrl}/readyz${input.full ? "?full=1" : ""}`,
+      {
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${input.token}`,
+        },
+        // Full proof may legitimately consume provider(60s)+ingest(30s)+maintain(120s).
+        signal: AbortSignal.timeout(input.timeoutMs ?? (input.full ? 240_000 : 10_000)),
       },
-      // Full proof may legitimately consume provider(60s)+ingest(30s)+maintain(120s).
-      signal: AbortSignal.timeout(input.timeoutMs ?? (input.full ? 240_000 : 10_000)),
-    },
-  );
+    );
+  } catch (cause) {
+    throw new CompanionSidecarUnavailableError(
+      "companion sidecar is not reachable",
+      { cause },
+    );
+  }
+  if (response.status === 503) {
+    throw new CompanionSidecarUnavailableError(
+      "companion sidecar is still warming",
+    );
+  }
   if (!response.ok) {
     throw new Error(`companion sidecar readiness failed with HTTP ${response.status}`);
   }

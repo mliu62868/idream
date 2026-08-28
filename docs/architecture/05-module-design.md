@@ -52,24 +52,19 @@
 
 ## 4. chat
 
-**职责**：Chat Service（**独立服务 `packages/chat`**，独立 Postgres schema/视图）拥有聊天产品权威：会话与消息、消息版本、Soul/PreparedTurn、Scene/relationship/boundaries、DSH workspace scope、聊天额度、输入/输出审核、重生成、历史、SSE/stream replay、chat outbox。每一轮只进入 DSH AgentLoop；官方 igrep plugin 在 sidecar workspace 内拥有通用记忆 lifecycle。主站经 `server/bff/chat-proxy` 签名 + 反向代理（`dispatchV1` 里 `chat`/`messages` resource → `proxyChatRequest`）。
+**职责**：Main 的 Chat Turn Ledger 保存 ChatSession、user message、唯一选中 assistant 回复、Scene、附件、额度与计费；`packages/chat` 只执行本地 AgentRun，`packages/chat-agent` 只执行 DSH/igrep。
 
-**主站关系**：
-- 主站拥有 `users`、`characters/girlfriends`、billing entitlement、age eligibility 的权威状态。
-- Chat 可以只读 `chat_user_view`、`chat_character_view`、`chat_entitlement_view`、`chat_user_eligibility_view`。
-- Chat 只写 chat domain 表，不写主站 core/billing/compliance 表。
-- 主站可以代理 Chat API，也可以消费 Chat outbox；不再作为 chat finalizer。
+**关键流程**：
 
-**关键流程**（详见 01 §4.2、06 §7、`docs/product/CHAT_SERVICE_PRD.md`）：
-- `POST /chat/sessions`：Chat 根据 userId + characterId 找或建 active session；从主站只读 view 断言用户 active、年龄/身份符合、角色可读且未下架。
-- `POST /chat/sessions/:id/messages`：Chat 校验 owner、entitlement/usage、角色状态、输入审核 → 事务落 user message + assistant placeholder → 入 Chat 内部 `chat.generate` → 返回 `assistantMessageId + streamUrl`。
-- Chat worker：冻结 PreparedTurn（released Soul + recent messages + Scene/relationship/boundaries + released knowledge + entitlement + workspace scope）→ DSH AgentLoop（official igrep wake/search）→ Redis Stream/SSE → 输出审核 → 事务落 assistant `Message` + `MessageVersion(selected)`、`chat_usage`、moderation/outbox；terminal commit ACK 后才允许 official plugin ingest。
-- `POST /messages/:id/regenerate`：新增 `MessageVersion`，**不改审计历史**。
-- 删除会话 = 软删 `status=deleted`；产品不暴露 memory item API，只支持 memory on/off 与 whole-relationship reset。reset 归档活跃会话、重建空 relationship 投影，并把旧 DSH workspace 与文件层记忆永久移入隔离区；rebuild 不得重新摄入隔离内容。
+- `POST /chat/sessions`：Main 校验 Character 可见性和 immutable content/Release pin，创建 `RecentChat`。
+- `POST /chat/sessions/:id/messages`：Main 做 owner、输入策略、额度与幂等检查，在一个事务写 user + pending assistant Turn，再签名执行快照给 Chat。
+- Chat 原子写 `input.json`，调用 DSH；token 经 Redis/SSE 暂态传输。
+- DSH 图片工具进入 Main `ToolEffectPort`；Main reserve/admit Generation，Gen 执行，Main settle/refund。
+- Chat terminal candidate 必须通过 Main exact-attempt CAS；收到 durable ACK 后才写 `terminal.json`、发 `done`、允许 memory ingest。
+- 编辑/重生成增加 `attempt`，保留一个产品回复 identity；历史和附件只展示当前选中 attempt。
+- 删除会话由 Main 删除产品 Turn；账号删除另行精确清理 AgentRun 和 DSH workspace。
 
-**不变量**：被审核拦截的消息返回安全错误但**保留会话**；user/assistant 内容都产生 chat moderation trace；额度由 Chat 服务端结合主站 entitlement view 判定；Chat outbox 事件按 event id 幂等消费。
-
-**记忆策略**：recent-message window 与 Chat-owned Scene/relationship/boundaries 进入 PreparedTurn；通用记忆仅由 official igrep 管理。旧 `memorySummary` 列已删除，entitlement 不映射为自研 memory cap/top-K。
+**不变量**：Chat 不连接数据库，不保存余额/usage ledger，不把 DSH event、SSE token、workspace transcript 或旧 attempt 当作产品消息。相同 ToolEffect replay 不得重复生成或扣费。
 
 ---
 
@@ -132,7 +127,7 @@
 **职责**：聚合读模型，拼 `BackendFeatureSpec §5.6` 的各 tab。
 
 **关键流程**：纯读聚合，**不拥有数据**，调其它模块 service：
-- `recent` = 最近 `chat_sessions` + 最近角色。
+- `recent` = Main `RecentChat` + 最近角色。
 - `characters` = 用户可见/自有角色。
 - `created` = `creatorId=me`。
 - `group-chats`/`packs` = P1（先返回空集 + Create CTA，UI 已具备空态）。

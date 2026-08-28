@@ -31,7 +31,7 @@ export function CharacterPortfolioVisual({
     variant === "featured"
       ? "relative min-h-[320px] overflow-hidden bg-black/[0.04] sm:min-h-[360px]"
       : variant === "tile"
-        ? "relative aspect-[4/5] w-full overflow-hidden rounded-lg bg-black/[0.04]"
+        ? "relative aspect-[6/5] w-full overflow-hidden bg-black/[0.04]"
         : "relative h-20 w-20 overflow-hidden rounded-lg bg-black/[0.04]";
   const content = (
     <>

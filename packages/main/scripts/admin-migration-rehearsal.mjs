@@ -282,10 +282,9 @@ async function exerciseDeferredPublicCatalogQualificationAuthority(
   );
   await db.query(
     `INSERT INTO character_projects
-      (id, "characterId", "ownerId", phase, audience, "successCriteria",
-       version, "updatedAt")
-     VALUES ($1, $2, $3, 'launch_ready', '{}'::jsonb, '{}'::jsonb, 1, NOW())`,
-    [projectId, characterId, userId],
+      (id, "characterId", version, "updatedAt")
+     VALUES ($1, $2, 1, NOW())`,
+    [projectId, characterId],
   );
 
   async function insertGeneratedRelease(input) {
@@ -1276,7 +1275,6 @@ async function inspectExpandedSchema(databaseName) {
       [
         [
           "character_serving",
-          "character_qa_runs",
           "control_plane_commands",
           "generation_transport_executions",
           "incident_postmortems",
@@ -1293,7 +1291,6 @@ async function inspectExpandedSchema(databaseName) {
         [
           "analytics_events_immutable",
           "character_release_snapshot_immutable",
-          "character_qa_runs_immutable_update",
           "generation_attempt_terminal_event_required",
           "generation_transport_execution_lifecycle",
           "incident_postmortems_immutable",
@@ -1452,25 +1449,6 @@ async function inspectExpandedSchema(databaseName) {
       ),
       expectedMigrations,
     );
-    const qaRunId = `migration-rehearsal-qa-${runId}`;
-    await db.query(
-      `INSERT INTO character_qa_runs
-        (id, "characterId", "projectId", "characterContentVersionId", "projectVersion", "ownerId", status, checks, "evidenceHash")
-       VALUES ($1, 'character', 'project', 'content', 1, 'owner', 'passed', '[]'::jsonb, $2)`,
-      [qaRunId, `migration-rehearsal-qa-hash-${runId}-${databaseName}`],
-    );
-    let qaImmutableUpdateRejected = false;
-    try {
-      await db.query(
-        `UPDATE character_qa_runs SET status = 'failed' WHERE id = $1`,
-        [qaRunId],
-      );
-    } catch (error) {
-      qaImmutableUpdateRejected = String(error).includes(
-        "character_qa_runs are immutable",
-      );
-    }
-    await db.query(`DELETE FROM character_qa_runs WHERE id = $1`, [qaRunId]);
     return {
       tables: tables.rows,
       triggers: triggers.rows,
@@ -1493,14 +1471,13 @@ async function inspectExpandedSchema(databaseName) {
         migrationHistoryComplete: migrationHistoryAuthority.complete,
         migrationHistoryChecksumsMatch:
           migrationHistoryAuthority.checksumsMatch,
-        expandedTablesPresent: tables.rowCount === 6,
-        databaseGuardsPresent: triggers.rowCount === 6,
-        qaImmutableUpdateRejected,
+        expandedTablesPresent: tables.rowCount === 5,
+        databaseGuardsPresent: triggers.rowCount === 5,
         servingConstraintsPresent:
-          servingConstraints.rowCount === 3 &&
+          servingConstraints.rowCount === 2 &&
           servingConstraints.rows.every((row) => row.condeferrable === true),
         servingConstraintsValidateAfterBackfill:
-          validatedServingConstraints.rowCount === 3 &&
+          validatedServingConstraints.rowCount === 2 &&
           validatedServingConstraints.rows.every(
             (row) => row.convalidated === true,
           ),

@@ -148,8 +148,8 @@ export const adminZhCustomers: Record<string, string> = {
   "No period end on record": "无周期结束时间记录",
   "No records.": "暂无记录。",
   "No subscription": "无订阅",
-  "One view of relationship activity, generations, billing, Cases, and operator history.":
-    "在一个视图里统一查看关系活动、生成、计费、工单与运营历史。",
+  "One view of recent chats, generations, billing, Cases, and operator history.":
+    "在一个视图里统一查看近期聊天、生成、计费、工单与运营历史。",
   "Open Customer 360": "打开客户全景",
   "Open all Cases for this customer": "查看该客户的全部工单",
   "Operator history ({count})": "运营操作历史（{count}）",
@@ -213,7 +213,7 @@ export const adminZhCustomers: Record<string, string> = {
   "Subscription {id} refund is {state}.": "订阅 {id} 的退款状态为 {state}。",
   "Related operational records": "关联运营记录",
   "Related records": "关联记录",
-  "Relationships ({count})": "关系（{count}）",
+  "Recent chats ({count})": "最近聊天（{count}）",
   "Renews": "续订于",
   "Reopen / create recurrence": "重新打开 / 创建复发记录",
   "Reopen this case": "重新打开该工单",

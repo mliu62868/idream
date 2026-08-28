@@ -39,12 +39,20 @@ const SYS = `${P}sys`;
 const CHAR = `${P}char`;
 const COMPLETE_PERSONA_DETAILS = {
   description: "A grounded companion who notices the details other people miss.",
-  relationshipArchetype: "trusted confidante",
-  personality: "Perceptive, curious, and quietly protective.",
-  tone: "Warm, direct, and lightly teasing.",
-  backstory: "You became close after solving a difficult problem together.",
+  detailsMarkdown: [
+    "## Character",
+    "Perceptive, curious, and quietly protective.",
+    "",
+    "## Voice",
+    "Warm, direct, and lightly teasing.",
+    "",
+    "## Background",
+    "You became close after solving a difficult problem together.",
+    "",
+    "## Dialogue example",
+    "- Start with the detail everyone else missed.",
+  ].join("\n"),
   firstMessage: "There you are. Tell me what happened.",
-  exampleDialogue: ["Start with the detail everyone else missed."],
 };
 
 function asInputJson(value: AiFinalizePayload): Prisma.InputJsonValue {
@@ -382,9 +390,6 @@ beforeAll(async () => {
     data: {
       id: projectId,
       characterId: CHAR,
-      ownerId: SYS,
-      audience: {},
-      successCriteria: [],
       activeKey: `official:${CHAR}`,
     },
   });
@@ -1273,6 +1278,81 @@ describe("image generation service contract", () => {
     await runQueuedGenerationJobs(8);
   });
 
+  it("keeps the live legacy Release authoritative when Chat pins an unreleased active profile", async () => {
+    const userId = `${P}legacy-chat-profile-user`;
+    const characterId = `${P}legacy-chat-profile-character`;
+    const profileId = `${P}legacy-chat-profile`;
+    const attachmentId = `${P}legacy-chat-attachment`;
+    await createUser({ id: userId });
+    await createCharacter({
+      id: characterId,
+      creatorId: userId,
+      name: "Legacy Chat Muse",
+      source: "official",
+      visibility: "public",
+      status: "approved",
+    });
+    const published = await publishCharacterForPublicAudience({
+      characterId,
+      ownerId: SYS,
+    });
+    await prisma.characterVisualProfile.create({
+      data: {
+        id: profileId,
+        characterId,
+        version: 1,
+        status: "active",
+        style: "realistic",
+        identityPrompt: "Unreleased staged identity",
+        faceTraits: {},
+        hairTraits: {},
+        bodyTraits: {},
+        signatureTraits: {},
+        styleTraits: {},
+        anchorAssetIds: [],
+        adapterRefs: {},
+        createdFrom: "test",
+      },
+    });
+    await grantCoins(userId, 100, "seed");
+
+    const job = await import("@/server/modules/ourdream/service").then((mod) =>
+      mod.createChatImageGenerationJob({
+        version: 1,
+        kind: "chat.image.requested",
+        requestId: `${P}legacy-chat-request`,
+        attachmentId,
+        sessionId: `${P}legacy-chat-session`,
+        messageId: `${P}legacy-chat-message`,
+        userId,
+        characterId,
+        characterReleaseId: published.releaseId,
+        visualProfileId: profileId,
+        visualProfileVersion: 1,
+        promptHint: "standing beside a sunlit window",
+        conversationContext: "The user asked for a photo by the window.",
+        controls: { orientation: "4:5", outputCount: 1 },
+      }),
+    );
+
+    await expect(
+      prisma.generationJob.findUniqueOrThrow({ where: { id: job.id } }),
+    ).resolves.toMatchObject({
+      sourceType: "chat_image",
+      sourceId: attachmentId,
+      visualProfileId: null,
+      visualProfileVersion: null,
+      controls: {
+        legacyReleaseAuthority: {
+          releaseId: published.releaseId,
+          releaseSnapshotHash: `${published.releaseId}-snapshot`,
+        },
+      },
+    });
+
+    await runQueuedGenerationJobs(8);
+  });
+
   it("replays a committed legacy retry but fails new retry and dispatch after serving switches authority", async () => {
     const userId = `${P}legacy-switch-user`;
     const characterId = `${P}legacy-switch-character`;
@@ -1487,12 +1567,10 @@ describe("image generation service contract", () => {
       userId,
       ageGate: true,
       body: {
+        age: 25,
         appearance: { face: { eyes: "hazel" }, hair: { color: "auburn", style: "long waves" } },
         body: { build: "athletic" },
-        advancedDetails: {
-          ...COMPLETE_PERSONA_DETAILS,
-          signature: { freckles: true },
-        },
+        advancedDetails: COMPLETE_PERSONA_DETAILS,
       },
     });
     expectOk(patchResponse);
@@ -1517,11 +1595,7 @@ describe("image generation service contract", () => {
     const submitResponse = await api("POST", `character-drafts/${draftId}/submit`, {
       userId,
       ageGate: true,
-      body: {
-        visibility: "private",
-        description: "A grounded companion with auburn waves and hazel eyes.",
-        age: 25,
-      },
+      body: { visibility: "private" },
     });
     expectOk(submitResponse);
     const characterId = submitResponse.data.character.id as string;
@@ -1599,7 +1673,7 @@ describe("image generation service contract", () => {
     const completedPersona = await api("PATCH", `character-drafts/${draftId}`, {
       userId,
       ageGate: true,
-      body: { advancedDetails: COMPLETE_PERSONA_DETAILS },
+      body: { age: 25, advancedDetails: COMPLETE_PERSONA_DETAILS },
     });
     expectOk(completedPersona);
     const preview = await prisma.characterPreviewJob.create({
@@ -1630,11 +1704,7 @@ describe("image generation service contract", () => {
     const submitted = await api("POST", `character-drafts/${draftId}/submit`, {
       userId,
       ageGate: true,
-      body: {
-        visibility: "private",
-        description: "This submission must not steal another Character image.",
-        age: 25,
-      },
+      body: { visibility: "private" },
     });
     expectError(submitted, 409, "conflict");
     await expect(
@@ -1669,6 +1739,12 @@ describe("image generation service contract", () => {
     });
     expectOk(draftResponse);
     const draftId = draftResponse.data.draft.id as string;
+    const completedPersona = await api("PATCH", `character-drafts/${draftId}`, {
+      userId,
+      ageGate: true,
+      body: { age: 25, advancedDetails: COMPLETE_PERSONA_DETAILS },
+    });
+    expectOk(completedPersona);
     const assetId = `${P}synthetic-preview-asset`;
     await prisma.mediaAsset.create({
       data: {
@@ -1705,11 +1781,7 @@ describe("image generation service contract", () => {
     const submit = await api("POST", `character-drafts/${draftId}/submit`, {
       userId,
       ageGate: true,
-      body: {
-        visibility: "private",
-        description: "Must not publish a demo identity.",
-        age: 25,
-      },
+      body: { visibility: "private" },
     });
     expectError(submit, 400, "bad_request");
     expect(await prisma.character.count({
@@ -1732,18 +1804,17 @@ describe("image generation service contract", () => {
     });
     expectOk(draftResponse);
     const draftId = draftResponse.data.draft.id as string;
-    await api("PATCH", `character-drafts/${draftId}`, {
+    const patched = await api("PATCH", `character-drafts/${draftId}`, {
       userId,
       ageGate: true,
       body: {
+        age: 26,
         appearance: { face: { eyes: "blue" }, hair: { color: "black" } },
         body: { build: "soft athletic" },
-        advancedDetails: {
-          ...COMPLETE_PERSONA_DETAILS,
-          signature: "silver necklace",
-        },
+        advancedDetails: COMPLETE_PERSONA_DETAILS,
       },
     });
+    expectOk(patched);
 
     const firstAssetId = `${P}selected-preview-asset-1`;
     const secondAssetId = `${P}selected-preview-asset-2`;
@@ -1810,11 +1881,7 @@ describe("image generation service contract", () => {
     const submitResponse = await api("POST", `character-drafts/${draftId}/submit`, {
       userId,
       ageGate: true,
-      body: {
-        visibility: "private",
-        description: "A grounded companion with blue eyes and a silver necklace.",
-        age: 26,
-      },
+      body: { visibility: "private" },
     });
     expectOk(submitResponse);
     const characterId = submitResponse.data.character.id as string;
@@ -3049,9 +3116,6 @@ describe("image generation service contract", () => {
       data: {
         id: sourceProjectId,
         characterId: sourceCharacterId,
-        ownerId: userId,
-        audience: {},
-        successCriteria: [],
         draftImageAssetId: sourceAssetId,
         draftAssetPack: {
           character_cover: { assetId: sourceAssetId },
@@ -3239,9 +3303,6 @@ describe("image generation service contract", () => {
       data: {
         id: projectId,
         characterId,
-        ownerId: userId,
-        audience: {},
-        successCriteria: [],
         draftImageAssetId: staleDraftId,
         draftAssetPack: {
           character_cover: { assetId: staleDraftId },
@@ -3389,9 +3450,6 @@ describe("image generation service contract", () => {
       data: {
         id: projectId,
         characterId,
-        ownerId: userId,
-        audience: {},
-        successCriteria: [],
         draftImageAssetId: staleDraftId,
         draftAssetPack: {
           character_hero: { assetId: staleDraftId },
@@ -4058,9 +4116,6 @@ describe("image generation service contract", () => {
       data: {
         id: projectId,
         characterId,
-        ownerId: userId,
-        audience: {},
-        successCriteria: [],
         activeKey: `user:${characterId}`,
       },
     });
@@ -4075,7 +4130,7 @@ describe("image generation service contract", () => {
         generationProvenance: {},
         releasePlacementManifest: {},
         snapshotHash: `${releaseId}-snapshot`,
-        status: "in_review",
+        status: "approved",
       },
     });
 
@@ -5599,7 +5654,7 @@ describe("image generation service contract", () => {
       ),
     ).toMatchObject({
       characterId,
-      imageEditModelIds: ["character-image-variation-darkbeast"],
+      imageEditModelIds: [],
     });
     expect(
       mediaList.data.items.find(
@@ -5608,7 +5663,7 @@ describe("image generation service contract", () => {
     ).toMatchObject({
       characterId: CHAR,
       canEditIdentity: false,
-      imageEditModelIds: ["character-image-variation-darkbeast"],
+      imageEditModelIds: [],
     });
     const automaticVariation = await api(
       "POST",
@@ -5640,37 +5695,21 @@ describe("image generation service contract", () => {
     );
     expectError(internalProfileVariation, 409, "conflict");
 
-    const quotedVariation = await api(
-      "POST",
-      `media/${mediaId}/variation/quote`,
-      {
-        userId,
-        ageGate: true,
-        body: {
-          consistencyMode: "creative",
-          model: "character-image-variation-darkbeast",
-        },
-      },
-    );
-    expectOk(quotedVariation);
     const variationQuote =
-      quotedVariation.data.quote as ExactGenerationQuote & {
+      automaticVariation.data.quote as ExactGenerationQuote & {
         defaultOrientation: string;
         maxCount: number;
         orientations: string[];
       };
     expect(variationQuote.maxCount).toBeGreaterThan(0);
     expect(variationQuote.orientations).toContain("4:5");
-    expect(variationQuote.profileId).toBe(
-      "character-image-variation-darkbeast",
-    );
+    expect(variationQuote.profileId).toBe("character-image-variation");
     const balanceBefore = await dreamcoinBalance(userId);
 
     const variationIdempotencyKey = `${P}variation-idempotency`;
     const variationBody = {
       outputCount: 1,
       consistencyMode: "creative" as const,
-      model: "character-image-variation-darkbeast",
       orientation: variationQuote.defaultOrientation,
       quoteAuthority: quoteAuthority(variationQuote),
     };

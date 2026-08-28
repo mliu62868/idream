@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   DSH_VERSION,
   IGREP_PLUGIN_VERSION,
+  IGREP_PLUGIN_DSH_PEER_RANGE,
   PROFILE_NAMES,
   executeCli,
   isSupportedNodeVersion,
@@ -67,6 +68,28 @@ test("root scripts expose setup/check without installing DSH into the workspace"
   assert.equal(manifest.devDependencies?.["@deepseek-ai/dsh"], undefined);
 });
 
+test("setup creates DSH_HOME before the first pnpm command", () => {
+  const fixture = createFixture({ materialized: false });
+  let dshHomeCreated = false;
+  const mkdirSync = fixture.fs.mkdirSync.bind(fixture.fs);
+  fixture.fs.mkdirSync = (directory, options) => {
+    if (path.normalize(directory) === path.normalize(DSH_HOME)) {
+      assert.deepEqual(options, { recursive: true, mode: 0o700 });
+      dshHomeCreated = true;
+    }
+    return mkdirSync(directory, options);
+  };
+  const spawnSync = fixture.dependencies.spawnSync;
+  fixture.dependencies.spawnSync = (command, args, options) => {
+    if (command === "pnpm") assert.equal(dshHomeCreated, true);
+    return spawnSync(command, args, options);
+  };
+
+  runDshCompanionBootstrap({ check: false }, fixture.dependencies);
+
+  assert.equal(dshHomeCreated, true);
+});
+
 test("setup materializes both official profiles, dumps with the same DSH_HOME, and persists only digests", () => {
   const fixture = createFixture({ materialized: false });
   const report = runDshCompanionBootstrap(
@@ -114,7 +137,9 @@ test("setup materializes both official profiles, dumps with the same DSH_HOME, a
   );
   assert.ok(
     dumps.every((call) =>
-      call.args.includes(`--package=@deepseek-ai/dsh@${DSH_VERSION}`)
+      call.command === "pnpm" &&
+      call.args.includes(`--package=@deepseek-ai/dsh@${DSH_VERSION}`) &&
+      readArg(call.args, "--dir") === DSH_HOME
     ),
   );
 
@@ -322,6 +347,13 @@ test("fails closed on runtime, igrep, Python, command, and plugin identity misma
       (error) => error?.code === "PLUGIN_VERSION_MISMATCH",
     );
   });
+  await t.test("plugin source peer range", () => {
+    const fixture = createFixture({ pluginPeerRange: "^0.1.1-rc.2" });
+    assert.throws(
+      () => runDshCompanionBootstrap({ check: false }, fixture.dependencies),
+      (error) => error?.code === "PLUGIN_PEER_RANGE_MISMATCH",
+    );
+  });
   await t.test("plugin peer version", () => {
     const fixture = createFixture({
       materialized: false,
@@ -351,7 +383,11 @@ function createFixture(options = {}) {
   const igrepExecutable = "/virtual/bin/igrep";
   const pythonExecutable = "/virtual/python3.14";
   fs.seed(igrepExecutable, `#!${pythonExecutable}\n`);
-  seedPluginSource(fs, options.pluginVersion ?? IGREP_PLUGIN_VERSION);
+  seedPluginSource(
+    fs,
+    options.pluginVersion ?? IGREP_PLUGIN_VERSION,
+    options.pluginPeerRange ?? IGREP_PLUGIN_DSH_PEER_RANGE,
+  );
   if (options.materialized !== false) {
     for (const profile of Object.values(PROFILE_NAMES)) {
       materializeProfile(fs, profile, options.profilePluginPath ?? PLUGIN_SOURCE);
@@ -469,13 +505,13 @@ function identifyCall(command, args) {
   if (command === "which" && args[0] === "igrep") return "which igrep";
   if (command === "/virtual/python3.14") return "python version";
   if (command === "igrep" && args[0] === "--version") return "igrep version";
-  if (command === "npm" && args.includes("-V")) return "dsh version";
+  if (command === "pnpm" && args.includes("-V")) return "dsh version";
   if (command === "igrep" && args.includes("--dry-run")) return "igrep dry-run";
-  if (command === "npm" && args.includes("deepseek-harness")) return "igrep setup";
-  if (command === "npm" && args.includes("plugin") && args.includes("install")) {
+  if (command === "pnpm" && args.includes("deepseek-harness")) return "igrep setup";
+  if (command === "pnpm" && args.includes("plugin") && args.includes("install")) {
     return "dsh plugin install";
   }
-  if (command === "npm" && args.includes("--dump-config")) return "dsh dump";
+  if (command === "pnpm" && args.includes("--dump-config")) return "dsh dump";
   return "unknown";
 }
 
@@ -488,7 +524,7 @@ function readArg(args, name) {
   return index >= 0 ? args[index + 1] : undefined;
 }
 
-function seedPluginSource(fs, version) {
+function seedPluginSource(fs, version, peerRange) {
   fs.seed(
     path.join(PLUGIN_SOURCE, "package.json"),
     JSON.stringify({
@@ -496,8 +532,8 @@ function seedPluginSource(fs, version) {
       version,
       dsh: { bundle: { patch: "cordis.patch.yml" } },
       peerDependencies: {
-        "@deepseek-ai/dsh-llm": `^${DSH_VERSION}`,
-        "@deepseek-ai/dsh-tools": `^${DSH_VERSION}`,
+        "@deepseek-ai/dsh-llm": peerRange,
+        "@deepseek-ai/dsh-tools": peerRange,
       },
     }),
   );

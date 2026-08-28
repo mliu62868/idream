@@ -86,7 +86,6 @@ export function characterDTO(
     creatorType: official ? "official" : "user",
     style: character.style,
     gender: character.gender,
-    relationship: character.relationship,
     creatorId: official ? null : character.creatorId,
     creator: creatorName ?? "Creator",
     creatorName,

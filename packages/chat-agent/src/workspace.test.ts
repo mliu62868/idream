@@ -53,7 +53,7 @@ function invocation(memoryMode: "normal" | "private"): CompanionInvocation {
     expectedProfileDigest: "d".repeat(64),
     deadlineAt: new Date(Date.now() + 60_000).toISOString(),
     preparedTurn: {
-      version: 2,
+      version: 3,
       model: "model-1",
       characterName: "Mira",
       messages: [{
@@ -86,8 +86,7 @@ function invocation(memoryMode: "normal" | "private"): CompanionInvocation {
         soulFingerprint: "soul-1",
         compilerVersion: "soul-v1",
         sceneVersion: 1,
-        relationshipVersion: 1,
-        fileContextRevision: "1",
+        contextRevision: "1",
         releasedKnowledgeDigest: releasedKnowledge.digest,
       },
     },
@@ -538,79 +537,5 @@ describe("DSH workspace authority", () => {
     expect(await workspaces.purge(request)).toBe(1);
     expect(await workspaces.purge(request)).toBe(0);
     await expect(lstat(markerPath)).rejects.toMatchObject({ code: "ENOENT" });
-  });
-});
-
-describe("relationship reset quarantine", () => {
-  it("retires the workspace and its cutover marker inside the user directory instead of destroying them", async () => {
-    const root = await mkdtemp(join(tmpdir(), "dsh-workspace-quarantine-"));
-    temporary.push(root);
-    let probes = 0;
-    const workspaces = store(root, {
-      status: async () => ({ dialogueFiles: probes++ === 0 ? 0 : 1 }),
-    });
-    const workspace = await workspaces.prepare(invocation("normal"));
-    await writeFile(join(workspace.path, ".igrep", "dialogue.jsonl"), "{}\n");
-    await workspace.commit();
-    const canonical = join(root, "canonical");
-    const relationship = relationshipWorkspacePath(canonical, "user-1", "character-1");
-    const markerPath = memoryCutoverMarkerPath(canonical, "user-1", "character-1");
-    await mkdir(dirname(markerPath), { recursive: true });
-    await writeFile(markerPath, "{}");
-
-    const request = {
-      scope: "relationship" as const,
-      userId: "user-1",
-      characterId: "character-1",
-      quarantineLabel: "filemut_reset_1",
-    };
-    expect(await workspaces.purge(request)).toBe(1);
-
-    await expect(lstat(relationship)).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(lstat(markerPath)).rejects.toMatchObject({ code: "ENOENT" });
-    const quarantineRoot = join(userWorkspacePath(canonical, "user-1"), ".reset-quarantine");
-    const retired = await readdir(quarantineRoot);
-    expect(retired).toHaveLength(1);
-    expect(retired[0]).toMatch(/^relationship-[a-f0-9]{64}-filemut_reset_1-[0-9a-f-]{36}$/);
-    const retiredRoot = join(quarantineRoot, retired[0]!);
-    expect((await stat(retiredRoot)).mode & 0o777).toBe(0o700);
-    expect(await readdir(retiredRoot)).toEqual(expect.arrayContaining([
-      ".igrep",
-      ".igrep.versions",
-      "cutover-marker.json",
-      "quarantine.json",
-    ]));
-    expect(JSON.parse(await readFile(join(retiredRoot, "quarantine.json"), "utf8")))
-      .toMatchObject({ label: "filemut_reset_1" });
-    // The retired pointer still resolves inside the retired tree, never back
-    // into the live authority.
-    expect(await readdir(resolve(retiredRoot, await readlink(join(retiredRoot, ".igrep")))))
-      .toContain("dialogue.jsonl");
-
-    // A repeated reset of an already-retired relationship changes nothing.
-    expect(await workspaces.purge(request)).toBe(0);
-    expect(await readdir(quarantineRoot)).toHaveLength(1);
-
-    // The next turn starts from an empty relationship, not from the quarantine.
-    const fresh = await workspaces.prepare(invocation("normal"));
-    expect(await readdir(join(fresh.path, ".igrep"))).toEqual([]);
-    await fresh.discard();
-
-    // Account erasure destroys the quarantine with the rest of the user directory.
-    expect(await workspaces.purge({ scope: "user", userId: "user-1" })).toBe(1);
-    await expect(lstat(quarantineRoot)).rejects.toMatchObject({ code: "ENOENT" });
-  });
-
-  it("rejects a quarantine label that could escape or collide", async () => {
-    const root = await mkdtemp(join(tmpdir(), "dsh-workspace-quarantine-label-"));
-    temporary.push(root);
-    const workspaces = store(root);
-    await (await workspaces.prepare(invocation("normal"))).discard();
-    await expect(workspaces.purge({
-      scope: "relationship",
-      userId: "user-1",
-      characterId: "character-1",
-      quarantineLabel: "../escape",
-    })).rejects.toThrow("quarantine label is invalid");
   });
 });

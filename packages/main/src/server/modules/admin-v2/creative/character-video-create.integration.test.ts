@@ -107,7 +107,6 @@ describe("Character video Creative Run authority", () => {
       name: "Mara",
       age: 27,
       gender: "female",
-      relationshipArchetype: "trusted companion",
       characterPromise: "A warm, self-assured companion.",
       detailsMarkdown: "Observant, direct, and emotionally grounded. Warm and concise. She works with local community groups.",
     });
@@ -135,9 +134,6 @@ describe("Character video Creative Run authority", () => {
       data: {
         id: projectId,
         characterId,
-        phase: "producing",
-        audience: {},
-        successCriteria: ["Video preserves the Character identity"],
         activeKey: `character-video:${characterId}`,
       },
     });

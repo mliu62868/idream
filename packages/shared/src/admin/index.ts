@@ -7,5 +7,4 @@ export * from "./response-contract";
 export * from "./mutation-transport";
 export * from "./errors";
 export * from "./operational-slo";
-export * from "./character-qa-authority";
 export * from "./character-release-assets";

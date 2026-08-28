@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
@@ -11,7 +11,7 @@ const packagePath = process.argv[2];
 
 if (!packagePath) {
   throw new Error(
-    "Usage: node scripts/build-next-standalone.mjs <package-path>",
+    "Usage: bun scripts/build-next-standalone.mjs <package-path>",
   );
 }
 

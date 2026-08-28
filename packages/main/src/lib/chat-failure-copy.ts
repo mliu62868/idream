@@ -22,7 +22,6 @@ const CHAT_FAILURE_COPY: Readonly<Record<string, string>> = {
   // —— 等一下就好 ——
   rate_limited: "You're sending a bit fast. Wait a moment and try again.",
   reply_in_progress: "Wait for the current reply to finish, then send again.",
-  relationship_busy: "The previous turn is still being saved. Try again in a moment.",
   service_not_ready: "Chat is still starting up. Try again in a few seconds.",
 
   // —— 用户可以自己改的 ——

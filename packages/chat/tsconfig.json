@@ -21,6 +21,6 @@
       "@idream/shared/observability/sentry": ["../shared/src/observability/sentry.ts"]
     }
   },
-  "include": ["src/**/*.ts", "prisma.config.ts"],
+  "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "generated"]
 }

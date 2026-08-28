@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
   type MainToChatReceiverAuthority,
+  LEGACY_MAIN_TO_CHAT_EVENTS,
   MAIN_TO_CHAT_EVENTS,
   type MainToChatTargetIdentity,
 } from "@idream/shared/contracts";
@@ -32,7 +33,10 @@ import {
 type Db = PrismaClient | Prisma.TransactionClient;
 
 const CHAT_OUTBOX_CURSOR_SCOPE = "main-to-chat-failed-outbox";
-const CHAT_EVENT_TYPES = Object.values(MAIN_TO_CHAT_EVENTS);
+const CHAT_EVENT_TYPES = [
+  ...Object.values(MAIN_TO_CHAT_EVENTS),
+  ...Object.values(LEGACY_MAIN_TO_CHAT_EVENTS),
+];
 
 export async function listFailedMainToChatOutboxEvents(
   request: Request,

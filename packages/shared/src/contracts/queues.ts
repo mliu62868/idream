@@ -26,24 +26,9 @@ export const GENERATION_CUTOVER_QUEUES = [
   MAIN_QUEUES.aiFinalize,
 ] as const;
 
-/** Chat service internal queues (chat/web → chat/worker, and chat maintenance). */
-export const CHAT_QUEUES = {
-  /** chat/web enqueues; chat/worker consumes — produce the assistant reply. */
-  generate: "chat.generate",
-  /** Stable historical wire id; derive Scene/relationship from the exact PG turn. */
-  memoryExtract: "chat.memory.extract",
-  /** Deliver chat.chat_outbox_events through Main's HTTP durable ingest. */
-  outboxDeliver: "chat.outbox.deliver",
-  /** Consume main → chat commands from chat.chat_inbox_events. */
-  inboxConsume: "chat.inbox.consume",
-  /** Periodic: scan stuck `generating` + pending outbox/inbox; converge. */
-  reconcile: "chat.reconcile",
-} as const;
-
 export const ALL_QUEUE_NAMES = [
   ...Object.values(GEN_QUEUES),
   ...Object.values(MAIN_QUEUES),
-  ...Object.values(CHAT_QUEUES),
 ] as const;
 
 export type QueueName = (typeof ALL_QUEUE_NAMES)[number];

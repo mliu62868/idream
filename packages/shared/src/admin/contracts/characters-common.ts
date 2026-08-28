@@ -4,14 +4,4 @@
 
 import { z } from "zod";
 
-export const characterProjectPhaseSchema = z.enum([
-  "idea",
-  "planned",
-  "producing",
-  "qa",
-  "launch_ready",
-  "live_management",
-  "retired",
-]);
-
 export const characterServingStateSchema = z.enum(["inactive", "live", "paused", "retired"]);

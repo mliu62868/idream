@@ -3,7 +3,7 @@
 import { useAdminI18n } from "@/components/admin/i18n";
 import Link from "next/link";
 import type { AdminPageInfo, CharacterPortfolioItem } from "@idream/shared/admin";
-import { Plus, Search, SlidersHorizontal } from "lucide-react";
+import { Plus, Search } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useAdminFormat } from "@/components/admin/ui/format";
 import { Pagination } from "@/components/admin/ui/Pagination";
@@ -18,15 +18,14 @@ import { cn } from "@/lib/utils";
 import {
   CHARACTER_PORTFOLIO_DEFAULT_SORT,
   CHARACTER_PORTFOLIO_PAGE_SIZE,
-  CHARACTER_PORTFOLIO_PHASES,
-  CHARACTER_PORTFOLIO_READINESS_STATES,
-  CHARACTER_PORTFOLIO_SERVING_STATES,
   CHARACTER_PORTFOLIO_SORT_LABELS,
   CHARACTER_PORTFOLIO_SORTS,
+  characterPortfolioEmptyView,
   characterPortfolioQuery,
   parseCharacterPortfolioUrl,
   type CharacterPortfolioSort,
   type CharacterPortfolioUrlState,
+  type CharacterPortfolioWorkQueue,
 } from "./portfolio-query";
 import { permissionDenied } from "./character-permission-denied";
 import { CharacterListEmptyState } from "./CharacterListEmptyState";
@@ -68,10 +67,12 @@ export function CharacterPortfolio({
   const format = useAdminFormat();
   const performanceMode = mode === "performance";
   const [search, setSearch] = useState("");
-  const [phase, setPhase] = useState("");
   const [servingState, setServingState] = useState("");
   const [readiness, setReadiness] = useState("");
   const [attention, setAttention] = useState(false);
+  const [workQueue, setWorkQueue] = useState<CharacterPortfolioWorkQueue | "">(
+    "",
+  );
   const [sort, setSort] = useState<CharacterPortfolioSort>(CHARACTER_PORTFOLIO_DEFAULT_SORT);
   // SPEC: 已生效的查询与筛选表单草稿分开保存。
   // INTENT: 上面六个 state 直接绑在输入框上，改一个下拉不该触发取数——只有 Apply /
@@ -115,10 +116,10 @@ export function CharacterPortfolio({
       nextCursorStack: readonly string[] = [],
     ) => {
       setSearch(next.search);
-      setPhase(next.phase ?? "");
       setServingState(next.servingState ?? "");
       setReadiness(next.readiness ?? "");
       setAttention(next.attention ?? false);
+      setWorkQueue(next.workQueue ?? "");
       setSort(next.sort ?? CHARACTER_PORTFOLIO_DEFAULT_SORT);
       setApplied(next);
       setCursorStack(nextCursorStack);
@@ -152,10 +153,10 @@ export function CharacterPortfolio({
     applyQuery(
       {
         search,
-        phase: phase || undefined,
         servingState: servingState || undefined,
         readiness: readiness || undefined,
         attention: attention || undefined,
+        workQueue: workQueue || undefined,
         sort,
         cursor: nextCursor,
       },
@@ -171,10 +172,10 @@ export function CharacterPortfolio({
     applyQuery(
       {
         search,
-        phase: phase || undefined,
         servingState: servingState || undefined,
         readiness: readiness || undefined,
         attention: attention || undefined,
+        workQueue: workQueue || undefined,
         sort: next,
       },
       "push",
@@ -193,95 +194,44 @@ export function CharacterPortfolio({
     apply(cursorStack.at(-1) || undefined, previous);
   }
 
-  const activeStatusFilterCount = [phase, servingState, readiness].filter(
-    Boolean,
-  ).length;
+  const rosterView = attention
+    ? "attention"
+    : workQueue === "live_asset_pack_incomplete"
+      ? "image_pack"
+    : servingState === "live"
+      ? "live"
+      : servingState === "inactive"
+        ? "draft"
+        : "all";
 
-  // INTENT: 「需要处理」是发现入口，不是第四个下拉——藏进 More filters 折叠等于没人会用。
-  function toggleAttention() {
-    const next = !attention;
+  // SPEC: 视图仍写回同一个 portfolio 查询；Image packs 是服务端工作清单，不是当前页的客户端过滤。
+  // INTENT: 运营先回答「我现在要看哪批角色」，再进入单个角色处理素材或上线动作。
+  function changeRosterView(
+    next: "all" | "draft" | "live" | "attention" | "image_pack",
+  ) {
+    const nextAttention = next === "attention";
+    const nextWorkQueue =
+      next === "image_pack" ? "live_asset_pack_incomplete" : undefined;
+    const nextServingState = next === "draft" ? "inactive" : next === "live" ? "live" : undefined;
+    setAttention(nextAttention);
+    setWorkQueue(nextWorkQueue ?? "");
+    setServingState(nextServingState ?? "");
+    setReadiness("");
     applyQuery(
       {
         search,
-        phase: phase || undefined,
-        servingState: servingState || undefined,
-        readiness: readiness || undefined,
-        attention: next || undefined,
+        servingState: nextServingState,
+        attention: nextAttention || undefined,
+        workQueue: nextWorkQueue,
         sort,
       },
       "push",
     );
   }
-
-  function clearStatusFilters() {
-    applyQuery({ search, attention: attention || undefined, sort }, "push");
-  }
-
-  const statusFilterControls = (
-    <div className="grid gap-3 p-3 sm:grid-cols-3">
-      <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-        {t("Character stage")}
-        <select
-          aria-label={t("Filter by character stage")}
-          className={`${fieldClass} mt-1`}
-          onChange={(event) => setPhase(event.target.value)}
-          value={phase}
-        >
-          <option value="">{t("All phases")}</option>
-          {CHARACTER_PORTFOLIO_PHASES.map((value) => (
-            <option key={value} value={value}>
-              {t(value.replaceAll("_", " "))}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-        {t("Serving state")}
-        <select
-          aria-label={t("Filter by serving state")}
-          className={`${fieldClass} mt-1`}
-          onChange={(event) => setServingState(event.target.value)}
-          value={servingState}
-        >
-          <option value="">{t("All serving states")}</option>
-          {CHARACTER_PORTFOLIO_SERVING_STATES.map((value) => (
-            <option key={value} value={value}>
-              {t(value.replaceAll("_", " "))}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-        {t("Readiness")}
-        <select
-          aria-label={t("Filter by readiness")}
-          className={`${fieldClass} mt-1`}
-          onChange={(event) => setReadiness(event.target.value)}
-          value={readiness}
-        >
-          <option value="">{t("All readiness")}</option>
-          {CHARACTER_PORTFOLIO_READINESS_STATES.map((value) => (
-            <option key={value} value={value}>
-              {t(value.replaceAll("_", " "))}
-            </option>
-          ))}
-        </select>
-      </label>
-      {activeStatusFilterCount > 0 ? (
-        <button
-          className="min-h-11 text-left text-xs font-semibold underline sm:col-span-3"
-          onClick={clearStatusFilters}
-          type="button"
-        >
-          {t("Clear status filters")}
-        </button>
-      ) : null}
-    </div>
-  );
   const filterForm = (
     <form
       aria-label={t("Search and filter characters")}
-      className="relative z-20 grid w-full gap-2 sm:grid-cols-[minmax(0,1fr)_auto] 2xl:grid-cols-[minmax(22rem,1fr)_auto_auto_auto_auto] 2xl:items-center"
+      className="grid w-full gap-2 sm:grid-cols-[minmax(14rem,1fr)_auto_auto] sm:items-center"
       onSubmit={(event) => {
         event.preventDefault();
         apply();
@@ -317,33 +267,6 @@ export function CharacterPortfolio({
           ))}
         </select>
       </label>
-      {/* INTENT: 「需要处理」两种模式都要给。之前只在 performance 模式渲染，
-          studio 的运营只能手敲 ?attention=true —— URL 解析和空态一直都支持它。 */}
-      <button
-        aria-pressed={attention}
-        className={cn(
-          "min-h-11 shrink-0 rounded-lg border px-3 text-sm font-semibold",
-          attention
-            ? "border-[var(--ad-ink)] bg-[var(--ad-ink)] text-white"
-            : "border-[var(--ad-border)] text-[var(--ad-ink)]",
-        )}
-        onClick={toggleAttention}
-        type="button"
-      >
-        {t("Needs attention")}
-      </button>
-      <details className="group shrink-0 justify-self-start rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
-        <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 text-sm font-semibold">
-          <SlidersHorizontal aria-hidden="true" className="h-4 w-4" />
-          <span>{t("Filters")}</span>
-          {activeStatusFilterCount > 0 ? (
-            <span>({activeStatusFilterCount})</span>
-          ) : null}
-        </summary>
-        <div className="absolute right-0 top-full mt-1 w-[min(680px,calc(100vw-2rem))] rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] shadow-[var(--ad-shadow-hover)]">
-          {statusFilterControls}
-        </div>
-      </details>
     </form>
   );
 
@@ -355,7 +278,7 @@ export function CharacterPortfolio({
     );
   return (
     <section aria-labelledby="character-list-title">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+      <div className="flex flex-col gap-5 border-b border-[var(--ad-border)] pb-6 sm:flex-row sm:items-start sm:justify-between">
         {performanceMode ? (
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">
@@ -369,33 +292,82 @@ export function CharacterPortfolio({
             </h2>
             <p className="mt-2 max-w-2xl text-sm text-[var(--ad-text-muted)]">
               {t(
-                "Compare release-attributed value, maturity, and portfolio decisions without expanding Project authority.",
+                "Compare release-attributed value and maturity.",
               )}
             </p>
           </div>
         ) : (
-          <h2 className="sr-only" id="character-list-title">
-            {t("Characters")}
-          </h2>
+          <div>
+            <h2 className="text-3xl font-semibold tracking-[-0.025em]" id="character-list-title">
+              {t("Characters")}
+            </h2>
+            <p className="mt-2 text-sm text-[var(--ad-text-muted)]">
+              {t("Manage Character settings, assets, and live operations")}
+            </p>
+          </div>
         )}
         {!performanceMode ? (
-          <div className="ml-auto flex w-full max-w-3xl flex-col gap-2 sm:flex-row sm:items-start">
-            <div className="min-w-0 flex-1">{filterForm}</div>
-            {canCreate ? (
+          canCreate ? (
               <Link
-                className="inline-flex min-h-11 shrink-0 items-center gap-2 rounded-md bg-[var(--ad-ink)] px-4 text-sm font-semibold text-[var(--ad-surface)] hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
+                className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md bg-[var(--ad-ink)] px-5 text-sm font-semibold text-[var(--ad-surface)] hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ad-ink)]"
                 href="/admin/characters/new"
               >
                 <Plus aria-hidden="true" className="h-4 w-4" />
                 {t("Create Character")}
               </Link>
-            ) : null}
-          </div>
+            ) : null
         ) : null}
       </div>
       {performanceMode ? (
-        <div className="mt-4 flex justify-end">{filterForm}</div>
-      ) : null}
+        <div className="mt-4 flex flex-col justify-end gap-2 lg:flex-row">
+          <div className="w-full lg:max-w-[42rem]">{filterForm}</div>
+          <button
+            aria-pressed={attention}
+            className={cn(
+              "min-h-11 shrink-0 rounded-md border px-4 text-sm font-semibold",
+              attention
+                ? "border-[var(--ad-ink)] bg-[var(--ad-ink)] text-[var(--ad-surface)]"
+                : "border-[var(--ad-border)] bg-[var(--ad-surface)] text-[var(--ad-ink)]",
+            )}
+            onClick={() => changeRosterView(attention ? "all" : "attention")}
+            type="button"
+          >
+            {t("Needs attention")}
+          </button>
+        </div>
+      ) : (
+        <div className="mt-4 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+          <div
+            aria-label={t("Character operations filters")}
+            className="inline-flex w-full shrink-0 overflow-x-auto rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] sm:w-auto xl:w-max"
+            role="group"
+          >
+            {([
+              ["all", "All"],
+              ["draft", "Draft"],
+              ["live", "Live"],
+              ["image_pack", "Incomplete packs"],
+              ["attention", "Needs attention"],
+            ] as const).map(([value, label]) => (
+              <button
+                aria-pressed={rosterView === value}
+                className={cn(
+                  "min-h-10 shrink-0 border-r border-[var(--ad-border)] px-5 text-sm font-medium last:border-r-0",
+                  rosterView === value
+                    ? "bg-[var(--ad-ink)] text-[var(--ad-surface)]"
+                    : "text-[var(--ad-text-muted)] hover:bg-black/[0.03] hover:text-[var(--ad-ink)]",
+                )}
+                key={value}
+                onClick={() => changeRosterView(value)}
+                type="button"
+              >
+                {t(label)}
+              </button>
+            ))}
+          </div>
+          <div className="w-full xl:max-w-[42rem]">{filterForm}</div>
+        </div>
+      )}
       {error ? (
         <div
           className="mt-5 rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]"
@@ -411,7 +383,7 @@ export function CharacterPortfolio({
           </button>
         </div>
       ) : null}
-      <div className="mt-4">
+      <div className="mt-6">
         {loading && items.length === 0 ? (
           <LoadingWorkspace
             label={
@@ -423,11 +395,14 @@ export function CharacterPortfolio({
         ) : items.length === 0 ? (
           error ? null : (
             <CharacterListEmptyState
-              attentionOnly={attention}
-              filtered={Boolean(
-                search || phase || servingState || readiness || attention,
-              )}
               onClear={() => applyQuery({ search: "" }, "push")}
+              view={characterPortfolioEmptyView({
+                search,
+                servingState: servingState || undefined,
+                readiness: readiness || undefined,
+                attention: attention || undefined,
+                workQueue: workQueue || undefined,
+              })}
             />
           )
         ) : (
@@ -436,14 +411,14 @@ export function CharacterPortfolio({
               className={
                 performanceMode
                   ? "grid gap-3"
-                  : "grid gap-x-7 gap-y-8 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+                  : "grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
               }
             >
               {items.map((item, index) => (
                 <CharacterPortfolioCard
                   canOpenAssets={canOpenAssets}
                   canOpenProject={canOpenProjects}
-                  eager={index < (performanceMode ? 1 : 4)}
+                  eager={index < (performanceMode ? 1 : 8)}
                   item={item}
                   key={item.characterId}
                   mode={mode}

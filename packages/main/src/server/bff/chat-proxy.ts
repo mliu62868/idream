@@ -1,10 +1,5 @@
-// SPEC: main-web BFF reverse proxy for /api/v1/chat/* (design §1, §3). Verifies
-// the user via main's session (cookie), signs an internal user context (HMAC over
-// userId/authTime/method/path/body-hash, short TTL), and forwards to the chat
-// service. The chat service STILL re-checks authz against views — the signature
-// only proves authn. Streams the response through (for SSE).
-// INVARIANT: never forwards the raw cookie; only the signed context crosses the
-// trust boundary.
+// Main owns Companion Chat product state. This module is now a façade over the
+// Main Turn Ledger; only AgentRun admission, cancellation and SSE cross to Chat.
 import {
   BFF_HEADER,
   BFF_USER_HEADER,
@@ -12,20 +7,31 @@ import {
 } from "@idream/shared/bff";
 import { getAuthCtx } from "@/server/lib/auth";
 import { env } from "@/server/lib/env";
-import { prisma } from "@/server/lib/db";
-import { isSyntheticMediaAsset } from "@/server/lib/media-asset-authority";
-import { isReusablePlatformAssetWhere } from "@/server/modules/ourdream/chat-image-reuse";
+import { AppError, Errors } from "@/server/lib/errors";
+import { logger } from "@/server/lib/logger";
+import {
+  archiveChatSession,
+  beginChatTurn,
+  cancelChatTurn,
+  chatVoiceAuthority,
+  createChatSession,
+  deleteChatMessage,
+  deleteChatSession,
+  editChatTurn,
+  getChatSession,
+  listChatSessions,
+  regenerateChatTurn,
+  renameChatSession,
+  setChatMemory,
+} from "@/server/modules/chat/turn-ledger";
+import { attemptChatAgentRunAdmission } from "@/server/modules/chat/agent-run-admission";
+import { clearCompanionMemory } from "@/server/modules/chat/companion-memory-authority";
 
-const HOP_BY_HOP = new Set(["cookie", "host", "connection", "content-length", "transfer-encoding"]);
-const INBOUND_TRUST_HEADERS = new Set([
-  "x-idream-bff",
-  "x-idream-bff-user",
-  "x-idream-role",
-  "x-idream-user-id",
-]);
-
-/** Shown in place of a generated reply when input moderation blocks the turn. */
-const BLOCKED_NOTICE = "I can’t help with that request.";
+const PRIVATE_HEADERS = {
+  "cache-control": "private, no-store, max-age=0",
+  pragma: "no-cache",
+  vary: "Cookie, Authorization",
+};
 
 export function chatServiceEnabled(): boolean {
   return Boolean(env.CHAT_SERVICE_URL);
@@ -39,305 +45,257 @@ export type ChatMessageVoiceAuthority = {
   text: string;
   attempt: number;
   sceneVersion: number;
-  scene: {
-    schemaVersion: 1;
-    version: number;
-    location: string | null;
-    time: string | null;
-    participants: string[];
-    emotionalBeat: string | null;
-    unresolvedThreads: string[];
-  } | null;
+  scene: unknown;
   characterContentVersionId: string | null;
   characterReleaseId: string | null;
 };
 
-/** Signed server-to-server read; Voice never accepts client-authored text/Scene. */
+/** Voice reads the selected final reply from Main; Chat is never queried. */
 export async function fetchChatMessageVoiceAuthority(
   request: Request,
   input: { sessionId: string; messageId: string; testOnlyText?: string; characterId?: string },
 ): Promise<ChatMessageVoiceAuthority> {
-  const base = env.CHAT_SERVICE_URL;
-  const secret = env.CHAT_BFF_SIGNING_SECRET;
   const auth = await getAuthCtx(request);
-  if (!auth.userId) throw new Error("sign in required");
-  if (process.env.NODE_ENV === "test") {
-    // INTENT: isolated Main integration tests do not boot the independently
-    // migrated Chat service. Production has no fallback and fails closed.
-    return {
-      schemaVersion: 1,
-      sessionId: input.sessionId,
-      messageId: input.messageId,
-      characterId: input.characterId ?? "test-character",
-      text: input.testOnlyText ?? "test voice",
-      attempt: 1,
-      sceneVersion: 0,
-      scene: null,
-      characterContentVersionId: null,
-      characterReleaseId: null,
-    };
-  }
-  if (!base) {
-    throw new Error("CHAT_SERVICE_URL not configured");
-  }
-  if (!secret && env.APP_ENV !== "test") throw new Error("CHAT_BFF_SIGNING_SECRET not configured");
-  const path = `/api/v1/chat/sessions/${encodeURIComponent(input.sessionId)}/messages/${encodeURIComponent(input.messageId)}/voice-authority`;
-  const headers = new Headers();
-  if (secret) {
-    const signed = signBffContext({ secret, userId: auth.userId, method: "GET", path, body: "" });
-    headers.set(BFF_HEADER, signed.signature);
-    headers.set(BFF_USER_HEADER, JSON.stringify(signed.context));
-  } else {
-    headers.set("x-idream-user-id", auth.userId);
-  }
-  const response = await fetch(`${base.replace(/\/$/, "")}${path}`, { method: "GET", headers });
-  if (!response.ok) throw new Error(`Chat Voice authority HTTP ${response.status}: ${await response.text()}`);
-  return await response.json() as ChatMessageVoiceAuthority;
+  if (!auth.userId) throw Errors.unauthorized("Sign in required");
+  return await chatVoiceAuthority(auth.userId, input.sessionId, input.messageId);
 }
 
-/** Proxy an /api/v1/chat/* request to the chat service. `segments` includes the
- *  leading "chat". Returns the chat service's Response (possibly streaming). */
+/** Public `/api/v1/chat|messages/*` façade. Product reads/writes stay in Main. */
 export async function proxyChatRequest(request: Request, segments: string[]): Promise<Response> {
-  const base = env.CHAT_SERVICE_URL;
-  const secret = env.CHAT_BFF_SIGNING_SECRET;
-  if (!base) return jsonError(503, "chat_unavailable", "CHAT_SERVICE_URL not configured");
-  if (!secret && env.APP_ENV !== "test") {
-    return jsonError(
-      503,
-      "chat_unavailable",
-      "CHAT_BFF_SIGNING_SECRET not configured",
-    );
-  }
-
   const auth = await getAuthCtx(request);
-  if (!auth.userId) return jsonError(401, "unauthorized", "sign in required");
-
-  const incoming = new URL(request.url);
-  const path = `/api/v1/${segments.join("/")}`;
-  const targetUrl = `${base.replace(/\/$/, "")}${path}${incoming.search}`;
-
-  const body = request.method === "GET" || request.method === "HEAD" ? "" : await request.text();
-
-  const headers = new Headers();
-  for (const [k, v] of request.headers) {
-    const normalized = k.toLowerCase();
-    if (
-      !HOP_BY_HOP.has(normalized) &&
-      !INBOUND_TRUST_HEADERS.has(normalized)
-    ) {
-      headers.set(k, v);
-    }
-  }
-
-  // Sign the internal user context. Plaintext identity exists only inside tests.
-  if (secret) {
-    const { signature, context } = signBffContext({
-      secret,
-      userId: auth.userId,
-      method: request.method,
-      path,
-      body,
-    });
-    headers.set(BFF_HEADER, signature);
-    headers.set(BFF_USER_HEADER, JSON.stringify(context));
-  } else {
-    headers.set("x-idream-user-id", auth.userId);
-  }
-
-  const upstream = await fetch(targetUrl, {
-    method: request.method,
-    headers,
-    body: body || undefined,
-    // @ts-expect-error Node fetch streaming flag for response bodies
-    duplex: "half",
-  });
-
-  // Shape-adapt the few endpoints the product frontend consumes: the chat service
-  // speaks a lean raw protocol, while the frontend expects the monolith's
-  // { ok, data } envelope with embedded/echoed objects. Adapt ONLY these 2xx JSON
-  // responses; everything else (SSE streams, management endpoints) streams through.
-  const adapted = await adaptForFrontend(request.method, segments, body, upstream, auth.userId);
-  if (adapted) return adapted;
-
-  // Pass through status + body (streaming-safe for SSE).
-  const respHeaders = new Headers(upstream.headers);
-  respHeaders.delete("content-encoding");
-  applyPrivateNoStoreHeaders(respHeaders);
-  return new Response(upstream.body, { status: upstream.status, headers: respHeaders });
-}
-
-/** Reshape the 3 frontend-consumed chat responses into the { ok, data } contract. */
-async function adaptForFrontend(
-  method: string,
-  segments: string[],
-  reqBody: string,
-  upstream: Response,
-  userId: string,
-): Promise<Response | null> {
-  if (!upstream.ok) return null;
-  if (!(upstream.headers.get("content-type") ?? "").includes("application/json")) return null;
-  const s = segments; // includes leading "chat"
-
-  // POST /chat/sessions → { data: { session: { id, ... } } }
-  if (method === "POST" && s.length === 2 && s[0] === "chat" && s[1] === "sessions") {
-    const session = (await upstream.json()) as { id?: string };
-    return envelope({ session }, upstream.status);
-  }
-
-  // GET /chat/sessions/:id → { data: { session: { ..., character:{name}, messages } } }
-  if (method === "GET" && s.length === 3 && s[0] === "chat" && s[1] === "sessions") {
-    const raw = (await upstream.json()) as {
-      session?: { characterId?: string } & Record<string, unknown>;
-      messages?: Array<Record<string, unknown>>;
-    };
-    const session = raw.session ?? {};
-    const characterId = session.characterId;
-    const character = characterId
-      ? await prisma.character.findUnique({
-          where: { id: characterId },
-          select: { creatorId: true, name: true },
-        })
-      : null;
-    const messages = await enrichAttachmentMedia(raw.messages ?? [], userId);
-    return envelope(
-      {
-        session: {
-          ...session,
-          character: {
-            name: character?.name ?? "",
-            canUpdateIdentity: character?.creatorId === userId,
-          },
-          messages,
-        },
-      },
-      upstream.status,
-    );
-  }
-
-  // POST /chat/sessions/:id/messages → { data: { userMessage, assistant, streamUrl } }
-  if (method === "POST" && s.length === 4 && s[0] === "chat" && s[1] === "sessions" && s[3] === "messages") {
-    const raw = (await upstream.json()) as {
-      userMessageId?: string;
-      assistantMessageId?: string;
-      streamUrl?: string | null;
-      status?: "generating" | "blocked";
-      safety?: { layer: "input" | "output"; policyCode?: string };
-    };
-    const content = safeContent(reqBody);
-    const blocked = raw.status === "blocked";
-    // Blocked input carries no stream — the assistant turn is a terminal safety
-    // notice the UI shows in place (design P0-B). Never hand the client a streamUrl.
-    return envelope(
-      {
-        userMessage: { id: raw.userMessageId, role: "user", content },
-        assistant: {
-          id: raw.assistantMessageId,
-          role: "assistant",
-          content: blocked ? BLOCKED_NOTICE : "",
-          status: raw.status ?? "generating",
-        },
-        streamUrl: blocked ? null : (raw.streamUrl ?? null),
-        ...(raw.safety ? { safety: raw.safety } : {}),
-      },
-      upstream.status,
-    );
-  }
-
-  return null;
-}
-
-async function enrichAttachmentMedia(messages: Array<Record<string, unknown>>, userId: string) {
-  const ids = new Set<string>();
-  for (const message of messages) {
-    const attachments = Array.isArray(message.attachments) ? message.attachments : [];
-    for (const attachment of attachments) {
-      if (!isRecord(attachment)) continue;
-      const mediaAssetId = typeof attachment.mediaAssetId === "string" ? attachment.mediaAssetId : null;
-      if (mediaAssetId) ids.add(mediaAssetId);
-    }
-  }
-  if (ids.size === 0) return messages;
-
-  const assets = await prisma.mediaAsset.findMany({
-    where: {
-      id: { in: [...ids] },
-      deletedAt: null,
-      ...isReusablePlatformAssetWhere(userId),
-    },
-    select: {
-      id: true,
-      url: true,
-      thumbnailUrl: true,
-      width: true,
-      height: true,
-      metadata: true,
-    },
-  });
-  const byId = new Map(assets.map((asset) => [asset.id, asset]));
-  return messages.map((message) => {
-    const attachments = Array.isArray(message.attachments) ? message.attachments : [];
-    return {
-      ...message,
-      attachments: attachments.map((attachment) => {
-        if (!isRecord(attachment)) return attachment;
-        const mediaAssetId = typeof attachment.mediaAssetId === "string" ? attachment.mediaAssetId : null;
-        const asset = mediaAssetId ? byId.get(mediaAssetId) : null;
-        const isSynthetic = asset ? isSyntheticMediaAsset(asset.metadata) : false;
-        return asset
-          ? {
-              ...attachment,
-              mediaUrl: asset.url,
-              thumbnailUrl: asset.thumbnailUrl ?? asset.url,
-              width: attachment.width ?? asset.width,
-              height: attachment.height ?? asset.height,
-              isSynthetic,
-            }
-          : attachment;
-      }),
-    };
-  });
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function envelope(data: unknown, status: number): Response {
-  const headers = new Headers({ "content-type": "application/json" });
-  applyPrivateNoStoreHeaders(headers);
-  return new Response(JSON.stringify({ ok: true, data }), {
-    status,
-    headers,
-  });
-}
-
-function safeContent(reqBody: string): string {
+  if (!auth.userId) return errorResponse(Errors.unauthorized("Sign in required"));
   try {
-    return String((JSON.parse(reqBody) as { content?: unknown }).content ?? "").trim();
-  } catch {
-    return "";
+    return await routeMainChat(request, segments, auth.userId);
+  } catch (error) {
+    return errorResponse(error);
   }
 }
 
-function jsonError(status: number, code: string, message: string): Response {
-  const headers = new Headers({ "content-type": "application/json" });
-  applyPrivateNoStoreHeaders(headers);
-  return new Response(JSON.stringify({ error: code, message }), {
-    status,
-    headers,
+async function routeMainChat(request: Request, segments: string[], userId: string): Promise<Response> {
+  const method = request.method;
+  const body = method === "GET" || method === "HEAD" ? {} : await jsonBody(request);
+  const root = segments[0];
+  const path = root === "chat" ? segments.slice(1) : segments;
+
+  if (root === "chat" && path[0] === "memory" && path[1] && path.length === 2) {
+    if (method === "DELETE") {
+      requireAgentRuntime();
+      return json(await clearCompanionMemory(userId, path[1]));
+    }
+  }
+
+  if (root === "chat" && path[0] === "sessions" && path.length === 1) {
+    if (method === "GET") return json(await listChatSessions(userId));
+    if (method === "POST") {
+      const session = await createChatSession(userId, {
+        characterId: text(body.characterId),
+        title: optionalText(body.title),
+        entryExposureId: optionalText(body.entryExposureId),
+        entryJourneyId: optionalText(body.journeyId),
+        entryPlacementId: optionalText(body.placementId),
+      });
+      return envelope({ session }, 201);
+    }
+  }
+
+  if (root === "chat" && path[0] === "sessions" && path[1]) {
+    const sessionId = path[1];
+    if (path.length === 2) {
+      if (method === "GET") return envelope({ session: await getChatSession(userId, sessionId) });
+      if (method === "PATCH") return json(await renameChatSession(userId, sessionId, text(body.title)));
+      if (method === "DELETE") {
+        await deleteChatSession(userId, sessionId);
+        return json({ ok: true });
+      }
+    }
+    if (path.length === 3 && path[2] === "messages" && method === "POST") {
+      requireAgentRuntime();
+      const idempotencyKey = request.headers.get("idempotency-key")?.trim();
+      if (!idempotencyKey) throw Errors.badRequest("Idempotency-Key is required");
+      const begun = await beginChatTurn({
+        userId,
+        sessionId,
+        content: text(body.content),
+        idempotencyKey,
+      });
+      const admission = begun.snapshot
+        ? await attemptChatAgentRunAdmission(begun.snapshot)
+        : null;
+      const assistant = admission?.admitted
+        ? { ...begun.assistant, status: "generating" as const }
+        : begun.assistant;
+      return envelope({
+        userMessage: begun.userMessage,
+        assistant,
+        assistantMessageId: assistant.id,
+        streamUrl: begun.streamUrl,
+        ...(begun.safety ? { safety: begun.safety } : {}),
+      }, 202);
+    }
+    if (path.length === 3 && path[2] === "archive" && method === "POST") {
+      return json(await archiveChatSession(userId, sessionId));
+    }
+    if (path.length === 3 && path[2] === "memory" && method === "POST") {
+      return json(await setChatMemory(userId, sessionId, Boolean(body.memoryEnabled)));
+    }
+    if (path.length === 3 && path[2] === "no-memory" && method === "POST") {
+      return json(await setChatMemory(userId, sessionId, false));
+    }
+    if (
+      path.length === 5 && path[2] === "messages" && path[4] === "voice-authority" && method === "GET"
+    ) {
+      return json(await chatVoiceAuthority(userId, sessionId, path[3]));
+    }
+  }
+
+  if ((root === "messages" || (root === "chat" && path[0] === "messages")) && path[1]) {
+    const messageId = path[1];
+    if (path.length === 2 && method === "DELETE") {
+      await deleteChatMessage(userId, messageId);
+      return json({ ok: true });
+    }
+    if (path.length === 2 && method === "PATCH") {
+      requireAgentRuntime();
+      const result = await editChatTurn(userId, messageId, text(body.content));
+      const admission = result.snapshot
+        ? await attemptChatAgentRunAdmission(result.snapshot)
+        : null;
+      return json(publicRetry(result, admission?.admitted === true), 202);
+    }
+    if (path.length === 3 && path[2] === "regenerate" && method === "POST") {
+      requireAgentRuntime();
+      const result = await regenerateChatTurn(userId, messageId);
+      const admission = await attemptChatAgentRunAdmission(result.snapshot);
+      return json(publicRetry(result, admission.admitted), 202);
+    }
+    if (path.length === 3 && path[2] === "cancel" && method === "POST") {
+      const result = await cancelChatTurn(userId, messageId);
+      await cancelAgentRun(result.turnId, result.attempt).catch(() => undefined);
+      return json({ ok: true, cancelled: result.cancelled });
+    }
+    if (path.length === 3 && path[2] === "stream" && method === "GET") {
+      return proxyAgentStream(request, userId, messageId);
+    }
+  }
+
+  throw Errors.notFound("Chat route not found");
+}
+
+function publicRetry(result: {
+  assistantMessageId: string;
+  attempt: number;
+  status: "pending" | "blocked";
+  streamUrl: string | null;
+  safety?: { layer: "input"; policyCode?: string };
+}, admitted = false) {
+  return {
+    assistantMessageId: result.assistantMessageId,
+    attempt: result.attempt,
+    status: admitted && result.status === "pending" ? "generating" : result.status,
+    streamUrl: result.streamUrl,
+    ...(result.safety ? { safety: result.safety } : {}),
+  };
+}
+
+async function proxyAgentStream(request: Request, userId: string, messageId: string): Promise<Response> {
+  const base = requireAgentRuntime();
+  const incoming = new URL(request.url);
+  const path = `/api/v1/messages/${encodeURIComponent(messageId)}/stream`;
+  const target = `${base}${path}${incoming.search}`;
+  const headers = signedAgentHeaders(userId, "GET", path, "");
+  const lastEventId = request.headers.get("last-event-id");
+  if (lastEventId) headers.set("last-event-id", lastEventId);
+  const response = await fetch(target, { method: "GET", headers });
+  const responseHeaders = new Headers(response.headers);
+  responseHeaders.delete("content-encoding");
+  responseHeaders.set("cache-control", "private, no-cache, no-store, no-transform");
+  responseHeaders.set("vary", "Cookie, Authorization");
+  return new Response(response.body, { status: response.status, headers: responseHeaders });
+}
+
+async function cancelAgentRun(turnId: string, attempt: number): Promise<void> {
+  const base = requireAgentRuntime();
+  await fetch(`${base}/internal/agent-runs/${encodeURIComponent(turnId)}/${attempt}/cancel`, {
+    method: "POST",
+    headers: { "x-internal-token": env.INTERNAL_TOKEN },
   });
 }
 
-function applyPrivateNoStoreHeaders(headers: Headers) {
-  headers.set("cache-control", "private, no-store, max-age=0");
-  headers.set("pragma", "no-cache");
-  const vary = new Set(
-    (headers.get("vary") ?? "")
-      .split(",")
-      .map((value) => value.trim())
-      .filter(Boolean),
+function signedAgentHeaders(
+  userId: string,
+  method: string,
+  path: string,
+  body: string,
+): Headers {
+  const headers = new Headers();
+  const secret = env.CHAT_BFF_SIGNING_SECRET;
+  if (!secret) {
+    if (env.APP_ENV !== "test") throw Errors.unavailable("CHAT_BFF_SIGNING_SECRET not configured");
+    headers.set("x-idream-user-id", userId);
+    return headers;
+  }
+  const signed = signBffContext({ secret, userId, method, path, body });
+  headers.set(BFF_HEADER, signed.signature);
+  // HTTP header values are ByteStrings in Undici. Escaping non-ASCII keeps the
+  // JSON semantic value intact while making the transport representation valid.
+  headers.set(BFF_USER_HEADER, asciiJson(signed.context));
+  return headers;
+}
+
+function requireAgentRuntime(): string {
+  if (!env.CHAT_SERVICE_URL) throw Errors.unavailable("CHAT_SERVICE_URL not configured");
+  if (!env.INTERNAL_TOKEN) throw Errors.unavailable("INTERNAL_TOKEN not configured");
+  if (!env.CHAT_BFF_SIGNING_SECRET && env.APP_ENV !== "test") {
+    throw Errors.unavailable("CHAT_BFF_SIGNING_SECRET not configured");
+  }
+  return env.CHAT_SERVICE_URL.replace(/\/$/u, "");
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function asciiJson(value: unknown): string {
+  return JSON.stringify(value).replace(/[\u007f-\uffff]/gu, (character) =>
+    `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
   );
-  vary.add("Cookie");
-  vary.add("Authorization");
-  headers.set("vary", [...vary].join(", "));
+}
+
+async function jsonBody(request: Request): Promise<Record<string, unknown>> {
+  const raw = await request.text();
+  if (!raw) return {};
+  try {
+    const parsed = record(JSON.parse(raw) as unknown);
+    if (!parsed) throw new Error("body must be an object");
+    return parsed;
+  } catch {
+    throw Errors.badRequest("Invalid JSON body");
+  }
+}
+
+function text(value: unknown): string {
+  if (typeof value !== "string") throw Errors.badRequest("Expected a string field");
+  return value;
+}
+
+function optionalText(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function json(value: unknown, status = 200): Response {
+  return Response.json(value, { status, headers: PRIVATE_HEADERS });
+}
+
+function envelope(data: unknown, status = 200): Response {
+  return json({ ok: true, data }, status);
+}
+
+function errorResponse(error: unknown): Response {
+  if (!(error instanceof AppError)) logger.error({ err: error }, "Main Chat façade failed");
+  const appError = error instanceof AppError
+    ? error
+    : Errors.internal("The Chat request could not be completed");
+  return json({ error: appError.code, message: appError.message }, appError.status);
 }

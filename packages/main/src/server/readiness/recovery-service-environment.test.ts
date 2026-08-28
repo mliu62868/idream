@@ -132,21 +132,13 @@ describe("recovery service environment", () => {
       writeFileSync(chat, [
         "APP_ENV=development",
         "INTERNAL_TOKEN=chat-internal-token",
-        "BULLMQ_PREFIX=idream:chat",
         "CHAT_BFF_SIGNING_SECRET=chat-bff-secret",
         "SENTRY_RELEASE=idream@chat-revision",
-        "CHAT_DATABASE_URL=postgresql://chat_service:pass@db.internal/idream",
-        "CHAT_PROJECTOR_DATABASE_URL=postgresql://chat_projector:pass@db.internal/idream",
         "CHAT_FS_ROOT=/srv/chat/runtime",
-        "CHAT_REDIS_URL=redis://chat-redis.internal:6379/5",
         "CHAT_MODEL_PROVIDER=openai",
         "CHAT_MODEL_BASE_URL=https://chat-model.example.com/v1",
         "CHAT_MODEL_NAME=chat-runtime-model",
         "CHAT_MODEL_API_KEY=chat-runtime-key",
-        "CHAT_MODERATION_PROVIDER=safety-gateway",
-        "CHAT_MODERATION_SERVICE_URL=https://chat-moderation.example.com",
-        "CHAT_MODERATION_API_KEY=chat-moderation-key",
-        "CHAT_MODERATION_TIMEOUT_MS=4321",
         "",
       ].join("\n"));
       writeFileSync(gen, [
@@ -180,10 +172,6 @@ describe("recovery service environment", () => {
 
       expect(env).toMatchObject({
         DATABASE_URL: "postgresql://main:pass@db.internal/idream",
-        CHAT_DATABASE_URL:
-          "postgresql://chat_service:pass@db.internal/idream",
-        CHAT_PROJECTOR_DATABASE_URL:
-          "postgresql://chat_projector:pass@db.internal/idream",
         CHAT_FS_ROOT: "/srv/chat/runtime",
         BLOB_ENDPOINT: "https://live.example.com",
         IDREAM_GEN_BLOB_ENDPOINT: "https://gen-live.example.com",
@@ -196,7 +184,6 @@ describe("recovery service environment", () => {
         IDREAM_ADMIN_BFF_SIGNING_SECRET: "admin-bff-secret",
         IDREAM_ADMIN_SOURCE_REVISION: "idream@admin-revision",
         IDREAM_CHAT_APP_ENV: "development",
-        IDREAM_CHAT_BULLMQ_PREFIX: "idream:chat",
         IDREAM_CHAT_INTERNAL_TOKEN: "chat-internal-token",
         IDREAM_CHAT_BFF_SIGNING_SECRET: "chat-bff-secret",
         IDREAM_CHAT_SOURCE_REVISION: "idream@chat-revision",
@@ -205,15 +192,10 @@ describe("recovery service environment", () => {
         IDREAM_GEN_SOURCE_REVISION: "idream@gen-revision",
         IDREAM_GEN_REDIS_URL: "redis://main-redis.internal:6379/3",
         IDREAM_GEN_BULLMQ_PREFIX: "idream:development",
-        CHAT_REDIS_URL: "redis://chat-redis.internal:6379/5",
         CHAT_MODEL_PROVIDER: "openai",
         CHAT_MODEL_BASE_URL: "https://chat-model.example.com/v1",
         CHAT_MODEL_NAME: "chat-runtime-model",
         CHAT_MODEL_API_KEY: "chat-runtime-key",
-        CHAT_MODERATION_PROVIDER: "safety-gateway",
-        CHAT_MODERATION_SERVICE_URL: "https://chat-moderation.example.com",
-        CHAT_MODERATION_API_KEY: "chat-moderation-key",
-        CHAT_MODERATION_TIMEOUT_MS: "4321",
         GEN_IMAGE_PROVIDER: "pipeline",
         GEN_VIDEO_PROVIDER: "backend",
         PIPELINE_API_URL: "https://main-chat.example.com/v1",

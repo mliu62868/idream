@@ -126,7 +126,6 @@ async function seedPublishableSubmission(suffix: string) {
     name: character.name,
     age: character.age,
     gender: character.gender,
-    relationship: character.relationship,
     description: character.description,
     style: character.style,
     appearance: character.appearance,
@@ -255,7 +254,6 @@ describe("character review queue (D)", () => {
     const workspace = await getCharacterWorkspace(seeded.characterId);
     expect(workspace.project).toMatchObject({
       characterId: seeded.characterId,
-      phase: "producing",
     });
     expect(workspace.serving).toMatchObject({ state: "inactive" });
     expect(workspace.releases).toEqual([]);

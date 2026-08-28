@@ -123,17 +123,3 @@ export const COMMAND_SEVERITY = {
       : "medium";
   },
 } as const;
-
-/**
- * character_project 只作为 @提及 的目标出现，没有自己的队列，但它的紧急度同样此前 SQL / TS
- * 各写一份。
- */
-export const CHARACTER_PROJECT_MENTION_SEVERITY = {
-  of(row: { readonly plannedLaunchAt: Date | null }, now: Date): WorkSeverity {
-    return row.plannedLaunchAt && row.plannedLaunchAt <= now ? "high" : "medium";
-  },
-  rankSql(table: Prisma.Sql, now: Date) {
-    return Prisma.sql`CASE WHEN ${table}."plannedLaunchAt" <= ${now}
-      THEN ${rank("high")} ELSE ${rank("medium")} END`;
-  },
-} as const;

@@ -11,9 +11,9 @@ const blockedPreviewWorkspace = characterWorkspaceDetail({
   character: { id: "alexa-reeves" },
   project: {
     draftAssetRouteAuthority: {
-      qaReady: false,
+      releaseReady: false,
       status: "current",
-      qaBlockers: [],
+      releaseBlockers: [],
     },
   },
   // 图池完成度读服务端 journey 投影，不数 preview 快照的槽位。
@@ -56,7 +56,6 @@ const blockedPreviewWorkspace = characterWorkspaceDetail({
     },
   },
   releases: [],
-  qaRuns: [],
 });
 
 let container: HTMLDivElement;
@@ -75,7 +74,9 @@ afterEach(() => {
 
 describe("Character launch preview — zh operators", () => {
   it("turns authority field keys into an operator-readable release summary", () => {
-    expect(releasePreviewChangeSummary(["name", "opening", "assetPack"])).toEqual({
+    expect(
+      releasePreviewChangeSummary(["name", "opening", "assetPack"]),
+    ).toEqual({
       firstRelease: false,
       labels: ["Character name", "Opening message", "Image pack"],
     });
@@ -89,11 +90,7 @@ describe("Character launch preview — zh operators", () => {
     act(() => {
       root.render(
         <AdminI18nProvider locale="zh">
-          <PreviewDiff
-            data={blockedPreviewWorkspace}
-            permissions={{ reviewRelease: true } as never}
-            runCommittedMutation={(async () => ({ result: undefined, refreshed: false })) as never}
-          />
+          <PreviewDiff data={blockedPreviewWorkspace} />
         </AdminI18nProvider>,
       );
     });
@@ -106,5 +103,68 @@ describe("Character launch preview — zh operators", () => {
     expect(container.textContent).not.toContain("Launch QA");
     expect(container.textContent).not.toContain("上线 QA");
     expect(container.querySelectorAll("article")).toHaveLength(2);
+  });
+
+  it("closes preview when the live and draft snapshots are already identical", () => {
+    const unchanged = characterWorkspaceDetail({
+      preview: {
+        live: {
+          label: "Live",
+          name: "Mira",
+        },
+        changedFields: [],
+      },
+      journey: { release: { candidateReleaseId: null } },
+    });
+
+    act(() => {
+      root.render(
+        <AdminI18nProvider locale="en">
+          <PreviewDiff data={unchanged} />
+        </AdminI18nProvider>,
+      );
+    });
+
+    expect(container.textContent).toContain("Live and draft are identical");
+    expect(container.textContent).toContain("Nothing needs review or release");
+    expect(container.textContent).not.toContain(
+      "Launch preview is waiting for the image pack",
+    );
+  });
+
+  it("shows a ready preview without confirmation forms", () => {
+    const ready = characterWorkspaceDetail({
+      project: {
+        draftAssetRouteAuthority: {
+          releaseReady: true,
+          status: "current",
+          releaseBlockers: [],
+        },
+      },
+      journey: { release: { candidateReleaseId: null } },
+      preview: {
+        changedFields: ["new_release"],
+        live: null,
+        draft: {
+          contentVersionId: "content-ready",
+          assetPackReady: true,
+        },
+      },
+      releases: [],
+    });
+
+    act(() => {
+      root.render(
+        <AdminI18nProvider locale="en">
+          <PreviewDiff data={ready} />
+        </AdminI18nProvider>,
+      );
+    });
+
+    expect(container.textContent).toContain("Real user-surface renderer");
+    expect(container.textContent).toContain("Current and draft assets");
+    expect(container.textContent).not.toContain("Launch checks");
+    expect(container.querySelector('input[type="checkbox"]')).toBeNull();
+    expect(container.querySelector("button")).toBeNull();
   });
 });

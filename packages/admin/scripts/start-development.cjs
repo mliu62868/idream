@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-require-imports -- This Node bootstrap loads Next's CommonJS CLI in the same process after choosing the development artifact authority. */
+/* eslint-disable @typescript-eslint/no-require-imports -- Bun loads Next's CommonJS CLI in-process after choosing the development artifact authority. */
 const path = require("node:path");
 
 const packageRoot = path.resolve(__dirname, "..");
@@ -28,7 +28,10 @@ function runDevelopment(options = {}) {
   return 0;
 }
 
-if (require.main === module) {
+if (
+  require.main === module ||
+  process.env.IDREAM_PM2_BUN_ENTRYPOINT === "admin-development"
+) {
   process.exitCode = runDevelopment();
 }
 

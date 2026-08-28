@@ -55,7 +55,7 @@ export type MediaAssetAuthorityDependency =
       kind: "character_release";
       characterId: string;
       releaseId: string;
-      releaseState: "current" | "scheduled";
+      releaseState: "current";
       slot: string;
       repairPath: string;
     }
@@ -202,7 +202,6 @@ export async function mediaAssetAuthorityDependenciesBatch(
         ON character."id" = project."characterId"
         AND character."deletedAt" IS NULL
       WHERE project."activeKey" IS NOT NULL
-        AND project."phase" NOT IN ('inactive', 'retired')
         AND (
           project."draftImageAssetId" IN (${Prisma.join(assetIds)})
           OR project."draftAssetPack" #>> '{character_cover,assetId}'
@@ -330,7 +329,15 @@ export async function mediaAssetAuthorityDependenciesBatch(
   const activeCreativeItems = await db.contentProductionItem.findMany({
       where: {
         mediaAssetId: { in: assetIds },
-        status: { in: ["queued", "generated", "approved"] },
+        OR: [
+          { status: "queued" },
+          {
+            status: { in: ["approved", "published"] },
+            // Campaign approval is still an active staging source. Character
+            // image Runs are only production history and do not pin the library.
+            batch: { purpose: "campaign", lifecycleState: "active" },
+          },
+        ],
       },
       select: {
         id: true,
@@ -346,36 +353,20 @@ export async function mediaAssetAuthorityDependenciesBatch(
       },
   });
   // Serving is deliberately not prefiltered through a JSON path. One
-  // relation query loads the only current/scheduled Releases that can be
+  // relation query loads the current Releases that can be
   // authoritative, then the canonical parser handles both the object
   // manifest and the legacy raw-array form.
   const servings = await db.characterServing.findMany({
       where: {
-        AND: [
-          { character: { deletedAt: null } },
-          {
-            OR: [
-              {
-                state: { in: ["live", "paused"] },
-                currentReleaseId: { not: null },
-              },
-              { scheduledReleaseId: { not: null } },
-            ],
-          },
-        ],
+        character: { deletedAt: null },
+        state: { in: ["live", "paused"] },
+        currentReleaseId: { not: null },
       },
       select: {
         characterId: true,
         state: true,
         currentReleaseId: true,
-        scheduledReleaseId: true,
         currentRelease: {
-          select: {
-            id: true,
-            releasePlacementManifest: true,
-          },
-        },
-        scheduledRelease: {
           select: {
             id: true,
             releasePlacementManifest: true,
@@ -467,14 +458,6 @@ export async function mediaAssetAuthorityDependenciesBatch(
           ? [{
               release: serving.currentRelease,
               releaseState: "current" as const,
-            }]
-          : []
-      ),
-      ...(
-        serving.scheduledRelease
-          ? [{
-              release: serving.scheduledRelease,
-              releaseState: "scheduled" as const,
             }]
           : []
       ),

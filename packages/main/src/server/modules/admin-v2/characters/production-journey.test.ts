@@ -12,7 +12,11 @@ const allPurposes: readonly CharacterProductionPurpose[] = [
   "character_chat",
 ];
 
-function journey(overrides: Partial<Parameters<typeof projectCharacterProductionJourneySnapshot>[0]> = {}) {
+function journey(
+  overrides: Partial<
+    Parameters<typeof projectCharacterProductionJourneySnapshot>[0]
+  > = {},
+) {
   return projectCharacterProductionJourneySnapshot({
     characterId: "character-1",
     asOf: new Date("2026-07-31T12:00:00.000Z"),
@@ -34,19 +38,26 @@ describe("Character Production Journey", () => {
   it("loads a page in a bounded number of queries instead of once per Character", async () => {
     const run = async (count: number) => {
       let queries = 0;
-      const findMany = <T>(rows: T[]) => async () => {
-        queries += 1;
-        return rows;
-      };
-      const ids = Array.from({ length: count }, (_, index) => `character-${index}`);
+      const findMany =
+        <T>(rows: T[]) =>
+        async () => {
+          queries += 1;
+          return rows;
+        };
+      const ids = Array.from(
+        { length: count },
+        (_, index) => `character-${index}`,
+      );
       const db = {
         characterProject: {
-          findMany: findMany(ids.map((characterId, index) => ({
-            id: `project-${index}`,
-            characterId,
-            draftAssetPack: {},
-            updatedAt: new Date("2026-07-31T00:00:00.000Z"),
-          }))),
+          findMany: findMany(
+            ids.map((characterId, index) => ({
+              id: `project-${index}`,
+              characterId,
+              draftAssetPack: {},
+              updatedAt: new Date("2026-07-31T00:00:00.000Z"),
+            })),
+          ),
         },
         characterServing: { findMany: findMany([]) },
         characterVisualProfile: { findMany: findMany([]) },
@@ -77,7 +88,7 @@ describe("Character Production Journey", () => {
       },
     });
     expect(result).toMatchObject({
-      stage: "release_review",
+      stage: "publishing",
       status: "blocked",
       primaryAction: {
         code: "recover_active_command",
@@ -105,7 +116,10 @@ describe("Character Production Journey", () => {
         deepLink: "/admin/characters/character-1?tab=assets",
       },
     });
-    expect(result.steps[1]).toMatchObject({ code: "image_assets", state: "current" });
+    expect(result.steps[1]).toMatchObject({
+      code: "image_assets",
+      state: "current",
+    });
   });
 
   it("uses a live portrait to establish identity instead of starting from zero", () => {
@@ -132,14 +146,19 @@ describe("Character Production Journey", () => {
       code: "complete_image_route",
       deepLink: "/admin/characters/character-1?tab=visual#visual-reference-set",
     });
-    expect(result.steps[0]).toMatchObject({ code: "visual_identity", state: "blocked" });
+    expect(result.steps[0]).toMatchObject({
+      code: "visual_identity",
+      state: "blocked",
+    });
     expect(result.steps[0].deepLink).toBe(
       "/admin/characters/character-1?tab=visual",
     );
   });
 
   it("continues the active run before selecting another missing purpose", () => {
-    expect(journey({ hasActiveImageRun: true }).primaryAction.code).toBe("continue_image_run");
+    expect(journey({ hasActiveImageRun: true }).primaryAction.code).toBe(
+      "continue_image_run",
+    );
   });
 
   it("keeps live truth while directing an incomplete live pack back to assets", () => {
@@ -151,28 +170,37 @@ describe("Character Production Journey", () => {
     expect(result).toMatchObject({
       stage: "image_production",
       primaryAction: { code: "continue_asset_pack" },
-      assetPack: { live: { completed: 1, missingPurposes: ["character_hero", "character_chat"] } },
+      assetPack: {
+        live: {
+          completed: 1,
+          missingPurposes: ["character_hero", "character_chat"],
+        },
+      },
       release: { servingState: "live", currentReleaseId: "release-live" },
     });
     expect(result.steps).toMatchObject([
       { code: "visual_identity", state: "complete" },
       { code: "image_assets", state: "current" },
-      { code: "preview_qa", state: "complete" },
+      { code: "preview", state: "complete" },
       { code: "release", state: "complete" },
       { code: "live_monitor", state: "complete" },
     ]);
   });
 
   it("moves a completed draft through Release review, then monitors an unchanged live pack", () => {
-    expect(journey({
-      draftPurposes: allPurposes,
-      candidateReleaseId: "release-candidate",
-    }).primaryAction.code).toBe("review_candidate_release");
-    expect(journey({
-      servingState: "live",
-      currentReleaseId: "release-live",
-      livePurposes: allPurposes,
-    })).toMatchObject({
+    expect(
+      journey({
+        draftPurposes: allPurposes,
+        candidateReleaseId: "release-candidate",
+      }).primaryAction.code,
+    ).toBe("publish_character");
+    expect(
+      journey({
+        servingState: "live",
+        currentReleaseId: "release-live",
+        livePurposes: allPurposes,
+      }),
+    ).toMatchObject({
       stage: "live_operations",
       status: "live",
       primaryAction: { code: "monitor_live_character" },

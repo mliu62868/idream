@@ -52,6 +52,7 @@ export const adminZhShell: Record<string, string> = {
   "Missing asset": "资产缺失",
   "Missing permission keys": "缺少的权限键",
   "Moderator": "审核员",
+  "More": "更多",
   "No activity yet. The first comment or handoff will appear here.": "暂无协作动态；第一条评论或交接会显示在这里。",
   "No permission for this workspace": "无此工作区权限",
   "No permitted records match this search.": "没有获准访问且符合搜索条件的记录。",

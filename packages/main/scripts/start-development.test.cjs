@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-require-imports -- This unit test exercises the CommonJS bootstrap used directly by PM2. */
+/* eslint-disable @typescript-eslint/no-require-imports -- This unit test exercises the Bun-hosted CommonJS bootstrap used directly by PM2. */
 const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
 const test = require("node:test");

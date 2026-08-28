@@ -132,8 +132,7 @@ describe("persisted Admin grant bundle authority", () => {
       "character.project.read",
       "character.project.write",
       "character.release.read",
-      "character.release.propose",
-      "character.release.review",
+      "character.release.publish",
       "character.performance.read",
     ] as const) expect(effective).toContain(permission);
     const scopedRequest = new Request("http://localhost/api/v2/admin/characters", {

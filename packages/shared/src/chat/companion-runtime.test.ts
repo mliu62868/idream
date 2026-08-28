@@ -19,6 +19,7 @@ import {
   companionToolResultSchema,
   companionWorkspaceRebuildBudget,
   companionWorkspaceRebuildMetrics,
+  createCompanionWorkspaceRebuildStream,
   COMPANION_WORKSPACE_REBUILD_MAX_TIMEOUT_MS,
   companionWorkspaceRebuildSchema,
   decodeCompanionWorkspaceRebuildFrame,
@@ -56,7 +57,7 @@ const profile = {
 };
 
 const preparedTurn = {
-  version: 2 as const,
+  version: 3 as const,
   model: profile.model,
   characterName: "Mira",
   messages: [
@@ -118,8 +119,7 @@ const preparedTurn = {
     soulFingerprint: "a".repeat(64),
     compilerVersion: "soul-v1",
     sceneVersion: 4,
-    relationshipVersion: 7,
-    fileContextRevision: "12",
+    contextRevision: "12",
     releasedKnowledgeDigest:
       "6868f5d7cc13655b3943d97dfe74e41d1da3fd8806721b3c19c7906e847b52ef",
   },
@@ -235,9 +235,9 @@ describe("companion runtime stable wire contract", () => {
   it("carries an explicit digest for an empty unreleased knowledge snapshot", () => {
     const empty = {
       characterId: "character-1",
-      characterContentVersionId: "legacy-unattributed",
+      characterContentVersionId: "content-v1",
       characterReleaseId: null,
-      digest: "105eeb3b7da80af178083cdcd5a37d702e64d0d2daa2ca51f531e11992de875f",
+      digest: "ecbdd532003d9a7866f8560db4248a9fd1876a49ce897bd1653c43244619b22c",
       files: [],
     };
     expect(preparedTurnWireSchema.parse({
@@ -245,7 +245,7 @@ describe("companion runtime stable wire contract", () => {
       releasedKnowledge: empty,
       trace: {
         ...preparedTurn.trace,
-        characterContentVersionId: "legacy-unattributed",
+        characterContentVersionId: "content-v1",
         characterReleaseId: null,
         releasedKnowledgeDigest: empty.digest,
       },
@@ -258,7 +258,7 @@ describe("companion runtime stable wire contract", () => {
       },
       trace: {
         ...preparedTurn.trace,
-        characterContentVersionId: "legacy-unattributed",
+        characterContentVersionId: "content-v1",
         characterReleaseId: null,
         releasedKnowledgeDigest: empty.digest,
       },
@@ -386,6 +386,7 @@ describe("companion runtime stable wire contract", () => {
         profileDigest: "b".repeat(64),
       },
       { ...common, type: "text_delta", delta: "The observatory" },
+      { ...common, type: "text_reset" },
       { ...common, type: "reasoning_usage", reasoningTokens: 4 },
       { ...common, type: "tool_started", callId: "call-1", name: "generate_image_async" },
       { ...common, type: "tool_finished", callId: "call-1", name: "generate_image_async", outcome: "succeeded", durationMs: 10 },
@@ -407,6 +408,7 @@ describe("companion runtime stable wire contract", () => {
     expect(fixtures.map((fixture) => companionEventSchema.parse(fixture).type)).toEqual([
       "started",
       "text_delta",
+      "text_reset",
       "reasoning_usage",
       "tool_started",
       "tool_finished",
@@ -511,6 +513,70 @@ describe("companion runtime stable wire contract", () => {
     )).toEqual(frame);
     expect(() => decodeCompanionWorkspaceRebuildFrame(`${JSON.stringify(frame)}\n{}\n`))
       .toThrow(/exactly one relationship rebuild NDJSON frame/);
+  });
+
+  it("pulls a rebuild from an async source without retaining the transcript", async () => {
+    let pulled = 0;
+    async function* messages() {
+      for (const role of ["user", "assistant"] as const) {
+        pulled += 1;
+        yield {
+          id: `${role}-1`,
+          sessionId: "session-1",
+          role,
+          content: role === "user" ? "Remember this." : "I will.",
+          createdAt: now,
+        };
+      }
+    }
+    const stream = createCompanionWorkspaceRebuildStream({
+      scope: "relationship",
+      userId: "user-1",
+      characterId: "character-1",
+      messageCount: 2,
+      messages: messages(),
+    });
+    expect(pulled).toBe(0);
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    const first = await reader.read();
+    expect(decodeCompanionWorkspaceRebuildFrame(decoder.decode(first.value))).toMatchObject({
+      type: "start",
+      messageCount: 2,
+    });
+    expect(pulled).toBe(0);
+    let body = "";
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      body += decoder.decode(chunk.value);
+    }
+    expect(pulled).toBe(2);
+    expect(body).toContain('"type":"message_start"');
+    expect(body).toContain('"type":"complete"');
+  });
+
+  it("rejects a non-empty async source when the authoritative pre-count is zero", async () => {
+    async function* messages() {
+      yield {
+        id: "user-1",
+        sessionId: "session-1",
+        role: "user" as const,
+        content: "Unexpected.",
+        createdAt: now,
+      };
+    }
+    const reader = createCompanionWorkspaceRebuildStream({
+      scope: "relationship",
+      userId: "user-1",
+      characterId: "character-1",
+      messageCount: 0,
+      messages: messages(),
+    }).getReader();
+    await reader.read();
+    await expect(reader.read()).rejects.toThrow(
+      "relationship rebuild source count changed while streaming",
+    );
   });
 
   it("budgets rebuild work independently of turn deadlines and monotonically by payload size", () => {

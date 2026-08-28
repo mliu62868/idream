@@ -101,8 +101,8 @@ describe("content-free bounded child commands", () => {
   });
 
   it("parses a bounded semantic version and JSON response", async () => {
-    const version = await executable(`process.stdout.write("igrep 0.1.132\\n");`);
-    await expect(igrepVersion(version)).resolves.toBe("0.1.132");
+    const version = await executable(`process.stdout.write("igrep 0.1.134\\n");`);
+    await expect(igrepVersion(version)).resolves.toBe("0.1.134");
     const json = await executable(`process.stdout.write(JSON.stringify({ ok: true }));`);
     await expect(runJsonCommand({ command: json, args: [] })).resolves.toEqual({ ok: true });
   });

@@ -300,10 +300,6 @@ describe("Today domain roots", () => {
       data: {
         id: projectId,
         characterId: `character-${suffix}`,
-        ownerId: null,
-        phase: "qa",
-        audience: {},
-        successCriteria: [],
         activeKey: `today-project-active-${suffix}`,
       },
     });
@@ -317,7 +313,7 @@ describe("Today domain roots", () => {
         releasePlacementManifest: {},
         snapshotHash: `snapshot-${suffix}`,
         readiness: "blocked",
-        status: "in_review",
+        status: "approved",
       },
     });
     await prisma.characterServing.create({ data: { id: servingId, characterId: `character-${suffix}`, currentReleaseId: releaseId, state: "live" } });
@@ -380,38 +376,36 @@ describe("Today domain roots", () => {
       expect.objectContaining({
         sourceType: "character_release",
         sourceId: releaseId,
-        claim: { entityVersion: 1 },
+        ownerId: null,
+        slaDueAt: null,
+        claim: null,
       }),
     ]));
   });
 
-  it("claims Character and Creative roots with CAS, Audit and Outbox", async () => {
-    function request(sourceType: "character_release" | "creative_run", sourceId: string, requestId: string) {
+  it("claims only assignable Creative roots with CAS, Audit and Outbox", async () => {
+    function request(sourceId: string, requestId: string) {
       return new Request("http://localhost/api/v2/admin/today/claim", {
         method: "POST",
         headers: {
           "content-type": "application/json",
           "x-idream-user-id": actorId,
           "x-idream-role": "admin",
-          "idempotency-key": `today-claim:${sourceType}:${sourceId}`,
+          "idempotency-key": `today-claim:creative_run:${sourceId}`,
           "x-request-id": requestId,
         },
-        body: JSON.stringify({ sourceType, sourceId, entityVersion: 1 }),
+        body: JSON.stringify({ sourceType: "creative_run", sourceId, entityVersion: 1 }),
       });
     }
 
-    await expect(claimTodayWorkItem(request("character_release", releaseId, `claim-character-${suffix}`))).resolves.toMatchObject({
+    await expect(claimTodayWorkItem(request(creativeRunId, `claim-creative-${suffix}`))).resolves.toMatchObject({
       ownerId: actorId,
       entityVersion: 2,
     });
-    await expect(claimTodayWorkItem(request("creative_run", creativeRunId, `claim-creative-${suffix}`))).resolves.toMatchObject({
-      ownerId: actorId,
-      entityVersion: 2,
-    });
-    await expect(prisma.characterProject.findUniqueOrThrow({ where: { id: projectId } })).resolves.toMatchObject({ ownerId: actorId, version: 2 });
+    await expect(prisma.characterProject.findUniqueOrThrow({ where: { id: projectId } })).resolves.toMatchObject({ version: 1 });
     await expect(prisma.contentProductionBatch.findUniqueOrThrow({ where: { id: creativeRunId } })).resolves.toMatchObject({ ownerId: actorId, version: 2 });
-    await expect(prisma.adminAuditLog.count({ where: { actorId, action: { in: ["character.project.claimed", "creative.run.claimed"] } } })).resolves.toBe(2);
-    await expect(prisma.mainOutboxEvent.count({ where: { aggregateId: { in: [projectId, creativeRunId] } } })).resolves.toBe(2);
+    await expect(prisma.adminAuditLog.count({ where: { actorId, action: "creative.run.claimed" } })).resolves.toBe(1);
+    await expect(prisma.mainOutboxEvent.count({ where: { aggregateId: creativeRunId } })).resolves.toBe(1);
   });
 
   it("re-enters a published Release when monitor authority requires rollback review", async () => {
@@ -607,10 +601,6 @@ describe("Today mentions and collaboration watch aliases", () => {
     await prisma.characterProject.create({ data: {
       id: projectId,
       characterId,
-      ownerId: actorId,
-      phase: "qa",
-      audience: {},
-      successCriteria: [],
       activeKey: `today-watch-project-${suffix}`,
     } });
     await prisma.characterRelease.createMany({ data: [
@@ -850,7 +840,7 @@ describe("Today All Work severity selection matches projection", () => {
       data: { id: characterId, name: "Severity fixture", age: 24, description: "Severity fixture", source: "official", appearance: {}, advancedDetails: {} },
     });
     await prisma.characterProject.create({
-      data: { id: projectId, characterId, ownerId: actorId, phase: "qa", audience: {}, successCriteria: [], activeKey: `severity-project-active-${suffix}` },
+      data: { id: projectId, characterId, activeKey: `severity-project-active-${suffix}` },
     });
     await prisma.characterRelease.createMany({
       data: ["blocked", "stale", "ready"].map((readiness, index) => ({
@@ -862,7 +852,7 @@ describe("Today All Work severity selection matches projection", () => {
         releasePlacementManifest: {},
         snapshotHash: `severity-snapshot-${index}-${suffix}`,
         readiness,
-        status: "in_review",
+        status: "approved",
       })),
     });
     await prisma.contentProductionBatch.createMany({
@@ -927,7 +917,7 @@ describe("Today All Work severity selection matches projection", () => {
       expect(page.pageInfo.hasNextPage, severity).toBe(false);
       counted[severity] = page.totalCount;
     }
-    expect(counted).toEqual({ critical: 2, high: 5, medium: 5, low: 3 });
+    expect(counted).toEqual({ critical: 2, high: 4, medium: 4, low: 2 });
   });
 
   it("partitions the unfiltered set across the four severities without loss or overlap", async () => {

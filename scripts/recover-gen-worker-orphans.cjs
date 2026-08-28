@@ -77,6 +77,7 @@ function exactOrphanTarget(snapshot, mode, group) {
     /^PM2 v[^:]*: God Daemon \(/.test(row.command),
   );
   const daemonPid = daemonRows.length === 1 ? daemonRows[0].pid : null;
+  const directBunRuntime = group.rootPid === group.runtimePid;
   const valid =
     Number.isSafeInteger(group.pgid) &&
     group.pgid > 1 &&
@@ -85,8 +86,8 @@ function exactOrphanTarget(snapshot, mode, group) {
     root.ppid === daemonPid &&
     root.startedAt === group.startedAt &&
     runtime?.pid === group.runtimePid &&
-    runtime.ppid === root.pid &&
-    members.length >= 2 &&
+    (directBunRuntime ? runtime.pid === root.pid : runtime.ppid === root.pid) &&
+    members.length >= (directBunRuntime ? 1 : 2) &&
     new Set(members.map((member) => member.pid)).size === members.length &&
     members.every(
       (member) =>
@@ -105,8 +106,10 @@ function exactOrphanTarget(snapshot, mode, group) {
       members: members.map((member) => ({
         ...member,
         role:
-          member.pid === group.rootPid
-            ? "tsx_wrapper"
+          directBunRuntime && member.pid === group.rootPid
+            ? `${mode}_bun_runtime`
+            : member.pid === group.rootPid
+              ? "legacy_tsx_wrapper"
             : member.pid === group.runtimePid
               ? `${mode}_runtime`
               : "descendant",

@@ -2830,7 +2830,7 @@ export function GeneratorWorkspace() {
                     Latest moment
                   </p>
                   <h2 className="mt-1 text-[18px] font-black text-white">
-                    Keep the relationship moving
+                    Continue the moment
                   </h2>
                   <p className="mt-1 text-[12px] font-medium text-[rgb(170,170,170)]">
                     Tell us whether the identity feels right, or continue from this image.

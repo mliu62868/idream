@@ -173,18 +173,12 @@ describe("public content audience", () => {
       data: {
         id: releaseProjectId,
         characterId: characterIds.customer,
-        phase: "live_management",
-        audience: {},
-        successCriteria: [],
       },
     });
     await prisma.characterProject.create({
       data: {
         id: officialReleaseProjectId,
         characterId: characterIds.official,
-        phase: "live_management",
-        audience: {},
-        successCriteria: [],
       },
     });
     await prisma.characterRelease.create({

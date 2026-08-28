@@ -327,6 +327,53 @@ describe("explore: search, filter, sort, pagination", () => {
 });
 
 describe("create lifecycle: draft → preview → submit → My AI", () => {
+  it("persists current Soul basics in the server draft and rejects legacy dimensions", async () => {
+    const userId = `${P}durable-soul-draft`;
+    await createUser({ id: userId });
+
+    const created = await api("POST", "character-drafts", {
+      userId,
+      ageGate: true,
+      body: { name: "ZZ Durable", gender: "trans", style: "realistic" },
+    });
+    expectOk(created);
+    const draftId = created.data.draft.id as string;
+
+    const patched = await api("PATCH", `character-drafts/${draftId}`, {
+      userId,
+      ageGate: true,
+      body: {
+        step: 2,
+        age: 120,
+        advancedDetails: {
+          description: "A precise companion.",
+          detailsMarkdown: "## Voice\nWarm and direct.",
+          firstMessage: "Hello.",
+        },
+      },
+    });
+    expectOk(patched);
+    expect(patched.data.draft.advancedDetails).toMatchObject({ age: 120 });
+
+    const resumed = await api("GET", "character-drafts/current", {
+      userId,
+      ageGate: true,
+    });
+    expectOk(resumed);
+    expect(resumed.data.draft).toMatchObject({
+      id: draftId,
+      name: "ZZ Durable",
+      advancedDetails: expect.objectContaining({ age: 120 }),
+    });
+
+    const rejected = await api("PATCH", `character-drafts/${draftId}`, {
+      userId,
+      ageGate: true,
+      body: { advancedDetails: { personality: "legacy split field" } },
+    });
+    expectError(rejected, 400, "bad_request");
+  });
+
   it("walks a draft through to an approved private character visible in library", async () => {
     const userId = `${P}creator`;
     await createUser({ id: userId });
@@ -344,10 +391,10 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
       ageGate: true,
       body: {
         step: 3,
+        age: 22,
         appearance: { hair: "red" },
         advancedDetails: {
           description: "My private companion.",
-          relationshipArchetype: "childhood friend",
           detailsMarkdown: [
             "## Personality and voice",
             "Bold, observant, protective, direct, and teasing.",
@@ -397,7 +444,7 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
     const staleIdentitySubmit = await api("POST", `character-drafts/${draftId}/submit`, {
       userId,
       ageGate: true,
-      body: { age: 25, visibility: "public" },
+      body: { visibility: "public" },
     });
     expectError(staleIdentitySubmit, 400, "bad_request");
 
@@ -426,7 +473,7 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
     const submit = await api("POST", `character-drafts/${draftId}/submit`, {
       userId,
       ageGate: true,
-      body: { age: 22, visibility: "private", description: "My private companion." },
+      body: { visibility: "private" },
     });
     expectOk(submit);
     expect(submit.data.character).toMatchObject({ status: "approved", visibility: "private" });
@@ -435,10 +482,12 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
       where: { id: characterId },
     });
     expect(createdCharacter).toMatchObject({
-      relationship: "childhood friend",
+      age: 22,
       advancedDetails: expect.objectContaining({
         detailsMarkdown: expect.stringContaining("Bold, observant, protective"),
         firstMessage: "There you are. What took you so long?",
+        soulFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+        compilerVersion: "character-soul-3",
       }),
       systemPrompt: expect.stringContaining(
         "Bold, observant, protective, direct, and teasing.",
@@ -453,13 +502,20 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
       version: 1,
       sourceType: "user",
       personaSnapshot: expect.objectContaining({
-        schemaVersion: 2,
+        schemaVersion: 3,
         compiled: expect.objectContaining({
-          compilerVersion: "character-soul-2",
+          compilerVersion: "character-soul-3",
           fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
         }),
       }),
     });
+
+    const currentDraft = await api("GET", "character-drafts/current", {
+      userId,
+      ageGate: true,
+    });
+    expectOk(currentDraft);
+    expect(currentDraft.data.draft).toBeNull();
 
     const edited = await api("PATCH", `characters/${characterId}`, {
       userId,
@@ -497,10 +553,23 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
       body: { name: "ZZ Public" },
     });
     const draftId = draftRes.data.draft.id as string;
+    const completeWithoutImage = await api("PATCH", `character-drafts/${draftId}`, {
+      userId,
+      ageGate: true,
+      body: {
+        age: 25,
+        advancedDetails: {
+          description: "A sharp-witted investigative reporter who values honest answers.",
+          detailsMarkdown: "",
+          firstMessage: "You are late. Tell me what happened.",
+        },
+      },
+    });
+    expectOk(completeWithoutImage);
     const blockedSubmit = await api("POST", `character-drafts/${draftId}/submit`, {
       userId,
       ageGate: true,
-      body: { age: 25, visibility: "public" },
+      body: { visibility: "public" },
     });
     expectError(blockedSubmit, 400, "bad_request");
     expect(blockedSubmit.error?.message).toBe(
@@ -529,10 +598,22 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
     });
     expectOk(selected);
 
+    const madeIncomplete = await api("PATCH", `character-drafts/${draftId}`, {
+      userId,
+      ageGate: true,
+      body: {
+        advancedDetails: {
+          description: "",
+          firstMessage: "",
+        },
+      },
+    });
+    expectOk(madeIncomplete);
+
     const incompletePersonaSubmit = await api("POST", `character-drafts/${draftId}/submit`, {
       userId,
       ageGate: true,
-      body: { age: 25, visibility: "public" },
+      body: { visibility: "public" },
     });
     expectError(incompletePersonaSubmit, 400, "bad_request");
     expect(incompletePersonaSubmit.error?.message).toBe(
@@ -541,7 +622,6 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
     expect(incompletePersonaSubmit.error?.details).toMatchObject({
       missingFields: [
         "description",
-        "relationship",
         "firstMessage",
       ],
     });
@@ -550,9 +630,9 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
       userId,
       ageGate: true,
       body: {
+        age: 25,
         advancedDetails: {
           description: "A sharp-witted investigative reporter who values honest answers.",
-          relationshipArchetype: "trusted confidante",
           detailsMarkdown: "",
           firstMessage: "You are late. Tell me what happened.",
         },
@@ -563,7 +643,7 @@ describe("create lifecycle: draft → preview → submit → My AI", () => {
     const submit = await api("POST", `character-drafts/${draftId}/submit`, {
       userId,
       ageGate: true,
-      body: { age: 25, visibility: "public" },
+      body: { visibility: "public" },
     });
     expectOk(submit);
     expect(submit.data.character.status).toBe("pending_review");

@@ -49,7 +49,7 @@ const TONE_BY_STATUS: Record<string, StatusTone> = {
 
   // 正在跑。来源：common.ts adminControlPlaneCommandStatusSchema、
   // incidents.ts incidentStatusSchema（monitoring）、
-  // characters-release.ts characterReleaseStatusSchema（validating）、
+  // Shared contracts also use transient validation states outside Character Release.
   // creative.ts creativeRunItemExecutionStateSchema（dispatching / finalizing）。
   running: "info", processing: "info", generating: "info", dispatching: "info",
   monitoring: "info", verifying: "info", validating: "info", finalizing: "info",

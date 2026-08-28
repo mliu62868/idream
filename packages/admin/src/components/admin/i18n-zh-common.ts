@@ -426,7 +426,6 @@ export const adminZhCommon: Record<string, string> = {
   "Refunding subscriptions": "订阅退款",
   "Reject": "拒绝",
   "Reject with reason": "填写理由后拒绝",
-  "Relationship": "关系",
   "Release": "发布版本",
   "Reload": "重新加载",
   "Remove": "移除",

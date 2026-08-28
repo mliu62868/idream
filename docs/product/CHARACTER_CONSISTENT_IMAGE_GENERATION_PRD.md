@@ -129,19 +129,6 @@ IP-Adapter/LoRA 服务都接入同一个 profile/capabilities 层。前端和 Ch
   已按默认 `seedMode=locked` 生成 20 张样本、review 页面和 contact sheet；人工评审
   17/20 为同一角色，`consistencyRate=0.85`，已写回 seed dry-run summary。该模型可作为
   已验证的内置 ComfyUI 候选，但仍不自动发布到用户路径，需等托管 gateway 后再导流。
-- `/Users/kk/Downloads/models/darkBeastKrea2_dbkleinv2BFS.safetensors` 的元数据指向
-  Flux.2 Klein reference/face-swap 路线，不是可直接套 Krea2 sd.cpp 的图生图模板。
-  2026-06-30 已按你给的 Civitai 链接核对：Dark Beast 集合本身有 Krea 2 版本
-  `3078453`，但本地 `dbkleinv2BFS` 文件对应 `modelVersionId=2740209`，
-  `baseModel=Flux.2 Klein 9B`，AutoV2 `B20B6F2744`。本地文件只是 diffusion/UNet
-  资产。已解析 BFS Head Swap workflow：它需要 body/base image + face/identity image
-  两张输入，分别映射到产品里的 `source_image/initImage` 和
-  `identity_reference/referenceImages`；还需要 Flux.2 Klein base、Qwen text encoder、
-  Flux2 VAE、head-swap LoRA 与 ComfyUI conditioning workflow。当前本机缺
-  `/Users/kk/.localai/models/flux2-vae.safetensors`、Flux.2 Klein base、
-  Qwen encoder、BFS LoRA 与可导入 workflow；先登记为 `DarkBeast reference candidate`
-  draft，不作为 active 模板。
-
 发布门槛：任何候选模板必须生成至少 20 张角色一致性样本，人工确认 80% 以上像同一角色，
 且不能出现空白/纯噪声/明显坏图，才允许 `enabled=true`、`status=active`、`rolloutPercent>0`。
 

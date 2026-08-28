@@ -24,7 +24,6 @@ export interface GenerationPromptCharacter {
   name: string;
   age: number;
   description: string;
-  relationship: string | null;
   style: string | null;
   gender: string | null;
   appearance: Prisma.JsonValue;
@@ -81,6 +80,16 @@ export async function resolveGenerationVisualProfile(
   } = {},
 ): Promise<CharacterVisualProfile | null> {
   if (requestedProfileId) {
+    // Chat may have prepared its turn just before Serving moved back to a legacy
+    // Release, or may still carry an unreleased staged profile beside that Release.
+    // The live Release is the current identity authority; Chat's failover contract
+    // must therefore drop the stale profile pin instead of creating two authorities.
+    if (opts.fallbackToActiveOnStale) {
+      const legacyReleaseAuthority = await prisma.$transaction((tx) =>
+        loadLockedLiveEditorialLegacyGenerationAuthority(tx, character.id),
+      );
+      if (legacyReleaseAuthority) return null;
+    }
     const profile = await prisma.characterVisualProfile.findFirst({
       where: { id: requestedProfileId, characterId: character.id },
       orderBy: { version: "desc" },
@@ -315,14 +324,13 @@ export async function assertCharacterIdentityAuthorityMutable(
 ) {
   const serving = await tx.characterServing.findUnique({
     where: { characterId },
-    select: { currentReleaseId: true, scheduledReleaseId: true },
+    select: { currentReleaseId: true },
   });
-  if (serving?.currentReleaseId || serving?.scheduledReleaseId) {
+  if (serving?.currentReleaseId) {
     throw Errors.conflict(
       "Withdraw or replace serving Character Release authority before changing Visual Identity or Reference Set",
       {
         currentReleaseId: serving.currentReleaseId,
-        scheduledReleaseId: serving.scheduledReleaseId,
         deepLink: `/admin/characters/${characterId}?tab=release`,
       },
     );
@@ -335,7 +343,7 @@ export async function assertCharacterIdentityAuthorityMutable(
   const activeRelease = await tx.characterRelease.findFirst({
     where: {
       projectId: { in: projects.map((project) => project.id) },
-      status: { in: ["draft", "validating", "in_review", "approved"] },
+      status: "approved",
     },
     select: { id: true, status: true },
   });

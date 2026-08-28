@@ -330,7 +330,6 @@ describe("character and media write actions off the HTTP path", () => {
         status: "approved",
         style: "realistic",
         gender: "female",
-        relationship: "trusted companion",
         appearance: {},
         advancedDetails: {
           personality: "Observant and steady.",

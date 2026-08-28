@@ -1,0 +1,23 @@
+{
+  "ok": false,
+  "checkedAt": "2026-08-26T10:32:39.513Z",
+  "observedAt": "2026-08-26T10:32:54.410Z",
+  "durationMs": 14897,
+  "actor": {
+    "userId": "seed-chat-probe-user",
+    "dataClass": "audit",
+    "signedBff": true
+  },
+  "legs": {
+    "generate": null,
+    "edit": null
+  },
+  "cleanup": {
+    "sessionGone": true,
+    "memoryCleared": true,
+    "recentChatDeleted": false,
+    "sourceTextRedacted": false
+  },
+  "error": "DSH image tool E2E failed at generate_tool_trace_invalid",
+  "sourceRevision": "idream-worktree-0fdf96b06508a8838f5d4fadb9157ad293e22ffb8f6b3737fba35f1768862069"
+}

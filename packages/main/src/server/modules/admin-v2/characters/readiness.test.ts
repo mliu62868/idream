@@ -10,7 +10,6 @@ const readyCandidate = {
   visualIdentity: { version: 2, anchorCount: 1, requiredTraitsPresent: true, snapshotSealed: true },
   referenceSet: { revision: 3, status: "active", snapshotSealed: true, availableReferenceCount: 2 },
   routeQualification: { status: "qualified", stale: false },
-  characterQa: { status: "passed" },
 } as const;
 
 describe("character release readiness", () => {
@@ -29,7 +28,6 @@ describe("character release readiness", () => {
     ["no published references", { referenceSet: { revision: 3, status: "draft", snapshotSealed: true, availableReferenceCount: 2 } }, "reference_set_not_active"],
     ["unsealed references", { referenceSet: { revision: 3, status: "active", snapshotSealed: false, availableReferenceCount: 2 } }, "reference_set_unsealed"],
     ["route stale", { routeQualification: { status: "qualified", stale: true } }, "generation_route_stale"],
-    ["QA failed", { characterQa: { status: "failed" } }, "character_qa_failed"],
     ["snapshot changed", { currentSnapshotHash: "snapshot-b" }, "snapshot_stale"],
     ["policy changed", { currentPolicyVersion: "release-policy-v2" }, "policy_stale"],
   ])("blocks %s with an actionable check", (_label, override, expectedCheck) => {
@@ -51,24 +49,14 @@ describe("character release readiness", () => {
     ]);
   });
 
-  it("rejects a serving pointer that targets another character or the scheduled pointer", () => {
+  it("rejects a serving pointer that targets another character", () => {
     expect(() =>
       validateServingPointer({
         servingCharacterId: "character-a",
         releaseCharacterId: "character-b",
         currentReleaseId: null,
-        scheduledReleaseId: null,
         candidateReleaseId: "release-b",
       }),
     ).toThrow(/same character/i);
-    expect(() =>
-      validateServingPointer({
-        servingCharacterId: "character-a",
-        releaseCharacterId: "character-a",
-        currentReleaseId: "release-current",
-        scheduledReleaseId: "release-b",
-        candidateReleaseId: "release-b",
-      }),
-    ).toThrow(/scheduled/i);
   });
 });

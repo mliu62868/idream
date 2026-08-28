@@ -108,4 +108,13 @@ describe("chatStreamLatestReplyFailed", () => {
       ]),
     ).toBe(false);
   });
+
+  it("does not report an intentionally cancelled reply as a failure", () => {
+    expect(
+      chatStreamLatestReplyFailed([
+        { role: "user", content: "hi" },
+        { role: "assistant", content: "", status: "cancelled" },
+      ]),
+    ).toBe(false);
+  });
 });

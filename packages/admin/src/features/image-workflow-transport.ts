@@ -1,8 +1,6 @@
 import type {
   CharacterIdentityBootstrapRequest,
-  CharacterQaRunCreateRequest,
-  CharacterReleaseProposalRequest,
-  CharacterReleaseReviewRequest,
+  CharacterReleaseCreateRequest,
   CreativeRunRetryFailedCommandRequest,
 } from "@idream/shared/admin";
 import type { AdminV2OperationRequest } from "@/lib/admin-v2-operation";
@@ -21,36 +19,15 @@ export const characterWorkspaceTabs = [
   "monitor",
 ] as const;
 
-export type CharacterWorkspaceTab = typeof characterWorkspaceTabs[number];
+export type CharacterWorkspaceTab = (typeof characterWorkspaceTabs)[number];
 
-export function characterWorkspaceTabFromSearch(search: string): CharacterWorkspaceTab {
+export function characterWorkspaceTabFromSearch(
+  search: string,
+): CharacterWorkspaceTab {
   const requested = new URLSearchParams(search).get("tab");
   return characterWorkspaceTabs.includes(requested as CharacterWorkspaceTab)
-    ? requested as CharacterWorkspaceTab
+    ? (requested as CharacterWorkspaceTab)
     : "project";
-}
-
-export function characterQaMutation(
-  characterId: string,
-  entityVersion: number,
-  checks: CharacterQaRunCreateRequest["checks"],
-  reason: string,
-  idempotencyKey: string,
-): AdminV2OperationRequest<"POST /api/v2/admin/characters/:id/qa-runs"> {
-  const body: CharacterQaRunCreateRequest = {
-    entityVersion,
-    checks,
-    reason,
-  };
-  return {
-    operationId: "POST /api/v2/admin/characters/:id/qa-runs",
-    options: {
-      path: { id: characterId },
-      idempotencyKey,
-      ifMatch: entityVersion,
-      body,
-    },
-  };
 }
 
 export function characterIdentityBootstrapMutation(
@@ -59,7 +36,7 @@ export function characterIdentityBootstrapMutation(
   runId: string,
   itemId: string,
   assetId: string,
-  reviewDecisionId: string,
+  reviewDecisionId: string | undefined,
   reason: string,
   idempotencyKey: string,
 ): AdminV2OperationRequest<"POST /api/v2/admin/characters/:id/identity-bootstrap"> {
@@ -68,7 +45,7 @@ export function characterIdentityBootstrapMutation(
     runId,
     itemId,
     assetId,
-    reviewDecisionId,
+    ...(reviewDecisionId ? { reviewDecisionId } : {}),
     reason,
     confirmation: `BOOTSTRAP IDENTITY ${characterId}`,
   };
@@ -83,17 +60,15 @@ export function characterIdentityBootstrapMutation(
   };
 }
 
-export function characterReleaseProposalMutation(
+export function characterReleaseCreateMutation(
   characterId: string,
   entityVersion: number,
-  qaRunId: string,
   reason: string,
   confirmation: string,
   idempotencyKey: string,
 ): AdminV2OperationRequest<"POST /api/v2/admin/characters/:id/releases"> {
-  const body: CharacterReleaseProposalRequest = {
+  const body: CharacterReleaseCreateRequest = {
     entityVersion,
-    qaRunId,
     reason,
     confirmation,
   };
@@ -101,32 +76,6 @@ export function characterReleaseProposalMutation(
     operationId: "POST /api/v2/admin/characters/:id/releases",
     options: {
       path: { id: characterId },
-      idempotencyKey,
-      ifMatch: entityVersion,
-      body,
-    },
-  };
-}
-
-export function characterReleaseReviewMutation(
-  characterId: string,
-  releaseId: string,
-  entityVersion: number,
-  decision: "approved" | "changes_requested",
-  reason: string,
-  confirmation: string,
-  idempotencyKey: string,
-): AdminV2OperationRequest<"POST /api/v2/admin/characters/:id/releases/:releaseId/review"> {
-  const body: CharacterReleaseReviewRequest = {
-    entityVersion,
-    decision,
-    reason,
-    confirmation,
-  };
-  return {
-    operationId: "POST /api/v2/admin/characters/:id/releases/:releaseId/review",
-    options: {
-      path: { id: characterId, releaseId },
       idempotencyKey,
       ifMatch: entityVersion,
       body,

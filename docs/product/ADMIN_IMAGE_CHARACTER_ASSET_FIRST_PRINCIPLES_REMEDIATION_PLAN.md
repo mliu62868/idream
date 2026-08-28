@@ -108,25 +108,15 @@ the immutable score, identity result, and visible-quality evidence. A candidate
 already selected by the draft pack must be replaced first; an active Character
 Look also blocks the terminal rejection until that Look is archived.
 
-### Stage D — QA and Release
+### Stage D — Preview and Release
 
-An immutable QA Run is valid only for the exact authority snapshot it observed:
-
-- Character Content Version;
-- Character Project version;
-- Visual Identity id/version/hash;
-- Reference Set id/revision/hash;
-- draft asset-pack hash.
-
-Any change to those facts makes the old QA evidence ineligible for a new Release.
-
-A Release proposal derives provenance from each selected asset’s actual Generation Job. It must not copy the current profile or reference set onto an unrelated historical asset.
+The one Publish action derives provenance from each selected asset’s actual Generation Job, creates an immutable Release from the current content/project/identity/reference/asset-pack snapshot, and runs technical validation automatically. It must not copy the current profile or reference set onto an unrelated historical asset.
 
 The signed Preview is an exact three-slot proof, not a decorative approximation:
 Feed resolves the selected portrait, Detail resolves the selected hero, and Chat
 resolves the selected chat asset. The token pins three distinct assets and
 projects each slot as available, missing, or unavailable. Missing, duplicated,
-drifted, or unavailable assets fail closed and block QA; no slot falls back to
+drifted, or unavailable assets fail closed and block publication; no slot falls back to
 the portrait.
 
 A signed Live Preview additionally pins the current `CharacterServing.version`.
@@ -135,7 +125,7 @@ the same version. Pause/resume, rollback, or any pointer/version change
 permanently revokes the old token even if the earlier Release later becomes
 current again.
 
-Requesting changes withdraws the immutable candidate and returns the Project to production. The operator can revise the draft and propose a new immutable candidate; no deadlocked draft Release remains.
+If validation fails, the operator fixes the source content or asset pack and publishes again. There is no separate proposal, review, or QA state to manage.
 
 ### Stage E — Verify then expose
 
@@ -179,7 +169,7 @@ The Image Library is an inventory surface, not a second review system.
    decisions.
 3. The asset detail projects its source Creative Run and every active
    Character Release or Campaign dependency.
-4. Archival is blocked while the asset is current-live, scheduled, or being
+4. Archival is blocked while the asset is current-live or being
    verified; the UI links the operator to the owning authority for replacement,
    withdrawal, or rollback.
 5. Bulk archival sends one POST preflight for the complete selection. The
@@ -321,7 +311,7 @@ The UI is a projection of these authorities. It may not invent readiness, proven
   terminal command result.
 - Image Library approve/reject requests cannot create review authority.
 - An asset referenced by a draft project, visual identity, Reference Set,
-  Generation Job, active Look, Creative Run, current/scheduled Release, Campaign,
+  Generation Job, active Look, Creative Run, current Release, Campaign,
   or verification cannot be archived, made private/unlisted, or deleted through
   an alternate inventory surface.
 - Bulk preflight and mutation cannot accept unsorted/duplicate target ids,

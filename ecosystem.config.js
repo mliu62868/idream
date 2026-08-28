@@ -1,5 +1,5 @@
 // pm2 process topology (design §12). The required DSH companion sidecar is a
-// separate Node process; mock video omits gen-video in every mode.
+// separate Bun process; mock video omits gen-video in every mode.
 // Development is the default: web apps use Next dev/Fast Refresh and source
 // services use PM2 watch. Production keeps the immutable standalone web runtime.
 //   bun run pm2:start              # development; no build required
@@ -13,27 +13,29 @@
 // Production web apps run from immutable .next-runtime releases. Prefer restart
 // after both builds are published; rolling reload still needs deployment-aware
 // routing to keep old clients and workers on the same release during the overlap.
-// ⚠️ chat is instances:1 — it writes Chat-owned relationship evidence and
-//    boundary projections. Scene/session/message authority stays in PG; generic
-//    memory lives only in the DSH/igrep workspace. Do NOT
-//    scale it past 1 without moving CHAT_FS_ROOT to shared storage (D1/C1).
-// ⚠️ script paths point at real node entry files (.mjs / next's CJS bin), NOT the
-//    pnpm `.bin/*` shell shims — pm2's node interpreter cannot parse a /bin/sh shim
-//    (and cluster mode requires a node-loadable script).
+// ⚠️ chat is instances:1 — each AgentRun has one local-file writer.
+//    Product Turn/Scene/attachment authority stays in Main PostgreSQL; generic
+//    memory lives in the DSH/igrep workspace. Do NOT scale it past 1 without
+//    shared storage plus explicit per-run writer arbitration.
+// ⚠️ Every first-party JavaScript/TypeScript/Next process uses Bun as PM2's
+//    interpreter. Fish Audio's Bun wrapper still owns the Python Uvicorn child;
+//    PM2 remains the lifecycle manager and queue-fence authority.
 // Absolute cwds (resolved from this file's dir) so targeted `pm2 start
 // ecosystem.config.js --only <app>` resolves each app's working dir — and thus its
 // dotenv-loaded .env — identically to a full start. Relative cwds resolve against
 // the pm2 daemon's cwd under `--only`, which silently breaks per-app .env loading.
 const { existsSync, readFileSync } = require("node:fs");
 const path = require("path");
-const { pathToFileURL } = require("node:url");
 const dir = (rel) => path.join(__dirname, rel);
-const tsxPreflight = require.resolve(
-  "./packages/chat-agent/node_modules/tsx/dist/preflight.cjs",
-);
-const tsxLoader = require.resolve(
-  "./packages/chat-agent/node_modules/tsx/dist/loader.mjs",
-);
+const bunInterpreter = [
+  process.env.BUN_EXEC_PATH,
+  process.env.BUN_INSTALL
+    ? path.join(process.env.BUN_INSTALL, "bin", "bun")
+    : undefined,
+  process.env.HOME
+    ? path.join(process.env.HOME, ".bun", "bin", "bun")
+    : undefined,
+].find((candidate) => candidate && existsSync(candidate)) ?? "bun";
 const runtimeMode = process.env.IDREAM_PM2_MODE ?? "development";
 if (runtimeMode !== "development" && runtimeMode !== "production") {
   throw new Error(
@@ -117,6 +119,7 @@ module.exports = {
       name: "fish-audio",
       cwd: dir("."),
       script: "scripts/start-fish-audio.cjs",
+      interpreter: bunInterpreter,
       exec_mode: "fork",
       instances: 1,
       ...sourceWatch(
@@ -175,6 +178,7 @@ module.exports = {
         ? "scripts/start-development.cjs"
         : "scripts/start-next-standalone.cjs",
       args: isDevelopment ? undefined : "packages/main",
+      interpreter: bunInterpreter,
       exec_mode: isDevelopment ? "fork" : "cluster",
       // Was "max" → one worker per CPU core, which floods `pm2 list` on many-core
       // machines. Cap to a small fixed count (override with MAIN_WEB_INSTANCES).
@@ -184,6 +188,12 @@ module.exports = {
       watch: false,
       env: {
         ...runtimeIdentityEnv,
+        IDREAM_PM2_BUN_ENTRYPOINT: isDevelopment
+          ? "main-development"
+          : "next-standalone",
+        ...(!isDevelopment
+          ? { IDREAM_NEXT_PACKAGE_PATH: "packages/main" }
+          : {}),
         PORT: process.env.MAIN_WEB_PORT ?? "3000",
         ...(isDevelopment
           ? {
@@ -201,15 +211,22 @@ module.exports = {
       name: "admin-web",
       cwd: isDevelopment ? dir("packages/admin") : dir("."),
       script: isDevelopment
-        ? "node_modules/next/dist/bin/next"
+        ? "scripts/start-development.cjs"
         : "scripts/start-next-standalone.cjs",
-      args: isDevelopment ? "dev" : "packages/admin",
+      args: isDevelopment ? undefined : "packages/admin",
+      interpreter: bunInterpreter,
       exec_mode: isDevelopment ? "fork" : "cluster",
       instances: 1,
       // Next dev owns source watching/Fast Refresh. PM2 watch would fight it.
       watch: false,
       env: {
         ...runtimeIdentityEnv,
+        IDREAM_PM2_BUN_ENTRYPOINT: isDevelopment
+          ? "admin-development"
+          : "next-standalone",
+        ...(!isDevelopment
+          ? { IDREAM_NEXT_PACKAGE_PATH: "packages/admin" }
+          : {}),
         PORT: process.env.ADMIN_WEB_PORT ?? "3001",
         ...(isDevelopment
           ? {
@@ -224,16 +241,9 @@ module.exports = {
     {
       name: "chat-agent",
       cwd: dir("packages/chat-agent"),
-      // INVARIANT: PM2 must own the process holding port 3101. The tsx CLI
-      // forks a child, so killing its PM2 parent leaves an orphan sidecar.
-      script: "src/main.ts",
-      interpreter: process.execPath,
-      node_args: [
-        "--require",
-        tsxPreflight,
-        "--import",
-        pathToFileURL(tsxLoader).href,
-      ],
+      // INVARIANT: PM2 directly owns the Bun process holding port 3101.
+      script: isDevelopment ? "src/main.ts" : "dist/main.js",
+      interpreter: bunInterpreter,
       exec_mode: "fork",
       instances: 1,
       kill_timeout: 5 * 60 * 1_000,
@@ -246,8 +256,8 @@ module.exports = {
     {
       name: "chat",
       cwd: dir("packages/chat"),
-      script: "node_modules/tsx/dist/cli.mjs",
-      args: "src/main.ts",
+      script: isDevelopment ? "src/main.ts" : "dist/main.js",
+      interpreter: bunInterpreter,
       exec_mode: "fork",
       instances: 1, // ⚠️ local FS single-writer
       // Warm model calls and active generations are allowed to finish after
@@ -258,14 +268,14 @@ module.exports = {
         ...runtimeIdentityEnv,
         ...sharedInternalEnv,
       },
-      // config from packages/chat/.env (CHAT_PORT, CHAT_DATABASE_URL, …)
+      // config from packages/chat/.env (CHAT_PORT, CHAT_FS_ROOT, …)
     },
     // slow · async — pure generation, only writes blob, horizontally scalable
     {
       name: "gen-image",
       cwd: dir("packages/gen"),
-      script: "node_modules/tsx/dist/cli.mjs",
-      args: "src/image.ts",
+      script: isDevelopment ? "src/image.ts" : "dist/image.js",
+      interpreter: bunInterpreter,
       exec_mode: "fork",
       // Draw Things serializes within one worker. Set GEN_IMAGE_INSTANCES=1 for
       // strict host-wide single-process model loading; other backends may scale out.
@@ -291,8 +301,8 @@ module.exports = {
           {
             name: "gen-video",
             cwd: dir("packages/gen"),
-            script: "node_modules/tsx/dist/cli.mjs",
-            args: "src/video.ts",
+            script: isDevelopment ? "src/video.ts" : "dist/video.js",
+            interpreter: bunInterpreter,
             exec_mode: "fork",
             instances: 1,
             kill_timeout: 35 * 60 * 1_000,
@@ -314,8 +324,10 @@ module.exports = {
     {
       name: "gen-finalizer",
       cwd: dir("packages/main"),
-      script: "node_modules/tsx/dist/cli.mjs",
-      args: "src/processes/finalizer.ts",
+      script: isDevelopment
+        ? "src/processes/finalizer.ts"
+        : "dist/finalizer.js",
+      interpreter: bunInterpreter,
       exec_mode: "fork",
       instances: 1,
       kill_timeout: 5 * 60 * 1_000,
@@ -336,8 +348,10 @@ module.exports = {
     {
       name: "main-event-consumer",
       cwd: dir("packages/main"),
-      script: "node_modules/tsx/dist/cli.mjs",
-      args: "src/processes/event-consumer.ts",
+      script: isDevelopment
+        ? "src/processes/event-consumer.ts"
+        : "dist/event-consumer.js",
+      interpreter: bunInterpreter,
       exec_mode: "fork",
       instances: 1,
       ...sourceWatch(
@@ -354,8 +368,10 @@ module.exports = {
     {
       name: "admin-command-worker",
       cwd: dir("packages/main"),
-      script: "node_modules/tsx/dist/cli.mjs",
-      args: "src/processes/admin-command-worker.ts",
+      script: isDevelopment
+        ? "src/processes/admin-command-worker.ts"
+        : "dist/admin-command-worker.js",
+      interpreter: bunInterpreter,
       exec_mode: "fork",
       instances: 1,
       ...sourceWatch(

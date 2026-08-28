@@ -7,7 +7,6 @@ import { createUser } from "@/server/test/helpers";
 import { toInputJson } from "../shared/prisma-json";
 import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-validation";
 import {
-  createCharacterPortfolioDecision,
   listCharacterPortfolio,
   listCharacterPortfolioData,
 } from "./portfolio";
@@ -58,9 +57,21 @@ describe("Character Portfolio authority/read model", () => {
     await createUser({ id: adminId, role: "admin", dataClass: "internal" });
     await createUser({ id: analystId, role: "analyst", dataClass: "internal" });
     await createUser({ id: producerId, role: "user", dataClass: "internal" });
-    await createUser({ id: scopedViewerId, role: "user", dataClass: "internal" });
-    await createUser({ id: globalCreativeViewerId, role: "analyst", dataClass: "internal" });
-    await createUser({ id: unscopedProducerViewerId, role: "user", dataClass: "internal" });
+    await createUser({
+      id: scopedViewerId,
+      role: "user",
+      dataClass: "internal",
+    });
+    await createUser({
+      id: globalCreativeViewerId,
+      role: "analyst",
+      dataClass: "internal",
+    });
+    await createUser({
+      id: unscopedProducerViewerId,
+      role: "user",
+      dataClass: "internal",
+    });
     await prisma.character.createMany({
       data: [
         {
@@ -219,8 +230,26 @@ describe("Character Portfolio authority/read model", () => {
     });
     await prisma.characterContentVersion.createMany({
       data: [
-        { id: contentA, characterId: characterA, version: 1, contentHash: `hash-a-${suffix}`, personaSnapshot: {}, openingSnapshot: {}, appearanceSnapshot: {}, sourceType: "test" },
-        { id: contentB, characterId: characterB, version: 1, contentHash: `hash-b-${suffix}`, personaSnapshot: {}, openingSnapshot: {}, appearanceSnapshot: {}, sourceType: "test" },
+        {
+          id: contentA,
+          characterId: characterA,
+          version: 1,
+          contentHash: `hash-a-${suffix}`,
+          personaSnapshot: {},
+          openingSnapshot: {},
+          appearanceSnapshot: {},
+          sourceType: "test",
+        },
+        {
+          id: contentB,
+          characterId: characterB,
+          version: 1,
+          contentHash: `hash-b-${suffix}`,
+          personaSnapshot: {},
+          openingSnapshot: {},
+          appearanceSnapshot: {},
+          sourceType: "test",
+        },
       ],
     });
     await prisma.characterProject.createMany({
@@ -228,16 +257,6 @@ describe("Character Portfolio authority/read model", () => {
         {
           id: projectA,
           characterId: characterA,
-          ownerId: producerId,
-          phase: "live_management",
-          audience: {
-            label: "returning companion users",
-            companionNeed: "continuity",
-            targetPlacementKeys: ["feed.hero"],
-          },
-          hypothesis: "continuity increases D7",
-          differentiation: "memory",
-          successCriteria: ["D7 improves"],
           draftImageAssetId: draftCoverAssetId,
           draftAssetPack: {
             character_cover: {
@@ -254,7 +273,10 @@ describe("Character Portfolio authority/read model", () => {
             },
           },
         },
-        { id: projectB, characterId: characterB, phase: "live_management", audience: { label: "new users" }, hypothesis: "test", differentiation: "test", successCriteria: ["test"] },
+        {
+          id: projectB,
+          characterId: characterB,
+        },
       ],
     });
     await prisma.characterRelease.createMany({
@@ -264,7 +286,13 @@ describe("Character Portfolio authority/read model", () => {
           projectId: projectA,
           revisionId: `revision-a-${suffix}`,
           characterContentVersionId: contentA,
-          generationProvenance: { generationProfileKey: "profile", generationProfileVersion: "1", workflowKey: "workflow", workflowVersion: "1", policyVersion: "policy-v1" },
+          generationProvenance: {
+            generationProfileKey: "profile",
+            generationProfileVersion: "1",
+            workflowKey: "workflow",
+            workflowVersion: "1",
+            policyVersion: "policy-v1",
+          },
           releasePlacementManifest: {
             placements: [
               {
@@ -319,8 +347,18 @@ describe("Character Portfolio authority/read model", () => {
     });
     await prisma.characterServing.createMany({
       data: [
-        { id: `serving-a-${suffix}`, characterId: characterA, currentReleaseId: releaseA, state: "live" },
-        { id: `serving-b-${suffix}`, characterId: characterB, currentReleaseId: releaseB, state: "live" },
+        {
+          id: `serving-a-${suffix}`,
+          characterId: characterA,
+          currentReleaseId: releaseA,
+          state: "live",
+        },
+        {
+          id: `serving-b-${suffix}`,
+          characterId: characterB,
+          currentReleaseId: releaseB,
+          state: "live",
+        },
       ],
     });
     await prisma.adminUserGrantBundle.createMany({
@@ -440,7 +478,9 @@ describe("Character Portfolio authority/read model", () => {
       validFrom: new Date("2026-07-10T01:00:00.000Z"),
       coverageState: "exact",
     }));
-    await prisma.characterExposureFact.createMany({ data: [...impressions, ...details] });
+    await prisma.characterExposureFact.createMany({
+      data: [...impressions, ...details],
+    });
     // Counterexample: a historically unattributed row must never be guessed into
     // the current release merely because the Character matches.
     await prisma.characterExposureFact.create({
@@ -473,17 +513,34 @@ describe("Character Portfolio authority/read model", () => {
     await prisma.contentProductionBatch.deleteMany({
       where: { targetId: { in: [characterA, characterB] } },
     });
-    await prisma.adminAuditLog.deleteMany({ where: { actorId: { in: [adminId, producerId] } } });
-    await prisma.decisionRecord.deleteMany({ where: { sourceType: "character_portfolio", sourceId: { in: [characterA, characterB] } } });
-    await prisma.characterEconomicsFact.deleteMany({ where: { characterId: { in: [characterA, characterB] } } });
-    await prisma.characterExposureFact.deleteMany({ where: { characterId: { in: [characterA, characterB] } } });
-    await prisma.characterFunnelDaily.deleteMany({ where: { characterId: { in: [characterA, characterB] } } });
-    await prisma.characterServing.deleteMany({ where: { characterId: { in: [characterA, characterB] } } });
-    await prisma.characterRelease.deleteMany({ where: { projectId: { in: [projectA, projectB] } } });
-    await prisma.generationRouteQualification.deleteMany({ where: { id: qualificationId } });
-    await prisma.generationModelProfile.deleteMany({ where: { id: generationProfileId } });
+    await prisma.adminAuditLog.deleteMany({
+      where: { actorId: { in: [adminId, producerId] } },
+    });
+    await prisma.characterEconomicsFact.deleteMany({
+      where: { characterId: { in: [characterA, characterB] } },
+    });
+    await prisma.characterExposureFact.deleteMany({
+      where: { characterId: { in: [characterA, characterB] } },
+    });
+    await prisma.characterFunnelDaily.deleteMany({
+      where: { characterId: { in: [characterA, characterB] } },
+    });
+    await prisma.characterServing.deleteMany({
+      where: { characterId: { in: [characterA, characterB] } },
+    });
+    await prisma.characterRelease.deleteMany({
+      where: { projectId: { in: [projectA, projectB] } },
+    });
+    await prisma.generationRouteQualification.deleteMany({
+      where: { id: qualificationId },
+    });
+    await prisma.generationModelProfile.deleteMany({
+      where: { id: generationProfileId },
+    });
     await prisma.characterVisualReferenceSnapshot.deleteMany({
-      where: { referenceSetRevisionId: { in: [referenceSetId, referenceSetBId] } },
+      where: {
+        referenceSetRevisionId: { in: [referenceSetId, referenceSetBId] },
+      },
     });
     await prisma.referenceSetRevision.deleteMany({
       where: { id: { in: [referenceSetId, referenceSetBId] } },
@@ -491,10 +548,18 @@ describe("Character Portfolio authority/read model", () => {
     await prisma.characterVisualProfile.deleteMany({
       where: { id: { in: [visualProfileId, visualProfileBId] } },
     });
-    await prisma.characterProject.deleteMany({ where: { id: { in: [projectA, projectB] } } });
-    await prisma.characterContentVersion.deleteMany({ where: { characterId: { in: [characterA, characterB] } } });
-    await prisma.character.deleteMany({ where: { id: { in: [characterA, characterB] } } });
-    await prisma.mediaAsset.deleteMany({ where: { id: { in: mediaAssetIds } } });
+    await prisma.characterProject.deleteMany({
+      where: { id: { in: [projectA, projectB] } },
+    });
+    await prisma.characterContentVersion.deleteMany({
+      where: { characterId: { in: [characterA, characterB] } },
+    });
+    await prisma.character.deleteMany({
+      where: { id: { in: [characterA, characterB] } },
+    });
+    await prisma.mediaAsset.deleteMany({
+      where: { id: { in: mediaAssetIds } },
+    });
     await prisma.adminUserGrantBundle.deleteMany({
       where: {
         userId: {
@@ -524,28 +589,36 @@ describe("Character Portfolio authority/read model", () => {
   });
 
   it("serves exact release/content/placement 7d and 28d metrics with fail-closed margin", async () => {
-    const data = await listCharacterPortfolioData(prisma, characterPortfolioQuerySchema.parse({
-      search: "Astra",
-      limit: 20,
-      placementId: "feed.hero",
-    }), { asOf, authorizedDraftAssetCharacterIds: null });
+    const data = await listCharacterPortfolioData(
+      prisma,
+      characterPortfolioQuerySchema.parse({
+        search: "Astra",
+        limit: 20,
+        placementId: "feed.hero",
+      }),
+      { asOf, authorizedDraftAssetCharacterIds: null },
+    );
     expect(data.items).toHaveLength(1);
     const item = data.items[0];
     expect(item.currentRelease?.id).toBe(releaseA);
     expect(item.visualProduction).toEqual({
       primaryImageUrl: `/media/${draftCoverAssetId}`,
       primaryImageSource: "draft",
-      draftPurposes: ["character_cover", "character_hero"],
+      draftPurposes: ["character_cover", "character_hero", "character_chat"],
       livePurposes: ["character_cover", "character_hero"],
       totalPurposes: 3,
       deepLink: `/admin/characters/${characterA}?tab=assets`,
     });
     expect(item.journey.primaryAction).toEqual({
-      code: "continue_asset_pack",
-      deepLink: `/admin/characters/${characterA}?tab=assets`,
+      code: "preview_character",
+      deepLink: `/admin/characters/${characterA}?tab=preview`,
       command: null,
     });
-    expect(item.performance.find((row) => row.window === "7d" && row.placementId === "feed.hero")).toMatchObject({
+    expect(
+      item.performance.find(
+        (row) => row.window === "7d" && row.placementId === "feed.hero",
+      ),
+    ).toMatchObject({
       characterContentVersionId: contentA,
       characterReleaseId: releaseA,
       eligibleImpressions: 120,
@@ -557,20 +630,31 @@ describe("Character Portfolio authority/read model", () => {
       qualityState: "certified",
       contributionMargin: { valueMicros: null, qualityState: "invalid" },
     });
-    expect(item.performance.find((row) => row.window === "7d" && row.placementId === "feed.hero")?.eligibleImpressions)
-      .toBe(120);
+    expect(
+      item.performance.find(
+        (row) => row.window === "7d" && row.placementId === "feed.hero",
+      )?.eligibleImpressions,
+    ).toBe(120);
   });
 
   // SPEC: 「需要处理」是运营每天的发现入口。它必须是真·筛选（进 where、影响分页），
   // 页内排序解决不了问题——第三页上那个零观测的角色永远翻不到。
   it("narrows the portfolio to live characters starved of observations", async () => {
-    const all = await listCharacterPortfolioData(prisma, characterPortfolioQuerySchema.parse({
-      limit: 50,
-    }), { asOf, authorizedDraftAssetCharacterIds: null });
-    const flagged = await listCharacterPortfolioData(prisma, characterPortfolioQuerySchema.parse({
-      limit: 50,
-      attention: true,
-    }), { asOf, authorizedDraftAssetCharacterIds: null });
+    const all = await listCharacterPortfolioData(
+      prisma,
+      characterPortfolioQuerySchema.parse({
+        limit: 50,
+      }),
+      { asOf, authorizedDraftAssetCharacterIds: null },
+    );
+    const flagged = await listCharacterPortfolioData(
+      prisma,
+      characterPortfolioQuerySchema.parse({
+        limit: 50,
+        attention: true,
+      }),
+      { asOf, authorizedDraftAssetCharacterIds: null },
+    );
 
     const allIds = all.items.map((item) => item.characterId);
     const flaggedIds = flagged.items.map((item) => item.characterId);
@@ -579,6 +663,41 @@ describe("Character Portfolio authority/read model", () => {
     // B 一条观测都没有 —— 只有 B 该被筛出来。
     expect(flaggedIds).toContain(characterB);
     expect(flaggedIds).not.toContain(characterA);
+    expect(
+      all.items.find((item) => item.characterId === characterA)
+        ?.needsAttention,
+    ).toBe(false);
+    expect(
+      all.items.find((item) => item.characterId === characterB)
+        ?.needsAttention,
+    ).toBe(true);
+  });
+
+  it("returns a cross-page work queue for incomplete live image packs", async () => {
+    const queue = await listCharacterPortfolioData(
+      prisma,
+      characterPortfolioQuerySchema.parse({
+        limit: 50,
+        workQueue: "live_asset_pack_incomplete",
+      }),
+      { asOf, authorizedDraftAssetCharacterIds: null },
+    );
+
+    // A 的 Live 是 2/3；B 的 Release 没有任何可用图片。两者都必须进入服务端清单，
+    // 不能只在当前浏览器页里临时过滤。
+    expect(queue.items.map((item) => item.characterId)).toEqual(
+      expect.arrayContaining([characterA, characterB]),
+    );
+    expect(queue.items.every((item) => item.serving.state === "live")).toBe(
+      true,
+    );
+    expect(
+      queue.items.every(
+        (item) =>
+          item.journey.assetPack.live.completed <
+          item.journey.assetPack.live.total,
+      ),
+    ).toBe(true);
   });
 
   it("returns an unfinished image run to the latest batch before ongoing production", async () => {
@@ -680,7 +799,7 @@ describe("Character Portfolio authority/read model", () => {
       expect(data.items[0].visualProduction).toMatchObject({
         primaryImageUrl: `/media/${liveCoverAssetId}`,
         primaryImageSource: "live",
-        draftPurposes: ["character_hero"],
+        draftPurposes: ["character_hero", "character_chat"],
         livePurposes: ["character_cover", "character_hero"],
       });
     } finally {
@@ -820,7 +939,7 @@ describe("Character Portfolio authority/read model", () => {
       expect(data.items[0].visualProduction).toMatchObject({
         primaryImageUrl: `/media/${draftCoverAssetId}`,
         primaryImageSource: "draft",
-        draftPurposes: ["character_cover"],
+        draftPurposes: ["character_cover", "character_hero", "character_chat"],
         livePurposes: ["character_cover", "character_hero"],
       });
     } finally {
@@ -911,13 +1030,17 @@ describe("Character Portfolio authority/read model", () => {
       },
     });
     try {
-      const data = await listCharacterPortfolioData(prisma, characterPortfolioQuerySchema.parse({
-        search: "Astra",
-        limit: 20,
-        placementId: "feed.hero",
-      }), { asOf: new Date("2026-07-17T12:30:00.000Z") });
-      const summary = data.items[0].performance.find((row) =>
-        row.window === "7d" && row.placementId === "feed.hero"
+      const data = await listCharacterPortfolioData(
+        prisma,
+        characterPortfolioQuerySchema.parse({
+          search: "Astra",
+          limit: 20,
+          placementId: "feed.hero",
+        }),
+        { asOf: new Date("2026-07-17T12:30:00.000Z") },
+      );
+      const summary = data.items[0].performance.find(
+        (row) => row.window === "7d" && row.placementId === "feed.hero",
       );
 
       expect(summary).toMatchObject({
@@ -932,9 +1055,13 @@ describe("Character Portfolio authority/read model", () => {
         qceRate: 0.5,
       });
       expect(summary?.evidence).toContain("window_grain:utc_product_day");
-      expect(summary?.evidence).not.toContain("detail_view_parent_outside_reporting_cohort");
+      expect(summary?.evidence).not.toContain(
+        "detail_view_parent_outside_reporting_cohort",
+      );
     } finally {
-      await prisma.characterExposureFact.deleteMany({ where: { id: partialDayFactId } });
+      await prisma.characterExposureFact.deleteMany({
+        where: { id: partialDayFactId },
+      });
       await prisma.characterFunnelDaily.deleteMany({
         where: {
           characterId: characterA,
@@ -947,107 +1074,123 @@ describe("Character Portfolio authority/read model", () => {
   });
 
   it("uses deterministic server-side cursor pagination and assigned producer scope", async () => {
-    const first = await listCharacterPortfolioData(prisma, characterPortfolioQuerySchema.parse({ limit: 1 }), { asOf });
+    const first = await listCharacterPortfolioData(
+      prisma,
+      characterPortfolioQuerySchema.parse({ limit: 1 }),
+      { asOf },
+    );
     expect(first.pageInfo).toMatchObject({ hasNextPage: true });
-    const second = await listCharacterPortfolioData(prisma, characterPortfolioQuerySchema.parse({
-      limit: 1,
-      cursor: first.pageInfo.endCursor as string,
-    }), { asOf });
+    const second = await listCharacterPortfolioData(
+      prisma,
+      characterPortfolioQuerySchema.parse({
+        limit: 1,
+        cursor: first.pageInfo.endCursor as string,
+      }),
+      { asOf },
+    );
     expect(second.items).toHaveLength(1);
     expect(second.items[0].characterId).not.toBe(first.items[0].characterId);
 
-    const assigned = await listCharacterPortfolioData(prisma, characterPortfolioQuerySchema.parse({ limit: 20 }), {
-      asOf,
-      assignedActorId: producerId,
-    });
-    expect(assigned.items.map((item) => item.characterId)).toEqual([characterA]);
   });
 
   it("orders by recency on request and pages back to the page it came from", async () => {
-    const all = await listCharacterPortfolioData(prisma, characterPortfolioQuerySchema.parse({
-      limit: 20,
-      sort: "updated_desc",
-    }), { asOf });
+    const all = await listCharacterPortfolioData(
+      prisma,
+      characterPortfolioQuerySchema.parse({
+        limit: 20,
+        sort: "updated_desc",
+      }),
+      { asOf },
+    );
     const projects = await prisma.characterProject.findMany({
       where: { characterId: { in: all.items.map((item) => item.characterId) } },
       orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
       select: { characterId: true },
     });
-    expect(all.items.map((item) => item.characterId)).toEqual(projects.map((project) => project.characterId));
+    expect(all.items.map((item) => item.characterId)).toEqual(
+      projects.map((project) => project.characterId),
+    );
     expect(all.pageInfo.totalCount).toBe(projects.length);
 
-    const first = await listCharacterPortfolioData(prisma, characterPortfolioQuerySchema.parse({
-      limit: 1,
-      sort: "updated_desc",
-    }), { asOf });
-    const second = await listCharacterPortfolioData(prisma, characterPortfolioQuerySchema.parse({
-      limit: 1,
-      sort: "updated_desc",
-      cursor: first.pageInfo.endCursor as string,
-    }), { asOf });
-    const back = await listCharacterPortfolioData(prisma, characterPortfolioQuerySchema.parse({
-      limit: 1,
-      sort: "updated_desc",
-      before: second.pageInfo.startCursor as string,
-    }), { asOf });
-    expect(back.items.map((item) => item.characterId)).toEqual(first.items.map((item) => item.characterId));
+    const first = await listCharacterPortfolioData(
+      prisma,
+      characterPortfolioQuerySchema.parse({
+        limit: 1,
+        sort: "updated_desc",
+      }),
+      { asOf },
+    );
+    const second = await listCharacterPortfolioData(
+      prisma,
+      characterPortfolioQuerySchema.parse({
+        limit: 1,
+        sort: "updated_desc",
+        cursor: first.pageInfo.endCursor as string,
+      }),
+      { asOf },
+    );
+    const back = await listCharacterPortfolioData(
+      prisma,
+      characterPortfolioQuerySchema.parse({
+        limit: 1,
+        sort: "updated_desc",
+        before: second.pageInfo.startCursor as string,
+      }),
+      { asOf },
+    );
+    expect(back.items.map((item) => item.characterId)).toEqual(
+      first.items.map((item) => item.characterId),
+    );
   });
 
   it("invalidates a cursor that was issued under a different sort", async () => {
-    const first = await listCharacterPortfolioData(prisma, characterPortfolioQuerySchema.parse({ limit: 1 }), { asOf });
-    await expect(listCharacterPortfolioData(prisma, characterPortfolioQuerySchema.parse({
-      limit: 1,
-      sort: "updated_desc",
-      cursor: first.pageInfo.endCursor as string,
-    }), { asOf })).rejects.toThrow(/invalid/);
-  });
-
-  it("records append-only Promote/Maintain/Improve/Pause/Retire evidence and filters by latest decision", async () => {
-    const decision = await createCharacterPortfolioDecision(prisma, {
-      characterId: characterA,
-      actor: { id: adminId, role: "admin" },
-      requestId: `portfolio-decision-request-${suffix}`,
-      body: {
-        releaseId: releaseA,
-        decision: "Promote",
-        question: "Should Astra receive more eligible exposure?",
-        evidenceRefs: [`performance:${releaseA}:28d`],
-        evidenceLevel: "attribution",
-        confidence: 0.8,
-        successCriteria: ["Eligible impressions increase without D7 regression"],
-        guardrails: ["same-character D7 must not decline"],
-        reviewAt: "2026-07-18T00:00:00.000Z",
-      },
-    });
-    expect(decision).toMatchObject({ decision: "Promote", releaseId: releaseA, evidenceLevel: "attribution" });
-    const filtered = await listCharacterPortfolioData(prisma, characterPortfolioQuerySchema.parse({
-      decision: "Promote",
-      limit: 20,
-    }), { asOf });
-    expect(filtered.items.map((item) => item.characterId)).toEqual([characterA]);
-    expect(filtered.items[0].latestDecision?.id).toBe(decision.id);
+    const first = await listCharacterPortfolioData(
+      prisma,
+      characterPortfolioQuerySchema.parse({ limit: 1 }),
+      { asOf },
+    );
+    await expect(
+      listCharacterPortfolioData(
+        prisma,
+        characterPortfolioQuerySchema.parse({
+          limit: 1,
+          sort: "created_desc",
+          cursor: first.pageInfo.endCursor as string,
+        }),
+        { asOf },
+      ),
+    ).rejects.toThrow(/invalid/);
   });
 
   it("enforces character.performance.read on the HTTP read surface", async () => {
-    const denied = await listCharacterPortfolio(new Request("http://localhost/api/v2/admin/characters/portfolio", {
-      headers: { "x-idream-user-id": producerId, "x-idream-role": "user" },
-    })).catch((error: unknown) => error);
+    const denied = await listCharacterPortfolio(
+      new Request("http://localhost/api/v2/admin/characters/portfolio", {
+        headers: { "x-idream-user-id": producerId, "x-idream-role": "user" },
+      }),
+    ).catch((error: unknown) => error);
     expect(denied).toMatchObject({ status: 403 });
 
-    const allowed = await listCharacterPortfolio(new Request("http://localhost/api/v2/admin/characters/portfolio?search=Astra", {
-      headers: { "x-idream-user-id": adminId, "x-idream-role": "admin" },
-    }));
+    const allowed = await listCharacterPortfolio(
+      new Request(
+        "http://localhost/api/v2/admin/characters/portfolio?search=Astra",
+        {
+          headers: { "x-idream-user-id": adminId, "x-idream-role": "admin" },
+        },
+      ),
+    );
     expect(allowed.status).toBe(200);
 
-    const performanceOnly = await listCharacterPortfolio(new Request(
-      "http://localhost/api/v2/admin/characters/portfolio?search=Astra",
-      {
-        headers: {
-          "x-idream-user-id": analystId,
-          "x-idream-role": "analyst",
+    const performanceOnly = await listCharacterPortfolio(
+      new Request(
+        "http://localhost/api/v2/admin/characters/portfolio?search=Astra",
+        {
+          headers: {
+            "x-idream-user-id": analystId,
+            "x-idream-role": "analyst",
+          },
         },
-      },
-    ));
+      ),
+    );
     expect(performanceOnly.status).toBe(200);
     const payload = await performanceOnly.json();
     expect(payload.data.items[0].visualProduction).toMatchObject({
@@ -1076,15 +1219,17 @@ describe("Character Portfolio authority/read model", () => {
       },
     });
     try {
-      const response = await listCharacterPortfolio(new Request(
-        "http://localhost/api/v2/admin/characters/portfolio?limit=20",
-        {
-          headers: {
-            "x-idream-user-id": scopedViewerId,
-            "x-idream-role": "user",
+      const response = await listCharacterPortfolio(
+        new Request(
+          "http://localhost/api/v2/admin/characters/portfolio?limit=20",
+          {
+            headers: {
+              "x-idream-user-id": scopedViewerId,
+              "x-idream-role": "user",
+            },
           },
-        },
-      ));
+        ),
+      );
       expect(response.status).toBe(200);
       const payload = await response.json();
       const itemA = payload.data.items.find(
@@ -1143,15 +1288,17 @@ describe("Character Portfolio authority/read model", () => {
       },
     });
     try {
-      const response = await listCharacterPortfolio(new Request(
-        "http://localhost/api/v2/admin/characters/portfolio?limit=20",
-        {
-          headers: {
-            "x-idream-user-id": globalCreativeViewerId,
-            "x-idream-role": "analyst",
+      const response = await listCharacterPortfolio(
+        new Request(
+          "http://localhost/api/v2/admin/characters/portfolio?limit=20",
+          {
+            headers: {
+              "x-idream-user-id": globalCreativeViewerId,
+              "x-idream-role": "analyst",
+            },
           },
-        },
-      ));
+        ),
+      );
       expect(response.status).toBe(200);
       const payload = await response.json();
       const itemA = payload.data.items.find(
@@ -1163,7 +1310,7 @@ describe("Character Portfolio authority/read model", () => {
       expect(itemA.visualProduction).toMatchObject({
         primaryImageUrl: `/media/${draftCoverAssetId}`,
         primaryImageSource: "draft",
-        draftPurposes: ["character_cover", "character_hero"],
+        draftPurposes: ["character_cover", "character_hero", "character_chat"],
       });
       expect(itemB.visualProduction).toMatchObject({
         primaryImageUrl: `/media/${characterBAnchorAssetId}`,
@@ -1193,15 +1340,17 @@ describe("Character Portfolio authority/read model", () => {
     });
     expect(malformedGrant.scope).toBeNull();
 
-    const response = await listCharacterPortfolio(new Request(
-      "http://localhost/api/v2/admin/characters/portfolio?limit=20",
-      {
-        headers: {
-          "x-idream-user-id": unscopedProducerViewerId,
-          "x-idream-role": "user",
+    const response = await listCharacterPortfolio(
+      new Request(
+        "http://localhost/api/v2/admin/characters/portfolio?limit=20",
+        {
+          headers: {
+            "x-idream-user-id": unscopedProducerViewerId,
+            "x-idream-role": "user",
+          },
         },
-      },
-    ));
+      ),
+    );
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       data: { items: [] },
@@ -1214,24 +1363,31 @@ describe("Character Portfolio authority/read model", () => {
       data: {
         id: orphanProjectId,
         characterId: `missing-character-${suffix}`,
-        phase: "qa",
-        audience: {},
-        successCriteria: [],
       },
     });
     try {
-      const data = await listCharacterPortfolioData(prisma, characterPortfolioQuerySchema.parse({
-        phase: "qa",
-        limit: 20,
-      }), { asOf });
+      const data = await listCharacterPortfolioData(
+        prisma,
+        characterPortfolioQuerySchema.parse({
+          limit: 20,
+        }),
+        {
+          asOf,
+          authorizedCharacterIds: [`missing-character-${suffix}`],
+        },
+      );
       expect(data.items).toEqual([]);
       expect(data.freshness).toBe("degraded");
-      expect(data.dataQuality).toContainEqual(expect.objectContaining({
-        code: "character_project_orphan",
-        severity: "error",
-      }));
+      expect(data.dataQuality).toContainEqual(
+        expect.objectContaining({
+          code: "character_project_orphan",
+          severity: "error",
+        }),
+      );
     } finally {
-      await prisma.characterProject.deleteMany({ where: { id: orphanProjectId } });
+      await prisma.characterProject.deleteMany({
+        where: { id: orphanProjectId },
+      });
     }
   });
 });

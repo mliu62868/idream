@@ -5,8 +5,8 @@ import { useState } from "react";
 import { MemoryToggle } from "./MemoryToggle";
 
 // SPEC: Official igrep owns item-level generic memory inside DSH. The product
-// exposes only the supported authority controls: memory on/off and a whole
-// relationship reset. It must not invent a second list/edit/delete authority.
+// exposes only the supported authority controls: memory on/off and clear all.
+// It must not invent a second list/edit/delete authority.
 export function MemoryPanel({
   open,
   onClose,
@@ -14,7 +14,6 @@ export function MemoryPanel({
   memoryEnabled,
   memoryPending,
   onToggleMemory,
-  onRelationshipReset,
 }: Readonly<{
   open: boolean;
   onClose: () => void;
@@ -22,7 +21,6 @@ export function MemoryPanel({
   memoryEnabled: boolean;
   memoryPending: boolean;
   onToggleMemory: () => void;
-  onRelationshipReset: () => void;
 }>) {
   const [resetting, setResetting] = useState(false);
   const [resetConfirm, setResetConfirm] = useState(false);
@@ -32,7 +30,7 @@ export function MemoryPanel({
   // INTENT: 服务端会归档这个角色的活跃会话，所以留在原地的用户下一条消息必然被
   // 拒（"This chat has been archived."）。重置的承诺是"start over"，那就真的把人
   // 带到新对话里；开不出新会话时才退回原地刷新，至少长期记忆已经清干净了。
-  async function resetRelationship() {
+  async function clearMemory() {
     if (!characterId) return;
     if (!resetConfirm) {
       setResetConfirm(true);
@@ -42,7 +40,7 @@ export function MemoryPanel({
     setResetFailed(false);
     try {
       const response = await fetch(
-        `/api/v1/chat/relationships/${encodeURIComponent(characterId)}`,
+        `/api/v1/chat/memory/${encodeURIComponent(characterId)}`,
         { method: "DELETE" },
       );
       if (!response.ok) {
@@ -65,7 +63,7 @@ export function MemoryPanel({
           return;
         }
       }
-      onRelationshipReset();
+      window.location.href = "/chat";
     } catch {
       setResetFailed(true);
     } finally {
@@ -82,7 +80,7 @@ export function MemoryPanel({
 
   return (
     <div
-      aria-label="Memory and relationship"
+      aria-label="Memory settings"
       aria-modal="true"
       className="fixed inset-0 z-50 flex"
       role="dialog"
@@ -121,7 +119,7 @@ export function MemoryPanel({
           <div className="my-4 h-px bg-[rgb(36,36,36)]" />
 
           <h3 className="mb-1 text-[12px] font-bold uppercase tracking-wide text-[rgb(170,170,170)]">
-            Relationship
+            Clear memory
           </h3>
           <p className="mb-3 text-[12px] leading-4 text-[rgb(114,113,112)]">
             {resetConfirm
@@ -129,23 +127,23 @@ export function MemoryPanel({
               : "Clear everything this character remembers about you and start a new conversation."}
           </p>
           <button
-            aria-label={resetConfirm ? "Confirm reset relationship" : "Reset relationship"}
+            aria-label={resetConfirm ? "Confirm clear memory" : "Clear memory"}
             className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-[rgb(36,36,36)] px-4 py-2 text-[13px] font-semibold text-[rgb(170,170,170)] transition-colors hover:text-white disabled:opacity-50"
-            data-testid="relationship-reset"
+            data-testid="memory-clear"
             disabled={resetting || !characterId}
-            onClick={resetRelationship}
+            onClick={clearMemory}
             type="button"
           >
             <RotateCcw className="h-4 w-4" />
-            {resetConfirm ? "Confirm reset" : "Reset relationship"}
+            {resetConfirm ? "Confirm clear" : "Clear memory"}
           </button>
           {resetFailed ? (
             <p
               className="mt-2 text-[12px] leading-4 text-[rgb(255,138,128)]"
-              data-testid="relationship-reset-error"
+              data-testid="memory-clear-error"
               role="status"
             >
-              Couldn&apos;t reset the relationship. Nothing was changed — try again.
+              Couldn&apos;t confirm memory was cleared. Old chats may already be archived — try again.
             </p>
           ) : null}
         </div>

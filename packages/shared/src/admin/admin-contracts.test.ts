@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import {
   adminCommandAcceptedSchema,
   adminCommandHeadersSchema,
@@ -7,9 +8,7 @@ import {
   adminListResponseSchema,
   approvalBindingSchema,
   ADMIN_METRIC_REGISTRY,
-  characterProjectSchema,
   characterReleaseRollbackCommandRequestSchema,
-  characterReleaseScheduleCommandRequestSchema,
   characterReleaseSchema,
   caseVerificationRequestSchema,
   creativeRunSchema,
@@ -30,59 +29,58 @@ const now = "2026-07-11T12:00:00.000Z";
 describe("Admin API v2 public contracts", () => {
   it("separates new backfill options from persisted Run continuation", () => {
     expect(adminBackfillRequestSchema.parse({})).toEqual({ dryRun: true });
-    expect(adminBackfillRequestSchema.parse({ runId: "run_1" })).toEqual({ runId: "run_1" });
-    expect(adminBackfillRequestSchema.safeParse({ runId: "run_1", dryRun: false }).success).toBe(false);
-    expect(adminBackfillRequestSchema.safeParse({ runId: "run_1", batchSize: 20 }).success).toBe(false);
+    expect(adminBackfillRequestSchema.parse({ runId: "run_1" })).toEqual({
+      runId: "run_1",
+    });
+    expect(
+      adminBackfillRequestSchema.safeParse({ runId: "run_1", dryRun: false })
+        .success,
+    ).toBe(false);
+    expect(
+      adminBackfillRequestSchema.safeParse({ runId: "run_1", batchSize: 20 })
+        .success,
+    ).toBe(false);
   });
 
   it("requires authoritative totals and provenance for every Today queue", () => {
     const emptyQueue = { totalCount: 0, items: [] };
-    expect(todayProjectionSchema.safeParse({
-      myShift: emptyQueue,
-      nextBestActions: emptyQueue,
-      unassigned: emptyQueue,
-      watching: emptyQueue,
-      recentlyResolved: emptyQueue,
-      asOf: now,
-      freshness: "fresh",
-      workMode: "admin",
-      rankingPolicyVersion: "today-ranking-v1",
-    }).success).toBe(true);
-    expect(todayProjectionSchema.safeParse({
-      myShift: { items: [] },
-      nextBestActions: emptyQueue,
-      unassigned: emptyQueue,
-      watching: emptyQueue,
-      recentlyResolved: emptyQueue,
-      asOf: now,
-      freshness: "fresh",
-      workMode: "admin",
-      rankingPolicyVersion: "today-ranking-v1",
-    }).success).toBe(false);
+    expect(
+      todayProjectionSchema.safeParse({
+        myShift: emptyQueue,
+        nextBestActions: emptyQueue,
+        unassigned: emptyQueue,
+        watching: emptyQueue,
+        recentlyResolved: emptyQueue,
+        asOf: now,
+        freshness: "fresh",
+        workMode: "admin",
+        rankingPolicyVersion: "today-ranking-v1",
+      }).success,
+    ).toBe(true);
+    expect(
+      todayProjectionSchema.safeParse({
+        myShift: { items: [] },
+        nextBestActions: emptyQueue,
+        unassigned: emptyQueue,
+        watching: emptyQueue,
+        recentlyResolved: emptyQueue,
+        asOf: now,
+        freshness: "fresh",
+        workMode: "admin",
+        rankingPolicyVersion: "today-ranking-v1",
+      }).success,
+    ).toBe(false);
   });
 
   it("accepts a cursor list envelope and rejects a response without freshness metadata", () => {
-    const schema = adminListResponseSchema(characterProjectSchema);
-    const project = {
-      id: "project_1",
-      characterId: "character_1",
-      ownerId: "user_1",
-      phase: "producing",
-      audience: "relationship-focused adults",
-      companionNeed: "consistent daily conversation",
-      hypothesis: "a calm voice improves return visits",
-      differentiation: "grounded and reflective",
-      targetPlacementKeys: ["explore.featured"],
-      successCriteria: ["same-character D7 improves"],
-      plannedLaunchAt: now,
-      version: 3,
-      createdAt: now,
-      updatedAt: now,
-    };
+    const schema = adminListResponseSchema(
+      z.object({ id: z.string().min(1) }).strict(),
+    );
+    const item = { id: "item_1" };
 
     expect(
       schema.safeParse({
-        items: [project],
+        items: [item],
         pageInfo: { endCursor: "cursor_1", hasNextPage: true },
         asOf: now,
         freshness: "fresh",
@@ -90,7 +88,7 @@ describe("Admin API v2 public contracts", () => {
     ).toBe(true);
     expect(
       schema.safeParse({
-        items: [project],
+        items: [item],
         pageInfo: { endCursor: null, hasNextPage: false },
         asOf: now,
       }).success,
@@ -137,34 +135,66 @@ describe("Admin API v2 public contracts", () => {
     ).toBe(false);
   });
 
-  it("requires an exact future-shaped timestamp for schedule and rejects extra rollback payload", () => {
+  it("rejects extra rollback payload", () => {
     const base = {
       entityVersion: 3,
-      reason: { code: "operator_verified", summary: "Verified release command" },
-      confirmation: "character:release:schedule",
+      reason: {
+        code: "operator_verified",
+        summary: "Verified release command",
+      },
+      confirmation: "character:release:rollback",
     };
     expect(
-      characterReleaseScheduleCommandRequestSchema.safeParse({
-        ...base,
-        scheduledAt: "2026-07-20T12:00:00.000Z",
-      }).success,
+      characterReleaseRollbackCommandRequestSchema.safeParse(base).success,
     ).toBe(true);
     expect(
-      characterReleaseScheduleCommandRequestSchema.safeParse({ ...base, scheduledAt: "tomorrow" }).success,
-    ).toBe(false);
-    expect(characterReleaseRollbackCommandRequestSchema.safeParse(base).success).toBe(true);
-    expect(
-      characterReleaseRollbackCommandRequestSchema.safeParse({ ...base, sourceReleaseId: "hidden-body-target" }).success,
+      characterReleaseRollbackCommandRequestSchema.safeParse({
+        ...base,
+        sourceReleaseId: "hidden-body-target",
+      }).success,
     ).toBe(false);
   });
 
   it.each([
-    [{ generated: 0, failed: 4, reviewed: 0, approved: 0, placed: 0, total: 4 }, "failed"],
-    [{ generated: 1, failed: 3, reviewed: 1, approved: 1, placed: 0, total: 4 }, "partially_succeeded"],
-    [{ generated: 4, failed: 0, reviewed: 4, approved: 4, placed: 4, total: 4 }, "succeeded"],
-  ] as const)("derives creative outcome from item facts", (counts, expected) => {
-    expect(deriveCreativeExecutionOutcome(counts)).toBe(expected);
-  });
+    [
+      {
+        generated: 0,
+        failed: 4,
+        reviewed: 0,
+        approved: 0,
+        placed: 0,
+        total: 4,
+      },
+      "failed",
+    ],
+    [
+      {
+        generated: 1,
+        failed: 3,
+        reviewed: 1,
+        approved: 1,
+        placed: 0,
+        total: 4,
+      },
+      "partially_succeeded",
+    ],
+    [
+      {
+        generated: 4,
+        failed: 0,
+        reviewed: 4,
+        approved: 4,
+        placed: 4,
+        total: 4,
+      },
+      "succeeded",
+    ],
+  ] as const)(
+    "derives creative outcome from item facts",
+    (counts, expected) => {
+      expect(deriveCreativeExecutionOutcome(counts)).toBe(expected);
+    },
+  );
 
   it("rejects creative count combinations that cannot be true", () => {
     const fixture = {
@@ -180,7 +210,14 @@ describe("Admin API v2 public contracts", () => {
       reviewState: "in_review",
       deploymentState: "unplaced",
       verificationState: "pending",
-      counts: { generated: 1, failed: 3, reviewed: 2, approved: 0, placed: 0, total: 4 },
+      counts: {
+        generated: 1,
+        failed: 3,
+        reviewed: 2,
+        approved: 0,
+        placed: 0,
+        total: 4,
+      },
       version: 2,
       createdAt: now,
       updatedAt: now,
@@ -199,13 +236,23 @@ describe("Admin API v2 public contracts", () => {
         ownerId: "ops_1",
         firstSeenAt: now,
         lastSeenAt: now,
-        impact: { affectedRequests: 8, affectedUsers: 6, failedCostMicros: 5000, refundMicros: 0 },
+        impact: {
+          affectedRequests: 8,
+          affectedUsers: 6,
+          failedCostMicros: 5000,
+          refundMicros: 0,
+        },
         suspectedCause: "provider timeout",
         causeConfidence: 0.8,
         recommendedActions: ["pause route"],
         runbookUrl: "/admin/system/runbooks/provider-timeout",
         rollbackTarget: null,
-        recoveryVerification: { state: "verifying", checkedAt: now, evidenceRefs: [], checks: null },
+        recoveryVerification: {
+          state: "verifying",
+          checkedAt: now,
+          evidenceRefs: [],
+          checks: null,
+        },
         version: 2,
         createdAt: now,
         updatedAt: now,
@@ -232,33 +279,40 @@ describe("Admin API v2 public contracts", () => {
       createdAt: now,
       updatedAt: now,
     };
-    expect(operationsCaseSchema.safeParse(closedWithoutResolution).success).toBe(false);
+    expect(
+      operationsCaseSchema.safeParse(closedWithoutResolution).success,
+    ).toBe(false);
   });
 
   it("requires evidence and an audited reason for verification overrides", () => {
-    expect(incidentRecoveryVerificationRequestSchema.safeParse({
-      entityVersion: 4,
-      mode: "derive",
-      evidenceRefs: [],
-      checks: {
-        successRateRecovered: true,
-        signatureGrowthStopped: true,
-        backlogRecovering: false,
-        failedRequestPlanComplete: true,
-        settlementReconciled: true,
-      },
-    }).success).toBe(false);
-    expect(incidentRecoveryVerificationRequestSchema.safeParse({
-      entityVersion: 4,
-      mode: "derive",
-      evidenceRefs: [],
-    }).success).toBe(true);
+    expect(
+      incidentRecoveryVerificationRequestSchema.safeParse({
+        entityVersion: 4,
+        mode: "derive",
+        evidenceRefs: [],
+        checks: {
+          successRateRecovered: true,
+          signatureGrowthStopped: true,
+          backlogRecovering: false,
+          failedRequestPlanComplete: true,
+          settlementReconciled: true,
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      incidentRecoveryVerificationRequestSchema.safeParse({
+        entityVersion: 4,
+        mode: "derive",
+        evidenceRefs: [],
+      }).success,
+    ).toBe(true);
     expect(
       incidentRecoveryVerificationRequestSchema.safeParse({
         entityVersion: 4,
         mode: "override",
         evidenceRefs: ["metric-window-1"],
-        overrideReason: "Backlog signal is unavailable; manual queue sample attached.",
+        overrideReason:
+          "Backlog signal is unavailable; manual queue sample attached.",
       }).success,
     ).toBe(true);
 
@@ -304,7 +358,10 @@ describe("Admin API v2 public contracts", () => {
       validationEvidence: [],
     };
     expect(metricDefinitionSchema.safeParse(definition).success).toBe(true);
-    expect(metricDefinitionSchema.safeParse({ ...definition, queryHash: "" }).success).toBe(false);
+    expect(
+      metricDefinitionSchema.safeParse({ ...definition, queryHash: "" })
+        .success,
+    ).toBe(false);
 
     expect(
       metricCardSchema.safeParse({
@@ -373,32 +430,40 @@ describe("Admin API v2 public contracts", () => {
     expect(
       adminErrorResponseSchema.safeParse({
         ok: false,
-        error: { code: "permission_denied", message: "Denied", requestId: "request_1" },
+        error: {
+          code: "permission_denied",
+          message: "Denied",
+          requestId: "request_1",
+        },
       }).success,
     ).toBe(false);
   });
 
   it("validates the Creative review, distribution placement, and verification commands", () => {
-    expect(creativeReviewDecisionRequestSchema.safeParse({
-      entityVersion: 4,
-      decision: "approved",
-      identityConsistency: "passed",
-      score: 92,
-      reason: "Matches the approved brief",
-    }).success).toBe(true);
-    expect(creativePlacementPublishRequestSchema.safeParse({
-      entityVersion: 5,
-      itemId: "item_1",
-      assetId: "asset_1",
-      slot: "campaign",
-      targetType: "campaign",
-      targetId: "campaign_1",
-      eyebrow: "  Featured  ",
-      title: "  Summer dreamers  ",
-      ctaLabel: "  Open collection  ",
-      href: "  /community?collection=summer  ",
-      reason: "Publish the approved asset",
-    })).toMatchObject({
+    expect(
+      creativeReviewDecisionRequestSchema.safeParse({
+        entityVersion: 4,
+        decision: "approved",
+        identityConsistency: "passed",
+        score: 92,
+        reason: "Matches the approved brief",
+      }).success,
+    ).toBe(true);
+    expect(
+      creativePlacementPublishRequestSchema.safeParse({
+        entityVersion: 5,
+        itemId: "item_1",
+        assetId: "asset_1",
+        slot: "campaign",
+        targetType: "campaign",
+        targetId: "campaign_1",
+        eyebrow: "  Featured  ",
+        title: "  Summer dreamers  ",
+        ctaLabel: "  Open collection  ",
+        href: "  /community?collection=summer  ",
+        reason: "Publish the approved asset",
+      }),
+    ).toMatchObject({
       success: true,
       data: {
         eyebrow: "Featured",
@@ -407,88 +472,106 @@ describe("Admin API v2 public contracts", () => {
         href: "/community?collection=summer",
       },
     });
-    expect(creativePlacementPublishRequestSchema.safeParse({
-      entityVersion: 5,
-      itemId: "item_1",
-      assetId: "asset_1",
-      slot: "campaign",
-      targetType: "campaign",
-      targetId: "campaign_1",
-      eyebrow: "Featured",
-      title: "Summer dreamers",
-      reason: "Publish an informational campaign without a CTA",
-    }).success).toBe(true);
-    expect(creativePlacementPublishRequestSchema.safeParse({
-      entityVersion: 5,
-      itemId: "item_1",
-      assetId: "asset_1",
-      slot: "campaign",
-      targetType: "campaign",
-      targetId: "campaign_1",
-      eyebrow: "Featured",
-      title: "Summer dreamers",
-      ctaLabel: "Open collection",
-      reason: "A CTA label without a destination is incomplete",
-    }).success).toBe(false);
-    expect(creativePlacementPublishRequestSchema.safeParse({
-      entityVersion: 5,
-      itemId: "item_1",
-      assetId: "asset_1",
-      slot: "campaign",
-      targetType: "campaign",
-      targetId: "campaign_1",
-      eyebrow: "Featured",
-      title: "Summer dreamers",
-      href: "/community?collection=summer",
-      reason: "A CTA destination without a label is incomplete",
-    }).success).toBe(false);
-    expect(creativePlacementPublishRequestSchema.safeParse({
-      entityVersion: 5,
-      itemId: "item_1",
-      assetId: "asset_1",
-      slot: "campaign",
-      targetType: "campaign",
-      targetId: "campaign_1",
-      reason: "Missing authored copy cannot become runtime authority",
-    }).success).toBe(false);
-    expect(creativePlacementPublishRequestSchema.safeParse({
-      entityVersion: 5,
-      itemId: "item_1",
-      assetId: "asset_1",
-      slot: "campaign",
-      targetType: "campaign",
-      targetId: "campaign_1",
-      eyebrow: "Featured",
-      title: "Summer dreamers",
-      href: "javascript:alert(1)",
-      reason: "Unsafe authored links cannot become runtime authority",
-    }).success).toBe(false);
-    expect(creativePlacementPublishRequestSchema.safeParse({
-      entityVersion: 5,
-      itemId: "item_1",
-      assetId: "asset_1",
-      slot: "feed_card",
-      targetType: "campaign",
-      targetId: "campaign_1",
-      eyebrow: "Featured",
-      title: "Summer dreamers",
-      reason: "Legacy surfaces cannot bypass runtime verification",
-    }).success).toBe(false);
-    expect(creativePlacementVerificationRequestSchema.safeParse({
-      entityVersion: 6,
-      reason: "Observed expected asset in the current slot",
-    }).success).toBe(true);
-    expect(creativeReviewDecisionRequestSchema.safeParse({
-      entityVersion: 4,
-      decision: "approved",
-      identityConsistency: "passed",
-      score: 101,
-      reason: "Invalid score",
-    }).success).toBe(false);
+    expect(
+      creativePlacementPublishRequestSchema.safeParse({
+        entityVersion: 5,
+        itemId: "item_1",
+        assetId: "asset_1",
+        slot: "campaign",
+        targetType: "campaign",
+        targetId: "campaign_1",
+        eyebrow: "Featured",
+        title: "Summer dreamers",
+        reason: "Publish an informational campaign without a CTA",
+      }).success,
+    ).toBe(true);
+    expect(
+      creativePlacementPublishRequestSchema.safeParse({
+        entityVersion: 5,
+        itemId: "item_1",
+        assetId: "asset_1",
+        slot: "campaign",
+        targetType: "campaign",
+        targetId: "campaign_1",
+        eyebrow: "Featured",
+        title: "Summer dreamers",
+        ctaLabel: "Open collection",
+        reason: "A CTA label without a destination is incomplete",
+      }).success,
+    ).toBe(false);
+    expect(
+      creativePlacementPublishRequestSchema.safeParse({
+        entityVersion: 5,
+        itemId: "item_1",
+        assetId: "asset_1",
+        slot: "campaign",
+        targetType: "campaign",
+        targetId: "campaign_1",
+        eyebrow: "Featured",
+        title: "Summer dreamers",
+        href: "/community?collection=summer",
+        reason: "A CTA destination without a label is incomplete",
+      }).success,
+    ).toBe(false);
+    expect(
+      creativePlacementPublishRequestSchema.safeParse({
+        entityVersion: 5,
+        itemId: "item_1",
+        assetId: "asset_1",
+        slot: "campaign",
+        targetType: "campaign",
+        targetId: "campaign_1",
+        reason: "Missing authored copy cannot become runtime authority",
+      }).success,
+    ).toBe(false);
+    expect(
+      creativePlacementPublishRequestSchema.safeParse({
+        entityVersion: 5,
+        itemId: "item_1",
+        assetId: "asset_1",
+        slot: "campaign",
+        targetType: "campaign",
+        targetId: "campaign_1",
+        eyebrow: "Featured",
+        title: "Summer dreamers",
+        href: "javascript:alert(1)",
+        reason: "Unsafe authored links cannot become runtime authority",
+      }).success,
+    ).toBe(false);
+    expect(
+      creativePlacementPublishRequestSchema.safeParse({
+        entityVersion: 5,
+        itemId: "item_1",
+        assetId: "asset_1",
+        slot: "feed_card",
+        targetType: "campaign",
+        targetId: "campaign_1",
+        eyebrow: "Featured",
+        title: "Summer dreamers",
+        reason: "Legacy surfaces cannot bypass runtime verification",
+      }).success,
+    ).toBe(false);
+    expect(
+      creativePlacementVerificationRequestSchema.safeParse({
+        entityVersion: 6,
+        reason: "Observed expected asset in the current slot",
+      }).success,
+    ).toBe(true);
+    expect(
+      creativeReviewDecisionRequestSchema.safeParse({
+        entityVersion: 4,
+        decision: "approved",
+        identityConsistency: "passed",
+        score: 101,
+        reason: "Invalid score",
+      }).success,
+    ).toBe(false);
   });
 
   it("ships an immutable registry with unsafe legacy metrics blocked for decisions", () => {
-    const identities = ADMIN_METRIC_REGISTRY.map(({ key, version }) => `${key}@${version}`);
+    const identities = ADMIN_METRIC_REGISTRY.map(
+      ({ key, version }) => `${key}@${version}`,
+    );
     expect(new Set(identities).size).toBe(identities.length);
     for (const key of [
       "legacy.activated_users",
@@ -496,16 +579,26 @@ describe("Admin API v2 public contracts", () => {
       "legacy.same_character_d1",
       "legacy.same_character_d7",
     ]) {
-      expect(ADMIN_METRIC_REGISTRY.find((definition) => definition.key === key)).toMatchObject({
+      expect(
+        ADMIN_METRIC_REGISTRY.find((definition) => definition.key === key),
+      ).toMatchObject({
         qualityState: "invalid",
         decisionUse: "blocked",
       });
     }
-    expect(ADMIN_METRIC_REGISTRY.find((definition) => definition.key === "flag_monitoring.exposure")).toMatchObject({
+    expect(
+      ADMIN_METRIC_REGISTRY.find(
+        (definition) => definition.key === "flag_monitoring.exposure",
+      ),
+    ).toMatchObject({
       qualityState: "directional",
       decisionUse: "directional_only",
     });
-    expect(ADMIN_METRIC_REGISTRY.find((definition) => definition.key === "north_star.wpcu")).toMatchObject({
+    expect(
+      ADMIN_METRIC_REGISTRY.find(
+        (definition) => definition.key === "north_star.wpcu",
+      ),
+    ).toMatchObject({
       publicationStatus: "official",
       decisionGate: expect.stringContaining("NS-01"),
       qualityState: "invalid",
@@ -513,14 +606,24 @@ describe("Admin API v2 public contracts", () => {
       lastValidatedAt: null,
       validationEvidence: [],
     });
-    for (const key of ["north_star.wscu", "guardrail.wscru", "business.wpscu"]) {
-      expect(ADMIN_METRIC_REGISTRY.find((definition) => definition.key === key)).toMatchObject({
+    for (const key of [
+      "north_star.wscu",
+      "guardrail.wscru",
+      "business.wpscu",
+    ]) {
+      expect(
+        ADMIN_METRIC_REGISTRY.find((definition) => definition.key === key),
+      ).toMatchObject({
         publicationStatus: "shadow",
         decisionGate: "NS-01",
         decisionUse: "directional_only",
       });
     }
-    expect(ADMIN_METRIC_REGISTRY.find((definition) => definition.key === "relationship.qce_activation.v1")).toMatchObject({
+    expect(
+      ADMIN_METRIC_REGISTRY.find(
+        (definition) => definition.key === "relationship.qce_activation.v1",
+      ),
+    ).toMatchObject({
       sourceFacts: ["experiment_exposure_fact", "chat_exchange_fact"],
       qualityState: "invalid",
       decisionUse: "blocked",

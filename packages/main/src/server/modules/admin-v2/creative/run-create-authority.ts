@@ -215,14 +215,14 @@ export async function resolveProductionBootstrapAuthority(
   const project = await db.characterProject.findFirst({
     where: { characterId },
     orderBy: { updatedAt: "desc" },
-    select: { id: true, version: true, phase: true },
+    select: { id: true, version: true },
   });
   const content = await db.characterContentVersion.findFirst({
     where: { characterId },
     orderBy: { version: "desc" },
     select: { id: true, appearanceSnapshot: true },
   });
-  if (!project || !content || !["idea", "planned", "producing"].includes(project.phase)) return null;
+  if (!project || !content) return null;
   return {
     projectId: project.id,
     projectVersion: project.version,

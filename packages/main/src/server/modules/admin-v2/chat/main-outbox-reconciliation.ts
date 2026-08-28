@@ -1,12 +1,16 @@
 import {
   MAIN_TO_CHAT_EVENTS,
+  LEGACY_MAIN_TO_CHAT_EVENTS,
   durableEnvelopeHash,
   durableEventEnvelopeSchema,
   resolveMainToChatTarget,
   type DurableEventEnvelope,
 } from "@idream/shared/contracts";
 
-const CHAT_EVENT_TYPES = Object.values(MAIN_TO_CHAT_EVENTS);
+const CHAT_EVENT_TYPES = [
+  ...Object.values(MAIN_TO_CHAT_EVENTS),
+  ...Object.values(LEGACY_MAIN_TO_CHAT_EVENTS),
+];
 const CHAT_EVENT_TYPE_SET = new Set<string>(CHAT_EVENT_TYPES);
 
 export type MainToChatReceiverReceipt = {

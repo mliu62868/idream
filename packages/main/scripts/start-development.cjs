@@ -94,7 +94,10 @@ function waitForChild(child, runtime) {
   });
 }
 
-if (require.main === module) {
+if (
+  require.main === module ||
+  process.env.IDREAM_PM2_BUN_ENTRYPOINT === "main-development"
+) {
   void runDevelopment()
     .then((status) => {
       process.exitCode = status;

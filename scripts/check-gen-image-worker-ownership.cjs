@@ -5,12 +5,19 @@ const path = require("node:path");
 
 const repoRoot = path.resolve(__dirname, "..");
 const genCwd = path.join(repoRoot, "packages/gen");
-const genTsxEntrypoint = path.join(genCwd, "node_modules/tsx/dist/cli.mjs");
+const legacyGenTsxEntrypoint = path.join(
+  genCwd,
+  "node_modules/tsx/dist/cli.mjs",
+);
+const pm2BunProcessContainer = require.resolve(
+  "pm2/lib/ProcessContainerForkBun.js",
+);
 const requireFromGen = createRequire(path.join(genCwd, "package.json"));
 const workerSpecs = {
   image: {
     appName: "gen-image",
-    entrypoint: "src/image.ts",
+    sourceEntrypoint: "src/image.ts",
+    builtEntrypoint: "dist/image.js",
     queue: "ai.image.generate",
     runIdEnv: "GEN_IMAGE_WORKER_RUN_ID",
     identityPattern:
@@ -18,7 +25,8 @@ const workerSpecs = {
   },
   video: {
     appName: "gen-video",
-    entrypoint: "src/video.ts",
+    sourceEntrypoint: "src/video.ts",
+    builtEntrypoint: "dist/video.js",
     queue: "ai.video.generate",
     runIdEnv: "GEN_VIDEO_WORKER_RUN_ID",
     identityPattern:
@@ -71,12 +79,17 @@ function pm2Identity(process, spec) {
   const slot = Number(env.NODE_APP_INSTANCE);
   const pid = Number(process.pid);
   const pmId = Number(process.pm_id);
+  const expectedEntrypoint =
+    env.IDREAM_PM2_MODE === "production"
+      ? spec.builtEntrypoint
+      : spec.sourceEntrypoint;
+  const interpreter = String(env.exec_interpreter ?? "");
   const correct =
     process.name === spec.appName &&
     env.pm_cwd === genCwd &&
-    env.pm_exec_path === genTsxEntrypoint &&
-    JSON.stringify(normalizeArgs(env.args)) ===
-      JSON.stringify([spec.entrypoint]) &&
+    env.pm_exec_path === path.join(genCwd, expectedEntrypoint) &&
+    normalizeArgs(env.args).length === 0 &&
+    (interpreter === "bun" || path.basename(interpreter) === "bun") &&
     Number.isSafeInteger(slot) &&
     slot >= 0 &&
     Number.isSafeInteger(pmId) &&
@@ -96,12 +109,23 @@ function pm2Identity(process, spec) {
 }
 
 function isWorkerRuntime(row, spec) {
-  const escaped = spec.entrypoint.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?:^|\\s)${escaped}(?:\\s|$)`).test(row.command);
+  return [spec.sourceEntrypoint, spec.builtEntrypoint].some((entrypoint) => {
+    const escaped = entrypoint.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(?:^|\\s)${escaped}(?:\\s|$)`).test(row.command);
+  });
 }
 
-function isGenTsxWrapper(row) {
-  return row.command.includes(genTsxEntrypoint);
+function isLegacyGenTsxWrapper(row) {
+  return row.command.includes(legacyGenTsxEntrypoint);
+}
+
+function isPm2BunRuntime(row) {
+  const [executable, container, ...rest] = row.command.split(/\s+/);
+  return (
+    path.basename(executable ?? "") === "bun" &&
+    container === pm2BunProcessContainer &&
+    rest.length === 0
+  );
 }
 
 function redisIdentity(worker, spec = workerSpecs.image) {
@@ -175,7 +199,33 @@ function classifySingleOwnership(input, spec) {
   const assignedRuntimePids = new Set();
   const groups = [];
 
-  for (const wrapper of input.psRows.filter(isGenTsxWrapper)) {
+  // PM2's Bun interpreter executes the app inside ProcessContainerForkBun.js;
+  // the PM2 pid is still the Bun runtime and BullMQ identity. The exact PM2
+  // definition above supplies the app/entrypoint authority that ps cannot.
+  for (const registered of livePm2) {
+    const runtime = input.psRows.find(
+      (row) =>
+        row.pid === registered.pid &&
+        row.ppid === daemonPid &&
+        row.pgid === row.pid &&
+        isPm2BunRuntime(row),
+    );
+    if (!runtime) continue;
+    assignedRuntimePids.add(runtime.pid);
+    groups.push({
+      rootPid: runtime.pid,
+      runtimePid: runtime.pid,
+      pgid: runtime.pgid,
+      startedAt: runtime.startedAt,
+      classification: "registered",
+      slot: registered.slot,
+    });
+  }
+
+  // Legacy tsx process groups are rejection/recovery signatures only. They are
+  // never accepted as the current runtime, but must remain visible so a Bun
+  // deployment cannot overlook an older queue consumer.
+  for (const wrapper of input.psRows.filter(isLegacyGenTsxWrapper)) {
     const children = runtimeChildren.filter(
       (child) => child.ppid === wrapper.pid && child.pgid === wrapper.pgid,
     );
@@ -219,17 +269,23 @@ function classifySingleOwnership(input, spec) {
     }
   }
 
-  for (const child of runtimeChildren) {
-    if (assignedRuntimePids.has(child.pid)) continue;
+  for (const runtime of runtimeChildren) {
+    if (assignedRuntimePids.has(runtime.pid)) continue;
+    const registered = registeredRoots.get(runtime.pid);
+    const classification = registered
+      ? "registered"
+      : daemonPid && runtime.ppid === daemonPid
+        ? "daemon_orphan"
+        : "external_unmanaged";
     groups.push({
-      rootPid: child.ppid,
-      runtimePid: child.pid,
-      pgid: child.pgid,
-      startedAt: child.startedAt,
-      classification: "external_unmanaged",
-      slot: null,
+      rootPid: runtime.pid,
+      runtimePid: runtime.pid,
+      pgid: runtime.pgid,
+      startedAt: runtime.startedAt,
+      classification,
+      slot: registered?.slot ?? null,
     });
-    issues.push("external_unmanaged");
+    if (classification !== "registered") issues.push(classification);
   }
   for (const row of livePm2) {
     if (!groups.some((group) => group.rootPid === row.pid)) {

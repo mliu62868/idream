@@ -42,15 +42,6 @@ async function assertReadableSource(
     if (activity.targetType === "creative_run") {
       return assertReadableSource(actor, permissions, "creative_run", activity.targetId);
     }
-    if (activity.targetType === "character_project") {
-      if (!permissions.has("character.project.read")) {
-        throw Errors.forbidden("Character Project mention is outside the actor's read scope");
-      }
-      if (!await prisma.characterProject.findUnique({ where: { id: activity.targetId }, select: { id: true } })) {
-        throw Errors.notFound("Character Project not found");
-      }
-      return;
-    }
     throw Errors.forbidden("Mention target is outside the actor's read scope");
   }
   if (sourceType === "admin_case") {

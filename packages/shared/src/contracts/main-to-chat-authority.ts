@@ -4,9 +4,16 @@ import {
   chatImageCompletedPayloadSchema,
   chatImageFailedPayloadSchema,
   chatSessionReleaseMigrationRequestedPayloadSchema,
+  accountDeletionRequestedV2PayloadSchema,
+  companionMemoryRebuildRequestedV1PayloadSchema,
+  companionMemoryPurgeRequestedV1PayloadSchema,
 } from "./payloads";
 import { durableEventEnvelopeSchema, type DurableEventEnvelope } from "./durable";
-import { MAIN_TO_CHAT_EVENTS, mainToChatEventType } from "./events";
+import {
+  LEGACY_MAIN_TO_CHAT_EVENTS,
+  MAIN_TO_CHAT_EVENTS,
+  mainToChatEventType,
+} from "./events";
 
 export const MAIN_TO_CHAT_TARGET_MISSING_CONFIRMATION =
   "DISCARD_MAIN_TO_CHAT_TARGET_MISSING" as const;
@@ -105,25 +112,37 @@ export function resolveMainToChatTarget(
     return { valid: false, target: null };
   }
   switch (envelope.eventType) {
-    case MAIN_TO_CHAT_EVENTS.chatImageAccepted: {
+    case MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2:
+      return accountDeletionRequestedV2PayloadSchema.safeParse(envelope.payload).success
+        ? { valid: true, target: null }
+        : { valid: false, target: null };
+    case MAIN_TO_CHAT_EVENTS.companionMemoryRebuildRequestedV1:
+      return companionMemoryRebuildRequestedV1PayloadSchema.safeParse(envelope.payload).success
+        ? { valid: true, target: null }
+        : { valid: false, target: null };
+    case MAIN_TO_CHAT_EVENTS.companionMemoryPurgeRequestedV1:
+      return companionMemoryPurgeRequestedV1PayloadSchema.safeParse(envelope.payload).success
+        ? { valid: true, target: null }
+        : { valid: false, target: null };
+    case LEGACY_MAIN_TO_CHAT_EVENTS.chatImageAccepted: {
       const payload = chatImageAcceptedPayloadSchema.safeParse(envelope.payload);
       return payload.success
         ? { valid: true, target: { kind: "attachment", id: payload.data.attachmentId } }
         : { valid: false, target: null };
     }
-    case MAIN_TO_CHAT_EVENTS.chatImageCompleted: {
+    case LEGACY_MAIN_TO_CHAT_EVENTS.chatImageCompleted: {
       const payload = chatImageCompletedPayloadSchema.safeParse(envelope.payload);
       return payload.success
         ? { valid: true, target: { kind: "attachment", id: payload.data.attachmentId } }
         : { valid: false, target: null };
     }
-    case MAIN_TO_CHAT_EVENTS.chatImageFailed: {
+    case LEGACY_MAIN_TO_CHAT_EVENTS.chatImageFailed: {
       const payload = chatImageFailedPayloadSchema.safeParse(envelope.payload);
       return payload.success
         ? { valid: true, target: { kind: "attachment", id: payload.data.attachmentId } }
         : { valid: false, target: null };
     }
-    case MAIN_TO_CHAT_EVENTS.sessionReleaseMigrationRequested: {
+    case LEGACY_MAIN_TO_CHAT_EVENTS.sessionReleaseMigrationRequested: {
       const payload = chatSessionReleaseMigrationRequestedPayloadSchema.safeParse(
         envelope.payload,
       );
@@ -132,6 +151,8 @@ export function resolveMainToChatTarget(
         : { valid: false, target: null };
     }
     default:
+      // Current lifecycle events and non-targeted migration evidence use their
+      // dedicated authority rather than attachment/session target probing.
       return { valid: true, target: null };
   }
 }

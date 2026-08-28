@@ -70,9 +70,6 @@ describe("Admin API v2 authoritative command routes", () => {
       data: {
         id: projectId,
         characterId,
-        phase: "launch_ready",
-        audience: { segment: "test" },
-        successCriteria: ["healthy release"],
       },
     });
     await prisma.characterRelease.create({

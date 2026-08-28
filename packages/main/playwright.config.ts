@@ -11,7 +11,7 @@ import { createPlaywrightCleanupPlan } from "./src/e2e/playwright-cleanup";
 import { createPlaywrightLifecycleVerifier } from "./src/e2e/playwright-lifecycle-receipt";
 
 // Browser tests own every writable dependency. Ambient Main/Admin/Chat/Gen
-// processes, Main's generation finalizer, CHAT_SERVICE_URL, CHAT_DATABASE_URL,
+// processes, Main's generation finalizer, CHAT_SERVICE_URL,
 // Redis db 0, and the live chat file store are never reused.
 const environment = resolvePlaywrightEnvironment(process.env);
 const cleanupPlan = createPlaywrightCleanupPlan(environment);

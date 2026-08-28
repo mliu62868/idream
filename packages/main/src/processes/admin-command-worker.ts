@@ -9,7 +9,6 @@ import {
   dispatchDueReleaseMonitors,
   dispatchStaleReleaseRoutes,
 } from "@/server/modules/admin-v2/characters/release-monitor";
-import { dispatchDueCharacterReleasePublishes } from "@/server/modules/admin-v2/characters/scheduled-release-dispatcher";
 import { dispatchStaleUnknownGenerationRequests } from "@/server/modules/admin-v2/jobs/stale-unknown-dispatcher";
 import { executeAcceptedAdminCommand } from "@/server/modules/admin-v2/commands/executor";
 import { reconcileExpiredCommandLeases } from "@/server/modules/admin-v2/shared/control-plane-command";
@@ -23,9 +22,9 @@ import {
   verifyIncidentActionPlanCommands,
 } from "@/server/modules/admin-v2/incidents/action-executor";
 import { dispatchGenerationIncidentCorrelation } from "@/server/modules/admin-v2/incidents/service";
+import { isProcessEntrypoint } from "./process-entrypoint";
 
 const COMMAND_TYPES = [
-  "character.release.schedule",
   "character.release.publish",
   "character.release.rollback",
   "character.serving.pause",
@@ -38,7 +37,6 @@ const COMMAND_TYPES = [
   "creative.run.retry_failed",
 ] as const;
 const CHARACTER_COMMAND_TYPES = new Set<string>([
-  "character.release.schedule",
   "character.release.publish",
   "character.release.rollback",
   "character.serving.pause",
@@ -153,18 +151,6 @@ export async function drainAdminCommands(
     cursorId: input.routeQualificationReleaseIds ? undefined : routeQualificationCursor ?? undefined,
   });
   if (!input.routeQualificationReleaseIds) routeQualificationCursor = routeQualifications.nextCursor;
-  const scheduledReleases = await dispatchDueCharacterReleasePublishes(db, {
-    dispatcherId: input.workerId,
-    environment: input.environment,
-    now,
-    limit: input.limit,
-  });
-  if (scheduledReleases.failed > 0) {
-    logger.error(
-      { workerId: input.workerId, failures: scheduledReleases.failures },
-      "due Character Release dispatch partially failed",
-    );
-  }
   const releaseMonitors = await dispatchDueReleaseMonitors(db, {
     workerId: input.workerId,
     now,
@@ -203,7 +189,6 @@ export async function drainAdminCommands(
     succeeded,
     failed,
     verifying,
-    scheduledReleases,
     routeQualifications,
     releaseMonitors,
     dispatched,
@@ -299,10 +284,14 @@ export function stopAdminCommandWorkerLoop() {
   running = false;
 }
 
-export function isDirectAdminCommandWorkerInvocation(argvEntry = process.argv[1]) {
-  const normalized = argvEntry?.replaceAll("\\", "/") ?? "";
-  return normalized.endsWith("/admin-command-worker.ts") ||
-    normalized.endsWith("/admin-command-worker.js");
+export function isDirectAdminCommandWorkerInvocation(
+  argvEntry = process.argv[1],
+  pmExecPath = process.env["pm_exec_path"],
+) {
+  return isProcessEntrypoint(
+    ["admin-command-worker.ts", "admin-command-worker.js"],
+    { argvEntry, pmExecPath },
+  );
 }
 
 if (isDirectAdminCommandWorkerInvocation()) {

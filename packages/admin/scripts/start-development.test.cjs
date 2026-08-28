@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-require-imports -- This unit test exercises the CommonJS bootstrap used directly by the package script. */
+/* eslint-disable @typescript-eslint/no-require-imports -- This unit test exercises the Bun-hosted CommonJS bootstrap used directly by the package script. */
 const assert = require("node:assert/strict");
 const test = require("node:test");
 

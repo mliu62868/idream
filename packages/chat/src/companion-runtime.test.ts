@@ -9,6 +9,7 @@ import {
 } from "@idream/shared/chat/companion-runtime";
 import {
   cancelActiveCompanionInvocations,
+  cancelCompanionInvocation,
   discardCompanionWorkspaceRebuild,
   DshCompanionRuntime,
   prepareCompanionWorkspaceRebuild,
@@ -40,7 +41,7 @@ function invocation(): CompanionInvocation {
     expectedProfileDigest: "d".repeat(64),
     deadlineAt: "2026-08-19T12:05:00.000Z",
     preparedTurn: {
-      version: 2,
+      version: 3,
       model: "model-1",
       characterName: "Mira",
       messages: [{
@@ -73,8 +74,7 @@ function invocation(): CompanionInvocation {
         soulFingerprint: "fingerprint",
         compilerVersion: "soul-v1",
         sceneVersion: 1,
-        relationshipVersion: 2,
-        fileContextRevision: "3",
+        contextRevision: "3",
         releasedKnowledgeDigest: releasedKnowledge.digest,
       },
     },
@@ -82,6 +82,31 @@ function invocation(): CompanionInvocation {
 }
 
 describe("DshCompanionRuntime", () => {
+  it("sends cancellation to sidecar when another Chat process owns the invocation", async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      requests.push({ url: String(url), init });
+      return Response.json({ ok: true });
+    });
+
+    await expect(cancelCompanionInvocation(
+      "invocation-owned-by-another-process",
+      "user",
+      {
+        baseUrl: "http://127.0.0.1:3101",
+        token: "sidecar-secret",
+        fetchImpl: fetchImpl as typeof fetch,
+      },
+    )).resolves.toBe(true);
+
+    expect(requests[0]?.url).toBe(
+      "http://127.0.0.1:3101/v1/invocations/invocation-owned-by-another-process/cancel",
+    );
+    expect(new Headers(requests[0]?.init?.headers).get("authorization"))
+      .toBe("Bearer sidecar-secret");
+    expect(String(requests[0]?.init?.body)).toContain('"reason":"user"');
+  });
+
   it("bridges strict event, tool and commit frames over authenticated NDJSON", async () => {
     const input = invocation();
     const toolCall = {
@@ -253,6 +278,62 @@ describe("DshCompanionRuntime", () => {
       async executeTool() { throw new Error("unused"); },
       async commit() { throw new Error("unused"); },
     })).resolves.toBeUndefined();
+  });
+
+  it("cancels a stalled response body when the invocation deadline aborts after headers", async () => {
+    let bodyCancelled = false;
+    let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const runtime = new DshCompanionRuntime({
+      baseUrl: "http://127.0.0.1:3101",
+      token: "secret",
+      fetchImpl: (async () => new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          streamController = controller;
+          setTimeout(() => {
+            try {
+              controller.close();
+            } catch {
+              // The deadline path must already have cancelled this stream.
+            }
+          }, 100);
+        },
+        cancel() {
+          bodyCancelled = true;
+        },
+      }), { status: 200 })) as typeof fetch,
+    });
+
+    await expect(runtime.run(invocation(), {
+      emit() {},
+      async executeTool() { throw new Error("unused"); },
+      async commit() { throw new Error("unused"); },
+    }, AbortSignal.timeout(10))).rejects.toMatchObject({ name: "TimeoutError" });
+    expect(streamController).toBeDefined();
+    expect(bodyCancelled).toBe(true);
+  });
+
+  it("does not wait for a stalled response-body cancellation after the deadline", async () => {
+    let bodyCancelled = false;
+    const runtime = new DshCompanionRuntime({
+      baseUrl: "http://127.0.0.1:3101",
+      token: "secret",
+      fetchImpl: (async () => new Response(new ReadableStream<Uint8Array>({
+        pull() {
+          return new Promise(() => {});
+        },
+        cancel() {
+          bodyCancelled = true;
+          return new Promise(() => {});
+        },
+      }), { status: 200 })) as typeof fetch,
+    });
+
+    await expect(runtime.run(invocation(), {
+      emit() {},
+      async executeTool() { throw new Error("unused"); },
+      async commit() { throw new Error("unused"); },
+    }, AbortSignal.timeout(10))).rejects.toMatchObject({ name: "TimeoutError" });
+    expect(bodyCancelled).toBe(true);
   });
 
   it("bounds an unterminated sidecar frame and cancels the response body", async () => {

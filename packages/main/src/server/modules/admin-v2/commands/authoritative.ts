@@ -91,7 +91,6 @@ type AdminCommandOperationId =
   | "POST /api/v2/admin/characters/:id/commands/retire"
   | "POST /api/v2/admin/characters/:id/releases/:releaseId/commands/publish"
   | "POST /api/v2/admin/characters/:id/releases/:releaseId/commands/rollback"
-  | "POST /api/v2/admin/characters/:id/releases/:releaseId/commands/schedule"
   | "POST /api/v2/admin/chat/sessions/:sessionId/commands/migrate-release"
   | "POST /api/v2/admin/creative/runs/:id/commands/retry-failed"
   | "POST /api/v2/admin/incidents/:id/commands/resolve";
@@ -425,56 +424,6 @@ export function publishCharacterRelease(request: Request, characterId: string, r
   });
 }
 
-const scheduleReleaseDefinition = {
-  commandType: "character.release.schedule",
-  targetType: "character_release",
-  permission: "character.release.publish",
-  retryMode: "idempotent",
-} as const satisfies CommandDefinition;
-
-export function scheduleCharacterRelease(request: Request, characterId: string, releaseId: string) {
-  return commandResponse(request, async () => {
-    const actor = await actorWithPermission(request, scheduleReleaseDefinition.permission, { characterId });
-    const parsed = await parseCommand(
-      request,
-      "POST /api/v2/admin/characters/:id/releases/:releaseId/commands/schedule",
-    );
-    requireConfirmation(parsed.body.confirmation, `${characterId}:${releaseId}:schedule`);
-    parsed.payload.scheduledAt = parsed.body.scheduledAt;
-    const replay = await replayExactCommandBeforeMutablePreflight({
-      actor,
-      parsed,
-      definition: scheduleReleaseDefinition,
-      targetId: releaseId,
-      coordinationKey: characterCommandCoordinationKey(characterId),
-    });
-    if (replay) return replay;
-    const release = await prisma.characterRelease.findUnique({ where: { id: releaseId } });
-    if (!release) throw Errors.notFound("Character release not found", { releaseId });
-    const project = await prisma.characterProject.findUnique({ where: { id: release.projectId } });
-    if (!project || project.characterId !== characterId) {
-      throw Errors.notFound("Character release not found for character", { characterId, releaseId });
-    }
-    if (release.version !== parsed.body.entityVersion) {
-      return versionConflict(parsed.requestId, { id: release.id, status: release.status, version: release.version }, parsed.body.entityVersion);
-    }
-    const scheduledAt = new Date(parsed.body.scheduledAt);
-    if (release.status !== "approved" || scheduledAt.getTime() <= Date.now()) {
-      throw new InvariantFailedError(
-        [{ code: "release_not_schedulable", message: "Release must be approved and scheduled in the future." }],
-        `/admin/characters/${characterId}?releaseId=${releaseId}`,
-      );
-    }
-    return acceptCommand({
-      actor,
-      parsed,
-      definition: scheduleReleaseDefinition,
-      targetId: releaseId,
-      coordinationKey: characterCommandCoordinationKey(characterId),
-    });
-  });
-}
-
 const rollbackReleaseDefinition = {
   commandType: "character.release.rollback",
   targetType: "character_serving",
@@ -633,7 +582,7 @@ export function migrateChatSessionRelease(request: Request, sessionId: string) {
     parsed.payload.fromCharacterReleaseId = parsed.body.fromCharacterReleaseId;
     parsed.payload.toCharacterContentVersionId = parsed.body.toCharacterContentVersionId;
     parsed.payload.toCharacterReleaseId = parsed.body.toCharacterReleaseId;
-    parsed.payload.compatibilityQa = parsed.body.compatibilityQa;
+    parsed.payload.compatibilityCheck = parsed.body.compatibilityCheck;
     parsed.payload.requestedById = actor.id;
     const replay = await replayExactCommandBeforeMutablePreflight({
       actor,

@@ -1,6 +1,6 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { evaluateMediaAssetCustomerPublishability } from "@/server/lib/media-asset-authority";
-import { officialEditorialContentIdentity } from "@/server/modules/admin-v2/shared/character-content-identity";
+import { officialEditorialSoulContentIdentity } from "@/server/modules/admin-v2/shared/character-content-identity";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { CHARACTER_RELEASE_POLICY_VERSION } from "@/server/modules/admin-v2/characters/character-release-contract";
 import { characterReleaseSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
@@ -125,13 +125,37 @@ export async function ensureOfficialEditorialCatalogQualification(
       );
     }
 
-    const { snapshot: contentSnapshot, contentHash } =
-      officialEditorialContentIdentity(character);
+    const editorialProjectId = `editorial-project:${character.id}`;
+    const authoredProject = await tx.characterProject.findUnique({
+      where: { id: editorialProjectId },
+    });
+    const authoredRevision = authoredProject
+      ? await tx.characterRevision.findFirst({
+          where: { projectId: authoredProject.id },
+          orderBy: [{ revision: "desc" }, { id: "desc" }],
+        })
+      : null;
+    const authoredContent = authoredRevision
+      ? await tx.characterContentVersion.findFirst({
+          where: {
+            id: authoredRevision.characterContentVersionId,
+            characterId: character.id,
+            sourceType: "admin_character_soul_version",
+          },
+        })
+      : null;
+    // An Admin Soul version is already immutable authoring authority. The
+    // editorial importer may project it into a Release, but must never rebuild
+    // it from mutable Character compatibility columns.
+    const editorialIdentity = authoredContent
+      ? null
+      : officialEditorialSoulContentIdentity(character);
+    const contentHash = authoredContent?.contentHash ?? editorialIdentity!.contentHash;
     const currentRelease = character.serving?.currentRelease ?? null;
     const currentReleaseContent = currentRelease
       ? await tx.characterContentVersion.findUnique({
           where: { id: currentRelease.characterContentVersionId },
-          select: { contentHash: true },
+          select: { id: true, contentHash: true, personaSnapshot: true },
         })
       : null;
     const currentQualification =
@@ -200,40 +224,32 @@ export async function ensureOfficialEditorialCatalogQualification(
           where: { characterId: character.id },
           _max: { version: true },
         });
-    const content =
-      existingContent ??
+    const content = authoredContent ?? existingContent ??
       await tx.characterContentVersion.create({
         data: {
           id: `editorial-content:${character.id}:${contentHash.slice(0, 16)}`,
           characterId: character.id,
           version: (latestContentVersion?._max.version ?? 0) + 1,
           contentHash,
-          personaSnapshot: toInputJson(contentSnapshot.persona),
-          openingSnapshot: toInputJson(contentSnapshot.opening),
-          appearanceSnapshot: toInputJson(contentSnapshot.appearance),
+          personaSnapshot: toInputJson(editorialIdentity!.snapshot.persona),
+          openingSnapshot: toInputJson(editorialIdentity!.snapshot.opening),
+          appearanceSnapshot: toInputJson(editorialIdentity!.snapshot.appearance),
           sourceType: "official_editorial_import",
           sourceId: character.id,
         },
       });
     const project = await tx.characterProject.upsert({
-      where: { id: `editorial-project:${character.id}` },
+      where: { id: editorialProjectId },
       update: {},
       create: {
-        id: `editorial-project:${character.id}`,
+        id: editorialProjectId,
         characterId: character.id,
-        phase: "live_management",
-        audience: {
-          source: "official_editorial_import",
-          state: "published",
-        },
-        successCriteria: [],
       },
     });
-    const revisionId =
-      `editorial-revision:${character.id}:${contentHash.slice(0, 16)}`;
-    const existingRevision = await tx.characterRevision.findUnique({
-      where: { id: revisionId },
-    });
+    const revisionId = `editorial-revision:${character.id}:${contentHash.slice(0, 16)}`;
+    const existingRevision = authoredContent && authoredRevision
+      ? authoredRevision
+      : await tx.characterRevision.findUnique({ where: { id: revisionId } });
     const latestRevision = existingRevision
       ? null
       : await tx.characterRevision.aggregate({
@@ -342,8 +358,6 @@ export async function ensureOfficialEditorialCatalogQualification(
         expectedVersion: character.serving.version,
         data: {
           currentReleaseId: release.id,
-          scheduledReleaseId: null,
-          scheduledAt: null,
         },
       });
     } else {

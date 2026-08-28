@@ -2,12 +2,11 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { POST } from "@/app/api/v2/admin/chat/sessions/[sessionId]/commands/migrate-release/route";
 import { prisma } from "@/server/lib/db";
-import { applyChatEvent } from "@/processes/event-consumer";
-import { CHAT_TO_MAIN_EVENTS, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 
 describe("explicit Chat Session Release migration command", () => {
   const suffix = randomUUID();
   const adminId = `session-migrate-admin-${suffix}`;
+  const userId = `session-migrate-user-${suffix}`;
   const characterId = `session-migrate-character-${suffix}`;
   const projectId = `session-migrate-project-${suffix}`;
   const contentId = `session-migrate-content-${suffix}`;
@@ -18,6 +17,20 @@ describe("explicit Chat Session Release migration command", () => {
   beforeAll(async () => {
     await prisma.user.create({
       data: { id: adminId, email: `${adminId}@example.test`, role: "admin", status: "active" },
+    });
+    await prisma.user.create({
+      data: { id: userId, email: `${userId}@example.test`, role: "user", status: "active" },
+    });
+    await prisma.character.create({
+      data: {
+        id: characterId,
+        creatorId: userId,
+        name: "Migration Character",
+        age: 24,
+        description: "fixture",
+        appearance: {},
+        advancedDetails: {},
+      },
     });
     await prisma.characterContentVersion.create({
       data: {
@@ -35,9 +48,6 @@ describe("explicit Chat Session Release migration command", () => {
       data: {
         id: projectId,
         characterId,
-        phase: "live_management",
-        audience: {},
-        successCriteria: [],
       },
     });
     await prisma.characterRelease.create({
@@ -53,10 +63,20 @@ describe("explicit Chat Session Release migration command", () => {
         version: 7,
       },
     });
+    await prisma.recentChat.create({
+      data: {
+        sessionId,
+        userId,
+        characterId,
+        characterContentVersionId: `old-content-${suffix}`,
+        characterReleaseId: `old-release-${suffix}`,
+        contextRevision: 4,
+      },
+    });
   });
 
   afterAll(async () => {
-    await prisma.mainOutboxEvent.deleteMany({ where: { aggregateId: sessionId } });
+    await prisma.recentChat.deleteMany({ where: { sessionId } });
     await prisma.adminAuditLog.deleteMany({ where: { actorId: adminId } });
     const commandIds = (await prisma.controlPlaneCommand.findMany({
       where: { actorId: adminId },
@@ -67,6 +87,8 @@ describe("explicit Chat Session Release migration command", () => {
     await prisma.characterRelease.delete({ where: { id: releaseId } });
     await prisma.characterProject.delete({ where: { id: projectId } });
     await prisma.characterContentVersion.delete({ where: { id: contentId } });
+    await prisma.character.delete({ where: { id: characterId } });
+    await prisma.user.delete({ where: { id: userId } });
     await prisma.user.delete({ where: { id: adminId } });
     await prisma.$disconnect();
   });
@@ -128,7 +150,7 @@ describe("explicit Chat Session Release migration command", () => {
           toCharacterReleaseId: draftReleaseId,
           reason: { code: "compatibility_repair", summary: "Should not be accepted" },
           confirmation: `${sessionId}:${draftReleaseId}:migrate`,
-          compatibilityQa: {
+          compatibilityCheck: {
             status: "passed",
             policyVersion: "chat-compat-v1",
             evidence: { transcriptId: `qa-draft-${suffix}` },
@@ -161,7 +183,7 @@ describe("explicit Chat Session Release migration command", () => {
     await prisma.characterContentVersion.delete({ where: { id: draftContentId } });
   });
 
-  it("dispatches to Chat, waits for next-turn verification, then closes the command", async () => {
+  it("updates the Main-owned session pin and closes the command atomically", async () => {
     const response = await POST(
       new Request(`http://localhost/api/v2/admin/chat/sessions/${sessionId}/commands/migrate-release`, {
         method: "POST",
@@ -182,7 +204,7 @@ describe("explicit Chat Session Release migration command", () => {
           toCharacterReleaseId: releaseId,
           reason: { code: "compatibility_repair", summary: "Fix incompatible persona injection" },
           confirmation: `${sessionId}:${releaseId}:migrate`,
-          compatibilityQa: {
+          compatibilityCheck: {
             status: "passed",
             policyVersion: "chat-compat-v1",
             evidence: { transcriptId: `qa-${suffix}` },
@@ -195,54 +217,21 @@ describe("explicit Chat Session Release migration command", () => {
     commandId = (await response.json()).data.commandId;
 
     const command = await prisma.controlPlaneCommand.findUniqueOrThrow({ where: { id: commandId } });
-    expect(command.status).toBe("verifying");
-    const dispatch = await prisma.mainOutboxEvent.findUniqueOrThrow({
-      where: { id: `session-release-migration:${commandId}` },
+    expect(command.status).toBe("succeeded");
+    await expect(prisma.recentChat.findUniqueOrThrow({
+      where: { sessionId },
+    })).resolves.toMatchObject({
+      characterContentVersionId: contentId,
+      characterReleaseId: releaseId,
+      contextRevision: 5,
+      releasePinnedAt: expect.any(Date),
     });
-    expect(dispatch.eventType).toBe(MAIN_TO_CHAT_EVENTS.sessionReleaseMigrationRequested);
-    expect(dispatch.payload).toMatchObject({
-      payload: {
-        commandId,
-        sessionId,
-        toCharacterContentVersionId: contentId,
-        toCharacterReleaseId: releaseId,
+    await expect(prisma.mainOutboxEvent.count({
+      where: {
+        aggregateId: sessionId,
+        eventType: "chat.session_release_migration.requested.v2",
       },
-    });
-
-    await expect(applyChatEvent({
-      eventId: `chat-tampered-${commandId}`,
-      eventType: CHAT_TO_MAIN_EVENTS.sessionReleaseMigrationApplied,
-      aggregateId: commandId,
-      payload: {
-        commandId,
-        sessionId,
-        characterId,
-        fromCharacterContentVersionId: `old-content-${suffix}`,
-        fromCharacterReleaseId: `old-release-${suffix}`,
-        toCharacterContentVersionId: contentId,
-        toCharacterReleaseId: `different-release-${suffix}`,
-        appliedAt: new Date().toISOString(),
-      },
-    })).rejects.toThrow("verification payload changed");
-    expect(await prisma.controlPlaneCommand.findUniqueOrThrow({ where: { id: commandId } })).toMatchObject({
-      status: "verifying",
-    });
-
-    await applyChatEvent({
-      eventId: `chat-applied-${commandId}`,
-      eventType: CHAT_TO_MAIN_EVENTS.sessionReleaseMigrationApplied,
-      aggregateId: commandId,
-      payload: {
-        commandId,
-        sessionId,
-        characterId,
-        fromCharacterContentVersionId: `old-content-${suffix}`,
-        fromCharacterReleaseId: `old-release-${suffix}`,
-        toCharacterContentVersionId: contentId,
-        toCharacterReleaseId: releaseId,
-        appliedAt: new Date().toISOString(),
-      },
-    });
+    })).resolves.toBe(0);
 
     expect(await prisma.controlPlaneCommand.findUniqueOrThrow({ where: { id: commandId } })).toMatchObject({
       status: "succeeded",

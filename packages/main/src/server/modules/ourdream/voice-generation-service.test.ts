@@ -313,7 +313,6 @@ describe("voice generation service contract", () => {
         age: 28,
         name: "Voice Reclaim Character",
         style: "warm",
-        relationship: "companion",
         voiceId: null,
         gender: "female",
       }),

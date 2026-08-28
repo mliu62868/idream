@@ -17,7 +17,7 @@ interface ImmutableReleaseAuthority {
 
 export interface ReleasedKnowledgeAuthority {
   readonly characterId: string;
-  readonly contentVersion: ImmutableContentAuthority | null;
+  readonly contentVersion: ImmutableContentAuthority;
   readonly release: ImmutableReleaseAuthority | null;
 }
 
@@ -31,10 +31,11 @@ const RELEASED_STATES = new Set(["published", "superseded"]);
 export function buildReleasedKnowledgeSnapshot(
   input: ReleasedKnowledgeAuthority,
 ): ReleasedKnowledgeSnapshot {
-  const contentVersionId =
-    input.contentVersion?.contentVersionId ?? "legacy-unattributed";
+  if (!input.contentVersion) {
+    throw new Error(`character ${input.characterId} has no immutable content version`);
+  }
+  const contentVersionId = input.contentVersion.contentVersionId;
   if (
-    input.contentVersion &&
     input.contentVersion.characterId !== input.characterId
   ) {
     throw new Error(
@@ -53,11 +54,6 @@ export function buildReleasedKnowledgeSnapshot(
   if (input.release.characterId !== input.characterId) {
     throw new Error(
       `character release ${input.release.releaseId} does not belong to character ${input.characterId}`,
-    );
-  }
-  if (!input.contentVersion) {
-    throw new Error(
-      `character release ${input.release.releaseId} has no immutable content version`,
     );
   }
   if (

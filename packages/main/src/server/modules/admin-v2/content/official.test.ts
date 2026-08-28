@@ -12,7 +12,6 @@ import {
   createUser,
   purgeTestData,
 } from "@/server/test/helpers";
-import { characterSoulQaEvidence } from "@/server/test/character-soul-evidence";
 import {
   characterReleaseSnapshotHash,
   characterVisualProfileSnapshotHash,
@@ -133,7 +132,6 @@ describe("official character CMS", () => {
             style: "anime",
             description: "A cheerful official companion.",
             advancedDetails: {
-              relationshipArchetype: "cheerful confidante",
               firstMessage: "Tell me what brightened your day.",
             },
             tags: ["Bubbly", "Bubbly", "Sci Fi"],
@@ -211,7 +209,7 @@ describe("official character CMS", () => {
     expect(result.status).toBe(400);
     expect(result.errorCode).toBe("bad_request");
     expect(result.errorDetails).toMatchObject({
-      missingFields: ["relationshipArchetype", "firstMessage"],
+      missingFields: ["firstMessage"],
     });
   });
 
@@ -229,7 +227,6 @@ describe("official character CMS", () => {
             style: "realistic",
             description: "An official companion with silver hair.",
             advancedDetails: {
-              relationshipArchetype: "trusted confidante",
               firstMessage: "What should we make space for?",
             },
             reason: "seed visual profile",
@@ -281,7 +278,6 @@ describe("official character CMS", () => {
         style: "realistic",
         description: "An official companion with stable Soul edits.",
         advancedDetails: {
-          relationshipArchetype: "trusted confidante",
           detailsMarkdown: "## Personality\nOriginal and complete.",
           firstMessage: "What should we make space for?",
         },
@@ -443,7 +439,6 @@ describe("official character CMS", () => {
             description:
               "An official companion used to verify publish/archive.",
             advancedDetails: {
-              relationshipArchetype: "trusted confidante",
               firstMessage: "Sit down and tell me what happened.",
             },
             reason: "seed for state toggle",
@@ -530,7 +525,6 @@ describe("official character CMS", () => {
             referenceDirection: "Canonical front-facing identity reference",
           },
           advancedDetails: {
-            relationshipArchetype: "trusted confidante",
             firstMessage: "You made it. Sit down and tell me what happened.",
             detailsMarkdown: legacySoulDetailsMarkdown({
               personality: "composed, observant",
@@ -620,10 +614,6 @@ describe("official character CMS", () => {
       "Everything will be fine.",
       "Generic reassurance ignores the user's actual concern.",
     ]) expect(migratedSoulBytes).toContain(expected);
-    const soulQaEvidence = characterSoulQaEvidence({
-      characterContentVersionId: contentVersion.id,
-      personaSnapshot: contentVersion.personaSnapshot,
-    });
     const referenceSetHash = referenceSetSnapshotHash({
       visualProfileId: activeProfile.id,
       revision: 1,
@@ -659,8 +649,6 @@ describe("official character CMS", () => {
     const routeFingerprint = `${P}publish-route`;
     const generationProfileKey = `${P}publish-profile`;
     const workflowKey = "qwen-image-edit-img2img";
-    const qaRunId = `${P}publish-qa-run`;
-    const qaEvidenceHash = `${P}publish-qa-evidence`;
     await prisma.generationModelProfile.create({
       data: {
         id: `${P}publish-model-profile`,
@@ -858,28 +846,6 @@ describe("official character CMS", () => {
         data: { sourceJobId: fixture.jobId },
       });
     }
-    await prisma.characterQaRun.create({
-      data: {
-        id: qaRunId,
-        characterId: id,
-        projectId: project.id,
-        characterContentVersionId: contentVersion.id,
-        projectVersion: project.version,
-        visualProfileId: activeProfile.id,
-        visualProfileVersion: activeProfile.version,
-        visualProfileHash,
-        referenceSetRevisionId: referenceSet.id,
-        referenceSetRevision: referenceSet.revision,
-        referenceSetHash,
-        draftAssetPackHash,
-        ownerId: admin,
-        status: "passed",
-        checks: [],
-        behaviorEvaluation: soulQaEvidence.behaviorEvaluation,
-        liveCanaries: soulQaEvidence.liveCanaries,
-        evidenceHash: qaEvidenceHash,
-      },
-    });
     const generationProvenance = {
       schemaVersion: "character-release-generation-provenance-v2",
       policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
@@ -890,22 +856,6 @@ describe("official character CMS", () => {
         generationProfileVersion: 1,
         workflowKey,
         workflowVersion: 1,
-      },
-      characterQa: {
-        status: "passed",
-        qaRunId,
-        evidenceHash: qaEvidenceHash,
-        characterId: id,
-        projectId: project.id,
-        characterContentVersionId: contentVersion.id,
-        projectVersion: project.version,
-        visualProfileId: activeProfile.id,
-        visualProfileVersion: activeProfile.version,
-        visualProfileHash,
-        referenceSetRevisionId: referenceSet.id,
-        referenceSetRevision: referenceSet.revision,
-        referenceSetHash,
-        draftAssetPackHash,
       },
       placements: releaseAssetFixtures.map((fixture) => ({
         slotKey: fixture.slotKey,
@@ -958,15 +908,6 @@ describe("official character CMS", () => {
         legacy: false,
       },
     });
-    await prisma.characterServing.update({
-      where: { characterId: id },
-      data: {
-        state: "inactive",
-        scheduledReleaseId: release.id,
-        scheduledAt: new Date(),
-      },
-    });
-
     // draft -> approved (first public release)
     const published = await call(
       officialApi(

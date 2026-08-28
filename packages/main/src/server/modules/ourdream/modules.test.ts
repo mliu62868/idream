@@ -40,12 +40,11 @@ const SYS = `${P}sys`;
 const CHAR = `${P}char`;
 
 describe("user Character Soul compatibility", () => {
-  it("folds a saved legacy server draft into v2 details instead of dropping it", () => {
+  it("folds a saved legacy server draft into v3 details instead of dropping it", () => {
     const content = compileUserCharacterContent({
       name: "Legacy Draft",
       age: 28,
       gender: "female",
-      relationship: "trusted confidante",
       description: "A precise companion.",
       style: "realistic",
       appearance: {},
@@ -57,7 +56,7 @@ describe("user Character Soul compatibility", () => {
       },
     });
 
-    expect(content.personaSnapshot.schemaVersion).toBe(2);
+    expect(content.personaSnapshot.schemaVersion).toBe(3);
     expect(content.personaSnapshot.soul.detailsMarkdown).toContain("Observant and candid.");
     expect(content.personaSnapshot.soul.detailsMarkdown).toContain("Warm and concise.");
     expect(content.personaSnapshot.soul.detailsMarkdown).toContain("She hosts a radio show.");
@@ -68,7 +67,6 @@ describe("user Character Soul compatibility", () => {
       name: "Pinned Soul",
       age: 28,
       gender: "female",
-      relationship: "trusted confidante",
       description: "A precise companion.",
       style: "realistic",
       appearance: {},
@@ -81,7 +79,6 @@ describe("user Character Soul compatibility", () => {
       name: "Mutable projected name",
       age: 44,
       gender: "male",
-      relationship: "mutable projected relationship",
       description: "Mutable projected promise.",
       style: "realistic",
       appearance: {},
@@ -102,7 +99,6 @@ describe("user Character Soul compatibility", () => {
       name: "Pinned Soul Copy",
       age: 28,
       gender: "female",
-      relationshipArchetype: "trusted confidante",
       characterPromise: "A precise companion.",
       detailsMarkdown: "## Voice\nPinned and precise.",
     });
@@ -129,7 +125,6 @@ async function seedCurrentPublicCharacterAuthority(input: {
         name: true,
         age: true,
         gender: true,
-        relationship: true,
         description: true,
         style: true,
         appearance: true,
@@ -168,7 +163,6 @@ async function seedCurrentPublicCharacterAuthority(input: {
       name: character.name,
       age: character.age,
       gender: character.gender,
-      relationship: character.relationship,
       description: character.description,
       style: character.style,
       appearance: character.appearance,
@@ -197,9 +191,6 @@ async function seedCurrentPublicCharacterAuthority(input: {
       data: {
         id: projectId,
         characterId: input.characterId,
-        phase: "live_management",
-        audience: {},
-        successCriteria: [],
       },
     });
     await tx.characterRelease.create({
@@ -1435,11 +1426,8 @@ describe("tags, likes, duplicate", () => {
       data: {
         id: projectId,
         characterId,
-        phase: "producing",
         activeKey: `${characterId}:active`,
         version: 3,
-        audience: {},
-        successCriteria: [],
         draftImageAssetId: mediaId,
       },
     });
@@ -1486,7 +1474,6 @@ describe("tags, likes, duplicate", () => {
     await expect(
       prisma.characterProject.findUniqueOrThrow({ where: { id: projectId } }),
     ).resolves.toMatchObject({
-      phase: "retired",
       activeKey: null,
       version: 4,
     });
@@ -1970,7 +1957,6 @@ describe("feed, community, policies, analytics", () => {
         source: "user",
         style: "realistic",
         gender: "female",
-        relationship: "trusted companion",
         appearance: {},
         advancedDetails: {
           personality: "Observant, emotionally specific, and consistent.",
@@ -2101,10 +2087,6 @@ describe("feed, community, policies, analytics", () => {
       data: {
         id: projectId,
         characterId,
-        ownerId: userId,
-        phase: "live_management",
-        audience: {},
-        successCriteria: [],
       },
     });
     await prisma.characterRelease.create({

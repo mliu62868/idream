@@ -1,7 +1,6 @@
 // @vitest-environment happy-dom
 
 import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
-import { characterPortfolioDecisionSchema } from "@idream/shared/admin";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -13,7 +12,6 @@ import {
 import {
   characterPerformanceHasObservations,
   PerformancePanel,
-  portfolioDecisions,
 } from "./PerformancePanel";
 
 type WorkspaceRelease = CharacterWorkspaceDetail["releases"][number]["release"];
@@ -110,7 +108,6 @@ const workspace = characterWorkspaceDetail({
   serving: { state: "live", currentReleaseId: releaseId },
   releases: [releaseEntry(workspaceRelease({ id: releaseId }))],
   performance: [performanceWindow({ characterReleaseId: releaseId })],
-  portfolio: { latestDecision: null },
 });
 
 const brokenPipelineWorkspace = withCharacterWorkspaceDetail(workspace, {
@@ -155,29 +152,13 @@ function render(data: CharacterWorkspaceDetail = workspace) {
   act(() => {
     root.render(
       <AdminI18nProvider locale="zh">
-        <PerformancePanel
-          data={data}
-          permissions={{ writeProject: true } as never}
-          runCommittedMutation={(async () => ({ result: undefined, refreshed: false })) as never}
-        />
+        <PerformancePanel data={data} />
       </AdminI18nProvider>,
     );
   });
 }
 
 describe("Character performance panel — zh operators", () => {
-  // SPEC: <option> 的 value 必须是后端枚举原值。曾经缺 value 属性，只因当时枚举没有译文才没炸；
-  // 一补译文就会把「维持」当决策提交，被 characterPortfolioDecisionSchema 拒掉。
-  it("submits the contract enum while showing the translated label", () => {
-    render();
-    const options = [...container.querySelectorAll<HTMLOptionElement>("select option")]
-      .filter((option) => portfolioDecisions.includes(option.value as never));
-    expect(options.map((option) => option.value))
-      .toEqual([...characterPortfolioDecisionSchema.options]);
-    expect(options.map((option) => option.textContent))
-      .toEqual(["推广", "维持", "改进", "暂停", "下线"]);
-  });
-
   // SPEC: 「还没有观测」和「观测口径坏了」必须在卡片上一眼分得开——前者等，后者查。
   // 两者以前都渲染成「不可用」，运营无从判断该不该找人。
   it("separates a character with no observations from a broken measurement pipeline", () => {
@@ -218,11 +199,12 @@ describe("Character performance panel — zh operators", () => {
     ])).toBe(true);
   });
 
-  it("seeds the decision record with translated prose instead of English", () => {
+  it("keeps monitoring factual and omits project-management controls", () => {
     render();
-    const textareas = [...container.querySelectorAll("textarea")].map((node) => node.value);
-    expect(textareas.some((value) => value.includes("这个角色应该怎么处理"))).toBe(true);
-    expect(textareas.some((value) => value.includes("同角色 D7 退化"))).toBe(true);
+    expect(container.querySelector("form, input, select, textarea, button")).toBeNull();
+    expect(container.textContent).not.toContain("负责人");
+    expect(container.textContent).not.toContain("复查时间");
+    expect(container.textContent).not.toContain("成功标准");
   });
 
 });

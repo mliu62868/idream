@@ -1,5 +1,6 @@
-// SPEC: Asset Studio — selecting a reviewed Run item as a draft image, and the
-// operator-uploaded image sources feeding it.
+// SPEC: Character images enter one library through generation or upload. The
+// three product placements select an available library asset directly; a
+// Creative review decision is not part of that operator action.
 
 import { z } from "zod";
 import {
@@ -10,10 +11,12 @@ import {
 export const characterDraftImageSelectionRequestSchema = z.object({
   entityVersion: z.number().int().nonnegative(),
   purpose: z.enum(["character_cover", "character_hero", "character_chat"]),
-  runId: adminIdSchema,
-  itemId: adminIdSchema,
   assetId: adminIdSchema,
-  reviewDecisionId: adminIdSchema,
+  // Historical clients may still send generation lineage. It remains useful
+  // evidence when present, but never gates choosing an existing library asset.
+  runId: adminIdSchema.optional(),
+  itemId: adminIdSchema.optional(),
+  reviewDecisionId: adminIdSchema.optional(),
   reason: z.string().trim().min(3).max(2_000),
 }).strict();
 
@@ -33,7 +36,7 @@ export const characterDraftImageSelectionResultSchema = z.object({
 
 export const characterImageSourceUploadRequestSchema = z
   .object({
-    purpose: z.literal("identity_experiment_source"),
+    purpose: z.enum(["identity_experiment_source", "character_library"]),
   })
   .strict();
 
@@ -64,6 +67,30 @@ export const characterImageSourceUploadResponseSchema = z
   })
   .strict();
 
+export const characterVideoSourceUploadRequestSchema = z
+  .object({
+    purpose: z.literal("character_video_library"),
+  })
+  .strict();
+
+export const characterVideoUploadAssetSchema = z
+  .object({
+    id: adminIdSchema,
+    url: z.string().trim().min(1),
+    filename: z.string().trim().min(1),
+    contentType: z.enum(["video/mp4", "video/webm"]),
+    sizeBytes: z.number().int().positive(),
+    createdAt: adminIsoDateTimeSchema,
+  })
+  .strict();
+
+export const characterVideoSourceUploadResponseSchema = z
+  .object({
+    asset: characterVideoUploadAssetSchema,
+    replayed: z.boolean(),
+  })
+  .strict();
+
 export type CharacterImageSourceAsset = z.infer<
   typeof characterImageSourceAssetSchema
 >;
@@ -78,6 +105,18 @@ export type CharacterImageSourceUploadRequest = z.infer<
 
 export type CharacterImageSourceUploadResponse = z.infer<
   typeof characterImageSourceUploadResponseSchema
+>;
+
+export type CharacterVideoUploadAsset = z.infer<
+  typeof characterVideoUploadAssetSchema
+>;
+
+export type CharacterVideoSourceUploadRequest = z.infer<
+  typeof characterVideoSourceUploadRequestSchema
+>;
+
+export type CharacterVideoSourceUploadResponse = z.infer<
+  typeof characterVideoSourceUploadResponseSchema
 >;
 
 export type CharacterDraftImageSelectionRequest = z.infer<typeof characterDraftImageSelectionRequestSchema>;

@@ -1,10 +1,14 @@
-import type { CharacterSoulSnapshot } from "@idream/shared";
+import {
+  loadCharacterSoulSnapshot,
+  type CharacterSoulSnapshot,
+} from "@idream/shared";
 import { describe, expect, it } from "vitest";
 import { canonicalSha256 } from "./canonical-json";
 import {
   characterContentHash,
   legacyCutoverContentIdentity,
   officialEditorialContentIdentity,
+  officialEditorialSoulContentIdentity,
 } from "./character-content-identity";
 
 // SPEC: these digests were produced by the five inline call sites that existed
@@ -20,7 +24,6 @@ const personaSnapshot = {
       name: "Aria",
       age: 24,
       gender: "female",
-      relationshipArchetype: "companion",
       characterPromise: "warm and steady",
     },
     voice: { tone: "soft", vocabulary: ["dear", "hey"] },
@@ -45,7 +48,6 @@ const legacyCharacter = {
   systemPrompt: "legacy system prompt",
   style: "anime",
   gender: "female",
-  relationship: "girlfriend",
   appearance: { hair: "black", eyes: "amber" },
   advancedDetails: {
     personality: "warm",
@@ -58,7 +60,7 @@ describe("character content identity", () => {
   it("pins the compiled-Soul content hash", () => {
     expect(
       characterContentHash({ personaSnapshot, openingSnapshot, appearanceSnapshot }),
-    ).toBe("939d53d984e4a369ab91748f2573035ebebf1243a2f324a5824e66663b3ea99a");
+    ).toBe("c6a6c824b18bd463f37b020e299d933a26660a039874639bf8dfd065b0485a7c");
   });
 
   it("ignores compiled prompt bytes, so runtime artifacts are not authoring authority", () => {
@@ -106,22 +108,61 @@ describe("character content identity", () => {
 
   it("pins the official editorial import content hash", () => {
     expect(officialEditorialContentIdentity(legacyCharacter).contentHash).toBe(
-      "ad3085be15c0d26e4967e75877440a53f7f9a0e62f38b2293ada5762a0e63e5e",
+      "66bec2bd09a433f05f959c8d309585964f18a119e389d22112ad3a2f2d30f7fc",
     );
+  });
+
+  it("builds a complete immutable Soul for new official editorial releases", () => {
+    const identity = officialEditorialSoulContentIdentity(legacyCharacter);
+    const loaded = loadCharacterSoulSnapshot(identity.snapshot.persona);
+
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+    expect(loaded.snapshot.soul).toMatchObject({
+      name: "Aria",
+      age: 24,
+      gender: "female",
+      characterPromise: "warm and steady companion",
+    });
+    expect(loaded.snapshot.soul.detailsMarkdown).toContain("## Personality");
+    expect(identity.snapshot.opening).toEqual({
+      firstMessage: "hey, you came back",
+    });
+    expect(identity.contentHash).toBe(characterContentHash({
+      personaSnapshot: identity.snapshot.persona,
+      openingSnapshot: identity.snapshot.opening,
+      appearanceSnapshot: identity.snapshot.appearance,
+    }));
+  });
+
+  it("does not append retired flat persona fields to authored editorial details", () => {
+    const identity = officialEditorialSoulContentIdentity({
+      ...legacyCharacter,
+      advancedDetails: {
+        ...legacyCharacter.advancedDetails,
+        detailsMarkdown: "CURRENT EDITORIAL SOUL",
+        backstory: "RETIRED BACKSTORY",
+      },
+    });
+    const loaded = loadCharacterSoulSnapshot(identity.snapshot.persona);
+
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+    expect(loaded.snapshot.soul.detailsMarkdown).toBe("CURRENT EDITORIAL SOUL");
+    expect(loaded.snapshot.soul.detailsMarkdown).not.toContain("RETIRED BACKSTORY");
   });
 
   it("pins both legacy shapes when advancedDetails carries nothing", () => {
     const bare = {
       ...legacyCharacter,
       systemPrompt: null,
-      relationship: null,
       advancedDetails: null,
     };
     expect(legacyCutoverContentIdentity(bare).contentHash).toBe(
       "bca00e7bad60628149451af04294ff4d570a6bd209a00f6e144848ad42fb9004",
     );
     expect(officialEditorialContentIdentity(bare).contentHash).toBe(
-      "0253424bb8d8e8466f161d472daeb3ae61586cc157dcecb94dd251e6189ad40f",
+      "e2abaf66cd160508cb52b884249df32ec1e3ef810fef5061b6fb82b228e4b952",
     );
   });
 

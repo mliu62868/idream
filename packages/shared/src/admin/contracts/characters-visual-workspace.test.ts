@@ -36,36 +36,58 @@ describe("Character Visual workspace contract", () => {
       assetId: "asset-1",
       reviewDecisionId: "decision-1",
     };
-    expect(characterVisualProfileCreateRequestSchema.safeParse({
-      candidateAuthority,
-      reason: "Activate reviewed candidate",
-      confirmation: "character-1:visual-profile",
-    }).success).toBe(false);
-    expect(characterVisualProfileCreateRequestSchema.safeParse({
-      identityPrompt: "Preserve the exact person shown in the canonical portrait.",
-      faceTraits: {
-        canonicalPortraitAuthority: true,
-        stableTraits: ["oval face", "blue eyes"],
-      },
-      hairTraits: { stableTraits: ["dark wavy hair"] },
-      bodyTraits: { stableTraits: ["balanced adult proportions"] },
-      candidateAuthority,
-      reason: "Activate reviewed candidate",
-      confirmation: "character-1:visual-profile",
-    }).success).toBe(true);
+    expect(
+      characterVisualProfileCreateRequestSchema.safeParse({
+        candidateAuthority,
+        reason: "Activate reviewed candidate",
+        confirmation: "character-1:visual-profile",
+      }).success,
+    ).toBe(false);
+    expect(
+      characterVisualProfileCreateRequestSchema.safeParse({
+        identityPrompt:
+          "Preserve the exact person shown in the canonical portrait.",
+        faceTraits: {
+          canonicalPortraitAuthority: true,
+          stableTraits: ["oval face", "blue eyes"],
+        },
+        hairTraits: { stableTraits: ["dark wavy hair"] },
+        bodyTraits: { stableTraits: ["balanced adult proportions"] },
+        candidateAuthority,
+        reason: "Activate reviewed candidate",
+        confirmation: "character-1:visual-profile",
+      }).success,
+    ).toBe(true);
   });
 
   it("keeps selection, published references, qualification evidence and readiness distinct", () => {
     const result = characterVisualWorkspaceSchema.parse({
       activeIdentity: {
-        id: "identity-1", version: 2, status: "active", style: "realistic",
-        identityPrompt: "same adult character", negativeIdentityPrompt: null,
+        id: "identity-1",
+        version: 2,
+        status: "active",
+        style: "realistic",
+        identityPrompt: "same adult character",
+        negativeIdentityPrompt: null,
         traits: { face: {}, hair: {}, body: {}, signature: {}, style: {} },
-        immutableHash: "identity-hash", evidenceState: "candidate", defaultSeed: null,
+        immutableHash: "identity-hash",
+        evidenceState: "candidate",
+        defaultSeed: null,
         anchorAssetIds: ["asset-anchor"],
-        createdFrom: "admin_passport_edit", createdAt: "2026-07-12T12:00:00.000Z",
+        createdFrom: "admin_passport_edit",
+        createdAt: "2026-07-12T12:00:00.000Z",
       },
-      anchors: [{ mediaAssetId: "asset-anchor", role: "identity_anchor", available: true, url: "/anchor.webp", thumbnailUrl: null, qualityScore: null, identityScore: null }],
+      anchors: [
+        {
+          mediaAssetId: "asset-anchor",
+          role: "identity_anchor",
+          available: true,
+          url: "/anchor.webp",
+          thumbnailUrl: null,
+          qualityScore: null,
+          identityScore: null,
+        },
+      ],
       references: [],
       videoSources: [],
       videoGenerationEstimate: {
@@ -79,7 +101,8 @@ describe("Character Visual workspace contract", () => {
       routeQualifications: [],
       routeEvaluation: {
         ready: false,
-        blocker: "Publish a sealed Reference Set before evaluating an image route.",
+        blocker:
+          "Publish a sealed Reference Set before evaluating an image route.",
         sampleMinimum: 40,
         evaluatorVersion: "identity-match-v1",
         profiles: [],
@@ -94,7 +117,13 @@ describe("Character Visual workspace contract", () => {
       readiness: {
         ready: false,
         qualificationPolicyVersion: "character-release-policy-v2",
-        blockers: [{ code: "reference_set_not_active", message: "No active Reference Set revision is pinned.", deepLink: "/admin/characters/character-1?tab=visual" }],
+        blockers: [
+          {
+            code: "reference_set_not_active",
+            message: "No active Reference Set revision is pinned.",
+            deepLink: "/admin/characters/character-1?tab=visual",
+          },
+        ],
         productionDeepLink: "/admin/characters/character-1?tab=assets",
       },
     });
@@ -111,78 +140,107 @@ describe("Character Visual workspace contract", () => {
   });
 
   it("rejects a readiness claim without explicit evidence collections", () => {
-    expect(characterVisualWorkspaceSchema.safeParse({ readiness: { ready: true, qualificationPolicyVersion: "v2", blockers: [], productionDeepLink: "/admin/content/production" } }).success).toBe(false);
+    expect(
+      characterVisualWorkspaceSchema.safeParse({
+        readiness: {
+          ready: true,
+          qualificationPolicyVersion: "v2",
+          blockers: [],
+          productionDeepLink: "/admin/content/production",
+        },
+      }).success,
+    ).toBe(false);
   });
 
   it("requires an explicit immutable Reference Set publication command", () => {
-    expect(characterReferenceSetPublishRequestSchema.parse({
-      visualProfileId: "identity-1",
-      expectedActiveReferenceSetRevisionId: null,
-      expectedActiveReferenceSetRevision: 0,
-      selectorVersion: "admin-visual-workbench-v1",
-      references: [{ mediaAssetId: "asset-anchor", role: "identity_anchor", weight: 1 }],
-      reason: { code: "reference_snapshot_publish", summary: "Seal reviewed identity references" },
-      confirmation: "PUBLISH REFERENCES character-1",
-    }).references).toHaveLength(1);
+    expect(
+      characterReferenceSetPublishRequestSchema.parse({
+        visualProfileId: "identity-1",
+        expectedActiveReferenceSetRevisionId: null,
+        expectedActiveReferenceSetRevision: 0,
+        selectorVersion: "admin-visual-workbench-v1",
+        references: [
+          { mediaAssetId: "asset-anchor", role: "identity_anchor", weight: 1 },
+        ],
+        reason: {
+          code: "reference_snapshot_publish",
+          summary: "Seal reviewed identity references",
+        },
+        confirmation: "PUBLISH REFERENCES character-1",
+      }).references,
+    ).toHaveLength(1);
   });
 
   it("rejects contradictory active Reference Set compare-and-swap authority", () => {
     const command = {
       visualProfileId: "identity-1",
       selectorVersion: "admin-visual-workbench-v1",
-      references: [{
-        mediaAssetId: "asset-anchor",
-        role: "identity_anchor",
-        weight: 1,
-      }],
+      references: [
+        {
+          mediaAssetId: "asset-anchor",
+          role: "identity_anchor",
+          weight: 1,
+        },
+      ],
       reason: {
         code: "reference_snapshot_publish",
         summary: "Seal reviewed identity references",
       },
       confirmation: "PUBLISH REFERENCES character-1",
     };
-    expect(characterReferenceSetPublishRequestSchema.safeParse({
-      ...command,
-      expectedActiveReferenceSetRevisionId: null,
-      expectedActiveReferenceSetRevision: 2,
-    }).success).toBe(false);
-    expect(characterReferenceSetPublishRequestSchema.safeParse({
-      ...command,
-      expectedActiveReferenceSetRevisionId: "reference-set-1",
-      expectedActiveReferenceSetRevision: 0,
-    }).success).toBe(false);
-    expect(characterReferenceSetPublishRequestSchema.safeParse({
-      ...command,
-      expectedActiveReferenceSetRevisionId: "reference-set-1",
-      expectedActiveReferenceSetRevision: 2,
-    }).success).toBe(true);
+    expect(
+      characterReferenceSetPublishRequestSchema.safeParse({
+        ...command,
+        expectedActiveReferenceSetRevisionId: null,
+        expectedActiveReferenceSetRevision: 2,
+      }).success,
+    ).toBe(false);
+    expect(
+      characterReferenceSetPublishRequestSchema.safeParse({
+        ...command,
+        expectedActiveReferenceSetRevisionId: "reference-set-1",
+        expectedActiveReferenceSetRevision: 0,
+      }).success,
+    ).toBe(false);
+    expect(
+      characterReferenceSetPublishRequestSchema.safeParse({
+        ...command,
+        expectedActiveReferenceSetRevisionId: "reference-set-1",
+        expectedActiveReferenceSetRevision: 2,
+      }).success,
+    ).toBe(true);
   });
 
   it("defines one atomic command for turning an approved first portrait into identity authority", () => {
-    expect(characterIdentityBootstrapRequestSchema.parse({
-      entityVersion: 1,
-      runId: "run-1",
-      itemId: "item-1",
-      assetId: "asset-anchor",
-      reviewDecisionId: "decision-1",
-      reason: "Establish the first reviewed portrait as the Character identity anchor",
-      confirmation: "BOOTSTRAP IDENTITY character-1",
-    })).toMatchObject({
+    expect(
+      characterIdentityBootstrapRequestSchema.parse({
+        entityVersion: 1,
+        runId: "run-1",
+        itemId: "item-1",
+        assetId: "asset-anchor",
+        reviewDecisionId: "decision-1",
+        reason:
+          "Establish the first reviewed portrait as the Character identity anchor",
+        confirmation: "BOOTSTRAP IDENTITY character-1",
+      }),
+    ).toMatchObject({
       entityVersion: 1,
       assetId: "asset-anchor",
     });
-    expect(characterIdentityBootstrapResponseSchema.parse({
-      characterId: "character-1",
-      projectVersion: 2,
-      visualProfileId: "visual-profile-1",
-      visualProfileVersion: 1,
-      referenceSetRevisionId: "reference-set-1",
-      referenceSetRevision: 1,
-      anchorAssetId: "asset-anchor",
-      draftImageAssetId: "asset-anchor",
-      deepLink: "/admin/characters/character-1?tab=assets",
-      replayed: false,
-    }).referenceSetRevision).toBe(1);
+    expect(
+      characterIdentityBootstrapResponseSchema.parse({
+        characterId: "character-1",
+        projectVersion: 2,
+        visualProfileId: "visual-profile-1",
+        visualProfileVersion: 1,
+        referenceSetRevisionId: "reference-set-1",
+        referenceSetRevision: 1,
+        anchorAssetId: "asset-anchor",
+        draftImageAssetId: "asset-anchor",
+        deepLink: "/admin/characters/character-1?tab=assets",
+        replayed: false,
+      }).referenceSetRevision,
+    ).toBe(1);
   });
 
   it("exposes the exact text-to-image profile used before identity exists", () => {
@@ -195,7 +253,8 @@ describe("Character Visual workspace contract", () => {
       routeQualifications: [],
       routeEvaluation: {
         ready: false,
-        blocker: "Create and seal a Visual Identity before evaluating an image route.",
+        blocker:
+          "Create and seal a Visual Identity before evaluating an image route.",
         sampleMinimum: 40,
         evaluatorVersion: "identity-match-v1",
         profiles: [],
@@ -217,15 +276,19 @@ describe("Character Visual workspace contract", () => {
       readiness: {
         ready: false,
         qualificationPolicyVersion: "character-release-policy-v2",
-        blockers: [{
-          code: "visual_identity_missing",
-          message: "No active Visual Identity version exists.",
-          deepLink: "/admin/characters/character-1?tab=visual",
-        }],
+        blockers: [
+          {
+            code: "visual_identity_missing",
+            message: "No active Visual Identity version exists.",
+            deepLink: "/admin/characters/character-1?tab=visual",
+          },
+        ],
         productionDeepLink: "/admin/characters/character-1?tab=assets",
       },
     });
-    expect(result.identityBootstrap.profile?.workflowKey).toBe("redcraft-krea2-redmix3-txt2img");
+    expect(result.identityBootstrap.profile?.workflowKey).toBe(
+      "redcraft-krea2-redmix3-txt2img",
+    );
   });
 
   it("keeps bootstrap authority visible when no compatible profile is configured", () => {
@@ -238,7 +301,8 @@ describe("Character Visual workspace contract", () => {
       routeQualifications: [],
       routeEvaluation: {
         ready: false,
-        blocker: "Create and seal a Visual Identity before evaluating an image route.",
+        blocker:
+          "Create and seal a Visual Identity before evaluating an image route.",
         sampleMinimum: 40,
         evaluatorVersion: "identity-match-v1",
         profiles: [],
@@ -253,11 +317,13 @@ describe("Character Visual workspace contract", () => {
       readiness: {
         ready: false,
         qualificationPolicyVersion: "character-release-policy-v2",
-        blockers: [{
-          code: "visual_identity_missing",
-          message: "No active Visual Identity version exists.",
-          deepLink: "/admin/characters/character-1?tab=visual",
-        }],
+        blockers: [
+          {
+            code: "visual_identity_missing",
+            message: "No active Visual Identity version exists.",
+            deepLink: "/admin/characters/character-1?tab=visual",
+          },
+        ],
         productionDeepLink: "/admin/characters/character-1?tab=assets",
       },
     });
@@ -311,46 +377,38 @@ describe("Character Visual workspace contract", () => {
   });
 
   it("rejects source-variation readiness claimed for another route fingerprint", () => {
-    expect(characterRouteQualificationEvidenceSchema.safeParse({
-      id: "qualification-1",
-      routeFingerprint: "route-fingerprint-1",
-      generationProfileKey: "profile-1",
-      generationProfileVersion: 1,
-      workflowKey: "source-identity-workflow",
-      workflowVersion: 1,
-      style: "realistic",
-      matrixKey: "matrix-1",
-      sampleCount: 40,
-      passCount: 40,
-      identityMatch: 0.96,
-      result: "qualified",
-      evidence: {},
-      policyVersion: "character-release-policy-v2",
-      evaluatedAt: "2026-07-16T12:00:00.000Z",
-      expiresAt: null,
-      stale: false,
-      sourceVariationAuthority: {
-        routeFingerprint: "route-fingerprint-2",
-        ready: true,
-        blocker: null,
-      },
-    }).success).toBe(false);
+    expect(
+      characterRouteQualificationEvidenceSchema.safeParse({
+        id: "qualification-1",
+        routeFingerprint: "route-fingerprint-1",
+        generationProfileKey: "profile-1",
+        generationProfileVersion: 1,
+        workflowKey: "source-identity-workflow",
+        workflowVersion: 1,
+        style: "realistic",
+        matrixKey: "matrix-1",
+        sampleCount: 40,
+        passCount: 40,
+        identityMatch: 0.96,
+        result: "qualified",
+        evidence: {},
+        policyVersion: "character-release-policy-v2",
+        evaluatedAt: "2026-07-16T12:00:00.000Z",
+        expiresAt: null,
+        stale: false,
+        sourceVariationAuthority: {
+          routeFingerprint: "route-fingerprint-2",
+          ready: true,
+          blocker: null,
+        },
+      }).success,
+    ).toBe(false);
   });
 
   it("projects exact draft-pack route authority without erasing historical selections", () => {
     const result = characterWorkspaceProjectSchema.parse({
       id: "project-1",
       characterId: "character-1",
-      ownerId: "operator-1",
-      phase: "producing",
-      audience: "",
-      companionNeed: "",
-      hypothesis: "",
-      differentiation: "",
-      targetPlacementKeys: [],
-      successCriteria: [],
-      productionPackage: "",
-      qaPlan: "",
       draftImageAssetId: "cover-q1",
       draftAssetPackHash: "pack-hash",
       draftAssetPack: {
@@ -376,10 +434,9 @@ describe("Character Visual workspace contract", () => {
         stalePurposes: ["character_cover", "character_hero", "character_chat"],
         missingPurposes: [],
         recoveryPurpose: "character_cover",
-        qaReady: false,
-        qaBlockers: ["draft_asset_generation_route_stale"],
+        releaseReady: false,
+        releaseBlockers: ["draft_asset_generation_route_stale"],
       },
-      plannedLaunchAt: null,
       version: 4,
       updatedAt: "2026-07-16T12:00:00.000Z",
     });
@@ -389,8 +446,8 @@ describe("Character Visual workspace contract", () => {
       stalePurposes: ["character_cover", "character_hero", "character_chat"],
       missingPurposes: [],
       recoveryPurpose: "character_cover",
-      qaReady: false,
-      qaBlockers: ["draft_asset_generation_route_stale"],
+      releaseReady: false,
+      releaseBlockers: ["draft_asset_generation_route_stale"],
     });
     expect(result.draftAssetPack.character_cover).toBe("cover-q1");
   });
@@ -432,35 +489,37 @@ describe("Character Visual workspace contract", () => {
   });
 
   it("rejects a ready preview claim backed by one aliased portrait", () => {
-    expect(characterPreviewSnapshotSchema.safeParse({
-      releaseId: null,
-      contentVersionId: "content-1",
-      label: "Draft Preview",
-      name: "Mira",
-      description: "A precise evening companion.",
-      persona: {},
-      opening: {},
-      appearance: {},
-      imageUrl: "/portrait.webp",
-      assetPack: {
-        character_cover: {
-          assetId: "portrait-1",
-          imageUrl: "/portrait.webp",
-          status: "available",
+    expect(
+      characterPreviewSnapshotSchema.safeParse({
+        releaseId: null,
+        contentVersionId: "content-1",
+        label: "Draft Preview",
+        name: "Mira",
+        description: "A precise evening companion.",
+        persona: {},
+        opening: {},
+        appearance: {},
+        imageUrl: "/portrait.webp",
+        assetPack: {
+          character_cover: {
+            assetId: "portrait-1",
+            imageUrl: "/portrait.webp",
+            status: "available",
+          },
+          character_hero: {
+            assetId: "portrait-1",
+            imageUrl: "/portrait.webp",
+            status: "available",
+          },
+          character_chat: {
+            assetId: "portrait-1",
+            imageUrl: "/portrait.webp",
+            status: "available",
+          },
         },
-        character_hero: {
-          assetId: "portrait-1",
-          imageUrl: "/portrait.webp",
-          status: "available",
-        },
-        character_chat: {
-          assetId: "portrait-1",
-          imageUrl: "/portrait.webp",
-          status: "available",
-        },
-      },
-      assetPackReady: true,
-      renderUrl: "http://localhost/internal-preview/characters/token",
-    }).success).toBe(false);
+        assetPackReady: true,
+        renderUrl: "http://localhost/internal-preview/characters/token",
+      }).success,
+    ).toBe(false);
   });
 });

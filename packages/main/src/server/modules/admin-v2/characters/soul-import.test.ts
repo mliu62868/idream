@@ -5,7 +5,6 @@ const completeSoul = {
   name: "Mara",
   age: 31,
   gender: "female",
-  relationshipArchetype: "old friend",
   characterPromise: "A precise, teasing confidante who notices what others miss.",
   detailsMarkdown: "## Personality\nObservant, stubborn, and tender under pressure.\n\n## Background\nShe returned to the harbor town after ten years away.",
 } as const;

@@ -14,8 +14,6 @@ export type ResolvedPlaywrightEnvironment = {
   readonly chatBaseURL: string;
   readonly chatPort: string;
   readonly databaseURL: string;
-  readonly chatDatabaseURL: string;
-  readonly chatProjectorDatabaseURL: string;
   readonly redisURL: string;
   readonly bullmqPrefix: string;
   readonly chatFsRoot: string;
@@ -53,13 +51,6 @@ export type ManagedPlaywrightWebServer = {
 
 const TEST_DATABASE_TOKEN = /(^|[_-])test([_-]|$)/i;
 const PLAYWRIGHT_DATABASE_TOKEN = /(^|[_-])playwright([_-]|$)/i;
-// SPEC: the run-owned Playwright database is created fresh, but chat_service /
-// chat_projector are cluster-wide login roles this harness must never rotate.
-// INTENT: a local cluster whose boundary roles already carry real passwords can
-// hand them in via PW_CHAT_*_PASSWORD; the disposable defaults stay for
-// throwaway clusters where the harness bootstraps the roles itself.
-const DEFAULT_CHAT_SERVICE_PASSWORD = "chat_service_change_me";
-const DEFAULT_CHAT_PROJECTOR_PASSWORD = "chat_projector_change_me";
 const DEFAULT_TEST_DATABASE_URL =
   "postgresql://postgres:postgres@localhost:5433/idream_test";
 
@@ -77,11 +68,8 @@ export function resolvePlaywrightEnvironment(
     );
   }
   if (input.PW_CHAT_DATABASE_URL !== undefined) {
-    throw new Error(
-      "PW_CHAT_DATABASE_URL must not be set; the Playwright chat database is derived from PW_DATABASE_URL",
-    );
+    throw new Error("PW_CHAT_DATABASE_URL is retired; Chat uses only its run-owned filesystem");
   }
-
   const mainBaseURL = loopbackBaseURL(
     input.PW_BASE_URL ?? "http://127.0.0.1:3000",
     "PW_BASE_URL",
@@ -122,19 +110,6 @@ export function resolvePlaywrightEnvironment(
       DEFAULT_TEST_DATABASE_URL,
     mainPort,
     runId,
-  );
-  const chatServicePassword =
-    nonEmpty(input.PW_CHAT_SERVICE_PASSWORD) ?? DEFAULT_CHAT_SERVICE_PASSWORD;
-  const chatProjectorPassword =
-    nonEmpty(input.PW_CHAT_PROJECTOR_PASSWORD) ??
-    DEFAULT_CHAT_PROJECTOR_PASSWORD;
-  const chatDatabaseURL = derivedPlaywrightChatDatabaseUrl(
-    databaseURL,
-    chatServicePassword,
-  );
-  const chatProjectorDatabaseURL = derivedPlaywrightChatProjectorDatabaseUrl(
-    databaseURL,
-    chatProjectorPassword,
   );
   const redisURL = assertPlaywrightRedisUrl(
     input.PW_REDIS_URL ?? "redis://127.0.0.1:6379/14",
@@ -186,8 +161,6 @@ export function resolvePlaywrightEnvironment(
     CHAT_PROVIDER: input.PW_CHAT_PROVIDER ?? "mock",
     CHAT_MODEL_PROVIDER: input.PW_CHAT_PROVIDER ?? "mock",
     CHAT_SERVICE_URL: chatBaseURL,
-    CHAT_DATABASE_URL: chatDatabaseURL,
-    CHAT_PROJECTOR_DATABASE_URL: chatProjectorDatabaseURL,
     CHAT_REDIS_URL: redisURL,
     CHAT_FS_ROOT: chatFsRoot,
     BLOB_ROOT: blobRoot,
@@ -195,10 +168,6 @@ export function resolvePlaywrightEnvironment(
     CHAT_BFF_SIGNING_SECRET: bffSecret,
     INTERNAL_TOKEN: internalToken,
     MAIN_WEB_URL: mainBaseURL,
-    CHAT_TEST_DB: databaseNameFromUrl(new URL(databaseURL)),
-    CHAT_TEST_REQUIRE_PLAYWRIGHT: "1",
-    CHAT_SERVICE_PASSWORD: chatServicePassword,
-    CHAT_PROJECTOR_PASSWORD: chatProjectorPassword,
     GEN_IMAGE_PROVIDER: input.PW_IMAGE_PROVIDER ?? "pipeline",
     PIPELINE_API_URL: pipelineBaseURL,
     GEN_VIDEO_PROVIDER: input.PW_VIDEO_PROVIDER ?? "mock",
@@ -226,8 +195,6 @@ export function resolvePlaywrightEnvironment(
     chatBaseURL,
     chatPort,
     databaseURL,
-    chatDatabaseURL,
-    chatProjectorDatabaseURL,
     redisURL,
     bullmqPrefix,
     chatFsRoot,
@@ -266,10 +233,6 @@ export function managedPlaywrightWebServers(
       },
       env: {
         ...environment.serviceEnv,
-        DATABASE_URL: environment.chatDatabaseURL,
-        CHAT_DATABASE_URL: environment.chatDatabaseURL,
-        CHAT_PROJECTOR_DATABASE_URL:
-          environment.chatProjectorDatabaseURL,
         CHAT_PORT: environment.chatPort,
         CHAT_SERVICE_URL: environment.chatBaseURL,
         MAIN_WEB_URL: environment.mainBaseURL,
@@ -366,84 +329,6 @@ export function assertPlaywrightDatabaseUrl(value: string) {
   return parsed.toString();
 }
 
-export function assertPlaywrightChatDatabaseUrl(
-  value: string,
-  authorityDatabaseUrl: string,
-) {
-  const authority = new URL(assertPlaywrightDatabaseUrl(authorityDatabaseUrl));
-  const parsed = postgresUrl(value, "Playwright Chat database");
-  const databaseName = databaseNameFromUrl(parsed);
-  assertPlaywrightDatabaseName(databaseName);
-  if (decodeURIComponent(parsed.username) !== "chat_service") {
-    throw new Error(
-      "Playwright Chat database must connect with the chat_service role",
-    );
-  }
-  if (
-    parsed.hostname !== authority.hostname ||
-    normalizedPort(parsed) !== normalizedPort(authority) ||
-    parsed.pathname !== authority.pathname
-  ) {
-    throw new Error(
-      "Playwright Chat must use the same database authority as Playwright Main",
-    );
-  }
-  return parsed.toString();
-}
-
-export function assertPlaywrightChatProjectorDatabaseUrl(
-  value: string,
-  authorityDatabaseUrl: string,
-) {
-  const authority = new URL(assertPlaywrightDatabaseUrl(authorityDatabaseUrl));
-  const parsed = postgresUrl(value, "Playwright Chat projector database");
-  const databaseName = databaseNameFromUrl(parsed);
-  assertPlaywrightDatabaseName(databaseName);
-  if (decodeURIComponent(parsed.username) !== "chat_projector") {
-    throw new Error(
-      "Playwright Chat projector database must connect with the chat_projector role",
-    );
-  }
-  if (
-    parsed.hostname !== authority.hostname ||
-    normalizedPort(parsed) !== normalizedPort(authority) ||
-    parsed.pathname !== authority.pathname
-  ) {
-    throw new Error(
-      "Playwright Chat projector must use the same database authority as Playwright Main",
-    );
-  }
-  return parsed.toString();
-}
-
-function derivedPlaywrightChatDatabaseUrl(
-  authorityDatabaseUrl: string,
-  password: string = DEFAULT_CHAT_SERVICE_PASSWORD,
-) {
-  const parsed = new URL(assertPlaywrightDatabaseUrl(authorityDatabaseUrl));
-  parsed.username = "chat_service";
-  parsed.password = password;
-  parsed.searchParams.delete("schema");
-  return assertPlaywrightChatDatabaseUrl(
-    parsed.toString(),
-    authorityDatabaseUrl,
-  );
-}
-
-function derivedPlaywrightChatProjectorDatabaseUrl(
-  authorityDatabaseUrl: string,
-  password: string = DEFAULT_CHAT_PROJECTOR_PASSWORD,
-) {
-  const parsed = new URL(assertPlaywrightDatabaseUrl(authorityDatabaseUrl));
-  parsed.username = "chat_projector";
-  parsed.password = password;
-  parsed.searchParams.delete("schema");
-  return assertPlaywrightChatProjectorDatabaseUrl(
-    parsed.toString(),
-    authorityDatabaseUrl,
-  );
-}
-
 function derivedPlaywrightDatabaseUrl(
   baseValue: string,
   mainPort: string,
@@ -530,11 +415,6 @@ export function assertPlaywrightBlobRoot(value: string) {
   return resolved;
 }
 
-function nonEmpty(value: string | undefined) {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : undefined;
-}
-
 function playwrightRunId(value: string | undefined) {
   const runId = value ?? randomBytes(4).toString("hex");
   if (!/^[a-f0-9]{8}$/.test(runId)) {
@@ -574,11 +454,6 @@ function loopbackBaseURL(value: string, variableName: string) {
     throw new Error(`${variableName} contains an invalid port`);
   }
   return parsed.toString().replace(/\/$/, "");
-}
-
-function normalizedPort(value: URL) {
-  if (value.port) return value.port;
-  return "5432";
 }
 
 function normalizedHostname(value: URL) {

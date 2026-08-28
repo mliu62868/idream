@@ -8,7 +8,7 @@ import {
   type AdminPermissionKey,
   type CharacterWorkspaceDetail,
 } from "@idream/shared/admin";
-import { ImageIcon } from "lucide-react";
+import { AlertTriangle, ImageIcon } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -19,17 +19,18 @@ import {
   type KeyboardEvent,
 } from "react";
 import type { AdminSubview } from "@/components/admin/nav-config";
-import { CharacterAssetStudio } from "@/features/characters/CharacterAssetStudio";
-import { CharacterVideoStudio } from "@/features/characters/CharacterVideoStudio";
+import { CharacterVideoLibrary } from "@/features/characters/CharacterVideoLibrary";
 import { CharacterCreateWizard } from "@/features/characters/CharacterCreateWizard";
 import { CharacterVoicePanel } from "@/features/characters/CharacterVoicePanel";
 import { CharacterSoulPanel } from "@/features/characters/CharacterSoulPanel";
 import {
   characterWorkspaceTabFromSearch,
-  characterWorkspaceTabs,
   type CharacterWorkspaceTab,
 } from "@/features/image-workflow-transport";
-import { LoadingWorkspace, fieldClass } from "@/features/operations/WorkspaceUi";
+import {
+  LoadingWorkspace,
+  fieldClass,
+} from "@/features/operations/WorkspaceUi";
 import { AdminV2RequestError, setWorkspaceUrl } from "@/lib/admin-v2-api";
 import {
   adminV2Operation,
@@ -44,14 +45,15 @@ import { createLatestRequestGate } from "@/lib/latest-request";
 import { cn } from "@/lib/utils";
 import { characterWorkspacePermissions } from "./character-workspace-permissions";
 import { permissionDenied } from "./character-permission-denied";
-import { CharacterJourneyRail } from "./CharacterJourneyRail";
 import { CharacterPortfolio } from "./CharacterPortfolio";
-import { ProjectEditor } from "./ProjectEditor";
+import { CharacterOverview } from "./CharacterOverview";
 import { VisualIdentityPanel } from "./VisualIdentityPanel";
 import { PreviewDiff } from "./PreviewDiff";
+import { CharacterImageLibrary } from "./CharacterImageLibrary";
+import { CharacterPlacementEditor } from "./CharacterPlacementEditor";
 import { ReleasePanel } from "./ReleasePanel";
 import { MonitorPanel } from "./MonitorPanel";
-import { PerformancePanel } from "./PerformancePanel";
+import { PerformancePanel, characterNoDataDiagnosis } from "./PerformancePanel";
 import {
   CharacterMediaOperationsCard,
   shouldReleaseVoiceReclaimIdempotencyKey,
@@ -65,19 +67,54 @@ import {
 type Tab = CharacterWorkspaceTab;
 
 const characterWorkspaceTabLabels: Record<Tab, string> = {
-  project: "Details",
+  project: "Overview",
   soul: "Soul",
   visual: "Visual identity",
   assets: "Images",
-  video: "Video",
+  video: "Videos",
   voice: "Voice",
   preview: "Launch preview",
   release: "Release",
-  monitor: "Live performance",
+  monitor: "Live monitoring",
 };
 
 export function characterWorkspaceTabLabel(tab: Tab) {
   return characterWorkspaceTabLabels[tab];
+}
+
+export type CharacterWorkspaceArea = "settings" | "assets" | "operations";
+
+const characterWorkspaceAreaLabels: Record<CharacterWorkspaceArea, string> = {
+  settings: "Character settings",
+  assets: "Character assets",
+  operations: "Character operations",
+};
+
+// INTENT: 角色详情只暴露三种运营心智：定义角色、管理素材、决定线上使用什么。
+// 旧 tab 继续作为 URL 和功能权威，避免一次导航收敛演变成流程或接口重写。
+export const characterWorkspaceAreaTabs: Record<
+  CharacterWorkspaceArea,
+  readonly Tab[]
+> = {
+  settings: ["project", "soul", "visual", "voice"],
+  assets: ["assets", "video"],
+  operations: ["preview", "release", "monitor"],
+};
+
+const characterWorkspaceAreas = Object.keys(
+  characterWorkspaceAreaTabs,
+) as CharacterWorkspaceArea[];
+
+export function characterWorkspaceAreaLabel(area: CharacterWorkspaceArea) {
+  return characterWorkspaceAreaLabels[area];
+}
+
+export function characterWorkspaceAreaForTab(tab: Tab): CharacterWorkspaceArea {
+  return (
+    characterWorkspaceAreas.find((area) =>
+      characterWorkspaceAreaTabs[area].includes(tab),
+    ) ?? "settings"
+  );
 }
 
 type CustomerPublicationPrepRecovery = {
@@ -99,7 +136,8 @@ export function customerPublicationPrepRecoveryFromError(
     !cause.details ||
     typeof cause.details !== "object" ||
     Array.isArray(cause.details)
-  ) return null;
+  )
+    return null;
   const details = cause.details as Record<string, unknown>;
   return details.reason === "customer_publication_prep_missing" &&
     details.characterId === characterId &&
@@ -117,6 +155,14 @@ function localCleanupWarning(cause: unknown) {
   return cause instanceof Error
     ? `The authoritative workspace refreshed, but local cleanup needs attention: ${cause.message}`
     : "The authoritative workspace refreshed, but local cleanup needs attention.";
+}
+
+export function characterWorkspaceLoadError(cause: unknown) {
+  if (!(cause instanceof Error))
+    return "Character workspace could not be loaded";
+  return cause.message.startsWith("Validation failed")
+    ? "This Character contains older operational evidence. Refresh and try the release again."
+    : cause.message;
 }
 
 /**
@@ -170,7 +216,10 @@ const characterCommandRecoveryCopy: CharacterCommandRecoveryCopy = {
   reconcileStillActive: ({ action }) =>
     `${action} is still active according to server authority. Character writes remain locked.`,
   reconcileFailed: ({ action, cause }) =>
-    committedCharacterProjectionWarning(`${action} command reconciliation`, cause),
+    committedCharacterProjectionWarning(
+      `${action} command reconciliation`,
+      cause,
+    ),
 };
 
 function CharacterDetail({
@@ -190,8 +239,10 @@ function CharacterDetail({
   const [data, setData] = useState<CharacterWorkspaceDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [publicationPrepRecovery, setPublicationPrepRecovery] = useState<CustomerPublicationPrepRecovery | null>(null);
-  const [pendingPublicationPrep, setPendingPublicationPrep] = useState<PendingPublicationPrep | null>(null);
+  const [publicationPrepRecovery, setPublicationPrepRecovery] =
+    useState<CustomerPublicationPrepRecovery | null>(null);
+  const [pendingPublicationPrep, setPendingPublicationPrep] =
+    useState<PendingPublicationPrep | null>(null);
   const publicationPrepIdempotencyKey = useRef<string | null>(null);
   const [reclaimingVoiceRequestId, setReclaimingVoiceRequestId] = useState<
     string | null
@@ -232,47 +283,50 @@ function CharacterDetail({
       if (request.isCurrent()) {
         const recovery = customerPublicationPrepRecoveryFromError(cause, id);
         setPublicationPrepRecovery(recovery);
-        setError(recovery
-          ? null
-          : cause instanceof Error
-            ? cause.message
-            : "Character workspace could not be loaded");
+        setError(
+          recovery
+            ? null
+            : cause instanceof Error
+              ? characterWorkspaceLoadError(cause)
+              : "Character workspace could not be loaded",
+        );
       }
       throw cause;
     } finally {
       if (request.isCurrent()) setLoading(false);
     }
   }, [id]);
-  const preparePublicationWorkspace = useCallback(async (
-    pending: PendingPublicationPrep,
-    reason: string,
-  ) => {
-    setError(null);
-    try {
-      await adminV2Operation("POST /api/v2/admin/characters/:id/project", {
-        path: { id },
-        idempotencyKey: pending.idempotencyKey,
-        body: {
-          submissionId: pending.submissionId,
-          reason,
-          confirmation: `PREPARE PUBLICATION ${id}`,
-        },
+  const preparePublicationWorkspace = useCallback(
+    async (pending: PendingPublicationPrep, reason: string) => {
+      setError(null);
+      try {
+        await adminV2Operation("POST /api/v2/admin/characters/:id/project", {
+          path: { id },
+          idempotencyKey: pending.idempotencyKey,
+          body: {
+            submissionId: pending.submissionId,
+            reason,
+            confirmation: `PREPARE PUBLICATION ${id}`,
+          },
+        });
+      } catch (cause) {
+        const failure =
+          cause instanceof Error
+            ? cause
+            : new Error("Publication workspace could not be prepared");
+        setError(failure.message);
+        throw failure;
+      }
+      publicationPrepIdempotencyKey.current = null;
+      setPendingPublicationPrep(null);
+      setTab("assets");
+      setWorkspaceUrl(new URLSearchParams({ tab: "assets" }), {
+        mode: "replace",
       });
-    } catch (cause) {
-      const failure = cause instanceof Error
-        ? cause
-        : new Error("Publication workspace could not be prepared");
-      setError(failure.message);
-      throw failure;
-    }
-    publicationPrepIdempotencyKey.current = null;
-    setPendingPublicationPrep(null);
-    setTab("assets");
-    setWorkspaceUrl(new URLSearchParams({ tab: "assets" }), {
-      mode: "replace",
-    });
-    await load().catch(() => undefined);
-  }, [id, load]);
+      await load().catch(() => undefined);
+    },
+    [id, load],
+  );
   const loadAuthoritative = useCallback(async () => {
     requestGate.current.invalidate();
     setLoading(true);
@@ -284,11 +338,7 @@ function CharacterDetail({
       setData(next);
       return next;
     } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : "Character workspace could not be loaded",
-      );
+      setError(characterWorkspaceLoadError(cause));
       throw cause;
     } finally {
       setLoading(false);
@@ -579,9 +629,7 @@ function CharacterDetail({
   }, [data?.activeCommand, id, journal]);
   if (!permissions.read) return permissionDenied("character.project.read");
   if (loading && !data && !pendingCommand) {
-    return (
-      <LoadingWorkspace label="Loading Character Project, Release and Monitor evidence" />
-    );
+    return <LoadingWorkspace label="Loading character workspace" />;
   }
   if (!data) {
     return (
@@ -636,11 +684,19 @@ function CharacterDetail({
             className="rounded-xl bg-[var(--ad-yellow-bg)] p-5 text-sm text-[var(--ad-yellow-text)]"
             role="status"
           >
-            <p className="font-semibold">{t("Approved · awaiting publication preparation")}</p>
-            <p className="mt-2">
-              {t("Prepare the Project, immutable Revision, and inactive Serving workspace. This does not publish a Release or make the Character public.")}
+            <p className="font-semibold">
+              {t("Approved · awaiting publication preparation")}
             </p>
-            {error ? <p className="mt-2" role="alert">{error}</p> : null}
+            <p className="mt-2">
+              {t(
+                "Prepare this approved Character for publishing. Nothing is published or made public yet.",
+              )}
+            </p>
+            {error ? (
+              <p className="mt-2" role="alert">
+                {error}
+              </p>
+            ) : null}
             <button
               className="mt-3 font-semibold underline"
               onClick={() => {
@@ -661,9 +717,7 @@ function CharacterDetail({
             role="alert"
           >
             {error ??
-              (loading
-                ? t("Loading characters…")
-                : t("Character not found"))}
+              (loading ? t("Loading characters…") : t("Character not found"))}
             <button
               className="ml-2 font-semibold underline"
               onClick={() => void load().catch(() => undefined)}
@@ -681,10 +735,14 @@ function CharacterDetail({
               summary: (
                 <div className="space-y-2">
                   <p>
-                    {t("This creates the Character Project, immutable Revision, and inactive Serving workspace.")}
+                    {t(
+                      "This creates a private publishing workspace for the Character.",
+                    )}
                   </p>
                   <p>
-                    {t("It does not create or publish a Release and does not make the Character visible in Explore or Community.")}
+                    {t(
+                      "It does not create or publish a Release and does not make the Character visible in Explore or Community.",
+                    )}
                   </p>
                 </div>
               ),
@@ -694,10 +752,8 @@ function CharacterDetail({
               },
               reasonLabel: t("Operational reason (≥3)"),
               submitLabel: t("Prepare publication workspace"),
-              onSubmit: (reason) => preparePublicationWorkspace(
-                pendingPublicationPrep,
-                reason,
-              ),
+              onSubmit: (reason) =>
+                preparePublicationWorkspace(pendingPublicationPrep, reason),
             }}
           />
         ) : null}
@@ -715,19 +771,6 @@ function CharacterDetail({
       mode: "push",
     });
   };
-  // SPEC: 把服务端 journey 深链（/admin/characters/:id?tab=x#anchor）落到同页导航。
-  // INTENT: tab 是 React state，next/link 跳同一条路由只会改地址栏、不换面板；而整页
-  //         跳转会丢掉正在恢复的命令上下文。所以这里手工解析后走 selectTab + 滚锚点。
-  const openDeepLink = (deepLink: string) => {
-    const target = new URL(deepLink, window.location.origin);
-    const nextTab = characterWorkspaceTabFromSearch(target.search);
-    selectTab(nextTab);
-    const anchor = target.hash.slice(1);
-    if (!anchor) return;
-    window.requestAnimationFrame(() => {
-      document.getElementById(anchor)?.scrollIntoView({ block: "start" });
-    });
-  };
   const onTabKey = (
     event: KeyboardEvent<HTMLButtonElement>,
     current: number,
@@ -735,7 +778,8 @@ function CharacterDetail({
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
     if (mutationNotice || pendingCommand || data.activeCommand) return;
-    const visibleTabs = characterWorkspaceTabs;
+    const visibleTabs =
+      characterWorkspaceAreaTabs[characterWorkspaceAreaForTab(tab)];
     const nextIndex =
       event.key === "Home"
         ? 0
@@ -755,32 +799,42 @@ function CharacterDetail({
     data.preview.draft?.imageUrl ??
     data.preview.live?.imageUrl ??
     data.character.imageUrl;
-  const visibleTabs = characterWorkspaceTabs;
+  const attentionMetric = data.performance.find(
+    (metric) => characterNoDataDiagnosis(metric)?.alert,
+  );
+  const attentionDiagnosis = attentionMetric
+    ? characterNoDataDiagnosis(attentionMetric)
+    : null;
+  const activeArea = characterWorkspaceAreaForTab(tab);
+  const visibleTabs = characterWorkspaceAreaTabs[activeArea];
   const writesLocked = commandWritesLocked || data.activeCommand !== null;
-  const guardedPermissions = characterWorkspacePermissions(granted, writesLocked);
+  const guardedPermissions = characterWorkspacePermissions(
+    granted,
+    writesLocked,
+  );
   return (
     <section aria-labelledby="character-workspace-title">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <div className="flex min-w-0 items-center gap-4">
+        <div className="flex min-w-0 items-center gap-3">
           {workspaceImageUrl ? (
             <Image
               alt={t("{name} primary role portrait", { name: workspaceName })}
-              className="h-24 w-24 shrink-0 rounded-lg object-cover"
-              height={96}
+              className="h-16 w-16 shrink-0 rounded-lg object-cover"
+              height={64}
               loading="eager"
               src={workspaceImageUrl}
               unoptimized
-              width={96}
+              width={64}
             />
           ) : (
-            <div className="grid h-24 w-24 shrink-0 place-items-center rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] text-[var(--ad-text-muted)]">
+            <div className="grid h-16 w-16 shrink-0 place-items-center rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] text-[var(--ad-text-muted)]">
               <ImageIcon aria-hidden="true" className="h-5 w-5" />
             </div>
           )}
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
               <h2
-                className="truncate text-2xl font-semibold"
+                className="truncate text-xl font-semibold"
                 id="character-workspace-title"
               >
                 {workspaceName}
@@ -799,7 +853,14 @@ function CharacterDetail({
                 <span aria-hidden="true">·</span> {t(data.character.visibility)}
               </p>
             </div>
-            <p className="mt-1 text-sm text-[var(--ad-text-muted)]">
+            <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
+              {data.preview.live && data.preview.changedFields.length === 0
+                ? `${t("Draft matches live")} · `
+                : data.preview.changedFields.length > 0
+                  ? `${t("{count} unpublished changes", {
+                      count: data.preview.changedFields.length,
+                    })} · `
+                  : ""}
               {t("Updated")}{" "}
               {new Date(data.character.updatedAt).toLocaleDateString(
                 adminDateLocale(locale),
@@ -812,7 +873,7 @@ function CharacterDetail({
             {t("Technical status")}
           </summary>
           <p>
-            {t("Project v")}
+            {t("Draft v")}
             {data.project.version} {t("· Serving v")}
             {data.serving?.version ?? 0}
           </p>
@@ -820,7 +881,7 @@ function CharacterDetail({
             {t("Character ID")} · {data.character.id}
           </p>
           <p className="mt-1 break-all">
-            {t("Project ID")} · {data.project.id}
+            {t("Workspace ID")} · {data.project.id}
           </p>
         </details>
       </div>
@@ -893,14 +954,60 @@ function CharacterDetail({
           </div>
         </div>
       ) : null}
-      <CharacterJourneyRail journey={data.journey} onOpenDeepLink={openDeepLink} />
-      <CharacterMediaOperationsCard
-        canReclaimVoice={guardedPermissions.writeProject}
-        onReclaimVoice={reclaimVoiceRequest}
-        projection={data.mediaOperations}
-        reclaimingVoiceRequestId={reclaimingVoiceRequestId}
-      />
-      <label className="mt-4 block sm:hidden">
+      {attentionDiagnosis && attentionMetric && tab !== "monitor" ? (
+        <div
+          className="mt-4 flex flex-col gap-2 border-l-2 border-[var(--ad-yellow-text)] bg-[var(--ad-yellow-bg)] px-3 py-2 text-sm text-[var(--ad-yellow-text)] sm:flex-row sm:items-center sm:justify-between"
+          role="status"
+        >
+          <p className="flex min-w-0 items-start gap-2">
+            <AlertTriangle
+              aria-hidden="true"
+              className="mt-0.5 h-4 w-4 shrink-0"
+            />
+            <span>
+              <strong>{t("Needs attention")}</strong>{" "}
+              {t(attentionDiagnosis.message, {
+                window: attentionMetric.window,
+              })}
+            </span>
+          </p>
+          <button
+            className="min-h-8 shrink-0 text-left text-xs font-semibold underline underline-offset-4"
+            onClick={() => selectTab("monitor")}
+            type="button"
+          >
+            {t("Inspect live monitoring")}
+          </button>
+        </div>
+      ) : null}
+      <div
+        aria-label={t("Character workspace area")}
+        className="mt-5 grid grid-cols-3 gap-1 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface-muted)] p-1 sm:max-w-xl"
+        role="group"
+      >
+        {characterWorkspaceAreas.map((area) => (
+          <button
+            aria-pressed={activeArea === area}
+            className={cn(
+              "min-h-10 rounded-md px-3 text-sm font-medium focus-visible:outline focus-visible:outline-2",
+              activeArea === area
+                ? "bg-[var(--ad-surface)] text-[var(--ad-ink)] shadow-sm"
+                : "text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]",
+            )}
+            disabled={writesLocked && activeArea !== area}
+            key={area}
+            onClick={() => {
+              if (activeArea !== area) {
+                selectTab(characterWorkspaceAreaTabs[area][0]);
+              }
+            }}
+            type="button"
+          >
+            {t(characterWorkspaceAreaLabel(area))}
+          </button>
+        ))}
+      </div>
+      <label className="mt-3 block sm:hidden">
         <span className="sr-only">{t("Workspace page")}</span>
         <select
           aria-label={t("Workspace page")}
@@ -917,7 +1024,7 @@ function CharacterDetail({
         </select>
       </label>
       <div
-        className="mt-4 hidden gap-1 overflow-x-auto border-b border-[var(--ad-border)] sm:flex"
+        className="mt-3 hidden gap-1 overflow-x-auto border-b border-[var(--ad-border)] sm:flex"
         role="tablist"
         aria-label={t("Character workspace")}
       >
@@ -945,20 +1052,15 @@ function CharacterDetail({
         ))}
       </div>
       <div
-        className="mt-5"
+        className="mt-5 scroll-mt-24"
         id={`character-panel-${tab}`}
         role="tabpanel"
         aria-labelledby={`character-tab-${tab}`}
       >
         {tab === "project" ? (
-          <ProjectEditor
+          <CharacterOverview
+            canWrite={guardedPermissions.writeProject}
             data={data}
-            key={data.project.version}
-            onReload={async () => {
-              await loadAuthoritative();
-            }}
-            permissions={guardedPermissions}
-            runCommittedMutation={runCommittedMutation}
           />
         ) : tab === "soul" ? (
           <CharacterSoulPanel
@@ -977,31 +1079,30 @@ function CharacterDetail({
           />
         ) : tab === "assets" ? (
           <div id="character-image-studio">
-            <CharacterAssetStudio
+            <CharacterImageLibrary
               actorId={actorId}
+              canArchive={guardedPermissions.archiveAssets}
+              canCreate={
+                guardedPermissions.createAssets &&
+                guardedPermissions.writeProject
+              }
+              canRead={permissions.readAssets}
+              canReadProduction={permissions.readProduction}
               commitProjectMutation={runCommittedMutation}
               data={data}
-              key={`${actorId}:${data.character.id}`}
               onContinue={selectTab}
               onProjectReload={load}
-              permissions={{
-                read: permissions.readAssets,
-                create: guardedPermissions.createAssets,
-                review: guardedPermissions.reviewAssets,
-                selectDraft: guardedPermissions.writeProject,
-              }}
             />
           </div>
         ) : tab === "video" ? (
-          <CharacterVideoStudio
+          <CharacterVideoLibrary
             actorId={actorId}
+            canArchive={guardedPermissions.archiveAssets}
+            canCreate={guardedPermissions.createAssets}
+            canRead={permissions.readAssets}
+            canReadProduction={permissions.readProduction}
             data={data}
             onCreateImage={() => selectTab("assets")}
-            permissions={{
-              read: permissions.readAssets,
-              create: guardedPermissions.createAssets,
-              review: guardedPermissions.reviewAssets,
-            }}
             runCommittedMutation={runCommittedMutation}
           />
         ) : tab === "voice" ? (
@@ -1015,11 +1116,14 @@ function CharacterDetail({
             takeIdempotencyKey={journal.takeIdempotencyKey}
           />
         ) : tab === "preview" ? (
-          <PreviewDiff
-            data={data}
-            permissions={guardedPermissions}
-            runCommittedMutation={runCommittedMutation}
-          />
+          <>
+            <CharacterPlacementEditor
+              canWrite={guardedPermissions.writeProject}
+              data={data}
+              runCommittedMutation={runCommittedMutation}
+            />
+            <PreviewDiff data={data} />
+          </>
         ) : tab === "release" ? (
           <ReleasePanel
             data={data}
@@ -1031,11 +1135,7 @@ function CharacterDetail({
         ) : (
           // SPEC: 「线上」= 表现证据 → 组合决策 → 发布护栏，自上而下就是运营复盘的顺序。
           <div className="space-y-5">
-            <PerformancePanel
-              data={data}
-              permissions={guardedPermissions}
-              runCommittedMutation={runCommittedMutation}
-            />
+            <PerformancePanel data={data} />
             <details className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
               <summary className="cursor-pointer p-4 font-semibold">
                 {t("Release monitoring")}
@@ -1052,6 +1152,12 @@ function CharacterDetail({
           </div>
         )}
       </div>
+      <CharacterMediaOperationsCard
+        canReclaimVoice={guardedPermissions.writeProject}
+        onReclaimVoice={reclaimVoiceRequest}
+        projection={data.mediaOperations}
+        reclaimingVoiceRequestId={reclaimingVoiceRequestId}
+      />
     </section>
   );
 }

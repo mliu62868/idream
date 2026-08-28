@@ -1,13 +1,12 @@
 import {
   COMPANION_RUNTIME_PROTOCOL_VERSION,
   COMPANION_NDJSON_FRAME_MAX_BYTES,
-  COMPANION_WORKSPACE_REBUILD_CONTENT_CHUNK_CHARS,
   companionMemoryCutoverSidecarProofSchema,
   companionRuntimeResponseSchema,
   companionWorkspaceRebuildBudget,
   companionWorkspaceRebuildMetrics,
+  createCompanionWorkspaceRebuildBody,
   decodeCompanionNdjsonFrame,
-  encodeCompanionWorkspaceRebuildFrame,
   encodeCompanionNdjsonFrame,
   type CompanionCommitAck,
   type CompanionEvent,
@@ -77,14 +76,41 @@ export async function cancelActiveCompanionInvocations(
   );
 }
 
+export interface CompanionCancellationTarget {
+  baseUrl: string;
+  token: string;
+  fetchImpl?: typeof fetch;
+}
+
+/**
+ * Cancel one exact DSH invocation. The sidecar owns active invocation truth, so
+ * a Chat process that did not start the turn must still send the control frame.
+ */
+export async function cancelCompanionInvocation(
+  invocationId: string,
+  reason: "user" | "timeout" | "shutdown" | "transport",
+  target?: CompanionCancellationTarget,
+): Promise<boolean> {
+  const active = activeDshInvocations.get(invocationId);
+  if (active) {
+    await active.runtime.cancel(active.invocationId, reason);
+    return true;
+  }
+  if (!target) return false;
+  await new DshCompanionRuntime({
+    baseUrl: target.baseUrl,
+    token: target.token,
+    fetchImpl: target.fetchImpl,
+  }).cancel(invocationId, reason);
+  return true;
+}
+
 export type CompanionWorkspacePurgeTarget =
   | { scope: "user"; userId: string }
   | {
       scope: "relationship";
       userId: string;
       characterId: string;
-      /** Reset: the sidecar retires the workspace under this label instead of destroying it. */
-      quarantine?: string;
     };
 
 export async function purgeCompanionWorkspace(input: {
@@ -158,7 +184,7 @@ async function sendCompanionWorkspaceRebuild(
       authorization: `Bearer ${input.token}`,
       "content-type": "application/x-ndjson",
     },
-    body: companionWorkspaceRebuildBody(request),
+    body: createCompanionWorkspaceRebuildBody(request),
     duplex: "half",
     signal: AbortSignal.timeout(
       input.timeoutMs ?? companionWorkspaceRebuildBudget(
@@ -246,78 +272,6 @@ export async function discardCompanionWorkspaceRebuild(input: {
   }
 }
 
-function companionWorkspaceRebuildBody(
-  request: CompanionWorkspaceRebuild,
-): ReadableStream<Uint8Array> {
-  const encoder = new TextEncoder();
-  let phase: "start" | "message_start" | "content" | "message_complete" | "complete" | "done" = "start";
-  let messageIndex = 0;
-  let contentOffset = 0;
-  return new ReadableStream<Uint8Array>({
-    pull(controller) {
-      if (phase === "start") {
-        phase = request.messages.length > 0 ? "message_start" : "complete";
-        controller.enqueue(encoder.encode(encodeCompanionWorkspaceRebuildFrame({
-          protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
-          type: "start",
-          scope: "relationship",
-          userId: request.userId,
-          characterId: request.characterId,
-          messageCount: request.messages.length,
-          ...(request.fence ? { fence: request.fence } : {}),
-        })));
-        return;
-      }
-      const message = request.messages[messageIndex];
-      if (phase === "message_start" && message) {
-        contentOffset = 0;
-        phase = "content";
-        const { content, ...header } = message;
-        controller.enqueue(encoder.encode(encodeCompanionWorkspaceRebuildFrame({
-          protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
-          type: "message_start",
-          message: header,
-          contentLength: content.length,
-        })));
-        return;
-      }
-      if (phase === "content" && message) {
-        const content = message.content.slice(
-          contentOffset,
-          contentOffset + COMPANION_WORKSPACE_REBUILD_CONTENT_CHUNK_CHARS,
-        );
-        contentOffset += content.length;
-        phase = contentOffset === message.content.length ? "message_complete" : "content";
-        controller.enqueue(encoder.encode(encodeCompanionWorkspaceRebuildFrame({
-          protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
-          type: "content_chunk",
-          content,
-        })));
-        return;
-      }
-      if (phase === "message_complete") {
-        messageIndex += 1;
-        phase = messageIndex < request.messages.length ? "message_start" : "complete";
-        controller.enqueue(encoder.encode(encodeCompanionWorkspaceRebuildFrame({
-          protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
-          type: "message_complete",
-        })));
-        return;
-      }
-      if (phase === "complete") {
-        phase = "done";
-        controller.enqueue(encoder.encode(encodeCompanionWorkspaceRebuildFrame({
-          protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
-          type: "complete",
-          messageCount: request.messages.length,
-        })));
-        return;
-      }
-      controller.close();
-    },
-  });
-}
-
 export async function readCompanionMemoryCutoverProof(input: {
   baseUrl: string;
   token: string;
@@ -392,7 +346,7 @@ export class DshCompanionRuntime implements CompanionRuntime {
       }
 
       let lastSequence = 0;
-      for await (const line of responseLines(response.body)) {
+      for await (const line of responseLines(response.body, signal)) {
         const decoded = decodeCompanionNdjsonFrame(`${line}\n`);
         const frame = companionRuntimeResponseSchema.parse(decoded);
         if (frame.invocationId !== invocation.invocationId) {
@@ -485,6 +439,7 @@ export class DshCompanionRuntime implements CompanionRuntime {
 
 async function* responseLines(
   stream: ReadableStream<Uint8Array>,
+  signal?: AbortSignal,
 ): AsyncGenerator<string> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
@@ -494,7 +449,7 @@ async function* responseLines(
   let completed = false;
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await readResponseChunk(reader, signal);
       if (value) {
         totalBytes += value.byteLength;
         if (totalBytes > COMPANION_RESPONSE_TOTAL_MAX_BYTES) {
@@ -522,7 +477,39 @@ async function* responseLines(
     }
     completed = true;
   } finally {
-    if (!completed) await reader.cancel().catch(() => undefined);
-    reader.releaseLock();
+    if (!completed) {
+      // INTENT: cancellation is cleanup, never part of the terminal deadline.
+      // Bun-backed network streams may leave reader.cancel() pending after the
+      // AbortSignal fires; awaiting it would turn a bounded invocation back
+      // into an unbounded generating message.
+      void reader.cancel().catch(() => undefined);
+    }
+    try {
+      reader.releaseLock();
+    } catch {
+      // A still-pending transport read keeps the lock until its best-effort
+      // cancellation settles. The invocation must still return immediately.
+    }
   }
+}
+
+function readResponseChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal?: AbortSignal,
+): ReturnType<ReadableStreamDefaultReader<Uint8Array>["read"]> {
+  if (!signal) return reader.read();
+  if (signal.aborted) return Promise.reject(companionAbortReason(signal));
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(companionAbortReason(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
+    reader.read().then(resolve, reject).finally(() => {
+      signal.removeEventListener("abort", onAbort);
+    });
+  });
+}
+
+function companionAbortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new DOMException("The operation was aborted", "AbortError");
 }

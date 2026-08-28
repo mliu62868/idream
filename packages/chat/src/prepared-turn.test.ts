@@ -26,20 +26,20 @@ function context(): BuiltContext {
       age: 31,
       description: "A precise adult companion.",
       systemPrompt: "Stay specific and grounded.",
-      relationship: "trusted companion",
       visibility: "public",
       status: "approved",
       deletedAt: null,
       voiceId: null,
-      updatedAt: new Date("2026-08-05T00:00:00Z"),
       visualProfileId: null,
       visualProfileVersion: null,
       identityPrompt: null,
       imageToolEnabled: false,
+      contentVersion: null,
+      release: null,
       characterContentVersionId: "content-1",
       characterReleaseId: "release-1",
       soulFingerprint: "fingerprint",
-      compilerVersion: "character-soul-2",
+      compilerVersion: "character-soul-3",
     },
     policy,
     recentMessages: Array.from({ length: 8 }, (_, index) => ({
@@ -47,8 +47,6 @@ function context(): BuiltContext {
       role: index % 2 === 0 ? "user" as const : "assistant" as const,
       content: `turn ${index} ${"t".repeat(600)}`,
     })),
-    boundaries: ["Never invent canon."],
-    relationship: null,
     scene: {
       schemaVersion: 1,
       version: 1,
@@ -61,8 +59,7 @@ function context(): BuiltContext {
     sceneVersion: 1,
     lastExchangeAt: null,
     dropped: [],
-    sessionContextRevision: 0n,
-    fileContextRevision: 0n,
+    contextRevision: 0n,
     releasedKnowledge: {
       characterId: "character-1",
       characterContentVersionId: "content-1",
@@ -111,7 +108,7 @@ describe("PreparedTurn budget", () => {
       maxOutputTokens: source.policy.modelProfile.maxOutputTokens,
     });
     expect(wire).toMatchObject({
-      version: 2,
+      version: 3,
       releasedKnowledge: source.releasedKnowledge,
       trace: {
         characterReleaseId: "release-1",
@@ -120,13 +117,8 @@ describe("PreparedTurn budget", () => {
     });
   });
 
-  it("preserves Soul, Scene, relationship and boundaries in the sole DSH projection", () => {
+  it("preserves Soul and Scene in the sole DSH projection", () => {
     const source = context();
-    source.relationship = {
-      stage: "close",
-      summary: "They trust each other deeply.",
-      version: 7,
-    };
     source.recentMessages = [
       { id: "user-history", role: "user", content: "Earlier question" },
       { id: "assistant-history", role: "assistant", content: "Earlier answer" },
@@ -139,15 +131,12 @@ describe("PreparedTurn budget", () => {
     const system = wire.messages[0]?.content ?? "";
     const state = wire.messages.at(-2)?.content ?? "";
     expect(system).toContain("Stay specific and grounded.");
-    expect(system).toContain("Never invent canon.");
     // Per-turn state lives next to the current message, never in the system prompt.
     expect(system).not.toContain("the library");
-    expect(system).not.toContain("They trust each other deeply.");
-    expect(state).toContain("They trust each other deeply.");
-    expect(state).toContain("Relationship stage: close");
+    expect(system).not.toContain("Relationship");
+    expect(state).not.toContain("Relationship");
     expect(state).toContain("Scene: at the library; tonight; with Mara; mood: calm");
     expect(state).toContain("Time now: 2026-08-24 15:04 UTC, Monday");
-    expect(wire.trace.relationshipVersion).toBe(7);
     expect(wire.releasedKnowledge).toEqual(source.releasedKnowledge);
     expect(toPreparedTurnWire(prepared)).toEqual(wire);
     // The budget counts the state block as adapter input.

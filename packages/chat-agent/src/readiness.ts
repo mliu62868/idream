@@ -150,12 +150,13 @@ async function verifyBootstrapRuntime(input: {
   ] as const;
   await Promise.all(profiles.map(async ([mode, profile, capabilities]) => {
     const dump = await textCommand(
-      "npm",
+      "pnpm",
       [
-        "exec",
-        "--yes",
+        "--dir",
+        dshHome,
+        "dlx",
+        "--silent",
         `--package=@deepseek-ai/dsh@${COMPANION_DSH_VERSION}`,
-        "--",
         "dsh",
         "--profile",
         profile.name,
@@ -239,7 +240,7 @@ function bridgeInvocation(
     expectedProfileDigest,
     deadlineAt: new Date(Date.now() + 60_000).toISOString(),
     preparedTurn: {
-      version: 2,
+      version: 3,
       model: profile.model,
       characterName: "Readiness",
       messages: [{
@@ -258,8 +259,7 @@ function bridgeInvocation(
         soulFingerprint: "0".repeat(64),
         compilerVersion: "readiness",
         sceneVersion: 0,
-        relationshipVersion: 0,
-        fileContextRevision: "0",
+        contextRevision: "0",
         releasedKnowledgeDigest: releasedKnowledge.digest,
       },
     },

@@ -2,9 +2,6 @@ import { describe, expect, it } from "vitest";
 import { starterPayload } from "./starters-api";
 
 const creativeFields = {
-  creativeBrief: "",
-  archetype: "",
-  relationship: "",
   detailsMarkdown: "",
   firstMessage: "",
   appearanceNotes: "",
@@ -23,8 +20,7 @@ describe("starterPayload", () => {
       scope: "built_in", tags: ["cute", "elf"], sortOrder: 3, reason: "ok3",
       appearance: { notes: "", visualBrief: "" },
       advancedDetails: {
-        creativeBrief: "", archetype: "", relationship: "", detailsMarkdown: "",
-        firstMessage: "", visualBrief: "",
+        detailsMarkdown: "", firstMessage: "",
       },
     });
   });

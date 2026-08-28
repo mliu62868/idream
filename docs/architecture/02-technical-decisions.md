@@ -35,7 +35,7 @@
 1. **dev 与 prod 都用 Postgres**（本地 Docker / `docker-compose.yml` 起 `postgres:`），`provider = "postgresql"` 写死在 schema 里，无需运行时切换。
 2. **schema 按包拆分**（多服务，见 14）：
    - `packages/main/prisma/schema.prisma` —— main 应用的权威表。
-   - `packages/chat/prisma/schema.prisma` —— chat 服务的权威表 + 跨库视图。启用 `previewFeatures = ["multiSchema", "views"]`，`schemas = ["chat","core","billing","compliance"]`。
+   - Companion Chat 产品表位于 `packages/main/prisma/schema.prisma`；`packages/chat` 不连接数据库，只保存本地 AgentRun/边界文件（ADR-20）。
    - `url` 由各包 `prisma.config.ts` 的 `process.env.DATABASE_URL` 注入。
 3. **放开使用全部 Postgres 特性**：enum 仍以 `String` + TS 常量 + Zod 表达（产品约定，不是 DB 限制），但数组、`@db.*` native type、`mode:'insensitive'`、`pg_trgm`/`tsvector` + GIN 全文检索、partial index 等可自由使用。
 4. **生产 DB 边界（schema/role/grant/视图）由 `db/sql/*.sql` 手工迁移**，**由用户在 prod 执行**（见 10 §6）；Prisma `migrate` 负责应用内表的 DDL SSoT。
@@ -106,12 +106,12 @@
 
 > **历史**：早期 MVP 设计为「`jobs` 表持久队列 + Vercel Cron 每分钟 drain + `after()`」，用 `SELECT ... FOR UPDATE SKIP LOCKED` 认领。该方案**已废弃**：部署形态从 Vercel serverless 转为常驻 pm2 进程（见 10、14），Cron 的分钟级延迟不满足生成类反馈需求。现统一为 **BullMQ + Redis**。
 
-**决策**：用 **BullMQ（Redis 后端）** 作为持久队列：
-- 队列封装在 `packages/main/src/server/jobs/queue.ts`（main 侧）与 `packages/chat/src/queue.ts`（chat 侧），均基于 `bullmq` 的 `Queue` / `Worker` + `ioredis`。
-- worker 是常驻进程（pm2，见 `ecosystem.config.js`）：`gen-image` / `gen-video`（`packages/gen`）、`chat`、`gen-finalizer`、`main-event-consumer` 等，各自从对应队列消费。
+**决策**：生成流水线用 **BullMQ（Redis 后端）** 作为持久队列：
+- 队列封装在 Main/Gen 的 generation modules；Chat 不拥有队列，Main 先写 Turn 后直接 admission 一个本地 AgentRun。
+- worker 是常驻进程（pm2，见 `ecosystem.config.js`）：`gen-image` / `gen-video`、`gen-finalizer`、`main-event-consumer` 等消费持久任务；`chat` 是 HTTP + 本地文件 runner。
 - 幂等：`dedupeKey` → 确定性 `jobId`，BullMQ 天然去重。
 - 重试 / 退避 / 延迟（`nextRunAt`）由 BullMQ `JobsOptions` 提供；超限进入 failed，可观测（BullMQ 队列状态）。
-- 跨服务投递（main ↔ chat）走 **outbox/inbox** 事件表 + 共享 Redis，要求 `BULLMQ_PREFIX` + `REDIS_URL` 两边一致。
+- 生成任务共享 Main/Gen 的 `BULLMQ_PREFIX`；Chat Redis 只承载可丢弃、可重建的 SSE token stream。产品 ToolEffect 与 terminal commit 走同步 Main internal API，账号删除仍使用 Main durable outbox。
 
 **备选**：
 - (A) DB 表队列 + Vercel Cron —— **曾采纳，现废弃**（见上「历史」）。

@@ -9,6 +9,7 @@ const granted = new Set<AdminPermissionKey>([
   "character.project.read",
   "character.release.read",
   "character.performance.read",
+  "creative.asset.read",
   "creative.run.read",
   ...Object.values(CHARACTER_WORKSPACE_WRITES),
 ]);
@@ -19,6 +20,7 @@ describe("Character workspace permission derivation", () => {
 
     expect(permissions.read).toBe(true);
     expect(permissions.readAssets).toBe(true);
+    expect(permissions.readProduction).toBe(true);
     for (const capability of Object.keys(CHARACTER_WORKSPACE_WRITES)) {
       expect(permissions[capability as keyof typeof CHARACTER_WORKSPACE_WRITES], capability)
         .toBe(true);
@@ -41,6 +43,7 @@ describe("Character workspace permission derivation", () => {
     // 读不受写入锁影响：锁住的是写入，不是看见。
     expect(permissions.read).toBe(true);
     expect(permissions.readAssets).toBe(true);
+    expect(permissions.readProduction).toBe(true);
   });
 
   it("denies the workspace read unless every permission the read operation declares is held", () => {

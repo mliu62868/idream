@@ -53,7 +53,6 @@ type RuntimeAuthorityEvidence = OperationEvidence & {
 type NoMemoryEvidence = OperationEvidence & {
   assistantMessageId?: string;
   authorityPinned?: boolean;
-  relationshipUnchanged?: boolean;
   dsh?: DshCompanionProbeEvidence;
 };
 
@@ -75,9 +74,7 @@ type RegenerateAnchorEvidence = OperationEvidence & {
 export type DshCompanionProbeEvidence = CompanionProbeDshEvidence;
 
 type CleanupEvidence = OperationEvidence & {
-  relationshipDeleted?: boolean;
-  relationshipsDeleted?: number;
-  relationshipsGone?: boolean;
+  memoryCleared?: boolean;
   sessionDeleted?: boolean;
   sessionGone?: boolean;
 };
@@ -722,7 +719,7 @@ async function probeConversation(input: {
     }
 
     // 4) Wait through memory.extract for the normal turn before taking the
-    // relationship baseline. SSE done is emitted before that derived job.
+    // memory baseline. SSE done is emitted before that derived job.
     const normal = await waitForSessionMessage({
       ...input,
       sessionId,
@@ -764,7 +761,7 @@ async function probeConversation(input: {
     }
 
     // 5) Recall from a new session. Its PreparedTurn contains no seed turn, so
-    // the exact marker can arrive only through the relationship igrep workspace.
+    // the exact marker can arrive only through the companion-memory workspace.
     const recallCreateRes = await signedFetch({
       ...input,
       method: "POST",
@@ -1037,10 +1034,8 @@ async function probeConversation(input: {
       throw new Error(evidence.regenerateAnchor.error ?? "regenerate evidence failed");
     }
 
-    const relationshipBefore = await readProbeRelationship(input);
-
     // 7) no-memory smoke: the assistant row must pin disabled even though the
-    // session is later restored, with no relationship or memory derivation.
+    // session is later restored, with no Scene or memory derivation.
     const disableMemory = await signedFetch({
       ...input, method: "POST", path: `/api/v1/chat/sessions/${sessionId}/memory`,
       body: JSON.stringify({ memoryEnabled: false }),
@@ -1097,13 +1092,9 @@ async function probeConversation(input: {
           requireMemoryExtracted: false,
         })
       : { status: 0, message: null };
-    const relationshipAfter = await readProbeRelationship(input);
     const authorityPinned =
       noMemState.message?.memoryAuthority === "disabled" &&
       noMemState.message.memoryExtractedAttempt === 0;
-    const relationshipUnchanged =
-      relationshipFingerprint(relationshipAfter) ===
-      relationshipFingerprint(relationshipBefore);
     const privateDsh = input.expectedCompanionRuntime === "dsh"
       ? await fetchProbeCompanionAttemptEvidence({
           ...input,
@@ -1119,21 +1110,18 @@ async function probeConversation(input: {
         noMemSend.status === 202 &&
         noMemStream.ok &&
         authorityPinned &&
-        relationshipUnchanged &&
         (privateDsh?.ok ?? true),
       status: noMemSend.status,
       assistantMessageId: noMemTurn.assistantMessageId,
       authorityPinned,
-      relationshipUnchanged,
       ...(privateDsh ? { dsh: privateDsh } : {}),
       error:
         disableMemory.status === 200 &&
         noMemStream.ok &&
         authorityPinned &&
-        relationshipUnchanged &&
         (privateDsh?.ok ?? true)
         ? null
-        : `disable=${disableMemory.status}; stream=${noMemStream.ok}; authority=${authorityPinned}; relationship=${relationshipUnchanged}; privateDsh=${privateDsh?.ok ?? "not_required"}`,
+        : `disable=${disableMemory.status}; stream=${noMemStream.ok}; authority=${authorityPinned}; privateDsh=${privateDsh?.ok ?? "not_required"}`,
     };
     if (!evidence.noMemory.ok) {
       throw new Error(evidence.noMemory.error ?? "private no-memory evidence failed");
@@ -1370,8 +1358,7 @@ export async function cleanupCompletedProbeState(input: {
   if (!input.sessionId) {
     return {
       ok: false,
-      relationshipDeleted: false,
-      relationshipsGone: false,
+      memoryCleared: false,
       sessionDeleted: false,
       sessionGone: false,
       error: "probe did not create a session to clean up",
@@ -1403,21 +1390,19 @@ export async function cleanupCompletedProbeState(input: {
       }));
     }
     const sessionDeleted = deleted.every((response) => response.status === 200);
-    const relationshipDeleted = fileAuthority.relationshipsGone === true;
+    const memoryCleared = fileAuthority.memoryCleared === true;
     const sessionGone = verify.every((response) => response.status === 404);
     const ok =
       restore.status === 200 &&
       sessionDeleted &&
       fileAuthority.ok &&
-      relationshipDeleted &&
+      memoryCleared &&
       sessionGone;
     return {
       ok,
       status: verify[0]?.status,
       sessionDeleted,
-      relationshipDeleted,
-      relationshipsDeleted: fileAuthority.relationshipsDeleted,
-      relationshipsGone: fileAuthority.relationshipsGone,
+      memoryCleared,
       sessionGone,
       error: ok
         ? null
@@ -1426,8 +1411,7 @@ export async function cleanupCompletedProbeState(input: {
   } catch (error) {
     return {
       ok: false,
-      relationshipDeleted: false,
-      relationshipsGone: false,
+      memoryCleared: false,
       sessionDeleted: false,
       sessionGone: false,
       error: error instanceof Error ? error.message : String(error),
@@ -1439,78 +1423,24 @@ async function clearProbeFileAuthority(input: {
   serviceUrl: string;
   secret: string;
   userId: string;
+  characterId: string;
 }): Promise<CleanupEvidence> {
   try {
-    const relationshipResponse = await signedFetch({
+    const response = await signedFetch({
       ...input,
-      method: "GET",
-      path: "/api/v1/chat/relationships",
+      method: "DELETE",
+      path: `/api/v1/chat/memory/${encodeURIComponent(input.characterId)}`,
     });
-    const relationshipBody = (
-      await relationshipResponse.json().catch(() => ({}))
-    ) as {
-      relationships?: Array<{ characterId?: string }>;
-    };
-    if (
-      relationshipResponse.status !== 200 ||
-      !Array.isArray(relationshipBody.relationships)
-    ) {
-      return {
-        ok: false,
-        relationshipDeleted: false,
-        relationshipsGone: false,
-        error: `list relationships=${relationshipResponse.status}`,
-      };
-    }
-
-    let relationshipsDeleted = 0;
-    for (const relationship of relationshipBody.relationships) {
-      if (!relationship.characterId) continue;
-      const response = await signedFetch({
-        ...input,
-        method: "DELETE",
-        path: `/api/v1/chat/relationships/${encodeURIComponent(relationship.characterId)}`,
-      });
-      if (response.status !== 200) {
-        return {
-          ok: false,
-          relationshipsDeleted,
-          relationshipDeleted: false,
-          relationshipsGone: false,
-          error: `could not delete audit relationship ${relationship.characterId}: HTTP ${response.status}`,
-        };
-      }
-      relationshipsDeleted += 1;
-    }
-
-    const relationshipVerify = await signedFetch({
-      ...input,
-      method: "GET",
-      path: "/api/v1/chat/relationships",
-    });
-    const verifiedRelationships = (
-      await relationshipVerify.json().catch(() => ({}))
-    ) as {
-      relationships?: unknown[];
-    };
-    const relationshipsGone =
-      relationshipVerify.status === 200 &&
-      Array.isArray(verifiedRelationships.relationships) &&
-      verifiedRelationships.relationships.length === 0;
     return {
-      ok: relationshipsGone,
-      status: relationshipVerify.status,
-      relationshipDeleted: relationshipsGone,
-      relationshipsDeleted,
-      relationshipsGone,
-      error:
-        relationshipsGone ? null : `verify relationships=${relationshipsGone}`,
+      ok: response.status === 200,
+      status: response.status,
+      memoryCleared: response.status === 200,
+      error: response.status === 200 ? null : `clear memory=${response.status}`,
     };
   } catch (error) {
     return {
       ok: false,
-      relationshipDeleted: false,
-      relationshipsGone: false,
+      memoryCleared: false,
       error: error instanceof Error ? error.message : String(error),
     };
   }
@@ -1576,42 +1506,6 @@ async function waitForSessionMessage(input: {
 
 export function chatServiceProbeSettleTimeoutMs(): number {
   return readPositiveIntEnv("CHAT_SERVICE_PROBE_SETTLE_TIMEOUT_MS", 90_000);
-}
-
-async function readProbeRelationship(input: {
-  serviceUrl: string;
-  secret: string;
-  userId: string;
-  characterId: string;
-}) {
-  const response = await signedFetch({
-    ...input,
-    method: "GET",
-    path: `/api/v1/chat/relationships/${input.characterId}`,
-  });
-  if (response.status !== 200) {
-    throw new Error(`relationship read returned HTTP ${response.status}`);
-  }
-  return (await response.json()) as {
-    signals?: { turns?: number };
-    stage?: string;
-    summary?: string;
-    version?: number;
-  };
-}
-
-function relationshipFingerprint(value: {
-  signals?: { turns?: number };
-  stage?: string;
-  summary?: string;
-  version?: number;
-}) {
-  return JSON.stringify({
-    signals: value.signals ?? null,
-    stage: value.stage ?? null,
-    summary: value.summary ?? null,
-    version: value.version ?? null,
-  });
 }
 
 function delay(ms: number) {

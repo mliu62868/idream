@@ -3,10 +3,6 @@ import {
   setGauge,
   type AdminInvariantCheck,
 } from "@idream/shared";
-import {
-  characterQaAuthorityMatches,
-  characterQaProvenanceMatchesRun,
-} from "@idream/shared/admin";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { ok } from "@/server/lib/http";
@@ -41,7 +37,6 @@ type InvariantDb = Pick<
   | "characterProject"
   | "characterRevision"
   | "characterContentVersion"
-  | "characterQaRun"
   | "characterVisualProfile"
   | "referenceSetRevision"
 >;
@@ -49,7 +44,7 @@ type InvariantDb = Pick<
 type ServingPointer = {
   readonly servingId: string;
   readonly characterId: string;
-  readonly pointer: "current" | "scheduled";
+  readonly pointer: "current";
   readonly releaseId: string;
 };
 
@@ -136,12 +131,12 @@ const sqlChecks: readonly SqlInvariant[] = [
   },
   {
     key: "serving_validation_stale",
-    description: "Current and scheduled Releases require an exact, non-revoked public qualification",
+    description: "Current Releases require an exact, non-revoked public qualification",
     evidence: `PublicCatalogQualification plus ReleaseValidationRun snapshotHash + ${CHARACTER_RELEASE_POLICY_VERSION}, or the editorial import policy`,
     query: Prisma.sql`
       SELECT r.id, count(*) OVER()::int AS total
       FROM character_serving s
-      JOIN character_releases r ON r.id IN (s."currentReleaseId", s."scheduledReleaseId")
+      JOIN character_releases r ON r.id = s."currentReleaseId"
       WHERE NOT EXISTS (
         SELECT 1
         FROM public_catalog_qualifications q
@@ -361,12 +356,12 @@ const sqlChecks: readonly SqlInvariant[] = [
   },
   {
     key: "serving_default_route_unqualified",
-    description: "Current and scheduled default generation routes must satisfy their current qualification",
-    evidence: "Current/scheduled Release generationProvenance routeFingerprint/matrixKey joined to non-expired qualification",
+    description: "Current default generation routes must satisfy their current qualification",
+    evidence: "Current Release generationProvenance routeFingerprint/matrixKey joined to non-expired qualification",
     query: Prisma.sql`
       SELECT r.id, count(*) OVER()::int AS total
       FROM character_serving s
-      JOIN character_releases r ON r.id IN (s."currentReleaseId", s."scheduledReleaseId")
+      JOIN character_releases r ON r.id = s."currentReleaseId"
       WHERE r.legacy = FALSE
       AND NOT EXISTS (
         SELECT 1 FROM generation_route_qualifications q
@@ -865,12 +860,11 @@ function isPositiveInteger(value: unknown): value is number {
 }
 
 function hasCompleteGenerationProvenance(value: unknown) {
-  if (!isRecord(value) || !isRecord(value.characterQa)) return false;
+  if (!isRecord(value)) return false;
   if (value.schemaVersion === "character-release-generation-provenance-v2") {
     if (!isRecord(value.requiredReleaseRoute) || !isRecord(value.visualAuthority)) return false;
     const route = value.requiredReleaseRoute;
     const visual = value.visualAuthority;
-    const qa = value.characterQa;
     return isNonEmptyString(route.routeFingerprint)
       && isNonEmptyString(route.matrixKey)
       && isNonEmptyString(route.generationProfileKey)
@@ -881,28 +875,14 @@ function hasCompleteGenerationProvenance(value: unknown) {
       && isPositiveInteger(visual.visualProfileVersion)
       && isNonEmptyString(visual.visualProfileHash)
       && isNonEmptyString(visual.referenceSetRevisionId)
-      && isNonEmptyString(visual.referenceSetHash)
-      && qa.status === "passed"
-      && isNonEmptyString(qa.qaRunId)
-      && isNonEmptyString(qa.evidenceHash)
-      && isPositiveInteger(qa.projectVersion)
-      && isNonEmptyString(qa.visualProfileId)
-      && isPositiveInteger(qa.visualProfileVersion)
-      && isNonEmptyString(qa.visualProfileHash)
-      && isNonEmptyString(qa.referenceSetRevisionId)
-      && isPositiveInteger(qa.referenceSetRevision)
-      && isNonEmptyString(qa.referenceSetHash)
-      && isNonEmptyString(qa.draftAssetPackHash);
+      && isNonEmptyString(visual.referenceSetHash);
   }
   return isNonEmptyString(value.routeFingerprint)
     && isNonEmptyString(value.matrixKey)
     && isNonEmptyString(value.generationProfileKey)
     && isPositiveInteger(value.generationProfileVersion)
     && isNonEmptyString(value.workflowKey)
-    && isPositiveInteger(value.workflowVersion)
-    && value.characterQa.status === "passed"
-    && isNonEmptyString(value.characterQa.qaRunId)
-    && isNonEmptyString(value.characterQa.evidenceHash);
+    && isPositiveInteger(value.workflowVersion);
 }
 
 function hasCompletePlacementManifest(value: unknown) {
@@ -929,7 +909,6 @@ interface ServingRow {
   readonly id: string;
   readonly characterId: string;
   readonly currentReleaseId: string | null;
-  readonly scheduledReleaseId: string | null;
 }
 
 interface ServingReleaseViolations {
@@ -938,9 +917,7 @@ interface ServingReleaseViolations {
   readonly crossCharacter: ViolationAccumulator;
   readonly joinInvalid: ViolationAccumulator;
   readonly currentIdentityInvalid: ViolationAccumulator;
-  readonly scheduledIdentityInvalid: ViolationAccumulator;
   readonly currentManifestInvalid: ViolationAccumulator;
-  readonly scheduledManifestInvalid: ViolationAccumulator;
 }
 
 function emptyAccumulator(): ViolationAccumulator {
@@ -997,14 +974,6 @@ async function inspectServingReleaseBatch(
         releaseId: serving.currentReleaseId,
       });
     }
-    if (serving.scheduledReleaseId) {
-      result.push({
-        servingId: serving.id,
-        characterId: serving.characterId,
-        pointer: "scheduled",
-        releaseId: serving.scheduledReleaseId,
-      });
-    }
     return result;
   });
   const releaseIds = [...new Set(pointers.map((pointer) => pointer.releaseId))];
@@ -1030,12 +999,7 @@ async function inspectServingReleaseBatch(
   const referenceSetIds = [...new Set(releases.flatMap((release) =>
     release.referenceSetRevisionId ? [release.referenceSetRevisionId] : [],
   ))];
-  const qaRunIds = [...new Set(releases.flatMap((release) => {
-    const provenance = isRecord(release.generationProvenance) ? release.generationProvenance : {};
-    const qa = isRecord(provenance.characterQa) ? provenance.characterQa : {};
-    return isNonEmptyString(qa.qaRunId) ? [qa.qaRunId] : [];
-  }))];
-  const [projects, revisions, contents, profiles, referenceSets, qaRuns] = await Promise.all([
+  const [projects, revisions, contents, profiles, referenceSets] = await Promise.all([
     db.characterProject.findMany({ where: { id: { in: projectIds } } }),
     db.characterRevision.findMany({ where: { id: { in: revisionIds } } }),
     db.characterContentVersion.findMany({ where: { id: { in: contentIds } } }),
@@ -1049,14 +1013,12 @@ async function inspectServingReleaseBatch(
         },
       },
     }),
-    db.characterQaRun.findMany({ where: { id: { in: qaRunIds } } }),
   ]);
   const projectById = new Map(projects.map((row) => [row.id, row]));
   const revisionById = new Map(revisions.map((row) => [row.id, row]));
   const contentById = new Map(contents.map((row) => [row.id, row]));
   const profileById = new Map(profiles.map((row) => [row.id, row]));
   const referenceSetById = new Map(referenceSets.map((row) => [row.id, row]));
-  const qaRunById = new Map(qaRuns.map((row) => [row.id, row]));
 
   for (const pointer of pointers) {
     const release = releaseById.get(pointer.releaseId);
@@ -1147,12 +1109,7 @@ async function inspectServingReleaseBatch(
       !editorialQualificationIsExact &&
       (!profileIsExact || !referenceIsExact)
     ) {
-      recordViolation(
-        pointer.pointer === "current"
-          ? violations.currentIdentityInvalid
-          : violations.scheduledIdentityInvalid,
-        release.id,
-      );
+      recordViolation(violations.currentIdentityInvalid, release.id);
     }
 
     const snapshotHash = characterReleaseSnapshotHash({
@@ -1165,51 +1122,17 @@ async function inspectServingReleaseBatch(
       generationProvenance: release.generationProvenance,
       releasePlacementManifest: release.releasePlacementManifest,
     });
-    const qa = isRecord(provenance.characterQa) ? provenance.characterQa : {};
-    const qaRun = isNonEmptyString(qa.qaRunId) ? qaRunById.get(qa.qaRunId) : undefined;
-    const strictCharacterQa = provenance.schemaVersion === "character-release-generation-provenance-v2";
-    const qaIsExact = Boolean(
-      project && qaRun && qaRun.status === "passed"
-      && qaRun.characterId === project.characterId
-      && qaRun.projectId === release.projectId
-      && qaRun.characterContentVersionId === release.characterContentVersionId
-      && qaRun.evidenceHash === qa.evidenceHash
-      && (!strictCharacterQa || (
-        characterQaProvenanceMatchesRun(qa, qaRun)
-        && characterQaAuthorityMatches(qaRun, {
-          characterId: project.characterId,
-          projectId: release.projectId,
-          characterContentVersionId: release.characterContentVersionId,
-          projectVersion: qaRun.projectVersion,
-          visualProfileId: release.visualProfileId,
-          visualProfileVersion: release.visualProfileVersion,
-          visualProfileHash: currentVisualHash,
-          referenceSetRevisionId: release.referenceSetRevisionId,
-          referenceSetRevision: referenceSet?.revision ?? null,
-          referenceSetHash: currentReferenceHash,
-          draftAssetPackHash: qaRun.draftAssetPackHash,
-        })
-      )),
-    );
     const manifestIsComplete = editorialQualificationIsExact
       ? hasCompletePlacementManifest(release.releasePlacementManifest) &&
         isNonEmptyString(release.snapshotHash) &&
         release.snapshotHash === snapshotHash
       : hasCompleteGenerationProvenance(release.generationProvenance) &&
-        qaIsExact &&
         hasCompletePlacementManifest(release.releasePlacementManifest) &&
         isNonEmptyString(release.snapshotHash) &&
         release.snapshotHash === snapshotHash &&
-        (pointer.pointer === "current"
-          ? release.status === "published"
-          : release.status === "approved");
+        release.status === "published";
     if (!manifestIsComplete) {
-      recordViolation(
-        pointer.pointer === "current"
-          ? violations.currentManifestInvalid
-          : violations.scheduledManifestInvalid,
-        release.id,
-      );
+      recordViolation(violations.currentManifestInvalid, release.id);
     }
   }
 }
@@ -1221,9 +1144,7 @@ async function runServingReleaseChecks(db: InvariantDb): Promise<AdminInvariantC
     crossCharacter: emptyAccumulator(),
     joinInvalid: emptyAccumulator(),
     currentIdentityInvalid: emptyAccumulator(),
-    scheduledIdentityInvalid: emptyAccumulator(),
     currentManifestInvalid: emptyAccumulator(),
-    scheduledManifestInvalid: emptyAccumulator(),
   };
   let afterId: string | undefined;
   while (true) {
@@ -1235,7 +1156,6 @@ async function runServingReleaseChecks(db: InvariantDb): Promise<AdminInvariantC
         id: true,
         characterId: true,
         currentReleaseId: true,
-        scheduledReleaseId: true,
       },
     });
     if (servingRows.length === 0) break;
@@ -1253,7 +1173,7 @@ async function runServingReleaseChecks(db: InvariantDb): Promise<AdminInvariantC
     invariantCheck(
       "serving_release_pointer_orphan",
       "Serving pointers must resolve to an existing CharacterRelease",
-      "CharacterServing current/scheduled pointer existence checked without inner-join elision",
+      "CharacterServing current pointer existence checked without inner-join elision",
       violations.releaseOrphan,
     ),
     invariantCheck(
@@ -1275,22 +1195,10 @@ async function runServingReleaseChecks(db: InvariantDb): Promise<AdminInvariantC
       violations.currentIdentityInvalid,
     ),
     invariantCheck(
-      "scheduled_release_missing_exact_identity_or_reference",
-      "Scheduled Releases require exact immutable Identity and non-empty ReferenceSet snapshots",
-      "VisualProfile character/version/canonical immutableHash and ReferenceSet canonical snapshotHash",
-      violations.scheduledIdentityInvalid,
-    ),
-    invariantCheck(
       "current_release_incomplete_manifest",
       "Current Releases must be published immutable snapshots with complete provenance and placement manifests",
-      "Canonical Release snapshotHash plus required provenance, QA, avatar placement, and slot identity",
+      "Canonical Release snapshotHash plus required provenance, avatar placement, and slot identity",
       violations.currentManifestInvalid,
-    ),
-    invariantCheck(
-      "scheduled_release_incomplete_manifest",
-      "Scheduled Releases must be immutable snapshots with complete provenance and placement manifests",
-      "Canonical Release snapshotHash plus required provenance, QA, avatar placement, and slot identity",
-      violations.scheduledManifestInvalid,
     ),
   ];
 }

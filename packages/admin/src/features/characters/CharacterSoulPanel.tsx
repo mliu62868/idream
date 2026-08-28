@@ -5,6 +5,7 @@ import {
   type CharacterDraftPersona,
   type CharacterWorkspaceDetail,
 } from "@idream/shared/admin";
+import { compileCharacterSoul } from "@idream/shared/chat/persona";
 import { useRef, useState } from "react";
 import { ConfirmDialog } from "@/components/admin/ui/ConfirmDialog";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
@@ -59,6 +60,7 @@ export function CharacterSoulPanel({
     setPersonaDraft((current) => current
       ? { ...current, ...patch }
       : current);
+  const draftPreview = compileSoulDraftPreview(persona);
 
   const createVersion = async (reason: string) => {
     setBusy(true);
@@ -94,7 +96,7 @@ export function CharacterSoulPanel({
     } catch (cause) {
       setError(
         cause instanceof AdminV2RequestError && cause.status === 409
-          ? t("A newer Soul or Project version exists. Reload before creating another version.")
+          ? t("A newer Soul or Character draft exists. Reload before creating another version.")
           : cause instanceof Error
             ? cause.message
             : t("Character Soul version could not be created"),
@@ -156,7 +158,7 @@ export function CharacterSoulPanel({
         <p className="mt-1 text-sm text-[var(--ad-text-muted)]">{t("Keep the basics clear. Put anything else in Markdown. Creating a version is explicit, and existing sessions keep their pinned bytes.")}</p>
         <div className="mt-5 grid gap-5 lg:grid-cols-2">
           <Field label={t("Name")} value={persona.name} onChange={(value) => setPersona({ name: value })} />
-          <Field label={t("Age")} type="number" value={String(persona.age)} onChange={(value) => setPersona({ age: Number(value) })} />
+          <Field label={t("Age")} max={120} min={18} type="number" value={String(persona.age)} onChange={(value) => setPersona({ age: Number(value) })} />
           <label className="text-sm font-medium">
             {t("Gender")}
             <select className={`${fieldClass} mt-2`} onChange={(event) => setPersona({ gender: event.target.value as CharacterDraftPersona["gender"] })} value={persona.gender}>
@@ -165,7 +167,6 @@ export function CharacterSoulPanel({
               <option value="trans">{t("Trans")}</option>
             </select>
           </label>
-          <Field label={t("Relationship archetype")} value={persona.relationshipArchetype} onChange={(value) => setPersona({ relationshipArchetype: value })} />
           <Field label={t("Character promise")} value={persona.characterPromise} onChange={(value) => setPersona({ characterPromise: value })} />
           <Area label={t("Opening message")} value={persona.firstMessage} onChange={(value) => setPersona({ firstMessage: value })} />
           <div className="lg:col-span-2">
@@ -181,8 +182,8 @@ export function CharacterSoulPanel({
       </section>
 
       <div className="grid gap-5 xl:grid-cols-2">
-        <ReadOnlyArtifact title={t("Generated SOUL.md")} unavailableLabel={t("Unavailable until the Soul compiles.")} value={data.soul.current.markdown} />
-        <ReadOnlyArtifact title={t("Compiled system prompt")} unavailableLabel={t("Unavailable until the Soul compiles.")} value={data.soul.current.systemPrompt} />
+        <ReadOnlyArtifact title={t("Generated SOUL.md")} unavailableLabel={t("Unavailable until the Soul compiles.")} value={draftPreview?.markdown ?? ""} />
+        <ReadOnlyArtifact title={t("Compiled system prompt")} unavailableLabel={t("Unavailable until the Soul compiles.")} value={draftPreview?.systemPrompt ?? ""} />
       </div>
       {confirmOpen ? (
         <ConfirmDialog
@@ -217,6 +218,21 @@ export function CharacterSoulPanel({
   );
 }
 
+export function compileSoulDraftPreview(persona: CharacterDraftPersona) {
+  const compiled = compileCharacterSoul({
+    name: persona.name,
+    age: persona.age,
+    gender: persona.gender,
+    characterPromise: persona.characterPromise,
+    detailsMarkdown: persona.detailsMarkdown,
+  });
+  if (!compiled.ok) return null;
+  return {
+    markdown: compiled.renderedMarkdown,
+    systemPrompt: compiled.snapshot.compiled.systemPrompt,
+  };
+}
+
 export function soulDraftFromWorkspace(data: CharacterWorkspaceDetail): CharacterDraftPersona | null {
   const soul = asRecord(data.soul.current.soul);
   if (Object.keys(soul).length === 0) return null;
@@ -225,7 +241,6 @@ export function soulDraftFromWorkspace(data: CharacterWorkspaceDetail): Characte
     name: soul.name,
     age: soul.age,
     gender: soul.gender,
-    relationshipArchetype: soul.relationshipArchetype,
     characterPromise: soul.characterPromise,
     detailsMarkdown: typeof soul.detailsMarkdown === "string" ? soul.detailsMarkdown : "",
     firstMessage: typeof opening.firstMessage === "string" ? opening.firstMessage : "",
@@ -239,13 +254,15 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function Field({ label, value, onChange, type = "text" }: {
+function Field({ label, value, onChange, type = "text", min, max }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   type?: "text" | "number";
+  min?: number;
+  max?: number;
 }) {
-  return <label className="text-sm font-medium">{label}<input className={`${fieldClass} mt-2`} onChange={(event) => onChange(event.target.value)} type={type} value={value} /></label>;
+  return <label className="text-sm font-medium">{label}<input className={`${fieldClass} mt-2`} max={max} min={min} onChange={(event) => onChange(event.target.value)} type={type} value={value} /></label>;
 }
 
 function Area({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {

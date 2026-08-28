@@ -1,11 +1,8 @@
-import { randomUUID } from "node:crypto";
 import {
-  MAIN_TO_CHAT_EVENTS,
   contentReportReasonSchema,
   isUnderageReportReason,
 } from "@idream/shared/contracts";
 import { z } from "zod";
-import { dispatchPendingChatEvents, recordMainToChatEvent } from "@/processes/chat-outbox";
 import { getAuthCtx } from "@/server/lib/auth";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
@@ -171,16 +168,6 @@ async function applyModerationAction(
         });
         if (removed.count > 0) {
           characterId = feedTargetCharacterId;
-          await recordMainToChatEvent(
-            {
-              eventId: `character_removed_${feedTargetCharacterId}_${randomUUID()}`,
-              eventType: MAIN_TO_CHAT_EVENTS.characterRemoved,
-              aggregateType: "character",
-              aggregateId: feedTargetCharacterId,
-              payload: { characterId: feedTargetCharacterId },
-            },
-            tx,
-          );
         }
       } else if (collectionId) {
         await tx.mediaCollection.updateMany({
@@ -220,27 +207,7 @@ async function applyModerationAction(
         notes: `Automatic takedown of ${targetType}:${targetId} on an underage report.`,
       },
     });
-    if (characterId && targetType === "character") {
-      await recordMainToChatEvent(
-        {
-          eventId: `character_removed_${characterId}_${randomUUID()}`,
-          eventType: MAIN_TO_CHAT_EVENTS.characterRemoved,
-          aggregateType: "character",
-          aggregateId: characterId,
-          payload: { characterId },
-        },
-        tx,
-      );
-    }
     return characterId;
   });
   if (!removedCharacterId) return;
-  try {
-    await dispatchPendingChatEvents();
-  } catch (error) {
-    logger.error(
-      { error, characterId: removedCharacterId },
-      "failed to dispatch durable Chat character removal",
-    );
-  }
 }

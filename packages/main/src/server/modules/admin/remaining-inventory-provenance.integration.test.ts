@@ -6,9 +6,7 @@ import {
   getCharacterProjectDraftForResume,
   updateCharacterProjectDraft,
 } from "@/server/modules/admin-v2/characters/project-draft";
-import {
-  listCharacterPortfolio,
-} from "@/server/modules/admin-v2/characters/portfolio";
+import { listCharacterPortfolio } from "@/server/modules/admin-v2/characters/portfolio";
 import {
   getGenerationJobV2,
   listGenerationJobsV2,
@@ -81,16 +79,6 @@ describe("remaining Admin inventory provenance", () => {
         data: {
           id: projectIds[dataClass],
           characterId: characterIds[dataClass],
-          phase: "idea",
-          audience: {
-            audience: "Customers seeking a dependable companion",
-            companionNeed: "A grounded conversation",
-            productionPackage: "Character identity set",
-            qaPlan: "Five-turn preview",
-          },
-          hypothesis: "A specific promise improves qualified conversations",
-          differentiation: "A deliberately scoped companion experience",
-          successCriteria: ["Qualified conversations improve"],
         },
       });
       await prisma.characterContentVersion.create({
@@ -101,7 +89,6 @@ describe("remaining Admin inventory provenance", () => {
           contentHash: `${prefix}content-hash-${dataClass}`,
           personaSnapshot: {
             name: `${prefix}${dataClass}`,
-            relationshipArchetype: "steady confidante",
             characterPromise: "A dependable place to talk",
             personality: "Observant and warm",
             tone: "Warm and concise",
@@ -198,16 +185,24 @@ describe("remaining Admin inventory provenance", () => {
 
   it("keeps character portfolio, workspace, review, and merchandising operational-only", async () => {
     const portfolio = await responseData(
-      await listCharacterPortfolio(adminRequest(`/api/v2/admin/characters/portfolio?search=${prefix}&limit=100`)),
+      await listCharacterPortfolio(
+        adminRequest(
+          `/api/v2/admin/characters/portfolio?search=${prefix}&limit=100`,
+        ),
+      ),
     );
     expect(ids(portfolio.items)).toEqual(
       new Set([characterIds.customer, characterIds.internal]),
     );
 
-    await expect(getCharacterWorkspace(characterIds.customer)).resolves.toMatchObject({
+    await expect(
+      getCharacterWorkspace(characterIds.customer),
+    ).resolves.toMatchObject({
       character: { id: characterIds.customer },
     });
-    await expect(getCharacterWorkspace(characterIds.fixture)).rejects.toMatchObject({
+    await expect(
+      getCharacterWorkspace(characterIds.fixture),
+    ).rejects.toMatchObject({
       status: 404,
     });
     await expect(
@@ -223,16 +218,6 @@ describe("remaining Admin inventory provenance", () => {
         characterId: characterIds.fixture,
         expectedVersion: 1,
         actor: { id: actorId, role: "admin" },
-        ownerId: null,
-        audience: "Fixture data must remain isolated",
-        companionNeed: "Fixture data must remain isolated",
-        hypothesis: "Fixture data must remain isolated",
-        differentiation: "Fixture data must remain isolated",
-        targetPlacementKeys: [],
-        successCriteria: ["Fixture data remains isolated"],
-        productionPackage: "",
-        qaPlan: "",
-        plannedLaunchAt: null,
         reason: "Prove fixture project mutation is blocked",
         requestId: `${prefix}fixture-project-update`,
       }),
@@ -245,43 +230,57 @@ describe("remaining Admin inventory provenance", () => {
     ).resolves.toEqual({ version: 1 });
 
     const review = await responseData(
-      await listReviewQueue(adminRequest(`/api/v2/admin/content/review-queue?search=${prefix}&limit=100`)),
+      await listReviewQueue(
+        adminRequest(
+          `/api/v2/admin/content/review-queue?search=${prefix}&limit=100`,
+        ),
+      ),
     );
     expect(
       new Set(
-        (review.items as Array<{ submissionId: string }>).map((item) => item.submissionId),
+        (review.items as Array<{ submissionId: string }>).map(
+          (item) => item.submissionId,
+        ),
       ),
     ).toEqual(new Set([submissionIds.customer, submissionIds.internal]));
 
-    await expectNotFound(reviewSubmission(
-      adminRequest(
-        `/api/v2/admin/content/review-queue/${submissionIds.fixture}/decision`,
-        "POST",
-        {
-          decision: "reject",
-          reason: "fixture authority must stay isolated",
-          confirmation: submissionIds.fixture,
-        },
+    await expectNotFound(
+      reviewSubmission(
+        adminRequest(
+          `/api/v2/admin/content/review-queue/${submissionIds.fixture}/decision`,
+          "POST",
+          {
+            decision: "reject",
+            reason: "fixture authority must stay isolated",
+            confirmation: submissionIds.fixture,
+          },
+        ),
+        { params: Promise.resolve({ id: submissionIds.fixture }) },
       ),
-      { params: Promise.resolve({ id: submissionIds.fixture }) },
-    ));
+    );
 
-    await expectNotFound(getContentCharacter(
-      adminRequest(`/api/v2/admin/content/characters/${characterIds.fixture}`),
-      { params: Promise.resolve({ id: characterIds.fixture }) },
-    ));
-    await expectNotFound(setCharacterVisibility(
-      adminRequest(
-        `/api/v2/admin/content/characters/${characterIds.fixture}/visibility`,
-        "POST",
-        {
-          visibility: "unlisted",
-          reason: "fixture authority must stay isolated",
-          confirmation: `${characterIds.fixture}:visibility:unlisted`,
-        },
+    await expectNotFound(
+      getContentCharacter(
+        adminRequest(
+          `/api/v2/admin/content/characters/${characterIds.fixture}`,
+        ),
+        { params: Promise.resolve({ id: characterIds.fixture }) },
       ),
-      { params: Promise.resolve({ id: characterIds.fixture }) },
-    ));
+    );
+    await expectNotFound(
+      setCharacterVisibility(
+        adminRequest(
+          `/api/v2/admin/content/characters/${characterIds.fixture}/visibility`,
+          "POST",
+          {
+            visibility: "unlisted",
+            reason: "fixture authority must stay isolated",
+            confirmation: `${characterIds.fixture}:visibility:unlisted`,
+          },
+        ),
+        { params: Promise.resolve({ id: characterIds.fixture }) },
+      ),
+    );
   });
 
   it("keeps generation and Creative Run list, detail, and commands operational-only", async () => {
@@ -290,7 +289,9 @@ describe("remaining Admin inventory provenance", () => {
         adminRequest(`/api/v2/admin/jobs?search=${prefix}&limit=100`),
       ),
     );
-    expect(ids(jobs.items)).toEqual(new Set([jobIds.customer, jobIds.internal]));
+    expect(ids(jobs.items)).toEqual(
+      new Set([jobIds.customer, jobIds.internal]),
+    );
     await expect(
       getGenerationJobV2(
         adminRequest(`/api/v2/admin/jobs/${jobIds.fixture}`),
@@ -302,7 +303,9 @@ describe("remaining Admin inventory provenance", () => {
       requestUrl: `http://localhost/api/v2/admin/creative/runs?search=${prefix}&limit=100`,
       actor: { id: actorId, role: "admin" },
     });
-    expect(ids(runs.items)).toEqual(new Set([batchIds.customer, batchIds.internal]));
+    expect(ids(runs.items)).toEqual(
+      new Set([batchIds.customer, batchIds.internal]),
+    );
     await expect(
       getCreativeRunDetail({
         runId: batchIds.fixture,
@@ -317,24 +320,34 @@ describe("remaining Admin inventory provenance", () => {
         adminRequest(`/api/v2/admin/assets?search=${prefix}&limit=100`),
       ),
     );
-    expect(ids(assets.items)).toEqual(new Set([mediaIds.customer, mediaIds.internal]));
-    await expectNotFound(getContentAsset(
-      adminRequest(`/api/v2/admin/assets/${mediaIds.fixture}`),
-      { params: Promise.resolve({ id: mediaIds.fixture }) },
-    ));
+    expect(ids(assets.items)).toEqual(
+      new Set([mediaIds.customer, mediaIds.internal]),
+    );
+    await expectNotFound(
+      getContentAsset(
+        adminRequest(`/api/v2/admin/assets/${mediaIds.fixture}`),
+        { params: Promise.resolve({ id: mediaIds.fixture }) },
+      ),
+    );
 
     const placements = await responseData(
       await listPlacements(
-        adminRequest(`/api/v2/admin/content/placements?search=${prefix}&limit=100`),
+        adminRequest(
+          `/api/v2/admin/content/placements?search=${prefix}&limit=100`,
+        ),
       ),
     );
     expect(ids(placements.items)).toEqual(
       new Set([placementIds.customer, placementIds.internal]),
     );
-    await expectNotFound(getPlacement(
-      adminRequest(`/api/v2/admin/content/placements/${placementIds.fixture}`),
-      { params: Promise.resolve({ id: placementIds.fixture }) },
-    ));
+    await expectNotFound(
+      getPlacement(
+        adminRequest(
+          `/api/v2/admin/content/placements/${placementIds.fixture}`,
+        ),
+        { params: Promise.resolve({ id: placementIds.fixture }) },
+      ),
+    );
   });
 
   function adminRequest(
@@ -366,7 +379,7 @@ async function expectNotFound(pending: Promise<Response> | Response) {
 
 async function responseData(response: Response) {
   expect(response.status).toBe(200);
-  const payload = await response.json() as { data: Record<string, unknown> };
+  const payload = (await response.json()) as { data: Record<string, unknown> };
   return payload.data;
 }
 
@@ -374,9 +387,15 @@ function ids(value: unknown) {
   return new Set(
     Array.isArray(value)
       ? value.flatMap((item) =>
-          item && typeof item === "object" && "id" in item && typeof item.id === "string"
+          item &&
+          typeof item === "object" &&
+          "id" in item &&
+          typeof item.id === "string"
             ? [item.id]
-            : item && typeof item === "object" && "characterId" in item && typeof item.characterId === "string"
+            : item &&
+                typeof item === "object" &&
+                "characterId" in item &&
+                typeof item.characterId === "string"
               ? [item.characterId]
               : [],
         )

@@ -37,11 +37,6 @@ describe("Character Soul version authority", () => {
       data: {
         id: projectId,
         characterId,
-        phase: "draft",
-        audience: {},
-        hypothesis: "",
-        differentiation: "",
-        successCriteria: [],
         activeKey: `soul-version:${suffix}`,
       },
     });
@@ -104,7 +99,6 @@ describe("Character Soul version authority", () => {
         name: "Pinned Mara",
         age: 28,
         gender: "female",
-        relationshipArchetype: "late-night confidante",
         characterPromise: "A precise place to put the day down.",
         detailsMarkdown: "Measured, observant, and gently challenging. Warm and concise. A former night-shift radio host.",
         firstMessage: "What followed you home tonight?",
@@ -156,7 +150,6 @@ describe("Character Soul version authority", () => {
         name: "Pinned Mara",
         age: 28,
         gender: "female",
-        relationshipArchetype: "late-night confidante",
         characterPromise: "A precise place to put the day down.",
         detailsMarkdown: "Measured, observant, and gently challenging. Warm, concise, and newly candid. A former night-shift radio host.",
         firstMessage: "What followed you home tonight?",

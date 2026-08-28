@@ -41,7 +41,6 @@ export interface ReleaseReadinessInput {
     readonly status: string;
     readonly stale: boolean;
   } | null;
-  readonly characterQa: { readonly status: string } | null;
 }
 
 function check(
@@ -114,11 +113,6 @@ export function evaluateReleaseReadiness(input: ReleaseReadinessInput) {
       "The active image generation route changed.",
     ),
     check(
-      input.characterQa?.status === "passed",
-      "character_qa_failed",
-      "Character-level preview and QA has not passed.",
-    ),
-    check(
       input.snapshotHash === input.currentSnapshotHash,
       "snapshot_stale",
       "Release content changed after validation.",
@@ -146,14 +140,10 @@ export function validateServingPointer(input: {
   readonly servingCharacterId: string;
   readonly releaseCharacterId: string;
   readonly currentReleaseId: string | null;
-  readonly scheduledReleaseId: string | null;
   readonly candidateReleaseId: string;
 }) {
   if (input.servingCharacterId !== input.releaseCharacterId) {
     throw new Error("Serving pointer and Release must belong to the same character");
-  }
-  if (input.scheduledReleaseId === input.candidateReleaseId) {
-    throw new Error("Scheduled pointer must be cleared in the same publication transaction");
   }
   if (input.currentReleaseId === input.candidateReleaseId) {
     throw new Error("Candidate Release is already the current serving pointer");

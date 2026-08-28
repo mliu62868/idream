@@ -21,14 +21,22 @@ function commandScope(actorId: string) {
 }
 
 function tagSlug(value: string) {
-  return value.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "").replace(/^-+|-+$/g, "");
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9-]/g, "")
+    .replace(/^-+|-+$/g, "");
 }
 
-async function resolveExisting(input: {
-  actorId: string;
-  idempotencyKey: string;
-  requestHash: string;
-}, db: typeof prisma | Prisma.TransactionClient = prisma): Promise<CharacterProjectCreateResponse | null> {
+async function resolveExisting(
+  input: {
+    actorId: string;
+    idempotencyKey: string;
+    requestHash: string;
+  },
+  db: typeof prisma | Prisma.TransactionClient = prisma,
+): Promise<CharacterProjectCreateResponse | null> {
   const existing = await db.controlPlaneCommand.findUnique({
     where: {
       scope_idempotencyKey: {
@@ -39,17 +47,23 @@ async function resolveExisting(input: {
   });
   if (!existing) return null;
   if (existing.requestHash !== input.requestHash) {
-    throw Errors.conflict("Idempotency key was reused with a different Character Project request", {
-      commandId: existing.id,
-      existingRequestHash: existing.requestHash,
-      submittedRequestHash: input.requestHash,
-    });
+    throw Errors.conflict(
+      "Idempotency key was reused with a different Character Project request",
+      {
+        commandId: existing.id,
+        existingRequestHash: existing.requestHash,
+        submittedRequestHash: input.requestHash,
+      },
+    );
   }
   if (existing.status !== "succeeded" || !existing.result) {
-    throw Errors.conflict("The original Character Project request has not completed", {
-      commandId: existing.id,
-      status: existing.status,
-    });
+    throw Errors.conflict(
+      "The original Character Project request has not completed",
+      {
+        commandId: existing.id,
+        status: existing.status,
+      },
+    );
   }
   return characterProjectCreateResponseSchema.parse({
     ...(existing.result as Record<string, unknown>),
@@ -64,8 +78,18 @@ export async function createCharacterProject(input: {
   requestId: string;
   legacyTagLabels?: readonly string[];
 }): Promise<CharacterProjectCreateResponse> {
-  const legacyTagLabels = [...new Set((input.legacyTagLabels ?? []).map((label) => label.trim()).filter(Boolean))];
-  const requestHash = canonicalSha256({ commandType: CREATE_COMMAND, payload: input.request, legacyTagLabels });
+  const legacyTagLabels = [
+    ...new Set(
+      (input.legacyTagLabels ?? [])
+        .map((label) => label.trim())
+        .filter(Boolean),
+    ),
+  ];
+  const requestHash = canonicalSha256({
+    commandType: CREATE_COMMAND,
+    payload: input.request,
+    legacyTagLabels,
+  });
   const prior = await resolveExisting({
     actorId: input.actor.id,
     idempotencyKey: input.idempotencyKey,
@@ -78,14 +102,13 @@ export async function createCharacterProject(input: {
   const projectId = randomUUID();
   const revisionId = randomUUID();
   const commandId = randomUUID();
-  const { positioning, persona, visualDirection, commercialIntent } = input.request;
-  const { personaSnapshot, openingSnapshot, appearanceSnapshot, contentHash } = characterDraftSnapshots({
-    persona,
-    visualDirection,
-  });
+  const { persona, visualDirection } = input.request;
+  const { personaSnapshot, openingSnapshot, appearanceSnapshot, contentHash } =
+    characterDraftSnapshots({
+      persona,
+      visualDirection,
+    });
   const projectSnapshot = {
-    positioning,
-    commercialIntent,
     contentHash,
   };
   const response = characterProjectCreateResponseSchema.parse({
@@ -106,11 +129,14 @@ export async function createCharacterProject(input: {
           hashtext(${`${commandScope(input.actor.id)}:${input.idempotencyKey}`})
         )
       `;
-      const existing = await resolveExisting({
-        actorId: input.actor.id,
-        idempotencyKey: input.idempotencyKey,
-        requestHash,
-      }, tx);
+      const existing = await resolveExisting(
+        {
+          actorId: input.actor.id,
+          idempotencyKey: input.idempotencyKey,
+          requestHash,
+        },
+        tx,
+      );
       if (existing) return existing;
       await tx.controlPlaneCommand.create({
         data: {
@@ -142,10 +168,8 @@ export async function createCharacterProject(input: {
           source: "official",
           style: visualDirection.style,
           gender: persona.gender,
-          relationship: persona.relationshipArchetype,
           appearance: toInputJson(appearanceSnapshot),
           advancedDetails: toInputJson({
-            relationshipArchetype: persona.relationshipArchetype,
             detailsMarkdown: persona.detailsMarkdown,
             firstMessage: openingSnapshot.firstMessage,
             soulFingerprint: personaSnapshot.compiled.fingerprint,
@@ -185,19 +209,6 @@ export async function createCharacterProject(input: {
         data: {
           id: projectId,
           characterId,
-          ownerId: commercialIntent.ownerId,
-          phase: "idea",
-          audience: toInputJson({
-            audience: positioning.audience,
-            companionNeed: positioning.companionNeed,
-            targetPlacementKeys: commercialIntent.targetPlacementKeys,
-            productionPackage: commercialIntent.productionPackage,
-            qaPlan: commercialIntent.qaPlan,
-          }),
-          hypothesis: positioning.hypothesis,
-          differentiation: positioning.differentiation,
-          successCriteria: toInputJson(commercialIntent.successCriteria),
-          plannedLaunchAt: commercialIntent.plannedLaunchAt ? new Date(commercialIntent.plannedLaunchAt) : null,
           activeKey: `official:${characterId}`,
         },
       });
@@ -225,26 +236,12 @@ export async function createCharacterProject(input: {
           targetType: "character_project",
           targetId: projectId,
           reason: input.request.reason.summary,
-          after: toInputJson({ ...response, requestHash, reason: input.request.reason }),
-          requestId: input.requestId,
-        },
-      });
-      await tx.adminCollaborationActivity.create({
-        data: {
-          targetType: "character_project",
-          targetId: projectId,
-          kind: "status_change",
-          actorId: input.actor.id,
-          body: "Created the server-authoritative Character Project draft",
-          metadata: toInputJson({
-            from: null,
-            to: "idea",
-            characterId,
-            characterContentVersionId: contentVersionId,
-            revisionId,
+          after: toInputJson({
+            ...response,
             requestHash,
+            reason: input.request.reason,
           }),
-          idempotencyKey: `character_project_create:${input.idempotencyKey}`,
+          requestId: input.requestId,
         },
       });
       await tx.mainOutboxEvent.create({
@@ -267,14 +264,19 @@ export async function createCharacterProject(input: {
       return response;
     });
   } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002"
+    ) {
       const raced = await resolveExisting({
         actorId: input.actor.id,
         idempotencyKey: input.idempotencyKey,
         requestHash,
       });
       if (raced) return raced;
-      throw Errors.conflict("Character Project idempotency evidence conflicts with an existing write");
+      throw Errors.conflict(
+        "Character Project idempotency evidence conflicts with an existing write",
+      );
     }
     throw error;
   }

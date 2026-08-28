@@ -39,7 +39,6 @@ describe("Character Voice clip reclaim authority", () => {
       age: 28,
       name: "Voice Reclaim Character",
       style: "warm",
-      relationship: "companion",
       voiceId: null,
       gender: "female",
     }),

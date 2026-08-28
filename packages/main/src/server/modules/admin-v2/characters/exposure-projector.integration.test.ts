@@ -73,7 +73,7 @@ describe("Character exposure v2 attribution projector", () => {
       data: { id: contentId, characterId, version: 1, contentHash: `exposure-hash-${suffix}`, personaSnapshot: {}, openingSnapshot: {}, appearanceSnapshot: {}, sourceType: "test" },
     });
     await prisma.characterProject.create({
-      data: { id: projectId, characterId, phase: "live_management", audience: {}, successCriteria: [] },
+      data: { id: projectId, characterId },
     });
     await prisma.characterRelease.create({
       data: {

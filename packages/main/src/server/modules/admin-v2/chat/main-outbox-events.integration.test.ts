@@ -7,7 +7,7 @@ import {
   mainToChatOutboxTargetMissingDispositionResultSchema,
 } from "@idream/shared/admin";
 import {
-  MAIN_TO_CHAT_EVENTS,
+  LEGACY_MAIN_TO_CHAT_EVENTS,
   durableEnvelopeHash,
   type DurableEventEnvelope,
 } from "@idream/shared/contracts";
@@ -29,7 +29,7 @@ const routeActors = {
 const routeActorIds = Object.values(routeActors);
 const originalFetch = globalThis.fetch;
 
-function envelope(id: string, eventType = MAIN_TO_CHAT_EVENTS.chatImageFailed) {
+function envelope(id: string, eventType = LEGACY_MAIN_TO_CHAT_EVENTS.chatImageFailed) {
   return {
     sourceService: "main",
     sourceEventId: id,
@@ -54,7 +54,7 @@ async function failedRow(id: string, payload: unknown = envelope(id)) {
   return prisma.mainOutboxEvent.create({
     data: {
       id,
-      eventType: parsed.eventType ?? MAIN_TO_CHAT_EVENTS.chatImageFailed,
+      eventType: parsed.eventType ?? LEGACY_MAIN_TO_CHAT_EVENTS.chatImageFailed,
       aggregateType: parsed.aggregateType ?? "chat_image",
       aggregateId: parsed.aggregateId ?? `${id}-aggregate`,
       payload: toInputJson(payload),

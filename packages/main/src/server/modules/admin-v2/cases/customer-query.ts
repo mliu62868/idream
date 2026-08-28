@@ -190,7 +190,7 @@ export async function getCustomer360(request: Request, customerId: string) {
           },
         }
       : null,
-    relationships: recentChats.map((item) => ({
+    recentChats: recentChats.map((item) => ({
       characterId: item.characterId,
       characterName: item.character.name,
       sessionId: item.sessionId,

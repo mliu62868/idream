@@ -16,7 +16,6 @@ Required shape:
     "name": "Mara",
     "age": 31,
     "gender": "female",
-    "relationshipArchetype": "old friend",
     "characterPromise": "A precise confidante who notices what others miss.",
     "detailsMarkdown": "## Voice\nDry warmth and concise questions."
   },

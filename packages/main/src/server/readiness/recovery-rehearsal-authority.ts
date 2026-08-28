@@ -52,18 +52,13 @@ type RecoveryCounts = {
   readonly latest_migration?: unknown;
   readonly main_outbox_pending?: unknown;
   readonly main_outbox_failed?: unknown;
+  readonly main_outbox_processing?: unknown;
   readonly main_outbox_transport_pending?: unknown;
   readonly main_outbox_transport_failed?: unknown;
   readonly main_outbox_dispatched?: unknown;
   readonly main_outbox_transport_unknown?: unknown;
   readonly inbound_event_received?: unknown;
   readonly inbound_event_processing?: unknown;
-  readonly chat_outbox_pending?: unknown;
-  readonly chat_outbox_failed?: unknown;
-  readonly chat_inbox_pending?: unknown;
-  readonly chat_inbox_failed?: unknown;
-  readonly chat_inbox_processing?: unknown;
-  readonly chat_file_mutations_pending?: unknown;
 };
 
 export type RecoveryRehearsalAuthority = {
@@ -138,10 +133,10 @@ const requiredSuffixes = [
 ] as const;
 
 const inFlightMutationCountKeys = [
+  "main_outbox_processing",
   "main_outbox_dispatched",
   "main_outbox_transport_unknown",
   "inbound_event_processing",
-  "chat_inbox_processing",
 ] as const;
 
 function sha256(value: Buffer | string) {
@@ -404,11 +399,8 @@ function validateSchema(
 ) {
   if (!value) return;
   const sql = value.toString("utf8");
-  if (
-    !sql.includes('CREATE TABLE "public"."_prisma_migrations"') ||
-    !sql.includes('CREATE TABLE "chat"."chat_sessions"')
-  ) {
-    problems.push(`${label} does not contain the Main and Chat schema authorities`);
+  if (!sql.includes('CREATE TABLE "public"."_prisma_migrations"')) {
+    problems.push(`${label} does not contain the Main schema authority`);
   }
 }
 
@@ -485,10 +477,9 @@ function validateRoleAuthority(
   const authority = parseJson<Record<string, unknown>>(value, label, problems);
   if (!authority) return;
   const roles = authority.required_roles;
-  const required = ["core_owner", "chat_owner", "chat_service", "chat_projector"];
   if (
     !Array.isArray(roles) ||
-    !required.every((role) => roles.includes(role)) ||
+    roles.length === 0 ||
     !Array.isArray(authority.roles_without_passwords) ||
     !Array.isArray(authority.memberships)
   ) {

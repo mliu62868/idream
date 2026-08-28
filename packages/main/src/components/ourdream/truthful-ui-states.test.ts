@@ -14,6 +14,7 @@ import {
   initialCharacterDraft,
   parseWizardDraft,
   viewerScopeFromAuthority,
+  wizardStateFromServerDraft,
 } from "./CreateWorkspace";
 import { newCreatePreviewBatch } from "./create-preview-flow";
 import {
@@ -311,6 +312,39 @@ describe("truthful public UI states", () => {
         activePreviewJobId: "preview-job-2",
         activeJobStatus: "running",
       },
+    });
+  });
+
+  it("restores all Soul basics from the durable server draft through age 120", () => {
+    expect(parseWizardDraft({
+      ...initialCharacterDraft(),
+      age: 120,
+    })?.age).toBe(120);
+
+    expect(wizardStateFromServerDraft({
+      id: "draft-1",
+      step: 2,
+      name: "Mira",
+      gender: "trans",
+      style: "realistic",
+      appearance: { prompt: "Silver eyes" },
+      hair: { prompt: "Long black hair" },
+      body: { type: "athletic" },
+      advancedDetails: {
+        age: 120,
+        description: "A precise companion.",
+        detailsMarkdown: "## Voice\nWarm and direct.",
+        firstMessage: "Hello.",
+      },
+      tags: ["warm", "night"],
+      previewJobId: null,
+    })).toMatchObject({
+      draftId: "draft-1",
+      step: 2,
+      age: 120,
+      name: "Mira",
+      detailsMarkdown: "## Voice\nWarm and direct.",
+      tags: "warm,night",
     });
   });
 

@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { CHAT_TO_MAIN_EVENTS } from "@idream/shared/contracts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import {
@@ -142,78 +141,7 @@ describe("metric product-event recovery", () => {
     await prisma.mainOutboxEvent.delete({ where: { id: unrelatedOutboxId } });
   });
 
-  it("redacts derived chat-image text even while a correction awaits its metric fact", async () => {
-    const exchangeId = `${prefix}-privacy-deferred-exchange`;
-    const sourceEventId = `${prefix}-privacy-deferred-correction`;
-    const job = await prisma.generationJob.create({
-      data: {
-        id: `${prefix}-privacy-deferred-job`,
-        userId,
-        mode: "image",
-        controls: {},
-        presetIds: [],
-        sourceType: "chat_image",
-        sourceId: `${prefix}-privacy-deferred-attachment`,
-        sourceMeta: {
-          sessionId: `${prefix}-privacy-deferred-session`,
-          exchangeId,
-          messageId: `${prefix}-privacy-deferred-assistant`,
-          promptHint: "private prompt awaiting metric fact",
-          conversationContext: "user: private context awaiting metric fact",
-        },
-      },
-    });
-    const { outbox } = await persistEvent({
-      sourceEventId,
-      eventType: CHAT_TO_MAIN_EVENTS.exchangeCorrectedV2,
-      occurredAt: new Date("2026-07-18T22:00:00Z"),
-      sourceService: "chat",
-      context: { aggregateId: exchangeId },
-      props: {
-        exchangeId,
-        correctionType: "deleted",
-        correctionRevision: 1,
-        userId,
-        sessionId: `${prefix}-privacy-deferred-session`,
-        messageIds: [
-          exchangeId,
-          `${prefix}-privacy-deferred-assistant`,
-        ],
-      },
-    });
-
-    await expect(dispatchOutboxes([outbox.id])).resolves.toEqual({
-      delivered: 0,
-      failed: 1,
-    });
-    await expect(prisma.generationJob.findUniqueOrThrow({
-      where: { id: job.id },
-    })).resolves.toMatchObject({
-      sourceMeta: {
-        sessionId: `${prefix}-privacy-deferred-session`,
-        exchangeId,
-        messageId: `${prefix}-privacy-deferred-assistant`,
-        promptHint: null,
-        conversationContext: null,
-        privacyRedaction: {
-          reason: "logical_exchange_deleted",
-          sourceEventId,
-          redactedAt: "2026-07-18T22:00:00.000Z",
-        },
-      },
-    });
-    await expect(prisma.mainOutboxEvent.findUniqueOrThrow({
-      where: { id: outbox.id },
-    })).resolves.toMatchObject({
-      status: "pending",
-      attempts: 1,
-      lastError: {
-        message: "Metric projection deferred: awaiting_required_fact",
-      },
-    });
-  });
-
-  it("terminally skips an internal chat projection whose domain authority is absent", async () => {
+  it("does not recreate product Chat state from a historical analytics event", async () => {
     const sourceEventId = `${prefix}-internal-chat-session`;
     const sessionId = `${prefix}-missing-session`;
     const { outbox } = await persistEvent({
@@ -254,10 +182,7 @@ describe("metric product-event recovery", () => {
       status: "delivered",
       attempts: 0,
       deliveredAt: expect.any(Date),
-      lastError: {
-        outcome: "skipped",
-        reason: "chat_projection_customer_authority_missing",
-      },
+      lastError: null,
     });
     await expect(prisma.recentChat.findUnique({
       where: { sessionId },
@@ -324,8 +249,8 @@ describe("metric product-event recovery", () => {
       orderBy: { characterId: "asc" },
       select: { characterId: true, chatsCount: true },
     })).resolves.toEqual([
-      { characterId: firstCharacter.id, chatsCount: 1 },
-      { characterId: secondCharacter.id, chatsCount: 1 },
+      { characterId: firstCharacter.id, chatsCount: 0 },
+      { characterId: secondCharacter.id, chatsCount: 0 },
     ]);
     await expect(prisma.inboundEventReceipt.findMany({
       where: {
@@ -351,7 +276,7 @@ describe("metric product-event recovery", () => {
     ]);
   });
 
-  it("applies one domain effect across overlapping scans and a delivered-row replay", async () => {
+  it("applies one projection receipt across overlapping scans and a delivered-row replay", async () => {
     const sourceEventId = `${prefix}-overlapping-message`;
     const character = await prisma.character.create({
       data: {
@@ -383,7 +308,7 @@ describe("metric product-event recovery", () => {
     expectConcurrentDispatchSuccess(concurrentResults);
     await expect(prisma.characterStats.findUniqueOrThrow({
       where: { characterId: character.id },
-    })).resolves.toMatchObject({ chatsCount: 1 });
+    })).resolves.toMatchObject({ chatsCount: 0 });
 
     await prisma.mainOutboxEvent.update({
       where: { id: outbox.id },
@@ -399,7 +324,7 @@ describe("metric product-event recovery", () => {
     });
     await expect(prisma.characterStats.findUniqueOrThrow({
       where: { characterId: character.id },
-    })).resolves.toMatchObject({ chatsCount: 1 });
+    })).resolves.toMatchObject({ chatsCount: 0 });
     await expect(prisma.inboundEventReceipt.count({
       where: {
         sourceService: "main.product_projection:chat",
@@ -490,7 +415,7 @@ describe("metric product-event recovery", () => {
       orderBy: { characterId: "asc" },
       select: { characterId: true, chatsCount: true },
     })).resolves.toEqual([
-      { characterId: firstCharacter.id, chatsCount: 1 },
+      { characterId: firstCharacter.id, chatsCount: 0 },
       { characterId: secondCharacter.id, chatsCount: 0 },
     ]);
   });

@@ -117,7 +117,6 @@ describe("seed data provenance", () => {
         id: true,
         source: true,
         creatorId: true,
-        relationship: true,
         style: true,
         appearance: true,
         advancedDetails: true,
@@ -186,7 +185,6 @@ describe("seed data provenance", () => {
       characters.every(
         (character) =>
           character.creatorId === "seed-system-creator" &&
-          Boolean(character.relationship?.trim()) &&
           Boolean(
             (character.advancedDetails as {
               detailsMarkdown?: string;
@@ -313,117 +311,29 @@ describe("seed data provenance", () => {
     ]);
   });
 
-  it("keeps Dark Beast Klein as a disabled workflow-backed comparison candidate", async () => {
-    const profile = await prisma.generationModelProfile.findFirst({
-      where: { profileKey: "darkbeast-flux2-klein-bfs-comparison" },
+  it("does not leave the retired Dark Beast Klein route executable", async () => {
+    const profiles = await prisma.generationModelProfile.findMany({
+      where: {
+        OR: [
+          { pipelineModel: "darkbeast-flux2-klein-9b-bfs" },
+          { workflowKey: "darkbeast-flux2-klein-9b-multi-reference" },
+        ],
+      },
       select: {
-        profileKey: true,
-        pipelineModel: true,
-        workflowKey: true,
-        runner: true,
-        steps: true,
-        sampler: true,
-        scheduler: true,
-        cfgScale: true,
         enabled: true,
         rolloutPercent: true,
         status: true,
-        runnerConfig: true,
       },
     });
 
-    expect(profile).toMatchObject({
-      profileKey: "darkbeast-flux2-klein-bfs-comparison",
-      pipelineModel: "darkbeast-flux2-klein-9b-bfs",
-      workflowKey: "darkbeast-flux2-klein-9b-multi-reference",
-      runner: "comfyui",
-      steps: 5,
-      sampler: "euler",
-      scheduler: "flux2",
-      cfgScale: 1,
-      enabled: false,
-      rolloutPercent: 0,
-      status: "draft",
-      runnerConfig: {
-        baseModel: "Flux.2 Klein 9B",
-        civitaiVersionId: 2740209,
-        comparisonBaseline: {
-          modelId: "qwen-image-edit-multi-reference",
-          workflowKey: "qwen-image-edit-multi-reference",
-        },
-        componentStatus: {
-          diffusionModel: {
-            status: "configured",
-            path: expect.stringMatching(
-              /models\/diffusion_models\/darkBeastINT8Convrot2_dbkleinv2BFS\.safetensors$/,
-            ),
-          },
-          qwenTextEncoder: {
-            status: "configured",
-            path: expect.stringMatching(
-              /models\/text_encoders\/qwen_3_8b_fp8mixed\.safetensors$/,
-            ),
-          },
-          flux2Vae: {
-            status: "configured",
-            path: expect.stringMatching(/models\/vae\/flux2-vae\.safetensors$/),
-          },
-          comfyWorkflow: {
-            status: "registered",
-            path: expect.stringMatching(
-              /packages\/gen\/workflows\/darkbeast-flux2-klein-9b-multi-reference\.json$/,
-            ),
-          },
-        },
-        capabilities: {
-          textToImage: false,
-          stableSeed: true,
-          referenceImages: true,
-          initImage: true,
-          lora: false,
-        },
-      },
-    });
-  });
-
-  it("publishes the verified Dark Beast identity-edit route for explicit user selection", async () => {
-    const profile = await prisma.generationModelProfile.findUnique({
-      where: { id: "seed-profile-darkbeast-user-image-edit-v1" },
-      select: {
-        profileKey: true,
-        label: true,
-        pipelineModel: true,
-        workflowKey: true,
-        enabled: true,
-        rolloutPercent: true,
-        status: true,
-        runnerConfig: true,
-        dryRunSummary: true,
-      },
-    });
-
-    expect(profile).toMatchObject({
-      profileKey: "character-image-variation-darkbeast",
-      label: "Dark Beast · Identity Focus",
-      pipelineModel: "darkbeast-flux2-klein-9b-bfs",
-      workflowKey: "darkbeast-flux2-klein-9b-multi-reference",
-      enabled: true,
-      rolloutPercent: 100,
-      status: "active",
-      runnerConfig: {
-        publicSelection: {
-          surface: "generator_image_edit",
-          referenceMode: "identity_source",
-          explicitOnly: true,
-        },
-      },
-      dryRunSummary: {
-        sampleCount: 1,
-        successRate: 1,
-        smokeOutputSha256:
-          "be3f9252c37b9d203d4e4eb98b51d5a1e57e6c5de183a6944e54063b12f59f5a",
-      },
-    });
+    expect(
+      profiles.every(
+        (profile) =>
+          profile.status === "archived" &&
+          profile.enabled === false &&
+          profile.rolloutPercent === 0,
+      ),
+    ).toBe(true);
   });
 
   it("keeps RedMix3 as a disabled exact-version scaled-fp8 comparison candidate", async () => {
@@ -526,69 +436,6 @@ describe("seed data provenance", () => {
       },
     ]);
   });
-
-  it("migrates the legacy Dark Beast row in place using a configurable ComfyUI model root", async () => {
-    const profileId = "seed-profile-sdcpp-darkbeast-krea2-img2img-v1";
-    await prisma.generationModelProfile.update({
-      where: { id: profileId },
-      data: {
-        profileKey: "profile_sdcpp_darkbeast_krea2_img2img_v1",
-        pipelineModel: "darkbeast-reference-candidate",
-        workflowKey: null,
-        runnerConfig: {
-          templateIntent: "image_to_image_identity_reference",
-        },
-        status: "active",
-        enabled: true,
-        rolloutPercent: 100,
-      },
-    });
-
-    const modelRoot = "/tmp/idream-darkbeast-model-root";
-    await execFileAsync("bun", ["run", "db:seed"], {
-      cwd: fileURLToPath(new URL("..", import.meta.url)),
-      env: {
-        ...process.env,
-        COMFYUI_MODEL_ROOT: modelRoot,
-      },
-    });
-
-    const migrated = await prisma.generationModelProfile.findUniqueOrThrow({
-      where: { id: profileId },
-      select: {
-        id: true,
-        profileKey: true,
-        pipelineModel: true,
-        workflowKey: true,
-        runnerConfig: true,
-        status: true,
-        enabled: true,
-        rolloutPercent: true,
-      },
-    });
-    expect(migrated).toMatchObject({
-      id: profileId,
-      profileKey: "darkbeast-flux2-klein-bfs-comparison",
-      pipelineModel: "darkbeast-flux2-klein-9b-bfs",
-      workflowKey: "darkbeast-flux2-klein-9b-multi-reference",
-      status: "draft",
-      enabled: false,
-      rolloutPercent: 0,
-      runnerConfig: {
-        diffusionModelPath: `${modelRoot}/diffusion_models/darkBeastINT8Convrot2_dbkleinv2BFS.safetensors`,
-        textEncoderPath: `${modelRoot}/text_encoders/qwen_3_8b_fp8mixed.safetensors`,
-        vaePath: `${modelRoot}/vae/flux2-vae.safetensors`,
-        civitaiVersionId: 2740209,
-        civitaiSha256:
-          "B20B6F2744E152FD3EFA2638E88A5FEAB478C778EE25C81B183FD80E03A099C3",
-      },
-    });
-    await expect(
-      prisma.generationModelProfile.count({
-        where: { profileKey: "profile_sdcpp_darkbeast_krea2_img2img_v1" },
-      }),
-    ).resolves.toBe(0);
-  }, 15_000);
 
   it("migrates the untouched legacy video beta route to the exact LTX workflow", async () => {
     const profileId = "seed-profile-video-beta-v1";
@@ -796,7 +643,7 @@ describe("seed data provenance", () => {
     expect(characters).toContain("existingProvenance.legacyCreatorId");
     expect(characters).toContain("originalOwnerId");
     expect(characters).toContain("hasExistingStructuredPersona");
-    expect(characters).toContain("existingCharacter?.relationship?.trim()");
+    expect(characters).not.toContain("relationshipArchetype");
     expect(characters).toMatch(
       /officialAdvancedDetails:[\s\S]*?\.\.\.personaDetails,[\s\S]*?\.\.\.existingAdvancedDetails,/,
     );

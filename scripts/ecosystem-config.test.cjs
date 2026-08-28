@@ -14,10 +14,13 @@ const {
   productionDrainWorkerTargets,
   productionQuiescenceTargets,
   productionRuntimeTargets,
+  developmentProcessDefinition,
+  developmentDefinitionPlan,
   productionProcessDefinition,
   productionDefinitionPlan,
   productionVideoWorkerCount,
   matchesProductionProcessDefinition,
+  matchesDevelopmentProcessDefinition,
   resolveCurrentPm2Mode,
   runPm2Ecosystem,
   verifyProductionRuntime,
@@ -160,18 +163,22 @@ test("development is the source-backed default", () => {
 
   assert.equal(mainWeb.cwd, path.join(repoRoot, "packages/main"));
   assert.equal(mainWeb.script, "scripts/start-development.cjs");
+  assert.equal(path.basename(mainWeb.interpreter), "bun");
   assert.equal(mainWeb.env.IDREAM_NEXT_DEVELOPMENT, "1");
   assert.equal(mainWeb.env.IDREAM_NEXT_DIST_DIR, ".next-development");
+  assert.equal(mainWeb.env.IDREAM_PM2_BUN_ENTRYPOINT, "main-development");
   assert.equal(adminWeb.env.IDREAM_NEXT_DEVELOPMENT, "1");
   assert.equal(adminWeb.env.IDREAM_NEXT_DIST_DIR, ".next-development");
+  assert.equal(adminWeb.env.IDREAM_PM2_BUN_ENTRYPOINT, "admin-development");
   assert.equal(mainWeb.args, undefined);
   assert.equal(mainWeb.exec_mode, "fork");
   assert.equal(mainWeb.instances, 1);
   assert.equal(mainWeb.watch, false);
 
   assert.equal(adminWeb.cwd, path.join(repoRoot, "packages/admin"));
-  assert.equal(adminWeb.script, "node_modules/next/dist/bin/next");
-  assert.equal(adminWeb.args, "dev");
+  assert.equal(adminWeb.script, "scripts/start-development.cjs");
+  assert.equal(adminWeb.args, undefined);
+  assert.equal(path.basename(adminWeb.interpreter), "bun");
   assert.equal(adminWeb.exec_mode, "fork");
   assert.equal(adminWeb.watch, false);
 
@@ -194,21 +201,38 @@ test("the DSH companion sidecar is required, single-instance and starts before C
   const chat = byName(config, "chat");
   assert.equal(sidecar.cwd, path.join(repoRoot, "packages/chat-agent"));
   assert.equal(sidecar.script, "src/main.ts");
-  assert.equal(sidecar.interpreter, process.execPath);
-  assert.deepEqual(sidecar.node_args.slice(0, 3), [
-    "--require",
-    require.resolve(
-      path.join(
-        repoRoot,
-        "packages/chat-agent/node_modules/tsx/dist/preflight.cjs",
-      ),
-    ),
-    "--import",
-  ]);
-  assert.match(sidecar.node_args[3], /^file:\/\/.*\/tsx\/dist\/loader\.mjs$/);
+  assert.equal(path.basename(sidecar.interpreter), "bun");
+  assert.equal(sidecar.node_args, undefined);
   assert.equal(sidecar.instances, 1);
   assert.equal(sidecar.exec_mode, "fork");
   assert.ok(config.apps.indexOf(sidecar) < config.apps.indexOf(chat));
+});
+
+test("every first-party JavaScript and TypeScript service is executed by Bun", () => {
+  for (const mode of ["development", "production"]) {
+    const config = loadConfig(mode);
+    for (const app of config.apps) {
+      assert.equal(path.basename(app.interpreter), "bun", `${mode}:${app.name}`);
+    }
+  }
+});
+
+test("Fish Audio direct and PM2 launchers use Bun while preserving the Python gateway", () => {
+  assert.equal(
+    rootPackage.scripts["voice:fish:start"],
+    "bun scripts/start-fish-audio.cjs",
+  );
+  for (const definition of [
+    developmentProcessDefinition("fish-audio"),
+    productionProcessDefinition("fish-audio"),
+  ]) {
+    assert.ok(definition);
+    assert.equal(path.basename(definition.execInterpreter), "bun");
+    assert.equal(
+      definition.execPath,
+      path.join(repoRoot, "scripts/start-fish-audio.cjs"),
+    );
+  }
 });
 
 test("obsolete rollout flags cannot remove the sidecar or enter Chat config", () => {
@@ -253,23 +277,12 @@ test("production pins the direct sidecar PID definition exactly", () => {
   const definition = productionProcessDefinition("chat-agent");
   assert.deepEqual(definition, {
     cwd: path.join(repoRoot, "packages/chat-agent"),
-    execPath: path.join(repoRoot, "packages/chat-agent/src/main.ts"),
+    execPath: path.join(repoRoot, "packages/chat-agent/dist/main.js"),
     args: [],
-    nodeArgs: [
-      "--require",
-      require.resolve(
-        path.join(
-          repoRoot,
-          "packages/chat-agent/node_modules/tsx/dist/preflight.cjs",
-        ),
-      ),
-      "--import",
-      definition.nodeArgs[3],
-    ],
-    execInterpreter: process.execPath,
+    execInterpreter: definition.execInterpreter,
     execMode: "fork_mode",
   });
-  assert.match(definition.nodeArgs[3], /^file:\/\/.*\/tsx\/dist\/loader\.mjs$/);
+  assert.equal(path.basename(definition.execInterpreter), "bun");
 });
 
 test("every runtime receives the operator-approved source identity", () => {
@@ -343,8 +356,8 @@ test("development omits the video process when the effective Gen provider is moc
 });
 
 test("main development and typecheck regenerate Prisma Client before loading application code", () => {
-  assert.equal(mainPackage.scripts.dev, "node scripts/start-development.cjs");
-  assert.match(mainPackage.scripts.typecheck, /^npm run db:generate && /);
+  assert.equal(mainPackage.scripts.dev, "bun scripts/start-development.cjs");
+  assert.match(mainPackage.scripts.typecheck, /^bun run db:generate && /);
 });
 
 test("production keeps immutable standalone web releases and disables watch", () => {
@@ -356,11 +369,31 @@ test("production keeps immutable standalone web releases and disables watch", ()
     assert.equal(web.cwd, repoRoot);
     assert.equal(web.script, "scripts/start-next-standalone.cjs");
     assert.equal(web.exec_mode, "cluster");
+    assert.equal(path.basename(web.interpreter), "bun");
     assert.equal(web.watch, false);
+    assert.equal(web.env.IDREAM_PM2_BUN_ENTRYPOINT, "next-standalone");
   }
+  assert.equal(mainWeb.env.IDREAM_NEXT_PACKAGE_PATH, "packages/main");
+  assert.equal(adminWeb.env.IDREAM_NEXT_PACKAGE_PATH, "packages/admin");
   for (const app of config.apps) {
     assert.equal(app.watch, false);
     assert.equal(app.env.IDREAM_PM2_MODE, "production");
+  }
+});
+
+test("production runs Bun-built worker artifacts instead of TypeScript source", () => {
+  const config = loadConfig("production");
+  const expectedScripts = new Map([
+    ["chat-agent", "dist/main.js"],
+    ["chat", "dist/main.js"],
+    ["gen-image", "dist/image.js"],
+    ["gen-video", "dist/video.js"],
+    ["gen-finalizer", "dist/finalizer.js"],
+    ["main-event-consumer", "dist/event-consumer.js"],
+    ["admin-command-worker", "dist/admin-command-worker.js"],
+  ]);
+  for (const [name, script] of expectedScripts) {
+    assert.equal(byName(config, name).script, script);
   }
 });
 
@@ -386,6 +419,43 @@ test("production definition authority stays exact for every ecosystem app", () =
       execMode: `${app.exec_mode}_mode`,
     });
   }
+});
+
+test("development definition authority stays exact for every ecosystem app", () => {
+  const config = loadConfig("development");
+  for (const app of config.apps) {
+    const definition = developmentProcessDefinition(app.name);
+    assert.ok(definition, `missing development definition ${app.name}`);
+    assert.deepEqual(definition, {
+      cwd: app.cwd,
+      execPath: path.resolve(app.cwd, app.script),
+      args: typeof app.args === "string" ? [app.args] : (app.args ?? []),
+      ...(app.interpreter ? { execInterpreter: app.interpreter } : {}),
+      execMode: `${app.exec_mode}_mode`,
+    });
+    assert.equal(
+      matchesDevelopmentProcessDefinition(
+        pm2ProcessFromApp(app, "stopped", "development"),
+      ),
+      true,
+    );
+  }
+});
+
+test("development recreates a registered Node/tsx definition for the Bun migration", () => {
+  const app = byName(loadConfig("development"), "gen-image");
+  const legacy = pm2ProcessFromApp(app, "stopped", "development");
+  legacy.pm2_env.pm_exec_path = path.join(
+    repoRoot,
+    "packages/gen/node_modules/tsx/dist/cli.mjs",
+  );
+  legacy.pm2_env.args = ["src/image.ts"];
+  legacy.pm2_env.exec_interpreter = process.execPath;
+
+  assert.deepEqual(developmentDefinitionPlan([legacy]), {
+    deleteNames: ["gen-image"],
+    requiresStart: true,
+  });
 });
 
 test("every production definition field fails closed on drift", () => {
@@ -671,9 +741,9 @@ test("runtime mode resolution is explicit and fail-closed", () => {
           status: "online",
           pm_exec_path: path.join(
             repoRoot,
-            "packages/main/node_modules/next/dist/bin/next",
+            "packages/main/scripts/start-development.cjs",
           ),
-          args: ["dev"],
+          args: [],
         },
       },
     ]),
@@ -1822,9 +1892,9 @@ test("every production PM2 package script uses the gated wrapper", () => {
       reload: rootPackage.scripts["pm2:reload:production"],
     },
     {
-      start: "node scripts/start-pm2-ecosystem.cjs production",
-      restart: "node scripts/start-pm2-ecosystem.cjs production restart",
-      reload: "node scripts/start-pm2-ecosystem.cjs production reload",
+      start: "bun scripts/start-pm2-ecosystem.cjs production",
+      restart: "bun scripts/start-pm2-ecosystem.cjs production restart",
+      reload: "bun scripts/start-pm2-ecosystem.cjs production reload",
     },
   );
 });
@@ -1838,10 +1908,10 @@ test("generic start, stop, restart and reload all use the gated wrapper", () => 
       reload: rootPackage.scripts["pm2:reload"],
     },
     {
-      start: "node scripts/start-pm2-ecosystem.cjs",
-      stop: "node scripts/start-pm2-ecosystem.cjs current stop",
-      restart: "node scripts/start-pm2-ecosystem.cjs current restart",
-      reload: "node scripts/start-pm2-ecosystem.cjs current reload",
+      start: "bun scripts/start-pm2-ecosystem.cjs",
+      stop: "bun scripts/start-pm2-ecosystem.cjs current stop",
+      restart: "bun scripts/start-pm2-ecosystem.cjs current restart",
+      reload: "bun scripts/start-pm2-ecosystem.cjs current reload",
     },
   );
 });
@@ -1855,9 +1925,9 @@ test("orphan recovery package scripts preserve explicit quiesce, plan and apply 
       apply: rootPackage.scripts["generation:apply-orphan-recovery"],
     },
     {
-      quiesce: "node scripts/start-pm2-ecosystem.cjs current quiesce",
-      plan: "node scripts/recover-gen-worker-orphans.cjs plan",
-      apply: "node scripts/recover-gen-worker-orphans.cjs apply",
+      quiesce: "bun scripts/start-pm2-ecosystem.cjs current quiesce",
+      plan: "bun scripts/recover-gen-worker-orphans.cjs plan",
+      apply: "bun scripts/recover-gen-worker-orphans.cjs apply",
     },
   );
 });

@@ -23,11 +23,6 @@ const TABLE: Record<string, Omit<FailureReason, "code">> = {
     hint: "Missing runtime components — needs engineering",
     severity: "engineering",
   },
-  missing_flux2_klein_reference_runtime_components: {
-    title: "Model files not ready",
-    hint: "Missing runtime components — needs engineering",
-    severity: "engineering",
-  },
   timeout: { title: "Generation timed out", hint: "Safe to retry", severity: "retry" },
   backend_unreachable: {
     title: "Backend unreachable",

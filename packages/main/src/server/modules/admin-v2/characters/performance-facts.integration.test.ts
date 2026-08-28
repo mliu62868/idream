@@ -29,7 +29,7 @@ describe("Character Performance resumable fact backfills", () => {
       },
     });
     await prisma.characterProject.create({
-      data: { id: projectId, characterId, phase: "live_management", audience: {}, successCriteria: [] },
+      data: { id: projectId, characterId },
     });
     await prisma.characterRelease.create({
       data: {

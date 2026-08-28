@@ -6,8 +6,11 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const DSH_VERSION = "0.1.0-rc.7";
+export const DSH_VERSION = "0.1.1-rc.2";
 export const IGREP_PLUGIN_VERSION = "0.1.0";
+// INTENT: igrep 0.1.134 still publishes this prerelease peer range. The owned
+// profiles pin rc.2 explicitly and live readiness proves compatibility.
+export const IGREP_PLUGIN_DSH_PEER_RANGE = "^0.1.0-rc.7";
 export const PROFILE_NAMES = Object.freeze({
   normal: "idream-companion-memory",
   private: "idream-companion-private",
@@ -83,6 +86,9 @@ export function runDshCompanionBootstrap(options, injected = {}) {
     dependencies.env.DSH_HOME ?? path.join(dependencies.homedir(), ".dsh"),
   );
   assertNodeVersion(dependencies.nodeVersion);
+  if (!options.check) {
+    dependencies.fs.mkdirSync(dshHome, { recursive: true, mode: 0o700 });
+  }
 
   const igrepExecutable = discoverIgrepExecutable(dependencies);
   const pythonVersion = readIgrepPythonVersion(
@@ -277,8 +283,8 @@ function readDshVersion(dependencies, dshHome) {
   const output = runCommand(
     dependencies,
     "dsh version",
-    "npm",
-    dshNpmArgs("dsh", "-V"),
+    "pnpm",
+    dshPnpmArgs(dshHome, "dsh", "-V"),
     dshEnvironment(dependencies.env, dshHome),
   ).trim();
   const version = output.split(/\s+/).at(-1);
@@ -349,8 +355,9 @@ function setupProfiles(discoveries, dependencies, dshHome) {
     runCommand(
       dependencies,
       `igrep setup for ${discovery.profileName}`,
-      "npm",
-      dshNpmArgs(
+      "pnpm",
+      dshPnpmArgs(
+        dshHome,
         "igrep",
         "setup",
         "deepseek-harness",
@@ -374,8 +381,9 @@ function setupProfiles(discoveries, dependencies, dshHome) {
     runCommand(
       dependencies,
       `dsh plugin install for ${discovery.profileName}`,
-      "npm",
-      dshNpmArgs(
+      "pnpm",
+      dshPnpmArgs(
+        dshHome,
         "dsh",
         "plugin",
         "--profile",
@@ -610,8 +618,9 @@ function dumpProfileConfigDigest(discovery, dependencies, dshHome) {
   const configDump = runCommand(
     dependencies,
     `dsh config dump for ${discovery.profileName}`,
-    "npm",
-    dshNpmArgs(
+    "pnpm",
+    dshPnpmArgs(
+      dshHome,
       "dsh",
       "--profile",
       discovery.profileName,
@@ -672,7 +681,7 @@ function validatePluginPackage(manifestPath, fs) {
     );
   }
   for (const peerPackage of PLUGIN_PEERS) {
-    if (manifest.peerDependencies?.[peerPackage] !== `^${DSH_VERSION}`) {
+    if (manifest.peerDependencies?.[peerPackage] !== IGREP_PLUGIN_DSH_PEER_RANGE) {
       throw new BootstrapError(
         "PLUGIN_PEER_RANGE_MISMATCH",
         `${PLUGIN_PACKAGE} must declare the pinned ${peerPackage} peer range`,
@@ -744,7 +753,6 @@ function writeBootstrapState(profiles, dependencies, dshHome) {
       ]),
     ),
   };
-  dependencies.fs.mkdirSync(dshHome, { recursive: true, mode: 0o700 });
   dependencies.fs.writeFileSync(
     path.join(dshHome, STATE_FILENAME),
     `${JSON.stringify(state, null, 2)}\n`,
@@ -858,12 +866,13 @@ function runCommand(dependencies, label, command, args, env) {
   return String(result.stdout ?? "");
 }
 
-function dshNpmArgs(...command) {
+function dshPnpmArgs(dshHome, ...command) {
   return [
-    "exec",
-    "--yes",
+    "--dir",
+    dshHome,
+    "dlx",
+    "--silent",
     `--package=@deepseek-ai/dsh@${DSH_VERSION}`,
-    "--",
     ...command,
   ];
 }

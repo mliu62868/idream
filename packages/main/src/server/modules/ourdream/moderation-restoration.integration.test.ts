@@ -1,9 +1,4 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import {
-  MAIN_TO_CHAT_EVENTS,
-  characterModerationRemovalEventId,
-  characterModerationRestorationEventId,
-} from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
 import {
   api,
@@ -204,7 +199,7 @@ describe("moderation appeal exact restoration authority", () => {
     expect(
       await prisma.mainOutboxEvent.count({
         where: {
-          id: characterModerationRestorationEventId(appealId),
+          aggregateId: characterId,
         },
       }),
     ).toBe(0);
@@ -273,12 +268,12 @@ describe("moderation appeal exact restoration authority", () => {
     ).resolves.toMatchObject({ status: "open", reviewerId: null });
     expect(
       await prisma.mainOutboxEvent.count({
-        where: { id: characterModerationRestorationEventId(appealId) },
+        where: { aggregateId: characterId },
       }),
     ).toBe(0);
   });
 
-  it("keeps a legacy Character appeal open without deterministic removal authority", async () => {
+  it("keeps a legacy Character appeal open without a Main moderation snapshot", async () => {
     const ownerId = `${P}owner-character-legacy`;
     const adminId = `${P}admin-character-legacy`;
     const characterId = `${P}character-legacy`;
@@ -304,15 +299,6 @@ describe("moderation appeal exact restoration authority", () => {
         reportId: report.id,
         reviewerId: adminId,
         decision: "actioned",
-      },
-    });
-    await prisma.mainOutboxEvent.create({
-      data: {
-        id: `${P}legacy-random-removal`,
-        eventType: MAIN_TO_CHAT_EVENTS.characterRemoved,
-        aggregateType: "character",
-        aggregateId: characterId,
-        payload: { characterId },
       },
     });
     const appeal = await api("POST", "appeals", {
@@ -379,7 +365,7 @@ describe("moderation appeal exact restoration authority", () => {
     ).toBe(0);
   });
 
-  it("commits exact Character removal and restoration events with the appeal", async () => {
+  it("restores the exact Main-owned Character state with the appeal", async () => {
     const ownerId = `${P}owner-character`;
     const adminId = `${P}admin-character`;
     const characterId = `${P}character`;
@@ -416,28 +402,9 @@ describe("moderation appeal exact restoration authority", () => {
     );
     expectOk(decision);
     const moderationDecisionId = decision.data.review.id as string;
-    const removalEventId = characterModerationRemovalEventId(
-      moderationDecisionId,
-    );
-    await expect(
-      prisma.mainOutboxEvent.findUniqueOrThrow({
-        where: { id: removalEventId },
-      }),
-    ).resolves.toMatchObject({
-      eventType: MAIN_TO_CHAT_EVENTS.characterRemoved,
-      aggregateType: "character",
-      aggregateId: characterId,
-      payload: {
-        sourceEventId: removalEventId,
-        payload: {
-          version: 1,
-          binding: "moderation_decision",
-          characterId,
-          moderationDecisionId,
-          previousRemovalEventId: null,
-        },
-      },
-    });
+    await expect(prisma.character.findUniqueOrThrow({
+      where: { id: characterId },
+    })).resolves.toMatchObject({ status: "removed" });
 
     const appeal = await api("POST", "appeals", {
       userId: ownerId,
@@ -460,28 +427,9 @@ describe("moderation appeal exact restoration authority", () => {
         confirmation: "OVERTURN",
       },
     }));
-    const restorationEventId = characterModerationRestorationEventId(appealId);
-    await expect(
-      prisma.mainOutboxEvent.findUniqueOrThrow({
-        where: { id: restorationEventId },
-      }),
-    ).resolves.toMatchObject({
-      eventType:
-        MAIN_TO_CHAT_EVENTS.characterModerationRestorationRequested,
-      aggregateType: "character",
-      aggregateId: characterId,
-      payload: {
-        sourceEventId: restorationEventId,
-        payload: {
-          version: 1,
-          binding: "removal_event",
-          appealId,
-          characterId,
-          moderationDecisionId,
-          removalEventId,
-        },
-      },
-    });
+    await expect(prisma.mainOutboxEvent.count({
+      where: { aggregateId: characterId },
+    })).resolves.toBe(0);
     await expect(
       prisma.character.findUniqueOrThrow({ where: { id: characterId } }),
     ).resolves.toMatchObject({ status: "approved" });

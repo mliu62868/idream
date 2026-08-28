@@ -27,11 +27,8 @@ import type { AdminActor } from "../shared/authority";
 import { toInputJson } from "../shared/prisma-json";
 import { contentAuditData } from "./audit";
 
-// SPEC: Image Library 的权威域实现 —— 列表、详情、单条 / 批量 metadata 编辑，
-// 以及归档前的依赖预检。
-// INTENT: 这里只管素材的**运营元数据与归档生命周期**。审阅结论（approved/rejected）
-// 属于 Creative Run 的不可变决策，所以任何 archived 以外的 status 写入都 fail closed
-// 并给出回到 Run 的 repairPath —— 图库不得凭空造出或顶替一次审阅。
+// SPEC: Character Asset Library 的权威域实现 —— 统一展示生成与导入媒体，并管理素材元数据和归档。
+// INTENT: 生产历史只作来源证据；运营位选择和素材归档不依赖人工评分或批准状态。
 
 type ContentAssetWithRelations = Prisma.MediaAssetGetPayload<{
   include: {
@@ -106,10 +103,10 @@ async function hydrateContentAssets(
 }
 
 export async function listContentAssets(query: ContentAssetQuery) {
-  const { status, purpose, profileId, targetId, tag, limit } = query;
+  const { mediaType, status, purpose, profileId, targetId, tag, limit } = query;
   const search = query.search?.toLowerCase();
   const productionItemStatus = status === "archived" ? undefined : status;
-  const queryIdentity = { status, purpose, profileId, targetId, tag, search, sort: "created_desc" };
+  const queryIdentity = { mediaType, status, purpose, profileId, targetId, tag, search, sort: "created_desc" };
   const cursorKeys = query.cursor
     ? decodeAdminListCursor(query.cursor, "content_assets", queryIdentity)
     : null;
@@ -117,34 +114,40 @@ export async function listContentAssets(query: ContentAssetQuery) {
     ? [parseIsoCursorKey(cursorKeys[0], "content_assets"), requiredCursorId(cursorKeys[1])]
     : [null, null];
   const productionAssetScope: Prisma.MediaAssetWhereInput = {
-    productionItems: { some: { status: productionItemStatus, batch: { purpose, targetId } } },
+    productionItems: {
+      some: { status: productionItemStatus, batch: { purpose, targetId } },
+    },
   };
-  const standalonePlatformAssetScope: Prisma.MediaAssetWhereInput | null = targetId
-    ? null
-    : {
-        productionItems: { none: {} },
-        AND: [
-          {
-            OR: (status ? [status] : contentAssetReviewStatusSchema.options).map((platformStatus) => ({
-              metadata: {
-                path: ["platformAsset", "status"],
-                equals: platformStatus,
-              },
-            })),
+  const standalonePlatformAssetScope: Prisma.MediaAssetWhereInput = {
+    productionItems: { none: {} },
+    ...(targetId ? { characterId: targetId } : {}),
+    AND: [
+      {
+        OR: (status
+          ? [status]
+          : contentAssetReviewStatusSchema.options.filter(
+              (platformStatus) => platformStatus !== "archived",
+            )
+        ).map((platformStatus) => ({
+          metadata: {
+            path: ["platformAsset", "status"],
+            equals: platformStatus,
           },
-          ...(purpose
-            ? [{
-                metadata: {
-                  path: ["platformAsset", "purpose"],
-                  equals: purpose,
-                },
-              }]
-            : []),
-        ],
-      };
+        })),
+      },
+      ...(purpose
+        ? [{
+            metadata: {
+              path: ["platformAsset", "purpose"],
+              equals: purpose,
+            },
+          }]
+        : []),
+    ],
+  };
   const assetAuthorityScopes = [
     productionAssetScope,
-    ...(standalonePlatformAssetScope ? [standalonePlatformAssetScope] : []),
+    standalonePlatformAssetScope,
   ];
   const matches: ContentAssetWithRelations[] = [];
   const batchSize = 100;
@@ -154,7 +157,7 @@ export async function listContentAssets(query: ContentAssetQuery) {
   while (matches.length <= limit && !exhausted) {
     const baseAssets = await prisma.mediaAsset.findMany({
       where: operationalMediaAssetWhere({
-        type: "image",
+        type: mediaType,
         deletedAt: null,
         sourceJob: profileId ? { profileId } : undefined,
         AND: [
@@ -175,6 +178,7 @@ export async function listContentAssets(query: ContentAssetQuery) {
     for (const asset of assets) {
       const metadata = platformAssetMetadata(asset);
       const tags = assetTags(asset);
+      if (!status && metadata.status === "archived") continue;
       if (status === "archived" && metadata.status !== "archived") continue;
       if (status && status !== "archived" && metadata.status === "archived") continue;
       if (tag && !tags.includes(tag)) continue;
@@ -227,7 +231,7 @@ async function assertAssetLibraryMutationAllowed(
       select: { batchId: true },
     });
     throw Errors.conflict(
-      "Image Library cannot create or replace Creative review authority",
+      "Asset Library cannot create or replace Creative review authority",
       {
         code: "creative_run_review_required",
         repairPath: item ? `/admin/creative/runs/${item.batchId}` : "/admin/creative/runs",
@@ -260,7 +264,7 @@ async function assertAssetLibraryMutationsAllowed(
       select: { mediaAssetId: true, batchId: true },
     });
     throw Errors.conflict(
-      "Image Library cannot create or replace Creative review authority",
+      "Asset Library cannot create or replace Creative review authority",
       {
         code: "creative_run_review_required",
         assetId: item?.mediaAssetId ?? assetIds[0],
@@ -510,8 +514,8 @@ function contentAssetDTO(
     createdAt: asset.createdAt.toISOString(),
     platformStatus: platformStatus ?? "generated",
     purpose: item?.batch.purpose ?? platform.purpose ?? null,
-    targetType: item?.batch.targetType ?? null,
-    targetId: item?.batch.targetId ?? null,
+    targetType: item?.batch.targetType ?? (asset.characterId ? "character" : null),
+    targetId: item?.batch.targetId ?? asset.characterId ?? null,
     tags: platformHasTags ? assetTags(asset) : item ? jsonStringArray(item.tags) : [],
     description: assetDescription(asset),
     sourceJob: asset.sourceJob

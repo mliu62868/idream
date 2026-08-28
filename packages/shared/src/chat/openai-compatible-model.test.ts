@@ -60,10 +60,14 @@ describe("openai-compatible chat model", () => {
       }),
     );
 
-    await model.complete({ messages: [{ role: "user", content: "{}" }] });
+    await model.complete({
+      messages: [{ role: "user", content: "{}" }],
+      responseFormat: "json_object",
+    });
 
     expect(body.temperature).toBe(PROFILE.structuredTemperature);
     expect(body.temperature).not.toBe(PROFILE.temperature);
+    expect(body.response_format).toEqual({ type: "json_object" });
   });
 
   it("carries the provider's real token counts on the final chunk", async () => {

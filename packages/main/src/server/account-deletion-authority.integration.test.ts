@@ -283,14 +283,19 @@ describe("account deletion authority", () => {
     const now = new Date();
     await prisma.mainOutboxEvent.update({
       where: { id: `user_deleted_${user.id}` },
-      // Dedicated completion is projected while this request transport is
-      // still pending; Chat's HTTP response advances it to delivered later.
-      data: { nextRunAt: now },
+    // Dedicated completion is projected before Chat's HTTP response advances
+    // the exact leased request transport from processing to delivered.
+    data: {
+      status: "processing",
+      nextRunAt: now,
+      leaseToken: `${P}chat-request-lease`,
+      leaseExpiresAt: new Date(now.getTime() + 30_000),
+    },
     });
 
     await expect(applyChatEvent({
       eventId: `${P}legacy-chat-completion`,
-      eventType: CHAT_TO_MAIN_EVENTS.accountErasureCompleted,
+      eventType: "chat.account_erasure.completed",
       aggregateId: user.id,
       payload: {
         userId: user.id,
@@ -567,12 +572,6 @@ describe("account deletion authority", () => {
         data: {
           id: projectId,
           characterId,
-          ownerId: user.id,
-          phase: "live_management",
-          audience: { private: "audience" },
-          hypothesis: "private hypothesis",
-          differentiation: "private differentiation",
-          successCriteria: { private: "criteria" },
           draftImageAssetId: assetIds[0],
           draftAssetPack: { private: "draft pack" },
           activeKey: `${P}published-active-key`,
@@ -743,13 +742,7 @@ describe("account deletion authority", () => {
     await expect(prisma.characterProject.findUniqueOrThrow({
       where: { id: projectId },
     })).resolves.toMatchObject({
-      ownerId: null,
       characterId: expect.stringMatching(/^erased:[a-f0-9]{64}$/),
-      phase: "retired",
-      audience: {},
-      hypothesis: null,
-      differentiation: null,
-      successCriteria: {},
       draftImageAssetId: null,
       draftAssetPack: {},
       activeKey: null,

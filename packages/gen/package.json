@@ -5,22 +5,25 @@
   "type": "module",
   "description": "Generation Service — gen/image + gen/video. Slow async workers: payload self-contained, write blob only, NO DB authority. Durable terminal records enter a Main-owned relay for projection.",
   "engines": {
-    "node": ">=22"
+    "node": ">=22",
+    "bun": "1.4.0"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "build": "echo source-only",
-    "start:image": "tsx src/image.ts",
-    "start:video": "tsx src/video.ts",
-    "probe:image": "tsx src/probe-image-pipeline.ts",
-    "probe:video": "tsx src/probe-video-pipeline.ts",
-    "probe:sentry": "tsx src/probe-sentry.ts",
-    "probe:character-consistency": "tsx src/probe-character-consistency.ts",
-    "probe:redcraft-comfyui": "tsx src/probe-redcraft-comfyui.ts",
-    "sync:comfyui-workflows": "tsx src/sync-comfyui-workflows.ts",
-    "smoke:backend": "tsx src/backend/smoke.ts",
-    "preflight": "tsx src/preflight.ts"
+    "build": "bun ../../scripts/build-bun-service.mjs src/image.ts src/video.ts",
+    "dev:image": "bun src/image.ts",
+    "dev:video": "bun src/video.ts",
+    "start:image": "bun dist/image.js",
+    "start:video": "bun dist/video.js",
+    "probe:image": "bun src/probe-image-pipeline.ts",
+    "probe:video": "bun src/probe-video-pipeline.ts",
+    "probe:sentry": "bun src/probe-sentry.ts",
+    "probe:character-consistency": "bun src/probe-character-consistency.ts",
+    "probe:redcraft-comfyui": "bun src/probe-redcraft-comfyui.ts",
+    "sync:comfyui-workflows": "bun src/sync-comfyui-workflows.ts",
+    "smoke:backend": "bun src/backend/smoke.ts",
+    "preflight": "bun src/preflight.ts"
   },
   "dependencies": {
     "@idream/shared": "workspace:*",

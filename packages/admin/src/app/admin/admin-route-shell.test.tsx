@@ -128,14 +128,18 @@ describe("canonical Admin route shell", () => {
     expect(markup).toContain('name="review-queue-search"');
   });
 
-  // SPEC: 服务端第一帧就是最终形态——语言、展开的分组、工作模式全部来自 cookie。
-  // INTENT: 这三项过去在 useEffect(rAF → localStorage) 里读，于是首帧必然是 English +
-  //         全折叠侧栏，几百毫秒后整页跳变。断言的是"首帧已经对"，不是"最终会对"。
-  it("renders the operator's stored language and expanded groups in the first server frame", () => {
+  // SPEC: 服务端第一帧就使用运营的语言；一级导航稳定为今日工作 / 角色 / 更多。
+  it("renders the operator's stored language and minimal primary navigation in the first server frame", () => {
     const markup = renderToString(
       <AdminConsoleClient
         {...shellProps({
-          initialPermissions: ["dashboard.read", "content.read", "safety.review.read"],
+          initialPermissions: [
+            "dashboard.read",
+            "character.project.read",
+            "character.release.read",
+            "character.performance.read",
+            "content.read",
+          ],
           preferences: { locale: "zh", openNavGroups: ["Character Studio"] },
         })}
       />,
@@ -143,9 +147,10 @@ describe("canonical Admin route shell", () => {
 
     expect(markup).toContain("今日工作");
     expect(markup).not.toContain(">Today<");
-    // 展开的分组把它的导航项也一并渲染出来了，而不是只留一个分组标题。
-    expect(markup).toContain("角色工作室");
-    expect(markup).toContain("分类体系");
+    expect(markup).toContain('href="/admin/characters"');
+    expect(markup).toContain(">角色<");
+    expect(markup).toContain(">更多<");
+    expect(markup).not.toContain(">分类体系<");
   });
 
   it("never reads a shell preference back out of browser storage", async () => {
@@ -158,21 +163,26 @@ describe("canonical Admin route shell", () => {
     expect(source).not.toContain("requestAnimationFrame");
   });
 
-  // SPEC: 冷启动（没有任何 cookie）的侧栏不能只剩一个可去的地方。
-  it("expands a workable default set of destinations on a cold start", () => {
-    const permissions = ["dashboard.read", "content.read", "safety.review.read"] as AdminPermissionKey[];
+  // SPEC: 冷启动的侧栏直接暴露核心对象，其余能力仍可从「更多」进入。
+  it("keeps the cold-start navigation focused without deleting destinations", () => {
+    const permissions = [
+      "dashboard.read",
+      "character.project.read",
+      "character.release.read",
+      "character.performance.read",
+      "content.read",
+      "safety.review.read",
+    ] as AdminPermissionKey[];
     const markup = renderToString(
       <AdminConsoleClient {...shellProps({ initialPermissions: permissions })} />,
     );
 
-    // admin 模式的首要分组是 Character Studio；这三个获准的能力应当直接可见，
-    // 而不是藏在一个只写着分组名的折叠标题后面。
-    expect(markup).toContain(">Character Review<");
-    expect(markup).toContain(">Character Starters<");
-    expect(markup).toContain(">Taxonomy<");
-    // 非首要分组仍然折叠：Growth 只出标题，不出它的导航项。
-    expect(markup).toContain(">Growth<");
-    expect(markup).not.toContain(">CMS &amp; SEO<");
+    expect(markup).toContain(">Today<");
+    expect(markup).toContain(">Characters<");
+    expect(markup).toContain(">More<");
+    expect(markup).not.toContain(">Character Review<");
+    expect(markup).not.toContain(">Character Starters<");
+    expect(markup).not.toContain(">Taxonomy<");
   });
 
   // SPEC: 顶栏出面包屑；账号、语言、工作模式、数据来源都收进账号菜单，不再占正文流。

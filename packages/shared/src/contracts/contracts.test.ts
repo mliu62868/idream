@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { idempotencyKeys } from "./idempotency";
 import {
   ALL_QUEUE_NAMES,
-  CHAT_QUEUES,
   MAIN_QUEUES,
   bullMqJobIdForDedupeKey,
 } from "./queues";
@@ -16,11 +15,6 @@ import {
 import { signBffContext, verifyBffContext } from "../bff/signing";
 
 describe("idempotency keys", () => {
-  it("chat.generate carries :attempt so regenerate is not deduped", () => {
-    expect(idempotencyKeys.chatGenerate("m1", 1)).toBe("chat-generate:m1:1");
-    expect(idempotencyKeys.chatGenerate("m1", 2)).toBe("chat-generate:m1:2");
-    expect(idempotencyKeys.chatGenerate("m1", 1)).not.toBe(idempotencyKeys.chatGenerate("m1", 2));
-  });
   it("generation terminal relay keys on immutable Attempt identity", () => {
     expect(idempotencyKeys.generationTerminalRelay("attempt-1")).toBe(
       "generation-terminal-relay:attempt-1",
@@ -81,8 +75,6 @@ describe("cross-service generation identity", () => {
 describe("queue names", () => {
   it("are unique and include the cross-service terminal relay queue", () => {
     expect(new Set(ALL_QUEUE_NAMES).size).toBe(ALL_QUEUE_NAMES.length);
-    expect(ALL_QUEUE_NAMES).toContain(CHAT_QUEUES.generate);
-    expect(ALL_QUEUE_NAMES).not.toContain("chat.maintain");
     expect(ALL_QUEUE_NAMES).toContain(MAIN_QUEUES.generationTerminalIngest);
   });
 });

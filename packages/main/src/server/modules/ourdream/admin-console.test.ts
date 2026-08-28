@@ -216,9 +216,6 @@ async function seedEditorialPublicCharacterAuthority(input: {
     data: {
       id: projectId,
       characterId: input.characterId,
-      phase: "live_management",
-      audience: {},
-      successCriteria: [],
     },
   });
   await prisma.characterRelease.create({
@@ -985,19 +982,7 @@ describe("generation config control plane", () => {
           "chat-image-edit",
         ]),
       );
-      expect(config.data.image.editModels).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            profileId: "character-image-variation-darkbeast",
-            referenceMode: "identity_source",
-          }),
-        ]),
-      );
-      expect(
-        config.data.image.editModels.map(
-          (model: { profileId: string }) => model.profileId,
-        ),
-      ).toEqual(["character-image-variation-darkbeast"]);
+      expect(config.data.image.editModels).toEqual([]);
       expect(JSON.stringify(config.data.image.models)).not.toContain("profile_image_premium_v1");
 
       const beforeRejectedJobs = await prisma.generationJob.count({ where: { userId } });
@@ -1972,16 +1957,16 @@ describe("generation config control plane", () => {
         mode: "image",
         runner: "comfyui",
         pipelineModel: "comfyui-missing-components",
-        sourceModelPath: "/models/diffusion/darkbeast.safetensors",
+        sourceModelPath: "/models/diffusion/candidate.safetensors",
         modelFormat: "safetensors",
         allowedOrientations: ["4:5"],
         runnerConfig: {
           apiModelId: "comfyui-missing-components",
-          verificationStatus: "missing_flux2_klein_reference_runtime_components",
+          verificationStatus: "missing_runtime_components",
           componentStatus: {
-            flux2Vae: "available",
-            flux2BaseModel: "missing",
-            qwenTextEncoder: "missing",
+            vae: "available",
+            baseModel: "missing",
+            textEncoder: "missing",
           },
         },
       },
@@ -2003,7 +1988,7 @@ describe("generation config control plane", () => {
       failureMode: "missing_runtime_components",
     });
     expect(JSON.stringify(dryRun.data.dryRun.samples)).toContain("verificationStatus");
-    expect(JSON.stringify(dryRun.data.dryRun.samples)).toContain("flux2BaseModel");
+    expect(JSON.stringify(dryRun.data.dryRun.samples)).toContain("baseModel");
     await expect(
       prisma.generationModelProfile.findUnique({ where: { id: draft.data.profile.id } }),
     ).resolves.toMatchObject({

@@ -2,7 +2,10 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
+import {
+  LEGACY_MAIN_TO_CHAT_EVENTS,
+  MAIN_TO_CHAT_EVENTS,
+} from "@idream/shared/contracts";
 import {
   characterVideoProductionRecipe,
   chatFsRootFingerprint,
@@ -65,11 +68,8 @@ const productionEnv = {
   CRON_SECRET: "production-cron-token-0123456789",
   REDIS_URL: "redis://redis.ourdream.internal:6379/0",
   BULLMQ_PREFIX: "idream:prod",
-  IDREAM_CHAT_BULLMQ_PREFIX: "idream:prod",
   IDREAM_GEN_BULLMQ_PREFIX: "idream:prod",
   CHAT_PROVIDER: "pipeline",
-  CHAT_DATABASE_URL:
-    "postgresql://chat_service:secret@db.ourdream.internal:5432/idream",
   CHAT_FS_ROOT: "/var/lib/idream/chat",
   CHAT_MODEL_PROVIDER: "pipeline",
   CHAT_MODEL_BASE_URL: "https://pipeline.ourdream.internal",
@@ -78,7 +78,6 @@ const productionEnv = {
   ADMIN_TEXT_PROBE_REPORT: ".tmp/launch-admin-text-probe.json",
   ADMIN_TEXT_PROBE_MAX_AGE_MINUTES: "1440",
   ADMIN_TEXT_PROBE_CHARACTER_ID: "reviewed-character-1",
-  CHAT_MODERATION_PROVIDER: "mock",
   VOICE_PROVIDER: "pipeline",
   MODERATION_PROVIDER: "mock",
   PAYMENT_PROVIDER: "btcpay",
@@ -149,10 +148,7 @@ const productionEnv = {
 
 const externalModerationEnv = {
   ...productionEnv,
-  CHAT_MODERATION_PROVIDER: "safety-gateway",
   MODERATION_PROVIDER: "safety-gateway",
-  CHAT_MODERATION_SERVICE_URL: externalModerationServiceUrl,
-  CHAT_MODERATION_API_KEY: externalModerationApiKey,
   MODERATION_SERVICE_URL: externalModerationServiceUrl,
   MODERATION_API_KEY: externalModerationApiKey,
   SAFETY_GATEWAY_PROBE_REPORT: externalModerationProbeReport,
@@ -450,7 +446,6 @@ function passingChatServiceProbe(
         status: 202,
         assistantMessageId: "msg_probe_no_memory_assistant",
         authorityPinned: true,
-        relationshipUnchanged: true,
         dsh: passingDshEvidence("private"),
         error: null,
       },
@@ -463,9 +458,7 @@ function passingChatServiceProbe(
       cleanup: {
         ok: true,
         status: 404,
-        relationshipDeleted: true,
-        relationshipsDeleted: 1,
-        relationshipsGone: true,
+        memoryCleared: true,
         sessionDeleted: true,
         sessionGone: true,
         error: null,
@@ -1787,31 +1780,7 @@ describe("launch readiness", () => {
     );
   });
 
-  it("requires the split chat service to use its own least-privilege database role", () => {
-    const report = assessLaunchReadiness({
-      env: {
-        ...productionEnv,
-        CHAT_DATABASE_URL: productionEnv.DATABASE_URL,
-      },
-      imagePipelineProbe: passingImageProbe(),
-      ageVerificationProbe: passingAgeProbe(),
-      blobStorageProbe: passingBlobProbe(),
-      chatModelProbe: passingChatProbe(),
-      voiceModelProbe: passingVoiceProbe(),
-      chatServiceProbe: passingChatServiceProbe(),
-      paymentProviderProbe: passingPaymentProbe(),
-      safetyGatewayProbe: passingSafetyProbe(),
-      productConfigProbe: passingProductConfigProbe(),
-      webSurfaceProbe: passingWebSurfaceProbe(),
-      publicCatalogProbe: passingPublicCatalogProbe(),
-      now,
-    });
-
-    expect(report.ok).toBe(false);
-    expect(failedIds(report)).toContain("chat-database-url");
-  });
-
-  it("requires a shared production BullMQ prefix across services", () => {
+  it("requires a shared production BullMQ prefix across Main and Gen", () => {
     const report = assessLaunchReadiness({
       env: {
         ...productionEnv,
@@ -1839,7 +1808,6 @@ describe("launch readiness", () => {
     ["IDREAM_ADMIN_APP_ENV", "development", "app-env-production"],
     ["IDREAM_CHAT_APP_ENV", "development", "app-env-production"],
     ["IDREAM_GEN_APP_ENV", "development", "app-env-production"],
-    ["IDREAM_CHAT_BULLMQ_PREFIX", "idream:chat", "bullmq-prefix"],
     ["IDREAM_GEN_BULLMQ_PREFIX", "idream:gen", "bullmq-prefix"],
     ["IDREAM_CHAT_INTERNAL_TOKEN", "wrong-chat-token", "internal-token"],
     ["IDREAM_GEN_INTERNAL_TOKEN", "wrong-gen-token", "internal-token"],
@@ -1868,7 +1836,6 @@ describe("launch readiness", () => {
           IDREAM_ADMIN_APP_ENV: "production",
           IDREAM_CHAT_APP_ENV: "production",
           IDREAM_GEN_APP_ENV: "production",
-          IDREAM_CHAT_BULLMQ_PREFIX: productionEnv.BULLMQ_PREFIX,
           IDREAM_GEN_BULLMQ_PREFIX: productionEnv.BULLMQ_PREFIX,
           IDREAM_CHAT_INTERNAL_TOKEN: productionEnv.INTERNAL_TOKEN,
           IDREAM_GEN_INTERNAL_TOKEN: productionEnv.INTERNAL_TOKEN,
@@ -2008,9 +1975,8 @@ describe("launch readiness", () => {
     expect(report.ok).toBe(false);
     expect(failedIds(report)).toContain("chat-fs-root");
     const check = checkById(report, "chat-fs-root");
-    expect(check?.remediation).toContain("relationship evidence and boundary projections");
-    expect(check?.remediation).toContain("Scene/session/message stay in Postgres");
-    expect(check?.remediation).not.toContain("chat logs and memories");
+    expect(check?.remediation).toContain("AgentRun evidence and local boundaries");
+    expect(check?.remediation).toContain("product sessions, Turns, attachments and billing stay in Main PostgreSQL");
   });
 
   it("requires public age verification return and callback URLs", () => {
@@ -2044,12 +2010,11 @@ describe("launch readiness", () => {
     );
   });
 
-  it("requires packages/chat to use a real model and supported moderation provider", () => {
+  it("requires packages/chat to use a real model", () => {
     const report = assessLaunchReadiness({
       env: {
         ...productionEnv,
         CHAT_MODEL_PROVIDER: "mock",
-        CHAT_MODERATION_PROVIDER: "unsupported",
       },
       imagePipelineProbe: passingImageProbe(),
       ageVerificationProbe: passingAgeProbe(),
@@ -2066,12 +2031,7 @@ describe("launch readiness", () => {
     });
 
     expect(report.ok).toBe(false);
-    expect(failedIds(report)).toEqual(
-      expect.arrayContaining([
-        "chat-model-provider",
-        "chat-moderation-provider",
-      ]),
-    );
+    expect(failedIds(report)).toContain("chat-model-provider");
   });
 
   it("rejects development-looking secrets even when they are long enough", () => {
@@ -2354,7 +2314,12 @@ describe("launch readiness", () => {
     });
     expect(count).toHaveBeenCalledWith({
       where: {
-        eventType: { in: Object.values(MAIN_TO_CHAT_EVENTS) },
+        eventType: {
+          in: [
+            ...Object.values(MAIN_TO_CHAT_EVENTS),
+            ...Object.values(LEGACY_MAIN_TO_CHAT_EVENTS),
+          ],
+        },
         status: "failed",
       },
     });
@@ -2864,7 +2829,7 @@ describe("launch readiness", () => {
           noMemory: {
             ...passing.conversation?.noMemory,
             ok: false,
-            relationshipUnchanged: false,
+            authorityPinned: false,
           },
           cleanup: {
             ...passing.conversation?.cleanup,
@@ -4570,7 +4535,6 @@ describe("launch readiness", () => {
       "IDREAM_ADMIN_INTERNAL_TOKEN",
       "IDREAM_CHAT_INTERNAL_TOKEN",
       "IDREAM_GEN_INTERNAL_TOKEN",
-      "IDREAM_CHAT_BULLMQ_PREFIX",
       "IDREAM_GEN_BULLMQ_PREFIX",
       "IDREAM_CHAT_BFF_SIGNING_SECRET",
       "IDREAM_ADMIN_BFF_SIGNING_SECRET",
@@ -4606,9 +4570,7 @@ describe("launch readiness", () => {
     expect(
       [
         ...[
-          "CHAT_DATABASE_URL",
           "CHAT_REDIS_URL",
-          "BULLMQ_PREFIX",
           "CHAT_FS_ROOT",
           "CHAT_PORT",
           "CHAT_BFF_SIGNING_SECRET",
@@ -4616,8 +4578,6 @@ describe("launch readiness", () => {
           "CHAT_MODEL_BASE_URL",
           "CHAT_MODEL_NAME",
           "CHAT_MODEL_API_KEY",
-          "CHAT_MODERATION_PROVIDER",
-          "CHAT_MODERATION_TIMEOUT_MS",
         ],
       ].filter((key) => !chatKeys.has(key)),
     ).toEqual([]);

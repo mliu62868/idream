@@ -3,7 +3,7 @@
 import { Flag, Loader2, Pencil, RefreshCw, Square, Trash2, Volume2 } from "lucide-react";
 
 // SPEC: Per-message action cluster. Assistant turns get Play + Regenerate; both
-//       roles get Delete + Report; the latest user turn may expose Edit. Pinned
+//       roles get Report; only the latest Turn gets Delete/Regenerate/Edit. Pinned
 //       top-right of the bubble.
 // INTENT: keep the existing Flag/Report behavior; add management without clutter.
 export function MessageActions({
@@ -22,7 +22,7 @@ export function MessageActions({
   voiceState?: "loading" | "playing";
   onEdit?: () => void;
   onReport: () => void;
-  onDelete: () => void;
+  onDelete?: () => void;
   onRegenerate?: () => void;
   onPlay?: () => void;
   deleteConfirm?: boolean;
@@ -82,17 +82,19 @@ export function MessageActions({
           <Pencil className="h-3.5 w-3.5" />
         </button>
       ) : null}
-      <button
-        aria-label={deleteConfirm ? "Confirm delete message" : "Delete message"}
-        className={`inline-flex h-7 min-w-7 items-center justify-center rounded-full ${deleteConfirm ? "px-2 text-[11px] font-bold uppercase" : "w-7"} ${tone} disabled:opacity-50`}
-        data-testid="chat-delete-message"
-        disabled={pending}
-        onClick={onDelete}
-        title={deleteConfirm ? "Confirm delete message" : "Delete message"}
-        type="button"
-      >
-        {deleteConfirm ? "Confirm" : <Trash2 className="h-3.5 w-3.5" />}
-      </button>
+      {onDelete ? (
+        <button
+          aria-label={deleteConfirm ? "Confirm delete message" : "Delete message"}
+          className={`inline-flex h-7 min-w-7 items-center justify-center rounded-full ${deleteConfirm ? "px-2 text-[11px] font-bold uppercase" : "w-7"} ${tone} disabled:opacity-50`}
+          data-testid="chat-delete-message"
+          disabled={pending}
+          onClick={onDelete}
+          title={deleteConfirm ? "Confirm delete message" : "Delete message"}
+          type="button"
+        >
+          {deleteConfirm ? "Confirm" : <Trash2 className="h-3.5 w-3.5" />}
+        </button>
+      ) : null}
       <button
         aria-label="Report message"
         className={`grid h-7 w-7 place-items-center rounded-full ${tone}`}

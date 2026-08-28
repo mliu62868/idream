@@ -15,11 +15,13 @@ const ACCEPTED_COMMAND = {
 };
 
 function stubFetch(payload: unknown, init?: ResponseInit) {
-  const fetchMock = vi.fn(async (input: string | URL | Request, requestInit?: RequestInit) => {
-    void input;
-    void requestInit;
-    return Response.json(payload, init);
-  });
+  const fetchMock = vi.fn(
+    async (input: string | URL | Request, requestInit?: RequestInit) => {
+      void input;
+      void requestInit;
+      return Response.json(payload, init);
+    },
+  );
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
 }
@@ -33,7 +35,11 @@ describe("admin v2 operation adapter", () => {
       {
         path: { id: "character 1" },
         idempotencyKey: "pause-1",
-        body: { entityVersion: 3, reason: "pause", confirmation: "PAUSE character 1" },
+        body: {
+          entityVersion: 3,
+          reason: "pause",
+          confirmation: "PAUSE character 1",
+        },
       },
     );
 
@@ -68,16 +74,20 @@ describe("admin v2 operation adapter", () => {
       },
     });
 
-    await adminV2Operation("POST /api/v2/admin/characters/:id/qa-runs", {
+    await adminV2Operation("POST /api/v2/admin/characters/:id/releases", {
       path: { id: "character-1" },
-      idempotencyKey: "qa-1",
+      idempotencyKey: "release-1",
       ifMatch: 7,
-      body: { entityVersion: 7, checks: [], reason: "QA" },
+      body: {
+        entityVersion: 7,
+        reason: "Publish current draft",
+        confirmation: "character-1:propose-release",
+      },
     }).catch(() => undefined);
 
     const [, init] = fetchMock.mock.calls[0] ?? [];
     const headers = new Headers(init?.headers);
-    expect(headers.get("idempotency-key")).toBe("qa-1");
+    expect(headers.get("idempotency-key")).toBe("release-1");
     expect(headers.get("if-match")).toBe('"7"');
   });
 
@@ -110,7 +120,10 @@ describe("admin v2 operation adapter", () => {
 
   it("fails an operation and a v1 write with the same error class", async () => {
     stubFetch(
-      { ok: false, error: { code: "conflict", message: "Character version changed" } },
+      {
+        ok: false,
+        error: { code: "conflict", message: "Character version changed" },
+      },
       { status: 409 },
     );
 
@@ -118,8 +131,11 @@ describe("admin v2 operation adapter", () => {
       "POST /api/v2/admin/characters/:id/commands/retire",
       { path: { id: "character-1" }, idempotencyKey: "retire-1", body: {} },
     ).catch((cause: unknown) => cause);
-    const legacyError = await apiWrite("/api/v2/admin/content/featured", "PUT", {})
-      .catch((cause: unknown) => cause);
+    const legacyError = await apiWrite(
+      "/api/v2/admin/content/featured",
+      "PUT",
+      {},
+    ).catch((cause: unknown) => cause);
 
     expect(operationError).toBeInstanceOf(AdminV2RequestError);
     expect(legacyError).toBeInstanceOf(AdminV2RequestError);

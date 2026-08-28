@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Check, ImageIcon, Loader2, Sparkles, Wand2 } from "lucide-react";
 import { CHARACTER_VISIBILITY, isCatalogMember } from "@idream/shared/catalog";
+import { legacySoulDetailsMarkdown } from "@idream/shared/chat/persona";
 import { renderCharacterSoulMarkdown } from "@idream/shared/chat/persona-render";
 import {
   characterStyleFormOptions,
@@ -39,11 +40,25 @@ type DraftPayload = {
   ok?: boolean;
   error?: { message?: string };
   data?: {
-    draft?: { id: string };
+    draft?: ServerCharacterDraft | null;
     character?: { id: string; name: string; status?: string };
     asset?: { id?: string; url: string; isSynthetic?: boolean };
     previewJob?: { id: string; status: string; errorCode?: string | null };
   };
+};
+
+export type ServerCharacterDraft = {
+  id: string;
+  step: number;
+  gender: string | null;
+  style: string | null;
+  appearance: unknown;
+  hair: unknown;
+  body: unknown;
+  name: string | null;
+  advancedDetails: unknown;
+  tags: unknown;
+  previewJobId: string | null;
 };
 
 type PreviewStatus = "idle" | "generating" | "complete" | "failed";
@@ -62,26 +77,7 @@ function pickString(value: unknown, ...keys: string[]): string {
 
 /** Historical templates and local drafts are read once into the one current field. */
 function templateDetailsMarkdown(value: unknown): string {
-  const authored = pickString(value, "detailsMarkdown");
-  if (authored) return authored;
-  if (!isRecord(value)) return "";
-  const personality = pickString(value, "personality");
-  const tone = pickString(value, "tone", "speakingStyle");
-  const backstory = pickString(value, "backstory");
-  const examples = Array.isArray(value.exampleDialogue)
-    ? value.exampleDialogue.filter((line): line is string => typeof line === "string" && Boolean(line.trim()))
-    : typeof value.exampleDialogue === "string" && value.exampleDialogue.trim()
-      ? [value.exampleDialogue.trim()]
-      : [];
-  return [
-    personality || tone
-      ? ["## Personality and voice", personality, tone].filter(Boolean).join("\n")
-      : "",
-    backstory ? `## Background\n${backstory}` : "",
-    examples.length > 0
-      ? `## Dialogue examples\n${examples.map((line) => `- ${line}`).join("\n")}`
-      : "",
-  ].filter(Boolean).join("\n\n");
+  return legacySoulDetailsMarkdown(value);
 }
 
 function pickTags(value: unknown): string {
@@ -122,7 +118,6 @@ export type WizardState = {
   hair: string;
   body: string;
   description: string;
-  relationshipArchetype: string;
   detailsMarkdown: string;
   firstMessage: string;
   tags: string;
@@ -143,7 +138,6 @@ const INITIAL: WizardState = {
   hair: "",
   body: "",
   description: "",
-  relationshipArchetype: "",
   detailsMarkdown: "",
   firstMessage: "",
   tags: "",
@@ -152,6 +146,31 @@ const INITIAL: WizardState = {
 
 export function initialCharacterDraft(): WizardState {
   return { ...INITIAL };
+}
+
+export function wizardStateFromServerDraft(
+  value: ServerCharacterDraft,
+): WizardState | null {
+  if (!value.id || !isRecord(value.advancedDetails)) return null;
+  const details = value.advancedDetails;
+  const age = typeof details.age === "number" ? details.age : INITIAL.age;
+  return parseWizardDraft({
+    ...INITIAL,
+    draftId: value.id,
+    step: Math.min(value.step, STEPS.length - 1),
+    name: value.name ?? "",
+    age,
+    gender: value.gender ?? INITIAL.gender,
+    style: value.style ?? INITIAL.style,
+    appearance: pickString(value.appearance, "prompt", "summary"),
+    hair: pickString(value.hair, "prompt", "summary"),
+    body: pickString(value.body, "type", "prompt", "summary"),
+    description: pickString(details, "description"),
+    detailsMarkdown: templateDetailsMarkdown(details),
+    firstMessage: pickString(details, "firstMessage"),
+    tags: pickTags(value.tags),
+    confirmedPreviewJobId: value.previewJobId ?? "",
+  });
 }
 
 export function CreateWorkspace() {
@@ -259,9 +278,11 @@ export function CreateWorkspace() {
     return () => controller.abort();
   }, [ageGateAccepted, viewerAuthorityAttempt]);
 
-  // Resume a draft after refresh once the viewer-scoped storage key is known.
+  // Local storage keeps unsaved keystrokes. When it is absent, the signed-in
+  // user's server draft restores the last durable step across browsers/devices.
   useEffect(() => {
     if (!storageKey) return;
+    const controller = new AbortController();
     let restored: WizardState | null = null;
     try {
       const raw = window.localStorage.getItem(storageKey);
@@ -271,31 +292,78 @@ export function CreateWorkspace() {
     } catch {
       // ignore malformed storage
     }
-    /* eslint-disable react-hooks/set-state-in-effect -- one-shot hydration from browser storage */
-    if (restored) {
-      setState(restored);
-      const restoredCandidate = restored.previewBatch?.candidates.find(
-        (candidate) => candidate.previewJobId === restored.confirmedPreviewJobId,
-      ) ?? restored.previewBatch?.candidates[0];
-      const restoredPreviewUrl = restored.confirmedPreviewUrl || restoredCandidate?.url;
+    const applyRestored = (
+      next: WizardState,
+      serverAsset?: { url: string } | null,
+      serverPreviewJob?: { id: string; status: string; errorCode?: string | null } | null,
+    ) => {
+      restored = next;
+      if (serverAsset?.url && next.confirmedPreviewJobId) {
+        restored = { ...next, confirmedPreviewUrl: serverAsset.url };
+      }
+      const applied = restored;
+      if (!applied) return;
+      setState(applied);
+      const restoredCandidate = applied.previewBatch?.candidates.find(
+        (candidate) => candidate.previewJobId === applied.confirmedPreviewJobId,
+      ) ?? applied.previewBatch?.candidates[0];
+      const restoredPreviewUrl = applied.confirmedPreviewUrl || restoredCandidate?.url;
       if (restoredPreviewUrl) {
         setPreview(restoredPreviewUrl);
         setSelectedPreviewJobId(
-          restored.confirmedPreviewJobId || restoredCandidate?.previewJobId || "",
+          applied.confirmedPreviewJobId || restoredCandidate?.previewJobId || "",
         );
       }
-      if (restored.previewBatch?.phase === "complete") {
+      if (applied.previewBatch?.phase === "complete" || restoredPreviewUrl) {
         setPreviewStatus("complete");
-      } else if (restored.previewBatch?.phase === "running") {
+      } else if (applied.previewBatch?.phase === "running") {
         setPreviewStatus("generating");
-      } else if (restored.previewBatch?.phase === "failed") {
+      } else if (applied.previewBatch?.phase === "failed" || serverPreviewJob?.status === "failed") {
         setPreviewStatus("failed");
-        setStatus(restored.previewBatch.errorMessage);
+        setStatus(
+          applied.previewBatch?.errorMessage ||
+          (serverPreviewJob?.errorCode
+            ? `Preview generation failed (${serverPreviewJob.errorCode}). Try again.`
+            : "Preview generation failed. Try again."),
+        );
       }
+    };
+    if (restored) {
+      queueMicrotask(() => {
+        if (controller.signal.aborted || !restored) return;
+        applyRestored(restored);
+        setHydrated(true);
+      });
+      return () => controller.abort();
     }
-    setHydrated(true);
-    /* eslint-enable react-hooks/set-state-in-effect */
-  }, [storageKey]);
+    if (viewerScope && !isAnonymousScope(viewerScope)) {
+      void requestApi(
+        "/api/v1/character-drafts/current",
+        undefined,
+        "GET",
+        { signal: controller.signal },
+      ).then((payload) => {
+        if (controller.signal.aborted || !payload.data?.draft) return;
+        const serverState = wizardStateFromServerDraft(payload.data.draft);
+        if (serverState) {
+          applyRestored(
+            serverState,
+            payload.data.asset ?? null,
+            payload.data.previewJob ?? null,
+          );
+        }
+      }).catch(() => {
+        // A durable resume failure must not block starting a fresh local draft.
+      }).finally(() => {
+        if (!controller.signal.aborted) setHydrated(true);
+      });
+      return () => controller.abort();
+    }
+    queueMicrotask(() => {
+      if (!controller.signal.aborted) setHydrated(true);
+    });
+    return () => controller.abort();
+  }, [requestApi, storageKey, viewerScope]);
 
   useEffect(() => {
     if (!hydrated || !storageKey) return;
@@ -342,9 +410,6 @@ export function CreateWorkspace() {
       appearance: pickString(template.appearance, "prompt", "summary") || current.appearance,
       description:
         pickString(template.advancedDetails, "description") || template.summary || current.description,
-      relationshipArchetype:
-        pickString(template.advancedDetails, "relationshipArchetype", "relationship") ||
-        current.relationshipArchetype,
       detailsMarkdown:
         templateDetailsMarkdown(template.advancedDetails) || current.detailsMarkdown,
       firstMessage: pickString(template.advancedDetails, "firstMessage") || current.firstMessage,
@@ -370,13 +435,14 @@ export function CreateWorkspace() {
   }
 
   const nameError = state.name.trim().length < 2 ? "Name needs at least 2 characters." : "";
-  const ageError = state.age < 18 || state.age > 99 ? "Age must be between 18 and 99." : "";
+  const ageError = state.age < 18 || state.age > 120 ? "Age must be between 18 and 120." : "";
   const personaError = requiredPersonaMessage(state);
 
   async function ensureDraft(): Promise<string> {
     if (state.draftId) return state.draftId;
     const created = await requestApi("/api/v1/character-drafts", {
       name: state.name,
+      age: state.age,
       style: state.style,
       gender: state.gender,
     });
@@ -393,6 +459,7 @@ export function CreateWorkspace() {
       {
         step: Math.min(nextStep, 12),
         name: state.name,
+        age: state.age,
         style: state.style,
         gender: state.gender,
         appearance: { prompt: state.appearance },
@@ -400,7 +467,6 @@ export function CreateWorkspace() {
         body: { type: state.body },
         advancedDetails: {
           description: state.description,
-          relationshipArchetype: state.relationshipArchetype,
           detailsMarkdown: state.detailsMarkdown,
           firstMessage: state.firstMessage,
         },
@@ -626,8 +692,6 @@ export function CreateWorkspace() {
       });
       const submitted = await requestApi(`/api/v1/character-drafts/${draftId}/submit`, {
         visibility: state.visibility,
-        description: state.description,
-        age: state.age,
       });
       const character = submitted.data?.character;
       if (character?.id) {
@@ -850,7 +914,7 @@ export function CreateWorkspace() {
                 <Field label="Age" hint={ageError || "18+ only"}>
                   <input
                     className="mt-2 w-full bg-transparent text-[18px] font-bold leading-6 outline-none"
-                    max={99}
+                    max={120}
                     min={18}
                     onChange={(event) => setIdentityField("age", Number(event.target.value))}
                     type="number"
@@ -918,33 +982,21 @@ export function CreateWorkspace() {
             {step === 2 && (
               <div className="grid gap-3" data-testid="create-step-soul">
                 <div>
-                  <h2 className="text-[18px] font-black text-white">Define who they are with you</h2>
+                  <h2 className="text-[18px] font-black text-white">Define who they are</h2>
                   <p className="mt-1 text-[13px] leading-5 text-[rgb(170,170,170)]">
                     These details become the character&apos;s stable chat persona, not just profile copy.
                   </p>
                 </div>
                 <Field
-                  hint="A one- or two-sentence profile shown to people who meet this character."
-                  label="Description"
+                  hint="A one- or two-sentence promise that defines what makes this character worth talking to."
+                  label="Character promise"
                 >
                   <textarea
                     className="mt-3 min-h-28 w-full rounded-[12px] border border-white/10 bg-[rgb(13,13,13)] p-4 text-[14px] font-medium leading-6 text-white outline-none"
+                    maxLength={1000}
                     onChange={(event) => setIdentityField("description", event.target.value)}
                     placeholder="A perceptive night-shift radio host who makes difficult conversations feel easy."
                     value={state.description}
-                  />
-                </Field>
-                <Field
-                  hint="This anchors the character's role with the user in every conversation."
-                  label="Relationship to you"
-                >
-                  <input
-                    className="mt-2 w-full bg-transparent text-[14px] font-semibold leading-6 text-white outline-none"
-                    onChange={(event) =>
-                      setIdentityField("relationshipArchetype", event.target.value)
-                    }
-                    placeholder="Trusted confidante and longtime friend"
-                    value={state.relationshipArchetype}
                   />
                 </Field>
                 <Field
@@ -953,6 +1005,7 @@ export function CreateWorkspace() {
                 >
                   <textarea
                     className="mt-3 min-h-20 w-full rounded-[12px] border border-white/10 bg-[rgb(13,13,13)] p-4 text-[14px] font-medium leading-6 text-white outline-none"
+                    maxLength={4000}
                     onChange={(event) => setIdentityField("firstMessage", event.target.value)}
                     placeholder="There you are. What has been on your mind tonight?"
                     value={state.firstMessage}
@@ -964,6 +1017,7 @@ export function CreateWorkspace() {
                 >
                   <textarea
                     className="mt-3 min-h-56 w-full rounded-[12px] border border-white/10 bg-[rgb(13,13,13)] p-4 font-mono text-[13px] font-medium leading-6 text-white outline-none"
+                    maxLength={24000}
                     onChange={(event) => setIdentityField("detailsMarkdown", event.target.value)}
                     placeholder={"## Personality and voice\nWarm, teasing, concise, emotionally attentive.\n\n## Background\nHow you met and what shaped this character."}
                     value={state.detailsMarkdown}
@@ -990,7 +1044,6 @@ export function CreateWorkspace() {
                       name: state.name,
                       age: state.age,
                       gender: state.gender,
-                      relationshipArchetype: state.relationshipArchetype,
                       characterPromise: state.description,
                       detailsMarkdown: state.detailsMarkdown,
                     })}
@@ -1387,12 +1440,12 @@ export function parseWizardDraft(value: unknown): WizardState | null {
       value.step < STEPS.length
         ? value.step
         : INITIAL.step,
-    name: draftString(value.name, 120),
+    name: draftString(value.name, 80),
     age:
       typeof value.age === "number" &&
       Number.isInteger(value.age) &&
       value.age >= 18 &&
-      value.age <= 99
+      value.age <= 120
         ? value.age
         : INITIAL.age,
     gender: draftString(value.gender, 80) || INITIAL.gender,
@@ -1400,8 +1453,7 @@ export function parseWizardDraft(value: unknown): WizardState | null {
     appearance: draftString(value.appearance, 4000),
     hair: draftString(value.hair, 2000),
     body: draftString(value.body, 2000),
-    description: draftString(value.description, 8000),
-    relationshipArchetype: draftString(value.relationshipArchetype, 500),
+    description: draftString(value.description, 1_000),
     detailsMarkdown:
       draftString(value.detailsMarkdown, 24_000) || templateDetailsMarkdown(value),
     firstMessage: draftString(value.firstMessage, 4000),
@@ -1435,14 +1487,10 @@ function normalizedTags(value: string) {
 }
 
 function requiredPersonaMessage(state: WizardState) {
-  const requirements: ReadonlyArray<[keyof WizardState, string]> = [
-    ["description", "Add a short character description before continuing."],
-    ["relationshipArchetype", "Define the character's relationship to you before continuing."],
-    ["firstMessage", "Write the character's first message before continuing."],
-  ];
-  for (const [key, message] of requirements) {
-    const value = state[key];
-    if (typeof value !== "string" || !value.trim()) return message;
-  }
+  if (!state.description.trim()) return "Write the character promise before continuing.";
+  if (state.description.length > 1_000) return "Character promise must be 1,000 characters or fewer.";
+  if (!state.firstMessage.trim()) return "Write the character's first message before continuing.";
+  if (state.firstMessage.length > 4_000) return "First message must be 4,000 characters or fewer.";
+  if (state.detailsMarkdown.length > 24_000) return "Additional details must be 24,000 characters or fewer.";
   return "";
 }

@@ -20,18 +20,25 @@ export type PendingAdminV2Contract = ContractEvidence & {
   readonly fixtureKey: string;
 };
 
-export type AdminV2ContractBinding = ExecutableAdminV2Contract | PendingAdminV2Contract;
+export type AdminV2ContractBinding =
+  ExecutableAdminV2Contract | PendingAdminV2Contract;
 
 const transportContracts = {
   none: z.undefined(),
   "path:id": z.object({ id: z.string().trim().min(1) }).strict(),
   "path:commandId": z.object({ commandId: z.string().trim().min(1) }).strict(),
-  "if-match": z.object({ ifMatch: z.coerce.number().int().positive() }).strict(),
-  "limit-query": z.object({ limit: z.coerce.number().int().min(1).max(200).default(50) }).strict(),
+  "if-match": z
+    .object({ ifMatch: z.coerce.number().int().positive() })
+    .strict(),
+  "limit-query": z
+    .object({ limit: z.coerce.number().int().min(1).max(200).default(50) })
+    .strict(),
 } as const satisfies Record<string, z.ZodType>;
 
-export const ADMIN_V2_PENDING_CONTRACTS = {
-} as const satisfies Record<string, ContractEvidence>;
+export const ADMIN_V2_PENDING_CONTRACTS = {} as const satisfies Record<
+  string,
+  ContractEvidence
+>;
 
 const bindingCache = new Map<string, ExecutableAdminV2Contract>();
 const fixtureOverrides: Readonly<Record<string, unknown>> = {
@@ -39,25 +46,6 @@ const fixtureOverrides: Readonly<Record<string, unknown>> = {
     requestId: "voice-request-fixture",
     confirmation: "RECLAIM VOICE voice-request-fixture",
     reason: "Recover an expired Voice worker lease",
-  },
-  characterQaRunCreateRequestSchema: {
-    entityVersion: 1,
-    checks: [
-      "explore_feed_card_desktop",
-      "explore_feed_card_mobile",
-      "character_detail_desktop",
-      "character_detail_mobile",
-      "opening_message",
-      "five_turn_conversation",
-      "chat_image",
-    ].map((key) => ({
-      key,
-      result: "passed",
-      evidenceRef: `evidence:${key}`,
-      comment: `${key} passed`,
-      fixDeepLink: "/admin/characters/fixture",
-    })),
-    reason: "Complete release QA fixture",
   },
   creativeRunCreateRequestSchema: {
     purpose: "feed",
@@ -95,13 +83,25 @@ const fixtureOverrides: Readonly<Record<string, unknown>> = {
   },
 };
 
-export function resolveAdminV2Contract(ref: string): AdminV2ContractBinding | null {
+export function resolveAdminV2Contract(
+  ref: string,
+): AdminV2ContractBinding | null {
   const { baseRef, requirements } = splitRequirements(ref);
-  const pending = (ADMIN_V2_PENDING_CONTRACTS as Readonly<Record<string, ContractEvidence>>)[baseRef];
+  const pending = (
+    ADMIN_V2_PENDING_CONTRACTS as Readonly<Record<string, ContractEvidence>>
+  )[baseRef];
   if (pending) return { kind: "pending", fixtureKey: baseRef, ...pending };
 
-  const transport = transportContracts[baseRef as keyof typeof transportContracts];
-  if (transport) return executableBinding(baseRef, transport, "transport", requirements, "packages/shared/src/admin/contract-registry.ts");
+  const transport =
+    transportContracts[baseRef as keyof typeof transportContracts];
+  if (transport)
+    return executableBinding(
+      baseRef,
+      transport,
+      "transport",
+      requirements,
+      "packages/shared/src/admin/contract-registry.ts",
+    );
 
   const candidate = adminV2ContractSchema(baseRef);
   if (!candidate) return null;
@@ -114,7 +114,9 @@ export function resolveAdminV2Contract(ref: string): AdminV2ContractBinding | nu
   );
 }
 
-export function requireExecutableAdminV2Contract(ref: string): ExecutableAdminV2Contract {
+export function requireExecutableAdminV2Contract(
+  ref: string,
+): ExecutableAdminV2Contract {
   const binding = resolveAdminV2Contract(ref);
   if (!binding || binding.kind === "pending") {
     throw new Error(`Admin v2 contract ${ref} is not executable`);
@@ -135,7 +137,9 @@ function executableBinding(
   try {
     valid = fixtureOverrides[fixtureKey] ?? validFixture(schema);
   } catch (error) {
-    throw new Error(`${fixtureKey}: ${error instanceof Error ? error.message : "fixture generation failed"}`);
+    throw new Error(
+      `${fixtureKey}: ${error instanceof Error ? error.message : "fixture generation failed"}`,
+    );
   }
   const binding: ExecutableAdminV2Contract = {
     kind,
@@ -156,7 +160,8 @@ function splitRequirements(ref: string) {
   const parts = ref.split("+");
   const baseRef = parts.shift() ?? ref;
   const requirements = parts.filter(
-    (part): part is "idempotency-key" | "if-match" => part === "idempotency-key" || part === "if-match",
+    (part): part is "idempotency-key" | "if-match" =>
+      part === "idempotency-key" || part === "if-match",
   );
   return { baseRef, requirements };
 }
@@ -181,13 +186,28 @@ function definition(schema: z.ZodType): ZodDef {
 }
 
 function validFixture(schema: z.ZodType, depth = 0): unknown {
-  if (depth > 30) throw new Error("Admin v2 fixture schema nesting exceeded 30 levels");
+  if (depth > 30)
+    throw new Error("Admin v2 fixture schema nesting exceeded 30 levels");
   const def = definition(schema);
-  if (["optional", "default", "prefault", "catch"].includes(def.type) && schema.safeParse(undefined).success) {
+  if (
+    ["optional", "default", "prefault", "catch"].includes(def.type) &&
+    schema.safeParse(undefined).success
+  ) {
     return undefined;
   }
   if (def.type === "nullable" && schema.safeParse(null).success) return null;
-  if (["optional", "nullable", "default", "prefault", "catch", "readonly", "nonoptional"].includes(def.type) && def.innerType) {
+  if (
+    [
+      "optional",
+      "nullable",
+      "default",
+      "prefault",
+      "catch",
+      "readonly",
+      "nonoptional",
+    ].includes(def.type) &&
+    def.innerType
+  ) {
     return validFixture(def.innerType, depth + 1);
   }
   if (def.type === "string") return stringFixture(schema);
@@ -213,7 +233,9 @@ function validFixture(schema: z.ZodType, depth = 0): unknown {
         if (schema.safeParse(refined).success) return refined;
       }
     }
-    throw new Error(`No structural positive fixture for object schema: ${JSON.stringify(candidate)}`);
+    throw new Error(
+      `No structural positive fixture for object schema: ${JSON.stringify(candidate)}`,
+    );
   }
   if (def.type === "array" && def.element) {
     const child = validFixture(def.element, depth + 1);
@@ -229,7 +251,9 @@ function validFixture(schema: z.ZodType, depth = 0): unknown {
     }
   }
   if (def.type === "tuple") {
-    const candidate = (def.items ?? []).map((item) => validFixture(item, depth + 1));
+    const candidate = (def.items ?? []).map((item) =>
+      validFixture(item, depth + 1),
+    );
     if (schema.safeParse(candidate).success) return candidate;
   }
   if (def.type === "record" || def.type === "map") return {};
@@ -237,11 +261,13 @@ function validFixture(schema: z.ZodType, depth = 0): unknown {
   if (def.type === "intersection" && def.left && def.right) {
     const left = validFixture(def.left, depth + 1);
     const right = validFixture(def.right, depth + 1);
-    const candidate = isRecord(left) && isRecord(right) ? { ...left, ...right } : left;
+    const candidate =
+      isRecord(left) && isRecord(right) ? { ...left, ...right } : left;
     if (schema.safeParse(candidate).success) return candidate;
   }
   if (def.type === "pipe" && def.in) return validFixture(def.in, depth + 1);
-  if (def.type === "lazy" && def.getter) return validFixture(def.getter(), depth + 1);
+  if (def.type === "lazy" && def.getter)
+    return validFixture(def.getter(), depth + 1);
   if (def.type === "unknown" || def.type === "any") return null;
   if (def.type === "undefined" || def.type === "void") return undefined;
   if (def.type === "null") return null;
@@ -250,19 +276,41 @@ function validFixture(schema: z.ZodType, depth = 0): unknown {
 
 function enumArrayFixtures(schema: z.ZodType): readonly unknown[][] {
   let def = definition(schema);
-  while (["optional", "nullable", "default", "prefault", "catch", "readonly", "nonoptional"].includes(def.type)) {
+  while (
+    [
+      "optional",
+      "nullable",
+      "default",
+      "prefault",
+      "catch",
+      "readonly",
+      "nonoptional",
+    ].includes(def.type)
+  ) {
     if (!def.innerType) return [];
     def = definition(def.innerType);
   }
   if (def.type !== "array" || !def.element) return [];
   let element = definition(def.element);
-  while (["optional", "nullable", "default", "prefault", "catch", "readonly", "nonoptional"].includes(element.type)) {
+  while (
+    [
+      "optional",
+      "nullable",
+      "default",
+      "prefault",
+      "catch",
+      "readonly",
+      "nonoptional",
+    ].includes(element.type)
+  ) {
     if (!element.innerType) return [];
     element = definition(element.innerType);
   }
   if (element.type !== "enum") return [];
   const values = Object.values(element.entries ?? {});
-  return Array.from({ length: values.length + 1 }, (_, length) => values.slice(0, length));
+  return Array.from({ length: values.length + 1 }, (_, length) =>
+    values.slice(0, length),
+  );
 }
 
 function stringFixture(schema: z.ZodType): string {
@@ -286,10 +334,17 @@ function stringFixture(schema: z.ZodType): string {
     "x".repeat(minLength),
   ];
   for (const candidate of candidates) {
-    if ((stringSchema.maxLength === null || stringSchema.maxLength === undefined || candidate.length <= stringSchema.maxLength) &&
-      schema.safeParse(candidate).success) return candidate;
+    if (
+      (stringSchema.maxLength === null ||
+        stringSchema.maxLength === undefined ||
+        candidate.length <= stringSchema.maxLength) &&
+      schema.safeParse(candidate).success
+    )
+      return candidate;
   }
-  throw new Error(`No positive string fixture for format ${stringSchema.format ?? "plain"}`);
+  throw new Error(
+    `No positive string fixture for format ${stringSchema.format ?? "plain"}`,
+  );
 }
 
 function numberFixture(schema: z.ZodType): number {
@@ -298,8 +353,12 @@ function numberFixture(schema: z.ZodType): number {
     readonly maxValue?: number | null;
     readonly isInt?: boolean;
   };
-  const min = Number.isFinite(numberSchema.minValue) ? numberSchema.minValue as number : -10;
-  const max = Number.isFinite(numberSchema.maxValue) ? numberSchema.maxValue as number : 10;
+  const min = Number.isFinite(numberSchema.minValue)
+    ? (numberSchema.minValue as number)
+    : -10;
+  const max = Number.isFinite(numberSchema.maxValue)
+    ? (numberSchema.maxValue as number)
+    : 10;
   const values = [0, 1, -1, min, max, Math.ceil(min), Math.floor(max)];
   for (const value of values) {
     const candidate = numberSchema.isInt ? Math.trunc(value) : value;

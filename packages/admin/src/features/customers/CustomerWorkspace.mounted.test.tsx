@@ -40,7 +40,7 @@ const customer360 = {
     cancelAtPeriodEnd: true,
     plan: { id: "plan-1", name: "Premium", billingPeriod: "monthly" },
   },
-  relationships: [],
+  recentChats: [],
   generations: [],
   ledger: [{ id: "ledger-1", delta: -1_500, balanceAfter: 12_345, reason: "generation_spend", sourceId: null, createdAt: "2026-08-10T00:00:00.000Z" }],
   cases: [],

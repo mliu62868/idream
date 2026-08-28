@@ -1,91 +1,26 @@
-// SPEC: chat/worker (design §10) — one process consuming every chat queue:
-// generate / Scene+relationship projection / outbox.deliver / inbox.consume / reconcile /
-// Single instance (writes local files). Graceful shutdown closes all.
-import type { Worker } from "bullmq";
-import {
-  CHAT_QUEUES,
-  chatGeneratePayloadSchema,
-  chatMemoryExtractPayloadSchema,
-} from "@idream/shared/contracts";
-import { runWorker } from "./queue.js";
+// Startup recovery for durable local AgentRuns. Admission executes immediately;
+// there is no Chat DB queue or product outbox.
+import { listIncompleteAgentRuns } from "./agent-run-store.js";
+import { startAgentRun } from "./agent-runner.js";
 import { logger } from "./logger.js";
-import {
-  processGenerateJob,
-  terminalizeGenerateJobFailure,
-} from "./generate.js";
-import { processMemoryExtract } from "./memory.js";
-import { deliverPendingOutbox } from "./outbox.js";
-import { consumeDurableInbox, reprocessPendingInbox } from "./inbox.js";
-import { reconcile } from "./reconcile.js";
-import { runtimeReadiness } from "./runtime-readiness.js";
 
-const RECONCILE_INTERVAL_MS = 30_000;
-
-// INVARIANT: provider readiness is turn admission. Durable convergence workers
-// run independently and retry against the concrete dependency that failed.
-async function admitWorkerJob(): Promise<void> {
-  if (!(await runtimeReadiness.refreshDependencies())) {
-    throw new Error("chat runtime is not ready");
-  }
-}
-
-export function startWorker(): { close: () => Promise<void> } {
-  const workers: Worker[] = [
-    runWorker(CHAT_QUEUES.generate, async (job) => {
-      const payload = chatGeneratePayloadSchema.parse(job.payload);
-      try {
-        await admitWorkerJob();
-        await processGenerateJob({
-          payload,
-          attemptsMade: job.attemptsMade,
-          maxAttempts: job.maxAttempts,
-        });
-      } catch (error) {
-        if (job.attemptsMade + 1 >= job.maxAttempts) {
-          await terminalizeGenerateJobFailure(payload).catch((terminalError) => {
-            logger.error(
-              { err: terminalError, assistantMessageId: payload.assistantMessageId },
-              "chat generation retry exhaustion terminalization failed",
-            );
-          });
-        }
-        throw error;
-      }
-    }, { concurrency: 2 }),
-
-    runWorker(CHAT_QUEUES.memoryExtract, async (job) => {
-      await processMemoryExtract(chatMemoryExtractPayloadSchema.parse(job.payload));
-    }, { concurrency: 1 }),
-
-    runWorker(CHAT_QUEUES.outboxDeliver, async () => {
-      await deliverPendingOutbox();
-    }, { concurrency: 1 }),
-
-    runWorker(CHAT_QUEUES.inboxConsume, async (job) => {
-      const receiptId = (job.payload as { receiptId?: unknown }).receiptId;
-      if (typeof receiptId !== "string" || receiptId.length === 0) {
-        throw new Error("chat inbox wake-up requires receiptId");
-      }
-      await consumeDurableInbox(receiptId);
-    }, { concurrency: 1 }),
-  ];
-
-  // Periodic convergence + housekeeping (single-instance, so timers are safe).
-  // reconcile()'s counts are the only signal that convergence is falling behind:
-  // a projection backlog or a requeue loop looks identical to a healthy pass
-  // unless the numbers are published. Logged every pass so a rising trend is
-  // visible before the affected users start reporting 500s.
-  const reconcileTimer = setInterval(() => {
-    reconcile()
-      .then((counts) => logger.info(counts, "reconcile pass"))
-      .catch((err) => logger.error({ err }, "reconcile failed"));
-  }, RECONCILE_INTERVAL_MS);
-  logger.info("chat/worker started");
-
+export function startWorker() {
+  let closed = false;
+  const recover = () => void listIncompleteAgentRuns()
+    .then((runs) => {
+      if (closed) return;
+      let recovered = 0;
+      for (const run of runs) if (startAgentRun(run.turnId, run.attempt)) recovered += 1;
+      if (recovered > 0) logger.info({ recovered }, "recovered incomplete AgentRuns");
+    })
+    .catch((error) => logger.error({ err: error }, "AgentRun recovery failed"));
+  recover();
+  const timer = setInterval(recover, 5_000);
+  timer.unref();
   return {
     async close() {
-      clearInterval(reconcileTimer);
-      await Promise.all(workers.map((w) => w.close()));
+      closed = true;
+      clearInterval(timer);
     },
   };
 }

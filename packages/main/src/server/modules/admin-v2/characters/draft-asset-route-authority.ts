@@ -6,7 +6,8 @@ export const characterDraftAssetPurposes = [
   "character_chat",
 ] as const;
 
-export type CharacterDraftAssetPurpose = (typeof characterDraftAssetPurposes)[number];
+export type CharacterDraftAssetPurpose =
+  (typeof characterDraftAssetPurposes)[number];
 
 export type DraftAssetRouteEntry = {
   readonly assetId: string;
@@ -20,7 +21,7 @@ export type DraftAssetRouteEntry = {
 
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
+    ? (value as Record<string, unknown>)
     : {};
 }
 
@@ -28,40 +29,52 @@ export function draftAssetRouteEntries(
   value: Prisma.JsonValue,
 ): Partial<Record<CharacterDraftAssetPurpose, DraftAssetRouteEntry>> {
   const source = record(value);
-  return Object.fromEntries(characterDraftAssetPurposes.flatMap((purpose) => {
-    const raw = source[purpose];
-    if (typeof raw === "string") {
-      return [[purpose, {
-        assetId: raw,
-        runId: null,
-        itemId: null,
-        reviewDecisionId: null,
-        generationJobId: null,
-        bootstrapIdentity: false,
-        generationRouteFingerprint: null,
-      }]];
-    }
-    const entry = record(raw);
-    if (typeof entry.assetId !== "string") return [];
-    return [[purpose, {
-      assetId: entry.assetId,
-      runId: typeof entry.runId === "string" ? entry.runId : null,
-      itemId: typeof entry.itemId === "string" ? entry.itemId : null,
-      reviewDecisionId:
-        typeof entry.reviewDecisionId === "string"
-          ? entry.reviewDecisionId
-          : null,
-      generationJobId:
-        typeof entry.generationJobId === "string"
-          ? entry.generationJobId
-          : null,
-      bootstrapIdentity: entry.bootstrapIdentity === true,
-      generationRouteFingerprint:
-        typeof entry.generationRouteFingerprint === "string"
-          ? entry.generationRouteFingerprint
-          : null,
-    }]];
-  }));
+  return Object.fromEntries(
+    characterDraftAssetPurposes.flatMap((purpose) => {
+      const raw = source[purpose];
+      if (typeof raw === "string") {
+        return [
+          [
+            purpose,
+            {
+              assetId: raw,
+              runId: null,
+              itemId: null,
+              reviewDecisionId: null,
+              generationJobId: null,
+              bootstrapIdentity: false,
+              generationRouteFingerprint: null,
+            },
+          ],
+        ];
+      }
+      const entry = record(raw);
+      if (typeof entry.assetId !== "string") return [];
+      return [
+        [
+          purpose,
+          {
+            assetId: entry.assetId,
+            runId: typeof entry.runId === "string" ? entry.runId : null,
+            itemId: typeof entry.itemId === "string" ? entry.itemId : null,
+            reviewDecisionId:
+              typeof entry.reviewDecisionId === "string"
+                ? entry.reviewDecisionId
+                : null,
+            generationJobId:
+              typeof entry.generationJobId === "string"
+                ? entry.generationJobId
+                : null,
+            bootstrapIdentity: entry.bootstrapIdentity === true,
+            generationRouteFingerprint:
+              typeof entry.generationRouteFingerprint === "string"
+                ? entry.generationRouteFingerprint
+                : null,
+          },
+        ],
+      ];
+    }),
+  );
 }
 
 // 只要 assetId 的读法：运营台的 project.draftAssetPack 与「有没有草稿图工作」都只关心
@@ -74,7 +87,8 @@ export function characterAssetPack(
     characterDraftAssetPurposes.flatMap((purpose) => {
       const entry = source[purpose];
       if (typeof entry === "string") return [[purpose, entry]];
-      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+      if (!entry || typeof entry !== "object" || Array.isArray(entry))
+        return [];
       const assetId = (entry as Record<string, unknown>).assetId;
       return typeof assetId === "string" ? [[purpose, assetId]] : [];
     }),
@@ -82,60 +96,45 @@ export function characterAssetPack(
 }
 
 /**
- * Draft selections remain immutable history when the global qualified route
- * advances. This projection only says whether each pointer can still authorize
- * the next QA/Release; it never clears or rewrites historical selections.
+ * SPEC: 运营位选择与图片的生产路线解耦；完整性只看三个用途是否都有素材。
+ * INTENT: 路线仍决定“还能不能继续生成”，但不让一次模型或工作流升级使已选运营图失效。
  */
 export function evaluateDraftAssetRouteAuthority(
   value: Prisma.JsonValue,
   currentRouteFingerprint: string | null,
 ) {
   const entries = draftAssetRouteEntries(value);
-  const selectedPurposes = characterDraftAssetPurposes.filter((purpose) => entries[purpose]);
-  const missingPurposes = characterDraftAssetPurposes.filter((purpose) => !entries[purpose]);
-  const invalidBootstrapPurposes = selectedPurposes.filter((purpose) =>
-    purpose !== "character_cover" && entries[purpose]?.bootstrapIdentity === true
+  const selectedPurposes = characterDraftAssetPurposes.filter(
+    (purpose) => entries[purpose],
   );
-  const stalePurposes = selectedPurposes.filter((purpose) => {
-    const entry = entries[purpose]!;
-    if (entry.bootstrapIdentity) return false;
-    return currentRouteFingerprint === null ||
-      entry.generationRouteFingerprint !== currentRouteFingerprint;
-  });
-  const routeCurrentByPurpose = Object.fromEntries(selectedPurposes.map((purpose) => [
-    purpose,
-    !stalePurposes.includes(purpose),
-  ])) as Partial<Record<CharacterDraftAssetPurpose, boolean>>;
+  const missingPurposes = characterDraftAssetPurposes.filter(
+    (purpose) => !entries[purpose],
+  );
+  const invalidBootstrapPurposes = selectedPurposes.filter(
+    (purpose) =>
+      purpose !== "character_cover" &&
+      entries[purpose]?.bootstrapIdentity === true,
+  );
+  const stalePurposes: CharacterDraftAssetPurpose[] = [];
+  const routeCurrentByPurpose = Object.fromEntries(
+    selectedPurposes.map((purpose) => [purpose, true]),
+  ) as Partial<Record<CharacterDraftAssetPurpose, boolean>>;
 
   return {
-    status: selectedPurposes.length === 0
-      ? "empty" as const
-      : stalePurposes.length === 0
-        ? "current" as const
-        : currentRouteFingerprint === null
-          ? "route_unavailable" as const
-          : "stale" as const,
+    status:
+      selectedPurposes.length === 0 ? ("empty" as const) : ("current" as const),
     currentRouteFingerprint,
     stalePurposes,
     missingPurposes,
     invalidBootstrapPurposes,
     recoveryPurpose: stalePurposes[0] ?? null,
     routeCurrentByPurpose,
-    qaReady:
-      missingPurposes.length === 0 &&
-      invalidBootstrapPurposes.length === 0 &&
-      stalePurposes.length === 0 &&
-      currentRouteFingerprint !== null,
-    qaBlockers: [
+    releaseReady:
+      missingPurposes.length === 0 && invalidBootstrapPurposes.length === 0,
+    releaseBlockers: [
       ...(missingPurposes.length > 0 ? ["draft_asset_pack_incomplete"] : []),
       ...(invalidBootstrapPurposes.length > 0
         ? ["draft_asset_bootstrap_scope_invalid"]
-        : []),
-      ...(currentRouteFingerprint === null
-        ? ["qualified_generation_route_missing"]
-        : []),
-      ...(stalePurposes.length > 0
-        ? ["draft_asset_generation_route_stale"]
         : []),
     ],
   };

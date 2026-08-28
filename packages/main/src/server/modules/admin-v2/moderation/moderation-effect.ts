@@ -1,13 +1,5 @@
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
-import {
-  MAIN_TO_CHAT_EVENTS,
-  characterModerationRemovalEventId,
-  characterModerationRemovedPayloadSchema,
-  characterModerationRestorationEventId,
-  characterModerationRestorationPayloadSchema,
-} from "@idream/shared/contracts";
-import { recordMainToChatEvent } from "@/processes/chat-outbox";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
@@ -266,36 +258,6 @@ async function applyCharacterModerationAction(
     targetId: characterId,
     moderationDecisionId,
   });
-  await recordCharacterRemoved(
-    db,
-    characterId,
-    moderationDecisionId,
-    previousModerationDecisionId,
-  );
-}
-
-async function recordCharacterRemoved(
-  db: ModerationDatabase,
-  characterId: string,
-  moderationDecisionId: string,
-  previousModerationDecisionId: string | null,
-) {
-  const payload = characterModerationRemovedPayloadSchema.parse({
-    version: 1,
-    binding: "moderation_decision",
-    characterId,
-    moderationDecisionId,
-    previousRemovalEventId: previousModerationDecisionId
-      ? characterModerationRemovalEventId(previousModerationDecisionId)
-      : null,
-  });
-  await recordMainToChatEvent({
-    eventId: characterModerationRemovalEventId(moderationDecisionId),
-    eventType: MAIN_TO_CHAT_EVENTS.characterRemoved,
-    aggregateType: "character",
-    aggregateId: characterId,
-    payload,
-  }, db);
 }
 
 async function restoreAppealTarget(
@@ -536,64 +498,7 @@ export async function restoreCanonicalAppealTarget(
     db,
     decision.id,
   );
-  if (
-    restored.targetRestored &&
-    (decision.report.targetType === "character" ||
-      decision.report.targetType === "feed_item") &&
-    restored.restoredTargetId
-  ) {
-    await recordCharacterModerationRestoration(db, {
-      appealId: appeal.id,
-      characterId: restored.restoredTargetId,
-      moderationDecisionId: decision.id,
-    });
-  }
   return restored;
-}
-
-async function recordCharacterModerationRestoration(
-  db: ModerationDatabase,
-  input: {
-    appealId: string;
-    characterId: string;
-    moderationDecisionId: string;
-  },
-) {
-  const removalEventId = characterModerationRemovalEventId(
-    input.moderationDecisionId,
-  );
-  const removal = await db.mainOutboxEvent.findUnique({
-    where: { id: removalEventId },
-    select: { eventType: true, aggregateType: true, aggregateId: true },
-  });
-  // INVARIANT: an older aggregate-only removal cannot authorize a successful
-  // Appeal. Returning success here would approve Main while Chat remains
-  // archived, so the whole Appeal transaction must stay open for manual work.
-  if (
-    !removal ||
-    removal.eventType !== MAIN_TO_CHAT_EVENTS.characterRemoved ||
-    removal.aggregateType !== "character" ||
-    removal.aggregateId !== input.characterId
-  ) {
-    throw Errors.conflict(
-      "Character removal has no deterministic Chat restoration authority",
-    );
-  }
-  const payload = characterModerationRestorationPayloadSchema.parse({
-    version: 1,
-    binding: "removal_event",
-    appealId: input.appealId,
-    characterId: input.characterId,
-    moderationDecisionId: input.moderationDecisionId,
-    removalEventId,
-  });
-  await recordMainToChatEvent({
-    eventId: characterModerationRestorationEventId(input.appealId),
-    eventType: MAIN_TO_CHAT_EVENTS.characterModerationRestorationRequested,
-    aggregateType: "character",
-    aggregateId: input.characterId,
-    payload,
-  }, db);
 }
 
 // Feed item ids are encoded as `character:<id>` (see ourdream feed handlers).

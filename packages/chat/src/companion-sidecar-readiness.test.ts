@@ -6,6 +6,7 @@ import {
   COMPANION_RUNTIME_PROTOCOL_VERSION,
 } from "@idream/shared/chat/companion-runtime";
 import {
+  CompanionSidecarUnavailableError,
   probeCompanionSidecar,
   verifiedCompanionProfileDigest,
   verifiedCompanionRuntimeVersions,
@@ -89,5 +90,29 @@ describe("companion sidecar readiness", () => {
       expectedModel: "other-model",
       fetchImpl: async () => Response.json(ready()),
     })).rejects.toThrow(/provider profile/);
+  });
+
+  it.each([
+    {
+      name: "is not listening yet",
+      fetchImpl: vi.fn(async () => {
+        throw new TypeError("fetch failed", {
+          cause: new Error("connect ECONNREFUSED 127.0.0.1:3101"),
+        });
+      }),
+    },
+    {
+      name: "is still warming",
+      fetchImpl: vi.fn(async () => new Response(null, { status: 503 })),
+    },
+  ])("classifies the sidecar as temporarily unavailable when it $name", async ({ fetchImpl }) => {
+    await expect(probeCompanionSidecar({
+      baseUrl: "http://127.0.0.1:3101",
+      token: "probe-token",
+      expectedProvider: "mock",
+      expectedBaseUrl: "http://127.0.0.1:8061/v1",
+      expectedModel: "local-model",
+      fetchImpl: fetchImpl as typeof fetch,
+    })).rejects.toBeInstanceOf(CompanionSidecarUnavailableError);
   });
 });

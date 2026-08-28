@@ -48,7 +48,7 @@ type CharacterVideoPermissions = {
   readonly review: boolean;
 };
 
-type RunCommittedMutation = <T>(input: {
+export type RunCommittedMutation = <T>(input: {
   readonly action: string;
   readonly commit: () => Promise<T>;
   readonly afterRefresh?: () => void;
@@ -138,13 +138,13 @@ export function characterVideoSourceOptions(
 
 function videoExecutionLabel(item: CreativeRunDetail["items"][number] | null) {
   if (!item) return "Waiting for generation details";
-  if (item.asset) return "Video ready for review";
+  if (item.asset) return "Video ready";
   return {
     dispatching: "Preparing video generation",
     provider_queued: "Waiting for video capacity",
     generating: "Generating video",
     finalizing: "Saving generated video",
-    ready: "Video ready for review",
+    ready: "Video ready",
     failed: "Video generation failed",
   }[item.executionState];
 }
@@ -286,12 +286,14 @@ export function CharacterVideoStudio({
   data,
   onCreateImage,
   permissions,
+  productionOnly = false,
   runCommittedMutation,
 }: {
   readonly actorId: string;
   readonly data: CharacterWorkspaceDetail;
   readonly onCreateImage: () => void;
   readonly permissions: CharacterVideoPermissions;
+  readonly productionOnly?: boolean;
   readonly runCommittedMutation: RunCommittedMutation;
 }) {
   const { locale, t } = useAdminI18n();
@@ -451,7 +453,7 @@ export function CharacterVideoStudio({
           brief,
           consistencyMode: "balanced",
           priority: "normal",
-          reason: "Create one reviewable Character video candidate",
+          reason: "Create one Character video for the role library",
         });
     try {
       if (
@@ -851,7 +853,7 @@ export function CharacterVideoStudio({
     <section aria-labelledby="character-video-title" className="space-y-5">
       {shownError ? <p className="rounded-lg bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">{t(shownError)}</p> : null}
       {message ? <p className="rounded-lg bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]" role="status">{t(message)}</p> : null}
-      {reviewIntent ? (
+      {!productionOnly && reviewIntent ? (
         <div
           className="flex flex-col gap-3 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3 text-sm sm:flex-row sm:items-center sm:justify-between"
           role="status"
@@ -932,7 +934,7 @@ export function CharacterVideoStudio({
             </div>
           )}
 
-          {selectedItem?.asset ? (
+          {!productionOnly && selectedItem?.asset ? (
             <details className="mt-4 border-t border-[var(--ad-border)] pt-3" open={!selectedItem.review}>
               <summary className="cursor-pointer text-sm font-semibold">{t("Video review")}</summary>
               <div className="mt-4 max-w-2xl">
@@ -1017,8 +1019,10 @@ export function CharacterVideoStudio({
                   : t("Estimated cost unavailable")}
               </p>
               <p>
-                {estimate?.averageDurationMs !== null &&
-                estimate?.averageDurationMs !== undefined
+                {estimate &&
+                estimate.completedSampleCount > 0 &&
+                estimate.averageDurationMs !== null &&
+                estimate.averageDurationMs !== undefined
                   ? t("Estimated duration: {duration} · {days}-day average · {count} completed run", {
                       duration: formatDuration(estimate.averageDurationMs),
                       days: estimate.windowDays,

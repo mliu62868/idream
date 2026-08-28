@@ -85,22 +85,21 @@ Safety rules:
 
 ### 3.3 Chat
 
-Chat product data is owned by Chat Service. The main site may proxy these APIs and consume chat outbox events, but it does not directly write chat sessions, messages, relationship state, or workspace scope. Generic companion memory is owned by official igrep inside the DSH sidecar; no iDream item table/API exists.
+Chat product data is owned by Main PostgreSQL. Browser APIs enter Main; `packages/chat` receives an immutable execution snapshot and stores only local AgentRun evidence. Generic companion memory is derived from committed Turns by official igrep; it is not a product-message database.
 
 | 实体 | 关键字段 |
 | --- | --- |
-| `chat_sessions` | `id`, `user_id`, `character_id`, `title`, `status`, `memory_enabled`, `context_revision`, `last_message_at`, `created_at` |
-| `messages` | `id`, `session_id`, `role`, `content`, `model`, `status`, `token_count`, `safety_status`, `created_at` |
-| `message_versions` | `id`, `message_id`, `content`, `model`, `created_at`, `selected` |
-| `chat_usage` | `id`, `user_id`, `session_id`, `messages_used`, `period_start`, `period_end` |
-| Chat file projection | versioned Scene、relationship evidence/state、boundaries；不含 generic memory items |
-| DSH workspace | `(user_id, character_id)` derived scope 下的 official igrep canonical memory；private attempt 临时隔离 |
+| `RecentChat` | `sessionId`, `userId`, `characterId`, `status`, `memoryEnabled`, `contextRevision`, immutable content/Release pin |
+| `ChatTurn` | user/assistant message identity、content/status、attempt、Scene、model/usage、terminal evidence、idempotency receipt |
+| `ChatTurnAttachment` | current-attempt image/video effect、Generation/Media 引用、delivery status |
+| AgentRun files | `input.json`, append-only `events.jsonl`, immutable `terminal.json`；执行证据，不用于历史展示 |
+| DSH workspace | normal canonical memory 与 private isolated memory；均从已提交 Turn 派生 |
 
 Enums:
 
-- `chat_sessions.status`: `active`, `archived`, `deleted`
-- `messages.role`: `user`, `assistant`, `system`, `tool`
-- `messages.status`: `pending`, `sent`, `blocked`, `failed`, `deleted`
+- session status: `active`, `archived`
+- user status: `sent`, `blocked`
+- assistant status: `pending`, `generating`, `sent`, `blocked`, `failed`, `cancelled`
 
 ### 3.4 Generation & Media
 
@@ -524,11 +523,9 @@ Rules:
 
 | Queue | Producer | Consumer | Notes |
 | --- | --- | --- | --- |
-| `moderation.input` | Chat Service, creator, generation | moderation service | Blocks high-severity content before model/provider call |
+| `moderation.input` | Main creator/chat/generation | moderation service | Blocks high-severity content before model/provider call |
 | `age.verification.webhook` | verification provider | compliance worker | Updates verification status idempotently |
 | `ai.image.generate` (`sourceType=character_preview`) | creator API via Generation dispatch Outbox | Gen image worker | Generates creator preview through the same Attempt/terminal authority as all images |
-| `chat.generate` | Chat Service API | Chat Service worker | Internal Chat queue; writes assistant message versions, usage, memory, relationship, and outbox |
-| `chat.outbox.deliver` | Chat Service DB | Chat Service worker | Delivers chat events to main-site consumers idempotently |
 | `generation.image` | generation API | image worker | P0 worker |
 | `generation.video` | generation API | video worker | P1 worker unless required earlier |
 | `moderation.output` | model workers | moderation service | Releases or blocks generated assets/messages |

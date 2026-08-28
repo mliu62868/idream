@@ -161,7 +161,7 @@ test.describe("public route smoke", () => {
       page.getByRole("heading", { name: "What should a character card include?" }),
     ).toBeVisible();
     await expect(page.getByText("A strong character card is a compact profile")).toBeVisible();
-    await expect(page.getByText("Name, age, role, and relationship to the user.")).toBeVisible();
+    await expect(page.getByText("Name, age, role, and a clear character promise.")).toBeVisible();
 
     const articleText = await page.locator("article").innerText();
     expect(articleText).not.toContain(

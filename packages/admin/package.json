@@ -4,17 +4,18 @@
   "private": true,
   "description": "iDream Admin Console — independently deployed internal control-plane service.",
   "engines": {
-    "node": ">=22"
+    "node": ">=22",
+    "bun": "1.4.0"
   },
   "scripts": {
-    "dev": "PORT=3001 node scripts/start-development.cjs",
-    "build": "node ../../scripts/build-next-standalone.mjs packages/admin",
-    "start": "next start",
+    "dev": "PORT=3001 bun scripts/start-development.cjs",
+    "build": "bun ../../scripts/build-next-standalone.mjs packages/admin",
+    "start": "bun --bun next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "check": "npm run lint && npm run typecheck && npm run build",
+    "check": "bun run lint && bun run typecheck && bun run build",
     "test": "vitest run",
-    "probe:sentry": "tsx src/probe-sentry.ts"
+    "probe:sentry": "bun src/probe-sentry.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.3.0",

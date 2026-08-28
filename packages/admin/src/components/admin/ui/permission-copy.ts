@@ -48,8 +48,6 @@ const PERMISSION_LABEL: Record<AdminPermissionKey, string> = {
   "character.project.read": "Viewing character projects",
   "character.project.write": "Editing character projects",
   "character.release.read": "Viewing character releases",
-  "character.release.propose": "Proposing a character release",
-  "character.release.review": "Reviewing a character release",
   "character.release.publish": "Publishing a character release",
   "character.performance.read": "Viewing character performance",
   "creative.run.read": "Viewing creative runs",

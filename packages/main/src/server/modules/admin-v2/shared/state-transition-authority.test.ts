@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   ADMIN_CASE_STATES,
-  CHARACTER_PROJECT_PHASE_STATES,
   CHARACTER_RELEASE_STATES,
   CHARACTER_SERVING_STATES,
   CONTROL_PLANE_COMMAND_STATES,
@@ -16,7 +15,6 @@ import {
   GENERATION_REQUEST_STATES,
   INCIDENT_STATES,
   isAdminCaseTransitionAllowed,
-  isCharacterProjectPhaseTransitionAllowed,
   isCharacterReleaseTransitionAllowed,
   isCharacterServingTransitionAllowed,
   isControlPlaneCommandTransitionAllowed,
@@ -41,26 +39,9 @@ interface MatrixCase {
 
 const matrices: readonly MatrixCase[] = [
   {
-    name: "Character Project phase",
-    states: CHARACTER_PROJECT_PHASE_STATES,
-    allowed: {
-      idea: ["planned", "producing", "qa", "live_management", "retired"],
-      planned: ["producing", "qa", "retired"],
-      producing: ["qa", "retired"],
-      qa: ["qa", "producing", "launch_ready", "retired"],
-      launch_ready: ["producing", "live_management", "retired"],
-      live_management: ["producing", "qa", "retired"],
-      retired: [],
-    },
-    permits: isCharacterProjectPhaseTransitionAllowed,
-  },
-  {
     name: "Character Release",
     states: CHARACTER_RELEASE_STATES,
     allowed: {
-      draft: [],
-      validating: [],
-      in_review: ["withdrawn", "approved"],
       approved: ["published"],
       published: ["superseded", "withdrawn"],
       superseded: [],

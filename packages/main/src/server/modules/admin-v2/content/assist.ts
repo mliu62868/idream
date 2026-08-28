@@ -50,7 +50,7 @@ export async function generateCharacterDraft(
       {
         role: "system",
         content:
-          "Write concise Markdown details for an ADULT (18+) AI companion based on the user's seed. Use only useful sections such as Personality, Voice, Background, Boundaries, or Dialogue examples. Do not repeat name, age, gender, relationship, or the short character promise. Output Markdown only.",
+          "Write concise Markdown details for an ADULT (18+) AI companion based on the user's seed. Use only useful sections such as Personality, Voice, Background, Boundaries, or Dialogue examples. Do not repeat name, age, gender, or the short character promise. Output Markdown only.",
       },
       { role: "user", content: context },
     ],

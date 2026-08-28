@@ -32,6 +32,12 @@ export function chatStreamTerminalErrorMessage(payload: unknown): string {
     typeof payload === "object" && payload !== null && !Array.isArray(payload)
       ? payload as Record<string, unknown>
       : {};
+  if (record.code === "reply_cancelled") {
+    return "Reply stopped. Regenerate for a new one.";
+  }
+  if (record.code === "igrep_memory_failed") {
+    return "Memory is temporarily unavailable. Please try again.";
+  }
   return record.code === "provider_output_limit"
     ? "Reply was cut short. Regenerate to try again."
     : "Reply failed to load. Please try again.";
@@ -68,6 +74,7 @@ export function chatStreamLatestReplyFailed(
 ) {
   const latest = messages.at(-1);
   if (!latest) return false;
+  if (latest.status === "cancelled") return false;
   return chatStreamMessageIsTerminal(latest) && !latest.content.trim();
 }
 

@@ -567,8 +567,8 @@ describe("public API runtime contracts", () => {
             ],
             editModels: [
               {
-                id: "character-image-variation-darkbeast",
-                label: "Dark Beast · Identity Focus",
+                id: "identity-source-edit",
+                label: "Identity and source edit",
                 costMultiplier: 1.2,
                 entitlement: null,
                 maxCount: 1,
@@ -617,7 +617,7 @@ describe("public API runtime contracts", () => {
       }).image.editModels,
     ).toEqual([
       expect.objectContaining({
-        id: "character-image-variation-darkbeast",
+        id: "identity-source-edit",
         referenceMode: "identity_source",
       }),
     ]);
@@ -961,7 +961,7 @@ describe("public API runtime contracts", () => {
             prompt: null,
             liked: false,
             imageEditModelIds: [
-              "character-image-variation-darkbeast",
+              "identity-source-edit",
             ],
           },
         ],
@@ -970,7 +970,7 @@ describe("public API runtime contracts", () => {
 
     expect(
       parseWorkspaceMediaResponse(payload).items[0]?.imageEditModelIds,
-    ).toEqual(["character-image-variation-darkbeast"]);
+    ).toEqual(["identity-source-edit"]);
     expect(() =>
       parseWorkspaceMediaResponse({
         ...payload,

@@ -136,59 +136,6 @@ and at zero rollout. A successful artifact smoke proves runtime compatibility;
 it does not switch the serving default or establish character-consistency
 qualification.
 
-### Dark Beast FLUX.2 Klein comparison candidate
-
-`darkbeast-flux2-klein-9b-multi-reference` is an opt-in, two-reference
-ComfyUI workflow for Civitai version `2740209` (`DBKleinV2 BFS`). Despite the
-collection slug, this exact version is based on FLUX.2 Klein 9B, not Krea 2.
-It is registered separately from Qwen Image Edit and is not a default route.
-
-Install these files on the target ComfyUI runner before executing it:
-
-- `models/diffusion_models/darkBeastINT8Convrot2_dbkleinv2BFS.safetensors`
-- `models/text_encoders/qwen_3_8b_fp8mixed.safetensors`
-- `models/vae/flux2-vae.safetensors`
-
-Set `COMFYUI_MODEL_ROOT` to that runner's absolute `models` directory before
-running `packages/main`'s database seed. It defaults to the local
-`/Users/kk/ComfyUI-Shared/models` layout. The release-readiness probe streams
-the checkpoint once under `--require-ready` and requires SHA-256
-`B20B6F2744E152FD3EFA2638E88A5FEAB478C778EE25C81B183FD80E03A099C3`,
-so a different file with the same name cannot pass the exact-version gate.
-
-The descriptor uses native `VAEEncode → ReferenceLatent` chains for one
-identity image and one source image. Optional LoRA and SeedVR2 nodes from the
-author's showcase workflow are intentionally excluded so later A/B output
-differences remain attributable to Dark Beast versus Qwen Image Edit. Its
-width and height controls update both `EmptyFlux2LatentImage` and
-`Flux2Scheduler`, keeping explicit orientation requests aligned with Qwen.
-
-Use the same identity image, source image, prompt, and fixed smoke seed for the
-first comparison:
-
-```bash
-cd packages/gen
-GEN_IMAGE_PROVIDER=backend \
-  COMFYUI_API_URL=http://127.0.0.1:8188 \
-  bun run smoke:backend -- \
-  --model darkbeast-flux2-klein-9b-bfs \
-  --ref /path/to/identity.png --ref-role identity_reference \
-  --ref /path/to/source.png --ref-role source_image \
-  --out /tmp/darkbeast-klein-comparison.png
-
-GEN_IMAGE_PROVIDER=backend \
-  COMFYUI_API_URL=http://127.0.0.1:8188 \
-  bun run smoke:backend -- \
-  --model qwen-image-edit-multi-reference \
-  --ref /path/to/identity.png --ref-role identity_reference \
-  --ref /path/to/source.png --ref-role source_image \
-  --out /tmp/qwen-image-edit-comparison.png
-```
-
-The seeded model profile remains `draft`, disabled, and at zero rollout until
-the exact assets are installed on a compatible runner and a real artifact
-smoke plus identity/intent review passes.
-
 ### Pointing at Draw Things
 
 Install the official `draw-things-cli`, set `DRAWTHINGS_CLI` when it is not on

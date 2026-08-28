@@ -11,7 +11,7 @@ import { SCOPES, STARTER_GENDERS, STARTER_STYLES, STARTERS_LIST, starterPayload,
 const EMPTY_DRAFT: StarterDraft = {
   name: "", summary: "", gender: "", style: "",
   scope: "built_in", tags: "", sortOrder: "0",
-  creativeBrief: "", archetype: "", relationship: "", detailsMarkdown: "",
+  detailsMarkdown: "",
   firstMessage: "",
   appearanceNotes: "", visualBrief: "", reason: "Create starter template draft",
 };
@@ -49,7 +49,6 @@ export function StartersNewPage() {
       const existing = tagsFromText(draft.tags);
       patch({
         summary,
-        creativeBrief: seed.trim(),
         detailsMarkdown: data.advancedDetails.detailsMarkdown,
         firstMessage: data.advancedDetails.firstMessage,
         visualBrief: data.advancedDetails.visualBrief,
@@ -140,15 +139,6 @@ export function StartersNewPage() {
         </Field>
       </FormSection>
       <FormSection title={t("Reusable persona")}>
-        <Field full label={t("Creative brief")}>
-          <textarea className={TEXTAREA_CLASS} onChange={(e) => patch({ creativeBrief: e.target.value })} value={draft.creativeBrief} />
-        </Field>
-        <Field label={t("Archetype")}>
-          <input className={INPUT_CLASS} onChange={(e) => patch({ archetype: e.target.value })} value={draft.archetype} />
-        </Field>
-        <Field label={t("Relationship")}>
-          <input className={INPUT_CLASS} onChange={(e) => patch({ relationship: e.target.value })} value={draft.relationship} />
-        </Field>
         <Field full label={t("Additional details · Markdown (optional)")}>
           <textarea className={TEXTAREA_CLASS} onChange={(e) => patch({ detailsMarkdown: e.target.value })} value={draft.detailsMarkdown} />
         </Field>

@@ -1,6 +1,6 @@
 # Character Soul Runtime
 
-状态：已实现（schema v2）
+状态：已实现（schema v3）
 权威：Shared 编译器 + 不可变 `CharacterContentVersion` + Release / Serving pin
 
 ## 1. 产品结论
@@ -12,9 +12,8 @@ Soul 只解决一件事：让模型稳定地知道“这个角色是谁”。
 1. 名字
 2. 年龄
 3. 性别
-4. 与用户的关系
-5. 角色承诺
-6. 扩展信息（可选 Markdown）
+4. 角色承诺
+5. 扩展信息（可选 Markdown）
 
 开场白独立保存，因为它是会话入口，不是角色人格正文。外观、场景、用户关系、用户记忆和运行时策略也不属于 Soul。
 
@@ -27,7 +26,6 @@ interface CharacterSoul {
   name: string;
   age: number; // 18...120
   gender: "female" | "male" | "trans";
-  relationshipArchetype: string;
   characterPromise: string;
   detailsMarkdown: string; // optional; empty string means absent
 }
@@ -37,10 +35,10 @@ interface CharacterSoul {
 
 ```ts
 interface CharacterSoulSnapshot {
-  schemaVersion: 2;
+  schemaVersion: 3;
   soul: CharacterSoul;
   compiled: {
-    compilerVersion: "character-soul-2";
+    compilerVersion: "character-soul-3";
     systemPrompt: string;
     fingerprint: string;
     estimatedTokens: number;
@@ -62,7 +60,6 @@ You are Mara. Speak and act consistently with this character.
 ## Basic information
 - Age: 31
 - Gender: female
-- Relationship: old friend
 - Character: A precise confidante who notices what others miss.
 
 ## Additional details
@@ -87,7 +84,7 @@ Chat 可以在外层添加更高优先级的运行时策略、用户边界和逐
 用户/Admin 表单
   -> Shared compileCharacterSoul
   -> immutable CharacterContentVersion
-       personaSnapshot  = schema v2 Soul + compiled bytes
+       personaSnapshot  = schema v3 Soul + compiled bytes
        openingSnapshot  = firstMessage
        appearanceSnapshot = visual identity
   -> CharacterRevision
@@ -104,15 +101,16 @@ Chat 可以在外层添加更高优先级的运行时策略、用户边界和逐
 
 ```json
 {
-  "relationshipArchetype": "old friend",
   "detailsMarkdown": "## Voice\nDry warmth.",
   "firstMessage": "You took your time.",
   "soulFingerprint": "...",
-  "compilerVersion": "character-soul-2"
+  "compilerVersion": "character-soul-3"
 }
 ```
 
 数据库已有 JSON 列足够承载该结构，不新增表、不新增字段、不做双写。
+
+创建中的 `CharacterDraft.advancedDetails` 还保存当前 `age`，供刷新或跨设备续编；草稿提交只读取这份服务端事实，不再要求页面重复提交年龄和简介。提交成功后草稿记录已创建的角色 ID，因此 `GET /character-drafts/current` 不会把已完成草稿再次恢复为待编辑状态。
 
 ## 5. 页面与后台
 
@@ -127,11 +125,11 @@ Starter 模板和“一句话生成角色”也只产出 `detailsMarkdown`，不
 
 ## 6. 历史数据
 
-schema v0/v1 只保留读取适配器：
+schema v0/v1/v2 只保留读取适配器：
 
-- 已固定会话继续使用历史快照中原有的 `compiled.systemPrompt` 字节。
-- Admin 打开历史版本时，旧人格维度会合并成一段 `detailsMarkdown` 供编辑。
-- 一旦保存新版本，只写 schema v2。
+- 历史结构先完整校验，再投影成不含 Relationship 的 schema v3 运行时文本。
+- Admin 打开历史版本时，旧人格维度会合并成一段 `detailsMarkdown`；旧关系字段直接丢弃。
+- 一旦保存新版本，只写 schema v3。
 - 新接口严格拒绝已删除的旧字段，避免旧结构继续扩散。
 
 这不是双写兼容；它只是不可变历史的读取责任。
@@ -141,7 +139,7 @@ schema v0/v1 只保留读取适配器：
 发布必须验证：
 
 - Soul 基本信息完整且年龄有效。
-- schema v2 的 compiler 版本、渲染文本和 fingerprint 一致。
+- schema v3 的 compiler 版本、渲染文本和 fingerprint 一致。
 - 开场白存在。
 - QA / canary 证据绑定相同的 ContentVersion、fingerprint 和 compilerVersion。
 - Serving 与 Chat 固定到同一 Release / ContentVersion。
@@ -155,6 +153,7 @@ schema v0/v1 只保留读取适配器：
 - 不让模型自动补齐缺失基本事实。
 - 不从 mutable `Character` 覆盖已固定 Soul。
 - 不把外观、Scene、Relationship 或用户 Memory 塞进 Soul。
+- 不在 Chat 建立 Relationship 阶段、分数、摘要、徽标或专用 API；连续性由 Scene、聊天记录与 Memory 提供。
 - 不为可能的未来扩展预留插件层。
 
 当产品真的需要一个新的独立权威时，先证明它有不同生命周期和不同消费者；否则继续写进 `detailsMarkdown`。

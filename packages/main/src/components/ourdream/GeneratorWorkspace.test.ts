@@ -83,15 +83,15 @@ describe("generator model selection authority", () => {
         referenceMode: "identity_source" as const,
       },
       {
-        id: "character-image-variation-darkbeast",
-        label: "Dark Beast identity edit",
+        id: "identity-source-edit",
+        label: "Identity and source edit",
         referenceMode: "identity_source" as const,
       },
     ];
 
     expect(
       generatorImageEditModelOptions(editModels, [
-        "character-image-variation-darkbeast",
+        "identity-source-edit",
       ]),
     ).toEqual([
       editModels[2],
@@ -339,7 +339,7 @@ describe("generator exact quote authority", () => {
         {
           mediaId: "media/with spaces",
           consistencyMode: "balanced",
-          model: "character-image-variation-darkbeast",
+          model: "identity-source-edit",
           outputCount: 1,
         },
         fetcher,
@@ -352,10 +352,10 @@ describe("generator exact quote authority", () => {
     ]);
     expect(requests[0]?.body).toMatchObject({
       consistencyMode: "balanced",
-      model: "character-image-variation-darkbeast",
+      model: "identity-source-edit",
     });
     expect(requests[1]?.body).toMatchObject({
-      model: "character-image-variation-darkbeast",
+      model: "identity-source-edit",
       outputCount: 1,
       orientation: quote.defaultOrientation,
       quoteAuthority: {

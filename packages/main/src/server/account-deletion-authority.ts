@@ -11,10 +11,7 @@ import type { BlobStore } from "@/server/providers/types";
 import { providers } from "@/server/providers";
 import { prisma } from "@/server/lib/db";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
-import {
-  transitionCharacterProject,
-  updateRetiredCharacterProjectMetadata,
-} from "@/server/modules/admin-v2/characters/transition";
+import { updateCharacterProjectMetadata } from "@/server/modules/admin-v2/characters/transition";
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 
@@ -201,7 +198,9 @@ export async function acceptChatAccountErasureCompletion(
     dispatched?.eventType !== MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2 ||
     dispatched.aggregateType !== "user" ||
     dispatched.aggregateId !== input.payload.userId ||
-    !["pending", "delivered"].includes(dispatched.status) ||
+    // Chat projects its completion before returning the durable ingest ACK, so
+    // the exact request is legitimately processing during this callback.
+    !["pending", "processing", "delivered"].includes(dispatched.status) ||
     dispatched.nextRunAt.getTime() > now.getTime() ||
     !requestEnvelope ||
     !requestPayload ||
@@ -867,13 +866,8 @@ async function hardDeleteMainAccountAuthority(
     : [];
   const attemptIds = attempts.map((row) => row.id);
   const projects = await tx.characterProject.findMany({
-    where: {
-      OR: [
-        { ownerId: input.userId },
-        ...(characterIds.length > 0 ? [{ characterId: { in: characterIds } }] : []),
-      ],
-    },
-    select: { id: true, characterId: true, phase: true },
+    where: { characterId: { in: characterIds } },
+    select: { id: true, characterId: true },
   });
   const projectIds = projects.map((row) => row.id);
   const releases = projectIds.length > 0
@@ -923,7 +917,6 @@ async function hardDeleteMainAccountAuthority(
       data: { currentContentVersionId: null, imageAssetId: null },
     });
     await tx.characterServing.deleteMany({ where: { characterId: { in: characterIds } } });
-    await tx.characterQaRun.deleteMany({ where: { characterId: { in: characterIds } } });
     await tx.characterReleaseEvent.deleteMany({ where: { characterId: { in: characterIds } } });
     await tx.characterFunnelDaily.deleteMany({ where: { characterId: { in: characterIds } } });
     await tx.characterEconomicsFact.deleteMany({ where: { characterId: { in: characterIds } } });
@@ -961,28 +954,14 @@ async function hardDeleteMainAccountAuthority(
       if (!retainedProjectIds.has(project.id)) continue;
       const anonymizedProject = {
         characterId: `erased:${sha256(project.characterId)}`,
-        ownerId: null,
-        audience: {},
-        hypothesis: null,
-        differentiation: null,
-        successCriteria: {},
-        plannedLaunchAt: null,
         draftImageAssetId: null,
         draftAssetPack: {},
         activeKey: null,
       } satisfies Prisma.CharacterProjectUncheckedUpdateManyInput;
-      if (project.phase === "retired") {
-        await updateRetiredCharacterProjectMetadata(tx, {
-          projectId: project.id,
-          data: anonymizedProject,
-        });
-      } else {
-        await transitionCharacterProject(tx, {
-          projectId: project.id,
-          to: "retired",
-          data: anonymizedProject,
-        });
-      }
+      await updateCharacterProjectMetadata(tx, {
+        projectId: project.id,
+        data: anonymizedProject,
+      });
     }
     const deletableProjectIds = projectIds.filter(
       (projectId) => !retainedProjectIds.has(projectId),

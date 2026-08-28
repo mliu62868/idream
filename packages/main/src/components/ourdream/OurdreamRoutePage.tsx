@@ -459,7 +459,7 @@ const articleContentByPath: Record<
         body:
           "A strong character card is a compact profile, not a lore dump. It gives enough detail for a roleplay model to hold the same voice and situation while leaving room for the user to steer the scene.",
         bullets: [
-          "Name, age, role, and relationship to the user.",
+          "Name, age, role, and a clear character promise.",
           "Personality traits that affect dialogue, not just appearance.",
           "Opening scenario, first message, and the emotional hook.",
           "Visual notes that should carry into generation prompts.",
@@ -492,7 +492,7 @@ const articleContentByPath: Record<
       {
         question: "What should a character card include?",
         answer:
-          "Include identity, relationship context, personality, scenario, first message, and a few visual anchors. Those fields are enough to make chat and generation feel connected.",
+          "Include identity, a clear character promise, optional personality or scenario notes, a first message, and a few visual anchors. That is enough for a focused first version.",
       },
       {
         question: "Do character cards replace the Create flow?",
@@ -513,7 +513,7 @@ const articleContentByPath: Record<
       {
         title: "Overview",
         body:
-          "Start by deciding the user's relationship to the companion, then write the traits that should show up in the first five chat turns.",
+          "Start with the character promise, then write the few traits that should show up in the first five chat turns.",
         bullets: [
           "Define the user role before writing the opening.",
           "Choose a voice pattern the model can repeat.",

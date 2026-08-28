@@ -13,6 +13,7 @@ import { safetyDocuments } from "../src/lib/ourdream-safety-data";
 import {
   officialCharacterSeeds,
   officialFeedbackItems,
+  resolveOfficialColdStartPersonaWrite,
 } from "../src/lib/official-cold-start-content";
 import { ensureOfficialEditorialCatalogQualification } from "../src/server/modules/ourdream/public-catalog-qualification";
 
@@ -30,27 +31,6 @@ const OPS_USER_ID = "seed-ops-user";
 const ANALYST_USER_ID = "seed-analyst-user";
 const COMFYUI_MODEL_ROOT =
   process.env.COMFYUI_MODEL_ROOT ?? "/Users/kk/ComfyUI-Shared/models";
-const DARKBEAST_BFS_FLUX2_MODEL_PATH = path.join(
-  COMFYUI_MODEL_ROOT,
-  "diffusion_models",
-  "darkBeastINT8Convrot2_dbkleinv2BFS.safetensors",
-);
-const DARKBEAST_BFS_FLUX2_TEXT_ENCODER_PATH = path.join(
-  COMFYUI_MODEL_ROOT,
-  "text_encoders",
-  "qwen_3_8b_fp8mixed.safetensors",
-);
-const DARKBEAST_BFS_FLUX2_VAE_PATH = path.join(
-  COMFYUI_MODEL_ROOT,
-  "vae",
-  "flux2-vae.safetensors",
-);
-const DARKBEAST_BFS_FLUX2_WORKFLOW_PATH = fileURLToPath(
-  new URL(
-    "../../gen/workflows/darkbeast-flux2-klein-9b-multi-reference.json",
-    import.meta.url,
-  ),
-);
 const REDMIX3_FP8_MODEL_PATH = path.join(
   COMFYUI_MODEL_ROOT,
   "diffusion_models",
@@ -72,141 +52,6 @@ const REDMIX3_WORKFLOW_PATH = fileURLToPath(
     import.meta.url,
   ),
 );
-
-function darkBeastComparisonProfileData() {
-  return {
-    profileKey: "darkbeast-flux2-klein-bfs-comparison",
-    label: "Dark Beast FLUX.2 Klein 9B BFS comparison",
-    mode: "image",
-    runner: "comfyui",
-    pipelineModel: "darkbeast-flux2-klein-9b-bfs",
-    workflowKey: "darkbeast-flux2-klein-9b-multi-reference",
-    sourceModelPath: DARKBEAST_BFS_FLUX2_MODEL_PATH,
-    convertedModelPath: null,
-    modelFormat: "safetensors",
-    runnerConfig: {
-      diffusionModelPath: DARKBEAST_BFS_FLUX2_MODEL_PATH,
-      textEncoderPath: DARKBEAST_BFS_FLUX2_TEXT_ENCODER_PATH,
-      vaePath: DARKBEAST_BFS_FLUX2_VAE_PATH,
-      workflowPath: DARKBEAST_BFS_FLUX2_WORKFLOW_PATH,
-      apiModelId: "darkbeast-flux2-klein-9b-bfs",
-      templateIntent: "image_edit_identity_source_comparison",
-      baseModel: "Flux.2 Klein 9B",
-      civitaiModelId: 2242173,
-      civitaiVersionId: 2740209,
-      civitaiVersionName: "DBKleinV2 BFS",
-      civitaiAutoV2: "B20B6F2744",
-      civitaiSha256:
-        "B20B6F2744E152FD3EFA2638E88A5FEAB478C778EE25C81B183FD80E03A099C3",
-      verificationStatus: "workflow_registered_runtime_assets_missing",
-      comparisonBaseline: {
-        modelId: "qwen-image-edit-multi-reference",
-        workflowKey: "qwen-image-edit-multi-reference",
-      },
-      workflow: {
-        kind: "flux2_klein_native_multi_reference",
-        source: "https://civitai.com/api/v1/model-versions/2740453",
-        identityReferenceRole: "identity_reference",
-        sourceReferenceRole: "source_image",
-        sampler: "euler",
-        scheduler: "flux2",
-        steps: 5,
-        cfgScale: 1,
-        notes:
-          "The comparison descriptor uses two native ReferenceLatent chains without optional BFS LoRA or SeedVR2 post-processing, so model behavior remains attributable during Qwen Image Edit A/B.",
-      },
-      componentStatus: {
-        diffusionModel: {
-          status: "configured",
-          path: DARKBEAST_BFS_FLUX2_MODEL_PATH,
-        },
-        qwenTextEncoder: {
-          status: "configured",
-          path: DARKBEAST_BFS_FLUX2_TEXT_ENCODER_PATH,
-        },
-        flux2Vae: {
-          status: "configured",
-          path: DARKBEAST_BFS_FLUX2_VAE_PATH,
-        },
-        comfyWorkflow: {
-          status: "registered",
-          path: DARKBEAST_BFS_FLUX2_WORKFLOW_PATH,
-        },
-      },
-      requiredComponents: [
-        "darkBeastINT8Convrot2_dbkleinv2BFS.safetensors",
-        "qwen_3_8b_fp8mixed.safetensors",
-        "flux2-vae.safetensors",
-        "ComfyUI 0.28+ native ReferenceLatent workflow",
-      ],
-      capabilities: {
-        textToImage: false,
-        stableSeed: true,
-        referenceImages: true,
-        initImage: true,
-        lora: false,
-      },
-    },
-    defaultWidth: 832,
-    defaultHeight: 1216,
-    allowedOrientations: ["4:5"],
-    steps: 5,
-    sampler: "euler",
-    scheduler: "flux2",
-    cfgScale: 1,
-    costMultiplier: 1.2,
-    requiredEntitlement: null,
-    maxCount: 1,
-    concurrencyLimit: 1,
-    enabled: false,
-    rolloutPercent: 0,
-    version: 1,
-    status: "draft",
-    dryRunSummary: {
-      sampleCount: 0,
-      successRate: 0,
-      failureMode: "runtime_assets_not_verified",
-      testedAt: "2026-07-19",
-      notes:
-        "The exact Civitai 2740209 checkpoint is FLUX.2 Klein 9B, not Krea 2. Its two-reference descriptor is registered for an identity+source A/B against qwen-image-edit-multi-reference. Keep disabled at zero rollout until the exact model, Qwen 8B encoder, and FLUX.2 VAE are installed on a compatible runner and a real artifact smoke passes.",
-    },
-    publishedAt: null,
-  } satisfies Prisma.GenerationModelProfileUncheckedUpdateInput;
-}
-
-function darkBeastUserImageEditProfileData() {
-  const candidate = darkBeastComparisonProfileData();
-  return {
-    ...candidate,
-    profileKey: "character-image-variation-darkbeast",
-    label: "Dark Beast · Identity Focus",
-    runnerConfig: {
-      ...candidate.runnerConfig,
-      verificationStatus: "runtime_verified_mps",
-      publicSelection: {
-        surface: "generator_image_edit",
-        referenceMode: "identity_source",
-        explicitOnly: true,
-      },
-    },
-    enabled: true,
-    rolloutPercent: 100,
-    status: "active",
-    dryRunSummary: {
-      sampleCount: 1,
-      successRate: 1,
-      p95LatencyMs: 116_500,
-      testedAt: "2026-07-19",
-      smokeOutputPath:
-        "/Users/kk/ComfyUI-Shared/output/idream_darkbeast_flux2_klein_multi_00001_.png",
-      smokeOutputSha256:
-        "be3f9252c37b9d203d4e4eb98b51d5a1e57e6c5de183a6944e54063b12f59f5a",
-      notes:
-        "Verified on ComfyUI 0.28.0 with Apple MPS at 832x1216, 5 Euler steps. Published only as an explicit identity-plus-source image-edit choice; automatic routing remains unchanged.",
-    },
-    publishedAt: new Date("2026-07-24T00:00:00.000Z"),
-  } satisfies Prisma.GenerationModelProfileUncheckedUpdateInput;
-}
 
 function redMix3ComparisonProfileData() {
   return {
@@ -571,8 +416,10 @@ async function seedTags() {
   }
 }
 
-async function seedCharacters() {
-  for (const card of officialCharacterSeeds) {
+async function seedCharacters(
+  cards: readonly (typeof officialCharacterSeeds)[number][] = officialCharacterSeeds,
+) {
+  for (const card of cards) {
     const mediaAssetId = `seed-image-${card.id}`;
     const age = parseAge(card.age);
     const tags = inferredTagSlugs(card);
@@ -580,12 +427,12 @@ async function seedCharacters() {
       `## Personality\n${card.personality}`,
       `## Voice\n${card.tone}`,
       `## Background\n${card.backstory}`,
+      `## Scenario\n${card.setup}`,
       card.exampleDialogue.length > 0
         ? `## Dialogue examples\n${card.exampleDialogue.map((line) => `- ${line}`).join("\n")}`
         : "",
     ].filter(Boolean).join("\n\n");
     const personaDetails: Prisma.InputJsonObject = {
-      relationshipArchetype: card.relationship,
       detailsMarkdown,
       firstMessage: card.firstMessage,
     };
@@ -598,7 +445,6 @@ async function seedCharacters() {
       name: card.title,
       age,
       gender: "female",
-      relationshipArchetype: card.relationship,
       characterPromise: card.description,
       detailsMarkdown,
     });
@@ -618,7 +464,11 @@ async function seedCharacters() {
         select: {
           advancedDetails: true,
           appearance: true,
-          relationship: true,
+          serving: {
+            select: {
+              currentRelease: { select: { legacy: true } },
+            },
+          },
           systemPrompt: true,
         },
       }),
@@ -635,7 +485,6 @@ async function seedCharacters() {
       existingAdvancedDetails.provenance,
     );
     const hasExistingStructuredPersona =
-      Boolean(existingCharacter?.relationship?.trim()) &&
       [
         "detailsMarkdown",
         "firstMessage",
@@ -655,9 +504,17 @@ async function seedCharacters() {
       ...(originalOwnerId ? { originalOwnerId } : {}),
       ownership: "platform_official",
     };
+    const personaWrite = resolveOfficialColdStartPersonaWrite({
+      currentReleaseLegacy:
+        existingCharacter?.serving?.currentRelease?.legacy,
+      seedAdvancedDetails: personaDetails,
+      existingAdvancedDetails,
+      compiledSystemPrompt: systemPrompt,
+      existingSystemPrompt: existingCharacter?.systemPrompt,
+      existingPersonaComplete: hasExistingStructuredPersona,
+    });
     const officialAdvancedDetails: Prisma.InputJsonObject = {
-      ...personaDetails,
-      ...existingAdvancedDetails,
+      ...personaWrite.advancedDetails,
       provenance: {
         ...existingProvenance,
         seedSource: "src/lib/official-cold-start-content.ts",
@@ -695,13 +552,7 @@ async function seedCharacters() {
         creatorId: SYSTEM_USER_ID,
         style: card.style,
         appearance: officialAppearance,
-        relationship:
-          existingCharacter?.relationship?.trim() || card.relationship,
-        systemPrompt:
-          hasExistingStructuredPersona &&
-          existingCharacter?.systemPrompt?.trim()
-            ? existingCharacter.systemPrompt
-            : systemPrompt,
+        systemPrompt: personaWrite.systemPrompt,
         advancedDetails: officialAdvancedDetails,
       },
       create: {
@@ -716,7 +567,6 @@ async function seedCharacters() {
         source: "official",
         style: card.style,
         gender: "female",
-        relationship: card.relationship,
         imageAssetId: mediaAssetId,
         vivid: card.vivid ?? false,
         appearance: officialAppearance,
@@ -767,8 +617,10 @@ async function seedCharacters() {
   }
 }
 
-async function seedOfficialCatalogQualifications() {
-  for (const card of officialCharacterSeeds) {
+async function seedOfficialCatalogQualifications(
+  cards: readonly (typeof officialCharacterSeeds)[number][] = officialCharacterSeeds,
+) {
+  for (const card of cards) {
     const currentRelease = await prisma.character.findUnique({
       where: { id: card.id },
       select: {
@@ -1331,30 +1183,6 @@ async function seedAdminControlPlane() {
     });
   }
 
-  if (!existingProfileKeys.has("darkbeast-flux2-klein-bfs-comparison")) {
-    const profileData = darkBeastComparisonProfileData();
-    await prisma.generationModelProfile.upsert({
-      where: { id: "seed-profile-sdcpp-darkbeast-krea2-img2img-v1" },
-      update: profileData,
-      create: {
-        id: "seed-profile-sdcpp-darkbeast-krea2-img2img-v1",
-        ...profileData,
-      },
-    });
-  }
-
-  if (!existingProfileKeys.has("character-image-variation-darkbeast")) {
-    const profileData = darkBeastUserImageEditProfileData();
-    await prisma.generationModelProfile.upsert({
-      where: { id: "seed-profile-darkbeast-user-image-edit-v1" },
-      update: profileData,
-      create: {
-        id: "seed-profile-darkbeast-user-image-edit-v1",
-        ...profileData,
-      },
-    });
-  }
-
   if (!existingProfileKeys.has("redcraft-krea2-redmix3-comparison")) {
     const profileData = redMix3ComparisonProfileData();
     await prisma.generationModelProfile.upsert({
@@ -1906,6 +1734,23 @@ async function seedPolicies() {
 }
 
 async function main() {
+  const officialCharacterId =
+    process.env.IDREAM_SEED_OFFICIAL_CHARACTER_ID?.trim();
+  if (officialCharacterId) {
+    const card = officialCharacterSeeds.find(
+      (candidate) => candidate.id === officialCharacterId,
+    );
+    if (!card) {
+      throw new Error(
+        `Unknown official Character seed: ${officialCharacterId}`,
+      );
+    }
+    // SPEC: Operators may refresh one cold-start Character without replaying
+    // unrelated catalog, billing, preset, or control-plane seed mutations.
+    await seedCharacters([card]);
+    await seedOfficialCatalogQualifications([card]);
+    return;
+  }
   await seedUsers();
   await seedTags();
   await seedCharacters();

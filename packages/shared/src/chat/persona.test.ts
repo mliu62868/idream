@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   compileCharacterSoul,
-  companionRole,
   legacySoulDetailsMarkdown,
   loadCharacterSoulSnapshot,
   looksLikeMockChatResponse,
@@ -11,7 +10,6 @@ const minimalSoulDraft = {
   name: "Melissa Burke",
   age: 38,
   gender: "female",
-  relationshipArchetype: "best friend's mother",
   characterPromise: "A perceptive confidante who challenges easy answers.",
   detailsMarkdown: [
     "## Personality and voice",
@@ -116,13 +114,13 @@ describe("CharacterSoul", () => {
     if (!first.ok) throw new Error("expected Soul compilation to succeed");
 
     expect(first.snapshot).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       soul: minimalSoulDraft,
-      compiled: { compilerVersion: "character-soul-2" },
+      compiled: { compilerVersion: "character-soul-3" },
     });
     expect(first.snapshot.compiled.systemPrompt).toBe(first.renderedMarkdown);
     expect(first.renderedMarkdown).toContain("# Melissa Burke — Character Soul");
-    expect(first.renderedMarkdown).toContain("- Relationship: best friend's mother");
+    expect(first.renderedMarkdown).not.toContain("Relationship:");
     expect(first.renderedMarkdown).toContain("## Additional details");
     expect(first.renderedMarkdown).toContain("## Personality and voice");
     expect(first.renderedMarkdown).not.toContain("_(not authored)_");
@@ -145,7 +143,6 @@ describe("CharacterSoul", () => {
       name: " ",
       age: 16,
       gender: "female",
-      relationshipArchetype: "",
       characterPromise: "",
       personality: "this deleted field must not rescue the draft",
       detailsMarkdown: "",
@@ -156,12 +153,11 @@ describe("CharacterSoul", () => {
     expect(result.diagnostics.map((item) => item.code)).toEqual(expect.arrayContaining([
       "soul_name_required",
       "soul_age_invalid",
-      "soul_relationship_required",
       "soul_character_promise_required",
     ]));
   });
 
-  it("rejects deleted authoring fields even when every v2 field is valid", () => {
+  it("rejects deleted authoring fields even when every v3 field is valid", () => {
     const result = compileCharacterSoul({
       ...minimalSoulDraft,
       personality: "This must be migrated explicitly, never dropped.",
@@ -204,7 +200,7 @@ describe("CharacterSoul", () => {
     ]) expect(markdown).toContain(value);
   });
 
-  it("loads v2 compiled bytes without recompiling and rejects tampering", () => {
+  it("loads v3 compiled bytes without recompiling and rejects tampering", () => {
     const compiled = compileCharacterSoul(minimalSoulDraft);
     if (!compiled.ok) throw new Error("expected Soul compilation to succeed");
 
@@ -222,7 +218,7 @@ describe("CharacterSoul", () => {
     expect(loadCharacterSoulSnapshot(compiled.snapshot)).toEqual(compiled);
   });
 
-  it("recomputes the v2 prompt budget when loading immutable bytes", () => {
+  it("recomputes the v3 prompt budget when loading immutable bytes", () => {
     const compiled = compileCharacterSoul({
       ...minimalSoulDraft,
       detailsMarkdown: "word ".repeat(6_100),
@@ -242,18 +238,18 @@ describe("CharacterSoul", () => {
     }));
   });
 
-  it("keeps historical v1 prompt bytes pinned while projecting old dimensions into one Markdown field", () => {
+  it("verifies historical v1 bytes but removes Relationship from the Chat projection", () => {
     const loaded = loadCharacterSoulSnapshot(historicalV1Snapshot);
 
     expect(loaded.ok).toBe(true);
     if (!loaded.ok) throw new Error("historical v1 Soul should load");
-    expect(loaded.snapshot.schemaVersion).toBe(1);
-    expect(loaded.snapshot.compiled.systemPrompt).toBe(historicalV1Snapshot.compiled.systemPrompt);
+    expect(loaded.snapshot.schemaVersion).toBe(3);
+    expect(loaded.snapshot.compiled.systemPrompt).not.toBe(historicalV1Snapshot.compiled.systemPrompt);
+    expect(loaded.snapshot.compiled.systemPrompt).not.toContain("Relationship");
     expect(loaded.snapshot.soul).toMatchObject({
       name: "Historical Mira",
       age: 29,
       gender: "female",
-      relationshipArchetype: "trusted companion",
       characterPromise: "A precise observatory keeper.",
     });
     expect(loaded.snapshot.soul.detailsMarkdown).toContain("## Personality");
@@ -262,7 +258,7 @@ describe("CharacterSoul", () => {
     expect(loaded.snapshot.soul.detailsMarkdown).toContain("The observatory windows are blue.");
   });
 
-  it("preserves complete schemaVersion 0 pinned prompts and rejects incomplete legacy snapshots", () => {
+  it("verifies complete schemaVersion 0 snapshots and projects them without Relationship", () => {
     const legacy = loadCharacterSoulSnapshot({
       name: "Alexa Reeves",
       age: 27,
@@ -278,8 +274,9 @@ describe("CharacterSoul", () => {
 
     expect(legacy.ok).toBe(true);
     if (!legacy.ok) throw new Error("complete legacy snapshot should load");
-    expect(legacy.snapshot.schemaVersion).toBe(0);
-    expect(legacy.snapshot.compiled.systemPrompt).toBe("PINNED LEGACY PROMPT — DO NOT RECOMPILE");
+    expect(legacy.snapshot.schemaVersion).toBe(3);
+    expect(legacy.snapshot.compiled.systemPrompt).not.toBe("PINNED LEGACY PROMPT — DO NOT RECOMPILE");
+    expect(legacy.snapshot.compiled.systemPrompt).not.toContain("Relationship");
     expect(legacy.snapshot.soul.detailsMarkdown).toContain("Bold and emotionally perceptive.");
     expect(legacy.diagnostics).toContainEqual(expect.objectContaining({
       code: "legacy_snapshot_loaded",
@@ -301,7 +298,7 @@ describe("CharacterSoul", () => {
 
   it("fails closed for an unsupported future Soul schema", () => {
     const result = loadCharacterSoulSnapshot({
-      schemaVersion: 3,
+      schemaVersion: 4,
       systemPrompt: "A future runtime owns these bytes.",
     });
     expect(result.ok).toBe(false);
@@ -313,11 +310,6 @@ describe("CharacterSoul", () => {
 });
 
 describe("chat persona helpers", () => {
-  it("does not treat creator handles as companion roles", () => {
-    expect(companionRole("@creator")).toBe("AI companion");
-    expect(companionRole("confidante")).toBe("confidante");
-  });
-
   it("detects mock/template chat responses", () => {
     expect(looksLikeMockChatResponse("Mock Launch Probe reply: hello")).toBe(true);
     expect(looksLikeMockChatResponse("Mock probe response: hello")).toBe(true);

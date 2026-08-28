@@ -592,7 +592,6 @@ export interface ChatServiceProbeEvidence {
       status?: number;
       assistantMessageId?: string;
       authorityPinned?: boolean;
-      relationshipUnchanged?: boolean;
       dsh?: ChatProbeDshEvidence | null;
       error?: string | null;
     } | null;
@@ -614,9 +613,7 @@ export interface ChatServiceProbeEvidence {
     cleanup?: {
       ok?: boolean;
       status?: number;
-      relationshipDeleted?: boolean;
-      relationshipsDeleted?: number;
-      relationshipsGone?: boolean;
+      memoryCleared?: boolean;
       sessionDeleted?: boolean;
       sessionGone?: boolean;
       error?: string | null;
@@ -746,7 +743,6 @@ const chatServiceProbeEvidenceSchema: z.ZodType<ChatServiceProbeEvidence> = z.ob
       ...chatProbeOperationShape,
       assistantMessageId: optionalText,
       authorityPinned: flag,
-      relationshipUnchanged: flag,
       dsh: nullableObject(chatProbeDshEvidenceShape),
     }),
     blockedInput: nullableObject({ ...chatProbeOperationShape, status_: nullableText }),
@@ -757,9 +753,7 @@ const chatServiceProbeEvidenceSchema: z.ZodType<ChatServiceProbeEvidence> = z.ob
     }),
     cleanup: nullableObject({
       ...chatProbeOperationShape,
-      relationshipDeleted: flag,
-      relationshipsDeleted: optionalCount,
-      relationshipsGone: flag,
+      memoryCleared: flag,
       sessionDeleted: flag,
       sessionGone: flag,
     }),

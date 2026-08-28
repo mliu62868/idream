@@ -32,7 +32,7 @@ describe("main to chat durable outbox", () => {
   it("derives the single durable ingest endpoint from the required Chat service URL", () => {
     expect(() => resolveChatDurableIngestUrl(undefined)).toThrow("CHAT_SERVICE_URL");
     expect(resolveChatDurableIngestUrl("https://chat.internal/")).toBe(
-      "https://chat.internal/internal/events/ingest",
+      "https://chat.internal/internal/events/account-deletion-v2/ingest",
     );
     expect(resolveChatDurableIngestUrl(
       "https://chat.internal/",
@@ -45,7 +45,8 @@ describe("main to chat durable outbox", () => {
   it("keeps the row pending on ingest failure and delivers after durable ACK", async () => {
     await recordMainToChatEvent({
       eventId,
-      eventType: MAIN_TO_CHAT_EVENTS.entitlementUpdated,
+      eventType: MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2,
+      schemaVersion: 2,
       aggregateType: "user",
       aggregateId: "user-1",
       payload: { userId: "user-1" },
@@ -142,7 +143,7 @@ describe("main to chat durable outbox", () => {
     await expect(dispatchPendingChatEvents(100, async () => {
       await expect(prisma.mainOutboxEvent.findUniqueOrThrow({
         where: { id: eventId },
-      })).resolves.toMatchObject({ status: "pending" });
+      })).resolves.toMatchObject({ status: "processing", attempts: 1 });
       completionProjected = true;
     })).resolves.toEqual({ delivered: 1, failed: 0 });
 
@@ -152,10 +153,11 @@ describe("main to chat durable outbox", () => {
     })).resolves.toMatchObject({ status: "delivered" });
   });
 
-  it("does not let a late failure regress an event after durable ACK", async () => {
+  it("leases one event to one reconciler and never double-delivers it", async () => {
     await recordMainToChatEvent({
       eventId,
-      eventType: MAIN_TO_CHAT_EVENTS.entitlementUpdated,
+      eventType: MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2,
+      schemaVersion: 2,
       aggregateType: "user",
       aggregateId: "user-1",
       payload: { userId: "user-1" },
@@ -165,31 +167,34 @@ describe("main to chat durable outbox", () => {
       data: { attempts: 7, nextRunAt: new Date(0) },
     });
 
-    let releaseFailure!: () => void;
-    const failureEntered = new Promise<void>((resolve) => {
-      releaseFailure = resolve;
+    let releaseDelivery!: () => void;
+    const deliveryEntered = new Promise<void>((resolve) => {
+      releaseDelivery = resolve;
     });
     const acknowledged = dispatchPendingChatEvents(100, async (event) => {
-      if (event.sourceEventId === eventId) await failureEntered;
+      if (event.sourceEventId === eventId) await deliveryEntered;
     });
-    const lateFailure = dispatchPendingChatEvents(100, async (event) => {
-      if (event.sourceEventId !== eventId) return;
-      releaseFailure();
-      await waitForOutboxStatus("delivered");
-      throw new Error("late transport failure");
+    await waitForOutboxStatus("processing");
+    const competingDeliver = vi.fn(async () => {});
+    await expect(dispatchPendingChatEvents(100, competingDeliver)).resolves.toEqual({
+      delivered: 0,
+      failed: 0,
     });
+    expect(competingDeliver).not.toHaveBeenCalled();
+    releaseDelivery();
 
-    await Promise.all([acknowledged, lateFailure]);
+    await acknowledged;
     expect(await prisma.mainOutboxEvent.findUnique({ where: { id: eventId } })).toMatchObject({
       status: "delivered",
-      attempts: 7,
+      attempts: 8,
     });
   });
 
-  it("lets a durable ACK repair a concurrent retry-exhausted failure", async () => {
+  it("reclaims an expired processing lease without accepting the stale owner", async () => {
     await recordMainToChatEvent({
       eventId,
-      eventType: MAIN_TO_CHAT_EVENTS.entitlementUpdated,
+      eventType: MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2,
+      schemaVersion: 2,
       aggregateType: "user",
       aggregateId: "user-1",
       payload: { userId: "user-1" },
@@ -199,22 +204,21 @@ describe("main to chat durable outbox", () => {
       data: { attempts: 7, nextRunAt: new Date(0) },
     });
 
-    let releaseSuccess!: () => void;
-    const successEntered = new Promise<void>((resolve) => {
-      releaseSuccess = resolve;
+    await prisma.mainOutboxEvent.update({
+      where: { id: eventId },
+      data: {
+        status: "processing",
+        leaseToken: "expired-owner",
+        leaseExpiresAt: new Date(0),
+      },
     });
-    const failed = dispatchPendingChatEvents(100, async (event) => {
-      if (event.sourceEventId !== eventId) return;
-      await successEntered;
-      throw new Error("transport failure");
-    });
-    const acknowledged = dispatchPendingChatEvents(100, async (event) => {
-      if (event.sourceEventId !== eventId) return;
-      releaseSuccess();
-      await waitForOutboxStatus("failed");
-    });
+    const delivered = vi.fn(async () => {});
 
-    await Promise.all([failed, acknowledged]);
+    await expect(dispatchPendingChatEvents(100, delivered)).resolves.toEqual({
+      delivered: 1,
+      failed: 0,
+    });
+    expect(delivered).toHaveBeenCalledOnce();
     expect(await prisma.mainOutboxEvent.findUnique({ where: { id: eventId } })).toMatchObject({
       status: "delivered",
       attempts: 8,

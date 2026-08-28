@@ -236,9 +236,6 @@ describe("Character image Creative Run authority", () => {
       data: {
         id: projectId,
         characterId,
-        phase: "producing",
-        audience: {},
-        successCriteria: ["Identity remains stable"],
         activeKey: `character-image-create:${characterId}`,
       },
     });

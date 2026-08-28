@@ -1,4 +1,7 @@
-import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
+import {
+  LEGACY_MAIN_TO_CHAT_EVENTS,
+  MAIN_TO_CHAT_EVENTS,
+} from "@idream/shared/contracts";
 
 type MainToChatBacklogDb = {
   mainOutboxEvent: {
@@ -16,7 +19,12 @@ export async function inspectMainToChatFailedBacklog(
 ) {
   const failed = await db.mainOutboxEvent.count({
     where: {
-      eventType: { in: Object.values(MAIN_TO_CHAT_EVENTS) },
+      eventType: {
+        in: [
+          ...Object.values(MAIN_TO_CHAT_EVENTS),
+          ...Object.values(LEGACY_MAIN_TO_CHAT_EVENTS),
+        ],
+      },
       status: "failed",
     },
   });

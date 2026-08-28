@@ -16,7 +16,7 @@ export const TODAY_STATUS_BY_DOMAIN: Record<TodaySourceType, readonly TodaySourc
   admin_case: ["new", "triaged", "in_progress", "waiting", "reopened"],
   ops_incident: ["detected", "triaged", "mitigating", "monitoring"],
   control_plane_command: ["accepted", "running", "verifying", "failed"],
-  character_release: ["draft", "validating", "in_review", "approved"],
+  character_release: ["approved"],
   creative_run: ["active"],
   collaboration_mention: ["active"],
 };

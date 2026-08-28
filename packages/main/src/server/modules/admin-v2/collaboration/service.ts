@@ -16,7 +16,6 @@ import { canonicalJsonHash, requireIdempotencyKey } from "@/server/modules/admin
 import { effectivePermissions } from "@/server/admin/effective-permissions";
 
 const targetDescriptors: Record<CollaborationTargetType, { read: AdminPermissionKey; write: AdminPermissionKey; exists: (id: string) => Promise<unknown> }> = {
-  character_project: { read: "character.project.read", write: "character.project.write", exists: (id) => prisma.characterProject.findUnique({ where: { id }, select: { id: true } }) },
   creative_run: { read: "creative.run.read", write: "creative.run.write", exists: (id) => prisma.contentProductionBatch.findUnique({ where: { id }, select: { id: true } }) },
   case: { read: "case.read", write: "case.assign", exists: (id) => prisma.adminCase.findUnique({ where: { id }, select: { id: true } }) },
   incident: { read: "ops.incident.read", write: "ops.incident.manage", exists: (id) => prisma.opsIncident.findUnique({ where: { id }, select: { id: true } }) },
@@ -45,7 +44,7 @@ function asRecord(value: Prisma.JsonValue | null): Record<string, unknown> {
 
 type AuthorityDb = Pick<
   Prisma.TransactionClient,
-  "adminCase" | "characterProject" | "contentProductionBatch" | "opsIncident"
+  "adminCase" | "contentProductionBatch" | "opsIncident"
 >;
 
 type CollaborationAuthority = {
@@ -58,9 +57,6 @@ async function collaborationAuthority(
   targetType: CollaborationTargetType,
   targetId: string,
 ): Promise<CollaborationAuthority | null> {
-  if (targetType === "character_project") {
-    return db.characterProject.findUnique({ where: { id: targetId }, select: { ownerId: true, version: true } });
-  }
   if (targetType === "creative_run") {
     return db.contentProductionBatch.findUnique({ where: { id: targetId }, select: { ownerId: true, version: true } });
   }
@@ -81,9 +77,7 @@ async function transferCollaborationAuthority(
 ) {
   const where = { id: input.targetId, version: input.expectedVersion };
   const data = { ownerId: input.ownerId, version: { increment: 1 } };
-  const updated = input.targetType === "character_project"
-    ? await tx.characterProject.updateMany({ where, data })
-    : input.targetType === "creative_run"
+  const updated = input.targetType === "creative_run"
       ? await tx.contentProductionBatch.updateMany({ where, data })
       : input.targetType === "case"
         ? await tx.adminCase.updateMany({ where, data })

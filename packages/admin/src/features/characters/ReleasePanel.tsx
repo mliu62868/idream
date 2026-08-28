@@ -3,12 +3,9 @@
 import { useAdminI18n } from "@/components/admin/i18n";
 import Link from "next/link";
 import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
-import { Clock3, Rocket, RotateCcw } from "lucide-react";
+import { Rocket, RotateCcw } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
-import {
-  characterReleaseProposalMutation,
-  characterReleaseReviewMutation,
-} from "@/features/image-workflow-transport";
+import { characterReleaseCreateMutation } from "@/features/image-workflow-transport";
 import {
   EmptyWorkspace,
   StatusBadge,
@@ -25,11 +22,9 @@ import type {
   CharacterCommandSubmission,
 } from "./character-command-journal";
 import {
-  latestQaRunForCurrentWorkspaceAuthority,
-  releasableQaRunForCurrentWorkspaceAuthority,
-} from "./character-qa-authority";
-import { cn } from "@/lib/utils";
-import { characterReleaseOrdinals } from "./character-workspace-format";
+  characterHasNoUnpublishedChanges,
+  characterReleaseOrdinals,
+} from "./character-workspace-format";
 import type {
   CharacterWorkspacePermissions,
   RunCommittedCharacterMutation,
@@ -51,17 +46,14 @@ type CharacterReleaseItem = CharacterWorkspaceDetail["releases"][number];
 
 const releaseCheckLabels: Record<string, string> = {
   release_generation_authority_kind: "Generation authority",
-  project_character_authority: "Character project authority",
+  project_character_authority: "Character snapshot",
   revision_is_immutable_and_pinned: "Pinned immutable revision",
   soul_snapshot_valid: "Soul snapshot",
   soul_release_policy: "Soul release policy",
-  soul_behavior_evaluation: "Soul behavior evaluation",
-  soul_live_model_canaries: "Live model canaries",
   opening_complete: "Opening message",
   visual_identity_exact_version: "Visual identity version",
   reference_set_published_snapshot: "Published reference set",
   generation_route_qualified: "Qualified generation route",
-  character_qa_passed: "Character QA",
   release_avatar_manifest_available: "Avatar placement",
   release_asset_manifest_available: "Image pack placement",
   release_assets_customer_publishable: "Customer-publishable assets",
@@ -102,17 +94,22 @@ function ReleaseSummary({
         {serving ? <StatusBadge tone="good" value="serving now" /> : null}
       </div>
       {checks.length > 0 ? (
-        <div className="mt-3 grid gap-2 sm:grid-cols-2">
-          {checks.map((check) => (
-            <div
-              className="flex items-center justify-between rounded bg-black/[0.03] px-3 py-2 text-xs"
-              key={check.checkKey}
-            >
-              <span>{t(characterReleaseCheckLabel(check.checkKey))}</span>
-              <StatusBadge value={check.result} />
-            </div>
-          ))}
-        </div>
+        <details className="mt-3 border-t border-[var(--ad-border)] pt-3">
+          <summary className="cursor-pointer text-xs font-semibold">
+            {t("Technical checks")}
+          </summary>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            {checks.map((check) => (
+              <div
+                className="flex items-center justify-between rounded bg-black/[0.03] px-3 py-2 text-xs"
+                key={check.checkKey}
+              >
+                <span>{t(characterReleaseCheckLabel(check.checkKey))}</span>
+                <StatusBadge value={check.result} />
+              </div>
+            ))}
+          </div>
+        </details>
       ) : null}
       <details className="mt-3 border-t border-[var(--ad-border)] pt-3">
         <summary className="cursor-pointer text-xs font-semibold">
@@ -120,65 +117,22 @@ function ReleaseSummary({
         </summary>
         <p className="mt-2 break-all text-xs text-[var(--ad-text-muted)]">
           {release.id} · {t("Snapshot")} {release.snapshotHash.slice(0, 16)} ·{" "}
-          {t("content")} {release.characterContentVersionId} · {t("row version")}{" "}
-          {release.version}
+          {t("content")} {release.characterContentVersionId}
         </p>
-        <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap rounded-md bg-black/[0.035] p-3 text-[11px] leading-5">
-          {JSON.stringify(
-            {
-              releasePlacementManifest: release.releasePlacementManifest,
-              generationProvenance: release.generationProvenance,
-            },
-            null,
-            2,
-          )}
-        </pre>
       </details>
     </article>
   );
 }
 
-// SPEC: 只要有任何一条要过确认闸的命令能点，确认闸就必须在页面上。
-// INTENT: 回滚下拉挂在恒渲染的 <details> 里，但确认勾选框藏在这个判定后面。角色
-//         retired/inactive 且无 candidate 时，回滚按钮可点 → 点了报「请先勾选确认」→
-//         页面上根本没有可勾的东西。hasRollbackSource 就是补上的那一条。
 export function characterReleaseConfirmationVisible(input: {
-  readonly hasCandidate: boolean;
-  readonly hasReleasableQaRun: boolean;
   readonly hasRollbackSource: boolean;
   readonly servingState: string | null;
 }) {
-  return input.hasCandidate ||
-    input.hasReleasableQaRun ||
+  return (
     input.hasRollbackSource ||
     input.servingState === "live" ||
-    input.servingState === "paused";
-}
-
-// SPEC: 发布是固定四步 —— 提案 → 审核 → 校验 → 发布。
-// INTENT: 四步的按钮按 candidate 状态条件渲染，同一时刻只出现一个，而每一步成功后确认框
-//         又会被清空重勾。运营看到的是"又冒出一个按钮"，不知道自己在第几步、还剩几步。
-export const CHARACTER_RELEASE_FLOW_STEPS = [
-  "Propose",
-  "Review",
-  "Validate",
-  "Publish",
-] as const;
-
-export function characterReleaseFlowStep(input: {
-  readonly hasCandidate: boolean;
-  readonly hasReleasableQaRun: boolean;
-  readonly candidateStatus: string | null;
-  readonly candidateReadiness: string | null;
-}): { readonly step: number; readonly label: string } | null {
-  if (!input.hasCandidate) {
-    return input.hasReleasableQaRun ? { step: 1, label: "Propose" } : null;
-  }
-  if (input.candidateStatus === "in_review") return { step: 2, label: "Review" };
-  if (input.candidateStatus !== "approved") return null;
-  return input.candidateReadiness === "ready"
-    ? { step: 4, label: "Publish" }
-    : { step: 3, label: "Validate" };
+    input.servingState === "paused"
+  );
 }
 
 export function ReleasePanel({
@@ -186,7 +140,6 @@ export function ReleasePanel({
   permissions,
   journal,
   writesLocked,
-  runCommittedMutation,
 }: {
   data: CharacterWorkspaceDetail;
   permissions: CharacterWorkspacePermissions;
@@ -199,11 +152,8 @@ export function ReleasePanel({
     () => characterReleaseOrdinals(data.releases),
     [data.releases],
   );
-  const liveAssetPackGap =
-    data.journey.assetPack.live.total - data.journey.assetPack.live.completed;
   const candidate = data.releases.find(
-    ({ release }) =>
-      !["published", "superseded", "withdrawn"].includes(release.status),
+    ({ release }) => release.status === "approved",
   );
   const current = data.releases.find(
     ({ release }) => release.id === data.serving?.currentReleaseId,
@@ -217,56 +167,32 @@ export function ReleasePanel({
     ({ release }) =>
       release.id !== current?.release.id && release.status === "superseded",
   );
-  const [reason, setReason] = useState(() =>
-    t("Operator verified release evidence"),
-  );
-  const [selectedQaRunId, setSelectedQaRunId] = useState("");
-  const [scheduledAt, setScheduledAt] = useState("");
+  const [reason, setReason] = useState(() => t("Publish current Character"));
   const [selectedRollbackSourceId, setSelectedRollbackSourceId] = useState("");
-  // SPEC: 发布类操作仍需明确确认（不可逆、对外可见），但确认方式是勾选，不是默写内部 ID。
-  // INTENT: 原先 8 个按钮共用一个输入框、各自要求不同的精确 token（{id}:{releaseId}:approved …），
-  // 敲对了按钮才启用——这是全工作台最重的一道人工负担，且同文件的视觉区早已是「勾选 → 程序化填」。
-  // 统一到那个惯例：运营勾一次，token 由代码按动作生成。
   const [releaseConfirmed, setReleaseConfirmed] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const proposalIdempotencyKeys = useRef<Record<string, string>>({});
-  const validationIdempotencyKeys = useRef<Record<string, string>>({});
-  const releaseReviewIdempotencyKeys = useRef<Record<string, string>>({});
+  const createIdempotencyKeys = useRef<Record<string, string>>({});
 
-  const command = async (
-    kind: "publish" | "schedule" | "rollback",
+  const submitCommand = async (
+    kind: "publish" | "rollback",
     releaseId: string,
     version: number,
   ) => {
     if (writesLocked) return;
-    const expectedConfirmation = `${data.character.id}:${releaseId}:${kind}`;
-    if (!releaseConfirmed) {
-      setError(t("Tick the release confirmation before running this action."));
-      return;
-    }
-    const scheduledDate = kind === "schedule" ? new Date(scheduledAt) : null;
-    if (scheduledDate && Number.isNaN(scheduledDate.getTime())) {
-      setError(t("Choose a valid schedule date and time."));
-      return;
-    }
-    setBusy(kind);
-    setError(null);
     if (
       !journal.beginSubmission(
         `Submitting Release ${kind}. Character writes stay locked until command acceptance is known.`,
       )
     ) {
-      setBusy(null);
       return;
     }
+    const body = {
+      entityVersion: version,
+      reason: { code: `operator_${kind}`, summary: reason },
+      confirmation: `${data.character.id}:${releaseId}:${kind}`,
+    };
     try {
-      const body = {
-        entityVersion: version,
-        reason: { code: `operator_${kind}`, summary: reason },
-        confirmation: expectedConfirmation,
-        ...(scheduledDate ? { scheduledAt: scheduledDate.toISOString() } : {}),
-      };
       const outcome = await journal.submit({
         action: `Release ${kind}`,
         signature: `${kind}:${releaseId}:${JSON.stringify(body)}`,
@@ -283,174 +209,54 @@ export function ReleasePanel({
       setError(commandSubmissionMessage(outcome, `Release ${kind}`));
     } catch (cause) {
       journal.abortSubmission();
+      throw cause;
+    }
+  };
+
+  const publishCharacter = async () => {
+    setBusy("publish");
+    setError(null);
+    try {
+      let releaseRef = candidate
+        ? { id: candidate.release.id, version: candidate.release.version }
+        : undefined;
+      if (!releaseRef) {
+        const signature = JSON.stringify({
+          characterId: data.character.id,
+          entityVersion: data.project.version,
+          reason,
+        });
+        const idempotencyKey =
+          createIdempotencyKeys.current[signature] ?? crypto.randomUUID();
+        createIdempotencyKeys.current[signature] = idempotencyKey;
+        const mutation = characterReleaseCreateMutation(
+          data.character.id,
+          data.project.version,
+          reason,
+          `${data.character.id}:publish`,
+          idempotencyKey,
+        );
+        const created = await adminV2Operation(
+          mutation.operationId,
+          mutation.options,
+        );
+        releaseRef = { id: created.id, version: created.version };
+        delete createIdempotencyKeys.current[signature];
+      }
+      await submitCommand("publish", releaseRef.id, releaseRef.version);
+    } catch (cause) {
       setError(
         cause instanceof Error
           ? cause.message
-          : t("Release {kind} failed", { kind: t(kind) }),
+          : t("Could not publish Character"),
       );
     } finally {
       setBusy(null);
     }
   };
-  const rollbackSourceId = rollbackSources.some(
-    ({ release }) => release.id === selectedRollbackSourceId,
-  )
-    ? selectedRollbackSourceId
-    : (rollbackSources[0]?.release.id ?? "");
-  const rollbackSource = rollbackSources.find(
-    ({ release }) => release.id === rollbackSourceId,
-  );
-  const latestAuthorityQaRun = latestQaRunForCurrentWorkspaceAuthority(
-    data.qaRuns,
-    data,
-  );
-  const releasableQaRun = releasableQaRunForCurrentWorkspaceAuthority(
-    data.qaRuns,
-    data,
-  );
-  const eligibleQaRuns = releasableQaRun ? [releasableQaRun] : [];
-  const qaRunId = eligibleQaRuns.some((run) => run.id === selectedQaRunId)
-    ? selectedQaRunId
-    : (eligibleQaRuns[0]?.id ?? "");
-  const releasePreparationNeedsAssets =
-    !data.project.draftAssetRouteAuthority.qaReady ||
-    !data.preview.draft.assetPackReady;
-  const flowStep = characterReleaseFlowStep({
-    candidateReadiness: candidate?.release.readiness ?? null,
-    candidateStatus: candidate?.release.status ?? null,
-    hasCandidate: Boolean(candidate),
-    hasReleasableQaRun: Boolean(releasableQaRun),
-  });
-  const confirmationVisible = characterReleaseConfirmationVisible({
-    hasCandidate: Boolean(candidate),
-    hasReleasableQaRun: Boolean(releasableQaRun),
-    hasRollbackSource: rollbackSources.length > 0,
-    servingState: data.serving?.state ?? null,
-  });
-  const propose = async () => {
-    setBusy("propose");
-    setError(null);
-    const requestSignature = JSON.stringify({
-      characterId: data.character.id,
-      entityVersion: data.project.version,
-      qaRunId,
-      reason,
-      confirmation: `${data.character.id}:propose-release`,
-    });
-    const idempotencyKey =
-      proposalIdempotencyKeys.current[requestSignature] ?? crypto.randomUUID();
-    proposalIdempotencyKeys.current[requestSignature] = idempotencyKey;
-    try {
-      const mutation = characterReleaseProposalMutation(
-        data.character.id,
-        data.project.version,
-        qaRunId,
-        reason,
-        `${data.character.id}:propose-release`,
-        idempotencyKey,
-      );
-      await runCommittedMutation({
-        action: "Release proposal",
-        commit: () => adminV2Operation(mutation.operationId, mutation.options),
-        afterRefresh: () => {
-          delete proposalIdempotencyKeys.current[requestSignature];
-          setReleaseConfirmed(false);
-        },
-      });
-    } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : t("Could not propose Release"),
-      );
-    } finally {
-      setBusy(null);
-    }
-  };
-  const review = async (decision: "approved" | "changes_requested") => {
-    if (!candidate) return;
-    setBusy(decision);
-    setError(null);
-    const requestSignature = JSON.stringify({
-      characterId: data.character.id,
-      releaseId: candidate.release.id,
-      entityVersion: candidate.release.version,
-      decision,
-      reason,
-      confirmation: `${data.character.id}:${candidate.release.id}:${decision}`,
-    });
-    const idempotencyKey =
-      releaseReviewIdempotencyKeys.current[requestSignature] ??
-      crypto.randomUUID();
-    releaseReviewIdempotencyKeys.current[requestSignature] = idempotencyKey;
-    try {
-      const mutation = characterReleaseReviewMutation(
-        data.character.id,
-        candidate.release.id,
-        candidate.release.version,
-        decision,
-        reason,
-        `${data.character.id}:${candidate.release.id}:${decision}`,
-        idempotencyKey,
-      );
-      await runCommittedMutation({
-        action: "Release review",
-        commit: () => adminV2Operation(mutation.operationId, mutation.options),
-        afterRefresh: () => {
-          delete releaseReviewIdempotencyKeys.current[requestSignature];
-          setReleaseConfirmed(false);
-        },
-      });
-    } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : t("Could not review Release"),
-      );
-    } finally {
-      setBusy(null);
-    }
-  };
-  const validate = async () => {
-    if (!candidate) return;
-    setBusy("validate");
-    setError(null);
-    const requestSignature = JSON.stringify({
-      characterId: data.character.id,
-      releaseId: candidate.release.id,
-      entityVersion: candidate.release.version,
-      confirmation: `${data.character.id}:${candidate.release.id}:validate`,
-    });
-    const idempotencyKey =
-      validationIdempotencyKeys.current[requestSignature] ??
-      crypto.randomUUID();
-    validationIdempotencyKeys.current[requestSignature] = idempotencyKey;
-    try {
-      await runCommittedMutation({
-        action: "Release validation",
-        commit: () =>
-          adminV2Operation(
-            "POST /api/v2/admin/characters/:id/releases/:releaseId/validation",
-            {
-              path: { id: data.character.id, releaseId: candidate.release.id },
-              idempotencyKey,
-              body: {
-                entityVersion: candidate.release.version,
-                confirmation: `${data.character.id}:${candidate.release.id}:validate`,
-              },
-            },
-          ),
-        afterRefresh: () => {
-          delete validationIdempotencyKeys.current[requestSignature];
-          setReleaseConfirmed(false);
-        },
-      });
-    } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : t("Could not validate Release"),
-      );
-    } finally {
-      setBusy(null);
-    }
-  };
+
   const servingCommand = async (action: "pause" | "resume" | "retire") => {
-    if (!data.serving || writesLocked) return;
+    if (!data.serving || writesLocked || !releaseConfirmed) return;
     setBusy(action);
     setError(null);
     if (
@@ -484,14 +290,49 @@ export function ReleasePanel({
     } catch (cause) {
       journal.abortSubmission();
       setError(
-        cause instanceof Error
-          ? cause.message
-          : t("Serving {action} failed", { action: t(action) }),
+        cause instanceof Error ? cause.message : t("Serving action failed"),
       );
     } finally {
       setBusy(null);
     }
   };
+
+  const rollbackCharacter = async () => {
+    if (!rollbackSource || !releaseConfirmed || writesLocked) return;
+    setBusy("rollback");
+    setError(null);
+    try {
+      await submitCommand(
+        "rollback",
+        rollbackSource.release.id,
+        data.serving?.version ?? 0,
+      );
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t("Rollback failed"));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const rollbackSourceId = rollbackSources.some(
+    ({ release }) => release.id === selectedRollbackSourceId,
+  )
+    ? selectedRollbackSourceId
+    : (rollbackSources[0]?.release.id ?? "");
+  const rollbackSource = rollbackSources.find(
+    ({ release }) => release.id === rollbackSourceId,
+  );
+  const noUnpublishedChanges = characterHasNoUnpublishedChanges(data);
+  const assetsReady =
+    data.project.draftAssetRouteAuthority.releaseReady &&
+    data.preview.draft.assetPackReady;
+  const canPublish =
+    Boolean(candidate) || (!noUnpublishedChanges && assetsReady);
+  const confirmationVisible = characterReleaseConfirmationVisible({
+    hasRollbackSource: rollbackSources.length > 0,
+    servingState: data.serving?.state ?? null,
+  });
+
   return (
     <div className="grid gap-5 xl:grid-cols-[1fr_340px]">
       <div className="space-y-5">
@@ -507,23 +348,11 @@ export function ReleasePanel({
                 >
                   {t("Current live release")}
                 </h3>
-                {/* SPEC: "已就绪"只代表发布校验通过，不代表线上图片资产齐了。
-                    INTENT: 发布校验校的是 placement manifest，不校 cover/hero/chat 三件套；
-                    卡片标"已就绪"而上线预览标"缺少 2 个图片位"，并列出现会被读成自相矛盾。
-                    把线上资产包缺口直接标在这里，两个口径各自说清自己在讲什么。 */}
-                {liveAssetPackGap > 0 ? (
-                  <p className="mb-3 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-xs text-[var(--ad-yellow-text)]">
-                    {t(
-                      "Release validation passed, but the live image pack is still {completed}/{total}. Missing: {missing}",
-                      {
-                        completed: data.journey.assetPack.live.completed,
-                        total: data.journey.assetPack.live.total,
-                        missing: data.journey.assetPack.live.missingPurposes.join(", "),
-                      },
-                    )}
-                  </p>
-                ) : null}
-                <ReleaseSummary item={current} ordinal={releaseOrdinals.get(current.release.id)} serving />
+                <ReleaseSummary
+                  item={current}
+                  ordinal={releaseOrdinals.get(current.release.id)}
+                  serving
+                />
               </section>
             ) : null}
             {candidate ? (
@@ -532,7 +361,7 @@ export function ReleasePanel({
                   className="mb-3 text-sm font-semibold"
                   id="candidate-release-title"
                 >
-                  {t("Release candidate")}
+                  {t("Ready to publish")}
                 </h3>
                 <ReleaseSummary
                   item={candidate}
@@ -561,244 +390,71 @@ export function ReleasePanel({
           </>
         )}
       </div>
+
       <aside className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4">
-        <h3 className="font-semibold">{t("Release action")}</h3>
-        {flowStep ? (
-          <ol
-            aria-label={t("Release steps")}
-            className="mt-3 flex flex-wrap gap-1.5 text-[11px] font-semibold"
-          >
-            {CHARACTER_RELEASE_FLOW_STEPS.map((label, index) => (
-              <li
-                aria-current={
-                  index + 1 === flowStep.step ? "step" : undefined
-                }
-                className={cn(
-                  "rounded border px-2 py-1",
-                  index + 1 === flowStep.step
-                    ? "border-[var(--ad-ink)] bg-[var(--ad-ink)] text-white"
-                    : index + 1 < flowStep.step
-                      ? "border-[var(--ad-green-text)]/40 text-[var(--ad-green-text)]"
-                      : "border-[var(--ad-border)] text-[var(--ad-text-muted)]",
-                )}
-                key={label}
-              >
-                {index + 1}. {t(label)}
-              </li>
-            ))}
-          </ol>
-        ) : null}
-        {!candidate && !releasableQaRun ? (
-          <div className="mt-4 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]">
-            <strong>{t("Release preparation is incomplete")}</strong>
-            <p className="mt-1 leading-5">
-              {t(
-                releasePreparationNeedsAssets
-                  ? "Complete the current image pack before recording launch QA and proposing a release."
-                  : "Record launch QA for the current draft before proposing a release.",
-              )}
-            </p>
+        <h3 className="font-semibold">{t("Publish Character")}</h3>
+        {noUnpublishedChanges && !candidate ? (
+          <p className="mt-3 text-sm text-[var(--ad-text-muted)]">
+            {t("Live and draft are identical. There is nothing to release.")}
+          </p>
+        ) : !assetsReady && !candidate ? (
+          <div className="mt-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]">
+            <p>{t("Complete the current image pack before publishing.")}</p>
             <Link
-              className="mt-3 inline-flex min-h-11 items-center font-semibold underline"
-              href={`/admin/characters/${data.character.id}?tab=${releasePreparationNeedsAssets ? "assets" : "preview"}`}
+              className="mt-2 inline-flex font-semibold underline"
+              href={`/admin/characters/${data.character.id}?tab=assets`}
             >
-              {t(
-                releasePreparationNeedsAssets
-                  ? "Complete image assets"
-                  : "Open launch QA",
-              )}
+              {t("Complete image assets")}
             </Link>
           </div>
         ) : null}
-        {confirmationVisible ? (
-          <>
-            <label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">
-              {t("Reason")}
-              <textarea
-                className={`${textAreaClass} mt-1`}
-                onChange={(event) => setReason(event.target.value)}
-                value={reason}
-              />
-            </label>
-            {!candidate && releasableQaRun ? (
-              <label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">
-                {t("Passed QA Run for this draft")}
-                <select
-                  className={`${fieldClass} mt-1`}
-                  onChange={(event) => setSelectedQaRunId(event.target.value)}
-                  value={qaRunId}
-                >
-                  <option value="">
-                    {t("Record QA for the current project version")}
-                  </option>
-                  {eligibleQaRuns.map((run) => (
-                    <option key={run.id} value={run.id}>
-                      {run.id} · {run.characterContentVersionId}
-                    </option>
-                  ))}
-                </select>
-                {latestAuthorityQaRun?.status === "failed" ? (
-                  <span className="mt-2 block font-normal text-[var(--ad-yellow-text)]">
-                    {t(
-                      "The latest QA Run for this snapshot failed. Earlier passed runs cannot authorize release.",
-                    )}
-                  </span>
-                ) : data.qaRuns.some((run) => run.status === "passed") &&
-                  eligibleQaRuns.length === 0 ? (
-                  <span className="mt-2 block font-normal text-[var(--ad-yellow-text)]">
-                    {t(
-                      "Earlier QA evidence is stale after the latest draft or release review change.",
-                    )}
-                  </span>
-                ) : null}
-              </label>
-            ) : null}
-            <label className="mt-4 flex items-start gap-2 text-xs font-semibold">
-              <input
-                checked={releaseConfirmed}
-                className="mt-0.5 h-4 w-4"
-                onChange={(event) => setReleaseConfirmed(event.target.checked)}
-                type="checkbox"
-              />
-              <span>
-                {t("I confirm this release action")}
-                <span className="mt-1 block font-normal text-[var(--ad-text-muted)]">
-                  {t(
-                    "Release actions are irreversible and visible to customers.",
-                  )}
-                </span>
-              </span>
-            </label>
-            {error ? (
-              <p
-                className="mt-3 text-xs text-[var(--ad-red-text)]"
-                role="alert"
-              >
-                {error}
-              </p>
-            ) : null}
-            {data.serving?.state === "live" &&
-            data.serving.scheduledReleaseId ? (
-              <p className="mt-3 rounded-md bg-[var(--ad-yellow-bg)] px-3 py-2 text-xs text-[var(--ad-yellow-text)]">
-                {t("Retiring this Character also cancels scheduled Release")}{" "}
-                {data.serving.scheduledReleaseId}
-                {t(
-                  ". The cancellation is recorded with the retirement command.",
-                )}
-              </p>
-            ) : null}
-            <div className="mt-4 grid gap-2">
-              {!candidate && releasableQaRun ? (
-                <WorkspaceButton
-                  disabled={
-                    !permissions.proposeRelease ||
-                    !qaRunId ||
-                    releaseConfirmed === false ||
-                    Boolean(busy)
-                  }
-                  onClick={() => void propose()}
-                >
-                  <Rocket className="h-4 w-4" />{" "}
-                  {t("Propose immutable Release")}
-                </WorkspaceButton>
-              ) : null}
-              {candidate?.release.status === "in_review" ? (
-                <>
-                  <WorkspaceButton
-                    disabled={
-                      !permissions.reviewRelease ||
-                      releaseConfirmed === false ||
-                      Boolean(busy)
-                    }
-                    onClick={() => void review("approved")}
-                    tone="primary"
-                  >
-                    {t("Approve candidate")}
-                  </WorkspaceButton>
-                  <WorkspaceButton
-                    disabled={
-                      !permissions.reviewRelease ||
-                      releaseConfirmed === false ||
-                      Boolean(busy)
-                    }
-                    onClick={() => void review("changes_requested")}
-                  >
-                    {t("Request changes")}
-                  </WorkspaceButton>
-                </>
-              ) : null}
-              {candidate?.release.status === "approved" &&
-              candidate.release.readiness !== "ready" ? (
-                <WorkspaceButton
-                  disabled={
-                    !permissions.publishRelease ||
-                    releaseConfirmed === false ||
-                    Boolean(busy)
-                  }
-                  onClick={() => void validate()}
-                >
-                  {t("Validate pinned snapshot")}
-                </WorkspaceButton>
-              ) : null}
-              {candidate?.release.status === "approved" &&
-              candidate.release.readiness === "ready" ? (
-                <WorkspaceButton
-                  disabled={
-                    !permissions.publishRelease ||
-                    releaseConfirmed === false ||
-                    Boolean(busy)
-                  }
-                  onClick={() =>
-                    void command(
-                      "publish",
-                      candidate.release.id,
-                      candidate.release.version,
-                    )
-                  }
-                  tone="primary"
-                >
-                  <Rocket className="h-4 w-4" /> {t("Publish candidate")}
-                </WorkspaceButton>
-              ) : null}
-            </div>
-          </>
+
+        {error ? (
+          <p className="mt-3 text-xs text-[var(--ad-red-text)]" role="alert">
+            {error}
+          </p>
         ) : null}
+
+        {canPublish ? (
+          <WorkspaceButton
+            className="mt-4 w-full"
+            disabled={
+              !permissions.publishRelease ||
+              Boolean(busy) ||
+              writesLocked
+            }
+            onClick={() => void publishCharacter()}
+            tone="primary"
+          >
+            <Rocket className="h-4 w-4" /> {t("Publish Character")}
+          </WorkspaceButton>
+        ) : null}
+
         <details className="mt-5 border-t border-[var(--ad-border)] pt-4">
           <summary className="cursor-pointer text-xs font-semibold">
-            {t("Schedule and live operations")}
+            {t("Rollback and live operations")}
           </summary>
-          <label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">
-            {t("Schedule at")}
-            <input
-              className={`${fieldClass} mt-1`}
-              onChange={(event) => setScheduledAt(event.target.value)}
-              type="datetime-local"
-              value={scheduledAt}
-            />
-          </label>
-          <div className="mt-3">
-            <WorkspaceButton
-              disabled={
-                !permissions.publishRelease ||
-                releaseConfirmed === false ||
-                !candidate ||
-                candidate.release.status !== "approved" ||
-                candidate.release.readiness !== "ready" ||
-                !scheduledAt ||
-                Boolean(busy)
-              }
-              onClick={() =>
-                candidate &&
-                void command(
-                  "schedule",
-                  candidate.release.id,
-                  candidate.release.version,
-                )
-              }
-            >
-              <Clock3 className="h-4 w-4" /> {t("Schedule")}
-            </WorkspaceButton>
-          </div>
+          {confirmationVisible ? (
+            <>
+              <label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">
+                {t("Reason")}
+                <textarea
+                  className={`${textAreaClass} mt-1`}
+                  onChange={(event) => setReason(event.target.value)}
+                  value={reason}
+                />
+              </label>
+              <label className="mt-4 flex items-start gap-2 text-xs font-semibold">
+                <input
+                  checked={releaseConfirmed}
+                  className="mt-0.5 h-4 w-4"
+                  onChange={(event) => setReleaseConfirmed(event.target.checked)}
+                  type="checkbox"
+                />
+                <span>{t("I confirm this release action")}</span>
+              </label>
+            </>
+          ) : null}
           <label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">
             {t("Historical rollback source")}
             <select
@@ -812,7 +468,6 @@ export function ReleasePanel({
               {rollbackSources.map(({ release }) => (
                 <option key={release.id} value={release.id}>
                   {t("Release")} #{releaseOrdinals.get(release.id) ?? "?"}
-                  {release.publishedAt ? ` · ${release.publishedAt.slice(0, 10)}` : ""}
                 </option>
               ))}
             </select>
@@ -821,30 +476,24 @@ export function ReleasePanel({
             <WorkspaceButton
               disabled={
                 !permissions.publishRelease ||
-                releaseConfirmed === false ||
+                !releaseConfirmed ||
                 !rollbackSource ||
-                Boolean(busy)
+                Boolean(busy) ||
+                writesLocked
               }
-              onClick={() =>
-                rollbackSource &&
-                void command(
-                  "rollback",
-                  rollbackSource.release.id,
-                  data.serving?.version ?? 0,
-                )
-              }
+              onClick={() => void rollbackCharacter()}
               tone="danger"
             >
-              <RotateCcw className="h-4 w-4" />{" "}
-              {t("Roll back to selected snapshot")}
+              <RotateCcw className="h-4 w-4" /> {t("Roll back")}
             </WorkspaceButton>
             {data.serving?.state === "live" ? (
               <>
                 <WorkspaceButton
                   disabled={
                     !permissions.publishRelease ||
-                    releaseConfirmed === false ||
-                    Boolean(busy)
+                    !releaseConfirmed ||
+                    Boolean(busy) ||
+                    writesLocked
                   }
                   onClick={() => void servingCommand("pause")}
                 >
@@ -853,8 +502,9 @@ export function ReleasePanel({
                 <WorkspaceButton
                   disabled={
                     !permissions.publishRelease ||
-                    releaseConfirmed === false ||
-                    Boolean(busy)
+                    !releaseConfirmed ||
+                    Boolean(busy) ||
+                    writesLocked
                   }
                   onClick={() => void servingCommand("retire")}
                   tone="danger"
@@ -867,8 +517,9 @@ export function ReleasePanel({
               <WorkspaceButton
                 disabled={
                   !permissions.publishRelease ||
-                  releaseConfirmed === false ||
-                  Boolean(busy)
+                  !releaseConfirmed ||
+                  Boolean(busy) ||
+                  writesLocked
                 }
                 onClick={() => void servingCommand("resume")}
               >
@@ -877,11 +528,6 @@ export function ReleasePanel({
             ) : null}
           </div>
         </details>
-        {!permissions.publishRelease ? (
-          <p className="mt-3 text-xs text-[var(--ad-text-muted)]">
-            {t("Read-only: character.release.publish is not granted.")}
-          </p>
-        ) : null}
       </aside>
     </div>
   );

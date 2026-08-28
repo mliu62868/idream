@@ -120,10 +120,17 @@ const COMPANION_MEMORY_GUIDANCE = [
   "nothing, say honestly that you don't recall rather than inventing it.",
 ].join(" ") + "\n\n{{igrep_memory_profile}}";
 
-// Two-word messages ("ok", "hi") carry no retrieval signal; searching them only
-// surfaces noise and spends the pre-recall budget.
-const MIN_RECALL_QUERY_CHARS = 8;
 const MAX_RECALL_NOTES = 6;
+
+function shouldPreRecall(query: string): boolean {
+  const text = query.trim();
+  if (!text) return false;
+  if (/(?:remember|recall|earlier|before|last time|记得|还记得|上次|之前|曾经)/iu.test(text)) {
+    return true;
+  }
+  const hanCharacters = text.match(/\p{Script=Han}/gu)?.length ?? 0;
+  return hanCharacters >= 2 || text.length >= 8;
+}
 
 function renderResidentProfile(profile: string): string {
   const text = profile.trim();
@@ -161,6 +168,49 @@ function wireUsage(usage?: TokenUsage) {
   };
 }
 
+function assistantText(message: AssistantMessage): string {
+  const parts: string[] = [];
+  for (const block of message.content) {
+    if (block.type === "text") parts.push(block.text);
+  }
+  return parts.join("");
+}
+
+function isUnexecutedImageToolPayload(
+  content: string,
+  tools: CompanionInvocation["preparedTurn"]["tools"],
+): boolean {
+  if (!tools.some((tool) =>
+    tool.name === "generate_image_async" || tool.name === "edit_last_image"
+  )) return false;
+  let candidate = content.trim();
+  if (/(?:^|\n)\s*(?:\[image\s*:[^\]\n]+\]|【图片\s*[：:][^】\n]+】)\s*(?:$|\n)/iu.test(candidate)) {
+    return true;
+  }
+  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/iu.exec(candidate);
+  if (fenced) candidate = fenced[1] ?? "";
+  if (!candidate.startsWith("{") || !candidate.endsWith("}")) return false;
+  try {
+    const parsed = JSON.parse(candidate) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+    const row = parsed as Record<string, unknown>;
+    if (typeof row.image === "string" && row.image.trim()) return true;
+    const nested = row.function && typeof row.function === "object" && !Array.isArray(row.function)
+      ? row.function as Record<string, unknown>
+      : null;
+    const name = typeof row.name === "string"
+      ? row.name
+      : typeof row.tool === "string"
+        ? row.tool
+        : typeof nested?.name === "string"
+          ? nested.name
+          : "";
+    return name === "generate_image_async" || name === "edit_last_image";
+  } catch {
+    return false;
+  }
+}
+
 function wireAttribution(finish: StreamChunk & { type: "finish" }) {
   const response = finish.replayState?.response;
   if (!response || typeof response !== "object" || Array.isArray(response)) return undefined;
@@ -195,6 +245,7 @@ function invocationFailure(input: {
   turnFailure?: LlmFailure;
   igrepFailure?: "wake" | "search" | "memory";
   preflightCode?: string;
+  terminalValidationCode?: "unexecuted_tool_payload";
 }) {
   if (input.terminalCommitted || input.phase === "memory_commit") {
     return {
@@ -208,6 +259,13 @@ function invocationFailure(input: {
       code: input.preflightCode,
       message: "companion preflight failed",
       retryable: false,
+    };
+  }
+  if (input.terminalValidationCode) {
+    return {
+      code: input.terminalValidationCode,
+      message: "companion terminal candidate was not executable",
+      retryable: true,
     };
   }
   if (input.turnFailure?.code === "PROVIDER_HTTP_ERROR") {
@@ -618,6 +676,7 @@ export class CompanionEngine implements InvocationService {
     let turnFailure: LlmFailure | undefined;
     let igrepFailure: "wake" | "search" | "memory" | undefined;
     let preflightCode: string | undefined;
+    let terminalValidationCode: "unexecuted_tool_payload" | undefined;
     const event = (payload: EventPayload) => {
       const value = companionEventSchema.parse({
         ...payload,
@@ -711,7 +770,7 @@ export class CompanionEngine implements InvocationService {
       let latestFinish: StreamChunk & { type: "finish" } | undefined;
       let turnEnd: TurnEndReason | undefined;
       let stepCount = 0;
-      let emittedText = "";
+      let currentStepText = "";
       const seenSessionEventSeqs = new Set<number>();
       const bridge = new ToolBridge(invocation, emit, event);
       active.toolBridge = bridge;
@@ -725,7 +784,7 @@ export class CompanionEngine implements InvocationService {
         if (sessionEvent.type === "assistant/chunk") {
           const chunk = sessionEvent.data.chunk;
           if (chunk.type === "text-delta" && chunk.text) {
-            emittedText += chunk.text;
+            currentStepText += chunk.text;
             event({ type: "text_delta", delta: chunk.text });
           }
           if (chunk.type === "finish") latestFinish = chunk;
@@ -758,7 +817,7 @@ export class CompanionEngine implements InvocationService {
             workspacePath,
             signal,
           )),
-          recallQuery.length >= MIN_RECALL_QUERY_CHARS
+          shouldPreRecall(recallQuery)
             ? timed(() => (this.options.recallMemory ?? recallIgrepMemory)(
                 this.options.igrepCommand,
                 workspacePath,
@@ -792,18 +851,12 @@ export class CompanionEngine implements InvocationService {
           });
           recallContext = renderRecallContext(recall.value.notes);
         } else if (recall) {
-          // SPEC: pre-recall enriches a turn that already carries the wake
-          // profile and the memory_search tool; its failure is observed on the
-          // wire and in the log, never fatal for the reply.
+          // INVARIANT: a memory-enabled turn cannot silently become a
+          // memory-blind answer. The user may retry or explicitly disable
+          // memory; Chat must never present this as a successful remembered turn.
+          igrepFailure = "memory";
           event({ type: "igrep_observation", operation: "memory", outcome: "failure", durationMs: recall.durationMs });
-          process.stderr.write(`${JSON.stringify({
-            level: "warn",
-            component: "chat-agent",
-            event: "companion_recall_failed",
-            invocationId: invocation.invocationId,
-            attemptId: invocation.attemptId,
-            errorType: describeInvocationCause(recall.error),
-          })}\n`);
+          throw recall.error;
         }
       }
       handle = await ctx.agents.create({
@@ -882,16 +935,28 @@ export class CompanionEngine implements InvocationService {
             if (payload.step > (this.options.maxSteps ?? 8)) {
               throw new Error("invocation exceeded its DSH step budget");
             }
+            // SPEC: text emitted before a tool call is provisional. A new DSH
+            // step retracts it so Chat never confuses execution prose with the
+            // final assistant answer while still streaming real provider text.
+            if (payload.step > 1 && currentStepText) {
+              currentStepText = "";
+              event({ type: "text_reset" });
+            }
             return next();
           }, { prepend: true });
 
           agentCtx.on("agent/turn-stopping", async ({ signal }) => {
             if (!latestAssistant || !latestFinish) throw new Error("turn stopped without a terminal assistant candidate");
-            // INVARIANT: Chat commits the exact bytes already delivered over
-            // SSE. DSH tool loops may emit visible prose in more than one step,
-            // while latestAssistant contains only the final step.
-            const content = emittedText;
+            const content = assistantText(latestAssistant);
             if (!content) throw new Error("terminal assistant candidate is empty");
+            if (isUnexecutedImageToolPayload(content, invocation.preparedTurn.tools)) {
+              terminalValidationCode = "unexecuted_tool_payload";
+              if (currentStepText) {
+                currentStepText = "";
+                event({ type: "text_reset" });
+              }
+              throw new Error("terminal assistant candidate contained an unexecuted image tool payload");
+            }
             if (latestFinish.reason.kind !== "stop" && latestFinish.reason.kind !== "max-tokens") {
               throw new Error(`non-terminal finish reason ${latestFinish.reason.kind}`);
             }
@@ -907,6 +972,14 @@ export class CompanionEngine implements InvocationService {
               completedAt: new Date().toISOString(),
               ...(attribution ? { attribution } : {}),
             };
+            // Some adapters only expose the assembled assistant message. Keep a
+            // terminal fallback, but never duplicate text already streamed.
+            if (!currentStepText) {
+              currentStepText = content;
+              event({ type: "text_delta", delta: content });
+            } else if (currentStepText !== content) {
+              throw new Error("streamed assistant text differs from terminal message");
+            }
             active.commitAwaiting = true;
             event({ type: "terminal_candidate", candidate });
             emit({ protocolVersion: 1, type: "commit", invocationId: invocation.invocationId, candidate });
@@ -968,6 +1041,7 @@ export class CompanionEngine implements InvocationService {
           ...(turnFailure ? { turnFailure } : {}),
           ...(igrepFailure ? { igrepFailure } : {}),
           ...(preflightCode ? { preflightCode } : {}),
+          ...(terminalValidationCode ? { terminalValidationCode } : {}),
         });
         // SPEC: 失败日志要能定位到哪一段坏了，但只用分类，不用自由文本。
         // INTENT: 这行过去只有 "invocation_failed" 一个词 —— 线上整轮聊天失败、

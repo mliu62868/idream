@@ -1,5 +1,8 @@
 import type { Prisma } from "@prisma/client";
-import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
+import {
+  LEGACY_MAIN_TO_CHAT_EVENTS,
+  MAIN_TO_CHAT_EVENTS,
+} from "@idream/shared/contracts";
 
 export const MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES = [
   "creative.retry.dispatch.v2",
@@ -11,7 +14,10 @@ export const MAIN_OUTBOX_GENERATION_DISPATCH_EVENT_TYPES = [
 export const MAIN_OUTBOX_TRANSPORT_QUEUES = [
   {
     queue: "chat",
-    eventTypes: Object.values(MAIN_TO_CHAT_EVENTS),
+    eventTypes: [
+      ...Object.values(MAIN_TO_CHAT_EVENTS),
+      ...Object.values(LEGACY_MAIN_TO_CHAT_EVENTS),
+    ],
   },
   {
     queue: "product_event",
@@ -34,13 +40,15 @@ export const MAIN_OUTBOX_TRANSPORT_QUEUES = [
 export const MAIN_OUTBOX_TRANSPORT_EVENT_TYPES = MAIN_OUTBOX_TRANSPORT_QUEUES
   .flatMap(({ eventTypes }) => [...eventTypes]);
 
-// INVARIANT: recovery and dispatch must share one vocabulary. Pending and
-// dispatched are the only deliverable states; every other listed state is an
-// audited terminal disposition that must be preserved, not mistaken for an
-// in-flight or corrupt carrier.
+// INVARIANT: recovery, leases and dispatch share one vocabulary. `processing`
+// is a known in-flight lease, never an unknown/corrupt or terminal carrier.
 export const MAIN_OUTBOX_TRANSPORT_DELIVERABLE_STATUSES = [
   "pending",
   "dispatched",
+] as const;
+
+export const MAIN_OUTBOX_TRANSPORT_IN_FLIGHT_STATUSES = [
+  "processing",
 ] as const;
 
 export const MAIN_OUTBOX_TRANSPORT_TERMINAL_STATUSES = [
@@ -53,12 +61,18 @@ export const MAIN_OUTBOX_TRANSPORT_TERMINAL_STATUSES = [
 
 export const MAIN_OUTBOX_TRANSPORT_KNOWN_STATUSES = [
   ...MAIN_OUTBOX_TRANSPORT_DELIVERABLE_STATUSES,
+  ...MAIN_OUTBOX_TRANSPORT_IN_FLIGHT_STATUSES,
   ...MAIN_OUTBOX_TRANSPORT_TERMINAL_STATUSES,
 ] as const;
 
 export function pendingMainOutboxTransportWhere(): Prisma.MainOutboxEventWhereInput {
   return {
     eventType: { in: [...MAIN_OUTBOX_TRANSPORT_EVENT_TYPES] },
-    status: { in: [...MAIN_OUTBOX_TRANSPORT_DELIVERABLE_STATUSES] },
+    status: {
+      in: [
+        ...MAIN_OUTBOX_TRANSPORT_DELIVERABLE_STATUSES,
+        ...MAIN_OUTBOX_TRANSPORT_IN_FLIGHT_STATUSES,
+      ],
+    },
   };
 }

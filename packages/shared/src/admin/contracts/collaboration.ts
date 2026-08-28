@@ -2,7 +2,6 @@ import { z } from "zod";
 import { adminCursorQuerySchema, adminIdSchema, adminIsoDateTimeSchema, adminPageInfoSchema } from "./common";
 
 export const collaborationTargetTypeSchema = z.enum([
-  "character_project",
   "creative_run",
   "case",
   "incident",
@@ -16,6 +15,7 @@ export const collaborationTargetTypeSchema = z.enum([
  */
 export const savedViewScopeSchema = z.enum([
   ...collaborationTargetTypeSchema.options,
+  "character_project",
   "support_request",
   "moderation_review_queue",
 ]);

@@ -38,8 +38,6 @@ export function servingDto(serving: {
   characterId: string;
   state: string;
   currentReleaseId: string | null;
-  scheduledReleaseId: string | null;
-  scheduledAt: Date | null;
   version: number;
   updatedAt: Date;
 } | null) {
@@ -47,8 +45,6 @@ export function servingDto(serving: {
     characterId: serving.characterId,
     state: serving.state,
     currentReleaseId: serving.currentReleaseId,
-    scheduledReleaseId: serving.scheduledReleaseId,
-    scheduledAt: serving.scheduledAt?.toISOString() ?? null,
     version: serving.version,
     updatedAt: serving.updatedAt.toISOString(),
   } : null;

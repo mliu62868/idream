@@ -6,11 +6,16 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { adminV2Request } = vi.hoisted(() => ({
-  adminV2Request: vi.fn<(path: string, options?: {
-    readonly method?: string;
-    readonly idempotencyKey?: string;
-    readonly body?: unknown;
-  }) => Promise<unknown>>(),
+  adminV2Request: vi.fn<
+    (
+      path: string,
+      options?: {
+        readonly method?: string;
+        readonly idempotencyKey?: string;
+        readonly body?: unknown;
+      },
+    ) => Promise<unknown>
+  >(),
 }));
 
 vi.mock("@/lib/admin-v2-api", async (importOriginal) => {
@@ -21,14 +26,12 @@ vi.mock("@/components/admin/i18n", () => ({
   adminDateLocale: () => undefined,
   useAdminI18n: () => ({
     locale: "en" as const,
-    t: (
-      value: string,
-      values?: Readonly<Record<string, string | number>>,
-    ) => Object.entries(values ?? {}).reduce(
-      (text, [key, replacement]) =>
-        text.replaceAll(`{${key}}`, String(replacement)),
-      value,
-    ),
+    t: (value: string, values?: Readonly<Record<string, string | number>>) =>
+      Object.entries(values ?? {}).reduce(
+        (text, [key, replacement]) =>
+          text.replaceAll(`{${key}}`, String(replacement)),
+        value,
+      ),
     value: (value: string) => value.replaceAll("_", " "),
   }),
 }));
@@ -48,14 +51,19 @@ import {
 async function waitUntil(predicate: () => boolean) {
   const deadline = Date.now() + 2_000;
   while (!predicate()) {
-    if (Date.now() >= deadline) throw new Error("Timed out waiting for Character Asset Studio");
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    if (Date.now() >= deadline)
+      throw new Error("Timed out waiting for Character Asset Studio");
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
   }
 }
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((complete) => { resolve = complete; });
+  const promise = new Promise<T>((complete) => {
+    resolve = complete;
+  });
   return { promise, resolve };
 }
 
@@ -200,7 +208,8 @@ const data = characterWorkspaceDetail({
       ready: false,
       qualificationPolicyVersion: "character-release-policy-v2",
       blockers: [],
-      productionDeepLink: "/admin/characters/character-no-bootstrap-route?tab=assets",
+      productionDeepLink:
+        "/admin/characters/character-no-bootstrap-route?tab=assets",
     },
   },
 });
@@ -210,12 +219,17 @@ describe("Character Asset Studio bootstrap route projection", () => {
   let root: Root;
 
   beforeEach(() => {
-    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    (
+      globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
     adminV2Request.mockReset();
-    adminV2Request.mockResolvedValue({ items: [], pageInfo: { endCursor: null, hasNextPage: false } });
+    adminV2Request.mockResolvedValue({
+      items: [],
+      pageInfo: { endCursor: null, hasNextPage: false },
+    });
     Object.defineProperty(window, "localStorage", {
       configurable: true,
       value: createMemoryStorage(),
@@ -230,18 +244,35 @@ describe("Character Asset Studio bootstrap route projection", () => {
   });
 
   it("stays in first-portrait mode and disables generation when authority is allowed but no profile exists", async () => {
-    await act(async () => root.render(<CharacterAssetStudio
-      commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
-      data={data}
-      onContinue={() => undefined}
-      onProjectReload={async () => undefined}
-      permissions={{ read: true, create: true, review: true, selectDraft: true }}
-    />));
-    await waitUntil(() => container.textContent?.includes("First identity portrait") === true);
+    await act(async () =>
+      root.render(
+        <CharacterAssetStudio
+          commitProjectMutation={async ({ commit }) => ({
+            result: await commit(),
+            refreshed: true,
+          })}
+          data={data}
+          onContinue={() => undefined}
+          onProjectReload={async () => undefined}
+          permissions={{
+            read: true,
+            create: true,
+            review: true,
+            selectDraft: true,
+          }}
+        />,
+      ),
+    );
+    await waitUntil(
+      () => container.textContent?.includes("First identity portrait") === true,
+    );
 
-    expect(container.textContent).toContain("No active text-to-image bootstrap profile is available");
-    const generate = [...container.querySelectorAll("button")]
-      .find((button) => button.textContent?.includes("Generate 1 portrait"));
+    expect(container.textContent).toContain(
+      "No active text-to-image bootstrap profile is available",
+    );
+    const generate = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Generate 1 portrait"),
+    );
     expect(generate).toBeDefined();
     expect(generate?.disabled).toBe(true);
     expect(container.textContent).not.toContain("Complete visual setup");
@@ -266,20 +297,48 @@ describe("Character Asset Studio bootstrap route projection", () => {
       },
     });
 
-    await act(async () => root.render(<CharacterAssetStudio
-      commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
-      data={bootstrapData}
-      onContinue={() => undefined}
-      onProjectReload={async () => undefined}
-      permissions={{ read: true, create: true, review: true, selectDraft: true }}
-    />));
-    await waitUntil(() => container.textContent?.includes("First identity portrait") === true);
+    await act(async () =>
+      root.render(
+        <CharacterAssetStudio
+          commitProjectMutation={async ({ commit }) => ({
+            result: await commit(),
+            refreshed: true,
+          })}
+          data={bootstrapData}
+          onContinue={() => undefined}
+          onProjectReload={async () => undefined}
+          permissions={{
+            read: true,
+            create: true,
+            review: true,
+            selectDraft: true,
+          }}
+        />,
+      ),
+    );
+    await waitUntil(
+      () => container.textContent?.includes("First identity portrait") === true,
+    );
 
-    const brief = container.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label*="creative brief"]',
-    )?.value ?? "";
+    const brief =
+      container.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label*="creative brief"]',
+      )?.value ?? "";
     expect(brief).toContain("define the identity");
     expect(brief).not.toContain("preserving the locked identity");
+    const generate = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Generate 1 portrait"),
+    );
+    expect(generate?.disabled).toBe(false);
+    expect(generate?.getAttribute("aria-describedby")).toBeNull();
+    expect(
+      container.querySelector(`#character-generation-action-${data.character.id}`),
+    ).toBeNull();
+    expect(
+      container.textContent?.match(
+        /The generation runtime is checked before any Run is created\./g,
+      ),
+    ).toHaveLength(1);
   });
 
   it("does not lock a failed first-portrait intent when runtime preflight created no Run", async () => {
@@ -304,7 +363,10 @@ describe("Character Asset Studio bootstrap route projection", () => {
       if (path.includes("/api/v2/admin/creative/runs?")) {
         return { items: [], pageInfo: { endCursor: null, hasNextPage: false } };
       }
-      if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
+      if (
+        path === "/api/v2/admin/creative/runs" &&
+        options?.method === "POST"
+      ) {
         throw new AdminV2RequestError(
           "The comfyui image-generation runtime is not ready. Restore backend health, refresh the Character workspace, then generate again. No Run was created.",
           503,
@@ -314,28 +376,48 @@ describe("Character Asset Studio bootstrap route projection", () => {
       throw new Error(`Unexpected Admin request: ${path}`);
     });
 
-    await act(async () => root.render(<CharacterAssetStudio
-      actorId={actorId}
-      commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
-      data={bootstrapData}
-      onContinue={() => undefined}
-      onProjectReload={async () => undefined}
-      permissions={{ read: true, create: true, review: true, selectDraft: true }}
-    />));
-    await waitUntil(() => container.textContent?.includes("First identity portrait") === true);
-    const generate = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent?.includes("Generate 1 portrait"),
+    await act(async () =>
+      root.render(
+        <CharacterAssetStudio
+          actorId={actorId}
+          commitProjectMutation={async ({ commit }) => ({
+            result: await commit(),
+            refreshed: true,
+          })}
+          data={bootstrapData}
+          onContinue={() => undefined}
+          onProjectReload={async () => undefined}
+          permissions={{
+            read: true,
+            create: true,
+            review: true,
+            selectDraft: true,
+          }}
+        />,
+      ),
+    );
+    await waitUntil(
+      () => container.textContent?.includes("First identity portrait") === true,
+    );
+    const generate = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Generate 1 portrait"),
     );
     await act(async () => {
       generate?.click();
       await Promise.resolve();
     });
-    await waitUntil(() => container.textContent?.includes("No Run was created") === true);
+    await waitUntil(
+      () => container.textContent?.includes("No Run was created") === true,
+    );
 
-    expect(container.textContent).not.toContain("Generation outcome is unknown");
-    expect(readActiveDurableMutationIntent({
-      scope: `character-asset:create:${actorId}:${bootstrapData.character.id}`,
-    })).toBeNull();
+    expect(container.textContent).not.toContain(
+      "Generation outcome is unknown",
+    );
+    expect(
+      readActiveDurableMutationIntent({
+        scope: `character-asset:create:${actorId}:${bootstrapData.character.id}`,
+      }),
+    ).toBeNull();
   });
 
   it("opens ready characters in the recurring image library with a new-batch composer", async () => {
@@ -352,7 +434,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
           status: "current",
           missingPurposes: [],
           stalePurposes: [],
-          qaBlockers: [],
+          releaseBlockers: [],
         },
       },
       preview: {
@@ -378,37 +460,56 @@ describe("Character Asset Studio bootstrap route projection", () => {
           profile: null,
         },
         readiness: { ...data.visual.readiness, ready: true, blockers: [] },
-        routeQualifications: [routeQualification({
-          id: "qualification-alexa",
-          generationProfileKey: "profile-alexa",
-          sourceVariationAuthority: {
-            routeFingerprint: "route-alexa",
-            ready: false,
-            blocker: "workflow_source_identity_combination_unsupported",
-          },
-        })],
+        routeQualifications: [
+          routeQualification({
+            id: "qualification-alexa",
+            generationProfileKey: "profile-alexa",
+            sourceVariationAuthority: {
+              routeFingerprint: "route-alexa",
+              ready: false,
+              blocker: "workflow_source_identity_combination_unsupported",
+            },
+          }),
+        ],
       },
     });
 
-    await act(async () => root.render(<CharacterAssetStudio
-      commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
-      data={readyData}
-      onContinue={() => undefined}
-      onProjectReload={async () => undefined}
-      permissions={{ read: true, create: true, review: true, selectDraft: true }}
-    />));
-    await waitUntil(() => container.textContent?.includes("New image") === true);
+    await act(async () =>
+      root.render(
+        <CharacterAssetStudio
+          commitProjectMutation={async ({ commit }) => ({
+            result: await commit(),
+            refreshed: true,
+          })}
+          data={readyData}
+          onContinue={() => undefined}
+          onProjectReload={async () => undefined}
+          permissions={{
+            read: true,
+            create: true,
+            review: true,
+            selectDraft: true,
+          }}
+        />,
+      ),
+    );
+    await waitUntil(
+      () => container.textContent?.includes("New image") === true,
+    );
 
     expect(container.textContent).toContain("Inspect");
     expect(container.textContent).toContain("Settings");
     expect(container.textContent).toContain("Visual identity");
     expect(container.textContent).not.toContain("Image purpose filters");
     expect(container.textContent).not.toContain("One image per generation");
-    expect(container.querySelector('img[alt="Alexa Reeves image 1"]')).not.toBeNull();
+    expect(
+      container.querySelector('img[alt="Alexa Reeves image 1"]'),
+    ).not.toBeNull();
     expect(container.textContent).not.toContain("Adjust the creative brief");
     expect(container.textContent).not.toContain("Review generation route");
-    const generate = [...container.querySelectorAll("button")]
-      .find((button) => button.textContent?.includes("Generate 1 portrait"));
+    const generate = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Generate 1 portrait"),
+    );
     expect(generate?.disabled).toBe(false);
   });
 
@@ -430,15 +531,17 @@ describe("Character Asset Studio bootstrap route projection", () => {
           id: "reference-set-mira-v1",
           revision: 1,
           status: "active",
-          references: [{
-            mediaAssetId: "mira-anchor",
-            role: "identity_anchor",
-            available: true,
-            url: "/mira.webp",
-            thumbnailUrl: null,
-            qualityScore: null,
-            identityScore: null,
-          }],
+          references: [
+            {
+              mediaAssetId: "mira-anchor",
+              role: "identity_anchor",
+              available: true,
+              url: "/mira.webp",
+              thumbnailUrl: null,
+              qualityScore: null,
+              identityScore: null,
+            },
+          ],
         },
         routeQualifications: [],
         identityBootstrap: {
@@ -451,23 +554,40 @@ describe("Character Asset Studio bootstrap route projection", () => {
         readiness: {
           ...data.visual.readiness,
           ready: false,
-          blockers: [{
-            code: "generation_route_unqualified",
-            message: "No qualified generation route exists.",
-            deepLink: "/admin/characters/character-no-bootstrap-route?tab=identity",
-          }],
+          blockers: [
+            {
+              code: "generation_route_unqualified",
+              message: "No qualified generation route exists.",
+              deepLink:
+                "/admin/characters/character-no-bootstrap-route?tab=identity",
+            },
+          ],
         },
       },
     });
 
-    await act(async () => root.render(<CharacterAssetStudio
-      commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
-      data={routeBlockedData}
-      onContinue={() => undefined}
-      onProjectReload={async () => undefined}
-      permissions={{ read: true, create: true, review: true, selectDraft: true }}
-    />));
-    await waitUntil(() => container.textContent?.includes("Image production setup") === true);
+    await act(async () =>
+      root.render(
+        <CharacterAssetStudio
+          commitProjectMutation={async ({ commit }) => ({
+            result: await commit(),
+            refreshed: true,
+          })}
+          data={routeBlockedData}
+          onContinue={() => undefined}
+          onProjectReload={async () => undefined}
+          permissions={{
+            read: true,
+            create: true,
+            review: true,
+            selectDraft: true,
+          }}
+        />,
+      ),
+    );
+    await waitUntil(
+      () => container.textContent?.includes("Image production setup") === true,
+    );
 
     expect(container.textContent).toContain("Visual identity v1");
     expect(container.textContent).toContain("References 1");
@@ -497,11 +617,14 @@ describe("Character Asset Studio bootstrap route projection", () => {
         readiness: {
           ...data.visual.readiness,
           ready: false,
-          blockers: [{
-            code: "identity_missing",
-            message: "No immutable Visual Identity version is pinned.",
-            deepLink: "/admin/characters/character-no-bootstrap-route?tab=identity",
-          }],
+          blockers: [
+            {
+              code: "identity_missing",
+              message: "No immutable Visual Identity version is pinned.",
+              deepLink:
+                "/admin/characters/character-no-bootstrap-route?tab=identity",
+            },
+          ],
         },
         imageReadiness: {
           state: "repairable",
@@ -520,27 +643,47 @@ describe("Character Asset Studio bootstrap route projection", () => {
       return { items: [], pageInfo: { endCursor: null, hasNextPage: false } };
     });
 
-    await act(async () => root.render(<CharacterAssetStudio
-      commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
-      data={repairableData}
-      onContinue={() => undefined}
-      onProjectReload={async () => undefined}
-      permissions={{ read: true, create: true, review: true, selectDraft: true }}
-    />));
-    await waitUntil(() => container.textContent?.includes("Use existing portrait") === true);
+    await act(async () =>
+      root.render(
+        <CharacterAssetStudio
+          commitProjectMutation={async ({ commit }) => ({
+            result: await commit(),
+            refreshed: true,
+          })}
+          data={repairableData}
+          onContinue={() => undefined}
+          onProjectReload={async () => undefined}
+          permissions={{
+            read: true,
+            create: true,
+            review: true,
+            selectDraft: true,
+          }}
+        />,
+      ),
+    );
+    await waitUntil(
+      () => container.textContent?.includes("Use existing portrait") === true,
+    );
 
-    const enable = [...container.querySelectorAll("button")]
-      .find((button) => button.textContent?.includes("Use existing portrait"));
+    const enable = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Use existing portrait"),
+    );
     expect(enable).toBeDefined();
     await act(async () => enable?.click());
-    await waitUntil(() => container.textContent?.includes(
-      "Image production could not be enabled. Your live images were not changed. Try again.",
-    ) === true);
+    await waitUntil(
+      () =>
+        container.textContent?.includes(
+          "Image production could not be enabled. Your live images were not changed. Try again.",
+        ) === true,
+    );
 
     const alert = container.querySelector('[role="alert"]');
     expect(alert).not.toBeNull();
     expect(container.firstElementChild?.firstElementChild).toBe(alert);
-    expect(container.textContent).not.toContain("Admin authority request failed (500)");
+    expect(container.textContent).not.toContain(
+      "Admin authority request failed (500)",
+    );
   });
 
   it("direct-loads and releases an exact committed Run after it falls outside the recent 20", async () => {
@@ -551,8 +694,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
     const intent = beginDurableMutationIntent({
       scope,
       signature: "committed-first-portrait-signature",
-      createIdempotencyKey: () =>
-        "committed-first-portrait-idempotency-key",
+      createIdempotencyKey: () => "committed-first-portrait-idempotency-key",
       requestSnapshot: {
         title: "Mira · Primary portrait",
         purpose: "character_cover",
@@ -654,26 +796,28 @@ describe("Character Asset Studio bootstrap route projection", () => {
       character: { ...data.character, id: characterId },
     });
 
-    await act(async () => root.render(
-      <CharacterAssetStudio
-        actorId={actorId}
-        commitProjectMutation={async ({ commit }) => ({
-          result: await commit(),
-          refreshed: true,
-        })}
-        data={committedData}
-        onContinue={() => undefined}
-        onProjectReload={async () => undefined}
-        permissions={{
-          read: true,
-          create: true,
-          review: true,
-          selectDraft: true,
-        }}
-      />,
-    ));
-    await waitUntil(() =>
-      container.textContent?.includes("Candidate 1") === true
+    await act(async () =>
+      root.render(
+        <CharacterAssetStudio
+          actorId={actorId}
+          commitProjectMutation={async ({ commit }) => ({
+            result: await commit(),
+            refreshed: true,
+          })}
+          data={committedData}
+          onContinue={() => undefined}
+          onProjectReload={async () => undefined}
+          permissions={{
+            read: true,
+            create: true,
+            review: true,
+            selectDraft: true,
+          }}
+        />,
+      ),
+    );
+    await waitUntil(
+      () => container.textContent?.includes("Candidate 1") === true,
     );
 
     expect(readActiveDurableMutationIntent({ scope })).toBeNull();
@@ -682,18 +826,19 @@ describe("Character Asset Studio bootstrap route projection", () => {
       `/api/v2/admin/creative/runs/${runId}`,
       expect.objectContaining({ schema: expect.anything() }),
     );
-    const selectCandidate = [...container.querySelectorAll<HTMLButtonElement>(
-      "button",
-    )].find((button) =>
-      button.getAttribute("aria-label") === "View candidate 1"
+    const selectCandidate = [
+      ...container.querySelectorAll<HTMLButtonElement>("button"),
+    ].find(
+      (button) => button.getAttribute("aria-label") === "View candidate 1",
     );
     expect(selectCandidate?.disabled).toBe(false);
 
-    const compareCandidate = [...container.querySelectorAll<HTMLButtonElement>(
-      "button",
-    )].find((button) =>
-      button.getAttribute("aria-label") ===
-        "Compare candidate 2 with current candidate"
+    const compareCandidate = [
+      ...container.querySelectorAll<HTMLButtonElement>("button"),
+    ].find(
+      (button) =>
+        button.getAttribute("aria-label") ===
+        "Compare candidate 2 with current candidate",
     );
     expect(compareCandidate?.disabled).toBe(false);
     await act(async () => compareCandidate?.click());
@@ -747,19 +892,34 @@ describe("Character Asset Studio bootstrap route projection", () => {
       throw new Error(`Unexpected Admin request: ${path}`);
     });
 
-    await act(async () => root.render(<CharacterAssetStudio
-      actorId={actorId}
-      commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
-      data={withCharacterWorkspaceDetail(data, {
-        character: { ...data.character, id: characterId },
-      })}
-      onContinue={() => undefined}
-      onProjectReload={async () => undefined}
-      permissions={{ read: true, create: true, review: true, selectDraft: true }}
-    />));
-    await waitUntil(() => container.textContent?.includes(
-      "The committed Run projection is still unavailable",
-    ) === true);
+    await act(async () =>
+      root.render(
+        <CharacterAssetStudio
+          actorId={actorId}
+          commitProjectMutation={async ({ commit }) => ({
+            result: await commit(),
+            refreshed: true,
+          })}
+          data={withCharacterWorkspaceDetail(data, {
+            character: { ...data.character, id: characterId },
+          })}
+          onContinue={() => undefined}
+          onProjectReload={async () => undefined}
+          permissions={{
+            read: true,
+            create: true,
+            review: true,
+            selectDraft: true,
+          }}
+        />,
+      ),
+    );
+    await waitUntil(
+      () =>
+        container.textContent?.includes(
+          "The committed Run projection is still unavailable",
+        ) === true,
+    );
 
     expect(container.textContent).toContain("projection replica unavailable");
     expect(container.textContent).toContain(
@@ -780,26 +940,38 @@ describe("Character Asset Studio bootstrap route projection", () => {
       throw new Error(`Unexpected Admin request: ${path}`);
     });
 
-    await act(async () => root.render(<CharacterAssetStudio
-      commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
-      data={withCharacterWorkspaceDetail(data, {
-        project: {
-          ...data.project,
-          draftAssetSelections: {
-            character_cover: {
-              assetId: "pinned-asset",
-              runId: pinnedRunId,
-              itemId: "pinned-item",
-              reviewDecisionId: "pinned-review",
-              generationJobId: "pinned-job",
+    await act(async () =>
+      root.render(
+        <CharacterAssetStudio
+          commitProjectMutation={async ({ commit }) => ({
+            result: await commit(),
+            refreshed: true,
+          })}
+          data={withCharacterWorkspaceDetail(data, {
+            project: {
+              ...data.project,
+              draftAssetSelections: {
+                character_cover: {
+                  assetId: "pinned-asset",
+                  runId: pinnedRunId,
+                  itemId: "pinned-item",
+                  reviewDecisionId: "pinned-review",
+                  generationJobId: "pinned-job",
+                },
+              },
             },
-          },
-        },
-      })}
-      onContinue={() => undefined}
-      onProjectReload={async () => undefined}
-      permissions={{ read: true, create: true, review: true, selectDraft: true }}
-    />));
+          })}
+          onContinue={() => undefined}
+          onProjectReload={async () => undefined}
+          permissions={{
+            read: true,
+            create: true,
+            review: true,
+            selectDraft: true,
+          }}
+        />,
+      ),
+    );
     await waitUntil(() => container.querySelector('[role="alert"]') !== null);
 
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
@@ -818,8 +990,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
     const intent = beginDurableMutationIntent({
       scope,
       signature: "wrong-character-first-portrait-signature",
-      createIdempotencyKey: () =>
-        "wrong-character-first-portrait-key",
+      createIdempotencyKey: () => "wrong-character-first-portrait-key",
       requestSnapshot: {
         title: "Mira · Primary portrait",
         purpose: "character_cover",
@@ -878,28 +1049,31 @@ describe("Character Asset Studio bootstrap route projection", () => {
       character: { ...data.character, id: characterId },
     });
 
-    await act(async () => root.render(
-      <CharacterAssetStudio
-        actorId={actorId}
-        commitProjectMutation={async ({ commit }) => ({
-          result: await commit(),
-          refreshed: true,
-        })}
-        data={committedData}
-        onContinue={() => undefined}
-        onProjectReload={async () => undefined}
-        permissions={{
-          read: true,
-          create: true,
-          review: true,
-          selectDraft: true,
-        }}
-      />,
-    ));
-    await waitUntil(() =>
-      container.textContent?.includes(
-        "does not match this Character and image purpose",
-      ) === true
+    await act(async () =>
+      root.render(
+        <CharacterAssetStudio
+          actorId={actorId}
+          commitProjectMutation={async ({ commit }) => ({
+            result: await commit(),
+            refreshed: true,
+          })}
+          data={committedData}
+          onContinue={() => undefined}
+          onProjectReload={async () => undefined}
+          permissions={{
+            read: true,
+            create: true,
+            review: true,
+            selectDraft: true,
+          }}
+        />,
+      ),
+    );
+    await waitUntil(
+      () =>
+        container.textContent?.includes(
+          "does not match this Character and image purpose",
+        ) === true,
     );
 
     expect(readActiveDurableMutationIntent({ scope })).toMatchObject({
@@ -934,37 +1108,39 @@ describe("Character Asset Studio bootstrap route projection", () => {
     const runDetail = {
       ...runSummary,
       version: 2,
-      items: [{
-        id: "source-variation-item",
-        ordinal: 0,
-        status: "approved",
-        version: 1,
-        asset: {
-          id: "source-variation-asset",
-          url: "/source-variation.webp",
-          thumbnailUrl: "/source-variation-thumb.webp",
-        },
-        review: {
-          id: "source-variation-review",
-          supersedesDecisionId: null,
-          decision: "approved",
-          identityConsistency: "passed",
-          score: 96,
-          quality: {
-            artifactFree: true,
-            singleSubject: true,
-            intentMatch: true,
-            noVisibleText: true,
+      items: [
+        {
+          id: "source-variation-item",
+          ordinal: 0,
+          status: "approved",
+          version: 1,
+          asset: {
+            id: "source-variation-asset",
+            url: "/source-variation.webp",
+            thumbnailUrl: "/source-variation-thumb.webp",
           },
-          reason: "Visible evidence passed",
+          review: {
+            id: "source-variation-review",
+            supersedesDecisionId: null,
+            decision: "approved",
+            identityConsistency: "passed",
+            score: 96,
+            quality: {
+              artifactFree: true,
+              singleSubject: true,
+              intentMatch: true,
+              noVisibleText: true,
+            },
+            reason: "Visible evidence passed",
+          },
+          lineage: {
+            generationProfileKey: "profile-source-v1",
+            workflowKey: "source-identity-workflow",
+            requestId: "request-source-v1",
+            providerRequestId: "provider-source-v1",
+          },
         },
-        lineage: {
-          generationProfileKey: "profile-source-v1",
-          workflowKey: "source-identity-workflow",
-          requestId: "request-source-v1",
-          providerRequestId: "provider-source-v1",
-        },
-      }],
+      ],
     };
     adminV2Request.mockImplementation(async (path) => {
       if (path.includes("/api/v2/admin/creative/runs?")) {
@@ -1006,50 +1182,54 @@ describe("Character Asset Studio bootstrap route projection", () => {
         snapshotHash: "reference-source-hash",
         createdFrom: "mounted-test",
         createdAt: "2026-07-16T12:00:00.000Z",
-        references: [{
-          mediaAssetId: "anchor-source-v1",
-          role: "identity_anchor",
-          available: true,
-          url: "/anchor-source.webp",
-          thumbnailUrl: null,
-          qualityScore: 96,
-          identityScore: 0.98,
-        }],
+        references: [
+          {
+            mediaAssetId: "anchor-source-v1",
+            role: "identity_anchor",
+            available: true,
+            url: "/anchor-source.webp",
+            thumbnailUrl: null,
+            qualityScore: 96,
+            identityScore: 0.98,
+          },
+        ],
       },
-      routeQualifications: [{
-        id: "qualification-source-v1",
-        routeFingerprint: "route-source-v1",
-        generationProfileKey: "profile-source-v1",
-        generationProfileVersion: 1,
-        workflowKey: "source-identity-workflow",
-        workflowVersion: 1,
-        style: "realistic",
-        matrixKey: "matrix-source-v1",
-        sampleCount: 40,
-        passCount: 40,
-        identityMatch: 0.98,
-        result: "qualified",
-        evidence: {},
-        policyVersion: "character-release-policy-v2",
-        evaluatedAt: "2026-07-16T12:00:00.000Z",
-        expiresAt: null,
-        stale: false,
-        identityContract: {
-          maxReferences: 2,
-          acceptedRoles: ["identity_anchor", "source_image"],
-          supportsLookReference: false,
-          supportsSourceImageWithIdentity: true,
-        },
-        profileCapabilities: {
-          referenceImages: true,
-          initImage: false,
-        },
-        sourceVariationAuthority: {
+      routeQualifications: [
+        {
+          id: "qualification-source-v1",
           routeFingerprint: "route-source-v1",
-          ready: false,
-          blocker: "profile_init_image_unsupported",
+          generationProfileKey: "profile-source-v1",
+          generationProfileVersion: 1,
+          workflowKey: "source-identity-workflow",
+          workflowVersion: 1,
+          style: "realistic",
+          matrixKey: "matrix-source-v1",
+          sampleCount: 40,
+          passCount: 40,
+          identityMatch: 0.98,
+          result: "qualified",
+          evidence: {},
+          policyVersion: "character-release-policy-v2",
+          evaluatedAt: "2026-07-16T12:00:00.000Z",
+          expiresAt: null,
+          stale: false,
+          identityContract: {
+            maxReferences: 2,
+            acceptedRoles: ["identity_anchor", "source_image"],
+            supportsLookReference: false,
+            supportsSourceImageWithIdentity: true,
+          },
+          profileCapabilities: {
+            referenceImages: true,
+            initImage: false,
+          },
+          sourceVariationAuthority: {
+            routeFingerprint: "route-source-v1",
+            ready: false,
+            blocker: "profile_init_image_unsupported",
+          },
         },
-      }],
+      ],
       identityBootstrap: {
         state: "blocked_existing_authority",
         allowed: false,
@@ -1069,21 +1249,41 @@ describe("Character Asset Studio bootstrap route projection", () => {
       visual: readyVisual,
     });
 
-    await act(async () => root.render(<CharacterAssetStudio
-      commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
-      data={blockedData}
-      onContinue={() => undefined}
-      onProjectReload={async () => undefined}
-      permissions={{ read: true, create: true, review: true, selectDraft: true }}
-    />));
-    await waitUntil(() => container.querySelector('[aria-label="View candidate 1"]') !== null);
-    const openCandidate = [...container.querySelectorAll<HTMLButtonElement>("button")]
-      .find((button) => button.getAttribute("aria-label") === "View candidate 1");
+    await act(async () =>
+      root.render(
+        <CharacterAssetStudio
+          commitProjectMutation={async ({ commit }) => ({
+            result: await commit(),
+            refreshed: true,
+          })}
+          data={blockedData}
+          onContinue={() => undefined}
+          onProjectReload={async () => undefined}
+          permissions={{
+            read: true,
+            create: true,
+            review: true,
+            selectDraft: true,
+          }}
+        />,
+      ),
+    );
+    await waitUntil(
+      () => container.querySelector('[aria-label="View candidate 1"]') !== null,
+    );
+    const openCandidate = [
+      ...container.querySelectorAll<HTMLButtonElement>("button"),
+    ].find(
+      (button) => button.getAttribute("aria-label") === "View candidate 1",
+    );
     await act(async () => openCandidate?.click());
-    await waitUntil(() => container.textContent?.includes("More like this") === true);
+    await waitUntil(
+      () => container.textContent?.includes("More like this") === true,
+    );
 
-    const blockedButton = [...container.querySelectorAll("button")]
-      .find((button) => button.textContent?.includes("More like this"));
+    const blockedButton = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.includes("More like this"),
+    );
     expect(blockedButton?.disabled).toBe(true);
     expect(container.textContent).toContain(
       "active model profile cannot use the selected image as an init image",
@@ -1093,34 +1293,50 @@ describe("Character Asset Studio bootstrap route projection", () => {
     const supportedData = withCharacterWorkspaceDetail(blockedData, {
       visual: {
         ...readyVisual,
-        routeQualifications: (readyVisual.routeQualifications ?? []).map((route) => ({
-          ...route,
-          profileCapabilities: {
-            referenceImages: true,
-            initImage: true,
-          },
-          sourceVariationAuthority: {
-            routeFingerprint: route.routeFingerprint,
-            ready: true,
-            blocker: null,
-          },
-        })),
+        routeQualifications: (readyVisual.routeQualifications ?? []).map(
+          (route) => ({
+            ...route,
+            profileCapabilities: {
+              referenceImages: true,
+              initImage: true,
+            },
+            sourceVariationAuthority: {
+              routeFingerprint: route.routeFingerprint,
+              ready: true,
+              blocker: null,
+            },
+          }),
+        ),
       },
     });
-    await act(async () => root.render(<CharacterAssetStudio
-      commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
-      data={supportedData}
-      onContinue={() => undefined}
-      onProjectReload={async () => undefined}
-      permissions={{ read: true, create: true, review: true, selectDraft: true }}
-    />));
+    await act(async () =>
+      root.render(
+        <CharacterAssetStudio
+          commitProjectMutation={async ({ commit }) => ({
+            result: await commit(),
+            refreshed: true,
+          })}
+          data={supportedData}
+          onContinue={() => undefined}
+          onProjectReload={async () => undefined}
+          permissions={{
+            read: true,
+            create: true,
+            review: true,
+            selectDraft: true,
+          }}
+        />,
+      ),
+    );
     await waitUntil(() => {
-      const button = [...container.querySelectorAll("button")]
-        .find((candidate) => candidate.textContent?.includes("More like this"));
+      const button = [...container.querySelectorAll("button")].find(
+        (candidate) => candidate.textContent?.includes("More like this"),
+      );
       return button?.disabled === false;
     });
-    const supportedButton = [...container.querySelectorAll("button")]
-      .find((button) => button.textContent?.includes("More like this"));
+    const supportedButton = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.includes("More like this"),
+    );
     expect(supportedButton?.disabled).toBe(false);
   });
 
@@ -1170,7 +1386,11 @@ describe("Character Asset Studio bootstrap route projection", () => {
         draftAssetRouteAuthority: {
           status: "stale",
           currentRouteFingerprint: "route-q2",
-          stalePurposes: ["character_cover", "character_hero", "character_chat"],
+          stalePurposes: [
+            "character_cover",
+            "character_hero",
+            "character_chat",
+          ],
           recoveryPurpose: "character_cover",
         },
       },
@@ -1183,22 +1403,30 @@ describe("Character Asset Studio bootstrap route projection", () => {
           style: "realistic",
           identityPrompt: "Mira with a stable recognizable identity",
           negativeIdentityPrompt: "identity drift",
-          traits: { face: { identity: "Mira" }, hair: {}, body: {}, signature: {}, style: {} },
+          traits: {
+            face: { identity: "Mira" },
+            hair: {},
+            body: {},
+            signature: {},
+            style: {},
+          },
           immutableHash: "identity-hash",
           evidenceState: "reviewed_bootstrap",
           defaultSeed: "mira-seed",
           createdFrom: "mounted-test",
           createdAt: "2026-07-16T12:00:00.000Z",
         },
-        anchors: [{
-          mediaAssetId: "anchor-1",
-          role: "identity_anchor",
-          available: true,
-          url: "/anchor.webp",
-          thumbnailUrl: "/anchor-thumb.webp",
-          qualityScore: 95,
-          identityScore: 0.98,
-        }],
+        anchors: [
+          {
+            mediaAssetId: "anchor-1",
+            role: "identity_anchor",
+            available: true,
+            url: "/anchor.webp",
+            thumbnailUrl: "/anchor-thumb.webp",
+            qualityScore: 95,
+            identityScore: 0.98,
+          },
+        ],
         references: [],
         activeReferenceSet: {
           id: "reference-set-1",
@@ -1208,41 +1436,45 @@ describe("Character Asset Studio bootstrap route projection", () => {
           snapshotHash: "reference-hash",
           createdFrom: "mounted-test",
           createdAt: "2026-07-16T12:00:00.000Z",
-          references: [{
-            mediaAssetId: "anchor-1",
-            role: "identity_anchor",
-            available: true,
-            url: "/anchor.webp",
-            thumbnailUrl: "/anchor-thumb.webp",
-            qualityScore: 95,
-            identityScore: 0.98,
-          }],
+          references: [
+            {
+              mediaAssetId: "anchor-1",
+              role: "identity_anchor",
+              available: true,
+              url: "/anchor.webp",
+              thumbnailUrl: "/anchor-thumb.webp",
+              qualityScore: 95,
+              identityScore: 0.98,
+            },
+          ],
         },
-        routeQualifications: [{
-          id: "qualification-q2",
-          routeFingerprint: "route-q2",
-          generationProfileKey: "profile-q2",
-          generationProfileVersion: 2,
-          workflowKey: "qwen-image-edit-img2img",
-          workflowVersion: 1,
-          style: "realistic",
-          matrixKey: "mounted-matrix-q2",
-          sampleCount: 40,
-          passCount: 40,
-          identityMatch: 0.99,
-          result: "qualified",
-          evidence: {},
-          policyVersion: "character-release-policy-v2",
-          evaluatedAt: "2026-07-16T13:00:00.000Z",
-          expiresAt: null,
-          stale: false,
-          identityContract: {
-            maxReferences: 1,
-            acceptedRoles: ["identity_anchor"],
-            supportsLookReference: false,
-            supportsSourceImageWithIdentity: false,
+        routeQualifications: [
+          {
+            id: "qualification-q2",
+            routeFingerprint: "route-q2",
+            generationProfileKey: "profile-q2",
+            generationProfileVersion: 2,
+            workflowKey: "qwen-image-edit-img2img",
+            workflowVersion: 1,
+            style: "realistic",
+            matrixKey: "mounted-matrix-q2",
+            sampleCount: 40,
+            passCount: 40,
+            identityMatch: 0.99,
+            result: "qualified",
+            evidence: {},
+            policyVersion: "character-release-policy-v2",
+            evaluatedAt: "2026-07-16T13:00:00.000Z",
+            expiresAt: null,
+            stale: false,
+            identityContract: {
+              maxReferences: 1,
+              acceptedRoles: ["identity_anchor"],
+              supportsLookReference: false,
+              supportsSourceImageWithIdentity: false,
+            },
           },
-        }],
+        ],
         identityBootstrap: {
           state: "blocked_existing_authority",
           allowed: false,
@@ -1254,7 +1486,10 @@ describe("Character Asset Studio bootstrap route projection", () => {
       },
     });
     adminV2Request.mockImplementation(async (path, options) => {
-      if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
+      if (
+        path === "/api/v2/admin/creative/runs" &&
+        options?.method === "POST"
+      ) {
         return { batch: { id: "run-cover-q2" }, replayed: false };
       }
       if (path.includes("/api/v2/admin/creative/runs?")) {
@@ -1275,31 +1510,55 @@ describe("Character Asset Studio bootstrap route projection", () => {
       throw new Error(`Unexpected Admin request: ${path}`);
     });
 
-    await act(async () => root.render(<CharacterAssetStudio
-      commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
-      data={stalePackData}
-      onContinue={() => undefined}
-      onProjectReload={async () => undefined}
-      permissions={{ read: true, create: true, review: true, selectDraft: true }}
-    />));
+    await act(async () =>
+      root.render(
+        <CharacterAssetStudio
+          commitProjectMutation={async ({ commit }) => ({
+            result: await commit(),
+            refreshed: true,
+          })}
+          data={stalePackData}
+          onContinue={() => undefined}
+          onProjectReload={async () => undefined}
+          permissions={{
+            read: true,
+            create: true,
+            review: true,
+            selectDraft: true,
+          }}
+        />,
+      ),
+    );
     // 按钮必须点名它要重跑哪一张：它只发一条 Run（recoveryPurpose），但旁边写着
     // 「N selected assets…」，泛化的 "Regenerate under current route" 会被读成整包重跑。
-    await waitUntil(() => container.textContent?.includes("Regenerate Primary portrait") === true);
-    expect(container.textContent).toContain("remain in history but cannot authorize QA");
+    await waitUntil(
+      () =>
+        container.textContent?.includes("Regenerate Primary portrait") === true,
+    );
+    expect(container.textContent).toContain(
+      "remain in history but cannot be published",
+    );
     expect(container.textContent).toContain("New image");
-    expect(container.textContent).not.toContain("Regenerate under current route");
+    expect(container.textContent).not.toContain(
+      "Regenerate under current route",
+    );
 
-    const regenerate = [...container.querySelectorAll("button")]
-      .find((button) => button.textContent?.includes("Regenerate Primary portrait"));
+    const regenerate = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.includes("Regenerate Primary portrait"),
+    );
     await act(async () => {
       regenerate?.click();
       await Promise.resolve();
     });
-    await waitUntil(() => adminV2Request.mock.calls.some(([path, options]) =>
-      path === "/api/v2/admin/creative/runs" && options?.method === "POST"
-    ));
-    const createCall = adminV2Request.mock.calls.find(([path, options]) =>
-      path === "/api/v2/admin/creative/runs" && options?.method === "POST"
+    await waitUntil(() =>
+      adminV2Request.mock.calls.some(
+        ([path, options]) =>
+          path === "/api/v2/admin/creative/runs" && options?.method === "POST",
+      ),
+    );
+    const createCall = adminV2Request.mock.calls.find(
+      ([path, options]) =>
+        path === "/api/v2/admin/creative/runs" && options?.method === "POST",
     );
     expect(createCall?.[1]).toMatchObject({
       body: {
@@ -1331,16 +1590,24 @@ describe("Character Asset Studio bootstrap route projection", () => {
     const detailRefresh = deferred<unknown>();
     let listReads = 0;
     adminV2Request.mockImplementation(async (path, options) => {
-      if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
+      if (
+        path === "/api/v2/admin/creative/runs" &&
+        options?.method === "POST"
+      ) {
         return { batch: { id: "new-run" }, replayed: false };
       }
       if (path.includes("/api/v2/admin/creative/runs?")) {
         listReads += 1;
         if (listReads === 2) return listRefresh.promise;
-        return { items: [runningRun], pageInfo: { endCursor: null, hasNextPage: false } };
+        return {
+          items: [runningRun],
+          pageInfo: { endCursor: null, hasNextPage: false },
+        };
       }
-      if (path === "/api/v2/admin/creative/runs/new-run") return detailRefresh.promise;
-      if (path === "/api/v2/admin/creative/runs/running-run") return runningDetail;
+      if (path === "/api/v2/admin/creative/runs/new-run")
+        return detailRefresh.promise;
+      if (path === "/api/v2/admin/creative/runs/running-run")
+        return runningDetail;
       throw new Error(`Unexpected Admin request: ${path}`);
     });
     const normalData = withCharacterWorkspaceDetail(data, {
@@ -1354,22 +1621,30 @@ describe("Character Asset Studio bootstrap route projection", () => {
           style: "realistic",
           identityPrompt: "Mira with a stable recognizable identity",
           negativeIdentityPrompt: "identity drift",
-          traits: { face: { identity: "Mira" }, hair: {}, body: {}, signature: {}, style: {} },
+          traits: {
+            face: { identity: "Mira" },
+            hair: {},
+            body: {},
+            signature: {},
+            style: {},
+          },
           immutableHash: "identity-hash",
           evidenceState: "reviewed_bootstrap",
           defaultSeed: "mira-seed",
           createdFrom: "mounted-test",
           createdAt: "2026-07-16T12:00:00.000Z",
         },
-        anchors: [{
-          mediaAssetId: "anchor-1",
-          role: "identity_anchor",
-          available: true,
-          url: "/anchor.webp",
-          thumbnailUrl: "/anchor-thumb.webp",
-          qualityScore: 95,
-          identityScore: 0.98,
-        }],
+        anchors: [
+          {
+            mediaAssetId: "anchor-1",
+            role: "identity_anchor",
+            available: true,
+            url: "/anchor.webp",
+            thumbnailUrl: "/anchor-thumb.webp",
+            qualityScore: 95,
+            identityScore: 0.98,
+          },
+        ],
         references: [],
         activeReferenceSet: {
           id: "reference-set-1",
@@ -1379,41 +1654,45 @@ describe("Character Asset Studio bootstrap route projection", () => {
           snapshotHash: "reference-hash",
           createdFrom: "mounted-test",
           createdAt: "2026-07-16T12:00:00.000Z",
-          references: [{
-            mediaAssetId: "anchor-1",
-            role: "identity_anchor",
-            available: true,
-            url: "/anchor.webp",
-            thumbnailUrl: "/anchor-thumb.webp",
-            qualityScore: 95,
-            identityScore: 0.98,
-          }],
+          references: [
+            {
+              mediaAssetId: "anchor-1",
+              role: "identity_anchor",
+              available: true,
+              url: "/anchor.webp",
+              thumbnailUrl: "/anchor-thumb.webp",
+              qualityScore: 95,
+              identityScore: 0.98,
+            },
+          ],
         },
-        routeQualifications: [{
-          id: "qualification-1",
-          routeFingerprint: "route-fingerprint",
-          generationProfileKey: "profile-reference-v1",
-          generationProfileVersion: 1,
-          workflowKey: "qwen-image-edit-img2img",
-          workflowVersion: 1,
-          style: "realistic",
-          matrixKey: "mounted-matrix",
-          sampleCount: 40,
-          passCount: 40,
-          identityMatch: 0.97,
-          result: "qualified",
-          evidence: {},
-          policyVersion: "character-release-policy-v2",
-          evaluatedAt: "2026-07-16T12:00:00.000Z",
-          expiresAt: null,
-          stale: false,
-          identityContract: {
-            maxReferences: 1,
-            acceptedRoles: ["identity_anchor"],
-            supportsLookReference: false,
-            supportsSourceImageWithIdentity: false,
+        routeQualifications: [
+          {
+            id: "qualification-1",
+            routeFingerprint: "route-fingerprint",
+            generationProfileKey: "profile-reference-v1",
+            generationProfileVersion: 1,
+            workflowKey: "qwen-image-edit-img2img",
+            workflowVersion: 1,
+            style: "realistic",
+            matrixKey: "mounted-matrix",
+            sampleCount: 40,
+            passCount: 40,
+            identityMatch: 0.97,
+            result: "qualified",
+            evidence: {},
+            policyVersion: "character-release-policy-v2",
+            evaluatedAt: "2026-07-16T12:00:00.000Z",
+            expiresAt: null,
+            stale: false,
+            identityContract: {
+              maxReferences: 1,
+              acceptedRoles: ["identity_anchor"],
+              supportsLookReference: false,
+              supportsSourceImageWithIdentity: false,
+            },
           },
-        }],
+        ],
         identityBootstrap: {
           state: "blocked_existing_authority",
           allowed: false,
@@ -1426,18 +1705,31 @@ describe("Character Asset Studio bootstrap route projection", () => {
     });
 
     await act(async () => {
-      root.render(<CharacterAssetStudio
-        commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
-        data={normalData}
-        onContinue={() => undefined}
-        onProjectReload={async () => undefined}
-        permissions={{ read: true, create: true, review: true, selectDraft: true }}
-      />);
+      root.render(
+        <CharacterAssetStudio
+          commitProjectMutation={async ({ commit }) => ({
+            result: await commit(),
+            refreshed: true,
+          })}
+          data={normalData}
+          onContinue={() => undefined}
+          onProjectReload={async () => undefined}
+          permissions={{
+            read: true,
+            create: true,
+            review: true,
+            selectDraft: true,
+          }}
+        />,
+      );
       await vi.advanceTimersByTimeAsync(0);
     });
-    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-    const generate = [...container.querySelectorAll("button")]
-      .find((button) => button.textContent?.includes("Generate 1 portrait"));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    const generate = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Generate 1 portrait"),
+    );
     expect(generate?.disabled).toBe(false);
 
     await act(async () => {
@@ -1445,9 +1737,14 @@ describe("Character Asset Studio bootstrap route projection", () => {
       await Promise.resolve();
     });
     expect(listReads).toBe(2);
-    await act(async () => { await vi.advanceTimersByTimeAsync(4_000); });
     await act(async () => {
-      listRefresh.resolve({ items: [runningRun], pageInfo: { endCursor: null, hasNextPage: false } });
+      await vi.advanceTimersByTimeAsync(4_000);
+    });
+    await act(async () => {
+      listRefresh.resolve({
+        items: [runningRun],
+        pageInfo: { endCursor: null, hasNextPage: false },
+      });
       detailRefresh.resolve({
         ...runningDetail,
         id: "new-run",
@@ -1460,12 +1757,18 @@ describe("Character Asset Studio bootstrap route projection", () => {
       await vi.advanceTimersByTimeAsync(0);
     });
 
-    expect(container.textContent).not.toContain("latest projection could not be refreshed");
-    expect(container.textContent).not.toContain("Automatic refresh was delayed");
+    expect(container.textContent).not.toContain(
+      "latest projection could not be refreshed",
+    );
+    expect(container.textContent).not.toContain(
+      "Automatic refresh was delayed",
+    );
     expect(container.textContent).not.toContain("Created Run receipt");
-    expect(readActiveDurableMutationIntent({
-      scope: "character-asset:create:anonymous:character-ready",
-    })).toBeNull();
+    expect(
+      readActiveDurableMutationIntent({
+        scope: "character-asset:create:anonymous:character-ready",
+      }),
+    ).toBeNull();
     expect(
       container.querySelector<HTMLTextAreaElement>(
         'textarea[aria-label*="creative brief"]',
@@ -1480,7 +1783,14 @@ describe("Character Asset Studio bootstrap route projection", () => {
       purpose: "character_cover",
       executionOutcome: "succeeded",
       reviewState: "approved",
-      counts: { total: 1, generated: 1, reviewed: 1, approved: 1, placed: 0, failed: 0 },
+      counts: {
+        total: 1,
+        generated: 1,
+        reviewed: 1,
+        approved: 1,
+        placed: 0,
+        failed: 0,
+      },
       updatedAt: `2026-07-${String(16 - Math.floor(index / 2)).padStart(2, "0")}T12:00:00.000Z`,
     }));
     const pinnedDetail = {
@@ -1488,15 +1798,26 @@ describe("Character Asset Studio bootstrap route projection", () => {
       purpose: "character_cover",
       executionOutcome: "succeeded",
       reviewState: "approved",
-      counts: { total: 1, generated: 1, reviewed: 1, approved: 1, placed: 0, failed: 0 },
+      counts: {
+        total: 1,
+        generated: 1,
+        reviewed: 1,
+        approved: 1,
+        placed: 0,
+        failed: 0,
+      },
       updatedAt: "2026-06-01T12:00:00.000Z",
       items: [],
     };
     adminV2Request.mockImplementation(async (path) => {
       if (path.includes("/api/v2/admin/creative/runs?")) {
-        return { items: recentRuns, pageInfo: { endCursor: "next-page", hasNextPage: true } };
+        return {
+          items: recentRuns,
+          pageInfo: { endCursor: "next-page", hasNextPage: true },
+        };
       }
-      if (path === `/api/v2/admin/creative/runs/${pinnedRunId}`) return pinnedDetail;
+      if (path === `/api/v2/admin/creative/runs/${pinnedRunId}`)
+        return pinnedDetail;
       throw new Error(`Unexpected Admin request: ${path}`);
     });
     const pinnedData = withCharacterWorkspaceDetail(data, {
@@ -1516,17 +1837,33 @@ describe("Character Asset Studio bootstrap route projection", () => {
       },
     });
 
-    await act(async () => root.render(<CharacterAssetStudio
-      commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
-      data={pinnedData}
-      onContinue={() => undefined}
-      onProjectReload={async () => undefined}
-      permissions={{ read: true, create: true, review: true, selectDraft: true }}
-    />));
-    await waitUntil(() => adminV2Request.mock.calls.some(([path]) =>
-      path === `/api/v2/admin/creative/runs/${pinnedRunId}`
-    ));
-    await waitUntil(() => container.textContent?.includes("Selected in draft") === true);
+    await act(async () =>
+      root.render(
+        <CharacterAssetStudio
+          commitProjectMutation={async ({ commit }) => ({
+            result: await commit(),
+            refreshed: true,
+          })}
+          data={pinnedData}
+          onContinue={() => undefined}
+          onProjectReload={async () => undefined}
+          permissions={{
+            read: true,
+            create: true,
+            review: true,
+            selectDraft: true,
+          }}
+        />,
+      ),
+    );
+    await waitUntil(() =>
+      adminV2Request.mock.calls.some(
+        ([path]) => path === `/api/v2/admin/creative/runs/${pinnedRunId}`,
+      ),
+    );
+    await waitUntil(
+      () => container.textContent?.includes("Selected in draft") === true,
+    );
 
     expect(adminV2Request).toHaveBeenCalledWith(
       `/api/v2/admin/creative/runs/${pinnedRunId}`,
@@ -1582,10 +1919,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
           replayed: true,
         };
       }
-      if (
-        path ===
-        "/api/v2/admin/creative/runs/recovered-first-portrait-run"
-      ) {
+      if (path === "/api/v2/admin/creative/runs/recovered-first-portrait-run") {
         projectionReads += 1;
         throw new Error("projection replica unavailable");
       }
@@ -1612,14 +1946,14 @@ describe("Character Asset Studio bootstrap route projection", () => {
           />,
         );
       });
-      await waitUntil(() =>
-        container.textContent?.includes("Loading character assets") ===
-          false
+      await waitUntil(
+        () =>
+          container.textContent?.includes("Loading character assets") === false,
       );
     };
     const findButton = (label: string) =>
       [...container.querySelectorAll("button")].find((button) =>
-        button.textContent?.includes(label)
+        button.textContent?.includes(label),
       );
 
     await renderForActor("operator-a");
@@ -1630,9 +1964,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
     });
     expect(createPosts).toBe(1);
     expect(createKeys[0]).toBeTruthy();
-    expect(container.textContent).toContain(
-      "Generation outcome is unknown",
-    );
+    expect(container.textContent).toContain("Generation outcome is unknown");
     expect(findButton("Resume generation")).toBeDefined();
 
     await act(async () => root.unmount());
@@ -1649,8 +1981,8 @@ describe("Character Asset Studio bootstrap route projection", () => {
       findButton("Resume generation")?.click();
       await Promise.resolve();
     });
-    await waitUntil(() =>
-      container.textContent?.includes("Created Run receipt") === true
+    await waitUntil(
+      () => container.textContent?.includes("Created Run receipt") === true,
     );
     expect(createPosts).toBe(2);
     expect(createKeys[1]).toBe(createKeys[0]);
@@ -1679,8 +2011,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
 
   it("keeps a recovered selection locked until the exact Character projection arrives", async () => {
     const characterId = data.character.id;
-    const selectionScope =
-      `character-asset:selection:operator-a:${characterId}`;
+    const selectionScope = `character-asset:selection:operator-a:${characterId}`;
     const selectedAssetId = "recovered-selection-asset";
     const trustedVerification = {
       kind: "character_draft_image_selection" as const,
@@ -1691,8 +2022,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
     beginDurableMutationIntent({
       scope: selectionScope,
       signature: "legacy-selection-without-kind",
-      createIdempotencyKey: () =>
-        "recovered-selection-idempotency-key",
+      createIdempotencyKey: () => "recovered-selection-idempotency-key",
       requestSnapshot: { legacy: true },
     });
     adminV2Request.mockImplementation(async (path, options) => {
@@ -1708,9 +2038,11 @@ describe("Character Asset Studio bootstrap route projection", () => {
       ) {
         if (
           (
-            options.body as {
-              readonly commandType?: string;
-            } | undefined
+            options.body as
+              | {
+                  readonly commandType?: string;
+                }
+              | undefined
           )?.commandType === "character.identity.bootstrap"
         ) {
           throw new AdminV2RequestError(
@@ -1718,17 +2050,14 @@ describe("Character Asset Studio bootstrap route projection", () => {
             409,
             "conflict",
             {
-              expectedCommandType:
-                "character.identity.bootstrap",
-              existingCommandType:
-                "character.project.draft_image.select",
+              expectedCommandType: "character.identity.bootstrap",
+              existingCommandType: "character.project.draft_image.select",
             },
           );
         }
         return {
           state: "committed",
-          commandType:
-            "character.project.draft_image.select",
+          commandType: "character.project.draft_image.select",
           commandId: "recovered-selection-command",
           status: "succeeded",
           committedTargetId: "recovered-selection-asset",
@@ -1743,22 +2072,22 @@ describe("Character Asset Studio bootstrap route projection", () => {
     const render = async (nextData: CharacterWorkspaceDetail) => {
       await act(async () => {
         root.render(
-        <CharacterAssetStudio
-          actorId="operator-a"
-          commitProjectMutation={async ({ commit }) => ({
-            result: await commit(),
-            refreshed: true,
-          })}
-          data={nextData}
-          onContinue={() => undefined}
-          onProjectReload={async () => undefined}
-          permissions={{
-            read: true,
-            create: true,
-            review: true,
-            selectDraft: true,
-          }}
-        />,
+          <CharacterAssetStudio
+            actorId="operator-a"
+            commitProjectMutation={async ({ commit }) => ({
+              result: await commit(),
+              refreshed: true,
+            })}
+            data={nextData}
+            onContinue={() => undefined}
+            onProjectReload={async () => undefined}
+            permissions={{
+              read: true,
+              create: true,
+              review: true,
+              selectDraft: true,
+            }}
+          />,
         );
       });
     };
@@ -1766,26 +2095,28 @@ describe("Character Asset Studio bootstrap route projection", () => {
     await render(data);
     await waitUntil(() =>
       [...container.querySelectorAll("button")].some((button) =>
-        button.textContent?.includes("Reconcile selection")
-      )
-    );
-    const reconcile = [...container.querySelectorAll("button")].find(
-      (button) =>
         button.textContent?.includes("Reconcile selection"),
+      ),
+    );
+    const reconcile = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Reconcile selection"),
     );
     await act(async () => {
       reconcile?.click();
       await Promise.resolve();
     });
-    await waitUntil(() =>
-      readActiveDurableMutationIntent({
-        scope: selectionScope,
-      })?.status === "committed_projection_pending"
+    await waitUntil(
+      () =>
+        readActiveDurableMutationIntent({
+          scope: selectionScope,
+        })?.status === "committed_projection_pending",
     );
 
-    expect(readActiveDurableMutationIntent({
-      scope: selectionScope,
-    })).toMatchObject({
+    expect(
+      readActiveDurableMutationIntent({
+        scope: selectionScope,
+      }),
+    ).toMatchObject({
       idempotencyKey: "recovered-selection-idempotency-key",
       status: "committed_projection_pending",
       committedTargetId: "recovered-selection-asset",
@@ -1794,20 +2125,25 @@ describe("Character Asset Studio bootstrap route projection", () => {
     expect(container.textContent).toContain(
       "remains locked until the exact Character authority is visible",
     );
-    expect(adminV2Request.mock.calls.some(([path, options]) =>
-      path.includes("/draft-image") &&
-      options?.method === "PATCH"
-    )).toBe(false);
-    expect(adminV2Request.mock.calls.filter(([path]) =>
-      path === "/api/v2/admin/mutation-receipts/reconcile"
-    ).map(([, options]) => options?.body)).toEqual([
+    expect(
+      adminV2Request.mock.calls.some(
+        ([path, options]) =>
+          path.includes("/draft-image") && options?.method === "PATCH",
+      ),
+    ).toBe(false);
+    expect(
+      adminV2Request.mock.calls
+        .filter(
+          ([path]) => path === "/api/v2/admin/mutation-receipts/reconcile",
+        )
+        .map(([, options]) => options?.body),
+    ).toEqual([
       {
         commandType: "character.identity.bootstrap",
         expectedCharacterId: characterId,
       },
       {
-        commandType:
-          "character.project.draft_image.select",
+        commandType: "character.project.draft_image.select",
         expectedCharacterId: characterId,
       },
     ]);
@@ -1837,9 +2173,11 @@ describe("Character Asset Studio bootstrap route projection", () => {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    expect(readActiveDurableMutationIntent({
-      scope: selectionScope,
-    })).toMatchObject({
+    expect(
+      readActiveDurableMutationIntent({
+        scope: selectionScope,
+      }),
+    ).toMatchObject({
       status: "committed_projection_pending",
       committedTargetId: selectedAssetId,
     });
@@ -1868,10 +2206,11 @@ describe("Character Asset Studio bootstrap route projection", () => {
       },
     });
     await render(exactProjection);
-    await waitUntil(() =>
-      readActiveDurableMutationIntent({
-        scope: selectionScope,
-      }) === null
+    await waitUntil(
+      () =>
+        readActiveDurableMutationIntent({
+          scope: selectionScope,
+        }) === null,
     );
     expect(container.textContent).toContain(
       "exact draft asset selection is verified",
@@ -1880,13 +2219,11 @@ describe("Character Asset Studio bootstrap route projection", () => {
 
   it("unlocks a legacy unbound selection after typed fallback proves it was cancelled", async () => {
     const characterId = data.character.id;
-    const selectionScope =
-      `character-asset:selection:operator-a:${characterId}`;
+    const selectionScope = `character-asset:selection:operator-a:${characterId}`;
     beginDurableMutationIntent({
       scope: selectionScope,
       signature: "legacy-unbound-selection-receipt",
-      createIdempotencyKey: () =>
-        "cancelled-selection-idempotency-key",
+      createIdempotencyKey: () => "cancelled-selection-idempotency-key",
       requestSnapshot: { legacySelectionAsset: "removed-field" },
     });
     adminV2Request.mockImplementation(async (path, options) => {
@@ -1901,9 +2238,11 @@ describe("Character Asset Studio bootstrap route projection", () => {
         options?.method === "POST"
       ) {
         const commandType = (
-          options.body as {
-            readonly commandType?: string;
-          } | undefined
+          options.body as
+            | {
+                readonly commandType?: string;
+              }
+            | undefined
         )?.commandType;
         if (commandType === "character.identity.bootstrap") {
           throw new AdminV2RequestError(
@@ -1911,17 +2250,14 @@ describe("Character Asset Studio bootstrap route projection", () => {
             409,
             "conflict",
             {
-              expectedCommandType:
-                "character.identity.bootstrap",
-              existingCommandType:
-                "character.project.draft_image.select",
+              expectedCommandType: "character.identity.bootstrap",
+              existingCommandType: "character.project.draft_image.select",
             },
           );
         }
         return {
           state: "cancelled",
-          commandType:
-            "character.project.draft_image.select",
+          commandType: "character.project.draft_image.select",
           commandId: "cancelled-selection-command",
           status: "cancelled",
           committedTargetId: null,
@@ -1953,33 +2289,36 @@ describe("Character Asset Studio bootstrap route projection", () => {
     });
     await waitUntil(() =>
       [...container.querySelectorAll("button")].some((button) =>
-        button.textContent?.includes("Reconcile selection")
-      )
-    );
-    const reconcile = [...container.querySelectorAll("button")].find(
-      (button) =>
         button.textContent?.includes("Reconcile selection"),
+      ),
+    );
+    const reconcile = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Reconcile selection"),
     );
     await act(async () => {
       reconcile?.click();
       await Promise.resolve();
     });
-    await waitUntil(() =>
-      readActiveDurableMutationIntent({
-        scope: selectionScope,
-      }) === null
+    await waitUntil(
+      () =>
+        readActiveDurableMutationIntent({
+          scope: selectionScope,
+        }) === null,
     );
 
-    expect(adminV2Request.mock.calls.filter(([path]) =>
-      path === "/api/v2/admin/mutation-receipts/reconcile"
-    ).map(([, options]) => options?.body)).toEqual([
+    expect(
+      adminV2Request.mock.calls
+        .filter(
+          ([path]) => path === "/api/v2/admin/mutation-receipts/reconcile",
+        )
+        .map(([, options]) => options?.body),
+    ).toEqual([
       {
         commandType: "character.identity.bootstrap",
         expectedCharacterId: characterId,
       },
       {
-        commandType:
-          "character.project.draft_image.select",
+        commandType: "character.project.draft_image.select",
         expectedCharacterId: characterId,
       },
     ]);
@@ -1988,19 +2327,20 @@ describe("Character Asset Studio bootstrap route projection", () => {
     );
     expect(
       [...container.querySelectorAll("button")].some((button) =>
-        button.textContent?.includes("Reconcile selection")
+        button.textContent?.includes("Reconcile selection"),
       ),
     ).toBe(false);
-    expect(adminV2Request.mock.calls.some(([path, options]) =>
-      path.includes("/draft-image") &&
-      options?.method === "PATCH"
-    )).toBe(false);
+    expect(
+      adminV2Request.mock.calls.some(
+        ([path, options]) =>
+          path.includes("/draft-image") && options?.method === "PATCH",
+      ),
+    ).toBe(false);
   });
 
   it("clears an old bootstrap receipt only after its trusted identity authority is visible", async () => {
     const characterId = data.character.id;
-    const selectionScope =
-      `character-asset:selection:operator-a:${characterId}`;
+    const selectionScope = `character-asset:selection:operator-a:${characterId}`;
     const trustedVerification = {
       kind: "character_identity_bootstrap" as const,
       characterId,
@@ -2011,8 +2351,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
     beginDurableMutationIntent({
       scope: selectionScope,
       signature: "legacy-bootstrap-signature",
-      createIdempotencyKey: () =>
-        "recovered-bootstrap-idempotency-key",
+      createIdempotencyKey: () => "recovered-bootstrap-idempotency-key",
       requestSnapshot: {
         kind: "bootstrap",
         body: { legacyAssetIdentifier: "recovered-identity-anchor" },
@@ -2034,8 +2373,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
           commandType: "character.identity.bootstrap",
           commandId: "recovered-bootstrap-command",
           status: "succeeded",
-          committedTargetId:
-            trustedVerification.referenceSetRevisionId,
+          committedTargetId: trustedVerification.referenceSetRevisionId,
           verification: trustedVerification,
         };
       }
@@ -2067,32 +2405,36 @@ describe("Character Asset Studio bootstrap route projection", () => {
     await render(data);
     await waitUntil(() =>
       [...container.querySelectorAll("button")].some((button) =>
-        button.textContent?.includes("Reconcile selection")
-      )
-    );
-    const reconcile = [...container.querySelectorAll("button")].find(
-      (button) =>
         button.textContent?.includes("Reconcile selection"),
+      ),
+    );
+    const reconcile = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Reconcile selection"),
     );
     await act(async () => {
       reconcile?.click();
       await Promise.resolve();
     });
-    await waitUntil(() =>
-      readActiveDurableMutationIntent({
-        scope: selectionScope,
-      })?.status === "committed_projection_pending"
+    await waitUntil(
+      () =>
+        readActiveDurableMutationIntent({
+          scope: selectionScope,
+        })?.status === "committed_projection_pending",
     );
 
-    expect(adminV2Request.mock.calls.find(([path]) =>
-      path === "/api/v2/admin/mutation-receipts/reconcile"
-    )?.[1]?.body).toEqual({
+    expect(
+      adminV2Request.mock.calls.find(
+        ([path]) => path === "/api/v2/admin/mutation-receipts/reconcile",
+      )?.[1]?.body,
+    ).toEqual({
       commandType: "character.identity.bootstrap",
       expectedCharacterId: characterId,
     });
-    expect(readActiveDurableMutationIntent({
-      scope: selectionScope,
-    })).toMatchObject({
+    expect(
+      readActiveDurableMutationIntent({
+        scope: selectionScope,
+      }),
+    ).toMatchObject({
       committedTargetId: trustedVerification.referenceSetRevisionId,
       requestSnapshot: trustedVerification,
     });
@@ -2135,15 +2477,17 @@ describe("Character Asset Studio bootstrap route projection", () => {
           snapshotHash: "receipt-recovery-reference-hash",
           createdFrom: "receipt-recovery",
           createdAt: "2026-07-17T12:00:00.000Z",
-          references: [{
-            mediaAssetId: trustedVerification.anchorAssetId,
-            role: "identity_anchor",
-            available: true,
-            url: "/recovered-anchor.webp",
-            thumbnailUrl: null,
-            qualityScore: 96,
-            identityScore: 0.98,
-          }],
+          references: [
+            {
+              mediaAssetId: trustedVerification.anchorAssetId,
+              role: "identity_anchor",
+              available: true,
+              url: "/recovered-anchor.webp",
+              thumbnailUrl: null,
+              qualityScore: 96,
+              identityScore: 0.98,
+            },
+          ],
         },
         identityBootstrap: {
           state: "blocked_existing_authority",
@@ -2155,24 +2499,26 @@ describe("Character Asset Studio bootstrap route projection", () => {
       },
     });
     await render(exactProjection);
-    await waitUntil(() =>
-      readActiveDurableMutationIntent({
-        scope: selectionScope,
-      }) === null
+    await waitUntil(
+      () =>
+        readActiveDurableMutationIntent({
+          scope: selectionScope,
+        }) === null,
     );
     expect(container.textContent).toContain(
       "Identity bootstrap authority is verified",
     );
-    expect(adminV2Request.mock.calls.some(([path, options]) =>
-      path.includes("/identity-bootstrap") &&
-      options?.method === "POST"
-    )).toBe(false);
+    expect(
+      adminV2Request.mock.calls.some(
+        ([path, options]) =>
+          path.includes("/identity-bootstrap") && options?.method === "POST",
+      ),
+    ).toBe(false);
   });
 
   it("clears a recovered review only after the exact decision is visible on its Run item", async () => {
     const characterId = data.character.id;
-    const reviewScope =
-      `character-asset:review:operator-a:${characterId}`;
+    const reviewScope = `character-asset:review:operator-a:${characterId}`;
     const runId = "recovered-review-run";
     const itemId = "recovered-review-item";
     const decisionId = "recovered-review-decision";
@@ -2196,8 +2542,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
     beginDurableMutationIntent({
       scope: reviewScope,
       signature: "legacy-review-without-replay-body",
-      createIdempotencyKey: () =>
-        "recovered-review-idempotency-key",
+      createIdempotencyKey: () => "recovered-review-idempotency-key",
       requestSnapshot: { legacy: true },
     });
     const runSummary = {
@@ -2218,32 +2563,34 @@ describe("Character Asset Studio bootstrap route projection", () => {
     const runDetail = {
       ...runSummary,
       version: 2,
-      items: [{
-        id: itemId,
-        ordinal: 0,
-        status: "approved",
-        version: 2,
-        asset: {
-          id: "recovered-review-asset",
-          url: "/recovered-review.webp",
-          thumbnailUrl: "/recovered-review-thumb.webp",
+      items: [
+        {
+          id: itemId,
+          ordinal: 0,
+          status: "approved",
+          version: 2,
+          asset: {
+            id: "recovered-review-asset",
+            url: "/recovered-review.webp",
+            thumbnailUrl: "/recovered-review-thumb.webp",
+          },
+          review: {
+            id: decisionId,
+            supersedesDecisionId: null,
+            decision: "approved",
+            identityConsistency: "unscored",
+            score: 94,
+            quality: canonicalSnapshot.body.quality,
+            reason: canonicalSnapshot.body.reason,
+          },
+          lineage: {
+            generationProfileKey: "bootstrap-profile-v1",
+            workflowKey: "bootstrap-workflow",
+            requestId: "recovered-review-request",
+            providerRequestId: "recovered-review-provider",
+          },
         },
-        review: {
-          id: decisionId,
-          supersedesDecisionId: null,
-          decision: "approved",
-          identityConsistency: "unscored",
-          score: 94,
-          quality: canonicalSnapshot.body.quality,
-          reason: canonicalSnapshot.body.reason,
-        },
-        lineage: {
-          generationProfileKey: "bootstrap-profile-v1",
-          workflowKey: "bootstrap-workflow",
-          requestId: "recovered-review-request",
-          providerRequestId: "recovered-review-provider",
-        },
-      }],
+      ],
     };
     let detailReads = 0;
     adminV2Request.mockImplementation(async (path, options) => {
@@ -2301,29 +2648,32 @@ describe("Character Asset Studio bootstrap route projection", () => {
     });
     await waitUntil(() =>
       [...container.querySelectorAll("button")].some((button) =>
-        button.textContent?.includes("Reconcile review")
-      )
+        button.textContent?.includes("Reconcile review"),
+      ),
     );
-    const reconcile = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent?.includes("Reconcile review"),
+    const reconcile = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Reconcile review"),
     );
     await act(async () => {
       reconcile?.click();
       await Promise.resolve();
     });
-    await waitUntil(() =>
-      readActiveDurableMutationIntent({
-        scope: reviewScope,
-      }) === null
+    await waitUntil(
+      () =>
+        readActiveDurableMutationIntent({
+          scope: reviewScope,
+        }) === null,
     );
 
     expect(detailReads).toBeGreaterThan(0);
     expect(container.textContent).toContain(
       "verified against its exact Run item",
     );
-    expect(adminV2Request.mock.calls.some(([path, options]) =>
-      path.includes("/decisions") &&
-      options?.method === "POST"
-    )).toBe(false);
+    expect(
+      adminV2Request.mock.calls.some(
+        ([path, options]) =>
+          path.includes("/decisions") && options?.method === "POST",
+      ),
+    ).toBe(false);
   });
 });

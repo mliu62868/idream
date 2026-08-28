@@ -29,7 +29,7 @@ describe("chatFailureCopy", () => {
   });
 
   it("keeps a wait-and-retry hint where waiting is the right move", () => {
-    for (const code of ["rate_limited", "reply_in_progress", "relationship_busy", "service_not_ready"]) {
+    for (const code of ["rate_limited", "reply_in_progress", "service_not_ready"]) {
       expect(chatFailureCopy({ error: code }, FALLBACK).toLowerCase()).toMatch(/wait|moment|few seconds/);
     }
   });

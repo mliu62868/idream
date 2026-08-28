@@ -380,6 +380,35 @@ describe("Character Video Studio", () => {
     await waitUntil(() => container.textContent?.includes("Generating video") === true);
   });
 
+  it("does not present a zero duration as evidence when there are no completed samples", async () => {
+    const noSamples = characterWorkspaceDetail({
+      ...data,
+      visual: {
+        ...data.visual,
+        videoGenerationEstimate: {
+          ...data.visual.videoGenerationEstimate!,
+          averageDurationMs: 0,
+          completedSampleCount: 0,
+        },
+      },
+    });
+    await act(async () => root.render(
+      <CharacterVideoStudio
+        actorId="actor-1"
+        data={noSamples}
+        onCreateImage={vi.fn()}
+        permissions={{ create: true, read: true, review: true }}
+        runCommittedMutation={runCommittedMutation}
+      />,
+    ));
+    await waitUntil(() => container.textContent?.includes("Create video") === true);
+
+    expect(container.textContent).toContain(
+      "Estimated duration unavailable until this profile has completed health samples",
+    );
+    expect(container.textContent).not.toContain("0s");
+  });
+
   it("shows the executable prerequisite when no Character image is available", async () => {
     const noSourceData = characterWorkspaceDetail({
       project: { draftAssetPack: {} },

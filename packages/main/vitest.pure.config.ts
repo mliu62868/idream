@@ -13,6 +13,7 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      "prisma/main-chat-turn-authority.test.ts",
       "src/components/ourdream/**/*.test.ts",
       "src/hooks/**/*.test.ts",
       "src/app/sitemap.test.ts",
@@ -22,6 +23,13 @@ export default defineConfig({
       "src/lib/**/*.test.ts",
       "src/server/launch-readiness.test.ts",
       "src/server/modules/voice-defaults.test.ts",
+      "src/server/modules/admin-v2/characters/simplified-release.test.ts",
+      "src/server/modules/admin-v2/characters/readiness.test.ts",
+      "src/server/modules/admin-v2/characters/character-release-contract.test.ts",
+      "src/server/modules/admin-v2/characters/production-journey.test.ts",
+      "src/server/modules/admin-v2/shared/state-transition-authority.test.ts",
+      "src/server/modules/admin-v2/shared/api-manifest.test.ts",
+      "src/server/modules/admin-v2/shared/finite-state-authority-inventory.test.ts",
       "src/server/modules/ourdream/generation-prompt.test.ts",
       "src/server/next-standalone-runtime.test.ts",
       "src/server/probe-web-surface-assets.test.ts",
@@ -39,6 +47,7 @@ export default defineConfig({
       "src/server/readiness/recovery-rehearsal-authority.test.ts",
       "src/server/readiness/recovery-rehearsal-executor.test.ts",
       "src/server/readiness/recovery-rehearsal-producer.test.ts",
+      "src/server/readiness/recovery-service-environment.test.ts",
       "src/server/cms/**/*.test.ts",
       "src/server/providers/**/*.test.ts",
       "src/server/seed-nondestructive.test.ts",
@@ -66,6 +75,10 @@ export default defineConfig({
       {
         find: /^@idream\/shared\/env$/,
         replacement: `${sharedSourceRoot}contracts/env.ts`,
+      },
+      {
+        find: /^@idream\/shared\/gen-workflow$/,
+        replacement: `${sharedSourceRoot}gen/workflow.ts`,
       },
       {
         find: /^@idream\/shared\/(.+)$/,

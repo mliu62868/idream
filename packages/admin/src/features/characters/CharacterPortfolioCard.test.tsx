@@ -15,26 +15,60 @@ function journey(
   deepLink: string,
 ): CharacterPortfolioItem["journey"] {
   const stateFor = (stepStage: CharacterPortfolioItem["journey"]["stage"]) =>
-    stepStage === stage ? "current" as const : "upcoming" as const;
+    stepStage === stage ? ("current" as const) : ("upcoming" as const);
   return {
     projectionVersion: 1,
     asOf: "2026-07-31T12:00:00.000Z",
     stage,
     status: stage === "live_operations" ? "live" : "in_progress",
     steps: [
-      { code: "visual_identity", state: "complete", deepLink: "/admin/characters/character-1?tab=visual" },
-      { code: "image_assets", state: stateFor("image_production"), deepLink: "/admin/characters/character-1?tab=assets" },
-      { code: "preview_qa", state: stateFor("preview_qa"), deepLink: "/admin/characters/character-1?tab=preview" },
-      { code: "release", state: "complete", deepLink: "/admin/characters/character-1?tab=release" },
-      { code: "live_monitor", state: stateFor("live_operations"), deepLink: "/admin/characters/character-1?tab=monitor" },
+      {
+        code: "visual_identity",
+        state: "complete",
+        deepLink: "/admin/characters/character-1?tab=visual",
+      },
+      {
+        code: "image_assets",
+        state: stateFor("image_production"),
+        deepLink: "/admin/characters/character-1?tab=assets",
+      },
+      {
+        code: "preview",
+        state: stateFor("preview"),
+        deepLink: "/admin/characters/character-1?tab=preview",
+      },
+      {
+        code: "release",
+        state: "complete",
+        deepLink: "/admin/characters/character-1?tab=release",
+      },
+      {
+        code: "live_monitor",
+        state: stateFor("live_operations"),
+        deepLink: "/admin/characters/character-1?tab=monitor",
+      },
     ],
     blockers: [],
     primaryAction: { code, deepLink, command: null },
     assetPack: {
-      draft: { availablePurposes: ["character_cover"], missingPurposes: ["character_hero", "character_chat"], completed: 1, total: 3 },
-      live: { availablePurposes: ["character_cover", "character_hero"], missingPurposes: ["character_chat"], completed: 2, total: 3 },
+      draft: {
+        availablePurposes: ["character_cover"],
+        missingPurposes: ["character_hero", "character_chat"],
+        completed: 1,
+        total: 3,
+      },
+      live: {
+        availablePurposes: ["character_cover", "character_hero"],
+        missingPurposes: ["character_chat"],
+        completed: 2,
+        total: 3,
+      },
     },
-    release: { servingState: "live", currentReleaseId: "release-1", candidateReleaseId: null },
+    release: {
+      servingState: "live",
+      currentReleaseId: "release-1",
+      candidateReleaseId: null,
+    },
   };
 }
 
@@ -45,14 +79,9 @@ describe("Character Portfolio card", () => {
   const item = {
     characterId: "character-1",
     name: "Mara",
+    needsAttention: false,
     serving: { state: "live" },
     readiness: "ready",
-    project: {
-      audience: "Companion",
-      phase: "live_management",
-      ownerId: "operator-ana",
-      updatedAt: "2026-07-31T12:00:00.000Z",
-    },
     visualProduction: {
       primaryImageUrl: "/media/mara.webp",
       primaryImageSource: "live",
@@ -61,15 +90,23 @@ describe("Character Portfolio card", () => {
       totalPurposes: 3,
       deepLink: "/admin/characters/character-1?tab=assets",
     },
-    performance: [{
-      window: "28d",
-      placementId: null,
-      maturity: "mature",
-      qceRate: 0.75,
-      sameCharacterD7: null,
-    }],
-    journey: journey("continue_asset_pack", "image_production", "/admin/characters/character-1?tab=assets"),
-    latestDecision: { decision: "promote" },
+    performance: [
+      {
+        window: "28d",
+        placementId: null,
+        maturity: "mature",
+        qceRate: 0.75,
+        sameCharacterD7: null,
+      },
+    ],
+    operationalState: {
+      blockers: [],
+    },
+    journey: journey(
+      "continue_asset_pack",
+      "image_production",
+      "/admin/characters/character-1?tab=assets",
+    ),
   } as unknown as CharacterPortfolioItem;
 
   it("keeps portfolio evidence out of the primary Character workspace", () => {
@@ -96,9 +133,10 @@ describe("Character Portfolio card", () => {
     expect(studio).toContain("Live");
     expect(studio).not.toContain("Complete Character Assets");
     expect(performance).toContain("28d QCE 75.0%");
-    expect(performance).toContain("Latest decision:");
+    expect(performance).not.toContain("Latest decision:");
+    expect(performance).not.toContain("Companion");
+    expect(performance).not.toContain("live management");
   });
-
 
   // SPEC: 草稿主图的可见性由「能不能看素材」决定，与看的是哪个视图无关。
   // INTENT: 「角色表现」曾把 canOpenAssets 硬编码成 false，于是主图来源为 draft 的角色
@@ -107,13 +145,26 @@ describe("Character Portfolio card", () => {
   it("shows a draft portrait in performance mode to an operator who may open assets", () => {
     const draftItem = {
       ...item,
-      visualProduction: { ...item.visualProduction, primaryImageSource: "draft" },
+      visualProduction: {
+        ...item.visualProduction,
+        primaryImageSource: "draft",
+      },
     } as unknown as CharacterPortfolioItem;
     const withAssets = renderToStaticMarkup(
-      <CharacterPortfolioCard canOpenAssets canOpenProject item={draftItem} mode="performance" />,
+      <CharacterPortfolioCard
+        canOpenAssets
+        canOpenProject
+        item={draftItem}
+        mode="performance"
+      />,
     );
     const withoutAssets = renderToStaticMarkup(
-      <CharacterPortfolioCard canOpenAssets={false} canOpenProject item={draftItem} mode="performance" />,
+      <CharacterPortfolioCard
+        canOpenAssets={false}
+        canOpenProject
+        item={draftItem}
+        mode="performance"
+      />,
     );
 
     expect(withAssets).toContain("/media/mara.webp");
@@ -125,7 +176,12 @@ describe("Character Portfolio card", () => {
   it("treats an existing live portrait as enablement instead of first-time setup", () => {
     const action = resolveCharacterPortfolioPrimaryAction({
       ...item,
-      journey: journey("prepare_image_production", "visual_setup", "/admin/characters/character-1?tab=assets"),
+      serving: { ...item.serving, state: "inactive" },
+      journey: journey(
+        "prepare_image_production",
+        "visual_setup",
+        "/admin/characters/character-1?tab=assets",
+      ),
     });
 
     expect(action).toMatchObject({
@@ -136,12 +192,18 @@ describe("Character Portfolio card", () => {
     });
   });
 
-
   it("returns an unfinished image run to the image still in progress", () => {
-    expect(resolveCharacterPortfolioPrimaryAction({
-      ...item,
-      journey: journey("continue_image_run", "image_production", "/admin/characters/character-1?tab=assets"),
-    })).toMatchObject({
+    expect(
+      resolveCharacterPortfolioPrimaryAction({
+        ...item,
+        serving: { ...item.serving, state: "inactive" },
+        journey: journey(
+          "continue_image_run",
+          "image_production",
+          "/admin/characters/character-1?tab=assets",
+        ),
+      }),
+    ).toMatchObject({
       // 运营面说人话：不用 batch/run 这类工程词（与周围 image route / image pack 文案一致）。
       eyebrow: "Image in progress",
       label: "Continue current image",
@@ -150,8 +212,12 @@ describe("Character Portfolio card", () => {
     });
   });
 
-
   it("uses the same authoritative live action in Studio and Performance", () => {
+    const liveJourney = journey(
+      "monitor_live_character",
+      "live_operations",
+      "/admin/characters/character-1?tab=monitor",
+    );
     const liveItem = {
       ...item,
       visualProduction: {
@@ -159,7 +225,22 @@ describe("Character Portfolio card", () => {
         draftPurposes: [],
         livePurposes: ["character_cover", "character_hero", "chat_moment"],
       },
-      journey: journey("monitor_live_character", "live_operations", "/admin/characters/character-1?tab=monitor"),
+      journey: {
+        ...liveJourney,
+        assetPack: {
+          ...liveJourney.assetPack,
+          live: {
+            availablePurposes: [
+              "character_cover",
+              "character_hero",
+              "character_chat",
+            ],
+            missingPurposes: [],
+            completed: 3,
+            total: 3,
+          },
+        },
+      },
     } as CharacterPortfolioItem;
 
     expect(resolveCharacterPortfolioPrimaryAction(liveItem)).toMatchObject({
@@ -176,18 +257,110 @@ describe("Character Portfolio card", () => {
     });
   });
 
+  it("explains the exact telemetry problem inside the needs-attention view", () => {
+    const action = resolveCharacterPortfolioPrimaryAction({
+      ...item,
+      needsAttention: true,
+    });
 
-  // 这里原本断言 roster 卡片"只有一个状态词和一个目的地"，并 not.toContain 下一步动作。
-  // 那是刻意的极简，但代价是运营在列表上看不出任何一张卡还差什么——journey 投影每条都下发了
-  // primaryAction / blockers / assetPack，前端一个字段没渲染。改成断言这些字段真的到了页面上。
-  it("puts the journey next action, blockers, and pack progress on the roster tile", () => {
+    expect(action).toEqual({
+      description:
+        "This live Character has no exposure or funnel events after the 7-day observation window.",
+      eyebrow: "No telemetry after 7 days",
+      href: "/admin/characters/character-1?tab=monitor",
+      label: "Inspect live monitoring",
+      requiresAssets: false,
+    });
+  });
+
+  it("does not let an incidental image run outrank a live telemetry failure", () => {
+    const action = resolveCharacterPortfolioPrimaryAction({
+      ...item,
+      needsAttention: true,
+      journey: journey(
+        "continue_image_run",
+        "image_production",
+        "/admin/characters/character-1?tab=assets",
+      ),
+    });
+
+    expect(action).toMatchObject({
+      label: "Inspect live monitoring",
+      href: "/admin/characters/character-1?tab=monitor",
+      requiresAssets: false,
+    });
+  });
+
+  it("keeps an explicit production blocker ahead of telemetry attention", () => {
+    const blockedJourney = journey(
+      "complete_image_route",
+      "visual_setup",
+      "/admin/characters/character-1?tab=visual",
+    );
+    const action = resolveCharacterPortfolioPrimaryAction({
+      ...item,
+      needsAttention: true,
+      journey: { ...blockedJourney, status: "blocked" },
+    });
+
+    expect(action).toMatchObject({
+      label: "Complete image route setup",
+      href: "/admin/characters/character-1?tab=visual",
+    });
+  });
+
+  it("keeps a live Release blocker ahead of telemetry attention", () => {
+    const action = resolveCharacterPortfolioPrimaryAction({
+      ...item,
+      needsAttention: true,
+      readiness: "blocked",
+      operationalState: {
+        ...item.operationalState,
+        blockers: [
+          {
+            code: "release_blocked",
+            message: "Current release is blocked",
+            deepLink: "/admin/characters/character-1?tab=monitor",
+          },
+        ],
+      },
+    });
+
+    expect(action).toMatchObject({
+      label: "Resolve live release blocker",
+      href: "/admin/characters/character-1?tab=monitor",
+    });
+  });
+
+  it("turns an incomplete historical live pack into an explicit remediation action", () => {
+    const action = resolveCharacterPortfolioPrimaryAction(item);
+
+    expect(action).toMatchObject({
+      eyebrow: "Live with an incomplete image pack",
+      label: "Complete image pack",
+      href: "/admin/characters/character-1?tab=assets",
+      requiresAssets: true,
+    });
+  });
+
+  // SPEC: 列表卡只回答四件事：是谁、当前状态、素材事实、下一步去哪里。
+  // INTENT: blocker 详情留在角色内处理；堆进卡片会把角色列表重新变成流程审查面板。
+  it("puts one next action and asset facts on the roster tile", () => {
     const blocked = {
       ...item,
       journey: {
         ...item.journey,
         blockers: [
-          { code: "assets_incomplete", message: "Draft image pack is missing 2 images", deepLink: "/admin/characters/character-1?tab=assets" },
-          { code: "preview_stale", message: "Launch preview is stale", deepLink: "/admin/characters/character-1?tab=preview" },
+          {
+            code: "assets_incomplete",
+            message: "Draft image pack is missing 2 images",
+            deepLink: "/admin/characters/character-1?tab=assets",
+          },
+          {
+            code: "preview_stale",
+            message: "Launch preview is stale",
+            deepLink: "/admin/characters/character-1?tab=preview",
+          },
         ],
       },
     } as CharacterPortfolioItem;
@@ -203,12 +376,14 @@ describe("Character Portfolio card", () => {
     expect(characterPortfolioState(item)).toMatchObject({ label: "Live" });
     expect(html).toContain('data-layout="roster"');
     expect(html).toContain('href="/admin/characters/character-1"');
-    expect(html).toContain("Continue filling image pack");
+    expect(html).toContain("Complete image pack");
     expect(html).toContain('href="/admin/characters/character-1?tab=assets"');
-    expect(html).toContain("Draft image pack is missing 2 images · +1 more");
-    expect(html).toContain("operator-ana");
+    expect(html).not.toContain("Draft image pack is missing 2 images");
+    expect(html).not.toContain("Image pack in progress");
+    expect(html).not.toContain("operator-ana");
     expect(html).toContain("Draft 1/3");
     expect(html).toContain("Live 2/3");
+    expect(html.match(/href=/g)).toHaveLength(2);
     // 组合表现证据仍然只属于 performance 模式。
     expect(html).not.toContain("28d QCE");
     expect(html).not.toContain("Latest decision:");
@@ -239,39 +414,42 @@ describe("Character Portfolio card", () => {
       />,
     );
 
-    expect(html).toContain("Continue filling image pack");
-    expect(html).not.toContain('href="/admin/characters/character-1?tab=assets"');
-  });
-
-
-  it("collapses an immature empty metric into one useful sentence", () => {
-    expect(characterPortfolioPerformanceLabel(t, {
-      maturity: "immature",
-      qceRate: null,
-      sameCharacterD7: null,
-    })).toBe(
-      "28d performance will appear after sufficient live traffic.",
+    expect(html).toContain("Complete image pack");
+    expect(html).not.toContain(
+      'href="/admin/characters/character-1?tab=assets"',
     );
   });
 
-
-  it("shows only measured portfolio metrics", () => {
-    expect(characterPortfolioPerformanceLabel(t, {
-      maturity: "mature",
-      qceRate: 0.75,
-      sameCharacterD7: null,
-    })).toBe("28d QCE 75.0% · mature");
+  it("collapses an immature empty metric into one useful sentence", () => {
+    expect(
+      characterPortfolioPerformanceLabel(t, {
+        maturity: "immature",
+        qceRate: null,
+        sameCharacterD7: null,
+      }),
+    ).toBe("28d performance will appear after sufficient live traffic.");
   });
 
+  it("shows only measured portfolio metrics", () => {
+    expect(
+      characterPortfolioPerformanceLabel(t, {
+        maturity: "mature",
+        qceRate: 0.75,
+        sameCharacterD7: null,
+      }),
+    ).toBe("28d QCE 75.0% · mature");
+  });
 
   it("translates the performance label instead of emitting raw English", () => {
     const zh = (key: string, values?: Record<string, string | number>) =>
       translateAdmin("zh", key, values);
 
-    expect(characterPortfolioPerformanceLabel(zh, {
-      maturity: "mature",
-      qceRate: 0.75,
-      sameCharacterD7: null,
-    })).toBe("28 天 QCE 75.0% · 证据充分");
+    expect(
+      characterPortfolioPerformanceLabel(zh, {
+        maturity: "mature",
+        qceRate: 0.75,
+        sameCharacterD7: null,
+      }),
+    ).toBe("28 天 QCE 75.0% · 证据充分");
   });
 });

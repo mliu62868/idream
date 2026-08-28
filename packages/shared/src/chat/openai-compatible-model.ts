@@ -47,7 +47,10 @@ export interface OpenAICompatibleTurn {
 export interface OpenAICompatibleChatModelContract {
   readonly supportsTools?: boolean;
   stream(input: OpenAICompatibleTurn): AsyncIterable<ChatChunk>;
-  complete(input: OpenAICompatibleTurn & { maxTokens?: number }): Promise<ChatCompletion>;
+  complete(input: OpenAICompatibleTurn & {
+    maxTokens?: number;
+    responseFormat?: "json_object";
+  }): Promise<ChatCompletion>;
 }
 
 type FetchLike = typeof fetch;
@@ -175,7 +178,10 @@ export class OpenAICompatibleChatModel implements OpenAICompatibleChatModelContr
     }
   }
 
-  async complete(input: OpenAICompatibleTurn & { maxTokens?: number }): Promise<ChatCompletion> {
+  async complete(input: OpenAICompatibleTurn & {
+    maxTokens?: number;
+    responseFormat?: "json_object";
+  }): Promise<ChatCompletion> {
     const model = input.model || this.profile.model;
     const controller = new AbortController();
     const timeoutMs = this.profile.completionTimeoutMs;
@@ -199,6 +205,9 @@ export class OpenAICompatibleChatModel implements OpenAICompatibleChatModelContr
           // both of which fight the repeated punctuation JSON legitimately needs.
           temperature: this.profile.structuredTemperature,
           chat_template_kwargs: { enable_thinking: false },
+          ...(input.responseFormat
+            ? { response_format: { type: input.responseFormat } }
+            : {}),
         }),
       });
       if (!response.ok) {

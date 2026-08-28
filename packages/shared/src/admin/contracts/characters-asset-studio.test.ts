@@ -5,15 +5,12 @@ import {
 } from "./characters-asset-studio";
 
 describe("Character Asset Studio contracts", () => {
-  it("requires the exact reviewed Run item and optimistic Project version", () => {
+  it("selects a role-owned library image with optimistic Project version", () => {
     const request = {
       entityVersion: 4,
       purpose: "character_hero" as const,
-      runId: "run-1",
-      itemId: "item-1",
       assetId: "asset-1",
-      reviewDecisionId: "decision-1",
-      reason: "Use the approved identity-consistent portrait in the next Release",
+      reason: "Use this existing library image in the next Release",
     };
     expect(characterDraftImageSelectionRequestSchema.parse(request)).toEqual(request);
     expect(characterDraftImageSelectionRequestSchema.safeParse({

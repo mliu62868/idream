@@ -69,11 +69,7 @@ export type WorkspacePurgeRequest =
       scope: "relationship";
       userId: string;
       characterId: string;
-      /** Present on a product reset: retire the workspace under quarantine instead of destroying it. */
-      quarantineLabel?: string;
     };
-
-const QUARANTINE_LABEL = /^[A-Za-z0-9._-]{1,80}$/u;
 
 interface LockWaiter {
   promise: Promise<void>;
@@ -244,20 +240,10 @@ export class AttemptWorkspaceStore {
           exists(privateTarget),
           exists(cutoverMarker),
         ]);
-        const quarantineLabel = request.quarantineLabel;
-        if (quarantineLabel === undefined) {
-          await Promise.all([
-            rm(canonicalTarget, { recursive: true, force: true }),
-            rm(cutoverMarker, { force: true }),
-          ]);
-        } else if (found[0] || found[2]) {
-          await this.quarantineRelationship(
-            request.userId,
-            quarantineLabel,
-            canonicalTarget,
-            cutoverMarker,
-          );
-        }
+        await Promise.all([
+          rm(canonicalTarget, { recursive: true, force: true }),
+          rm(cutoverMarker, { force: true }),
+        ]);
         // Private attempts hold no memory; there is nothing to analyse.
         await rm(privateTarget, { recursive: true, force: true });
         await Promise.all([
@@ -295,48 +281,6 @@ export class AttemptWorkspaceStore {
       }),
     ]);
     return relationshipNames.size;
-  }
-
-  /**
-   * SPEC: a relationship reset retires the workspace instead of destroying it,
-   * so engineers can inspect what the companion had accumulated. The quarantine
-   * lives inside the user's authority directory — an account purge removes it —
-   * is never a retrieval root or a rebuild source, and has no restore path.
-   * INTENT: no TTL by product decision (2026-08-24); it exists for analysis.
-   * The label is Chat's ledger mutation id, shared with the retired
-   * relationship files on the Chat side so one reset is one artefact pair.
-   */
-  private async quarantineRelationship(
-    userId: string,
-    label: string,
-    canonicalTarget: string,
-    cutoverMarker: string,
-  ): Promise<void> {
-    if (!QUARANTINE_LABEL.test(label)) {
-      throw new Error("relationship quarantine label is invalid");
-    }
-    const quarantineRoot = join(
-      userWorkspacePath(this.options.canonicalRoot, userId),
-      ".reset-quarantine",
-    );
-    const target = join(quarantineRoot, `${basename(canonicalTarget)}-${label}-${randomUUID()}`);
-    assertWithin(quarantineRoot, target);
-    await mkdir(quarantineRoot, { recursive: true, mode: 0o700 });
-    await chmod(quarantineRoot, 0o700);
-    if (await exists(canonicalTarget)) {
-      await rename(canonicalTarget, target);
-    } else {
-      await mkdir(target, { mode: 0o700 });
-    }
-    await chmod(target, 0o700);
-    if (await exists(cutoverMarker)) {
-      await rename(cutoverMarker, join(target, "cutover-marker.json"));
-    }
-    await writeFile(
-      join(target, "quarantine.json"),
-      `${JSON.stringify({ quarantinedAt: new Date().toISOString(), label })}\n`,
-      { encoding: "utf8", flag: "wx", mode: 0o600 },
-    );
   }
 
   async rebuildRelationship<T>(
@@ -386,9 +330,9 @@ export class AttemptWorkspaceStore {
     try {
       signal?.throwIfAborted();
       await this.purgeEphemeralRelationship(identity);
-      // A new durable claim supersedes every candidate left by an expired
-      // claim. The relationship lock prevents a live prepare/promote race.
-      await rm(candidatesRoot, { recursive: true, force: true });
+      // Each durable claim owns one candidate directory. Removing the shared
+      // root here would let a second process destroy a live prepare between
+      // Main lease heartbeats.
       await mkdir(memory, { recursive: true, mode: 0o700 });
       for (const path of [candidatesRoot, candidateRoot, workspace, memory]) {
         await chmod(path, 0o700);
@@ -653,7 +597,7 @@ export class AttemptWorkspaceStore {
       priorVersion = await this.canonicalVersion(canonicalLink, versionsRoot);
       result = await build(workspace);
       signal?.throwIfAborted();
-      // igrep 0.1.132 refuses a workspace whose .igrep resolves outside the
+      // igrep 0.1.134 refuses a workspace whose .igrep resolves outside the
       // workspace. Build and verify in a real directory, then move that exact
       // certified directory into the version authority before pointer swap.
       await rename(candidateMemory, candidateVersion);
@@ -997,6 +941,19 @@ export class AttemptWorkspaceStore {
       const target = join(garbageRoot, `candidate-${randomUUID()}`);
       assertWithin(garbageRoot, target);
       await rename(candidateRoot, target);
+      garbage.push(target);
+    }
+    const candidatesRoot = join(relationshipRoot, ".rebuild-candidates");
+    for (const entry of await readdir(candidatesRoot, { withFileTypes: true }).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    })) {
+      if (!entry.isDirectory()) continue;
+      const source = join(candidatesRoot, entry.name);
+      const target = join(garbageRoot, `candidate-${entry.name}-${randomUUID()}`);
+      assertWithin(candidatesRoot, source);
+      assertWithin(garbageRoot, target);
+      await rename(source, target);
       garbage.push(target);
     }
     return garbage;

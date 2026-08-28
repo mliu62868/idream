@@ -3,7 +3,6 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { toInputJson } from "../shared/prisma-json";
 import {
-  transitionCharacterProject,
   transitionCharacterRelease,
   transitionCharacterServing,
 } from "./transition";
@@ -26,9 +25,9 @@ describe("Character aggregate transitions", () => {
     await prisma.user.create({ data: { id: actorId, email: `${actorId}@idream.internal`, role: "admin", status: "active" } });
     await prisma.character.create({ data: { id: characterId, creatorId: actorId, name: "Transition Fixture", age: 24, description: "Aggregate transition fixture", visibility: "private", status: "draft", appearance: {}, advancedDetails: {} } });
     await prisma.characterContentVersion.create({ data: { id: contentId, characterId, version: 1, contentHash: contentId, personaSnapshot: {}, openingSnapshot: {}, appearanceSnapshot: {}, sourceType: "test", createdById: actorId } });
-    await prisma.characterProject.create({ data: { id: projectId, characterId, ownerId: actorId, phase: "qa", audience: {}, successCriteria: [] } });
+    await prisma.characterProject.create({ data: { id: projectId, characterId } });
     await prisma.characterRevision.create({ data: { id: revisionId, projectId, revision: 1, characterContentVersionId: contentId, projectSnapshot: {}, createdById: actorId } });
-    await prisma.characterRelease.create({ data: { id: releaseId, projectId, revisionId, characterContentVersionId: contentId, generationProvenance: toInputJson({}), releasePlacementManifest: toInputJson({}), snapshotHash: id("snapshot"), status: "in_review" } });
+    await prisma.characterRelease.create({ data: { id: releaseId, projectId, revisionId, characterContentVersionId: contentId, generationProvenance: toInputJson({}), releasePlacementManifest: toInputJson({}), snapshotHash: id("snapshot"), status: "approved" } });
     await prisma.characterServing.create({ data: { id: servingId, characterId, state: "inactive" } });
   });
 
@@ -45,28 +44,28 @@ describe("Character aggregate transitions", () => {
 
   it("advances an allowed edge, bumps version, and returns the new authoritative snapshot", async () => {
     const before = await prisma.characterRelease.findUniqueOrThrow({ where: { id: releaseId } });
-    const approved = await prisma.$transaction((tx) =>
+    const published = await prisma.$transaction((tx) =>
       transitionCharacterRelease(tx, {
         releaseId,
-        to: "approved",
+        to: "published",
         expectedVersion: before.version,
-        data: { readiness: "ready" },
+        data: { readiness: "ready", publishedAt: new Date() },
       }),
     );
-    expect(approved).toMatchObject({
-      status: "approved",
+    expect(published).toMatchObject({
+      status: "published",
       readiness: "ready",
       version: before.version + 1,
     });
   });
 
   it("rejects an edge the state machine does not permit", async () => {
-    // approved 只能到 published；直接退回 in_review 不是一条边。
+    // published 只能退出服务；不能退回 approved。
     await expect(prisma.$transaction((tx) =>
-      transitionCharacterRelease(tx, { releaseId, to: "in_review" }),
+      transitionCharacterRelease(tx, { releaseId, to: "approved" }),
     )).rejects.toMatchObject({ status: 409 });
     await expect(prisma.characterRelease.findUniqueOrThrow({ where: { id: releaseId } }))
-      .resolves.toMatchObject({ status: "approved" });
+      .resolves.toMatchObject({ status: "published" });
   });
 
   it("rejects a stale expected version without touching the row", async () => {
@@ -74,7 +73,7 @@ describe("Character aggregate transitions", () => {
     await expect(prisma.$transaction((tx) =>
       transitionCharacterRelease(tx, {
         releaseId,
-        to: "published",
+        to: "superseded",
         expectedVersion: before.version - 1,
       }),
     )).rejects.toMatchObject({ status: 409 });
@@ -85,10 +84,10 @@ describe("Character aggregate transitions", () => {
   it("reads the current state itself, so a caller cannot assert a state the row does not have", async () => {
     // 调用方不再传 from：published 之后同一次调用重放，当前状态已不是 approved，边不成立。
     await prisma.$transaction((tx) =>
-      transitionCharacterRelease(tx, { releaseId, to: "published", data: { publishedAt: new Date() } }),
+      transitionCharacterRelease(tx, { releaseId, to: "superseded" }),
     );
     await expect(prisma.$transaction((tx) =>
-      transitionCharacterRelease(tx, { releaseId, to: "published" }),
+      transitionCharacterRelease(tx, { releaseId, to: "superseded" }),
     )).rejects.toMatchObject({ status: 409 });
   });
 
@@ -101,7 +100,7 @@ describe("Character aggregate transitions", () => {
     await expect(prisma.$transaction((tx) =>
       transitionCharacterRelease(tx, {
         releaseId,
-        to: "approved",
+        to: "published",
         conflict: () => new CommandError("current_release_transition_invalid"),
       }),
     )).rejects.toMatchObject({ code: "current_release_transition_invalid" });
@@ -109,7 +108,7 @@ describe("Character aggregate transitions", () => {
 
   it("fails closed for a missing aggregate row", async () => {
     await expect(prisma.$transaction((tx) =>
-      transitionCharacterRelease(tx, { releaseId: `${releaseId}-missing`, to: "approved" }),
+      transitionCharacterRelease(tx, { releaseId: `${releaseId}-missing`, to: "published" }),
     )).rejects.toMatchObject({ status: 409 });
   });
 
@@ -135,20 +134,4 @@ describe("Character aggregate transitions", () => {
     expect(live).toMatchObject({ state: "live", currentReleaseId: releaseId });
   });
 
-  it("carries domain data through the project phase transition", async () => {
-    const project = await prisma.characterProject.findUniqueOrThrow({ where: { id: projectId } });
-    const retired = await prisma.$transaction((tx) =>
-      transitionCharacterProject(tx, {
-        projectId,
-        to: "retired",
-        expectedVersion: project.version,
-        data: { activeKey: null },
-      }),
-    );
-    expect(retired).toMatchObject({ phase: "retired", version: project.version + 1 });
-    // retired 是终态，没有出边。
-    await expect(prisma.$transaction((tx) =>
-      transitionCharacterProject(tx, { projectId, to: "producing" }),
-    )).rejects.toMatchObject({ status: 409 });
-  });
 });

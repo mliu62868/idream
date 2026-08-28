@@ -62,7 +62,7 @@ describe("character template library service (feature B)", () => {
         summary: "A neon-lit companion",
         tags: ["scifi", "neon"],
         appearance: { hair: "silver" },
-        advancedDetails: { persona: "playful" },
+        advancedDetails: { detailsMarkdown: "Playful and quick-witted." },
         reason: "seed built-in template",
       },
     });

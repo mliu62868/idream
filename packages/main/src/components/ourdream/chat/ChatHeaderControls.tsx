@@ -3,16 +3,14 @@
 import { List, Settings, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { MemoryToggle } from "./MemoryToggle";
-import { RelationshipBadge } from "./RelationshipBadge";
 
-// SPEC: Chat header control row — relationship stage, memory on/off, Generate link,
-//       and entry points to the session list + memory panel.
+// SPEC: Chat header control row — memory on/off, Generate link, and entry points
+//       to the session list + memory panel.
 // INTENT: mobile-first; wraps cleanly at 390px so nothing is occluded.
 export function ChatHeaderControls({
   characterId,
   memoryEnabled,
   memoryPending,
-  relationshipRefreshKey,
   onToggleMemory,
   onOpenSessions,
   onOpenMemory,
@@ -20,7 +18,6 @@ export function ChatHeaderControls({
   characterId: string | null;
   memoryEnabled: boolean;
   memoryPending: boolean;
-  relationshipRefreshKey: number;
   onToggleMemory: () => void;
   onOpenSessions: () => void;
   onOpenMemory: () => void;
@@ -30,7 +27,6 @@ export function ChatHeaderControls({
   return (
     <div className="mt-4">
       <div className="flex flex-wrap items-center gap-2">
-        <RelationshipBadge characterId={characterId} refreshKey={relationshipRefreshKey} />
         <MemoryToggle enabled={memoryEnabled} pending={memoryPending} onToggle={onToggleMemory} />
         {generateHref ? (
           <Link
@@ -68,7 +64,7 @@ export function ChatHeaderControls({
             className="grid h-8 w-8 place-items-center rounded-full border border-white/10 bg-[rgb(36,36,36)] text-[rgb(170,170,170)] transition-colors hover:text-white"
             data-testid="memory-panel-open"
             onClick={onOpenMemory}
-            title="Memory & relationship"
+            title="Memory"
             type="button"
           >
             <Settings className="h-4 w-4" />

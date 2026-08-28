@@ -111,10 +111,10 @@ describe("Character media operations card", () => {
     ));
 
     expect(html).toContain(
-      "Run completion does not approve or publish an asset.",
+      "A completed run does not select or publish an asset.",
     );
     expect(html).toContain(
-      "Review and Release remain separate decisions.",
+      "Selecting an asset does not publish the Character.",
     );
   });
 

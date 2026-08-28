@@ -1,11 +1,20 @@
 import type { AdminPermissionKey } from "./permissions";
 
-export const ADMIN_V2_HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
+export const ADMIN_V2_HTTP_METHODS = [
+  "GET",
+  "POST",
+  "PUT",
+  "PATCH",
+  "DELETE",
+] as const;
 export type AdminV2HttpMethod = (typeof ADMIN_V2_HTTP_METHODS)[number];
 export type AdminV2RoutePattern = `/api/v2/admin/${string}`;
 export type AdminV2OperationId = `${AdminV2HttpMethod} ${AdminV2RoutePattern}`;
 
-type NonEmptyPermissions = readonly [AdminPermissionKey, ...AdminPermissionKey[]];
+type NonEmptyPermissions = readonly [
+  AdminPermissionKey,
+  ...AdminPermissionKey[],
+];
 
 export type AdminV2ResourcePermissionResolver =
   | "collaboration_target_read"
@@ -49,9 +58,7 @@ export type AdminV2ApiContract = {
 };
 
 export type AdminV2MutationTransportKind =
-  | "idempotency_key"
-  | "if_match"
-  | "idempotency_key_and_if_match";
+  "idempotency_key" | "if_match" | "idempotency_key_and_if_match";
 
 export type AdminV2MutationMetadata = {
   readonly transport: AdminV2MutationTransportKind;
@@ -72,16 +79,28 @@ export type AdminV2ApiOperation = {
 };
 
 const bootstrap = (): AdminV2Authorization => ({ kind: "bootstrap" });
-const allOf = (...permissions: NonEmptyPermissions): AdminV2Authorization => ({ kind: "all_of", permissions });
+const allOf = (...permissions: NonEmptyPermissions): AdminV2Authorization => ({
+  kind: "all_of",
+  permissions,
+});
 const oneOfBy = (
   resolver: AdminV2ResourcePermissionResolver,
   ...permissions: NonEmptyPermissions
-): AdminV2Authorization => ({ kind: "one_of_by_resource", resolver, permissions });
+): AdminV2Authorization => ({
+  kind: "one_of_by_resource",
+  resolver,
+  permissions,
+});
 const allOfAndOneOfBy = (
   resolver: AdminV2ResourcePermissionResolver,
   always: NonEmptyPermissions,
   oneOf: NonEmptyPermissions,
-): AdminV2Authorization => ({ kind: "all_of_and_one_of_by_resource", resolver, always, oneOf });
+): AdminV2Authorization => ({
+  kind: "all_of_and_one_of_by_resource",
+  resolver,
+  always,
+  oneOf,
+});
 
 /**
  * SPEC: an operation keeps the literal id and contract refs it was declared with.
@@ -114,7 +133,9 @@ function operation<
   request: Request,
   response: Response,
   responseProjectionBy?: readonly AdminPermissionKey[],
-  mutationOverride?: Partial<Pick<AdminV2MutationMetadata, "commandType" | "executionMode">>,
+  mutationOverride?: Partial<
+    Pick<AdminV2MutationMetadata, "commandType" | "executionMode">
+  >,
 ): DeclaredOperation<Method, Route, Request, Response> {
   const operationId = `${method} ${route}` as `${Method} ${Route}`;
   const mutation = mutationMetadata(
@@ -138,39 +159,57 @@ function mutationMetadata(
   operationId: AdminV2OperationId,
   request: AdminV2RequestContractRef,
   response: AdminV2SchemaContractRef,
-  override?: Partial<Pick<AdminV2MutationMetadata, "commandType" | "executionMode">>,
+  override?: Partial<
+    Pick<AdminV2MutationMetadata, "commandType" | "executionMode">
+  >,
 ): AdminV2MutationMetadata | undefined {
   const requirements = request.split("+");
   const idempotency = requirements.includes("idempotency-key");
   const ifMatch = requirements.includes("if-match") || request === "if-match";
   if (!idempotency && !ifMatch) return undefined;
-  const transport = idempotency && ifMatch
-    ? "idempotency_key_and_if_match"
-    : idempotency
-      ? "idempotency_key"
-      : "if_match";
+  const transport =
+    idempotency && ifMatch
+      ? "idempotency_key_and_if_match"
+      : idempotency
+        ? "idempotency_key"
+        : "if_match";
   return {
     transport,
-    commandType: override?.commandType ?? operationId
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, ".")
-      .replace(/^\.|\.$/g, ""),
-    executionMode: override?.executionMode ??
+    commandType:
+      override?.commandType ??
+      operationId
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ".")
+        .replace(/^\.|\.$/g, ""),
+    executionMode:
+      override?.executionMode ??
       (response === "adminCommandAcceptedSchema" ? "durable" : "atomic"),
   };
 }
 
-const collaborationRead = ["character.project.read", "creative.run.read", "case.read", "ops.incident.read"] as const;
+const collaborationRead = [
+  "creative.run.read",
+  "case.read",
+  "ops.incident.read",
+] as const;
 /**
  * SPEC: Saved View 的 scope 词表比协作目标多两个队列，权限矩阵跟着多两条。
  * INTENT: 和 `savedViewScopeSchema` 一一对应；写死在 `collaborationRead` 上会让支持工单
  *         和人审队列的 Saved View 只能凭协作权限打开，那是两拨完全不同的人。
  */
-const savedViewScopeRead = [...collaborationRead, "support.request.read", "safety.review.read"] as const;
-const collaborationWrite = ["character.project.write", "creative.run.write", "case.assign", "ops.incident.manage"] as const;
+const savedViewScopeRead = [
+  ...collaborationRead,
+  "character.project.read",
+  "support.request.read",
+  "safety.review.read",
+] as const;
+const collaborationWrite = [
+  "creative.run.write",
+  "case.assign",
+  "ops.incident.manage",
+] as const;
 export const ADMIN_COMMAND_TARGET_READ_PERMISSIONS = {
   admin_case: "case.read",
-  character_project: "character.project.read",
   character_release: "character.release.read",
   character_serving: "character.release.read",
   chat_session: "character.release.read",
@@ -180,16 +219,21 @@ export const ADMIN_COMMAND_TARGET_READ_PERMISSIONS = {
   incident_action_plan: "ops.incident.read",
   ops_incident: "ops.incident.read",
 } as const satisfies Record<string, AdminPermissionKey>;
-export type AdminCommandTargetType = keyof typeof ADMIN_COMMAND_TARGET_READ_PERMISSIONS;
+export type AdminCommandTargetType =
+  keyof typeof ADMIN_COMMAND_TARGET_READ_PERMISSIONS;
 
 const commandTargetRead = [
   "case.read",
-  "character.project.read",
   "character.release.read",
   "creative.run.read",
   "ops.incident.read",
 ] as const satisfies readonly (typeof ADMIN_COMMAND_TARGET_READ_PERMISSIONS)[AdminCommandTargetType][];
-const todayClaimWrite = ["case.assign", "ops.incident.manage", "character.project.write", "creative.run.write"] as const;
+const todayClaimWrite = [
+  "case.assign",
+  "ops.incident.manage",
+  "character.project.write",
+  "creative.run.write",
+] as const;
 const mutationRecoveryWrite = [
   "character.project.write",
   "creative.run.review",
@@ -204,60 +248,339 @@ const mutationRecoveryWrite = [
  * dashboard capability.
  */
 export const ADMIN_V2_API_OPERATIONS = [
-  operation("GET", "/api/v2/admin/bootstrap", bootstrap(), "none", "adminBootstrapResponseSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/bootstrap",
+    bootstrap(),
+    "none",
+    "adminBootstrapResponseSchema",
+  ),
 
-  operation("GET", "/api/v2/admin/cases", allOf("case.read"), "operationsCaseQuerySchema", "operationsCaseListResponseSchema"),
-  operation("POST", "/api/v2/admin/cases/backfill", allOf("case.decide"), "adminBackfillRequestSchema+idempotency-key", "adminBackfillResultSchema"),
-  operation("POST", "/api/v2/admin/cases/backfill/customer", allOf("case.decide"), "adminBackfillRequestSchema+idempotency-key", "adminBackfillResultSchema"),
-  operation("GET", "/api/v2/admin/cases/:id", allOf("case.read"), "path:id", "operationsCaseDetailSchema"),
-  operation("POST", "/api/v2/admin/cases/:id/actions", allOf("case.decide"), "customerCaseActionRequestSchema+idempotency-key", "caseMutationResultSchema"),
-  operation("POST", "/api/v2/admin/cases/:id/assignment", allOf("case.assign"), "caseAssignmentRequestSchema+idempotency-key", "caseMutationResultSchema"),
-  operation("POST", "/api/v2/admin/cases/:id/commands/close", allOf("case.decide"), "caseCloseCommandRequestSchema+idempotency-key", "adminCommandAcceptedSchema"),
-  operation("POST", "/api/v2/admin/cases/:id/commands/reopen", allOf("case.decide"), "caseReopenRequestSchema+idempotency-key", "caseReopenResultSchema"),
-  operation("POST", "/api/v2/admin/cases/:id/commands/wait", allOf("case.assign"), "caseWaitRequestSchema+idempotency-key", "caseMutationResultSchema"),
-  operation("POST", "/api/v2/admin/cases/:id/decisions", allOf("case.decide"), "caseDecisionRequestSchema+idempotency-key", "caseMutationResultSchema"),
-  operation("POST", "/api/v2/admin/cases/:id/verification", allOf("case.decide"), "caseVerificationRequestSchema+idempotency-key", "caseMutationResultSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/cases",
+    allOf("case.read"),
+    "operationsCaseQuerySchema",
+    "operationsCaseListResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/cases/backfill",
+    allOf("case.decide"),
+    "adminBackfillRequestSchema+idempotency-key",
+    "adminBackfillResultSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/cases/backfill/customer",
+    allOf("case.decide"),
+    "adminBackfillRequestSchema+idempotency-key",
+    "adminBackfillResultSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/cases/:id",
+    allOf("case.read"),
+    "path:id",
+    "operationsCaseDetailSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/cases/:id/actions",
+    allOf("case.decide"),
+    "customerCaseActionRequestSchema+idempotency-key",
+    "caseMutationResultSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/cases/:id/assignment",
+    allOf("case.assign"),
+    "caseAssignmentRequestSchema+idempotency-key",
+    "caseMutationResultSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/cases/:id/commands/close",
+    allOf("case.decide"),
+    "caseCloseCommandRequestSchema+idempotency-key",
+    "adminCommandAcceptedSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/cases/:id/commands/reopen",
+    allOf("case.decide"),
+    "caseReopenRequestSchema+idempotency-key",
+    "caseReopenResultSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/cases/:id/commands/wait",
+    allOf("case.assign"),
+    "caseWaitRequestSchema+idempotency-key",
+    "caseMutationResultSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/cases/:id/decisions",
+    allOf("case.decide"),
+    "caseDecisionRequestSchema+idempotency-key",
+    "caseMutationResultSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/cases/:id/verification",
+    allOf("case.decide"),
+    "caseVerificationRequestSchema+idempotency-key",
+    "caseMutationResultSchema",
+  ),
 
-  operation("GET", "/api/v2/admin/voice-defaults", allOf("generation.config.read"), "none", "voiceDefaultSettingsSchema"),
-  operation("PUT", "/api/v2/admin/voice-defaults", allOf("generation.config.write"), "voiceDefaultSettingsUpdateRequestSchema+idempotency-key", "voiceDefaultSettingsUpdateResponseSchema"),
-  operation("POST", "/api/v2/admin/voice-defaults/preview", allOf("generation.config.read"), "voiceDefaultPreviewRequestSchema", "voiceDefaultPreviewResponseSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/voice-defaults",
+    allOf("generation.config.read"),
+    "none",
+    "voiceDefaultSettingsSchema",
+  ),
+  operation(
+    "PUT",
+    "/api/v2/admin/voice-defaults",
+    allOf("generation.config.write"),
+    "voiceDefaultSettingsUpdateRequestSchema+idempotency-key",
+    "voiceDefaultSettingsUpdateResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/voice-defaults/preview",
+    allOf("generation.config.read"),
+    "voiceDefaultPreviewRequestSchema",
+    "voiceDefaultPreviewResponseSchema",
+  ),
 
-  operation("POST", "/api/v2/admin/characters", allOf("character.project.write"), "characterProjectCreateRequestSchema+idempotency-key", "characterProjectCreateResponseSchema"),
-  operation("GET", "/api/v2/admin/characters/portfolio", allOf("character.performance.read"), "characterPortfolioQuerySchema", "characterPortfolioResponseSchema"),
-  operation("POST", "/api/v2/admin/characters/performance/backfill", allOf("analytics.metric.export"), "characterPerformanceBackfillRequestSchema+idempotency-key", "characterPerformanceBackfillResponseSchema"),
-  operation("GET", "/api/v2/admin/characters/performance/reconciliation", allOf("analytics.metric.read"), "none", "characterPerformanceReconciliationSchema"),
-  operation("POST", "/api/v2/admin/characters/route-qualifications/commands/evaluate", allOf("content.production.write"), "generationRouteQualificationEvaluateRequestSchema+idempotency-key", "generationRouteQualificationEvaluateResponseSchema"),
-  operation("GET", "/api/v2/admin/characters/:id", allOf("character.project.read", "character.release.read", "character.performance.read"), "path:id", "characterWorkspaceDetailSchema"),
-  operation("GET", "/api/v2/admin/characters/:id/image-sources", allOf("character.project.read", "creative.run.read"), "path:id", "characterImageSourceListResponseSchema"),
-  operation("POST", "/api/v2/admin/characters/:id/image-sources", allOf("character.project.write", "creative.run.write"), "characterImageSourceUploadRequestSchema+idempotency-key", "characterImageSourceUploadResponseSchema"),
-  operation("POST", "/api/v2/admin/characters/:id/voice-clones", allOf("character.project.write"), "characterVoiceCloneCreateRequestSchema+idempotency-key", "characterVoiceCloneCreateResponseSchema"),
-  operation("POST", "/api/v2/admin/characters/:id/voice-clones/:profileId/activate", allOf("character.release.publish"), "characterVoiceActivationRequestSchema+idempotency-key", "characterVoiceActivationResponseSchema"),
-  operation("POST", "/api/v2/admin/characters/:id/voice-defaults/reset", allOf("character.release.publish"), "characterVoiceSystemDefaultResetRequestSchema+idempotency-key", "characterVoiceSystemDefaultResetResponseSchema"),
-  operation("POST", "/api/v2/admin/characters/:id/voice-clips/:requestId/commands/reclaim", allOf("character.project.write"), "characterVoiceClipReclaimRequestSchema+idempotency-key", "characterVoiceClipReclaimResponseSchema"),
-  operation("POST", "/api/v2/admin/characters/:id/reference-sets", allOf("content.official.write"), "characterReferenceSetPublishRequestSchema+idempotency-key", "characterReferenceSetPublishResponseSchema"),
-  operation("PATCH", "/api/v2/admin/characters/:id/looks/:lookId", allOf("content.official.write"), "characterLookArchiveRequestSchema+idempotency-key", "characterLookArchiveResponseSchema"),
-  operation("POST", "/api/v2/admin/characters/:id/commands/pause", allOf("character.release.publish"), "adminCommandRequestSchema+idempotency-key", "adminCommandAcceptedSchema"),
-  operation("POST", "/api/v2/admin/characters/:id/commands/resume", allOf("character.release.publish"), "adminCommandRequestSchema+idempotency-key", "adminCommandAcceptedSchema"),
-  operation("POST", "/api/v2/admin/characters/:id/commands/retire", allOf("character.release.publish"), "adminCommandRequestSchema+idempotency-key", "adminCommandAcceptedSchema"),
-  operation("POST", "/api/v2/admin/characters/:id/portfolio-decisions", allOf("character.project.write"), "characterPortfolioDecisionRequestSchema+idempotency-key", "characterPortfolioDecisionRecordSchema"),
-  operation("GET", "/api/v2/admin/characters/:id/project", allOf("character.project.write"), "path:id", "characterProjectDraftResumeSchema"),
-  operation("POST", "/api/v2/admin/characters/:id/project", allOf("character.project.write"), "customerCharacterPublicationPrepRequestSchema+idempotency-key", "customerCharacterPublicationPrepResponseSchema", undefined, { commandType: "character.publication.prepare", executionMode: "atomic" }),
-  operation("PATCH", "/api/v2/admin/characters/:id/project", allOf("character.project.write"), "characterProjectDraftPatchRequestSchema+if-match", "characterWorkspaceProjectSchema"),
-  operation("POST", "/api/v2/admin/characters/:id/soul/versions", allOf("character.project.write"), "characterSoulVersionCreateRequestSchema+idempotency-key+if-match", "characterSoulVersionCreateResponseSchema"),
-  operation("PATCH", "/api/v2/admin/characters/:id/draft-image", allOf("character.project.write"), "characterDraftImageSelectionRequestSchema+idempotency-key+if-match", "characterDraftImageSelectionResultSchema", undefined, { commandType: "character.project.draft_image.select" }),
-  operation("POST", "/api/v2/admin/characters/:id/identity-bootstrap", allOf("character.project.write"), "characterIdentityBootstrapRequestSchema+idempotency-key+if-match", "characterIdentityBootstrapResponseSchema"),
-  operation("POST", "/api/v2/admin/characters/:id/image-readiness/repair", allOf("character.project.write"), "characterImageReadinessRepairRequestSchema+idempotency-key+if-match", "characterImageReadinessRepairResponseSchema"),
-  operation("POST", "/api/v2/admin/characters/:id/qa-runs", allOf("character.release.review"), "characterQaRunCreateRequestSchema+idempotency-key+if-match", "characterQaRunSchema"),
-  operation("POST", "/api/v2/admin/characters/:id/releases", allOf("character.release.propose"), "characterReleaseProposalRequestSchema+idempotency-key+if-match", "characterReleaseSchema"),
-  operation("POST", "/api/v2/admin/characters/:id/releases/:releaseId/commands/publish", allOf("character.release.publish"), "characterReleasePublishCommandRequestSchema+idempotency-key", "adminCommandAcceptedSchema"),
-  operation("POST", "/api/v2/admin/characters/:id/releases/:releaseId/commands/rollback", allOf("character.release.publish"), "characterReleaseRollbackCommandRequestSchema+idempotency-key", "adminCommandAcceptedSchema"),
-  operation("POST", "/api/v2/admin/characters/:id/releases/:releaseId/commands/schedule", allOf("character.release.publish"), "characterReleaseScheduleCommandRequestSchema+idempotency-key", "adminCommandAcceptedSchema"),
-  operation("POST", "/api/v2/admin/characters/:id/releases/:releaseId/monitors/:window/refresh", allOf("character.release.review"), "characterReleaseMonitorRefreshRequestSchema+idempotency-key", "characterReleaseMonitorRefreshResultSchema"),
-  operation("POST", "/api/v2/admin/characters/:id/releases/:releaseId/review", allOf("character.release.review"), "characterReleaseReviewRequestSchema+idempotency-key+if-match", "characterReleaseSchema"),
-  operation("POST", "/api/v2/admin/characters/:id/releases/:releaseId/validation", allOf("character.release.publish"), "characterReleaseValidationRequestSchema+idempotency-key", "characterReleaseValidationResultSchema"),
-
-  operation("POST", "/api/v2/admin/chat/sessions/:sessionId/commands/migrate-release", allOf("character.release.publish"), "characterSessionReleaseMigrationCommandRequestSchema+idempotency-key", "adminCommandAcceptedSchema"),
-  operation("GET", "/api/v2/admin/chat/main-outbox-events", allOf("chat.ops.read", "ops.queue.read"), "mainToChatOutboxEventQuerySchema", "mainToChatOutboxEventListResponseSchema"),
+  operation(
+    "POST",
+    "/api/v2/admin/characters",
+    allOf("character.project.write"),
+    "characterProjectCreateRequestSchema+idempotency-key",
+    "characterProjectCreateResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/characters/portfolio",
+    allOf("character.performance.read"),
+    "characterPortfolioQuerySchema",
+    "characterPortfolioResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/characters/performance/backfill",
+    allOf("analytics.metric.export"),
+    "characterPerformanceBackfillRequestSchema+idempotency-key",
+    "characterPerformanceBackfillResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/characters/performance/reconciliation",
+    allOf("analytics.metric.read"),
+    "none",
+    "characterPerformanceReconciliationSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/characters/route-qualifications/commands/evaluate",
+    allOf("content.production.write"),
+    "generationRouteQualificationEvaluateRequestSchema+idempotency-key",
+    "generationRouteQualificationEvaluateResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/characters/:id",
+    allOf(
+      "character.project.read",
+      "character.release.read",
+      "character.performance.read",
+    ),
+    "path:id",
+    "characterWorkspaceDetailSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/characters/:id/image-sources",
+    allOf("character.project.read", "creative.run.read"),
+    "path:id",
+    "characterImageSourceListResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/characters/:id/image-sources",
+    allOf("character.project.write", "creative.run.write"),
+    "characterImageSourceUploadRequestSchema+idempotency-key",
+    "characterImageSourceUploadResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/characters/:id/video-sources",
+    allOf("character.project.write", "creative.run.write"),
+    "characterVideoSourceUploadRequestSchema+idempotency-key",
+    "characterVideoSourceUploadResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/characters/:id/voice-clones",
+    allOf("character.project.write"),
+    "characterVoiceCloneCreateRequestSchema+idempotency-key",
+    "characterVoiceCloneCreateResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/characters/:id/voice-clones/:profileId/activate",
+    allOf("character.release.publish"),
+    "characterVoiceActivationRequestSchema+idempotency-key",
+    "characterVoiceActivationResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/characters/:id/voice-defaults/reset",
+    allOf("character.release.publish"),
+    "characterVoiceSystemDefaultResetRequestSchema+idempotency-key",
+    "characterVoiceSystemDefaultResetResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/characters/:id/voice-clips/:requestId/commands/reclaim",
+    allOf("character.project.write"),
+    "characterVoiceClipReclaimRequestSchema+idempotency-key",
+    "characterVoiceClipReclaimResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/characters/:id/reference-sets",
+    allOf("content.official.write"),
+    "characterReferenceSetPublishRequestSchema+idempotency-key",
+    "characterReferenceSetPublishResponseSchema",
+  ),
+  operation(
+    "PATCH",
+    "/api/v2/admin/characters/:id/looks/:lookId",
+    allOf("content.official.write"),
+    "characterLookArchiveRequestSchema+idempotency-key",
+    "characterLookArchiveResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/characters/:id/commands/pause",
+    allOf("character.release.publish"),
+    "adminCommandRequestSchema+idempotency-key",
+    "adminCommandAcceptedSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/characters/:id/commands/resume",
+    allOf("character.release.publish"),
+    "adminCommandRequestSchema+idempotency-key",
+    "adminCommandAcceptedSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/characters/:id/commands/retire",
+    allOf("character.release.publish"),
+    "adminCommandRequestSchema+idempotency-key",
+    "adminCommandAcceptedSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/characters/:id/project",
+    allOf("character.project.write"),
+    "path:id",
+    "characterProjectDraftResumeSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/characters/:id/project",
+    allOf("character.project.write"),
+    "customerCharacterPublicationPrepRequestSchema+idempotency-key",
+    "customerCharacterPublicationPrepResponseSchema",
+    undefined,
+    { commandType: "character.publication.prepare", executionMode: "atomic" },
+  ),
+  operation(
+    "PATCH",
+    "/api/v2/admin/characters/:id/project",
+    allOf("character.project.write"),
+    "characterProjectDraftPatchRequestSchema+if-match",
+    "characterWorkspaceProjectSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/characters/:id/soul/versions",
+    allOf("character.project.write"),
+    "characterSoulVersionCreateRequestSchema+idempotency-key+if-match",
+    "characterSoulVersionCreateResponseSchema",
+  ),
+  operation(
+    "PATCH",
+    "/api/v2/admin/characters/:id/draft-image",
+    allOf("character.project.write"),
+    "characterDraftImageSelectionRequestSchema+idempotency-key+if-match",
+    "characterDraftImageSelectionResultSchema",
+    undefined,
+    { commandType: "character.project.draft_image.select" },
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/characters/:id/identity-bootstrap",
+    allOf("character.project.write"),
+    "characterIdentityBootstrapRequestSchema+idempotency-key+if-match",
+    "characterIdentityBootstrapResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/characters/:id/image-readiness/repair",
+    allOf("character.project.write"),
+    "characterImageReadinessRepairRequestSchema+idempotency-key+if-match",
+    "characterImageReadinessRepairResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/characters/:id/releases",
+    allOf("character.release.publish"),
+    "characterReleaseCreateRequestSchema+idempotency-key+if-match",
+    "characterReleaseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/characters/:id/releases/:releaseId/commands/publish",
+    allOf("character.release.publish"),
+    "characterReleasePublishCommandRequestSchema+idempotency-key",
+    "adminCommandAcceptedSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/characters/:id/releases/:releaseId/commands/rollback",
+    allOf("character.release.publish"),
+    "characterReleaseRollbackCommandRequestSchema+idempotency-key",
+    "adminCommandAcceptedSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/characters/:id/releases/:releaseId/monitors/:window/refresh",
+    allOf("character.release.publish"),
+    "characterReleaseMonitorRefreshRequestSchema+idempotency-key",
+    "characterReleaseMonitorRefreshResultSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/chat/sessions/:sessionId/commands/migrate-release",
+    allOf("character.release.publish"),
+    "characterSessionReleaseMigrationCommandRequestSchema+idempotency-key",
+    "adminCommandAcceptedSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/chat/main-outbox-events",
+    allOf("chat.ops.read", "ops.queue.read"),
+    "mainToChatOutboxEventQuerySchema",
+    "mainToChatOutboxEventListResponseSchema",
+  ),
   operation(
     "POST",
     "/api/v2/admin/chat/main-outbox-events/commands/replay",
@@ -280,44 +603,241 @@ export const ADMIN_V2_API_OPERATIONS = [
     },
   ),
 
-  operation("GET", "/api/v2/admin/collaboration/:targetType/:targetId/activity", oneOfBy("collaboration_target_read", ...collaborationRead), "collaborationQuerySchema", "collaborationActivityListResponseSchema"),
-  operation("POST", "/api/v2/admin/collaboration/:targetType/:targetId/activity", oneOfBy("collaboration_target_write", ...collaborationWrite), "collaborationActivityCreateSchema+idempotency-key", "collaborationActivityMutationSchema"),
-  operation("PUT", "/api/v2/admin/collaboration/:targetType/:targetId/watch", oneOfBy("collaboration_target_read", ...collaborationRead), "collaborationWatchSchema+idempotency-key", "collaborationWatchResponseSchema"),
-  operation("GET", "/api/v2/admin/collaboration/mentions", allOf("dashboard.read"), "collaborationQuerySchema", "collaborationMentionListResponseSchema", collaborationRead),
-  operation("GET", "/api/v2/admin/commands/:commandId", allOfAndOneOfBy("command_target_read", ["dashboard.read"], commandTargetRead), "path:commandId", "adminCommandStatusSchema"),
-  operation("POST", "/api/v2/admin/mutation-receipts/reconcile", oneOfBy("mutation_recovery_command_type", ...mutationRecoveryWrite), "adminMutationRecoveryRequestSchema+idempotency-key", "adminMutationRecoveryResultSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/collaboration/:targetType/:targetId/activity",
+    oneOfBy("collaboration_target_read", ...collaborationRead),
+    "collaborationQuerySchema",
+    "collaborationActivityListResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/collaboration/:targetType/:targetId/activity",
+    oneOfBy("collaboration_target_write", ...collaborationWrite),
+    "collaborationActivityCreateSchema+idempotency-key",
+    "collaborationActivityMutationSchema",
+  ),
+  operation(
+    "PUT",
+    "/api/v2/admin/collaboration/:targetType/:targetId/watch",
+    oneOfBy("collaboration_target_read", ...collaborationRead),
+    "collaborationWatchSchema+idempotency-key",
+    "collaborationWatchResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/collaboration/mentions",
+    allOf("dashboard.read"),
+    "collaborationQuerySchema",
+    "collaborationMentionListResponseSchema",
+    collaborationRead,
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/commands/:commandId",
+    allOfAndOneOfBy(
+      "command_target_read",
+      ["dashboard.read"],
+      commandTargetRead,
+    ),
+    "path:commandId",
+    "adminCommandStatusSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/mutation-receipts/reconcile",
+    oneOfBy("mutation_recovery_command_type", ...mutationRecoveryWrite),
+    "adminMutationRecoveryRequestSchema+idempotency-key",
+    "adminMutationRecoveryResultSchema",
+  ),
 
-  operation("GET", "/api/v2/admin/creative/runs", allOf("creative.run.read"), "creativeRunQuerySchema", "creativeRunListResponseSchema"),
-  operation("POST", "/api/v2/admin/creative/runs", allOf("creative.run.write"), "creativeRunCreateRequestSchema+idempotency-key", "creativeRunCreateResultSchema"),
-  operation("GET", "/api/v2/admin/creative/run-options", allOf("creative.run.read"), "none", "creativeRunCreateOptionsSchema"),
-  operation("GET", "/api/v2/admin/creative/runs/:id", allOf("creative.run.read"), "path:id", "creativeRunDetailSchema"),
-  operation("POST", "/api/v2/admin/creative/runs/:id/commands/attach-incident", allOf("ops.incident.manage", "creative.run.write"), "creativeRunAttachIncidentRequestSchema+idempotency-key", "creativeRunAttachIncidentResultSchema"),
-  operation("POST", "/api/v2/admin/creative/runs/:id/commands/retry-failed", allOf("creative.run.write"), "creativeRunRetryFailedCommandRequestSchema+idempotency-key", "adminCommandAcceptedSchema"),
-  operation("POST", "/api/v2/admin/creative/runs/:id/items/:itemId/decisions", allOf("creative.run.review"), "creativeReviewDecisionRequestSchema+idempotency-key", "creativeReviewDecisionResultSchema"),
-  operation("POST", "/api/v2/admin/creative/runs/:id/placements", allOf("creative.placement.publish"), "creativePlacementPublishRequestSchema+idempotency-key", "creativePlacementPublishResultSchema"),
-  operation("POST", "/api/v2/admin/creative/runs/:id/placements/:placementId/verification", allOf("creative.placement.publish"), "creativePlacementVerificationRequestSchema+idempotency-key", "creativePlacementVerificationResultSchema"),
-  operation("POST", "/api/v2/admin/creative/runs/:id/placements/:placementId/withdrawal", allOf("creative.placement.publish"), "creativePlacementWithdrawalRequestSchema+idempotency-key", "creativePlacementWithdrawalResultSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/creative/runs",
+    allOf("creative.run.read"),
+    "creativeRunQuerySchema",
+    "creativeRunListResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/creative/runs",
+    allOf("creative.run.write"),
+    "creativeRunCreateRequestSchema+idempotency-key",
+    "creativeRunCreateResultSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/creative/run-options",
+    allOf("creative.run.read"),
+    "none",
+    "creativeRunCreateOptionsSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/creative/runs/:id",
+    allOf("creative.run.read"),
+    "path:id",
+    "creativeRunDetailSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/creative/runs/:id/commands/attach-incident",
+    allOf("ops.incident.manage", "creative.run.write"),
+    "creativeRunAttachIncidentRequestSchema+idempotency-key",
+    "creativeRunAttachIncidentResultSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/creative/runs/:id/commands/retry-failed",
+    allOf("creative.run.write"),
+    "creativeRunRetryFailedCommandRequestSchema+idempotency-key",
+    "adminCommandAcceptedSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/creative/runs/:id/items/:itemId/decisions",
+    allOf("creative.run.review"),
+    "creativeReviewDecisionRequestSchema+idempotency-key",
+    "creativeReviewDecisionResultSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/creative/runs/:id/placements",
+    allOf("creative.placement.publish"),
+    "creativePlacementPublishRequestSchema+idempotency-key",
+    "creativePlacementPublishResultSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/creative/runs/:id/placements/:placementId/verification",
+    allOf("creative.placement.publish"),
+    "creativePlacementVerificationRequestSchema+idempotency-key",
+    "creativePlacementVerificationResultSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/creative/runs/:id/placements/:placementId/withdrawal",
+    allOf("creative.placement.publish"),
+    "creativePlacementWithdrawalRequestSchema+idempotency-key",
+    "creativePlacementWithdrawalResultSchema",
+  ),
 
-  operation("GET", "/api/v2/admin/assets", allOf("creative.asset.read"), "contentAssetQuerySchema", "contentAssetListResponseSchema"),
-  operation("GET", "/api/v2/admin/assets/:id", allOf("creative.asset.read"), "path:id", "contentAssetDetailResponseSchema"),
-  operation("PATCH", "/api/v2/admin/assets/:id", allOf("content.asset.review"), "contentAssetPatchRequestSchema+idempotency-key", "contentAssetMutationResponseSchema"),
-  operation("POST", "/api/v2/admin/assets/bulk/preflight", allOf("content.asset.review"), "contentAssetBulkPreflightRequestSchema", "contentAssetBulkPreflightResponseSchema"),
-  operation("POST", "/api/v2/admin/assets/bulk", allOf("content.asset.review"), "contentAssetBulkRequestSchema+idempotency-key", "contentAssetBulkMutationResponseSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/assets",
+    allOf("creative.asset.read"),
+    "contentAssetQuerySchema",
+    "contentAssetListResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/assets/:id",
+    allOf("creative.asset.read"),
+    "path:id",
+    "contentAssetDetailResponseSchema",
+  ),
+  operation(
+    "PATCH",
+    "/api/v2/admin/assets/:id",
+    allOf("content.asset.review"),
+    "contentAssetPatchRequestSchema+idempotency-key",
+    "contentAssetMutationResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/assets/bulk/preflight",
+    allOf("content.asset.review"),
+    "contentAssetBulkPreflightRequestSchema",
+    "contentAssetBulkPreflightResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/assets/bulk",
+    allOf("content.asset.review"),
+    "contentAssetBulkRequestSchema+idempotency-key",
+    "contentAssetBulkMutationResponseSchema",
+  ),
 
-  operation("GET", "/api/v2/admin/customers", allOf("customer.read"), "customerListQuerySchema", "customerListResponseSchema"),
-  operation("GET", "/api/v2/admin/customers/:id", allOf("customer.read"), "path:id", "customer360Schema"),
+  operation(
+    "GET",
+    "/api/v2/admin/customers",
+    allOf("customer.read"),
+    "customerListQuerySchema",
+    "customerListResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/customers/:id",
+    allOf("customer.read"),
+    "path:id",
+    "customer360Schema",
+  ),
 
-  operation("GET", "/api/v2/admin/experiments", allOf("experiment.manage"), "experimentDefinitionListQuerySchema", "experimentDefinitionListSchema"),
-  operation("POST", "/api/v2/admin/experiments", allOf("experiment.manage"), "experimentDefinitionCreateSchema+idempotency-key", "experimentDefinitionMutationSchema"),
-  operation("GET", "/api/v2/admin/experiments/:id", allOf("experiment.manage"), "path:id", "experimentDefinitionResponseSchema"),
-  operation("GET", "/api/v2/admin/experiments/:id/analysis", allOf("experiment.manage"), "experimentAnalysisQuerySchema", "experimentAnalysisResponseSchema"),
-  operation("POST", "/api/v2/admin/experiments/:id/commands/start", allOf("experiment.manage"), "experimentLifecycleRequestSchema+idempotency-key", "experimentDefinitionMutationSchema"),
-  operation("POST", "/api/v2/admin/experiments/:id/commands/stop", allOf("experiment.manage"), "experimentLifecycleRequestSchema+idempotency-key", "experimentDefinitionMutationSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/experiments",
+    allOf("experiment.manage"),
+    "experimentDefinitionListQuerySchema",
+    "experimentDefinitionListSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/experiments",
+    allOf("experiment.manage"),
+    "experimentDefinitionCreateSchema+idempotency-key",
+    "experimentDefinitionMutationSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/experiments/:id",
+    allOf("experiment.manage"),
+    "path:id",
+    "experimentDefinitionResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/experiments/:id/analysis",
+    allOf("experiment.manage"),
+    "experimentAnalysisQuerySchema",
+    "experimentAnalysisResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/experiments/:id/commands/start",
+    allOf("experiment.manage"),
+    "experimentLifecycleRequestSchema+idempotency-key",
+    "experimentDefinitionMutationSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/experiments/:id/commands/stop",
+    allOf("experiment.manage"),
+    "experimentLifecycleRequestSchema+idempotency-key",
+    "experimentDefinitionMutationSchema",
+  ),
 
-  operation("POST", "/api/v2/admin/generation/requests/:id/commands/cancel", allOf("generation.job.requeue"), "generationRequestCancelSchema+idempotency-key", "generationRequestCancelResultSchema"),
+  operation(
+    "POST",
+    "/api/v2/admin/generation/requests/:id/commands/cancel",
+    allOf("generation.job.requeue"),
+    "generationRequestCancelSchema+idempotency-key",
+    "generationRequestCancelResultSchema",
+  ),
 
-  operation("GET", "/api/v2/admin/incidents", allOf("ops.incident.read"), "incidentQuerySchema", "incidentListResponseSchema"),
-  operation("GET", "/api/v2/admin/incidents/correlation-outbox", allOf("ops.incident.read", "ops.queue.read"), "incidentCorrelationOutboxEventQuerySchema", "incidentCorrelationOutboxEventListResponseSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/incidents",
+    allOf("ops.incident.read"),
+    "incidentQuerySchema",
+    "incidentListResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/incidents/correlation-outbox",
+    allOf("ops.incident.read", "ops.queue.read"),
+    "incidentCorrelationOutboxEventQuerySchema",
+    "incidentCorrelationOutboxEventListResponseSchema",
+  ),
   operation(
     "POST",
     "/api/v2/admin/incidents/correlation-outbox/commands/replay",
@@ -325,7 +845,10 @@ export const ADMIN_V2_API_OPERATIONS = [
     "incidentCorrelationOutboxReplayRequestSchema+idempotency-key",
     "incidentCorrelationOutboxReplayResultSchema",
     undefined,
-    { commandType: "incident.correlation_outbox.replay", executionMode: "atomic" },
+    {
+      commandType: "incident.correlation_outbox.replay",
+      executionMode: "atomic",
+    },
   ),
   operation(
     "POST",
@@ -339,200 +862,1198 @@ export const ADMIN_V2_API_OPERATIONS = [
       executionMode: "atomic",
     },
   ),
-  operation("POST", "/api/v2/admin/incidents/backfill", allOf("ops.incident.manage"), "adminBackfillRequestSchema+idempotency-key", "adminBackfillResultSchema"),
-  operation("GET", "/api/v2/admin/incidents/:id", allOf("ops.incident.read"), "path:id", "incidentDetailSchema"),
-  operation("PATCH", "/api/v2/admin/incidents/:id", allOf("ops.incident.manage"), "incidentTriageRequestSchema+if-match", "incidentTriageResultSchema"),
-  operation("POST", "/api/v2/admin/incidents/:id/action-plans/preview", allOf("ops.incident.manage"), "incidentActionPlanPreviewRequestSchema+idempotency-key", "incidentActionPlanSchema"),
-  operation("POST", "/api/v2/admin/incidents/:id/action-plans/:planId/execute", allOf("ops.incident.manage"), "incidentActionPlanExecuteRequestSchema+idempotency-key", "adminCommandAcceptedSchema"),
-  operation("POST", "/api/v2/admin/incidents/:id/commands/close", allOf("ops.incident.manage"), "incidentCloseRequestSchema+idempotency-key", "incidentCloseResultSchema"),
-  operation("POST", "/api/v2/admin/incidents/:id/commands/merge", allOf("ops.incident.manage"), "incidentMergeRequestSchema+idempotency-key", "incidentMergeResultSchema"),
-  operation("POST", "/api/v2/admin/incidents/:id/commands/resolve", allOf("ops.incident.manage"), "incidentResolveCommandRequestSchema+idempotency-key", "adminCommandAcceptedSchema"),
-  operation("POST", "/api/v2/admin/incidents/:id/commands/split", allOf("ops.incident.manage"), "incidentSplitRequestSchema+idempotency-key", "incidentSplitResultSchema"),
-  operation("POST", "/api/v2/admin/incidents/:id/verification", allOf("ops.incident.manage"), "incidentRecoveryVerificationRequestSchema+idempotency-key", "incidentRecoveryVerificationResultSchema"),
+  operation(
+    "POST",
+    "/api/v2/admin/incidents/backfill",
+    allOf("ops.incident.manage"),
+    "adminBackfillRequestSchema+idempotency-key",
+    "adminBackfillResultSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/incidents/:id",
+    allOf("ops.incident.read"),
+    "path:id",
+    "incidentDetailSchema",
+  ),
+  operation(
+    "PATCH",
+    "/api/v2/admin/incidents/:id",
+    allOf("ops.incident.manage"),
+    "incidentTriageRequestSchema+if-match",
+    "incidentTriageResultSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/incidents/:id/action-plans/preview",
+    allOf("ops.incident.manage"),
+    "incidentActionPlanPreviewRequestSchema+idempotency-key",
+    "incidentActionPlanSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/incidents/:id/action-plans/:planId/execute",
+    allOf("ops.incident.manage"),
+    "incidentActionPlanExecuteRequestSchema+idempotency-key",
+    "adminCommandAcceptedSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/incidents/:id/commands/close",
+    allOf("ops.incident.manage"),
+    "incidentCloseRequestSchema+idempotency-key",
+    "incidentCloseResultSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/incidents/:id/commands/merge",
+    allOf("ops.incident.manage"),
+    "incidentMergeRequestSchema+idempotency-key",
+    "incidentMergeResultSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/incidents/:id/commands/resolve",
+    allOf("ops.incident.manage"),
+    "incidentResolveCommandRequestSchema+idempotency-key",
+    "adminCommandAcceptedSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/incidents/:id/commands/split",
+    allOf("ops.incident.manage"),
+    "incidentSplitRequestSchema+idempotency-key",
+    "incidentSplitResultSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/incidents/:id/verification",
+    allOf("ops.incident.manage"),
+    "incidentRecoveryVerificationRequestSchema+idempotency-key",
+    "incidentRecoveryVerificationResultSchema",
+  ),
 
-  operation("GET", "/api/v2/admin/jobs", allOf("generation.job.read"), "generationJobQuerySchema", "generationJobListResponseSchema"),
-  operation("GET", "/api/v2/admin/jobs/:id", allOf("generation.job.read"), "path:id", "generationJobDetailResponseSchema"),
-  operation("POST", "/api/v2/admin/jobs/:id/commands/reconcile-unknown", allOf("generation.job.requeue"), "unknownGenerationReconciliationCommandSchema+idempotency-key", "unknownGenerationReconciliationResultSchema"),
-  operation("POST", "/api/v2/admin/jobs/:id/commands/retry", allOf("generation.job.requeue"), "retryGenerationRequestCommandSchema+idempotency-key", "retryGenerationRequestResultSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/jobs",
+    allOf("generation.job.read"),
+    "generationJobQuerySchema",
+    "generationJobListResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/jobs/:id",
+    allOf("generation.job.read"),
+    "path:id",
+    "generationJobDetailResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/jobs/:id/commands/reconcile-unknown",
+    allOf("generation.job.requeue"),
+    "unknownGenerationReconciliationCommandSchema+idempotency-key",
+    "unknownGenerationReconciliationResultSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/jobs/:id/commands/retry",
+    allOf("generation.job.requeue"),
+    "retryGenerationRequestCommandSchema+idempotency-key",
+    "retryGenerationRequestResultSchema",
+  ),
 
-  operation("GET", "/api/v2/admin/metrics", allOf("analytics.metric.read"), "metricDashboardQuerySchema", "metricDashboardResponseSchema"),
-  operation("GET", "/api/v2/admin/metrics/quality", allOf("analytics.metric.read"), "metricQualityQuerySchema", "metricQualityReportSchema"),
-  operation("GET", "/api/v2/admin/metrics/reconciliation", allOf("analytics.metric.read"), "metricReconciliationQuerySchema", "metricReconciliationReportSchema"),
-  operation("GET", "/api/v2/admin/reconciliation/invariants", allOf("analytics.metric.read"), "none", "adminInvariantReportSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/metrics",
+    allOf("analytics.metric.read"),
+    "metricDashboardQuerySchema",
+    "metricDashboardResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/metrics/quality",
+    allOf("analytics.metric.read"),
+    "metricQualityQuerySchema",
+    "metricQualityReportSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/metrics/reconciliation",
+    allOf("analytics.metric.read"),
+    "metricReconciliationQuerySchema",
+    "metricReconciliationReportSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/reconciliation/invariants",
+    allOf("analytics.metric.read"),
+    "none",
+    "adminInvariantReportSchema",
+  ),
 
-  operation("GET", "/api/v2/admin/saved-views", allOfAndOneOfBy("saved_view_scope_read", ["dashboard.read"], savedViewScopeRead), "savedViewListQuerySchema", "savedViewListResponseSchema"),
-  operation("POST", "/api/v2/admin/saved-views", allOfAndOneOfBy("saved_view_scope_read", ["dashboard.read"], savedViewScopeRead), "savedViewCreateSchema+idempotency-key", "savedViewMutationResponseSchema"),
-  operation("PATCH", "/api/v2/admin/saved-views/:id", allOfAndOneOfBy("saved_view_scope_read", ["dashboard.read"], savedViewScopeRead), "savedViewUpdateSchema+if-match", "savedViewUpdateResponseSchema"),
-  operation("DELETE", "/api/v2/admin/saved-views/:id", allOfAndOneOfBy("saved_view_scope_read", ["dashboard.read"], savedViewScopeRead), "if-match", "savedViewDeleteSchema"),
-  operation("GET", "/api/v2/admin/search", allOf("dashboard.read"), "globalAdminSearchQuerySchema", "globalAdminSearchResponseSchema", ["customer.read", "character.project.read", "creative.run.read", "case.read", "ops.incident.read", "generation.job.read"]),
+  operation(
+    "GET",
+    "/api/v2/admin/saved-views",
+    allOfAndOneOfBy(
+      "saved_view_scope_read",
+      ["dashboard.read"],
+      savedViewScopeRead,
+    ),
+    "savedViewListQuerySchema",
+    "savedViewListResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/saved-views",
+    allOfAndOneOfBy(
+      "saved_view_scope_read",
+      ["dashboard.read"],
+      savedViewScopeRead,
+    ),
+    "savedViewCreateSchema+idempotency-key",
+    "savedViewMutationResponseSchema",
+  ),
+  operation(
+    "PATCH",
+    "/api/v2/admin/saved-views/:id",
+    allOfAndOneOfBy(
+      "saved_view_scope_read",
+      ["dashboard.read"],
+      savedViewScopeRead,
+    ),
+    "savedViewUpdateSchema+if-match",
+    "savedViewUpdateResponseSchema",
+  ),
+  operation(
+    "DELETE",
+    "/api/v2/admin/saved-views/:id",
+    allOfAndOneOfBy(
+      "saved_view_scope_read",
+      ["dashboard.read"],
+      savedViewScopeRead,
+    ),
+    "if-match",
+    "savedViewDeleteSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/search",
+    allOf("dashboard.read"),
+    "globalAdminSearchQuerySchema",
+    "globalAdminSearchResponseSchema",
+    [
+      "customer.read",
+      "character.project.read",
+      "creative.run.read",
+      "case.read",
+      "ops.incident.read",
+      "generation.job.read",
+    ],
+  ),
 
-  operation("GET", "/api/v2/admin/today", allOf("dashboard.read"), "todayProjectionQuerySchema", "todayProjectionSchema"),
-  operation("GET", "/api/v2/admin/today/all-work", allOf("dashboard.read"), "todayAllWorkQuerySchema", "todayAllWorkResponseSchema"),
-  operation("POST", "/api/v2/admin/today/claim", allOfAndOneOfBy("today_claim_source_write", ["dashboard.read"], todayClaimWrite), "todayClaimRequestSchema+idempotency-key", "todayClaimResponseSchema"),
-  operation("PUT", "/api/v2/admin/today/preferences", allOf("dashboard.read"), "operationalWorkPreferenceUpdateSchema+if-match", "operationalWorkPreferenceSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/today",
+    allOf("dashboard.read"),
+    "todayProjectionQuerySchema",
+    "todayProjectionSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/today/all-work",
+    allOf("dashboard.read"),
+    "todayAllWorkQuerySchema",
+    "todayAllWorkResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/today/claim",
+    allOfAndOneOfBy(
+      "today_claim_source_write",
+      ["dashboard.read"],
+      todayClaimWrite,
+    ),
+    "todayClaimRequestSchema+idempotency-key",
+    "todayClaimResponseSchema",
+  ),
+  operation(
+    "PUT",
+    "/api/v2/admin/today/preferences",
+    allOf("dashboard.read"),
+    "operationalWorkPreferenceUpdateSchema+if-match",
+    "operationalWorkPreferenceSchema",
+  ),
 
-  operation("GET", "/api/v2/admin/users/:id/grant-bundles", allOf("user.role.write"), "path:id", "adminGrantBundleListSchema"),
-  operation("POST", "/api/v2/admin/users/:id/grant-bundles", allOf("user.role.write"), "adminGrantBundleWriteSchema+idempotency-key", "adminGrantBundleMutationSchema"),
-  operation("DELETE", "/api/v2/admin/users/:id/grant-bundles/:bundleKey", allOf("user.role.write"), "adminGrantBundleRevokeSchema+idempotency-key", "adminGrantBundleMutationSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/users/:id/grant-bundles",
+    allOf("user.role.write"),
+    "path:id",
+    "adminGrantBundleListSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/users/:id/grant-bundles",
+    allOf("user.role.write"),
+    "adminGrantBundleWriteSchema+idempotency-key",
+    "adminGrantBundleMutationSchema",
+  ),
+  operation(
+    "DELETE",
+    "/api/v2/admin/users/:id/grant-bundles/:bundleKey",
+    allOf("user.role.write"),
+    "adminGrantBundleRevokeSchema+idempotency-key",
+    "adminGrantBundleMutationSchema",
+  ),
 
   // ---- trust: migrated from v1 ----
-  operation("GET", "/api/v2/admin/moderation/queue", allOf("safety.review.read"), "moderationQueueQuerySchema", "moderationQueueResponseSchema"),
-  operation("POST", "/api/v2/admin/moderation/media/:id/decision", allOf("safety.review.write"), "moderationMediaDecisionRequestSchema+idempotency-key", "moderationMediaDecisionResponseSchema", undefined, { commandType: "safety.media.review" }),
-  operation("POST", "/api/v2/admin/moderation/reports/:id/decision", allOf("safety.review.write"), "moderationReportDecisionRequestSchema+idempotency-key", "moderationReportDecisionResponseSchema", undefined, { commandType: "safety.review.decision" }),
-  operation("POST", "/api/v2/admin/moderation/appeals/:id/decision", allOf("safety.review.write"), "moderationAppealDecisionRequestSchema+idempotency-key", "moderationAppealDecisionResponseSchema", undefined, { commandType: "safety.appeal.decision" }),
+  operation(
+    "GET",
+    "/api/v2/admin/moderation/queue",
+    allOf("safety.review.read"),
+    "moderationQueueQuerySchema",
+    "moderationQueueResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/moderation/media/:id/decision",
+    allOf("safety.review.write"),
+    "moderationMediaDecisionRequestSchema+idempotency-key",
+    "moderationMediaDecisionResponseSchema",
+    undefined,
+    { commandType: "safety.media.review" },
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/moderation/reports/:id/decision",
+    allOf("safety.review.write"),
+    "moderationReportDecisionRequestSchema+idempotency-key",
+    "moderationReportDecisionResponseSchema",
+    undefined,
+    { commandType: "safety.review.decision" },
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/moderation/appeals/:id/decision",
+    allOf("safety.review.write"),
+    "moderationAppealDecisionRequestSchema+idempotency-key",
+    "moderationAppealDecisionResponseSchema",
+    undefined,
+    { commandType: "safety.appeal.decision" },
+  ),
 
-  operation("GET", "/api/v2/admin/compliance/users/:id/export", allOf("compliance.read"), "path:id", "complianceUserExportResponseSchema"),
-  operation("POST", "/api/v2/admin/compliance/users/:id/erase", allOf("compliance.write"), "complianceEraseRequestSchema", "complianceEraseResponseSchema"),
-  operation("GET", "/api/v2/admin/compliance/age-verifications", allOf("compliance.read"), "complianceAgeVerificationQuerySchema", "complianceAgeVerificationListResponseSchema"),
-  operation("POST", "/api/v2/admin/compliance/age-verifications/:id/override", allOf("compliance.write"), "complianceAgeVerificationOverrideRequestSchema", "complianceAgeVerificationOverrideResponseSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/compliance/users/:id/export",
+    allOf("compliance.read"),
+    "path:id",
+    "complianceUserExportResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/compliance/users/:id/erase",
+    allOf("compliance.write"),
+    "complianceEraseRequestSchema",
+    "complianceEraseResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/compliance/age-verifications",
+    allOf("compliance.read"),
+    "complianceAgeVerificationQuerySchema",
+    "complianceAgeVerificationListResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/compliance/age-verifications/:id/override",
+    allOf("compliance.write"),
+    "complianceAgeVerificationOverrideRequestSchema",
+    "complianceAgeVerificationOverrideResponseSchema",
+  ),
 
-  operation("GET", "/api/v2/admin/risk/abuse", allOf("billing.read"), "riskAbuseQuerySchema", "riskAbuseOverviewSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/risk/abuse",
+    allOf("billing.read"),
+    "riskAbuseQuerySchema",
+    "riskAbuseOverviewSchema",
+  ),
 
-  operation("GET", "/api/v2/admin/approvals", allOf("admin.approval.review"), "approvalListQuerySchema", "approvalListResponseSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/approvals",
+    allOf("admin.approval.review"),
+    "approvalListQuerySchema",
+    "approvalListResponseSchema",
+  ),
   // INTENT: 请求方的真正门槛是动态的「你自己得先持有你要申请的那把钥匙」，manifest 表达不了。
   // 这里声明的是「进得了运营台」这条静态下限，动态那条仍由 createApproval 强制。
-  operation("POST", "/api/v2/admin/approvals", allOf("dashboard.read"), "approvalCreateRequestSchema", "approvalMutationResponseSchema"),
-  operation("POST", "/api/v2/admin/approvals/:id/approve", allOf("admin.approval.review"), "approvalDecisionRequestSchema", "approvalMutationResponseSchema"),
-  operation("POST", "/api/v2/admin/approvals/:id/reject", allOf("admin.approval.review"), "approvalDecisionRequestSchema", "approvalMutationResponseSchema"),
+  operation(
+    "POST",
+    "/api/v2/admin/approvals",
+    allOf("dashboard.read"),
+    "approvalCreateRequestSchema",
+    "approvalMutationResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/approvals/:id/approve",
+    allOf("admin.approval.review"),
+    "approvalDecisionRequestSchema",
+    "approvalMutationResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/approvals/:id/reject",
+    allOf("admin.approval.review"),
+    "approvalDecisionRequestSchema",
+    "approvalMutationResponseSchema",
+  ),
   // ---- people: migrated from v1 ----
-  operation("GET", "/api/v2/admin/users", allOf("user.read"), "accessUserListQuerySchema", "accessUserListResponseSchema"),
-  operation("GET", "/api/v2/admin/users/:id", allOf("user.read"), "path:id", "accessUserDetailSchema"),
-  operation("POST", "/api/v2/admin/users/:id/status", allOf("user.status.write"), "accessUserStatusCommandSchema+idempotency-key", "accessUserCommandResultSchema", undefined, { commandType: "user.status.write" }),
-  operation("POST", "/api/v2/admin/users/:id/role", allOf("user.role.write"), "accessUserRoleCommandSchema+idempotency-key", "accessUserCommandResultSchema", undefined, { commandType: "user.role.write" }),
-  operation("GET", "/api/v2/admin/users/:id/permissions", allOf("user.role.write"), "path:id", "accessUserPermissionListSchema"),
-  operation("POST", "/api/v2/admin/users/:id/permissions", allOf("user.role.write"), "accessUserPermissionCommandSchema+idempotency-key", "accessUserPermissionResultSchema", undefined, { commandType: "admin.permission.write" }),
+  operation(
+    "GET",
+    "/api/v2/admin/users",
+    allOf("user.read"),
+    "accessUserListQuerySchema",
+    "accessUserListResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/users/:id",
+    allOf("user.read"),
+    "path:id",
+    "accessUserDetailSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/users/:id/status",
+    allOf("user.status.write"),
+    "accessUserStatusCommandSchema+idempotency-key",
+    "accessUserCommandResultSchema",
+    undefined,
+    { commandType: "user.status.write" },
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/users/:id/role",
+    allOf("user.role.write"),
+    "accessUserRoleCommandSchema+idempotency-key",
+    "accessUserCommandResultSchema",
+    undefined,
+    { commandType: "user.role.write" },
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/users/:id/permissions",
+    allOf("user.role.write"),
+    "path:id",
+    "accessUserPermissionListSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/users/:id/permissions",
+    allOf("user.role.write"),
+    "accessUserPermissionCommandSchema+idempotency-key",
+    "accessUserPermissionResultSchema",
+    undefined,
+    { commandType: "admin.permission.write" },
+  ),
 
-  operation("GET", "/api/v2/admin/support/requests", allOf("support.request.read"), "supportRequestListQuerySchema", "supportRequestListResponseSchema"),
-  operation("PATCH", "/api/v2/admin/support/requests/:id", allOf("support.request.write"), "supportRequestPatchSchema+idempotency-key", "supportRequestMutationResponseSchema", undefined, { commandType: "support.request.update" }),
-  operation("POST", "/api/v2/admin/support/requests/:id/escalate", allOf("support.request.write"), "supportRequestEscalateSchema+idempotency-key", "supportRequestMutationResponseSchema", undefined, { commandType: "support.request.escalate" }),
+  operation(
+    "GET",
+    "/api/v2/admin/support/requests",
+    allOf("support.request.read"),
+    "supportRequestListQuerySchema",
+    "supportRequestListResponseSchema",
+  ),
+  operation(
+    "PATCH",
+    "/api/v2/admin/support/requests/:id",
+    allOf("support.request.write"),
+    "supportRequestPatchSchema+idempotency-key",
+    "supportRequestMutationResponseSchema",
+    undefined,
+    { commandType: "support.request.update" },
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/support/requests/:id/escalate",
+    allOf("support.request.write"),
+    "supportRequestEscalateSchema+idempotency-key",
+    "supportRequestMutationResponseSchema",
+    undefined,
+    { commandType: "support.request.escalate" },
+  ),
   // SPEC: 明文查看不带幂等键。
   // INTENT: 它写的是审计，不是状态 —— 重放同一个 key 应当再记一条查看记录，而不是把上一次的
   //         明文原样发回来。幂等在这里恰好会抹掉这条链路唯一的产出。
-  operation("POST", "/api/v2/admin/support/plaintext/view", allOf("support.plaintext.view"), "supportPlaintextViewRequestSchema", "supportPlaintextViewResponseSchema"),
+  operation(
+    "POST",
+    "/api/v2/admin/support/plaintext/view",
+    allOf("support.plaintext.view"),
+    "supportPlaintextViewRequestSchema",
+    "supportPlaintextViewResponseSchema",
+  ),
 
-  operation("GET", "/api/v2/admin/audit-log", allOf("audit.read"), "auditLogQuerySchema", "auditLogListResponseSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/audit-log",
+    allOf("audit.read"),
+    "auditLogQuerySchema",
+    "auditLogListResponseSchema",
+  ),
 
-  operation("GET", "/api/v2/admin/feature-flags", allOf("ops.queue.read"), "featureFlagListQuerySchema", "featureFlagListResponseSchema"),
-  operation("PATCH", "/api/v2/admin/feature-flags/:key", allOf("config.feature_flag.write"), "featureFlagPatchSchema+idempotency-key", "featureFlagMutationResponseSchema", undefined, { commandType: "config.feature_flag.write" }),
+  operation(
+    "GET",
+    "/api/v2/admin/feature-flags",
+    allOf("ops.queue.read"),
+    "featureFlagListQuerySchema",
+    "featureFlagListResponseSchema",
+  ),
+  operation(
+    "PATCH",
+    "/api/v2/admin/feature-flags/:key",
+    allOf("config.feature_flag.write"),
+    "featureFlagPatchSchema+idempotency-key",
+    "featureFlagMutationResponseSchema",
+    undefined,
+    { commandType: "config.feature_flag.write" },
+  ),
   // ---- money: migrated from v1 ----
-  operation("GET", "/api/v2/admin/billing/ledger", allOf("billing.read"), "adminBillingLedgerQuerySchema", "adminBillingLedgerListResponseSchema"),
-  operation("POST", "/api/v2/admin/billing/adjustments", allOf("billing.ledger.adjust"), "adminBillingLedgerAdjustmentRequestSchema+idempotency-key", "adminBillingLedgerAdjustmentResponseSchema"),
-  operation("GET", "/api/v2/admin/billing/reconciliation", allOf("billing.read"), "adminBillingReconciliationQuerySchema", "adminBillingReconciliationResponseSchema"),
-  operation("POST", "/api/v2/admin/billing/reconciliation/:id/resolve", allOf("billing.checkout.reconcile"), "adminBillingCheckoutReconcileRequestSchema+idempotency-key", "adminBillingCheckoutReconcileResponseSchema", undefined, { commandType: "billing.checkout.reconcile_refund" }),
-  operation("GET", "/api/v2/admin/billing/subscriptions", allOf("billing.read"), "adminBillingSubscriptionQuerySchema", "adminBillingSubscriptionListResponseSchema"),
-  operation("POST", "/api/v2/admin/billing/subscriptions/:id/refund", allOf("billing.subscription.refund"), "adminSubscriptionRefundRequestSchema+idempotency-key", "adminSubscriptionRefundCommandResponseSchema", undefined, { commandType: "billing.subscription.refund" }),
-  operation("POST", "/api/v2/admin/billing/subscriptions/:id/refund/reconcile", allOf("billing.subscription.refund"), "adminSubscriptionRefundRequestSchema+idempotency-key", "adminSubscriptionRefundCommandResponseSchema", undefined, { commandType: "billing.subscription.refund.reconcile" }),
+  operation(
+    "GET",
+    "/api/v2/admin/billing/ledger",
+    allOf("billing.read"),
+    "adminBillingLedgerQuerySchema",
+    "adminBillingLedgerListResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/billing/adjustments",
+    allOf("billing.ledger.adjust"),
+    "adminBillingLedgerAdjustmentRequestSchema+idempotency-key",
+    "adminBillingLedgerAdjustmentResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/billing/reconciliation",
+    allOf("billing.read"),
+    "adminBillingReconciliationQuerySchema",
+    "adminBillingReconciliationResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/billing/reconciliation/:id/resolve",
+    allOf("billing.checkout.reconcile"),
+    "adminBillingCheckoutReconcileRequestSchema+idempotency-key",
+    "adminBillingCheckoutReconcileResponseSchema",
+    undefined,
+    { commandType: "billing.checkout.reconcile_refund" },
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/billing/subscriptions",
+    allOf("billing.read"),
+    "adminBillingSubscriptionQuerySchema",
+    "adminBillingSubscriptionListResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/billing/subscriptions/:id/refund",
+    allOf("billing.subscription.refund"),
+    "adminSubscriptionRefundRequestSchema+idempotency-key",
+    "adminSubscriptionRefundCommandResponseSchema",
+    undefined,
+    { commandType: "billing.subscription.refund" },
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/billing/subscriptions/:id/refund/reconcile",
+    allOf("billing.subscription.refund"),
+    "adminSubscriptionRefundRequestSchema+idempotency-key",
+    "adminSubscriptionRefundCommandResponseSchema",
+    undefined,
+    { commandType: "billing.subscription.refund.reconcile" },
+  ),
 
-  operation("GET", "/api/v2/admin/pricing/rules", allOf("billing.read"), "adminPricingRuleQuerySchema", "adminPricingRuleListResponseSchema"),
-  operation("POST", "/api/v2/admin/pricing/rules", allOf("config.pricing.write"), "adminPricingRuleCreateRequestSchema+idempotency-key", "adminPricingRuleMutationResponseSchema", undefined, { commandType: "config.pricing.create" }),
-  operation("PATCH", "/api/v2/admin/pricing/rules/:id", allOf("config.pricing.write"), "adminPricingRulePatchRequestSchema+idempotency-key", "adminPricingRuleMutationResponseSchema", undefined, { commandType: "config.pricing.update" }),
-  operation("POST", "/api/v2/admin/pricing/rules/:id/publish", allOf("config.pricing.write"), "adminPricingRulePublishRequestSchema+idempotency-key", "adminPricingRulePublishResponseSchema", undefined, { commandType: "config.pricing.publish" }),
-  operation("POST", "/api/v2/admin/pricing/rules/:id/rollback", allOf("config.pricing.write"), "adminPricingRuleRollbackRequestSchema+idempotency-key", "adminPricingRuleRollbackResponseSchema", undefined, { commandType: "config.pricing.rollback" }),
+  operation(
+    "GET",
+    "/api/v2/admin/pricing/rules",
+    allOf("billing.read"),
+    "adminPricingRuleQuerySchema",
+    "adminPricingRuleListResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/pricing/rules",
+    allOf("config.pricing.write"),
+    "adminPricingRuleCreateRequestSchema+idempotency-key",
+    "adminPricingRuleMutationResponseSchema",
+    undefined,
+    { commandType: "config.pricing.create" },
+  ),
+  operation(
+    "PATCH",
+    "/api/v2/admin/pricing/rules/:id",
+    allOf("config.pricing.write"),
+    "adminPricingRulePatchRequestSchema+idempotency-key",
+    "adminPricingRuleMutationResponseSchema",
+    undefined,
+    { commandType: "config.pricing.update" },
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/pricing/rules/:id/publish",
+    allOf("config.pricing.write"),
+    "adminPricingRulePublishRequestSchema+idempotency-key",
+    "adminPricingRulePublishResponseSchema",
+    undefined,
+    { commandType: "config.pricing.publish" },
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/pricing/rules/:id/rollback",
+    allOf("config.pricing.write"),
+    "adminPricingRuleRollbackRequestSchema+idempotency-key",
+    "adminPricingRuleRollbackResponseSchema",
+    undefined,
+    { commandType: "config.pricing.rollback" },
+  ),
 
-  operation("GET", "/api/v2/admin/promo/redeem-codes", allOf("growth.promo.read"), "adminRedeemCodeQuerySchema", "adminRedeemCodeListResponseSchema"),
-  operation("POST", "/api/v2/admin/promo/redeem-codes", allOf("growth.promo.write"), "adminRedeemCodeCreateRequestSchema+idempotency-key", "adminRedeemCodeMutationResponseSchema", undefined, { commandType: "promo.redeem_code.create" }),
-  operation("POST", "/api/v2/admin/promo/redeem-codes/:id/disable", allOf("growth.promo.write"), "adminRedeemCodeDisableRequestSchema+idempotency-key", "adminRedeemCodeMutationResponseSchema", undefined, { commandType: "promo.redeem_code.disable" }),
-  operation("GET", "/api/v2/admin/promo/referrals", allOf("growth.promo.read"), "adminReferralQuerySchema", "adminReferralListResponseSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/promo/redeem-codes",
+    allOf("growth.promo.read"),
+    "adminRedeemCodeQuerySchema",
+    "adminRedeemCodeListResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/promo/redeem-codes",
+    allOf("growth.promo.write"),
+    "adminRedeemCodeCreateRequestSchema+idempotency-key",
+    "adminRedeemCodeMutationResponseSchema",
+    undefined,
+    { commandType: "promo.redeem_code.create" },
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/promo/redeem-codes/:id/disable",
+    allOf("growth.promo.write"),
+    "adminRedeemCodeDisableRequestSchema+idempotency-key",
+    "adminRedeemCodeMutationResponseSchema",
+    undefined,
+    { commandType: "promo.redeem_code.disable" },
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/promo/referrals",
+    allOf("growth.promo.read"),
+    "adminReferralQuerySchema",
+    "adminReferralListResponseSchema",
+  ),
   // ---- platform: migrated from v1 ----
   // Chat 只读运营视图（Main 代理 Chat 服务的 /internal/admin/*）。
-  operation("GET", "/api/v2/admin/chat/overview", allOf("chat.ops.read"), "none", "chatOpsOverviewResponseSchema"),
-  operation("GET", "/api/v2/admin/chat/provider-health", allOf("chat.ops.read"), "none", "chatOpsProviderHealthResponseSchema"),
-  operation("GET", "/api/v2/admin/chat/sessions", allOf("chat.ops.read"), "chatOpsSessionQuerySchema", "chatOpsSessionListResponseSchema"),
-  operation("GET", "/api/v2/admin/chat/usage", allOf("chat.ops.read"), "chatOpsUsageQuerySchema", "chatOpsUsageListResponseSchema"),
-  operation("GET", "/api/v2/admin/chat/moderation-events", allOf("chat.ops.read"), "chatOpsModerationEventQuerySchema", "chatOpsModerationEventListResponseSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/chat/overview",
+    allOf("chat.ops.read"),
+    "none",
+    "chatOpsOverviewResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/chat/provider-health",
+    allOf("chat.ops.read"),
+    "none",
+    "chatOpsProviderHealthResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/chat/sessions",
+    allOf("chat.ops.read"),
+    "chatOpsSessionQuerySchema",
+    "chatOpsSessionListResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/chat/usage",
+    allOf("chat.ops.read"),
+    "chatOpsUsageQuerySchema",
+    "chatOpsUsageListResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/chat/moderation-events",
+    allOf("chat.ops.read"),
+    "chatOpsModerationEventQuerySchema",
+    "chatOpsModerationEventListResponseSchema",
+  ),
 
   // CMS/SEO。写操作用 expectedUpdatedAt CAS，不声明幂等头（见 contracts/cms.ts）。
-  operation("GET", "/api/v2/admin/cms/pages", allOf("content.read"), "cmsPageListQuerySchema", "cmsPageListResponseSchema"),
-  operation("POST", "/api/v2/admin/cms/pages", allOf("content.cms.write"), "cmsPageCreateRequestSchema", "cmsPageMutationResponseSchema"),
-  operation("PATCH", "/api/v2/admin/cms/pages", allOf("content.cms.write"), "cmsPagePatchRequestSchema", "cmsPageMutationResponseSchema"),
-  operation("POST", "/api/v2/admin/cms/pages/publish", allOf("content.cms.write"), "cmsPagePublicationRequestSchema", "cmsPageMutationResponseSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/cms/pages",
+    allOf("content.read"),
+    "cmsPageListQuerySchema",
+    "cmsPageListResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/cms/pages",
+    allOf("content.cms.write"),
+    "cmsPageCreateRequestSchema",
+    "cmsPageMutationResponseSchema",
+  ),
+  operation(
+    "PATCH",
+    "/api/v2/admin/cms/pages",
+    allOf("content.cms.write"),
+    "cmsPagePatchRequestSchema",
+    "cmsPageMutationResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/cms/pages/publish",
+    allOf("content.cms.write"),
+    "cmsPagePublicationRequestSchema",
+    "cmsPageMutationResponseSchema",
+  ),
   // 单页读取用 ?path= 而非路径段：CMS path 含 "/"，塞不进一个 `:id`。
-  operation("GET", "/api/v2/admin/cms/page", allOf("content.read"), "cmsPageDetailQuerySchema", "cmsPageDetailResponseSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/cms/page",
+    allOf("content.read"),
+    "cmsPageDetailQuerySchema",
+    "cmsPageDetailResponseSchema",
+  ),
 
-  operation("GET", "/api/v2/admin/announcements", allOf("growth.promo.read"), "announcementListQuerySchema", "announcementListResponseSchema"),
-  operation("POST", "/api/v2/admin/announcements", allOf("growth.promo.write"), "announcementCreateRequestSchema", "announcementMutationResponseSchema"),
-  operation("PATCH", "/api/v2/admin/announcements/:id", allOf("growth.promo.write"), "announcementPatchRequestSchema", "announcementMutationResponseSchema"),
-  operation("DELETE", "/api/v2/admin/announcements/:id", allOf("growth.promo.write"), "announcementDeleteRequestSchema", "announcementDeleteResponseSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/announcements",
+    allOf("growth.promo.read"),
+    "announcementListQuerySchema",
+    "announcementListResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/announcements",
+    allOf("growth.promo.write"),
+    "announcementCreateRequestSchema",
+    "announcementMutationResponseSchema",
+  ),
+  operation(
+    "PATCH",
+    "/api/v2/admin/announcements/:id",
+    allOf("growth.promo.write"),
+    "announcementPatchRequestSchema",
+    "announcementMutationResponseSchema",
+  ),
+  operation(
+    "DELETE",
+    "/api/v2/admin/announcements/:id",
+    allOf("growth.promo.write"),
+    "announcementDeleteRequestSchema",
+    "announcementDeleteResponseSchema",
+  ),
 
-  operation("GET", "/api/v2/admin/dashboard", allOf("dashboard.read"), "none", "adminDashboardResponseSchema"),
-  operation("GET", "/api/v2/admin/analytics/overview", allOf("analytics.export"), "adminOverviewWindowQuerySchema", "analyticsOverviewResponseSchema"),
-  operation("GET", "/api/v2/admin/analytics/export", allOf("analytics.export"), "analyticsExportQuerySchema", "analyticsExportResponseSchema"),
-  operation("GET", "/api/v2/admin/analytics/retention", allOf("analytics.export"), "analyticsRetentionQuerySchema", "analyticsRetentionResponseSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/dashboard",
+    allOf("dashboard.read"),
+    "none",
+    "adminDashboardResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/analytics/overview",
+    allOf("analytics.export"),
+    "adminOverviewWindowQuerySchema",
+    "analyticsOverviewResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/analytics/export",
+    allOf("analytics.export"),
+    "analyticsExportQuerySchema",
+    "analyticsExportResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/analytics/retention",
+    allOf("analytics.export"),
+    "analyticsRetentionQuerySchema",
+    "analyticsRetentionResponseSchema",
+  ),
   // Flag 监控住在 analytics 下而不是 experiments 下：`/experiments/:id` 已声明在先，
   // manifest 是按声明顺序线性匹配的，`experiments/flag-monitoring` 会先撞上 `:id`。
-  operation("GET", "/api/v2/admin/analytics/flag-monitoring", allOf("analytics.export"), "none", "experimentFlagMonitoringResponseSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/analytics/flag-monitoring",
+    allOf("analytics.export"),
+    "none",
+    "experimentFlagMonitoringResponseSchema",
+  ),
   // ---- generation: migrated from v1 `generation` / `ops` dispatcher resources ----
-  operation("GET", "/api/v2/admin/generation/model-profiles", allOf("generation.config.read"), "generationModelProfileQuerySchema", "generationModelProfileListResponseSchema"),
-  operation("POST", "/api/v2/admin/generation/model-profiles", allOf("generation.config.write"), "generationModelProfileCreateRequestSchema+idempotency-key", "generationModelProfileResponseSchema"),
-  operation("PATCH", "/api/v2/admin/generation/model-profiles/:id", allOf("generation.config.write"), "generationModelProfilePatchRequestSchema+idempotency-key", "generationModelProfileResponseSchema"),
-  operation("GET", "/api/v2/admin/generation/model-profiles/:id/health", allOf("generation.config.read"), "generationProfileHealthQuerySchema", "generationProfileHealthResponseSchema"),
-  operation("POST", "/api/v2/admin/generation/model-profiles/:id/commands/publish", allOf("generation.config.write"), "generationPublishCommandRequestSchema+idempotency-key", "generationModelProfilePublishResponseSchema"),
-  operation("POST", "/api/v2/admin/generation/model-profiles/:id/commands/rollback", allOf("generation.config.write"), "generationConfigCommandRequestSchema+idempotency-key", "generationModelProfileRollbackResponseSchema"),
-  operation("POST", "/api/v2/admin/generation/model-profiles/:id/commands/dry-run", allOf("generation.config.write"), "generationConfigCommandRequestSchema+idempotency-key", "generationProfileDryRunResponseSchema"),
-  operation("POST", "/api/v2/admin/generation/model-profiles/:id/commands/test-job", allOf("generation.config.write"), "generationProfileTestJobRequestSchema+idempotency-key", "generationProfileTestJobResponseSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/generation/model-profiles",
+    allOf("generation.config.read"),
+    "generationModelProfileQuerySchema",
+    "generationModelProfileListResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/generation/model-profiles",
+    allOf("generation.config.write"),
+    "generationModelProfileCreateRequestSchema+idempotency-key",
+    "generationModelProfileResponseSchema",
+  ),
+  operation(
+    "PATCH",
+    "/api/v2/admin/generation/model-profiles/:id",
+    allOf("generation.config.write"),
+    "generationModelProfilePatchRequestSchema+idempotency-key",
+    "generationModelProfileResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/generation/model-profiles/:id/health",
+    allOf("generation.config.read"),
+    "generationProfileHealthQuerySchema",
+    "generationProfileHealthResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/generation/model-profiles/:id/commands/publish",
+    allOf("generation.config.write"),
+    "generationPublishCommandRequestSchema+idempotency-key",
+    "generationModelProfilePublishResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/generation/model-profiles/:id/commands/rollback",
+    allOf("generation.config.write"),
+    "generationConfigCommandRequestSchema+idempotency-key",
+    "generationModelProfileRollbackResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/generation/model-profiles/:id/commands/dry-run",
+    allOf("generation.config.write"),
+    "generationConfigCommandRequestSchema+idempotency-key",
+    "generationProfileDryRunResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/generation/model-profiles/:id/commands/test-job",
+    allOf("generation.config.write"),
+    "generationProfileTestJobRequestSchema+idempotency-key",
+    "generationProfileTestJobResponseSchema",
+  ),
 
   // Model imports write to the local model library, not the database, so they carry no
   // idempotency transport: replaying a register is already the identity it would buy.
-  operation("GET", "/api/v2/admin/generation/model-imports", allOf("generation.config.read"), "none", "generationModelImportListResponseSchema"),
-  operation("POST", "/api/v2/admin/generation/model-imports/commands/register", allOf("generation.config.write"), "generationModelImportRegisterRequestSchema", "generationModelImportRegisterResponseSchema"),
-  operation("POST", "/api/v2/admin/generation/model-imports/commands/upload", allOf("generation.config.write"), "none", "generationModelImportUploadResponseSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/generation/model-imports",
+    allOf("generation.config.read"),
+    "none",
+    "generationModelImportListResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/generation/model-imports/commands/register",
+    allOf("generation.config.write"),
+    "generationModelImportRegisterRequestSchema",
+    "generationModelImportRegisterResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/generation/model-imports/commands/upload",
+    allOf("generation.config.write"),
+    "none",
+    "generationModelImportUploadResponseSchema",
+  ),
 
-  operation("GET", "/api/v2/admin/generation/recipes", allOf("generation.config.read"), "generationRecipeQuerySchema", "generationRecipeListResponseSchema"),
-  operation("POST", "/api/v2/admin/generation/recipes", allOf("generation.config.write"), "generationRecipeCreateRequestSchema+idempotency-key", "generationRecipeResponseSchema"),
-  operation("GET", "/api/v2/admin/generation/recipes/:id", allOf("generation.config.read"), "path:id", "generationRecipeResponseSchema"),
-  operation("PATCH", "/api/v2/admin/generation/recipes/:id", allOf("generation.config.write"), "generationRecipePatchRequestSchema+idempotency-key", "generationRecipeResponseSchema"),
-  operation("POST", "/api/v2/admin/generation/recipes/:id/commands/publish", allOf("generation.config.write"), "generationPublishCommandRequestSchema+idempotency-key", "generationRecipePublishResponseSchema"),
-  operation("POST", "/api/v2/admin/generation/recipes/:id/commands/rollback", allOf("generation.config.write"), "generationConfigCommandRequestSchema+idempotency-key", "generationRecipeRollbackResponseSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/generation/recipes",
+    allOf("generation.config.read"),
+    "generationRecipeQuerySchema",
+    "generationRecipeListResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/generation/recipes",
+    allOf("generation.config.write"),
+    "generationRecipeCreateRequestSchema+idempotency-key",
+    "generationRecipeResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/generation/recipes/:id",
+    allOf("generation.config.read"),
+    "path:id",
+    "generationRecipeResponseSchema",
+  ),
+  operation(
+    "PATCH",
+    "/api/v2/admin/generation/recipes/:id",
+    allOf("generation.config.write"),
+    "generationRecipePatchRequestSchema+idempotency-key",
+    "generationRecipeResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/generation/recipes/:id/commands/publish",
+    allOf("generation.config.write"),
+    "generationPublishCommandRequestSchema+idempotency-key",
+    "generationRecipePublishResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/generation/recipes/:id/commands/rollback",
+    allOf("generation.config.write"),
+    "generationConfigCommandRequestSchema+idempotency-key",
+    "generationRecipeRollbackResponseSchema",
+  ),
 
-  operation("GET", "/api/v2/admin/generation/presets", allOf("generation.config.read"), "generationPresetQuerySchema", "generationPresetListResponseSchema"),
-  operation("POST", "/api/v2/admin/generation/presets", allOf("generation.config.write"), "generationPresetCreateRequestSchema+idempotency-key", "generationPresetResponseSchema"),
-  operation("GET", "/api/v2/admin/generation/presets/:id", allOf("generation.config.read"), "path:id", "generationPresetResponseSchema"),
-  operation("PATCH", "/api/v2/admin/generation/presets/:id", allOf("generation.config.write"), "generationPresetPatchRequestSchema+idempotency-key", "generationPresetResponseSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/generation/presets",
+    allOf("generation.config.read"),
+    "generationPresetQuerySchema",
+    "generationPresetListResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/generation/presets",
+    allOf("generation.config.write"),
+    "generationPresetCreateRequestSchema+idempotency-key",
+    "generationPresetResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/generation/presets/:id",
+    allOf("generation.config.read"),
+    "path:id",
+    "generationPresetResponseSchema",
+  ),
+  operation(
+    "PATCH",
+    "/api/v2/admin/generation/presets/:id",
+    allOf("generation.config.write"),
+    "generationPresetPatchRequestSchema+idempotency-key",
+    "generationPresetResponseSchema",
+  ),
 
-  operation("GET", "/api/v2/admin/generation/dead-letter", allOf("ops.queue.read"), "generationDeadLetterQuerySchema", "generationDeadLetterListResponseSchema"),
-  operation("POST", "/api/v2/admin/generation/dead-letter/commands/requeue", allOf("generation.job.requeue"), "generationDeadLetterBatchRequestSchema+idempotency-key", "generationDeadLetterRequeueBatchResultSchema"),
-  operation("POST", "/api/v2/admin/generation/dead-letter/commands/discard", allOf("ops.deadletter.write"), "generationDeadLetterBatchRequestSchema+idempotency-key", "generationDeadLetterDiscardBatchResultSchema"),
-  operation("POST", "/api/v2/admin/generation/dead-letter/:id/commands/requeue", allOf("generation.job.requeue"), "generationDeadLetterRequeueRequestSchema+idempotency-key", "generationDeadLetterRequeueResultSchema"),
-  operation("POST", "/api/v2/admin/generation/dead-letter/:id/commands/discard", allOf("ops.deadletter.write"), "generationConfigCommandRequestSchema+idempotency-key", "generationDeadLetterDiscardResultSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/generation/dead-letter",
+    allOf("ops.queue.read"),
+    "generationDeadLetterQuerySchema",
+    "generationDeadLetterListResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/generation/dead-letter/commands/requeue",
+    allOf("generation.job.requeue"),
+    "generationDeadLetterBatchRequestSchema+idempotency-key",
+    "generationDeadLetterRequeueBatchResultSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/generation/dead-letter/commands/discard",
+    allOf("ops.deadletter.write"),
+    "generationDeadLetterBatchRequestSchema+idempotency-key",
+    "generationDeadLetterDiscardBatchResultSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/generation/dead-letter/:id/commands/requeue",
+    allOf("generation.job.requeue"),
+    "generationDeadLetterRequeueRequestSchema+idempotency-key",
+    "generationDeadLetterRequeueResultSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/generation/dead-letter/:id/commands/discard",
+    allOf("ops.deadletter.write"),
+    "generationConfigCommandRequestSchema+idempotency-key",
+    "generationDeadLetterDiscardResultSchema",
+  ),
 
-  operation("GET", "/api/v2/admin/generation/backends", allOf("generation.config.read"), "none", "generationBackendListResponseSchema"),
-  operation("GET", "/api/v2/admin/generation/workflows", allOf("generation.config.read"), "none", "generationWorkflowListResponseSchema"),
-  operation("GET", "/api/v2/admin/generation/workflows/:id", allOf("generation.config.read"), "path:id", "generationWorkflowDetailResponseSchema"),
-  operation("GET", "/api/v2/admin/generation/metrics", allOf("generation.config.read"), "generationMetricsQuerySchema", "generationMetricsResponseSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/generation/backends",
+    allOf("generation.config.read"),
+    "none",
+    "generationBackendListResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/generation/workflows",
+    allOf("generation.config.read"),
+    "none",
+    "generationWorkflowListResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/generation/workflows/:id",
+    allOf("generation.config.read"),
+    "path:id",
+    "generationWorkflowDetailResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/generation/metrics",
+    allOf("generation.config.read"),
+    "generationMetricsQuerySchema",
+    "generationMetricsResponseSchema",
+  ),
 
-  operation("GET", "/api/v2/admin/ops/providers", allOf("ops.queue.read"), "generationProviderOpsQuerySchema", "generationProviderOpsResponseSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/ops/providers",
+    allOf("ops.queue.read"),
+    "generationProviderOpsQuerySchema",
+    "generationProviderOpsResponseSchema",
+  ),
   // ---- content: migrated from v1 ----
-  operation("GET", "/api/v2/admin/content/characters", allOf("content.read"), "contentCharacterQuerySchema", "contentCharacterListResponseSchema"),
-  operation("GET", "/api/v2/admin/content/characters/:id", allOf("content.read"), "path:id", "contentCharacterDetailResponseSchema"),
-  operation("POST", "/api/v2/admin/content/characters/:id/visibility", allOf("content.takedown.write"), "contentCharacterVisibilityRequestSchema+idempotency-key", "contentCharacterModerationResponseSchema", undefined, { commandType: "content.visibility.write" }),
-  operation("POST", "/api/v2/admin/content/characters/:id/status", allOf("content.takedown.write"), "contentCharacterStatusRequestSchema+idempotency-key", "contentCharacterModerationResponseSchema", undefined, { commandType: "content.status.write" }),
-  operation("PUT", "/api/v2/admin/content/characters/:id/tags", allOf("content.tag.write"), "contentCharacterTagsRequestSchema+idempotency-key", "contentCharacterTagsResponseSchema", undefined, { commandType: "content.tags.write" }),
-  operation("POST", "/api/v2/admin/content/characters/:id/chat-tools", allOf("content.production.write"), "contentCharacterChatToolsRequestSchema", "contentCharacterChatToolsResponseSchema"),
-  operation("GET", "/api/v2/admin/content/characters/:id/visual-profiles", allOf("content.read"), "path:id", "contentVisualProfileListResponseSchema"),
-  operation("POST", "/api/v2/admin/content/characters/:id/visual-profiles", allOf("content.official.write"), "characterVisualProfileCreateRequestSchema+idempotency-key", "contentVisualProfileMutationResponseSchema", undefined, { commandType: "content.visual_profile.create" }),
-  operation("GET", "/api/v2/admin/content/featured", allOf("content.read"), "none", "contentFeaturedResponseSchema"),
-  operation("PUT", "/api/v2/admin/content/featured", allOf("content.takedown.write"), "contentFeaturedUpdateRequestSchema+idempotency-key", "contentFeaturedUpdateResponseSchema", undefined, { commandType: "content.featured.write" }),
-  operation("POST", "/api/v2/admin/content/production/directions", allOf("content.production.write"), "contentProductionDirectionsRequestSchema", "contentProductionDirectionsResponseSchema"),
-  operation("POST", "/api/v2/admin/content/production/estimate", allOf("content.asset.read"), "contentProductionEstimateRequestSchema", "contentProductionEstimateResponseSchema"),
-  operation("GET", "/api/v2/admin/content/placements", allOf("creative.placement.read"), "contentPlacementQuerySchema", "contentPlacementListResponseSchema"),
-  operation("POST", "/api/v2/admin/content/placements", allOf("creative.placement.publish"), "contentPlacementCreateRequestSchema+idempotency-key", "contentPlacementMutationResponseSchema", undefined, { commandType: "content.placement.create" }),
-  operation("GET", "/api/v2/admin/content/placements/:id", allOf("creative.placement.read"), "path:id", "contentPlacementDetailResponseSchema"),
-  operation("PATCH", "/api/v2/admin/content/placements/:id", allOf("creative.placement.publish"), "contentPlacementPatchRequestSchema+idempotency-key+if-match", "contentPlacementMutationResponseSchema", undefined, { commandType: "content.placement.patch" }),
-  operation("GET", "/api/v2/admin/content/official", allOf("content.official.write"), "contentOfficialQuerySchema", "contentOfficialListResponseSchema"),
-  operation("POST", "/api/v2/admin/content/official", allOf("content.official.write"), "contentOfficialCreateRequestSchema+idempotency-key", "contentOfficialCreateResponseSchema"),
-  operation("PATCH", "/api/v2/admin/content/official/:id", allOf("content.official.write", "character.project.write"), "contentOfficialUpdateRequestSchema", "contentOfficialUpdateResponseSchema"),
-  operation("POST", "/api/v2/admin/content/official/:id/state", allOf("content.official.write", "character.release.publish"), "contentOfficialStateRequestSchema", "contentOfficialStateResponseSchema"),
-  operation("GET", "/api/v2/admin/content/templates", allOf("content.read"), "contentTemplateQuerySchema", "contentTemplateListResponseSchema"),
-  operation("POST", "/api/v2/admin/content/templates", allOf("content.template.write"), "contentTemplateCreateRequestSchema", "contentTemplateDetailResponseSchema"),
-  operation("GET", "/api/v2/admin/content/templates/:id", allOf("content.read"), "path:id", "contentTemplateDetailResponseSchema"),
-  operation("PATCH", "/api/v2/admin/content/templates/:id", allOf("content.template.write"), "contentTemplateUpdateRequestSchema", "contentTemplateDetailResponseSchema"),
-  operation("POST", "/api/v2/admin/content/templates/:id/active", allOf("content.template.write"), "contentTemplateActiveRequestSchema", "contentTemplateDetailResponseSchema"),
-  operation("GET", "/api/v2/admin/content/tags", allOf("content.read"), "contentTagQuerySchema", "contentTagListResponseSchema"),
-  operation("POST", "/api/v2/admin/content/tags/merge", allOf("content.tag.write"), "contentTagMergeRequestSchema", "contentTagMergeResponseSchema"),
-  operation("PATCH", "/api/v2/admin/content/tags/:id", allOf("content.tag.write"), "contentTagPatchRequestSchema", "contentTagPatchResponseSchema"),
-  operation("GET", "/api/v2/admin/content/review-queue", allOf("safety.review.read"), "contentReviewQueueQuerySchema", "contentReviewQueueListResponseSchema"),
-  operation("POST", "/api/v2/admin/content/review-queue/:id/decision", allOf("safety.review.write"), "contentReviewDecisionRequestSchema+idempotency-key", "contentReviewDecisionResponseSchema", undefined, { commandType: "content.submission.review" }),
-  operation("POST", "/api/v2/admin/content/character-assist", allOf("content.official.write"), "contentCharacterAssistRequestSchema", "contentCharacterAssistResponseSchema"),
+  operation(
+    "GET",
+    "/api/v2/admin/content/characters",
+    allOf("content.read"),
+    "contentCharacterQuerySchema",
+    "contentCharacterListResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/content/characters/:id",
+    allOf("content.read"),
+    "path:id",
+    "contentCharacterDetailResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/content/characters/:id/visibility",
+    allOf("content.takedown.write"),
+    "contentCharacterVisibilityRequestSchema+idempotency-key",
+    "contentCharacterModerationResponseSchema",
+    undefined,
+    { commandType: "content.visibility.write" },
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/content/characters/:id/status",
+    allOf("content.takedown.write"),
+    "contentCharacterStatusRequestSchema+idempotency-key",
+    "contentCharacterModerationResponseSchema",
+    undefined,
+    { commandType: "content.status.write" },
+  ),
+  operation(
+    "PUT",
+    "/api/v2/admin/content/characters/:id/tags",
+    allOf("content.tag.write"),
+    "contentCharacterTagsRequestSchema+idempotency-key",
+    "contentCharacterTagsResponseSchema",
+    undefined,
+    { commandType: "content.tags.write" },
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/content/characters/:id/chat-tools",
+    allOf("content.production.write"),
+    "contentCharacterChatToolsRequestSchema",
+    "contentCharacterChatToolsResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/content/characters/:id/visual-profiles",
+    allOf("content.read"),
+    "path:id",
+    "contentVisualProfileListResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/content/characters/:id/visual-profiles",
+    allOf("content.official.write"),
+    "characterVisualProfileCreateRequestSchema+idempotency-key",
+    "contentVisualProfileMutationResponseSchema",
+    undefined,
+    { commandType: "content.visual_profile.create" },
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/content/featured",
+    allOf("content.read"),
+    "none",
+    "contentFeaturedResponseSchema",
+  ),
+  operation(
+    "PUT",
+    "/api/v2/admin/content/featured",
+    allOf("content.takedown.write"),
+    "contentFeaturedUpdateRequestSchema+idempotency-key",
+    "contentFeaturedUpdateResponseSchema",
+    undefined,
+    { commandType: "content.featured.write" },
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/content/production/directions",
+    allOf("content.production.write"),
+    "contentProductionDirectionsRequestSchema",
+    "contentProductionDirectionsResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/content/production/estimate",
+    allOf("content.asset.read"),
+    "contentProductionEstimateRequestSchema",
+    "contentProductionEstimateResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/content/placements",
+    allOf("creative.placement.read"),
+    "contentPlacementQuerySchema",
+    "contentPlacementListResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/content/placements",
+    allOf("creative.placement.publish"),
+    "contentPlacementCreateRequestSchema+idempotency-key",
+    "contentPlacementMutationResponseSchema",
+    undefined,
+    { commandType: "content.placement.create" },
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/content/placements/:id",
+    allOf("creative.placement.read"),
+    "path:id",
+    "contentPlacementDetailResponseSchema",
+  ),
+  operation(
+    "PATCH",
+    "/api/v2/admin/content/placements/:id",
+    allOf("creative.placement.publish"),
+    "contentPlacementPatchRequestSchema+idempotency-key+if-match",
+    "contentPlacementMutationResponseSchema",
+    undefined,
+    { commandType: "content.placement.patch" },
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/content/official",
+    allOf("content.official.write"),
+    "contentOfficialQuerySchema",
+    "contentOfficialListResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/content/official",
+    allOf("content.official.write"),
+    "contentOfficialCreateRequestSchema+idempotency-key",
+    "contentOfficialCreateResponseSchema",
+  ),
+  operation(
+    "PATCH",
+    "/api/v2/admin/content/official/:id",
+    allOf("content.official.write", "character.project.write"),
+    "contentOfficialUpdateRequestSchema",
+    "contentOfficialUpdateResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/content/official/:id/state",
+    allOf("content.official.write", "character.release.publish"),
+    "contentOfficialStateRequestSchema",
+    "contentOfficialStateResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/content/templates",
+    allOf("content.read"),
+    "contentTemplateQuerySchema",
+    "contentTemplateListResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/content/templates",
+    allOf("content.template.write"),
+    "contentTemplateCreateRequestSchema",
+    "contentTemplateDetailResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/content/templates/:id",
+    allOf("content.read"),
+    "path:id",
+    "contentTemplateDetailResponseSchema",
+  ),
+  operation(
+    "PATCH",
+    "/api/v2/admin/content/templates/:id",
+    allOf("content.template.write"),
+    "contentTemplateUpdateRequestSchema",
+    "contentTemplateDetailResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/content/templates/:id/active",
+    allOf("content.template.write"),
+    "contentTemplateActiveRequestSchema",
+    "contentTemplateDetailResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/content/tags",
+    allOf("content.read"),
+    "contentTagQuerySchema",
+    "contentTagListResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/content/tags/merge",
+    allOf("content.tag.write"),
+    "contentTagMergeRequestSchema",
+    "contentTagMergeResponseSchema",
+  ),
+  operation(
+    "PATCH",
+    "/api/v2/admin/content/tags/:id",
+    allOf("content.tag.write"),
+    "contentTagPatchRequestSchema",
+    "contentTagPatchResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/content/review-queue",
+    allOf("safety.review.read"),
+    "contentReviewQueueQuerySchema",
+    "contentReviewQueueListResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/content/review-queue/:id/decision",
+    allOf("safety.review.write"),
+    "contentReviewDecisionRequestSchema+idempotency-key",
+    "contentReviewDecisionResponseSchema",
+    undefined,
+    { commandType: "content.submission.review" },
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/content/character-assist",
+    allOf("content.official.write"),
+    "contentCharacterAssistRequestSchema",
+    "contentCharacterAssistResponseSchema",
+  ),
 ] as const satisfies readonly AdminV2ApiOperation[];
 
 /** One declared operation, literals intact. */
@@ -540,7 +2061,8 @@ export type AdminV2DeclaredOperation = (typeof ADMIN_V2_API_OPERATIONS)[number];
 /** Every operation id the manifest actually declares — not the `${Method} ${Route}` template. */
 export type AdminV2DeclaredOperationId = AdminV2DeclaredOperation["id"];
 /** Every request contract ref the manifest actually declares. */
-export type AdminV2DeclaredRequestRef = AdminV2DeclaredOperation["contract"]["request"];
+export type AdminV2DeclaredRequestRef =
+  AdminV2DeclaredOperation["contract"]["request"];
 /**
  * SPEC: operation id -> the request contract ref it declares.
  * INTENT: a flat lookup, not `Extract` over the operation union — indexing 103 object types
@@ -548,17 +2070,21 @@ export type AdminV2DeclaredRequestRef = AdminV2DeclaredOperation["contract"]["re
  * An id union (pause/resume/retire) indexes to the union of their refs.
  */
 type AdminV2DeclaredRequestRefById = {
-  [Operation in AdminV2DeclaredOperation as Operation["id"]]: Operation["contract"]["request"];
+  [
+    Operation in AdminV2DeclaredOperation as Operation["id"]
+  ]: Operation["contract"]["request"];
 };
-export type AdminV2DeclaredRequestRefFor<Id extends AdminV2DeclaredOperationId> =
-  AdminV2DeclaredRequestRefById[Id];
+export type AdminV2DeclaredRequestRefFor<
+  Id extends AdminV2DeclaredOperationId,
+> = AdminV2DeclaredRequestRefById[Id];
 
 /** Same flat-lookup shape as the request refs, for the rest of the declaration. */
 type AdminV2DeclaredOperationById = {
   [Operation in AdminV2DeclaredOperation as Operation["id"]]: Operation;
 };
-export type AdminV2DeclaredResponseRefFor<Id extends AdminV2DeclaredOperationId> =
-  AdminV2DeclaredOperationById[Id]["contract"]["response"];
+export type AdminV2DeclaredResponseRefFor<
+  Id extends AdminV2DeclaredOperationId,
+> = AdminV2DeclaredOperationById[Id]["contract"]["response"];
 export type AdminV2DeclaredRouteFor<Id extends AdminV2DeclaredOperationId> =
   AdminV2DeclaredOperationById[Id]["route"];
 
@@ -575,7 +2101,11 @@ export const ADMIN_V2_API_OPERATIONS_BY_ID = Object.fromEntries(
 function routePatternRegex(route: AdminV2RoutePattern): RegExp {
   const pattern = route
     .split("/")
-    .map((segment) => segment.startsWith(":") ? "[^/]+" : segment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .map((segment) =>
+      segment.startsWith(":")
+        ? "[^/]+"
+        : segment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+    )
     .join("/");
   return new RegExp(`^${pattern}/?$`);
 }
@@ -584,9 +2114,13 @@ export function findAdminV2ApiOperation(
   method: string,
   pathname: string,
 ): AdminV2ApiOperation | null {
-  return ADMIN_V2_API_OPERATIONS.find(
-    (operation) => operation.method === method && routePatternRegex(operation.route).test(pathname),
-  ) ?? null;
+  return (
+    ADMIN_V2_API_OPERATIONS.find(
+      (operation) =>
+        operation.method === method &&
+        routePatternRegex(operation.route).test(pathname),
+    ) ?? null
+  );
 }
 
 /**

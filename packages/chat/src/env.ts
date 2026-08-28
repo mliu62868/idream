@@ -1,4 +1,4 @@
-// SPEC: Chat service runtime config. Fail fast on missing required secrets.
+// SPEC: local AgentRun runtime config. Fail fast on missing required secrets.
 // INTENT: One typed accessor; no scattered process.env reads. All config comes
 // from packages/chat/.env (see .env.example) — loaded here, non-overriding so
 // vitest/pm2-injected vars still win.
@@ -7,44 +7,11 @@
 // cwd, so start chat via the full ecosystem (or `bun run pm2:start`), not `--only`.
 import "dotenv/config";
 import {
-  DEFAULT_MODERATION_PROVIDER,
-  DEFAULT_MODERATION_TIMEOUT_MS,
   DEFAULT_REDIS_URL,
-  defaultBullmqPrefix,
   mainWebUrlOrigin,
 } from "@idream/shared/env";
 import { resolveChatFsRoot, resolveChatModelProfile } from "@idream/shared";
-import { ACCOUNT_ERASURE_COMPLETION_V2_INGEST_PATH } from "@idream/shared/contracts";
 import { resolveCompanionRuntimeConfig } from "./companion-runtime-selection.js";
-
-function required(name: string, fallback?: string): string {
-  const value = process.env[name] ?? fallback;
-  if (value === undefined || value === "") {
-    throw new Error(`Missing required env var ${name}`);
-  }
-  return value;
-}
-
-function assertRunOwnedTestMainIngest(): void {
-  const isTestProcess =
-    process.env.APP_ENV === "test" ||
-    process.env.NODE_ENV === "test" ||
-    process.env.VITEST === "true";
-  if (!isTestProcess) return;
-  const runId = process.env.PW_RUN_ID?.trim();
-  const prefix = process.env.BULLMQ_PREFIX ?? "";
-  const e2ePrefix = `${defaultBullmqPrefix("e2e")}:`;
-  if (
-    process.env.PLAYWRIGHT_E2E !== "1" ||
-    !runId ||
-    !prefix.startsWith(e2ePrefix) ||
-    !prefix.endsWith(`:${runId}`)
-  ) {
-    throw new Error(
-      "Refusing Main ingest from a non-Playwright Chat test process",
-    );
-  }
-}
 
 export const env = {
   get APP_ENV() {
@@ -59,26 +26,8 @@ export const env = {
   get SOURCE_REVISION() {
     return process.env.IDREAM_SOURCE_REVISION ?? process.env.SENTRY_RELEASE;
   },
-  get DATABASE_URL() {
-    return required("CHAT_DATABASE_URL", process.env.DATABASE_URL);
-  },
-  get PROJECTOR_DATABASE_URL() {
-    const explicit = process.env.CHAT_PROJECTOR_DATABASE_URL;
-    if (explicit) return explicit;
-    const url = new URL(this.DATABASE_URL);
-    url.username = "chat_projector";
-    url.password = required("CHAT_PROJECTOR_PASSWORD");
-    return url.toString();
-  },
   get REDIS_URL() {
     return process.env.CHAT_REDIS_URL ?? process.env.REDIS_URL ?? DEFAULT_REDIS_URL;
-  },
-  // BullMQ is receiver-local wake-up/work scheduling; cross-service events use
-  // durable HTTP ingest and do not depend on a shared Redis prefix. The default
-  // still comes from the shared contract so chat cannot drift off main/gen if
-  // that ever stops being true.
-  get BULLMQ_PREFIX() {
-    return process.env.BULLMQ_PREFIX ?? defaultBullmqPrefix(process.env.APP_ENV);
   },
   get CHAT_FS_ROOT() {
     return resolveChatFsRoot(
@@ -104,42 +53,16 @@ export const env = {
   get CHAT_MODEL_API_KEY() {
     return resolveChatModelProfile(process.env).apiKey;
   },
-  get MODERATION_PROVIDER() {
-    return (
-      process.env.CHAT_MODERATION_PROVIDER ??
-      process.env.MODERATION_PROVIDER ??
-      DEFAULT_MODERATION_PROVIDER
-    );
-  },
-  get MODERATION_SERVICE_URL() {
-    return process.env.CHAT_MODERATION_SERVICE_URL ?? process.env.MODERATION_SERVICE_URL ?? "";
-  },
-  get MODERATION_API_KEY() {
-    return process.env.CHAT_MODERATION_API_KEY ?? process.env.MODERATION_API_KEY ?? "";
-  },
-  get MODERATION_TIMEOUT_MS() {
-    const raw =
-      process.env.CHAT_MODERATION_TIMEOUT_MS ??
-      process.env.MODERATION_TIMEOUT_MS ??
-      String(DEFAULT_MODERATION_TIMEOUT_MS);
-    const parsed = Number.parseInt(raw, 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MODERATION_TIMEOUT_MS;
-  },
   get BFF_SIGNING_SECRET() {
     return process.env.CHAT_BFF_SIGNING_SECRET ?? "";
   },
-  // Shared secret for main-web → chat internal admin API (/internal/admin/*).
+  // Shared secret for Main → Chat AgentRun admission and cancellation.
   // Empty ⇒ internal endpoints reject all callers (safe default).
   get INTERNAL_TOKEN() {
     return process.env.INTERNAL_TOKEN ?? "";
   },
-  get MAIN_INTERNAL_INGEST_URL() {
-    assertRunOwnedTestMainIngest();
-    return `${mainWebUrlOrigin()}/api/internal/events/ingest`;
-  },
-  get MAIN_ACCOUNT_ERASURE_COMPLETION_V2_INGEST_URL() {
-    assertRunOwnedTestMainIngest();
-    return `${mainWebUrlOrigin()}${ACCOUNT_ERASURE_COMPLETION_V2_INGEST_PATH}`;
+  get MAIN_INTERNAL_BASE_URL() {
+    return mainWebUrlOrigin().replace(/\/$/u, "");
   },
   get PORT() {
     return Number.parseInt(process.env.CHAT_PORT ?? "3100", 10);

@@ -93,10 +93,6 @@ describe.sequential("Character renderer preview Serving authority", () => {
       data: {
         id: projectId,
         characterId,
-        ownerId,
-        phase: "live_management",
-        audience: {},
-        successCriteria: [],
         draftImageAssetId: assetPack.character_cover,
         draftAssetPack: {
           character_cover: assetPack.character_cover,
@@ -110,7 +106,6 @@ describe.sequential("Character renderer preview Serving authority", () => {
       name: "Serving Truth",
       age: 28,
       gender: "female",
-      relationshipArchetype: "trusted companion",
       characterPromise: "A fixture whose preview follows the real Serving pointer.",
       detailsMarkdown: "The active pointer is the truth.",
     });

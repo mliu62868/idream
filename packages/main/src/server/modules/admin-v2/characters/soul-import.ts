@@ -233,17 +233,6 @@ export async function importRepositorySoul(input: {
         requestId: input.requestId,
       },
     });
-    await tx.adminCollaborationActivity.create({
-      data: {
-        targetType: "character_project",
-        targetId: project.id,
-        kind: "draft_saved",
-        actorId: input.actorId!,
-        body: "Imported reviewed repository Character Soul",
-        metadata: toInputJson({ contentVersionId: content.id, revisionId: revision.id }),
-        idempotencyKey: `character_soul_repository_import:${input.requestId}`,
-      },
-    });
     return {
       ...base,
       mode: "applied",

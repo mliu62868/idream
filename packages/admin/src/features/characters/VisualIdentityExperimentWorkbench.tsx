@@ -53,6 +53,8 @@ export type ActivateIdentityCandidateInput =
 type ExperimentMode = "text_to_image" | "image_to_image";
 type SeedStrategy = "random" | "locked" | "reuse_source";
 
+const RANDOM_SEED_LIMIT = 2_147_483_647;
+
 // INVARIANT: 常量空数组，避免"资源尚未到达"每次渲染都产生新引用而触发下游重算。
 const EMPTY_SOURCE_OPTIONS: SourceOption[] = [];
 
@@ -82,8 +84,25 @@ function sourceRoleLabel(
   return "Identity reference";
 }
 
-function randomSeed() {
-  return String(Math.floor(Math.random() * 2_147_483_647));
+function randomSeed(previous?: string) {
+  const candidate = Math.floor(Math.random() * RANDOM_SEED_LIMIT);
+  if (String(candidate) !== previous) return String(candidate);
+  return String((candidate + 1) % RANDOM_SEED_LIMIT);
+}
+
+// INTENT: Visual Profile 的 defaultSeed 是身份稳定键；运营字段承诺的是数值基准种子。
+// 哈希后仍可跨刷新稳定复现，同时不把 `character:…:visual:…` 暴露成“随机种子”。
+function numericComposerSeed(seed: string | null | undefined) {
+  if (!seed) return randomSeed();
+  const numeric = Number(seed);
+  if (Number.isSafeInteger(numeric) && numeric >= 0) return String(numeric);
+
+  let hash = 2_166_136_261;
+  for (const char of seed) {
+    hash ^= char.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return String((hash >>> 0) % RANDOM_SEED_LIMIT);
 }
 
 function runSettled(run: CreativeRunDetail) {
@@ -104,9 +123,6 @@ function modeLabel(mode: ExperimentMode) {
 function generationModelLabel(modelId: string) {
   if (modelId === "redcraft-krea2-redmix3-fp8") return "RedCraft Krea2";
   if (modelId === "qwen-image-edit") return "Qwen Image Edit";
-  if (modelId === "darkbeast-flux2-klein-9b-bfs") {
-    return "Dark Beast FLUX.2 Klein 9B";
-  }
   return modelId;
 }
 
@@ -221,8 +237,8 @@ export function VisualIdentityExperimentWorkbench({
       "different person, inconsistent face, duplicate person, extra limbs, text, watermark",
   );
   const [seedStrategy, setSeedStrategy] = useState<SeedStrategy>("locked");
-  const [baseSeed, setBaseSeed] = useState(
-    identity?.defaultSeed ?? randomSeed(),
+  const [baseSeed, setBaseSeed] = useState(() =>
+    numericComposerSeed(identity?.defaultSeed),
   );
   const count = 1;
   const [consistencyMode, setConsistencyMode] = useState<
@@ -593,7 +609,7 @@ export function VisualIdentityExperimentWorkbench({
       setResultOpen(true);
       setNotice("generation_started");
       if (resolvedSeedStrategy === "random" && !result.replayed) {
-        setBaseSeed(randomSeed());
+        setBaseSeed(randomSeed(baseSeed));
       }
       return detail;
     } catch (cause) {
@@ -634,7 +650,7 @@ export function VisualIdentityExperimentWorkbench({
     setPositivePrompt(experiment.positivePrompt);
     setNegativePrompt(experiment.negativePrompt);
     setSeedStrategy(experiment.seedStrategy);
-    setBaseSeed(experiment.baseSeed ?? randomSeed());
+    setBaseSeed(numericComposerSeed(experiment.baseSeed));
     setStrength(experiment.strength);
     setSourceAssetId(experiment.sourceAssetId);
     if (selectedRun?.reviewContext.orientation) {
@@ -882,7 +898,7 @@ export function VisualIdentityExperimentWorkbench({
                 disabled={resolvedSeedStrategy === "reuse_source"}
                 onClick={() => {
                   setSeedStrategy("locked");
-                  setBaseSeed(randomSeed());
+                  setBaseSeed(randomSeed(baseSeed));
                 }}
                 type="button"
               >

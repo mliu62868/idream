@@ -356,7 +356,7 @@ export async function repairLegacyEditorialVisualIdentity(input: {
     const activeRelease = await input.tx.characterRelease.findFirst({
       where: {
         projectId: project.id,
-        status: { in: ["draft", "validating", "in_review", "approved"] },
+        status: "approved",
       },
       select: { id: true, status: true },
     });
@@ -729,7 +729,6 @@ export async function repairCharacterImageReadiness(input: {
     draftAssetPack: project.draftAssetPack,
     serving: {
       currentReleaseId: serving.currentReleaseId,
-      scheduledReleaseId: serving.scheduledReleaseId,
       version: serving.version,
     },
     currentRelease: {
@@ -770,16 +769,15 @@ export async function repairCharacterImageReadiness(input: {
     where: {
       projectId: project.id,
       id: { not: currentRelease.id },
-      status: { in: ["draft", "validating", "in_review", "approved"] },
+      status: "approved",
     },
     select: { id: true, status: true },
   });
-  if (candidateRelease || serving.scheduledReleaseId) {
+  if (candidateRelease) {
     throw Errors.conflict(
-      "Finish the active or scheduled Character Release before repairing image readiness",
+      "Finish the active Character Release before repairing image readiness",
       {
         candidateReleaseId: candidateRelease?.id ?? null,
-        scheduledReleaseId: serving.scheduledReleaseId,
       },
     );
   }
@@ -1026,24 +1024,6 @@ export async function repairCharacterImageReadiness(input: {
         state,
       }),
       requestId: input.requestId,
-    },
-  });
-  await input.tx.adminCollaborationActivity.create({
-    data: {
-      targetType: "character_project",
-      targetId: project.id,
-      kind: "status_change",
-      actorId: input.actor.id,
-      body: "Prepared the live editorial portrait for future image production",
-      metadata: toInputJson({
-        characterId: input.characterId,
-        visualProfileId: visualProfile.id,
-        referenceSetRevisionId: referenceSet.id,
-        liveReleaseUnchanged: true,
-        state,
-      }),
-      idempotencyKey:
-        `character_image_readiness:${input.requestId}`,
     },
   });
   await input.tx.mainOutboxEvent.create({

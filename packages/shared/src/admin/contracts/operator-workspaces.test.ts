@@ -16,25 +16,37 @@ describe("operator workspace contracts", () => {
   it("requires an optimistic version and an auditable reason for project autosave", () => {
     const result = characterProjectDraftPatchRequestSchema.safeParse({
       entityVersion: 3,
-      ownerId: null,
-      audience: "People seeking a calm evening companion",
-      companionNeed: "A predictable decompression ritual",
-      hypothesis: "Warm direct openings increase qualified conversation",
-      differentiation: "Quiet confidence without generic affirmation",
-      targetPlacementKeys: ["feed_card"],
-      successCriteria: ["QCE improves without D7 regression"],
-      plannedLaunchAt: null,
+      content: {
+        persona: {
+          name: "Mara",
+          age: 28,
+          gender: "female",
+          characterPromise: "A calm evening companion",
+          detailsMarkdown: "",
+          firstMessage: "You made it.",
+        },
+        visualDirection: {
+          identityAnchor: "Composed late-night radio host",
+          stableTraits: ["dark wavy hair"],
+          style: "realistic",
+          referenceDirection: "Warm studio portrait",
+        },
+      },
       reason: "Autosave strategy step",
     });
     expect(result.success).toBe(true);
-    expect(characterProjectDraftPatchRequestSchema.safeParse({
-      ...(result.success ? result.data : {}),
-      reason: "",
-    }).success).toBe(false);
-    expect(characterProjectDraftPatchRequestSchema.safeParse({
-      ...(result.success ? result.data : {}),
-      phase: "launch_ready",
-    }).success).toBe(false);
+    expect(
+      characterProjectDraftPatchRequestSchema.safeParse({
+        ...(result.success ? result.data : {}),
+        reason: "",
+      }).success,
+    ).toBe(false);
+    expect(
+      characterProjectDraftPatchRequestSchema.safeParse({
+        ...(result.success ? result.data : {}),
+        phase: "launch_ready",
+      }).success,
+    ).toBe(false);
   });
 
   it("rejects a creative detail whose derived counts contradict its outcome", () => {
@@ -56,7 +68,14 @@ describe("operator workspace contracts", () => {
       settlementView: "not_required",
       retryEligibility: { eligibleItemIds: [], eligibleCount: 0 },
       legacyState: "completed",
-      counts: { generated: 1, failed: 3, reviewed: 0, approved: 0, placed: 0, total: 4 },
+      counts: {
+        generated: 1,
+        failed: 3,
+        reviewed: 0,
+        approved: 0,
+        placed: 0,
+        total: 4,
+      },
       version: 2,
       createdAt: "2026-07-11T00:00:00.000Z",
       updatedAt: "2026-07-11T00:00:00.000Z",
@@ -84,7 +103,14 @@ describe("operator workspace contracts", () => {
       settlementView: "not_required",
       retryEligibility: { eligibleItemIds: [], eligibleCount: 0 },
       legacyState: "draft",
-      counts: { generated: 0, failed: 0, reviewed: 0, approved: 0, placed: 0, total: 0 },
+      counts: {
+        generated: 0,
+        failed: 0,
+        reviewed: 0,
+        approved: 0,
+        placed: 0,
+        total: 0,
+      },
       version: 1,
       createdAt: "2026-07-11T00:00:00.000Z",
       updatedAt: "2026-07-11T00:00:00.000Z",

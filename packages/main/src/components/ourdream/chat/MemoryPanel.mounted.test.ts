@@ -32,14 +32,13 @@ async function render(): Promise<void> {
       memoryEnabled: true,
       memoryPending: false,
       onToggleMemory: () => {},
-      onRelationshipReset: () => {},
     }));
   });
 }
 
 function resetButton(): HTMLButtonElement {
   const button = container.querySelector<HTMLButtonElement>(
-    '[data-testid="relationship-reset"]',
+    '[data-testid="memory-clear"]',
   );
   if (!button) throw new Error("reset button missing");
   return button;
@@ -51,11 +50,11 @@ async function click(button: HTMLButtonElement): Promise<void> {
   });
 }
 
-describe("MemoryPanel relationship reset", () => {
+describe("MemoryPanel clear", () => {
   it("starts a fresh conversation after the reset succeeds", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes("/relationships/")) {
+      if (url.includes("/memory/")) {
         return new Response(JSON.stringify({ ok: true, archivedSessions: 1 }), {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -75,14 +74,14 @@ describe("MemoryPanel relationship reset", () => {
     await click(resetButton());
 
     const calls = fetchMock.mock.calls.map(([input]) => String(input));
-    expect(calls[0]).toContain("/api/v1/chat/relationships/raya-reyes");
+    expect(calls[0]).toContain("/api/v1/chat/memory/raya-reyes");
     // Without this the user is left sitting in a session the reset just archived,
     // where every send comes back "This chat has been archived".
     expect(calls[1]).toBe("/api/v1/chat/sessions");
     expect(window.location.href).toContain("/chat/sess_new");
   });
 
-  it("says nothing changed when the reset call fails", async () => {
+  it("does not claim a reset failure was a no-op", async () => {
     const fetchMock = vi.fn(async () => new Response("{}", { status: 500 }));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -92,7 +91,7 @@ describe("MemoryPanel relationship reset", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(
-      container.querySelector('[data-testid="relationship-reset-error"]')?.textContent,
-    ).toContain("Nothing was changed");
+      container.querySelector('[data-testid="memory-clear-error"]')?.textContent,
+    ).toContain("Old chats may already be archived");
   });
 });

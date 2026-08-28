@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
   ACCOUNT_DELETION_V2_INGEST_PATH,
@@ -10,6 +11,10 @@ import { setGauge } from "@idream/shared";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
+import {
+  purgeCompanionMemoryFromMain,
+  rebuildCompanionMemoryFromMain,
+} from "@/server/modules/chat/companion-memory-authority";
 
 type Db = PrismaClient | Prisma.TransactionClient;
 export type MainToChatEventType =
@@ -56,22 +61,21 @@ export async function dispatchPendingChatEvents(
 ): Promise<{ delivered: number; failed: number }> {
   const now = new Date();
   const eventTypes = Object.values(MAIN_TO_CHAT_EVENTS);
+  const due = {
+    OR: [
+      { status: "pending", nextRunAt: { lte: now } },
+      { status: "processing", leaseExpiresAt: { lte: now } },
+    ],
+    eventType: { in: eventTypes },
+  } satisfies Prisma.MainOutboxEventWhereInput;
   const [oldestPending, rows] = await Promise.all([
     prisma.mainOutboxEvent.findFirst({
-      where: {
-        status: "pending",
-        nextRunAt: { lte: now },
-        eventType: { in: eventTypes },
-      },
+      where: due,
       orderBy: { createdAt: "asc" },
       select: { createdAt: true },
     }),
     prisma.mainOutboxEvent.findMany({
-      where: {
-        status: "pending",
-        nextRunAt: { lte: now },
-        eventType: { in: eventTypes },
-      },
+      where: due,
       orderBy: { createdAt: "asc" },
       take: batch,
     }),
@@ -85,40 +89,80 @@ export async function dispatchPendingChatEvents(
   let delivered = 0;
   let failed = 0;
   for (const row of rows) {
+    const leaseToken = randomUUID();
+    const leaseExpiresAt = new Date(Date.now() + 30_000);
+    const claimed = await prisma.mainOutboxEvent.updateMany({
+      where: {
+        id: row.id,
+        attempts: row.attempts,
+        OR: [
+          { status: "pending", nextRunAt: { lte: now } },
+          { status: "processing", leaseExpiresAt: { lte: now } },
+        ],
+      },
+      data: {
+        status: "processing",
+        attempts: { increment: 1 },
+        leaseToken,
+        leaseExpiresAt,
+      },
+    });
+    if (claimed.count !== 1) continue;
+    const attempts = row.attempts + 1;
+    const heartbeat = setInterval(() => {
+      void prisma.mainOutboxEvent.updateMany({
+        where: { id: row.id, status: "processing", leaseToken },
+        data: { leaseExpiresAt: new Date(Date.now() + 30_000) },
+      }).catch(() => undefined);
+    }, 10_000);
+    let deliveryError: unknown;
+    let deliveryFailed = false;
     try {
       await deliver(durableEventEnvelopeSchema.parse(row.payload));
     } catch (error) {
-      const attempts = row.attempts + 1;
-      const rollbackSafeAccountDeletion =
-        row.eventType === MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2;
+      deliveryFailed = true;
+      deliveryError = error;
+    } finally {
+      clearInterval(heartbeat);
+    }
+    if (deliveryFailed) {
       // INVARIANT: a stale failure may only advance the exact pending attempt
       // it observed; it must never overwrite a durable ACK or a newer retry.
-      // Account deletion v2 never enters an unrecoverable transport tombstone:
-      // a rolled-back Chat intentionally returns 404 on its capability route.
+      // Chat lifecycle events never enter an unrecoverable transport
+      // tombstone: local erasure/rebuild must converge before new work resumes.
       const transition = await prisma.mainOutboxEvent.updateMany({
-        where: { id: row.id, status: "pending", attempts: row.attempts },
+        where: { id: row.id, status: "processing", leaseToken, attempts },
         data: {
-          attempts,
-          status:
-            !rollbackSafeAccountDeletion && attempts >= 8
-              ? "failed"
-              : "pending",
+          // Local-file cleanup and relationship rebuild stay retryable until
+          // the target capability has actually converged.
+          status: "pending",
           nextRunAt: new Date(
             Date.now() + Math.min(attempts, 120) * 30_000,
           ),
-          lastError: toInputJson({ message: error instanceof Error ? error.message : "chat delivery failed" }),
+          lastError: toInputJson({
+            message: deliveryError instanceof Error
+              ? deliveryError.message
+              : "chat delivery failed",
+          }),
+          leaseToken: null,
+          leaseExpiresAt: null,
         },
       });
       failed += transition.count;
       continue;
     }
 
-    // INTENT: receiver durable ACK is stronger evidence than local retry
-    // exhaustion. It may repair a concurrent failed write and is never
-    // followed by the failure path if this local persistence step errors.
+    // Receiver ACK can complete only the exact live lease. An expired owner can
+    // neither deliver nor regress the row after another reconciler reclaims it.
     const transition = await prisma.mainOutboxEvent.updateMany({
-      where: { id: row.id, status: { in: ["pending", "failed"] } },
-      data: { status: "delivered", deliveredAt: new Date(), lastError: Prisma.DbNull },
+      where: { id: row.id, status: "processing", leaseToken, attempts },
+      data: {
+        status: "delivered",
+        deliveredAt: new Date(),
+        lastError: Prisma.DbNull,
+        leaseToken: null,
+        leaseExpiresAt: null,
+      },
     });
     delivered += transition.count;
   }
@@ -132,13 +176,21 @@ export function resolveChatDurableIngestUrl(
   if (!chatServiceUrl?.trim()) {
     throw new Error("CHAT_SERVICE_URL is required for Main to Chat durable delivery");
   }
-  const path = eventType === MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2
-    ? ACCOUNT_DELETION_V2_INGEST_PATH
-    : "/internal/events/ingest";
-  return `${chatServiceUrl.replace(/\/$/, "")}${path}`;
+  if (eventType && eventType !== MAIN_TO_CHAT_EVENTS.accountDeletionRequestedV2) {
+    throw new Error("only account deletion is a Main to Chat durable event");
+  }
+  return `${chatServiceUrl.replace(/\/$/, "")}${ACCOUNT_DELETION_V2_INGEST_PATH}`;
 }
 
 async function deliverToChat(event: DurableEventEnvelope): Promise<void> {
+  if (event.eventType === MAIN_TO_CHAT_EVENTS.companionMemoryRebuildRequestedV1) {
+    await rebuildCompanionMemoryFromMain(event);
+    return;
+  }
+  if (event.eventType === MAIN_TO_CHAT_EVENTS.companionMemoryPurgeRequestedV1) {
+    await purgeCompanionMemoryFromMain(event);
+    return;
+  }
   const response = await fetch(resolveChatDurableIngestUrl(
     env.CHAT_SERVICE_URL,
     event.eventType as MainToChatEventType,

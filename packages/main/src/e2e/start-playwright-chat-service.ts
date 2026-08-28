@@ -5,7 +5,6 @@ import {
 import path from "node:path";
 import pg from "pg";
 import {
-  assertPlaywrightChatDatabaseUrl,
   assertPlaywrightDatabaseUrl,
   resolvePlaywrightEnvironment,
   type ResolvedPlaywrightEnvironment,
@@ -36,28 +35,10 @@ async function preparePlaywrightAuthority(
 ) {
   throwIfAborted(signal);
   const databaseURL = assertPlaywrightDatabaseUrl(environment.databaseURL);
-  const chatDatabaseURL = assertPlaywrightChatDatabaseUrl(
-    environment.chatDatabaseURL,
-    databaseURL,
-  );
   const database = new URL(databaseURL);
-  const databaseName = decodeURIComponent(database.pathname.replace(/^\//, ""));
-  const superUser = decodeURIComponent(database.username);
-  const superPassword = decodeURIComponent(database.password);
-  if (!superUser) {
-    throw new Error(
-      "Playwright authority database URL must include its provisioning user",
-    );
+  if (!decodeURIComponent(database.username)) {
+    throw new Error("Playwright authority database URL must include its provisioning user");
   }
-
-  process.env.CHAT_TEST_DB = databaseName;
-  process.env.CHAT_TEST_REQUIRE_PLAYWRIGHT = "1";
-  process.env.PG_SUPER = superUser;
-  process.env.PGHOST = database.hostname;
-  process.env.PGPORT = database.port || "5432";
-  process.env.PGPASSWORD = superPassword;
-  process.env.SUPER_PASSWORD = superPassword;
-  process.env.POSTGRES_PASSWORD = superPassword;
 
   const childEnv = {
     ...process.env,
@@ -65,17 +46,14 @@ async function preparePlaywrightAuthority(
     DB_PROVIDER: "postgresql",
     TEST_DATABASE_URL: databaseURL,
     DATABASE_URL: databaseURL,
-    CHAT_DATABASE_URL: chatDatabaseURL,
   };
+  await recreateOwnedDatabase(databaseURL, signal);
+  throwIfAborted(signal);
   await runPreparationCommand(
     "node",
-    [
-      "--input-type=module",
-      "--eval",
-      "import { provisionChatTestDb } from './test/provision.mjs'; provisionChatTestDb();",
-    ],
+    ["scripts/db-push.mjs"],
     {
-      cwd: chatDir,
+      cwd: mainDir,
       env: childEnv,
       signal,
     },
@@ -83,18 +61,36 @@ async function preparePlaywrightAuthority(
   throwIfAborted(signal);
   await alignDeferrableAuthorityConstraints(databaseURL, signal);
   throwIfAborted(signal);
-  await runPreparationCommand("npx", ["tsx", "prisma/seed.ts"], {
+  await runPreparationCommand("bun", ["prisma/seed.ts"], {
     cwd: mainDir,
     env: childEnv,
     signal,
   });
   throwIfAborted(signal);
-  await runPreparationCommand("bun", ["run", "db:generate"], {
-    cwd: chatDir,
-    env: childEnv,
-    signal,
+}
+
+async function recreateOwnedDatabase(url: string, signal: AbortSignal) {
+  const parsed = new URL(assertPlaywrightDatabaseUrl(url));
+  const databaseName = decodeURIComponent(parsed.pathname.replace(/^\//, ""));
+  parsed.pathname = "/postgres";
+  parsed.searchParams.delete("schema");
+  const client = new pg.Client({
+    connectionString: parsed.toString(),
+    connectionTimeoutMillis: 3_000,
+    query_timeout: 10_000,
   });
-  throwIfAborted(signal);
+  const abortConnection = () => void client.end().catch(() => undefined);
+  signal.addEventListener("abort", abortConnection, { once: true });
+  try {
+    await client.connect();
+    throwIfAborted(signal);
+    await client.query(`DROP DATABASE IF EXISTS ${quoteIdentifier(databaseName)} WITH (FORCE)`);
+    throwIfAborted(signal);
+    await client.query(`CREATE DATABASE ${quoteIdentifier(databaseName)}`);
+  } finally {
+    signal.removeEventListener("abort", abortConnection);
+    await client.end().catch(() => undefined);
+  }
 }
 
 async function alignDeferrableAuthorityConstraints(
@@ -117,7 +113,6 @@ async function alignDeferrableAuthorityConstraints(
     for (const constraint of [
       "character_serving_characterId_fkey",
       "character_serving_currentReleaseId_fkey",
-      "character_serving_scheduledReleaseId_fkey",
     ]) {
       throwIfAborted(signal);
       await client.query(
@@ -135,7 +130,7 @@ function quoteIdentifier(value: string) {
 }
 
 function startChatService() {
-  const child = spawn(process.execPath, ["src/main.ts"], {
+  const child = spawn("bun", ["src/main.ts"], {
     cwd: chatDir,
     env: process.env,
     stdio: "inherit",

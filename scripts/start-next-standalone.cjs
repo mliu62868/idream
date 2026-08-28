@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 const {
   existsSync,
   lstatSync,
@@ -17,7 +17,7 @@ const repoRoot = path.resolve(__dirname, "..");
 function start(packagePath) {
   if (!packagePath) {
     throw new Error(
-      "Usage: node scripts/start-next-standalone.cjs <package-path>",
+      "Usage: bun scripts/start-next-standalone.cjs <package-path>",
     );
   }
 
@@ -198,8 +198,11 @@ function requireDirectory(directory, message) {
   }
 }
 
-if (require.main === module) {
-  start(process.argv[2]);
+if (
+  require.main === module ||
+  process.env.IDREAM_PM2_BUN_ENTRYPOINT === "next-standalone"
+) {
+  start(process.env.IDREAM_NEXT_PACKAGE_PATH ?? process.argv[2]);
 }
 
 module.exports = {

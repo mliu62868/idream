@@ -19,7 +19,7 @@ import {
   ScrollText,
   Server,
   ShieldAlert,
-  ShieldCheck,
+  UserRound,
   SlidersHorizontal,
   Sparkles,
   Ticket,
@@ -182,7 +182,7 @@ export const navItems: NavItem[] = [
   apiItem({ id: "dashboard", label: "Today", href: "/admin/today", icon: Gauge, group: "Today", apiWorkspace: "today",
     render: (ctx) => <TodayWorkspace workMode={ctx.workMode} /> }),
 
-  apiItem({ id: "content/official", label: "Characters", href: "/admin/characters", icon: ShieldCheck, group: "Character Studio", apiWorkspace: "character_workspace", chrome: "compact",
+  apiItem({ id: "content/official", label: "Characters", href: "/admin/characters", icon: UserRound, group: "Character Studio", apiWorkspace: "character_workspace", chrome: "compact",
     render: (ctx) => <CharacterWorkspace actorId={ctx.actorId} permissions={ctx.permissions} view={ctx.view} /> }),
   item({ id: "content/review-queue", label: "Character Review", href: "/admin/characters/review", icon: ClipboardCheck, group: "Character Studio", read: read("safety.review.read"),
     render: () => <ReviewQueueView /> }),

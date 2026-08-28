@@ -176,9 +176,6 @@ describe.runIf(process.env.RUN_ADMIN_REAL_COMMAND_WORKER_CHAOS === "1")(
         data: {
           id: projectId,
           characterId,
-          phase: "live",
-          audience: {},
-          successCriteria: {},
           activeKey: `official:${characterId}`,
         },
       });

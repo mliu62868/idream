@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  MAIN_TO_CHAT_EVENTS,
+  LEGACY_MAIN_TO_CHAT_EVENTS,
   durableEnvelopeHash,
   durableEventEnvelopeSchema,
 } from "@idream/shared/contracts";
@@ -14,7 +14,7 @@ function failedImageRow(overrides: Record<string, unknown> = {}) {
   const envelope = {
     sourceService: "main",
     sourceEventId: id,
-    eventType: MAIN_TO_CHAT_EVENTS.chatImageFailed,
+    eventType: LEGACY_MAIN_TO_CHAT_EVENTS.chatImageFailed,
     schemaVersion: 1,
     occurredAt: "2026-08-11T12:00:00.000Z",
     aggregateType: "chat_effect",

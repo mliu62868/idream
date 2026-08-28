@@ -96,6 +96,18 @@ export default defineConfig({
         "../shared/src/chat/companion-runtime.ts",
         import.meta.url,
       ).pathname,
+      "@idream/shared/chat/image-action": new URL(
+        "../shared/src/chat/image-action.ts",
+        import.meta.url,
+      ).pathname,
+      "@idream/shared/chat/persona-render": new URL(
+        "../shared/src/chat/persona-render.ts",
+        import.meta.url,
+      ).pathname,
+      "@idream/shared/chat/persona": new URL(
+        "../shared/src/chat/persona.ts",
+        import.meta.url,
+      ).pathname,
       "@idream/shared/media/generated-image-sanity": new URL(
         "../shared/src/media/generated-image-sanity.ts",
         import.meta.url,

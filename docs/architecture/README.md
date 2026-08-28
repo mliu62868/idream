@@ -36,7 +36,7 @@ packages/main/prisma/schema.prisma + packages/*/src ← 代码（最终事实来
 | — | [README.md](./README.md) | 索引、技术栈、决策摘要（本文件） | 所有人 |
 | 01 | [01-system-architecture.md](./01-system-architecture.md) | 系统架构、分层、请求生命周期、模块依赖、部署拓扑 | 所有工程 |
 | 02 | [02-technical-decisions.md](./02-technical-decisions.md) | 关键技术决策（ADR）：栈形态/数据库/Auth/支付/队列/AI/年龄验证/存储/限流/缓存 | 架构、Lead |
-| 03 | [03-data-model.md](./03-data-model.md) | Prisma schema 参考、迁移与 seed 策略、chat 服务库边界 | 后台工程 |
+| 03 | [03-data-model.md](./03-data-model.md) | Main Prisma schema 参考、迁移与 seed 策略；旧 Chat PG 设计由 ADR-20 取代 | 后台工程 |
 | 04 | [04-api-design.md](./04-api-design.md) | API 规范：响应/错误/校验/分页/鉴权/限流/幂等/SSE | 前后端 |
 | 05 | [05-module-design.md](./05-module-design.md) | 后台模块职责与关键流程（as-built） | 后台工程 |
 | 06 | [06-async-jobs-and-ai.md](./06-async-jobs-and-ai.md) | Redis/BullMQ、跨服务队列、AI provider 抽象、生成流水线 | 后台工程 |
@@ -51,6 +51,8 @@ packages/main/prisma/schema.prisma + packages/*/src ← 代码（最终事实来
 | 16 | [16-character-asset-studio-authority.md](./16-character-asset-studio-authority.md) | Character Asset Studio 的生成、审核、草稿采用与 Release 发布权威 | Product、架构、后端、运营 |
 | 17 | [17-deep-module-authority-boundaries.md](./17-deep-module-authority-boundaries.md) | Gen、Ledger、Admin mutation、状态变更、跨服务交换与 Character Journey 的深模块权威 ADR | Product、架构、后端、运营 |
 | 18 | [18-character-soul-runtime-design.md](./18-character-soul-runtime-design.md) | Character Soul、Chat turn context、关系证据、场景状态与 Release/运行时一致性设计 | Product、架构、后端、运营 |
+| 19 | [19-deepseek-harness-companion-runtime-migration.md](./19-deepseek-harness-companion-runtime-migration.md) | DSH/igrep Companion 执行内核；不拥有产品事实 | Product、架构、后端 |
+| 20 | [20-local-file-chat-authority.md](./20-local-file-chat-authority.md) | Main 产品 Turn 权威、Chat 本地 AgentRun 与生成结算边界 | Product、架构、后端、运营 |
 
 > 实现状态（已落地/暂缓）以 [`CURRENT_FUNCTIONAL_COVERAGE.md`](../product/CURRENT_FUNCTIONAL_COVERAGE.md) 为唯一事实来源；剩余工作执行计划见 [`REMAINING_WORK_EXECUTION_PLAN.md`](../product/REMAINING_WORK_EXECUTION_PLAN.md)。
 > 管理后台方案见 [ADMIN_CONSOLE_PLAN.md](../product/ADMIN_CONSOLE_PLAN.md)；生成（图片/视频/语音）契约见 [BackendFeatureSpec.md](../product/BackendFeatureSpec.md) §5.5。
@@ -62,13 +64,13 @@ packages/main/prisma/schema.prisma + packages/*/src ← 代码（最终事实来
 | 运行时 | Node.js ≥ 24 | `.nvmrc=24`，`package.json engines.node>=24` |
 | 框架 | Next.js 16.2.1（App Router, React 19.2） | **注意：Next 16 有破坏性变更**，middleware 已更名 **Proxy**，详见 01/02 |
 | 语言 | TypeScript 5（strict, 禁 `any`） | `@/*` → `src/*` |
-| ORM | Prisma 7.x（每包一份 `prisma.config.ts`，`prisma-client` 生成器） | main 与 chat 各自 schema，详见 03 |
-| 数据库 | **PostgreSQL only**（dev=prod 同栈，本地 docker-compose / prod Neon 等） | Postgres-only（无 SQLite 双库），见 02-ADR-2、03 |
+| ORM | Main 使用 Prisma 7.x（`prisma-client` 生成器） | Chat 不使用 ORM，详见 ADR-20 |
+| 数据库 | Main 使用 PostgreSQL 保存产品 Turn 与计费；Chat AgentRun 使用本地文件 | `packages/chat` 不使用 PostgreSQL/Prisma，见 ADR-20 |
 | 鉴权 | better-auth（email+password + session，Prisma adapter） | 备选 Auth.js v5，见 02-ADR-3 |
 | 校验 | Zod | 系统边界强制校验（API 入参、env、provider 回调） |
 | UI | shadcn/ui + @base-ui/react + Tailwind v4 | 既有，前端不在本目录范围 |
 | 支付 | 抽象 `PaymentProvider`；**生产用加密货币**（推荐自托管 BTCPay Server，非托管/无 AUP 风险） | 见 02-ADR-4 |
-| 异步 | Redis/BullMQ + 常驻 pm2 worker；Main↔Chat 业务事件走 Outbox→HTTP durable ingest→Inbox ACK；Gen 图片/视频/finalizer 走队列 | 见 06、14、17 |
+| 异步 | Main/Gen 使用 Redis/BullMQ；Chat 是有界 HTTP AgentRun，Redis 只缓存 SSE；跨服务删除等命令使用 durable event/receipt | 见 06、14、17 |
 | AI | 抽象 `ChatModel`/`ImageModel`/`VideoModel`/`Voice`/`Moderation` | **自托管开源模型，经内部流水线 API（OpenAI 兼容）接入**，见 02-ADR-6 |
 | 管理后台 | 独立 `@idream/admin` web/BFF + main `/api/v2/admin/*` authority；v1 仅兼容观测 | Today、Character、Creative、Incident、Case、Metrics、系统控制面，见 ADR-11 |
 | 对象存储 | 抽象 `BlobStore`；S3 兼容（R2）/ 本地 fs（dev） | 签名 URL，见 02-ADR-8 |
@@ -81,11 +83,11 @@ packages/main/prisma/schema.prisma + packages/*/src ← 代码（最终事实来
 
 | ADR | 决策 | 一句话理由 |
 | --- | --- | --- |
-| ADR-1 | **monorepo + 按执行时间分级拆服务**：`main`（快 web，权威库）/ `chat`（慢生成，独立服务库）/ `gen`（图片/视频 worker）；只用异步任务 + 事件交互 | 慢负载从快 web 剥离；KISS、可独立伸缩 |
-| ADR-2 | **PostgreSQL only**（dev=prod 同栈，无 SQLite 双库、无 `db-provider` 切换脚本）；main/chat 各自 schema | 端到端一致、可放心用 Postgres 原生特性（view/multiSchema/SKIP LOCKED） |
+| ADR-1 | **monorepo + 按执行时间分级拆服务**：`main`（产品 Turn/计费权威）/ `chat`（Agent 执行，本地 run）/ `gen`（图片/视频 worker） | 慢负载从快 web 剥离；产品事实仍集中在 Main |
+| ADR-2 | **Main PostgreSQL only**（dev=prod 同栈，无 SQLite 双库、无 `db-provider` 切换脚本） | Main 领域继续使用 PostgreSQL；Chat 存储由 ADR-20 取代 |
 | ADR-3 | **better-auth** 自管 user/session/account 表，域字段（plan 等）外挂 | 现代、Prisma 原生、email+password+session+限流齐全 |
 | ADR-4 | **支付抽象 + 加密货币**（BTCPay Server / NOWPayments 等）；订阅按"预付周期 + 到期续费"建模 | 加密支付绕开卡组织成人内容限制；自托管非托管无 AUP 风险 |
-| ADR-5 | **Redis/BullMQ + 常驻 pm2 worker**（main↔chat outbox/inbox 事件、gen 生成队列） | 可靠任务、重试、限并发；非 Vercel Cron / 非 DB 表队列 |
+| ADR-5 | **Main/Gen Redis/BullMQ + 常驻 PM2 worker；Chat 不建队列** | 生成任务需要 durable retry；Chat token 流需要直接 AgentRun/SSE |
 | ADR-6 | **AI provider 全部抽象**；**自托管开源模型经内部流水线 API（OpenAI 兼容）接入** | 自托管规避公有 API 成人内容禁令；prompt 不出内网 |
 | ADR-7 | **年龄验证 provider 抽象**（Go.cam 等），按司法辖区/风险触发，状态进 `age_verifications` | 安全文档点名 Go.cam；UK OSA / 美国多州法律强制 |
 | ADR-8 | **对象存储抽象 + S3 兼容(R2)/Vercel Blob(private)**，私有 + 签名 URL | 媒体资产私密、防盗链、成人 CDN 友好 |
@@ -95,6 +97,8 @@ packages/main/prisma/schema.prisma + packages/*/src ← 代码（最终事实来
 | ADR-12 | **Character Asset Studio 复用现有生成、审核、草稿、Release 与 Serving authority** | 采用只改草稿，只有显式发布改变线上角色 |
 | ADR-13 | **六个深 Module 吸收重复的可靠性协议**：Gen、Ledger、Admin mutation、聚合 transition、Durable Exchange、Character Journey | 每个高风险事实只有一个窄写入口；状态与部署配置不再漂移 |
 | ADR-14（Proposed） | **Character Soul 是版本化结构化权威；SOUL.md 与 system prompt 都是派生产物** | Release 与 Chat 共享一个解释 Interface；静态人格不再与关系、记忆、场景混写 |
+| ADR-19 | **DSH + official igrep 是唯一 Companion Agent 执行内核** | 统一 model/tool/memory loop，但不扩大为产品数据权威 |
+| ADR-20 | **Main PG 是产品 Turn/计费权威，Chat 本地文件只保存 AgentRun** | Agent 运行与产品记录分离；Chat 删除数据库协调层但不复制 Main ledger |
 
 ## 4. 不可妥协的合规底线（贯穿全文，P0）
 
@@ -112,7 +116,8 @@ packages/main/prisma/schema.prisma + packages/*/src ← 代码（最终事实来
 
 - monorepo 4+1 包：`@idream/{shared,main,chat,gen,admin}`；pm2 多进程（`ecosystem.config.js`）。
 - `packages/main`：Next 16 全栈（`src/app` 前端 + `src/server` 后端，`/api/v1/[...resource]` catch-all → `dispatchV1`），Prisma + PostgreSQL，better-auth，计费/权益/生成/角色/admin。
-- `packages/chat`：独立 chat 服务（独立 Postgres role + 文件层记忆/关系），main 经 BFF proxy + 事件队列交互。
+- `packages/chat`：不连接 PostgreSQL，保存本地 AgentRun 与 SSE 暂态；产品 Turn/附件/Scene/计费由 Main PostgreSQL 管理。
+- `packages/chat-agent`：DSH/official igrep sidecar；只执行模型、工具和派生记忆。
 - `packages/gen`：图片/视频生成 worker（写 blob）。
 - 实现状态（已落地/暂缓）以 [`CURRENT_FUNCTIONAL_COVERAGE.md`](../product/CURRENT_FUNCTIONAL_COVERAGE.md) 为准；路线图见 [12-roadmap.md](./12-roadmap.md)。
 
@@ -127,4 +132,4 @@ bun run check       # lint + typecheck + build
 bun run check:launch # 上线就绪体检（launch-readiness）
 ```
 
-E2E（Playwright）与各 `launch:probe:*` 探针见 11/10。DB 迁移与 chat 服务库边界 SQL（`db/sql/*.sql`，由用户手工执行）见 10。
+E2E（Playwright）与各 `launch:probe:*` 探针见 11/10。DB 迁移由用户手工执行；旧 Chat Turn 导入 Main 及 Chat PG 退出顺序见 ADR-20。

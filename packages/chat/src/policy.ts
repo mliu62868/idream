@@ -2,7 +2,6 @@
 // knobs the hot path + worker both need. ONE place — never re-derive inline.
 // EXAMPLE: resolvePolicy({modelTier:"deluxe",...}) → { model, maxContextMessages,
 //          rateLimitPerHour, voiceEnabled, memoryEnabled, ... }
-import type { ChatEntitlementView } from "./db.js";
 import { resolveChatModelProfile, type ChatModelProfile } from "@idream/shared";
 
 export interface EntitlementSnapshot {
@@ -23,7 +22,6 @@ export interface ChatPolicy {
   unlimitedMessages: boolean;
   voiceEnabled: boolean;
   memoryEnabled: boolean;
-  allowRelationshipPatch: boolean;
   outputModerationRequired: boolean;
   /** Entitlement flag AND character flag (image_tool_enabled on both boundary views). */
   imageToolEnabled: boolean;
@@ -51,7 +49,6 @@ export function resolvePolicy(
     unlimitedMessages: ent.unlimitedMessages,
     voiceEnabled: ent.voiceEnabled,
     memoryEnabled: memoryAllowed,
-    allowRelationshipPatch: memoryAllowed,
     outputModerationRequired: true,
     imageToolEnabled: ent.imageToolEnabled && (opts.characterImageToolEnabled ?? true),
   };
@@ -62,8 +59,8 @@ export function currentModel(): string {
   return resolveChatModelProfile(process.env).model;
 }
 
-/** Normalize a Prisma entitlement view row (nullable for unknown users) → snapshot. */
-export function snapshotFromView(row: ChatEntitlementView | null): EntitlementSnapshot {
+/** Normalize the signed Main entitlement snapshot. */
+export function snapshotFromView(row: Partial<EntitlementSnapshot> | null): EntitlementSnapshot {
   return {
     modelTier: row?.modelTier ?? "free",
     unlimitedMessages: row?.unlimitedMessages ?? false,

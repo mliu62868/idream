@@ -17,6 +17,7 @@ export const contentAssetReviewStatusSchema = z.enum([
 ]);
 
 export const contentAssetQuerySchema = z.object({
+  mediaType: z.enum(["image", "video"]).default("image"),
   status: contentAssetReviewStatusSchema.optional(),
   purpose: creativeRunPurposeSchema.optional(),
   profileId: adminIdSchema.optional(),
@@ -151,7 +152,7 @@ const contentAssetPlacementSchema = z.object({
 
 /**
  * SPEC: one MediaAsset row as the Admin wire sees it — the shape `mediaAssetDTO` produces.
- * INTENT: the Image Library and the Placement editor both carry the same asset row. Declaring
+ * INTENT: the Character Asset Library and the Placement editor both carry the same asset row. Declaring
  * it once and composing it keeps a single answer to `customerPublishable` across both, which
  * is the whole reason `mediaAssetDTO` exists on the server side.
  */

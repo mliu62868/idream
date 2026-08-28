@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import {
-  MAIN_TO_CHAT_EVENTS,
   aiFinalizePayloadSchema,
   type AiFinalizePayload,
 } from "@idream/shared/contracts";
@@ -14,7 +13,6 @@ import {
   type GenerationAttempt,
   type GenerationJob,
 } from "@prisma/client";
-import { recordMainToChatEvent } from "@/processes/chat-outbox";
 import { ensureGenerationSettlementLinks } from "@/server/ai/generation-settlement";
 import { refundGenerationRequest } from "@/server/ai/generation-refund";
 import { removeGenerationAttemptQueueJob } from "@/server/ai/generation-attempt-queue";
@@ -250,20 +248,14 @@ export async function reconcileUnknownGenerationRequest(input: {
       }
       await markProductionItemFailed(tx, request.id);
       if (request.sourceType === "chat_image" && request.sourceId) {
-        await recordMainToChatEvent({
-          eventId: `chat_image_failed_${request.sourceId}_${request.id}_unknown_confirmed_failed`,
-          eventType: MAIN_TO_CHAT_EVENTS.chatImageFailed,
-          aggregateType: "chat_attachment",
-          aggregateId: request.sourceId,
-          payload: {
-            version: 1,
-            kind: "chat.image.failed",
-            attachmentId: request.sourceId,
-            generationJobId: request.id,
+        await tx.chatTurnAttachment.updateMany({
+          where: { id: request.sourceId },
+          data: {
             status: "failed",
+            generationJobId: request.id,
             errorCode: "operator_confirmed_provider_failure",
           },
-        }, tx);
+        });
       }
     }
 
@@ -816,21 +808,17 @@ async function adoptRecoveredSuccess(
     input.request.sourceType === "chat_image" &&
     input.request.sourceId
   ) {
-    await recordMainToChatEvent({
-      eventId: `chat_image_completed_${input.request.sourceId}_${input.request.id}_${firstAsset.id}`,
-      eventType: MAIN_TO_CHAT_EVENTS.chatImageCompleted,
-      aggregateType: "chat_attachment",
-      aggregateId: input.request.sourceId,
-      payload: {
-        version: 1,
-        kind: "chat.image.completed",
-        attachmentId: input.request.sourceId,
+    await tx.chatTurnAttachment.updateMany({
+      where: { id: input.request.sourceId },
+      data: {
+        status: "completed",
         generationJobId: input.request.id,
         mediaAssetId: firstAsset.id,
         width: payload.assets[0]?.width ?? null,
         height: payload.assets[0]?.height ?? null,
+        errorCode: null,
       },
-    }, tx);
+    });
   }
   await tx.generationJobEvent.create({
     data: {

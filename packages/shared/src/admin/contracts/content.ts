@@ -90,7 +90,6 @@ export const contentCharacterDetailResponseSchema = z.object({
     status: shortText(40),
     visibility: shortText(40),
     source: shortText(40),
-    relationship: z.string().nullable(),
     voiceId: z.string().nullable(),
     imageAssetId: adminIdSchema.nullable(),
     creatorId: adminIdSchema.nullable(),
@@ -548,13 +547,21 @@ export const contentTemplateDetailResponseSchema = z.object({
   template: contentTemplateSchema,
 }).strict();
 
+const contentTemplateAdvancedDetailsSchema = z.object({
+  detailsMarkdown: z.string().max(24_000).default(""),
+  firstMessage: z.string().trim().max(4_000).default(""),
+}).strict();
+
 export const contentTemplateCreateRequestSchema = z.object({
   name: z.string().trim().min(1).max(80),
   summary: z.string().trim().max(200).optional(),
   gender: z.string().trim().max(40).optional(),
   style: z.string().trim().max(60).optional(),
   appearance: officialRecordSchema.default({}),
-  advancedDetails: officialRecordSchema.default({}),
+  advancedDetails: contentTemplateAdvancedDetailsSchema.default({
+    detailsMarkdown: "",
+    firstMessage: "",
+  }),
   tags: z.array(z.string().trim().min(1).max(40)).max(12).default([]),
   coverAssetId: z.string().trim().max(160).optional(),
   sortOrder: z.number().int().default(0),
@@ -568,7 +575,7 @@ export const contentTemplateUpdateRequestSchema = z.object({
   gender: z.string().trim().max(40).optional(),
   style: z.string().trim().max(60).optional(),
   appearance: officialRecordSchema.optional(),
-  advancedDetails: officialRecordSchema.optional(),
+  advancedDetails: contentTemplateAdvancedDetailsSchema.optional(),
   tags: z.array(z.string().trim().min(1).max(40)).max(12).optional(),
   coverAssetId: z.string().trim().max(160).nullable().optional(),
   sortOrder: z.number().int().optional(),

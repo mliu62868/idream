@@ -1,8 +1,8 @@
-import { once } from "node:events";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer as createNetServer } from "node:net";
 import { LlmAdapter, LlmError, type GenerateOptions, type StreamChunk } from "@deepseek-ai/dsh-llm";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import {
@@ -14,7 +14,11 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CompanionEngine as RuntimeCompanionEngine } from "./engine";
 import { companionCompositionDigest, companionIgrepConfig } from "./composition";
-import { createCompanionServer, type CompanionServer } from "./server";
+import {
+  createCompanionServer,
+  type CompanionServer,
+  type CompanionServerOptions,
+} from "./server";
 import { AttemptWorkspaceStore, relationshipWorkspacePath } from "./workspace";
 
 const AUTH_TOKEN = "engine-test-secret";
@@ -22,6 +26,47 @@ const EMPTY_RECALL = async () => ({ outcome: "empty" as const, resultCount: 0, r
 const IGREP_LLM = { url: "https://maintenance.example/v1", model: "maintenance-model" };
 const temporary: string[] = [];
 const servers: CompanionServer[] = [];
+
+async function waitFor(check: () => void | Promise<void>, timeoutMs = 1_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  do {
+    try {
+      await check();
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  } while (Date.now() < deadline);
+  throw lastError;
+}
+
+async function availablePort(): Promise<number> {
+  return await new Promise((resolvePort, reject) => {
+    const socket = createNetServer();
+    socket.once("error", reject);
+    socket.listen(0, "127.0.0.1", () => {
+      const address = socket.address();
+      if (!address || typeof address === "string") {
+        socket.close();
+        reject(new Error("missing ephemeral test port"));
+        return;
+      }
+      socket.close((error) => error ? reject(error) : resolvePort(address.port));
+    });
+  });
+}
+
+async function createTestCompanionServer(
+  options: Omit<CompanionServerOptions, "hostname" | "port">,
+): Promise<CompanionServer> {
+  return createCompanionServer({
+    ...options,
+    hostname: "127.0.0.1",
+    port: await availablePort(),
+  });
+}
 
 // Engine unit tests exercise the DSH programmatic loop, not the host's global
 // igrep installation. The real CLI boundary is covered by igrep tests and E2E.
@@ -104,6 +149,26 @@ class ToolThenTextAdapter extends LlmAdapter {
       block: { type: "text", text: "I sent the observatory view to the image studio." },
     };
     yield { type: "usage", usage: { inputTokens: 31, outputTokens: 11 } };
+    yield { type: "finish", reason: { kind: "stop" } };
+  }
+}
+
+class JsonImagePayloadAdapter extends LlmAdapter {
+  constructor(private readonly content = JSON.stringify({
+    image: "Mira in the blue-lit observatory tonight",
+  })) {
+    super();
+  }
+
+  async *stream(): AsyncIterable<StreamChunk> {
+    const content = this.content;
+    yield { type: "block-start", index: 0, blockType: "text" };
+    yield { type: "text-delta", index: 0, text: content };
+    yield {
+      type: "block-end",
+      index: 0,
+      block: { type: "text", text: content },
+    };
     yield { type: "finish", reason: { kind: "stop" } };
   }
 }
@@ -222,7 +287,7 @@ function invocation(memoryMode: "normal" | "private" = "private"): CompanionInvo
     ),
     deadlineAt: new Date(Date.now() + 30_000).toISOString(),
     preparedTurn: {
-      version: 2,
+      version: 3,
       model: "deepseek/test",
       characterName: "Mira",
       messages: [
@@ -275,8 +340,7 @@ function invocation(memoryMode: "normal" | "private" = "private"): CompanionInvo
         soulFingerprint: "a".repeat(64),
         compilerVersion: "soul-v1",
         sceneVersion: 1,
-        relationshipVersion: 2,
-        fileContextRevision: "3",
+        contextRevision: "3",
         releasedKnowledgeDigest: releasedKnowledge.digest,
       },
     },
@@ -284,11 +348,7 @@ function invocation(memoryMode: "normal" | "private" = "private"): CompanionInvo
 }
 
 async function listen(server: CompanionServer): Promise<string> {
-  server.http.listen(0, "127.0.0.1");
-  await once(server.http, "listening");
-  const address = server.http.address();
-  if (!address || typeof address === "string") throw new Error("missing test address");
-  return `http://127.0.0.1:${address.port}`;
+  return server.http.url.origin;
 }
 
 async function frames(
@@ -578,7 +638,7 @@ describe("programmatic DSH companion runtime", () => {
       observeWake: async () => ({ outcome: "hit", resultCount: 1, profile: "" }),
       igrepLlm: IGREP_LLM,
     });
-    const server = createCompanionServer({
+    const server = await createTestCompanionServer({
       authToken: AUTH_TOKEN,
       readiness: async () => { throw new Error("not used"); },
       invocation: engine,
@@ -594,6 +654,10 @@ describe("programmatic DSH companion runtime", () => {
       },
       body: JSON.stringify({ protocolVersion: 1, type: "run", invocation: run }),
     });
+    expect(
+      response.status,
+      response.status === 200 ? undefined : await response.clone().text(),
+    ).toBe(200);
     const observed = await frames(response, async (frame) => {
       if (frame.type !== "commit") return;
       await fetch(`${baseUrl}/v1/invocations/${run.invocationId}/commit`, {
@@ -789,7 +853,7 @@ describe("programmatic DSH companion runtime", () => {
       recallMemory: EMPTY_RECALL,
       igrepLlm: IGREP_LLM,
     });
-    const server = createCompanionServer({
+    const server = await createTestCompanionServer({
       authToken: AUTH_TOKEN,
       readiness: async () => { throw new Error("not used"); },
       invocation: engine,
@@ -856,7 +920,7 @@ describe("programmatic DSH companion runtime", () => {
     await expect(readdir(join(root, "canonical"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("[Gate T] runs a real two-step DSH tool loop and reuses an identical tool result", async () => {
+  it("[Gate T] exposes only the final reply from a real two-step DSH tool loop", async () => {
     const root = await mkdtemp(join(tmpdir(), "chat-agent-tool-"));
     temporary.push(root);
     const adapter = new ToolThenTextAdapter();
@@ -884,7 +948,7 @@ describe("programmatic DSH companion runtime", () => {
       recallMemory: EMPTY_RECALL,
       igrepLlm: IGREP_LLM,
     });
-    const server = createCompanionServer({
+    const server = await createTestCompanionServer({
       authToken: AUTH_TOKEN,
       readiness: async () => { throw new Error("not used"); },
       invocation: engine,
@@ -956,25 +1020,92 @@ describe("programmatic DSH companion runtime", () => {
     expect(collected.filter((frame) => frame.type === "tool_call")).toHaveLength(1);
     expect(collected.find((frame) => frame.type === "commit")).toMatchObject({
       candidate: {
-        content: "I'll frame it for you. I sent the observatory view to the image studio.",
+        content: "I sent the observatory view to the image studio.",
         execution: { steps: 2, toolCalls: 1 },
       },
     });
-    const streamed = collected
+    const visibleTextEvents = collected
       .filter((frame) => frame.type === "event" && frame.event.type === "text_delta")
       .map((frame) => frame.type === "event" && frame.event.type === "text_delta"
         ? frame.event.delta
-        : "")
-      .join("");
-    expect(streamed).toBe(
-      "I'll frame it for you. I sent the observatory view to the image studio.",
-    );
+        : "");
+    expect(visibleTextEvents).toEqual([
+      "I'll frame it for you. ",
+      "I sent the observatory view to the image studio.",
+    ]);
+    expect(collected).toContainEqual(expect.objectContaining({
+      type: "event",
+      event: expect.objectContaining({ type: "text_reset" }),
+    }));
     expect(adapter.calls).toHaveLength(2);
     expect(adapter.calls[1]?.messages.at(-1)).toMatchObject({
       role: "user",
       source: { kind: "tool", callId: "call-image-1" },
     });
     expect(collected.some((frame) => frame.type === "event" && frame.event.type === "tool_finished")).toBe(true);
+  });
+
+  it.each([
+    ["JSON", JSON.stringify({ image: "Mira in the blue-lit observatory tonight" })],
+    ["bracketed placeholder", "I'll show you.\n[Image: Mira by the window]"],
+  ])("[Gate T] retracts an unexecuted %s image payload before failing the turn", async (_kind, content) => {
+    const root = await mkdtemp(join(tmpdir(), "chat-agent-json-tool-payload-"));
+    temporary.push(root);
+    const run = invocation();
+    run.invocationId = "inv-json-tool-payload";
+    run.attemptId = "attempt-json-tool-payload";
+    run.preparedTurn.tools.push({
+      name: "generate_image_async",
+      description: "Generate a companion image asynchronously.",
+      parameters: {
+        type: "object",
+        properties: { prompt: { type: "string" } },
+        required: ["prompt"],
+      },
+    });
+    const engine = new CompanionEngine({
+      workspaces: new AttemptWorkspaceStore({
+        canonicalRoot: join(root, "canonical"),
+        privateRoot: join(root, "private"),
+        memoryProbe: { status: async () => ({ dialogueFiles: 0 }) },
+      }),
+      plugin: async () => ({ name: "igrep", apply() {} }),
+      adapter: () => new JsonImagePayloadAdapter(content),
+      igrepCommand: "igrep",
+      recallMemory: EMPTY_RECALL,
+      igrepLlm: IGREP_LLM,
+    });
+    const collected: CompanionRuntimeResponse[] = [];
+
+    await engine.run(run, (frame) => {
+      collected.push(frame);
+      if (frame.type !== "commit") return;
+      void engine.accept({
+        protocolVersion: 1,
+        type: "commit_ack",
+        invocationId: run.invocationId,
+        ack: {
+          attemptId: run.attemptId,
+          accepted: true,
+          status: "committed",
+          terminalMessageId: "assistant-json-tool-payload",
+          committedAt: new Date().toISOString(),
+        },
+      });
+    });
+
+    expect(collected).not.toContainEqual(expect.objectContaining({ type: "commit" }));
+    expect(collected).toContainEqual(expect.objectContaining({
+      type: "event",
+      event: expect.objectContaining({ type: "text_reset" }),
+    }));
+    expect(collected).toContainEqual(expect.objectContaining({
+      type: "event",
+      event: expect.objectContaining({
+        type: "failed",
+        error: expect.objectContaining({ code: "unexecuted_tool_payload" }),
+      }),
+    }));
   });
 
   it("[Gate T] projects a failed Chat tool outcome as a DSH tool error before the recovery step", async () => {
@@ -1005,7 +1136,7 @@ describe("programmatic DSH companion runtime", () => {
       recallMemory: EMPTY_RECALL,
       igrepLlm: IGREP_LLM,
     });
-    const server = createCompanionServer({
+    const server = await createTestCompanionServer({
       authToken: AUTH_TOKEN,
       readiness: async () => { throw new Error("not used"); },
       invocation: engine,
@@ -1123,7 +1254,7 @@ describe("programmatic DSH companion runtime", () => {
       recallMemory: EMPTY_RECALL,
       igrepLlm: IGREP_LLM,
     });
-    const server = createCompanionServer({
+    const server = await createTestCompanionServer({
       authToken: AUTH_TOKEN,
       readiness: async () => { throw new Error("not used"); },
       invocation: engine,
@@ -1205,7 +1336,7 @@ describe("programmatic DSH companion runtime", () => {
       recallMemory: EMPTY_RECALL,
       igrepLlm: IGREP_LLM,
     });
-    const server = createCompanionServer({
+    const server = await createTestCompanionServer({
       authToken: AUTH_TOKEN,
       readiness: async () => { throw new Error("not used"); },
       invocation: engine,
@@ -1271,7 +1402,7 @@ describe("programmatic DSH companion runtime", () => {
       recallMemory: EMPTY_RECALL,
       igrepLlm: IGREP_LLM,
     });
-    const server = createCompanionServer({
+    const server = await createTestCompanionServer({
       authToken: AUTH_TOKEN,
       readiness: async () => { throw new Error("not used"); },
       invocation: engine,
@@ -1345,7 +1476,7 @@ describe("programmatic DSH companion runtime", () => {
       recallMemory: EMPTY_RECALL,
       igrepLlm: IGREP_LLM,
     });
-    const server = createCompanionServer({
+    const server = await createTestCompanionServer({
       authToken: AUTH_TOKEN,
       readiness: async () => { throw new Error("not used"); },
       invocation: engine,
@@ -1411,7 +1542,7 @@ describe("programmatic DSH companion runtime", () => {
       try {
         // `started` now precedes workspace acquisition; the adapter factory runs
         // only after the relationship workspace is held, so it is the proof.
-        await vi.waitFor(() => {
+        await waitFor(() => {
           expect(adapterFactoryCalls).toBe(1);
         });
 
@@ -1457,7 +1588,7 @@ describe("programmatic DSH companion runtime", () => {
         successor.attemptId = `attempt-workspace-successor-${reason}`;
         const successorFrames: CompanionRuntimeResponse[] = [];
         const successorRun = engine.run(successor, (frame) => successorFrames.push(frame));
-        await vi.waitFor(() => {
+        await waitFor(() => {
           expect(adapterFactoryCalls).toBe(2);
         });
         await engine.accept({
@@ -1492,7 +1623,7 @@ describe("programmatic DSH companion runtime", () => {
       recallMemory: EMPTY_RECALL,
       igrepLlm: IGREP_LLM,
     });
-    const server = createCompanionServer({
+    const server = await createTestCompanionServer({
       authToken: AUTH_TOKEN,
       readiness: async () => { throw new Error("not used"); },
       invocation: engine,
@@ -1667,7 +1798,7 @@ describe("companion memory prompt", () => {
       }),
       igrepLlm: IGREP_LLM,
     });
-    const server = createCompanionServer({
+    const server = await createTestCompanionServer({
       authToken: AUTH_TOKEN,
       readiness: async () => { throw new Error("not used"); },
       invocation: engine,
@@ -1737,7 +1868,7 @@ describe("companion memory prompt", () => {
     expect(collected.some((frame) => frame.type === "commit")).toBe(true);
   });
 
-  it("keeps a turn alive when pre-recall fails and skips recall for a message too short to search", async () => {
+  it("fails a memory-enabled turn when pre-recall fails and still skips empty-signal messages", async () => {
     const root = await mkdtemp(join(tmpdir(), "chat-agent-companion-recall-degrade-"));
     temporary.push(root);
     let recallCalls = 0;
@@ -1760,7 +1891,7 @@ describe("companion memory prompt", () => {
     });
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
-      for (const [content, expectedCalls] of [["ok", 0], ["Do you remember my sister's name?", 1]] as const) {
+      for (const [content, expectedCalls] of [["ok", 0], ["你还记得我姐姐吗？", 1]] as const) {
         const run = invocation("normal");
         run.invocationId = `inv-recall-${expectedCalls}`;
         run.attemptId = `attempt-recall-${expectedCalls}`;
@@ -1784,14 +1915,20 @@ describe("companion memory prompt", () => {
           }
         });
         expect(recallCalls).toBe(expectedCalls);
-        expect(collected.some((frame) => frame.type === "commit")).toBe(true);
+        expect(collected.some((frame) => frame.type === "commit")).toBe(expectedCalls === 0);
         const events = collected.flatMap((frame) => frame.type === "event" ? [frame.event] : []);
         expect(events.filter((event) => event.type === "igrep_observation" && event.operation === "memory"))
           .toEqual(expectedCalls === 0 ? [] : [expect.objectContaining({ outcome: "failure" })]);
+        if (expectedCalls === 1) {
+          expect(events).toContainEqual(expect.objectContaining({
+            type: "failed",
+            error: expect.objectContaining({ code: "igrep_memory_failed" }),
+          }));
+        }
         expect(JSON.stringify(collected)).not.toContain("PRIVATE_RECALL_FAILURE_SENTINEL");
       }
       expect(stderr.mock.calls.map((call) => String(call[0])).join("")).not.toContain("PRIVATE_RECALL_FAILURE_SENTINEL");
-      expect(stderr.mock.calls.map((call) => String(call[0])).join("")).toContain("companion_recall_failed");
+      expect(stderr.mock.calls.map((call) => String(call[0])).join("")).toContain("igrep_memory_failed");
     } finally {
       stderr.mockRestore();
       await engine.shutdown();

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { compileCharacterSoul } from "@idream/shared";
 
 const db = vi.hoisted(() => ({
   findUser: vi.fn(),
@@ -140,8 +141,8 @@ function installFailFastProbeFetch(
       sessionListReads += 1;
       return sessionListReads === 2 ? json({}, 401) : json([]);
     }
-    if (url.pathname === "/api/v1/chat/relationships" && method === "GET") {
-      return json({ relationships: [] });
+    if (url.pathname.startsWith("/api/v1/chat/memory/") && method === "DELETE") {
+      return json({ ok: true });
     }
     if (url.pathname === "/api/v1/chat/sessions" && method === "POST") {
       sessionCreates += 1;
@@ -314,6 +315,20 @@ describe("chat service probe actor authority", () => {
   });
 
   it("skips approved characters whose pinned content lacks a complete immutable Soul", () => {
+    const ready = compileCharacterSoul({
+      name: "Alexa Reeves",
+      age: 27,
+      gender: "female",
+      characterPromise: "A candid late-night confidante.",
+      detailsMarkdown: [
+        "## Personality and voice",
+        "Bold, emotionally perceptive, playful, and direct.",
+        "",
+        "## Background",
+        "She learned to read a room before speaking.",
+      ].join("\n"),
+    });
+    if (!ready.ok) throw new Error("probe fixture Soul must compile");
     expect(selectSoulReadyProbeCharacter([
       {
         id: "newer-but-incomplete",
@@ -325,17 +340,7 @@ describe("chat service probe actor authority", () => {
       },
       {
         id: "older-soul-ready",
-        personaSnapshot: {
-          name: "Alexa Reeves",
-          age: 27,
-          gender: "female",
-          relationshipArchetype: "confidante",
-          characterPromise: "A candid late-night confidante.",
-          personality: "Bold and emotionally perceptive.",
-          tone: "Playful and direct.",
-          backstory: "She learned to read a room before speaking.",
-          systemPrompt: "PINNED LEGACY PROMPT — DO NOT RECOMPILE",
-        },
+        personaSnapshot: ready.snapshot,
       },
     ])).toBe("older-soul-ready");
   });

@@ -10,20 +10,19 @@ import { adminV2OperationAllowed } from "@/lib/admin-v2-operation";
  */
 export const CHARACTER_WORKSPACE_WRITES = {
   writeProject: "character.project.write",
-  proposeRelease: "character.release.propose",
   publishRelease: "character.release.publish",
-  reviewRelease: "character.release.review",
   writeVisual: "content.official.write",
   evaluateRoute: "content.production.write",
   createAssets: "creative.run.write",
   reviewAssets: "creative.run.review",
+  archiveAssets: "content.asset.review",
   manageVoiceDefaults: "generation.config.write",
 } as const satisfies Record<string, AdminPermissionKey>;
 
 type CharacterWorkspaceWrite = keyof typeof CHARACTER_WORKSPACE_WRITES;
 
 export type CharacterWorkspacePermissions =
-  & { readonly read: boolean; readonly readAssets: boolean }
+  & { readonly read: boolean; readonly readAssets: boolean; readonly readProduction: boolean }
   & { readonly [Capability in CharacterWorkspaceWrite]: boolean };
 
 export function characterWorkspacePermissions(
@@ -38,7 +37,8 @@ export function characterWorkspacePermissions(
   ) as { [Capability in CharacterWorkspaceWrite]: boolean };
   return {
     read: adminV2OperationAllowed("GET /api/v2/admin/characters/:id", granted),
-    readAssets: granted.has("creative.run.read"),
+    readAssets: granted.has("creative.asset.read"),
+    readProduction: granted.has("creative.run.read"),
     ...writes,
   };
 }

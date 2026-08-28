@@ -9,3 +9,4 @@ export * from "./metric-events";
 export * from "./voice";
 export * from "./generation-identity";
 export * from "./content-report";
+export * from "./chat-turns";

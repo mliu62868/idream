@@ -65,7 +65,7 @@ export const customer360Schema = z
       })
       .strict()
       .nullable(),
-    relationships: z.array(z.object({
+    recentChats: z.array(z.object({
       characterId: adminIdSchema,
       characterName: z.string().min(1),
       sessionId: adminIdSchema,

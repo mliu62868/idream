@@ -72,10 +72,7 @@ type VoiceClipRequestResult = {
 };
 
 const BLOCKED_ASSISTANT_NOTICE = "I can’t help with that request.";
-// SPEC: Client-only terminal status for a reply the reader stopped. Chat has no
-//       abort endpoint, so the turn keeps generating server-side; freezing the
-//       row here is what drops the typing indicator and unlocks Regenerate.
-const STOPPED_REPLY_STATUS = "stopped";
+const STOPPED_REPLY_STATUS = "cancelled";
 // A reply is only auto-followed while the reader is parked within this many
 // pixels of the bottom; above that the viewport belongs to the reader.
 const STICK_TO_BOTTOM_SLACK_PX = 120;
@@ -174,7 +171,6 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   const [memoryPending, setMemoryPending] = useState(false);
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
-  const [relationshipRefreshKey, setRelationshipRefreshKey] = useState(0);
   const [voicePreparingIds, setVoicePreparingIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -182,6 +178,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingContent, setEditingContent] = useState("");
   const [editingPending, setEditingPending] = useState(false);
+  const [stoppingReply, setStoppingReply] = useState(false);
   const [deleteConfirmMessageId, setDeleteConfirmMessageId] = useState<string | null>(null);
   const [variationPendingMediaId, setVariationPendingMediaId] =
     useState<string | null>(null);
@@ -209,7 +206,11 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     ),
   );
   const hasGeneratingReply = chatStreamMessagesNeedReconciliation(messages);
-  const canSend = canSubmitChatMessage(content, pending, hasGeneratingReply);
+  const canSend = canSubmitChatMessage(
+    content,
+    pending || stoppingReply,
+    hasGeneratingReply,
+  );
 
   useEffect(() => {
     const onScroll = () => {
@@ -333,6 +334,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
           return;
         }
         applySession(session);
+        resumePendingStreams(session.messages);
         failureCount = 0;
         if (chatStreamLatestReplyFailed(session.messages)) {
           setStatus("Reply failed to load. Please try again.");
@@ -597,7 +599,9 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
             { ...assistant, content: "" },
           ]),
         );
-        streamAssistant(streamUrl, assistant.id, assistant.content);
+        if (assistant.status === "generating") {
+          streamAssistant(streamUrl, assistant.id, assistant.content);
+        }
       }
     } catch {
       // Network/parse failure: surface the error and restore the typed text so the
@@ -657,7 +661,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       const payload = (await response.json()) as {
         assistantMessageId?: string;
         streamUrl?: string | null;
-        status?: "generating" | "blocked";
+        status?: "pending" | "generating" | "blocked";
       };
       cancelEdit();
       const session = await fetchSession();
@@ -672,7 +676,9 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
         setStatus("Couldn't edit the message. Please try again.");
         return;
       }
-      streamAssistant(payload.streamUrl, payload.assistantMessageId, "");
+      if (payload.status === "generating") {
+        streamAssistant(payload.streamUrl, payload.assistantMessageId, "");
+      }
     } catch {
       setStatus("Couldn't edit the message. Please try again.");
     } finally {
@@ -786,7 +792,12 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       );
       if (!response.ok) {
         setMessages((current) => updateAttachmentStatus(current, attachmentId, "proposed"));
-        setStatus(response.status === 402 ? "Not enough dreamcoins for this image." : "Image request failed.");
+        if (response.status === 402) {
+          setUpgradeReason("dreamcoins");
+          setStatus("Not enough dreamcoins for this image.");
+        } else {
+          setStatus("Image request failed.");
+        }
         return;
       }
       fetchSession().then(applySession).catch(() => {});
@@ -883,6 +894,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       const payload = (await response.json()) as {
         assistantMessageId?: string;
         streamUrl?: string | null;
+        status?: "pending" | "generating";
       };
       const newId = payload.assistantMessageId;
       const streamUrl = payload.streamUrl;
@@ -893,11 +905,11 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       setMessages((current) =>
         current.map((message) =>
           message.id === messageId
-            ? { ...message, id: newId, content: "", status: "generating" }
+            ? { ...message, id: newId, content: "", status: payload.status ?? "pending" }
             : message,
         ),
       );
-      streamAssistant(streamUrl, newId, "");
+      if (payload.status === "generating") streamAssistant(streamUrl, newId, "");
     } catch {
       setStatus("Couldn't regenerate. Please try again.");
     }
@@ -908,9 +920,16 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       if (
         message.role === "assistant" &&
         !message.content.trim() &&
-        (message.status === "generating" || message.status === "pending")
+        message.status === "generating"
       ) {
-        streamAssistant(`/api/v1/chat/messages/${encodeURIComponent(message.id)}/stream`, message.id, "");
+        const attempt = Number.isSafeInteger(message.attempt) && Number(message.attempt) > 0
+          ? `?attempt=${message.attempt}`
+          : "";
+        streamAssistant(
+          `/api/v1/chat/messages/${encodeURIComponent(message.id)}/stream${attempt}`,
+          message.id,
+          "",
+        );
       }
     }
   }
@@ -964,6 +983,20 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       );
     });
 
+    source.addEventListener("replace", (event) => {
+      const data = parseStreamEvent(event);
+      streamed = typeof data.content === "string" ? data.content : "";
+      localStreamStateRef.current.set(assistantId, {
+        content: streamed,
+        stopped: false,
+      });
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === assistantId ? { ...message, content: streamed } : message,
+        ),
+      );
+    });
+
     source.addEventListener("done", () => {
       setStatus(null);
       void finish().finally(close);
@@ -985,11 +1018,11 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     });
   }
 
-  // SPEC: Stop is client-side — Chat exposes no abort, so the turn finishes on
-  //       the server. What the reader gets back is control: the bubble freezes at
-  //       the text that actually arrived, the composer unlocks, and Regenerate
-  //       becomes available without waiting the reply out.
-  function stopStreamingReply() {
+  // SPEC: Stop is a Chat-owned terminal transition. The browser closes SSE
+  // immediately, but unlocks the composer only after Chat has cancelled the
+  // exact durable attempt and signalled the active DSH invocation.
+  async function stopStreamingReply() {
+    if (stoppingReply) return;
     const stoppedIds = new Set<string>();
     for (const [messageId, source] of streamSources.current) {
       source.close();
@@ -1000,6 +1033,34 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       if (chatStreamMessageIsInProgress(message)) stoppedIds.add(message.id);
     }
     if (stoppedIds.size === 0) return;
+    setStoppingReply(true);
+    setStatus("Stopping reply…");
+    const results = await Promise.all(
+      [...stoppedIds].map(async (messageId) => {
+        const response = await fetch(
+          `/api/v1/messages/${encodeURIComponent(messageId)}/cancel`,
+          { method: "POST" },
+        );
+        return response.ok;
+      }),
+    ).catch(() => stoppedIds.size === 0 ? [] : [false]);
+    if (!results.every(Boolean)) {
+      for (const messageId of stoppedIds) {
+        localStreamStateRef.current.delete(messageId);
+      }
+      setStatus("Couldn't stop the reply. Reconnecting…");
+      try {
+        const session = await fetchSession();
+        applySession(session);
+        resumePendingStreams(session.messages);
+      } catch {
+        // Keep the explicit reconnecting state; the normal poll loop remains
+        // the recovery path when this immediate authority read also fails.
+      } finally {
+        setStoppingReply(false);
+      }
+      return;
+    }
     for (const messageId of stoppedIds) {
       const streamedContent = localStreamStateRef.current.get(messageId)?.content;
       localStreamStateRef.current.set(messageId, {
@@ -1014,6 +1075,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       applyLocalStreamState(current, localStreamStateRef.current),
     );
     setStatus("Reply stopped. Regenerate for a new one.");
+    setStoppingReply(false);
   }
 
   function jumpToLatest() {
@@ -1054,7 +1116,6 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                 characterId={characterId}
                 memoryEnabled={memoryEnabled}
                 memoryPending={memoryPending}
-                relationshipRefreshKey={relationshipRefreshKey}
                 onToggleMemory={toggleMemory}
                 onOpenSessions={() => setSessionsOpen(true)}
                 onOpenMemory={() => setMemoryOpen(true)}
@@ -1076,10 +1137,17 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                     !latestReplyInProgress;
                   const canRegenerateMessage =
                     !immutableOpening &&
+                    message.replyToMessageId === latestUserMessageId &&
                     canRegenerateChatMessage(message, hasGeneratingReply);
+                  const canDeleteMessage =
+                    !immutableOpening &&
+                    !latestReplyInProgress &&
+                    (message.id === latestUserMessageId ||
+                      message.replyToMessageId === latestUserMessageId);
                   const canPlayMessage = !isUser && Boolean(message.content.trim());
                   const messageActionCount = showMessageActions
-                    ? 2 +
+                    ? 1 +
+                      Number(canDeleteMessage) +
                       Number(canEditMessage) +
                       Number(canRegenerateMessage) +
                       Number(canPlayMessage)
@@ -1178,6 +1246,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                               canAddToIdentity={canUpdateIdentity}
                               characterId={characterId}
                               key={attachment.id}
+                              paymentHref={upgradeHrefForChatSession(id)}
                               onAddToIdentity={
                                 attachment.mediaAssetId
                                   ? () => addAttachmentToIdentity(attachment.mediaAssetId as string)
@@ -1224,8 +1293,8 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                               : undefined
                           }
                           onReport={() => reportMessage(message.id)}
-                          onDelete={() => deleteMessage(message.id)}
-                          deleteConfirm={messageDeleteConfirm}
+                          onDelete={canDeleteMessage ? () => deleteMessage(message.id) : undefined}
+                          deleteConfirm={canDeleteMessage && messageDeleteConfirm}
                           onRegenerate={
                             canRegenerateMessage
                               ? () => regenerate(message.id)
@@ -1271,12 +1340,15 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                   <button
                     aria-label="Stop reply"
                     className={COMPOSER_BUTTON_CLASS}
+                    disabled={stoppingReply}
                     data-testid="chat-stop-reply"
-                    onClick={stopStreamingReply}
+                    onClick={() => void stopStreamingReply()}
                     title="Stop reply"
                     type="button"
                   >
-                    <Square className="h-4 w-4" />
+                    {stoppingReply
+                      ? <Loader2 className="h-4 w-4 animate-spin" />
+                      : <Square className="h-4 w-4" />}
                   </button>
                 ) : (
                   <button
@@ -1327,7 +1399,6 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
         memoryEnabled={memoryEnabled}
         memoryPending={memoryPending}
         onToggleMemory={toggleMemory}
-        onRelationshipReset={() => setRelationshipRefreshKey((key) => key + 1)}
       />
       {reportDialog}
     </main>
@@ -1485,6 +1556,7 @@ function ChatImageAttachmentCard({
   onIdentityMismatch,
   onMoreLikeThis,
   moreLikeThisPending,
+  paymentHref,
 }: Readonly<{
   attachment: ChatAttachment;
   canAddToIdentity: boolean;
@@ -1495,6 +1567,7 @@ function ChatImageAttachmentCard({
   onIdentityMismatch?: () => void;
   onMoreLikeThis?: () => void;
   moreLikeThisPending: boolean;
+  paymentHref: string;
 }>) {
   const source = attachment.thumbnailUrl ?? attachment.mediaUrl;
   const previewKey = `${attachment.id}:${source ?? ""}`;
@@ -1540,6 +1613,7 @@ function ChatImageAttachmentCard({
 
   const isWaiting = ["requesting", "queued", "running"].includes(attachment.status);
   const failed = ["failed", "blocked", "refunded", "rejected"].includes(attachment.status);
+  const paymentRequired = failed && attachment.errorCode === "payment_required";
   const completedUnavailable = attachment.status === "completed" && Boolean(attachment.mediaAssetId);
   return (
     <div
@@ -1554,6 +1628,8 @@ function ChatImageAttachmentCard({
           <p className="text-[12px] font-bold text-white">
             {attachment.status === "proposed"
               ? "Image request"
+              : paymentRequired
+                ? "Not enough dreamcoins"
               : failed || completedUnavailable
                 ? "Image unavailable"
                 : "Generating image"}
@@ -1571,13 +1647,22 @@ function ChatImageAttachmentCard({
           ) : (
             <p className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-white/60">
               {failed
-                ? "The image could not be completed."
+                ? paymentRequired
+                  ? "Add dreamcoins to generate this image."
+                  : "The image could not be completed."
                 : attachment.promptHint || "Create an image from this chat moment."}
             </p>
           )}
         </div>
       </div>
-      {attachment.status === "proposed" || failed ? (
+      {paymentRequired ? (
+        <Link
+          className="mt-3 inline-flex h-8 items-center rounded-full bg-white px-3 text-[12px] font-bold text-[rgb(13,13,13)]"
+          href={paymentHref}
+        >
+          Get more dreamcoins
+        </Link>
+      ) : attachment.status === "proposed" || failed ? (
         <button
           className="mt-3 inline-flex h-8 items-center gap-1.5 rounded-full bg-white px-3 text-[12px] font-bold text-[rgb(13,13,13)] disabled:opacity-70"
           onClick={onConfirm}

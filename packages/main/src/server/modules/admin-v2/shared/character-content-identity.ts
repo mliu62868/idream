@@ -1,4 +1,8 @@
-import type { CharacterSoulSnapshot } from "@idream/shared";
+import {
+  compileCharacterSoul,
+  legacySoulDetailsMarkdown,
+  type CharacterSoulSnapshot,
+} from "@idream/shared";
 import { canonicalSha256 } from "./canonical-json";
 
 // SPEC: `CharacterContentVersion.contentHash` is the identity of one immutable
@@ -63,8 +67,8 @@ export interface LegacyCharacterContentFields {
  * Soul to hash and could only read the flat mutable Character columns.
  *
  * INTENT: kept separate from {@link officialEditorialContentIdentity} even though
- * both hash flat columns. This one carries `personality` and `visualBrief` and no
- * `relationship`, and takes `firstMessage` unconditionally — the editorial shape
+ * both hash flat columns. This one carries `personality` and `visualBrief`, omits
+ * the legacy relationship field, and takes `firstMessage` unconditionally — the editorial shape
  * does the opposite on all three counts. Merging them would re-key every
  * `legacy_cutover_snapshot` row and make the backfill non-idempotent on rerun.
  */
@@ -100,7 +104,7 @@ export function legacyCutoverContentIdentity(
  * a non-string opening must read as absent rather than as arbitrary JSON.
  */
 export function officialEditorialContentIdentity(
-  character: LegacyCharacterContentFields & { readonly relationship: string | null },
+  character: LegacyCharacterContentFields,
 ) {
   const advanced = record(character.advancedDetails);
   const snapshot = {
@@ -109,7 +113,6 @@ export function officialEditorialContentIdentity(
       age: character.age,
       description: character.description,
       systemPrompt: character.systemPrompt,
-      relationship: character.relationship,
     },
     opening: {
       firstMessage:
@@ -122,4 +125,51 @@ export function officialEditorialContentIdentity(
     },
   };
   return { snapshot, contentHash: canonicalSha256(snapshot) };
+}
+
+/**
+ * The current official-editorial identity. New Releases compile the flat seed
+ * record into the same immutable Soul consumed by Chat; the legacy identity
+ * above remains frozen solely so already-persisted v0 rows retain their hash.
+ */
+export function officialEditorialSoulContentIdentity(
+  character: LegacyCharacterContentFields,
+) {
+  const advanced = record(character.advancedDetails);
+  const authoredDetails = typeof advanced.detailsMarkdown === "string"
+    && advanced.detailsMarkdown.trim()
+    ? advanced.detailsMarkdown
+    : legacySoulDetailsMarkdown(advanced);
+  const compiled = compileCharacterSoul({
+    name: character.name,
+    age: character.age,
+    gender: character.gender,
+    characterPromise: character.description,
+    detailsMarkdown: authoredDetails,
+  });
+  if (!compiled.ok) {
+    throw new Error(
+      `Official editorial Soul is incomplete: ${compiled.diagnostics.map((item) => item.code).join(",")}`,
+    );
+  }
+  const snapshot = {
+    persona: compiled.snapshot,
+    opening: {
+      firstMessage:
+        typeof advanced.firstMessage === "string" ? advanced.firstMessage : null,
+    },
+    appearance: {
+      style: character.style,
+      gender: character.gender,
+      structured: character.appearance,
+    },
+  };
+  return {
+    snapshot,
+    contentHash: characterContentHash({
+      personaSnapshot: snapshot.persona,
+      openingSnapshot: snapshot.opening,
+      appearanceSnapshot: snapshot.appearance,
+    }),
+  };
 }

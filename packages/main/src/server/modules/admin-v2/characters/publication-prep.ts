@@ -3,7 +3,6 @@ import { Errors } from "@/server/lib/errors";
 import { toInputJson } from "../shared/prisma-json";
 import { characterWorkspaceTabLink } from "./character-deep-link";
 import { lockCharacterGenerationAuthority } from "./generation-authority-lock";
-import { transitionCharacterProject } from "./transition";
 
 export type CustomerCharacterPublicationPrep = {
   state: "publication_prep";
@@ -85,32 +84,8 @@ export async function ensureCustomerCharacterPublicationPrep(
     project = await tx.characterProject.create({
       data: {
         characterId: character.id,
-        ownerId: null,
-        phase: "producing",
-        audience: toInputJson({
-          audience: "approved customer character",
-          companionNeed: "prepare approved customer content for public serving",
-          targetPlacementKeys: ["explore", "community"],
-          productionPackage: "customer_character_release_v2",
-          qaPlan: "character_release_policy_v2",
-          source: "customer_submission_review",
-          submissionId: input.submissionId,
-        }),
-        successCriteria: toInputJson([
-          "release_asset_pack",
-          "release_validation",
-          "serving_live",
-        ]),
         activeKey: `customer-publication:${character.id}`,
       },
-    });
-    created = true;
-  } else if (project.phase === "retired") {
-    throw Errors.conflict("Customer Character Project is retired");
-  } else if (["idea", "planned"].includes(project.phase)) {
-    project = await transitionCharacterProject(tx, {
-      projectId: project.id,
-      to: "producing",
     });
     created = true;
   }

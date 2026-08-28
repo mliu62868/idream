@@ -286,7 +286,6 @@ export interface CreateCharacterInput {
   status?: string;
   style?: string;
   gender?: string;
-  relationship?: string | null;
   systemPrompt?: string;
   appearance?: Prisma.InputJsonValue;
   advancedDetails?: Prisma.InputJsonValue;
@@ -309,7 +308,6 @@ export async function createCharacter(input: CreateCharacterInput) {
       status: input.status ?? "approved",
       style: input.style ?? "realistic",
       gender: input.gender ?? "female",
-      relationship: input.relationship ?? "trusted companion",
       systemPrompt: input.systemPrompt ?? null,
       imageAssetId: input.imageAssetId ?? null,
       appearance: input.appearance ?? {},
@@ -396,9 +394,6 @@ export async function publishCharacterForPublicAudience(input: {
       data: {
         id: projectId,
         characterId: input.characterId,
-        phase: "live_management",
-        audience: {},
-        successCriteria: [],
       },
     });
     await tx.characterRelease.create({

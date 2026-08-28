@@ -40,7 +40,6 @@ describe("Character media operations projection", () => {
       name: "Media Ops Character",
       age: 28,
       gender: "female",
-      relationshipArchetype: "trusted companion",
       characterPromise: "Character media operations projection fixture.",
       detailsMarkdown: "Observant and direct.",
     });
@@ -62,8 +61,6 @@ describe("Character media operations projection", () => {
       data: {
         id: projectId,
         characterId,
-        audience: {},
-        successCriteria: [],
         draftAssetPack: {},
       },
     });

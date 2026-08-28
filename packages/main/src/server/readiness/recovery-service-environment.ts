@@ -173,13 +173,7 @@ export function loadRecoveryServiceEnvironment(input: {
           IDREAM_ADMIN_SOURCE_REVISION: adminSourceRevision,
         }
       : {}),
-    CHAT_DATABASE_URL: chat.CHAT_DATABASE_URL,
-    CHAT_PROJECTOR_DATABASE_URL: chat.CHAT_PROJECTOR_DATABASE_URL,
-    CHAT_REDIS_URL:
-      chat.CHAT_REDIS_URL ?? chat.REDIS_URL ?? DEFAULT_REDIS_URL,
     IDREAM_CHAT_APP_ENV: chatAppEnv,
-    IDREAM_CHAT_BULLMQ_PREFIX:
-      chat.BULLMQ_PREFIX ?? defaultBullmqPrefix(chatAppEnv),
     IDREAM_CHAT_INTERNAL_TOKEN: chat.INTERNAL_TOKEN,
     IDREAM_CHAT_BFF_SIGNING_SECRET: chat.CHAT_BFF_SIGNING_SECRET,
     IDREAM_CHAT_SOURCE_REVISION: chatSourceRevision,
@@ -187,14 +181,6 @@ export function loadRecoveryServiceEnvironment(input: {
     CHAT_MODEL_BASE_URL: chatModel.baseUrl,
     CHAT_MODEL_NAME: chatModel.model,
     CHAT_MODEL_API_KEY: chatModel.apiKey,
-    CHAT_MODERATION_PROVIDER:
-      chat.CHAT_MODERATION_PROVIDER ?? chat.MODERATION_PROVIDER ?? "mock",
-    CHAT_MODERATION_SERVICE_URL:
-      chat.CHAT_MODERATION_SERVICE_URL ?? chat.MODERATION_SERVICE_URL,
-    CHAT_MODERATION_API_KEY:
-      chat.CHAT_MODERATION_API_KEY ?? chat.MODERATION_API_KEY,
-    CHAT_MODERATION_TIMEOUT_MS:
-      chat.CHAT_MODERATION_TIMEOUT_MS ?? chat.MODERATION_TIMEOUT_MS,
     CHAT_FS_ROOT: chatRoot
       ? resolveChatFsRoot(
           chatRoot,

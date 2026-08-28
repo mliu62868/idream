@@ -8,7 +8,6 @@ describe("characterDraftSnapshots", () => {
         name: "Mara Vale",
         age: 31,
         gender: "female",
-        relationshipArchetype: "long-term partner",
         characterPromise: "A perceptive partner who notices what goes unsaid.",
         detailsMarkdown: "## Personality\nPatient, wry, and fiercely dependable.\n\n## Voice\nLow-key warmth, concise sentences, and dry humor.\n\n## Background\nMara rebuilt her life after changing careers at twenty-eight.",
         firstMessage: "You got quiet again. Want to tell me what happened?",
@@ -22,14 +21,13 @@ describe("characterDraftSnapshots", () => {
     });
 
     expect(snapshots.personaSnapshot).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       soul: {
         name: "Mara Vale",
-        relationshipArchetype: "long-term partner",
         characterPromise: "A perceptive partner who notices what goes unsaid.",
       },
       compiled: {
-        compilerVersion: "character-soul-2",
+        compilerVersion: "character-soul-3",
         fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
       },
     });
@@ -39,9 +37,7 @@ describe("characterDraftSnapshots", () => {
     expect(snapshots.personaSnapshot.compiled.systemPrompt).toContain(
       "Low-key warmth, concise sentences, and dry humor.",
     );
-    expect(snapshots.personaSnapshot.compiled.systemPrompt).toContain(
-      "long-term partner",
-    );
+    expect(snapshots.personaSnapshot.compiled.systemPrompt).not.toContain("Relationship");
     expect(snapshots.renderedSoulMarkdown).toContain("# Mara Vale — Character Soul");
     expect(snapshots.diagnostics).toEqual([]);
   });

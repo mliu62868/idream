@@ -56,9 +56,6 @@ beforeAll(async () => {
       data: {
         id: projectId,
         characterId,
-        phase: "live_management",
-        audience: {},
-        successCriteria: [],
       },
     });
     await tx.characterRelease.create({
@@ -130,8 +127,6 @@ beforeAll(async () => {
         id: `${P}serving`,
         characterId,
         currentReleaseId: releaseId,
-        scheduledReleaseId: null,
-        scheduledAt: null,
         state: "live",
       },
     });
@@ -179,8 +174,6 @@ describe("creator makes a live Character private", () => {
     ).resolves.toMatchObject({
       state: "paused",
       currentReleaseId: releaseId,
-      scheduledReleaseId: null,
-      scheduledAt: null,
       version: 2,
     });
 
@@ -205,42 +198,4 @@ describe("creator makes a live Character private", () => {
     expect(after.data.items).toEqual([]);
   });
 
-  it("cancels a scheduled first Release before making the Character private", async () => {
-    const scheduledAt = new Date(Date.now() + 60_000);
-    const servingBefore = await prisma.characterServing.update({
-      where: { characterId },
-      data: {
-        state: "inactive",
-        currentReleaseId: null,
-        scheduledReleaseId: releaseId,
-        scheduledAt,
-        version: 7,
-      },
-    });
-    await prisma.character.update({
-      where: { id: characterId },
-      data: { visibility: "public", status: "approved" },
-    });
-
-    const updated = await api("PATCH", `characters/${characterId}`, {
-      userId,
-      ageGate: true,
-      body: { visibility: "private" },
-    });
-    expectOk(updated);
-    expect(updated.data.character).toMatchObject({
-      id: characterId,
-      visibility: "private",
-      publicationState: "not_public",
-    });
-    await expect(
-      prisma.characterServing.findUniqueOrThrow({ where: { characterId } }),
-    ).resolves.toMatchObject({
-      state: "inactive",
-      currentReleaseId: null,
-      scheduledReleaseId: null,
-      scheduledAt: null,
-      version: servingBefore.version + 1,
-    });
-  });
 });

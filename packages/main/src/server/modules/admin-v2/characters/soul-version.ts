@@ -145,17 +145,6 @@ export async function createCharacterSoulVersion(input: {
         requestId: input.requestId,
       },
     });
-    await tx.adminCollaborationActivity.create({
-      data: {
-        targetType: "character_project",
-        targetId: project.id,
-        kind: "draft_saved",
-        actorId: input.actor.id,
-        body: `Created Character Soul version ${createdContent.version}`,
-        metadata: toInputJson(result),
-        idempotencyKey: `character_soul_version_created:${input.requestId}`,
-      },
-    });
     await tx.mainOutboxEvent.create({
       data: {
         eventType: "character.soul.version_created.v1",

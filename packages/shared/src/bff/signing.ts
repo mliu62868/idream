@@ -12,9 +12,69 @@ export const BFF_HEADER = "x-idream-bff" as const;
 export const BFF_USER_HEADER = "x-idream-bff-user" as const;
 const DEFAULT_TTL_MS = 30_000;
 
+export interface ChatAuthoritySnapshot {
+  version: 1;
+  user: {
+    id: string;
+    displayName: string | null;
+    locale: string;
+    status: string;
+    deletedAt: string | null;
+    dataClass: string;
+  };
+  eligibility: {
+    ageGateAccepted: boolean;
+    ageVerified: boolean;
+    jurisdiction: string | null;
+    restrictedReason: string | null;
+  };
+  entitlement: {
+    modelTier: string;
+    unlimitedMessages: boolean;
+    voiceEnabled: boolean;
+    imageToolEnabled: boolean;
+  };
+  /** Present only when the request introduces or explicitly updates a character. */
+  character?: {
+    characterId: string;
+    creatorId: string | null;
+    name: string;
+    age: number;
+    description: string;
+    systemPrompt: string | null;
+    visibility: string;
+    status: string;
+    voiceId: string | null;
+    visualProfileId: string | null;
+    visualProfileVersion: number | null;
+    identityPrompt: string | null;
+    imageToolEnabled: boolean;
+    deletedAt: string | null;
+    contentVersion: {
+      contentVersionId: string;
+      characterId: string;
+      version: number;
+      contentHash: string;
+      personaSnapshot: unknown;
+      openingSnapshot: unknown;
+      appearanceSnapshot: unknown;
+    } | null;
+    release: {
+      releaseId: string;
+      characterId: string;
+      characterContentVersionId: string;
+      status: string;
+      version: number;
+      snapshotHash: string;
+    } | null;
+  };
+}
+
 export interface BffContext {
   userId: string;
   authTime: number; // epoch ms
+  /** Main facts needed by Chat. Covered by the same request signature. */
+  authority?: ChatAuthoritySnapshot;
 }
 
 function bodyHash(body: string): string {
@@ -22,7 +82,14 @@ function bodyHash(body: string): string {
 }
 
 function canonical(ctx: BffContext, method: string, path: string, body: string): string {
-  return [ctx.userId, String(ctx.authTime), method.toUpperCase(), path, bodyHash(body)].join("\n");
+  return [
+    ctx.userId,
+    String(ctx.authTime),
+    method.toUpperCase(),
+    path,
+    bodyHash(body),
+    JSON.stringify(ctx.authority ?? null),
+  ].join("\n");
 }
 
 export function signBffContext(input: {
@@ -32,8 +99,13 @@ export function signBffContext(input: {
   path: string;
   body: string;
   authTime?: number;
+  authority?: ChatAuthoritySnapshot;
 }): { signature: string; context: BffContext } {
-  const context: BffContext = { userId: input.userId, authTime: input.authTime ?? nowMs(input) };
+  const context: BffContext = {
+    userId: input.userId,
+    authTime: input.authTime ?? nowMs(input),
+    ...(input.authority ? { authority: input.authority } : {}),
+  };
   const sig = createHmac("sha256", input.secret)
     .update(canonical(context, input.method, input.path, input.body))
     .digest("hex");

@@ -34,19 +34,13 @@ import {
 } from "@/lib/durable-mutation-intent";
 
 const restoredDraft = {
-  positioning: {
-    audience: "Adult companion audience",
-    companionNeed: "Reliable evening companionship",
-    hypothesis: "Consistency builds trust",
-    differentiation: "A precise and observant point of view",
-  },
   persona: {
     name: "Mira",
     age: 24,
     gender: "female",
-    relationshipArchetype: "steady confidante",
     characterPromise: "A dependable conversational presence",
-    detailsMarkdown: "## Personality\nWarm and observant.\n\n## Voice\nNatural and concise.\n\n## Background\nA complete restored backstory.",
+    detailsMarkdown:
+      "## Personality\nWarm and observant.\n\n## Voice\nNatural and concise.\n\n## Background\nA complete restored backstory.",
     firstMessage: "Where should we begin?",
   },
   visualDirection: {
@@ -54,14 +48,6 @@ const restoredDraft = {
     stableTraits: ["dark wavy hair"],
     style: "realistic",
     referenceDirection: "Natural portrait light",
-  },
-  commercialIntent: {
-    ownerId: null,
-    plannedLaunchAt: null,
-    targetPlacementKeys: [],
-    successCriteria: ["Restore without duplication"],
-    productionPackage: "Portrait, hero, and chat assets",
-    qaPlan: "Verify desktop and mobile",
   },
 };
 
@@ -71,7 +57,6 @@ const legacyRestoredDraft = {
     name: "Mira",
     age: 24,
     gender: "female",
-    relationshipArchetype: "steady confidante",
     characterPromise: "A dependable conversational presence",
     personality: "Warm and observant",
     tone: "Natural and concise",
@@ -117,10 +102,7 @@ function createMemoryStorage(): Storage {
   };
 }
 
-async function openReviewSection(
-  container: HTMLElement,
-  sectionIndex: number,
-) {
+async function openReviewSection(container: HTMLElement, sectionIndex: number) {
   const edit = [...container.querySelectorAll("button")].filter(
     (button) => button.textContent?.trim() === "Edit",
   )[sectionIndex];
@@ -132,8 +114,9 @@ describe("Character create wizard restore authority", () => {
   let root: Root;
 
   beforeEach(() => {
-    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
-      .IS_REACT_ACT_ENVIRONMENT = true;
+    (
+      globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -161,22 +144,19 @@ describe("Character create wizard restore authority", () => {
     adminV2Request.mockImplementation(() => new Promise(() => undefined));
 
     await act(async () => {
-      root.render(
-        <CharacterCreateWizard
-          actorId="operator-a"
-          canCreate
-        />,
-      );
+      root.render(<CharacterCreateWizard actorId="operator-a" canCreate />);
     });
 
-    const next = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent?.toLowerCase().includes("continue"),
+    const next = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.toLowerCase().includes("continue"),
     );
     expect(next?.disabled).toBe(true);
     next?.click();
-    expect(adminV2Request.mock.calls.some(([, options]) =>
-      options?.method === "POST"
-    )).toBe(false);
+    expect(
+      adminV2Request.mock.calls.some(
+        ([, options]) => options?.method === "POST",
+      ),
+    ).toBe(false);
   });
 
   it("hydrates a blank server snapshot before restoring a complete local draft", async () => {
@@ -195,9 +175,9 @@ describe("Character create wizard restore authority", () => {
     const hydrationContainer = document.createElement("div");
     hydrationContainer.innerHTML = serverMarkup;
     document.body.append(hydrationContainer);
-    const consoleError = vi.spyOn(console, "error").mockImplementation(
-      () => undefined,
-    );
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
     let hydrationRoot: Root | null = null;
     try {
       await act(async () => {
@@ -207,10 +187,11 @@ describe("Character create wizard restore authority", () => {
         );
         await new Promise((resolve) => setTimeout(resolve, 0));
       });
-      await waitUntil(() =>
-        hydrationContainer.textContent?.includes(
-          "Creating saves a private, inactive draft",
-        ) === true
+      await waitUntil(
+        () =>
+          hydrationContainer.textContent?.includes(
+            "Creating saves a private, inactive draft",
+          ) === true,
       );
       expect(hydrationContainer.textContent).toContain(
         "Required information complete.",
@@ -219,6 +200,28 @@ describe("Character create wizard restore authority", () => {
       expect(hydrationContainer.textContent).toContain("Saved locally");
       expect(hydrationContainer.textContent).toContain(
         "Creating saves a private, inactive draft",
+      );
+      const personaSummary = [...hydrationContainer.querySelectorAll("h3")].find(
+        (heading) => heading.textContent?.trim() === "Persona & conversation",
+      );
+      const technicalDetails = hydrationContainer.querySelector<HTMLDetailsElement>(
+        '[data-testid="character-create-soul-preview"]',
+      );
+      expect(personaSummary).toBeTruthy();
+      expect(technicalDetails).toBeTruthy();
+      if (!personaSummary || !technicalDetails) {
+        throw new Error("Review hierarchy was not rendered");
+      }
+      expect(
+        personaSummary.compareDocumentPosition(technicalDetails) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(technicalDetails.open).toBe(false);
+      expect(technicalDetails.querySelector("summary")?.textContent).toContain(
+        "Technical details",
+      );
+      expect(technicalDetails.textContent).toContain(
+        "SOUL.md · exact Agent prompt",
       );
       expect(consoleError).not.toHaveBeenCalled();
     } finally {
@@ -233,8 +236,10 @@ describe("Character create wizard restore authority", () => {
         <CharacterCreateWizard actorId="operator-validation" canCreate />,
       );
     });
-    await waitUntil(() =>
-      container.textContent?.includes("Continue to visual direction") === true
+    await waitUntil(
+      () =>
+        container.textContent?.includes("Continue to visual direction") ===
+        true,
     );
 
     const age = container.querySelector<HTMLInputElement>(
@@ -249,8 +254,8 @@ describe("Character create wizard restore authority", () => {
         age.dispatchEvent(new Event("input", { bubbles: true }));
       }
     });
-    const next = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent?.includes("Continue to visual direction"),
+    const next = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Continue to visual direction"),
     );
     expect(next?.disabled).toBe(false);
 
@@ -286,36 +291,32 @@ describe("Character create wizard restore authority", () => {
 
     await act(async () => {
       root.render(
-        <CharacterCreateWizard
-          actorId="operator-storage-denied"
-          canCreate
-        />,
+        <CharacterCreateWizard actorId="operator-storage-denied" canCreate />,
       );
     });
-    await waitUntil(() =>
-      container.textContent?.includes(
-        "Creating saves a private, inactive draft",
-      ) === true
+    await waitUntil(
+      () =>
+        container.textContent?.includes(
+          "Creating saves a private, inactive draft",
+        ) === true,
     );
     const soulPreview = container.querySelector(
       '[data-testid="character-create-soul-preview"]',
     );
     expect(soulPreview?.textContent).toContain("# Mira — Character Soul");
-    expect(soulPreview?.textContent).toContain(
-      "- Relationship: steady confidante",
-    );
+    expect(soulPreview?.textContent).not.toContain("Relationship:");
     expect(soulPreview?.textContent).toContain("## Additional details");
     expect(soulPreview?.textContent).toContain("Warm and observant.");
     await openReviewSection(container, 0);
 
-    const audience = container.querySelector("textarea");
+    const additionalDetails = container.querySelector("textarea");
     await act(async () => {
-      if (audience) {
+      if (additionalDetails) {
         Object.getOwnPropertyDescriptor(
           HTMLTextAreaElement.prototype,
           "value",
-        )?.set?.call(audience, "Updated only in this tab");
-        audience.dispatchEvent(new Event("input", { bubbles: true }));
+        )?.set?.call(additionalDetails, "Updated only in this tab");
+        additionalDetails.dispatchEvent(new Event("input", { bubbles: true }));
       }
     });
 
@@ -352,8 +353,7 @@ describe("Character create wizard restore authority", () => {
     );
     adminV2Request.mockImplementation(async (path, options) => {
       if (
-        path ===
-          "/api/v2/admin/characters/existing-character/project" &&
+        path === "/api/v2/admin/characters/existing-character/project" &&
         options?.method === "GET"
       ) {
         throw new Error("restore unavailable");
@@ -374,46 +374,45 @@ describe("Character create wizard restore authority", () => {
     });
 
     await act(async () => {
-      root.render(
-        <CharacterCreateWizard
-          actorId="operator-a"
-          canCreate
-        />,
-      );
+      root.render(<CharacterCreateWizard actorId="operator-a" canCreate />);
     });
-    await waitUntil(() =>
-      container.textContent?.includes(
-        "The requested server draft was not restored.",
-      ) === true
+    await waitUntil(
+      () =>
+        container.textContent?.includes(
+          "The requested server draft was not restored.",
+        ) === true,
     );
     const lockedNext = [...container.querySelectorAll("button")].find(
       (button) => button.textContent?.toLowerCase().includes("continue"),
     );
     expect(lockedNext?.disabled).toBe(true);
-    expect(adminV2Request.mock.calls.some(([, options]) =>
-      options?.method === "POST"
-    )).toBe(false);
+    expect(
+      adminV2Request.mock.calls.some(
+        ([, options]) => options?.method === "POST",
+      ),
+    ).toBe(false);
 
-    const startNew = [...container.querySelectorAll("button")].find(
-      (button) =>
-        button.textContent?.includes("Start a new Character instead"),
+    const startNew = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Start a new Character instead"),
     );
     await act(async () => startNew?.click());
-    const confirm = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent?.includes("Confirm start new"),
+    const confirm = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Confirm start new"),
     );
     await act(async () => confirm?.click());
     expect(window.location.search).toBe("");
 
-    const blankNext = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent?.toLowerCase().includes("continue"),
+    const blankNext = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.toLowerCase().includes("continue"),
     );
     expect(container.querySelector("textarea")?.value).toBe("");
     expect(blankNext?.disabled).toBe(false);
-    expect(adminV2Request.mock.calls.some(([path, options]) =>
-      path === "/api/v2/admin/characters" &&
-      options?.method === "POST"
-    )).toBe(false);
+    expect(
+      adminV2Request.mock.calls.some(
+        ([path, options]) =>
+          path === "/api/v2/admin/characters" && options?.method === "POST",
+      ),
+    ).toBe(false);
   });
 
   it("retries restore and then patches the existing Project without creating another Character", async () => {
@@ -425,8 +424,7 @@ describe("Character create wizard restore authority", () => {
     let restoreAttempts = 0;
     adminV2Request.mockImplementation(async (path, options) => {
       if (
-        path ===
-          "/api/v2/admin/characters/existing-character/project" &&
+        path === "/api/v2/admin/characters/existing-character/project" &&
         options?.method === "GET"
       ) {
         restoreAttempts += 1;
@@ -442,8 +440,7 @@ describe("Character create wizard restore authority", () => {
         };
       }
       if (
-        path ===
-          "/api/v2/admin/characters/existing-character/project" &&
+        path === "/api/v2/admin/characters/existing-character/project" &&
         options?.method === "PATCH"
       ) {
         return { version: 4 };
@@ -452,58 +449,56 @@ describe("Character create wizard restore authority", () => {
     });
 
     await act(async () => {
-      root.render(
-        <CharacterCreateWizard
-          actorId="operator-a"
-          canCreate
-        />,
-      );
+      root.render(<CharacterCreateWizard actorId="operator-a" canCreate />);
     });
-    await waitUntil(() =>
-      container.textContent?.includes("Retry restore") === true
+    await waitUntil(
+      () => container.textContent?.includes("Retry restore") === true,
     );
-    const retry = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent?.includes("Retry restore"),
+    const retry = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Retry restore"),
     );
     await act(async () => {
       retry?.click();
       await Promise.resolve();
     });
-    await waitUntil(() =>
-      container.textContent?.includes(
-        "Creating saves a private, inactive draft",
-      ) === true
+    await waitUntil(
+      () =>
+        container.textContent?.includes(
+          "Creating saves a private, inactive draft",
+        ) === true,
     );
     await openReviewSection(container, 0);
-    const audience = container.querySelector("textarea");
+    const additionalDetails = container.querySelector("textarea");
     await act(async () => {
-      if (audience) {
+      if (additionalDetails) {
         Object.getOwnPropertyDescriptor(
           HTMLTextAreaElement.prototype,
           "value",
-        )?.set?.call(audience, "Updated restored audience");
-        audience.dispatchEvent(
-          new Event("input", { bubbles: true }),
-        );
+        )?.set?.call(additionalDetails, "Updated restored details");
+        additionalDetails.dispatchEvent(new Event("input", { bubbles: true }));
       }
     });
 
-    const next = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent?.toLowerCase().includes("continue"),
+    const next = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.toLowerCase().includes("continue"),
     );
     await act(async () => {
       next?.click();
       await Promise.resolve();
     });
-    await waitUntil(() => adminV2Request.mock.calls.some(([path, options]) =>
-      path ===
-        "/api/v2/admin/characters/existing-character/project" &&
-      options?.method === "PATCH"
-    ));
-    expect(adminV2Request.mock.calls.some(([path, options]) =>
-      path === "/api/v2/admin/characters" &&
-      options?.method === "POST"
-    )).toBe(false);
+    await waitUntil(() =>
+      adminV2Request.mock.calls.some(
+        ([path, options]) =>
+          path === "/api/v2/admin/characters/existing-character/project" &&
+          options?.method === "PATCH",
+      ),
+    );
+    expect(
+      adminV2Request.mock.calls.some(
+        ([path, options]) =>
+          path === "/api/v2/admin/characters" && options?.method === "POST",
+      ),
+    ).toBe(false);
   });
 
   it("restores a legacy instructional draft but blocks its final production handoff", async () => {
@@ -514,8 +509,7 @@ describe("Character create wizard restore authority", () => {
     );
     adminV2Request.mockImplementation(async (path, options) => {
       if (
-        path ===
-          "/api/v2/admin/characters/legacy-character/project" &&
+        path === "/api/v2/admin/characters/legacy-character/project" &&
         options?.method === "GET"
       ) {
         return {
@@ -527,9 +521,9 @@ describe("Character create wizard restore authority", () => {
           },
           draft: {
             ...restoredDraft,
-            positioning: {
-              ...restoredDraft.positioning,
-              audience: "Define the adult audience for this companion",
+            persona: {
+              ...restoredDraft.persona,
+              name: "Untitled companion",
             },
           },
         };
@@ -538,17 +532,16 @@ describe("Character create wizard restore authority", () => {
     });
 
     await act(async () => {
-      root.render(
-        <CharacterCreateWizard actorId="operator-a" canCreate />,
-      );
+      root.render(<CharacterCreateWizard actorId="operator-a" canCreate />);
     });
-    await waitUntil(() => container.textContent?.includes(
-      "Creating saves a private, inactive draft",
-    ) === true);
-    const finish = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent?.includes(
-        "Save character & open portrait studio",
-      ),
+    await waitUntil(
+      () =>
+        container.textContent?.includes(
+          "Creating saves a private, inactive draft",
+        ) === true,
+    );
+    const finish = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Save character"),
     );
     // SPEC: 遗留草稿里的 instructional sentinel 仍然拦住最终创建，即使它落在向导已不再渲染的
     // positioning 字段上——production-ready 校验吃的是整份草稿，不是当前这一屏。
@@ -557,10 +550,12 @@ describe("Character create wizard restore authority", () => {
     expect(container.textContent).toContain(
       "Correct the highlighted fields to continue.",
     );
-    expect(adminV2Request.mock.calls.some(([path, options]) =>
-      path === "/api/v2/admin/characters" &&
-      options?.method === "POST"
-    )).toBe(false);
+    expect(
+      adminV2Request.mock.calls.some(
+        ([path, options]) =>
+          path === "/api/v2/admin/characters" && options?.method === "POST",
+      ),
+    ).toBe(false);
   });
 
   it("isolates an unresolved new-Character intent while an explicit server draft is restored", async () => {
@@ -571,7 +566,7 @@ describe("Character create wizard restore authority", () => {
         ...restoredDraft,
         reason: {
           code: "character_wizard_started",
-          summary: "Create a server-authoritative Character Project draft",
+          summary: "Create a server-authoritative Character draft",
         },
         confirmation: "CREATE CHARACTER",
       },
@@ -584,8 +579,7 @@ describe("Character create wizard restore authority", () => {
     );
     adminV2Request.mockImplementation(async (path, options) => {
       if (
-        path ===
-          "/api/v2/admin/characters/existing-character/project" &&
+        path === "/api/v2/admin/characters/existing-character/project" &&
         options?.method === "GET"
       ) {
         return {
@@ -602,25 +596,30 @@ describe("Character create wizard restore authority", () => {
     });
 
     await act(async () => {
-      root.render(
-        <CharacterCreateWizard actorId="operator-a" canCreate />,
-      );
+      root.render(<CharacterCreateWizard actorId="operator-a" canCreate />);
     });
-    await waitUntil(() => container.textContent?.includes(
-      "Creating saves a private, inactive draft",
-    ) === true);
+    await waitUntil(
+      () =>
+        container.textContent?.includes(
+          "Creating saves a private, inactive draft",
+        ) === true,
+    );
     await openReviewSection(container, 0);
     expect(container.querySelector("textarea")?.disabled).toBe(false);
     expect(container.textContent).not.toContain(
       "A Character creation request is unresolved",
     );
-    expect(adminV2Request.mock.calls.some(([path, options]) =>
-      path === "/api/v2/admin/characters" &&
-      options?.method === "POST"
-    )).toBe(false);
-    expect(readActiveDurableMutationIntent({
-      scope: "character-project:create:operator-a",
-    })?.idempotencyKey).toBe("unresolved-new-character-key");
+    expect(
+      adminV2Request.mock.calls.some(
+        ([path, options]) =>
+          path === "/api/v2/admin/characters" && options?.method === "POST",
+      ),
+    ).toBe(false);
+    expect(
+      readActiveDurableMutationIntent({
+        scope: "character-project:create:operator-a",
+      })?.idempotencyKey,
+    ).toBe("unresolved-new-character-key");
   });
 
   it("clears the committed creation receipt before non-authoritative URL synchronization", async () => {
@@ -629,10 +628,7 @@ describe("Character create wizard restore authority", () => {
       JSON.stringify(restoredDraft),
     );
     adminV2Request.mockImplementation(async (path, options) => {
-      if (
-        path === "/api/v2/admin/characters" &&
-        options?.method === "POST"
-      ) {
+      if (path === "/api/v2/admin/characters" && options?.method === "POST") {
         return {
           characterId: "created-character",
           characterContentVersionId: "created-content",
@@ -648,61 +644,65 @@ describe("Character create wizard restore authority", () => {
     });
 
     await act(async () => {
-      root.render(
-        <CharacterCreateWizard actorId="operator-a" canCreate />,
-      );
+      root.render(<CharacterCreateWizard actorId="operator-a" canCreate />);
     });
-    await waitUntil(() => container.textContent?.includes(
-      "Creating saves a private, inactive draft",
-    ) === true);
-    await waitUntil(() =>
-      [...container.querySelectorAll("button")].some((button) =>
-        button.textContent?.includes(
-          "Save character & open portrait studio",
-        ) &&
-        !button.disabled
-      )
+    await waitUntil(
+      () =>
+        container.textContent?.includes(
+          "Creating saves a private, inactive draft",
+        ) === true,
     );
-    expect(adminV2Request.mock.calls.some(([path, options]) =>
-      path === "/api/v2/admin/characters" &&
-      options?.method === "POST"
-    )).toBe(false);
+    await waitUntil(() =>
+      [...container.querySelectorAll("button")].some(
+        (button) =>
+          button.textContent?.includes("Save character") && !button.disabled,
+      ),
+    );
+    expect(
+      adminV2Request.mock.calls.some(
+        ([path, options]) =>
+          path === "/api/v2/admin/characters" && options?.method === "POST",
+      ),
+    ).toBe(false);
     vi.spyOn(window.history, "replaceState").mockImplementation(() => {
       throw new Error("history unavailable");
     });
-    const finish = [...container.querySelectorAll("button")].find(
-      (button) =>
-        button.textContent?.includes(
-          "Save character & open portrait studio",
-        ),
+    const finish = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Save character"),
     );
     await act(async () => {
       finish?.click();
       await Promise.resolve();
     });
     await waitUntil(() =>
-      adminV2Request.mock.calls.some(([path, options]) =>
-        path === "/api/v2/admin/characters" &&
-        options?.method === "POST"
-      )
+      adminV2Request.mock.calls.some(
+        ([path, options]) =>
+          path === "/api/v2/admin/characters" && options?.method === "POST",
+      ),
     );
     expect(container.textContent).toContain("Private server draft · version 1");
-    expect(readActiveDurableMutationIntent({
-      scope: "character-project:create:operator-a",
-    })).toBeNull();
+    expect(
+      readActiveDurableMutationIntent({
+        scope: "character-project:create:operator-a",
+      }),
+    ).toBeNull();
     expect(container.textContent).toContain(
       "The Character was created, but this tab URL could not be updated.",
     );
-    expect(adminV2Request.mock.calls.filter(([path, options]) =>
-      path === "/api/v2/admin/characters" &&
-      options?.method === "POST"
-    )).toHaveLength(1);
+    expect(
+      adminV2Request.mock.calls.filter(
+        ([path, options]) =>
+          path === "/api/v2/admin/characters" && options?.method === "POST",
+      ),
+    ).toHaveLength(1);
     expect(routerPush).toHaveBeenCalledWith(
-      "/admin/characters/created-character?tab=assets",
+      "/admin/characters/created-character",
     );
-    expect(window.localStorage.getItem(
-      "idream.admin.character-create-draft.v2:operator-a",
-    )).toBeNull();
+    expect(
+      window.localStorage.getItem(
+        "idream.admin.character-create-draft.v2:operator-a",
+      ),
+    ).toBeNull();
   });
 
   it("shows a neutral recovery result and does not advance after sealing an uncommitted Character key", async () => {
@@ -715,8 +715,7 @@ describe("Character create wizard restore authority", () => {
         ...restoredDraft,
         reason: {
           code: "character_wizard_started",
-          summary:
-            "Create a server-authoritative Character Project draft",
+          summary: "Create a server-authoritative Character draft",
         },
         confirmation: "CREATE CHARACTER",
       },
@@ -739,38 +738,40 @@ describe("Character create wizard restore authority", () => {
     });
 
     await act(async () => {
-      root.render(
-        <CharacterCreateWizard actorId="operator-a" canCreate />,
-      );
+      root.render(<CharacterCreateWizard actorId="operator-a" canCreate />);
     });
     await waitUntil(() =>
-      [...container.querySelectorAll("button")].some((button) =>
-        button.textContent?.includes("Reconcile saved request") &&
-        !button.disabled
-      )
+      [...container.querySelectorAll("button")].some(
+        (button) =>
+          button.textContent?.includes("Reconcile saved request") &&
+          !button.disabled,
+      ),
     );
-    const reconcile = [...container.querySelectorAll("button")].find(
-      (button) =>
-        button.textContent?.includes("Reconcile saved request"),
+    const reconcile = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Reconcile saved request"),
     );
     await act(async () => {
       reconcile?.click();
       await Promise.resolve();
     });
-    await waitUntil(() =>
-      container.textContent?.includes(
-        "Its key was sealed on the server",
-      ) === true
+    await waitUntil(
+      () =>
+        container.textContent?.includes("Its key was sealed on the server") ===
+        true,
     );
 
     expect(container.textContent).toContain("1.Persona");
     expect(container.textContent).not.toContain("Failed to save");
-    expect(readActiveDurableMutationIntent({
-      scope: "character-project:create:operator-a",
-    })).toBeNull();
-    expect(adminV2Request.mock.calls.some(([path, options]) =>
-      path === "/api/v2/admin/characters" &&
-      options?.method === "POST"
-    )).toBe(false);
+    expect(
+      readActiveDurableMutationIntent({
+        scope: "character-project:create:operator-a",
+      }),
+    ).toBeNull();
+    expect(
+      adminV2Request.mock.calls.some(
+        ([path, options]) =>
+          path === "/api/v2/admin/characters" && options?.method === "POST",
+      ),
+    ).toBe(false);
   });
 });

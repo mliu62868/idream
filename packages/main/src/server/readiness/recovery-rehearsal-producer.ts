@@ -94,10 +94,10 @@ const forbiddenPostgresUrlOverrides = new Set([
 
 const safeBundleName = /^idream-recovery-[A-Za-z0-9._-]+$/u;
 const inFlightMutationCountKeys = [
+  "main_outbox_processing",
   "main_outbox_dispatched",
   "main_outbox_transport_unknown",
   "inbound_event_processing",
-  "chat_inbox_processing",
 ] as const;
 
 function nextValue(args: readonly string[], index: number, flag: string) {
@@ -346,26 +346,8 @@ export function resolveRecoveryRehearsalSourceAuthority(input: {
       /^(?:[1-9][0-9]*)$/u.test(recoveryRetentionDaysRaw)
     ? Number.parseInt(recoveryRetentionDaysRaw, 10)
     : null;
-  const chatDatabase = tryParsePostgresUrl(
-    input.env.CHAT_DATABASE_URL,
-    "CHAT_DATABASE_URL",
-  );
-  const projectorDatabase = tryParsePostgresUrl(
-    input.env.CHAT_PROJECTOR_DATABASE_URL,
-    "CHAT_PROJECTOR_DATABASE_URL",
-  );
   if (!targets.database) {
     throw new Error("DATABASE_URL must identify the current PostgreSQL source");
-  }
-  if (
-    !chatDatabase || chatDatabase.user !== "chat_service" ||
-    !projectorDatabase || projectorDatabase.user !== "chat_projector" ||
-    databaseIdentity(targets.database) !== databaseIdentity(chatDatabase) ||
-    databaseIdentity(targets.database) !== databaseIdentity(projectorDatabase)
-  ) {
-    throw new Error(
-      "Main, Chat request, and Chat projector must use their exact roles on one database authority",
-    );
   }
   if (!targets.chatFsRoot) {
     throw new Error("CHAT_FS_ROOT must identify the current Chat file source");
@@ -439,14 +421,6 @@ export function resolveRecoveryRehearsalPlan(input: {
     input.env.RECOVERY_DATABASE_URL,
     "RECOVERY_DATABASE_URL",
   );
-  const chatDatabase = tryParsePostgresUrl(
-    input.env.CHAT_DATABASE_URL,
-    "CHAT_DATABASE_URL",
-  );
-  const projectorDatabase = tryParsePostgresUrl(
-    input.env.CHAT_PROJECTOR_DATABASE_URL,
-    "CHAT_PROJECTOR_DATABASE_URL",
-  );
   const genProvider = input.env.GEN_BLOB_PROVIDER?.trim() || provider;
   const genRoot = genProvider === "mock"
     ? resolveLocalRoot(
@@ -503,41 +477,17 @@ export function resolveRecoveryRehearsalPlan(input: {
   } else if (databaseIdentity(database) !== databaseIdentity(recoveryDatabase)) {
     blockers.push("RECOVERY_DATABASE_URL must identify the exact Main source database");
   }
-  if (!chatDatabase || !projectorDatabase) {
-    blockers.push(
-      "CHAT_DATABASE_URL and CHAT_PROJECTOR_DATABASE_URL must be unambiguous PostgreSQL URLs",
-    );
-  }
   for (const name of RECOVERY_AMBIENT_LIBPQ_TARGET_VARIABLES) {
     if (input.env[name]) {
       blockers.push(`ambient libpq target variable ${name} is not allowed`);
     }
-  }
-  if (
-    databaseIdentity(database) === null ||
-    databaseIdentity(database) !== databaseIdentity(chatDatabase) ||
-    databaseIdentity(database) !== databaseIdentity(projectorDatabase)
-  ) {
-    blockers.push(
-      "Main, Chat request, and Chat projector database authorities must match",
-    );
-  }
-  if (chatDatabase && chatDatabase.user !== "chat_service") {
-    blockers.push("CHAT_DATABASE_URL must use chat_service");
-  }
-  if (projectorDatabase && projectorDatabase.user !== "chat_projector") {
-    blockers.push("CHAT_PROJECTOR_DATABASE_URL must use chat_projector");
   }
   if (database && /(?:test|playwright)/iu.test(database.database)) {
     blockers.push("source database must not be a test or Playwright database");
   }
   if (
     isPlaceholder(database?.host) ||
-    isPlaceholder(database?.password) ||
-    isPlaceholder(chatDatabase?.host) ||
-    isPlaceholder(chatDatabase?.password) ||
-    isPlaceholder(projectorDatabase?.host) ||
-    isPlaceholder(projectorDatabase?.password)
+    isPlaceholder(database?.password)
   ) {
     blockers.push("database authority contains placeholder values");
   }

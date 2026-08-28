@@ -17,9 +17,9 @@ describe("collaboration handoff authority transfer", () => {
   const caseId = `handoff-case-${suffix}`;
   const now = new Date("2026-07-12T12:00:00.000Z");
   const targetIds = [projectId, creativeRunId, incidentId, caseId];
-  const expectedTodayIds = [releaseId, creativeRunId, incidentId, caseId];
+  const expectedTodayIds = [creativeRunId, incidentId, caseId];
+  const characterTarget = { targetType: "character_project", targetId: projectId } as const;
   const targets = [
-    { targetType: "character_project", targetId: projectId },
     { targetType: "creative_run", targetId: creativeRunId },
     { targetType: "incident", targetId: incidentId },
     { targetType: "case", targetId: caseId },
@@ -33,7 +33,7 @@ describe("collaboration handoff authority transfer", () => {
   });
 
   function handoffRequest(
-    target: (typeof targets)[number],
+    target: (typeof targets)[number] | typeof characterTarget,
     key: string,
     expectedVersion = 1,
     body = `Transfer ${target.targetType} ownership`,
@@ -65,11 +65,6 @@ describe("collaboration handoff authority transfer", () => {
       data: {
         id: projectId,
         characterId: `handoff-character-${suffix}`,
-        ownerId: previousOwnerId,
-        phase: "production",
-        audience: {},
-        successCriteria: [],
-        plannedLaunchAt: now,
       },
     });
     await prisma.characterRelease.create({
@@ -144,7 +139,7 @@ describe("collaboration handoff authority transfer", () => {
     await prisma.$disconnect();
   });
 
-  it("atomically transfers every domain owner once and moves Today Mine to the new owner", async () => {
+  it("atomically transfers assignable domain owners once and moves Today Mine to the new owner", async () => {
     const before = await buildTodayProjection({
       actor: { id: previousOwnerId, role: "admin" },
       permissions: resolvePermissions("admin"),
@@ -169,24 +164,24 @@ describe("collaboration handoff authority transfer", () => {
       ]));
     }
 
-    await expect(prisma.characterProject.findUniqueOrThrow({ where: { id: projectId } })).resolves.toMatchObject({ ownerId: nextOwnerId, version: 2 });
+    await expect(prisma.characterProject.findUniqueOrThrow({ where: { id: projectId } })).resolves.toMatchObject({ version: 1 });
     await expect(prisma.contentProductionBatch.findUniqueOrThrow({ where: { id: creativeRunId } })).resolves.toMatchObject({ ownerId: nextOwnerId, version: 2 });
     await expect(prisma.opsIncident.findUniqueOrThrow({ where: { id: incidentId } })).resolves.toMatchObject({ ownerId: nextOwnerId, version: 2 });
     await expect(prisma.adminCase.findUniqueOrThrow({ where: { id: caseId } })).resolves.toMatchObject({ ownerId: nextOwnerId, version: 2 });
-    await expect(prisma.adminCollaborationActivity.count({ where: { targetId: { in: targetIds }, kind: "handoff" } })).resolves.toBe(4);
-    await expect(prisma.adminCollaborationActivity.count({ where: { targetId: { in: targetIds }, mentionedIds: { has: nextOwnerId } } })).resolves.toBe(4);
-    await expect(prisma.adminAuditLog.count({ where: { targetId: { in: targetIds }, action: "collaboration.handoff" } })).resolves.toBe(4);
-    await expect(prisma.mainOutboxEvent.count({ where: { aggregateId: { in: targetIds }, eventType: "admin.collaboration.handoff.v2" } })).resolves.toBe(4);
+    await expect(prisma.adminCollaborationActivity.count({ where: { targetId: { in: targetIds }, kind: "handoff" } })).resolves.toBe(3);
+    await expect(prisma.adminCollaborationActivity.count({ where: { targetId: { in: targetIds }, mentionedIds: { has: nextOwnerId } } })).resolves.toBe(3);
+    await expect(prisma.adminAuditLog.count({ where: { targetId: { in: targetIds }, action: "collaboration.handoff" } })).resolves.toBe(3);
+    await expect(prisma.mainOutboxEvent.count({ where: { aggregateId: { in: targetIds }, eventType: "admin.collaboration.handoff.v2" } })).resolves.toBe(3);
 
     for (const target of targets) {
       const stale = await handoffRequest(target, `stale-${target.targetType}-${suffix}`, 1);
       expect(stale.status).toBe(409);
     }
-    const collision = await handoffRequest(targets[0], `handoff-character_project-${suffix}`, 1, "Different payload");
+    const collision = await handoffRequest(targets[0], `handoff-creative_run-${suffix}`, 1, "Different payload");
     expect(collision.status).toBe(409);
-    await expect(prisma.adminCollaborationActivity.count({ where: { targetId: { in: targetIds }, kind: "handoff" } })).resolves.toBe(4);
-    await expect(prisma.adminAuditLog.count({ where: { targetId: { in: targetIds }, action: "collaboration.handoff" } })).resolves.toBe(4);
-    await expect(prisma.mainOutboxEvent.count({ where: { aggregateId: { in: targetIds }, eventType: "admin.collaboration.handoff.v2" } })).resolves.toBe(4);
+    await expect(prisma.adminCollaborationActivity.count({ where: { targetId: { in: targetIds }, kind: "handoff" } })).resolves.toBe(3);
+    await expect(prisma.adminAuditLog.count({ where: { targetId: { in: targetIds }, action: "collaboration.handoff" } })).resolves.toBe(3);
+    await expect(prisma.mainOutboxEvent.count({ where: { aggregateId: { in: targetIds }, eventType: "admin.collaboration.handoff.v2" } })).resolves.toBe(3);
 
     const [previousOwnerToday, nextOwnerToday] = await Promise.all([
       buildTodayProjection({
@@ -203,5 +198,19 @@ describe("collaboration handoff authority transfer", () => {
     expect(previousOwnerToday.myShift.items.some((item) => expectedTodayIds.includes(item.sourceId))).toBe(false);
     expect(nextOwnerToday.myShift.items.filter((item) => expectedTodayIds.includes(item.sourceId)).map((item) => item.sourceId).sort())
       .toEqual([...expectedTodayIds].sort());
+  });
+
+  it("keeps Character releases outside assignment and handoff workflows", async () => {
+    const response = await handoffRequest(
+      characterTarget,
+      `handoff-character-project-rejected-${suffix}`,
+    );
+    expect(response.status).toBe(400);
+    await expect(
+      prisma.adminCollaborationActivity.count({ where: { targetId: projectId } }),
+    ).resolves.toBe(0);
+    await expect(
+      prisma.characterProject.findUniqueOrThrow({ where: { id: projectId } }),
+    ).resolves.toMatchObject({ version: 1 });
   });
 });

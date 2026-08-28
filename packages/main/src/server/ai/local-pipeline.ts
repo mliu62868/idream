@@ -2,7 +2,6 @@ import { Prisma } from "@prisma/client";
 import {
   idempotencyKeys,
   MAIN_QUEUES,
-  MAIN_TO_CHAT_EVENTS,
   type GenerationTerminalRecord,
 } from "@idream/shared/contracts";
 import { bullMqJobIdForDedupeKey, jobQueue } from "@/server/jobs/queue";
@@ -27,7 +26,6 @@ import {
   transitionGenerationRequestWithDisposition,
 } from "./generation-request-transition";
 import { refundGenerationRequest } from "./generation-refund";
-import { recordMainToChatEvent } from "@/processes/chat-outbox";
 import {
   deliverGenerationArtifacts,
   lateArtifactDisposition,
@@ -940,22 +938,19 @@ async function finalizeGenerationCompleted(
     }
     const chatAsset = deliveredAssets[0];
     if (chatAsset && job.sourceType === "chat_image" && job.sourceId) {
-      await recordMainToChatEvent({
-        eventId: `chat_image_completed_${job.sourceId}_${job.id}_${chatAsset.id}`,
-        eventType: MAIN_TO_CHAT_EVENTS.chatImageCompleted,
-        aggregateType: "chat_attachment",
-        aggregateId: job.sourceId,
-        payload: {
-          version: 1,
-          kind: "chat.image.completed",
-          attachmentId: job.sourceId,
-          generationJobId: job.id,
+      // Main owns both the Generation Request and the user-visible Turn. The
+      // delivery transaction projects the attachment directly; no callback to
+      // Chat and no second product-state machine are involved.
+      await tx.chatTurnAttachment.updateMany({
+        where: { id: job.sourceId, generationJobId: job.id },
+        data: {
+          status: "completed",
           mediaAssetId: chatAsset.id,
           width: chatAsset.width,
           height: chatAsset.height,
-          summary: chatImageCompletedSummary(job),
+          errorCode: null,
         },
-      }, tx);
+      });
     }
     if (!payload.terminalRecordRef) {
       await appendLocalCanonicalProductEvent(tx, {
@@ -1205,26 +1200,6 @@ async function resolveGenerationAttemptForFinalize(
   return { attempt, isLatest: latestAttempt?.id === attempt.id };
 }
 
-// P4 Task 5: what the chat agent should recall having sent. sourceMeta.promptHint
-// (the raw human-facing request, set on chat.image.requested — see service.ts
-// buildChatImagePrompt) is preferred: job.prompt is the fully-composed generation
-// prompt (character description + style directives), which at a 200-char clip
-// would truncate away the actual request. job.prompt is the fallback for the rare
-// case a job carries no hint. No extra query — job is already loaded.
-function chatImageCompletedSummary(job: {
-  prompt: string | null;
-  sourceMeta: Prisma.JsonValue | null;
-}): string | undefined {
-  const sourceMeta =
-    job.sourceMeta && typeof job.sourceMeta === "object" && !Array.isArray(job.sourceMeta)
-      ? (job.sourceMeta as Record<string, unknown>)
-      : {};
-  const promptHint = typeof sourceMeta.promptHint === "string" ? sourceMeta.promptHint : null;
-  const raw = promptHint?.trim() || job.prompt?.trim();
-  if (!raw) return undefined;
-  return raw.length <= 200 ? raw : `${raw.slice(0, 199)}…`;
-}
-
 async function markGenerationModeratingOutput(generationJobId: string, assetCount: number) {
   return prisma.$transaction(async (tx) => {
     const result = await transitionGenerationRequestWithDisposition(tx, {
@@ -1294,20 +1269,10 @@ async function refundGeneration(
     });
     if (!transitioned) return false;
     if (sourceType === "chat_image" && sourceId) {
-      await recordMainToChatEvent({
-        eventId: `chat_image_failed_${sourceId}_${jobId}_${status}_${errorCode}`,
-        eventType: MAIN_TO_CHAT_EVENTS.chatImageFailed,
-        aggregateType: "chat_attachment",
-        aggregateId: sourceId,
-        payload: {
-          version: 1,
-          kind: "chat.image.failed",
-          attachmentId: sourceId,
-          generationJobId: jobId,
-          status,
-          errorCode,
-        },
-      }, tx);
+      await tx.chatTurnAttachment.updateMany({
+        where: { id: sourceId, generationJobId: jobId },
+        data: { status, errorCode },
+      });
     }
     if (terminal.moderation) {
       await tx.moderationEvent.create({

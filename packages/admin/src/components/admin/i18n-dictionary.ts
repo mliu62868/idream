@@ -36,11 +36,7 @@ const zh: Record<string, string> = {
 };
 
 const zhValues: Record<string, string> = {
-  // SPEC: 角色组合决策与线上表现的枚举值（Promote…/mature…/certified…/exact…）。
-  // 走 zhValues 通道而不是 zh —— 它们是枚举，StatusBadge 与 <option> 共用同一份译文。
-  Promote: "推广",
-  Maintain: "维持",
-  Improve: "改进",
+  // SPEC: 线上表现的枚举值走 zhValues 通道——StatusBadge 直接接收服务端枚举。
   Retire: "下线",
   // maturity 是两个维度：immature 说的是观察窗口还没走完（时间），insufficient_data 才是
   // 窗口走完了但样本没达标（样本量）。译文混用"样本不足"会让运营把"再等等"当成"投放不够"。
@@ -433,4 +429,3 @@ export function adminValueLabel(locale: AdminLocale, key: string) {
 export function adminDateLocale(locale: AdminLocale) {
   return locale === "zh" ? "zh-CN" : undefined;
 }
-

@@ -20,7 +20,6 @@ export interface UserCharacterSoulInput {
   name: string;
   age: number;
   gender: string;
-  relationship: string | null;
   description: string;
   style: string;
   appearance: unknown;
@@ -58,7 +57,6 @@ export function compileUserCharacterContent(input: UserCharacterSoulInput) {
         name: input.name,
         age: input.age,
         gender: input.gender,
-        relationshipArchetype: input.relationship,
         characterPromise: input.description,
         detailsMarkdown: legacySoulDetailsMarkdown(details),
       };

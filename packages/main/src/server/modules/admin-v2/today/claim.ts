@@ -4,7 +4,6 @@ import {
   type TodayClaimResponse,
 } from "@idream/shared/admin";
 import type { Prisma } from "@prisma/client";
-import { effectiveCharacterIdsForPermission } from "@/server/admin/effective-permissions";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
@@ -61,80 +60,12 @@ async function claimCreativeRun(input: {
   });
 }
 
-async function claimCharacterRelease(input: {
-  tx: Prisma.TransactionClient;
-  request: TodayClaimRequest;
-  actor: AdminActor;
-  requestId: string;
-}): Promise<TodayClaimResponse> {
-  const tx = input.tx;
-  const release = await tx.characterRelease.findUnique({ where: { id: input.request.sourceId } });
-  if (!release) throw Errors.notFound("Character Release not found");
-  const project = await tx.characterProject.findUnique({ where: { id: release.projectId } });
-  if (!project) throw Errors.notFound("Character Project not found");
-  const allowedCharacterIds = await effectiveCharacterIdsForPermission(
-    input.actor.id,
-    input.actor.role,
-    "character.project.write",
-  );
-  if (allowedCharacterIds !== null && !allowedCharacterIds.has(project.characterId)) {
-    throw Errors.forbidden("Character is outside the effective permission scope");
-  }
-  if (project.ownerId !== null) {
-    throw Errors.conflict("Character Project is already assigned", { ownerId: project.ownerId });
-  }
-  const changed = await tx.characterProject.updateMany({
-    where: { id: project.id, ownerId: null, version: input.request.entityVersion },
-    data: { ownerId: input.actor.id, version: { increment: 1 } },
-  });
-  if (changed.count !== 1) {
-    throw Errors.conflict("Character Project changed before claim", { currentVersion: project.version });
-  }
-  const updated = await tx.characterProject.findUniqueOrThrow({ where: { id: project.id } });
-  await tx.adminAuditLog.create({
-    data: {
-      actorId: input.actor.id,
-      actorRole: input.actor.role,
-      action: "character.project.claimed",
-      targetType: "character_project",
-      targetId: project.id,
-      reason: "Claimed from Today",
-      before: toInputJson({ ownerId: null, version: project.version }),
-      after: toInputJson({ ownerId: updated.ownerId, version: updated.version, releaseId: release.id }),
-      requestId: input.requestId,
-    },
-  });
-  await tx.mainOutboxEvent.create({
-    data: {
-      eventType: "character.project.claimed.v2",
-      aggregateType: "character_project",
-      aggregateId: project.id,
-      payload: toInputJson({
-        projectId: project.id,
-        characterId: project.characterId,
-        releaseId: release.id,
-        ownerId: updated.ownerId,
-        version: updated.version,
-      }),
-    },
-  });
-  return todayClaimResponseSchema.parse({
-    sourceType: "character_release",
-    sourceId: release.id,
-    ownerId: input.actor.id,
-    entityVersion: updated.version,
-  });
-}
-
 async function claimActor(request: Request, body: TodayClaimRequest) {
   if (body.sourceType === "admin_case") {
     return actorWithPermission(request, "case.assign");
   }
   if (body.sourceType === "ops_incident") {
     return actorWithPermission(request, "ops.incident.manage");
-  }
-  if (body.sourceType === "character_release") {
-    return actorWithPermission(request, "character.project.write");
   }
   return actorWithPermission(request, "creative.run.write");
 }
@@ -176,9 +107,6 @@ async function applyClaim(
       ownerId: actor.id,
       entityVersion: updated.version,
     });
-  }
-  if (body.sourceType === "character_release") {
-    return claimCharacterRelease({ tx, request: body, actor, requestId });
   }
   return claimCreativeRun({ tx, request: body, actor, requestId });
 }

@@ -122,7 +122,7 @@ export const purposeConfig: Record<CharacterAssetPurpose, {
     label: "Chat moments",
     shortLabel: "Chat",
     pluralLabel: "chat image",
-    description: "Natural, conversational moments for the relationship experience.",
+    description: "Natural, conversational moments for the chat experience.",
     count: 1,
     orientation: "4:5",
   },
@@ -294,7 +294,7 @@ export function characterAssetBootstrapRequestKey(input: {
   readonly runId: string;
   readonly itemId: string;
   readonly assetId: string;
-  readonly reviewDecisionId: string;
+  readonly reviewDecisionId?: string;
   readonly reason: string;
 }) {
   return JSON.stringify({
@@ -313,10 +313,10 @@ export function characterAssetDraftSelectionRequestKey(input: {
   readonly body: {
     readonly entityVersion: number;
     readonly purpose: CharacterAssetPurpose;
-    readonly runId: string;
-    readonly itemId: string;
+    readonly runId?: string;
+    readonly itemId?: string;
     readonly assetId: string;
-    readonly reviewDecisionId: string;
+    readonly reviewDecisionId?: string;
     readonly reason: string;
   };
 }) {

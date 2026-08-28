@@ -9,6 +9,7 @@ import {
   ChevronDown,
   ChevronRight,
   Languages,
+  LayoutGrid,
   Menu,
   RefreshCcw,
   UserRound,
@@ -22,7 +23,6 @@ import {
 import {
   canReadWorkspace,
   parseAdminPath,
-  defaultOpenNavGroups,
   defaultWorkModeForRole,
   missingWorkspacePermissions,
   navGroupsForPermissions,
@@ -31,10 +31,8 @@ import {
 } from "@/components/admin/nav-config";
 import {
   ADMIN_LOCALE_COOKIE,
-  ADMIN_NAV_GROUPS_COOKIE,
   ADMIN_WORK_MODE_COOKIE,
   ADMIN_WORK_MODES,
-  serializeOpenNavGroups,
   writeAdminPreferenceCookie,
   type AdminLocale,
   type AdminShellPreferences,
@@ -137,11 +135,21 @@ function AdminConsoleContent({
     () => navGroupsForPermissions(permissions, workMode),
     [permissions, workMode],
   );
-  // SPEC: 角色工作台不裁剪导航。
-  // INTENT: 曾把侧边栏裁到 Today + 角色/角色审核队列，但工作台里就有"检查生成路由"这类
-  // 需要跳生成任务/供应商诊断的动作，裁完就没有出口，只能绕回 Today。非当前组本来就是
-  // 折叠态（渐进披露），保留它们不增加视觉噪音，却能一步跳出去。
-  const visibleNavGroups = navGroups;
+  const permittedNavItems = navGroups.flatMap(({ items }) => items);
+  // SPEC: Admin 的一级导航只有「今日工作 / 角色 / 更多」。
+  // INVARIANT: 「更多」只改变信息层级，不删除权限允许的任何既有目的地。
+  const primaryNavItems = permittedNavItems.filter(
+    (item) => item.tier === "daily" || item.href === "/admin/characters",
+  );
+  const primaryNavIds = new Set(primaryNavItems.map((item) => item.id));
+  const moreNavGroups = navGroups
+    .map(({ group, items }) => ({
+      group,
+      items: items.filter((item) => !primaryNavIds.has(item.id)),
+    }))
+    .filter(({ items }) => items.length > 0);
+  const activeInMore = !primaryNavIds.has(sectionId);
+  const [moreNavOpen, setMoreNavOpen] = useState(activeInMore);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   useEffect(() => {
@@ -199,27 +207,6 @@ function AdminConsoleContent({
     setWorkMode(next);
     writeAdminPreferenceCookie(ADMIN_WORK_MODE_COOKIE, next);
   }, []);
-
-  // SPEC: 哪些折叠分组是展开的。null 表示运营从没动过折叠——此时用冷启动默认集合，
-  //       而不是"全折叠"。持有当前页的分组在渲染时无条件展开（见下方侧栏 JSX），
-  //       且不写进这份持久化集合。
-  const [chosenGroups, setChosenGroups] = useState<readonly string[] | null>(
-    preferences.openNavGroups,
-  );
-  const openGroups = useMemo(
-    () => new Set(chosenGroups ?? defaultOpenNavGroups(workMode, activeItem.group)),
-    [activeItem.group, chosenGroups, workMode],
-  );
-  const toggleGroup = useCallback((group: string) => {
-    setChosenGroups((previous) => {
-      const next = new Set(previous ?? defaultOpenNavGroups(workMode, activeItem.group));
-      if (next.has(group)) next.delete(group);
-      else next.add(group);
-      const chosen = [...next];
-      writeAdminPreferenceCookie(ADMIN_NAV_GROUPS_COOKIE, serializeOpenNavGroups(chosen));
-      return chosen;
-    });
-  }, [activeItem.group, workMode]);
 
   const handleSidebarWheel = useCallback((event: WheelEvent<HTMLElement>) => {
     if (event.ctrlKey) return;
@@ -283,45 +270,45 @@ function AdminConsoleContent({
             </div>
           </div>
           <nav ref={sidebarNavRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
-            {visibleNavGroups.map(({ group, items }, groupIndex) => {
-              if (group === "Today") {
-                return (
-                  <div className="pb-2" key={group}>
-                    {items.map((item) => (
-                      <NavLink active={item.id === sectionId} item={item} key={item.id} />
+            <div className="space-y-1 pb-3">
+              {primaryNavItems.map((item) => (
+                <NavLink active={item.id === sectionId} item={item} key={item.id} />
+              ))}
+            </div>
+            {moreNavGroups.length > 0 ? (
+              <div className="border-t border-[var(--ad-border)] pt-3">
+                <button
+                  aria-expanded={moreNavOpen}
+                  className={cn(
+                    "mb-1 flex h-10 w-full items-center gap-3 rounded-md px-3 text-[13px] font-medium text-[var(--ad-text-muted)] transition-colors hover:bg-black/[0.04] hover:text-[var(--ad-ink)]",
+                    activeInMore && "bg-black/[0.05] text-[var(--ad-ink)]",
+                  )}
+                  onClick={() => setMoreNavOpen((open) => !open)}
+                  type="button"
+                >
+                  <LayoutGrid aria-hidden="true" className="h-4 w-4" />
+                  <span>{t("More")}</span>
+                  <ChevronRight
+                    aria-hidden="true"
+                    className={cn("ml-auto h-4 w-4 transition-transform", moreNavOpen && "rotate-90")}
+                  />
+                </button>
+                {moreNavOpen ? (
+                  <div className="mt-2 space-y-3 border-l border-[var(--ad-border)] pl-2">
+                    {moreNavGroups.map(({ group, items }) => (
+                      <section key={group}>
+                        <h2 className="px-3 pb-1 text-[10px] font-semibold uppercase text-[var(--ad-text-muted)]">
+                          {t(group)}
+                        </h2>
+                        {items.map((item) => (
+                          <NavLink active={item.id === sectionId} item={item} key={item.id} />
+                        ))}
+                      </section>
                     ))}
                   </div>
-                );
-              }
-              // Progressive disclosure: collapsed unless the operator opened it, or
-              // it holds the active item (auto-revealed without persisting the toggle).
-              const forcedOpen = activeItem.group === group;
-              const open = openGroups.has(group) || forcedOpen;
-              return (
-                <div className={cn(groupIndex === 1 && "border-t border-[var(--ad-border)] pt-3")} key={group}>
-                    <button
-                      aria-disabled={forcedOpen}
-                      aria-expanded={open}
-                      className={cn(
-                        "flex h-9 w-full items-center justify-between gap-2 rounded-md px-3 text-[10px] font-semibold uppercase tracking-normal text-[var(--ad-text-muted)] transition-colors hover:bg-black/[0.04] hover:text-[var(--ad-ink)]",
-                        forcedOpen && "cursor-default hover:bg-transparent hover:text-[var(--ad-text-muted)]",
-                      )}
-                      onClick={forcedOpen ? undefined : () => toggleGroup(group)}
-                      type="button"
-                    >
-                      <span>{t(group)}</span>
-                      <ChevronRight
-                        className={cn("h-3.5 w-3.5 shrink-0 transition-transform", open && "rotate-90")}
-                      />
-                    </button>
-                    {open
-                      ? items.map((item) => (
-                          <NavLink active={item.id === sectionId} item={item} key={item.id} />
-                        ))
-                      : null}
-                </div>
-              );
-            })}
+                ) : null}
+              </div>
+            ) : null}
           </nav>
         </aside>
 
@@ -357,23 +344,36 @@ function AdminConsoleContent({
                 </button>
               </div>
               <nav className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
-                {visibleNavGroups.map(({ group, items }) => (
-                  <section className="border-b border-[var(--ad-border)] py-2 last:border-b-0" key={group}>
-                    {group === "Today" ? null : (
-                      <h2 className="px-3 pb-1 text-[10px] font-semibold uppercase text-[var(--ad-text-muted)]">
-                        {t(group)}
-                      </h2>
-                    )}
-                    {items.map((item) => (
-                      <NavLink
-                        active={item.id === sectionId}
-                        item={item}
-                        key={item.id}
-                        onNavigate={() => setMobileNavOpen(false)}
-                      />
+                <section className="border-b border-[var(--ad-border)] pb-3">
+                  {primaryNavItems.map((item) => (
+                    <NavLink
+                      active={item.id === sectionId}
+                      item={item}
+                      key={item.id}
+                      onNavigate={() => setMobileNavOpen(false)}
+                    />
+                  ))}
+                </section>
+                {moreNavGroups.length > 0 ? (
+                  <section className="pt-3">
+                    <h2 className="px-3 pb-2 text-[10px] font-semibold uppercase text-[var(--ad-text-muted)]">
+                      {t("More")}
+                    </h2>
+                    {moreNavGroups.map(({ group, items }) => (
+                      <div className="mb-3" key={group}>
+                        <p className="px-3 pb-1 text-[10px] text-[var(--ad-text-muted)]">{t(group)}</p>
+                        {items.map((item) => (
+                          <NavLink
+                            active={item.id === sectionId}
+                            item={item}
+                            key={item.id}
+                            onNavigate={() => setMobileNavOpen(false)}
+                          />
+                        ))}
+                      </div>
                     ))}
                   </section>
-                ))}
+                ) : null}
               </nav>
             </aside>
           </div>

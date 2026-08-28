@@ -89,21 +89,21 @@ export function MonitorPanel({
     <div>
       <div className="mb-4 flex flex-wrap gap-2">
         <WorkspaceButton
-          disabled={busy || !permissions.reviewRelease}
+          disabled={busy || !permissions.publishRelease}
           onClick={() => void refresh("24h")}
         >
           <RefreshCcw className="h-4 w-4" /> {t("Refresh 24h")}
         </WorkspaceButton>
         <WorkspaceButton
-          disabled={busy || !permissions.reviewRelease}
+          disabled={busy || !permissions.publishRelease}
           onClick={() => void refresh("72h")}
         >
           <RefreshCcw className="h-4 w-4" /> {t("Refresh 72h")}
         </WorkspaceButton>
       </div>
-      {!permissions.reviewRelease ? (
+      {!permissions.publishRelease ? (
         <p className="mb-4 text-xs text-[var(--ad-text-muted)]">
-          {t("Read-only: character.release.review is not granted.")}
+          {t("Read-only: character.release.publish is not granted.")}
         </p>
       ) : null}
       {error ? (

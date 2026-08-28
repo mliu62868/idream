@@ -44,20 +44,10 @@ afterEach(() => {
 function fakeRunner(
   counts: Record<string, unknown>,
   failStage?: string,
-  chatAuthority?: {
-    request?: Record<string, unknown>;
-    projector?: Record<string, unknown>;
-  },
   pm2Processes: readonly Record<string, unknown>[] = [],
 ) {
   const archives = new Map<string, string>();
   const calls: string[] = [];
-  const chatDatabaseConnections: Array<Record<string, string | undefined>> = [];
-  const databaseChildTargetOverrides: Array<{
-    stage: string;
-    hostaddr: string | undefined;
-    service: string | undefined;
-  }> = [];
   const quiescenceEnvironments: NodeJS.ProcessEnv[] = [];
   const databaseExecutionUsers: Array<{
     stage: string;
@@ -66,17 +56,11 @@ function fakeRunner(
   const schema = [
     "-- PostgreSQL database dump",
     'CREATE TABLE "public"."_prisma_migrations" ("id" text);',
-    'CREATE TABLE "chat"."chat_sessions" ("id" text);',
     "",
   ].join("\n");
   const roles = {
-    required_roles: ["chat_owner", "chat_projector", "chat_service", "core_owner"],
-    roles_without_passwords: [
-      { role: "chat_owner" },
-      { role: "chat_projector" },
-      { role: "chat_service" },
-      { role: "core_owner" },
-    ],
+    required_roles: ["postgres"],
+    roles_without_passwords: [{ role: "postgres" }],
     memberships: [],
     password_restore_policy: "Credentials are excluded.",
   };
@@ -209,46 +193,6 @@ function fakeRunner(
         return result(archiveListing(manifest));
       }
       if (input.stage.startsWith("runtime_quiescence_port_")) return result("", 1);
-      if (input.stage === "chat_request_database_authority") {
-        databaseChildTargetOverrides.push({
-          stage: input.stage,
-          hostaddr: input.env?.PGHOSTADDR,
-          service: input.env?.PGSERVICE,
-        });
-        chatDatabaseConnections.push({
-          stage: input.stage,
-          host: input.env?.PGHOST,
-          port: input.env?.PGPORT,
-          database: input.env?.PGDATABASE,
-          user: input.env?.PGUSER,
-          password: input.env?.PGPASSWORD,
-        });
-        return result(JSON.stringify(chatAuthority?.request ?? {
-          session_user: "chat_service",
-          current_user: "chat_service",
-          database: "idream",
-        }));
-      }
-      if (input.stage === "chat_projector_database_authority") {
-        databaseChildTargetOverrides.push({
-          stage: input.stage,
-          hostaddr: input.env?.PGHOSTADDR,
-          service: input.env?.PGSERVICE,
-        });
-        chatDatabaseConnections.push({
-          stage: input.stage,
-          host: input.env?.PGHOST,
-          port: input.env?.PGPORT,
-          database: input.env?.PGDATABASE,
-          user: input.env?.PGUSER,
-          password: input.env?.PGPASSWORD,
-        });
-        return result(JSON.stringify(chatAuthority?.projector ?? {
-          session_user: "chat_projector",
-          current_user: "chat_projector",
-          database: "idream",
-        }));
-      }
       if (input.stage.endsWith("_counts") || input.stage === "post_dump_counts") {
         return result(JSON.stringify(counts));
       }
@@ -308,8 +252,6 @@ function fakeRunner(
   };
   return {
     calls,
-    chatDatabaseConnections,
-    databaseChildTargetOverrides,
     quiescenceEnvironments,
     databaseExecutionUsers,
     runner,
@@ -470,7 +412,7 @@ describe("recovery rehearsal executor", () => {
   });
 
   it("rejects an owned PM2 process unless it has an explicit terminal status", () => {
-    const { runner } = fakeRunner({}, undefined, undefined, [
+    const { runner } = fakeRunner({}, undefined, [
       { name: "main-web", pm_id: 1, pm2_env: {} },
     ]);
 
@@ -486,7 +428,7 @@ describe("recovery rehearsal executor", () => {
     expect(RECOVERY_COUNT_SQL).toContain("'main_outbox_dispatched'");
     expect(RECOVERY_COUNT_SQL).toContain("'main_outbox_transport_unknown'");
     expect(RECOVERY_COUNT_SQL).toContain("'inbound_event_processing'");
-    expect(RECOVERY_COUNT_SQL).toContain("'chat_inbox_processing'");
+    expect(RECOVERY_COUNT_SQL).not.toContain("'chat_inbox_processing'");
     expect(RECOVERY_COUNT_SQL).not.toContain("character.release.published.v2");
   });
 
@@ -550,10 +492,6 @@ describe("recovery rehearsal executor", () => {
         "postgresql://postgres:secret@db.internal:5432/idream",
       REDIS_URL: "redis://redis.internal:6379/3",
       BULLMQ_PREFIX: "idream:development",
-      CHAT_DATABASE_URL:
-        "postgresql://chat_service:request-secret@db.internal:5432/idream",
-      CHAT_PROJECTOR_DATABASE_URL:
-        "postgresql://chat_projector:projector-secret@db.internal:5432/idream",
       CHAT_FS_ROOT: chatRoot,
       BLOB_PROVIDER: "mock",
       GEN_BLOB_PROVIDER: "mock",
@@ -583,23 +521,16 @@ describe("recovery rehearsal executor", () => {
       latest_migration: "002_terminal",
       main_outbox_pending: 0,
       main_outbox_failed: 0,
+      main_outbox_processing: 0,
       main_outbox_transport_pending: 0,
       main_outbox_transport_failed: 0,
       main_outbox_dispatched: 0,
       main_outbox_transport_unknown: 0,
       inbound_event_received: 0,
       inbound_event_processing: 0,
-      chat_outbox_pending: 0,
-      chat_outbox_failed: 0,
-      chat_inbox_pending: 0,
-      chat_inbox_failed: 0,
-      chat_inbox_processing: 0,
-      chat_file_mutations_pending: 0,
     };
     const {
       calls,
-      chatDatabaseConnections,
-      databaseChildTargetOverrides,
       databaseExecutionUsers,
       quiescenceEnvironments,
       runner,
@@ -632,48 +563,12 @@ describe("recovery rehearsal executor", () => {
       "generation_cutover_authority",
       "generation_worker_ownership",
       "runtime_quiescence_pm2",
-      "chat_request_database_authority",
-      "chat_projector_database_authority",
       "source_counts",
       "postgres_custom_dump",
       "restore_database_apply",
       "restore_counts",
       "restore_database_cleanup",
     ]));
-    expect(calls.indexOf("chat_request_database_authority"))
-      .toBeLessThan(calls.indexOf("source_counts"));
-    expect(calls.indexOf("chat_projector_database_authority"))
-      .toBeLessThan(calls.indexOf("source_counts"));
-    expect(chatDatabaseConnections).toEqual([
-      {
-        stage: "chat_request_database_authority",
-        host: "db.internal",
-        port: "5432",
-        database: "idream",
-        user: "chat_service",
-        password: "request-secret",
-      },
-      {
-        stage: "chat_projector_database_authority",
-        host: "db.internal",
-        port: "5432",
-        database: "idream",
-        user: "chat_projector",
-        password: "projector-secret",
-      },
-    ]);
-    expect(databaseChildTargetOverrides).toEqual([
-      {
-        stage: "chat_request_database_authority",
-        hostaddr: undefined,
-        service: undefined,
-      },
-      {
-        stage: "chat_projector_database_authority",
-        hostaddr: undefined,
-        service: undefined,
-      },
-    ]);
     expect(quiescenceEnvironments).toHaveLength(3);
     expect(quiescenceEnvironments.every((value) =>
       value.REDIS_URL === "redis://redis.internal:6379/3" &&
@@ -694,134 +589,6 @@ describe("recovery rehearsal executor", () => {
     expect(entries.every((entry) => !entry.includes("staging"))).toBe(true);
   });
 
-  it("authenticates both Chat roles against the exact Main source before capture", async () => {
-    const workspaceRoot = realpathSync(
-      mkdtempSync(path.join(tmpdir(), "idream-recovery-chat-authority-")),
-    );
-    temporaryDirectories.push(workspaceRoot);
-    const env = {
-      APP_ENV: "production",
-      IDREAM_QUIESCED: "1",
-      DATABASE_URL: "postgresql://postgres:secret@db.internal:5432/idream",
-      RECOVERY_DATABASE_URL:
-        "postgresql://postgres:secret@db.internal:5432/idream",
-      REDIS_URL: "redis://redis.internal:6379/3",
-      BULLMQ_PREFIX: "idream:development",
-      CHAT_DATABASE_URL:
-        "postgresql://chat_service:secret@db.internal:5432/idream",
-      CHAT_PROJECTOR_DATABASE_URL:
-        "postgresql://chat_projector:secret@db.internal:5432/idream",
-      CHAT_FS_ROOT: path.join(workspaceRoot, "chat"),
-      BLOB_PROVIDER: "mock",
-      GEN_BLOB_PROVIDER: "mock",
-      BLOB_ROOT: path.join(workspaceRoot, "blob"),
-    };
-    const bundleName = "idream-recovery-chat-authority-1";
-    const plan = resolveRecoveryRehearsalPlan({
-      options: {
-        apply: true,
-        bundleName,
-        bundleParent: path.join(workspaceRoot, "backups"),
-        chatEnvFile: null,
-        confirmation: `CREATE RECOVERY REHEARSAL ${bundleName}`,
-        genEnvFile: null,
-        help: false,
-        launchEnvFile: null,
-      },
-      env,
-      expectedMigrationCount: 1,
-      latestMigration: "001_terminal",
-      workspaceRoot,
-    });
-    const { calls, runner } = fakeRunner({}, undefined, {
-      projector: {
-        session_user: "postgres",
-        current_user: "chat_projector",
-        database: "idream",
-      },
-    });
-
-    await expect(executeRecoveryRehearsal({
-      plan,
-      env: env as unknown as NodeJS.ProcessEnv,
-      expectedMigrations: [
-        { migrationName: "001_terminal", checksum: "a".repeat(64) },
-      ],
-      workspaceRoot,
-      runner,
-    })).rejects.toThrow(
-      "CHAT_PROJECTOR_DATABASE_URL did not authenticate as exact role chat_projector",
-    );
-
-    expect(calls).toContain("chat_request_database_authority");
-    expect(calls).toContain("chat_projector_database_authority");
-    expect(calls).not.toContain("source_counts");
-    expect(calls).not.toContain("postgres_custom_dump");
-    expect(calls).not.toContain("restore_database_create");
-  });
-
-  it("rejects execution-time Chat database target drift before authentication", async () => {
-    const workspaceRoot = realpathSync(
-      mkdtempSync(path.join(tmpdir(), "idream-recovery-chat-target-")),
-    );
-    temporaryDirectories.push(workspaceRoot);
-    const env = {
-      APP_ENV: "production",
-      IDREAM_QUIESCED: "1",
-      DATABASE_URL: "postgresql://postgres:secret@db.internal:5432/idream",
-      RECOVERY_DATABASE_URL:
-        "postgresql://postgres:secret@db.internal:5432/idream",
-      REDIS_URL: "redis://redis.internal:6379/3",
-      BULLMQ_PREFIX: "idream:development",
-      CHAT_DATABASE_URL:
-        "postgresql://chat_service:secret@db.internal:5432/idream",
-      CHAT_PROJECTOR_DATABASE_URL:
-        "postgresql://chat_projector:secret@db.internal:5432/idream",
-      CHAT_FS_ROOT: path.join(workspaceRoot, "chat"),
-      BLOB_PROVIDER: "mock",
-      GEN_BLOB_PROVIDER: "mock",
-      BLOB_ROOT: path.join(workspaceRoot, "blob"),
-    };
-    const bundleName = "idream-recovery-chat-target-1";
-    const plan = resolveRecoveryRehearsalPlan({
-      options: {
-        apply: true,
-        bundleName,
-        bundleParent: path.join(workspaceRoot, "backups"),
-        chatEnvFile: null,
-        confirmation: `CREATE RECOVERY REHEARSAL ${bundleName}`,
-        genEnvFile: null,
-        help: false,
-        launchEnvFile: null,
-      },
-      env,
-      expectedMigrationCount: 1,
-      latestMigration: "001_terminal",
-      workspaceRoot,
-    });
-    const executionEnv = {
-      ...env,
-      CHAT_PROJECTOR_DATABASE_URL:
-        "postgresql://chat_projector:secret@other.internal:5432/idream",
-    };
-    const { calls, runner } = fakeRunner({});
-
-    await expect(executeRecoveryRehearsal({
-      plan,
-      env: executionEnv as unknown as NodeJS.ProcessEnv,
-      expectedMigrations: [
-        { migrationName: "001_terminal", checksum: "a".repeat(64) },
-      ],
-      workspaceRoot,
-      runner,
-    })).rejects.toThrow(
-      "CHAT_PROJECTOR_DATABASE_URL must target the exact Main source database",
-    );
-
-    expect(calls).toEqual([]);
-    expect(existsSync(path.join(workspaceRoot, "backups"))).toBe(false);
-  });
-
   it.each([
     [
       "query target override",
@@ -835,14 +602,6 @@ describe("recovery rehearsal executor", () => {
       "ambient target override",
       { PGHOSTADDR: "203.0.113.10" },
       "ambient libpq target variable PGHOSTADDR is not allowed",
-    ],
-    [
-      "Chat role override",
-      {
-        CHAT_DATABASE_URL:
-          "postgresql://postgres:secret@db.internal:5432/idream",
-      },
-      "CHAT_DATABASE_URL must use chat_service",
     ],
   ])("rejects execution-time %s before every side effect", async (
     _caseName,
@@ -861,10 +620,6 @@ describe("recovery rehearsal executor", () => {
         "postgresql://postgres:secret@db.internal:5432/idream",
       REDIS_URL: "redis://redis.internal:6379/3",
       BULLMQ_PREFIX: "idream:development",
-      CHAT_DATABASE_URL:
-        "postgresql://chat_service:secret@db.internal:5432/idream",
-      CHAT_PROJECTOR_DATABASE_URL:
-        "postgresql://chat_projector:secret@db.internal:5432/idream",
       CHAT_FS_ROOT: path.join(workspaceRoot, "chat"),
       BLOB_PROVIDER: "mock",
       GEN_BLOB_PROVIDER: "mock",
@@ -926,10 +681,6 @@ describe("recovery rehearsal executor", () => {
         "postgresql://postgres:secret@db.internal:5432/idream",
       REDIS_URL: "redis://redis.internal:6379/3",
       BULLMQ_PREFIX: "idream:development",
-      CHAT_DATABASE_URL:
-        "postgresql://chat_service:secret@db.internal:5432/idream",
-      CHAT_PROJECTOR_DATABASE_URL:
-        "postgresql://chat_projector:secret@db.internal:5432/idream",
       CHAT_FS_ROOT: chatRoot,
       BLOB_PROVIDER: "mock",
       GEN_BLOB_PROVIDER: "mock",
@@ -958,18 +709,13 @@ describe("recovery rehearsal executor", () => {
       latest_migration: "001_terminal",
       main_outbox_pending: 0,
       main_outbox_failed: 0,
+      main_outbox_processing: 0,
       main_outbox_transport_pending: 0,
       main_outbox_transport_failed: 0,
       main_outbox_dispatched: 0,
       main_outbox_transport_unknown: 0,
       inbound_event_received: 0,
       inbound_event_processing: 0,
-      chat_outbox_pending: 0,
-      chat_outbox_failed: 0,
-      chat_inbox_pending: 0,
-      chat_inbox_failed: 0,
-      chat_inbox_processing: 0,
-      chat_file_mutations_pending: 0,
     };
     const { calls, runner } = fakeRunner(counts, "restore_database_apply");
     const exactMigrationAuthority: MigrationAuthority = {

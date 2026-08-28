@@ -9,35 +9,46 @@ import {
   adminIdSchema,
   adminIsoDateTimeSchema,
 } from "./common";
+import { generationRouteQualificationResultSchema } from "./characters-qualification";
 import {
-  characterProjectPhaseSchema,
-} from "./characters-common";
-import {
-  generationRouteQualificationResultSchema,
-} from "./characters-qualification";
-import {
-  characterQaRunSchema,
   characterServingSchema,
   characterWorkspaceReleaseSchema,
 } from "./characters-release";
 import {
   characterPerformanceSummarySchema,
-  characterPortfolioDecisionRecordSchema,
   characterProductionJourneySchema,
-  characterReleaseChangeMarkerSchema,
 } from "./characters-performance";
 import {
   characterMediaOperationsProjectionSchema,
   characterVoiceWorkspaceSchema,
 } from "./characters-media-operations";
 
-export const characterVisualStyleSchema = z.enum(["realistic", "anime", "hybrid", "other"]);
+export const characterVisualStyleSchema = z.enum([
+  "realistic",
+  "anime",
+  "hybrid",
+  "other",
+]);
 
-export const characterVisualIdentityStatusSchema = z.enum(["draft", "active", "archived", "superseded", "retired"]);
+export const characterVisualIdentityStatusSchema = z.enum([
+  "draft",
+  "active",
+  "archived",
+  "superseded",
+  "retired",
+]);
 
-export const characterVisualReferenceSetStatusSchema = z.enum(["draft", "active", "superseded"]);
+export const characterVisualReferenceSetStatusSchema = z.enum([
+  "draft",
+  "active",
+  "superseded",
+]);
 
-export const characterVisualReferenceRoleSchema = z.enum(["primary_face", "identity_anchor", "identity_reference"]);
+export const characterVisualReferenceRoleSchema = z.enum([
+  "primary_face",
+  "identity_anchor",
+  "identity_reference",
+]);
 
 export const CHARACTER_CANONICAL_PORTRAIT_IDENTITY_PROMPT =
   "Preserve the exact same adult person shown in the canonical identity portrait, including facial geometry, eyes, nose, lips, skin tone, hairline, age presentation, body proportions, and signature marks";
@@ -113,13 +124,15 @@ export const characterVisualIdentityVersionSchema = z
     style: characterVisualStyleSchema,
     identityPrompt: z.string(),
     negativeIdentityPrompt: z.string().nullable(),
-    traits: z.object({
-      face: z.record(z.string(), z.unknown()),
-      hair: z.record(z.string(), z.unknown()),
-      body: z.record(z.string(), z.unknown()),
-      signature: z.record(z.string(), z.unknown()),
-      style: z.record(z.string(), z.unknown()),
-    }).strict(),
+    traits: z
+      .object({
+        face: z.record(z.string(), z.unknown()),
+        hair: z.record(z.string(), z.unknown()),
+        body: z.record(z.string(), z.unknown()),
+        signature: z.record(z.string(), z.unknown()),
+        style: z.record(z.string(), z.unknown()),
+      })
+      .strict(),
     immutableHash: z.string().nullable(),
     evidenceState: z.string().trim().min(1),
     defaultSeed: z.string().nullable(),
@@ -194,36 +207,48 @@ export const characterVisualReferenceSetSchema = z
   })
   .strict();
 
-export const characterReferenceSetPublishRequestSchema = z.object({
-  visualProfileId: adminIdSchema,
-  expectedActiveReferenceSetRevisionId: adminIdSchema.nullable(),
-  expectedActiveReferenceSetRevision: z.number().int().nonnegative(),
-  selectorVersion: z.string().trim().min(1).max(80),
-  references: z.array(z.object({
-    mediaAssetId: adminIdSchema,
-    role: characterVisualReferenceRoleSchema,
-    weight: z.number().positive().max(10).default(1),
-  }).strict()).min(1).max(24),
-  reason: adminCommandReasonSchema,
-  confirmation: z.string().trim().min(1).max(240),
-}).strict().superRefine((value, context) => {
-  const expectsNoActiveRevision =
-    value.expectedActiveReferenceSetRevisionId === null;
-  const hasInitialRevision =
-    value.expectedActiveReferenceSetRevision === 0;
-  if (expectsNoActiveRevision !== hasInitialRevision) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["expectedActiveReferenceSetRevision"],
-      message:
-        "Expected active Reference Set id and revision must describe the same authority state.",
-    });
-  }
-});
+export const characterReferenceSetPublishRequestSchema = z
+  .object({
+    visualProfileId: adminIdSchema,
+    expectedActiveReferenceSetRevisionId: adminIdSchema.nullable(),
+    expectedActiveReferenceSetRevision: z.number().int().nonnegative(),
+    selectorVersion: z.string().trim().min(1).max(80),
+    references: z
+      .array(
+        z
+          .object({
+            mediaAssetId: adminIdSchema,
+            role: characterVisualReferenceRoleSchema,
+            weight: z.number().positive().max(10).default(1),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(24),
+    reason: adminCommandReasonSchema,
+    confirmation: z.string().trim().min(1).max(240),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const expectsNoActiveRevision =
+      value.expectedActiveReferenceSetRevisionId === null;
+    const hasInitialRevision = value.expectedActiveReferenceSetRevision === 0;
+    if (expectsNoActiveRevision !== hasInitialRevision) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["expectedActiveReferenceSetRevision"],
+        message:
+          "Expected active Reference Set id and revision must describe the same authority state.",
+      });
+    }
+  });
 
-export const characterReferenceSetPublishResponseSchema = characterVisualReferenceSetSchema.extend({
-  replayed: z.boolean(),
-}).strict();
+export const characterReferenceSetPublishResponseSchema =
+  characterVisualReferenceSetSchema
+    .extend({
+      replayed: z.boolean(),
+    })
+    .strict();
 
 export const characterRouteQualificationEvidenceSchema = z
   .object({
@@ -244,33 +269,48 @@ export const characterRouteQualificationEvidenceSchema = z
     evaluatedAt: adminIsoDateTimeSchema,
     expiresAt: adminIsoDateTimeSchema.nullable(),
     stale: z.boolean(),
-    identityContract: z.object({
-      maxReferences: z.number().int().nonnegative(),
-      acceptedRoles: z.array(z.enum([
-        "identity_anchor",
-        "identity_reference",
-        "look_reference",
-        "source_image",
-      ])).readonly(),
-      supportsLookReference: z.boolean(),
-      supportsSourceImageWithIdentity: z.boolean(),
-    }).strict().optional(),
-    profileCapabilities: z.object({
-      referenceImages: z.boolean(),
-      initImage: z.boolean(),
-    }).strict().optional(),
-    sourceVariationAuthority: z.object({
-      routeFingerprint: z.string().trim().min(1),
-      ready: z.boolean(),
-      blocker: z.enum([
-        "no_qualified_route",
-        "profile_init_image_unsupported",
-        "workflow_source_image_unsupported",
-        "workflow_source_identity_combination_unsupported",
-        "reference_capacity_insufficient",
-        "reference_slot_assignment_unsupported",
-      ]).nullable(),
-    }).strict().optional(),
+    identityContract: z
+      .object({
+        maxReferences: z.number().int().nonnegative(),
+        acceptedRoles: z
+          .array(
+            z.enum([
+              "identity_anchor",
+              "identity_reference",
+              "look_reference",
+              "source_image",
+            ]),
+          )
+          .readonly(),
+        supportsLookReference: z.boolean(),
+        supportsSourceImageWithIdentity: z.boolean(),
+      })
+      .strict()
+      .optional(),
+    profileCapabilities: z
+      .object({
+        referenceImages: z.boolean(),
+        initImage: z.boolean(),
+      })
+      .strict()
+      .optional(),
+    sourceVariationAuthority: z
+      .object({
+        routeFingerprint: z.string().trim().min(1),
+        ready: z.boolean(),
+        blocker: z
+          .enum([
+            "no_qualified_route",
+            "profile_init_image_unsupported",
+            "workflow_source_image_unsupported",
+            "workflow_source_identity_combination_unsupported",
+            "reference_capacity_insufficient",
+            "reference_slot_assignment_unsupported",
+          ])
+          .nullable(),
+      })
+      .strict()
+      .optional(),
   })
   .strict()
   .superRefine((qualification, ctx) => {
@@ -280,7 +320,8 @@ export const characterRouteQualificationEvidenceSchema = z
       ctx.addIssue({
         code: "custom",
         path: ["sourceVariationAuthority", "routeFingerprint"],
-        message: "Source variation authority must belong to this exact route fingerprint",
+        message:
+          "Source variation authority must belong to this exact route fingerprint",
       });
     }
     if (authority.ready !== (authority.blocker === null)) {
@@ -324,8 +365,14 @@ export const characterIdentityCalibrationProfileSchema = z
     workflowKey: z.string().trim().min(1),
     workflowVersion: z.number().int().positive(),
     orientation: z.string().trim().min(1).max(20),
-    allowedOrientations: z.array(z.string().trim().min(1).max(20)).min(1).readonly(),
-    modes: z.array(z.enum(["text_to_image", "image_to_image"])).min(1).readonly(),
+    allowedOrientations: z
+      .array(z.string().trim().min(1).max(20))
+      .min(1)
+      .readonly(),
+    modes: z
+      .array(z.enum(["text_to_image", "image_to_image"]))
+      .min(1)
+      .readonly(),
     recommended: z.boolean(),
   })
   .strict();
@@ -356,18 +403,26 @@ export const characterRouteEvaluationWorkspaceSchema = z
   })
   .strict()
   .superRefine((workspace, context) => {
-    if (workspace.ready !== (workspace.blocker === null && workspace.profiles.length > 0)) {
+    if (
+      workspace.ready !==
+      (workspace.blocker === null && workspace.profiles.length > 0)
+    ) {
       context.addIssue({
         code: "custom",
         path: ["ready"],
-        message: "Route evaluation readiness must match its profiles and blocker",
+        message:
+          "Route evaluation readiness must match its profiles and blocker",
       });
     }
   });
 
 export const characterIdentityBootstrapWorkspaceSchema = z
   .object({
-    state: z.enum(["new", "recoverable_empty_history", "blocked_existing_authority"]),
+    state: z.enum([
+      "new",
+      "recoverable_empty_history",
+      "blocked_existing_authority",
+    ]),
     allowed: z.boolean(),
     nextIdentityVersion: z.number().int().positive(),
     blockers: z.array(z.string().trim().min(1)).readonly(),
@@ -423,21 +478,31 @@ export const characterVisualWorkspaceSchema = z
       .optional(),
     activeReferenceSet: characterVisualReferenceSetSchema.nullable(),
     looks: z.array(characterLookWorkspaceSchema).readonly().optional(),
-    routeQualifications: z.array(characterRouteQualificationEvidenceSchema).readonly(),
+    routeQualifications: z
+      .array(characterRouteQualificationEvidenceSchema)
+      .readonly(),
     routeEvaluation: characterRouteEvaluationWorkspaceSchema,
     identityCalibration: characterIdentityCalibrationWorkspaceSchema.optional(),
     identityBootstrap: characterIdentityBootstrapWorkspaceSchema,
     imageReadiness: characterImageReadinessSchema.optional(),
-    readiness: z.object({
-      ready: z.boolean(),
-      qualificationPolicyVersion: z.string().trim().min(1),
-      blockers: z.array(z.object({
-        code: z.string().trim().min(1),
-        message: z.string().trim().min(1),
-        deepLink: z.string().startsWith("/admin/"),
-      }).strict()).readonly(),
-      productionDeepLink: z.string().startsWith("/admin/"),
-    }).strict(),
+    readiness: z
+      .object({
+        ready: z.boolean(),
+        qualificationPolicyVersion: z.string().trim().min(1),
+        blockers: z
+          .array(
+            z
+              .object({
+                code: z.string().trim().min(1),
+                message: z.string().trim().min(1),
+                deepLink: z.string().startsWith("/admin/"),
+              })
+              .strict(),
+          )
+          .readonly(),
+        productionDeepLink: z.string().startsWith("/admin/"),
+      })
+      .strict(),
   })
   .strict();
 
@@ -445,109 +510,120 @@ export const characterWorkspaceProjectSchema = z
   .object({
     id: adminIdSchema,
     characterId: adminIdSchema,
-    ownerId: adminIdSchema.nullable(),
-    phase: characterProjectPhaseSchema,
-    audience: z.string(),
-    companionNeed: z.string(),
-    hypothesis: z.string(),
-    differentiation: z.string(),
-    targetPlacementKeys: z.array(z.string()).readonly(),
-    successCriteria: z.array(z.string()).readonly(),
-    productionPackage: z.string(),
-    qaPlan: z.string(),
     draftImageAssetId: adminIdSchema.nullable(),
     draftAssetPackHash: z.string().trim().min(1),
-    draftAssetPack: z.object({
-      character_cover: adminIdSchema.optional(),
-      character_hero: adminIdSchema.optional(),
-      character_chat: adminIdSchema.optional(),
-    }).strict(),
-    draftAssetSelections: z.object({
-      character_cover: z.object({
-        assetId: adminIdSchema,
-        runId: adminIdSchema.nullable(),
-        itemId: adminIdSchema.nullable(),
-        reviewDecisionId: adminIdSchema.nullable(),
-        generationJobId: adminIdSchema.nullable(),
-        bootstrapIdentity: z.boolean(),
-        generationRouteFingerprint: z.string().trim().min(1).nullable(),
-        routeCurrent: z.boolean(),
-      }).strict().optional(),
-      character_hero: z.object({
-        assetId: adminIdSchema,
-        runId: adminIdSchema.nullable(),
-        itemId: adminIdSchema.nullable(),
-        reviewDecisionId: adminIdSchema.nullable(),
-        generationJobId: adminIdSchema.nullable(),
-        bootstrapIdentity: z.boolean(),
-        generationRouteFingerprint: z.string().trim().min(1).nullable(),
-        routeCurrent: z.boolean(),
-      }).strict().optional(),
-      character_chat: z.object({
-        assetId: adminIdSchema,
-        runId: adminIdSchema.nullable(),
-        itemId: adminIdSchema.nullable(),
-        reviewDecisionId: adminIdSchema.nullable(),
-        generationJobId: adminIdSchema.nullable(),
-        bootstrapIdentity: z.boolean(),
-        generationRouteFingerprint: z.string().trim().min(1).nullable(),
-        routeCurrent: z.boolean(),
-      }).strict().optional(),
-    }).strict().optional(),
-    draftAssetRouteAuthority: z.object({
-      status: z.enum(["empty", "current", "stale", "route_unavailable"]),
-      currentRouteFingerprint: z.string().trim().min(1).nullable(),
-      stalePurposes: z.array(z.enum([
-        "character_cover",
-        "character_hero",
-        "character_chat",
-      ])).readonly(),
-      missingPurposes: z.array(z.enum([
-        "character_cover",
-        "character_hero",
-        "character_chat",
-      ])).readonly(),
-      recoveryPurpose: z.enum([
-        "character_cover",
-        "character_hero",
-        "character_chat",
-      ]).nullable(),
-      qaReady: z.boolean(),
-      qaBlockers: z.array(z.enum([
-        "draft_asset_pack_incomplete",
-        "draft_asset_bootstrap_scope_invalid",
-        "qualified_generation_route_missing",
-        "draft_asset_generation_route_stale",
-      ])).readonly(),
-    }).strict(),
-    plannedLaunchAt: adminIsoDateTimeSchema.nullable(),
+    draftAssetPack: z
+      .object({
+        character_cover: adminIdSchema.optional(),
+        character_hero: adminIdSchema.optional(),
+        character_chat: adminIdSchema.optional(),
+      })
+      .strict(),
+    draftAssetSelections: z
+      .object({
+        character_cover: z
+          .object({
+            assetId: adminIdSchema,
+            runId: adminIdSchema.nullable(),
+            itemId: adminIdSchema.nullable(),
+            reviewDecisionId: adminIdSchema.nullable(),
+            generationJobId: adminIdSchema.nullable(),
+            bootstrapIdentity: z.boolean(),
+            generationRouteFingerprint: z.string().trim().min(1).nullable(),
+            routeCurrent: z.boolean(),
+          })
+          .strict()
+          .optional(),
+        character_hero: z
+          .object({
+            assetId: adminIdSchema,
+            runId: adminIdSchema.nullable(),
+            itemId: adminIdSchema.nullable(),
+            reviewDecisionId: adminIdSchema.nullable(),
+            generationJobId: adminIdSchema.nullable(),
+            bootstrapIdentity: z.boolean(),
+            generationRouteFingerprint: z.string().trim().min(1).nullable(),
+            routeCurrent: z.boolean(),
+          })
+          .strict()
+          .optional(),
+        character_chat: z
+          .object({
+            assetId: adminIdSchema,
+            runId: adminIdSchema.nullable(),
+            itemId: adminIdSchema.nullable(),
+            reviewDecisionId: adminIdSchema.nullable(),
+            generationJobId: adminIdSchema.nullable(),
+            bootstrapIdentity: z.boolean(),
+            generationRouteFingerprint: z.string().trim().min(1).nullable(),
+            routeCurrent: z.boolean(),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .optional(),
+    draftAssetRouteAuthority: z
+      .object({
+        status: z.enum(["empty", "current", "stale", "route_unavailable"]),
+        currentRouteFingerprint: z.string().trim().min(1).nullable(),
+        stalePurposes: z
+          .array(
+            z.enum(["character_cover", "character_hero", "character_chat"]),
+          )
+          .readonly(),
+        missingPurposes: z
+          .array(
+            z.enum(["character_cover", "character_hero", "character_chat"]),
+          )
+          .readonly(),
+        recoveryPurpose: z
+          .enum(["character_cover", "character_hero", "character_chat"])
+          .nullable(),
+        releaseReady: z.boolean(),
+        releaseBlockers: z
+          .array(
+            z.enum([
+              "draft_asset_pack_incomplete",
+              "draft_asset_bootstrap_scope_invalid",
+              "qualified_generation_route_missing",
+              "draft_asset_generation_route_stale",
+            ]),
+          )
+          .readonly(),
+      })
+      .strict(),
     version: z.number().int().nonnegative(),
     updatedAt: adminIsoDateTimeSchema,
   })
   .strict();
 
-export const characterIdentityBootstrapRequestSchema = z.object({
-  entityVersion: z.number().int().positive(),
-  runId: adminIdSchema,
-  itemId: adminIdSchema,
-  assetId: adminIdSchema,
-  reviewDecisionId: adminIdSchema,
-  reason: z.string().trim().max(2_000).default(""),
-  confirmation: z.string().trim().min(1).max(240),
-}).strict();
+export const characterIdentityBootstrapRequestSchema = z
+  .object({
+    entityVersion: z.number().int().positive(),
+    runId: adminIdSchema,
+    itemId: adminIdSchema,
+    assetId: adminIdSchema,
+    reviewDecisionId: adminIdSchema.optional(),
+    reason: z.string().trim().max(2_000).default(""),
+    confirmation: z.string().trim().min(1).max(240),
+  })
+  .strict();
 
-export const characterIdentityBootstrapResponseSchema = z.object({
-  characterId: adminIdSchema,
-  projectVersion: z.number().int().positive(),
-  visualProfileId: adminIdSchema,
-  visualProfileVersion: z.number().int().positive(),
-  referenceSetRevisionId: adminIdSchema,
-  referenceSetRevision: z.number().int().positive(),
-  anchorAssetId: adminIdSchema,
-  draftImageAssetId: adminIdSchema,
-  deepLink: z.string().startsWith("/admin/characters/"),
-  replayed: z.boolean(),
-}).strict();
+export const characterIdentityBootstrapResponseSchema = z
+  .object({
+    characterId: adminIdSchema,
+    projectVersion: z.number().int().positive(),
+    visualProfileId: adminIdSchema,
+    visualProfileVersion: z.number().int().positive(),
+    referenceSetRevisionId: adminIdSchema,
+    referenceSetRevision: z.number().int().positive(),
+    anchorAssetId: adminIdSchema,
+    draftImageAssetId: adminIdSchema,
+    deepLink: z.string().startsWith("/admin/characters/"),
+    replayed: z.boolean(),
+  })
+  .strict();
 
 export const characterImageReadinessRepairRequestSchema = z
   .object({
@@ -580,23 +656,27 @@ export const characterImageReadinessRepairResponseSchema = z
   })
   .strict();
 
-const characterPreviewAssetSlotSchema = z.object({
-  assetId: adminIdSchema.nullable(),
-  imageUrl: z.string().nullable(),
-  status: z.enum(["missing", "available", "unavailable"]),
-}).strict().superRefine((value, ctx) => {
-  const consistent = value.status === "available"
-    ? value.assetId !== null && value.imageUrl !== null
-    : value.status === "missing"
-      ? value.assetId === null && value.imageUrl === null
-      : value.assetId !== null && value.imageUrl === null;
-  if (!consistent) {
-    ctx.addIssue({
-      code: "custom",
-      message: `Preview asset slot fields do not match ${value.status} status`,
-    });
-  }
-});
+const characterPreviewAssetSlotSchema = z
+  .object({
+    assetId: adminIdSchema.nullable(),
+    imageUrl: z.string().nullable(),
+    status: z.enum(["missing", "available", "unavailable"]),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const consistent =
+      value.status === "available"
+        ? value.assetId !== null && value.imageUrl !== null
+        : value.status === "missing"
+          ? value.assetId === null && value.imageUrl === null
+          : value.assetId !== null && value.imageUrl === null;
+    if (!consistent) {
+      ctx.addIssue({
+        code: "custom",
+        message: `Preview asset slot fields do not match ${value.status} status`,
+      });
+    }
+  });
 
 export const characterPreviewSnapshotSchema = z
   .object({
@@ -609,11 +689,13 @@ export const characterPreviewSnapshotSchema = z
     opening: z.record(z.string(), z.unknown()),
     appearance: z.record(z.string(), z.unknown()),
     imageUrl: z.string().nullable(),
-    assetPack: z.object({
-      character_cover: characterPreviewAssetSlotSchema,
-      character_hero: characterPreviewAssetSlotSchema,
-      character_chat: characterPreviewAssetSlotSchema,
-    }).strict(),
+    assetPack: z
+      .object({
+        character_cover: characterPreviewAssetSlotSchema,
+        character_hero: characterPreviewAssetSlotSchema,
+        character_chat: characterPreviewAssetSlotSchema,
+      })
+      .strict(),
     assetPackReady: z.boolean(),
     renderUrl: z.string().url().nullable(),
   })
@@ -625,16 +707,16 @@ export const characterPreviewSnapshotSchema = z
       value.assetPack.character_chat,
     ];
     const availableAssetIds = slots.flatMap((slot) =>
-      slot.status === "available" && slot.assetId ? [slot.assetId] : []
+      slot.status === "available" && slot.assetId ? [slot.assetId] : [],
     );
     const exactlyReady =
-      availableAssetIds.length === 3 &&
-      new Set(availableAssetIds).size === 3;
+      availableAssetIds.length === 3 && new Set(availableAssetIds).size === 3;
     if (value.assetPackReady !== exactlyReady) {
       ctx.addIssue({
         code: "custom",
         path: ["assetPackReady"],
-        message: "assetPackReady must represent three distinct available assets",
+        message:
+          "assetPackReady must represent three distinct available assets",
       });
     }
     if (value.imageUrl !== value.assetPack.character_cover.imageUrl) {
@@ -670,37 +752,58 @@ export const characterWorkspaceDetailSchema = z
       })
       .strict(),
     project: characterWorkspaceProjectSchema,
-    soul: z.object({
-      valid: z.boolean(),
-      current: z.object({
-        contentVersionId: adminIdSchema,
-        version: z.number().int().positive(),
-        schemaVersion: z.number().int().nonnegative().nullable(),
-        compilerVersion: z.string().nullable(),
-        fingerprint: z.string().nullable(),
-        estimatedTokens: z.number().int().nonnegative().nullable(),
-        soul: z.record(z.string(), z.unknown()).nullable(),
-        markdown: z.string().nullable(),
-        systemPrompt: z.string().nullable(),
-        diagnostics: z.array(z.object({
-          code: z.string(),
-          path: z.array(z.string()),
-          severity: z.enum(["error", "warning"]),
-          message: z.string(),
-        }).strict()).readonly(),
-      }).strict(),
-      previous: z.object({
-        contentVersionId: adminIdSchema,
-        version: z.number().int().positive(),
-        fingerprint: z.string().nullable(),
-      }).strict().nullable(),
-      changedFields: z.array(z.string()).readonly(),
-      requiredCanaryProfiles: z.array(z.object({
-        tier: z.enum(["free", "premium", "deluxe"]),
-        provider: z.string().min(1),
-        model: z.string().min(1),
-      }).strict()).min(1).max(3).readonly(),
-    }).strict(),
+    soul: z
+      .object({
+        valid: z.boolean(),
+        current: z
+          .object({
+            contentVersionId: adminIdSchema,
+            version: z.number().int().positive(),
+            schemaVersion: z.number().int().nonnegative().nullable(),
+            compilerVersion: z.string().nullable(),
+            fingerprint: z.string().nullable(),
+            estimatedTokens: z.number().int().nonnegative().nullable(),
+            soul: z.record(z.string(), z.unknown()).nullable(),
+            markdown: z.string().nullable(),
+            systemPrompt: z.string().nullable(),
+            diagnostics: z
+              .array(
+                z
+                  .object({
+                    code: z.string(),
+                    path: z.array(z.string()),
+                    severity: z.enum(["error", "warning"]),
+                    message: z.string(),
+                  })
+                  .strict(),
+              )
+              .readonly(),
+          })
+          .strict(),
+        previous: z
+          .object({
+            contentVersionId: adminIdSchema,
+            version: z.number().int().positive(),
+            fingerprint: z.string().nullable(),
+          })
+          .strict()
+          .nullable(),
+        changedFields: z.array(z.string()).readonly(),
+        requiredCanaryProfiles: z
+          .array(
+            z
+              .object({
+                tier: z.enum(["free", "premium", "deluxe"]),
+                provider: z.string().min(1),
+                model: z.string().min(1),
+              })
+              .strict(),
+          )
+          .min(1)
+          .max(3)
+          .readonly(),
+      })
+      .strict(),
     journey: characterProductionJourneySchema,
     mediaOperations: characterMediaOperationsProjectionSchema,
     visual: characterVisualWorkspaceSchema,
@@ -708,7 +811,6 @@ export const characterWorkspaceDetailSchema = z
     serving: characterServingSchema.nullable(),
     activeCommand: adminCommandStatusSchema.nullable(),
     releases: z.array(characterWorkspaceReleaseSchema).readonly(),
-    qaRuns: z.array(characterQaRunSchema).readonly(),
     preview: z
       .object({
         live: characterPreviewSnapshotSchema.nullable(),
@@ -717,27 +819,37 @@ export const characterWorkspaceDetailSchema = z
       })
       .strict(),
     performance: z.array(characterPerformanceSummarySchema).readonly(),
-    portfolio: z.object({
-      latestDecision: characterPortfolioDecisionRecordSchema.nullable(),
-      changeMarkers: z.array(characterReleaseChangeMarkerSchema).readonly(),
-    }).strict(),
   })
   .strict();
 
-export type CharacterWorkspaceDetail = z.infer<typeof characterWorkspaceDetailSchema>;
+export type CharacterWorkspaceDetail = z.infer<
+  typeof characterWorkspaceDetailSchema
+>;
 
-export type CharacterReferenceSetPublishRequest = z.infer<typeof characterReferenceSetPublishRequestSchema>;
+export type CharacterReferenceSetPublishRequest = z.infer<
+  typeof characterReferenceSetPublishRequestSchema
+>;
 
-export type CharacterLookArchiveRequest = z.infer<typeof characterLookArchiveRequestSchema>;
+export type CharacterLookArchiveRequest = z.infer<
+  typeof characterLookArchiveRequestSchema
+>;
 
 export type CharacterVisualProfileCreateRequest = z.infer<
   typeof characterVisualProfileCreateRequestSchema
 >;
 
-export type CharacterIdentityBootstrapRequest = z.infer<typeof characterIdentityBootstrapRequestSchema>;
+export type CharacterIdentityBootstrapRequest = z.infer<
+  typeof characterIdentityBootstrapRequestSchema
+>;
 
-export type CharacterIdentityBootstrapResponse = z.infer<typeof characterIdentityBootstrapResponseSchema>;
+export type CharacterIdentityBootstrapResponse = z.infer<
+  typeof characterIdentityBootstrapResponseSchema
+>;
 
-export type CharacterImageReadinessRepairRequest = z.infer<typeof characterImageReadinessRepairRequestSchema>;
+export type CharacterImageReadinessRepairRequest = z.infer<
+  typeof characterImageReadinessRepairRequestSchema
+>;
 
-export type CharacterImageReadinessRepairResponse = z.infer<typeof characterImageReadinessRepairResponseSchema>;
+export type CharacterImageReadinessRepairResponse = z.infer<
+  typeof characterImageReadinessRepairResponseSchema
+>;

@@ -15,7 +15,7 @@ interface SnapshotRow {
 export interface SoulSnapshotAudit {
   referenced: number;
   valid: number;
-  v2: number;
+  current: number;
   historical: number;
   invalid: Array<{
     ownerType: SoulReference["ownerType"];
@@ -33,7 +33,7 @@ export function auditSoulSnapshots(
   const report: SoulSnapshotAudit = {
     referenced: references.length,
     valid: 0,
-    v2: 0,
+    current: 0,
     historical: 0,
     invalid: [],
   };
@@ -51,7 +51,7 @@ export function auditSoulSnapshots(
     const root = stored && typeof stored === "object" && !Array.isArray(stored)
       ? stored as Record<string, unknown>
       : {};
-    if (root.schemaVersion === 2) report.v2 += 1;
+    if (root.schemaVersion === 3) report.current += 1;
     else report.historical += 1;
   }
   return report;
@@ -60,10 +60,8 @@ export function auditSoulSnapshots(
 export interface CharacterSoulAuthorityAuditReport {
   ok: boolean;
   topology: {
-    mode: "same_cluster_views" | "invalid";
+    mode: "main_turn_ledger" | "invalid";
     database: string;
-    chatDatabase: string;
-    requiredViews: Record<string, boolean>;
   };
   readModel: { parityMismatches: number; rows: unknown[] };
   snapshots: SoulSnapshotAudit;
@@ -84,80 +82,29 @@ export function characterSoulAuthorityIsLaunchSafe(input: {
   legacyServingSnapshots: number;
   legacyCurrentPointers: number;
 }) {
-  // INTENT: ADR-14 keeps explicit legacy adapters during the migration window.
-  // Non-zero drain counts are telemetry, not corruption; inability to inspect
-  // them or inability to load an exact referenced snapshot is the blocker.
-  return input.topologyMode === "same_cluster_views" &&
+  // INVARIANT: launch-safe serving/current pointers must use the current Soul
+  // schema, and every active session must pin immutable content. Historical
+  // adapters exist for continuity, not as a reason to report a green launch.
+  return input.topologyMode === "main_turn_ledger" &&
     input.parityMismatches === 0 &&
     input.invalidSnapshots === 0 &&
-    input.nullPinSessions >= 0 &&
-    input.legacyServingSnapshots >= 0 &&
-    input.legacyCurrentPointers >= 0;
+    input.nullPinSessions === 0 &&
+    input.legacyServingSnapshots === 0 &&
+    input.legacyCurrentPointers === 0;
 }
 
 /**
- * Launch-grade audit for the declared same-cluster topology. A future separate
- * Chat database must replace this with durable projection watermarks and ACKs.
+ * Launch-grade audit for Main-owned immutable Character pins and Chat Turns.
  */
 export async function auditCharacterSoulAuthority(
   db: PrismaClient,
-  chatDb: Pick<PrismaClient, "$queryRaw"> = db,
 ): Promise<CharacterSoulAuthorityAuditReport> {
-  const topologyRows = await db.$queryRaw<Array<{
-    database: string;
-    characterView: string | null;
-    contentView: string | null;
-    releaseView: string | null;
-  }>>`
-    SELECT
-      current_database() AS database,
-      to_regclass('core.chat_character_view')::text AS "characterView",
-      to_regclass('core.chat_character_content_version_view')::text AS "contentView",
-      to_regclass('core.chat_character_release_view')::text AS "releaseView"
-  `;
-  const topology = topologyRows[0];
-  const chatTopologyRows = await chatDb.$queryRaw<Array<{ database: string }>>`
+  const topologyRows = await db.$queryRaw<Array<{ database: string }>>`
     SELECT current_database() AS database
   `;
-  const chatDatabase = chatTopologyRows[0]?.database ?? "unknown";
-  const requiredViews = {
-    chatCharacterView: topology?.characterView === "core.chat_character_view",
-    chatCharacterContentVersionView:
-      topology?.contentView === "core.chat_character_content_version_view",
-    chatCharacterReleaseView:
-      topology?.releaseView === "core.chat_character_release_view",
-  };
-  const mode = Object.values(requiredViews).every(Boolean) &&
-      chatDatabase === topology?.database
-    ? "same_cluster_views" as const
-    : "invalid" as const;
-
-  const parityRows = mode === "same_cluster_views"
-    ? await db.$queryRaw<Array<{
-        characterId: string;
-        expectedContentVersionId: string | null;
-        actualContentVersionId: string | null;
-        expectedReleaseId: string | null;
-        actualReleaseId: string | null;
-      }>>`
-        SELECT
-          c.id AS "characterId",
-          COALESCE(cr."characterContentVersionId", c."currentContentVersionId") AS "expectedContentVersionId",
-          view.character_content_version_id AS "actualContentVersionId",
-          cr.id AS "expectedReleaseId",
-          view.character_release_id AS "actualReleaseId"
-        FROM public.characters c
-        LEFT JOIN public.character_serving serving ON serving."characterId" = c.id
-        LEFT JOIN public.character_releases cr ON cr.id = serving."currentReleaseId"
-        LEFT JOIN core.chat_character_view view ON view.character_id = c.id
-        WHERE c."deletedAt" IS NULL
-          AND (
-            view.character_id IS NULL
-            OR view.character_content_version_id IS DISTINCT FROM COALESCE(cr."characterContentVersionId", c."currentContentVersionId")
-            OR view.character_release_id IS DISTINCT FROM cr.id
-          )
-      `
-    : [];
+  const topology = topologyRows[0];
+  const mode = topology?.database ? "main_turn_ledger" as const : "invalid" as const;
+  const parityRows: unknown[] = [];
 
   const serving = await db.$queryRaw<Array<{
     ownerId: string;
@@ -180,22 +127,21 @@ export async function auditCharacterSoulAuthority(
   let activeSessions = 0;
   let nullPinSessions = 0;
   try {
-    pinned = await chatDb.$queryRaw<Array<{ ownerId: string; contentVersionId: string }>>`
-      SELECT id AS "ownerId", character_content_version_id AS "contentVersionId"
-      FROM chat.chat_sessions
-      WHERE status = 'active' AND character_content_version_id IS NOT NULL
+    pinned = await db.$queryRaw<Array<{ ownerId: string; contentVersionId: string }>>`
+      SELECT "sessionId" AS "ownerId", "characterContentVersionId" AS "contentVersionId"
+      FROM public.recent_chats
+      WHERE status = 'active' AND "characterContentVersionId" IS NOT NULL
     `;
-    const counts = await chatDb.$queryRaw<Array<{ active: bigint; nullPins: bigint }>>`
+    const counts = await db.$queryRaw<Array<{ active: bigint; nullPins: bigint }>>`
       SELECT
         COUNT(*) FILTER (WHERE status = 'active') AS active,
-        COUNT(*) FILTER (WHERE status = 'active' AND character_content_version_id IS NULL) AS "nullPins"
-      FROM chat.chat_sessions
+        COUNT(*) FILTER (WHERE status = 'active' AND "characterContentVersionId" IS NULL) AS "nullPins"
+      FROM public.recent_chats
     `;
     activeSessions = Number(counts[0]?.active ?? 0);
     nullPinSessions = Number(counts[0]?.nullPins ?? 0);
   } catch {
-    // The declared topology includes chat.* in the same database. Inability to
-    // inspect pinned sessions is a launch-gate failure, represented below.
+    // Inability to inspect Main's pinned sessions is a launch-gate failure.
     nullPinSessions = -1;
   }
   const references: SoulReference[] = [
@@ -215,7 +161,7 @@ export async function auditCharacterSoulAuthority(
     const stored = snapshots.find((row) => row.id === contentVersionId)?.personaSnapshot;
     return Boolean(
       stored && typeof stored === "object" && !Array.isArray(stored) &&
-      (stored as Record<string, unknown>).schemaVersion === 2,
+      (stored as Record<string, unknown>).schemaVersion === 3,
     );
   };
   const pinnedIds = new Set(pinned.map((row) => row.ownerId));
@@ -240,8 +186,6 @@ export async function auditCharacterSoulAuthority(
     topology: {
       mode,
       database: topology?.database ?? "unknown",
-      chatDatabase,
-      requiredViews,
     },
     readModel: { parityMismatches: parityRows.length, rows: parityRows },
     snapshots: snapshotAudit,

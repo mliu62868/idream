@@ -1,23 +1,29 @@
 import {
   adminReadinessSchema,
-  characterProjectPhaseSchema,
   characterServingStateSchema,
   type CharacterPortfolioQuery,
 } from "@idream/shared/admin";
 
 export type CharacterPortfolioSort = NonNullable<CharacterPortfolioQuery["sort"]>;
+export type CharacterPortfolioWorkQueue = NonNullable<
+  CharacterPortfolioQuery["workQueue"]
+>;
+export type CharacterPortfolioEmptyView =
+  | "all"
+  | "filtered"
+  | "attention"
+  | "live_asset_pack_incomplete";
 
 export interface CharacterPortfolioUrlState {
   readonly search: string;
-  readonly phase?: string;
   readonly servingState?: string;
   readonly readiness?: string;
   readonly attention?: boolean;
+  readonly workQueue?: CharacterPortfolioWorkQueue;
   readonly sort?: CharacterPortfolioSort;
   readonly cursor?: string;
 }
 
-export const CHARACTER_PORTFOLIO_PHASES = characterProjectPhaseSchema.options;
 export const CHARACTER_PORTFOLIO_SERVING_STATES = characterServingStateSchema.options;
 export const CHARACTER_PORTFOLIO_READINESS_STATES = adminReadinessSchema.options;
 
@@ -37,7 +43,7 @@ export const CHARACTER_PORTFOLIO_SORTS = Object.keys(
   CHARACTER_PORTFOLIO_SORT_LABELS,
 ) as readonly CharacterPortfolioSort[];
 
-export const CHARACTER_PORTFOLIO_DEFAULT_SORT: CharacterPortfolioSort = "project_id_asc";
+export const CHARACTER_PORTFOLIO_DEFAULT_SORT: CharacterPortfolioSort = "updated_desc";
 
 /** 分页条要按同一个 limit 算「第几条–第几条」，所以它不能只活在下面的 URLSearchParams 里。 */
 export const CHARACTER_PORTFOLIO_PAGE_SIZE = 25;
@@ -51,17 +57,22 @@ function parseSort(value: string | null): CharacterPortfolioSort | undefined {
   return CHARACTER_PORTFOLIO_SORTS.find((sort) => sort === value);
 }
 
+function parseWorkQueue(
+  value: string | null,
+): CharacterPortfolioWorkQueue | undefined {
+  return value === "live_asset_pack_incomplete" ? value : undefined;
+}
+
 export function parseCharacterPortfolioUrl(search: string): CharacterPortfolioUrlState {
   const params = new URLSearchParams(search);
-  const phase = characterProjectPhaseSchema.safeParse(params.get("phase"));
   const servingState = characterServingStateSchema.safeParse(params.get("servingState"));
   const readiness = adminReadinessSchema.safeParse(params.get("readiness"));
   return {
     search: params.get("search")?.trim() ?? "",
-    phase: phase.success ? phase.data : undefined,
     servingState: servingState.success ? servingState.data : undefined,
     readiness: readiness.success ? readiness.data : undefined,
     attention: params.get("attention") === "true" ? true : undefined,
+    workQueue: parseWorkQueue(params.get("workQueue")),
     sort: parseSort(params.get("sort")),
     cursor: optionalValue(params.get("cursor")),
   };
@@ -80,10 +91,22 @@ export function characterPortfolioQuery(
     params.set("sort", state.sort);
   }
   if (state.search.trim()) params.set("search", state.search.trim());
-  if (state.phase) params.set("phase", state.phase);
   if (state.servingState) params.set("servingState", state.servingState);
   if (state.readiness) params.set("readiness", state.readiness);
   if (state.attention) params.set("attention", "true");
+  if (state.workQueue) params.set("workQueue", state.workQueue);
   if (state.cursor) params.set("cursor", state.cursor);
   return params.toString();
+}
+
+// SPEC: “问题已清空”只在运营清单本身为空时成立；一旦叠加搜索或 readiness，零结果只说明组合筛选没命中。
+export function characterPortfolioEmptyView(
+  state: CharacterPortfolioUrlState,
+): CharacterPortfolioEmptyView {
+  if (state.search.trim() || state.readiness) return "filtered";
+  if (state.attention) return "attention";
+  if (state.workQueue === "live_asset_pack_incomplete") {
+    return "live_asset_pack_incomplete";
+  }
+  return state.servingState ? "filtered" : "all";
 }

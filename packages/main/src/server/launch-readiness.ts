@@ -222,22 +222,9 @@ function isPostgresUrl(value: string | undefined) {
   );
 }
 
-function postgresUser(value: string | undefined) {
-  if (!value || !isPostgresUrl(value)) return undefined;
-  try {
-    return decodeURIComponent(new URL(value).username);
-  } catch {
-    return undefined;
-  }
-}
-
-function isChatServiceDatabaseUrl(value: string | undefined) {
-  return isPostgresUrl(value) && postgresUser(value) === "chat_service";
-}
-
 // INTENT: 非生产的 prefix 默认值由 env 契约推导，不在这里第二次抄一遍字面量 ——
-// 三个服务的 env.ts 早先各抄一份默认值，这里再抄一份，同一条不变量四处防守而无一处定义。
-// "idream:chat" / "idream:gen" 是服务本地的历史默认值，契约里没有，保留为显式历史项。
+// Main/Gen 的 env.ts 早先各抄一份默认值，这里再抄一份，同一条不变量三处防守而无一处定义。
+// "idream:chat" 是已退役的 Chat 队列默认值；"idream:gen" 是历史 Gen 默认值。
 const NON_PRODUCTION_BULLMQ_PREFIXES = new Set([
   ...(["development", "test"] as const).map((appEnv) =>
     defaultBullmqPrefix(appEnv),
@@ -496,17 +483,6 @@ function addChatServiceChecks(checks: LaunchReadinessCheck[], env: EnvLike) {
   const supportedChatModelProviders = ["openai", "pipeline"];
   const chatRedisUrl = env.CHAT_REDIS_URL ?? env.REDIS_URL;
 
-  addCheck(checks, {
-    id: "chat-database-url",
-    area: "Chat",
-    status: isChatServiceDatabaseUrl(env.CHAT_DATABASE_URL) ? "pass" : "fail",
-    message: isChatServiceDatabaseUrl(env.CHAT_DATABASE_URL)
-      ? "CHAT_DATABASE_URL uses the chat_service Postgres role."
-      : "CHAT_DATABASE_URL is missing, not Postgres, or not using the chat_service role.",
-    remediation:
-      "Set CHAT_DATABASE_URL to the production Postgres URL for the chat_service role; do not reuse main-web DATABASE_URL.",
-  });
-
   addValueCheck(checks, {
     id: "chat-redis-url",
     area: "Chat",
@@ -514,7 +490,7 @@ function addChatServiceChecks(checks: LaunchReadinessCheck[], env: EnvLike) {
     value: chatRedisUrl,
     url: true,
     remediation:
-      "Set CHAT_REDIS_URL or shared REDIS_URL so packages/chat uses the production queue Redis instance.",
+      "Set CHAT_REDIS_URL or shared REDIS_URL for transient Chat SSE fan-out; durable AgentRun state stays under CHAT_FS_ROOT.",
   });
 
   addCheck(checks, {
@@ -525,7 +501,7 @@ function addChatServiceChecks(checks: LaunchReadinessCheck[], env: EnvLike) {
       ? "CHAT_FS_ROOT is an absolute durable-storage path."
       : "CHAT_FS_ROOT is missing or not an absolute durable-storage path.",
     remediation:
-      "Set CHAT_FS_ROOT to an absolute durable path for relationship evidence and boundary projections; Scene/session/message stay in Postgres and generic memory stays in DSH/igrep.",
+      "Set CHAT_FS_ROOT to an absolute durable path for AgentRun evidence and local boundaries; product sessions, Turns, attachments and billing stay in Main PostgreSQL.",
   });
 
   addCheck(checks, {
@@ -688,7 +664,6 @@ function addChatServiceProbeCheck(
       if (
         probe.conversation.noMemory?.ok !== true ||
         probe.conversation.noMemory.authorityPinned !== true ||
-        probe.conversation.noMemory.relationshipUnchanged !== true ||
         probe.conversation.noMemory.dsh?.ok !== true
       ) {
         problems.push(
@@ -706,8 +681,7 @@ function addChatServiceProbeCheck(
       if (
         probe.conversation.cleanup?.ok !== true ||
         probe.conversation.cleanup.sessionDeleted !== true ||
-        probe.conversation.cleanup.relationshipDeleted !== true ||
-        probe.conversation.cleanup.relationshipsGone !== true ||
+        probe.conversation.cleanup.memoryCleared !== true ||
         probe.conversation.cleanup.sessionGone !== true
       ) {
         problems.push("conversation smoke did not clean its audit state");
@@ -943,59 +917,6 @@ function addVoiceModelProbeCheck(
       problems.length === 0
         ? undefined
         : `Run \`bun run --filter @idream/main probe:voice -- --report .tmp/launch-voice-probe.json\` against the real voice model gateway, then set ${PROBE_REPORTS[probeName].reportEnvKey} before check:launch.`,
-  });
-}
-
-function addChatModerationChecks(checks: LaunchReadinessCheck[], env: EnvLike) {
-  const chatModerationProvider =
-    env.CHAT_MODERATION_PROVIDER ?? env.MODERATION_PROVIDER ?? "mock";
-  const externalModerationEnabled = chatModerationProvider === "safety-gateway";
-  addCheck(checks, {
-    id: "chat-moderation-provider",
-    area: "Chat",
-    status:
-      chatModerationProvider === "mock" || externalModerationEnabled
-        ? "pass"
-        : "fail",
-    message: `Chat moderation provider is ${chatModerationProvider}.`,
-    remediation:
-      "Set CHAT_MODERATION_PROVIDER to a supported provider: mock or safety-gateway.",
-  });
-
-  if (!externalModerationEnabled) {
-    addCheck(checks, {
-      id: "chat-moderation-service-url",
-      area: "Chat",
-      status: "pass",
-      message: `Chat moderation provider ${chatModerationProvider} does not require CHAT_MODERATION_SERVICE_URL.`,
-    });
-    addCheck(checks, {
-      id: "chat-moderation-api-key",
-      area: "Chat",
-      status: "pass",
-      message: `Chat moderation provider ${chatModerationProvider} does not require CHAT_MODERATION_API_KEY.`,
-    });
-    return;
-  }
-
-  addValueCheck(checks, {
-    id: "chat-moderation-service-url",
-    area: "Chat",
-    label: "Chat moderation service URL",
-    value: env.CHAT_MODERATION_SERVICE_URL ?? env.MODERATION_SERVICE_URL,
-    url: true,
-    remediation:
-      "Set CHAT_MODERATION_SERVICE_URL or MODERATION_SERVICE_URL to the production safety gateway.",
-  });
-
-  addValueCheck(checks, {
-    id: "chat-moderation-api-key",
-    area: "Chat",
-    label: "Chat moderation API key",
-    value: env.CHAT_MODERATION_API_KEY ?? env.MODERATION_API_KEY,
-    minLength: 16,
-    remediation:
-      "Set CHAT_MODERATION_API_KEY or MODERATION_API_KEY to the production safety gateway token.",
   });
 }
 
@@ -2703,10 +2624,7 @@ function requiredRevisionProbeNames(
     names.add("videoH3GenerationProbe");
     names.add("videoH3GenerationPersistenceProbe");
   }
-  if (
-    (env.MODERATION_PROVIDER ?? "mock") !== "mock" ||
-    (env.CHAT_MODERATION_PROVIDER ?? "mock") !== "mock"
-  ) {
+  if ((env.MODERATION_PROVIDER ?? "mock") !== "mock") {
     names.add("safetyGatewayProbe");
   }
   if (scope === "full") {
@@ -2930,23 +2848,19 @@ export function assessLaunchReadiness(
     id: "bullmq-prefix",
     area: "Queues",
     status:
-      env.IDREAM_CHAT_APP_ENV === "production" &&
       env.IDREAM_GEN_APP_ENV === "production" &&
       isProductionBullmqPrefix(env.BULLMQ_PREFIX) &&
-      env.IDREAM_CHAT_BULLMQ_PREFIX === env.BULLMQ_PREFIX &&
       env.IDREAM_GEN_BULLMQ_PREFIX === env.BULLMQ_PREFIX
         ? "pass"
         : "fail",
     message:
-      env.IDREAM_CHAT_APP_ENV === "production" &&
       env.IDREAM_GEN_APP_ENV === "production" &&
       isProductionBullmqPrefix(env.BULLMQ_PREFIX) &&
-      env.IDREAM_CHAT_BULLMQ_PREFIX === env.BULLMQ_PREFIX &&
       env.IDREAM_GEN_BULLMQ_PREFIX === env.BULLMQ_PREFIX
-        ? "Main, Chat, and Gen share one explicit production BullMQ prefix."
-        : "Main, Chat, and Gen are not bound to one production BullMQ prefix.",
+        ? "Main and Gen share one explicit production BullMQ prefix."
+        : "Main and Gen are not bound to one production BullMQ prefix.",
     remediation:
-      "Set one shared production BULLMQ_PREFIX, such as idream:prod, for main-web, chat, and gen workers.",
+      "Set one shared production BULLMQ_PREFIX, such as idream:prod, for Main and Gen workers; Chat does not use BullMQ.",
   });
 
   addProviderChecks(checks, env, capabilities, scope);
@@ -2988,7 +2902,6 @@ export function assessLaunchReadiness(
   addChatServiceChecks(checks, env);
   addChatServiceProbeCheck(checks, env, probes.chatServiceProbe, now);
   addAdminTextProbeCheck(checks, env, probes.adminTextProbe, now);
-  addChatModerationChecks(checks, env);
 
   addImagePipelineChecks(
     checks,
@@ -3418,43 +3331,34 @@ async function addCharacterSoulAuthorityPreflight(
   checks: LaunchReadinessCheck[],
 ) {
   const databaseUrl = env.DATABASE_URL;
-  const chatDatabaseUrl = env.CHAT_DATABASE_URL;
-  if (
-    !databaseUrl ||
-    !isPostgresUrl(databaseUrl) ||
-    !chatDatabaseUrl ||
-    !isPostgresUrl(chatDatabaseUrl)
-  ) {
+  if (!databaseUrl || !isPostgresUrl(databaseUrl)) {
     checks.push({
       id: "character-soul-authority",
       area: "Chat",
       status: "fail",
       message:
-        "Character Soul authority audit requires PostgreSQL Main and Chat database URLs.",
+        "Character Soul authority audit requires Main PostgreSQL.",
       remediation:
-        "Set DATABASE_URL and CHAT_DATABASE_URL to their least-privilege roles on the same target database, then rerun check:launch.",
+        "Set DATABASE_URL for Main, then rerun check:launch.",
     });
     return;
   }
   const db = new PrismaClient({
     adapter: new PrismaPg({ connectionString: databaseUrl }),
   });
-  const chatDb = new PrismaClient({
-    adapter: new PrismaPg({ connectionString: chatDatabaseUrl }),
-  });
   try {
-    const audit = await auditCharacterSoulAuthority(db, chatDb);
+    const audit = await auditCharacterSoulAuthority(db);
     checks.push(
       {
         id: "character-read-model-topology",
         area: "Chat",
-        status: audit.topology.mode === "same_cluster_views" ? "pass" : "fail",
+        status: audit.topology.mode === "main_turn_ledger" ? "pass" : "fail",
         message:
-          audit.topology.mode === "same_cluster_views"
-            ? `Character read model and Chat pin drain use least-privilege roles on ${audit.topology.database}.`
-            : `Required same-cluster Character views are absent or Chat targets ${audit.topology.chatDatabase} instead of ${audit.topology.database}.`,
+          audit.topology.mode === "main_turn_ledger"
+            ? `Character content pins and Chat Turns are authoritative in Main database ${audit.topology.database}.`
+            : "Main Character/Turn authority is unavailable.",
         remediation:
-          "Apply the canonical core read-view SQL before starting Chat.",
+          "Apply the Main Chat Turn migration before starting Chat.",
       },
       {
         id: "character-read-model-parity",
@@ -3476,25 +3380,25 @@ async function addCharacterSoulAuthorityPreflight(
         id: "character-soul-legacy-drain",
         area: "Chat",
         status:
-          audit.drain.legacyServingSnapshots >= 0 &&
-          audit.drain.legacyCurrentPointers >= 0
+          audit.drain.legacyServingSnapshots === 0 &&
+          audit.drain.legacyCurrentPointers === 0
             ? "pass"
             : "fail",
         message: `${audit.drain.legacyServingSnapshots} legacy serving snapshots; ${audit.drain.legacyCurrentPointers} legacy current user pointers.`,
         remediation:
-          "Keep the explicit legacy decoder and drain metrics until reviewed v1 replacements are published.",
+          "Publish reviewed schema v3 replacements for every serving and current Character pointer.",
       },
       {
         id: "character-soul-pin-drain",
         area: "Chat",
         status:
-          audit.drain.nullPinSessions >= 0 &&
+          audit.drain.nullPinSessions === 0 &&
           audit.drain.legacyPinnedSessions >= 0
             ? "pass"
             : "fail",
         message: `${audit.drain.activeSessions} active sessions; ${audit.drain.nullPinSessions} null pins; ${audit.drain.legacyPinnedSessions} legacy pins.`,
         remediation:
-          "Observe drain and use the compatibility-QA migration command only when an old session must move.",
+          "Backfill every active null pin from the Character read view before starting Chat.",
       },
     );
   } catch (error) {
@@ -3507,7 +3411,7 @@ async function addCharacterSoulAuthorityPreflight(
         "Run character-soul:audit against the target database and repair topology, permissions, or snapshot authority.",
     });
   } finally {
-    await Promise.all([db.$disconnect(), chatDb.$disconnect()]);
+    await db.$disconnect();
   }
 }
 

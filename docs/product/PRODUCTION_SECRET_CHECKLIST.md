@@ -63,15 +63,12 @@ Store these generated values:
 
 | Key | Notes |
 | --- | --- |
-| `CHAT_DATABASE_URL` | Request connection; must use the `chat_service` Postgres role |
-| `CHAT_PROJECTOR_DATABASE_URL` | File-projector connection; must use the distinct `chat_projector` Postgres role and must not reuse the request credential |
-| `CHAT_FS_ROOT` | Absolute durable-storage path; include it in the same recovery checkpoint as PostgreSQL and Blob |
+| `CHAT_FS_ROOT` | Absolute durable-storage path for AgentRun evidence; include it in the same checkpoint as PostgreSQL, DSH workspaces and Blob |
 | `CHAT_PORT` | Chat service HTTP/SSE port |
 | `CHAT_MODEL_PROVIDER` | `pipeline` or another production model provider |
 | `CHAT_MODEL_BASE_URL` | OpenAI-compatible chat gateway URL |
 | `CHAT_MODEL_NAME` | Production chat model alias |
 | `CHAT_MODEL_API_KEY` | Chat gateway token |
-| `CHAT_MODERATION_PROVIDER` | Current product scope uses `mock`; service URL/API key are not required unless this changes |
 
 ## Pipeline and Voice Values
 
@@ -155,20 +152,19 @@ Treat these as one quiesced recovery checkpoint:
 | Value | Requirement |
 | --- | --- |
 | Main PostgreSQL | Version-compatible dump plus migration count and restore verification |
-| `CHAT_FS_ROOT` | Archive plus per-file manifest/checksum; contains relationship/evidence/boundary projections only (Scene/session/message stay in PG; generic memory stays in DSH/igrep) |
+| `CHAT_FS_ROOT` | AgentRun archive plus per-file manifest/checksum; product sessions/Turns/Scene stay in Main PG |
+| DSH workspace roots | Canonical and private igrep workspace archives plus manifests; derived memory, restored separately from AgentRun |
 | Local `BLOB_ROOT` | Archive plus per-object manifest/checksum when `BLOB_PROVIDER=mock`; for R2/S3 bind the checkpoint to versioned object inventory instead |
 | Checkpoint metadata | Quiesced timestamp, artifact ids, SHA-256 values, provider/root identifiers, and disposable-restore result |
 | `RECOVERY_REHEARSAL_BUNDLE` | Absolute or workspace-relative path to the published flat bundle whose basename prefixes every artifact |
 | `RECOVERY_REHEARSAL_APPROVED_SHA256` | Lowercase SHA-256 of `<bundle>/<bundle>.sha256`, copied into the launch env only after explicit operator review |
 | `RECOVERY_REHEARSAL_MAX_AGE_MINUTES` | Maximum accepted age of the bundle checksum manifest; default `1440` |
 
-Do not call a database-only dump a complete iDream backup. Stop writers and verify that transport outbox/inbox, generation queues, and Chat file mutations have no `dispatched`, `processing`, unknown, or otherwise in-flight mutation before capturing the three layers. Stable scheduled/pending/failed durable intents are preserved product state: record them in source/restore counts and require exact equality instead of deleting or prematurely delivering them.
+Do not call a database-only dump a complete iDream backup. Stop new Turn admission and pause/drain Generation；确认没有 active/unknown attempt 后，在同一 checkpoint 捕获 Main PostgreSQL、AgentRun、DSH workspaces 和 Blob。稳定 scheduled/pending/failed durable intent 是产品事实，source/restore 必须逐项相等，不能为让备份通过而提前投递或删除。
 
-The published bundle must contain a PostgreSQL custom-format archive accepted by real `pg_restore --list`, canonical Main+Chat schema/logical/role/database manifests, a gzip Chat FS archive whose real `tar` listing and extracted tree reconstruct the signed file manifest, a fresh quiescence receipt, and either an equivalently reconstructed local Blob archive or a non-empty versioned remote-object inventory. Remote inventory must prove exact bytes, checksum, metadata, retention and the created version in an independent recovery endpoint/bucket. Magic bytes, checksummed placeholder text, path traversal entries, weak digests and source/restore drift are rejected by `check:launch`.
+发布 bundle 必须包含可由 `pg_restore --list` 读取的 Main PostgreSQL archive、Main schema/logical manifests、可重建 checksum manifest 的 AgentRun/DSH archives、新鲜 quiescence receipt，以及 local Blob archive 或独立 versioned recovery bucket inventory。远端 inventory 必须绑定 exact version、checksum、metadata 和 retention。
 
-Use `bun run recovery:rehearse -- --help` for the canonical producer. Its default mode is a read-only sanitized plan. Apply requires the exact typed confirmation plus `APP_ENV=production IDREAM_QUIESCED=1`; pass `--launch-env-file`, `--chat-env-file` and `--gen-env-file` when the services have separate runtime env files. The shared resolver keeps those three authorities separate: Chat model/Redis/BFF and Gen provider/ComfyUI/model values may not fall back to Main or ambient process values. Apply reuses the Generation pause/drain and worker-ownership checks, accepts only explicit terminal PM2 states, and records the fresh quiescence facts and fingerprint in the bundle. R2/S3 apply additionally requires a configured AWS CLI, live bucket versioning, and an independently credentialed/versioned recovery endpoint and bucket; without that second authority it fails closed. Local `mock` Blob remains a local archive.
-
-`check:launch` reads this bundle directly. It requires `RECOVERY_REHEARSAL_APPROVED_SHA256` to equal the SHA-256 of the master checksum manifest, runs the real archive inspections again, verifies the quiescence receipt, and requires exact source/isolated-restore equality for database counts/schema/logical state—including stable durable backlog—plus Chat FS and Blob inventories. It also resolves Main/Chat/Gen env independently and compares the expected `CHAT_FS_ROOT` fingerprint with the authenticated signed Chat probe response. It requires PostgreSQL 16 and the repository's exact latest migration, and rejects in-flight/unknown mutation counters or stale evidence. The historical migration-60 bundle and every bundle created before the quiescence-receipt contract therefore fail closed; create a fresh bundle rather than re-signing one.
+现有 `bun run recovery:rehearse` 仍基于旧 Chat PG/inbox/file-mutation checkpoint contract，尚未包含独立 DSH workspace authority。ADR-20 cutover 后必须先刷新 recovery producer/executor/launch gate，再用它签发当前 bundle；旧 bundle 只保留为历史恢复证据，不能重签后用于当前 revision。
 
 After reviewing a newly published bundle, bind that exact checksum manifest in the launch env:
 
@@ -177,16 +173,7 @@ shasum -a 256 <bundle-dir>/<bundle-name>.sha256
 # Copy the lowercase digest to RECOVERY_REHEARSAL_APPROVED_SHA256.
 ```
 
-The current local checkpoint satisfying this contract is:
-
-- Current local bundle: `.tmp/recovery-bundles/idream-recovery-local-20260814-final-user-journeys`.
-- Approved checksum-manifest digest: read the exact lower-case SHA-256 from the completed bundle's external approval and verify it through `RECOVERY_REHEARSAL_APPROVED_SHA256`; do not copy a rotating digest into this tracked checklist.
-- Completion time: `2026-08-13T02:08:19.069Z`.
-- PostgreSQL 16 migration authority is 71/71; source and isolated restore schema/logical/counts, Chat FS, local mock Blob, DB authority and queue authority are exact.
-- The fresh quiescence receipt blocks in-flight mutations only. Stable scheduled/pending/failed durable backlog is preserved unchanged and compared exactly; it is never drained, deleted or relabeled merely to make a checkpoint pass.
-- PM2 restart restored queues plus Image 2/2 and Video 1/1 ownership, and the subsequent signed Chat probe passed. The last post-Recovery host observation had 10 iDream PM2 app instances online; Main `/` was 200, Admin `/` was the expected 307 redirect, and Chat `/readyz` was 200. Generation cutover had zero active requests, in-flight Bull rows, and pending terminal outboxes, one `ignoredHistory` row, and `issues=[]`. This runtime observation predates the source-bound revision now under review.
-
-This checkpoint closes the current local Recovery Gate. It does not turn local mock Blob into production object storage and does not replace a production checkpoint against independently retained non-mock recovery versions. Role passwords and external secrets remain intentionally excluded and must come from the secret manager.
+只有新 producer 同时恢复并比较四层 authority 后，才能把其 manifest digest 写入 `RECOVERY_REHEARSAL_APPROVED_SHA256`。本地 mock Blob checkpoint 不能替代 production non-mock recovery，role password 与 external secret 始终由 secret manager 注入。
 
 ## Probe Report Variables
 

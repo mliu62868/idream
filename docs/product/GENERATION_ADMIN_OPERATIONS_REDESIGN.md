@@ -203,13 +203,6 @@ provider 和未来 LoRA/adapter 服务。需要收敛的是 admin UX：普通运
   256x384、2 steps 非退化图；又通过 `serve:comfyui-image` +
   `launch:probe:redcraft-image:local` 走通统一 gen image pipeline 和 blob 写入。它仍保留
   draft candidate，发布前必须补 20 张一致性样本和生产 runner 策略。
-- DarkBeast `darkBeastKrea2_dbkleinv2BFS.safetensors` 当前更像 reference/img2img
-  runtime 资产，但不是集合里的 Krea 2 version；Civitai `modelVersionId=2740209`
-  标为 `Flux.2 Klein 9B`。BFS workflow 实际需要 body/source image + face/identity image
-  两张输入、Flux.2 Klein base、Qwen text encoder、Flux2 VAE、head-swap LoRA 与 ComfyUI
-  conditioning workflow；当前本机缺 `flux2-vae.safetensors`、base、encoder、LoRA 和
-  可导入 workflow；保留 ComfyUI candidate。
-
 上线规则：模板发布按钮必须依赖 dry run + visual sample + 人工一致性 review，不能只因为
 模型文件存在或 profile JSON 校验通过就发布。
 服务端发布门禁也必须执行同样规则：image profile 要求 `sampleCount>=20`，

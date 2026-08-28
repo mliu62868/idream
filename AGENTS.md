@@ -19,7 +19,7 @@ This version has breaking changes — APIs, conventions, and file structure may 
 
 ## 技术栈里读不出来的部分
 - Next.js 16 的 middleware 已更名 Proxy
-- PostgreSQL only；main 与 chat 各自 schema，**没有** SQLite 双库
+- Main 使用 PostgreSQL；Chat 无数据库，只保存本地 AgentRun，**没有** SQLite 双库
 - AI 走自托管开源模型 + OpenAI 兼容流水线；支付走加密货币
 
 ## 文档与事实来源（SSoT）
@@ -29,8 +29,8 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - 代码是最终事实来源：`packages/main/prisma/schema.prisma` + `packages/*/src`
 
 ## 结构里不显然的两点
-- `packages/shared` 是跨包契约 SSoT（类型/协议）；`chat` 用独立 PG role + 文件层记忆，main 经 BFF proxy + 事件交互
-- `db/sql/` 是 chat 服务库边界 SQL，**由用户手工执行**，不要自己连库跑
+- `packages/shared` 是跨包契约 SSoT；Main 经 BFF 把不可变 Turn 快照交给 `chat`，`chat-agent` 执行 DSH/igrep
+- `db/sql/` 中旧 Chat 导入/cutover SQL **由用户手工执行**，不要自己连库跑
 
 ## 真实端到端验证 —— 已授权付费请求
 

@@ -670,9 +670,6 @@ describe("Creative workflow transition concurrency", () => {
       data: {
         id: projectId,
         characterId,
-        phase: "producing",
-        audience: {},
-        successCriteria: [],
         draftImageAssetId: dependencyRejectAssetId,
         draftAssetPack: {
           character_cover: { assetId: dependencyRejectAssetId },

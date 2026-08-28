@@ -174,7 +174,7 @@ export const operationalWorkPreferenceSchema = z
 
 export const todayClaimRequestSchema = z
   .object({
-    sourceType: z.enum(["admin_case", "ops_incident", "character_release", "creative_run"]),
+    sourceType: z.enum(["admin_case", "ops_incident", "creative_run"]),
     sourceId: adminIdSchema,
     entityVersion: z.number().int().nonnegative(),
   })
@@ -182,7 +182,7 @@ export const todayClaimRequestSchema = z
 
 export const todayClaimResponseSchema = z
   .object({
-    sourceType: z.enum(["admin_case", "ops_incident", "character_release", "creative_run"]),
+    sourceType: z.enum(["admin_case", "ops_incident", "creative_run"]),
     sourceId: adminIdSchema,
     ownerId: adminIdSchema,
     entityVersion: z.number().int().nonnegative(),

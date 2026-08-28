@@ -38,7 +38,6 @@ export async function loadCharacterIdentityBootstrapAuthority(
     select: {
       id: true,
       version: true,
-      phase: true,
       draftImageAssetId: true,
       draftAssetPack: true,
     },
@@ -56,7 +55,7 @@ export async function loadCharacterIdentityBootstrapAuthority(
   });
   const serving = await db.characterServing.findUnique({
     where: { characterId },
-    select: { currentReleaseId: true, scheduledReleaseId: true },
+    select: { currentReleaseId: true },
   });
   const profileIds = profiles.map((profile) => profile.id);
   const projectIds = projects.map((project) => project.id);
@@ -74,9 +73,6 @@ export async function loadCharacterIdentityBootstrapAuthority(
   });
   const releaseCount = await db.characterRelease.count({
     where: { projectId: { in: projectIds } },
-  });
-  const passedQaCount = await db.characterQaRun.count({
-    where: { characterId, status: "passed" },
   });
   const latestProject = projects[0] ?? null;
   const currentImageOperational = Boolean(
@@ -101,13 +97,9 @@ export async function loadCharacterIdentityBootstrapAuthority(
   const blockers = [
     ...(!character ? ["character_missing"] : []),
     ...(!latestProject ? ["project_missing"] : []),
-    ...(latestProject && !["idea", "planned", "producing"].includes(latestProject.phase)
-      ? ["project_phase_not_bootstrap_eligible"]
-      : []),
     ...(currentImageCanAnchorIdentity ? ["character_image_already_selected"] : []),
-    ...(serving?.currentReleaseId || serving?.scheduledReleaseId ? ["serving_release_exists"] : []),
+    ...(serving?.currentReleaseId ? ["serving_release_exists"] : []),
     ...(releaseCount > 0 ? ["release_history_exists"] : []),
-    ...(passedQaCount > 0 ? ["passed_qa_history_exists"] : []),
     ...(referenceSetCount > 0 ? ["reference_set_history_exists"] : []),
     ...(referenceCandidateCount > 0 ? ["reference_candidate_history_exists"] : []),
     ...(lookCount > 0 ? ["character_look_history_exists"] : []),
@@ -129,7 +121,6 @@ export async function loadCharacterIdentityBootstrapAuthority(
     projects: projects.map((project) => ({
       id: project.id,
       version: project.version,
-      phase: project.phase,
       draftImageAssetId: project.draftImageAssetId,
       draftAssetPack: project.draftAssetPack,
     })),
@@ -141,7 +132,6 @@ export async function loadCharacterIdentityBootstrapAuthority(
       lookCount,
       generationJobCount,
       releaseCount,
-      passedQaCount,
     },
   });
   const allowed = blockers.length === 0;

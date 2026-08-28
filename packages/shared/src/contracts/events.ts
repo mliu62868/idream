@@ -1,35 +1,36 @@
-// SPEC: Cross-service event-type names (PRD §11, design §6). Two outboxes:
-// chat→main and main→chat. Consumers are idempotent on eventId.
-// INTENT: Name SSoT so producer/consumer never drift. Payload shapes in payloads.ts.
+// SPEC: Chat has no product store. Durable Main→Chat events therefore carry
+// only lifecycle intent for local execution state, never product Turns.
 import { z } from "zod";
 
-/** chat → main (Chat outbox, at-least-once). */
+/** Chat local-file erasure → Main completion. */
 export const CHAT_TO_MAIN_EVENTS = {
-  sessionCreated: "chat.session.created",
-  messageCompleted: "chat.message.completed",
-  exchangeCompletedV2: "chat.exchange.completed.v2",
-  exchangeCorrectedV2: "chat.exchange.corrected.v2",
-  messageBlocked: "chat.message.blocked",
-  imageRequested: "chat.image.requested",
-  sessionDeleted: "chat.session.deleted",
-  relationshipUpdated: "chat.relationship.updated",
-  usageIncremented: "chat.usage.incremented",
-  safetyFlagged: "chat.safety.flagged",
-  accountErasureCompleted: "chat.account_erasure.completed",
   // SPEC: This completion is request-bound and may only travel through the
   // dedicated synchronous capability route. Generic outbox dispatchers must
   // never select it during an application rollback.
   accountErasureCompletedV2: "chat.account_erasure.completed.v2",
-  sessionReleaseMigrationApplied: "chat.session_release_migration.applied.v2",
 } as const;
 
-/** main → chat (Main outbox → chat inbox). Cache-invalidation / block / compensate. */
+/** Main deletion request → Chat local files/DSH. */
 export const MAIN_TO_CHAT_EVENTS = {
-  userSuspended: "user.suspended",
-  userDeleted: "user.deleted",
   // SPEC: Account deletion uses a dedicated v2 transport route. An older Chat
   // binary must not persist-and-ignore this request through its generic inbox.
   accountDeletionRequestedV2: "user.account_deletion.requested.v2",
+  // A destructive Turn/Session correction makes Main's remaining committed
+  // transcript the only legal source for the relationship workspace.
+  companionMemoryRebuildRequestedV1: "chat.companion_memory.rebuild_requested.v1",
+  // Clearing memory is a durable lifecycle command. Archiving product state
+  // and physically purging the relationship workspace converge independently.
+  companionMemoryPurgeRequestedV1: "chat.companion_memory.purge_requested.v1",
+} as const;
+
+/**
+ * Migration-only vocabulary for pre-cutover outbox evidence. Admin repair and
+ * launch readiness retain it until production cutover; the runtime dispatcher
+ * must never select these events again.
+ */
+export const LEGACY_MAIN_TO_CHAT_EVENTS = {
+  userSuspended: "user.suspended",
+  userDeleted: "user.deleted",
   characterUpdated: "character.updated",
   characterRemoved: "character.removed",
   characterModerationRestorationRequested:
@@ -44,22 +45,17 @@ export const MAIN_TO_CHAT_EVENTS = {
   sessionReleaseMigrationRequested: "chat.session_release_migration.requested.v2",
 } as const;
 
-// INVARIANT: moderation removal/restoration identities are derived from the
-// authority row that caused them, so retries cannot create a second causal set.
-export function characterModerationRemovalEventId(
-  moderationDecisionId: string,
-) {
-  return `moderation_character_removed_${moderationDecisionId}`;
-}
-
-export function characterModerationRestorationEventId(appealId: string) {
-  return `moderation_character_restoration_${appealId}`;
-}
-
 // INVARIANT: v2 account deletion is delivered only through this capability
 // route, so a rolled-back Chat binary returns 404 instead of ACKing a no-op.
 export const ACCOUNT_DELETION_V2_INGEST_PATH =
   "/internal/events/account-deletion-v2/ingest";
+
+export const COMPANION_MEMORY_PURGE_PATH =
+  "/internal/companion-memory/purge";
+export const COMPANION_MEMORY_REBUILD_PREPARE_PATH =
+  "/internal/companion-memory/rebuild/prepare";
+export const COMPANION_MEMORY_REBUILD_PROMOTE_PATH =
+  "/internal/companion-memory/rebuild/promote";
 
 // INVARIANT: Main applies this completion synchronously before Chat ACKs the
 // matching request. An older Main binary has no such route and therefore
@@ -71,7 +67,10 @@ export const chatToMainEventType = z.enum(
   Object.values(CHAT_TO_MAIN_EVENTS) as [string, ...string[]],
 );
 export const mainToChatEventType = z.enum(
-  Object.values(MAIN_TO_CHAT_EVENTS) as [string, ...string[]],
+  [
+    ...Object.values(MAIN_TO_CHAT_EVENTS),
+    ...Object.values(LEGACY_MAIN_TO_CHAT_EVENTS),
+  ] as [string, ...string[]],
 );
 
 /** Envelope every outbox row serializes to before delivery. */
@@ -86,4 +85,6 @@ export const eventEnvelopeSchema = z.object({
 
 export type EventEnvelope = z.infer<typeof eventEnvelopeSchema>;
 export type ChatToMainEvent = (typeof CHAT_TO_MAIN_EVENTS)[keyof typeof CHAT_TO_MAIN_EVENTS];
-export type MainToChatEvent = (typeof MAIN_TO_CHAT_EVENTS)[keyof typeof MAIN_TO_CHAT_EVENTS];
+export type MainToChatEvent =
+  | (typeof MAIN_TO_CHAT_EVENTS)[keyof typeof MAIN_TO_CHAT_EVENTS]
+  | (typeof LEGACY_MAIN_TO_CHAT_EVENTS)[keyof typeof LEGACY_MAIN_TO_CHAT_EVENTS];

@@ -24,16 +24,6 @@ const base = {
   project: {
     id: "project-fixture",
     characterId: "character-fixture",
-    ownerId: null,
-    phase: "idea",
-    audience: "",
-    companionNeed: "",
-    hypothesis: "",
-    differentiation: "",
-    targetPlacementKeys: [],
-    successCriteria: [],
-    productionPackage: "",
-    qaPlan: "",
     draftImageAssetId: null,
     draftAssetPackHash: "",
     draftAssetPack: {},
@@ -43,10 +33,9 @@ const base = {
       stalePurposes: [],
       missingPurposes: [],
       recoveryPurpose: null,
-      qaReady: false,
-      qaBlockers: [],
+      releaseReady: false,
+      releaseBlockers: [],
     },
-    plannedLaunchAt: null,
     version: 1,
     updatedAt: "2026-07-30T12:00:00.000Z",
   },
@@ -55,15 +44,14 @@ const base = {
     current: {
       contentVersionId: "content-fixture",
       version: 1,
-      schemaVersion: 2,
-      compilerVersion: "character-soul-2",
+      schemaVersion: 3,
+      compilerVersion: "character-soul-3",
       fingerprint: "fixture-fingerprint",
       estimatedTokens: 256,
       soul: {
         name: "Mira",
         age: 24,
         gender: "female",
-        relationshipArchetype: "trusted companion",
         characterPromise: "A fixture Character used by admin workspace tests.",
         detailsMarkdown: "",
       },
@@ -73,7 +61,9 @@ const base = {
     },
     previous: null,
     changedFields: [],
-    requiredCanaryProfiles: [{ tier: "free", provider: "mock", model: "fixture-model" }],
+    requiredCanaryProfiles: [
+      { tier: "free", provider: "mock", model: "fixture-model" },
+    ],
   },
   journey: {
     projectionVersion: 1,
@@ -81,11 +71,31 @@ const base = {
     stage: "visual_setup",
     status: "blocked",
     steps: [
-      { code: "visual_identity", state: "current", deepLink: "/admin/characters/character-fixture" },
-      { code: "image_assets", state: "upcoming", deepLink: "/admin/characters/character-fixture" },
-      { code: "preview_qa", state: "upcoming", deepLink: "/admin/characters/character-fixture" },
-      { code: "release", state: "upcoming", deepLink: "/admin/characters/character-fixture" },
-      { code: "live_monitor", state: "upcoming", deepLink: "/admin/characters/character-fixture" },
+      {
+        code: "visual_identity",
+        state: "current",
+        deepLink: "/admin/characters/character-fixture",
+      },
+      {
+        code: "image_assets",
+        state: "upcoming",
+        deepLink: "/admin/characters/character-fixture",
+      },
+      {
+        code: "preview",
+        state: "upcoming",
+        deepLink: "/admin/characters/character-fixture",
+      },
+      {
+        code: "release",
+        state: "upcoming",
+        deepLink: "/admin/characters/character-fixture",
+      },
+      {
+        code: "live_monitor",
+        state: "upcoming",
+        deepLink: "/admin/characters/character-fixture",
+      },
     ],
     blockers: [],
     primaryAction: {
@@ -94,8 +104,18 @@ const base = {
       command: null,
     },
     assetPack: {
-      draft: { availablePurposes: [], missingPurposes: [], completed: 0, total: 3 },
-      live: { availablePurposes: [], missingPurposes: [], completed: 0, total: 3 },
+      draft: {
+        availablePurposes: [],
+        missingPurposes: [],
+        completed: 0,
+        total: 3,
+      },
+      live: {
+        availablePurposes: [],
+        missingPurposes: [],
+        completed: 0,
+        total: 3,
+      },
     },
     release: {
       servingState: "inactive",
@@ -230,7 +250,6 @@ const base = {
   serving: null,
   activeCommand: null,
   releases: [],
-  qaRuns: [],
   preview: {
     live: null,
     draft: {
@@ -254,18 +273,16 @@ const base = {
     changedFields: [],
   },
   performance: [],
-  portfolio: {
-    latestDecision: null,
-    changeMarkers: [],
-  },
 } satisfies CharacterWorkspaceDetail;
 
 /**
  * INTENT: 数组按整体替换，不做逐项合并——测试写 `anchors: [a]` 的意思一定是"就这一个"。
  */
-type FixtureOverrides<T> = T extends readonly unknown[] ? T
-  : T extends object ? { readonly [K in keyof T]?: FixtureOverrides<T[K]> }
-  : T;
+type FixtureOverrides<T> = T extends readonly unknown[]
+  ? T
+  : T extends object
+    ? { readonly [K in keyof T]?: FixtureOverrides<T[K]> }
+    : T;
 
 function merge(current: unknown, override: unknown): unknown {
   if (
@@ -278,8 +295,12 @@ function merge(current: unknown, override: unknown): unknown {
   ) {
     return override;
   }
-  const next: Record<string, unknown> = { ...(current as Record<string, unknown>) };
-  for (const [key, value] of Object.entries(override as Record<string, unknown>)) {
+  const next: Record<string, unknown> = {
+    ...(current as Record<string, unknown>),
+  };
+  for (const [key, value] of Object.entries(
+    override as Record<string, unknown>,
+  )) {
     next[key] = merge(next[key], value);
   }
   return next;

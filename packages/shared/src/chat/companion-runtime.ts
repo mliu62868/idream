@@ -1,13 +1,19 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import {
+  EDIT_LAST_IMAGE_TOOL,
+  editLastImageArgsSchema,
+  GENERATE_IMAGE_ASYNC_TOOL,
+  generateImageAsyncArgsSchema,
+} from "./image-action";
 
 // SPEC: This is the only product-facing wire vocabulary between Chat and the
 // companion sidecar. Runtime implementation packages must project into it and
 // must never export DSH, Cordis, or plugin-owned types across this boundary.
 export const COMPANION_RUNTIME_PROTOCOL_VERSION = 1 as const;
-export const COMPANION_DSH_VERSION = "0.1.0-rc.7" as const;
+export const COMPANION_DSH_VERSION = "0.1.1-rc.2" as const;
 export const COMPANION_DSH_COMMIT =
-  "99f6f02fecdb7dff40c3fbc9470f5907c29f74ca" as const;
+  "b150a551b8d465e31e418e1b2eaf5e79bbb7d28e" as const;
 export const COMPANION_IGREP_PLUGIN_VERSION = "0.1.0" as const;
 export const COMPANION_TERMINAL_CONTENT_MAX_BYTES = 2_097_152;
 // JSON can expand control bytes sixfold (`\u00xx`); 16 MiB safely carries the
@@ -226,15 +232,14 @@ export const preparedTurnTraceSchema = z
     soulFingerprint: nonEmptyStringSchema,
     compilerVersion: nonEmptyStringSchema,
     sceneVersion: nonNegativeIntegerSchema,
-    relationshipVersion: nonNegativeIntegerSchema.nullable(),
-    fileContextRevision: z.string().regex(/^\d+$/),
+    contextRevision: z.string().regex(/^\d+$/),
     releasedKnowledgeDigest: sha256Schema,
   })
   .strict();
 
 export const preparedTurnWireSchema = z
   .object({
-    version: z.literal(2),
+    version: z.literal(3),
     model: nonEmptyStringSchema,
     characterName: nonEmptyStringSchema,
     messages: z.array(preparedTurnMessageSchema).min(1),
@@ -505,6 +510,182 @@ export function decodeCompanionWorkspaceRebuildFrame(
   return companionWorkspaceRebuildFrameSchema.parse(JSON.parse(value));
 }
 
+/** Stream one canonical rebuild without imposing an aggregate history cap. */
+export function createCompanionWorkspaceRebuildBody(
+  request: CompanionWorkspaceRebuild,
+): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  let phase: "start" | "message_start" | "content" | "message_complete" | "complete" | "done" = "start";
+  let messageIndex = 0;
+  let contentOffset = 0;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (phase === "start") {
+        phase = request.messages.length > 0 ? "message_start" : "complete";
+        controller.enqueue(encoder.encode(encodeCompanionWorkspaceRebuildFrame({
+          protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
+          type: "start",
+          scope: "relationship",
+          userId: request.userId,
+          characterId: request.characterId,
+          messageCount: request.messages.length,
+          ...(request.fence ? { fence: request.fence } : {}),
+        })));
+        return;
+      }
+      const message = request.messages[messageIndex];
+      if (phase === "message_start" && message) {
+        contentOffset = 0;
+        phase = "content";
+        const { content, ...header } = message;
+        controller.enqueue(encoder.encode(encodeCompanionWorkspaceRebuildFrame({
+          protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
+          type: "message_start",
+          message: header,
+          contentLength: content.length,
+        })));
+        return;
+      }
+      if (phase === "content" && message) {
+        const content = message.content.slice(
+          contentOffset,
+          contentOffset + COMPANION_WORKSPACE_REBUILD_CONTENT_CHUNK_CHARS,
+        );
+        contentOffset += content.length;
+        phase = contentOffset === message.content.length ? "message_complete" : "content";
+        controller.enqueue(encoder.encode(encodeCompanionWorkspaceRebuildFrame({
+          protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
+          type: "content_chunk",
+          content,
+        })));
+        return;
+      }
+      if (phase === "message_complete") {
+        messageIndex += 1;
+        phase = messageIndex < request.messages.length ? "message_start" : "complete";
+        controller.enqueue(encoder.encode(encodeCompanionWorkspaceRebuildFrame({
+          protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
+          type: "message_complete",
+        })));
+        return;
+      }
+      if (phase === "complete") {
+        phase = "done";
+        controller.enqueue(encoder.encode(encodeCompanionWorkspaceRebuildFrame({
+          protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
+          type: "complete",
+          messageCount: request.messages.length,
+        })));
+        return;
+      }
+      controller.close();
+    },
+  });
+}
+
+/**
+ * Stream a canonical transcript directly from a paged authority reader. The
+ * caller supplies the pre-counted message total so the receiver can validate
+ * completeness without Main retaining the whole history in memory.
+ */
+export function createCompanionWorkspaceRebuildStream(input: {
+  scope: "relationship";
+  userId: string;
+  characterId: string;
+  fence?: CompanionWorkspaceRebuildFence;
+  messageCount: number;
+  messages: AsyncIterable<CompanionWorkspaceRebuildMessage>;
+}): ReadableStream<Uint8Array> {
+  if (!Number.isSafeInteger(input.messageCount) || input.messageCount < 0) {
+    throw new Error("relationship rebuild messageCount must be a non-negative integer");
+  }
+  const encoder = new TextEncoder();
+  const iterator = input.messages[Symbol.asyncIterator]();
+  let phase: "start" | "next" | "content" | "message_complete" | "done" = "start";
+  let current: CompanionWorkspaceRebuildMessage | null = null;
+  let contentOffset = 0;
+  let emitted = 0;
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (phase === "start") {
+        // Always probe the async source, including an advertised zero. A stale
+        // pre-count of zero must not silently certify an empty projection.
+        phase = "next";
+        controller.enqueue(encoder.encode(encodeCompanionWorkspaceRebuildFrame({
+          protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
+          type: "start",
+          scope: input.scope,
+          userId: input.userId,
+          characterId: input.characterId,
+          messageCount: input.messageCount,
+          ...(input.fence ? { fence: input.fence } : {}),
+        })));
+        return;
+      }
+      if (phase === "next") {
+        const next = await iterator.next();
+        if (next.done) {
+          if (emitted !== input.messageCount) {
+            controller.error(new Error("relationship rebuild source count changed while streaming"));
+            return;
+          }
+          phase = "done";
+          controller.enqueue(encoder.encode(encodeCompanionWorkspaceRebuildFrame({
+            protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
+            type: "complete",
+            messageCount: emitted,
+          })));
+          return;
+        }
+        if (emitted >= input.messageCount) {
+          await iterator.return?.();
+          controller.error(new Error("relationship rebuild source count changed while streaming"));
+          return;
+        }
+        current = companionWorkspaceRebuildMessageSchema.parse(next.value);
+        contentOffset = 0;
+        phase = "content";
+        const { content, ...message } = current;
+        controller.enqueue(encoder.encode(encodeCompanionWorkspaceRebuildFrame({
+          protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
+          type: "message_start",
+          message,
+          contentLength: content.length,
+        })));
+        return;
+      }
+      if (phase === "content" && current) {
+        const content = current.content.slice(
+          contentOffset,
+          contentOffset + COMPANION_WORKSPACE_REBUILD_CONTENT_CHUNK_CHARS,
+        );
+        contentOffset += content.length;
+        phase = contentOffset === current.content.length ? "message_complete" : "content";
+        controller.enqueue(encoder.encode(encodeCompanionWorkspaceRebuildFrame({
+          protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
+          type: "content_chunk",
+          content,
+        })));
+        return;
+      }
+      if (phase === "message_complete") {
+        emitted += 1;
+        current = null;
+        phase = "next";
+        controller.enqueue(encoder.encode(encodeCompanionWorkspaceRebuildFrame({
+          protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
+          type: "message_complete",
+        })));
+        return;
+      }
+      controller.close();
+    },
+    async cancel() {
+      await iterator.return?.();
+    },
+  });
+}
+
 const companionWorkspaceVersionSchema = z.string().regex(
   /^(?:(?:rebuild|commit|migrated)-\d+-)?[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$|^initial-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/,
 );
@@ -596,22 +777,6 @@ export const companionInvocationSchema = z
     }
   });
 
-const generateImageArgumentsSchema = z
-  .object({
-    prompt: z.string().trim().min(12).max(1_200),
-    caption: z.string().trim().min(1).max(500).optional(),
-    orientation: z.enum(["4:5", "1:1", "16:9"]).optional(),
-    outputCount: z.number().int().min(1).max(4).optional(),
-  })
-  .strict();
-
-const editLastImageArgumentsSchema = z
-  .object({
-    instruction: z.string().trim().min(4).max(1_200),
-    caption: z.string().trim().min(1).max(300).optional(),
-  })
-  .strict();
-
 const companionToolIdentity = {
   attemptId: nonEmptyStringSchema,
   callId: nonEmptyStringSchema,
@@ -621,15 +786,15 @@ export const companionToolCallSchema = z.discriminatedUnion("name", [
   z
     .object({
       ...companionToolIdentity,
-      name: z.literal("generate_image_async"),
-      arguments: generateImageArgumentsSchema,
+      name: z.literal(GENERATE_IMAGE_ASYNC_TOOL),
+      arguments: generateImageAsyncArgsSchema,
     })
     .strict(),
   z
     .object({
       ...companionToolIdentity,
-      name: z.literal("edit_last_image"),
-      arguments: editLastImageArgumentsSchema,
+      name: z.literal(EDIT_LAST_IMAGE_TOOL),
+      arguments: editLastImageArgsSchema,
     })
     .strict(),
 ]);
@@ -770,6 +935,12 @@ export const companionEventSchema = z
         ...companionEventIdentity,
         type: z.literal("text_delta"),
         delta: z.string().min(1),
+      })
+      .strict(),
+    z
+      .object({
+        ...companionEventIdentity,
+        type: z.literal("text_reset"),
       })
       .strict(),
     z

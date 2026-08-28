@@ -6,9 +6,11 @@
 
 适用范围：`packages/admin`、`packages/main` 中的 Admin API 与领域服务、`packages/chat` 到 main 的业务事件、后台依赖的读模型与度量事实层。
 
+> **2026-08-27 Character 产品取舍覆盖：** 本文关于 Character 的项目简报、负责人、计划上线、手工 QA、Portfolio 决策记录和交接/认领要求不再是目标设计。Character Admin 以角色资料、素材、预览、自动发布预检、Release/Serving 和线上表现事实为主流程；旧章节保留为历史方案，不得据此恢复已删除字段或入口。Case、Incident、Creative Run 等真正需要分派和 SLA 的运营对象不受此覆盖影响。
+
 ## 0. 文档地位与使用方式
 
-本文定义管理后台从当前“功能控制面”升级为“公司运营操作系统”的目标模型、状态与指标口径、信息架构、关键工作流、技术迁移、测试、发布和验收门槛。
+本文记录管理后台从“功能控制面”升级的历史目标模型；与上方 Character 产品取舍冲突的内容已被覆盖。
 
 文档关系如下：
 
@@ -359,7 +361,7 @@ System
 | `/admin/generation/recipes` | `/admin/ops/recipes` | `generation.config.read` | keep |
 | `/admin/generation/presets` | `/admin/ops/recipes?view=presets` | `generation.config.read` | merge 为 Recipe subtype/view |
 | `/admin/content/assets` | `/admin/creative/library` | `creative.asset.read` | keep |
-| `/admin/content/placements` | `/admin/creative/placements` | `creative.placement.read` | keep；动作再区分 distribution publish / release proposal |
+| `/admin/content/placements` | `/admin/creative/placements` | `creative.placement.read` | keep；动作区分 distribution placement 与 Character Release-owned placement |
 | `/admin/cms` | `/admin/growth/content` | 现有 CMS permissions | keep，归 Growth 内容运营 |
 | `/admin/users` | `/admin/customers` | `user.read` / `customer.read` | keep，升级 Customer 360 |
 | `/admin/billing` | `/admin/customer-ops/billing` | `billing.read` | keep |
@@ -453,7 +455,7 @@ Today 不是指标卡墙。它必须让操作者在 30 秒内回答：
 | 状态轴 | 回答的问题 | 示例 |
 | --- | --- | --- |
 | `workflowState` / `projectPhase` | 团队工作做到哪一步 | producing、review、monitoring |
-| `servingState` | 当前是否被线上产品服务 | inactive、live、paused、retired；计划发布另有 scheduled pointer |
+| `servingState` | 当前是否被线上产品服务 | inactive、live、paused、retired |
 | `qualityState` | 是否有证据证明达到质量门槛 | unscored、passed、failed、stale |
 | `executionOutcome` | 异步执行结果是什么 | running、succeeded、partially_succeeded、failed |
 | `visibility` | 哪些用户当前可见 | private、unlisted、public |
@@ -466,9 +468,6 @@ Today 不是指标卡墙。它必须让操作者在 30 秒内回答：
 
 前端不直接提交任意 `status`。API 暴露业务命令，例如：
 
-- `submitReleaseForReview`
-- `approveRelease`
-- `scheduleRelease`
 - `publishRelease`
 - `pauseServing`
 - `rollbackRelease`
@@ -522,34 +521,28 @@ interface OperationalStateView {
 | 对象 | 职责 |
 | --- | --- |
 | `CharacterContentVersion` | 所有角色共用的不可变 Persona/opening/appearance 内容版本；供 Chat Session pin 和事件归因 |
-| `CharacterProject` | owner、目标用户、陪伴需求、差异化、内容假设、目标投放位、计划上线时间、成功标准 |
+| `CharacterProject` | 当前角色草稿素材包、视觉路线和递增版本；不承担人员分派或排期 |
 | `CharacterRevision` | Persona、首条消息、描述、结构化外观等不可变内容快照 |
 | `CharacterRelease` | 固化 revision、Visual Identity version、ReferenceSetRevision、generation provenance、release-owned asset/placement manifest 和发布策略 |
-| `CharacterServing` | 每个官方角色唯一的 current pointer、serving state、可选 scheduled pointer/time 和 version；这是线上服务状态的唯一 authority |
+| `CharacterServing` | 每个官方角色唯一的 current pointer、serving state 和 version；这是线上服务状态的唯一 authority |
 | `ReleaseValidationRun` | snapshotHash、policyVersion、运行时间、总体结果和逐项 checks；同一 policy 下的每次验证都保留 |
 | `ReleaseCheckResult` | validationRunId、check key、结果、证据、验证时间、修复 deep link |
-| `ReleaseEvent` | submit、approve、schedule、publish、pause、rollback、supersede 历史 |
+| `ReleaseEvent` | prepare、publish、pause、rollback、supersede 历史 |
 | `ReleaseMonitor` | 发布后 24h/72h 可见性、聊天可用性、关键指标和 rollback 判断 |
 
 现有 `Character.status` 在兼容阶段继续存在，但在 v2 cutover 后不再是官方角色发布的单一权威字段。
 
-### 8.2 三条独立生命周期
+### 8.2 最小生命周期
 
 ```text
-Project phase:
-idea → planned → producing → qa → launch_ready → live_management → retired
-
 Release workflow:
-draft → validating → in_review → approved → published → superseded | withdrawn
+approved → published → superseded | withdrawn
 
 Character serving state:
 inactive | live | paused | retired
-
-Scheduled publication:
-scheduledReleaseId + scheduledAt（独立于当前 serving state）
 ```
 
-Release 不再保存第二套 `servingState=live`。计划发布把 approved Release 写入 `CharacterServing.scheduledReleaseId/scheduledAt`；如果旧版本仍在线，serving state 继续是 live。到时重新验证后原子切换 current pointer、清空 scheduled pointer，再将候选 Release 标为 published。官方角色 public visibility 的唯一公式是：
+运营只执行一次即时发布。服务端从当前草稿创建 approved Release、自动完成技术验证，再原子切换 current pointer 并将 Release 标为 published。官方角色 public visibility 的唯一公式是：
 
 ```text
 CharacterServing.state = live
@@ -561,7 +554,7 @@ AND CharacterRelease.status = published
 
 ### 8.3 Release 不变量
 
-- 每次 schedule 和 publish 前都创建新的 `ReleaseValidationRun`；publish 必须比较 snapshot hash、release version、validation policy version 和当前 policy，任何一项漂移都重新验证。
+- 创建 Release 和 publish 时由服务端自动创建 `ReleaseValidationRun`；publish 必须比较 snapshot hash、release version、validation policy version 和当前 policy，任何一项漂移都重新验证。
 - 发布后修改 Persona、首条消息、Visual Identity 或关键素材时创建新 revision/release，不静默修改 live 快照。
 - Release manifest 引用的 revision、Visual Identity、ReferenceSetRevision、generation profile/recipe、asset 和 release-owned placement slot/version 不可变。
 - publish 是一次短事务中的 `CharacterServing.currentReleaseId` pointer swap，同时 supersede 旧 Release，并更新 legacy Character 投影、Audit 和 Outbox；不能逐表半发布。rollback 不重新激活旧历史行，而是从历史 snapshot 创建带 `rollbackOfReleaseId` 的新 Release、重新验证后再 pointer swap，保留完整发布时间线。
@@ -585,19 +578,18 @@ AND CharacterRelease.status = published
 
 新建流程改为：
 
-1. `Strategy`：目标用户、陪伴需求、差异化、owner、目标日期、成功指标。
-2. `Concept`：名称、年龄、风格、关系原型、角色承诺。
-3. `Persona`：性格、语气、背景、首条消息、样例对话。
-4. `Visual direction`：身份锚点、稳定 traits、风格和参考方向。
-5. `Plan & review`：生产包、投放位、QA 计划、成功标准。
+1. `Character`：名称、年龄、风格、角色承诺和 Persona。
+2. `Visual direction`：身份锚点、稳定 traits、风格和参考方向。
+3. `Assets`：生成并选用 portrait、hero 和 chat 三张素材。
+4. `Publish`：预览后点击一次发布；技术检查由服务端自动执行。
 
 每一步服务端 autosave，并明确展示 `Saving / Saved / Conflict / Failed to save`。草稿可以跨设备继续；每次写入携带 revision/version。冲突不能静默覆盖。
 
 ### 8.6 角色详情和真实预览
 
-详情页 Header 固定展示 owner、project phase、serving、visibility、release readiness、线上版本、草稿版本、计划上线时间和唯一主动作。
+详情页 Header 固定展示角色身份、serving、visibility、release readiness、线上版本、草稿版本和唯一主动作。
 
-Tabs：`Overview / Brief / Persona / Visual Identity / Creative Runs / Preview & QA / Performance / Activity`。
+Tabs：`Character / Soul / Visual Identity / Assets / Video / Voice / Preview / Release / Monitor`。
 
 Preview 必须复用真实前台 renderer，至少覆盖：
 
@@ -1403,11 +1395,11 @@ running/verifying 使用 lease：`leaseOwner/leaseExpiresAt/heartbeatAt/attemptC
 
 | 模型 | 关键字段 | 关键约束 |
 | --- | --- | --- |
-| `CharacterProject` | characterId、ownerId、phase、audience、hypothesis、differentiation、successCriteria、plannedLaunchAt、version | 一个官方 Character 一个 active Project；version 乐观锁 |
+| `CharacterProject` | characterId、draft asset pack、visual route、version | 一个官方 Character 一个 active Project；只保存生产草稿元数据，不保存负责人、阶段或排期 |
 | `CharacterContentVersion` | characterId、version、contentHash、persona/opening/appearance snapshot、sourceType/id、createdBy | `(characterId, version)` 与 `(characterId, contentHash)` unique；所有角色可用、不可变 |
 | `CharacterRevision` | projectId、revision、characterContentVersionId、project metadata、createdBy | `(projectId, revision)` unique；发布后不可变 |
 | `CharacterRelease` | projectId、revisionId、characterContentVersionId、visualProfileId/version、referenceSetRevisionId、generation provenance、releaseOwnedPlacementManifest、snapshotHash、status、publishedAt、supersedesId、rollbackOfReleaseId、version | published 后 content/manifest 不可变，lifecycle 可推进；不存 serving/schedule authority |
-| `CharacterServing` | characterId、currentReleaseId、state、scheduledReleaseId、scheduledAt、version | characterId unique；current/scheduled pointer 各自唯一且不能相同 |
+| `CharacterServing` | characterId、currentReleaseId、state、version | characterId unique；至多一个 current pointer |
 | `ReleaseValidationRun` | releaseId、snapshotHash、policyVersion、result、startedAt、finishedAt | 每次验证保留，publish hash 必须匹配 |
 | `ReleaseCheckResult` | validationRunId、checkKey、result、evidence、checkedAt | `(validationRunId, checkKey)` unique |
 | `ReleaseMonitor` | releaseId、window、status、baseline、observed、verification | 24h/72h 独立结果 |
@@ -1447,8 +1439,8 @@ running/verifying 使用 lease：`leaseOwner/leaseExpiresAt/heartbeatAt/attemptC
 
 应尽量同时在 service 与数据库层表达：
 
-- 每个 official Character 恰有一个 `CharacterServing` row；只有一个 currentReleaseId 和至多一个 scheduledReleaseId。
-- current/scheduled Release 的 `project.characterId` 必须等于 `CharacterServing.characterId`；command transaction 校验并由 reconciliation 二次守护。
+- 每个 official Character 恰有一个 `CharacterServing` row；只有一个 currentReleaseId。
+- current Release 的 `project.characterId` 必须等于 `CharacterServing.characterId`；command transaction 校验并由 reconciliation 二次守护。
 - current published Release 必须引用不可变 Revision/CharacterContentVersion、Visual Identity version、ReferenceSetRevision 和 manifest。
 - publish/rollback 使用 validation snapshotHash 和 policy version，pointer swap 与 legacy projection/Audit/Outbox 同事务。
 - 同一 Attempt 只有一个 terminal event。
@@ -1523,7 +1515,7 @@ Review complete · Execution partially succeeded · Unplaced
 
 ### 18.5 协作
 
-Character Project、Creative Run、Case 和 Incident 统一提供 owner、watchers、dueAt/SLA、comments、@mentions、attachments、checklist、Activity 和 handoff note。
+Creative Run、Case 和 Incident 提供 owner、watchers、dueAt/SLA、comments、@mentions、attachments、checklist、Activity 和 handoff note。Character 不参与这套任务分派模型。
 
 Mention 产生 Inbox 项；转派后旧 owner 从 Mine 移出，新 owner 立即收到 Work Item。多人编辑使用 revision/version；后提交者必须看到 diff 并选择重新应用，不能静默覆盖。
 

@@ -6,9 +6,23 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"/Users/kk/.agents/skills/impeccable/scripts/hook.mjs\"",
+            "command": "[ ! -f '/Users/kk/.agents/skills/impeccable/scripts/hook.mjs' ] || node '/Users/kk/.agents/skills/impeccable/scripts/hook.mjs'",
             "timeout": 5,
-            "statusMessage": "Checking UI changes"
+            "statusMessage": "Checking UI changes",
+            "commandWindows": "if exist \"/Users/kk/.agents/skills/impeccable/scripts/hook.mjs\" (node \"/Users/kk/.agents/skills/impeccable/scripts/hook.mjs\" & exit /b)"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ ! -f '/Users/kk/.agents/skills/impeccable/scripts/hook.mjs' ] || node '/Users/kk/.agents/skills/impeccable/scripts/hook.mjs'",
+            "timeout": 30,
+            "statusMessage": "Design deep pass",
+            "commandWindows": "if exist \"/Users/kk/.agents/skills/impeccable/scripts/hook.mjs\" (node \"/Users/kk/.agents/skills/impeccable/scripts/hook.mjs\" & exit /b)"
           }
         ]
       }

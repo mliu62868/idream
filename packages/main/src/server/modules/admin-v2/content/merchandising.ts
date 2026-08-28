@@ -215,7 +215,6 @@ export async function getContentCharacter(id: string) {
       status: character.status,
       visibility: character.visibility,
       source: character.source,
-      relationship: character.relationship,
       voiceId: character.voiceId,
       imageAssetId: character.imageAssetId,
       creatorId: character.creatorId,

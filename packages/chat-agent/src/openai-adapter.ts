@@ -162,6 +162,54 @@ function fuseSignal(source: AbortSignal | undefined, timeoutMs: number): {
   };
 }
 
+async function* decodedResponseChunks(
+  stream: ReadableStream<Uint8Array>,
+  signal: AbortSignal,
+): AsyncGenerator<string> {
+  const reader = stream.pipeThrough(new TextDecoderStream()).getReader();
+  let completed = false;
+  try {
+    while (true) {
+      const { done, value } = await readDecodedChunk(reader, signal);
+      if (done) break;
+      if (value) yield value;
+    }
+    completed = true;
+  } finally {
+    if (!completed) {
+      // INTENT: a provider-body cancellation is best-effort cleanup. Some
+      // Bun fetch streams never settle reader.cancel() after headers, so the
+      // completion deadline must not await that transport-specific promise.
+      void reader.cancel().catch(() => undefined);
+    }
+    try {
+      reader.releaseLock();
+    } catch {
+      // The abandoned read owns the lock until cancellation settles.
+    }
+  }
+}
+
+function readDecodedChunk(
+  reader: ReadableStreamDefaultReader<string>,
+  signal: AbortSignal,
+): ReturnType<ReadableStreamDefaultReader<string>["read"]> {
+  if (signal.aborted) return Promise.reject(modelAbortReason(signal));
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(modelAbortReason(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
+    reader.read().then(resolve, reject).finally(() => {
+      signal.removeEventListener("abort", onAbort);
+    });
+  });
+}
+
+function modelAbortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new DOMException("The operation was aborted", "AbortError");
+}
+
 export class OpenAiCompatibleAdapter extends LlmAdapter {
   private readonly profile: PreparedTurnProfile;
   private readonly apiKey: string;
@@ -223,6 +271,10 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
             parameters: tool.parameters,
           },
         })),
+        // SPEC: OpenAI-compatible servers must enter the native function-call
+        // path when tools are present; never rely on a server-specific default
+        // that may render a tool plan as ordinary assistant JSON.
+        tool_choice: "auto",
       } : {}),
       ...(this.profile.provider === "openrouter" ? {
         provider: { only: [...(this.providerOnly ?? [])], allow_fallbacks: false },
@@ -320,7 +372,7 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
         return chunks;
       };
 
-      for await (const text of response.body.pipeThrough(new TextDecoderStream())) {
+      for await (const text of decodedResponseChunks(response.body, timeout.signal)) {
         timeout.resetIdle(this.profile.timeout.idleMs);
         responseBytes += Buffer.byteLength(text);
         if (responseBytes > MAX_PROVIDER_STREAM_BYTES) {

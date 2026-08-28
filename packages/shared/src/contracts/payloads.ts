@@ -19,6 +19,12 @@ export const chatStreamEventSchema = z.discriminatedUnion("type", [
     delta: z.string(),
   }),
   z.object({
+    type: z.literal("replace"),
+    attempt: z.number().int().min(1),
+    seq: z.number().int().min(1),
+    content: z.string(),
+  }),
+  z.object({
     type: z.literal("done"),
     attempt: z.number().int().min(1),
     usage: z.object({
@@ -33,22 +39,6 @@ export const chatStreamEventSchema = z.discriminatedUnion("type", [
     retryable: z.boolean(),
   }),
 ]);
-
-/** Durable internal intent. Runtime context is rebuilt from current authorities. */
-export const chatGeneratePayloadSchema = z.object({
-  sessionId: z.string().min(1),
-  userMessageId: z.string().min(1),
-  assistantMessageId: z.string().min(1),
-  attempt: z.number().int().min(1),
-});
-
-/** Exact source turn used by the asynchronous Scene/relationship projector. */
-export const chatMemoryExtractPayloadSchema = z.object({
-  sessionId: z.string().min(1),
-  userMessageId: z.string().min(1),
-  assistantMessageId: z.string().min(1),
-  attempt: z.number().int().min(1),
-});
 
 const generationReferenceImageSchema = z
   .object({
@@ -132,53 +122,51 @@ export const chatImageRequestedPayloadSchema = z
   })
   .passthrough();
 
-export const chatImageAcceptedPayloadSchema = z
-  .object({
-    version: z.literal(1),
-    kind: z.literal("chat.image.accepted"),
-    attachmentId: z.string(),
-    generationJobId: z.string(),
-    costDreamcoins: z.number().int().min(0),
-  })
-  .passthrough();
+// Migration-only Main→Chat payloads. The current runtime never dispatches
+// them, but Admin must validate existing failed rows until production cutover.
+export const chatImageAcceptedPayloadSchema = z.object({
+  version: z.literal(1),
+  kind: z.literal("chat.image.accepted"),
+  attachmentId: z.string(),
+  generationJobId: z.string(),
+  costDreamcoins: z.number().int().min(0),
+}).passthrough();
 
-export const chatImageCompletedPayloadSchema = z
-  .object({
-    version: z.literal(1),
-    kind: z.literal("chat.image.completed"),
-    attachmentId: z.string(),
-    generationJobId: z.string().nullable().optional(),
-    mediaAssetId: z.string(),
-    width: z.number().int().min(1).nullable().optional(),
-    height: z.number().int().min(1).nullable().optional(),
-    // P4 Task 5: short human-readable description of the delivered photo, so the
-    // chat agent can recall "what it sent" in later turns without re-fetching the
-    // asset. Optional — older main builds omit it.
-    summary: z.string().optional(),
-  })
-  .passthrough();
+export const chatImageCompletedPayloadSchema = z.object({
+  version: z.literal(1),
+  kind: z.literal("chat.image.completed"),
+  attachmentId: z.string(),
+  generationJobId: z.string().nullable().optional(),
+  mediaAssetId: z.string(),
+  width: z.number().int().min(1).nullable().optional(),
+  height: z.number().int().min(1).nullable().optional(),
+  summary: z.string().optional(),
+}).passthrough();
 
-export const chatImageFailedPayloadSchema = z
-  .object({
-    version: z.literal(1),
-    kind: z.literal("chat.image.failed"),
-    attachmentId: z.string(),
-    generationJobId: z.string().nullable().optional(),
-    status: z.enum(["failed", "blocked", "refunded", "rejected"]),
-    errorCode: z.string().nullable().optional(),
-  })
-  .passthrough();
+export const chatImageFailedPayloadSchema = z.object({
+  version: z.literal(1),
+  kind: z.literal("chat.image.failed"),
+  attachmentId: z.string(),
+  generationJobId: z.string().nullable().optional(),
+  status: z.enum(["failed", "blocked", "refunded", "rejected"]),
+  errorCode: z.string().nullable().optional(),
+}).passthrough();
 
-// Legacy transport only. Main records it for rolling compatibility but never
-// advances v2 deletion authority from this aggregate-level event. The request
-// id is optional because older Chat binaries did not emit it.
-export const chatAccountErasureCompletedPayloadSchema = z
-  .object({
-    userId: z.string().min(1),
-    fileMutationId: z.string().min(1),
-    deletionRequestEventId: z.string().min(1).optional(),
-  })
-  .strict();
+export const chatSessionReleaseMigrationRequestedPayloadSchema = z.object({
+  commandId: z.string().min(1),
+  sessionId: z.string().min(1),
+  characterId: z.string().min(1),
+  fromCharacterContentVersionId: z.string().min(1).nullable(),
+  fromCharacterReleaseId: z.string().min(1).nullable(),
+  toCharacterContentVersionId: z.string().min(1),
+  toCharacterReleaseId: z.string().min(1).nullable(),
+  reason: z.string().trim().min(1).max(1_000),
+  compatibilityQa: z.object({
+    status: z.literal("passed"),
+    policyVersion: z.string().trim().min(1),
+  }).passthrough(),
+  requestedById: z.string().min(1),
+}).passthrough();
 
 // SPEC: v2 completion is meaningful only as the terminal response to one exact
 // Main deletion request. `binding` is deliberately literal so a generic or
@@ -199,74 +187,24 @@ export const accountDeletionRequestedV2PayloadSchema = z
   })
   .strict();
 
-// SPEC: A moderation removal identifies the exact decision that caused Chat
-// to archive sessions. Aggregate-only character events are not reversible.
-export const characterModerationRemovedPayloadSchema = z
-  .object({
-    version: z.literal(1),
-    binding: z.literal("moderation_decision"),
-    characterId: z.string().min(1),
-    moderationDecisionId: z.string().min(1),
-    previousRemovalEventId: z.string().min(1).nullable(),
-  })
-  .strict();
+export const companionMemoryRebuildRequestedV1PayloadSchema = z.object({
+  version: z.literal(1),
+  userId: z.string().min(1),
+  characterId: z.string().min(1),
+  claimToken: z.string().uuid(),
+  authorityVersion: z.string().regex(/^[1-9]\d*$/),
+  purgeTurnIds: z.array(z.string().min(1)),
+  purgeRunAttempts: z.array(z.object({
+    turnId: z.string().min(1),
+    throughAttempt: z.number().int().positive(),
+  }).strict()).default([]),
+}).strict();
 
-// SPEC: An appeal restoration is bound to one immutable removal event. Chat
-// must restore only the sessions captured by that event's causal snapshot.
-export const characterModerationRestorationPayloadSchema = z
-  .object({
-    version: z.literal(1),
-    binding: z.literal("removal_event"),
-    appealId: z.string().min(1),
-    characterId: z.string().min(1),
-    moderationDecisionId: z.string().min(1),
-    removalEventId: z.string().min(1),
-  })
-  .strict();
-
-export type CharacterModerationRemovedPayload = z.infer<
-  typeof characterModerationRemovedPayloadSchema
->;
-export type CharacterModerationRestorationPayload = z.infer<
-  typeof characterModerationRestorationPayloadSchema
->;
-
-export const chatSessionReleaseMigrationRequestedPayloadSchema = z
-  .object({
-    commandId: z.string().min(1),
-    sessionId: z.string().min(1),
-    characterId: z.string().min(1),
-    fromCharacterContentVersionId: z.string().min(1).nullable(),
-    fromCharacterReleaseId: z.string().min(1).nullable(),
-    toCharacterContentVersionId: z.string().min(1),
-    toCharacterReleaseId: z.string().min(1).nullable(),
-    reason: z.string().trim().min(1).max(1_000),
-    compatibilityQa: z
-      .object({
-        status: z.literal("passed"),
-        policyVersion: z.string().trim().min(1),
-      })
-      .passthrough(),
-    requestedById: z.string().min(1),
-  })
-  .passthrough();
-
-export type ChatSessionReleaseMigrationRequestedPayload = z.infer<
-  typeof chatSessionReleaseMigrationRequestedPayloadSchema
->;
-
-export const chatSessionReleaseMigrationAppliedPayloadSchema = z
-  .object({
-    commandId: z.string().min(1),
-    sessionId: z.string().min(1),
-    characterId: z.string().min(1),
-    fromCharacterContentVersionId: z.string().min(1).nullable(),
-    fromCharacterReleaseId: z.string().min(1).nullable(),
-    toCharacterContentVersionId: z.string().min(1),
-    toCharacterReleaseId: z.string().min(1).nullable(),
-    appliedAt: z.iso.datetime(),
-  })
-  .strict();
+export const companionMemoryPurgeRequestedV1PayloadSchema = z.object({
+  version: z.literal(1),
+  userId: z.string().min(1),
+  characterId: z.string().min(1),
+}).strict();
 
 export const videoGeneratePayloadSchema = z
   .object({
@@ -440,17 +378,9 @@ export const aiFinalizePayloadSchema = z.preprocess(
 );
 
 export type ChatStreamEvent = z.infer<typeof chatStreamEventSchema>;
-export type ChatGeneratePayload = z.infer<typeof chatGeneratePayloadSchema>;
-export type ChatMemoryExtractPayload = z.infer<typeof chatMemoryExtractPayloadSchema>;
 export type ImageGeneratePayload = z.infer<typeof imageGeneratePayloadSchema>;
 export type VideoGeneratePayload = z.infer<typeof videoGeneratePayloadSchema>;
 export type ChatImageRequestedPayload = z.infer<typeof chatImageRequestedPayloadSchema>;
-export type ChatImageAcceptedPayload = z.infer<typeof chatImageAcceptedPayloadSchema>;
-export type ChatImageCompletedPayload = z.infer<typeof chatImageCompletedPayloadSchema>;
-export type ChatImageFailedPayload = z.infer<typeof chatImageFailedPayloadSchema>;
-export type ChatAccountErasureCompletedPayload = z.infer<
-  typeof chatAccountErasureCompletedPayloadSchema
->;
 export type ChatAccountErasureCompletedV2Payload = z.infer<
   typeof chatAccountErasureCompletedV2PayloadSchema
 >;

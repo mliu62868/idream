@@ -1,5 +1,4 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { prisma } from "@/server/lib/db";
 import { getCaseDetail } from "@/server/modules/admin-v2/cases/query";
 import {
@@ -30,12 +29,14 @@ const SYS = `${P}sys`;
 const CHAR = `${P}char`;
 const COMPLETE_PERSONA_DETAILS = {
   description: "A thoughtful adult companion.",
-  relationshipArchetype: "trusted confidante",
-  personality: "Patient, observant, and honest.",
-  tone: "Warm and direct.",
-  backstory: "You met through a shared creative project.",
+  detailsMarkdown: [
+    "## Personality and voice",
+    "Patient, observant, honest, warm, and direct.",
+    "",
+    "## Background",
+    "You met through a shared creative project.",
+  ].join("\n"),
   firstMessage: "I am glad you are here. What is on your mind?",
-  exampleDialogue: ["Tell me the part that matters most to you."],
 };
 
 async function freshUser(suffix: string, role: "user" | "admin" = "user") {
@@ -103,14 +104,14 @@ describe("character age hard rule (>= 18)", () => {
         appearance: {},
         hair: {},
         body: {},
-        advancedDetails: COMPLETE_PERSONA_DETAILS,
+        advancedDetails: { ...COMPLETE_PERSONA_DETAILS, age: 17 },
         tags: [],
       },
     });
     const result = await api("POST", `character-drafts/${draft.id}/submit`, {
       userId,
       ageGate: true,
-      body: { age: 17, visibility: "private" },
+      body: { visibility: "private" },
     });
     expectError(result, 400, "bad_request");
   });
@@ -124,7 +125,7 @@ describe("character age hard rule (>= 18)", () => {
         appearance: {},
         hair: {},
         body: {},
-        advancedDetails: COMPLETE_PERSONA_DETAILS,
+        advancedDetails: { ...COMPLETE_PERSONA_DETAILS, age: 21 },
         tags: [],
       },
     });
@@ -147,7 +148,7 @@ describe("character age hard rule (>= 18)", () => {
     const result = await api("POST", `character-drafts/${draft.id}/submit`, {
       userId,
       ageGate: true,
-      body: { age: 21, visibility: "private" },
+      body: { visibility: "private" },
     });
     expectOk(result);
     expect(result.data.character).toMatchObject({ age: 21, status: "approved" });
@@ -164,14 +165,14 @@ describe("content moderation — input + output", () => {
         appearance: {},
         hair: {},
         body: {},
-        advancedDetails: {},
+        advancedDetails: { age: 21 },
         tags: [],
       },
     });
     const result = await api("POST", `character-drafts/${draft.id}/submit`, {
       userId,
       ageGate: true,
-      body: { age: 21, visibility: "private" },
+      body: { visibility: "private" },
     });
     expectError(result, 403, "forbidden");
 
@@ -485,20 +486,9 @@ describe("admin moderation queue + audit", () => {
 
     const removed = await prisma.character.findUnique({ where: { id: target } });
     expect(removed?.status).toBe("removed");
-    await expect(
-      prisma.mainOutboxEvent.findFirstOrThrow({
-        where: {
-          eventType: MAIN_TO_CHAT_EVENTS.characterRemoved,
-          aggregateType: "character",
-          aggregateId: target,
-        },
-        orderBy: { createdAt: "desc" },
-      }),
-    ).resolves.toMatchObject({
-      eventType: MAIN_TO_CHAT_EVENTS.characterRemoved,
-      aggregateType: "character",
-      aggregateId: target,
-    });
+    await expect(prisma.mainOutboxEvent.count({
+      where: { aggregateId: target },
+    })).resolves.toBe(0);
     const evidence = await prisma.caseEvidence.findFirstOrThrow({
       where: { sourceType: "content_report", sourceId: reportId },
     });

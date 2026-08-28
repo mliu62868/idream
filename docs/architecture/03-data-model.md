@@ -1,12 +1,10 @@
 # 03 · 数据模型与 Prisma Schema
 
-更新日期：2026-06-28
+更新日期：2026-08-27
 
 本文件把 `BackendFeatureSpec.md §3` 的实体表落地为 **PostgreSQL-only**（dev = prod = Postgres，见 ADR-2）的 Prisma schema 参考，并给出索引、迁移与 seed 策略。**schema 文件本身是数据形状的 SSoT**，本文是其忠实参考，非逐字镜像。
 
-> **多服务拆分**：schema 已按包拆分（见 ADR-2 / 14）：
-> - `packages/main/prisma/schema.prisma` —— main 应用权威表（本文档主要覆盖范围）。
-> - `packages/chat/prisma/schema.prisma` —— chat 服务权威表 + 跨库视图（multiSchema/views，见 §3.4）。
+> **数据库边界**：只有 `packages/main/prisma/schema.prisma` 保存产品聊天、计费和生成事实。`packages/chat` 不使用 Prisma/PostgreSQL，只保存本地 AgentRun 文件（见 ADR-20 / 14）。
 
 ## 1. 设计约定
 
@@ -42,7 +40,7 @@
 
 ## 3. Schema 参考
 
-> 下面按模块分块，是 `packages/main/prisma/schema.prisma` 的忠实参考（字段以实际文件为准）。chat 表见 §3.4，已物理迁至 `packages/chat/prisma/schema.prisma`。
+> 下面按模块分块，是 `packages/main/prisma/schema.prisma` 的忠实参考（字段以实际文件为准）。Chat 产品表见 §3.4。
 
 ### 3.0 头部 + 生成器 + 数据源
 
@@ -360,68 +358,57 @@ model CharacterTemplate {                          // admin CMS：建角色起�
 }
 ```
 
-### 3.4 Chat（已外迁至 Chat Service）
+### 3.4 Chat（Main 产品权威）
 
-> **拆分已落地**（见 14）。chat 域权威表已**物理迁出** main schema，落在 `packages/chat/prisma/schema.prisma`（独立 `chat` schema，`chat_service` 角色连接）。main **不再**写 `chat_sessions`/`messages`，只通过 Chat API + outbox/inbox 事件交互。DDL 权威在 `db/sql/03_chat_tables.sql`（用户手工执行），Prisma schema 仅映射，不 `db push`。
->
-> **Phase 6 authority**：`companion_memories` / `relationship_states` 不是 PG 表。Scene/relationship/boundaries 是 Chat 文件投影；通用记忆仅由 DSH sidecar 内的 official igrep workspace 持有。没有 `memory.md` 或 `/memories` item authority。
-
-**main 侧只保留一个 read projection**（由 chat→main outbox 投喂，永不是 source of truth）：
+`RecentChat` 是 ChatSession 本身，不是投影。`ChatTurn` 是一个 user/final-assistant 产品对；`ChatTurnAttachment` 绑定精确 Turn。Scene、immutable Character pin、幂等、quota 和生成关联均在 Main。
 
 ```prisma
-// packages/main/prisma/schema.prisma
-model RecentChat {                                 // 图库「最近」标签页用，单向派生自事件
-  sessionId     String    @id
-  userId        String
-  characterId   String
-  title         String?
-  status        String    @default("active")       /// enum: active | deleted
-  lastMessageAt DateTime?
-  createdAt     DateTime  @default(now())
-  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  character     Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
-  @@index([userId, lastMessageAt])
-  @@index([characterId])
+model RecentChat {
+  sessionId                String     @id
+  userId                   String
+  characterId              String
+  activeKey                String?    @unique
+  memoryEnabled            Boolean    @default(true)
+  contextRevision          Int        @default(0)
+  characterContentVersionId String?
+  characterReleaseId       String?
+  openingMessage           String?
+  status                   String     @default("active")
+  turns                    ChatTurn[]
   @@map("recent_chats")
 }
-```
 
-**Chat Service 权威表 + 视图**（`packages/chat/prisma/schema.prisma`，`previewFeatures = ["multiSchema","views"]`，`schemas = ["chat","core","billing","compliance"]`）：
-
-- **只读视图**（main 权威，最小暴露）：`ChatUserView`(core)、`ChatCharacterView`(core)、`ChatCharacterTagsView`(core)、`ChatEntitlementView`(billing)、`ChatUserEligibilityView`(compliance)。Chat Service 只读这些，不写 main 权威表。
-- **chat schema 权威表**：`ChatSession`、`Message`、`MessageVersion`、`ChatUsage`、`ChatModerationEvent`，以及跨服务事件表 `ChatOutboxEvent`(`chat_outbox_events`) / `ChatInboxEvent`(`chat_inbox_events`)。
-
-```prisma
-// packages/chat/prisma/schema.prisma（节选；字段以实际文件为准）
-model ChatSession {
-  id              String    @id
-  userId          String    @map("user_id")
-  characterId     String    @map("character_id")
-  title           String?
-  status          String    @default("active")
-  memoryEnabled   Boolean   @default(true) @map("memory_enabled")
-  lastMessageAt   DateTime? @map("last_message_at")
-  // ... createdAt/updatedAt/deletedAt
-  @@map("chat_sessions")
-  @@schema("chat")
+model ChatTurn {
+  id                 String @id
+  sessionId          String
+  attempt            Int    @default(1)
+  idempotencyKey     String
+  requestHash        String
+  userMessageId      String @unique
+  assistantMessageId String @unique
+  userContent        String
+  assistantContent   String @default("")
+  assistantStatus    String @default("pending")
+  sceneVersion       Int    @default(0)
+  scene              Json?
+  terminalEvidence   Json?
+  attachments        ChatTurnAttachment[]
+  @@unique([sessionId, idempotencyKey])
+  @@map("chat_turns")
 }
 
-model ChatOutboxEvent {                            // chat→main：Outbox→HTTP durable ingest→Inbox ACK
-  id            String    @id
-  eventType     String    @map("event_type")
-  aggregateType String    @map("aggregate_type")
-  aggregateId   String    @map("aggregate_id")
-  payload       Json      @default("{}")
-  status        String    @default("pending")
-  attempts      Int       @default(0)
-  nextRunAt     DateTime  @default(now()) @map("next_run_at")
-  // ...
-  @@index([status, nextRunAt], map: "chat_outbox_pending_idx")
-  @@map("chat_outbox_events")
-  @@schema("chat")
+model ChatTurnAttachment {
+  id              String @id
+  turnId          String
+  status          String @default("requesting")
+  generationJobId String?
+  mediaAssetId    String?
+  metadata        Json   @default("{}")
+  @@map("chat_turn_attachments")
 }
-// ChatInboxEvent 对称（main→chat）。
 ```
+
+Chat 本地 `runs/<turnId>/<attempt>/` 不是数据库模型，也不进入 Prisma。通用记忆在 DSH/igrep；Relationship 产品状态不存在。
 
 ### 3.5 Generation & Media
 
@@ -1009,9 +996,9 @@ model LegalHold {                                  // 法务保留（阻止删�
 ## 4. 索引策略
 
 - **Explore 列表**：`characters(visibility,status)`、`(source,visibility,status)`、`(gender,style)`、`(createdAt)`、`character_stats(likesCount)`/`(chatsCount)` 支撑排序（For You/Popular/Newest）。
-- **聊天历史**：在 Chat Service 侧 `chat_sessions(userId,lastMessageAt)`、`messages(sessionId,createdAt)`；main 侧 `recent_chats(userId,lastMessageAt)`。
+- **聊天历史**：Main `recent_chats(userId,lastMessageAt)` 与 `chat_turns(sessionId,createdAt)`；Chat 只有按 Turn/attempt 分目录的 AgentRun 文件。
 - **图库**：`media_assets(ownerId,type,createdAt)`。
-- **队列**：状态在 Redis/BullMQ，不在关系库（见 06）；跨服务投递扫描 `chat_outbox_events(status,nextRunAt)`。
+- **队列**：生成调度在 Main/Gen Redis/BullMQ；Chat 不使用 BullMQ。账号删除跨服务投递扫描 Main `main_outbox_events(status,nextRunAt)`。
 - **审核队列**：`content_reports(status,priority)`。
 - **后台**：`admin_audit_logs(actorId,createdAt)`/`(action,createdAt)`；可治理配置普遍 `(<key>,status)`。
 - **幂等**：`provider_events(provider,providerEventId)` 唯一。
@@ -1066,7 +1053,7 @@ CREATE INDEX characters_name_trgm ON characters USING gin (name gin_trgm_ops);
 ## 7. 与 BackendFeatureSpec 的差异/补充
 
 - 队列状态在 Redis/BullMQ（ADR-5），关系库只存权威业务态 + 幂等记录；新增基础设施表：`ProviderEvent`、`AnalyticsEvent`、`RoutePage`、`CharacterLike`、`Follow`，spec 未显式列出但实现必需。
-- chat 域已外迁到 Chat Service（`packages/chat`，独立 `chat` schema + 视图）；main 仅保留 `RecentChat` read projection。通用记忆只在 DSH/igrep workspace，Chat 文件层仅承载 Scene/relationship/boundaries（§3.4）。
+- chat 域已外迁到 Chat Service（`packages/chat`，独立 `chat` schema + 视图）；main 仅保留 `RecentChat` read projection。通用记忆只在 DSH/igrep workspace，Chat 文件层仅承载 boundaries 与历史隔离文件，Scene 存在 Chat 账本中（§3.4）。
 - 新增 Admin 控制平面表（§3.10）：审计/审批/特性开关/应用设置/生成模型·prompt·路由·定价的可治理配置/权限/支持授权/法务保留。
 - `Character.source`（official|user）区分官方 CMS 角色与用户角色；新增 `CharacterTemplate`（建角色起步模板）。
 - `MediaAsset.liked` 保留为拥有者快捷标记，多用户点赞用 `MediaLike`。

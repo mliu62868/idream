@@ -26,11 +26,16 @@ const MAX_IMAGE_EDGE = 8_192;
 const MIN_IMAGE_EDGE = 64;
 const LIST_LIMIT = 24;
 const IMAGE_SOURCE_PURPOSE = "identity_experiment_source";
+const CHARACTER_LIBRARY_PURPOSE = "character_library";
+
+type CharacterImageUploadPurpose =
+  | typeof IMAGE_SOURCE_PURPOSE
+  | typeof CHARACTER_LIBRARY_PURPOSE;
 
 type SupportedImageFormat = "jpeg" | "png" | "webp";
 
 export type ParsedCharacterImageSourceForm = {
-  purpose: typeof IMAGE_SOURCE_PURPOSE;
+  purpose: CharacterImageUploadPurpose;
   image: {
     filename: string;
     contentType: "image/jpeg" | "image/png" | "image/webp";
@@ -144,7 +149,7 @@ export async function createCharacterImageSource(input: {
   const uploadId = randomUUID();
   const assetId = `media_identity_source_${uploadId}`;
   const storageKey =
-    `character-image-sources/${input.characterId}/${uploadId}${input.form.image.extension}`;
+    `character-images/${input.characterId}/${uploadId}${input.form.image.extension}`;
   let preparedStored = false;
   let mutationCompleted = false;
 
@@ -154,7 +159,9 @@ export async function createCharacterImageSource(input: {
       actor: input.actor,
       idempotencyKey: input.idempotencyKey,
       requestId: input.requestId,
-      commandType: "character.identity_experiment_source.upload",
+      commandType: input.form.purpose === CHARACTER_LIBRARY_PURPOSE
+        ? "character.library_asset.upload"
+        : "character.identity_experiment_source.upload",
       target: { type: "character", id: input.characterId },
       payload: {
         purpose: input.form.purpose,
@@ -205,7 +212,9 @@ export async function createCharacterImageSource(input: {
               sha256: input.form.image.sha256,
               platformAsset: {
                 purpose: input.form.purpose,
-                status: "draft",
+                status: input.form.purpose === CHARACTER_LIBRARY_PURPOSE
+                  ? "generated"
+                  : "draft",
               },
             }),
           },
@@ -214,10 +223,14 @@ export async function createCharacterImageSource(input: {
           data: {
             actorId: input.actor.id,
             actorRole: input.actor.role,
-            action: "character.identity_experiment_source.uploaded",
+            action: input.form.purpose === CHARACTER_LIBRARY_PURPOSE
+              ? "character.library_asset.uploaded"
+              : "character.identity_experiment_source.uploaded",
             targetType: "media_asset",
             targetId: asset.id,
-            reason: "Upload a private local source for an identity experiment",
+            reason: input.form.purpose === CHARACTER_LIBRARY_PURPOSE
+              ? "Import an image into the Character library"
+              : "Upload a private local source for an identity experiment",
             after: toInputJson({
               characterId: input.characterId,
               assetId: asset.id,

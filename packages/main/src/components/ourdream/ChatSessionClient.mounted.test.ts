@@ -185,6 +185,10 @@ describe("ChatSessionClient streaming composer", () => {
     });
 
     expect(FakeEventSource.instances.at(-1)?.closed).toBe(true);
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/v1/messages/assistant-1/cancel",
+      { method: "POST" },
+    );
     expect(replyBubble()?.textContent).toContain("Once upon");
     expect(container.querySelector('[aria-label="Assistant is typing"]')).toBeNull();
     expect(container.querySelector('[data-testid="chat-stop-reply"]')).toBeNull();
@@ -192,6 +196,42 @@ describe("ChatSessionClient streaming composer", () => {
     expect(replyBubble()?.querySelector('[data-testid="chat-regenerate"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="chat-session-status"]')?.textContent)
       .toContain("Reply stopped.");
+  });
+
+  it("retracts provisional tool-step prose before rendering the final step", async () => {
+    await startStreamingReply();
+    expect(replyBubble()?.textContent).toContain("Once upon");
+
+    await act(async () => {
+      FakeEventSource.instances.at(-1)?.emit("replace", { content: "" });
+    });
+    expect(replyBubble()?.textContent).not.toContain("Once upon");
+
+    await act(async () => {
+      FakeEventSource.instances.at(-1)?.emit("delta", { delta: "Final reply" });
+    });
+    expect(replyBubble()?.textContent).toContain("Final reply");
+  });
+
+  it("turns an insufficient-balance image failure into a recovery path", async () => {
+    sessionMessages = [{
+      ...opening,
+      attachments: [{
+        id: "attachment-payment",
+        kind: "generated_image",
+        status: "failed",
+        errorCode: "payment_required",
+        promptHint: "A portrait by the window",
+      }],
+    }];
+
+    await mountSession();
+
+    const card = container.querySelector('[data-testid="chat-image-attachment-card"]');
+    expect(card?.textContent).toContain("Not enough dreamcoins");
+    expect(card?.textContent).not.toContain("Retry image");
+    expect(card?.querySelector('a[href="/upgrade?returnTo=%2Fchat%2Fsession-1"]')?.textContent)
+      .toContain("Get more dreamcoins");
   });
 
   async function mountSession() {

@@ -4,8 +4,6 @@ import { claimControlPlaneCommand } from "../shared/control-plane-command";
 import { transitionControlPlaneCommandAttempt } from "../shared/control-plane-command-attempt";
 import { transitionControlPlaneCommand } from "../shared/control-plane-command-transition";
 import { toInputJson } from "../shared/prisma-json";
-import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
-import { recordMainToChatEvent } from "@/processes/chat-outbox";
 import { executeCreativeRetryCommand } from "../creative/retry-executor";
 import { executeIncidentActionPlanCommand } from "../incidents/action-executor";
 import { transitionIncident } from "../incidents/transition";
@@ -227,8 +225,8 @@ async function executeMigrateSessionRelease(commandId: string) {
       const fromCharacterContentVersionId = nullableString(payload, "fromCharacterContentVersionId");
       const fromCharacterReleaseId = nullableString(payload, "fromCharacterReleaseId");
       const reason = jsonObject(payload.reason);
-      const compatibilityQa = jsonObject(payload.compatibilityQa);
-      if (compatibilityQa.status !== "passed") {
+      const compatibilityCheck = jsonObject(payload.compatibilityCheck);
+      if (compatibilityCheck.status !== "passed") {
         throw Errors.conflict("Compatibility QA is no longer passing");
       }
       // Interactive transactions own one pg connection; keep authority reads
@@ -246,42 +244,54 @@ async function executeMigrateSessionRelease(commandId: string) {
       ) {
         throw Errors.conflict("Target Release changed before session migration dispatch");
       }
-      const eventId = `session-release-migration:${claimed.id}`;
-      const eventPayload = {
+      const migrated = await tx.recentChat.updateMany({
+        where: {
+          sessionId: claimed.targetId,
+          characterId,
+          characterContentVersionId: fromCharacterContentVersionId,
+          characterReleaseId: fromCharacterReleaseId,
+        },
+        data: {
+          characterContentVersionId: toCharacterContentVersionId,
+          characterReleaseId: toCharacterReleaseId,
+          releasePinnedAt: new Date(),
+          contextRevision: { increment: 1 },
+        },
+      });
+      if (migrated.count !== 1) {
+        throw Errors.conflict("Chat session Release pin changed before migration");
+      }
+      const appliedAt = new Date();
+      const transitioned = await transitionControlPlaneCommand(tx, {
         commandId: claimed.id,
-        sessionId: claimed.targetId,
-        characterId,
-        fromCharacterContentVersionId,
-        fromCharacterReleaseId,
-        toCharacterContentVersionId,
-        toCharacterReleaseId,
-        reason: typeof reason.summary === "string" ? reason.summary : "compatibility migration",
-        compatibilityQa,
-        requestedById: claimed.actorId,
-      };
-      await recordMainToChatEvent({
-        eventId,
-        eventType: MAIN_TO_CHAT_EVENTS.sessionReleaseMigrationRequested,
-        schemaVersion: 2,
-        aggregateType: "chat_session",
-        aggregateId: claimed.targetId,
-        payload: eventPayload,
-      }, tx);
-      return transitionControlPlaneCommand(tx, {
-        commandId: claimed.id,
-        to: "verifying",
+        to: "succeeded",
         expected: { from: "running", leaseOwner: WORKER_ID, attemptCount: claimed.attemptCount },
         data: {
           result: toInputJson({
             sessionId: claimed.targetId,
-            dispatchEventId: eventId,
-            verificationState: "verifying",
+            characterId,
+            fromCharacterContentVersionId,
+            fromCharacterReleaseId,
+            toCharacterContentVersionId,
+            toCharacterReleaseId,
+            reason: typeof reason.summary === "string" ? reason.summary : "compatibility migration",
+            compatibilityCheck,
+            verificationState: "passed",
+            appliedAt: appliedAt.toISOString(),
           }),
           leaseOwner: null,
           leaseExpiresAt: null,
-          heartbeatAt: new Date(),
+          heartbeatAt: appliedAt,
+          finishedAt: appliedAt,
         },
       });
+      await transitionControlPlaneCommandAttempt(tx, {
+        commandId: claimed.id,
+        attemptNo: claimed.attemptCount,
+        to: "succeeded",
+        data: { finishedAt: appliedAt },
+      });
+      return transitioned;
     });
   } catch (error) {
     await failCommand(claimed.id, claimed.attemptCount, error);

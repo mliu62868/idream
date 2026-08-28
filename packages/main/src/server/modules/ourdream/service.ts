@@ -33,6 +33,11 @@ import {
   resumeSubscription,
 } from "./billing-checkout";
 import {
+  characterDraftDetailsWriteSchema,
+  mergeCurrentCharacterDraftDetails,
+  readCurrentCharacterDraftDetails,
+} from "./character-draft-details";
+import {
   activeSubscriptionWhere,
   billingAccessDTO,
   entitlementMap,
@@ -62,15 +67,10 @@ import {
 import { invalidateCharacterDraftAssetPack } from "@/server/modules/admin-v2/characters/draft-asset-authority";
 import { proxyChatRequest } from "@/server/bff/chat-proxy";
 import {
-  MAIN_TO_CHAT_EVENTS,
   METRIC_PRODUCT_EVENTS,
   characterExposureRecordedV2Schema,
   idempotencyKeys,
 } from "@idream/shared/contracts";
-import {
-  dispatchPendingChatEvents,
-  recordMainToChatEvent,
-} from "@/processes/chat-outbox";
 import { appendCanonicalMetricEvent } from "@/server/modules/admin-v2/metrics/event-writer";
 import { createClassifiedAnalyticsEvent } from "@/server/modules/admin-v2/metrics/classified-event-writer";
 import { recordExperimentExposure } from "@/server/modules/admin-v2/experiments/runtime";
@@ -112,7 +112,6 @@ import {
 import { mediaAssetAuthorityDependencies } from "@/server/modules/admin-v2/shared/media-asset-authority-dependencies";
 import { canonicalJsonHash } from "@/server/modules/admin-v2/shared/idempotency";
 import {
-  transitionCharacterProject,
   transitionCharacterServing,
 } from "@/server/modules/admin-v2/characters/transition";
 import {
@@ -290,25 +289,25 @@ const draftCreateSchema = z.object({
   gender: z.enum(GENDERS).optional(),
   style: z.enum(CHARACTER_STYLES).optional(),
   name: z.string().trim().min(1).max(80).optional(),
-});
+  age: z.number().int().min(18).max(120).optional(),
+}).strict();
 
 const draftPatchSchema = z.object({
   step: z.number().int().min(0).max(12).optional(),
   gender: z.enum(GENDERS).nullable().optional(),
   style: z.enum(CHARACTER_STYLES).nullable().optional(),
   name: z.string().trim().min(1).max(80).nullable().optional(),
+  age: z.number().int().min(18).max(120).optional(),
   appearance: z.record(z.string(), z.unknown()).optional(),
   hair: z.record(z.string(), z.unknown()).optional(),
   body: z.record(z.string(), z.unknown()).optional(),
-  advancedDetails: z.record(z.string(), z.unknown()).optional(),
+  advancedDetails: characterDraftDetailsWriteSchema.optional(),
   tags: z.array(z.string().trim().min(1).max(40)).max(12).optional(),
-});
+}).strict();
 
 const draftSubmitSchema = z.object({
   visibility: z.enum(CHARACTER_VISIBILITY).default("private"),
-  description: z.string().trim().min(1).max(1_500).optional(),
-  age: z.number().int().min(18).max(99).default(21),
-});
+}).strict();
 
 const draftPreviewSelectSchema = z.object({
   previewJobId: z.string().trim().min(1),
@@ -573,6 +572,7 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
 
   if (resource === "character-drafts") {
     if (!id && method === "POST") return createDraft(request);
+    if (id === "current" && !action && method === "GET") return currentDraft(request);
     if (id && !action && method === "PATCH") return updateDraft(request, id);
     if (id && action === "preview" && method === "POST") return previewDraft(request, id);
     if (id && action === "preview" && method === "GET") return previewStatus(request, id);
@@ -1654,7 +1654,7 @@ async function createDraft(request: Request) {
       appearance: {},
       hair: {},
       body: {},
-      advancedDetails: {},
+      advancedDetails: body.age === undefined ? {} : { age: body.age },
       tags: [],
     },
   });
@@ -1669,14 +1669,23 @@ async function updateDraft(request: Request, id: string) {
   requireAgeVerified(ctx);
   const body = draftPatchSchema.parse(await jsonBody(request));
   const currentDraft = await assertDraftOwner(id, user.id);
+  const currentDetails = readCurrentCharacterDraftDetails(currentDraft.advancedDetails);
   const identityChanged =
     (body.name !== undefined && body.name !== currentDraft.name) ||
     (body.gender !== undefined && body.gender !== currentDraft.gender) ||
     (body.style !== undefined && body.style !== currentDraft.style) ||
+    (body.age !== undefined && body.age !== currentDetails.age) ||
     jsonFieldChanged(body.appearance, currentDraft.appearance) ||
     jsonFieldChanged(body.hair, currentDraft.hair) ||
-    jsonFieldChanged(body.body, currentDraft.body) ||
-    advancedDetailsIdentityChanged(body.advancedDetails, currentDraft.advancedDetails);
+    jsonFieldChanged(body.body, currentDraft.body);
+  const nextAdvancedDetails =
+    body.advancedDetails !== undefined || body.age !== undefined
+      ? mergeCurrentCharacterDraftDetails({
+          current: currentDraft.advancedDetails,
+          patch: body.advancedDetails,
+          age: body.age,
+        })
+      : undefined;
 
   const draft = await prisma.characterDraft.update({
     where: { id },
@@ -1688,7 +1697,9 @@ async function updateDraft(request: Request, id: string) {
       appearance: body.appearance ? toInputJson(body.appearance) : undefined,
       hair: body.hair ? toInputJson(body.hair) : undefined,
       body: body.body ? toInputJson(body.body) : undefined,
-      advancedDetails: body.advancedDetails ? toInputJson(body.advancedDetails) : undefined,
+      advancedDetails: nextAdvancedDetails
+        ? toInputJson(nextAdvancedDetails)
+        : undefined,
       tags: body.tags ? toInputJson(body.tags.map(slugify)) : undefined,
       previewJobId: identityChanged ? null : undefined,
     },
@@ -1701,28 +1712,47 @@ function jsonFieldChanged(next: Record<string, unknown> | undefined, current: un
   return next !== undefined && JSON.stringify(next) !== JSON.stringify(current ?? {});
 }
 
-const personaDetailFields = new Set([
-  "description",
-  "relationshipArchetype",
-  "relationship",
-  "detailsMarkdown",
-  "personality",
-  "tone",
-  "backstory",
-  "firstMessage",
-  "exampleDialogue",
-]);
-
-function advancedDetailsIdentityChanged(
-  next: Record<string, unknown> | undefined,
-  current: unknown,
-) {
-  if (next === undefined) return false;
-  const identityDetails = (value: unknown) =>
-    Object.fromEntries(
-      Object.entries(jsonRecord(value)).filter(([key]) => !personaDetailFields.has(key)),
-    );
-  return JSON.stringify(identityDetails(next)) !== JSON.stringify(identityDetails(current));
+async function currentDraft(request: Request) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  const latest = await prisma.characterDraft.findFirst({
+    where: { ownerId: user.id },
+    orderBy: { updatedAt: "desc" },
+  });
+  const latestDetails = latest
+    ? readCurrentCharacterDraftDetails(latest.advancedDetails)
+    : null;
+  const historicalSubmission = latest && !latestDetails?.submittedCharacterId
+    ? await prisma.characterContentVersion.findFirst({
+        where: { sourceType: "user", sourceId: latest.id },
+        select: { characterId: true },
+      })
+    : null;
+  const draft = latest && !latestDetails?.submittedCharacterId && !historicalSubmission
+    ? latest
+    : null;
+  if (!draft) return ok({ draft: null, previewJob: null, asset: null });
+  const previewJob = draft.previewJobId
+    ? await prisma.characterPreviewJob.findFirst({
+        where: { id: draft.previewJobId, draftId: draft.id },
+      })
+    : await prisma.characterPreviewJob.findFirst({
+        where: { draftId: draft.id },
+        orderBy: { createdAt: "desc" },
+      });
+  const asset = previewJob?.resultAssetId
+    ? await prisma.mediaAsset.findUnique({ where: { id: previewJob.resultAssetId } })
+    : null;
+  return ok({
+    draft: {
+      ...draft,
+      advancedDetails: latestDetails,
+    },
+    previewJob,
+    asset: asset ? mediaDTO(asset) : null,
+  });
 }
 
 async function previewDraft(request: Request, id: string) {
@@ -1808,8 +1838,6 @@ async function submitDraft(request: Request, id: string) {
     userId: user.id,
     draftId: id,
     visibility: body.visibility,
-    description: body.description,
-    age: body.age,
   });
   // Input moderation already ran synchronously inside the submit action; no async pass.
   await trackEvent("character_created", { characterId: character.id }, ctx);
@@ -4535,11 +4563,7 @@ async function archiveCharacter(request: Request, id: string) {
         servingId: serving.id,
         to: "retired",
         expectedVersion: serving.version,
-        data: {
-        currentReleaseId: null,
-        scheduledReleaseId: null,
-        scheduledAt: null,
-        },
+        data: { currentReleaseId: null },
       });
     }
     await tx.characterSubmission.updateMany({
@@ -4562,37 +4586,17 @@ async function archiveCharacter(request: Request, id: string) {
       where: {
         characterId: character.id,
         activeKey: { not: null },
-        phase: { notIn: ["inactive", "retired"] },
       },
-      select: { id: true, phase: true, version: true },
+      select: { id: true },
     });
     for (const project of activeProjects) {
-      await transitionCharacterProject(tx, {
-        projectId: project.id,
-        to: "retired",
-        expectedVersion: project.version,
-        data: { activeKey: null },
+      await tx.characterProject.update({
+        where: { id: project.id },
+        data: { activeKey: null, version: { increment: 1 } },
       });
     }
-    await recordMainToChatEvent({
-      eventId: `character_removed_${character.id}_${randomUUID()}`,
-      eventType: MAIN_TO_CHAT_EVENTS.characterRemoved,
-      aggregateType: "character",
-      aggregateId: character.id,
-      payload: { characterId: character.id },
-    }, tx);
     return true;
   });
-  if (archived) {
-    try {
-      await dispatchPendingChatEvents();
-    } catch (error) {
-      logger.error(
-        { error, characterId: id },
-        "failed to dispatch durable Chat character removal",
-      );
-    }
-  }
   return ok({ archived: true });
 }
 
@@ -5077,14 +5081,13 @@ async function assertCharacterDisplayImageMutable(
 ) {
   const serving = await tx.characterServing.findUnique({
     where: { characterId },
-    select: { currentReleaseId: true, scheduledReleaseId: true },
+    select: { currentReleaseId: true },
   });
-  if (serving?.currentReleaseId || serving?.scheduledReleaseId) {
+  if (serving?.currentReleaseId) {
     throw Errors.conflict(
       "Release-managed Character display images must change through Character Assets and Release",
       {
         currentReleaseId: serving.currentReleaseId,
-        scheduledReleaseId: serving.scheduledReleaseId,
         deepLink: `/admin/characters/${characterId}?tab=assets`,
       },
     );

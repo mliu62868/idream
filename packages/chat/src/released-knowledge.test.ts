@@ -54,17 +54,11 @@ describe("released knowledge authority", () => {
     })).toThrow(/content version.*does not belong/);
   });
 
-  it("emits an empty digest without consulting immutable content when no release is pinned", () => {
-    expect(buildReleasedKnowledgeSnapshot({
+  it("rejects an unattributed character instead of inventing legacy content authority", () => {
+    expect(() => buildReleasedKnowledgeSnapshot({
       characterId: "character-1",
       contentVersion: null,
       release: null,
-    })).toEqual({
-      characterId: "character-1",
-      characterContentVersionId: "legacy-unattributed",
-      characterReleaseId: null,
-      digest: "105eeb3b7da80af178083cdcd5a37d702e64d0d2daa2ca51f531e11992de875f",
-      files: [],
-    });
+    } as never)).toThrow(/no immutable content version/);
   });
 });

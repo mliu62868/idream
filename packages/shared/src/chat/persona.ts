@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { renderCharacterSoulMarkdown } from "./persona-render";
 
-export const CHARACTER_SOUL_SCHEMA_VERSION = 2 as const;
-export const CHARACTER_SOUL_COMPILER_VERSION = "character-soul-2" as const;
+export const CHARACTER_SOUL_SCHEMA_VERSION = 3 as const;
+export const CHARACTER_SOUL_COMPILER_VERSION = "character-soul-3" as const;
 
 export type CharacterSoulGender = "female" | "male" | "trans";
 
@@ -17,7 +17,6 @@ export interface CharacterSoul {
   name: string;
   age: number;
   gender: CharacterSoulGender;
-  relationshipArchetype: string;
   characterPromise: string;
   detailsMarkdown: string;
 }
@@ -30,19 +29,17 @@ export interface CompiledCharacterSoul {
 }
 
 export interface CharacterSoulSnapshot {
-  schemaVersion: 2;
+  schemaVersion: 3;
   soul: CharacterSoul;
   compiled: CompiledCharacterSoul;
 }
 
-/**
- * Historical snapshots keep their stored schema marker and compiled bytes.
- * Their old authoring dimensions are projected into the one current details
- * field only for editing and operator display; Chat still receives the pinned
- * historical system prompt.
+/** Historical snapshots are verified first, then projected through the current
+ * compiler. This preserves corruption detection without re-introducing removed
+ * product fields into Chat prompts.
  */
 export interface LoadedCharacterSoulSnapshot {
-  schemaVersion: 0 | 1 | 2;
+  schemaVersion: 0 | 1 | 2 | 3;
   soul: CharacterSoul;
   compiled: CompiledCharacterSoul;
 }
@@ -110,18 +107,21 @@ type LegacyV1Soul = {
   };
 };
 
+type LegacyV2Soul = CharacterSoul & {
+  relationshipArchetype: string;
+};
+
 const PROMPT_WARNING_TOKENS = 6_000;
 const CHARACTER_SOUL_FIELDS = new Set([
   "name",
   "age",
   "gender",
-  "relationshipArchetype",
   "characterPromise",
   "detailsMarkdown",
 ]);
 
 /**
- * SPEC: Character Soul authoring has five required facts and one optional
+ * SPEC: Character Soul authoring has four required facts and one optional
  * Markdown field. The compiler owns validation, rendering, token estimation,
  * and fingerprinting behind this one interface.
  */
@@ -185,8 +185,8 @@ export function compileCharacterSoul(
 }
 
 /**
- * Historical write boundaries call this before v2 compilation. It folds every
- * flat Soul field shipped by the old clients into one Markdown value; the v2
+ * Historical write boundaries call this before v3 compilation. It folds every
+ * flat Soul field shipped by the old clients into one Markdown value; the v3
  * compiler itself stays strict and never guesses whether an unknown key matters.
  */
 export function legacySoulDetailsMarkdown(
@@ -243,8 +243,9 @@ export function legacySoulDetailsMarkdown(
 }
 
 /**
- * SPEC: immutable v2 bytes are verified, never recompiled. Historical v0/v1
- * bytes remain readable so existing sessions keep their exact pinned prompt.
+ * SPEC: current bytes are verified and used unchanged. Historical v0/v1/v2
+ * bytes are verified, then compiled into the current relation-free runtime
+ * projection so old sessions cannot bypass a removed product invariant.
  */
 export function loadCharacterSoulSnapshot(
   stored: unknown,
@@ -265,6 +266,7 @@ export function loadCharacterSoulSnapshot(
     return loadLegacySnapshot(root);
   }
   if (root.schemaVersion === 1) return loadV1Snapshot(root);
+  if (root.schemaVersion === 2) return loadV2Snapshot(root);
   if (root.schemaVersion !== CHARACTER_SOUL_SCHEMA_VERSION) {
     return failed(
       "soul_schema_version_unsupported",
@@ -285,7 +287,7 @@ export function loadCharacterSoulSnapshot(
     diagnostics.push(errorDiagnostic(
       "compiled_prompt_mismatch",
       ["compiled", "systemPrompt"],
-      "Stored Soul prompt does not match the schema v2 compiler output.",
+      "Stored Soul prompt does not match the schema v3 compiler output.",
     ));
     return { ok: false, diagnostics };
   }
@@ -316,16 +318,10 @@ export function loadCharacterSoulSnapshot(
   }
   return {
     ok: true,
-    snapshot: { schemaVersion: 2, soul, compiled },
+    snapshot: { schemaVersion: 3, soul, compiled },
     renderedMarkdown,
     diagnostics,
   };
-}
-
-export function companionRole(relationship?: string | null): string {
-  const value = cleanText(relationship);
-  if (!value || value.startsWith("@")) return "AI companion";
-  return value;
 }
 
 export function looksLikeMockChatResponse(text: string): boolean {
@@ -346,12 +342,6 @@ function decodeSoul(
     ),
     age: adultAge(root.age, diagnostics, ["soul", "age"]),
     gender: gender(root.gender, diagnostics, ["soul", "gender"]),
-    relationshipArchetype: requiredText(
-      root.relationshipArchetype,
-      diagnostics,
-      "soul_relationship_required",
-      ["soul", "relationshipArchetype"],
-    ),
     characterPromise: requiredText(
       root.characterPromise,
       diagnostics,
@@ -360,6 +350,86 @@ function decodeSoul(
     ),
     detailsMarkdown: markdownText(root.detailsMarkdown),
   };
+}
+
+function loadV2Snapshot(root: Record<string, unknown>): CharacterSoulResult {
+  const diagnostics: SoulDiagnostic[] = [];
+  const legacySoul = decodeV2Soul(record(root.soul) ?? {}, diagnostics);
+  const compiled = decodeCompiled(root.compiled, diagnostics);
+  if (hasErrors(diagnostics) || !compiled) return { ok: false, diagnostics };
+  const renderedMarkdown = renderHistoricalV2SoulMarkdown(legacySoul);
+  if (
+    compiled.compilerVersion !== "character-soul-2" ||
+    compiled.systemPrompt !== renderedMarkdown
+  ) {
+    diagnostics.push(errorDiagnostic(
+      "compiled_prompt_mismatch",
+      ["compiled", "systemPrompt"],
+      "Stored Soul prompt does not match the historical schema v2 compiler output.",
+    ));
+    return { ok: false, diagnostics };
+  }
+  if (compiled.fingerprint !== soulFingerprint({
+    soul: legacySoul,
+    compilerVersion: compiled.compilerVersion,
+    systemPrompt: compiled.systemPrompt,
+  })) {
+    diagnostics.push(fingerprintMismatch());
+    return { ok: false, diagnostics };
+  }
+  if (compiled.estimatedTokens !== estimateTokens(compiled.systemPrompt)) {
+    diagnostics.push(errorDiagnostic(
+      "compiled_token_estimate_mismatch",
+      ["compiled", "estimatedTokens"],
+      "Stored Soul token estimate does not match its compiled prompt bytes.",
+    ));
+    return { ok: false, diagnostics };
+  }
+  return compileHistoricalProjection(
+    withoutHistoricalRelationship(legacySoul),
+    [{
+      code: "historical_relationship_removed",
+      path: ["soul", "relationshipArchetype"],
+      severity: "warning",
+      message: "Verified schemaVersion 2 bytes and removed its historical relationship field from the current runtime projection.",
+    }],
+  );
+}
+
+function decodeV2Soul(
+  root: Record<string, unknown>,
+  diagnostics: SoulDiagnostic[],
+): LegacyV2Soul {
+  return {
+    ...decodeSoul(root, diagnostics),
+    relationshipArchetype: requiredText(
+      root.relationshipArchetype,
+      diagnostics,
+      "soul_relationship_required",
+      ["soul", "relationshipArchetype"],
+    ),
+  };
+}
+
+function withoutHistoricalRelationship(soul: LegacyV2Soul): CharacterSoul {
+  const { relationshipArchetype: _historicalRelationship, ...current } = soul;
+  return current;
+}
+
+function renderHistoricalV2SoulMarkdown(soul: LegacyV2Soul): string {
+  const detailsMarkdown = soul.detailsMarkdown.trim();
+  return [
+    `# ${soul.name.replace(/\s+/g, " ").trim()} — Character Soul`,
+    "",
+    `You are ${soul.name.replace(/\s+/g, " ").trim()}. Speak and act consistently with this character.`,
+    "",
+    "## Basic information",
+    `- Age: ${soul.age}`,
+    `- Gender: ${soul.gender}`,
+    `- Relationship: ${soul.relationshipArchetype.replace(/\s+/g, " ").trim()}`,
+    `- Character: ${soul.characterPromise.replace(/\s+/g, " ").trim()}`,
+    ...(detailsMarkdown ? ["", "## Additional details", "", detailsMarkdown] : []),
+  ].join("\n").trim();
 }
 
 function loadV1Snapshot(root: Record<string, unknown>): CharacterSoulResult {
@@ -376,12 +446,12 @@ function loadV1Snapshot(root: Record<string, unknown>): CharacterSoulResult {
     return { ok: false, diagnostics };
   }
   const soul = projectV1Soul(legacySoul);
-  return {
-    ok: true,
-    snapshot: { schemaVersion: 1, soul, compiled },
-    renderedMarkdown: renderCharacterSoulMarkdown(soul),
-    diagnostics,
-  };
+  return compileHistoricalProjection(soul, [...diagnostics, {
+      code: "historical_relationship_removed",
+      path: ["soul", "identity", "relationshipArchetype"],
+      severity: "warning",
+      message: "Verified schemaVersion 1 bytes and removed its historical relationship field from the current runtime projection.",
+    }]);
 }
 
 function decodeV1Soul(value: unknown, diagnostics: SoulDiagnostic[]): LegacyV1Soul {
@@ -449,7 +519,6 @@ function projectV1Soul(legacy: LegacyV1Soul): CharacterSoul {
     name: legacy.identity.name,
     age: legacy.identity.age,
     gender: legacy.identity.gender,
-    relationshipArchetype: legacy.identity.relationshipArchetype,
     characterPromise: legacy.identity.characterPromise,
     detailsMarkdown: renderV1DetailsMarkdown(legacy),
   };
@@ -536,14 +605,14 @@ function loadLegacySnapshot(root: Record<string, unknown>): CharacterSoulResult 
     return failed(
       "legacy_snapshot_incomplete",
       [],
-      "Legacy pinned Soul must contain identity, behavior, relationship, and explicit compiled prompt bytes.",
+      "Legacy pinned Soul must contain its historical identity, behavior, and explicit compiled prompt bytes.",
     );
   }
   const details: string[] = [];
   appendDetailSection(details, "Personality and voice", [personality, tone]);
   appendDetailSection(details, "Background", [backstory]);
   appendBulletSection(details, "Dialogue examples", examples);
-  const soul: CharacterSoul = {
+  const legacySoul: LegacyV2Soul = {
     name,
     age,
     gender: genderValue,
@@ -551,23 +620,29 @@ function loadLegacySnapshot(root: Record<string, unknown>): CharacterSoulResult 
     characterPromise,
     detailsMarkdown: details.join("\n\n"),
   };
-  const compilerVersion = "legacy-0";
-  const compiled = {
-    compilerVersion,
-    systemPrompt: legacyPrompt,
-    fingerprint: soulFingerprint({ soul, compilerVersion, systemPrompt: legacyPrompt }),
-    estimatedTokens: estimateTokens(legacyPrompt),
-  };
-  return {
-    ok: true,
-    snapshot: { schemaVersion: 0, soul, compiled },
-    renderedMarkdown: renderCharacterSoulMarkdown(soul),
-    diagnostics: [{
+  const soul = withoutHistoricalRelationship(legacySoul);
+  return compileHistoricalProjection(soul, [{
       code: "legacy_snapshot_loaded",
       path: ["schemaVersion"],
       severity: "warning",
-      message: "Loaded an immutable schemaVersion 0 Soul through the historical read adapter.",
-    }],
+      message: "Verified a schemaVersion 0 Soul and projected it through the current compiler.",
+    }, {
+      code: "historical_relationship_removed",
+      path: ["relationshipArchetype"],
+      severity: "warning",
+      message: "Removed the historical relationship field from the current runtime projection.",
+    }]);
+}
+
+function compileHistoricalProjection(
+  soul: CharacterSoul,
+  historicalDiagnostics: SoulDiagnostic[],
+): CharacterSoulResult {
+  const projected = compileCharacterSoul(soul);
+  if (!projected.ok) return projected;
+  return {
+    ...projected,
+    diagnostics: [...historicalDiagnostics, ...projected.diagnostics],
   };
 }
 
@@ -660,7 +735,7 @@ function unknownSoulField(path: string[]): SoulDiagnostic {
   return errorDiagnostic(
     "soul_field_unknown",
     path,
-    `${path.join(".")} is not part of the Character Soul v2 contract; migrate it into soul.detailsMarkdown.`,
+    `${path.join(".")} is not part of the Character Soul v3 contract; migrate it into soul.detailsMarkdown.`,
   );
 }
 

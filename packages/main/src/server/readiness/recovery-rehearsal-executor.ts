@@ -103,18 +103,13 @@ SELECT jsonb_build_object(
   'latest_migration', (SELECT migration_name FROM public._prisma_migrations WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL ORDER BY finished_at DESC, migration_name DESC LIMIT 1),
   'main_outbox_pending', (SELECT count(*) FROM public.main_outbox_events WHERE status = 'pending'),
   'main_outbox_failed', (SELECT count(*) FROM public.main_outbox_events WHERE status = 'failed'),
+  'main_outbox_processing', (SELECT count(*) FROM public.main_outbox_events WHERE status = 'processing'),
   'main_outbox_transport_pending', (SELECT count(*) FROM public.main_outbox_events WHERE "eventType" IN (${mainOutboxTransportEventTypesSql}) AND status = 'pending'),
   'main_outbox_transport_failed', (SELECT count(*) FROM public.main_outbox_events WHERE "eventType" IN (${mainOutboxTransportEventTypesSql}) AND status = 'failed'),
   'main_outbox_dispatched', (SELECT count(*) FROM public.main_outbox_events WHERE "eventType" IN (${mainOutboxTransportEventTypesSql}) AND status = 'dispatched'),
   'main_outbox_transport_unknown', (SELECT count(*) FROM public.main_outbox_events WHERE "eventType" IN (${mainOutboxTransportEventTypesSql}) AND status NOT IN (${mainOutboxTransportKnownStatusesSql})),
   'inbound_event_received', (SELECT count(*) FROM public.inbound_event_receipts WHERE "processingState" = 'received'),
-  'inbound_event_processing', (SELECT count(*) FROM public.inbound_event_receipts WHERE "processingState" = 'processing'),
-  'chat_outbox_pending', (SELECT count(*) FROM chat.chat_outbox_events WHERE status = 'pending'),
-  'chat_outbox_failed', (SELECT count(*) FROM chat.chat_outbox_events WHERE status = 'failed'),
-  'chat_inbox_pending', (SELECT count(*) FROM chat.chat_inbox_events WHERE status = 'pending'),
-  'chat_inbox_failed', (SELECT count(*) FROM chat.chat_inbox_events WHERE status = 'failed'),
-  'chat_inbox_processing', (SELECT count(*) FROM chat.chat_inbox_events WHERE status = 'processing'),
-  'chat_file_mutations_pending', (SELECT count(*) FROM chat.chat_file_mutations WHERE status = 'pending')
+  'inbound_event_processing', (SELECT count(*) FROM public.inbound_event_receipts WHERE "processingState" = 'processing')
 );`;
 
 const TABLE_MANIFEST_SQL = String.raw`
@@ -258,10 +253,6 @@ WITH user_namespaces AS (
   FROM role_oids
   JOIN pg_roles AS role ON role.oid = role_oids.role_oid
   WHERE role_oids.role_oid <> 0
-  UNION SELECT 'core_owner'
-  UNION SELECT 'chat_owner'
-  UNION SELECT 'chat_service'
-  UNION SELECT 'chat_projector'
 ), roles AS (
   SELECT jsonb_build_object(
     'role', role.rolname,
@@ -375,36 +366,6 @@ function psql(
     input: sql,
     stage,
   }).stdout.toString("utf8").trim();
-}
-
-function assertChatDatabaseAuthority(
-  runner: RecoveryCommandRunner,
-  env: NodeJS.ProcessEnv,
-  source: RecoveryPostgresConnection,
-  connection: RecoveryPostgresConnection,
-  label: string,
-  expectedRole: "chat_service" | "chat_projector",
-  stage: string,
-) {
-  assertSameDatabaseAuthority(source, connection, label);
-  const identity = parseJson<{
-    session_user?: unknown;
-    current_user?: unknown;
-    database?: unknown;
-  }>(psql(
-    runner,
-    connection,
-    env,
-    stage,
-    "SELECT jsonb_build_object('session_user', session_user, 'current_user', current_user, 'database', current_database());",
-  ), stage);
-  if (
-    identity.session_user !== expectedRole ||
-    identity.current_user !== expectedRole ||
-    identity.database !== source.database
-  ) {
-    throw new Error(`${label} did not authenticate as exact role ${expectedRole}`);
-  }
 }
 
 function parseJson<T>(value: string, stage: string): T {
@@ -1439,31 +1400,11 @@ export async function executeRecoveryRehearsal(input: {
     input.env.RECOVERY_DATABASE_URL,
     "RECOVERY_DATABASE_URL",
   );
-  const chatConnection = parseRecoveryPostgresConnection(
-    input.env.CHAT_DATABASE_URL,
-    "CHAT_DATABASE_URL",
-  );
-  const projectorConnection = parseRecoveryPostgresConnection(
-    input.env.CHAT_PROJECTOR_DATABASE_URL,
-    "CHAT_PROJECTOR_DATABASE_URL",
-  );
   assertSameDatabaseAuthority(
     sourceConnection,
     connection,
     "RECOVERY_DATABASE_URL",
   );
-  assertSameDatabaseAuthority(sourceConnection, chatConnection, "CHAT_DATABASE_URL");
-  assertSameDatabaseAuthority(
-    sourceConnection,
-    projectorConnection,
-    "CHAT_PROJECTOR_DATABASE_URL",
-  );
-  if (chatConnection.user !== "chat_service") {
-    throw new Error("CHAT_DATABASE_URL must use chat_service");
-  }
-  if (projectorConnection.user !== "chat_projector") {
-    throw new Error("CHAT_PROJECTOR_DATABASE_URL must use chat_projector");
-  }
   const parent = path.dirname(input.plan.bundlePath);
   const finalBundle = input.plan.bundlePath;
   const lockPath = path.join(parent, `.${input.plan.bundleName}.publish.lock`);
@@ -1521,25 +1462,6 @@ export async function executeRecoveryRehearsal(input: {
       `${JSON.stringify(quiescenceReceipt, null, 2)}\n`,
       { mode: 0o600 },
     );
-    assertChatDatabaseAuthority(
-      runner,
-      input.env,
-      sourceConnection,
-      chatConnection,
-      "CHAT_DATABASE_URL",
-      "chat_service",
-      "chat_request_database_authority",
-    );
-    assertChatDatabaseAuthority(
-      runner,
-      input.env,
-      sourceConnection,
-      projectorConnection,
-      "CHAT_PROJECTOR_DATABASE_URL",
-      "chat_projector",
-      "chat_projector_database_authority",
-    );
-
     const migrationAuthority = await (
       input.inspectMigration ?? inspectMigrationAuthority
     )(input.env.RECOVERY_DATABASE_URL!);
@@ -1585,11 +1507,7 @@ export async function executeRecoveryRehearsal(input: {
     const recordedRoles = new Set(
       roleAuthority.roles_without_passwords.map((entry) => entry.role),
     );
-    if (
-      !["core_owner", "chat_owner", "chat_service", "chat_projector"]
-        .every((role) => roleAuthority.required_roles.includes(role)) ||
-      !roleAuthority.required_roles.every((role) => recordedRoles.has(role))
-    ) {
+    if (!roleAuthority.required_roles.every((role) => recordedRoles.has(role))) {
       throw new Error("required PostgreSQL restore roles are missing");
     }
     const databaseAuthority = parseJson<DatabaseAuthority>(

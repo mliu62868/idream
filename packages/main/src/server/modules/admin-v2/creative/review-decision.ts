@@ -74,14 +74,14 @@ async function characterAssetReviewDependencies(
   });
   const serving = await tx.characterServing.findUnique({
     where: { characterId },
-    include: { currentRelease: true, scheduledRelease: true },
+    include: { currentRelease: true },
   });
   const dependencies: string[] = [];
   const activeRelease = project
     ? await tx.characterRelease.findFirst({
         where: {
           projectId: project.id,
-          status: { in: ["draft", "validating", "in_review", "approved"] },
+          status: "approved",
         },
         select: { id: true, releasePlacementManifest: true },
       })
@@ -141,12 +141,6 @@ async function characterAssetReviewDependencies(
     jsonContainsString(serving.currentRelease.releasePlacementManifest, assetId)
   ) {
     dependencies.push("current_character_release");
-  }
-  if (
-    serving?.scheduledRelease &&
-    jsonContainsString(serving.scheduledRelease.releasePlacementManifest, assetId)
-  ) {
-    dependencies.push("scheduled_character_release");
   }
   if (downstreamGeneration) dependencies.push("downstream_generation_lineage");
   return dependencies;

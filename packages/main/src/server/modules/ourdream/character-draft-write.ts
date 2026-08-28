@@ -1,5 +1,4 @@
 import { dispatchGenerationAttemptOutbox } from "@/server/modules/generation/generation-attempt-authority";
-import { legacySoulDetailsMarkdown } from "@idream/shared";
 import { lockCharacterMediaAssetAuthorities } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
@@ -7,7 +6,6 @@ import { toInputJson } from "@/server/lib/request-json";
 import { moderateText } from "@/server/moderation/text-authority";
 import {
   jsonNonBlankString,
-  jsonRecord,
   jsonStringArray,
   pruneUndefined,
 } from "./json-values";
@@ -34,6 +32,7 @@ import {
   compileUserSoulOrBadRequest,
   materializeUserCharacterContentVersion,
 } from "./character-soul";
+import { readCurrentCharacterDraftDetails } from "./character-draft-details";
 
 // SPEC: 用户侧建角色向导的两个写入动作 —— 生成身份预览图、把草稿提交成 Character。
 //
@@ -228,59 +227,51 @@ export async function submitCharacterDraft(input: {
   readonly userId: string;
   readonly draftId: string;
   readonly visibility: "private" | "unlisted" | "public";
-  readonly description?: string;
-  readonly age: number;
 }) {
   const { draftId: id, userId } = input;
   const draft = await assertDraftOwner(id, userId);
   if (!draft.name) throw Errors.badRequest("Draft name is required before submit");
   const draftName = draft.name;
-  const advancedDetails = jsonRecord(draft.advancedDetails);
-  const relationship =
-    jsonNonBlankString(advancedDetails.relationshipArchetype) ??
-    jsonNonBlankString(advancedDetails.relationship);
-
-  const personaDescription =
-    input.description ??
-    jsonNonBlankString(advancedDetails.description);
-  const description =
-    personaDescription ??
-    `Custom ${draft.style ?? "realistic"} companion created from the Ourdream creator.`;
+  const advancedDetails = readCurrentCharacterDraftDetails(draft.advancedDetails);
+  const historicalSubmission = advancedDetails.submittedCharacterId
+    ? null
+    : await prisma.characterContentVersion.findFirst({
+        where: { sourceType: "user", sourceId: draft.id },
+        select: { characterId: true },
+      });
+  const submittedCharacterId =
+    advancedDetails.submittedCharacterId ?? historicalSubmission?.characterId;
+  if (submittedCharacterId) {
+    const existing = await prisma.character.findFirst({
+      where: {
+        id: submittedCharacterId,
+        creatorId: userId,
+        deletedAt: null,
+      },
+    });
+    if (!existing) {
+      throw Errors.conflict("This draft was submitted but its Character is unavailable");
+    }
+    return { character: existing };
+  }
+  const age = advancedDetails.age;
+  if (age === undefined) {
+    throw Errors.badRequest("Complete the character persona before publishing", {
+      missingFields: ["age"],
+    });
+  }
+  const personaDescription = jsonNonBlankString(advancedDetails.description);
+  const description = personaDescription ?? "";
   const style = draft.style ?? "realistic";
   const gender = draft.gender ?? "female";
   const missingPersonaFields = requiredCharacterPersonaFields({
     description: personaDescription,
-    relationship,
     advancedDetails,
   });
-  const storedAdvancedDetails = { ...advancedDetails };
-  for (const key of [
-    "description",
-    "relationship",
-    "personality",
-    "tone",
-    "speakingStyle",
-    "backstory",
-    "exampleDialogue",
-    "values",
-    "wants",
-    "fears",
-    "contradictions",
-    "cadence",
-    "vocabulary",
-    "voiceHabits",
-    "voiceAvoid",
-    "interaction",
-    "canon",
-    "negativeDialogue",
-  ]) {
-    delete storedAdvancedDetails[key];
-  }
-  Object.assign(storedAdvancedDetails, {
-    relationshipArchetype: relationship,
-    detailsMarkdown: legacySoulDetailsMarkdown(advancedDetails),
+  const storedAdvancedDetails = {
+    detailsMarkdown: advancedDetails.detailsMarkdown ?? "",
     firstMessage: jsonNonBlankString(advancedDetails.firstMessage),
-  });
+  };
   const moderation = await moderateText(
     "character_draft",
     id,
@@ -326,14 +317,18 @@ export async function submitCharacterDraft(input: {
   }
   const userContent = compileUserSoulOrBadRequest({
     name: draftName,
-    age: input.age,
+    age,
     description,
-    relationship,
     style,
     gender,
     appearance: draft.appearance,
-    advancedDetails: draft.advancedDetails,
+    advancedDetails,
   });
+  const characterAdvancedDetails = {
+    ...storedAdvancedDetails,
+    soulFingerprint: userContent.personaSnapshot.compiled.fingerprint,
+    compilerVersion: userContent.personaSnapshot.compiled.compilerVersion,
+  };
 
   const character = await prisma.$transaction(async (tx) => {
     await lockCharacterMediaAssetAuthorities(tx, [anchorAssetId]);
@@ -356,17 +351,16 @@ export async function submitCharacterDraft(input: {
       data: {
         creatorId: userId,
         name: draftName,
-        age: input.age,
+        age,
         description,
         systemPrompt: userContent.personaSnapshot.compiled.systemPrompt,
         visibility: input.visibility,
         status: input.visibility === "public" ? "pending_review" : "approved",
         style,
         gender,
-        relationship,
         imageAssetId: anchorAssetId,
         appearance: toInputJson(draft.appearance ?? {}),
-        advancedDetails: toInputJson(storedAdvancedDetails),
+        advancedDetails: toInputJson(characterAdvancedDetails),
       },
     });
 
@@ -408,11 +402,11 @@ export async function submitCharacterDraft(input: {
         status: "active",
         style,
         name: draftName,
-        age: input.age,
+        age,
         description,
         gender,
         appearance: draft.appearance,
-        advancedDetails: draft.advancedDetails,
+        advancedDetails,
         anchorAssetIds: [anchorAssetId],
         createdFrom: "create_preview",
       }),
@@ -430,6 +424,16 @@ export async function submitCharacterDraft(input: {
         status: input.visibility === "public" ? "pending" : "approved",
       },
     });
+    await tx.characterDraft.update({
+      where: { id: draft.id },
+      data: {
+        advancedDetails: toInputJson({
+          ...advancedDetails,
+          age,
+          submittedCharacterId: created.id,
+        }),
+      },
+    });
 
     return tx.character.findUniqueOrThrow({ where: { id: created.id } });
   });
@@ -439,12 +443,10 @@ export async function submitCharacterDraft(input: {
 
 function requiredCharacterPersonaFields(input: {
   description: string | null;
-  relationship: string | null;
   advancedDetails: Record<string, unknown>;
 }) {
   const missingFields: string[] = [];
   if (!input.description) missingFields.push("description");
-  if (!input.relationship) missingFields.push("relationship");
   if (!jsonNonBlankString(input.advancedDetails.firstMessage)) {
     missingFields.push("firstMessage");
   }

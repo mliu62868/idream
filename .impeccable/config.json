@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "broken-image",
+        "value": "*",
+        "files": [
+          "/Users/kk/code/idream/packages/main/src/components/ourdream/ChatSessionClient.tsx"
+        ],
+        "createdAt": "2026-08-27T01:41:41.207Z",
+        "reason": "Guarded render requires attachment.mediaUrl and source to be truthy before the img is created"
+      }
+    ]
+  }
+}

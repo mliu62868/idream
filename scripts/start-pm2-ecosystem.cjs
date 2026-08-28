@@ -1,7 +1,7 @@
 const { spawnSync } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
+const { existsSync } = require("node:fs");
 const path = require("node:path");
-const { pathToFileURL } = require("node:url");
 const {
   loadGenEnvironment,
 } = require("./check-gen-image-worker-ownership.cjs");
@@ -11,12 +11,15 @@ const repoRoot = path.resolve(__dirname, "..");
 const productionGateCwd = path.join(repoRoot, "packages/main");
 const productionGenCwd = path.join(repoRoot, "packages/gen");
 const productionChatAgentCwd = path.join(repoRoot, "packages/chat-agent");
-const productionChatAgentTsxPreflight = require.resolve(
-  path.join(productionChatAgentCwd, "node_modules/tsx/dist/preflight.cjs"),
-);
-const productionChatAgentTsxLoader = require.resolve(
-  path.join(productionChatAgentCwd, "node_modules/tsx/dist/loader.mjs"),
-);
+const bunInterpreter = [
+  process.env.BUN_EXEC_PATH,
+  process.env.BUN_INSTALL
+    ? path.join(process.env.BUN_INSTALL, "bin", "bun")
+    : undefined,
+  process.env.HOME
+    ? path.join(process.env.HOME, ".bun", "bin", "bun")
+    : undefined,
+].find((candidate) => candidate && existsSync(candidate)) ?? "bun";
 
 const genImageOwnershipProbe = path.join(
   repoRoot,
@@ -59,67 +62,142 @@ const productionProcessDefinitions = new Map([
     cwd: repoRoot,
     execPath: path.join(repoRoot, "scripts/start-fish-audio.cjs"),
     args: [],
+    execInterpreter: bunInterpreter,
     execMode: "fork_mode",
   }],
   ["main-web", {
     cwd: repoRoot,
     execPath: path.join(repoRoot, "scripts/start-next-standalone.cjs"),
     args: ["packages/main"],
+    execInterpreter: bunInterpreter,
     execMode: "cluster_mode",
   }],
   ["admin-web", {
     cwd: repoRoot,
     execPath: path.join(repoRoot, "scripts/start-next-standalone.cjs"),
     args: ["packages/admin"],
+    execInterpreter: bunInterpreter,
     execMode: "cluster_mode",
   }],
   ["chat", {
     cwd: path.join(repoRoot, "packages/chat"),
-    execPath: path.join(repoRoot, "packages/chat/node_modules/tsx/dist/cli.mjs"),
-    args: ["src/main.ts"],
+    execPath: path.join(repoRoot, "packages/chat/dist/main.js"),
+    args: [],
+    execInterpreter: bunInterpreter,
+    execMode: "fork_mode",
+  }],
+  ["chat-agent", {
+    cwd: productionChatAgentCwd,
+    execPath: path.join(productionChatAgentCwd, "dist/main.js"),
+    args: [],
+    execInterpreter: bunInterpreter,
+    execMode: "fork_mode",
+  }],
+  ["gen-image", {
+    cwd: productionGenCwd,
+    execPath: path.join(productionGenCwd, "dist/image.js"),
+    args: [],
+    execInterpreter: bunInterpreter,
+    execMode: "fork_mode",
+  }],
+  ["gen-video", {
+    cwd: productionGenCwd,
+    execPath: path.join(productionGenCwd, "dist/video.js"),
+    args: [],
+    execInterpreter: bunInterpreter,
+    execMode: "fork_mode",
+  }],
+  ["gen-finalizer", {
+    cwd: productionGateCwd,
+    execPath: path.join(productionGateCwd, "dist/finalizer.js"),
+    args: [],
+    execInterpreter: bunInterpreter,
+    execMode: "fork_mode",
+  }],
+  ["main-event-consumer", {
+    cwd: productionGateCwd,
+    execPath: path.join(productionGateCwd, "dist/event-consumer.js"),
+    args: [],
+    execInterpreter: bunInterpreter,
+    execMode: "fork_mode",
+  }],
+  ["admin-command-worker", {
+    cwd: productionGateCwd,
+    execPath: path.join(productionGateCwd, "dist/admin-command-worker.js"),
+    args: [],
+    execInterpreter: bunInterpreter,
+    execMode: "fork_mode",
+  }],
+]);
+const developmentProcessDefinitions = new Map([
+  ["fish-audio", {
+    cwd: repoRoot,
+    execPath: path.join(repoRoot, "scripts/start-fish-audio.cjs"),
+    args: [],
+    execInterpreter: bunInterpreter,
+    execMode: "fork_mode",
+  }],
+  ["main-web", {
+    cwd: path.join(repoRoot, "packages/main"),
+    execPath: path.join(repoRoot, "packages/main/scripts/start-development.cjs"),
+    args: [],
+    execInterpreter: bunInterpreter,
+    execMode: "fork_mode",
+  }],
+  ["admin-web", {
+    cwd: path.join(repoRoot, "packages/admin"),
+    execPath: path.join(repoRoot, "packages/admin/scripts/start-development.cjs"),
+    args: [],
+    execInterpreter: bunInterpreter,
+    execMode: "fork_mode",
+  }],
+  ["chat", {
+    cwd: path.join(repoRoot, "packages/chat"),
+    execPath: path.join(repoRoot, "packages/chat/src/main.ts"),
+    args: [],
+    execInterpreter: bunInterpreter,
     execMode: "fork_mode",
   }],
   ["chat-agent", {
     cwd: productionChatAgentCwd,
     execPath: path.join(productionChatAgentCwd, "src/main.ts"),
     args: [],
-    nodeArgs: [
-      "--require",
-      productionChatAgentTsxPreflight,
-      "--import",
-      pathToFileURL(productionChatAgentTsxLoader).href,
-    ],
-    execInterpreter: process.execPath,
+    execInterpreter: bunInterpreter,
     execMode: "fork_mode",
   }],
   ["gen-image", {
     cwd: productionGenCwd,
-    execPath: path.join(productionGenCwd, "node_modules/tsx/dist/cli.mjs"),
-    args: ["src/image.ts"],
+    execPath: path.join(productionGenCwd, "src/image.ts"),
+    args: [],
+    execInterpreter: bunInterpreter,
     execMode: "fork_mode",
   }],
   ["gen-video", {
     cwd: productionGenCwd,
-    execPath: path.join(productionGenCwd, "node_modules/tsx/dist/cli.mjs"),
-    args: ["src/video.ts"],
+    execPath: path.join(productionGenCwd, "src/video.ts"),
+    args: [],
+    execInterpreter: bunInterpreter,
     execMode: "fork_mode",
   }],
   ["gen-finalizer", {
     cwd: productionGateCwd,
-    execPath: path.join(productionGateCwd, "node_modules/tsx/dist/cli.mjs"),
-    args: ["src/processes/finalizer.ts"],
+    execPath: path.join(productionGateCwd, "src/processes/finalizer.ts"),
+    args: [],
+    execInterpreter: bunInterpreter,
     execMode: "fork_mode",
   }],
   ["main-event-consumer", {
     cwd: productionGateCwd,
-    execPath: path.join(productionGateCwd, "node_modules/tsx/dist/cli.mjs"),
-    args: ["src/processes/event-consumer.ts"],
+    execPath: path.join(productionGateCwd, "src/processes/event-consumer.ts"),
+    args: [],
+    execInterpreter: bunInterpreter,
     execMode: "fork_mode",
   }],
   ["admin-command-worker", {
     cwd: productionGateCwd,
-    execPath: path.join(productionGateCwd, "node_modules/tsx/dist/cli.mjs"),
-    args: ["src/processes/admin-command-worker.ts"],
+    execPath: path.join(productionGateCwd, "src/processes/admin-command-worker.ts"),
+    args: [],
+    execInterpreter: bunInterpreter,
     execMode: "fork_mode",
   }],
 ]);
@@ -190,6 +268,10 @@ function productionProcessDefinition(name) {
   return productionProcessDefinitions.get(name) ?? null;
 }
 
+function developmentProcessDefinition(name) {
+  return developmentProcessDefinitions.get(name) ?? null;
+}
+
 function matchesProductionProcessDefinition(process) {
   const definition = productionProcessDefinition(process?.name);
   const pm2Env = process?.pm2_env;
@@ -223,6 +305,40 @@ function productionDefinitionPlan(processes) {
   return { deleteNames, requiresStart: true };
 }
 
+function matchesDevelopmentProcessDefinition(process) {
+  const definition = developmentProcessDefinition(process?.name);
+  const pm2Env = process?.pm2_env;
+  return Boolean(
+    definition &&
+      pm2Env &&
+      typeof pm2Env === "object" &&
+      pm2Env.pm_cwd === definition.cwd &&
+      pm2Env.pm_exec_path === definition.execPath &&
+      JSON.stringify(normalizePm2Args(pm2Env.args)) ===
+        JSON.stringify(definition.args) &&
+      JSON.stringify(normalizePm2Args(pm2Env.node_args)) === "[]" &&
+      (definition.execInterpreter === undefined ||
+        pm2Env.exec_interpreter === definition.execInterpreter) &&
+      pm2Env.exec_mode === definition.execMode &&
+      processRuntimeMarker(process) === "development",
+  );
+}
+
+function developmentDefinitionPlan(processes) {
+  // PM2 restart/update-env does not replace an already-registered script or
+  // interpreter. Recreate only definitions whose structural fields prove they
+  // predate the Bun migration; ordinary development restarts keep stable IDs.
+  const deleteNames = productionRuntimeTargets.filter((name) =>
+    processes.some(
+      (process) =>
+        process?.name === name &&
+        typeof process?.pm2_env?.pm_exec_path === "string" &&
+        !matchesDevelopmentProcessDefinition(process),
+    ),
+  );
+  return { deleteNames, requiresStart: deleteNames.length > 0 };
+}
+
 function legacyWebRuntimeMode(process) {
   if (!process || !["main-web", "admin-web"].includes(process.name)) {
     return null;
@@ -235,10 +351,7 @@ function legacyWebRuntimeMode(process) {
   if (executable.endsWith("/scripts/start-next-standalone.cjs")) {
     return "production";
   }
-  if (
-    executable.includes("/node_modules/next/dist/bin/next") &&
-    args.includes("dev")
-  ) {
+  if (executable.endsWith("/scripts/start-development.cjs")) {
     return "development";
   }
   return null;
@@ -505,7 +618,7 @@ function verifyGenImageWorkerOwnership({
   spawnSync: spawn,
 }) {
   const result = spawn(
-    "node",
+    "bun",
     [
       genImageOwnershipProbe,
       "--mode",
@@ -688,8 +801,10 @@ function runPm2Ecosystem(options = {}) {
   if (gate.error) throw gate.error;
   if (gate.status !== 0) return gate.status ?? 1;
 
-  if (mode === "production") {
-    const definitionPlan = productionDefinitionPlan(quiescedProcesses);
+  {
+    const definitionPlan = mode === "production"
+      ? productionDefinitionPlan(quiescedProcesses)
+      : developmentDefinitionPlan(quiescedProcesses);
     for (const name of definitionPlan.deleteNames) {
       const deleted = spawn("pm2", ["delete", name], {
         cwd: repoRoot,
@@ -699,21 +814,25 @@ function runPm2Ecosystem(options = {}) {
       if (deleted.error) throw deleted.error;
       if (deleted.status !== 0) return deleted.status ?? 1;
     }
-    // Snapshot-to-delete is intentionally not trusted: an app absent from the
-    // quiesced snapshot could be registered concurrently and make `pm2 start`
-    // reuse/merge stale definition or env. Fresh authority requires the whole
-    // owned namespace to be empty immediately before ecosystem creation.
-    const confirmedDeleted = readPm2ProcessList(spawn, runtimeEnv);
-    if (!confirmedDeleted.ok) return confirmedDeleted.status;
-    if (
-      confirmedDeleted.processes.some((process) =>
-        productionRuntimeTargets.includes(process?.name)
-      )
-    ) {
-      process.stderr.write(
-        "PM2 owned runtime namespace is not empty; Generation queues remain paused\n",
-      );
-      return 1;
+    if (mode === "production" || definitionPlan.deleteNames.length > 0) {
+      // Snapshot-to-delete is intentionally not trusted: confirm every target
+      // is absent before PM2 is allowed to create the Bun definition. A first
+      // production deploy also proves that no app appeared after the snapshot.
+      const confirmedDeleted = readPm2ProcessList(spawn, runtimeEnv);
+      if (!confirmedDeleted.ok) return confirmedDeleted.status;
+      const namesThatMustBeAbsent = mode === "production"
+        ? productionRuntimeTargets
+        : definitionPlan.deleteNames;
+      if (
+        confirmedDeleted.processes.some((process) =>
+          namesThatMustBeAbsent.includes(process?.name)
+        )
+      ) {
+        process.stderr.write(
+          "PM2 owned runtime definition survived delete; Generation queues remain paused\n",
+        );
+        return 1;
+      }
     }
     definitionRecreated = definitionPlan.requiresStart;
   }
@@ -788,9 +907,12 @@ module.exports = {
   productionGenCwd,
   productionProcessDefinition,
   productionDefinitionPlan,
+  developmentProcessDefinition,
+  developmentDefinitionPlan,
   productionVideoWorkerCount,
   repoRoot,
   matchesProductionProcessDefinition,
+  matchesDevelopmentProcessDefinition,
   resolveCurrentPm2Mode,
   runPm2Ecosystem,
   verifyGenImageWorkerOwnership,

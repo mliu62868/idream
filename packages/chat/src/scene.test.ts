@@ -48,4 +48,31 @@ describe("typed Scene State", () => {
     expect(next.emotionalBeat).toBe("relieved");
     expect(next.unresolvedThreads).toEqual(["call the hotel"]);
   });
+
+  it.each([
+    "I am falling in love with you.",
+    "I'm interested in astronomy.",
+    "I feel at ease with you.",
+    "We are in trouble with the landlord.",
+  ])("does not turn an abstract preposition into a location: %s", (userText) => {
+    expect(deriveSceneDelta({ userText, assistantText: "" }).location).toBeNull();
+  });
+
+  it.each([
+    "我在想你。",
+    "你在骗我。",
+    "我在看你。",
+  ])("does not turn a Chinese predicate into a location: %s", (userText) => {
+    expect(deriveSceneDelta({ userText, assistantText: "" }).location).toBeNull();
+  });
+
+  it.each([
+    ["我在厨房", "厨房"],
+    ["我在厨房想你。", "厨房"],
+    ["我们到了海边", "海边"],
+    ["I am in Paris", "Paris"],
+    ["I'm at the station waiting for you.", "the station"],
+  ])("extracts a concrete location without requiring punctuation: %s", (userText, location) => {
+    expect(deriveSceneDelta({ userText, assistantText: "" }).location).toBe(location);
+  });
 });

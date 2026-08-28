@@ -130,6 +130,7 @@ describe("OpenAI-compatible DSH adapter", () => {
       top_p: 0.95,
       repetition_penalty: 1.05,
       chat_template_kwargs: { enable_thinking: false },
+      tool_choice: "auto",
       provider: { only: ["DeepSeek"], allow_fallbacks: false },
     });
     expect(chunks).toContainEqual({
@@ -317,6 +318,81 @@ describe("OpenAI-compatible DSH adapter", () => {
     expect(bodyCancelled).toBe(true);
     expect(JSON.stringify(thrown)).not.toContain(sentinel);
     expect((thrown as Error).message).not.toContain(sentinel);
+  });
+
+  it("cancels a stalled provider body when completion timeout fires after headers", async () => {
+    let bodyCancelled = false;
+    const adapter = new OpenAiCompatibleAdapter({
+      profile: {
+        tier: "test",
+        adapter: "openai-compatible-v1",
+        provider: "openrouter",
+        baseUrl: "http://127.0.0.1:1/v1",
+        model: "deepseek/test",
+        supportsTools: true,
+        maxOutputTokens: 16,
+        timeout: { firstTokenMs: 10, idleMs: 10, completionMs: 10 },
+        sampling: {
+          temperature: 0.9,
+          topP: 0.95,
+          repetitionPenalty: 1.05,
+        },
+      },
+      apiKey: "provider-secret",
+      openRouterProviderOnly: ["DeepSeek"],
+      fetch: (async () => new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          setTimeout(() => {
+            try {
+              controller.close();
+            } catch {
+              // The timeout path must already have cancelled this stream.
+            }
+          }, 100);
+        },
+        cancel() {
+          bodyCancelled = true;
+        },
+      }), { status: 200 })) as typeof fetch,
+    });
+
+    await expect(drain(adapter)).rejects.toThrow(/timeout/);
+    expect(bodyCancelled).toBe(true);
+  });
+
+  it("does not wait for a stalled provider-body cancellation after timeout", async () => {
+    let bodyCancelled = false;
+    const adapter = new OpenAiCompatibleAdapter({
+      profile: {
+        tier: "test",
+        adapter: "openai-compatible-v1",
+        provider: "openrouter",
+        baseUrl: "http://127.0.0.1:1/v1",
+        model: "deepseek/test",
+        supportsTools: true,
+        maxOutputTokens: 16,
+        timeout: { firstTokenMs: 10, idleMs: 10, completionMs: 10 },
+        sampling: {
+          temperature: 0.9,
+          topP: 0.95,
+          repetitionPenalty: 1.05,
+        },
+      },
+      apiKey: "provider-secret",
+      openRouterProviderOnly: ["DeepSeek"],
+      fetch: (async () => new Response(new ReadableStream<Uint8Array>({
+        pull() {
+          return new Promise(() => {});
+        },
+        cancel() {
+          bodyCancelled = true;
+          return new Promise(() => {});
+        },
+      }), { status: 200 })) as typeof fetch,
+    });
+
+    await expect(drain(adapter)).rejects.toThrow(/timeout/);
+    expect(bodyCancelled).toBe(true);
   });
 
   it("aborts an SSE stream whose undelimited event exceeds the byte limit", async () => {

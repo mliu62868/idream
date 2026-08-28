@@ -74,7 +74,6 @@ export async function loadCharacterVisualWorkspace(input: {
   readonly serving: {
     readonly state: string;
     readonly currentReleaseId: string | null;
-    readonly scheduledReleaseId: string | null;
     readonly version: number;
   } | null;
   readonly releases: readonly VisualWorkspaceRelease[];
@@ -242,7 +241,6 @@ export async function loadCharacterVisualWorkspace(input: {
           : 0,
     } : null,
     routeQualification: qualifiedRoute ? { status: qualifiedRoute.result, stale: false } : null,
-    characterQa: { status: "passed" },
   });
   // SPEC: 生图（打磨）闸 ≠ 发布闸。这里只保留「没有它就画不出图」的条件。
   // INTENT: 密封 hash（*_unsealed）是内容的派生缓存，它的价值是发布时锁住身份，对生成一张
@@ -264,7 +262,6 @@ export async function loadCharacterVisualWorkspace(input: {
     draftAssetPack: project.draftAssetPack,
     serving: serving ? {
       currentReleaseId: serving.currentReleaseId,
-      scheduledReleaseId: serving.scheduledReleaseId,
       version: serving.version,
     } : null,
     currentRelease: currentReleaseForImageReadiness ? {
@@ -286,8 +283,8 @@ export async function loadCharacterVisualWorkspace(input: {
   const hasDraftAssetWork =
     project.draftImageAssetId !== null ||
     Object.keys(characterAssetPack(project.draftAssetPack)).length > 0;
-  const hasCandidateRelease = releases.some((release) =>
-    ["draft", "validating", "in_review", "approved"].includes(release.status)
+  const hasCandidateRelease = releases.some(
+    (release) => release.status === "approved",
   );
   const identityBlockerCodes = new Set([
     "visual_identity_missing",
@@ -318,7 +315,6 @@ export async function loadCharacterVisualWorkspace(input: {
     currentReleaseForImageReadiness?.legacy === true &&
     currentReleaseForImageReadiness.status === "published" &&
     serving?.currentReleaseId === currentReleaseForImageReadiness.id &&
-    serving.scheduledReleaseId === null &&
     !hasDraftAssetWork &&
     !hasCandidateRelease &&
     activeIdentity === null &&

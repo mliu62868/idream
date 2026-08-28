@@ -5,6 +5,12 @@ import {
 } from "./runtime-policy";
 
 describe("buildCharacterRuntimePolicy", () => {
+  it("requires a direct in-character answer instead of exposing model planning", () => {
+    const policy = buildCharacterRuntimePolicy({ memoryEnabled: true });
+    expect(policy).toContain("Output only the final in-character reply");
+    expect(policy).toContain("Never expose analysis, planning, or instructions");
+  });
+
   it("makes the no-memory promise boundary explicit", () => {
     expect(buildCharacterRuntimePolicy({ memoryEnabled: false })).toContain(
       "Never promise future recall",
@@ -29,6 +35,16 @@ describe("buildCharacterRuntimePolicy", () => {
     });
     expect(disabled).not.toContain("generate_image_async");
     expect(disabled).not.toContain("edit_last_image");
+  });
+
+  it("keeps consensual adult companion requests inside the product path", () => {
+    const policy = buildCharacterRuntimePolicy({
+      memoryEnabled: true,
+      imageToolEnabled: true,
+    });
+    expect(policy).toContain(
+      "Do not refuse a request merely because it is sexual or explicit",
+    );
   });
 
   it("owns explicit future-memory requests outside the model", () => {

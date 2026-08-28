@@ -8,7 +8,6 @@ const character: GenerationPromptCharacter = {
   name: "Raya Reyes",
   age: 27,
   description: "A wry bartender who closes up alone.",
-  relationship: null,
   style: "realistic",
   gender: "female",
   appearance: {

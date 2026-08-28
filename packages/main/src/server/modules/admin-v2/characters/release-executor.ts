@@ -7,7 +7,6 @@ import { transitionControlPlaneCommand } from "../shared/control-plane-command-t
 import { toInputJson } from "../shared/prisma-json";
 import { releaseMonitorDueAt } from "./release-monitor";
 import {
-  isCharacterProjectPhaseTransitionAllowed,
   isCharacterReleaseTransitionAllowed,
   isCharacterServingTransitionAllowed,
   type CharacterReleaseCreationState,
@@ -17,7 +16,6 @@ import { projectServingToCharacter } from "./serving-projection";
 import { PUBLIC_CATALOG_QUALIFICATION_SCHEMA_VERSION } from "@/server/modules/ourdream/public-catalog-qualification";
 import { evaluateEditorialReleaseAuthorityInTransaction } from "@/server/modules/ourdream/public-release-authority";
 import {
-  transitionCharacterProject,
   transitionCharacterRelease,
   transitionCharacterServing,
 } from "./transition";
@@ -32,17 +30,13 @@ import {
   releaseString as stringValue,
 } from "./release-snapshot-values";
 
-
-// paused is an operator hold: an existing schedule remains durable and becomes
-// eligible after resume. retired is terminal and cannot accept new schedules.
-const SCHEDULABLE_SERVING_STATES = new Set(["inactive", "live"]);
-
 type ReleaseCommandRow = Awaited<
-  ReturnType<Prisma.TransactionClient["controlPlaneCommand"]["findUniqueOrThrow"]>
+  ReturnType<
+    Prisma.TransactionClient["controlPlaneCommand"]["findUniqueOrThrow"]
+  >
 >;
 
 type ReleaseCommandType =
-  | "character.release.schedule"
   | "character.release.publish"
   | "character.release.rollback"
   | "character.serving.pause"
@@ -110,14 +104,27 @@ function releasedCharacterProjection(content: {
   const description = soul.characterPromise;
   const age = soul.age;
   const gender = soul.gender;
-  const relationship = soul.relationshipArchetype;
   const style = stringValue(appearance.style);
   const firstMessage = stringValue(opening.firstMessage);
-  if (!name || !description || age === null || !gender || !relationship || !style || !firstMessage) {
+  if (
+    !name ||
+    !description ||
+    age === null ||
+    !gender ||
+    !style ||
+    !firstMessage
+  ) {
     throw new ReleaseCommandError(
       "release_content_projection_incomplete",
       "Release content cannot produce the complete serving projection",
-      { name: Boolean(name), description: Boolean(description), age, gender, relationship, style, firstMessage: Boolean(firstMessage) },
+      {
+        name: Boolean(name),
+        description: Boolean(description),
+        age,
+        gender,
+        style,
+        firstMessage: Boolean(firstMessage),
+      },
     );
   }
   const systemPrompt = soulResult.snapshot.compiled.systemPrompt;
@@ -128,10 +135,8 @@ function releasedCharacterProjection(content: {
     systemPrompt,
     style,
     gender,
-    relationship,
     appearance: toInputJson(appearance),
     advancedDetails: toInputJson({
-      relationshipArchetype: soulResult.snapshot.soul.relationshipArchetype,
       detailsMarkdown: soulResult.snapshot.soul.detailsMarkdown,
       firstMessage,
       soulFingerprint: soulResult.snapshot.compiled.fingerprint,
@@ -172,7 +177,11 @@ async function failCommand(
   await transitionControlPlaneCommand(tx, {
     commandId: command.id,
     to: "failed",
-    expected: { from: "running", leaseOwner: command.leaseOwner, attemptCount: command.attemptCount },
+    expected: {
+      from: "running",
+      leaseOwner: command.leaseOwner,
+      attemptCount: command.attemptCount,
+    },
     data: {
       error: toInputJson(errorBody),
       needsReconciliation: false,
@@ -275,111 +284,6 @@ async function appendExecutionEvidence(
   await finishAttempt(tx, input.command, "succeeded", input.now);
 }
 
-async function executeSchedule(
-  tx: Prisma.TransactionClient,
-  command: ReleaseCommandRow,
-  policyVersion: string,
-  now: Date,
-) {
-  const release = await tx.characterRelease.findUnique({
-    where: { id: command.targetId },
-  });
-  if (!release)
-    throw new ReleaseCommandError(
-      "release_not_found",
-      "Release does not exist",
-    );
-  if (
-    release.version !== command.expectedVersion ||
-    !isCharacterReleaseTransitionAllowed(release.status, "published")
-  ) {
-    throw new ReleaseCommandError(
-      "release_version_conflict",
-      "Only the expected approved Release can be scheduled",
-    );
-  }
-  const validation = await validateCharacterReleaseSnapshot(tx, release, policyVersion, now);
-  if (validation.failed.length > 0) {
-    await tx.characterRelease.update({
-      where: { id: release.id },
-      data: { readiness: "blocked" },
-    });
-    throw new ReleaseCommandError(
-      "release_validation_failed",
-      "Release validation failed",
-      {
-        blockers: validation.failed.map((item) => item.key),
-        validationRunId: validation.run.id,
-      },
-    );
-  }
-  const payload = record(command.requestPayload);
-  const scheduledAtText = stringValue(payload.scheduledAt);
-  const scheduledAt = scheduledAtText ? new Date(scheduledAtText) : null;
-  if (
-    !scheduledAt ||
-    !Number.isFinite(scheduledAt.getTime()) ||
-    scheduledAt <= now
-  ) {
-    throw new ReleaseCommandError(
-      "invalid_schedule_time",
-      "scheduledAt must be a future ISO timestamp",
-    );
-  }
-  const serving = await tx.characterServing.findUnique({
-    where: { characterId: validation.project?.characterId ?? "" },
-  });
-  if (!serving || serving.currentReleaseId === release.id) {
-    throw new ReleaseCommandError(
-      "serving_conflict",
-      "Release is already current or CharacterServing is missing",
-    );
-  }
-  if (!SCHEDULABLE_SERVING_STATES.has(serving.state)) {
-    throw new ReleaseCommandError(
-      "serving_not_schedulable",
-      "Only inactive or live CharacterServing can accept a Release schedule",
-      { servingState: serving.state },
-    );
-  }
-  const updated = await tx.characterServing.updateMany({
-    where: { id: serving.id, version: serving.version },
-    data: {
-      scheduledReleaseId: release.id,
-      scheduledAt,
-      version: { increment: 1 },
-    },
-  });
-  if (updated.count !== 1)
-    throw new ReleaseCommandError(
-      "serving_version_conflict",
-      "CharacterServing changed while scheduling",
-    );
-  await tx.characterRelease.update({
-    where: { id: release.id },
-    data: { readiness: "ready" },
-  });
-  await appendExecutionEvidence(tx, {
-    command,
-    commandType: "character.release.schedule",
-    releaseId: release.id,
-    characterId: validation.project?.characterId ?? "",
-    before: { serving },
-    after: {
-      scheduledReleaseId: release.id,
-      scheduledAt: scheduledAt.toISOString(),
-      servingVersion: serving.version + 1,
-    },
-    eventType: "character.release.scheduled",
-    now,
-    result: {
-      scheduledAt: scheduledAt.toISOString(),
-      validationRunId: validation.run.id,
-    },
-  });
-  return release.id;
-}
-
 async function publishRelease(
   tx: Prisma.TransactionClient,
   command: ReleaseCommandRow,
@@ -409,20 +313,12 @@ async function publishRelease(
       "project_missing",
       "Release Project is missing",
     );
-  if (
-    project.phase !== "live_management" &&
-    !isCharacterProjectPhaseTransitionAllowed(
-      project.phase,
-      "live_management",
-    )
-  ) {
-    throw new ReleaseCommandError(
-      "project_phase_conflict",
-      "Character Project cannot enter live management from its present phase",
-      { projectPhase: project.phase },
-    );
-  }
-  const validation = await validateCharacterReleaseSnapshot(tx, release, policyVersion, now);
+  const validation = await validateCharacterReleaseSnapshot(
+    tx,
+    release,
+    policyVersion,
+    now,
+  );
   if (validation.failed.length > 0) {
     await tx.characterRelease.update({
       where: { id: release.id },
@@ -445,56 +341,10 @@ async function publishRelease(
       "serving_missing",
       "CharacterServing is missing",
     );
-  const payload = record(command.requestPayload);
-  if (payload.trigger === "scheduled_release_due") {
-    const scheduledRelease = record(payload.scheduledRelease);
-    const servingId = stringValue(scheduledRelease.servingId);
-    const releaseId = stringValue(scheduledRelease.releaseId);
-    const scheduledAtText = stringValue(scheduledRelease.scheduledAt);
-    const scheduledAt = scheduledAtText ? new Date(scheduledAtText) : null;
-    const servingVersion = scheduledRelease.servingVersion;
-    const occurrenceIsCurrent =
-      servingId === serving.id &&
-      releaseId === release.id &&
-      typeof servingVersion === "number" &&
-      Number.isInteger(servingVersion) &&
-      servingVersion === serving.version &&
-      scheduledAt !== null &&
-      Number.isFinite(scheduledAt.getTime()) &&
-      scheduledAt.getTime() <= now.getTime() &&
-      serving.scheduledReleaseId === release.id &&
-      serving.scheduledAt?.getTime() === scheduledAt.getTime();
-    if (!occurrenceIsCurrent) {
-      throw new ReleaseCommandError(
-        "scheduled_release_occurrence_changed",
-        "The scheduled Release occurrence changed before publish execution",
-        {
-          expected: {
-            servingId,
-            servingVersion,
-            releaseId,
-            scheduledAt: scheduledAtText,
-          },
-          actual: {
-            servingId: serving.id,
-            servingVersion: serving.version,
-            releaseId: serving.scheduledReleaseId,
-            scheduledAt: serving.scheduledAt?.toISOString() ?? null,
-          },
-        },
-      );
-    }
-  }
   if (serving.currentReleaseId === release.id) {
     throw new ReleaseCommandError(
       "release_already_current",
       "Release is already current",
-    );
-  }
-  if (serving.scheduledReleaseId && serving.scheduledReleaseId !== release.id) {
-    throw new ReleaseCommandError(
-      "scheduled_release_conflict",
-      "Another Release is scheduled",
     );
   }
   await transitionCharacterServing(tx, {
@@ -504,8 +354,6 @@ async function publishRelease(
     expectedCurrentReleaseId: serving.currentReleaseId,
     data: {
       currentReleaseId: release.id,
-      scheduledReleaseId: null,
-      scheduledAt: null,
     },
     conflict: () =>
       new ReleaseCommandError(
@@ -538,13 +386,6 @@ async function publishRelease(
       supersedesId: serving.currentReleaseId,
     },
   });
-  if (project.phase !== "live_management") {
-    await transitionCharacterProject(tx, {
-      projectId: project.id,
-      to: "live_management",
-      expectedVersion: project.version,
-    });
-  }
   const publishedAssetIds = [
     ...new Set(
       releasePlacements(release.releasePlacementManifest).map(
@@ -801,25 +642,17 @@ async function executeServingState(
       `Serving must be ${expectedState} before ${nextState}`,
     );
   }
-  if (
-    retiring &&
-    project.phase !== "live_management"
-  ) {
-    throw new ReleaseCommandError(
-      "project_phase_conflict",
-      "Character Project must be in live management before retirement",
-      { projectPhase: project.phase },
-    );
-  }
   const resuming = !pausing && !retiring;
   let resumeEvidence: Record<string, unknown> | null = null;
   if (resuming) {
     if (release.legacy) {
-      const authority =
-        await evaluateEditorialReleaseAuthorityInTransaction(tx, {
+      const authority = await evaluateEditorialReleaseAuthorityInTransaction(
+        tx,
+        {
           releaseId: release.id,
           projectionState: "paused",
-        });
+        },
+      );
       // INTENT: editorial Releases have no generated validation run that can
       // independently clear a hard readiness block. Resume may heal only the
       // known false-staleness shape (the exact authority is otherwise intact
@@ -927,9 +760,10 @@ async function executeServingState(
       }
     }
   }
-  const resumeAssetId = pausing || retiring
-    ? null
-    : placementAssetId(release.releasePlacementManifest);
+  const resumeAssetId =
+    pausing || retiring
+      ? null
+      : placementAssetId(release.releasePlacementManifest);
   if (!pausing && !retiring && !resumeAssetId) {
     throw new ReleaseCommandError(
       "serving_projection_manifest_missing",
@@ -940,14 +774,6 @@ async function executeServingState(
     servingId: serving.id,
     to: nextState,
     expectedVersion: serving.version,
-    data: {
-      ...(retiring
-        ? {
-            scheduledReleaseId: null,
-            scheduledAt: null,
-          }
-        : {}),
-    },
   });
   await projectServingToCharacter(tx, {
     characterId: command.targetId,
@@ -955,11 +781,9 @@ async function executeServingState(
     ...(pausing || retiring ? {} : { avatarAssetId: resumeAssetId }),
   });
   if (retiring) {
-    await transitionCharacterProject(tx, {
-      projectId: project.id,
-      to: "retired",
-      expectedVersion: project.version,
-      data: { activeKey: null },
+    await tx.characterProject.update({
+      where: { id: project.id },
+      data: { activeKey: null, version: { increment: 1 } },
     });
   }
   await appendExecutionEvidence(tx, {
@@ -972,27 +796,17 @@ async function executeServingState(
       servingVersion: serving.version,
       releaseReadiness: release.readiness,
       releaseVersion: release.version,
-      scheduledReleaseId: serving.scheduledReleaseId,
-      scheduledAt: serving.scheduledAt?.toISOString() ?? null,
     },
     after: {
       servingState: nextState,
       servingVersion: serving.version + 1,
-      releaseReadiness:
-        resuming ? "ready" : release.readiness,
+      releaseReadiness: resuming ? "ready" : release.readiness,
       releaseVersion:
         resuming && release.readiness !== "ready"
           ? release.version + 1
           : release.version,
       resumeEvidence,
       retired: retiring,
-      scheduledReleaseId: retiring ? null : serving.scheduledReleaseId,
-      scheduledAt: retiring
-        ? null
-        : serving.scheduledAt?.toISOString() ?? null,
-      cancelledScheduledReleaseId: retiring
-        ? serving.scheduledReleaseId
-        : null,
     },
     eventType: retiring
       ? "character.serving.retired"
@@ -1002,17 +816,13 @@ async function executeServingState(
     now,
     result: {
       servingState: nextState,
-      releaseReadiness:
-        resuming ? "ready" : release.readiness,
+      releaseReadiness: resuming ? "ready" : release.readiness,
       releaseVersion:
         resuming && release.readiness !== "ready"
           ? release.version + 1
           : release.version,
       resumeEvidence,
       retired: retiring,
-      cancelledScheduledReleaseId: retiring
-        ? serving.scheduledReleaseId
-        : null,
     },
   });
   return release.id;
@@ -1033,7 +843,6 @@ type ReleaseCommandHandler = (
 const RELEASE_COMMAND_HANDLERS: Readonly<
   Record<ReleaseCommandType, ReleaseCommandHandler>
 > = {
-  "character.release.schedule": executeSchedule,
   "character.release.publish": async (tx, command, policyVersion, now) =>
     publishRelease(
       tx,

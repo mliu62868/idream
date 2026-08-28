@@ -54,9 +54,7 @@ describe("Image Library and legacy Placement authority", () => {
   const projectId = `content-authority-project-${suffix}`;
   const contentVersionId = `content-authority-content-${suffix}`;
   const releaseId = `content-authority-release-${suffix}`;
-  const scheduledReleaseId = `content-authority-scheduled-release-${suffix}`;
   const releaseAssetId = `content-authority-release-asset-${suffix}`;
-  const scheduledReleaseAssetId = `content-authority-scheduled-release-asset-${suffix}`;
   const campaignAssetId = `content-authority-campaign-asset-${suffix}`;
   const standaloneAssetId = `content-authority-standalone-asset-${suffix}`;
   const freeAssetId = `content-authority-free-asset-${suffix}`;
@@ -150,7 +148,6 @@ describe("Image Library and legacy Placement authority", () => {
     await prisma.mediaAsset.createMany({
       data: [
         releaseAssetId,
-        scheduledReleaseAssetId,
         campaignAssetId,
         standaloneAssetId,
         freeAssetId,
@@ -227,9 +224,6 @@ describe("Image Library and legacy Placement authority", () => {
       data: {
         id: projectId,
         characterId,
-        phase: "live_management",
-        audience: {},
-        successCriteria: [],
       },
     });
     await prisma.characterContentVersion.create({
@@ -290,57 +284,11 @@ describe("Image Library and legacy Placement authority", () => {
         publishedAt: new Date(),
       },
     });
-    await prisma.characterRelease.create({
-      data: {
-        id: scheduledReleaseId,
-        projectId,
-        revisionId: `content-authority-scheduled-revision-${suffix}`,
-        characterContentVersionId: contentVersionId,
-        generationProvenance: {},
-        releasePlacementManifest: {
-          schemaVersion: 2,
-          placements: [
-            {
-              slotKey: "character_avatar",
-              assetId: scheduledReleaseAssetId,
-              slotVersion: 1,
-              runId: `scheduled-avatar-run-${suffix}`,
-              itemId: `scheduled-avatar-item-${suffix}`,
-              reviewDecisionId: `scheduled-avatar-decision-${suffix}`,
-              generationJobId: `scheduled-avatar-job-${suffix}`,
-            },
-            {
-              slotKey: "character_hero",
-              assetId: scheduledReleaseAssetId,
-              slotVersion: 1,
-              runId: `scheduled-hero-run-${suffix}`,
-              itemId: `scheduled-hero-item-${suffix}`,
-              reviewDecisionId: `scheduled-hero-decision-${suffix}`,
-              generationJobId: `scheduled-hero-job-${suffix}`,
-            },
-            {
-              slotKey: "character_chat",
-              assetId: scheduledReleaseAssetId,
-              slotVersion: 1,
-              runId: `scheduled-chat-run-${suffix}`,
-              itemId: `scheduled-chat-item-${suffix}`,
-              reviewDecisionId: `scheduled-chat-decision-${suffix}`,
-              generationJobId: `scheduled-chat-job-${suffix}`,
-            },
-          ],
-        },
-        snapshotHash: `content-authority-scheduled-snapshot-${suffix}`,
-        readiness: "ready",
-        status: "scheduled",
-      },
-    });
     await prisma.characterServing.create({
       data: {
         id: `content-authority-serving-${suffix}`,
         characterId,
         currentReleaseId: releaseId,
-        scheduledReleaseId,
-        scheduledAt: new Date(Date.now() + 60_000),
         state: "live",
       },
     });
@@ -552,7 +500,7 @@ describe("Image Library and legacy Placement authority", () => {
     });
     await prisma.characterServing.deleteMany({ where: { characterId } });
     await prisma.characterRelease.deleteMany({
-      where: { id: { in: [releaseId, scheduledReleaseId] } },
+      where: { id: releaseId },
     });
     await prisma.characterContentVersion.deleteMany({
       where: { id: contentVersionId },
@@ -566,7 +514,6 @@ describe("Image Library and legacy Placement authority", () => {
         id: {
           in: [
             releaseAssetId,
-            scheduledReleaseAssetId,
             campaignAssetId,
             standaloneAssetId,
             freeAssetId,
@@ -815,60 +762,6 @@ describe("Image Library and legacy Placement authority", () => {
     });
   });
 
-  it("projects scheduled Character Release dependencies and blocks single or bulk archive", async () => {
-    const scheduledBulkAssetIds = [
-      scheduledReleaseAssetId,
-      bulkFreeAssetId,
-    ].sort();
-    const response = await getContentAsset(
-      request("GET", `api/v2/admin/assets/${scheduledReleaseAssetId}`),
-      scheduledReleaseAssetId,
-    );
-    const payload = await response.json();
-    expect(payload.data.asset.authorityDependencies).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          kind: "character_release",
-          characterId,
-          releaseId: scheduledReleaseId,
-          releaseState: "scheduled",
-          repairPath: `/admin/characters/${characterId}?tab=release`,
-        }),
-      ]),
-    );
-    await expect(patchContentAsset(
-      request("PATCH", `api/v2/admin/assets/${scheduledReleaseAssetId}`, {
-        status: "archived",
-        reason: "attempt to archive a scheduled Release asset",
-        confirmation: scheduledReleaseAssetId,
-      }),
-      scheduledReleaseAssetId,
-    )).rejects.toMatchObject({
-      status: 409,
-      details: {
-        code: "asset_authority_dependency_active",
-        assetId: scheduledReleaseAssetId,
-      },
-    });
-    await expect(bulkPatchContentAssets(
-      request("POST", "api/v2/admin/assets/bulk", {
-        assetIds: scheduledBulkAssetIds,
-        status: "archived",
-        reason: "scheduled Release must make the whole selection fail",
-        confirmation: scheduledBulkAssetIds.join(","),
-      }),
-    )).rejects.toMatchObject({
-      status: 409,
-      details: {
-        code: "asset_authority_dependency_active",
-        assetId: scheduledReleaseAssetId,
-      },
-    });
-    await expect(prisma.mediaAsset.findUniqueOrThrow({
-      where: { id: bulkFreeAssetId },
-    })).resolves.toMatchObject({ metadata: {} });
-  });
-
   it("protects paused current Releases but does not keep retired current pointers active", async () => {
     await prisma.characterServing.update({
       where: { characterId },
@@ -942,7 +835,7 @@ describe("Image Library and legacy Placement authority", () => {
   it("protects Serving Release assets independently from a retired Project", async () => {
     await prisma.characterProject.update({
       where: { id: projectId },
-      data: { phase: "retired", activeKey: null },
+      data: { activeKey: null },
     });
     try {
       const response = await getContentAsset(
@@ -965,7 +858,7 @@ describe("Image Library and legacy Placement authority", () => {
     } finally {
       await prisma.characterProject.update({
         where: { id: projectId },
-        data: { phase: "live_management" },
+        data: { activeKey: `official:${characterId}` },
       });
     }
   });
@@ -1102,28 +995,19 @@ describe("Image Library and legacy Placement authority", () => {
         {
           id: historicalActiveProjectId,
           characterId: deletedCharacterId,
-          phase: "producing",
           activeKey: `legacy-deleted-active:${suffix}`,
-          audience: {},
-          successCriteria: [],
           draftImageAssetId: staleAssetId,
         },
         {
           id: retiredProjectId,
           characterId: deletedCharacterId,
-          phase: "retired",
           activeKey: `legacy-retired:${suffix}`,
-          audience: {},
-          successCriteria: [],
           draftImageAssetId: staleAssetId,
         },
         {
           id: inactiveProjectId,
           characterId: deletedCharacterId,
-          phase: "producing",
           activeKey: null,
-          audience: {},
-          successCriteria: [],
           draftImageAssetId: staleAssetId,
         },
       ],

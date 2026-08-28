@@ -1,7 +1,10 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { characterWorkspaceDetail } from "./character-workspace-fixture";
-import { soulDraftFromWorkspace } from "./CharacterSoulPanel";
+import {
+  compileSoulDraftPreview,
+  soulDraftFromWorkspace,
+} from "./CharacterSoulPanel";
 
 const panelSource = readFileSync(
   new URL("./CharacterSoulPanel.tsx", import.meta.url),
@@ -17,7 +20,6 @@ describe("Character Soul editor projection", () => {
             name: "Mira",
             age: 31,
             gender: "trans",
-            relationshipArchetype: "trusted companion",
             characterPromise: "Notices what changes.",
             detailsMarkdown: "## Voice\nWarm and precise.",
           },
@@ -42,5 +44,22 @@ describe("Character Soul editor projection", () => {
     );
     // 提交只能来自对话框，不能还留一条绕过它的直接调用。
     expect(panelSource).not.toContain("void createVersion()");
+  });
+
+  it("compiles the unsaved form values for both live preview artifacts", () => {
+    const preview = compileSoulDraftPreview({
+      name: "Mira",
+      age: 31,
+      gender: "trans",
+      characterPromise: "LIVE DRAFT PREVIEW SHOULD APPEAR",
+      detailsMarkdown: "## Voice\nWarm and precise.",
+      firstMessage: "Hello.",
+    });
+
+    expect(preview).toMatchObject({
+      markdown: expect.stringContaining("LIVE DRAFT PREVIEW SHOULD APPEAR"),
+      systemPrompt: expect.stringContaining("LIVE DRAFT PREVIEW SHOULD APPEAR"),
+    });
+    expect(preview?.markdown).toBe(preview?.systemPrompt);
   });
 });

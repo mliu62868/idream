@@ -48,7 +48,9 @@ const officialInclude = {
   },
 } satisfies Prisma.CharacterInclude;
 
-type OfficialCharacterRow = Prisma.CharacterGetPayload<{ include: typeof officialInclude }>;
+type OfficialCharacterRow = Prisma.CharacterGetPayload<{
+  include: typeof officialInclude;
+}>;
 
 function officialCharacterDTO(character: OfficialCharacterRow) {
   const [visualProfile] = character.visualProfiles;
@@ -74,7 +76,7 @@ function officialCharacterDTO(character: OfficialCharacterRow) {
 
 function jsonRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
+    ? (value as Record<string, unknown>)
     : {};
 }
 
@@ -84,7 +86,10 @@ function text(value: unknown) {
 
 function stringList(value: unknown) {
   return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    ? value.filter(
+        (item): item is string =>
+          typeof item === "string" && item.trim().length > 0,
+      )
     : [];
 }
 
@@ -113,7 +118,10 @@ function hasOwn(row: Record<string, unknown>, key: string) {
 }
 
 function touchesSoulDetails(row: Record<string, unknown>) {
-  return hasOwn(row, "detailsMarkdown") || LEGACY_SOUL_DETAIL_KEYS.some((key) => hasOwn(row, key));
+  return (
+    hasOwn(row, "detailsMarkdown") ||
+    LEGACY_SOUL_DETAIL_KEYS.some((key) => hasOwn(row, key))
+  );
 }
 
 function officialSoulDetailsMarkdown(row: Record<string, unknown>) {
@@ -125,16 +133,23 @@ function officialSoulDetailsMarkdown(row: Record<string, unknown>) {
   }
   const markdown = legacySoulDetailsMarkdown(row);
   if (markdown.length > SOUL_DETAILS_MARKDOWN_MAX_LENGTH) {
-    throw Errors.badRequest("detailsMarkdown must not exceed 24000 characters", {
-      maxLength: SOUL_DETAILS_MARKDOWN_MAX_LENGTH,
-    });
+    throw Errors.badRequest(
+      "detailsMarkdown must not exceed 24000 characters",
+      {
+        maxLength: SOUL_DETAILS_MARKDOWN_MAX_LENGTH,
+      },
+    );
   }
   return markdown;
 }
 
 function sameStrings(left: readonly string[], right: readonly string[]) {
   const normalized = (values: readonly string[]) =>
-    [...new Set(values.map((value) => value.trim().toLowerCase()).filter(Boolean))].sort();
+    [
+      ...new Set(
+        values.map((value) => value.trim().toLowerCase()).filter(Boolean),
+      ),
+    ].sort();
   return JSON.stringify(normalized(left)) === JSON.stringify(normalized(right));
 }
 
@@ -191,16 +206,15 @@ export async function createOfficialCharacter(input: {
 
   const advanced = jsonRecord(body.advancedDetails);
   const appearance = jsonRecord(body.appearance);
-  const relationshipArchetype = text(advanced.relationshipArchetype) || text(advanced.relationship);
   const firstMessage = text(advanced.firstMessage);
-  const missingFields = [
-    ...(!relationshipArchetype ? ["relationshipArchetype"] : []),
-    ...(!firstMessage ? ["firstMessage"] : []),
-  ];
+  const missingFields = [...(!firstMessage ? ["firstMessage"] : [])];
   if (missingFields.length > 0) {
-    throw Errors.badRequest("Complete the official Character Soul before creating it", {
-      missingFields,
-    });
+    throw Errors.badRequest(
+      "Complete the official Character Soul before creating it",
+      {
+        missingFields,
+      },
+    );
   }
   const created = await createCharacterProject({
     actor,
@@ -208,36 +222,26 @@ export async function createOfficialCharacter(input: {
     requestId: request.headers.get("x-request-id") ?? randomUUID(),
     legacyTagLabels: body.tags,
     request: {
-      positioning: {
-        audience: "Unspecified legacy draft audience; complete in Character Studio",
-        companionNeed: "Unspecified legacy draft companion need; complete in Character Studio",
-        hypothesis: "Legacy draft requires an explicit value hypothesis before release",
-        differentiation: "Legacy draft requires explicit differentiation before release",
-      },
       persona: {
         name: body.name,
         age: body.age,
         gender: body.gender,
-        relationshipArchetype,
         characterPromise: body.description,
         detailsMarkdown: officialSoulDetailsMarkdown(advanced),
         firstMessage,
       },
       visualDirection: {
-        identityAnchor: text(appearance.identityAnchor) || `${body.name} canonical identity anchor requires production evidence`,
-        stableTraits: stringList(appearance.stableTraits).length > 0
-          ? stringList(appearance.stableTraits)
-          : ["Unspecified stable trait; complete before release"],
+        identityAnchor:
+          text(appearance.identityAnchor) ||
+          `${body.name} canonical identity anchor requires production evidence`,
+        stableTraits:
+          stringList(appearance.stableTraits).length > 0
+            ? stringList(appearance.stableTraits)
+            : ["Unspecified stable trait; complete before release"],
         style: body.style,
-        referenceDirection: text(appearance.referenceDirection) || "Unspecified reference direction; complete before release",
-      },
-      commercialIntent: {
-        ownerId: actor.id,
-        plannedLaunchAt: null,
-        targetPlacementKeys: [],
-        successCriteria: ["Complete explicit Character Project success criteria before release"],
-        productionPackage: "Legacy draft requires an explicit production package before release",
-        qaPlan: "Legacy draft requires persona, visual, mobile, desktop, and conversation QA before release",
+        referenceDirection:
+          text(appearance.referenceDirection) ||
+          "Unspecified reference direction; complete before release",
       },
       reason: { code: "legacy_official_create_adapter", summary: body.reason },
       confirmation: "CREATE CHARACTER",
@@ -265,7 +269,13 @@ export async function updateOfficialCharacter(input: {
     throw Errors.notFound("Official character not found");
   }
 
-  if (body.tags && !sameStrings(body.tags, existing.tags.map((link) => link.tag.label))) {
+  if (
+    body.tags &&
+    !sameStrings(
+      body.tags,
+      existing.tags.map((link) => link.tag.label),
+    )
+  ) {
     throw Errors.conflict(
       "Legacy profile edit cannot mutate live taxonomy; use the Taxonomy workspace",
       { deepLink: "/admin/characters/taxonomy" },
@@ -275,7 +285,7 @@ export async function updateOfficialCharacter(input: {
   const advanced = jsonRecord(body.advancedDetails);
   const appearance = jsonRecord(body.appearance);
   const legacySoulDetailKeys = LEGACY_SOUL_DETAIL_KEYS.filter((key) =>
-    hasOwn(advanced, key)
+    hasOwn(advanced, key),
   );
   if (legacySoulDetailKeys.length > 0) {
     throw Errors.badRequest(
@@ -288,22 +298,31 @@ export async function updateOfficialCharacter(input: {
     ...(body.name !== undefined ? { name: body.name } : {}),
     ...(body.age !== undefined ? { age: body.age } : {}),
     ...(body.gender !== undefined ? { gender: body.gender } : {}),
-    ...(body.description !== undefined ? { characterPromise: body.description } : {}),
-    ...(text(advanced.relationshipArchetype) ? { relationshipArchetype: text(advanced.relationshipArchetype) } : {}),
-    ...(touchesSoulDetails(advanced)
-      // SPEC: detailsMarkdown is an explicit complete replacement. Structured
-      // legacy fields are rejected above because partial Markdown inference
-      // cannot preserve omitted author intent.
-      ? { detailsMarkdown: officialSoulDetailsMarkdown(advanced) }
+    ...(body.description !== undefined
+      ? { characterPromise: body.description }
       : {}),
-    ...(text(advanced.firstMessage) ? { firstMessage: text(advanced.firstMessage) } : {}),
+    ...(touchesSoulDetails(advanced)
+      ? // SPEC: detailsMarkdown is an explicit complete replacement. Structured
+        // legacy fields are rejected above because partial Markdown inference
+        // cannot preserve omitted author intent.
+        { detailsMarkdown: officialSoulDetailsMarkdown(advanced) }
+      : {}),
+    ...(text(advanced.firstMessage)
+      ? { firstMessage: text(advanced.firstMessage) }
+      : {}),
   };
   const visualDirection = {
     ...resumed.draft.visualDirection,
     ...(body.style !== undefined ? { style: body.style } : {}),
-    ...(text(appearance.identityAnchor) ? { identityAnchor: text(appearance.identityAnchor) } : {}),
-    ...(stringList(appearance.stableTraits).length > 0 ? { stableTraits: stringList(appearance.stableTraits) } : {}),
-    ...(text(appearance.referenceDirection) ? { referenceDirection: text(appearance.referenceDirection) } : {}),
+    ...(text(appearance.identityAnchor)
+      ? { identityAnchor: text(appearance.identityAnchor) }
+      : {}),
+    ...(stringList(appearance.stableTraits).length > 0
+      ? { stableTraits: stringList(appearance.stableTraits) }
+      : {}),
+    ...(text(appearance.referenceDirection)
+      ? { referenceDirection: text(appearance.referenceDirection) }
+      : {}),
   };
   const moderation = await moderateText(
     "character",
@@ -318,16 +337,6 @@ export async function updateOfficialCharacter(input: {
     characterId: id,
     expectedVersion: resumed.authority.projectVersion,
     actor,
-    ownerId: resumed.draft.commercialIntent.ownerId,
-    audience: resumed.draft.positioning.audience,
-    companionNeed: resumed.draft.positioning.companionNeed,
-    hypothesis: resumed.draft.positioning.hypothesis,
-    differentiation: resumed.draft.positioning.differentiation,
-    targetPlacementKeys: resumed.draft.commercialIntent.targetPlacementKeys,
-    successCriteria: resumed.draft.commercialIntent.successCriteria,
-    productionPackage: resumed.draft.commercialIntent.productionPackage,
-    qaPlan: resumed.draft.commercialIntent.qaPlan,
-    plannedLaunchAt: resumed.draft.commercialIntent.plannedLaunchAt,
     content: { persona, visualDirection },
     reason: body.reason,
     requestId: request.headers.get("x-request-id") ?? randomUUID(),
@@ -355,11 +364,16 @@ export async function setOfficialState(input: {
   if (!existing || existing.source !== "official" || existing.deletedAt) {
     throw Errors.notFound("Official character not found");
   }
-  const serving = await prisma.characterServing.findUnique({ where: { characterId: id } });
+  const serving = await prisma.characterServing.findUnique({
+    where: { characterId: id },
+  });
   if (!serving) {
-    throw Errors.badRequest("Character has not completed the v2 Release backfill", {
-      repairDeepLink: `/admin/characters/${id}?tab=overview`,
-    });
+    throw Errors.badRequest(
+      "Character has not completed the v2 Release backfill",
+      {
+        repairDeepLink: `/admin/characters/${id}?tab=overview`,
+      },
+    );
   }
 
   let commandType:
@@ -377,10 +391,7 @@ export async function setOfficialState(input: {
     target = { type: "character_serving", id };
     expectedVersion = serving.version;
   } else {
-    const candidateId = serving.scheduledReleaseId;
-    const candidate = candidateId
-      ? await prisma.characterRelease.findUnique({ where: { id: candidateId } })
-      : await prisma.characterRelease.findFirst({
+    const candidate = await prisma.characterRelease.findFirst({
           where: {
             projectId: {
               in: (
@@ -393,11 +404,14 @@ export async function setOfficialState(input: {
             status: "approved",
           },
           orderBy: { createdAt: "desc" },
-        });
-    if (!candidate) {
-      throw Errors.badRequest("Publishing requires an approved Character Release candidate", {
-        repairDeepLink: `/admin/characters/${id}?tab=overview`,
       });
+    if (!candidate) {
+      throw Errors.badRequest(
+        "Publishing requires an approved Character Release candidate",
+        {
+          repairDeepLink: `/admin/characters/${id}?tab=overview`,
+        },
+      );
     }
     commandType = "character.release.publish";
     target = { type: "character_release", id: candidate.id };
@@ -435,7 +449,11 @@ export async function setOfficialState(input: {
   }
   const after = await prisma.character.findUniqueOrThrow({ where: { id } });
   return {
-    character: { id: after.id, status: after.status, visibility: after.visibility },
+    character: {
+      id: after.id,
+      status: after.status,
+      visibility: after.visibility,
+    },
     commandId: accepted.commandId,
   };
 }

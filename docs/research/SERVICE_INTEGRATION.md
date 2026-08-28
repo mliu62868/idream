@@ -229,7 +229,7 @@ Chat 不把这些事件当作唯一权威来源；权威读取仍来自只读 vi
 ```text
 Main Site -> user.account_deletion.requested.v2 -> Chat
 Chat:
-  1. 标记/删除该 user 的 chat_sessions/messages/memories/relationships
+  1. 标记/删除该 user 的 chat_sessions/messages/companion-memory workspaces
   2. 删除 runtime vector index 和 stream cache
   3. outbox: chat.account_erasure.completed
 ```

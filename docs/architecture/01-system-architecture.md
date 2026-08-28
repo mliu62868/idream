@@ -1,247 +1,92 @@
 # 01 · 系统架构
 
-更新日期：2026-06-28
+更新日期：2026-08-28
 
-## 1. 架构风格：模块化单体 + Chat Service 独立边界
+## 1. 架构形态
 
-整个仓库是 npm workspaces monorepo（`packages/{main,chat,gen,admin,shared}`）。主站（`packages/main`）按业务域内聚、单部署。Chat 已**物理拆分**为独立服务（`packages/chat`），拥有自己的聊天域 Postgres schema/视图；主站不再写 chat 表、也不做 chat finalizer，只通过 BFF 代理（`server/bff/chat-proxy`）与 outbox 事件与之交互。
+iDream 是 Bun + Turborepo monorepo，按事实权威和执行时长拆成六个一方包：
 
-为什么：
+| 包 | 职责 | 持久化权威 |
+| --- | --- | --- |
+| `packages/main` | 用户产品、Character、ChatSession/Turn、计费、Generation、媒体、Admin API | PostgreSQL + Blob |
+| `packages/chat` | 接收 Main 的不可变 Turn 快照，组织流式 AgentRun | `CHAT_FS_ROOT/runs`；Redis 只缓存 SSE |
+| `packages/chat-agent` | DSH AgentLoop、模型调用、工具协议、official igrep | DSH/igrep workspace |
+| `packages/gen` | 图片/视频 provider 执行与不可变终态记录 | Blob + Main/Gen durable protocol |
+| `packages/admin` | 运营界面；写操作进入 Main authority | 无独立产品数据库 |
+| `packages/shared` | 跨包协议、Zod schema 和稳定类型 | 无运行时权威 |
 
-- **KISS / YAGNI**：前端已是 Next 16，用同一个 App 提供 API 最省心；Vercel 原生支持。
-- **Orthogonality**：主站 core domain 与 chat domain 通过只读 view 和 outbox 事件解耦，Chat 可独立扩展。
-- **重活异步化**：聊天生成、图片/视频生成、审核、webhook 处理都走异步 job（见 06），所以同步 HTTP 路径很短，serverless 超时风险低，不需要长驻服务。
+核心取舍只有一个：**产品事实集中在 Main；模型和生成执行可以拆进程，但不建立第二份产品数据库。**
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│              Monorepo（npm workspaces：packages/*）                  │
-│  packages/main    主站 Next.js 16 App（单部署，本架构主体）          │
-│  packages/chat    Chat Service（独立服务 + 独立 Postgres schema）    │
-│  packages/gen     生成 worker（图/视频/语音 pipeline）              │
-│  packages/admin   Admin 控制台（独立 Next App）                     │
-│  packages/shared  跨包共享契约/类型（bff/chat/contracts/media…）    │
-└──────────────────────────────────────────────────────────────────┘
-
-packages/main 内部：
-┌──────────────────────────────────────────────────────────────────┐
-│  src/app/(public)/*       公开 SEO 页（SSR/预渲染，Cache Components）│
-│  src/app/(app)/*          鉴权后产品页（dynamic）                    │
-│  src/app/api/v1/[...resource]/route.ts                             │
-│                           单一 catch-all → dispatchV1 按 resource 分发│
-│  src/app/api/auth/[...all]/route.ts    better-auth handler         │
-│  src/app/api/internal/worker/route.ts  内部 worker 端点（密钥保护）  │
-│  proxy.ts                 轻量边缘检查（age gate cookie、安全 header）│
-│         │                                                          │
-│         ▼                                                          │
-│  src/server/                  ← 后台核心（本架构主体）               │
-│   ├─ modules/ourdream/service.ts  产品域 mega-module（dispatchV1）   │
-│   ├─ modules/admin/               admin 域（service.ts + characters/）│
-│   ├─ jobs/                    队列定义 + claim                       │
-│   ├─ providers/               外部供应商抽象（AI/支付/存储/验证）     │
-│   ├─ bff/                     chat-proxy（签名 + 反向代理到 Chat）    │
-│   ├─ admin/                   权限 / dev-login                       │
-│   └─ lib/                     横切（auth、db、errors、http、logger…） │
-└──────────────────────────────────────────────────────────────────┘
-        │ Prisma Client（单例）                  │ Provider SDK
-        ▼                                        ▼
-   PostgreSQL（Postgres-only，dev/prod 一致）   AI / PSP / Blob / Verify / Redis
-```
-
-Chat 目标拓扑：
+## 2. Chat 与生成主链
 
 ```text
-Main Site owns:
-  identity, compliance, catalog/characters, creator, billing, generation, media, safety/admin, SEO
-
-Chat Service owns:
-  chat_sessions, messages, message_versions, chat_usage,
-  Soul/PreparedTurn, Scene/relationship/boundaries, workspace scope,
-  chat stream, chat outbox
-
-Chat Agent sidecar owns:
-  DSH AgentLoop + official igrep companion-memory lifecycle
-
-Chat Service reads only:
-  core.chat_user_view
-  core.chat_character_view
-  billing.chat_entitlement_view
-  compliance.chat_user_eligibility_view
+Browser
+  -> Main BFF
+     -> Main PostgreSQL: transaction creates user message + pending assistant Turn
+     -> signed immutable execution snapshot
+        -> Chat: local AgentRun
+           -> chat-agent: DSH model/tool loop
+              -> image/video ToolEffect
+                 -> Main: entitlement + reserve + Generation Request/Attempt
+                    -> Gen: provider execution
+                    -> Main: Delivery + Settlement/refund
+           -> terminal candidate
+        -> Main: exact attempt CAS + durable ACK
+  <- Main SSE/history: only selected product Turn and current-attempt attachments
 ```
 
-## 2. 分层与依赖方向
+Chat 收到 Main terminal ACK 后才能发送 SSE `done` 和允许长期记忆 ingest。DSH 事件、token、工具输出和本地 transcript 都不能反向成为用户消息列表。
 
-严格单向依赖，**禁止反向**（lib/provider 不得 import 业务 service，service 不得 import route）：
+## 3. 一致性边界
 
-```
-catch-all route.ts ─▶ dispatchV1（service mega-module）─▶ Prisma Client ─▶ DB
-                          │
-                          └─▶ provider 抽象（AI/PSP/Blob/Verify）
-                          └─▶ job queue（入队，不在请求内做重活）
-                          └─▶ events（埋点，fire-and-forget）
-                          └─▶ lib/auth（解析 session）、lib/http（envelope/error）
-```
+| 边界 | 一致性规则 |
+| --- | --- |
+| Main 内部产品写入 | Prisma transaction；同一交互事务内查询串行执行 |
+| Chat terminal | `turnId + assistantMessageId + attempt` CAS；完全相同才算幂等 replay |
+| ToolEffect | `turnId + attempt + callId + argumentsDigest` 幂等；Main 先 reserve/admit，再 ACK |
+| Generation | `Request -> Attempt -> TransportExecution -> TerminalRecord -> Artifact/Delivery -> Settlement` |
+| SSE | 可丢、可重连的暂态传输；不能作为完成权威 |
+| AgentRun 文件 | 单 writer、原子 input/terminal、append+fsync events；只用于执行恢复与排障 |
+| companion memory | 从已提交 Turn 派生，可删除/重建；不能覆盖 Main 产品事实 |
 
-> 现状已**没有**独立的 repository 层：数据访问直接由 service handler 用 Prisma 完成（见 §3、05）。下表是各角色的职责约束。
+## 4. Main 内部分层
 
-| 层 | 唯一职责 | 不允许 |
-| --- | --- | --- |
-| **Route Handler** (`app/api/v1/[...resource]/route.ts`) | HTTP 适配：单一 catch-all 把 method+segments 交给 `dispatchV1` | 写业务逻辑、直接用 Prisma |
-| **Service** (`modules/ourdream/service.ts`、`modules/admin/`) | 业务规则、跨表事务、权限断言、**直接用 Prisma 读写**、入队 job、发埋点 | 碰 `Request` 之外的 HTTP 细节、绕过 provider 直连外部 SDK |
-| **Provider** (`providers/*`) | 把外部供应商封装成稳定接口；处理 SDK、重试、签名 | 业务规则 |
-| **lib/** | 横切能力（auth、db 单例、http、错误、日志、env、constants） | 业务规则、import 业务模块 |
-
-> Prisma 访问集中在 service 层（`modules/ourdream` + `modules/admin`），不在 route/provider/lib 里散落，满足 SSoT。
-
-## 3. 模块清单与依赖
-
-下表是**逻辑业务域**划分（对齐 `BackendFeatureSpec.md §2` 与 `dispatchV1` 的 resource 分发）。与早期设计不同，主站后台**不再**按域拆成十几个 `modules/<name>/` 目录：除 admin 外，所有产品域都内聚在单一 mega-module `src/server/modules/ourdream/service.ts`，由 `dispatchV1(request, segments)` 按 `resource` 段分发到对应 handler。chat 已拆成独立服务（`packages/chat`）。
-
-| 逻辑域 | 实现位置 | 依赖 | P0 |
-| --- | --- | --- | --- |
-| identity | `ourdream/service.ts`（auth/me/account handler） | lib/auth | ✅ |
-| compliance（age gate + age verification） | `ourdream/service.ts` | providers/verify | ✅ |
-| catalog（角色目录/搜索/筛选/标签/统计） | `ourdream/service.ts` | — | ✅ |
-| chat | **独立服务 `packages/chat`**；主站经 `server/bff/chat-proxy` 代理 | read-only core/billing/compliance views, providers/chat | ✅ |
-| creator（草稿/预览/提交/审核态） | `ourdream/service.ts` | safety, jobs, providers/image | ✅ |
-| generation（图/视频/语音任务、presets） | `ourdream/service.ts`；worker pipeline 在 `packages/gen` | billing(dreamcoin), safety, jobs, providers/image,video,voice | ✅(先图) |
-| media（图库 like/manage/download） | `ourdream/service.ts` | providers/blob | ✅(基础) |
-| billing（计划/订阅/权益/dreamcoin） | `ourdream/service.ts` | providers/payment, jobs | ✅ |
-| safety（审核/举报/申诉/政策） | `ourdream/service.ts` | jobs, providers/moderation | ✅ |
-| library（My AI 各 tab 聚合） | `ourdream/service.ts` | catalog, media, generation | ✅(基础) |
-| profile（资料/偏好/语言/兑换码/推荐/账号） | `ourdream/service.ts` | identity, billing | P0/P1 |
-| feed（推荐流 + 互动） | `ourdream/service.ts` | catalog, media, safety | P1 |
-| community（榜单/创作者/collections） | `ourdream/service.ts` | catalog, profile | P1 |
-| seo（路由内容/文章/比较页 metadata） | `ourdream/service.ts` + `src/app` 路由 | — | P1 |
-| analytics（产品事件/漏斗） | `ourdream/service.ts`（events/track）+ `processes/event-consumer` | — | P0 轻量 |
-| admin（审核后台/角色 CMS/用户内容任务管理） | **`modules/admin/`**（service.ts + characters/）+ `server/admin`（权限） | safety, catalog, billing, identity | P0 内部 |
-
-**依赖治理规则**：
-
-- 主站产品域目前共处一个 mega-module；硬服务边界只剩两处：**chat（独立服务 `packages/chat`）** 与 **admin 模块（`modules/admin/`）**。
-- 出现双向依赖时，下沉公共概念到 `lib/` 或用 **事件/job** 解耦（如 billing 完成 → 发事件 → library 刷新）。
-- 跨包共享读模型/契约放 `packages/shared`（`bff/chat/contracts/media…`）。
-- Chat 是特殊边界：主站经 BFF 代理/消费 Chat outbox；主站不直接写 Chat Service 权威表。Chat 只读主站 User/Character/Entitlement/Eligibility view，但不能写主站权威表。
-
-## 4. 请求生命周期
-
-### 4.1 典型读请求（Explore 列表 `GET /api/v1/characters`）
-
-```
-Client
-  │  fetch（带 session cookie / age gate cookie）
-  ▼
-proxy.ts          安全 header；可选 age-gate 乐观检查（不做最终鉴权）
-  ▼
-[...resource]/route.ts   → dispatchV1(request, ["characters"])
-  ▼
-dispatchV1        匹配 resource=characters & GET → 调 listCharacters handler
-  ▼
-listCharacters    断言 age gate（从 ctx）→ 直接 Prisma 查询
-                  （cursor 分页、tag 过滤、可见性=public+approved）
-  ▼
-handler           ok({ items, nextCursor })  +  after(()=>events.track('explore_...'))
+```text
+Next Route/BFF
+  -> domain module / authority seam
+     -> Prisma transaction or durable queue admission
+     -> provider port
 ```
 
-### 4.2 典型写请求（发消息 `POST /api/v1/chat/sessions/:id/messages`）
+- Route 只做 HTTP 适配、鉴权上下文和 schema 校验。
+- 领域 module 保存不变量、授权、状态转换和事务。
+- Provider 只封装第三方/本地执行器，不承载产品计费规则。
+- `packages/shared` 只放真正跨包的 wire contract；包内实现类型留在包内。
 
-Chat 写请求进入 Chat Service。主站可以作为 BFF 验证 session cookie 并代理请求，但不写 `chat_sessions/messages/relationships`，也不做 chat finalizer。Chat 每一轮只调用 DSH sidecar；official igrep 负责通用记忆，产品不暴露 item API。
+## 5. 异步与进程
 
-```
-Browser ─▶ Main BFF/API Gateway ─▶ Chat Service
-                                ├─ verify signed user context
-                                ├─ read core.chat_user_view
-                                ├─ read compliance.chat_user_eligibility_view
-                                ├─ read billing.chat_entitlement_view
-                                ├─ read core.chat_character_view
-                                ├─ moderation.input(content)
-                                ├─ transaction:
-                                │    insert user message
-                                │    insert assistant placeholder
-                                │    update session.lastMessageAt
-                                ├─ enqueue internal chat.generate
-                                └─ return {assistantMessageId, streamUrl}
+- BullMQ 用于 Main/Gen 的生成、terminal/finalizer、webhook 与后台任务。
+- Chat 不使用 BullMQ；一次 Turn 是 Main 到 Chat 的有界 HTTP AgentRun。
+- Redis 在 Chat 侧只保存可恢复的 SSE token stream；最终历史来自 Main PostgreSQL。
+- PM2 是完整产品拓扑的进程管理器；所有一方 TypeScript/Next 进程由 Bun 解释执行。
+- Docker Compose 只提供本地 PostgreSQL/Redis，不是产品部署入口。
 
-Chat worker:
-  recent messages + memory + relationship + character persona
-  → ChatModel.stream
-  → Redis Stream / SSE
-  → moderation.output
-  → transaction:
-       update assistant message + version
-       increment chat_usage
-       apply memory / relationship
-       insert chat outbox events
-```
+## 6. 数据与部署
 
-### 4.3 webhook（支付/验证 provider）
+- 只有 Main 使用 Prisma/PostgreSQL。`packages/chat` 没有 schema、role、migration 或数据库 URL。
+- 媒体字节进入 Blob；数据库保存身份、状态、校验和、交付和结算事实。
+- `CHAT_FS_ROOT` 必须是 Chat 单 writer 可持久访问的绝对路径。多实例前必须先解决共享文件和写入仲裁；当前固定 `instances: 1`。
+- DSH sidecar 与 Chat 独立进程，但它没有产品消息、余额或 Generation 的写权限。
 
-`POST /api/v1/billing/webhooks/:provider` → **先验签** → 落 `provider_events`（按 event id 去重，幂等）→ 入队 `billing.webhook` → 立即 200。worker 再更新订阅/权益/ledger（见 08）。
+## 7. 架构不变量
 
-## 5. Next.js 16 落地要点（破坏性变更）
+1. 用户看到的会话、user message、唯一最终回复、附件和计量只来自 Main。
+2. Chat 文件不保存可独立展示的第二份聊天历史，不保存余额/usage ledger。
+3. 图片/视频计费属于 Main Generation/Ledger；不存在“provider 成功后回调直接扣费”。
+4. 同一 ToolEffect 重试不得重复生成或重复扣费；参数变化必须冲突。
+5. 旧 attempt 的终态或附件不得覆盖/泄漏到当前 attempt。
+6. 没有 immutable Character content/Soul pin 时不启动 ChatSession/AgentRun。
+7. 删除产品 Turn 与清理 AgentRun 是不同数据类别；两者分别由 Main 和 Chat 执行并通过精确回执协调。
+8. 旧 Chat PG 只可作为一次性离线导入来源，不能重新接回运行时。
 
-> AGENTS.md 警告：这不是你熟悉的 Next.js。以下基于本地 `node_modules/next/dist/docs/` 16.2 文档。
-
-| 能力 | Next 16 现状 | 我们的用法 |
-| --- | --- | --- |
-| **Proxy**（原 middleware） | `proxy.ts` 根/`src` 一个文件；官方明确**不要**用于"完整会话管理或鉴权" | 只做：安全 header、age-gate cookie 的**乐观**重定向、维护匿名 `anonymous_id`。真正鉴权在 service 层。 |
-| **Route Handlers** | Web `Request/Response`；非 GET 默认不缓存 | 单一 catch-all `app/api/v1/[...resource]/route.ts` → `dispatchV1`；统一 envelope；`export const dynamic="force-dynamic"` |
-| **`after()`** (`next/server`) | 响应后执行副作用，受路由 `maxDuration` 约束 | 埋点、轻量日志、**触发**（非执行）job；**不**放长任务 |
-| **`connection()`** | 替代 `unstable_noStore`，强制运行时渲染 | 动态产品页/handler 里需要时调用 |
-| **Cache Components** | `use cache` + `cacheLife` + `cacheTag`，GET handler 也走同模型 | 公开 SEO 页、角色目录读模型缓存；角色更新 `revalidateTag('character:'+id)` |
-| `maxDuration` | route segment config | 给 worker/流式 handler 配置更长超时（见 06/10） |
-
-关键纪律：
-
-- **鉴权绝不放 proxy**。proxy 里 `fetch` 的 cache 选项无效、且不适合慢数据。
-- worker/cron 端点放 `app/api/internal/*`，用 `CRON_SECRET` / `INTERNAL_TOKEN` 头校验，`proxy.ts` 的 matcher 排除它们。
-- SSE 流式聊天用 Route Handler 返回 `ReadableStream`（`text/event-stream`），见 04 §8。
-
-## 6. 数据流与一致性
-
-- **强一致**（同库事务）：下单扣 dreamcoin（reserve）、创建角色、改可见性等用 `prisma.$transaction`。
-- **最终一致**（跨副作用）：生成结果落库 → 发事件 → 刷新 library 读模型 / 失效缓存；webhook → 权益同步。
-- **dreamcoin / 订阅**：**append-only ledger 派生余额**，绝不直接覆盖余额字段（见 08 §4）。
-- **审计**：审核决定、申诉、ledger、provider 事件均不可变（insert-only），保留 policy_code 与时间。
-
-## 7. 部署拓扑
-
-```
-                 ┌─────────── Vercel Project ───────────┐
-   用户 ──HTTPS──▶│ Edge/Proxy → Functions(Fluid Compute) │
-                 │   - 公开页(预渲染/ISR)                  │
-                 │   - 产品 API (Node runtime)            │
-                 │   - /api/internal/worker (Cron 触发)   │
-                 └───────┬───────────────┬───────────────┘
-                         │               │
-              Prisma(pooled URL)   Provider SDK（HTTPS）
-                         │               │
-        ┌────────────────▼───┐   ┌───────▼──────────────────────────┐
-        │ PostgreSQL (Neon)   │   │ AI 模型托管 / PSP / Blob(R2) /     │
-        │  - pooled (app)     │   │ 年龄验证 / Upstash Redis(限流)     │
-        │  - direct (migrate) │   └──────────────────────────────────┘
-        └─────────────────────┘
-
-                 ┌──────────── Chat Service ────────────┐
-                 │ Chat API / SSE / chat workers         │
-                 │ read-only core views + write chat.*   │
-                 └───────────────────────────────────────┘
-
-   dev：本地 `next dev` + 本地 Postgres（Postgres-only）+ provider 的 mock/sandbox 实现
-```
-
-- **产品部署 PM2**：`ecosystem.config.js` 管理 Main、Admin、Chat、Gen、finalizer、consumer、Admin worker 与 Voice 的完整常驻拓扑；生产 wrapper 在任何进程/队列变更前执行上线门禁。
-- **Docker 仅用于本地基础设施**：`docker-compose.yml` 只启动 PostgreSQL 与 Redis，不提供不完整的 Main-only 产品容器入口。
-- **数据库**：prod 用 Neon/Supabase（Vercel Marketplace，**Vercel Postgres 已下线**）；app 走 pooled 连接，migrate 走 direct 连接。
-- 详细环境矩阵、env 变量、连接池与迁移 runbook 见 [10-operations.md](./10-operations.md)。
-
-## 8. 架构不变量（Invariants，写代码时反复自检）
-
-1. Prisma 访问集中在 service 层（`modules/ourdream` + `modules/admin`）；route/provider/lib 碰 db 即违规。
-2. 同步 HTTP 路径不调用 AI / 不做重 IO；重活入队。
-3. 余额/额度类数值由 ledger/usage 表派生，不可就地覆盖。
-4. 一切用户可见内容（角色、媒体、消息、feed）可被举报且能进审核队列。
-5. 成人内容前必过 age gate；受限司法辖区必过身份验证。
-6. 客户端传来的 plan / 权益一律不可信，服务端按 entitlements 判定。
-7. provider 回调先验签、再幂等落库、最后入队处理。
-8. 数据库为 Postgres-only（`DB_PROVIDER="postgresql" as const`），dev/prod 一致；Chat Service 用独立 Postgres schema/视图（见 03）。
-9. Chat Service 只读主站 User/Character/Entitlement/Eligibility view，只写 chat domain 表。
+Chat 的详细协议见 [14-chat-service-tech-design.md](./14-chat-service-tech-design.md) 与 [ADR-20](./20-local-file-chat-authority.md)；队列与生成见 [06-async-jobs-and-ai.md](./06-async-jobs-and-ai.md)。

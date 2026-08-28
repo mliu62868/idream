@@ -19,6 +19,7 @@ import {
 import { deriveCreativeRunContinuation } from "./run-state";
 import { assertCustomerPublishableCreativeAsset } from "./customer-publishable-asset";
 import { jsonRecord } from "./json";
+import { mediaAssetPlatformStatus } from "@/server/lib/media-asset-authority";
 
 // SPEC: Creative 素材在运行时投放位上的三个动作 —— 上架待验、撤回、验证。
 // INTENT: 这三个动作写的是 MediaAssetPlacement 这个独立聚合，有自己的投放位咨询锁、
@@ -93,7 +94,13 @@ export async function publishDistributionPlacement(input: {
     if (!isCreativeRunItemTransitionAllowed(item.status, "published")) {
       throw Errors.conflict("Creative Run item must be approved before placement", { status: item.status });
     }
-    if (item.mediaAsset.deletedAt || item.mediaAsset.safetyStatus !== "passed") {
+    if (
+      item.mediaAsset.deletedAt ||
+      item.mediaAsset.safetyStatus !== "passed" ||
+      ["archived", "rejected"].includes(
+        mediaAssetPlatformStatus(item.mediaAsset.metadata) ?? "",
+      )
+    ) {
       throw Errors.badRequest("Placement asset is not valid");
     }
     const customerMediaAuthority = await assertCustomerPublishableCreativeAsset(

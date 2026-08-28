@@ -10,10 +10,11 @@ export const characterReleaseAssetPlacementSchema = z.object({
   slotKey: characterReleaseAssetSlotSchema,
   assetId: z.string().trim().min(1),
   slotVersion: z.number().int().positive(),
-  runId: z.string().trim().min(1),
-  itemId: z.string().trim().min(1),
-  reviewDecisionId: z.string().trim().min(1),
-  generationJobId: z.string().trim().min(1),
+  // Production lineage is optional: imported images are first-class library assets.
+  runId: z.string().trim().min(1).optional(),
+  itemId: z.string().trim().min(1).optional(),
+  reviewDecisionId: z.string().trim().min(1).optional(),
+  generationJobId: z.string().trim().min(1).optional(),
   bootstrapIdentity: z.boolean().optional(),
 }).strict();
 

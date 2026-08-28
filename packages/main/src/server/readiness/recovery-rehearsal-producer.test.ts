@@ -75,10 +75,6 @@ describe("recovery rehearsal producer", () => {
         IDREAM_GEN_REDIS_URL: "redis://redis.internal:6379/3",
         IDREAM_GEN_BULLMQ_PREFIX: "idream:development",
         DATABASE_URL: "postgresql://main:secret@db.internal:5432/idream",
-        CHAT_DATABASE_URL:
-          "postgresql://chat_service:chat-secret@db.internal:5432/idream",
-        CHAT_PROJECTOR_DATABASE_URL:
-          "postgresql://chat_projector:projector-secret@db.internal:5432/idream",
         CHAT_FS_ROOT: "/var/lib/idream/chat",
         BLOB_PROVIDER: "r2",
         GEN_BLOB_PROVIDER: "r2",
@@ -151,10 +147,6 @@ describe("recovery rehearsal producer", () => {
         DATABASE_URL: "postgresql://main:db-pass@db.internal:5432/idream",
         RECOVERY_DATABASE_URL:
           "postgresql://postgres:recovery-pass@db.internal:5432/idream",
-        CHAT_DATABASE_URL:
-          "postgresql://chat_service:chat-pass@db.internal:5432/idream",
-        CHAT_PROJECTOR_DATABASE_URL:
-          "postgresql://chat_projector:projector-pass@db.internal:5432/idream",
         CHAT_FS_ROOT: "/var/lib/idream/chat",
         BLOB_PROVIDER: "s3",
         GEN_BLOB_PROVIDER: "s3",
@@ -220,10 +212,6 @@ describe("recovery rehearsal producer", () => {
         DATABASE_URL: "postgresql://main:secret@db.internal:5432/idream",
         RECOVERY_DATABASE_URL:
           "postgresql://postgres:secret@other.internal:5432/idream",
-        CHAT_DATABASE_URL:
-          "postgresql://chat_service:secret@db.internal:5432/idream",
-        CHAT_PROJECTOR_DATABASE_URL:
-          "postgresql://chat_projector:secret@db.internal:5432/idream",
         CHAT_FS_ROOT: "/var/lib/idream/chat",
         BLOB_PROVIDER: "mock",
         GEN_BLOB_PROVIDER: "mock",
@@ -271,10 +259,6 @@ describe("recovery rehearsal producer", () => {
     expect(resolveRecoveryRehearsalSourceAuthority({
       env: {
         DATABASE_URL: "postgresql://main:secret@db.internal:5432/idream",
-        CHAT_DATABASE_URL:
-          "postgresql://chat_service:secret@db.internal:5432/idream",
-        CHAT_PROJECTOR_DATABASE_URL:
-          "postgresql://chat_projector:secret@db.internal:5432/idream",
         CHAT_FS_ROOT: "data/chat",
         REDIS_URL: "redis://redis.internal:6379/3",
         BULLMQ_PREFIX: "idream:development",
@@ -302,23 +286,6 @@ describe("recovery rehearsal producer", () => {
       },
     });
 
-    expect(() => resolveRecoveryRehearsalSourceAuthority({
-      env: {
-        DATABASE_URL: "postgresql://main:secret@db.internal:5432/idream",
-        CHAT_DATABASE_URL:
-          "postgresql://chat_service:secret@db.internal:5432/idream",
-        CHAT_PROJECTOR_DATABASE_URL:
-          "postgresql://chat_projector:secret@other.internal:5432/idream",
-        CHAT_FS_ROOT: "data/chat",
-        REDIS_URL: "redis://redis.internal:6379/3",
-        BULLMQ_PREFIX: "idream:development",
-        BLOB_PROVIDER: "mock",
-        BLOB_ROOT: "data/blob",
-      },
-      workspaceRoot: "/workspace/idream",
-    })).toThrow(
-      "Main, Chat request, and Chat projector must use their exact roles on one database authority",
-    );
   });
 
   it.each([
@@ -354,10 +321,6 @@ describe("recovery rehearsal producer", () => {
         APP_ENV: "production",
         IDREAM_QUIESCED: "1",
         DATABASE_URL: databaseUrl,
-        CHAT_DATABASE_URL:
-          "postgresql://chat_service:chat-secret@db.internal:5432/idream",
-        CHAT_PROJECTOR_DATABASE_URL:
-          "postgresql://chat_projector:projector-secret@db.internal:5432/idream",
         CHAT_FS_ROOT: "/var/lib/idream/chat",
         BLOB_PROVIDER: "mock",
         GEN_BLOB_PROVIDER: "mock",
@@ -391,10 +354,6 @@ describe("recovery rehearsal producer", () => {
         IDREAM_QUIESCED: "1",
         DATABASE_URL:
           "postgresql://main:secret@db.internal:5432/idream",
-        CHAT_DATABASE_URL:
-          "postgresql://chat_service:chat-secret@db.internal:5432/idream",
-        CHAT_PROJECTOR_DATABASE_URL:
-          "postgresql://chat_projector:projector-secret@db.internal:5432/idream",
         CHAT_FS_ROOT: "/var/lib/idream/chat",
         BLOB_PROVIDER: "mock",
         GEN_BLOB_PROVIDER: "mock",
@@ -427,10 +386,6 @@ describe("recovery rehearsal producer", () => {
       env: {
         APP_ENV: "development",
         DATABASE_URL: "postgresql://main:pw@db.internal:5432/idream",
-        CHAT_DATABASE_URL:
-          "postgresql://chat_service:pw@other.internal:5432/idream",
-        CHAT_PROJECTOR_DATABASE_URL:
-          "postgresql://chat_projector:pw@db.internal:5432/idream",
         CHAT_FS_ROOT: "/var/lib/idream/chat",
         BLOB_PROVIDER: "r2",
         GEN_BLOB_PROVIDER: "mock",
@@ -446,7 +401,6 @@ describe("recovery rehearsal producer", () => {
     expect(plan.blockers).toEqual(expect.arrayContaining([
       "APP_ENV must be production",
       "IDREAM_QUIESCED must be 1",
-      "Main, Chat request, and Chat projector database authorities must match",
       "Main and Gen Blob providers must match",
       "typed confirmation does not match",
     ]));
@@ -469,10 +423,6 @@ describe("recovery rehearsal producer", () => {
         IDREAM_QUIESCED: "1",
         DATABASE_URL:
           "postgresql://app:replace-with-password@postgres.example.com:5432/idream",
-        CHAT_DATABASE_URL:
-          "postgresql://chat_service:replace-with-password@postgres.example.com:5432/idream",
-        CHAT_PROJECTOR_DATABASE_URL:
-          "postgresql://chat_projector:replace-with-password@postgres.example.com:5432/idream",
         CHAT_FS_ROOT: "/var/lib/idream/chat",
         BLOB_PROVIDER: "r2",
         GEN_BLOB_PROVIDER: "r2",
@@ -539,30 +489,24 @@ describe("recovery rehearsal producer", () => {
       main_outbox_transport_pending: 1,
       main_outbox_transport_failed: 1,
       main_outbox_dispatched: 0,
+      main_outbox_processing: 0,
       main_outbox_transport_unknown: 0,
       inbound_event_received: 3,
       inbound_event_processing: 0,
-      chat_outbox_pending: 4,
-      chat_outbox_failed: 2,
-      chat_inbox_pending: 5,
-      chat_inbox_failed: 1,
-      chat_inbox_processing: 0,
-      chat_file_mutations_pending: 6,
     }, 71, "migration-71")).toEqual([]);
 
     expect(validateRecoveryCounts({
       migrations: 70,
       latest_migration: "migration-70",
       main_outbox_dispatched: 1,
+      main_outbox_processing: 0,
       main_outbox_transport_unknown: 4,
       inbound_event_processing: 2,
-      chat_inbox_processing: 3,
     }, 71, "migration-71")).toEqual(expect.arrayContaining([
       "migration authority is 70/71 with latest migration-70, expected migration-71",
       "checkpoint has in-flight mutation: main_outbox_dispatched=1",
       "checkpoint has in-flight mutation: main_outbox_transport_unknown=4",
       "checkpoint has in-flight mutation: inbound_event_processing=2",
-      "checkpoint has in-flight mutation: chat_inbox_processing=3",
     ]));
   });
 });

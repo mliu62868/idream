@@ -13,7 +13,6 @@ describe("resolvePolicy (SSoT)", () => {
     expect(p.maxContextMessages).toBe(12);
     expect(p.rateLimitPerHour).toBe(60);
     expect(p.memoryEnabled).toBe(true);
-    expect(p.allowRelationshipPatch).toBe(true);
   });
 
   it("plans retain their quota policy but use the same configured DSH model", () => {
@@ -45,13 +44,12 @@ describe("resolvePolicy (SSoT)", () => {
     expect(p.rateLimitPerHour).toBe(600);
   });
 
-  it("memory disabled selects the no-memory workspace and relationship boundary", () => {
+  it("memory disabled selects the isolated no-memory workspace", () => {
     const p = resolvePolicy(
       { modelTier: "deluxe", unlimitedMessages: false, voiceEnabled: false, imageToolEnabled: true },
       { memoryEnabled: false },
     );
     expect(p.memoryEnabled).toBe(false);
-    expect(p.allowRelationshipPatch).toBe(false);
   });
 
   it("snapshotFromView defaults unknown user to free", () => {

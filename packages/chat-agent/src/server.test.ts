@@ -3,9 +3,12 @@ import { mkdtemp, readFile, readdir, readlink, rm, stat, writeFile } from "node:
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
+import { createServer as createNetServer } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   COMPANION_WORKSPACE_REBUILD_CONTENT_CHUNK_CHARS,
+  releasedKnowledgeDigest,
+  type CompanionInvocation,
   type CompanionReadiness,
 } from "@idream/shared/chat/companion-runtime";
 import { createCompanionServer, type InvocationService } from "./server";
@@ -14,6 +17,38 @@ import { AttemptWorkspaceStore, relationshipWorkspacePath } from "./workspace";
 
 const servers: Array<ReturnType<typeof createCompanionServer>> = [];
 const temporary: string[] = [];
+
+async function waitFor(check: () => void | Promise<void>, timeoutMs = 1_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  do {
+    try {
+      await check();
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  } while (Date.now() < deadline);
+  throw lastError;
+}
+
+async function availablePort(): Promise<number> {
+  return await new Promise((resolvePort, reject) => {
+    const socket = createNetServer();
+    socket.once("error", reject);
+    socket.listen(0, "127.0.0.1", () => {
+      const address = socket.address();
+      if (!address || typeof address === "string") {
+        socket.close();
+        reject(new Error("missing ephemeral test port"));
+        return;
+      }
+      socket.close((error) => error ? reject(error) : resolvePort(address.port));
+    });
+  });
+}
+
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
   await Promise.all(temporary.splice(0).map((path) => rm(path, { recursive: true, force: true })));
@@ -25,9 +60,9 @@ const readiness = {
   ready: true,
   checkedAt: "2026-08-20T12:00:00.000Z",
   instance: { id: "11111111-1111-4111-8111-111111111111", startedAt: "2026-08-20T11:59:00.000Z" },
-  dshVersion: "0.1.0-rc.7",
-  dshCommit: "99f6f02fecdb7dff40c3fbc9470f5907c29f74ca",
-  igrepVersion: "0.1.132",
+  dshVersion: "0.1.1-rc.2",
+  dshCommit: "b150a551b8d465e31e418e1b2eaf5e79bbb7d28e",
+  igrepVersion: "0.1.134",
   pluginVersion: "0.1.0",
   provider: { name: "local", model: "model-1", baseUrl: "http://127.0.0.1:8061/v1", resolved: true },
   profiles: {
@@ -69,18 +104,79 @@ function invocation(): InvocationService {
   };
 }
 
-async function start(service = invocation(), rebuildSpoolRoot?: string) {
+function runtimeInvocation(): CompanionInvocation {
+  const knowledgeAuthority = {
+    characterId: "character-1",
+    characterContentVersionId: "ccv-1",
+    characterReleaseId: "release-1",
+    files: [] as [],
+  };
+  const releasedKnowledge = {
+    ...knowledgeAuthority,
+    digest: releasedKnowledgeDigest(knowledgeAuthority),
+  };
+  return {
+    invocationId: "invocation-http-1",
+    attemptId: "assistant-http-1:1",
+    sessionId: "session-http-1",
+    userId: "user-1",
+    characterId: "character-1",
+    memoryMode: "normal",
+    expectedProfileDigest: "d".repeat(64),
+    deadlineAt: "2026-08-20T12:05:00.000Z",
+    preparedTurn: {
+      version: 3,
+      model: "model-1",
+      characterName: "Mira",
+      messages: [{
+        id: "message-http-1",
+        sourceKind: "current_user",
+        role: "user",
+        content: "Stay connected.",
+      }],
+      tools: [],
+      profile: {
+        tier: "free",
+        adapter: "openai-compatible-v1",
+        provider: "local",
+        baseUrl: "http://127.0.0.1:8061/v1",
+        model: "model-1",
+        supportsTools: true,
+        maxOutputTokens: 1_000,
+        timeout: { firstTokenMs: 1_000, idleMs: 1_000, completionMs: 2_000 },
+        sampling: { temperature: 0.9, topP: 0.95, repetitionPenalty: 1.05 },
+      },
+      budget: { maxInputTokens: 2_000, usedInputTokens: 100, dropped: [] },
+      releasedKnowledge,
+      trace: {
+        characterContentVersionId: "ccv-1",
+        characterReleaseId: "release-1",
+        soulFingerprint: "fingerprint",
+        compilerVersion: "soul-v1",
+        sceneVersion: 1,
+        contextRevision: "3",
+        releasedKnowledgeDigest: releasedKnowledge.digest,
+      },
+    },
+  };
+}
+
+async function start(
+  service = invocation(),
+  rebuildSpoolRoot?: string,
+  readinessCheck: (force?: boolean) => Promise<CompanionReadiness> = async () => readiness,
+) {
+  const port = await availablePort();
   const server = createCompanionServer({
     authToken: "sidecar-token",
-    readiness: async () => readiness,
+    hostname: "127.0.0.1",
+    port,
+    readiness: readinessCheck,
     invocation: service,
     rebuildSpoolRoot,
   });
   servers.push(server);
-  await new Promise<void>((resolve) => server.http.listen(0, "127.0.0.1", resolve));
-  const address = server.http.address();
-  if (!address || typeof address === "string") throw new Error("missing test address");
-  return { baseUrl: `http://127.0.0.1:${address.port}`, service };
+  return { baseUrl: server.http.url.origin, server, service };
 }
 
 const authorized = { authorization: "Bearer sidecar-token", "content-type": "application/json" };
@@ -118,6 +214,114 @@ describe("companion HTTP authority boundary", () => {
     expect((await fetch(`${baseUrl}/healthz`)).status).toBe(200);
     expect((await fetch(`${baseUrl}/readyz`)).status).toBe(401);
     expect((await fetch(`${baseUrl}/readyz`, { headers: { authorization: "Bearer sidecar-token" } })).status).toBe(200);
+  });
+
+  it("gives authenticated full readiness a finite budget beyond Bun's default idle timeout", async () => {
+    const { baseUrl } = await start(invocation(), undefined, async (force) => {
+      expect(force).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 10_250));
+      return readiness;
+    });
+
+    const response = await fetch(`${baseUrl}/readyz?full=1`, {
+      headers: { authorization: "Bearer sidecar-token" },
+    });
+    expect(response.status).toBe(200);
+  }, 15_000);
+
+  it("cancels the exact invocation when the NDJSON response consumer disconnects", async () => {
+    const running = Promise.withResolvers<void>();
+    const service = invocation();
+    service.run = vi.fn(async (input, emit) => {
+      emit({
+        protocolVersion: 1,
+        type: "event",
+        invocationId: input.invocationId,
+        event: {
+          type: "text_delta",
+          invocationId: input.invocationId,
+          attemptId: input.attemptId,
+          sequence: 1,
+          occurredAt: "2026-08-20T12:00:01.000Z",
+          delta: "connected",
+        },
+      });
+      await running.promise;
+    });
+    service.accept = vi.fn(async (frame) => {
+      if (frame.type === "cancel") running.resolve();
+    });
+    service.shutdown = vi.fn(async () => running.resolve());
+    const { baseUrl } = await start(service);
+
+    const response = await fetch(`${baseUrl}/v1/invocations`, {
+      method: "POST",
+      headers: authorized,
+      body: JSON.stringify({
+        protocolVersion: 1,
+        type: "run",
+        invocation: runtimeInvocation(),
+      }),
+    });
+    expect(
+      response.status,
+      response.status === 200 ? undefined : await response.clone().text(),
+    ).toBe(200);
+    expect(response.headers.get("content-type")).toBe("application/x-ndjson; charset=utf-8");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const reader = response.body?.getReader();
+    expect(reader).toBeDefined();
+    const first = await reader!.read();
+    expect(new TextDecoder().decode(first.value)).toContain('"type":"text_delta"');
+
+    await reader!.cancel();
+
+    await waitFor(() => expect(service.accept).toHaveBeenCalledWith({
+      protocolVersion: 1,
+      type: "cancel",
+      invocationId: "invocation-http-1",
+      reason: "user",
+    }));
+  });
+
+  it("rejects new work while draining but keeps liveness and invocation control available", async () => {
+    const shutdownEntered = Promise.withResolvers<void>();
+    const finishShutdown = Promise.withResolvers<void>();
+    const service = invocation();
+    service.shutdown = vi.fn(async () => {
+      shutdownEntered.resolve();
+      await finishShutdown.promise;
+    });
+    const { baseUrl, server } = await start(service);
+    const closing = server.close();
+    await shutdownEntered.promise;
+
+    expect((await fetch(`${baseUrl}/healthz`)).status).toBe(200);
+    expect((await fetch(`${baseUrl}/readyz`, {
+      headers: { authorization: "Bearer sidecar-token" },
+    })).status).toBe(503);
+    expect((await fetch(`${baseUrl}/v1/workspaces/purge`, {
+      method: "POST",
+      headers: authorized,
+      body: JSON.stringify({ scope: "user", userId: "user-1" }),
+    })).status).toBe(503);
+    expect((await fetch(`${baseUrl}/v1/invocations/invocation-http-1/cancel`, {
+      method: "POST",
+      headers: authorized,
+      body: JSON.stringify({
+        protocolVersion: 1,
+        type: "cancel",
+        invocationId: "invocation-http-1",
+        reason: "shutdown",
+      }),
+    })).status).toBe(200);
+    expect(service.accept).toHaveBeenCalledWith(expect.objectContaining({
+      type: "cancel",
+      invocationId: "invocation-http-1",
+    }));
+
+    finishShutdown.resolve();
+    await closing;
   });
 
   it("strictly validates relationship rebuilds", async () => {
@@ -275,8 +479,8 @@ describe("companion HTTP authority boundary", () => {
     controller.abort();
 
     await expect(response).rejects.toMatchObject({ name: "AbortError" });
-    await vi.waitFor(() => expect(sidecarSignal.aborted).toBe(true));
-    await vi.waitFor(async () => expect(await readdir(spoolRoot)).toEqual([]));
+    await waitFor(() => expect(sidecarSignal.aborted).toBe(true));
+    await waitFor(async () => expect(await readdir(spoolRoot)).toEqual([]));
   });
 
   it("applies a complete projection beyond legacy body and message caps and replaces deleted memory", async () => {
@@ -508,26 +712,12 @@ describe("companion HTTP authority boundary", () => {
 });
 
 describe("workspace purge request contract", () => {
-  it("forwards a reset quarantine label and rejects an unsafe one", async () => {
+  it("accepts only physical relationship purge authority", async () => {
     const { baseUrl, service } = await start();
     const purge = async (body: Record<string, unknown>) => fetch(`${baseUrl}/v1/workspaces/purge`, {
       method: "POST",
       headers: authorized,
       body: JSON.stringify(body),
-    });
-
-    const accepted = await purge({
-      scope: "relationship",
-      userId: "user-1",
-      characterId: "character-1",
-      quarantine: "filemut_reset_1",
-    });
-    expect(accepted.status).toBe(200);
-    expect(service.purge).toHaveBeenLastCalledWith({
-      scope: "relationship",
-      userId: "user-1",
-      characterId: "character-1",
-      quarantineLabel: "filemut_reset_1",
     });
 
     const destroy = await purge({ scope: "relationship", userId: "user-1", characterId: "character-1" });
@@ -538,13 +728,13 @@ describe("workspace purge request contract", () => {
       characterId: "character-1",
     });
 
-    const unsafe = await purge({
+    const extraAuthority = await purge({
       scope: "relationship",
       userId: "user-1",
       characterId: "character-1",
-      quarantine: "../escape",
+      quarantine: "retained-copy",
     });
-    expect(unsafe.status).toBe(400);
-    expect(service.purge).toHaveBeenCalledTimes(2);
+    expect(extraAuthority.status).toBe(400);
+    expect(service.purge).toHaveBeenCalledOnce();
   });
 });

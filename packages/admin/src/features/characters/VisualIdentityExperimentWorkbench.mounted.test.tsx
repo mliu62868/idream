@@ -248,6 +248,7 @@ describe("Visual Identity experiment activation", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    vi.restoreAllMocks();
   });
 
   it("gives every generation selector an explicit accessible name", async () => {
@@ -336,6 +337,53 @@ describe("Visual Identity experiment activation", () => {
       if (prompt) setTextAreaValue(prompt, "A calm editorial portrait");
     });
     expect(generate?.disabled).toBe(false);
+  });
+
+  it("starts with a numeric generation seed and changes it on every randomize click", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.1);
+    const opaqueIdentitySeedData = withCharacterWorkspaceDetail(data, {
+      visual: {
+        ...data.visual,
+        activeIdentity: {
+          ...data.visual.activeIdentity!,
+          defaultSeed: "character:character-1:visual:1",
+        },
+      },
+    });
+
+    await act(async () =>
+      root.render(
+        <VisualIdentityExperimentWorkbench
+          canActivate
+          canCreate
+          canReview
+          canUploadSource
+          data={opaqueIdentitySeedData}
+          onActivateCandidate={vi.fn(async () => undefined)}
+        />,
+      ),
+    );
+    await waitUntil(
+      () =>
+        container.querySelector<HTMLInputElement>('input[aria-label="Seed"]') !==
+        null,
+    );
+
+    const seed = container.querySelector<HTMLInputElement>(
+      'input[aria-label="Seed"]',
+    );
+    const randomize = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Randomize",
+    );
+    const initialSeed = seed?.value;
+    await act(async () => randomize?.click());
+    const firstRandomSeed = seed?.value;
+    await act(async () => randomize?.click());
+    const secondRandomSeed = seed?.value;
+
+    expect.soft(initialSeed).toMatch(/^\d+$/);
+    expect.soft(firstRandomSeed).not.toBe(initialSeed);
+    expect.soft(secondRandomSeed).not.toBe(firstRandomSeed);
   });
 
   it("shows historical images as a gallery and lets an older image be selected again", async () => {

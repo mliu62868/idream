@@ -198,7 +198,6 @@ async function alignDeferrableAuthorityConstraints(url: string) {
     for (const constraint of [
       "character_serving_characterId_fkey",
       "character_serving_currentReleaseId_fkey",
-      "character_serving_scheduledReleaseId_fkey",
     ]) {
       await client.query(
         `ALTER TABLE "character_serving" ALTER CONSTRAINT ${quoteIdentifier(constraint)} DEFERRABLE INITIALLY IMMEDIATE`,

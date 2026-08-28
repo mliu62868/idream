@@ -872,18 +872,6 @@ describe("Admin v2 finite-state authority inventory", () => {
     )).toBe(false);
   });
 
-  it("binds every Character Project phase writer to the phase authority", () => {
-    const writers = productionTypeScript.filter((path) =>
-      mutationWritesField(path, "characterProject", "phase"),
-    );
-    expect(writers.sort()).toEqual([
-      "src/server/modules/admin-v2/characters/transition.ts",
-    ]);
-    for (const path of writers) {
-      expect(source(path), path).toContain("isCharacterProjectPhaseTransitionAllowed");
-    }
-  });
-
   it("binds every Creative Run workflow or verification writer to both independent authorities", () => {
     const writers = productionTypeScript.filter((path) =>
       mutationWritesField(path, "contentProductionBatch", "workflowStage") ||

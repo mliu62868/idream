@@ -38,9 +38,6 @@ function draftFromRow(row: Starter): StarterDraft {
     scope: (scopes.includes(row.scope) ? row.scope : SCOPES[0]) as StarterDraft["scope"],
     tags: row.tags.join(", "),
     sortOrder: String(row.sortOrder),
-    creativeBrief: starterTextField(row.advancedDetails, "creativeBrief"),
-    archetype: starterTextField(row.advancedDetails, "archetype"),
-    relationship: starterTextField(row.advancedDetails, "relationship"),
     detailsMarkdown: starterDetailsMarkdown(row.advancedDetails),
     firstMessage: starterTextField(row.advancedDetails, "firstMessage"),
     appearanceNotes: starterTextField(row.appearance, "notes"),
@@ -269,9 +266,6 @@ export function StartersDetailPage({ id }: { id: string }) {
             </Field>
           </FormSection>
           <FormSection title={t("Reusable persona")}>
-            <Field full label={t("Creative brief")}><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("creativeBrief", event.target.value)} value={draft.creativeBrief} /></Field>
-            <Field label={t("Archetype")}><input className={INPUT_CLASS} onChange={(event) => updateDraft("archetype", event.target.value)} value={draft.archetype} /></Field>
-            <Field label={t("Relationship")}><input className={INPUT_CLASS} onChange={(event) => updateDraft("relationship", event.target.value)} value={draft.relationship} /></Field>
             <Field full label={t("Additional details · Markdown (optional)")}><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("detailsMarkdown", event.target.value)} value={draft.detailsMarkdown} /></Field>
             <Field full label={t("First message")}><textarea className={TEXTAREA_CLASS} onChange={(event) => updateDraft("firstMessage", event.target.value)} value={draft.firstMessage} /></Field>
           </FormSection>
@@ -320,7 +314,6 @@ export function StartersDetailPage({ id }: { id: string }) {
 
           <DetailSection title={t("Reusable character foundation")}>
             <div className="grid gap-5 md:grid-cols-2">
-              <div><p className="text-xs text-[var(--ad-text-muted)]">{t("Creative brief")}</p><p className="mt-1 whitespace-pre-wrap text-sm text-[var(--ad-text)]">{starterTextField(row.advancedDetails, "creativeBrief") || "—"}</p></div>
               <div><p className="text-xs text-[var(--ad-text-muted)]">{t("Additional details")}</p><p className="mt-1 whitespace-pre-wrap text-sm text-[var(--ad-text)]">{starterDetailsMarkdown(row.advancedDetails) || "—"}</p></div>
               <div><p className="text-xs text-[var(--ad-text-muted)]">{t("First message")}</p><p className="mt-1 whitespace-pre-wrap text-sm text-[var(--ad-text)]">{starterTextField(row.advancedDetails, "firstMessage") || "—"}</p></div>
               <div><p className="text-xs text-[var(--ad-text-muted)]">{t("Visual direction")}</p><p className="mt-1 whitespace-pre-wrap text-sm text-[var(--ad-text)]">{starterTextField(row.appearance, "visualBrief") || starterTextField(row.advancedDetails, "visualBrief") || "—"}</p></div>

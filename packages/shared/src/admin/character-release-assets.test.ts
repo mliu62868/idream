@@ -36,6 +36,23 @@ describe("Character Release asset manifest", () => {
     });
   });
 
+  it("accepts imported library images without synthetic generation lineage", () => {
+    const imported = (slotKey: "character_avatar" | "character_hero" | "character_chat") => ({
+      slotKey,
+      assetId: `${slotKey}-imported-asset`,
+      slotVersion: 1,
+    });
+
+    expect(parseCharacterReleaseAssetManifest({
+      schemaVersion: 2,
+      placements: [
+        imported("character_avatar"),
+        imported("character_hero"),
+        imported("character_chat"),
+      ],
+    })).not.toBeNull();
+  });
+
   it.each([
     {
       schemaVersion: 1,
@@ -58,17 +75,6 @@ describe("Character Release asset manifest", () => {
       placements: [
         placement("character_avatar"),
         placement("character_hero"),
-      ],
-    },
-    {
-      schemaVersion: 2,
-      placements: [
-        placement("character_avatar"),
-        placement("character_hero"),
-        {
-          ...placement("character_chat"),
-          generationJobId: undefined,
-        },
       ],
     },
     {

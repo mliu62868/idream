@@ -33,6 +33,7 @@ model User {
   charactersCreated  Character[]              @relation("CharacterCreator")
   characterDrafts    CharacterDraft[]
   recentChats        RecentChat[]
+  chatTurnUsageFacts ChatTurnUsageFact[]
   generationJobs     GenerationJob[]
   mediaAssets        MediaAsset[]
   voiceClipRequests  VoiceClipRequest[]
@@ -69,24 +70,24 @@ model User {
 // This receipt deliberately has no User FK because the terminal state outlives
 // the hard-deleted account and contains only a one-way subject hash.
 model AccountDeletion {
-  id                    String    @id
-  userId                String?   @unique
-  subjectHash           String    @unique
-  status                String    @default("awaiting_chat") // awaiting_chat | deleting_blobs | finalizing | completed
-  requestedAt           DateTime  @default(now())
+  id                    String                       @id
+  userId                String?                      @unique
+  subjectHash           String                       @unique
+  status                String                       @default("awaiting_chat") // awaiting_chat | deleting_blobs | finalizing | completed
+  requestedAt           DateTime                     @default(now())
   graceEndsAt           DateTime
-  chatRequestEventId    String?   @unique
-  chatCompletionEventId String?   @unique
+  chatRequestEventId    String?                      @unique
+  chatCompletionEventId String?                      @unique
   chatFileMutationId    String?
   chatCompletedAt       DateTime?
-  blobExpectedCount     Int       @default(0)
-  blobDeletedCount      Int       @default(0)
+  blobExpectedCount     Int                          @default(0)
+  blobDeletedCount      Int                          @default(0)
   mainPurgedAt          DateTime?
   completedAt           DateTime?
   lastError             Json?
-  version               Int       @default(1)
-  createdAt             DateTime  @default(now())
-  updatedAt             DateTime  @updatedAt
+  version               Int                          @default(1)
+  createdAt             DateTime                     @default(now())
+  updatedAt             DateTime                     @updatedAt
   blobReceipts          AccountDeletionBlobReceipt[]
   ledgerEntries         ErasedDreamcoinLedgerEntry[]
 
@@ -228,45 +229,44 @@ model AgeVerification {
 }
 
 model Character {
-  id              String    @id @default(cuid())
-  creatorId       String?
-  name            String
-  age             Int
-  description     String
-  systemPrompt    String?
-  visibility      String    @default("private") // enum: private | unlisted | public
-  status          String    @default("draft") // enum: draft | pending_review | approved | rejected | removed | archived
-  source          String    @default("user") // enum: official | user — 官方角色由 admin CMS 生产，跳过用户审核但仍过 moderation
-  style           String    @default("realistic") // enum: realistic | anime | hybrid | other
-  gender          String    @default("female") // enum: female | male | trans
-  relationship    String?
-  voiceId         String?
-  imageAssetId    String?
-  appearance      Json
-  advancedDetails Json
-  vivid           Boolean   @default(false)
+  id                      String    @id @default(cuid())
+  creatorId               String?
+  name                    String
+  age                     Int
+  description             String
+  systemPrompt            String?
+  visibility              String    @default("private") // enum: private | unlisted | public
+  status                  String    @default("draft") // enum: draft | pending_review | approved | rejected | removed | archived
+  source                  String    @default("user") // enum: official | user — 官方角色由 admin CMS 生产，跳过用户审核但仍过 moderation
+  style                   String    @default("realistic") // enum: realistic | anime | hybrid | other
+  gender                  String    @default("female") // enum: female | male | trans
+  voiceId                 String?
+  imageAssetId            String?
+  appearance              Json
+  advancedDetails         Json
+  vivid                   Boolean   @default(false)
   // Exact immutable authoring pointer for user-owned Characters. Official
   // Characters resolve through CharacterServing -> CharacterRelease instead.
   currentContentVersionId String?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-  deletedAt       DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+  deletedAt               DateTime?
 
-  creator           User?                    @relation("CharacterCreator", fields: [creatorId], references: [id], onDelete: SetNull)
-  imageAsset        MediaAsset?              @relation("CharacterImage", fields: [imageAssetId], references: [id], onDelete: SetNull)
-  tags              CharacterTag[]
-  stats             CharacterStats?
-  submissions       CharacterSubmission[]
-  recentChats       RecentChat[]
-  generationJobs    GenerationJob[]
-  mediaAssets       MediaAsset[]             @relation("CharacterAssets")
-  voiceClipRequests VoiceClipRequest[]
-  voiceUsageFacts   VoiceUsageFact[]
-  visualProfiles    CharacterVisualProfile[]
-  looks             CharacterLook[]
-  voiceProfiles     CharacterVoiceProfile[]
-  likes             CharacterLike[]
-  serving           CharacterServing?
+  creator               User?                    @relation("CharacterCreator", fields: [creatorId], references: [id], onDelete: SetNull)
+  imageAsset            MediaAsset?              @relation("CharacterImage", fields: [imageAssetId], references: [id], onDelete: SetNull)
+  tags                  CharacterTag[]
+  stats                 CharacterStats?
+  submissions           CharacterSubmission[]
+  recentChats           RecentChat[]
+  generationJobs        GenerationJob[]
+  mediaAssets           MediaAsset[]             @relation("CharacterAssets")
+  voiceClipRequests     VoiceClipRequest[]
+  voiceUsageFacts       VoiceUsageFact[]
+  visualProfiles        CharacterVisualProfile[]
+  looks                 CharacterLook[]
+  voiceProfiles         CharacterVoiceProfile[]
+  likes                 CharacterLike[]
+  serving               CharacterServing?
   currentContentVersion CharacterContentVersion? @relation("CharacterCurrentContentVersion", fields: [currentContentVersionId, id], references: [id, characterId], onDelete: Restrict, onUpdate: Cascade, map: "characters_currentContentVersion_character_fkey")
 
   @@index([visibility, status])
@@ -611,25 +611,125 @@ model CharacterTemplate {
   @@map("character_templates")
 }
 
-// Recent-chats read projection (main-owned). The chat service is the authority
-// for chat sessions/messages (its own chat.* schema); main keeps this lean
-// projection fed by the chat→main outbox (session.created / message.completed /
-// session.deleted) so the library "recent" tab works without main writing the
-// chat domain. One-way derived from events — never the source of truth.
+// Main-owned Companion Chat product authority. Chat's local files contain only
+// AgentRun execution evidence and may be rebuilt from these committed Turns.
 model RecentChat {
-  sessionId     String    @id
-  userId        String
-  characterId   String
-  title         String?
-  status        String    @default("active") // active | deleted
-  lastMessageAt DateTime?
-  createdAt     DateTime  @default(now())
-  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  character     Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  sessionId                     String     @id
+  userId                        String
+  characterId                   String
+  title                         String?
+  status                        String     @default("active") // active | archived
+  activeKey                     String?    @unique
+  memoryEnabled                 Boolean    @default(true)
+  contextRevision               Int        @default(0)
+  characterContentVersionId     String?
+  characterReleaseId            String?
+  characterVisualProfileId      String?
+  characterVisualProfileVersion Int?
+  releasePinnedAt               DateTime?
+  entryExposureId               String?
+  entryJourneyId                String?
+  entryPlacementId              String?
+  openingMessage                String?
+  lastMessageAt                 DateTime?
+  createdAt                     DateTime   @default(now())
+  updatedAt                     DateTime   @updatedAt
+  user                          User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  character                     Character  @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  turns                         ChatTurn[]
 
   @@index([userId, lastMessageAt])
   @@index([characterId])
   @@map("recent_chats")
+}
+
+// One row is exactly what the product displays: one user message and its one
+// selected final assistant reply. Provider/DSH traces stay in Chat AgentRun files.
+model ChatTurn {
+  id                            String               @id
+  sessionId                     String
+  attempt                       Int                  @default(1)
+  idempotencyKey                String
+  requestHash                   String
+  userMessageId                 String               @unique
+  assistantMessageId            String               @unique
+  userContent                   String
+  userStatus                    String               @default("sent")
+  assistantContent              String               @default("")
+  assistantStatus               String               @default("pending") // pending | generating | sent | blocked | failed | cancelled
+  model                         String?
+  promptTokens                  Int?
+  completionTokens              Int?
+  terminalEvidence              Json?
+  characterContentVersionId     String?
+  characterReleaseId            String?
+  characterVisualProfileId      String?
+  characterVisualProfileVersion Int?
+  memoryEnabled                 Boolean
+  executionSnapshot             Json?
+  admissionAttempts             Int                  @default(0)
+  admissionNextRunAt            DateTime             @default(now())
+  admissionLeaseToken           String?
+  admissionLeaseUntil           DateTime?
+  admissionLastError            Json?
+  admittedAt                    DateTime?
+  statsCountedAt                DateTime?
+  sceneVersion                  Int                  @default(0)
+  scene                         Json?
+  createdAt                     DateTime             @default(now())
+  updatedAt                     DateTime             @updatedAt
+  terminalAt                    DateTime?
+  session                       RecentChat           @relation(fields: [sessionId], references: [sessionId], onDelete: Cascade)
+  attachments                   ChatTurnAttachment[]
+
+  @@unique([sessionId, idempotencyKey])
+  @@index([sessionId, createdAt])
+  @@index([assistantStatus, updatedAt])
+  @@index([assistantStatus, admissionNextRunAt, admissionLeaseUntil])
+  @@map("chat_turns")
+}
+
+// One accepted product Turn consumes one daily allowance forever, even when
+// privacy operations later remove the mutable transcript row.
+model ChatTurnUsageFact {
+  turnId     String   @id
+  userId     String
+  productDay DateTime @db.Date
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, productDay])
+  @@map("chat_turn_usage_facts")
+}
+
+// Monotonic projector authority for one user-character memory workspace.
+model CompanionMemoryAuthority {
+  aggregateId String   @id
+  version     BigInt   @default(0)
+  updatedAt   DateTime @updatedAt
+
+  @@map("companion_memory_authorities")
+}
+
+model ChatTurnAttachment {
+  id              String   @id
+  turnId          String
+  kind            String
+  status          String   @default("requesting")
+  generationJobId String?
+  mediaAssetId    String?
+  promptHint      String?
+  width           Int?
+  height          Int?
+  errorCode       String?
+  metadata        Json     @default("{}")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  turn            ChatTurn @relation(fields: [turnId], references: [id], onDelete: Cascade)
+
+  @@index([turnId])
+  @@index([generationJobId])
+  @@map("chat_turn_attachments")
 }
 
 model GenerationPreset {
@@ -1617,13 +1717,6 @@ model LegalHold {
 model CharacterProject {
   id                String      @id @default(cuid())
   characterId       String
-  ownerId           String?
-  phase             String      @default("idea")
-  audience          Json
-  hypothesis        String?
-  differentiation   String?
-  successCriteria   Json
-  plannedLaunchAt   DateTime?
   draftImageAssetId String?
   draftImageAsset   MediaAsset? @relation("CharacterProjectDraftImage", fields: [draftImageAssetId], references: [id], onDelete: SetNull)
   draftAssetPack    Json        @default("{}")
@@ -1632,24 +1725,23 @@ model CharacterProject {
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
 
-  @@index([characterId, phase])
-  @@index([ownerId, phase])
+  @@index([characterId])
   @@index([draftImageAssetId])
   @@map("character_projects")
 }
 
 model CharacterContentVersion {
-  id                 String   @id @default(cuid())
-  characterId        String
-  version            Int
-  contentHash        String
-  personaSnapshot    Json
-  openingSnapshot    Json
-  appearanceSnapshot Json
-  sourceType         String
-  sourceId           String?
-  createdById        String?
-  createdAt          DateTime @default(now())
+  id                   String      @id @default(cuid())
+  characterId          String
+  version              Int
+  contentHash          String
+  personaSnapshot      Json
+  openingSnapshot      Json
+  appearanceSnapshot   Json
+  sourceType           String
+  sourceId             String?
+  createdById          String?
+  createdAt            DateTime    @default(now())
   currentForCharacters Character[] @relation("CharacterCurrentContentVersion")
 
   @@unique([characterId, version])
@@ -1686,7 +1778,7 @@ model CharacterRelease {
   snapshotHash               String
   readiness                  String                      @default("unknown")
   legacy                     Boolean                     @default(false)
-  status                     String                      @default("draft")
+  status                     String                      @default("approved") // enum: approved | published | superseded | withdrawn
   publishedAt                DateTime?
   supersedesId               String?
   rollbackOfReleaseId        String?
@@ -1694,7 +1786,6 @@ model CharacterRelease {
   createdAt                  DateTime                    @default(now())
   updatedAt                  DateTime                    @updatedAt
   currentServing             CharacterServing?           @relation("CurrentCharacterServing")
-  scheduledServing           CharacterServing?           @relation("ScheduledCharacterServing")
   publicCatalogQualification PublicCatalogQualification?
 
   @@unique([id, snapshotHash])
@@ -1707,20 +1798,17 @@ model CharacterRelease {
 }
 
 model CharacterServing {
-  id                 String            @id @default(cuid())
-  characterId        String            @unique
-  currentReleaseId   String?           @unique
-  state              String            @default("inactive")
-  scheduledReleaseId String?           @unique
-  scheduledAt        DateTime?
-  version            Int               @default(1)
-  createdAt          DateTime          @default(now())
-  updatedAt          DateTime          @updatedAt
-  character          Character         @relation(fields: [characterId], references: [id], onDelete: Cascade, onUpdate: Cascade, map: "character_serving_characterId_fkey")
-  currentRelease     CharacterRelease? @relation("CurrentCharacterServing", fields: [currentReleaseId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "character_serving_currentReleaseId_fkey")
-  scheduledRelease   CharacterRelease? @relation("ScheduledCharacterServing", fields: [scheduledReleaseId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "character_serving_scheduledReleaseId_fkey")
+  id               String            @id @default(cuid())
+  characterId      String            @unique
+  currentReleaseId String?           @unique
+  state            String            @default("inactive")
+  version          Int               @default(1)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  character        Character         @relation(fields: [characterId], references: [id], onDelete: Cascade, onUpdate: Cascade, map: "character_serving_characterId_fkey")
+  currentRelease   CharacterRelease? @relation("CurrentCharacterServing", fields: [currentReleaseId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "character_serving_currentReleaseId_fkey")
 
-  @@index([state, scheduledAt])
+  @@index([state])
   @@map("character_serving")
 }
 
@@ -1772,33 +1860,6 @@ model PublicContentRepairItem {
   @@index([status, entityType, detectedAt])
   @@index([entityType, entityId])
   @@map("public_content_repair_items")
-}
-
-model CharacterQaRun {
-  id                        String   @id @default(cuid())
-  characterId               String
-  projectId                 String
-  characterContentVersionId String
-  projectVersion            Int
-  visualProfileId           String?
-  visualProfileVersion      Int?
-  visualProfileHash         String?
-  referenceSetRevisionId    String?
-  referenceSetRevision      Int?
-  referenceSetHash          String?
-  draftAssetPackHash        String?
-  ownerId                   String
-  status                    String
-  checks                    Json
-  behaviorEvaluation        Json?    @map("behavior_evaluation")
-  liveCanaries              Json?    @map("live_canaries")
-  evidenceHash              String   @unique
-  createdAt                 DateTime @default(now())
-
-  @@index([characterId, createdAt])
-  @@index([projectId, characterContentVersionId, status], map: "character_qa_runs_projectId_characterContentVersionId_status_id")
-  @@index([visualProfileId, referenceSetRevisionId])
-  @@map("character_qa_runs")
 }
 
 model ReleaseCheckResult {
@@ -1878,28 +1939,28 @@ model GenerationRouteQualification {
 }
 
 model GenerationAttempt {
-  id                    String                   @id @default(cuid())
-  requestId             String
-  attemptNo             Int
-  provider              String?
-  profileKey            String?
-  profileVersion        Int?
-  workflowKey           String?
-  workflowVersion       Int?
-  status                String                   @default("queued")
-  terminalSequence      Int?
-  errorClass            String?
-  errorCode             String?
-  errorSignature        String?
-  retryability          String?
-  operatorGuidance      String?
-  sourceCommandId       String?
-  creativeRunItemId     String?
-  terminalRecordRef     String?
-  startedAt             DateTime?
-  finishedAt            DateTime?
-  createdAt             DateTime                 @default(now())
-  events                GenerationAttemptEvent[]
+  id                String                   @id @default(cuid())
+  requestId         String
+  attemptNo         Int
+  provider          String?
+  profileKey        String?
+  profileVersion    Int?
+  workflowKey       String?
+  workflowVersion   Int?
+  status            String                   @default("queued")
+  terminalSequence  Int?
+  errorClass        String?
+  errorCode         String?
+  errorSignature    String?
+  retryability      String?
+  operatorGuidance  String?
+  sourceCommandId   String?
+  creativeRunItemId String?
+  terminalRecordRef String?
+  startedAt         DateTime?
+  finishedAt        DateTime?
+  createdAt         DateTime                 @default(now())
+  events            GenerationAttemptEvent[]
 
   @@unique([requestId, attemptNo])
   @@unique([sourceCommandId, creativeRunItemId])
@@ -1938,7 +1999,7 @@ model GenerationTransportExecution {
   latencyMs          Int?
   costMicros         BigInt?
   pricingVersion     String?
-  terminalRecordRef String?
+  terminalRecordRef  String?
   startedAt          DateTime  @default(now())
   finishedAt         DateTime?
 
@@ -1948,15 +2009,15 @@ model GenerationTransportExecution {
 }
 
 model GenerationArtifact {
-  id               String   @id @default(cuid())
-  attemptId        String
-  ordinal          Int
-  providerRef      String?
+  id                     String   @id @default(cuid())
+  attemptId              String
+  ordinal                Int
+  providerRef            String?
   terminalRecordChecksum String
-  validationState  String   @default("produced")
-  assetId          String?
-  archiveState     String   @default("active")
-  createdAt        DateTime @default(now())
+  validationState        String   @default("produced")
+  assetId                String?
+  archiveState           String   @default("active")
+  createdAt              DateTime @default(now())
 
   @@unique([attemptId, ordinal])
   @@index([assetId])
@@ -2263,20 +2324,22 @@ model InboundEventReceipt {
 }
 
 model MainOutboxEvent {
-  id            String    @id @default(cuid())
-  eventType     String
-  aggregateType String
-  aggregateId   String
-  payload       Json
-  status        String    @default("pending")
-  attempts      Int       @default(0)
-  nextRunAt     DateTime  @default(now())
-  deliveredAt   DateTime?
-  lastError     Json?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  id             String    @id @default(cuid())
+  eventType      String
+  aggregateType  String
+  aggregateId    String
+  payload        Json
+  status         String    @default("pending")
+  attempts       Int       @default(0)
+  nextRunAt      DateTime  @default(now())
+  leaseToken     String?
+  leaseExpiresAt DateTime?
+  deliveredAt    DateTime?
+  lastError      Json?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
-  @@index([status, nextRunAt])
+  @@index([status, nextRunAt, leaseExpiresAt])
   @@index([aggregateType, aggregateId, createdAt])
   @@map("main_outbox_events")
 }

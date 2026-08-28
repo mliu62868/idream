@@ -7,10 +7,11 @@ import {
   type WorkflowDescriptor,
   type WorkflowReferenceRole,
 } from "@idream/shared/gen-workflow";
-import { isMediaAssetOperationalForAuthority } from "@/server/lib/media-asset-authority";
+import {
+  hasHydratableMediaBlobAuthority,
+  isMediaAssetOperationalForAuthority,
+} from "@/server/lib/media-asset-authority";
 import { canonicalSha256 } from "../shared/canonical-json";
-import { characterIdentityReviewEvidencePassed } from "../shared/creative-review-quality";
-import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import {
   characterDraftAssetPurposes,
   draftAssetRouteEntries,
@@ -21,12 +22,6 @@ function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
-}
-
-function strings(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((entry): entry is string => typeof entry === "string")
-    : [];
 }
 
 function manifestEntries(value: unknown): Record<string, unknown>[] {
@@ -184,9 +179,9 @@ export function draftAssetSourceRuntimeAuthority(input: {
 }
 
 /**
- * Revalidates the mutable facts behind the Project's immutable draft-pack
- * pointers immediately before QA. Selection-time approval is not sufficient:
- * media availability, review authority, and generation lineage can all drift.
+ * SPEC: 发布草稿只要求三个运营位各自指向本角色素材库中的可用图片。
+ * INTENT: 生成、导入、外部制作只是素材进入图库的方式；人工评分和生成血缘不能成为
+ *         运营选择 Cover / Hero / Chat 的资格门槛。Release 仍会冻结最终素材快照。
  */
 export async function evaluateDraftAssetPackAuthority(
   tx: DraftAssetPackAuthorityStore,
@@ -205,97 +200,11 @@ export async function evaluateDraftAssetPackAuthority(
     return entry ? [{ purpose, entry }] : [];
   });
   const assetIds = [...new Set(selectedEntries.map(({ entry }) => entry.assetId))];
-  const itemIds = selectedEntries.flatMap(({ entry }) =>
-    entry.itemId ? [entry.itemId] : []
-  );
-  const generationJobIds = selectedEntries.flatMap(({ entry }) =>
-    entry.generationJobId ? [entry.generationJobId] : []
-  );
   const assets = await tx.mediaAsset.findMany({
     where: { id: { in: assetIds } },
   });
-  const items = await tx.contentProductionItem.findMany({
-    where: { id: { in: itemIds } },
-    include: { batch: true, job: true },
-  });
-  const decisions = await tx.creativeReviewDecision.findMany({
-    where: { runItemId: { in: itemIds } },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-  });
-  const attempts = await tx.generationAttempt.findMany({
-    where: {
-      requestId: { in: generationJobIds },
-      status: "succeeded",
-    },
-    orderBy: [
-      { requestId: "asc" },
-      { attemptNo: "desc" },
-      { id: "desc" },
-    ],
-  });
-  const workflow = await generationWorkflowDescriptor(
-    input.currentRoute.workflowKey,
-  );
-  const generationProfile = await tx.generationModelProfile.findFirst({
-    where: {
-      profileKey: input.currentRoute.generationProfileKey,
-      version: input.currentRoute.generationProfileVersion,
-      status: "active",
-    },
-  });
   const assetById = new Map(assets.map((asset) => [asset.id, asset]));
-  const itemById = new Map(items.map((item) => [item.id, item]));
-  const latestDecisionByItemId = new Map<string, (typeof decisions)[number]>();
-  for (const decision of decisions) {
-    if (!latestDecisionByItemId.has(decision.runItemId)) {
-      latestDecisionByItemId.set(decision.runItemId, decision);
-    }
-  }
-  const latestAttemptByJobId = new Map<string, (typeof attempts)[number]>();
-  for (const attempt of attempts) {
-    if (!latestAttemptByJobId.has(attempt.requestId)) {
-      latestAttemptByJobId.set(attempt.requestId, attempt);
-    }
-  }
-  const canonicalReferenceAssetIds = input.referenceSet.references
-    .map((reference) => reference.mediaAssetId);
   const authorityLockedAssetIdSet = new Set(input.authorityLockedAssetIds);
-  const sourceManifestEntries = items.flatMap((item) =>
-    manifestEntries(item.job?.referenceManifest)
-      .filter((entry) => entry.role === "source_image")
-  );
-  const sourceAssetIds = sourceManifestEntries.flatMap((entry) =>
-    typeof entry.mediaAssetId === "string" ? [entry.mediaAssetId] : []
-  );
-  const sourceAssets = await tx.mediaAsset.findMany({
-    where: { id: { in: [...new Set(sourceAssetIds)] } },
-    include: { sourceJob: true },
-  });
-  const sourceAssetById = new Map(
-    sourceAssets.map((asset) => [asset.id, asset]),
-  );
-  const sourceItemIds = sourceAssets.flatMap((asset) =>
-    asset.sourceJob?.sourceType === "content_production_item" &&
-      typeof asset.sourceJob.sourceId === "string"
-      ? [asset.sourceJob.sourceId]
-      : []
-  );
-  const sourceDecisions = await tx.creativeReviewDecision.findMany({
-    where: { runItemId: { in: sourceItemIds } },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-  });
-  const latestSourceDecisionByItemId = new Map<
-    string,
-    (typeof sourceDecisions)[number]
-  >();
-  for (const decision of sourceDecisions) {
-    if (!latestSourceDecisionByItemId.has(decision.runItemId)) {
-      latestSourceDecisionByItemId.set(decision.runItemId, decision);
-    }
-  }
-  const profileCapabilities = record(
-    record(generationProfile?.runnerConfig).capabilities,
-  );
 
   const invalidAssetPurposes = selectedEntries.flatMap(({ purpose, entry }) => {
     const asset = assetById.get(entry.assetId);
@@ -304,190 +213,24 @@ export async function evaluateDraftAssetPackAuthority(
       asset.type !== "image" ||
       asset.safetyStatus !== "passed" ||
       !isMediaAssetOperationalForAuthority(asset.metadata) ||
+      !hasHydratableMediaBlobAuthority(asset) ||
+      record(record(asset.metadata).platformAsset).status === "archived" ||
       asset.characterId !== input.characterId
       ? [purpose]
       : [];
   });
-  const invalidLineagePurposes = selectedEntries.flatMap(({ purpose, entry }) => {
-    if (
-      !entry.runId ||
-      !entry.itemId ||
-      !entry.reviewDecisionId ||
-      !entry.generationJobId
-    ) {
-      return [purpose];
-    }
-    const asset = assetById.get(entry.assetId);
-    const item = itemById.get(entry.itemId);
-    const job = item?.job ?? null;
-    const latestDecision = latestDecisionByItemId.get(entry.itemId);
-    const latestAttempt = latestAttemptByJobId.get(entry.generationJobId);
-    const sourceMeta = record(job?.sourceMeta);
-    const pinnedReferenceAssetIds = strings(job?.referenceAssetIds);
-    const pinnedManifestEntries = manifestEntries(job?.referenceManifest);
-    const partitionedManifest = partitionedReferenceManifestAuthority({
-      pinnedReferenceAssetIds,
-      manifestEntries: pinnedManifestEntries,
-      canonicalReferenceAssetIds,
-      referenceSetRevisionId: input.referenceSet.id,
-      referenceSetSnapshotHash: input.referenceSet.snapshotHash,
-    });
-    const sourceAuthorityMatches = partitionedManifest.sourceEntries.every(
-      (manifestEntry) => {
-        const sourceAssetId =
-          typeof manifestEntry.mediaAssetId === "string"
-            ? manifestEntry.mediaAssetId
-            : null;
-        const sourceAsset = sourceAssetId
-          ? sourceAssetById.get(sourceAssetId)
-          : null;
-        const sourceJob = sourceAsset?.sourceJob ?? null;
-        const sourceDecision =
-          sourceJob?.sourceType === "content_production_item" &&
-            typeof sourceJob.sourceId === "string"
-            ? latestSourceDecisionByItemId.get(sourceJob.sourceId)
-            : null;
-        return Boolean(
-          sourceAssetId &&
-          authorityLockedAssetIdSet.has(sourceAssetId) &&
-          sourceAsset &&
-          sourceAsset.deletedAt === null &&
-          sourceAsset.type === "image" &&
-          sourceAsset.safetyStatus === "passed" &&
-          isMediaAssetOperationalForAuthority(sourceAsset.metadata) &&
-          sourceAsset.characterId === input.characterId &&
-          sourceJob &&
-          manifestEntry.sourceJobId === sourceJob.id &&
-          sourceJob.status === "completed" &&
-          sourceJob.mode === "image" &&
-          sourceJob.deliveredOutputCount > 0 &&
-          sourceJob.characterId === input.characterId &&
-          sourceJob.visualProfileId === input.visualProfile.id &&
-          sourceJob.visualProfileVersion === input.visualProfile.version &&
-          sourceJob.referenceSetRevisionId === input.referenceSet.id &&
-          sourceJob.sourceType === "content_production_item" &&
-          sourceDecision &&
-          sourceDecision.artifactId === sourceAsset.id &&
-          characterIdentityReviewEvidencePassed({
-            bootstrapIdentity: false,
-            decision: sourceDecision.decision,
-            identityConsistency: sourceDecision.identityConsistency,
-            score: sourceDecision.score,
-            evidence: sourceDecision.evidence,
-          })
-        );
-      },
-    );
-    const sourceRuntimeMatches = draftAssetSourceRuntimeAuthority({
-      sourceReferenceCount: partitionedManifest.sourceEntries.length,
-      pinnedReferenceCount: pinnedManifestEntries.length,
-      canonicalReferenceRoles: partitionedManifest.canonicalEntries.flatMap(
-        (entry) => typeof entry.role === "string" ? [entry.role] : [],
-      ),
-      workflow,
-      profileSupportsReferenceImages:
-        profileCapabilities.referenceImages === true,
-      profileSupportsInitImage: profileCapabilities.initImage === true,
-    });
-    const bootstrapAuthorityMatches =
-      entry.bootstrapIdentity &&
-      purpose === "character_cover" &&
-      sourceMeta.bootstrapIdentity === true &&
-      job?.visualProfileId === null &&
-      job.referenceSetRevisionId === null &&
-      strings(job.referenceAssetIds).length === 0 &&
-      manifestEntries(job.referenceManifest).length === 0 &&
-      input.visualProfile.createdFrom ===
-        `identity_bootstrap:${entry.generationJobId}` &&
-      input.referenceSet.createdFrom ===
-        `identity_bootstrap:${entry.generationJobId}` &&
-      input.visualProfile.evidenceState === "reviewed_bootstrap" &&
-      record(input.visualProfile.adapterRefs).bootstrapIdentity === true &&
-      record(input.visualProfile.adapterRefs).generationJobId ===
-        entry.generationJobId &&
-      input.referenceSet.references.some((reference) =>
-        reference.mediaAssetId === entry.assetId
-      );
-    const qualifiedIdentityRouteMatches =
-      !entry.bootstrapIdentity &&
-      sourceMeta.bootstrapIdentity !== true &&
-      job?.visualProfileId === input.visualProfile.id &&
-      job.visualProfileVersion === input.visualProfile.version &&
-      job.referenceSetRevisionId === input.referenceSet.id &&
-      partitionedManifest.matches &&
-      sourceAuthorityMatches &&
-      sourceRuntimeMatches &&
-      sourceMeta.referenceSetRevisionId === input.referenceSet.id &&
-      sourceMeta.generationRouteQualificationId === input.currentRoute.id &&
-      sourceMeta.generationRouteFingerprint ===
-        input.currentRoute.routeFingerprint &&
-      entry.generationRouteFingerprint === input.currentRoute.routeFingerprint &&
-      job.profileId === input.currentRoute.generationProfileKey &&
-      job.profileVersion === input.currentRoute.generationProfileVersion &&
-      job.model === input.currentRoute.workflowKey &&
-      latestAttempt?.profileKey === input.currentRoute.generationProfileKey &&
-      latestAttempt.profileVersion ===
-        input.currentRoute.generationProfileVersion &&
-      latestAttempt.workflowKey === input.currentRoute.workflowKey &&
-      latestAttempt.workflowVersion === input.currentRoute.workflowVersion;
-
-    return !asset ||
-      !authorityLockedAssetIdSet.has(entry.assetId) ||
-      canonicalReferenceAssetIds.some(
-        (referenceAssetId) =>
-          !authorityLockedAssetIdSet.has(referenceAssetId),
-      ) ||
-      !item ||
-      item.batchId !== entry.runId ||
-      item.jobId !== entry.generationJobId ||
-      item.mediaAssetId !== entry.assetId ||
-      item.batch.targetType !== "character" ||
-      item.batch.targetId !== input.characterId ||
-      item.batch.purpose !== purpose ||
-      !["approved", "published"].includes(item.status) ||
-      !job ||
-      job.id !== entry.generationJobId ||
-      job.status !== "completed" ||
-      job.mode !== "image" ||
-      job.deliveredOutputCount < 1 ||
-      job.characterId !== input.characterId ||
-      job.sourceType !== "content_production_item" ||
-      job.sourceId !== item.id ||
-      sourceMeta.batchId !== item.batchId ||
-      sourceMeta.purpose !== purpose ||
-      sourceMeta.targetType !== "character" ||
-      sourceMeta.targetId !== input.characterId ||
-      sourceMeta.bootstrapIdentity !== entry.bootstrapIdentity ||
-      asset.sourceJobId !== job.id ||
-      !job.profileId ||
-      !job.profileVersion ||
-      !job.model ||
-      !job.provider ||
-      !latestAttempt ||
-      latestAttempt.provider !== job.provider ||
-      latestAttempt.profileKey !== job.profileId ||
-      latestAttempt.profileVersion !== job.profileVersion ||
-      latestAttempt.workflowKey !== job.model ||
-      !latestDecision ||
-      latestDecision.id !== entry.reviewDecisionId ||
-      latestDecision.artifactId !== entry.assetId ||
-      !characterIdentityReviewEvidencePassed({
-        bootstrapIdentity: entry.bootstrapIdentity,
-        decision: latestDecision.decision,
-        identityConsistency: latestDecision.identityConsistency,
-        score: latestDecision.score,
-        evidence: latestDecision.evidence,
-      }) ||
-      (!bootstrapAuthorityMatches && !qualifiedIdentityRouteMatches)
-      ? [purpose]
-      : [];
-  });
+  const invalidLineagePurposes = selectedEntries.flatMap(
+    ({ purpose, entry }) =>
+      authorityLockedAssetIdSet.has(entry.assetId) ? [] : [purpose],
+  );
+  const distinctAssets = assetIds.length === selectedEntries.length;
 
   return {
     invalidAssetPurposes,
     invalidLineagePurposes,
     ready:
       selectedEntries.length === characterDraftAssetPurposes.length &&
+      distinctAssets &&
       invalidAssetPurposes.length === 0 &&
       invalidLineagePurposes.length === 0,
   };

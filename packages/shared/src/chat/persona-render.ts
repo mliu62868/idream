@@ -2,7 +2,6 @@ export interface CharacterSoulMarkdownInput {
   name: string;
   age: number;
   gender: string;
-  relationshipArchetype: string;
   characterPromise: string;
   detailsMarkdown?: string | null;
 }
@@ -24,7 +23,6 @@ export function renderCharacterSoulMarkdown(
     "## Basic information",
     `- Age: ${soul.age}`,
     `- Gender: ${compactText(soul.gender)}`,
-    `- Relationship: ${compactText(soul.relationshipArchetype)}`,
     `- Character: ${compactText(soul.characterPromise)}`,
     ...(detailsMarkdown
       ? ["", "## Additional details", "", detailsMarkdown]

@@ -115,7 +115,6 @@ type VoiceCharacter = {
   age: number;
   name: string;
   style: string;
-  relationship: string | null;
   voiceId: string | null;
   gender: string;
 };
@@ -1313,13 +1312,8 @@ function resolvePinnedVoiceProvider(
 function characterVoiceTone(character: {
   name: string;
   style: string;
-  relationship: string | null;
 }) {
-  const relationship = character.relationship?.trim();
-  const persona = relationship
-    ? `the user's ${relationship}`
-    : "a close companion";
-  return `Speak as ${character.name}, ${persona}. Warm, intimate, expressive ${character.style} delivery.`;
+  return `Speak as ${character.name}. Warm, expressive ${character.style} delivery consistent with the Character Soul.`;
 }
 
 function voiceClipResponse(asset: {

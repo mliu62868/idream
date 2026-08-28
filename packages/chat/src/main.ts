@@ -10,20 +10,54 @@ import {
   warmRuntime,
 } from "./runtime-readiness.js";
 import { cancelActiveCompanionInvocations } from "./companion-runtime.js";
+import { isCompanionSidecarUnavailableError } from "./companion-sidecar-readiness.js";
 
 const server = startWeb();
 let worker: ReturnType<typeof startWorker> | null = null;
 let warmupRetry: ReturnType<typeof setTimeout> | null = null;
 let shuttingDown = false;
+let sidecarUnavailableSince: number | null = null;
+let lastWarmupErrorAt: number | null = null;
+const WARMUP_RETRY_MS = 5_000;
+const WARMUP_ERROR_INTERVAL_MS = 60_000;
+
+function clearWarmupFailureState(): void {
+  sidecarUnavailableSince = null;
+  lastWarmupErrorAt = null;
+}
+
+function reportWarmupFailure(error: unknown, message: string): void {
+  const now = Date.now();
+  if (isCompanionSidecarUnavailableError(error)) {
+    if (sidecarUnavailableSince === null) {
+      sidecarUnavailableSince = now;
+      logger.warn(
+        { reason: error.message, retryInMs: WARMUP_RETRY_MS },
+        "chat runtime dependency is not ready; waiting",
+      );
+      return;
+    }
+    if (now - sidecarUnavailableSince < WARMUP_ERROR_INTERVAL_MS) return;
+  } else {
+    sidecarUnavailableSince = null;
+  }
+  if (
+    lastWarmupErrorAt !== null &&
+    now - lastWarmupErrorAt < WARMUP_ERROR_INTERVAL_MS
+  ) return;
+  lastWarmupErrorAt = now;
+  captureChatRuntimeWarmupFailure(error);
+  logger.error({ err: error }, message);
+}
 
 runtimeReadiness.configureFullWarmupRecovery(async () => {
   if (shuttingDown) throw new Error("chat is shutting down");
   try {
     await warmRuntime();
+    clearWarmupFailureState();
     logger.info(runtimeReadiness.snapshot(), "chat runtime recovered");
   } catch (error) {
-    captureChatRuntimeWarmupFailure(error);
-    logger.error({ err: error }, "chat runtime recovery warm-up failed");
+    reportWarmupFailure(error, "chat runtime recovery warm-up failed");
     throw error;
   }
 });
@@ -33,13 +67,13 @@ async function startRuntime(): Promise<void> {
   try {
     await warmRuntime();
     if (shuttingDown) return;
+    clearWarmupFailureState();
     worker = startWorker();
     logger.info(runtimeReadiness.snapshot(), "chat runtime ready");
   } catch (error) {
-    captureChatRuntimeWarmupFailure(error);
-    logger.error({ err: error }, "chat runtime warm-up failed; staying unready");
+    reportWarmupFailure(error, "chat runtime warm-up failed; staying unready");
     if (!shuttingDown) {
-      warmupRetry = setTimeout(() => void startRuntime(), 5_000);
+      warmupRetry = setTimeout(() => void startRuntime(), WARMUP_RETRY_MS);
       warmupRetry.unref();
     }
   }
@@ -56,7 +90,7 @@ async function shutdown(signal: string): Promise<void> {
   await cancelActiveCompanionInvocations("shutdown");
   await Promise.all([
     worker?.close().catch((err) => logger.error({ err }, "worker close failed")),
-    new Promise<void>((resolve) => server.close(() => resolve())),
+    server.stop(true),
   ]);
   await closeStreamPublisher().catch((err) => logger.error({ err }, "stream publisher close failed"));
   process.exit(0);

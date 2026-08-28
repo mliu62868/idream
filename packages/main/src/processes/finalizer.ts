@@ -10,6 +10,7 @@ import { logger } from "@/server/lib/logger";
 import { dispatchPendingGenerationTerminalRecords } from "@/server/ai/generation-terminal-record-ingest";
 import { redriveFailedGenerationTerminalRelays } from "@/server/ai/generation-terminal-relay";
 import { scanDueUnknownGenerationReviews } from "@/server/modules/admin-v2/jobs/unknown-review-reminder";
+import { isProcessEntrypoint } from "./process-entrypoint";
 
 const BUSY_DELAY_MS = 50;
 const IDLE_DELAY_MS = 1_000;
@@ -132,7 +133,7 @@ export async function awaitFinalizerShutdown(
   await loopPromise;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isProcessEntrypoint(["finalizer.ts", "finalizer.js"])) {
   const loopPromise = runFinalizerLoop();
   let shutdownPromise: Promise<void> | null = null;
   const shutdown = () => {

@@ -257,7 +257,7 @@ export async function createCharacterVisualProfile(input: {
     ? await tx.characterRelease.findFirst({
         where: {
           projectId: project.id,
-          status: { in: ["draft", "validating", "in_review", "approved"] },
+          status: "approved",
         },
         select: { id: true, status: true },
       })

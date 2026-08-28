@@ -11,8 +11,23 @@ import {
 
 describe("admin collaboration and experiment contracts", () => {
   it("rejects unbounded or client-only saved view query state", () => {
-    expect(savedViewQueryStateSchema.safeParse({ search: "", filters: {}, sort: { field: "updatedAt", direction: "desc" }, pageSize: 201 }).success).toBe(false);
-    expect(savedViewQueryStateSchema.safeParse({ search: "", filters: {}, sort: { field: "updatedAt", direction: "desc" }, pageSize: 50, cursor: "client-row" }).success).toBe(false);
+    expect(
+      savedViewQueryStateSchema.safeParse({
+        search: "",
+        filters: {},
+        sort: { field: "updatedAt", direction: "desc" },
+        pageSize: 201,
+      }).success,
+    ).toBe(false);
+    expect(
+      savedViewQueryStateSchema.safeParse({
+        search: "",
+        filters: {},
+        sort: { field: "updatedAt", direction: "desc" },
+        pageSize: 50,
+        cursor: "client-row",
+      }).success,
+    ).toBe(false);
   });
 
   it("requires balanced immutable experiment variants and a real guardrail", () => {
@@ -20,54 +35,123 @@ describe("admin collaboration and experiment contracts", () => {
       key: "onboarding.copy",
       hypothesis: "A shorter opening increases qualified engagement",
       eligibility: {},
-      variants: [{ key: "control", allocationBps: 5_000 }, { key: "treatment", allocationBps: 5_000 }],
+      variants: [
+        { key: "control", allocationBps: 5_000 },
+        { key: "treatment", allocationBps: 5_000 },
+      ],
       salt: "0123456789abcdef",
-      metrics: { primary: "relationship.qce_activation.v1", controlVariant: "control", minimumMaturePerArm: 100, guardrails: [{ metricKey: "guardrail.support_contact_rate.v1", maxAbsoluteRegression: 0.02 }] },
+      metrics: {
+        primary: "relationship.qce_activation.v1",
+        controlVariant: "control",
+        minimumMaturePerArm: 100,
+        guardrails: [
+          {
+            metricKey: "guardrail.support_contact_rate.v1",
+            maxAbsoluteRegression: 0.02,
+          },
+        ],
+      },
     };
     expect(experimentDefinitionCreateSchema.safeParse(base).success).toBe(true);
-    expect(experimentDefinitionCreateSchema.safeParse({ ...base, variants: [{ key: "control", allocationBps: 9_000 }, { key: "treatment", allocationBps: 500 }] }).success).toBe(false);
-    expect(experimentDefinitionCreateSchema.safeParse({ ...base, metrics: { ...base.metrics, guardrails: [] } }).success).toBe(false);
+    expect(
+      experimentDefinitionCreateSchema.safeParse({
+        ...base,
+        variants: [
+          { key: "control", allocationBps: 9_000 },
+          { key: "treatment", allocationBps: 500 },
+        ],
+      }).success,
+    ).toBe(false);
+    expect(
+      experimentDefinitionCreateSchema.safeParse({
+        ...base,
+        metrics: { ...base.metrics, guardrails: [] },
+      }).success,
+    ).toBe(false);
   });
 
   it("owns collaboration and Saved View authority response contracts", () => {
     const now = new Date().toISOString();
-    const activity = { id: "activity-1", targetType: "incident", targetId: "incident-1", kind: "comment", actorId: "admin-1", body: "Investigating", mentionedIds: [], metadata: {}, parentId: null, createdAt: now };
-    const list = collaborationActivityListResponseSchema.parse({ items: [activity], actors: [{ id: "admin-1", displayName: "Ops Anna" }], watching: true, watcherIds: ["actor-1"], pageInfo: { hasNextPage: false, endCursor: null }, asOf: now });
+    const activity = {
+      id: "activity-1",
+      targetType: "incident",
+      targetId: "incident-1",
+      kind: "comment",
+      actorId: "admin-1",
+      body: "Investigating",
+      mentionedIds: [],
+      metadata: {},
+      parentId: null,
+      createdAt: now,
+    };
+    const list = collaborationActivityListResponseSchema.parse({
+      items: [activity],
+      actors: [{ id: "admin-1", displayName: "Ops Anna" }],
+      watching: true,
+      watcherIds: ["actor-1"],
+      pageInfo: { hasNextPage: false, endCursor: null },
+      asOf: now,
+    });
     expect(list.items).toHaveLength(1);
     // 名录只覆盖能解析出显示名的人；解析不到的 actorId 不占位，前端回落到 ID。
     expect(list.actors).toEqual([{ id: "admin-1", displayName: "Ops Anna" }]);
-    expect(collaborationActivityListResponseSchema.safeParse({ items: [activity], watching: true, watcherIds: [], pageInfo: { hasNextPage: false, endCursor: null }, asOf: now }).success).toBe(false);
-    expect(collaborationActivityMutationSchema.parse({ activity, authority: { ownerId: "actor-2", version: 2 }, duplicate: false }).authority).toEqual({ ownerId: "actor-2", version: 2 });
-    expect(collaborationActivityCreateSchema.safeParse({ kind: "handoff", body: "Transfer", mentionedIds: [], metadata: { handoffToActorId: "actor-2" } }).success).toBe(false);
-    expect(collaborationActivityCreateSchema.safeParse({ kind: "handoff", expectedVersion: 1, body: "Transfer", mentionedIds: [], metadata: { handoffToActorId: "actor-2" } }).success).toBe(true);
-    expect(collaborationWatchResponseSchema.parse({ watching: true, duplicate: false }).watching).toBe(true);
-    expect(savedViewMutationResponseSchema.parse({ view: { id: "view-1", scope: "incident", label: "Mine", queryState: { search: "", filters: {}, sort: { field: "id", direction: "asc" }, pageSize: 30 }, version: 1, createdAt: now, updatedAt: now }, duplicate: false }).view.version).toBe(1);
-  });
-
-  it.each(["draft_saved", "evidence_attached"] as const)(
-    "accepts server-authored %s workspace evidence",
-    (kind) => {
-      const now = new Date().toISOString();
-      const activity = {
-        id: `activity-${kind}`,
-        targetType: "character_project",
-        targetId: "project-1",
-        kind,
-        actorId: "admin-1",
-        body: "Server-authored workspace evidence",
-        mentionedIds: [],
-        metadata: {},
-        parentId: null,
-        createdAt: now,
-      };
-      expect(collaborationActivityListResponseSchema.safeParse({
+    expect(
+      collaborationActivityListResponseSchema.safeParse({
         items: [activity],
-        actors: [],
-        watching: false,
+        watching: true,
         watcherIds: [],
         pageInfo: { hasNextPage: false, endCursor: null },
         asOf: now,
-      }).success).toBe(true);
-    },
-  );
+      }).success,
+    ).toBe(false);
+    expect(
+      collaborationActivityMutationSchema.parse({
+        activity,
+        authority: { ownerId: "actor-2", version: 2 },
+        duplicate: false,
+      }).authority,
+    ).toEqual({ ownerId: "actor-2", version: 2 });
+    expect(
+      collaborationActivityCreateSchema.safeParse({
+        kind: "handoff",
+        body: "Transfer",
+        mentionedIds: [],
+        metadata: { handoffToActorId: "actor-2" },
+      }).success,
+    ).toBe(false);
+    expect(
+      collaborationActivityCreateSchema.safeParse({
+        kind: "handoff",
+        expectedVersion: 1,
+        body: "Transfer",
+        mentionedIds: [],
+        metadata: { handoffToActorId: "actor-2" },
+      }).success,
+    ).toBe(true);
+    expect(
+      collaborationWatchResponseSchema.parse({
+        watching: true,
+        duplicate: false,
+      }).watching,
+    ).toBe(true);
+    expect(
+      savedViewMutationResponseSchema.parse({
+        view: {
+          id: "view-1",
+          scope: "incident",
+          label: "Mine",
+          queryState: {
+            search: "",
+            filters: {},
+            sort: { field: "id", direction: "asc" },
+            pageSize: 30,
+          },
+          version: 1,
+          createdAt: now,
+          updatedAt: now,
+        },
+        duplicate: false,
+      }).view.version,
+    ).toBe(1);
+  });
 });

@@ -44,29 +44,25 @@ describe("mediaAssetAuthorityDependenciesBatch", () => {
     }
   });
 
-  it("maps object and legacy raw-array Serving manifests without a release scan per asset", async () => {
+  it("maps object and legacy raw-array current Release manifests without a release scan per asset", async () => {
     const characterServing = {
       findMany: vi.fn(async () => [
         {
           characterId: "character-object",
           state: "live",
           currentReleaseId: "release-object",
-          scheduledReleaseId: null,
           currentRelease: {
             id: "release-object",
             releasePlacementManifest: {
               placements: [{ slotKey: "character_avatar", assetId: "asset-a" }],
             },
           },
-          scheduledRelease: null,
         },
         {
           characterId: "character-legacy",
-          state: "inactive",
-          currentReleaseId: null,
-          scheduledReleaseId: "release-legacy",
-          currentRelease: null,
-          scheduledRelease: {
+          state: "paused",
+          currentReleaseId: "release-legacy",
+          currentRelease: {
             id: "release-legacy",
             releasePlacementManifest: [
               { placementId: "character_hero", assetId: "asset-b" },
@@ -101,7 +97,7 @@ describe("mediaAssetAuthorityDependenciesBatch", () => {
     expect(dependencies.get("asset-b")).toContainEqual(expect.objectContaining({
       kind: "character_release",
       releaseId: "release-legacy",
-      releaseState: "scheduled",
+      releaseState: "current",
       slot: "character_hero",
     }));
     expect(characterServing.findMany).toHaveBeenCalledTimes(1);

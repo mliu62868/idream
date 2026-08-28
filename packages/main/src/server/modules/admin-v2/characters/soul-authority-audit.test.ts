@@ -12,7 +12,6 @@ describe("Character Soul authority audit", () => {
       name: "June",
       age: 28,
       gender: "female",
-      relationshipArchetype: "neighbor",
       characterPromise: "A candid neighbor.",
       detailsMarkdown: "Direct.",
     });
@@ -21,23 +20,31 @@ describe("Character Soul authority audit", () => {
       { ownerType: "serving_release", ownerId: "character-1", contentVersionId: "v1" },
       { ownerType: "pinned_session", ownerId: "session-1", contentVersionId: "missing" },
     ], [{ id: "v1", personaSnapshot: compiled.snapshot }]);
-    expect(result).toMatchObject({ referenced: 2, valid: 1, v2: 1, historical: 0 });
+    expect(result).toMatchObject({ referenced: 2, valid: 1, current: 1, historical: 0 });
     expect(result.invalid).toEqual([
       expect.objectContaining({ ownerId: "session-1", contentVersionId: "missing" }),
     ]);
   });
 
-  it("treats legacy and null-pin drain counts as observable migration state", () => {
+  it("blocks launch until legacy and null-pin migration state is drained", () => {
     expect(characterSoulAuthorityIsLaunchSafe({
-      topologyMode: "same_cluster_views",
+      topologyMode: "main_turn_ledger",
       parityMismatches: 0,
       invalidSnapshots: 0,
       nullPinSessions: 271,
       legacyServingSnapshots: 15,
       legacyCurrentPointers: 0,
+    })).toBe(false);
+    expect(characterSoulAuthorityIsLaunchSafe({
+      topologyMode: "main_turn_ledger",
+      parityMismatches: 0,
+      invalidSnapshots: 0,
+      nullPinSessions: 0,
+      legacyServingSnapshots: 0,
+      legacyCurrentPointers: 0,
     })).toBe(true);
     expect(characterSoulAuthorityIsLaunchSafe({
-      topologyMode: "same_cluster_views",
+      topologyMode: "main_turn_ledger",
       parityMismatches: 0,
       invalidSnapshots: 1,
       nullPinSessions: 0,
@@ -45,7 +52,7 @@ describe("Character Soul authority audit", () => {
       legacyCurrentPointers: 0,
     })).toBe(false);
     expect(characterSoulAuthorityIsLaunchSafe({
-      topologyMode: "same_cluster_views",
+      topologyMode: "main_turn_ledger",
       parityMismatches: 0,
       invalidSnapshots: 0,
       nullPinSessions: -1,
@@ -54,17 +61,13 @@ describe("Character Soul authority audit", () => {
     })).toBe(false);
   });
 
-  it("reads pinned Chat sessions through the Chat database role", async () => {
+  it("reads pinned Chat sessions from Main's Turn ledger", async () => {
     const mainRows = [
-      [{
-        database: "idream",
-        characterView: "core.chat_character_view",
-        contentView: "core.chat_character_content_version_view",
-        releaseView: "core.chat_character_release_view",
-      }],
+      [{ database: "idream" }],
       [],
       [],
       [],
+      [{ active: BigInt(0), nullPins: BigInt(0) }],
     ];
     const mainDb = {
       $queryRaw: async () => {
@@ -74,21 +77,11 @@ describe("Character Soul authority audit", () => {
       },
       characterContentVersion: { findMany: async () => [] },
     };
-    const chatRows = [
-      [{ database: "idream" }],
-      [],
-      [{ active: BigInt(0), nullPins: BigInt(0) }],
-    ];
-    const chatDb = {
-      $queryRaw: async () => chatRows.shift() ?? [],
-    };
-
     const audit = await (
       auditCharacterSoulAuthority as unknown as (
         main: typeof mainDb,
-        chat: typeof chatDb,
       ) => ReturnType<typeof auditCharacterSoulAuthority>
-    )(mainDb, chatDb);
+    )(mainDb);
 
     expect(audit.ok).toBe(true);
     expect(audit.drain).toMatchObject({

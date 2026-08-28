@@ -13,6 +13,7 @@ The expected contexts are:
 
 - `packages/main`
 - `packages/chat`
+- `packages/chat-agent`
 - `packages/gen`
 - `packages/admin`
 - `packages/shared`
@@ -32,6 +33,9 @@ Existing product and architecture sources of truth defined by `AGENTS.md` remain
     │   ├── CONTEXT.md
     │   └── docs/adr/
     ├── chat/
+    │   ├── CONTEXT.md
+    │   └── docs/adr/
+    ├── chat-agent/
     │   ├── CONTEXT.md
     │   └── docs/adr/
     ├── gen/
