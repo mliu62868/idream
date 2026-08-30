@@ -4,6 +4,7 @@ import {
   COMPANION_MEMORY_REBUILD_PREPARE_PATH,
   COMPANION_MEMORY_REBUILD_PROMOTE_PATH,
   companionMemoryPurgeRequestedV1PayloadSchema,
+  companionMemoryProjectRequestedV1PayloadSchema,
   companionMemoryRebuildRequestedV1PayloadSchema,
   durableEventEnvelopeSchema,
   MAIN_TO_CHAT_EVENTS,
@@ -21,7 +22,7 @@ import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 
-const MEMORY_EVENT_TYPES = [
+const DESTRUCTIVE_MEMORY_EVENT_TYPES = [
   MAIN_TO_CHAT_EVENTS.companionMemoryRebuildRequestedV1,
   MAIN_TO_CHAT_EVENTS.companionMemoryPurgeRequestedV1,
 ] as const;
@@ -31,21 +32,84 @@ export function companionRelationshipAggregateId(userId: string, characterId: st
   return `${userId}:${characterId}`;
 }
 
-export async function assertNoPendingCompanionMemoryRebuild(
+export async function hasPendingCompanionMemoryMutation(
   tx: Prisma.TransactionClient,
   userId: string,
   characterId: string,
-): Promise<void> {
+): Promise<boolean> {
   const pending = await tx.mainOutboxEvent.findFirst({
     where: {
-      eventType: { in: [...MEMORY_EVENT_TYPES] },
+      eventType: { in: [...DESTRUCTIVE_MEMORY_EVENT_TYPES] },
       aggregateType: "chat_relationship",
       aggregateId: companionRelationshipAggregateId(userId, characterId),
       status: { in: ["pending", "processing"] },
     },
     select: { id: true },
   });
-  if (pending) throw Errors.conflict("Companion memory is changing; retry shortly");
+  return Boolean(pending);
+}
+
+export async function assertNoPendingCompanionMemoryRebuild(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  characterId: string,
+): Promise<void> {
+  if (await hasPendingCompanionMemoryMutation(tx, userId, characterId)) {
+    throw Errors.conflict("Companion memory is changing; retry shortly");
+  }
+}
+
+export async function scheduleCompanionMemoryProjection(
+  tx: Prisma.TransactionClient,
+  input: { userId: string; characterId: string },
+): Promise<string> {
+  const aggregateId = companionRelationshipAggregateId(input.userId, input.characterId);
+  // A pending full projection reads Main only when delivered, so it already
+  // includes every newer accepted Turn and can safely coalesce them.
+  const existing = await tx.mainOutboxEvent.findFirst({
+    where: {
+      eventType: MAIN_TO_CHAT_EVENTS.companionMemoryProjectRequestedV1,
+      aggregateType: "chat_relationship",
+      aggregateId,
+      status: "pending",
+    },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
+  });
+  if (existing) return existing.id;
+  const authority = await tx.companionMemoryAuthority.upsert({
+    where: { aggregateId },
+    create: { aggregateId, version: BigInt(1) },
+    update: { version: { increment: 1 } },
+    select: { version: true },
+  });
+  const eventId = randomUUID();
+  const envelope = durableEventEnvelopeSchema.parse({
+    sourceService: "main",
+    sourceEventId: eventId,
+    eventType: MAIN_TO_CHAT_EVENTS.companionMemoryProjectRequestedV1,
+    schemaVersion: 1,
+    occurredAt: new Date().toISOString(),
+    aggregateType: "chat_relationship",
+    aggregateId,
+    payload: {
+      version: 1,
+      userId: input.userId,
+      characterId: input.characterId,
+      claimToken: randomUUID(),
+      authorityVersion: authority.version.toString(),
+    },
+  });
+  await tx.mainOutboxEvent.create({
+    data: {
+      id: eventId,
+      eventType: envelope.eventType,
+      aggregateType: envelope.aggregateType,
+      aggregateId: envelope.aggregateId,
+      payload: toInputJson(envelope),
+    },
+  });
+  return eventId;
 }
 
 export async function scheduleCompanionMemoryRebuild(
@@ -58,16 +122,9 @@ export async function scheduleCompanionMemoryRebuild(
   },
 ): Promise<string> {
   const aggregateId = companionRelationshipAggregateId(input.userId, input.characterId);
-  const existing = await tx.mainOutboxEvent.findFirst({
-    where: {
-      eventType: { in: [...MEMORY_EVENT_TYPES] },
-      aggregateType: "chat_relationship",
-      aggregateId,
-      status: { in: ["pending", "processing"] },
-    },
-    select: { id: true },
-  });
-  if (existing) return existing.id;
+  // INVARIANT: every destructive mutation carries its own exact purge fence.
+  // A pending rebuild may already be processing and cannot be safely widened.
+  await supersedePendingMemoryProjections(tx, aggregateId, "destructive_memory_rebuild");
   const authority = await tx.companionMemoryAuthority.upsert({
     where: { aggregateId },
     create: { aggregateId, version: BigInt(1) },
@@ -110,7 +167,8 @@ export async function rebuildCompanionMemoryFromMain(
 ): Promise<void> {
   const payload = memoryRebuildPayload(event);
   if (
-    event.eventType !== MAIN_TO_CHAT_EVENTS.companionMemoryRebuildRequestedV1 ||
+    (event.eventType !== MAIN_TO_CHAT_EVENTS.companionMemoryRebuildRequestedV1
+      && event.eventType !== MAIN_TO_CHAT_EVENTS.companionMemoryProjectRequestedV1) ||
     event.aggregateType !== "chat_relationship" ||
     event.aggregateId !== companionRelationshipAggregateId(payload.userId, payload.characterId)
   ) {
@@ -270,6 +328,7 @@ export async function clearCompanionMemory(userId: string, characterId: string) 
       },
     });
     const aggregateId = companionRelationshipAggregateId(userId, characterId);
+    await supersedePendingMemoryProjections(tx, aggregateId, "durable_memory_purge");
     await tx.mainOutboxEvent.updateMany({
       where: {
         eventType: MAIN_TO_CHAT_EVENTS.companionMemoryRebuildRequestedV1,
@@ -448,6 +507,17 @@ function memoryRebuildPayload(event: DurableEventEnvelope): {
   purgeTurnIds: string[];
   purgeRunAttempts: Array<{ turnId: string; throughAttempt: number }>;
 } {
+  if (event.eventType === MAIN_TO_CHAT_EVENTS.companionMemoryProjectRequestedV1) {
+    const parsed = companionMemoryProjectRequestedV1PayloadSchema.safeParse(event.payload);
+    if (!parsed.success) {
+      throw new Error("companion memory projection event payload is invalid");
+    }
+    return {
+      ...parsed.data,
+      purgeTurnIds: [],
+      purgeRunAttempts: [],
+    };
+  }
   const parsed = companionMemoryRebuildRequestedV1PayloadSchema.safeParse(event.payload);
   if (!parsed.success) {
     throw new Error("companion memory rebuild event payload is invalid");
@@ -457,6 +527,28 @@ function memoryRebuildPayload(event: DurableEventEnvelope): {
     purgeTurnIds: [...new Set(parsed.data.purgeTurnIds)],
     purgeRunAttempts: dedupeAttemptFences(parsed.data.purgeRunAttempts),
   };
+}
+
+async function supersedePendingMemoryProjections(
+  tx: Prisma.TransactionClient,
+  aggregateId: string,
+  reason: string,
+): Promise<void> {
+  await tx.mainOutboxEvent.updateMany({
+    where: {
+      eventType: MAIN_TO_CHAT_EVENTS.companionMemoryProjectRequestedV1,
+      aggregateType: "chat_relationship",
+      aggregateId,
+      status: "pending",
+    },
+    data: {
+      status: "delivered",
+      deliveredAt: new Date(),
+      lastError: { supersededBy: reason },
+      leaseToken: null,
+      leaseExpiresAt: null,
+    },
+  });
 }
 
 function dedupeAttemptFences(

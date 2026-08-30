@@ -4,16 +4,19 @@ import type {
   ChatExecutionSnapshot,
   ChatTerminalCommit,
 } from "@idream/shared/contracts";
-import { chatExecutionSnapshotSchema } from "@idream/shared/contracts";
+import { chatExecutionSnapshotSchema, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { isSyntheticMediaAsset } from "@/server/lib/media-asset-authority";
 import { moderateText } from "@/server/moderation/text-authority";
 import { updateGenerationRequestSourceMeta } from "@/server/ai/generation-request-transition";
+import { recordMainToChatEvent } from "@/processes/chat-outbox";
 import { isReusablePlatformAssetWhere } from "@/server/modules/ourdream/chat-image-reuse";
 import {
   assertNoPendingCompanionMemoryRebuild,
+  hasPendingCompanionMemoryMutation,
+  scheduleCompanionMemoryProjection,
   scheduleCompanionMemoryRebuild,
 } from "./companion-memory-authority";
 
@@ -157,22 +160,6 @@ export async function beginChatTurn(input: {
   const idempotencyKey = requiredText(input.idempotencyKey, "Idempotency-Key", 160);
   const requestHash = sha256(JSON.stringify({ sessionId: input.sessionId, content }));
   const session = await requireActiveSession(input.userId, input.sessionId);
-  const prior = await prisma.chatTurn.findUnique({
-    where: { sessionId_idempotencyKey: { sessionId: session.sessionId, idempotencyKey } },
-  });
-  if (prior) {
-    if (prior.requestHash !== requestHash) {
-      throw Errors.conflict("Idempotency-Key was already used for another message");
-    }
-    return begunResult(
-      prior,
-      true,
-      ACTIVE_ASSISTANT_STATES.includes(prior.assistantStatus)
-        ? await executionSnapshot(prior.id)
-        : null,
-    );
-  }
-
   const turnId = randomUUID();
   const moderation = await moderateText("chat_turn", turnId, content, "input");
   const blocked = moderation.status === "blocked";
@@ -193,17 +180,24 @@ export async function beginChatTurn(input: {
     const duplicate = await tx.chatTurn.findUnique({
       where: { sessionId_idempotencyKey: { sessionId: session.sessionId, idempotencyKey } },
     });
-    if (duplicate) {
-      if (duplicate.requestHash !== requestHash) {
-        throw Errors.conflict("Idempotency-Key was already used for another message");
-      }
-      return { turn: duplicate, snapshot: await frozenExecutionSnapshot(tx, duplicate.id) };
-    }
-    await assertNoPendingCompanionMemoryRebuild(
+    const memoryIsolated = await hasPendingCompanionMemoryMutation(
       tx,
       input.userId,
       lockedSession.characterId,
     );
+    if (duplicate) {
+      if (duplicate.requestHash !== requestHash) {
+        throw Errors.conflict("Idempotency-Key was already used for another message");
+      }
+      return {
+        turn: duplicate,
+        snapshot: await frozenExecutionSnapshot(
+          tx,
+          duplicate.id,
+          duplicate.memoryEnabled && !memoryIsolated,
+        ),
+      };
+    }
     if (!blocked) {
       const active = await tx.chatTurn.findFirst({
         where: {
@@ -257,7 +251,9 @@ export async function beginChatTurn(input: {
     }
     return {
       turn,
-      snapshot: blocked ? null : await frozenExecutionSnapshot(tx, turn.id),
+      snapshot: blocked
+        ? null
+        : await frozenExecutionSnapshot(tx, turn.id, turn.memoryEnabled && !memoryIsolated),
     };
   });
   return begunResult(
@@ -279,6 +275,7 @@ export async function regenerateChatTurn(userId: string, messageId: string) {
       throw Errors.conflict("A reply is already generating");
     }
     const previousAttempt = current.attempt;
+    const sceneAnchor = await previousCommittedScene(tx, current);
     const regenerated = await tx.chatTurn.update({
       where: { id: turn.id },
       data: {
@@ -291,6 +288,8 @@ export async function regenerateChatTurn(userId: string, messageId: string) {
         terminalEvidence: Prisma.JsonNull,
         terminalAt: null,
         executionSnapshot: Prisma.JsonNull,
+        sceneVersion: sceneAnchor?.sceneVersion ?? 0,
+        scene: sceneAnchor?.scene == null ? Prisma.JsonNull : toJson(sceneAnchor.scene),
         admissionAttempts: 0,
         admissionNextRunAt: new Date(),
         admissionLeaseToken: null,
@@ -304,7 +303,7 @@ export async function regenerateChatTurn(userId: string, messageId: string) {
       characterId: turn.session.characterId,
       purgeRunAttempts: [{ turnId: turn.id, throughAttempt: previousAttempt }],
     });
-    return { turn: regenerated, snapshot: await frozenExecutionSnapshot(tx, regenerated.id) };
+    return { turn: regenerated, snapshot: await frozenExecutionSnapshot(tx, regenerated.id, false) };
   });
   return {
     assistantMessageId: updated.turn.assistantMessageId,
@@ -333,6 +332,7 @@ export async function editChatTurn(userId: string, messageId: string, nextConten
     if (ACTIVE_ASSISTANT_STATES.includes(current.assistantStatus)) {
       throw Errors.conflict("A reply is already generating");
     }
+    const sceneAnchor = await previousCommittedScene(tx, current);
     await redactChatImageSourceText(tx, {
       userId,
       reason: "logical_turn_edited",
@@ -357,6 +357,8 @@ export async function editChatTurn(userId: string, messageId: string, nextConten
           : Prisma.JsonNull,
         terminalAt: blocked ? now : null,
         executionSnapshot: Prisma.JsonNull,
+        sceneVersion: sceneAnchor?.sceneVersion ?? 0,
+        scene: sceneAnchor?.scene == null ? Prisma.JsonNull : toJson(sceneAnchor.scene),
         admissionAttempts: 0,
         admissionNextRunAt: now,
         admissionLeaseToken: null,
@@ -372,7 +374,7 @@ export async function editChatTurn(userId: string, messageId: string, nextConten
     });
     return {
       turn: edited,
-      snapshot: blocked ? null : await frozenExecutionSnapshot(tx, edited.id),
+      snapshot: blocked ? null : await frozenExecutionSnapshot(tx, edited.id, false),
     };
   });
   return {
@@ -414,7 +416,7 @@ export async function commitChatTerminal(input: ChatTerminalCommit) {
       const session = await tx.recentChat.update({
         where: { sessionId: input.sessionId },
         data: { contextRevision: { increment: 1 }, lastMessageAt: now },
-        select: { characterId: true },
+        select: { userId: true, characterId: true },
       });
       if (input.status === "sent") {
         const firstSelectedReply = await tx.chatTurn.updateMany({
@@ -426,6 +428,10 @@ export async function commitChatTerminal(input: ChatTerminalCommit) {
             where: { characterId: session.characterId },
             data: { chatsCount: { increment: 1 }, lastActivityAt: now },
           });
+        }
+        if (current.memoryEnabled) {
+          await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${session.userId} FOR UPDATE`;
+          await scheduleCompanionMemoryProjection(tx, session);
         }
       }
       return { turn: current, duplicate: false };
@@ -447,10 +453,9 @@ export async function commitChatTerminal(input: ChatTerminalCommit) {
         select: { userId: true, characterId: true },
       });
       await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${session.userId} FOR UPDATE`;
-      // A duplicate ACK means Chat may have crashed anywhere after Main's
-      // commit. Rebuilding from Main closes the memory-promotion ambiguity
-      // without ever rerunning the model or inventing a second terminal.
-      await scheduleCompanionMemoryRebuild(tx, session);
+      // A duplicate ACK may follow a Chat crash after Main committed. The
+      // idempotent projection closes that window without rerunning the model.
+      await scheduleCompanionMemoryProjection(tx, session);
     }
     return { turn: current, duplicate: true };
   });
@@ -464,16 +469,41 @@ export async function commitChatTerminal(input: ChatTerminalCommit) {
 
 export async function cancelChatTurn(userId: string, messageId: string) {
   const turn = await requireTurn(userId, messageId);
-  const now = new Date();
-  const changed = await prisma.chatTurn.updateMany({
-    where: { id: turn.id, assistantStatus: { in: ACTIVE_ASSISTANT_STATES } },
-    data: {
-      assistantStatus: "cancelled",
-      terminalAt: now,
-      terminalEvidence: toJson({ authority: "main_user_cancel" }),
-    },
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId} FOR UPDATE`;
+    await tx.$queryRaw`SELECT "sessionId" FROM "recent_chats" WHERE "sessionId" = ${turn.sessionId} FOR UPDATE`;
+    await tx.$queryRaw`SELECT id FROM "chat_turns" WHERE id = ${turn.id} FOR UPDATE`;
+    const current = await tx.chatTurn.findFirst({
+      where: { id: turn.id, session: { userId } },
+    });
+    if (!current) throw Errors.notFound("Chat message not found");
+    if (!ACTIVE_ASSISTANT_STATES.includes(current.assistantStatus)) {
+      return {
+        ok: true,
+        turnId: current.id,
+        attempt: current.attempt,
+        cancelled: false,
+      };
+    }
+    const now = new Date();
+    await tx.chatTurn.update({
+      where: { id: current.id },
+      data: {
+        assistantStatus: "cancelled",
+        terminalAt: now,
+        terminalEvidence: toJson({ authority: "main_user_cancel" }),
+      },
+    });
+    await recordMainToChatEvent({
+      eventId: `chat_agent_run_cancel_${sha256(`${current.id}:${current.attempt}`).slice(0, 40)}`,
+      eventType: MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1,
+      aggregateType: "chat_turn",
+      aggregateId: current.id,
+      payload: { version: 1, userId, turnId: current.id, attempt: current.attempt },
+      occurredAt: now,
+    }, tx);
+    return { ok: true, turnId: current.id, attempt: current.attempt, cancelled: true };
   });
-  return { ok: true, turnId: turn.id, attempt: turn.attempt, cancelled: changed.count === 1 };
 }
 
 export async function deleteChatMessage(userId: string, messageId: string) {
@@ -593,6 +623,7 @@ export async function executionSnapshot(turnId: string): Promise<ChatExecutionSn
 async function frozenExecutionSnapshot(
   tx: Prisma.TransactionClient,
   turnId: string,
+  memoryEnabled = true,
 ): Promise<ChatExecutionSnapshot> {
   const turn = await tx.chatTurn.findUnique({ where: { id: turnId }, include: { session: true } });
   if (!turn) throw Errors.notFound("Chat turn not found");
@@ -626,7 +657,7 @@ async function frozenExecutionSnapshot(
     characterReleaseId: turn.characterReleaseId,
     characterVisualProfileId: turn.characterVisualProfileId,
     characterVisualProfileVersion: turn.characterVisualProfileVersion,
-    memoryEnabled: turn.memoryEnabled,
+    memoryEnabled: turn.memoryEnabled && memoryEnabled,
     contextRevision: turn.session.contextRevision,
     userContent: turn.userContent,
     recentTurns: recent.map((item) => ({
@@ -645,6 +676,21 @@ async function frozenExecutionSnapshot(
     data: { executionSnapshot: toJson(snapshot) },
   });
   return snapshot;
+}
+
+async function previousCommittedScene(
+  tx: Prisma.TransactionClient,
+  turn: { id: string; sessionId: string },
+) {
+  return tx.chatTurn.findFirst({
+    where: {
+      sessionId: turn.sessionId,
+      id: { not: turn.id },
+      assistantStatus: "sent",
+    },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    select: { sceneVersion: true, scene: true },
+  });
 }
 
 async function requireSession(userId: string, sessionId: string) {

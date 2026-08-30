@@ -23,14 +23,25 @@ import { stableNumericSeed, type ImageModel } from "../providers";
 import {
   assignWorkflowReferenceSlots,
   type SlotValues,
+  type WorkflowDescriptor,
 } from "./workflow";
-import { validateWorkflowPin, type BackendRegistry } from "./registry";
+import {
+  comfyUiRunnerForDescriptor,
+  validateWorkflowPin,
+  type BackendRegistry,
+  type ComfyUiRunner,
+} from "./registry";
 import { BackendInvocationError } from "./types";
 
 type GenerateInput = Parameters<ImageModel["generate"]>[0];
 type GenerateResult = Awaited<ReturnType<ImageModel["generate"]>>;
 type SuccessData = Extract<GenerateResult, { ok: true }>["data"];
 type ImageAsset = SuccessData["assets"][number];
+type RunWithAcceleratorLease = <T>(run: () => Promise<T>) => Promise<T>;
+type PrepareComfyUiRunner = (runner: ComfyUiRunner) => Promise<void>;
+
+const runWithoutAcceleratorLease: RunWithAcceleratorLease = (run) => run();
+const skipComfyUiMemoryTransition: PrepareComfyUiRunner = async () => {};
 
 // SPEC: orientation -> default pixel size. Wire vocabulary mirrors main's actual
 // contract (packages/main/src/server/modules/ourdream/generation-dimensions.ts:
@@ -106,7 +117,13 @@ function snapDimension(value: number): number {
 }
 
 export class BackendImageModel implements ImageModel {
-  constructor(private readonly registry: BackendRegistry | Promise<BackendRegistry>) {}
+  constructor(
+    private readonly registry: BackendRegistry | Promise<BackendRegistry>,
+    private readonly runWithAcceleratorLease: RunWithAcceleratorLease =
+      runWithoutAcceleratorLease,
+    private readonly prepareComfyUiRunner: PrepareComfyUiRunner =
+      skipComfyUiMemoryTransition,
+  ) {}
 
   async generate(input: GenerateInput): Promise<GenerateResult> {
     const modelId = input.model ?? env.PIPELINE_IMAGE_MODEL_DEFAULT;
@@ -155,40 +172,49 @@ export class BackendImageModel implements ImageModel {
     const baseSeed = numericSeed(input.seed, input.requestId);
     const count = Math.max(1, Math.min(input.count, 4));
     const stepsOverride = numericControl(input.controls, "steps");
+    const workflowControlSlots = resolveWorkflowControlSlots(descriptor, input.controls);
 
     const providerRequestIds: string[] = [];
     let failurePhase: "pre_submit" | "post_submit" = "pre_submit";
     try {
       const assets: ImageAsset[] = [];
-      for (let index = 0; index < count; index += 1) {
-        failurePhase = "pre_submit";
-        const slots: SlotValues = {
-          prompt: input.prompt,
-          negative: input.negativePrompt ?? "",
-          ...(size.width !== undefined ? { width: size.width } : {}),
-          ...(size.height !== undefined ? { height: size.height } : {}),
-          seed: baseSeed + index,
-          ...(stepsOverride !== undefined ? { steps: stepsOverride } : {}),
-        };
-        const handle = await backend.submit({
-          descriptor,
-          slots,
-          referenceImages: input.referenceImages,
-          requestId: input.requestId,
-          timeoutMs: env.PIPELINE_TIMEOUT_MS,
-        });
-        providerRequestIds.push(handle.id);
-        failurePhase = "post_submit";
-        const result = await backend.poll(handle);
-        for (const asset of result.assets) {
-          assets.push({
-            width: asset.width,
-            height: asset.height,
-            contentType: asset.contentType,
-            body: asset.body,
-          });
+      await this.runWithAcceleratorLease(async () => {
+        if (descriptor.backendKind === "comfyui") {
+          await this.prepareComfyUiRunner(
+            comfyUiRunnerForDescriptor(descriptor),
+          );
         }
-      }
+        for (let index = 0; index < count; index += 1) {
+          failurePhase = "pre_submit";
+          const slots: SlotValues = {
+            prompt: input.prompt,
+            negative: input.negativePrompt ?? "",
+            ...(size.width !== undefined ? { width: size.width } : {}),
+            ...(size.height !== undefined ? { height: size.height } : {}),
+            seed: baseSeed + index,
+            ...(stepsOverride !== undefined ? { steps: stepsOverride } : {}),
+            ...workflowControlSlots,
+          };
+          const handle = await backend.submit({
+            descriptor,
+            slots,
+            referenceImages: input.referenceImages,
+            requestId: input.requestId,
+            timeoutMs: env.PIPELINE_TIMEOUT_MS,
+          });
+          providerRequestIds.push(handle.id);
+          failurePhase = "post_submit";
+          const result = await backend.poll(handle);
+          for (const asset of result.assets) {
+            assets.push({
+              width: asset.width,
+              height: asset.height,
+              contentType: asset.contentType,
+              body: asset.body,
+            });
+          }
+        }
+      });
       return {
         ok: true,
         data: { assets },
@@ -303,4 +329,26 @@ function numericSeed(seed: string | undefined, requestId: string | undefined): n
 function numericControl(controls: Record<string, unknown> | undefined, key: string): number | undefined {
   const value = controls?.[key];
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+// SPEC: A descriptor may expose workflow-native numeric controls beyond the
+// common width/height/steps set (for example Krea2 ref_boost and grounding_px).
+// Only declared numeric slots cross this boundary; prompt, seed, dimensions,
+// image bindings, workflow pins, and arbitrary request controls keep their
+// dedicated authorities above.
+function resolveWorkflowControlSlots(
+  descriptor: WorkflowDescriptor,
+  controls: Record<string, unknown> | undefined,
+): SlotValues {
+  if (!controls) return {};
+  const reserved = new Set(["prompt", "negative", "width", "height", "seed", "steps"]);
+  const slots: SlotValues = {};
+  for (const slot of descriptor.inputs) {
+    if (reserved.has(slot.key) || (slot.type !== "int" && slot.type !== "float")) continue;
+    const value = controls[slot.key];
+    if (typeof value !== "number" || !Number.isFinite(value)) continue;
+    if (slot.type === "int" && !Number.isInteger(value)) continue;
+    slots[slot.key] = value;
+  }
+  return slots;
 }

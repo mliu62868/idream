@@ -19,73 +19,17 @@ export const creativeRunAttachIncidentRequestSchema = z.object({
 
 export const characterRouteEvaluationMatrixSchemaVersion =
   "character-identity-v1";
-export const characterVideoProductionRecipe = {
-  recipeVersion: 1,
-  profileKey: "profile_video_beta_v1",
-  modelLabel: "LTX 2.3 GTAnimation",
-  runner: "comfyui",
-  pipelineModel: "ltx23-gtanimation-int4-convrot",
-  workflowKey: "ltx23-gtanimation-i2v",
-  workflowVersion: 1,
-  sourceModelPath:
-    "diffusion_models/ltx23Gtanimation25Frames_ltxv23INT4Convrot.safetensors",
-  checkpointFilename:
-    "ltx23Gtanimation25Frames_ltxv23INT4Convrot.safetensors",
-  modelFormat: "safetensors",
-  comfyWorkflowId: "9b3f4d6a-0c8e-4b72-9f51-2a6d7e8c9012",
-  comfyWorkflowName: "iDream LTX 2.3 GTAnimation I2V",
-  outputFilenamePrefix: "idream-ltx23-gtanimation",
-  durationSeconds: 4,
-  expectedDurationSeconds: 4,
-  frameCount: null,
-  fps: 25,
-  width: 768,
-  height: 1152,
-  orientation: "2:3",
-  outputCount: 1,
-  sourceImageCount: 1,
-  steps: 13,
-  sampler: "euler",
-  scheduler: "manual_sigmas",
-  cfgScale: 1,
-  // Hash of the executable ComfyUI graph after replacing only the declared
-  // runtime input fields. Metadata labels and ComfyUI cache markers are
-  // excluded; checkpoint, wiring, sampler, sigma schedule and bindings are not.
-  workflowGraphSha256:
-    "ef8ff05606ca85d714b4ecf7dc5ed6c4758f543b545e313f875469564d08184a",
-  modelAssets: [
-    { path: "diffusion_models/ltx23Gtanimation25Frames_ltxv23INT4Convrot.safetensors", sha256: "fa457f3fb702a24cfefa1167db5ce11d8c8994023120b560e34d778cfa071d1d" },
-    { path: "latent_upscale_models/ltx-2.3-spatial-upscaler-x2-1.1.safetensors", sha256: "5f416311fa8172b65af67530758964708d29a317b830d689a51143b7f91913ed" },
-    { path: "vae/LTX23_audio_vae_bf16.safetensors", sha256: "5bc10fa4adecf99dda132d916e23048cbd56797702c5fa50eb5d2079048a38c3" },
-    { path: "vae/LTX23_video_vae_bf16.safetensors", sha256: "01ea62d09bc139f95c5dee7b5c062ad6a3e6cd8be910a1983ac02e7eb5b8ee3b" },
-    { path: "text_encoders/gemma-3-12b-it-heretic-v2_int8.safetensors", sha256: "5ec38ee58d20b884eca5f2569b8750dcc36c6e3013be55e58ebc38b9d4948174" },
-    { path: "text_encoders/ltx-2.3_text_projection_bf16.safetensors", sha256: "911d59bb4cb7708179c9a0045ea0fe41212ecfb77aed3a02702b7c0a8274911f" },
-  ],
-  requiredEntitlement: "video_generation",
-  concurrencyLimit: 1,
-  rolloutPercent: 100,
-  explicitSelectionOnly: false,
-  capabilities: [
-    "video",
-    "img2video",
-    "referenceImages",
-    "stableSeed",
-    "audio",
-  ],
-  evaluatorDimensions: ["artifact", "identity", "intent"],
-} as const;
-
 // SPEC: H3 is a second pinned production recipe, not a mutable variant of LTX.
 // INTENT: H3's trained frame grid starts at 124 frames, so the request remains
 // the integer five-second contract while output verification uses 124 / 24.
 export const minimaxH3VideoProductionRecipe = {
-  recipeVersion: 1,
+  recipeVersion: 3,
   profileKey: "profile_video_h3_v1",
   modelLabel: "MiniMax H3 RedCraft A2A",
   runner: "comfyui",
   pipelineModel: "minimax-h3-redcraft-a2a-int8-convrot",
   workflowKey: "minimax-h3-redcraft-i2v",
-  workflowVersion: 1,
+  workflowVersion: 3,
   sourceModelPath:
     "diffusion_models/REDMix-MiniMaxH3-A2Ab1-pruned-int8-convrot-ComfyMCP.safetensors",
   checkpointFilename:
@@ -113,7 +57,7 @@ export const minimaxH3VideoProductionRecipe = {
   scheduler: "simple",
   cfgScale: 1,
   workflowGraphSha256:
-    "bb2429ba7e32820a93fcc56cf2f1de4bd39ba21661093876b989b29d618dcba8",
+    "f3486e6f4ff5c7a8f13799c25de74734c0db72d7ca77919c9ec77743e566645c",
   modelAssets: [
     { path: "diffusion_models/REDMix-MiniMaxH3-A2Ab1-pruned-int8-convrot-ComfyMCP.safetensors", sha256: "fc99ff051283ee05f29b1ebcb14e0d7b36c03e93512ac5479411cdfa2e284122" },
     { path: "text_encoders/qwen3vl-32B-MiniMax-H3-Q4_K_M.gguf", sha256: "1bf75e038c5895b97b6ea16cc1e3d32076254b06ec3df10657650d86dc82279e" },
@@ -134,8 +78,80 @@ export const minimaxH3VideoProductionRecipe = {
   evaluatorDimensions: ["artifact", "identity", "intent"],
 } as const;
 
+// SPEC: RedGraft is the default LTX video route validated on the isolated MPS
+// ComfyUI runtime. H3 remains an explicit alternative.
+export const redgraftLtx25VideoProductionRecipe = {
+  recipeVersion: 1,
+  profileKey: "profile_video_redgraft_ltx25_v1",
+  modelLabel: "RedGraft LTX 2.5 Fast 2K",
+  runner: "comfyui",
+  pipelineModel: "redgraft-ltx25-fast2k-int8-convrot",
+  workflowKey: "redgraft-ltx25-i2v",
+  workflowVersion: 1,
+  sourceModelPath:
+    "diffusion_models/redgraftLTX25Fast2K_ltx25RedgraftNSFW.safetensors",
+  checkpointFilename:
+    "redgraftLTX25Fast2K_ltx25RedgraftNSFW.safetensors",
+  modelFormat: "safetensors",
+  comfyWorkflowId: "7b4d10fa-cce3-4d8b-a2d7-64b132a5c25d",
+  comfyWorkflowName: "iDream RedGraft LTX 2.5 I2V",
+  outputFilenamePrefix: "idream-redgraft-ltx25",
+  durationSeconds: 5,
+  expectedDurationSeconds: 121 / 24,
+  frameCount: 121,
+  fps: 24,
+  width: 768,
+  height: 1152,
+  orientation: "2:3",
+  outputCount: 1,
+  sourceImageCount: 1,
+  steps: 13,
+  sampler: "euler",
+  scheduler: "manual_sigmas",
+  cfgScale: 1,
+  workflowGraphSha256:
+    "3535e285e10977ba4f4d2c9675a575e01aed1b6c0a440fb2d4d5a622558baf33",
+  modelAssets: [
+    {
+      path: "diffusion_models/redgraftLTX25Fast2K_ltx25RedgraftNSFW.safetensors",
+      sha256: "ab59bb5e74e76937b55a6876fb23c4b58261e798227eb544f7d8a2934728c882",
+    },
+    {
+      path: "latent_upscale_models/ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
+      sha256: "5f416311fa8172b65af67530758964708d29a317b830d689a51143b7f91913ed",
+    },
+    {
+      path: "text_encoders/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors",
+      sha256: "6ce688a0aa98a5fa36a9f1e6c3f42152a498cc2b53ee8c15674c64244f91487f",
+    },
+    {
+      path: "vae/ltx-2.5-audio-vae-bf16.safetensors",
+      sha256: "c52733d37f6a7fb7949c3dc0fb468c6cb2169e4d836983a73babb9f0d54837a5",
+    },
+    {
+      path: "vae/ltx-2.5-video-vae-conv-bf16.safetensors",
+      sha256: "685b06ee3d9b2039647698fc4ea33175112462fc374e2777312c907897dfce8d",
+    },
+  ],
+  requiredEntitlement: "video_generation",
+  concurrencyLimit: 1,
+  rolloutPercent: 100,
+  explicitSelectionOnly: false,
+  capabilities: [
+    "video",
+    "img2video",
+    "referenceImages",
+    "stableSeed",
+    "audio",
+  ],
+  evaluatorDimensions: ["artifact", "identity", "intent"],
+} as const;
+
+export const characterVideoProductionRecipe =
+  redgraftLtx25VideoProductionRecipe;
+
 export const characterVideoProductionRecipes = [
-  characterVideoProductionRecipe,
+  redgraftLtx25VideoProductionRecipe,
   minimaxH3VideoProductionRecipe,
 ] as const;
 

@@ -14,7 +14,6 @@ import { env } from "@/server/lib/env";
 import { logger } from "@/server/lib/logger";
 import { executionSnapshot } from "./turn-ledger";
 import { loadChatAuthoritySnapshot } from "./chat-authority-snapshot";
-import { assertNoPendingCompanionMemoryRebuild } from "./companion-memory-authority";
 
 const ADMISSION_PATH = "/internal/agent-runs";
 const ADMISSION_TIMEOUT_MS = 5_000;
@@ -54,11 +53,6 @@ export async function attemptChatAgentRunAdmission(
       if (JSON.stringify(persisted.data) !== JSON.stringify(expected)) {
         throw new Error("Chat Turn execution snapshot changed after creation");
       }
-      await assertNoPendingCompanionMemoryRebuild(
-        tx,
-        persisted.data.userId,
-        turn.session.characterId,
-      );
       const changed = await tx.chatTurn.updateMany({
         where: {
           id: turn.id,

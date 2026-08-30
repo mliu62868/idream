@@ -4,7 +4,7 @@ import { compileCharacterSoul } from "@idream/shared";
 import { POST as createCreativeRun } from "@/app/api/v2/admin/creative/runs/route";
 import { prisma } from "@/server/lib/db";
 import { getCharacterWorkspace } from "@/server/modules/admin-v2/characters/workspace";
-import { isProductionLtxVideoProfile } from "@/server/modules/generation/production-video-profile";
+import { isDefaultProductionVideoProfile } from "@/server/modules/generation/production-video-profile";
 import { purgeQueuedGenerationJobs } from "@/server/test/helpers";
 import { toInputJson } from "../shared/prisma-json";
 
@@ -39,7 +39,7 @@ describe("Character video Creative Run authority", () => {
         purpose: "character_video",
         targetType: "character",
         targetId: characterId,
-        profileId: "profile_video_beta_v1",
+        profileId: "profile_video_redgraft_ltx25_v1",
         referenceAssetIds: [sourceAssetId],
         orientation: "2:3",
         count: 1,
@@ -55,11 +55,11 @@ describe("Character video Creative Run authority", () => {
   beforeAll(async () => {
     const profile = await prisma.generationModelProfile.findFirst({
       where: {
-        profileKey: "profile_video_beta_v1",
+        profileKey: "profile_video_redgraft_ltx25_v1",
         version: 1,
       },
     });
-    expect(profile && isProductionLtxVideoProfile(profile)).toBe(true);
+    expect(profile && isDefaultProductionVideoProfile(profile)).toBe(true);
     expect(await prisma.generationRecipe.count({
       where: {
         mode: "video",
@@ -251,7 +251,7 @@ describe("Character video Creative Run authority", () => {
     );
   });
 
-  it("dispatches an exact LTX job from an operational image that is not the published primary", async () => {
+  it("dispatches an exact RedGraft job from an operational image that is not the published primary", async () => {
     const response = await createCreativeRun(request());
     expect(response.status).toBe(202);
     const payload = await response.json();
@@ -268,17 +268,17 @@ describe("Character video Creative Run authority", () => {
     expect(item.job).toMatchObject({
       mode: "video",
       characterId,
-      profileId: "profile_video_beta_v1",
+      profileId: "profile_video_redgraft_ltx25_v1",
       profileVersion: 1,
       recipeId: "template_video_character_default",
       orientation: "2:3",
       outputCount: 1,
-      model: "ltx23-gtanimation-i2v",
+      model: "redgraft-ltx25-i2v",
       provider: "comfyui",
     });
     expect(item.job?.controls).toMatchObject({
       sourceImageAssetId: sourceAssetId,
-      seconds: 4,
+      seconds: 5,
       width: 768,
       height: 1152,
     });
@@ -291,9 +291,9 @@ describe("Character video Creative Run authority", () => {
     ]);
     expect(attempts).toHaveLength(1);
     expect(attempts[0]).toMatchObject({
-      profileKey: "profile_video_beta_v1",
+      profileKey: "profile_video_redgraft_ltx25_v1",
       profileVersion: 1,
-      workflowKey: "ltx23-gtanimation-i2v",
+      workflowKey: "redgraft-ltx25-i2v",
       workflowVersion: 1,
     });
     expect(await prisma.mainOutboxEvent.findUniqueOrThrow({

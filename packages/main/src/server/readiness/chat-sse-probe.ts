@@ -21,9 +21,9 @@ type ChatSseProbeOptions = {
   readonly expectedAttempt?: number;
 };
 
-// SPEC: A retryable Chat attempt error is not the terminal user result. The
-// same assistant message can be retried by the reconciler, so readiness must
-// reconnect with Last-Event-ID and prove the later delta/done sequence.
+// SPEC: Transport closure may reconnect with Last-Event-ID. An explicit Chat
+// error is already downstream of Main's durable terminal commit and ends this
+// attempt; regeneration creates a separately observed attempt.
 export async function observeChatSseAcrossReconnects(
   options: ChatSseProbeOptions,
 ): Promise<ChatSseProbeResult> {
@@ -161,7 +161,7 @@ function inspectChatSse(
     if (event === "done") sawDone = true;
     if (event === "error") {
       error ??= stringValue(payload.code) ?? stringValue(payload.message) ?? "chat_stream_error";
-      if (payload.retryable !== true) fatalError = true;
+      fatalError = true;
     }
   }
 

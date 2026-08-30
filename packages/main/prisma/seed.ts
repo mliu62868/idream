@@ -2,13 +2,16 @@ import { Prisma, PrismaClient } from "@prisma/client";
 import {
   compileCharacterSoul,
   minimaxH3VideoProductionRecipe,
+  redgraftLtx25VideoProductionRecipe,
 } from "@idream/shared";
 import path from "node:path";
-import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
 import { categoryFilters } from "../src/lib/ourdream-data";
 import { createPrismaClientOptions } from "../src/server/lib/prisma-adapter";
-import { PRODUCTION_H3_VIDEO_PROFILE } from "../src/server/modules/generation/production-video-profile";
+import {
+  PRODUCTION_H3_VIDEO_PROFILE,
+  PRODUCTION_REDGRAFT_LTX25_VIDEO_PROFILE,
+} from "../src/server/modules/generation/production-video-profile";
 import { safetyDocuments } from "../src/lib/ourdream-safety-data";
 import {
   officialCharacterSeeds,
@@ -46,127 +49,24 @@ const REDMIX3_VAE_PATH = path.join(
   "vae",
   "qwen_image_vae.safetensors",
 );
+const REDMIX3_IDENTITY_LORA_PATH = path.join(
+  COMFYUI_MODEL_ROOT,
+  "loras",
+  "Krea2",
+  "krea2_identity_edit_v1_2.safetensors",
+);
 const REDMIX3_WORKFLOW_PATH = fileURLToPath(
   new URL(
     "../../gen/workflows/redcraft-krea2-redmix3-txt2img.json",
     import.meta.url,
   ),
 );
-
-function redMix3ComparisonProfileData() {
-  return {
-    profileKey: "redcraft-krea2-redmix3-comparison",
-    label: "RedCraft Krea2 RedMix3 comparison",
-    mode: "image",
-    runner: "comfyui",
-    pipelineModel: "redcraft-krea2-redmix3-fp8",
-    workflowKey: "redcraft-krea2-redmix3-txt2img",
-    sourceModelPath: REDMIX3_FP8_MODEL_PATH,
-    // SPEC: run the Civitai release file as-is. With the ComfyUI-AppleSilicon-FP8
-    // custom node in the runner, ComfyUI dequantizes scaled-fp8 per layer on MPS, so the
-    // former bf16 conversion product is neither needed nor equivalent to it
-    // (measured RMSE 25.5 against the same seed on the krea2Edition pair).
-    convertedModelPath: null,
-    modelFormat: "safetensors",
-    runnerConfig: {
-      sourceFp8Path: REDMIX3_FP8_MODEL_PATH,
-      diffusionModelPath: REDMIX3_FP8_MODEL_PATH,
-      textEncoderPath: REDMIX3_TEXT_ENCODER_PATH,
-      vaePath: REDMIX3_VAE_PATH,
-      workflowPath: REDMIX3_WORKFLOW_PATH,
-      apiModelId: "redcraft-krea2-redmix3-fp8",
-      templateIntent: "redmix3_text_to_image_comparison",
-      baseModel: "Krea 2",
-      civitaiModelId: 958009,
-      civitaiVersionId: 3139241,
-      civitaiVersionName: "赤佬 3.0 (Krea2)",
-      civitaiFileId: 3019490,
-      civitaiFileName: "redcraft23INT8INT4FP8_30Krea2.safetensors",
-      civitaiPrecision: "fp8",
-      civitaiAutoV2: "F6088960C0",
-      civitaiSha256:
-        "F6088960C0FEBD27CBD372FC758BB07D012F2D8AE3CD10C45C903D48B94409EA",
-      // Header expectations are still worth asserting on download; they just no
-      // longer feed a conversion step.
-      weightLayout: {
-        format: "scaled_fp8_e4m3",
-        expectedFp8Weights: 256,
-        expectedWeightScales: 256,
-        expectedComfyQuantSidecars: 256,
-      },
-      verificationStatus: "runtime_verified_mps",
-      comparisonBaseline: {
-        modelId: "redcraft-krea2-redmix3-fp8",
-        workflowKey: "redcraft-krea2-redmix3-txt2img",
-      },
-      workflow: {
-        sampler: "euler",
-        scheduler: "simple",
-        steps: 12,
-        cfgScale: 1,
-        notes:
-          "The candidate graph excludes author showcase LoRA and upscalers. The current route uses 10-step ER-SDE, so paired artifacts compare version-native recipes rather than model weights alone.",
-      },
-      componentStatus: {
-        sourceFp8: {
-          // SHA-256 verified against the Civitai release on 2026-07-29.
-          status: "present",
-          path: REDMIX3_FP8_MODEL_PATH,
-        },
-        qwenTextEncoder: {
-          status: "present",
-          path: REDMIX3_TEXT_ENCODER_PATH,
-        },
-        qwenVae: {
-          status: "present",
-          path: REDMIX3_VAE_PATH,
-        },
-        comfyWorkflow: {
-          status: "registered",
-          path: REDMIX3_WORKFLOW_PATH,
-        },
-      },
-      requiredComponents: [
-        "Krea2RedMix3.0-fp8-scaled-ComfyUI.safetensors",
-        "qwen3vl_4b_bf16.safetensors",
-        "qwen_image_vae.safetensors",
-        "ComfyUI 0.28+ MPS workflow",
-      ],
-      capabilities: {
-        textToImage: true,
-        stableSeed: true,
-        referenceImages: false,
-        initImage: false,
-        lora: false,
-      },
-    },
-    defaultWidth: 832,
-    defaultHeight: 1216,
-    allowedOrientations: ["3:4", "4:5", "1:1"],
-    steps: 12,
-    sampler: "euler",
-    scheduler: "simple",
-    cfgScale: 1,
-    costMultiplier: 1.2,
-    requiredEntitlement: null,
-    maxCount: 1,
-    concurrencyLimit: 1,
-    enabled: false,
-    rolloutPercent: 0,
-    version: 1,
-    status: "draft",
-    dryRunSummary: {
-      sampleCount: 0,
-      successRate: 0,
-      failureMode: "artifact_smoke_pending",
-      testedAt: "2026-07-19",
-      notes:
-        "RedMix3 is registered as an isolated BF16 conversion candidate. Keep disabled at zero rollout until the exact FP8 hash, conversion integrity, and a real MPS artifact smoke pass.",
-    },
-    publishedAt: null,
-  } satisfies Prisma.GenerationModelProfileUncheckedUpdateInput;
-}
-
+const REDMIX3_IDENTITY_WORKFLOW_PATH = fileURLToPath(
+  new URL(
+    "../../gen/workflows/redcraft-krea2-identity-edit.json",
+    import.meta.url,
+  ),
+);
 const sensitiveTags = new Set(["teen", "bdsm", "virgin"]);
 
 const communityCollections = [
@@ -1015,182 +915,189 @@ async function seedAdminControlPlane() {
 
   if (!existingProfileKeys.has("profile_image_default_v1")) {
     await prisma.generationModelProfile.upsert({
-    where: { id: "seed-profile-image-default-v1" },
-    update: {
-      profileKey: "profile_image_default_v1",
-      label: "Default image",
-      mode: "image",
-      runner: "comfyui",
-      pipelineModel: "redcraft-krea2-redmix3-fp8",
-      workflowKey: "redcraft-krea2-redmix3-txt2img",
-      sourceModelPath: REDMIX3_FP8_MODEL_PATH,
-      convertedModelPath: null,
-      modelFormat: "safetensors",
-      runnerConfig: {
-        modelPath: REDMIX3_FP8_MODEL_PATH,
-        apiModelId: "redcraft-krea2-redmix3-fp8",
-        workflowPath: REDMIX3_WORKFLOW_PATH,
-        capabilities: {
-          textToImage: true,
-          stableSeed: true,
-          referenceImages: false,
-          initImage: false,
-          lora: false,
+      where: { id: "seed-profile-image-default-v1" },
+      update: {},
+      create: {
+        id: "seed-profile-image-default-v1",
+        profileKey: "profile_image_default_v1",
+        label: "Default image · Krea 2 RedMix3",
+        mode: "image",
+        runner: "comfyui",
+        pipelineModel: "redcraft-krea2-redmix3-fp8",
+        workflowKey: "redcraft-krea2-redmix3-txt2img",
+        sourceModelPath: REDMIX3_FP8_MODEL_PATH,
+        convertedModelPath: null,
+        modelFormat: "safetensors",
+        runnerConfig: {
+          sourceFp8Path: REDMIX3_FP8_MODEL_PATH,
+          diffusionModelPath: REDMIX3_FP8_MODEL_PATH,
+          textEncoderPath: REDMIX3_TEXT_ENCODER_PATH,
+          vaePath: REDMIX3_VAE_PATH,
+          workflowPath: REDMIX3_WORKFLOW_PATH,
+          workflowVersion: 1,
+          apiModelId: "redcraft-krea2-redmix3-fp8",
+          precisionPolicy: "fp8_resident_bf16_transient_mps",
+          capabilities: {
+            textToImage: true,
+            stableSeed: true,
+            referenceImages: false,
+            initImage: false,
+            lora: false,
+          },
         },
-      },
-      defaultWidth: 512,
-      defaultHeight: 512,
-      allowedOrientations: ["1:1", "4:5", "3:4", "9:16", "16:9"],
-      steps: 8,
-      sampler: "euler",
-      scheduler: "model_default",
-      cfgScale: 1,      costMultiplier: 1,
-      requiredEntitlement: null,
-      maxCount: 4,
-      concurrencyLimit: 2,
-      enabled: true,
-      rolloutPercent: 100,
-      version: 1,
-      status: "active",
-      dryRunSummary: { configurationSampleCount: 6, configurationPassRate: 1, source: "seed_configuration_check" },
-      publishedAt: new Date("2026-06-24T00:00:00.000Z"),
-    },
-    create: {
-      id: "seed-profile-image-default-v1",
-      profileKey: "profile_image_default_v1",
-      label: "Default image",
-      mode: "image",
-      runner: "comfyui",
-      pipelineModel: "redcraft-krea2-redmix3-fp8",
-      workflowKey: "redcraft-krea2-redmix3-txt2img",
-      sourceModelPath: REDMIX3_FP8_MODEL_PATH,
-      convertedModelPath: null,
-      modelFormat: "safetensors",
-      runnerConfig: {
-        modelPath: REDMIX3_FP8_MODEL_PATH,
-        apiModelId: "redcraft-krea2-redmix3-fp8",
-        workflowPath: REDMIX3_WORKFLOW_PATH,
-        capabilities: {
-          textToImage: true,
-          stableSeed: true,
-          referenceImages: false,
-          initImage: false,
-          lora: false,
+        defaultWidth: 512,
+        defaultHeight: 512,
+        allowedOrientations: ["1:1", "4:5", "3:4", "9:16", "16:9"],
+        steps: 12,
+        sampler: "euler",
+        scheduler: "simple",
+        cfgScale: 1,
+        costMultiplier: 1,
+        requiredEntitlement: null,
+        maxCount: 1,
+        concurrencyLimit: 1,
+        enabled: true,
+        rolloutPercent: 100,
+        version: 1,
+        status: "active",
+        dryRunSummary: {
+          status: "runtime_verified_mps",
+          source: "redmix3_scaled_fp8_local_runtime",
+          notes:
+            "Scaled-FP8 weights stay resident; M1-M4 decode individual operations to BF16 without a whole-model BF16 serving copy.",
         },
+        publishedAt: new Date("2026-08-01T01:07:04.054Z"),
       },
-      defaultWidth: 512,
-      defaultHeight: 512,
-      allowedOrientations: ["1:1", "4:5", "3:4", "9:16", "16:9"],
-      steps: 8,
-      sampler: "euler",
-      scheduler: "model_default",
-      cfgScale: 1,      costMultiplier: 1,
-      requiredEntitlement: null,
-      maxCount: 4,
-      concurrencyLimit: 2,
-      enabled: true,
-      rolloutPercent: 100,
-      version: 1,
-      status: "active",
-      dryRunSummary: { configurationSampleCount: 6, configurationPassRate: 1, source: "seed_configuration_check" },
-      publishedAt: new Date("2026-06-24T00:00:00.000Z"),
-    },
     });
   }
 
   if (!existingProfileKeys.has("profile_image_premium_v1")) {
     await prisma.generationModelProfile.upsert({
-    where: { id: "seed-profile-image-premium-v1" },
-    update: {
-      profileKey: "profile_image_premium_v1",
-      label: "Premium image",
-      mode: "image",
-      runner: "comfyui",
-      pipelineModel: "redcraft-krea2-redmix3-fp8",
-      workflowKey: "redcraft-krea2-redmix3-txt2img",
-      sourceModelPath: REDMIX3_FP8_MODEL_PATH,
-      convertedModelPath: null,
-      modelFormat: "safetensors",
-      runnerConfig: {
-        modelPath: REDMIX3_FP8_MODEL_PATH,
-        apiModelId: "redcraft-krea2-redmix3-fp8",
-        workflowPath: REDMIX3_WORKFLOW_PATH,
-        capabilities: {
-          textToImage: true,
-          stableSeed: true,
-          referenceImages: false,
-          initImage: false,
-          lora: false,
+      where: { id: "seed-profile-image-premium-v1" },
+      update: {},
+      create: {
+        id: "seed-profile-image-premium-v1",
+        profileKey: "profile_image_premium_v1",
+        label: "Premium image",
+        mode: "image",
+        runner: "comfyui",
+        pipelineModel: "redcraft-krea2-redmix3-fp8",
+        workflowKey: "redcraft-krea2-redmix3-txt2img",
+        sourceModelPath: REDMIX3_FP8_MODEL_PATH,
+        convertedModelPath: null,
+        modelFormat: "safetensors",
+        runnerConfig: {
+          sourceFp8Path: REDMIX3_FP8_MODEL_PATH,
+          diffusionModelPath: REDMIX3_FP8_MODEL_PATH,
+          textEncoderPath: REDMIX3_TEXT_ENCODER_PATH,
+          vaePath: REDMIX3_VAE_PATH,
+          workflowPath: REDMIX3_WORKFLOW_PATH,
+          workflowVersion: 1,
+          apiModelId: "redcraft-krea2-redmix3-fp8",
+          precisionPolicy: "fp8_resident_bf16_transient_mps",
+          capabilities: {
+            textToImage: true,
+            stableSeed: true,
+            referenceImages: false,
+            initImage: false,
+            lora: false,
+          },
         },
-      },
-      defaultWidth: 640,
-      defaultHeight: 640,
-      allowedOrientations: ["1:1", "4:5", "3:4", "9:16", "16:9"],
-      steps: 12,
-      sampler: "euler",
-      scheduler: "model_default",
-      cfgScale: 1,      costMultiplier: 1.5,
-      requiredEntitlement: "premium_models",
-      maxCount: 4,
-      concurrencyLimit: 1,
-      enabled: true,
-      rolloutPercent: 100,
-      version: 1,
-      status: "active",
-      dryRunSummary: { configurationSampleCount: 6, configurationPassRate: 1, source: "seed_configuration_check" },
-      publishedAt: new Date("2026-06-24T00:00:00.000Z"),
-    },
-    create: {
-      id: "seed-profile-image-premium-v1",
-      profileKey: "profile_image_premium_v1",
-      label: "Premium image",
-      mode: "image",
-      runner: "comfyui",
-      pipelineModel: "redcraft-krea2-redmix3-fp8",
-      workflowKey: "redcraft-krea2-redmix3-txt2img",
-      sourceModelPath: REDMIX3_FP8_MODEL_PATH,
-      convertedModelPath: null,
-      modelFormat: "safetensors",
-      runnerConfig: {
-        modelPath: REDMIX3_FP8_MODEL_PATH,
-        apiModelId: "redcraft-krea2-redmix3-fp8",
-        workflowPath: REDMIX3_WORKFLOW_PATH,
-        capabilities: {
-          textToImage: true,
-          stableSeed: true,
-          referenceImages: false,
-          initImage: false,
-          lora: false,
+        defaultWidth: 640,
+        defaultHeight: 640,
+        allowedOrientations: ["1:1", "4:5", "3:4", "9:16", "16:9"],
+        steps: 12,
+        sampler: "euler",
+        scheduler: "model_default",
+        cfgScale: 1,
+        costMultiplier: 1.5,
+        requiredEntitlement: "premium_models",
+        maxCount: 4,
+        concurrencyLimit: 1,
+        enabled: true,
+        rolloutPercent: 100,
+        version: 1,
+        status: "active",
+        dryRunSummary: {
+          status: "runtime_verified_mps",
+          source: "redmix3_scaled_fp8_local_runtime",
+          notes:
+            "Scaled-FP8 weights stay resident; M1-M4 decode individual operations to BF16 without a whole-model BF16 serving copy.",
         },
+        publishedAt: new Date("2026-08-12T20:12:36.042Z"),
       },
-      defaultWidth: 640,
-      defaultHeight: 640,
-      allowedOrientations: ["1:1", "4:5", "3:4", "9:16", "16:9"],
-      steps: 12,
-      sampler: "euler",
-      scheduler: "model_default",
-      cfgScale: 1,      costMultiplier: 1.5,
-      requiredEntitlement: "premium_models",
-      maxCount: 4,
-      concurrencyLimit: 1,
-      enabled: true,
-      rolloutPercent: 100,
-      version: 1,
-      status: "active",
-      dryRunSummary: { configurationSampleCount: 6, configurationPassRate: 1, source: "seed_configuration_check" },
-      publishedAt: new Date("2026-06-24T00:00:00.000Z"),
-    },
     });
   }
 
-  if (!existingProfileKeys.has("redcraft-krea2-redmix3-comparison")) {
-    const profileData = redMix3ComparisonProfileData();
+  if (!existingProfileKeys.has("character-image-single-identity-redcraft")) {
     await prisma.generationModelProfile.upsert({
-      where: { id: "seed-profile-redcraft-krea2-redmix3-v1" },
-      update: profileData,
+      where: { id: "seed-profile-character-image-single-identity-redcraft-v1" },
+      update: {},
       create: {
-        id: "seed-profile-redcraft-krea2-redmix3-v1",
-        ...profileData,
+        id: "seed-profile-character-image-single-identity-redcraft-v1",
+        profileKey: "character-image-single-identity-redcraft",
+        label: "Character Single-Reference Identity (RedCraft Krea2)",
+        mode: "image",
+        runner: "comfyui",
+        pipelineModel: "redcraft-krea2-identity-edit",
+        workflowKey: "redcraft-krea2-identity-edit",
+        sourceModelPath: REDMIX3_FP8_MODEL_PATH,
+        convertedModelPath: null,
+        modelFormat: "safetensors",
+        runnerConfig: {
+          sourceFp8Path: REDMIX3_FP8_MODEL_PATH,
+          diffusionModelPath: REDMIX3_FP8_MODEL_PATH,
+          textEncoderPath: REDMIX3_TEXT_ENCODER_PATH,
+          vaePath: REDMIX3_VAE_PATH,
+          identityLoraPath: REDMIX3_IDENTITY_LORA_PATH,
+          workflowPath: REDMIX3_IDENTITY_WORKFLOW_PATH,
+          workflowVersion: 4,
+          apiModelId: "redcraft-krea2-identity-edit",
+          precisionPolicy: "fp8_resident_bf16_transient_mps",
+          templateIntent: "single_face_reference_identity_restaging",
+          publicSelection: { explicitOnly: true },
+          capabilities: {
+            textToImage: false,
+            stableSeed: true,
+            referenceImages: true,
+            initImage: true,
+            lora: true,
+          },
+          identityEdit: {
+            nodePack: "comfyui-krea2edit@1.2.5",
+            nodePackRevision: "bdfa8b267fdb13730868d435b277dcfe696ec083",
+            fileName: "krea2_identity_edit_v1_2.safetensors",
+            sha256: "6ADF9A69CC9502D286DB7B69964D37DA7E9CFE4B05B4D004BC275F087D3FD3CF",
+            strength: 1,
+            refBoost: 4,
+            fitMode: "fit",
+            groundingPx: 768,
+            referenceFraming: "face_closeup",
+            bodyAuthority: "character_appearance_text",
+          },
+        },
+        defaultWidth: 832,
+        defaultHeight: 1216,
+        allowedOrientations: ["4:5", "3:4", "1:1"],
+        steps: 8,
+        sampler: "euler",
+        scheduler: "simple",
+        cfgScale: 1,
+        costMultiplier: 1.3,
+        requiredEntitlement: null,
+        maxCount: 1,
+        concurrencyLimit: 1,
+        enabled: true,
+        rolloutPercent: 100,
+        version: 4,
+        status: "active",
+        dryRunSummary: {
+          status: "runtime_smoke_passed_reference_limited",
+          source: "local_comfyui_mps_2026-08-28",
+          notes:
+            "A face-only identity anchor passed identity, hotel restaging, and clothing-removal intent at 832x1216. Full-body references leaked outfit and pose; body traits remain text-authoritative. Keep explicit-only pending a broader fixed A/B.",
+        },
+        publishedAt: new Date("2026-08-28T00:00:00.000Z"),
       },
     });
   }
@@ -1456,194 +1363,26 @@ async function seedAdminControlPlane() {
     });
   }
 
-  const legacyVideoBetaProfile =
-    await prisma.generationModelProfile.findUnique({
-      where: { id: "seed-profile-video-beta-v1" },
-      select: {
-        profileKey: true,
-        label: true,
-        mode: true,
-        runner: true,
-        pipelineModel: true,
-        workflowKey: true,
-        sourceModelPath: true,
-        convertedModelPath: true,
-        modelFormat: true,
-        runnerConfig: true,
-        defaultWidth: true,
-        defaultHeight: true,
-        allowedOrientations: true,
-        steps: true,
-        sampler: true,
-        scheduler: true,
-        cfgScale: true,
-        costMultiplier: true,
-        requiredEntitlement: true,
-        maxCount: true,
-        concurrencyLimit: true,
-        enabled: true,
-        rolloutPercent: true,
-        version: true,
-        status: true,
-        dryRunSummary: true,
-        publishedAt: true,
-        archivedAt: true,
-      },
-    });
-  const isUntouchedLegacyVideoBeta =
-    legacyVideoBetaProfile?.profileKey === "profile_video_beta_v1" &&
-    legacyVideoBetaProfile.label === "Video beta" &&
-    legacyVideoBetaProfile.mode === "video" &&
-    legacyVideoBetaProfile.runner === "external" &&
-    legacyVideoBetaProfile.pipelineModel === "mock-video" &&
-    legacyVideoBetaProfile.workflowKey === null &&
-    legacyVideoBetaProfile.sourceModelPath === null &&
-    legacyVideoBetaProfile.convertedModelPath === null &&
-    legacyVideoBetaProfile.modelFormat === "external" &&
-    isDeepStrictEqual(
-      legacyVideoBetaProfile.runnerConfig,
-      { disabledUntilFlag: "video_gen" },
-    ) &&
-    legacyVideoBetaProfile.defaultWidth === 768 &&
-    legacyVideoBetaProfile.defaultHeight === 1024 &&
-    isDeepStrictEqual(
-      legacyVideoBetaProfile.allowedOrientations,
-      ["9:16", "16:9"],
-    ) &&
-    legacyVideoBetaProfile.steps === 24 &&
-    legacyVideoBetaProfile.sampler === "video_default" &&
-    legacyVideoBetaProfile.scheduler === "model_default" &&
-    legacyVideoBetaProfile.cfgScale === 5 &&
-    legacyVideoBetaProfile.costMultiplier === 1 &&
-    legacyVideoBetaProfile.requiredEntitlement === "video_generation" &&
-    legacyVideoBetaProfile.maxCount === 1 &&
-    legacyVideoBetaProfile.concurrencyLimit === 1 &&
-    legacyVideoBetaProfile.enabled === true &&
-    legacyVideoBetaProfile.rolloutPercent === 0 &&
-    legacyVideoBetaProfile.version === 1 &&
-    legacyVideoBetaProfile.status === "active" &&
-    isDeepStrictEqual(
-      legacyVideoBetaProfile.dryRunSummary,
-      {
-        status: "not_run",
-        source: "seed_configuration_state",
-        disabledByFlag: "video_gen",
-      },
-    ) &&
-    legacyVideoBetaProfile.publishedAt?.getTime() ===
-      new Date("2026-06-24T00:00:00.000Z").getTime() &&
-    legacyVideoBetaProfile.archivedAt === null;
-  if (
-    !existingProfileKeys.has("profile_video_beta_v1") ||
-    isUntouchedLegacyVideoBeta
-  ) {
-    await prisma.generationModelProfile.upsert({
-    where: { id: "seed-profile-video-beta-v1" },
-    update: {
-      profileKey: "profile_video_beta_v1",
-      label: "LTX 2.3 GTAnimation I2V",
-      mode: "video",
-      runner: "comfyui",
-      pipelineModel: "ltx23-gtanimation-int4-convrot",
-      workflowKey: "ltx23-gtanimation-i2v",
-      sourceModelPath: "diffusion_models/ltx23Gtanimation25Frames_ltxv23INT4Convrot.safetensors",
-      convertedModelPath: null,
-      modelFormat: "safetensors",
-      runnerConfig: {
-        workflowVersion: 1,
-        capabilities: {
-          textToImage: false,
-          stableSeed: true,
-          referenceImages: false,
-          initImage: true,
-          imageToVideo: true,
-          audio: true,
-          fps: 25,
-          maxDurationSeconds: 4,
-        },
-      },
-      defaultWidth: 768,
-      defaultHeight: 1152,
-      allowedOrientations: ["2:3"],
-      steps: 13,
-      sampler: "euler",
-      scheduler: "manual_sigmas",
-      cfgScale: 1,
-      costMultiplier: 1,
-      requiredEntitlement: "video_generation",
-      maxCount: 1,
-      concurrencyLimit: 1,
-      enabled: true,
-      rolloutPercent: 100,
-      version: 1,
-      status: "active",
-      dryRunSummary: {
-        status: "passed",
-        source: "local_mps_exact_model_probe",
-        testedAt: "2026-07-25",
-        resolution: "768x1152",
-        seconds: 6,
-        fps: 25,
-        wallTimeSeconds: 854.106,
-        peakRssGiB: 25.034,
-        notes:
-          "Exact INT4 ConvRot checkpoint completed the two-stage LTX 2.3 I2V workflow with audio on Apple Silicon MPS.",
-      },
-      publishedAt: new Date("2026-07-25T00:00:00.000Z"),
+  const retiredLtx23Profiles = await prisma.generationModelProfile.findMany({
+    where: {
+      OR: [
+        { id: "seed-profile-video-beta-v1" },
+        { profileKey: "profile_video_beta_v1" },
+        { pipelineModel: "ltx23-gtanimation-int4-convrot" },
+        { workflowKey: "ltx23-gtanimation-i2v" },
+      ],
     },
-    create: {
-      id: "seed-profile-video-beta-v1",
-      profileKey: "profile_video_beta_v1",
-      label: "LTX 2.3 GTAnimation I2V",
-      mode: "video",
-      runner: "comfyui",
-      pipelineModel: "ltx23-gtanimation-int4-convrot",
-      workflowKey: "ltx23-gtanimation-i2v",
-      sourceModelPath: "diffusion_models/ltx23Gtanimation25Frames_ltxv23INT4Convrot.safetensors",
-      convertedModelPath: null,
-      modelFormat: "safetensors",
-      runnerConfig: {
-        workflowVersion: 1,
-        capabilities: {
-          textToImage: false,
-          stableSeed: true,
-          referenceImages: false,
-          initImage: true,
-          imageToVideo: true,
-          audio: true,
-          fps: 25,
-          maxDurationSeconds: 4,
-        },
+    select: { id: true, archivedAt: true },
+  });
+  for (const profile of retiredLtx23Profiles) {
+    await prisma.generationModelProfile.update({
+      where: { id: profile.id },
+      data: {
+        enabled: false,
+        rolloutPercent: 0,
+        status: "archived",
+        archivedAt: profile.archivedAt ?? new Date(),
       },
-      defaultWidth: 768,
-      defaultHeight: 1152,
-      allowedOrientations: ["2:3"],
-      steps: 13,
-      sampler: "euler",
-      scheduler: "manual_sigmas",
-      cfgScale: 1,
-      costMultiplier: 1,
-      requiredEntitlement: "video_generation",
-      maxCount: 1,
-      concurrencyLimit: 1,
-      enabled: true,
-      rolloutPercent: 100,
-      version: 1,
-      status: "active",
-      dryRunSummary: {
-        status: "passed",
-        source: "local_mps_exact_model_probe",
-        testedAt: "2026-07-25",
-        resolution: "768x1152",
-        seconds: 6,
-        fps: 25,
-        wallTimeSeconds: 854.106,
-        peakRssGiB: 25.034,
-        notes:
-          "Exact INT4 ConvRot checkpoint completed the two-stage LTX 2.3 I2V workflow with audio on Apple Silicon MPS.",
-      },
-      publishedAt: new Date("2026-07-25T00:00:00.000Z"),
-    },
     });
   }
 
@@ -1675,6 +1414,38 @@ async function seedAdminControlPlane() {
             "Exact RedCraft MiniMax H3 INT8 ConvRot workflow completed I2V with AAC audio on Apple Silicon MPS.",
         },
         publishedAt: new Date("2026-08-19T00:00:00.000Z"),
+      },
+    });
+  }
+
+  if (!existingProfileKeys.has(redgraftLtx25VideoProductionRecipe.profileKey)) {
+    const recipe = redgraftLtx25VideoProductionRecipe;
+    const profile = PRODUCTION_REDGRAFT_LTX25_VIDEO_PROFILE;
+    await prisma.generationModelProfile.upsert({
+      where: { id: "seed-profile-video-redgraft-ltx25-v1" },
+      update: {},
+      create: {
+        id: "seed-profile-video-redgraft-ltx25-v1",
+        ...profile,
+        label: recipe.modelLabel,
+        mode: "video",
+        convertedModelPath: null,
+        costMultiplier: 1,
+        enabled: true,
+        status: "active",
+        dryRunSummary: {
+          status: "passed",
+          source: "local_mps_multi_seed_and_cutover_probe",
+          testedAt: "2026-08-28",
+          resolution: `${recipe.width}x${recipe.height}`,
+          frames: recipe.frameCount,
+          seconds: recipe.expectedDurationSeconds,
+          fps: recipe.fps,
+          wallTimeSeconds: 866.617,
+          notes:
+            "Exact Civitai 3250230 checkpoint completed multi-seed and repeat I2V validation with AAC audio on ComfyUI 0.34.2 / PyTorch 2.13 MPS.",
+        },
+        publishedAt: new Date("2026-08-28T00:00:00.000Z"),
       },
     });
   }

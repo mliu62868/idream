@@ -9,38 +9,22 @@ import {
   runtimeReadiness,
   warmRuntime,
 } from "./runtime-readiness.js";
-import { cancelActiveCompanionInvocations } from "./companion-runtime.js";
-import { isCompanionSidecarUnavailableError } from "./companion-sidecar-readiness.js";
+import { shutdownAgentRuntime } from "./agent-runtime/runtime.js";
 
 const server = startWeb();
 let worker: ReturnType<typeof startWorker> | null = null;
 let warmupRetry: ReturnType<typeof setTimeout> | null = null;
 let shuttingDown = false;
-let sidecarUnavailableSince: number | null = null;
 let lastWarmupErrorAt: number | null = null;
 const WARMUP_RETRY_MS = 5_000;
 const WARMUP_ERROR_INTERVAL_MS = 60_000;
 
 function clearWarmupFailureState(): void {
-  sidecarUnavailableSince = null;
   lastWarmupErrorAt = null;
 }
 
 function reportWarmupFailure(error: unknown, message: string): void {
   const now = Date.now();
-  if (isCompanionSidecarUnavailableError(error)) {
-    if (sidecarUnavailableSince === null) {
-      sidecarUnavailableSince = now;
-      logger.warn(
-        { reason: error.message, retryInMs: WARMUP_RETRY_MS },
-        "chat runtime dependency is not ready; waiting",
-      );
-      return;
-    }
-    if (now - sidecarUnavailableSince < WARMUP_ERROR_INTERVAL_MS) return;
-  } else {
-    sidecarUnavailableSince = null;
-  }
   if (
     lastWarmupErrorAt !== null &&
     now - lastWarmupErrorAt < WARMUP_ERROR_INTERVAL_MS
@@ -87,8 +71,8 @@ async function shutdown(signal: string): Promise<void> {
   runtimeReadiness.stopAccepting();
   if (warmupRetry) clearTimeout(warmupRetry);
   logger.info({ signal }, "chat shutting down");
-  await cancelActiveCompanionInvocations("shutdown");
   await Promise.all([
+    shutdownAgentRuntime().catch((err) => logger.error({ err }, "Agent runtime close failed")),
     worker?.close().catch((err) => logger.error({ err }, "worker close failed")),
     server.stop(true),
   ]);

@@ -1,13 +1,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { compileCharacterSoul } from "@idream/shared";
+import { BFF_HEADER } from "@idream/shared/bff";
 
 const db = vi.hoisted(() => ({
   findUser: vi.fn(),
+  findTurn: vi.fn(),
+  findPendingProjection: vi.fn(),
+  createSession: vi.fn(async () => ({})),
+  deleteSessions: vi.fn(async () => ({ count: 1 })),
 }));
 
 vi.mock("./lib/db", () => ({
   prisma: {
     user: { findUnique: db.findUser },
+    chatTurn: { findUnique: db.findTurn },
+    mainOutboxEvent: { findFirst: db.findPendingProjection },
+    session: { create: db.createSession, deleteMany: db.deleteSessions },
     $disconnect: vi.fn(async () => undefined),
   },
 }));
@@ -16,11 +24,9 @@ import {
   DEFAULT_CHAT_SERVICE_PROBE_STREAM_TIMEOUT_MS,
   chatServiceProbeSettleTimeoutMs,
   assertDedicatedChatProbeActor,
-  collectProbeRolloutEvidenceBeforeCleanup,
   describeDshRecallFailure,
   fetchProbeCompanionAttemptEvidence,
   evaluateDshRecallEvidence,
-  parseExpectedCompanionRuntime,
   projectDshCompanionEvidence,
   runProbe,
   selectSoulReadyProbeCharacter,
@@ -36,57 +42,34 @@ const auditActor = {
 
 function completedDshTrace() {
   return {
-    companionRuntime: {
-      runtime: "dsh",
-      memoryBackend: "igrep-dsh",
-      profile: "idream-companion-memory",
-      private: false,
-      sidecarUrl: "http://127.0.0.1:3101",
+    authority: "dsh_terminal_candidate",
+    attemptId: "assistant-normal:1",
+    runtime: "embedded_dsh",
+    memoryMode: "normal",
+    provider: "openai",
+    model: "fixture-model",
+    finishReason: "stop",
+    completedAt: "2026-08-19T12:00:01.000Z",
+    execution: { steps: 2, toolCalls: 0 },
+    tools: [],
+    profileDigest: "a".repeat(64),
+    runtimeInstance: {
+      id: "5dd87053-012f-4ca3-a4d7-5aeb89466d5b",
+      startedAt: "2026-08-19T12:00:00.000Z",
     },
-    dsh: {
-      profileDigest: "a".repeat(64),
-      memoryMode: "normal",
-      provider: "openai",
-      model: "fixture-model",
-      workspaceKeyHash: "must-not-leak",
+    igrepVersion: "0.14.1",
+    pluginVersion: "0.1.0",
+    contentDigest: "b".repeat(64),
+    igrepObservations: {
+      wake: { calls: 1, hits: 0, failures: 0, evidenceMatches: 0 },
+      search: { calls: 0, hits: 0, failures: 0, evidenceMatches: 0 },
+      memory: { calls: 1, hits: 1, failures: 0, evidenceMatches: 1 },
     },
-    primaryTelemetry: {
-      schemaVersion: 1,
-      runtime: "dsh",
-      terminalStatus: "sent",
-      truncated: false,
-      provider: "openai",
-      model: "fixture-model",
-      sseTerminal: "done",
-      memory: { outcome: "ingested", settleLagMs: 17 },
-      igrep: {
-        wake: { calls: 1, hit: 0, empty: 1, failure: 0, resultCount: 0, latencyMs: [2] },
-          memory: {
-            calls: 1,
-            hit: 1,
-            empty: 0,
-            failure: 0,
-            resultCount: 1,
-            evidenceMatches: 1,
-            latencyMs: [8],
-          },
-      },
-      sidecar: {
-        instanceId: "5dd87053-012f-4ca3-a4d7-5aeb89466d5b",
-        startedAt: "2026-08-19T12:00:00.000Z",
-        profileDigest: "a".repeat(64),
-      },
+    attribution: {
+      requestId: "chatcmpl-probe",
+      actualProvider: "local-openai",
     },
-    companion: {
-      profile: "idream-companion-memory",
-      memoryIngestOutcome: "ingested",
-      memoryIngestSettledAt: "2026-08-19T12:00:01.000Z",
-      attribution: {
-        requestId: "chatcmpl-probe",
-        actualProvider: "local-openai",
-      },
-    },
-    trace: { systemPrompt: "must-not-leak" },
+    privateTrace: "must-not-leak",
   };
 }
 
@@ -94,15 +77,31 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
   db.findUser.mockReset();
+  db.findTurn.mockReset();
+  db.findPendingProjection.mockReset();
+  db.createSession.mockClear();
+  db.deleteSessions.mockClear();
 });
 
 function installFailFastProbeFetch(
-  scenario: "normal_fatal" | "future_fatal" | "future_unsettled",
+  scenario: "normal_fatal" | "recall_fatal" | "regenerate_fatal",
 ): string[] {
+  db.findTurn.mockImplementation(async (_args: { where: { assistantMessageId: string } }) => ({
+    attempt: 1,
+    assistantStatus: "sent",
+    terminalEvidence: completedDshTrace(),
+    memoryEnabled: true,
+    sceneVersion: 0,
+    session: {
+      sessionId: "session-probe",
+      userId: auditActor.id,
+      characterId: "lola-moonstruck",
+    },
+  }));
+  db.findPendingProjection.mockResolvedValue(null);
   const requests: string[] = [];
-  let sessionListReads = 0;
-  let sessionCreates = 0;
   let messagePosts = 0;
+  let regenerated = false;
   let seededRecallMarker: string | undefined;
   const deletedSessions = new Set<string>();
   vi.stubGlobal("fetch", vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
@@ -116,37 +115,17 @@ function installFailFastProbeFetch(
     const sse = (events: string[]) => new Response(events.join("\n"), { status: 200 });
     if (url.pathname === "/healthz") return json({ ok: true, service: "chat" });
     if (url.pathname === "/api/v1/chat/runtime-authority") {
+      if (!new Headers(init?.headers).has(BFF_HEADER)) return json({}, 401);
       return json({ chatFsRootFingerprint: "a".repeat(64), sourceRevision: "probe-revision" });
     }
-    if (url.pathname === "/internal/admin/companion-rollout-evidence") {
-      const from = url.searchParams.get("from");
-      const to = url.searchParams.get("to");
-      return json({
-        schemaVersion: 1,
-        window: { from, to },
-        releaseDecision: { status: "not_evaluated" },
-        runtimes: { native: { attempts: 0 }, dsh: { attempts: 1 } },
-        dataScope: {
-          userAuthority: "core.chat_user_view",
-          scope: "internal-audit",
-          includedDataClass: "audit",
-          activeCustomersOnly: false,
-          exactAuditActorOnly: true,
-          userFilterApplied: true,
-          windowBasis: "message_versions.created_at",
-        },
-      });
-    }
     if (url.pathname === "/api/v1/chat/sessions" && method === "GET") {
-      sessionListReads += 1;
-      return sessionListReads === 2 ? json({}, 401) : json([]);
+      return json([]);
     }
     if (url.pathname.startsWith("/api/v1/chat/memory/") && method === "DELETE") {
       return json({ ok: true });
     }
     if (url.pathname === "/api/v1/chat/sessions" && method === "POST") {
-      sessionCreates += 1;
-      return json({ id: sessionCreates === 1 ? "session-probe" : "session-recall" }, 201);
+      return json({ id: "session-probe" }, 201);
     }
     if (url.pathname === "/api/v1/chat/sessions/session-probe/messages" && method === "POST") {
       messagePosts += 1;
@@ -156,22 +135,16 @@ function installFailFastProbeFetch(
         seededRecallMarker = /idreamrecall_[a-f0-9]{32}/u.exec(content.content)?.[0];
         expect(seededRecallMarker).toBeTruthy();
       }
+      if (!normal) {
+        const content = JSON.parse(String(init?.body)) as { content: string };
+        expect(content.content).not.toContain(seededRecallMarker);
+        expect(content.content).toContain(
+          'Call memory_search with query exactly "exact rooftop probe code word"',
+        );
+      }
       return json({
-        assistantMessageId: normal ? "assistant-normal" : "assistant-future",
-        userMessageId: normal ? "user-normal" : "user-future",
-        attempt: 1,
-        status: "pending",
-      }, 202);
-    }
-    if (url.pathname === "/api/v1/chat/sessions/session-recall/messages" && method === "POST") {
-      const content = JSON.parse(String(init?.body)) as { content: string };
-      expect(content.content).not.toContain(seededRecallMarker);
-      expect(content.content).toContain(
-        'Call memory_search with query exactly "exact rooftop probe code word"',
-      );
-      return json({
-        assistantMessageId: "assistant-recall",
-        userMessageId: "user-recall",
+        assistantMessageId: normal ? "assistant-normal" : "assistant-recall",
+        userMessageId: normal ? "user-normal" : "user-recall",
         attempt: 1,
         status: "pending",
       }, 202);
@@ -195,26 +168,14 @@ function installFailFastProbeFetch(
             "",
           ]);
     }
-    if (url.pathname === "/api/v1/chat/messages/assistant-future/stream") {
-      return scenario === "future_fatal"
-        ? sse([
-            "event: error",
-            'data: {"type":"error","attempt":1,"code":"provider_failed","retryable":false}',
-            "",
-          ])
-        : sse([
-        "event: start",
-        'data: {"type":"start","attempt":1}',
-        "",
-        "event: delta",
-        'data: {"type":"delta","attempt":1,"seq":1,"delta":"future"}',
-        "",
-        "event: done",
-        'data: {"type":"done","attempt":1,"usage":{}}',
-        "",
-          ]);
-    }
     if (url.pathname === "/api/v1/chat/messages/assistant-recall/stream") {
+      if (scenario === "recall_fatal" || (scenario === "regenerate_fatal" && regenerated)) {
+        return sse([
+          "event: error",
+          `data: {"type":"error","attempt":${regenerated ? 2 : 1},"code":"provider_failed","retryable":false}`,
+          "",
+        ]);
+      }
       return sse([
         "event: start",
         'data: {"type":"start","attempt":1}',
@@ -227,16 +188,14 @@ function installFailFastProbeFetch(
         "",
       ]);
     }
+    if (url.pathname === "/api/v1/chat/messages/assistant-recall/regenerate" && method === "POST") {
+      regenerated = true;
+      return json({ assistantMessageId: "assistant-recall", attempt: 2 }, 202);
+    }
     if (url.pathname === "/api/v1/chat/sessions/session-probe" && method === "GET") {
       if (deletedSessions.has("session-probe")) return json({}, 404);
       return json({
         messages: [
-          {
-            id: "user-future",
-            role: "user",
-            status: "sent",
-            sceneVersion: 2,
-          },
           {
             id: "assistant-normal",
             role: "assistant",
@@ -249,30 +208,15 @@ function installFailFastProbeFetch(
           },
           ...(messagePosts > 1
             ? [{
-                id: "assistant-future",
+                id: "assistant-recall",
                 role: "assistant",
-                status: "generating",
+                status: "sent",
+                content: `You told me ${seededRecallMarker}.`,
                 attempt: 1,
-                memoryExtractedAttempt: 0,
-                scene: { version: 2 },
-                runtimeTrace: { primaryTelemetry: {} },
+                scene: { version: 0 },
               }]
             : []),
         ],
-      });
-    }
-    if (url.pathname === "/api/v1/chat/sessions/session-recall" && method === "GET") {
-      if (deletedSessions.has("session-recall")) return json({}, 404);
-      return json({
-        messages: [{
-          id: "assistant-recall",
-          role: "assistant",
-          status: "sent",
-          content: "recalled",
-          attempt: 1,
-          memoryExtractedAttempt: 1,
-          scene: { version: 0 },
-        }],
       });
     }
     if (url.pathname === "/api/v1/chat/sessions/session-probe/memory" && method === "POST") {
@@ -280,10 +224,6 @@ function installFailFastProbeFetch(
     }
     if (url.pathname === "/api/v1/chat/sessions/session-probe" && method === "DELETE") {
       deletedSessions.add("session-probe");
-      return json({ ok: true });
-    }
-    if (url.pathname === "/api/v1/chat/sessions/session-recall" && method === "DELETE") {
-      deletedSessions.add("session-recall");
       return json({ ok: true });
     }
     return json({ error: "unexpected probe request" }, 500);
@@ -347,15 +287,6 @@ describe("chat service probe actor authority", () => {
 });
 
 describe("chat service DSH evidence", () => {
-  it("requires an explicit exact DSH mode instead of accepting an ambiguous value", () => {
-    expect(parseExpectedCompanionRuntime(undefined)).toBe("dsh");
-    expect(parseExpectedCompanionRuntime("dsh")).toBe("dsh");
-    expect(parseExpectedCompanionRuntime(" dsh ")).toBe("dsh");
-    expect(() => parseExpectedCompanionRuntime("native")).toThrow(
-      "expected companion runtime must be dsh",
-    );
-  });
-
   it("uses one bounded settlement envelope for the sole DSH runtime", () => {
     expect(chatServiceProbeSettleTimeoutMs()).toBe(90_000);
     vi.stubEnv("CHAT_SERVICE_PROBE_SETTLE_TIMEOUT_MS", "120000");
@@ -367,23 +298,17 @@ describe("chat service DSH evidence", () => {
 
     expect(evidence).toEqual({
       ok: true,
-      runtime: "dsh",
-      memoryBackend: "igrep-dsh",
-      profile: "idream-companion-memory",
-      private: false,
-      primaryRuntime: "dsh",
-      terminalStatus: "sent",
-      sseTerminal: "done",
+      runtime: "embedded_dsh",
+      memoryMode: "normal",
       provider: "openai",
       model: "fixture-model",
       profileDigest: "a".repeat(64),
+      runtimeInstanceId: "5dd87053-012f-4ca3-a4d7-5aeb89466d5b",
+      igrepVersion: "0.14.1",
+      pluginVersion: "0.1.0",
       requestId: "chatcmpl-probe",
       actualProvider: "local-openai",
-      memoryOutcome: "ingested",
-      memoryIngestOutcome: "ingested",
-      memorySettledAt: "2026-08-19T12:00:01.000Z",
-      memorySettleLagMs: 17,
-      sidecarInstanceId: "5dd87053-012f-4ca3-a4d7-5aeb89466d5b",
+      memoryOutcome: "projected",
       wakeCalls: 1,
       wakeFailures: 0,
       igrepSearchCalls: 0,
@@ -397,135 +322,22 @@ describe("chat service DSH evidence", () => {
     expect(JSON.stringify(evidence)).not.toContain("must-not-leak");
   });
 
-  it("accepts the canonical rebuild outcome after durable memory repair", () => {
-    const trace = completedDshTrace() as Record<string, unknown>;
-    const telemetry = trace.primaryTelemetry as Record<string, unknown>;
-    telemetry.memory = { outcome: "ingested_rebuilt", settleLagMs: 34_000 };
-    const companion = trace.companion as Record<string, unknown>;
-    companion.memoryIngestOutcome = "ingested_rebuilt";
-
-    expect(projectDshCompanionEvidence(trace, "normal")).toMatchObject({
-      ok: true,
-      memoryOutcome: "ingested_rebuilt",
-      memoryIngestOutcome: "ingested_rebuilt",
-      error: null,
-    });
-  });
-
-  it("fails closed when the started sidecar digest differs from the durable attempt pin", () => {
-    const evidence = projectDshCompanionEvidence({
-      companionRuntime: {
-        runtime: "dsh",
-        memoryBackend: "igrep-dsh",
-        profile: "idream-companion-memory",
-        private: false,
-      },
-      dsh: {
-        profileDigest: "a".repeat(64),
-        memoryMode: "normal",
-        provider: "openai",
-        model: "fixture-model",
-      },
-      primaryTelemetry: {
-        schemaVersion: 1,
-        runtime: "dsh",
-        terminalStatus: "sent",
-        truncated: false,
-        provider: "openai",
-        model: "fixture-model",
-        sseTerminal: "done",
-        memory: { outcome: "ingested", settleLagMs: 17 },
-        sidecar: {
-          instanceId: "5dd87053-012f-4ca3-a4d7-5aeb89466d5b",
-          startedAt: "2026-08-19T12:00:00.000Z",
-          profileDigest: "b".repeat(64),
-        },
-      },
-      companion: {
-        profile: "idream-companion-memory",
-        memoryIngestOutcome: "ingested",
-        memoryIngestSettledAt: "2026-08-19T12:00:01.000Z",
-        attribution: { requestId: "chatcmpl-probe" },
-      },
-    }, "normal");
-
-    expect(evidence.ok).toBe(false);
-    expect(evidence.error).toContain("primaryTelemetry.sidecar.profileDigest");
-  });
-
   it("fails closed when a normal DSH candidate has no provider attribution", () => {
-    const evidence = projectDshCompanionEvidence({
-      companionRuntime: {
-        runtime: "dsh",
-        memoryBackend: "igrep-dsh",
-        profile: "idream-companion-memory",
-        private: false,
-      },
-      dsh: {
-        profileDigest: "b".repeat(64),
-        memoryMode: "normal",
-        provider: "openai",
-        model: "fixture-model",
-      },
-      primaryTelemetry: {
-        schemaVersion: 1,
-        runtime: "dsh",
-        terminalStatus: "sent",
-        truncated: false,
-        provider: "openai",
-        model: "fixture-model",
-        sseTerminal: "done",
-        memory: { outcome: "ingested", settleLagMs: 0 },
-        sidecar: {
-          instanceId: "5dd87053-012f-4ca3-a4d7-5aeb89466d5b",
-          startedAt: "2026-08-19T12:00:00.000Z",
-        },
-      },
-      companion: {
-        profile: "idream-companion-memory",
-        memoryIngestOutcome: "ingested",
-        memoryIngestSettledAt: "2026-08-19T12:00:01.000Z",
-      },
-    }, "normal");
+    const trace = completedDshTrace();
+    delete (trace as { attribution?: unknown }).attribution;
+    const evidence = projectDshCompanionEvidence(trace, "normal");
 
     expect(evidence.ok).toBe(false);
-    expect(evidence.error).toContain("companion.attribution");
+    expect(evidence.error).toContain("attribution");
   });
 
-  it("accepts model output authority for a private turn but rejects a writable memory outcome", () => {
-    const evidence = projectDshCompanionEvidence({
-      companionRuntime: {
-        runtime: "dsh",
-        memoryBackend: "igrep-dsh",
-        profile: "idream-companion-private",
-        private: true,
-      },
-      dsh: {
-        profileDigest: "c".repeat(64),
-        memoryMode: "private",
-        provider: "openai",
-        model: "fixture-model",
-      },
-      outputAuthority: "model",
-      primaryTelemetry: {
-        schemaVersion: 1,
-        runtime: "dsh",
-        terminalStatus: "sent",
-        truncated: false,
-        provider: "openai",
-        model: "fixture-model",
-        sseTerminal: "done",
-        memory: { outcome: "pending" },
-        igrep: {
-          wake: { calls: 1, hit: 0, empty: 1, failure: 0, resultCount: 0, latencyMs: [1] },
-        },
-      },
-    }, "private");
+  it("requires private turns to carry no igrep activity", () => {
+    const trace = completedDshTrace();
+    trace.memoryMode = "private";
+    const evidence = projectDshCompanionEvidence(trace, "private");
 
     expect(evidence.ok).toBe(false);
-    expect(evidence.error).not.toContain("outputAuthority");
-    expect(evidence.error).toContain("primaryTelemetry.memory.outcome");
-    expect(evidence.error).toContain("primaryTelemetry.igrep.private");
+    expect(evidence.error).toContain("privateMemoryIsolation");
   });
 });
 
@@ -550,7 +362,7 @@ describe("chat service conversation probe", () => {
       dsh: projectDshCompanionEvidence(completedDshTrace(), "normal"),
     }).ok).toBe(false);
     const unrelated = completedDshTrace();
-    unrelated.primaryTelemetry.igrep.memory.evidenceMatches = 0;
+    unrelated.igrepObservations.memory.evidenceMatches = 0;
     expect(evaluateDshRecallEvidence({
       assistantContent: `You told me ${sentinel}.`,
       sentinel,
@@ -570,90 +382,19 @@ describe("chat service conversation probe", () => {
     expect(DEFAULT_CHAT_SERVICE_PROBE_STREAM_TIMEOUT_MS).toBe(330_000);
   });
 
-  it("collects exact-actor aggregate Gate R evidence before cleanup", async () => {
-    const requests: string[] = [];
-    const checkedAt = "2026-08-20T12:00:00.000Z";
-    const collectedAt = "2026-08-20T12:05:00.000Z";
-    const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
-      const url = new URL(
-        typeof input === "string" || input instanceof URL ? input : input.url,
-      );
-      requests.push(`${init?.method ?? "GET"} ${url.pathname}?${url.searchParams}`);
-      expect(init?.headers).toEqual({ "x-internal-token": "internal-probe-token" });
-      return new Response(JSON.stringify({
-        schemaVersion: 1,
-        generatedAt: collectedAt,
-        window: { from: checkedAt, to: collectedAt, durationMs: 300_000 },
-        comparisonStatus: "sample_insufficient",
-        sampleEvidence: { native: "no_samples", dsh: "observed" },
-        releaseDecision: {
-          status: "not_evaluated",
-          reason: "no_gate_thresholds_or_observation_window_policy",
-        },
-        runtimes: {
-          native: { attempts: 0 },
-          dsh: { attempts: 3 },
-        },
-        dataScope: {
-          userAuthority: "core.chat_user_view",
-          scope: "internal-audit",
-          includedDataClass: "audit",
-          activeCustomersOnly: false,
-          exactAuditActorOnly: true,
-          userFilterApplied: true,
-          windowBasis: "message_versions.created_at",
-        },
-      }), { status: 200, headers: { "content-type": "application/json" } });
-    });
-
-    const evidence = await collectProbeRolloutEvidenceBeforeCleanup({
-      serviceUrl: "http://127.0.0.1:3100",
-      internalToken: "internal-probe-token",
-      userId: auditActor.id,
-      checkedAt,
-      expectedCompanionRuntime: "dsh",
-      now: () => new Date(collectedAt),
-      fetchImpl,
-    });
-
-    expect(evidence).toMatchObject({
-      ok: true,
-      status: 200,
-      collectedAt,
-      aggregate: {
-        dataScope: { scope: "internal-audit", exactAuditActorOnly: true },
-        releaseDecision: { status: "not_evaluated" },
-        runtimes: { dsh: { attempts: 3 } },
+  it("reads content-free evidence from Main's durable terminal authority", async () => {
+    db.findTurn.mockResolvedValue({
+      attempt: 1,
+      assistantStatus: "sent",
+      terminalEvidence: completedDshTrace(),
+      memoryEnabled: true,
+      session: {
+        sessionId: "session-probe",
+        userId: auditActor.id,
+        characterId: "character-probe",
       },
     });
-    expect(requests).toEqual([
-      "GET /internal/admin/companion-rollout-evidence?" +
-      "from=2026-08-20T12%3A00%3A00.000Z&" +
-      "to=2026-08-20T12%3A05%3A00.000Z&" +
-      "scope=internal-audit&userId=seed-chat-probe-user",
-    ]);
-    expect(JSON.stringify(evidence)).not.toContain("internal-probe-token");
-  });
-
-  it("reads content-free per-attempt DSH evidence only through the internal audit seam", async () => {
-    const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
-      const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
-      expect(url.pathname).toBe("/internal/admin/companion-attempt-evidence");
-      expect(Object.fromEntries(url.searchParams)).toEqual({
-        userId: auditActor.id,
-        sessionId: "session-probe",
-        messageId: "assistant-normal",
-        mode: "normal",
-      });
-      expect(init?.headers).toEqual({ "x-internal-token": "internal-probe-token" });
-      return new Response(JSON.stringify({
-        messageId: "assistant-normal",
-        attempt: 1,
-        status: "sent",
-        memoryExtractedAttempt: 1,
-        dsh: projectDshCompanionEvidence(completedDshTrace(), "normal"),
-      }), { status: 200 });
-    });
+    db.findPendingProjection.mockResolvedValue(null);
 
     const evidence = await fetchProbeCompanionAttemptEvidence({
       serviceUrl: "http://127.0.0.1:3100",
@@ -663,25 +404,32 @@ describe("chat service conversation probe", () => {
       messageId: "assistant-normal",
       attempt: 1,
       mode: "normal",
-      fetchImpl,
     });
 
-    expect(evidence).toMatchObject({ ok: true, runtime: "dsh", memoryBackend: "igrep-dsh" });
+    expect(evidence).toMatchObject({
+      ok: true,
+      runtime: "embedded_dsh",
+      memoryOutcome: "projected",
+    });
     expect(JSON.stringify(evidence)).not.toContain("must-not-leak");
   });
 
-  it("polls attempt evidence until the sidecar memory settlement leaves pending", async () => {
-    const pending = completedDshTrace();
-    (pending.primaryTelemetry as { memory: { outcome: string } }).memory = { outcome: "pending" };
-    (pending.companion as { memoryIngestOutcome: string }).memoryIngestOutcome = "pending";
-    const traces = [pending, pending, completedDshTrace()];
-    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
-      messageId: "assistant-normal",
+  it("polls until Main's relationship projection leaves pending", async () => {
+    db.findTurn.mockResolvedValue({
       attempt: 1,
-      status: "sent",
-      memoryExtractedAttempt: 1,
-      dsh: projectDshCompanionEvidence(traces.shift() ?? completedDshTrace(), "normal"),
-    }), { status: 200 }));
+      assistantStatus: "sent",
+      terminalEvidence: completedDshTrace(),
+      memoryEnabled: true,
+      session: {
+        sessionId: "session-probe",
+        userId: auditActor.id,
+        characterId: "character-probe",
+      },
+    });
+    db.findPendingProjection
+      .mockResolvedValueOnce({ id: "projection-1" })
+      .mockResolvedValueOnce({ id: "projection-1" })
+      .mockResolvedValueOnce(null);
     const sleeps: number[] = [];
 
     const evidence = await fetchProbeCompanionAttemptEvidence({
@@ -692,56 +440,44 @@ describe("chat service conversation probe", () => {
       messageId: "assistant-normal",
       attempt: 1,
       mode: "normal",
-      fetchImpl,
       sleep: async (ms) => { sleeps.push(ms); },
     });
 
-    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(db.findPendingProjection).toHaveBeenCalledTimes(3);
     expect(sleeps).toEqual([500, 500]);
-    expect(evidence).toMatchObject({ ok: true, memoryOutcome: "ingested" });
+    expect(evidence).toMatchObject({ ok: true, memoryOutcome: "projected" });
   });
 
-  it("fails closed when pre-cleanup Gate R evidence is not attributable", async () => {
-    const evidence = await collectProbeRolloutEvidenceBeforeCleanup({
+  it("can inspect terminal evidence without waiting for its async projection", async () => {
+    db.findTurn.mockResolvedValue({
+      attempt: 1,
+      assistantStatus: "sent",
+      terminalEvidence: completedDshTrace(),
+      memoryEnabled: true,
+      session: {
+        sessionId: "session-probe",
+        userId: auditActor.id,
+        characterId: "character-probe",
+      },
+    });
+    db.findPendingProjection.mockResolvedValue({ id: "projection-1" });
+    const sleep = vi.fn(async () => undefined);
+
+    const evidence = await fetchProbeCompanionAttemptEvidence({
       serviceUrl: "http://127.0.0.1:3100",
       internalToken: "internal-probe-token",
       userId: auditActor.id,
-      checkedAt: "2026-08-20T12:00:00.000Z",
-      expectedCompanionRuntime: "dsh",
-      now: () => new Date("2026-08-20T12:05:00.000Z"),
-      fetchImpl: vi.fn(async () => new Response(JSON.stringify({
-        schemaVersion: 1,
-        window: {
-          from: "2026-08-20T12:00:00.000Z",
-          to: "2026-08-20T12:05:00.000Z",
-        },
-        releaseDecision: { status: "not_evaluated" },
-        runtimes: { native: { attempts: 0 }, dsh: { attempts: 0 } },
-        dataScope: { scope: "customers" },
-      }), { status: 200 })),
+      sessionId: "session-probe",
+      messageId: "assistant-normal",
+      attempt: 1,
+      mode: "normal",
+      awaitProjection: false,
+      sleep,
     });
 
-    expect(evidence).toMatchObject({ ok: false, status: 200 });
-    expect(evidence.error).toContain("internal-audit aggregate");
-  });
-
-  it("does not collect pre-cleanup evidence without INTERNAL_TOKEN", async () => {
-    const fetchImpl = vi.fn();
-    const evidence = await collectProbeRolloutEvidenceBeforeCleanup({
-      serviceUrl: "http://127.0.0.1:3100",
-      internalToken: null,
-      userId: auditActor.id,
-      checkedAt: "2026-08-20T12:00:00.000Z",
-      expectedCompanionRuntime: "dsh",
-      now: () => new Date("2026-08-20T12:05:00.000Z"),
-      fetchImpl,
-    });
-
-    expect(evidence).toMatchObject({
-      ok: false,
-      error: "INTERNAL_TOKEN is required for pre-cleanup Gate R evidence",
-    });
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(evidence).toMatchObject({ ok: true, memoryOutcome: "pending" });
+    expect(db.findPendingProjection).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
   });
 
   it("stops before the future turn when the normal stream is terminally failed", async () => {
@@ -762,16 +498,14 @@ describe("chat service conversation probe", () => {
     expect(requests.filter((request) =>
       request === "POST /api/v1/chat/sessions/session-probe/messages")).toHaveLength(1);
     expect(requests.some((request) => request.includes("/regenerate"))).toBe(false);
-    expect(
-      requests.indexOf("GET /internal/admin/companion-rollout-evidence"),
-    ).toBeLessThan(requests.indexOf("DELETE /api/v1/chat/sessions/session-probe"));
+    expect(requests).toContain("DELETE /api/v1/chat/sessions/session-probe");
   });
 
-  it("stops before regeneration when the future terminal state never settles", async () => {
+  it("stops before regeneration when relationship recall is terminally failed", async () => {
     db.findUser.mockResolvedValue(auditActor);
     vi.stubEnv("CHAT_SERVICE_PROBE_SETTLE_TIMEOUT_MS", "1");
     vi.stubEnv("CHAT_SERVICE_PROBE_STREAM_TIMEOUT_MS", "100");
-    const requests = installFailFastProbeFetch("future_unsettled");
+    const requests = installFailFastProbeFetch("recall_fatal");
 
     const report = await runProbe({
       serviceUrl: "http://127.0.0.1:3100",
@@ -781,20 +515,17 @@ describe("chat service conversation probe", () => {
       characterId: "lola-moonstruck",
     });
 
-    expect(report.conversation?.regenerateAnchor?.error).toContain(
-      "future scene terminal state failed",
-    );
+    expect(report.conversation?.error).toBe("recall stream failed: provider_failed");
     expect(requests.some((request) => request.includes("/regenerate"))).toBe(false);
-    expect(requests).toContain("POST /api/v1/chat/sessions/session-recall/messages");
     expect(requests.filter((request) =>
       request === "POST /api/v1/chat/sessions/session-probe/messages")).toHaveLength(2);
   });
 
-  it("stops after a fatal future-turn stream error and preserves its code", async () => {
+  it("stops after a fatal regenerate stream error and preserves its code", async () => {
     db.findUser.mockResolvedValue(auditActor);
     vi.stubEnv("CHAT_SERVICE_PROBE_SETTLE_TIMEOUT_MS", "1");
     vi.stubEnv("CHAT_SERVICE_PROBE_STREAM_TIMEOUT_MS", "100");
-    const requests = installFailFastProbeFetch("future_fatal");
+    const requests = installFailFastProbeFetch("regenerate_fatal");
 
     const report = await runProbe({
       serviceUrl: "http://127.0.0.1:3100",
@@ -808,11 +539,11 @@ describe("chat service conversation probe", () => {
 
     expect(conversation.regenerateAnchor).toMatchObject({
       ok: false,
-      assistantMessageId: "assistant-future",
-      error: "future scene stream failed: provider_failed",
+      assistantMessageId: "assistant-recall",
+      error: "regenerate stream failed: provider_failed",
     });
-    expect(conversation.error).toBe("future scene stream failed: provider_failed");
-    expect(requests.some((request) => request.includes("/regenerate"))).toBe(false);
+    expect(conversation.error).toBe("regenerate stream failed: provider_failed");
+    expect(requests).toContain("POST /api/v1/chat/messages/assistant-recall/regenerate");
     expect(
       requests.filter((request) =>
         request === "POST /api/v1/chat/sessions/session-probe/messages"),

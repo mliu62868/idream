@@ -9,7 +9,6 @@ const PROFILE: ChatModelProfile = {
   model: "test-model",
   firstTokenTimeoutMs: 5_000,
   idleTimeoutMs: 5_000,
-  completionTimeoutMs: 5_000,
 };
 
 /** Frames each event the way an OpenAI-compatible server frames SSE. */

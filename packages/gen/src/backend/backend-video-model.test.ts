@@ -3,8 +3,8 @@ import { BackendVideoModel } from "./backend-video-model";
 import { BackendInvocationError, type GenBackend } from "./types";
 import { workflowDescriptorSchema } from "./workflow";
 import type { VerifiedVideoMedia } from "./video-media-probe";
-import productionDescriptor from "../../workflows/ltx23-gtanimation-i2v.json";
 import h3ProductionDescriptor from "../../workflows/minimax-h3-redcraft-i2v.json";
+import productionDescriptor from "../../workflows/redgraft-ltx25-i2v.json";
 
 const MP4 = new Uint8Array([
   0x00, 0x00, 0x00, 0x18,
@@ -17,12 +17,13 @@ const MP4 = new Uint8Array([
 
 const descriptor = workflowDescriptorSchema.parse(productionDescriptor);
 const h3Descriptor = workflowDescriptorSchema.parse(h3ProductionDescriptor);
+const redgraftDescriptor = descriptor;
 const VERIFIED_VIDEO: VerifiedVideoMedia = {
   width: 768,
   height: 1152,
-  durationSeconds: 4.04,
-  framesPerSecond: 25,
-  frameCount: 101,
+  durationSeconds: 121 / 24,
+  framesPerSecond: 24,
+  frameCount: 121,
   hasAudio: true,
 };
 
@@ -56,10 +57,10 @@ function backend(
 function validGenerationInput() {
   return {
     prompt: "wave",
-    seconds: 4,
-    model: "ltx23-gtanimation-i2v",
+    seconds: 5,
+    model: "redgraft-ltx25-i2v",
     controls: {
-      workflowKey: "ltx23-gtanimation-i2v",
+      workflowKey: "redgraft-ltx25-i2v",
       workflowVersion: 1,
       width: 768,
       height: 1152,
@@ -73,6 +74,39 @@ function validGenerationInput() {
 }
 
 describe("BackendVideoModel", () => {
+  it("prepares the selected ComfyUI runner inside the host lease before submit", async () => {
+    const events: string[] = [];
+    const stub = backend();
+    stub.submit = vi.fn(async () => {
+      events.push("submit");
+      return { id: "prompt-video-1" };
+    });
+    const model = new BackendVideoModel(
+      {
+        resolveForModel: vi.fn(() => ({ backend: stub, descriptor })),
+      },
+      async (run) => {
+        events.push("lease:acquired");
+        const result = await run();
+        events.push("lease:released");
+        return result;
+      },
+      async (runner) => {
+        events.push(`prepare:${runner}`);
+      },
+    );
+
+    const result = await model.generate(validGenerationInput());
+
+    expect(result.ok).toBe(true);
+    expect(events).toEqual([
+      "lease:acquired",
+      "prepare:video",
+      "submit",
+      "lease:released",
+    ]);
+  });
+
   it("does not advertise deterministic replay for ComfyUI video submissions", () => {
     const model = new BackendVideoModel({
       resolveForModel: vi.fn(() => ({ backend: backend(), descriptor })),
@@ -96,12 +130,12 @@ describe("BackendVideoModel", () => {
     const result = await model.generate({
       prompt: "She smiles, blinks, and waves naturally.",
       negativePrompt: "flicker, identity drift",
-      seconds: 4,
+      seconds: 5,
       seed: "100",
-      model: "ltx23-gtanimation-i2v",
+      model: "redgraft-ltx25-i2v",
       requestId: "request-video-1",
       controls: {
-        workflowKey: "ltx23-gtanimation-i2v",
+        workflowKey: "redgraft-ltx25-i2v",
         workflowVersion: 1,
         width: 768,
         height: 1152,
@@ -132,13 +166,14 @@ describe("BackendVideoModel", () => {
           negative: "flicker, identity drift",
           width: 768,
           height: 1152,
-          seconds: 4,
-          fps: 25,
+          seconds: 5,
+          fps: 24,
           seed: 100,
           refinerSeed: 101,
         },
       }),
     );
+
   });
 
   it("binds MiniMax H3 image-to-video to its native 124-frame envelope", async () => {
@@ -166,7 +201,7 @@ describe("BackendVideoModel", () => {
       requestId: "request-h3-video-1",
       controls: {
         workflowKey: "minimax-h3-redcraft-i2v",
-        workflowVersion: 1,
+        workflowVersion: 3,
         width: 512,
         height: 512,
         fps: 24,
@@ -202,6 +237,72 @@ describe("BackendVideoModel", () => {
     );
   });
 
+  it("binds RedGraft LTX 2.5 to the validated 121-frame production envelope", async () => {
+    const verifiedRedGraft: VerifiedVideoMedia = {
+      width: 768,
+      height: 1152,
+      durationSeconds: 121 / 24,
+      framesPerSecond: 24,
+      frameCount: 121,
+      hasAudio: true,
+    };
+    const stub = backend(verifiedRedGraft);
+    const model = new BackendVideoModel({
+      resolveForModel: vi.fn(() => ({
+        backend: stub,
+        descriptor: redgraftDescriptor,
+      })),
+    });
+
+    const result = await model.generate({
+      prompt: "She smiles, speaks, and waves naturally.",
+      negativePrompt: "flicker, identity drift",
+      seconds: 5,
+      seed: "42",
+      model: "redgraft-ltx25-i2v",
+      requestId: "request-redgraft-video-1",
+      controls: {
+        workflowKey: "redgraft-ltx25-i2v",
+        workflowVersion: 1,
+        width: 768,
+        height: 1152,
+        fps: 24,
+      },
+      referenceImages: [{
+        assetId: "source-redgraft-1",
+        role: "source_image",
+        b64Json: "aW1hZ2U=",
+      }],
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        asset: {
+          seconds: 121 / 24,
+          contentType: "video/mp4",
+        },
+      },
+    });
+    expect(stub.submit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        descriptor: redgraftDescriptor,
+        requestId: "request-redgraft-video-1",
+        slots: {
+          prompt: "She smiles, speaks, and waves naturally.",
+          negative: "flicker, identity drift",
+          width: 768,
+          height: 1152,
+          seconds: 5,
+          fps: 24,
+          seed: 42,
+          refinerSeed: 43,
+        },
+      }),
+    );
+
+  });
+
   it("rejects MiniMax H3 output outside its exact 124-frame grid", async () => {
     const stub = backend({
       width: 512,
@@ -224,7 +325,7 @@ describe("BackendVideoModel", () => {
       model: "minimax-h3-redcraft-i2v",
       controls: {
         workflowKey: "minimax-h3-redcraft-i2v",
-        workflowVersion: 1,
+        workflowVersion: 3,
         width: 512,
         height: 512,
       },
@@ -258,8 +359,8 @@ describe("BackendVideoModel", () => {
     },
     {
       label: "decoded frame rate",
-      media: { ...VERIFIED_VIDEO, framesPerSecond: 24 },
-      message: "frame rate is 24fps",
+      media: { ...VERIFIED_VIDEO, framesPerSecond: 25 },
+      message: "frame rate is 25fps",
     },
     {
       label: "required audio stream",
@@ -363,10 +464,10 @@ describe("BackendVideoModel", () => {
 
     const result = await model.generate({
       prompt: "wave",
-      seconds: 4,
-      model: "ltx23-gtanimation-i2v",
+      seconds: 5,
+      model: "redgraft-ltx25-i2v",
       controls: {
-        workflowKey: "ltx23-gtanimation-i2v",
+        workflowKey: "redgraft-ltx25-i2v",
         workflowVersion: 2,
       },
       referenceImages: [{
@@ -431,7 +532,7 @@ describe("BackendVideoModel", () => {
     expect(stub.submit).not.toHaveBeenCalled();
   });
 
-  it("rejects video durations outside the production four-second envelope", async () => {
+  it("rejects video durations outside the production five-second envelope", async () => {
     const stub = backend();
     const model = new BackendVideoModel({
       resolveForModel: vi.fn(() => ({ backend: stub, descriptor })),
@@ -440,9 +541,9 @@ describe("BackendVideoModel", () => {
     const result = await model.generate({
       prompt: "wave",
       seconds: 6,
-      model: "ltx23-gtanimation-i2v",
+      model: "redgraft-ltx25-i2v",
       controls: {
-        workflowKey: "ltx23-gtanimation-i2v",
+        workflowKey: "redgraft-ltx25-i2v",
         workflowVersion: 1,
       },
       referenceImages: [{
@@ -475,8 +576,8 @@ describe("BackendVideoModel", () => {
 
     const missingPins = await model.generate({
       prompt: "wave",
-      seconds: 4,
-      model: "ltx23-gtanimation-i2v",
+      seconds: 5,
+      model: "redgraft-ltx25-i2v",
       controls: { width: 768, height: 1152 },
       referenceImages,
     });
@@ -487,10 +588,10 @@ describe("BackendVideoModel", () => {
 
     const wrongEnvelope = await model.generate({
       prompt: "wave",
-      seconds: 4,
-      model: "ltx23-gtanimation-i2v",
+      seconds: 5,
+      model: "redgraft-ltx25-i2v",
       controls: {
-        workflowKey: "ltx23-gtanimation-i2v",
+        workflowKey: "redgraft-ltx25-i2v",
         workflowVersion: 1,
         width: 1024,
         height: 1152,
@@ -515,10 +616,10 @@ describe("BackendVideoModel", () => {
 
     const result = await model.generate({
       prompt: "wave",
-      seconds: 4,
+      seconds: 5,
       model: "other-video-model",
       controls: {
-        workflowKey: "ltx23-gtanimation-i2v",
+        workflowKey: "redgraft-ltx25-i2v",
         workflowVersion: 1,
         width: 768,
         height: 1152,

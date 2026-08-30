@@ -13,6 +13,11 @@ describe("production seed authority boundaries", () => {
     expect(source).toContain(
       'if (!existingProfileKeys.has("profile_image_default_v1"))',
     );
+    expect(source).toContain(
+      'if (!existingProfileKeys.has("character-image-single-identity-redcraft"))',
+    );
+    expect(source).toContain("fp8_resident_bf16_transient_mps");
+    expect(source).not.toContain("Krea2RedMix3.0-bf16.safetensors");
   });
 
   it("merges official provenance without replacing existing JSON fields", async () => {

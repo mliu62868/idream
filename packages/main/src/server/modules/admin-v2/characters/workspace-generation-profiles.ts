@@ -6,7 +6,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { generationCostDreamcoins } from "@/server/lib/generation-pricing";
 import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
-import { isProductionLtxVideoProfile } from "@/server/modules/generation/production-video-profile";
+import { isDefaultProductionVideoProfile } from "@/server/modules/generation/production-video-profile";
 import { OPERATIONAL_USER_DATA_CLASS_SQL } from "@/server/modules/metric-data-scope";
 import { jsonRecord as record, jsonStrings as strings } from "../shared/prisma-json";
 import {
@@ -27,7 +27,7 @@ export async function loadCharacterVideoGenerationEstimate() {
     },
     orderBy: { version: "desc" },
   });
-  if (!profile || !isProductionLtxVideoProfile(profile)) {
+  if (!profile || !isDefaultProductionVideoProfile(profile)) {
     return {
       profileKey: characterVideoProductionRecipe.profileKey,
       estimatedCostDreamcoins: null,

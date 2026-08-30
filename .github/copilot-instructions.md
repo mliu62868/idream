@@ -32,7 +32,7 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - 代码是最终事实来源：`packages/main/prisma/schema.prisma` + `packages/*/src`
 
 ## 结构里不显然的两点
-- `packages/shared` 是跨包契约 SSoT；Main 经 BFF 把不可变 Turn 快照交给 `chat`，`chat-agent` 执行 DSH/igrep
+- `packages/shared` 是跨包契约 SSoT；Main 经 BFF 把不可变 Turn 快照交给 `chat`，Chat 内部的 `agent-runtime` 执行 DSH/igrep
 - `db/sql/` 中旧 Chat 导入/cutover SQL **由用户手工执行**，不要自己连库跑
 
 ## 真实端到端验证 —— 已授权付费请求

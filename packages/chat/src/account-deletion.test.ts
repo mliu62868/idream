@@ -4,6 +4,10 @@ import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
 import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+const purgeCompanionWorkspace = vi.hoisted(() => vi.fn(async () => ({ purged: 1 })));
+vi.mock("./agent-runtime/runtime.js", () => ({ purgeCompanionWorkspace }));
+
 import { consumeAccountDeletionRequest } from "./account-deletion.js";
 
 const roots: string[] = [];
@@ -13,8 +17,6 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
   for (const name of [
     "CHAT_FS_ROOT",
-    "DSH_AGENT_TOKEN",
-    "DSH_AGENT_URL",
     "MAIN_WEB_URL",
     "INTERNAL_TOKEN",
   ]) delete process.env[name];
@@ -26,8 +28,6 @@ describe("local Chat account deletion", () => {
     roots.push(root);
     Object.assign(process.env, {
       CHAT_FS_ROOT: root,
-      DSH_AGENT_TOKEN: "test-sidecar-token",
-      DSH_AGENT_URL: "http://127.0.0.1:3101",
       MAIN_WEB_URL: "http://127.0.0.1:3000",
       INTERNAL_TOKEN: "test-internal-token",
     });
@@ -44,9 +44,6 @@ describe("local Chat account deletion", () => {
 
     const fetchMock = vi.fn(async (request: string | URL | Request) => {
       const url = String(request);
-      if (url.endsWith("/v1/workspaces/purge")) {
-        return Response.json({ ok: true, purged: 1 });
-      }
       if (url.endsWith("/api/internal/events/account-erasure-completion-v2/ingest")) {
         return Response.json({ acknowledged: true, status: "persisted", receiptId: "completion-1" });
       }
@@ -78,6 +75,7 @@ describe("local Chat account deletion", () => {
       acknowledged: true,
       status: "duplicate",
     });
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(purgeCompanionWorkspace).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

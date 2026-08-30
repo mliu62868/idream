@@ -143,7 +143,7 @@ function commandList(calls) {
 
 function onlineProductionProcesses() {
   return productionRuntimeTargets.flatMap((name) =>
-    Array.from({ length: name === "gen-image" ? 2 : 1 }, () =>
+    Array.from({ length: 1 }, () =>
       pm2Process(name, "online"),
     ),
   );
@@ -151,7 +151,7 @@ function onlineProductionProcesses() {
 
 test("development is the source-backed default", () => {
   const config = loadConfig();
-  assert.equal(config.apps.length, 10);
+  assert.equal(config.apps.length, 9);
   for (const app of config.apps) {
     assert.equal(app.env.IDREAM_PM2_MODE, "development");
   }
@@ -187,25 +187,26 @@ test("development is the source-backed default", () => {
     path.join(repoRoot, "packages/shared/src"),
   ]);
   assert.equal(chat.watch_delay, 500);
-  assert.equal(genImage.instances, 2);
+  assert.equal(genImage.instances, 1);
+  assert.equal(
+    genImage.env.COMFYUI_IMAGE_API_URL,
+    "http://127.0.0.1:8189",
+  );
+  assert.equal(
+    byName(loadConfig("development", { GEN_VIDEO_PROVIDER: "backend" }), "gen-video")
+      .env.COMFYUI_VIDEO_API_URL,
+    "http://127.0.0.1:8188",
+  );
+  assert.equal(
+    byName(loadConfig("development", { GEN_VIDEO_PROVIDER: "backend" }), "gen-video")
+      .env.COMFYUI_H3_API_URL,
+    "http://127.0.0.1:8190",
+  );
   assert.deepEqual(genFinalizer.watch, [
     path.join(repoRoot, "packages/main/src/processes"),
     path.join(repoRoot, "packages/main/src/server"),
     path.join(repoRoot, "packages/shared/src"),
   ]);
-});
-
-test("the DSH companion sidecar is required, single-instance and starts before Chat", () => {
-  const config = loadConfig("development");
-  const sidecar = byName(config, "chat-agent");
-  const chat = byName(config, "chat");
-  assert.equal(sidecar.cwd, path.join(repoRoot, "packages/chat-agent"));
-  assert.equal(sidecar.script, "src/main.ts");
-  assert.equal(path.basename(sidecar.interpreter), "bun");
-  assert.equal(sidecar.node_args, undefined);
-  assert.equal(sidecar.instances, 1);
-  assert.equal(sidecar.exec_mode, "fork");
-  assert.ok(config.apps.indexOf(sidecar) < config.apps.indexOf(chat));
 });
 
 test("every first-party JavaScript and TypeScript service is executed by Bun", () => {
@@ -235,7 +236,7 @@ test("Fish Audio direct and PM2 launchers use Bun while preserving the Python ga
   }
 });
 
-test("obsolete rollout flags cannot remove the sidecar or enter Chat config", () => {
+test("obsolete rollout flags cannot enter the embedded Chat runtime", () => {
   const obsolete = [
     "DSH_AGENT_ENABLED",
     "COMPANION_EXECUTION_MODE",
@@ -246,11 +247,8 @@ test("obsolete rollout flags cannot remove the sidecar or enter Chat config", ()
   try {
     for (const key of obsolete) process.env[key] = "0";
     const config = loadConfig("production");
-    const sidecar = byName(config, "chat-agent");
     const chat = byName(config, "chat");
-    assert.equal(sidecar.instances, 1);
     for (const key of obsolete) {
-      assert.equal(Object.hasOwn(sidecar.env, key), false, `sidecar ${key}`);
       assert.equal(Object.hasOwn(chat.env, key), false, `chat ${key}`);
     }
   } finally {
@@ -260,29 +258,6 @@ test("obsolete rollout flags cannot remove the sidecar or enter Chat config", ()
     }
     delete require.cache[require.resolve(configPath)];
   }
-});
-
-test("production admission drains Chat before the single companion sidecar", () => {
-  assert.equal(
-    productionAdmissionTargets.filter((name) => name === "chat-agent").length,
-    1,
-  );
-  assert.ok(
-    productionAdmissionTargets.indexOf("chat") <
-      productionAdmissionTargets.indexOf("chat-agent"),
-  );
-});
-
-test("production pins the direct sidecar PID definition exactly", () => {
-  const definition = productionProcessDefinition("chat-agent");
-  assert.deepEqual(definition, {
-    cwd: path.join(repoRoot, "packages/chat-agent"),
-    execPath: path.join(repoRoot, "packages/chat-agent/dist/main.js"),
-    args: [],
-    execInterpreter: definition.execInterpreter,
-    execMode: "fork_mode",
-  });
-  assert.equal(path.basename(definition.execInterpreter), "bun");
 });
 
 test("every runtime receives the operator-approved source identity", () => {
@@ -384,7 +359,6 @@ test("production keeps immutable standalone web releases and disables watch", ()
 test("production runs Bun-built worker artifacts instead of TypeScript source", () => {
   const config = loadConfig("production");
   const expectedScripts = new Map([
-    ["chat-agent", "dist/main.js"],
     ["chat", "dist/main.js"],
     ["gen-image", "dist/image.js"],
     ["gen-video", "dist/video.js"],
@@ -458,6 +432,21 @@ test("development recreates a registered Node/tsx definition for the Bun migrati
   });
 });
 
+test("development recreates gen-image when the requested instance count shrinks", () => {
+  const app = byName(loadConfig("development"), "gen-image");
+  const first = pm2ProcessFromApp(app, "stopped", "development");
+  const second = pm2ProcessFromApp(app, "stopped", "development");
+  second.pm2_env.NODE_APP_INSTANCE = 1;
+
+  assert.deepEqual(
+    developmentDefinitionPlan(
+      [first, second],
+      { GEN_IMAGE_INSTANCES: "1", GEN_VIDEO_PROVIDER: "mock" },
+    ),
+    { deleteNames: ["gen-image"], requiresStart: true },
+  );
+});
+
 test("every production definition field fails closed on drift", () => {
   const exact = pm2Process("main-web", "online");
   assert.equal(matchesProductionProcessDefinition(exact), true);
@@ -479,16 +468,6 @@ test("every production definition field fails closed on drift", () => {
       false,
     );
   }
-
-  const sidecar = pm2Process("chat-agent", "online");
-  assert.equal(matchesProductionProcessDefinition(sidecar), true);
-  assert.equal(
-    matchesProductionProcessDefinition({
-      ...sidecar,
-      pm2_env: { ...sidecar.pm2_env, exec_interpreter: "/usr/bin/bun" },
-    }),
-    false,
-  );
 });
 
 test("production stop phases classify every non-voice app exactly once", () => {
@@ -505,13 +484,6 @@ test("production stop phases classify every non-voice app exactly once", () => {
     productionAdmissionTargets.includes("admin-command-worker"),
     true,
   );
-  if (productionAdmissionTargets.includes("chat-agent")) {
-    assert.ok(
-      productionAdmissionTargets.indexOf("chat") <
-        productionAdmissionTargets.indexOf("chat-agent"),
-      "Chat must stop before its companion sidecar",
-    );
-  }
   assert.equal(productionDrainWorkerTargets.at(-1), "gen-finalizer");
 });
 
@@ -931,7 +903,6 @@ test("a generic development restart preserves the detected source topology", () 
   const runningProcesses = [
     developmentProcess("main-web", "online"),
     developmentProcess("gen-image", "online"),
-    developmentProcess("gen-image", "online"),
     developmentProcess("gen-video", "online"),
     developmentProcess("gen-finalizer", "online"),
   ];
@@ -1016,7 +987,7 @@ test("a generic development restart preserves the detected source topology", () 
     })),
     [
       { expected: 0, expectedVideo: 0, mode: "quiescent" },
-      { expected: 2, expectedVideo: 1, mode: "ready" },
+      { expected: 1, expectedVideo: 1, mode: "ready" },
     ],
   );
   assert.match(ownershipChecks[0].runId, /^pm2-[a-f0-9-]+$/);
@@ -1300,7 +1271,7 @@ test("production pauses and drains before phased stop, gate, restart, and resume
     })),
     [
       { expected: 0, expectedVideo: 0, mode: "quiescent" },
-      { expected: 2, expectedVideo: 1, mode: "ready" },
+      { expected: 1, expectedVideo: 1, mode: "ready" },
     ],
   );
   assert.match(ownershipChecks[0].runId, /^pm2-[a-f0-9-]+$/);

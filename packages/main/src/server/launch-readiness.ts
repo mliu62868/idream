@@ -26,7 +26,7 @@ import { isPublicHttpsUrl } from "../lib/public-site-origin";
 import { auditCharacterSoulAuthority } from "./modules/admin-v2/characters/soul-authority-audit";
 // SPEC: evidence 契约的家在 readiness/evidence.ts —— 生产端（probe-*.ts）与这里共用同一份声明。
 import {
-  isRelativeFutureSceneAnchor,
+  isStableRegeneratedSceneAnchor,
   type AdminTextProbeEvidence,
   type AgeVerificationProbeEvidence,
   type BlobStorageProbeEvidence,
@@ -478,8 +478,7 @@ function addProviderChecks(
 }
 
 function addChatServiceChecks(checks: LaunchReadinessCheck[], env: EnvLike) {
-  const chatModelProvider =
-    env.CHAT_MODEL_PROVIDER ?? env.CHAT_PROVIDER ?? "mock";
+  const chatModelProvider = env.CHAT_MODEL_PROVIDER ?? "mock";
   const supportedChatModelProviders = ["openai", "pipeline"];
   const chatRedisUrl = env.CHAT_REDIS_URL ?? env.REDIS_URL;
 
@@ -521,20 +520,20 @@ function addChatServiceChecks(checks: LaunchReadinessCheck[], env: EnvLike) {
     id: "chat-model-base-url",
     area: "Chat",
     label: "Chat model base URL",
-    value: env.CHAT_MODEL_BASE_URL ?? env.PIPELINE_API_URL,
+    value: env.CHAT_MODEL_BASE_URL,
     url: true,
     remediation:
-      "Set CHAT_MODEL_BASE_URL or PIPELINE_API_URL to the production OpenAI-compatible chat gateway.",
+      "Set CHAT_MODEL_BASE_URL to the production OpenAI-compatible chat gateway.",
   });
 
   addValueCheck(checks, {
     id: "chat-model-api-key",
     area: "Chat",
     label: "Chat model API key",
-    value: env.CHAT_MODEL_API_KEY ?? env.PIPELINE_API_TOKEN,
+    value: env.CHAT_MODEL_API_KEY,
     minLength: 16,
     remediation:
-      "Set CHAT_MODEL_API_KEY or PIPELINE_API_TOKEN so packages/chat can authenticate to the chat gateway.",
+      "Set CHAT_MODEL_API_KEY so packages/chat can authenticate to the chat gateway.",
   });
 }
 
@@ -570,9 +569,6 @@ function addChatServiceProbeCheck(
     }
     if (probe.usedSignedBff !== true) {
       problems.push("probe did not use signed BFF headers");
-    }
-    if (probe.expectedCompanionRuntime !== "dsh") {
-      problems.push("probe did not require the sole DSH companion runtime");
     }
     if (probe.health?.ok !== true || probe.health.status !== 200) {
       problems.push("healthz did not return HTTP 200 ok");
@@ -647,18 +643,16 @@ function addChatServiceProbeCheck(
       }
       if (
         probe.conversation.regenerateAnchor?.ok !== true ||
-        !isRelativeFutureSceneAnchor(
+        !isStableRegeneratedSceneAnchor(
           probe.conversation.regenerateAnchor,
         ) ||
-        probe.conversation.regenerateAnchor.regeneratedSceneVersion !== 0 ||
         probe.conversation.regenerateAnchor.recallMatched !== true ||
         probe.conversation.regenerateAnchor.wakeObserved !== true ||
         probe.conversation.regenerateAnchor.memorySearchHit !== true ||
-        probe.conversation.regenerateAnchor.futureDsh?.ok !== true ||
         probe.conversation.regenerateAnchor.regeneratedDsh?.ok !== true
       ) {
         problems.push(
-          "conversation smoke did not prove old-turn Scene anchoring and igrep recall",
+          "conversation smoke did not prove latest-turn regenerate anchoring and igrep recall",
         );
       }
       if (

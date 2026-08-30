@@ -36,7 +36,6 @@ export const chatStreamEventSchema = z.discriminatedUnion("type", [
     type: z.literal("error"),
     attempt: z.number().int().min(1),
     code: z.string(),
-    retryable: z.boolean(),
   }),
 ]);
 
@@ -187,6 +186,13 @@ export const accountDeletionRequestedV2PayloadSchema = z
   })
   .strict();
 
+export const agentRunCancelRequestedV1PayloadSchema = z.object({
+  version: z.literal(1),
+  userId: z.string().min(1),
+  turnId: z.string().min(1),
+  attempt: z.number().int().positive(),
+}).strict();
+
 export const companionMemoryRebuildRequestedV1PayloadSchema = z.object({
   version: z.literal(1),
   userId: z.string().min(1),
@@ -198,6 +204,14 @@ export const companionMemoryRebuildRequestedV1PayloadSchema = z.object({
     turnId: z.string().min(1),
     throughAttempt: z.number().int().positive(),
   }).strict()).default([]),
+}).strict();
+
+export const companionMemoryProjectRequestedV1PayloadSchema = z.object({
+  version: z.literal(1),
+  userId: z.string().min(1),
+  characterId: z.string().min(1),
+  claimToken: z.string().uuid(),
+  authorityVersion: z.string().regex(/^[1-9]\d*$/),
 }).strict();
 
 export const companionMemoryPurgeRequestedV1PayloadSchema = z.object({
@@ -386,5 +400,8 @@ export type ChatAccountErasureCompletedV2Payload = z.infer<
 >;
 export type AccountDeletionRequestedV2Payload = z.infer<
   typeof accountDeletionRequestedV2PayloadSchema
+>;
+export type AgentRunCancelRequestedV1Payload = z.infer<
+  typeof agentRunCancelRequestedV1PayloadSchema
 >;
 export type AiFinalizePayload = z.infer<typeof aiFinalizePayloadSchema>;

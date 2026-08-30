@@ -31,6 +31,12 @@ const nullableText = z
   .transform((value) => value ?? null);
 /** `typeof x === "string" ? x : undefined` */
 const optionalText = z.string().optional().catch(undefined);
+const optionalCompanionMemoryOutcome = z
+  .enum(["projected", "pending", "disabled"])
+  .optional()
+  .catch(undefined);
+const optionalEmbeddedDshRuntime = z.literal("embedded_dsh").optional().catch(undefined);
+const optionalCompanionMemoryMode = z.enum(["normal", "private"]).optional().catch(undefined);
 /** `typeof x === "number" ? x : undefined` */
 const optionalCount = z.number().optional().catch(undefined);
 /** `typeof x === "boolean" ? x : false` */
@@ -82,19 +88,27 @@ export type ProbeReportOf<T, Optional extends keyof T = never> = Required<
 > &
   Pick<T, Optional>;
 
-// INVARIANT: a later turn advances Scene from the original anchor, while the
-// user/assistant pair for that turn must expose the same derived version.
-export function isRelativeFutureSceneAnchor(input: {
+// INVARIANT: regenerate creates a newer attempt of the same logical turn and
+// never moves that turn to the relationship's current Scene head.
+export function isStableRegeneratedSceneAnchor(input: {
+  originalAttempt?: number | null;
+  regeneratedAttempt?: number | null;
   originalSceneVersion?: number | null;
-  futureUserSceneVersion?: number | null;
-  futureSceneVersion?: number | null;
+  regeneratedSceneVersion?: number | null;
 }): boolean {
-  const futureUserSceneVersion = input.futureUserSceneVersion;
-  return input.originalSceneVersion === 0 &&
-    typeof futureUserSceneVersion === "number" &&
-    Number.isSafeInteger(futureUserSceneVersion) &&
-    futureUserSceneVersion > input.originalSceneVersion &&
-    input.futureSceneVersion === futureUserSceneVersion;
+  const originalAttempt = input.originalAttempt;
+  const regeneratedAttempt = input.regeneratedAttempt;
+  const originalSceneVersion = input.originalSceneVersion;
+  return typeof originalAttempt === "number" &&
+    Number.isSafeInteger(originalAttempt) &&
+    originalAttempt > 0 &&
+    typeof regeneratedAttempt === "number" &&
+    Number.isSafeInteger(regeneratedAttempt) &&
+    regeneratedAttempt > originalAttempt &&
+    typeof originalSceneVersion === "number" &&
+    Number.isSafeInteger(originalSceneVersion) &&
+    originalSceneVersion >= 0 &&
+    input.regeneratedSceneVersion === originalSceneVersion;
 }
 
 // SPEC: 所有 probe 的失败详情都长这样。retryable 由多数 probe 实际写出，消费端目前不读，
@@ -520,7 +534,6 @@ export interface ChatServiceProbeEvidence {
   characterId?: string | null;
   characterSource?: string | null;
   usedSignedBff?: boolean;
-  expectedCompanionRuntime?: string | null;
   loadError?: string;
   health?: {
     ok?: boolean;
@@ -577,13 +590,10 @@ export interface ChatServiceProbeEvidence {
       originalAttempt?: number;
       regeneratedAttempt?: number;
       originalSceneVersion?: number | null;
-      futureUserSceneVersion?: number | null;
-      futureSceneVersion?: number | null;
       regeneratedSceneVersion?: number | null;
       recallMatched?: boolean;
       wakeObserved?: boolean;
       memorySearchHit?: boolean;
-      futureDsh?: ChatProbeDshEvidence | null;
       regeneratedDsh?: ChatProbeDshEvidence | null;
       error?: string | null;
     } | null;
@@ -601,13 +611,6 @@ export interface ChatServiceProbeEvidence {
       status?: number;
       // SPEC: 与 status 并存不是没改完的重命名 —— status 是 HTTP 码，status_ 是回包里的审核结论。
       status_?: string | null;
-      error?: string | null;
-    } | null;
-    rolloutEvidence?: {
-      ok?: boolean;
-      status?: number;
-      collectedAt?: string;
-      aggregate?: unknown;
       error?: string | null;
     } | null;
     cleanup?: {
@@ -639,24 +642,17 @@ const chatProbeOperationShape = {
 
 const chatProbeDshEvidenceShape = {
   ok: flag,
-  runtime: optionalText,
-  memoryBackend: optionalText,
-  profile: optionalText,
-  private: flag,
-  primaryRuntime: optionalText,
-  terminalStatus: optionalText,
-  sseTerminal: optionalText,
+  runtime: optionalEmbeddedDshRuntime,
+  memoryMode: optionalCompanionMemoryMode,
   provider: optionalText,
   model: optionalText,
   profileDigest: optionalText,
-  outputAuthority: optionalText,
+  runtimeInstanceId: optionalText,
+  igrepVersion: optionalText,
+  pluginVersion: optionalText,
   requestId: optionalText,
   actualProvider: optionalText,
-  memoryOutcome: optionalText,
-  memoryIngestOutcome: optionalText,
-  memorySettledAt: optionalText,
-  memorySettleLagMs: optionalCount,
-  sidecarInstanceId: optionalText,
+  memoryOutcome: optionalCompanionMemoryOutcome,
   wakeCalls: optionalCount,
   wakeFailures: optionalCount,
   igrepSearchCalls: optionalCount,
@@ -679,7 +675,6 @@ const chatServiceProbeEvidenceSchema: z.ZodType<ChatServiceProbeEvidence> = z.ob
   characterId: nullableText,
   characterSource: nullableText,
   usedSignedBff: flag,
-  expectedCompanionRuntime: nullableText,
   health: nullableObject({
     ok: flag,
     status: optionalCount,
@@ -730,13 +725,10 @@ const chatServiceProbeEvidenceSchema: z.ZodType<ChatServiceProbeEvidence> = z.ob
       originalAttempt: optionalCount,
       regeneratedAttempt: optionalCount,
       originalSceneVersion: optionalCount,
-      futureUserSceneVersion: optionalCount,
-      futureSceneVersion: optionalCount,
       regeneratedSceneVersion: optionalCount,
       recallMatched: flag,
       wakeObserved: flag,
       memorySearchHit: flag,
-      futureDsh: nullableObject(chatProbeDshEvidenceShape),
       regeneratedDsh: nullableObject(chatProbeDshEvidenceShape),
     }),
     noMemory: nullableObject({
@@ -746,11 +738,6 @@ const chatServiceProbeEvidenceSchema: z.ZodType<ChatServiceProbeEvidence> = z.ob
       dsh: nullableObject(chatProbeDshEvidenceShape),
     }),
     blockedInput: nullableObject({ ...chatProbeOperationShape, status_: nullableText }),
-    rolloutEvidence: nullableObject({
-      ...chatProbeOperationShape,
-      collectedAt: optionalText,
-      aggregate: z.unknown().optional(),
-    }),
     cleanup: nullableObject({
       ...chatProbeOperationShape,
       memoryCleared: flag,

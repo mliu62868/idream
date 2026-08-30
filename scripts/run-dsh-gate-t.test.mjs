@@ -6,14 +6,19 @@ import {
   runGateTProbe,
 } from "./run-dsh-gate-t.mjs";
 
-test("Gate T runner is bounded to pure sidecar and Chat public-seam tests", () => {
+test("Gate T runner is bounded to embedded runtime and Chat public-seam tests", () => {
   assert.deepEqual(
     GATE_T_CHECKS.map(({ id, cwd, scenarios }) => ({ id, cwd, scenarios })),
     [
       {
-        id: "sidecar-tool-loop",
-        cwd: "packages/chat-agent",
-        scenarios: ["multi_step_single_tool", "tool_error", "tool_timeout"],
+        id: "embedded-runtime-tool-loop",
+        cwd: "packages/chat",
+        scenarios: [
+          "direct_terminal_commit",
+          "single_product_tool",
+          "main_cas_rejection",
+          "in_process_cancel",
+        ],
       },
       {
         id: "chat-tool-recovery",
@@ -32,7 +37,6 @@ test("Gate T runner is bounded to pure sidecar and Chat public-seam tests", () =
   );
   for (const check of GATE_T_CHECKS) {
     assert.equal(check.command, "bun");
-    assert.ok(check.args.includes("\\[Gate T\\]"));
     assert.ok(!check.args.some((argument) => /integration|prisma|db:/u.test(argument)));
   }
 });
@@ -59,7 +63,7 @@ test("Gate T runner reports every check and fails closed on one non-zero exit", 
   assert.equal(report.checks.length, 2);
   assert.deepEqual(report.checks.map((check) => check.ok), [true, false]);
   assert.deepEqual(calls.map((call) => call.cwd), [
-    "/repo/packages/chat-agent",
+    "/repo/packages/chat",
     "/repo/packages/chat",
   ]);
 });

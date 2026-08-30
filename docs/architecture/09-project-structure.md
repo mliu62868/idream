@@ -104,8 +104,8 @@ const Env = z.object({
   BETTER_AUTH_SECRET: z.string().min(32),
   INTERNAL_TOKEN: z.string().min(16),
   CRON_SECRET: z.string().min(16),
-  // providers（按需，dev 可空走 mock）
-  CHAT_PROVIDER_URL: z.string().url().optional(),
+  // Main 自有文本能力；Companion 模型 route 只由 Chat 的 CHAT_MODEL_* 配置
+  CHAT_PROVIDER: z.enum(["mock", "pipeline"]).default("mock"),
   // ...支付/存储/审核/验证/Upstash 见 10 §2
 });
 export const env = Env.parse(process.env);   // 启动即校验，缺失即崩

@@ -1,12 +1,12 @@
 # ADR-19 · DSH Companion 执行内核
 
-> 状态：Accepted（执行内核）；产品数据权威由 ADR-20 取代
+> 状态：部分由 [ADR-21](./21-companion-chat-deep-runtime.md) 取代。DSH/igrep 唯一执行内核仍有效；独立 `chat-agent` process/interface 与同步 workspace promotion 不再有效。产品数据权威见 ADR-20。
 >
 > 更新日期：2026-08-28
 
 ## 决策
 
-Companion Chat 的模型循环统一使用 `packages/chat-agent` 中的 DeepSeek Harness：
+原决策把 Companion Chat 的模型循环放在独立 `packages/chat-agent` 中；该进程边界已经由 ADR-21 删除。以下保留的是仍有效的 DSH/igrep 执行约束：
 
 - `@deepseek-ai/dsh-*` 固定 `0.1.1-rc.2`。
 - official igrep plugin 管理通用 companion memory。

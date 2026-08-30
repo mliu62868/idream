@@ -3,6 +3,7 @@ import {
   applySceneDelta,
   deriveSceneDelta,
   emptySceneState,
+  sceneForReply,
 } from "./scene.js";
 
 describe("typed Scene State", () => {
@@ -47,6 +48,28 @@ describe("typed Scene State", () => {
     expect(next.location).toBe("the rooftop garden");
     expect(next.emotionalBeat).toBe("relieved");
     expect(next.unresolvedThreads).toEqual(["call the hotel"]);
+  });
+
+  it("advances once from the frozen pre-turn Scene anchor", () => {
+    const prior = {
+      schemaVersion: 1 as const,
+      version: 4,
+      location: "the rooftop garden",
+      time: "tonight",
+      participants: ["Mina"],
+      emotionalBeat: "calm",
+      unresolvedThreads: ["choose the train"],
+    };
+
+    expect(sceneForReply({
+      previous: prior,
+      userText: "We are at the station.",
+      assistantText: "I wait beside you.",
+    })).toMatchObject({
+      version: 5,
+      location: "the station",
+      unresolvedThreads: ["choose the train"],
+    });
   });
 
   it.each([

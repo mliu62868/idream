@@ -18,7 +18,9 @@ import {
 import { pipelineEndpoint } from "@idream/shared/env";
 import { BackendImageModel } from "./backend/backend-image-model";
 import { BackendVideoModel } from "./backend/backend-video-model";
+import { prepareComfyUiRunnerMemory } from "./backend/comfyui-memory-transition";
 import { buildBackendRegistry, type BackendRegistry } from "./backend/registry";
+import { withGenerationAcceleratorLease } from "./backend/generation-accelerator-lease";
 import { env } from "./env";
 import type { GenAdapter } from "./provider-vocabulary";
 
@@ -608,7 +610,9 @@ let registryPromise: Promise<BackendRegistry> | undefined;
 
 function getBackendRegistry(): Promise<BackendRegistry> {
   registryPromise ??= buildBackendRegistry({
-    comfyApiUrl: env.COMFYUI_API_URL,
+    comfyImageApiUrl: env.COMFYUI_IMAGE_API_URL,
+    comfyVideoApiUrl: env.COMFYUI_VIDEO_API_URL,
+    comfyH3ApiUrl: env.COMFYUI_H3_API_URL,
     drawThingsCli: env.DRAWTHINGS_CLI,
     drawThingsModelsDir: env.DRAWTHINGS_MODELS_DIR,
     drawThingsOffline: env.DRAWTHINGS_OFFLINE,
@@ -618,7 +622,11 @@ function getBackendRegistry(): Promise<BackendRegistry> {
 }
 
 function buildBackendImageModel(): ImageModel {
-  return new BackendImageModel(getBackendRegistry());
+  return new BackendImageModel(
+    getBackendRegistry(),
+    (run) => withGenerationAcceleratorLease("image", run),
+    prepareComfyUiRunnerMemory,
+  );
 }
 
 function buildImageModel(): ImageModel {
@@ -643,7 +651,11 @@ function buildVideoModel(): VideoModel {
     case "mock":
       return new MockVideoModel();
     case "backend":
-      return new BackendVideoModel(getBackendRegistry());
+      return new BackendVideoModel(
+        getBackendRegistry(),
+        (run) => withGenerationAcceleratorLease("video", run),
+        prepareComfyUiRunnerMemory,
+      );
     case "pipeline":
       return new PipelineVideoModel();
   }
@@ -699,9 +711,9 @@ function buildModerationProvider(): ModerationProvider {
 // gateway is still the documented rollback route (see the runbook in
 // docs/architecture/10-operations.md and PIPELINE_API_URL in
 // .env.production.example) — deleting it would remove a rollback that operations
-// still relies on. Video is backend-only because its sole production route is
-// LTX 2.3 I2V and only BackendVideoModel enforces that runtime envelope
-// (768x1152, 25fps, ~4s, ffprobe/ffmpeg-verified decode); a generic gateway
+// still relies on. Video is backend-only because its production routes are
+// RedGraft LTX 2.5 and MiniMax H3, and only BackendVideoModel enforces each
+// pinned runtime envelope plus ffprobe/ffmpeg-verified decode. A generic gateway
 // cannot, so admitting one would let unverified media settle as succeeded.
 const PRODUCTION_ADAPTERS: Record<"image" | "video", readonly GenAdapter[]> = {
   image: ["backend", "pipeline"],
@@ -733,8 +745,13 @@ export function assertProductionProviderReady(kind: "image" | "video") {
     throw new Error(`Production ${kind} generation requires PIPELINE_API_URL`);
   }
 
-  if (provider === "backend" && !env.COMFYUI_API_URL) {
-    throw new Error(`Production ${kind} generation requires COMFYUI_API_URL`);
+  const comfyUiApiUrl = kind === "image"
+    ? env.COMFYUI_IMAGE_API_URL
+    : env.COMFYUI_VIDEO_API_URL;
+  if (provider === "backend" && !comfyUiApiUrl) {
+    throw new Error(
+      `Production ${kind} generation requires COMFYUI_${kind.toUpperCase()}_API_URL`,
+    );
   }
 }
 

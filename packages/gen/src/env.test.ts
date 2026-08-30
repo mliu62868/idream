@@ -7,6 +7,10 @@ import { env } from "./env";
 const originalWorkflowDir = process.env.GEN_WORKFLOW_DIR;
 const originalVideoTimeout = process.env.GEN_VIDEO_TIMEOUT_MS;
 const originalMainWebUrl = process.env.MAIN_WEB_URL;
+const originalComfyUiApiUrl = process.env.COMFYUI_API_URL;
+const originalComfyUiImageApiUrl = process.env.COMFYUI_IMAGE_API_URL;
+const originalComfyUiVideoApiUrl = process.env.COMFYUI_VIDEO_API_URL;
+const originalComfyUiH3ApiUrl = process.env.COMFYUI_H3_API_URL;
 
 afterEach(() => {
   if (originalWorkflowDir === undefined) {
@@ -24,6 +28,15 @@ afterEach(() => {
   } else {
     process.env.MAIN_WEB_URL = originalMainWebUrl;
   }
+  for (const [name, value] of [
+    ["COMFYUI_API_URL", originalComfyUiApiUrl],
+    ["COMFYUI_IMAGE_API_URL", originalComfyUiImageApiUrl],
+    ["COMFYUI_VIDEO_API_URL", originalComfyUiVideoApiUrl],
+    ["COMFYUI_H3_API_URL", originalComfyUiH3ApiUrl],
+  ] as const) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
 });
 
 describe("generation environment", () => {
@@ -40,6 +53,28 @@ describe("generation environment", () => {
       "GEN_VIDEO_TIMEOUT_MS must be a positive integer",
     );
   });
+
+  it("routes image and video to isolated ComfyUI runners by default", () => {
+    delete process.env.COMFYUI_API_URL;
+    delete process.env.COMFYUI_IMAGE_API_URL;
+    delete process.env.COMFYUI_VIDEO_API_URL;
+    delete process.env.COMFYUI_H3_API_URL;
+
+    expect(env.COMFYUI_IMAGE_API_URL).toBe("http://127.0.0.1:8189");
+    expect(env.COMFYUI_VIDEO_API_URL).toBe("http://127.0.0.1:8188");
+    expect(env.COMFYUI_H3_API_URL).toBe("http://127.0.0.1:8190");
+  });
+
+  it("allows modality-specific URLs to override the shared compatibility URL", () => {
+    process.env.COMFYUI_API_URL = "http://127.0.0.1:9000";
+    process.env.COMFYUI_IMAGE_API_URL = "http://127.0.0.1:9001";
+    process.env.COMFYUI_VIDEO_API_URL = "http://127.0.0.1:9002";
+    process.env.COMFYUI_H3_API_URL = "http://127.0.0.1:9003";
+
+    expect(env.COMFYUI_IMAGE_API_URL).toBe("http://127.0.0.1:9001");
+    expect(env.COMFYUI_VIDEO_API_URL).toBe("http://127.0.0.1:9002");
+    expect(env.COMFYUI_H3_API_URL).toBe("http://127.0.0.1:9003");
+  });
 });
 
 // SPEC: env.ts is the only place in gen that decides what an environment
@@ -51,14 +86,7 @@ describe("generation environment", () => {
 // tree rather than a blacklist of names already known to have drifted: any new
 // `process.env.X` read in gen, for any X env.ts owns, fails here.
 describe("gen environment ownership", () => {
-  // Deliberate exceptions. Each one has to be argued for in review; an empty
-  // entry list means the file may not read that name at all.
-  const DELIBERATE_RAW_READS: Readonly<Record<string, readonly string[]>> = {
-    // Documented at the top of the file: this manual smoke defaults to the CPU
-    // ComfyUI on 8191, not the worker's 8188, and assigns the env it then
-    // dynamically imports providers with.
-    "probe-redcraft-comfyui.ts": ["COMFYUI_API_URL"],
-  };
+  const DELIBERATE_RAW_READS: Readonly<Record<string, readonly string[]>> = {};
 
   async function sourceFiles(dir: string): Promise<string[]> {
     const found: string[] = [];

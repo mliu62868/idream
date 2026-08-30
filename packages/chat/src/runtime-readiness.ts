@@ -2,7 +2,7 @@ import { mkdir, open, unlink } from "node:fs/promises";
 import path from "node:path";
 import IORedis from "ioredis";
 import { redisConnectionOptions } from "@idream/shared/env";
-import { probeCompanionSidecar } from "./companion-sidecar-readiness.js";
+import { warmAgentRuntime } from "./agent-runtime/runtime.js";
 import { env } from "./env.js";
 
 export interface RuntimeReadinessSnapshot {
@@ -10,7 +10,7 @@ export interface RuntimeReadinessSnapshot {
   warmed: boolean;
   fileStore: boolean;
   redis: boolean;
-  companion: boolean;
+  agentRuntime: boolean;
   fresh: boolean;
   observedAt: string | null;
   reason: string | null;
@@ -22,7 +22,7 @@ export class RuntimeReadiness {
     warmed: false,
     fileStore: false,
     redis: false,
-    companion: false,
+    agentRuntime: false,
     reason: "warming",
   };
   private recover: (() => Promise<void>) | null = null;
@@ -46,7 +46,7 @@ export class RuntimeReadiness {
 
   canAcceptTurns(): boolean {
     return this.state.accepting && this.state.warmed
-      && this.state.fileStore && this.state.redis && this.state.companion
+      && this.state.fileStore && this.state.redis && this.state.agentRuntime
       && this.isFresh();
   }
 
@@ -73,7 +73,7 @@ export class RuntimeReadiness {
       warmed: true,
       fileStore: true,
       redis: true,
-      companion: true,
+      agentRuntime: true,
       reason: null,
     };
   }
@@ -99,17 +99,17 @@ export class RuntimeReadiness {
 
 export const runtimeReadiness = new RuntimeReadiness();
 
-/** Chat readiness now proves exactly three dependencies: files, Redis SSE, DSH. */
+/** Admission health proves only the dependencies needed to start one Agent run. */
 export async function warmRuntime(input: {
   readiness?: RuntimeReadiness;
   pingRedis?: () => Promise<void>;
-  probeSidecar?: () => Promise<void>;
+  probeAgentRuntime?: () => Promise<void>;
 } = {}): Promise<void> {
   const readiness = input.readiness ?? runtimeReadiness;
   try {
     await assertWritableFileRoot();
     await (input.pingRedis ?? pingRedis)();
-    await (input.probeSidecar ?? probeSidecar)();
+    await (input.probeAgentRuntime ?? warmAgentRuntime)();
     readiness.markReady();
   } catch (error) {
     readiness.markFailed(error instanceof Error ? error.message : "warmup_failed");
@@ -138,15 +138,4 @@ async function pingRedis(): Promise<void> {
   } finally {
     await redis.quit().catch(() => redis.disconnect());
   }
-}
-
-async function probeSidecar(): Promise<void> {
-  const config = env.COMPANION_RUNTIME_CONFIG;
-  await probeCompanionSidecar({
-    baseUrl: config.sidecarUrl,
-    token: config.sidecarToken,
-    expectedProvider: env.CHAT_MODEL_PROVIDER,
-    expectedBaseUrl: env.CHAT_MODEL_BASE_URL,
-    expectedModel: env.CHAT_MODEL_NAME,
-  });
 }

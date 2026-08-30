@@ -1,4 +1,7 @@
-import type { CharacterVideoProductionRecipe } from "@idream/shared";
+import {
+  minimaxH3VideoProductionRecipe,
+  type CharacterVideoProductionRecipe,
+} from "@idream/shared";
 import type { VideoGeneratePayload } from "@idream/shared/contracts";
 import { env } from "../env";
 import {
@@ -6,7 +9,12 @@ import {
   type VideoModel,
 } from "../providers";
 import { assignWorkflowReferenceSlots, type SlotValues } from "./workflow";
-import { validateWorkflowPin, type BackendRegistry } from "./registry";
+import {
+  comfyUiRunnerForDescriptor,
+  validateWorkflowPin,
+  type BackendRegistry,
+  type ComfyUiRunner,
+} from "./registry";
 import { BackendInvocationError, type BackendAsset } from "./types";
 import { assertCharacterVideoProductionDescriptor } from "./production-video-descriptor";
 
@@ -15,10 +23,19 @@ type GenerateResult = Awaited<ReturnType<VideoModel["generate"]>>;
 type ReferenceImages = NonNullable<VideoGeneratePayload["referenceImages"]>;
 const PRODUCTION_DURATION_TOLERANCE_SECONDS = 0.25;
 const PRODUCTION_FPS_TOLERANCE = 0.05;
+type RunWithAcceleratorLease = <T>(run: () => Promise<T>) => Promise<T>;
+type PrepareComfyUiRunner = (runner: ComfyUiRunner) => Promise<void>;
+
+const runWithoutAcceleratorLease: RunWithAcceleratorLease = (run) => run();
+const skipComfyUiMemoryTransition: PrepareComfyUiRunner = async () => {};
 
 export class BackendVideoModel implements VideoModel {
   constructor(
     private readonly registry: BackendRegistry | Promise<BackendRegistry>,
+    private readonly runWithAcceleratorLease: RunWithAcceleratorLease =
+      runWithoutAcceleratorLease,
+    private readonly prepareComfyUiRunner: PrepareComfyUiRunner =
+      skipComfyUiMemoryTransition,
   ) {}
 
   async generate(input: GenerateInput): Promise<GenerateResult> {
@@ -85,15 +102,22 @@ export class BackendVideoModel implements VideoModel {
     });
     let providerRequestId: string | null = null;
     try {
-      const handle = await backend.submit({
-        descriptor,
-        slots,
-        referenceImages: input.referenceImages,
-        requestId: input.requestId,
-        timeoutMs: env.VIDEO_TIMEOUT_MS,
+      const result = await this.runWithAcceleratorLease(async () => {
+        if (descriptor.backendKind === "comfyui") {
+          await this.prepareComfyUiRunner(
+            comfyUiRunnerForDescriptor(descriptor),
+          );
+        }
+        const handle = await backend.submit({
+          descriptor,
+          slots,
+          referenceImages: input.referenceImages,
+          requestId: input.requestId,
+          timeoutMs: env.VIDEO_TIMEOUT_MS,
+        });
+        providerRequestId = handle.id;
+        return backend.poll(handle);
       });
-      providerRequestId = handle.id;
-      const result = await backend.poll(handle);
       const asset = result.assets.find(
         (candidate) => candidate.contentType === "video/mp4",
       );
@@ -243,7 +267,7 @@ function productionVideoSlots(
     fps: recipe.fps,
     seed: input.seed,
   };
-  if (recipe.frameCount !== null) {
+  if (recipe.workflowKey === minimaxH3VideoProductionRecipe.workflowKey) {
     return { ...common, length: recipe.frameCount };
   }
   return {

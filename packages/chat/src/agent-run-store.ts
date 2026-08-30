@@ -14,13 +14,13 @@ export interface AgentRunInput {
   authority: ChatAuthoritySnapshot;
 }
 
-export interface AgentRunTerminal {
+export interface AgentRunCompletion {
   schemaVersion: 1;
   attemptId: string;
   outcome: "committed" | "failed" | "cancelled";
-  mainCommit: unknown;
   evidence: Record<string, unknown>;
   completedAt: string;
+  expiresAt: string;
 }
 
 export interface AgentRunProposal {
@@ -43,6 +43,18 @@ interface AgentRunTombstone {
   throughAttempt: number | null;
   updatedAt: string;
 }
+
+interface AgentRunIndex {
+  schemaVersion: 1;
+  turnId: string;
+  attempt: number;
+  userId: string;
+  snapshotDigest: string;
+  terminal: boolean;
+  expiresAt: string | null;
+}
+
+const FAILED_TRACE_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 
 const admissionTails = new Map<string, Promise<void>>();
 
@@ -68,8 +80,8 @@ function eventsFile(turnId: string, attempt: number): string {
   return path.join(runDir(turnId, attempt), "events.jsonl");
 }
 
-function terminalFile(turnId: string, attempt: number): string {
-  return path.join(runDir(turnId, attempt), "terminal.json");
+function completionFile(turnId: string, attempt: number): string {
+  return path.join(runDir(turnId, attempt), "completion.json");
 }
 
 function proposalFile(turnId: string, attempt: number): string {
@@ -112,6 +124,27 @@ async function admitAgentRunUnlocked(
   ) {
     return { duplicate: false, terminal: false, tombstoned: true };
   }
+  const snapshotDigest = admissionIdentity(input);
+  const existingIndex = await readAgentRunIndex(input.snapshot.assistantMessageId);
+  if (existingIndex) {
+    const exactIdentity =
+      existingIndex.turnId !== input.snapshot.turnId
+      ? false
+      : existingIndex.attempt === input.snapshot.attempt
+        && existingIndex.userId === input.snapshot.userId
+        && existingIndex.snapshotDigest === snapshotDigest;
+    const supersedesPriorAttempt =
+      existingIndex.turnId === input.snapshot.turnId &&
+      existingIndex.userId === input.snapshot.userId &&
+      existingIndex.attempt < input.snapshot.attempt;
+    // INVARIANT: Main signs the monotonically newer product attempt. It may
+    // arrive after Main's terminal ACK but before Chat has marked the prior
+    // local trace complete; that local bookkeeping lag must not reject regen.
+    if (!exactIdentity && !supersedesPriorAttempt) {
+      throw new Error("AgentRun identity was reused with different input");
+    }
+    if (exactIdentity && existingIndex.terminal) return { duplicate: true, terminal: true };
+  }
   const file = inputFile(input.snapshot.turnId, input.snapshot.attempt);
   const encoded = `${JSON.stringify(input)}\n`;
   try {
@@ -120,24 +153,16 @@ async function admitAgentRunUnlocked(
     if (admissionIdentity(persisted) !== admissionIdentity(input)) {
       throw new Error("AgentRun identity was reused with different input");
     }
-    await atomicWrite(assistantIndexFile(input.snapshot.assistantMessageId), `${JSON.stringify({
-      turnId: input.snapshot.turnId,
-      attempt: input.snapshot.attempt,
-      userId: input.snapshot.userId,
-    })}\n`);
+    await writeAgentRunIndex(input, false);
     return {
       duplicate: true,
-      terminal: Boolean(await readAgentRunTerminal(input.snapshot.turnId, input.snapshot.attempt)),
+      terminal: Boolean(await readAgentRunCompletion(input.snapshot.turnId, input.snapshot.attempt)),
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   await atomicWrite(file, encoded);
-  await atomicWrite(assistantIndexFile(input.snapshot.assistantMessageId), `${JSON.stringify({
-    turnId: input.snapshot.turnId,
-    attempt: input.snapshot.attempt,
-    userId: input.snapshot.userId,
-  })}\n`);
+  await writeAgentRunIndex(input, false);
   return { duplicate: false, terminal: false };
 }
 
@@ -146,16 +171,12 @@ export async function findAgentRunByAssistant(assistantMessageId: string): Promi
   attempt: number;
   userId: string;
 } | null> {
-  try {
-    return JSON.parse(await readFile(assistantIndexFile(assistantMessageId), "utf8")) as {
-      turnId: string;
-      attempt: number;
-      userId: string;
-    };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
-  }
+  const index = await readAgentRunIndex(assistantMessageId);
+  return index && new Date(index.expiresAt ?? 0).getTime() >= Date.now()
+    ? { turnId: index.turnId, attempt: index.attempt, userId: index.userId }
+    : index && !index.terminal
+      ? { turnId: index.turnId, attempt: index.attempt, userId: index.userId }
+      : null;
 }
 
 export async function readAgentRunInput(turnId: string, attempt: number): Promise<AgentRunInput | null> {
@@ -205,31 +226,35 @@ async function appendAgentRunEventUnlocked(
   return event;
 }
 
-export async function writeAgentRunTerminal(
+export async function completeAgentRun(
   turnId: string,
   attempt: number,
-  terminal: AgentRunTerminal,
+  completion: Omit<AgentRunCompletion, "schemaVersion" | "expiresAt">,
 ): Promise<void> {
   return withAdmissionLock(`turn:${turnId}`, async () => {
     assertNotTombstoned(turnId, attempt, await readAgentRunTombstone(turnId));
-    await writeAgentRunTerminalUnlocked(turnId, attempt, terminal);
-  });
-}
-
-async function writeAgentRunTerminalUnlocked(
-  turnId: string,
-  attempt: number,
-  terminal: AgentRunTerminal,
-): Promise<void> {
-  const file = terminalFile(turnId, attempt);
-  const existing = await readAgentRunTerminal(turnId, attempt);
-  if (existing) {
-    if (sha256(JSON.stringify(existing)) !== sha256(JSON.stringify(terminal))) {
-      throw new Error("AgentRun terminal evidence is immutable");
+    const input = await readAgentRunInput(turnId, attempt);
+    if (!input) throw new Error("AgentRun input is missing at completion");
+    const expiresAt = new Date(
+      new Date(completion.completedAt).getTime() + FAILED_TRACE_RETENTION_MS,
+    ).toISOString();
+    await writeAgentRunIndex(input, true, expiresAt);
+    if (completion.outcome === "committed") {
+      await rm(runDir(turnId, attempt), { recursive: true, force: true });
+      return;
     }
-    return;
-  }
-  await atomicWrite(file, `${JSON.stringify(terminal)}\n`);
+    const record: AgentRunCompletion = {
+      schemaVersion: 1,
+      ...completion,
+      expiresAt,
+    };
+    const existing = await readAgentRunCompletion(turnId, attempt);
+    if (existing && sha256(JSON.stringify(existing)) !== sha256(JSON.stringify(record))) {
+      throw new Error("AgentRun completion evidence is immutable");
+    }
+    if (!existing) await atomicWrite(completionFile(turnId, attempt), `${JSON.stringify(record)}\n`);
+    await rm(proposalFile(turnId, attempt), { force: true });
+  });
 }
 
 /** Main retries must replay these exact bytes; the proposal is never replaced. */
@@ -272,45 +297,84 @@ export async function readAgentRunProposal(
   }
 }
 
-export async function readAgentRunTerminal(
+export async function readAgentRunCompletion(
   turnId: string,
   attempt: number,
-): Promise<AgentRunTerminal | null> {
+): Promise<AgentRunCompletion | null> {
   try {
-    return JSON.parse(await readFile(terminalFile(turnId, attempt), "utf8")) as AgentRunTerminal;
+    return JSON.parse(await readFile(completionFile(turnId, attempt), "utf8")) as AgentRunCompletion;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
 }
 
-/** Startup repair input: complete input + no terminal. */
-export async function listIncompleteAgentRuns(): Promise<Array<{ turnId: string; attempt: number }>> {
+/** Startup repair input: complete input + no accepted or rejected completion. */
+export async function listIncompleteAgentRuns(): Promise<Array<{
+  turnId: string;
+  attempt: number;
+  userId: string;
+}>> {
+  await cleanupExpiredAgentRuns();
   const runsRoot = path.join(path.resolve(env.CHAT_FS_ROOT), "runs");
-  const result: Array<{ turnId: string; attempt: number }> = [];
+  const result: Array<{ turnId: string; attempt: number; userId: string }> = [];
   for (const turn of await directories(runsRoot)) {
     for (const attemptName of await directories(path.join(runsRoot, turn))) {
       const attempt = Number(attemptName);
       if (!Number.isSafeInteger(attempt) || attempt < 1) continue;
-      const input = await exists(inputFile(turn, attempt));
-      const terminal = await exists(terminalFile(turn, attempt));
-      if (input && !terminal && !await isAgentRunTombstoned(turn, attempt)) {
-        result.push({ turnId: turn, attempt });
+      const input = await readAgentRunInput(turn, attempt);
+      const completed = await exists(completionFile(turn, attempt));
+      if (input && !completed && !await isAgentRunTombstoned(turn, attempt)) {
+        result.push({ turnId: turn, attempt, userId: input.snapshot.userId });
       }
     }
   }
   return result;
 }
 
+export async function cleanupExpiredAgentRuns(now = Date.now()): Promise<number> {
+  const root = path.resolve(env.CHAT_FS_ROOT);
+  let removed = 0;
+  const runsRoot = path.join(root, "runs");
+  for (const turnId of await directories(runsRoot)) {
+    for (const attemptName of await directories(path.join(runsRoot, turnId))) {
+      const attempt = Number(attemptName);
+      if (!Number.isSafeInteger(attempt) || attempt < 1) continue;
+      const completion = await readAgentRunCompletion(turnId, attempt);
+      if (!completion || new Date(completion.expiresAt).getTime() > now) continue;
+      await rm(runDir(turnId, attempt), { recursive: true, force: true });
+      removed += 1;
+    }
+  }
+  const indexRoot = path.join(root, "run-index", "assistant");
+  for (const name of await files(indexRoot)) {
+    const target = path.join(indexRoot, name);
+    const index = await readJsonFile<AgentRunIndex>(target);
+    if (!index?.terminal || !index.expiresAt || new Date(index.expiresAt).getTime() > now) continue;
+    await rm(target, { force: true });
+    removed += 1;
+  }
+  return removed;
+}
+
 /** Account erasure removes only local execution evidence for the exact user. */
 export async function purgeAgentRunsForUser(userId: string): Promise<number> {
   return withAdmissionLock(`user:${userId}`, async () => {
-    await atomicWrite(userTombstoneFile(userId), `${JSON.stringify({
-      schemaVersion: 1,
-      deletedAt: new Date().toISOString(),
-    })}\n`);
+    await writeUserTombstone(userId);
     return purgeAgentRunsForUserUnlocked(userId);
   });
+}
+
+/** Permanently reject new admissions before account erasure drains active work. */
+export async function fenceAgentRunsForUser(userId: string): Promise<void> {
+  await withAdmissionLock(`user:${userId}`, () => writeUserTombstone(userId));
+}
+
+async function writeUserTombstone(userId: string): Promise<void> {
+  await atomicWrite(userTombstoneFile(userId), `${JSON.stringify({
+    schemaVersion: 1,
+    deletedAt: new Date().toISOString(),
+  })}\n`);
 }
 
 async function purgeAgentRunsForUserUnlocked(userId: string): Promise<number> {
@@ -329,6 +393,7 @@ async function purgeAgentRunsForUserUnlocked(userId: string): Promise<number> {
     if (!belongsToUser) continue;
     purged += await purgeAgentRunsForTurn(turnId);
   }
+  await purgeAgentRunIndexes((index) => index.userId === userId);
   return purged;
 }
 
@@ -389,8 +454,22 @@ async function purgeAgentRunDirectoriesUnlocked(
     }
     await rm(runDir(safeTurnId, attempt), { recursive: true, force: true });
   }
+  await purgeAgentRunIndexes((index) =>
+    index.turnId === safeTurnId
+    && (throughAttempt === null || index.attempt <= throughAttempt));
   if (throughAttempt === null) await rm(turnRoot, { recursive: true, force: true });
   return purged;
+}
+
+async function purgeAgentRunIndexes(
+  matches: (index: AgentRunIndex) => boolean,
+): Promise<void> {
+  const root = path.join(path.resolve(env.CHAT_FS_ROOT), "run-index", "assistant");
+  for (const name of await files(root)) {
+    const target = path.join(root, name);
+    const index = await readJsonFile<AgentRunIndex>(target);
+    if (index && matches(index)) await rm(target, { force: true });
+  }
 }
 
 async function readAgentRunTombstone(turnId: string): Promise<AgentRunTombstone | null> {
@@ -464,6 +543,59 @@ async function directories(parent: string): Promise<string[]> {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
   }
+}
+
+async function files(parent: string): Promise<string[]> {
+  try {
+    return (await readdir(parent, { withFileTypes: true }))
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name)
+      .sort();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+}
+
+async function readJsonFile<T>(file: string): Promise<T | null> {
+  try {
+    return JSON.parse(await readFile(file, "utf8")) as T;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+async function readAgentRunIndex(assistantMessageId: string): Promise<AgentRunIndex | null> {
+  return readJsonFile<AgentRunIndex>(assistantIndexFile(assistantMessageId));
+}
+
+async function writeAgentRunIndex(
+  input: AgentRunInput,
+  terminal: boolean,
+  expiresAt: string | null = null,
+): Promise<void> {
+  const existing = await readAgentRunIndex(input.snapshot.assistantMessageId);
+  if (
+    existing &&
+    existing.turnId === input.snapshot.turnId &&
+    existing.userId === input.snapshot.userId &&
+    existing.attempt > input.snapshot.attempt
+  ) {
+    // Main may start attempt N+1 immediately after accepting N's terminal,
+    // before Chat finishes N's local cleanup. Never let that delayed cleanup
+    // move the assistant index backwards.
+    return;
+  }
+  await atomicWrite(assistantIndexFile(input.snapshot.assistantMessageId), `${JSON.stringify({
+    schemaVersion: 1,
+    turnId: input.snapshot.turnId,
+    attempt: input.snapshot.attempt,
+    userId: input.snapshot.userId,
+    snapshotDigest: admissionIdentity(input),
+    terminal,
+    expiresAt,
+  } satisfies AgentRunIndex)}\n`);
 }
 
 async function exists(file: string): Promise<boolean> {

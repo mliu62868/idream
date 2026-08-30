@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
   ACCOUNT_DELETION_V2_INGEST_PATH,
+  agentRunCancelRequestedV1PayloadSchema,
   durableAckSchema,
   durableEventEnvelopeSchema,
   MAIN_TO_CHAT_EVENTS,
@@ -183,7 +184,23 @@ export function resolveChatDurableIngestUrl(
 }
 
 async function deliverToChat(event: DurableEventEnvelope): Promise<void> {
-  if (event.eventType === MAIN_TO_CHAT_EVENTS.companionMemoryRebuildRequestedV1) {
+  if (event.eventType === MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1) {
+    const payload = agentRunCancelRequestedV1PayloadSchema.parse(event.payload);
+    const base = env.CHAT_SERVICE_URL?.trim();
+    if (!base) throw new Error("CHAT_SERVICE_URL is required for AgentRun cancellation");
+    const response = await fetch(
+      `${base.replace(/\/$/, "")}/internal/agent-runs/${encodeURIComponent(payload.turnId)}/${payload.attempt}/cancel`,
+      { method: "POST", headers: { "x-internal-token": env.INTERNAL_TOKEN } },
+    );
+    if (!response.ok) throw new Error(`Chat AgentRun cancel returned ${response.status}`);
+    const acknowledged = await response.json() as { ok?: unknown };
+    if (acknowledged.ok !== true) throw new Error("Chat did not durably fence the AgentRun");
+    return;
+  }
+  if (
+    event.eventType === MAIN_TO_CHAT_EVENTS.companionMemoryRebuildRequestedV1
+    || event.eventType === MAIN_TO_CHAT_EVENTS.companionMemoryProjectRequestedV1
+  ) {
     await rebuildCompanionMemoryFromMain(event);
     return;
   }

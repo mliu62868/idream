@@ -42,7 +42,7 @@ import {
   identityCalibrationGenerationModes,
 } from "@/server/modules/admin-v2/characters/generation-route-authority";
 import { operationalMediaAssetWhere } from "@/server/modules/metric-data-scope";
-import { isProductionLtxVideoProfile } from "@/server/modules/generation/production-video-profile";
+import { isDefaultProductionVideoProfile } from "@/server/modules/generation/production-video-profile";
 import {
   appendProductionJobEvent,
   generationProfileCapabilities,
@@ -283,7 +283,7 @@ export async function createCreativeRun(
     }
   } else if (characterVideoRun) {
     if (
-      !isProductionLtxVideoProfile(profile) ||
+      !isDefaultProductionVideoProfile(profile) ||
       !workflow ||
       !workflow.capabilities.includes("video") ||
       !workflow.capabilities.includes("img2video") ||
@@ -855,7 +855,7 @@ export async function createCreativeRun(
       });
       if (
         !currentProfile ||
-        !isProductionLtxVideoProfile(currentProfile) ||
+        !isDefaultProductionVideoProfile(currentProfile) ||
         currentProfile.id !== profile.id ||
         !currentRecipe ||
         currentRecipe.recipeKey !== recipe.recipeKey ||

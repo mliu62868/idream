@@ -154,7 +154,8 @@ Product services do not load `.safetensors` directly. Image generation runs thro
 main-web / packages/gen
   -> GEN_IMAGE_PROVIDER=backend
   -> BackendRegistry (workflow descriptors under GEN_WORKFLOW_DIR)
-  -> ComfyUIBackend -> COMFYUI_API_URL -> ComfyUI server -> model files
+  -> ComfyUIBackend -> COMFYUI_IMAGE_API_URL / COMFYUI_VIDEO_API_URL
+     -> isolated ComfyUI runners -> shared model files
   -> SdcppBackend   -> SDCPP_CLI       -> sd-cli process -> model files
   -> DrawThingsBackend -> DRAWTHINGS_CLI -> draw-things-cli -> model files
 ```
@@ -185,8 +186,8 @@ bun run launch:probe:age -- --report .tmp/launch-age-probe.json
 ```
 
 `bun run diagnose:chat-provider -- --report .tmp/chat-provider-diagnostic.json`
-is an optional raw OpenAI-compatible transport diagnostic. It bypasses the DSH
-sidecar, igrep, Chat commit authority, and tool bridge, so it is deliberately
+is an optional raw OpenAI-compatible transport diagnostic. It bypasses the embedded
+DSH runtime, igrep, Chat commit authority, and tool bridge, so it is deliberately
 excluded from launch readiness.
 
 Run the final direct gate:

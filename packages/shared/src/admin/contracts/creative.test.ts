@@ -7,6 +7,7 @@ import {
   characterVideoProductionRecipeForWorkflow,
   characterVideoProductionRecipe,
   minimaxH3VideoProductionRecipe,
+  redgraftLtx25VideoProductionRecipe,
   creativePlacementWithdrawalRequestSchema,
   creativePlacementWithdrawalResultSchema,
   creativeRunCreateOptionsSchema,
@@ -27,36 +28,14 @@ describe("Creative Run create contract", () => {
     reason: "Launch the approved operator brief",
   };
 
-  it("owns the complete pinned Character video execution recipe", () => {
-    expect(characterVideoProductionRecipe).toMatchObject({
-      recipeVersion: 1,
-      runner: "comfyui",
-      pipelineModel: "ltx23-gtanimation-int4-convrot",
-      workflowKey: "ltx23-gtanimation-i2v",
-      workflowVersion: 1,
-      sourceModelPath:
-        "diffusion_models/ltx23Gtanimation25Frames_ltxv23INT4Convrot.safetensors",
-      checkpointFilename:
-        "ltx23Gtanimation25Frames_ltxv23INT4Convrot.safetensors",
-      modelFormat: "safetensors",
-      width: 768,
-      height: 1152,
-      fps: 25,
-      durationSeconds: 4,
-      steps: 13,
-      sampler: "euler",
-      scheduler: "manual_sigmas",
-      cfgScale: 1,
-    });
-    expect(characterVideoProductionRecipe.modelAssets).toHaveLength(6);
-    expect(characterVideoProductionRecipe.modelAssets).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          path: characterVideoProductionRecipe.sourceModelPath,
-          sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
-        }),
-      ]),
+  it("uses RedGraft as the default Character video recipe and excludes LTX 2.3", () => {
+    expect(characterVideoProductionRecipe).toBe(
+      redgraftLtx25VideoProductionRecipe,
     );
+    expect(characterVideoProductionRecipe.explicitSelectionOnly).toBe(false);
+    expect(
+      characterVideoProductionRecipeForWorkflow("ltx23-gtanimation-i2v"),
+    ).toBeNull();
   });
 
   it("keeps MiniMax H3 as a separate explicit five-second video recipe", () => {
@@ -67,7 +46,7 @@ describe("Creative Run create contract", () => {
       profileKey: "profile_video_h3_v1",
       pipelineModel: "minimax-h3-redcraft-a2a-int8-convrot",
       workflowKey: "minimax-h3-redcraft-i2v",
-      workflowVersion: 1,
+      workflowVersion: 3,
       checkpointFilename:
         "REDMix-MiniMaxH3-A2Ab1-pruned-int8-convrot-ComfyMCP.safetensors",
       width: 512,
@@ -89,6 +68,38 @@ describe("Creative Run create contract", () => {
     expect(minimaxH3VideoProductionRecipe.modelAssets).toHaveLength(4);
     expect(
       minimaxH3VideoProductionRecipe.modelAssets.every((asset) =>
+        /^[a-f0-9]{64}$/.test(asset.sha256),
+      ),
+    ).toBe(true);
+  });
+
+  it("pins RedGraft LTX 2.5 and all validated MPS assets as the default route", () => {
+    expect(redgraftLtx25VideoProductionRecipe).toMatchObject({
+      profileKey: "profile_video_redgraft_ltx25_v1",
+      pipelineModel: "redgraft-ltx25-fast2k-int8-convrot",
+      workflowKey: "redgraft-ltx25-i2v",
+      workflowVersion: 1,
+      checkpointFilename:
+        "redgraftLTX25Fast2K_ltx25RedgraftNSFW.safetensors",
+      width: 768,
+      height: 1152,
+      fps: 24,
+      durationSeconds: 5,
+      expectedDurationSeconds: 121 / 24,
+      frameCount: 121,
+      steps: 13,
+      sampler: "euler",
+      scheduler: "manual_sigmas",
+      explicitSelectionOnly: false,
+    });
+    expect(
+      characterVideoProductionRecipeForWorkflow(
+        redgraftLtx25VideoProductionRecipe.workflowKey,
+      ),
+    ).toBe(redgraftLtx25VideoProductionRecipe);
+    expect(redgraftLtx25VideoProductionRecipe.modelAssets).toHaveLength(5);
+    expect(
+      redgraftLtx25VideoProductionRecipe.modelAssets.every((asset) =>
         /^[a-f0-9]{64}$/.test(asset.sha256),
       ),
     ).toBe(true);
@@ -221,7 +232,7 @@ describe("Creative Run create contract", () => {
       purpose: "character_video" as const,
       targetType: "character" as const,
       targetId: "character-1",
-      profileId: "profile_video_beta_v1",
+      profileId: "profile_video_redgraft_ltx25_v1",
       referenceAssetIds: ["character-source-1"],
       orientation: "2:3",
       count: 1,

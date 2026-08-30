@@ -7,7 +7,7 @@
 ## 当前状态
 
 - 代码已把 Companion Chat 产品权威迁到 Main PostgreSQL：`RecentChat`、`ChatTurn`、`ChatTurnAttachment`。
-- `packages/chat` 已移除 Prisma/PostgreSQL/BullMQ，使用本地 AgentRun；`packages/chat-agent` 执行 DSH/igrep。
+- `packages/chat` 已移除 Prisma/PostgreSQL/BullMQ；其深模块内嵌执行 AgentRun、DSH/igrep，成功 run 在 Main ACK 后清理。
 - 图片 ToolEffect 已进入 Main Generation/Ledger，不采用成功后普通 hook 扣费。
 - Main migration 和旧 Chat 数据导入脚本已经存在，但本仓库修改不会替用户连接生产库执行。
 - 当前工作树同时包含大规模 Character/Admin 重构；它造成 shared/main 全门禁仍未恢复，不能把 Chat isolated green 写成全仓完成。
@@ -32,10 +32,10 @@
 6. 以新 Main history/BFF 启动；旧 Chat schema 保持只读观察。
 7. 观察期后再单独批准旧 schema/roles 的不可逆删除。
 
-## 3. 清理迁移专用代码
+## 3. 清理剩余迁移工具
 
-- cutover 对账通过后运行 `chat:purge-legacy-session-traces`，清理不再可恢复的旧 runtime trace。
-- 确认 production 不再需要 relationship workspace rebuild/cutover 兼容协议后，将该迁移 sidecar surface 与测试整组删除。
+- 独立 `chat-agent` package/process、HTTP/NDJSON wire、rollout flags 与 cutover proof 已删除；旧 package/env 已可恢复隔离到 `.data/quarantine/`。
+- production cutover 对账通过后再清理不再可恢复的旧 runtime trace；本轮不做不可逆删除。
 - 删除只服务于旧 Chat PG recovery bundle 的 schema/role/inbox/file-mutation检查，更新 recovery producer/launch gate 为 Main PG + AgentRun + DSH + Blob。
 
 这些代码在实际 cutover 前保留是迁移保险；cutover 后继续长期保留才是结构债。

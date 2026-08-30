@@ -64,6 +64,23 @@ export function applySceneDelta(previous: SceneState, delta: SceneDelta): SceneS
   };
 }
 
+export function sceneForReply(input: {
+  previous: SceneState;
+  userText: string;
+  assistantText: string;
+}): SceneState {
+  // INVARIANT: Main freezes the Scene before this logical Turn. Edit and
+  // regenerate both replace the discarded answer from that same anchor, so
+  // applying one delta always advances the Scene exactly once.
+  return applySceneDelta(
+    input.previous,
+    deriveSceneDelta({
+      userText: input.userText,
+      assistantText: input.assistantText,
+    }),
+  );
+}
+
 /**
  * Deterministic floor for Scene extraction. A configured semantic extractor may
  * enrich this later, but this keeps scene continuity available without adding a

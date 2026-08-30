@@ -5,7 +5,9 @@ import {
   chatImageFailedPayloadSchema,
   chatSessionReleaseMigrationRequestedPayloadSchema,
   accountDeletionRequestedV2PayloadSchema,
+  agentRunCancelRequestedV1PayloadSchema,
   companionMemoryRebuildRequestedV1PayloadSchema,
+  companionMemoryProjectRequestedV1PayloadSchema,
   companionMemoryPurgeRequestedV1PayloadSchema,
 } from "./payloads";
 import { durableEventEnvelopeSchema, type DurableEventEnvelope } from "./durable";
@@ -116,8 +118,16 @@ export function resolveMainToChatTarget(
       return accountDeletionRequestedV2PayloadSchema.safeParse(envelope.payload).success
         ? { valid: true, target: null }
         : { valid: false, target: null };
+    case MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1:
+      return agentRunCancelRequestedV1PayloadSchema.safeParse(envelope.payload).success
+        ? { valid: true, target: null }
+        : { valid: false, target: null };
     case MAIN_TO_CHAT_EVENTS.companionMemoryRebuildRequestedV1:
       return companionMemoryRebuildRequestedV1PayloadSchema.safeParse(envelope.payload).success
+        ? { valid: true, target: null }
+        : { valid: false, target: null };
+    case MAIN_TO_CHAT_EVENTS.companionMemoryProjectRequestedV1:
+      return companionMemoryProjectRequestedV1PayloadSchema.safeParse(envelope.payload).success
         ? { valid: true, target: null }
         : { valid: false, target: null };
     case MAIN_TO_CHAT_EVENTS.companionMemoryPurgeRequestedV1:

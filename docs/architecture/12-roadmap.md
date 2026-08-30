@@ -35,11 +35,11 @@ Character 内容与 Release 收口
 ## R3 · AgentRun/DSH 运行闭环
 
 - 验证 admission、SSE 重连、取消、重生成、Chat 重启恢复和 terminal exact replay。
-- 验证 Main ACK 前不发 `done`、不 ingest memory；终态后相同 idempotency key 不重跑模型。
+- 验证 Main ACK 前不发 `done`；成功 run 清理；memory 只从 Main committed Turns 异步投影。
 - 完成账号删除对 AgentRun 和 DSH workspace 的精确 purge。
-- 生产 cutover 后运行一次 legacy session trace purge，再移除迁移专用兼容代码。
+- 生产 cutover 后隔离旧 package/env；新 runtime 不解析旧 wire 或 cutover proof。
 
-退出：Chat 与 chat-agent isolated tests、typecheck、build 通过；本地真实进程 probe 绑定当前 source revision。
+退出：Chat isolated tests、typecheck、build 通过；本地真实进程 probe 绑定当前 source revision。
 
 ## R4 · 生成与计费
 
@@ -54,7 +54,7 @@ Character 内容与 Release 收口
 
 - 全包 test/typecheck/build/lint。
 - Playwright 覆盖首聊、刷新历史、编辑、重生成、取消、图片工具、失败退款、删除和恢复。
-- PM2 readiness 验证 Main/Admin/Chat/chat-agent/Gen/finalizer 的实际进程与端口。
+- PM2 readiness 验证 Main/Admin/Chat/Gen/finalizer 的实际进程与端口。
 - production 再验证真实 domain、secret、Redis、Blob、provider、Sentry、备份恢复和观察窗。
 
 本地受控 beta 通过不等于公开生产批准；最终结论必须绑定同一 source revision 和同一环境证据。

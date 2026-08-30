@@ -9,21 +9,20 @@ const OUTPUT_LIMIT = 4_000;
 
 export const GATE_T_CHECKS = Object.freeze([
   Object.freeze({
-    id: "sidecar-tool-loop",
-    cwd: "packages/chat-agent",
+    id: "embedded-runtime-tool-loop",
+    cwd: "packages/chat",
     command: "bun",
     args: Object.freeze([
       "run",
       "test",
       "--",
-      "src/engine.test.ts",
-      "-t",
-      "\\[Gate T\\]",
+      "src/agent-runtime/engine.test.ts",
     ]),
     scenarios: Object.freeze([
-      "multi_step_single_tool",
-      "tool_error",
-      "tool_timeout",
+      "direct_terminal_commit",
+      "single_product_tool",
+      "main_cas_rejection",
+      "in_process_cancel",
     ]),
   }),
   Object.freeze({

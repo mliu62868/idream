@@ -52,7 +52,7 @@
 
 ## 4. chat
 
-**职责**：Main 的 Chat Turn Ledger 保存 ChatSession、user message、唯一选中 assistant 回复、Scene、附件、额度与计费；`packages/chat` 只执行本地 AgentRun，`packages/chat-agent` 只执行 DSH/igrep。
+**职责**：Main 的 Chat Turn Ledger 保存 ChatSession、user message、唯一选中 assistant 回复、Scene、附件、额度与计费；`packages/chat` 的深模块内嵌执行 AgentRun、DSH 与 igrep。
 
 **关键流程**：
 
@@ -60,9 +60,9 @@
 - `POST /chat/sessions/:id/messages`：Main 做 owner、输入策略、额度与幂等检查，在一个事务写 user + pending assistant Turn，再签名执行快照给 Chat。
 - Chat 原子写 `input.json`，调用 DSH；token 经 Redis/SSE 暂态传输。
 - DSH 图片工具进入 Main `ToolEffectPort`；Main reserve/admit Generation，Gen 执行，Main settle/refund。
-- Chat terminal candidate 必须通过 Main exact-attempt CAS；收到 durable ACK 后才写 `terminal.json`、发 `done`、允许 memory ingest。
+- Chat terminal candidate 必须通过 Main exact-attempt CAS；收到 durable ACK 后发 `done` 并删除成功 run。Main 另行异步投影已提交 Turn 到 memory。
 - 编辑/重生成增加 `attempt`，保留一个产品回复 identity；历史和附件只展示当前选中 attempt。
-- 删除会话由 Main 删除产品 Turn；账号删除另行精确清理 AgentRun 和 DSH workspace。
+- 删除会话由 Main 删除产品 Turn；Chat 不中断新对话，但在 rebuild cutover 前关闭该关系的长期记忆。账号删除另行精确清理 AgentRun 和 DSH workspace。
 
 **不变量**：Chat 不连接数据库，不保存余额/usage ledger，不把 DSH event、SSE token、workspace transcript 或旧 attempt 当作产品消息。相同 ToolEffect replay 不得重复生成或扣费。
 

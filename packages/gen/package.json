@@ -20,7 +20,6 @@
     "probe:video": "bun src/probe-video-pipeline.ts",
     "probe:sentry": "bun src/probe-sentry.ts",
     "probe:character-consistency": "bun src/probe-character-consistency.ts",
-    "probe:redcraft-comfyui": "bun src/probe-redcraft-comfyui.ts",
     "sync:comfyui-workflows": "bun src/sync-comfyui-workflows.ts",
     "smoke:backend": "bun src/backend/smoke.ts",
     "preflight": "bun src/preflight.ts"

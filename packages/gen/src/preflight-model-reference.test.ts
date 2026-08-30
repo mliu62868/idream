@@ -13,13 +13,15 @@ describe("modelLoaderNodeForReference", () => {
       .toBe("CLIPLoader");
   });
 
-  it("keeps the existing checkpoint, UNET, and VAE probes", () => {
+  it("keeps checkpoint, UNET, VAE, and model-only LoRA probes", () => {
     expect(modelLoaderNodeForReference("CheckpointLoaderSimple", "ckpt_name"))
       .toBe("CheckpointLoaderSimple");
     expect(modelLoaderNodeForReference("UNETLoader", "unet_name"))
       .toBe("UNETLoader");
     expect(modelLoaderNodeForReference("VAELoader", "vae_name"))
       .toBe("VAELoader");
+    expect(modelLoaderNodeForReference("LoraLoaderModelOnly", "lora_name"))
+      .toBe("LoraLoaderModelOnly");
     expect(modelLoaderNodeForReference("SaveVideo", "filename_prefix"))
       .toBeNull();
   });

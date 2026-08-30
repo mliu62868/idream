@@ -193,8 +193,17 @@ function classifySingleOwnership(input, spec) {
   );
   const daemonPid = daemonRows.length === 1 ? daemonRows[0].pid : null;
   const registeredRoots = new Map(livePm2.map((row) => [row.pid, row]));
-  const runtimeChildren = input.psRows.filter((row) =>
-    isWorkerRuntime(row, spec)
+  const redis = input.redisWorkers.map((worker) => redisIdentity(worker, spec));
+  const namedRedis = redis.filter(Boolean);
+  const redisRuntimePids = new Set(namedRedis.map((identity) => identity.pid));
+  // PM2's Bun container hides the app entrypoint from `ps`. Once a definition
+  // has disappeared, the named BullMQ connection is the only remaining
+  // modality-to-PID evidence. Use that exact identity to make the orphan
+  // visible to the existing process-group recovery gate.
+  const runtimeChildren = input.psRows.filter(
+    (row) =>
+      isWorkerRuntime(row, spec) ||
+      (redisRuntimePids.has(row.pid) && isPm2BunRuntime(row)),
   );
   const assignedRuntimePids = new Set();
   const groups = [];
@@ -293,11 +302,9 @@ function classifySingleOwnership(input, spec) {
     }
   }
 
-  const redis = input.redisWorkers.map((worker) => redisIdentity(worker, spec));
   if (redis.some((identity) => identity === null)) {
     issues.push("anonymous_or_invalid_redis_worker");
   }
-  const namedRedis = redis.filter(Boolean);
   const targetRedisDb = input.targetRedisDb ?? 0;
   if (namedRedis.some((identity) => identity.db !== targetRedisDb)) {
     issues.push("redis_database_mismatch");
@@ -576,7 +583,7 @@ function parseCliArgs(args) {
   if (!new Set(["quiescent", "ready", "steady"]).has(mode)) {
     throw new Error(`unsupported ownership mode: ${mode}`);
   }
-  const expectedDefault = mode === "quiescent" ? 0 : 2;
+  const expectedDefault = mode === "quiescent" ? 0 : 1;
   const expectedRaw = values.get("--expected") ?? String(expectedDefault);
   if (!/^\d+$/.test(expectedRaw)) {
     throw new Error("--expected must be a non-negative integer");

@@ -11,7 +11,6 @@ import {
   mainWebUrlOrigin,
 } from "@idream/shared/env";
 import { resolveChatFsRoot, resolveChatModelProfile } from "@idream/shared";
-import { resolveCompanionRuntimeConfig } from "./companion-runtime-selection.js";
 
 export const env = {
   get APP_ENV() {
@@ -38,8 +37,8 @@ export const env = {
   get CHAT_MODEL_PROVIDER() {
     return resolveChatModelProfile(process.env).provider;
   },
-  // Admin health labels and probes must resolve the same DSH provider profile
-  // that readiness pins; Chat never executes the model through these getters.
+  // Product policy and the embedded DSH runtime resolve the same provider
+  // profile; these getters expose that pin to health and operator probes.
   get CHAT_MODEL_BASE_URL() {
     return resolveChatModelProfile(process.env).baseUrl;
   },
@@ -67,8 +66,11 @@ export const env = {
   get PORT() {
     return Number.parseInt(process.env.CHAT_PORT ?? "3100", 10);
   },
-  // Read as one validated snapshot before each attempt is recorded.
-  get COMPANION_RUNTIME_CONFIG() {
-    return resolveCompanionRuntimeConfig(process.env);
+  get AGENT_RUN_DEADLINE_MS() {
+    const value = Number(process.env.DSH_AGENT_DEADLINE_MS ?? 300_000);
+    if (!Number.isSafeInteger(value) || value <= 0) {
+      throw new Error("DSH_AGENT_DEADLINE_MS must be a positive integer");
+    }
+    return value;
   },
 } as const;

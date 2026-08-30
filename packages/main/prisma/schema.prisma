@@ -644,7 +644,8 @@ model RecentChat {
 }
 
 // One row is exactly what the product displays: one user message and its one
-// selected final assistant reply. Provider/DSH traces stay in Chat AgentRun files.
+// selected final assistant reply. Main retains content-free terminal evidence;
+// Chat deletes successful local execution files after Main's durable ACK.
 model ChatTurn {
   id                            String               @id
   sessionId                     String

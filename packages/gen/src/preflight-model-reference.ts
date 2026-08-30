@@ -3,6 +3,7 @@ const SLOT_TO_NODE: Readonly<Record<string, string>> = {
   unet_name: "UNETLoader",
   clip_name: "CLIPLoader",
   vae_name: "VAELoader",
+  lora_name: "LoraLoaderModelOnly",
 };
 
 // SPEC: preflight queries the loader that owns each selectable model field.

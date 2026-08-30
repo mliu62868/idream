@@ -186,7 +186,7 @@ These must point at fresh reports before public launch:
 | `PUBLIC_CATALOG_PROBE_REPORT` | `bun run launch:probe:catalog -- --report .tmp/public-catalog-probe.json` |
 | `CHAT_SERVICE_PROBE_REPORT` | `bun run launch:probe:chat-service -- --report .tmp/launch-chat-service-probe.json` |
 | `PIPELINE_IMAGE_PROBE_REPORT` | `bun run --filter @idream/gen probe:image -- --model <active-product-config-model> --report .tmp/launch-image-probe.json` using the production Gen adapter/workflow/blob env |
-| `VIDEO_GENERATION_PROBE_REPORT` | `bun run launch:probe:video -- --model ltx23-gtanimation-i2v --reference <reviewed-character-image> --report .tmp/launch-video-probe.json` |
+| `VIDEO_GENERATION_PROBE_REPORT` | `bun run launch:probe:video -- --model redgraft-ltx25-i2v --reference <reviewed-character-image> --report .tmp/launch-video-probe.json` |
 | `VIDEO_H3_GENERATION_PROBE_REPORT` | `bun run launch:probe:video -- --model minimax-h3-redcraft-i2v --reference <reviewed-character-image> --report .tmp/launch-video-h3-probe.json` |
 | `GENERATION_VIDEO_PERSISTENCE_PROBE_REPORT` | Run `probe:generation-persistence` for the completed LTX product job. |
 | `GENERATION_VIDEO_H3_PERSISTENCE_PROBE_REPORT` | Run `probe:generation-persistence` for the completed H3 product job. |

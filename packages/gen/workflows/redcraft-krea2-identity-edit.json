@@ -1,0 +1,285 @@
+{
+  "workflowKey": "redcraft-krea2-identity-edit",
+  "modelId": "redcraft-krea2-identity-edit",
+  "backendKind": "comfyui",
+  "comfyWorkflow": {
+    "id": "9f1a7932-0097-485c-a6ea-a18c51ffc52b",
+    "name": "iDream · RedCraft Krea2 · Identity Edit v1.2"
+  },
+  "version": 4,
+  "capabilities": [
+    "img2img",
+    "edit",
+    "referenceImages",
+    "stableSeed"
+  ],
+  "identity": {
+    "mode": "single_reference",
+    "maxReferences": 1,
+    "acceptedRoles": [
+      "identity_anchor",
+      "identity_reference",
+      "source_image"
+    ],
+    "supportsLookReference": false,
+    "supportsSourceImageWithIdentity": false
+  },
+  "quality": {
+    "maxCandidates": 2,
+    "evaluatorDimensions": [
+      "artifact",
+      "face_count",
+      "identity",
+      "intent"
+    ]
+  },
+  "apiPrompt": {
+    "1": {
+      "class_type": "UNETLoader",
+      "inputs": {
+        "unet_name": "Krea2RedMix3.0-fp8-scaled-ComfyUI.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    "2": {
+      "class_type": "CLIPLoader",
+      "inputs": {
+        "clip_name": "qwen3vl_4b_bf16.safetensors",
+        "type": "krea2"
+      }
+    },
+    "3": {
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "qwen_image_vae.safetensors"
+      }
+    },
+    "4": {
+      "class_type": "LoraLoaderModelOnly",
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "lora_name": "Krea2/krea2_identity_edit_v1_2.safetensors",
+        "strength_model": 1
+      }
+    },
+    "5": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": ""
+      }
+    },
+    "7": {
+      "class_type": "EmptySD3LatentImage",
+      "inputs": {
+        "width": 832,
+        "height": 1216,
+        "batch_size": 1
+      }
+    },
+    "8": {
+      "class_type": "Krea2EditModelPatch",
+      "inputs": {
+        "model": [
+          "4",
+          0
+        ],
+        "source_latent": [
+          "7",
+          0
+        ],
+        "ref_boost": 4,
+        "ref_boost_a": 1,
+        "fit_mode": "fit",
+        "vae": [
+          "3",
+          0
+        ],
+        "source_image": [
+          "5",
+          0
+        ],
+        "target_latent": [
+          "7",
+          0
+        ]
+      }
+    },
+    "9": {
+      "class_type": "Krea2EditGroundedEncode",
+      "inputs": {
+        "clip": [
+          "2",
+          0
+        ],
+        "prompt": "",
+        "image": [
+          "5",
+          0
+        ],
+        "grounding_px": 768,
+        "system_prompt": ""
+      }
+    },
+    "10": {
+      "class_type": "Krea2EditGroundedEncode",
+      "inputs": {
+        "clip": [
+          "2",
+          0
+        ],
+        "prompt": "",
+        "image": [
+          "5",
+          0
+        ],
+        "grounding_px": 768,
+        "system_prompt": ""
+      }
+    },
+    "11": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": [
+          "8",
+          0
+        ],
+        "positive": [
+          "9",
+          0
+        ],
+        "negative": [
+          "10",
+          0
+        ],
+        "latent_image": [
+          "7",
+          0
+        ],
+        "seed": 0,
+        "steps": 8,
+        "cfg": 1,
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "denoise": 1
+      }
+    },
+    "12": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "11",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
+      }
+    },
+    "13": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": [
+          "12",
+          0
+        ],
+        "filename_prefix": "idream_redcraft_krea2_identity"
+      }
+    }
+  },
+  "inputs": [
+    {
+      "key": "prompt",
+      "type": "text",
+      "target": {
+        "nodeId": "9",
+        "field": "prompt"
+      }
+    },
+    {
+      "key": "negative",
+      "type": "text",
+      "target": {
+        "nodeId": "10",
+        "field": "prompt"
+      },
+      "default": ""
+    },
+    {
+      "key": "identity_image",
+      "type": "image",
+      "required": true,
+      "referenceRoles": [
+        "identity_anchor",
+        "identity_reference",
+        "source_image"
+      ],
+      "target": {
+        "nodeId": "5",
+        "field": "image"
+      }
+    },
+    {
+      "key": "width",
+      "type": "int",
+      "target": {
+        "nodeId": "7",
+        "field": "width"
+      },
+      "default": 832
+    },
+    {
+      "key": "height",
+      "type": "int",
+      "target": {
+        "nodeId": "7",
+        "field": "height"
+      },
+      "default": 1216
+    },
+    {
+      "key": "seed",
+      "type": "int",
+      "target": {
+        "nodeId": "11",
+        "field": "seed"
+      }
+    },
+    {
+      "key": "steps",
+      "type": "int",
+      "target": {
+        "nodeId": "11",
+        "field": "steps"
+      },
+      "default": 8
+    },
+    {
+      "key": "ref_boost",
+      "type": "float",
+      "target": {
+        "nodeId": "8",
+        "field": "ref_boost"
+      },
+      "default": 4
+    },
+    {
+      "key": "grounding_px",
+      "type": "int",
+      "target": {
+        "nodeId": "9",
+        "field": "grounding_px"
+      },
+      "additionalTargets": [
+        {
+          "nodeId": "10",
+          "field": "grounding_px"
+        }
+      ],
+      "default": 768
+    }
+  ]
+}

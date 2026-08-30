@@ -10,7 +10,6 @@ const { computeSourceRevision } = require("./source-revision.cjs");
 const repoRoot = path.resolve(__dirname, "..");
 const productionGateCwd = path.join(repoRoot, "packages/main");
 const productionGenCwd = path.join(repoRoot, "packages/gen");
-const productionChatAgentCwd = path.join(repoRoot, "packages/chat-agent");
 const bunInterpreter = [
   process.env.BUN_EXEC_PATH,
   process.env.BUN_INSTALL
@@ -36,9 +35,6 @@ const productionAdmissionTargets = [
   "main-web",
   "admin-web",
   "chat",
-  // Admission shutdown is ordered: Chat drains/cancels active invocations
-  // before the sidecar that owns them is allowed to stop.
-  "chat-agent",
   "main-event-consumer",
   "admin-command-worker",
 ];
@@ -82,13 +78,6 @@ const productionProcessDefinitions = new Map([
   ["chat", {
     cwd: path.join(repoRoot, "packages/chat"),
     execPath: path.join(repoRoot, "packages/chat/dist/main.js"),
-    args: [],
-    execInterpreter: bunInterpreter,
-    execMode: "fork_mode",
-  }],
-  ["chat-agent", {
-    cwd: productionChatAgentCwd,
-    execPath: path.join(productionChatAgentCwd, "dist/main.js"),
     args: [],
     execInterpreter: bunInterpreter,
     execMode: "fork_mode",
@@ -154,13 +143,6 @@ const developmentProcessDefinitions = new Map([
   ["chat", {
     cwd: path.join(repoRoot, "packages/chat"),
     execPath: path.join(repoRoot, "packages/chat/src/main.ts"),
-    args: [],
-    execInterpreter: bunInterpreter,
-    execMode: "fork_mode",
-  }],
-  ["chat-agent", {
-    cwd: productionChatAgentCwd,
-    execPath: path.join(productionChatAgentCwd, "src/main.ts"),
     args: [],
     execInterpreter: bunInterpreter,
     execMode: "fork_mode",
@@ -324,19 +306,34 @@ function matchesDevelopmentProcessDefinition(process) {
   );
 }
 
-function developmentDefinitionPlan(processes) {
+function developmentDefinitionPlan(processes, runtimeEnv = process.env) {
   // PM2 restart/update-env does not replace an already-registered script or
-  // interpreter. Recreate only definitions whose structural fields prove they
-  // predate the Bun migration; ordinary development restarts keep stable IDs.
-  const deleteNames = productionRuntimeTargets.filter((name) =>
-    processes.some(
-      (process) =>
-        process?.name === name &&
-        typeof process?.pm2_env?.pm_exec_path === "string" &&
-        !matchesDevelopmentProcessDefinition(process),
-    ),
+  // interpreter or scale an existing app down. Recreate definitions whose
+  // structure or instance cardinality differs from the current topology.
+  const expectedInstances = new Map(
+    productionRuntimeTargets.map((name) => [
+      name,
+      name === "gen-image"
+        ? positiveInstanceCount(runtimeEnv.GEN_IMAGE_INSTANCES, 1)
+        : name === "gen-video"
+          ? developmentVideoWorkerCount(runtimeEnv)
+          : 1,
+    ]),
   );
-  return { deleteNames, requiresStart: deleteNames.length > 0 };
+  const deleteNames = productionRuntimeTargets.filter((name) => {
+    const registered = processes.filter((process) => process?.name === name);
+    if (registered.length === 0) return false;
+    return registered.length !== expectedInstances.get(name) ||
+      registered.some(
+        (process) =>
+          typeof process?.pm2_env?.pm_exec_path === "string" &&
+          !matchesDevelopmentProcessDefinition(process),
+      );
+  });
+  return {
+    deleteNames,
+    requiresStart: deleteNames.length > 0,
+  };
 }
 
 function legacyWebRuntimeMode(process) {
@@ -410,7 +407,7 @@ function productionExpectedInstances(runtimeEnv) {
       name === "main-web"
         ? positiveInstanceCount(runtimeEnv.MAIN_WEB_INSTANCES, 1)
         : name === "gen-image"
-          ? positiveInstanceCount(runtimeEnv.GEN_IMAGE_INSTANCES, 2)
+          ? positiveInstanceCount(runtimeEnv.GEN_IMAGE_INSTANCES, 1)
           : name === "gen-video"
             ? productionVideoWorkerCount(runtimeEnv)
             : 1,
@@ -804,7 +801,7 @@ function runPm2Ecosystem(options = {}) {
   {
     const definitionPlan = mode === "production"
       ? productionDefinitionPlan(quiescedProcesses)
-      : developmentDefinitionPlan(quiescedProcesses);
+      : developmentDefinitionPlan(quiescedProcesses, runtimeEnv);
     for (const name of definitionPlan.deleteNames) {
       const deleted = spawn("pm2", ["delete", name], {
         cwd: repoRoot,
@@ -872,7 +869,7 @@ function runPm2Ecosystem(options = {}) {
   }
 
   const ownedImageWorkers = ownershipProbe({
-    expected: positiveInstanceCount(runtimeEnv.GEN_IMAGE_INSTANCES, 2),
+    expected: positiveInstanceCount(runtimeEnv.GEN_IMAGE_INSTANCES, 1),
     // Development registers the PM2 app, but mock exits before creating a Bull
     // consumer. Production may likewise validate an exact zero-video topology.
     expectedVideo:

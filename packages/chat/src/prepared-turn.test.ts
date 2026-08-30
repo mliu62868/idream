@@ -3,7 +3,6 @@ import type { BuiltContext } from "./context.js";
 import {
   compilePreparedTurn,
   fitPreparedTurnBudget,
-  toPreparedTurnWire,
 } from "./prepared-turn.js";
 import { resolvePolicy } from "./policy.js";
 
@@ -60,13 +59,6 @@ function context(): BuiltContext {
     lastExchangeAt: null,
     dropped: [],
     contextRevision: 0n,
-    releasedKnowledge: {
-      characterId: "character-1",
-      characterContentVersionId: "content-1",
-      characterReleaseId: "release-1",
-      digest: "73f52f1247b5c2862b6a865ef06ca934cdda49c7af16c606dad118dbbe2eb3c2",
-      files: [],
-    },
   };
 }
 
@@ -89,7 +81,7 @@ describe("PreparedTurn budget", () => {
     ];
     const prepared = compilePreparedTurn(source, "user-current");
 
-    const wire = toPreparedTurnWire(prepared);
+    const { context: _context, ...wire } = prepared;
 
     expect(JSON.parse(JSON.stringify(wire))).toEqual(wire);
     expect(wire.messages.map(({ id, sourceKind, role }) => ({ id, sourceKind, role })))
@@ -109,10 +101,8 @@ describe("PreparedTurn budget", () => {
     });
     expect(wire).toMatchObject({
       version: 3,
-      releasedKnowledge: source.releasedKnowledge,
       trace: {
         characterReleaseId: "release-1",
-        releasedKnowledgeDigest: source.releasedKnowledge.digest,
       },
     });
   });
@@ -126,7 +116,7 @@ describe("PreparedTurn budget", () => {
     ];
     const prepared = compilePreparedTurn(source, "user-current", new Date("2026-08-24T15:04:00Z"));
 
-    const wire = toPreparedTurnWire(prepared);
+    const { context: _context, ...wire } = prepared;
 
     const system = wire.messages[0]?.content ?? "";
     const state = wire.messages.at(-2)?.content ?? "";
@@ -137,8 +127,8 @@ describe("PreparedTurn budget", () => {
     expect(state).not.toContain("Relationship");
     expect(state).toContain("Scene: at the library; tonight; with Mara; mood: calm");
     expect(state).toContain("Time now: 2026-08-24 15:04 UTC, Monday");
-    expect(wire.releasedKnowledge).toEqual(source.releasedKnowledge);
-    expect(toPreparedTurnWire(prepared)).toEqual(wire);
+    const { context: _contextAgain, ...sameWire } = prepared;
+    expect(sameWire).toEqual(wire);
     // The budget counts the state block as adapter input.
     expect(prepared.messages.at(-2)?.content).toBe(state);
   });

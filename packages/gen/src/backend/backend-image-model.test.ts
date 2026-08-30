@@ -92,11 +92,58 @@ function submittedSlots(backend: GenBackend, callIndex = 0): Record<string, stri
 }
 
 function modelWith(backend: GenBackend): BackendImageModel {
-  const registry = { resolveForModel: vi.fn(() => ({ backend, descriptor })) };
+  return modelWithDescriptor(backend, descriptor);
+}
+
+function modelWithDescriptor(
+  backend: GenBackend,
+  selectedDescriptor: typeof descriptor,
+): BackendImageModel {
+  const registry = { resolveForModel: vi.fn(() => ({ backend, descriptor: selectedDescriptor })) };
   return new BackendImageModel(registry);
 }
 
 describe("BackendImageModel", () => {
+  it("prepares the selected ComfyUI runner inside the host lease before submit", async () => {
+    const events: string[] = [];
+    const stub = makeStubBackend({
+      submit: vi.fn(async () => {
+        events.push("submit");
+        return { id: "handle-1" };
+      }),
+    });
+    const registry = {
+      resolveForModel: vi.fn(() => ({ backend: stub, descriptor })),
+    };
+    const model = new BackendImageModel(
+      registry,
+      async (run) => {
+        events.push("lease:acquired");
+        const result = await run();
+        events.push("lease:released");
+        return result;
+      },
+      async (runner) => {
+        events.push(`prepare:${runner}`);
+      },
+    );
+
+    const result = await model.generate({
+      prompt: "a cat",
+      count: 1,
+      model: "m",
+      controls: PIN,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(events).toEqual([
+      "lease:acquired",
+      "prepare:image",
+      "submit",
+      "lease:released",
+    ]);
+  });
+
   it("rejects a stale worker descriptor before backend submission", async () => {
     const backend = makeStubBackend();
     const model = modelWith(backend);
@@ -462,5 +509,55 @@ describe("BackendImageModel numericControl", () => {
     });
 
     expect(submittedSlots(backend)).not.toHaveProperty("steps");
+  });
+
+  it("passes only declared workflow-native numeric controls into slots", async () => {
+    const backend = makeStubBackend();
+    const tunableDescriptor = workflowDescriptorSchema.parse({
+      ...descriptor,
+      inputs: [
+        { key: "ref_boost", type: "int", default: 4, target: { nodeId: "8", field: "ref_boost" } },
+        { key: "guidance", type: "float", default: 1, target: { nodeId: "9", field: "guidance" } },
+      ],
+      apiPrompt: {
+        "8": { class_type: "TestInt", inputs: { ref_boost: 4 } },
+        "9": { class_type: "TestFloat", inputs: { guidance: 1 } },
+      },
+    });
+
+    await modelWithDescriptor(backend, tunableDescriptor).generate({
+      prompt: "a cat",
+      count: 1,
+      model: "m",
+      controls: {
+        ...PIN,
+        ref_boost: 2,
+        guidance: 0.75,
+        undeclared: 99,
+      },
+    });
+
+    expect(submittedSlots(backend)).toMatchObject({ ref_boost: 2, guidance: 0.75 });
+    expect(submittedSlots(backend)).not.toHaveProperty("undeclared");
+  });
+
+  it("ignores a fractional override for a declared int slot", async () => {
+    const backend = makeStubBackend();
+    const tunableDescriptor = workflowDescriptorSchema.parse({
+      ...descriptor,
+      inputs: [
+        { key: "ref_boost", type: "int", default: 4, target: { nodeId: "8", field: "ref_boost" } },
+      ],
+      apiPrompt: { "8": { class_type: "TestInt", inputs: { ref_boost: 4 } } },
+    });
+
+    await modelWithDescriptor(backend, tunableDescriptor).generate({
+      prompt: "a cat",
+      count: 1,
+      model: "m",
+      controls: { ...PIN, ref_boost: 2.5 },
+    });
+
+    expect(submittedSlots(backend)).not.toHaveProperty("ref_boost");
   });
 });

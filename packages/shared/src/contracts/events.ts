@@ -15,9 +15,15 @@ export const MAIN_TO_CHAT_EVENTS = {
   // SPEC: Account deletion uses a dedicated v2 transport route. An older Chat
   // binary must not persist-and-ignore this request through its generic inbox.
   accountDeletionRequestedV2: "user.account_deletion.requested.v2",
+  // User cancellation is authoritative in Main. Chat durably fences the exact
+  // local attempt so restart recovery cannot execute work the user stopped.
+  agentRunCancelRequestedV1: "chat.agent_run.cancel_requested.v1",
   // A destructive Turn/Session correction makes Main's remaining committed
   // transcript the only legal source for the relationship workspace.
   companionMemoryRebuildRequestedV1: "chat.companion_memory.rebuild_requested.v1",
+  // Every accepted Main Turn advances the relationship memory projection.
+  // This lag-tolerant event never blocks a new Chat Turn.
+  companionMemoryProjectRequestedV1: "chat.companion_memory.project_requested.v1",
   // Clearing memory is a durable lifecycle command. Archiving product state
   // and physically purging the relationship workspace converge independently.
   companionMemoryPurgeRequestedV1: "chat.companion_memory.purge_requested.v1",

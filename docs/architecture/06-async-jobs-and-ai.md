@@ -73,7 +73,7 @@ Request admitted
 
 ## 6. Provider 边界
 
-- Chat 模型只由 `chat-agent` 的 OpenAI-compatible adapter 调用。
+- Chat 模型只由 `packages/chat/src/agent-runtime` 的 OpenAI-compatible adapter 调用。
 - 图片/视频 provider 只由 `packages/gen` 执行。
 - Main 持有产品策略、moderation、entitlement、ledger、Generation 和交付状态机。
 - Provider adapter 只做协议、超时、错误映射与原始执行证据，不做余额更新。
@@ -84,4 +84,4 @@ Request admitted
 - 每次 attempt 记录 provider/model/workflow、开始/结束时间、错误、artifact 和 settlement。
 - terminal ingest 与 finalizer 可重复执行；所有写入都以 CAS/唯一约束保护。
 - 发布或恢复前 pause/drain 生成队列，确认没有 active/unknown attempt，再切进程。
-- Chat 监控 AgentRun active/terminal、Main ACK 延迟、SSE 重连和 DSH readiness；不监控不存在的 Chat DB/queue。
+- Chat 监控 AgentRun active/failed trace、Main ACK 延迟、SSE 重连、memory projection lag 和内嵌 DSH readiness；不监控不存在的 Chat DB/queue。

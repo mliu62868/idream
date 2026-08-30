@@ -3,8 +3,8 @@
 // image through BackendImageModel -> BackendRegistry -> GenBackend. The default
 // targets ComfyUI; pass a Draw Things model id to drive draw-things-cli through
 // the same provider seam the gen worker uses in production.
-// Defaults to the txt2img redcraft path; pass --model <modelId> to target any
-// other registered descriptor (e.g. qwen-image-edit), --ref <image path> to
+// Requires --model <modelId>; retired models must never remain as an implicit
+// fallback. Pass --ref <image path> to
 // drive an img2img/edit workflow off a local reference image, and --prompt to
 // override the default smoke prompt. Multi-reference workflows use repeated
 // --ref plus one matching --ref-role per reference so semantic graph slots are
@@ -12,10 +12,8 @@
 // INTENT: Manual-only dev script, not part of `vitest run` (no live server in
 // CI; see package.json's `smoke:backend` script). Forces GEN_IMAGE_PROVIDER to
 // "backend" unconditionally so package-local .env cannot select another Gen
-// provider. Also forces GEN_WORKFLOW_DIR to an absolute path
-// resolved from this file's location, since the env.ts default
-// ("packages/gen/workflows") is repo-root relative and breaks when this
-// script is invoked from inside packages/gen (its `bun run` cwd).
+// provider. Workflow discovery uses env.ts's file-relative bundled default, so
+// the same descriptor authority is used regardless of the caller's cwd.
 // INVARIANTS: never commits the generated PNG; writes under the OS temp dir
 // unless --out points elsewhere. Exits 1 on any failure (ok:false, missing
 // body, or a thrown error) so it composes as a CLI health check. --ref is
@@ -24,31 +22,38 @@ import { Buffer } from "node:buffer";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   resolveSmokeGenerationOverrides,
   resolveSmokeReferences,
+  resolveSmokeWorkflowPin,
 } from "./smoke-args";
-
-const here = path.dirname(fileURLToPath(import.meta.url));
 
 // Must happen before providers.ts/env.ts are evaluated by the imports below —
 // import statements are hoisted, so these assignments run first regardless of
 // where they appear in the file, but keeping them textually first avoids
 // confusion about ordering.
 process.env.GEN_IMAGE_PROVIDER = "backend";
-process.env.GEN_WORKFLOW_DIR ??= path.resolve(here, "..", "..", "workflows");
 
 const { providers } = await import("../providers");
+const { env } = await import("../env");
 const { assertGeneratedImageSanity } = await import("@idream/shared/media/generated-image-sanity");
 const { logger } = await import("../logger");
+const { loadWorkflowDescriptors } = await import("./workflow");
 
 const SMOKE_PROMPT =
   "adult woman, upper-body portrait, oval face, hazel eyes, long auburn hair, soft daylight, photorealistic, high detail";
 
 async function main() {
   const outPath = resolveOutPath();
-  const modelId = resolveArg("--model") ?? "redcraft-krea2-redmix3-fp8";
+  const requestedModel = resolveArg("--model");
+  if (!requestedModel) {
+    throw new Error("--model is required; no implicit image model is allowed");
+  }
+  const workflowPin = resolveSmokeWorkflowPin(
+    await loadWorkflowDescriptors(env.GEN_WORKFLOW_DIR),
+    requestedModel,
+  );
+  const modelId = workflowPin.modelId;
   const promptOverride = resolveArg("--prompt");
   const cliArgs = process.argv.slice(2);
   const generationOverrides = resolveSmokeGenerationOverrides(cliArgs);
@@ -77,14 +82,23 @@ async function main() {
     // descriptor's own declared slot defaults apply instead.
     orientation: hasReferences ? undefined : "4:5",
     seed: generationOverrides.seed ?? "42",
-    // Same reasoning as orientation above: redcraft's txt2img default is 10
-    // steps, but qwen-image-edit's P0-validated recipe is 4 steps — don't
-    // clobber a ref-driven descriptor's own steps default.
-    controls: generationOverrides.steps === undefined
-      ? hasReferences
+    // Reference-driven descriptors own their validated step defaults; only the
+    // generic text-to-image smoke supplies a ten-step fallback.
+    controls: {
+      workflowKey: workflowPin.workflowKey,
+      workflowVersion: workflowPin.workflowVersion,
+      ...(generationOverrides.steps === undefined
+        ? hasReferences
+          ? {}
+          : { steps: 10 }
+        : { steps: generationOverrides.steps }),
+      ...(generationOverrides.refBoost === undefined
         ? {}
-        : { steps: 10 }
-      : { steps: generationOverrides.steps },
+        : { ref_boost: generationOverrides.refBoost }),
+      ...(generationOverrides.groundingPx === undefined
+        ? {}
+        : { grounding_px: generationOverrides.groundingPx }),
+    },
     ...(referenceImages ? { referenceImages } : {}),
   });
 

@@ -46,9 +46,13 @@ OpenAI-compatible pipeline gateway:
 
 ### Pointing at a local ComfyUI
 
-Set `COMFYUI_API_URL` (default `http://127.0.0.1:8188`) to your running ComfyUI
-instance's native API, and `GEN_IMAGE_PROVIDER=backend` to route
-`providers.image` through it. `GEN_WORKFLOW_DIR` defaults to
+Set `COMFYUI_IMAGE_API_URL` (default `http://127.0.0.1:8189`) and
+`COMFYUI_VIDEO_API_URL` (default `http://127.0.0.1:8188`) to the isolated native
+image and RedGraft/LTX APIs. `COMFYUI_H3_API_URL` defaults to
+`http://127.0.0.1:8190` for MiniMax H3. `bun run comfyui:start` starts image with
+PyTorch attention, RedGraft/LTX with validated split attention, and H3 with
+exact PyTorch SDPA. Set `GEN_IMAGE_PROVIDER=backend` to route `providers.image`
+through it. `GEN_WORKFLOW_DIR` defaults to
 `packages/gen/workflows` (repo-root relative); the smoke script below resolves
 it explicitly so it works regardless of cwd.
 
@@ -61,80 +65,51 @@ ComfyUI startup, so a ComfyUI upgrade needs **no re-patching**. Do NOT install
 the older `fp4-fp8-for-torch-mps` pip package alongside it; both patch the
 same MPS ops and stack unpredictably.
 
-After every ComfyUI upgrade (then `pm2 restart comfyui-idream`):
+RedCraft RedMix3 uses the author/release scaled-FP8 checkpoint directly. On
+M1–M4, the 8-bit weights remain the resident/storage representation and the
+compatibility layer decodes one operation at a time to BF16 for MPS GEMM. This
+is intentional: it preserves the roughly 12 GiB resident checkpoint instead of
+materializing a roughly 24 GiB whole-model BF16 serving copy. Do not add
+`--supports-fp8-compute`; on this host it would quantize BF16 activations only to
+decode them again before the same BF16 GEMM.
+
+After every ComfyUI upgrade (then `bun run comfyui:restart`):
 
 ```bash
-cd packages/gen && bun run preflight && bun run smoke:backend
+cd packages/gen && bun run preflight
 ```
 
 `preflight` hard-checks the node directory (via `COMFYUI_VENV_PYTHON`), model
 visibility, and every production video recipe's pinned model SHA-256 against
-the bytes under `COMFYUI_MODEL_ROOT`; `smoke:backend` proves fp8 end-to-end
-with a real image. If
-smoke fails after an upgrade, update the node itself and restart:
+the bytes under `COMFYUI_MODEL_ROOT`; `smoke:backend` requires an explicit
+model. If a supported route fails after an upgrade, update the node
+itself and restart:
 
 ```bash
 git -C "<comfyui>/custom_nodes/ComfyUI-AppleSilicon-FP8" pull
 ```
 
 Per-patch status is logged at startup — inspect with
-`pm2 logs comfyui-idream --nostream | grep AppleSilicon-FP8`. A venv rebuild
+`pm2 logs comfyui-video comfyui-image --nostream | grep AppleSilicon-FP8`. A venv rebuild
 (major ComfyUI Desktop upgrade) keeps the node but may drop its pip deps;
 reinstall with the venv python: `pip install -r <node dir>/requirements.txt`.
 
-### RedCraft Krea2 RedMix3 comparison candidate
+### RedCraft Krea2 routes
 
-`redcraft-krea2-redmix3-txt2img` is an opt-in RedMix3 text-to-image workflow
-for Civitai model `958009`, version `3139241`, file `3019490`. It remains
-separate from the serving `redcraft-krea2-redmix3-txt2img` workflow so the current
-RedCraft BF16 model stays available as the default and rollback path.
+The active text-to-image descriptor is
+`redcraft-krea2-redmix3-txt2img@1`. Identity Edit uses
+`redcraft-krea2-identity-edit@4`: the full v1.2 LoRA at strength 1,
+`ref_boost=4`, `grounding_px=768`, 832×1216, 8 steps, CFG 1, Euler/Simple. Its
+pixel path receives `vae + source_image + target_latent` and pre-encodes the
+fitted source before sampling; the required `source_latent` socket uses the
+same empty target latent as a type-correct placeholder, avoiding a redundant
+source VAE encode.
 
-The exact source file is the 12.24 GiB scaled-FP8 variant:
-
-- upstream filename: `redcraft23INT8INT4FP8_30Krea2.safetensors`
-- normalized local filename:
-  `Krea2RedMix3.0-fp8-scaled-ComfyUI.safetensors`
-- SHA-256:
-  `F6088960C0FEBD27CBD372FC758BB07D012F2D8AE3CD10C45C903D48B94409EA`
-- Civitai download:
-  `https://civitai.red/api/download/models/3139241?fileId=3019490`
-
-Header inspection must show 256 FP8 weights, 256 matching `weight_scale`
-sidecars, and 256 `comfy_quant` tags. **No conversion step is needed.** With
-the `ComfyUI-AppleSilicon-FP8` custom node in the runner's `custom_nodes/`,
-ComfyUI dequantizes scaled-fp8 per layer on MPS, so the descriptor loads the
-Civitai release file as-is. The
-former bf16 conversion product is not equivalent to it anyway — same-seed
-output differs (RMSE 25.5); see
-`docs/research/QWEN_FP8_ON_APPLE_MPS_LANDED_2026-07-29.md`.
-
-The candidate also requires:
-
-- `models/text_encoders/qwen3vl_4b_bf16.safetensors`
-- `models/vae/qwen_image_vae.safetensors`
-
-Its controlled graph uses 12 steps, Euler, Simple, and CFG 1. Author showcase
-LoRA, SeedVR2, sharpening, and upscalers are intentionally excluded. The
-current route uses 10-step ER-SDE, so a same-prompt/seed/dimensions comparison
-still compares two version-native recipes; it is not a model-weight-only
-experiment. Run a local artifact smoke with:
-
-```bash
-cd packages/gen
-GEN_IMAGE_PROVIDER=backend \
-  COMFYUI_API_URL=http://127.0.0.1:8188 \
-  bun run smoke:backend -- \
-  --model redcraft-krea2-redmix3-fp8 \
-  --prompt "editorial portrait, dramatic foreground perspective, natural skin texture" \
-  --seed 486071801727172 \
-  --steps 12 \
-  --out /private/tmp/idream-redmix3-mps-smoke.png
-```
-
-The seeded profile `redcraft-krea2-redmix3-comparison` stays `draft`, disabled,
-and at zero rollout. A successful artifact smoke proves runtime compatibility;
-it does not switch the serving default or establish character-consistency
-qualification.
+Only the active FP8 profiles may point at these descriptors. The legacy
+`/Users/kk/Downloads/models/redcraftKREA2RedMix_krea2Edition.safetensors`
+profiles remain archived because that file is absent. The materialized BF16
+comparison profile also remains archived: its file is absent and its matched
+warm A/B did not justify doubling resident model bytes.
 
 ### Pointing at Draw Things
 
@@ -145,10 +120,9 @@ On macOS the CLI automatically reuses the Draw Things app model directory;
 (`DRAWTHINGS_OFFLINE=true`) so missing models fail instead of downloading at
 request time.
 
-The adapter serializes Draw Things commands inside each worker. When the host
-must load only one model process at a time, start PM2 with
-`GEN_IMAGE_INSTANCES=1`; leaving the variable unset preserves the two-worker
-default used by the other backends.
+The host defaults to one image worker. Image and video backend calls also share
+`GEN_ACCELERATOR_LOCK_PATH`, so separate ComfyUI processes cannot execute large
+MPS jobs concurrently on the same unified-memory GPU.
 
 ```bash
 cd packages/gen
@@ -169,12 +143,17 @@ requires the corresponding real backend:
 
 ```bash
 cd packages/gen
-GEN_IMAGE_PROVIDER=backend COMFYUI_API_URL=http://127.0.0.1:8188 bun run smoke:backend -- --out /tmp/backend-smoke.png
+GEN_IMAGE_PROVIDER=backend \
+  COMFYUI_IMAGE_API_URL=http://127.0.0.1:8189 \
+  bun run smoke:backend -- \
+  --model qwen-image-edit \
+  --ref /absolute/path/to/reference.png \
+  --out /tmp/backend-smoke.png
 ```
 
-The first generation on a cold ComfyUI process loads a ~24GB bf16 checkpoint
-into memory and can take a few minutes; subsequent runs are much faster once
-the model is resident.
+Cold-start cost depends on the explicitly selected model. The smoke command has
+no implicit model fallback, so an unspecified or archived model cannot be
+exercised accidentally.
 
 ## Production video backend (`GEN_VIDEO_PROVIDER=backend`)
 
@@ -186,22 +165,23 @@ the worker rejects corrupt media or output that drifts from its recipe-specific
 dimensions, duration, fps, or required audio stream. Missing verification
 binaries fail closed.
 
-The checked-in descriptor pins the exact Civitai LTX 2.3 GTAnimation INT4
-ConvRot workflow tested on ComfyUI/MPS:
+The checked-in descriptors pin the exact RedGraft LTX 2.5 and MiniMax H3
+workflows tested on ComfyUI/MPS:
 
 ```dotenv
 GEN_VIDEO_PROVIDER=backend
 GEN_VIDEO_TIMEOUT_MS=1800000
-COMFYUI_API_URL=http://127.0.0.1:8188
+COMFYUI_VIDEO_API_URL=http://127.0.0.1:8188
+COMFYUI_H3_API_URL=http://127.0.0.1:8190
 # Optional when the binaries are not on PATH:
 # GEN_FFPROBE_BIN=/opt/homebrew/bin/ffprobe
 # GEN_FFMPEG_BIN=/opt/homebrew/bin/ffmpeg
 ```
 
 ```text
-default model: ltx23-gtanimation-int4-convrot
-default workflow: ltx23-gtanimation-i2v
-default output: 768x1152, about 4 seconds, 25 fps, MP4 with audio
+default model: redgraft-ltx25-fast2k-int8-convrot
+default workflow: redgraft-ltx25-i2v
+default output: 768x1152, 121 frames / 5.042 seconds, 24 fps, MP4 with audio
 
 explicit model: minimax-h3-redcraft-a2a-int8-convrot
 explicit workflow: minimax-h3-redcraft-i2v
@@ -210,9 +190,13 @@ input: one published source image
 ```
 
 MiniMax H3 is registered as `profile_video_h3_v1` with
-`publicSelection.explicitOnly=true`; it never replaces the LTX default when a
+`publicSelection.explicitOnly=true`; it never replaces the RedGraft default when a
 caller omits the model. Its request contract is the integer value `seconds=5`,
-which the worker binds to H3's native 124-frame grid.
+which the worker binds to H3's native 124-frame grid. Workflow v3 routes H3 to
+8190 but keeps exact SDPA: the matched 512×512/124-frame SolAttn A/B saved only
+about eight seconds of an eleven-minute prompt while changing generated pixels,
+which was not enough evidence to accept approximation. RedGraft/LTX continues
+to use its unchanged 8188 split-attention process.
 
 Both recipes pin every executable checkpoint, text encoder, VAE, and LTX
 upscaler by relative model path plus SHA-256. Set `COMFYUI_MODEL_ROOT` to the
@@ -230,21 +214,18 @@ edit invalidates its freshness exactly like a code edit. Explicit immutable
 release revisions remain opaque exact-match authority. See
 `docs/architecture/10-operations.md` for the drain and reprobe procedure.
 
-Regenerate the descriptor from the validated ComfyUI API prompt with:
+Sync the checked-in descriptors into the ComfyUI API workflow directory with:
 
 ```bash
-bun packages/gen/scripts/build-ltx23-gtanimation-workflow.mjs
 bun run sync:comfyui-workflows
 ```
 
 The 30-minute provider timeout is intentional. On the current M4 Max host, the
 executor-bound `0fdf96b06508` evidence snapshot measured MiniMax H3 direct at
-667.438 seconds total (565 seconds for 8-step sampling). The final dual-route
-product closure measured LTX at 381.205 seconds and MiniMax H3 at 722.188
-seconds; each completed one Main Attempt, delivered one MediaAsset, and created
-exactly one 100-Dreamcoin spend settlement. An earlier real Main H3 job took
-745.752 seconds, while the historical LTX 2.3 browser job took 623.715 seconds.
-The routes use different resolution/frame contracts and warm/cold states, so
+667.438 seconds total (565 seconds for 8-step sampling). The latest isolated
+RedGraft product probe took 893.807 seconds end to end for 121 frames. Historical
+LTX 2.3 timings remain evidence for old outputs, not an executable route. The
+active routes use different resolution/frame contracts and warm/cold states, so
 these values are operating baselines rather than a controlled model benchmark.
 
 The PM2 `gen-video` process intentionally runs with `watch: false` in both

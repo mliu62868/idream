@@ -24,7 +24,9 @@ export interface BackendRegistry {
 }
 
 export async function buildBackendRegistry(opts: {
-  comfyApiUrl: string;
+  comfyImageApiUrl: string;
+  comfyVideoApiUrl: string;
+  comfyH3ApiUrl?: string;
   drawThingsCli?: string;
   drawThingsModelsDir?: string;
   drawThingsOffline?: boolean;
@@ -52,14 +54,18 @@ export async function buildBackendRegistry(opts: {
     index(descriptor.workflowKey, descriptor);
   }
 
-  const backends: Record<WorkflowDescriptor["backendKind"], GenBackend> = {
-    comfyui: new ComfyUIBackend({ apiUrl: opts.comfyApiUrl }),
-    drawthings: new DrawThingsBackend({
+  const comfyBackends = {
+    image: new ComfyUIBackend({ apiUrl: opts.comfyImageApiUrl }),
+    video: new ComfyUIBackend({ apiUrl: opts.comfyVideoApiUrl }),
+    "video-h3": new ComfyUIBackend({
+      apiUrl: opts.comfyH3ApiUrl ?? opts.comfyVideoApiUrl,
+    }),
+  } as const;
+  const drawThingsBackend = new DrawThingsBackend({
       cli: opts.drawThingsCli ?? "draw-things-cli",
       modelsDir: opts.drawThingsModelsDir,
       offline: opts.drawThingsOffline,
-    }),
-  };
+    });
 
   return {
     resolveForModel(key: string) {
@@ -67,9 +73,23 @@ export async function buildBackendRegistry(opts: {
       if (!descriptor) {
         throw new Error(`buildBackendRegistry: unknown modelId "${key}" (no workflow descriptor found)`);
       }
-      return { backend: backends[descriptor.backendKind], descriptor };
+      const backend: GenBackend = descriptor.backendKind === "drawthings"
+        ? drawThingsBackend
+        : comfyBackends[comfyUiRunnerForDescriptor(descriptor)];
+      return { backend, descriptor };
     },
   };
+}
+
+export type ComfyUiRunner = "image" | "video" | "video-h3";
+
+export function comfyUiRunnerForDescriptor(
+  descriptor: Pick<WorkflowDescriptor, "capabilities" | "workflowKey">,
+): ComfyUiRunner {
+  if (descriptor.workflowKey === "minimax-h3-redcraft-i2v") {
+    return "video-h3";
+  }
+  return descriptor.capabilities.includes("video") ? "video" : "image";
 }
 
 // SPEC: the ONE authority that decides which backend executes an attempt is

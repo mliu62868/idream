@@ -42,20 +42,28 @@ _Avoid_: 图片创作、角色编辑
 
 ## Companion Chat
 
+**Chat**：
+承载用户与角色持续对话的产品领域；它依据 Main 固定的产品事实组织 Agent 运行，但 Agent 运行的具体技术不构成新的产品领域。
+_Avoid_: Chat Agent、DSH Chat
+
 **产品 Turn**：
 用户的一条消息及其唯一选中最终回复，是会话列表、历史展示、附件和计量引用的产品事实。
 _Avoid_: Agent 运行、DSH SessionEvent、流式草稿
 
 **Agent 运行**：
 为一个产品 Turn 生成回复的模型、工具与流式执行过程；它可以失败或重试，但不能自行成为用户可见历史。
-_Avoid_: 产品 Turn、聊天记录
+_Avoid_: Chat Agent、产品 Turn、聊天记录
+
+**Agent 运行轨迹**：
+一次 Agent 运行产生的事件序列，用于诊断和恢复尚未提交的终态候选；它不是产品状态，也不参与陪伴记忆召回。
+_Avoid_: 产品 Turn、AgentRun 状态机、陪伴记忆
 
 **工具效果**：
 Agent 工具请求产生的产品动作，例如创建图片或视频生成请求；效果身份由 Turn attempt 与 tool call 共同确定。
 _Avoid_: 通用 hook、模型输出、生成结算
 
 **陪伴记忆**：
-从已提交产品 Turn 派生的长期召回内容；它可以删除、重建或暂时不可用，不是产品 Turn 权威。
+从 Main 已提交产品 Turn 异步投影的长期召回内容；它可以延迟、删除、重建或暂时不可用，不是产品 Turn 权威。
 _Avoid_: 产品 Turn、Agent 运行、Scene
 
 **Main 权威快照**：
@@ -71,9 +79,13 @@ Main 已提交产品 Turn 并固定该次执行事实，Chat 已接受以此开�
 _Avoid_: 产品 Turn 提交、Agent 运行完成
 
 **Agent 运行终态候选**：
-Agent 运行提交给 Main 的不可变最终输出；只有 Main 接受后才成为产品 Turn 的选中回复。
+Agent 运行提交给 Main 的不可变最终输出，包含回复内容、结构化上下文变化、用量和工具效果身份；它只对生成它的 Main 权威快照有效，在 Main 接受或明确拒绝前需要可精确恢复，只有 Main 接受后才成为产品 Turn 的选中回复。
 _Avoid_: 产品回复、流式草稿
 
 **陪伴记忆重建**：
 删除产品 Turn 或 Session 后，从 Main 剩余的已提交产品 Turn 重新派生陪伴记忆，使已删除内容不再参与召回。
 _Avoid_: 全量清空、历史消息恢复
+
+**陪伴记忆隔离期**：
+产品 Turn 被删除、修订或清空后，到陪伴记忆重建完成之间的状态；Chat 可以继续产生产品 Turn，但长期记忆不得参与召回。
+_Avoid_: Chat 停机、记忆清空完成

@@ -15,6 +15,7 @@ import type {
   VideoGeneratePayload,
 } from "@idream/shared/contracts";
 import { loadWorkflowDescriptors } from "./backend/workflow";
+import { comfyUiRunnerForDescriptor } from "./backend/registry";
 import { probeVideoMedia } from "./backend/video-media-probe";
 import { env } from "./env";
 import {
@@ -260,14 +261,30 @@ async function resolveBackendBinding(model: string) {
   }
   return {
     backendKind: descriptor.backendKind,
-    backendTarget:
-      descriptor.backendKind === "comfyui"
-        ? env.COMFYUI_API_URL
-        : env.DRAWTHINGS_CLI,
+    backendTarget: videoProbeBackendTarget(descriptor),
     workflowKey: descriptor.workflowKey,
     workflowVersion: descriptor.version,
     recipe,
   } as const;
+}
+
+// INVARIANT: attestation and reporting must bind the same listener selected by
+// BackendRegistry. Reporting 8188 while H3 actually ran on 8190 proves the
+// wrong process/model roots and defeats the purpose of the launch probe.
+export function videoProbeBackendTarget(
+  descriptor: Parameters<typeof comfyUiRunnerForDescriptor>[0] & {
+    readonly backendKind: "comfyui" | "drawthings";
+  },
+  targets = {
+    video: env.COMFYUI_VIDEO_API_URL,
+    h3: env.COMFYUI_H3_API_URL,
+    drawThings: env.DRAWTHINGS_CLI,
+  },
+) {
+  if (descriptor.backendKind === "drawthings") return targets.drawThings;
+  return comfyUiRunnerForDescriptor(descriptor) === "video-h3"
+    ? targets.h3
+    : targets.video;
 }
 
 function productionRecipeForModel(

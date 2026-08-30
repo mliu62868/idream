@@ -5,7 +5,7 @@ import { Errors } from "@/server/lib/errors";
 import { toInputJson } from "@/server/lib/request-json";
 import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
 import { characterReferenceAuthorityFrom } from "@/server/modules/admin-v2/characters/reference-authority";
-import { isProductionLtxVideoProfile } from "@/server/modules/generation/production-video-profile";
+import { isDefaultProductionVideoProfile } from "@/server/modules/generation/production-video-profile";
 import type { CreativeRunCreateInput } from "./run-create";
 
 export async function resolveProductionProfile(
@@ -29,7 +29,7 @@ export async function resolveProductionProfile(
       `Production Studio requires an active ${mode} profile`,
     );
   }
-  if (mode === "video" && !isProductionLtxVideoProfile(profile)) {
+  if (mode === "video" && !isDefaultProductionVideoProfile(profile)) {
     throw Errors.conflict(
       "Production Studio only accepts the exact pinned Character video profile",
       { profileId, version: version ?? null },

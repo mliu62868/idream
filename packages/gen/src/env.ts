@@ -181,13 +181,43 @@ export const env = {
     const parsed = Number.parseInt(process.env.PIPELINE_TIMEOUT_MS ?? "60000", 10);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 60_000;
   },
-  /** Long-running video generation timeout; LTX 2.3 MPS runs need a larger budget. */
+  /** Long-running video timeout; RedGraft LTX 2.5 and H3 MPS runs need a larger budget. */
   get VIDEO_TIMEOUT_MS(): number {
     return positiveIntegerEnv("GEN_VIDEO_TIMEOUT_MS", 1_800_000);
   },
-  /** ComfyUI native HTTP API base URL, used by GEN_IMAGE_PROVIDER=backend. */
+  /** Shared explicit override. Prefer the modality-specific authorities below. */
   get COMFYUI_API_URL(): string {
     return process.env.COMFYUI_API_URL ?? "http://127.0.0.1:8188";
+  },
+  /** Image-only ComfyUI runner: PyTorch attention on the isolated 8189 process. */
+  get COMFYUI_IMAGE_API_URL(): string {
+    return process.env.COMFYUI_IMAGE_API_URL ??
+      process.env.COMFYUI_API_URL ??
+      "http://127.0.0.1:8189";
+  },
+  /** Video-only ComfyUI runner: RedGraft-safe split attention on 8188. */
+  get COMFYUI_VIDEO_API_URL(): string {
+    return process.env.COMFYUI_VIDEO_API_URL ??
+      process.env.COMFYUI_API_URL ??
+      "http://127.0.0.1:8188";
+  },
+  /** MiniMax H3-only runner: exact PyTorch SDPA, isolated from RedGraft. */
+  get COMFYUI_H3_API_URL(): string {
+    return process.env.COMFYUI_H3_API_URL ?? "http://127.0.0.1:8190";
+  },
+  /** Cross-worker file lease; one Apple GPU/unified-memory job runs at a time. */
+  get ACCELERATOR_LOCK_PATH(): string {
+    return process.env.GEN_ACCELERATOR_LOCK_PATH ??
+      "/tmp/idream-generation-accelerator.lock";
+  },
+  get ACCELERATOR_LOCK_POLL_MS(): number {
+    return positiveIntegerEnv("GEN_ACCELERATOR_LOCK_POLL_MS", 1_000);
+  },
+  get ACCELERATOR_LOCK_STALE_MS(): number {
+    return positiveIntegerEnv(
+      "GEN_ACCELERATOR_LOCK_STALE_MS",
+      this.VIDEO_TIMEOUT_MS + 5 * 60_000,
+    );
   },
   /** Exact ComfyUI models root whose bytes are attested by video launch probes. */
   get COMFYUI_MODEL_ROOT(): string {

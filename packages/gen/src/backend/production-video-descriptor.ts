@@ -1,49 +1,60 @@
 import { createHash } from "node:crypto";
 import {
-  characterVideoProductionRecipe,
   characterVideoProductionRecipeForWorkflow,
   minimaxH3VideoProductionRecipe,
+  redgraftLtx25VideoProductionRecipe,
   type CharacterVideoProductionRecipe,
 } from "@idream/shared";
 import type { WorkflowDescriptor } from "./workflow";
 
-const ltxRuntimeInputs = [
-  { key: "prompt", type: "text", target: { nodeId: "320:303", field: "text" } },
-  { key: "negative", type: "text", target: { nodeId: "320:313", field: "text" } },
-  {
-    key: "source_image",
-    type: "image",
-    required: true,
-    referenceRoles: ["source_image"],
-    target: { nodeId: "269", field: "image" },
-  },
-  {
-    key: "width",
-    type: "int",
-    default: characterVideoProductionRecipe.width,
-    target: { nodeId: "320:312", field: "value" },
-  },
-  {
-    key: "height",
-    type: "int",
-    default: characterVideoProductionRecipe.height,
-    target: { nodeId: "320:299", field: "value" },
-  },
-  {
-    key: "fps",
-    type: "int",
-    default: characterVideoProductionRecipe.fps,
-    target: { nodeId: "320:300", field: "value" },
-  },
-  {
-    key: "seconds",
-    type: "int",
-    default: characterVideoProductionRecipe.durationSeconds,
-    target: { nodeId: "320:301", field: "value" },
-  },
-  { key: "seed", type: "int", target: { nodeId: "320:277", field: "noise_seed" } },
-  { key: "refinerSeed", type: "int", target: { nodeId: "320:276", field: "noise_seed" } },
-] as const;
+function ltxRuntimeInputs(recipe: CharacterVideoProductionRecipe) {
+  return [
+    { key: "prompt", type: "text", target: { nodeId: "320:303", field: "text" } },
+    {
+      key: "negative",
+      type: "text",
+      target: {
+        nodeId: recipe.workflowKey === redgraftLtx25VideoProductionRecipe.workflowKey
+          ? "900:0"
+          : "320:313",
+        field: "text",
+      },
+    },
+    {
+      key: "source_image",
+      type: "image",
+      required: true,
+      referenceRoles: ["source_image"],
+      target: { nodeId: "269", field: "image" },
+    },
+    {
+      key: "width",
+      type: "int",
+      default: recipe.width,
+      target: { nodeId: "320:312", field: "value" },
+    },
+    {
+      key: "height",
+      type: "int",
+      default: recipe.height,
+      target: { nodeId: "320:299", field: "value" },
+    },
+    {
+      key: "fps",
+      type: "int",
+      default: recipe.fps,
+      target: { nodeId: "320:300", field: "value" },
+    },
+    {
+      key: "seconds",
+      type: "int",
+      default: recipe.durationSeconds,
+      target: { nodeId: "320:301", field: "value" },
+    },
+    { key: "seed", type: "int", target: { nodeId: "320:277", field: "noise_seed" } },
+    { key: "refinerSeed", type: "int", target: { nodeId: "320:276", field: "noise_seed" } },
+  ] as const;
+}
 
 const h3RuntimeInputs = [
   { key: "prompt", type: "text", target: { nodeId: "6", field: "prompt" } },
@@ -103,12 +114,12 @@ export function assertCharacterVideoProductionDescriptor(
   }
 
   const graph = executableGraph(descriptor);
-  if (recipe.workflowKey === characterVideoProductionRecipe.workflowKey) {
-    assertLtxGraph(graph);
-  } else if (
+  if (
     recipe.workflowKey === minimaxH3VideoProductionRecipe.workflowKey
   ) {
     assertH3Graph(graph);
+  } else {
+    assertLtxGraph(graph, recipe);
   }
 
   const fingerprint = characterVideoProductionDescriptorFingerprint(descriptor);
@@ -165,13 +176,13 @@ export function characterVideoProductionDescriptorFingerprint(
 function runtimeInputsForRecipe(recipe: CharacterVideoProductionRecipe) {
   return recipe.workflowKey === minimaxH3VideoProductionRecipe.workflowKey
     ? h3RuntimeInputs
-    : ltxRuntimeInputs;
+    : ltxRuntimeInputs(recipe);
 }
 
 function assertLtxGraph(
   graph: Record<string, Record<string, unknown>>,
+  recipe: CharacterVideoProductionRecipe,
 ) {
-  const recipe = characterVideoProductionRecipe;
   assertGraphValue(graph, "320:333", "class_type", "UNETLoader");
   assertGraphInput(graph, "320:333", "unet_name", recipe.checkpointFilename);
   assertGraphValue(graph, "75", "class_type", "SaveVideo");
@@ -209,6 +220,10 @@ function assertH3Graph(
   assertGraphValue(graph, "1", "class_type", "UNETLoader");
   assertGraphInput(graph, "1", "unet_name", recipe.checkpointFilename);
   assertGraphValue(graph, "2", "class_type", "MiniMaxH3SigmaShift");
+  if (graph["17"] !== undefined) {
+    throw new Error("Production H3 graph must keep exact attention at 512x512");
+  }
+  assertGraphInput(graph, "2", "model", ["1", 0]);
   assertGraphInput(graph, "2", "shift_video", recipe.shiftVideo);
   assertGraphInput(graph, "2", "shift_audio", recipe.shiftAudio);
   assertGraphValue(graph, "3", "class_type", "CLIPLoaderGGUF");
@@ -264,7 +279,7 @@ function assertGraphInput(
   field: string,
   expected: unknown,
 ) {
-  if (graphInput(graph, nodeId, field) !== expected) {
+  if (stableJson(graphInput(graph, nodeId, field)) !== stableJson(expected)) {
     throw new Error(
       `Production video node ${nodeId}.inputs.${field} does not match the recipe`,
     );

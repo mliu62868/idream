@@ -3,6 +3,7 @@ import {
   decodeChatServiceProbeEvidence,
   decodeVideoGenerationProbeEvidence,
   decodeVideoH3GenerationProbeEvidence,
+  isStableRegeneratedSceneAnchor,
 } from "./evidence";
 
 describe("Chat service probe evidence decoder", () => {
@@ -20,11 +21,26 @@ describe("Chat service probe evidence decoder", () => {
 
     expect(decoded.conversation?.getSession?.dsh?.memorySearchEvidenceMatches).toBe(1);
   });
+
+  it("requires regenerate to increment attempt without moving the Scene anchor", () => {
+    expect(isStableRegeneratedSceneAnchor({
+      originalAttempt: 1,
+      regeneratedAttempt: 2,
+      originalSceneVersion: 1,
+      regeneratedSceneVersion: 1,
+    })).toBe(true);
+    expect(isStableRegeneratedSceneAnchor({
+      originalAttempt: 2,
+      regeneratedAttempt: 2,
+      originalSceneVersion: 1,
+      regeneratedSceneVersion: 2,
+    })).toBe(false);
+  });
 });
 
 describe("Video generation probe evidence decoder", () => {
   it.each([
-    ["LTX", decodeVideoGenerationProbeEvidence],
+    ["RedGraft LTX 2.5", decodeVideoGenerationProbeEvidence],
     ["MiniMax H3", decodeVideoH3GenerationProbeEvidence],
   ])("preserves the executor-bound source revision for %s", (_label, decode) => {
     const decoded = decode({

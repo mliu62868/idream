@@ -10,8 +10,7 @@
 | --- | --- |
 | `main-web` | 产品 HTTP/BFF、Main PostgreSQL authority |
 | `admin-web` | 运营 UI |
-| `chat-agent` | DSH/igrep sidecar |
-| `chat` | 本地 AgentRun + SSE |
+| `chat` | 本地 AgentRun + 内嵌 DSH/igrep + SSE |
 | `gen-image` / `gen-video` | 图片/视频 provider worker；mock video 时不注册 video worker |
 | `gen-finalizer` | Generation terminal relay/finalize |
 | `main-event-consumer` | Main durable events |
@@ -37,7 +36,7 @@ bun run pm2:start:production
 | --- | --- | --- |
 | 产品/Chat Turn/计费/Generation metadata | Main PostgreSQL | 唯一产品数据库 |
 | 媒体字节 | Blob/R2/S3 | DB 保存引用、校验和与交付事实 |
-| Chat AgentRun | `CHAT_FS_ROOT/runs` | 执行证据，不是产品消息 |
+| Chat AgentRun | `CHAT_FS_ROOT/runs` | 未决恢复与 7 天失败诊断，不是产品消息 |
 | companion memory | DSH igrep canonical root | 从已提交 Turn 派生 |
 | private run memory | DSH igrep private root | 隔离、短期、不可进入 canonical memory |
 | Chat token stream | Redis | 暂态 SSE transport |
@@ -60,22 +59,12 @@ bun run pm2:start:production
 - `CHAT_PORT` / `CHAT_FS_ROOT` / `CHAT_REDIS_URL`
 - `MAIN_WEB_URL` / `INTERNAL_TOKEN`
 - `CHAT_BFF_SIGNING_SECRET`
-- `DSH_AGENT_URL` / `DSH_AGENT_TOKEN`
-- `DSH_PROFILE_NORMAL` / `DSH_PROFILE_PRIVATE`
-- `CHAT_MODEL_*`：用于 readiness/profile pin；模型实际由 chat-agent 执行
-
-Chat 没有独立 moderation provider。输入/输出产品策略属于 Main。
-
-### chat-agent
-
-- `CHAT_AGENT_HOST=127.0.0.1` / `CHAT_AGENT_PORT=3101`
-- `DSH_AGENT_TOKEN`
 - `DSH_IGREP_PLUGIN_URL` / `DSH_BOOTSTRAP_STATE_PATH`
 - `DSH_IGREP_CANONICAL_ROOT` / `DSH_IGREP_PRIVATE_ROOT`
-- `DSH_PROVIDER_API_KEY` / `DSH_READY_PROVIDER` / `DSH_READY_MODEL` / `DSH_READY_BASE_URL`
-- 并发、step、timeout 和 provider pin
+- `CHAT_MODEL_PROVIDER` / `CHAT_MODEL_BASE_URL` / `CHAT_MODEL_NAME` / `CHAT_MODEL_API_KEY`：Turn 与 full readiness 共用唯一模型配置
+- `DSH_MAX_*` / `DSH_AGENT_DEADLINE_MS`：并发、step 与 attempt deadline
 
-chat-agent 只监听 loopback；Chat 是唯一调用者。
+Chat 没有独立 moderation provider。输入/输出产品策略属于 Main。
 
 ### Gen
 
@@ -89,8 +78,7 @@ chat-agent 只监听 loopback；Chat 是唯一调用者。
 ## 4. Readiness
 
 - liveness 只说明进程活着；发布必须使用 full readiness。
-- Chat full readiness 检查可写 `CHAT_FS_ROOT`、Redis、Main/BFF secret、chat-agent/profile/model pin。
-- chat-agent readiness 检查 DSH package version、official igrep plugin/bootstrap、provider/model 和 loopback 绑定。
+- Chat admission readiness 只检查可写 `CHAT_FS_ROOT`、Redis 与签名配置；full certification 另行检查内嵌 DSH package、official igrep plugin/bootstrap、provider/model 和 profile pin。
 - Gen readiness 检查 worker ownership、provider/workflow/model bytes 和 terminal ingress。
 - Main readiness 检查 migration、Turn ledger、Character/Soul pins、Generation/settlement 和跨服务 secrets。
 
@@ -139,7 +127,7 @@ Cutover 顺序：
 
 1. 固定 source revision，构建 immutable artifact。
 2. pause Generation admission/queues；等待 active attempt terminal 或明确对账。
-3. 停止 Main/Admin/Chat/chat-agent/event/admin workers，再停止 Gen；finalizer 最后。
+3. 停止 Main/Admin/Chat/event/admin workers，再停止 Gen；finalizer 最后。
 4. 执行 migration/cutover（如有）。
 5. 启动进程，等待期望实例数和 full readiness。
 6. 运行 Main/Chat/Gen probes 与最小真实生成。
@@ -175,7 +163,7 @@ bun run lint
 发布还需：
 
 - fresh/upgrade migration rehearsal；
-- Main/Chat/chat-agent/Gen 真实进程 readiness；
+- Main/Chat/Gen 真实进程 readiness；
 - authenticated Playwright 用户与运营旅程；
 - 最低充分的真实图片/视频/语音 provider 请求；
 - request/attempt/artifact/delivery/settlement、耗时、费用和持久化证据；

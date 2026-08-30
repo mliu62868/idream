@@ -4,13 +4,12 @@
 
 ## 1. 架构形态
 
-iDream 是 Bun + Turborepo monorepo，按事实权威和执行时长拆成六个一方包：
+iDream 是 Bun + Turborepo monorepo，按事实权威和执行时长拆成五个一方包：
 
 | 包 | 职责 | 持久化权威 |
 | --- | --- | --- |
 | `packages/main` | 用户产品、Character、ChatSession/Turn、计费、Generation、媒体、Admin API | PostgreSQL + Blob |
-| `packages/chat` | 接收 Main 的不可变 Turn 快照，组织流式 AgentRun | `CHAT_FS_ROOT/runs`；Redis 只缓存 SSE |
-| `packages/chat-agent` | DSH AgentLoop、模型调用、工具协议、official igrep | DSH/igrep workspace |
+| `packages/chat` | 接收不可变 Turn 快照；内嵌 DSH/igrep 执行；流式 AgentRun | 未决/失败 run trace + DSH/igrep workspace；Redis 只缓存 SSE |
 | `packages/gen` | 图片/视频 provider 执行与不可变终态记录 | Blob + Main/Gen durable protocol |
 | `packages/admin` | 运营界面；写操作进入 Main authority | 无独立产品数据库 |
 | `packages/shared` | 跨包协议、Zod schema 和稳定类型 | 无运行时权威 |
@@ -25,7 +24,7 @@ Browser
      -> Main PostgreSQL: transaction creates user message + pending assistant Turn
      -> signed immutable execution snapshot
         -> Chat: local AgentRun
-           -> chat-agent: DSH model/tool loop
+           -> Chat embedded agent-runtime: DSH model/tool loop
               -> image/video ToolEffect
                  -> Main: entitlement + reserve + Generation Request/Attempt
                     -> Gen: provider execution
@@ -35,7 +34,7 @@ Browser
   <- Main SSE/history: only selected product Turn and current-attempt attachments
 ```
 
-Chat 收到 Main terminal ACK 后才能发送 SSE `done` 和允许长期记忆 ingest。DSH 事件、token、工具输出和本地 transcript 都不能反向成为用户消息列表。
+Chat 收到 Main terminal ACK 后才能发送 SSE `done`；随后删除成功 run 文件。长期记忆只由 Main 已提交 Turn 的异步投影更新。DSH 事件、token、工具输出和本地 transcript 都不能反向成为用户消息列表。
 
 ## 3. 一致性边界
 
@@ -46,7 +45,7 @@ Chat 收到 Main terminal ACK 后才能发送 SSE `done` 和允许长期记忆 i
 | ToolEffect | `turnId + attempt + callId + argumentsDigest` 幂等；Main 先 reserve/admit，再 ACK |
 | Generation | `Request -> Attempt -> TransportExecution -> TerminalRecord -> Artifact/Delivery -> Settlement` |
 | SSE | 可丢、可重连的暂态传输；不能作为完成权威 |
-| AgentRun 文件 | 单 writer、原子 input/terminal、append+fsync events；只用于执行恢复与排障 |
+| AgentRun 文件 | 单 writer、原子 input/proposal、append+fsync events；成功 ACK 后删除，失败 trace 保留 7 天 |
 | companion memory | 从已提交 Turn 派生，可删除/重建；不能覆盖 Main 产品事实 |
 
 ## 4. Main 内部分层
@@ -76,7 +75,7 @@ Next Route/BFF
 - 只有 Main 使用 Prisma/PostgreSQL。`packages/chat` 没有 schema、role、migration 或数据库 URL。
 - 媒体字节进入 Blob；数据库保存身份、状态、校验和、交付和结算事实。
 - `CHAT_FS_ROOT` 必须是 Chat 单 writer 可持久访问的绝对路径。多实例前必须先解决共享文件和写入仲裁；当前固定 `instances: 1`。
-- DSH sidecar 与 Chat 独立进程，但它没有产品消息、余额或 Generation 的写权限。
+- DSH/igrep 与 Chat 同进程、同生命周期；只有 Main 端口可提交产品终态或 ToolEffect。
 
 ## 7. 架构不变量
 

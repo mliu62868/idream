@@ -10,14 +10,14 @@ import {
 } from "./chat-stream-recovery";
 
 describe("chat stream recovery", () => {
-  it("keeps EventSource alive for transport loss and retryable provider errors", () => {
+  it("reconnects only for transport loss without a Chat terminal error", () => {
     expect(chatStreamErrorDisposition({})).toBe("reconnect");
     expect(
       chatStreamErrorDisposition({ code: "provider_failed", retryable: true }),
-    ).toBe("reconnect");
+    ).toBe("terminal");
   });
 
-  it("closes only for an explicit non-retryable stream error", () => {
+  it("closes for every explicit stream error", () => {
     expect(
       chatStreamErrorDisposition({ code: "blocked", retryable: false }),
     ).toBe("terminal");

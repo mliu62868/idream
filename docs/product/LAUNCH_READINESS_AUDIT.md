@@ -232,7 +232,7 @@ bun run launch:probe:blob -- --report .tmp/launch-blob-probe.json
 
 ```bash
 bun run --filter @idream/gen probe:image -- --model <active-product-config-model> --report .tmp/launch-image-probe.json
-bun run launch:probe:video -- --model ltx23-gtanimation-i2v --reference <reviewed-character-image> --report .tmp/launch-video-probe.json
+bun run launch:probe:video -- --model redgraft-ltx25-i2v --reference <reviewed-character-image> --report .tmp/launch-video-probe.json
 bun run launch:probe:web-surface -- --report .tmp/launch-web-surface-probe.json
 bun run launch:probe:product-config -- --report .tmp/launch-product-config-probe.json
 bun run launch:probe:catalog -- --report .tmp/public-catalog-probe.json

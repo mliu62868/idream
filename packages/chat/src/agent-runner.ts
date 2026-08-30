@@ -11,58 +11,80 @@ import type {
   CompanionTerminalCandidate,
   CompanionToolCall,
   CompanionToolResult,
-} from "@idream/shared/chat/companion-runtime";
+} from "./agent-runtime/contracts.js";
+import {
+  agentRuntimeProfileDigest,
+  agentRuntimeVersions,
+  runCompanion,
+} from "./agent-runtime/runtime.js";
 import {
   appendAgentRunEvent,
+  completeAgentRun,
   fenceAgentRunAttempt,
   isAgentRunTombstoned,
   readAgentRunInput,
+  readAgentRunCompletion,
   readAgentRunProposal,
-  readAgentRunTerminal,
   writeAgentRunProposal,
-  writeAgentRunTerminal,
   type AgentRunProposal,
 } from "./agent-run-store.js";
-import { DshCompanionRuntime } from "./companion-runtime.js";
-import { verifiedCompanionProfileDigest } from "./companion-sidecar-readiness.js";
-import { selectCompanionRuntimeForAttempt } from "./companion-runtime-selection.js";
 import { env } from "./env.js";
 import { logger } from "./logger.js";
 import {
   prepareCompanionTurn,
-  preparedTurnRuntime,
-  toPreparedTurnWire,
 } from "./prepared-turn.js";
-import { applySceneDelta, deriveSceneDelta } from "./scene.js";
+import { sceneForReply } from "./scene.js";
 import { appendStreamEvent, streamKey } from "./stream.js";
+import { stableJson } from "./stable-json.js";
 
-const activeRuns = new Map<string, AbortController>();
+interface ActiveAgentRun {
+  controller: AbortController;
+  userId: string;
+  done: Promise<void>;
+}
 
-export function startAgentRun(turnId: string, attempt: number): boolean {
+const activeRuns = new Map<string, ActiveAgentRun>();
+
+export function startAgentRun(turnId: string, attempt: number, userId: string): boolean {
   const key = runKey(turnId, attempt);
   if (activeRuns.has(key)) return false;
   const controller = new AbortController();
-  activeRuns.set(key, controller);
-  void executeAgentRun(turnId, attempt, controller.signal)
+  const active: ActiveAgentRun = {
+    controller,
+    userId,
+    done: Promise.resolve(),
+  };
+  activeRuns.set(key, active);
+  active.done = executeAgentRun(turnId, attempt, controller.signal)
     .catch((error) => logger.error({ err: error, turnId, attempt }, "AgentRun failed"))
-    .finally(() => activeRuns.delete(key));
+    .finally(() => {
+      if (activeRuns.get(key) === active) activeRuns.delete(key);
+    });
   return true;
 }
 
 export async function cancelAgentRun(turnId: string, attempt: number): Promise<boolean> {
   await fenceAgentRunAttempt(turnId, attempt);
   const key = runKey(turnId, attempt);
-  const controller = activeRuns.get(key);
-  if (!controller) return false;
-  controller.abort(new Error("cancelled by Main"));
+  const active = activeRuns.get(key);
+  if (!active) return false;
+  active.controller.abort(new Error("cancelled by Main"));
   return true;
+}
+
+/** Account erasure waits until no in-process run can recreate purged files. */
+export async function cancelAgentRunsForUser(userId: string): Promise<number> {
+  const matching = [...activeRuns.values()].filter((run) => run.userId === userId);
+  for (const run of matching) run.controller.abort(new Error("account erased by Main"));
+  await Promise.all(matching.map((run) => run.done));
+  return matching.length;
 }
 
 async function executeAgentRun(turnId: string, attempt: number, signal: AbortSignal): Promise<void> {
   if (await isAgentRunTombstoned(turnId, attempt)) return;
   const input = await readAgentRunInput(turnId, attempt);
   if (!input) throw new Error("AgentRun input is missing");
-  if (await readAgentRunTerminal(turnId, attempt)) return;
+  if (await readAgentRunCompletion(turnId, attempt)) return;
   const snapshot = input.snapshot;
   const attemptId = `${snapshot.assistantMessageId}:${snapshot.attempt}`;
   const key = streamKey(snapshot.assistantMessageId);
@@ -74,13 +96,14 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
     });
     const replay = await settleTerminalProposal(existingProposal, key, true);
     if (!replay.accepted) throw new Error(replay.error.message);
-    await writeAcceptedTerminal(existingProposal, replay);
+    await finalizeAcceptedProposal(existingProposal, replay);
     return;
   }
   let committed = false;
   let committedProposal: AgentRunProposal | null = null;
   let committedAck: Extract<CompanionCommitAck, { accepted: true }> | null = null;
-  let locallyTerminal = false;
+  let runtimeFailure: Extract<CompanionEvent, { type: "failed" }>["error"] | undefined;
+  let runtimeCancellation: Extract<CompanionEvent, { type: "cancelled" }>["reason"] | undefined;
   try {
     await appendStreamEvent(key, { type: "start", attempt: snapshot.attempt });
     await appendAgentRunEvent(turnId, attempt, "admitted", {
@@ -90,16 +113,13 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
       assistantMessageId: snapshot.assistantMessageId,
     });
     const prepared = await prepareCompanionTurn({ snapshot, authority: input.authority });
-    const runtimeConfig = env.COMPANION_RUNTIME_CONFIG;
-    const runtimePin = selectCompanionRuntimeForAttempt({
-      config: runtimeConfig,
-      memoryAuthority: snapshot.memoryEnabled ? "enabled" : "disabled",
-    });
-    const profileDigest = verifiedCompanionProfileDigest(
-      runtimePin.sidecarUrl,
-      runtimePin.private ? "private" : "normal",
-    );
-    let wire = toPreparedTurnWire(prepared);
+    const memoryMode = snapshot.memoryEnabled ? "normal" : "private";
+    const profileDigest = await agentRuntimeProfileDigest(memoryMode);
+    const runtimeVersions = await agentRuntimeVersions();
+    let runtimeInstance: { id: string; startedAt: string } | undefined;
+    const igrepObservations = emptyIgrepObservations();
+    const { context, ...executionTurn } = prepared;
+    let wire = executionTurn;
     const requiredTool = requiredImageToolCallForUserRequest({
       userText: snapshot.userContent,
       characterName: prepared.characterName,
@@ -128,26 +148,34 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
       userId: snapshot.userId,
       characterId: snapshot.characterId,
       preparedTurn: wire,
-      memoryMode: runtimePin.private ? "private" : "normal",
+      memoryMode,
       expectedProfileDigest: profileDigest,
-      deadlineAt: new Date(Date.now() + runtimePin.deadlineMs).toISOString(),
+      deadlineAt: new Date(Date.now() + env.AGENT_RUN_DEADLINE_MS).toISOString(),
     };
-    const runtime = new DshCompanionRuntime({
-      baseUrl: runtimePin.sidecarUrl,
-      token: runtimeConfig.sidecarToken,
-    });
     let sequence = 0;
-    await runtime.run(invocation, {
+    await runCompanion(invocation, {
       emit: async (event) => {
-        await appendAgentRunEvent(turnId, attempt, `dsh.${event.type}`, event);
+        const trace = agentRunTraceEvent(event);
+        if (trace) await appendAgentRunEvent(turnId, attempt, trace.kind, trace.payload);
+        if (event.type === "started") runtimeInstance = event.instance;
+        if (event.type === "failed") runtimeFailure = event.error;
+        if (event.type === "cancelled") runtimeCancellation = event.reason;
+        if (event.type === "igrep_observation") {
+          const metric = igrepObservations[event.operation];
+          metric.calls += 1;
+          if (event.outcome === "hit") metric.hits += 1;
+          if (event.outcome === "failure") metric.failures += 1;
+          metric.evidenceMatches += event.evidenceMatches ?? 0;
+        }
         sequence = await projectStreamEvent(key, snapshot.attempt, sequence, event);
       },
       executeTool: (call) => executeMainTool(call, snapshot.turnId, snapshot.attempt),
       commit: async (candidate) => {
-        const scene = applySceneDelta(
-          preparedTurnRuntime(prepared).scene,
-          deriveSceneDelta({ userText: snapshot.userContent, assistantText: candidate.content }),
-        );
+        const scene = sceneForReply({
+          previous: context.scene,
+          userText: snapshot.userContent,
+          assistantText: candidate.content,
+        });
         const terminal: ChatTerminalCommit = {
           version: 1,
           turnId: snapshot.turnId,
@@ -161,7 +189,14 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
           completionTokens: candidate.usage.completionTokens,
           sceneVersion: scene.version,
           scene,
-          terminalEvidence: terminalEvidence(candidate, profileDigest),
+          terminalEvidence: terminalEvidence(
+            candidate,
+            profileDigest,
+            runtimeVersions,
+            memoryMode,
+            runtimeInstance,
+            igrepObservations,
+          ),
         };
         const proposal: AgentRunProposal = {
           schemaVersion: 1,
@@ -176,7 +211,6 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
           committedProposal = proposal;
           committedAck = ack;
         }
-        else locallyTerminal = Boolean(await readAgentRunTerminal(turnId, attempt));
         return ack;
       },
     }, signal);
@@ -184,16 +218,18 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
     if (!committedProposal || !committedAck) {
       throw new Error("DSH committed without durable terminal evidence");
     }
-    // INVARIANT: local terminal is downstream of the sidecar commit_ack. A
-    // crash before this write leaves an incomplete run whose duplicate Main
-    // ACK schedules a canonical memory rebuild.
-    await writeAcceptedTerminal(committedProposal, committedAck);
+    // INVARIANT: local terminal is downstream of Main's durable ACK. A crash
+    // before this write replays the exact immutable proposal without rerunning
+    // the model or any tool effect.
+    await finalizeAcceptedProposal(committedProposal, committedAck);
   } catch (error) {
-    if (committed || locallyTerminal) throw error;
+    if (committed) throw error;
+    if (await readAgentRunCompletion(turnId, attempt)) return;
     // Once a candidate is durable, recovery may only replay it. Replacing it
     // with a generic failure would destroy exact Main CAS identity.
     if (await readAgentRunProposal(turnId, attempt)) throw error;
-    const cancelled = signal.aborted;
+    const cancellation = classifyAgentRunCancellation(signal.aborted, runtimeCancellation);
+    const cancelled = cancellation.cancelled;
     const reason = error instanceof Error ? error.message : "AgentRun failed";
     const terminal: ChatTerminalCommit = {
       version: 1,
@@ -208,11 +244,12 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
       completionTokens: null,
       sceneVersion: snapshot.sceneVersion,
       scene: snapshot.scene,
-      terminalEvidence: {
-        authority: "chat_agent_run",
-        failureCode: cancelled ? "cancelled" : "agent_run_failed",
-        failureDigest: sha256(reason),
-      },
+      terminalEvidence: agentRunFailureEvidence({
+        cancelled,
+        runtimeCancellation: cancellation.reason,
+        runtimeFailure,
+        reason,
+      }),
     };
     const proposal: AgentRunProposal = {
       schemaVersion: 1,
@@ -223,14 +260,12 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
     await writeAgentRunProposal(turnId, attempt, proposal);
     await appendAgentRunEvent(turnId, attempt, "agent.failed", {
       cancelled,
+      failureCode: cancellation.failureCode ?? runtimeFailure?.code ?? "agent_run_failed",
       reasonDigest: sha256(reason),
     });
     const ack = await settleTerminalProposal(proposal, key, false);
-    if (ack.accepted) await writeAcceptedTerminal(proposal, ack);
-    if (!ack.accepted) {
-      if (await readAgentRunTerminal(turnId, attempt)) locallyTerminal = true;
-      if (!locallyTerminal) throw error;
-    }
+    if (ack.accepted) await finalizeAcceptedProposal(proposal, ack);
+    else return;
     if (!cancelled) throw error;
   }
 }
@@ -261,13 +296,10 @@ async function settleTerminalProposal(
       type: "error",
       attempt: terminal.attempt,
       code: "terminal_rejected",
-      retryable: false,
     }).catch(() => undefined);
-    await writeAgentRunTerminal(terminal.turnId, terminal.attempt, {
-      schemaVersion: 1,
+    await completeAgentRun(terminal.turnId, terminal.attempt, {
       attemptId: proposal.attemptId,
       outcome: terminal.status === "cancelled" ? "cancelled" : "failed",
-      mainCommit: { accepted: false, status: response.status },
       evidence: terminal.terminalEvidence,
       completedAt: new Date().toISOString(),
     });
@@ -300,25 +332,22 @@ async function settleTerminalProposal(
     await appendStreamEvent(stream, {
       type: "error",
       attempt: terminal.attempt,
-      code: terminal.status === "cancelled" ? "cancelled" : "agent_run_failed",
-      retryable: terminal.status !== "cancelled",
+      code: terminalFailureCode(terminal),
     }).catch(() => undefined);
   }
   return ack;
 }
 
-async function writeAcceptedTerminal(
+async function finalizeAcceptedProposal(
   proposal: AgentRunProposal,
   ack: Extract<CompanionCommitAck, { accepted: true }>,
 ): Promise<void> {
   const terminal = proposal.terminal;
-  await writeAgentRunTerminal(terminal.turnId, terminal.attempt, {
-    schemaVersion: 1,
+  await completeAgentRun(terminal.turnId, terminal.attempt, {
     attemptId: proposal.attemptId,
     outcome: terminal.status === "sent"
       ? "committed"
       : terminal.status === "cancelled" ? "cancelled" : "failed",
-    mainCommit: ack,
     evidence: terminal.terminalEvidence,
     completedAt: ack.committedAt,
   });
@@ -391,7 +420,64 @@ async function projectStreamEvent(
   return sequence;
 }
 
-function terminalEvidence(candidate: CompanionTerminalCandidate, profileDigest: string) {
+/** Local AgentRun evidence is content-free; Redis alone carries live deltas. */
+export function agentRunTraceEvent(
+  event: CompanionEvent,
+): { kind: string; payload: unknown } | null {
+  switch (event.type) {
+    case "started":
+      return {
+        kind: "dsh.started",
+        payload: { instance: event.instance, profileDigest: event.profileDigest },
+      };
+    case "tool_started":
+      return {
+        kind: "dsh.tool_started",
+        payload: { callId: event.callId, name: event.name },
+      };
+    case "tool_finished":
+      return {
+        kind: "dsh.tool_finished",
+        payload: {
+          callId: event.callId,
+          name: event.name,
+          outcome: event.outcome,
+          durationMs: event.durationMs,
+        },
+      };
+    case "igrep_observation":
+      return {
+        kind: "dsh.igrep_observation",
+        payload: {
+          operation: event.operation,
+          outcome: event.outcome,
+          resultCount: event.resultCount,
+          evidenceMatches: event.evidenceMatches,
+          durationMs: event.durationMs,
+        },
+      };
+    case "failed":
+      return { kind: "dsh.failed", payload: { error: event.error } };
+    case "cancelled":
+      return { kind: "dsh.cancelled", payload: { reason: event.reason } };
+    case "text_delta":
+    case "text_reset":
+    case "reasoning_usage":
+    case "usage":
+    case "heartbeat":
+    case "terminal_candidate":
+      return null;
+  }
+}
+
+function terminalEvidence(
+  candidate: CompanionTerminalCandidate,
+  profileDigest: string,
+  versions: { igrepVersion: string; pluginVersion: string },
+  memoryMode: "normal" | "private",
+  runtimeInstance: { id: string; startedAt: string } | undefined,
+  igrepObservations: IgrepObservations,
+) {
   return {
     authority: "dsh_terminal_candidate",
     attemptId: candidate.attemptId,
@@ -400,10 +486,76 @@ function terminalEvidence(candidate: CompanionTerminalCandidate, profileDigest: 
     finishReason: candidate.finishReason,
     completedAt: candidate.completedAt,
     execution: candidate.execution,
+    tools: candidate.tools,
     attribution: candidate.attribution ?? null,
     profileDigest,
+    memoryMode,
+    runtime: "embedded_dsh",
+    runtimeInstance: runtimeInstance ?? null,
+    igrepObservations,
+    igrepVersion: versions.igrepVersion,
+    pluginVersion: versions.pluginVersion,
     contentDigest: sha256(candidate.content),
   };
+}
+
+export function agentRunFailureEvidence(input: {
+  cancelled: boolean;
+  runtimeCancellation?: Extract<CompanionEvent, { type: "cancelled" }>["reason"];
+  runtimeFailure?: Extract<CompanionEvent, { type: "failed" }>["error"];
+  reason: string;
+}) {
+  const failureCode = input.cancelled
+    ? input.runtimeCancellation === "timeout" ? "agent_run_deadline_timeout" : "reply_cancelled"
+    : input.runtimeFailure?.code ?? "agent_run_failed";
+  return {
+    authority: "chat_agent_run",
+    failureCode,
+    ...(input.runtimeCancellation ? { cancellationReason: input.runtimeCancellation } : {}),
+    failureDigest: sha256(input.reason),
+  };
+}
+
+export function classifyAgentRunCancellation(
+  signalAborted: boolean,
+  runtimeReason?: Extract<CompanionEvent, { type: "cancelled" }>["reason"],
+): {
+  cancelled: boolean;
+  reason?: Extract<CompanionEvent, { type: "cancelled" }>["reason"];
+  failureCode?: "agent_run_deadline_timeout" | "reply_cancelled";
+} {
+  const reason = runtimeReason ?? (signalAborted ? "transport" : undefined);
+  if (!reason) return { cancelled: false };
+  return {
+    cancelled: true,
+    reason,
+    failureCode: reason === "timeout" ? "agent_run_deadline_timeout" : "reply_cancelled",
+  };
+}
+
+function terminalFailureCode(terminal: ChatTerminalCommit): string {
+  if (terminal.status === "cancelled") return "reply_cancelled";
+  const failureCode = terminal.terminalEvidence.failureCode;
+  return typeof failureCode === "string" && failureCode ? failureCode : "agent_run_failed";
+}
+
+type IgrepMetric = {
+  calls: number;
+  hits: number;
+  failures: number;
+  evidenceMatches: number;
+};
+
+type IgrepObservations = Record<"wake" | "search" | "memory", IgrepMetric>;
+
+function emptyIgrepObservations(): IgrepObservations {
+  const metric = (): IgrepMetric => ({
+    calls: 0,
+    hits: 0,
+    failures: 0,
+    evidenceMatches: 0,
+  });
+  return { wake: metric(), search: metric(), memory: metric() };
 }
 
 function rejectedCommit(attemptId: string, message: string): CompanionCommitAck {
@@ -433,15 +585,6 @@ function runKey(turnId: string, attempt: number): string {
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
-}
-
-function stableJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  const object = record(value);
-  if (object) {
-    return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${stableJson(object[key])}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
 }
 
 function record(value: unknown): Record<string, unknown> | null {

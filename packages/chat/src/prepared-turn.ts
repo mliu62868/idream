@@ -8,65 +8,19 @@ import { buildContext, type BuiltContext } from "./context.js";
 import { buildCompanionSystemPrompt, buildTurnStateBlock } from "./prompt.js";
 import { registryChatTools } from "./agent-tools.js";
 import {
-  preparedTurnWireSchema,
-  type PreparedTurnWire,
-  type ReleasedKnowledgeSnapshot,
-} from "@idream/shared/chat/companion-runtime";
+  preparedTurnSchema,
+  type PreparedTurnInput,
+} from "./agent-runtime/contracts.js";
 
-export interface PreparedTurn {
-  model: string;
-  characterName: string;
-  messages: ModelMessage[];
-  tools: ChatToolDefinition[];
-  profile: {
-    tier: string;
-    adapter: string;
-    provider: string;
-    baseUrl: string;
-    model: string;
-    supportsTools: boolean;
-    maxOutputTokens: number;
-    timeout: {
-      firstTokenMs: number;
-      idleMs: number;
-      completionMs: number;
-    };
-    sampling: {
-      temperature: number;
-      topP: number;
-      repetitionPenalty: number;
-    };
-  };
-  budget: {
-    maxInputTokens: number;
-    usedInputTokens: number;
-    dropped: Array<"transcript">;
-  };
-  releasedKnowledge: ReleasedKnowledgeSnapshot;
-  trace: {
-    characterContentVersionId: string;
-    characterReleaseId: string | null;
-    soulFingerprint: string;
-    compilerVersion: string;
-    sceneVersion: number;
-    contextRevision: string;
-    releasedKnowledgeDigest: string;
-    profile: PreparedTurn["profile"];
-  };
+export interface PreparedTurn extends PreparedTurnInput {
+  /** Main-owned context needed only for deterministic terminal finalization. */
+  context: BuiltContext;
 }
 
 export interface PrepareCompanionTurnInput {
   snapshot: ChatExecutionSnapshot;
   authority: ChatAuthoritySnapshot;
 }
-
-interface PreparedTurnRuntimeState {
-  context: BuiltContext;
-  currentUserMessageId: string;
-  turnState: string;
-}
-
-const runtimeByPreparedTurn = new WeakMap<PreparedTurn, PreparedTurnRuntimeState>();
 
 export async function prepareCompanionTurn(
   input: PrepareCompanionTurnInput,
@@ -83,7 +37,7 @@ export function compilePreparedTurn(
 ): PreparedTurn {
   const fitted = fitPreparedTurnBudget(context, now);
   const modelProfile = fitted.context.policy.modelProfile;
-  const profile: PreparedTurn["profile"] = {
+  const profile: PreparedTurnInput["profile"] = {
     tier: fitted.context.policy.tier,
     adapter: modelProfile.adapter,
     provider: modelProfile.provider,
@@ -94,7 +48,6 @@ export function compilePreparedTurn(
     timeout: {
       firstTokenMs: modelProfile.firstTokenTimeoutMs,
       idleMs: modelProfile.idleTimeoutMs,
-      completionMs: modelProfile.completionTimeoutMs,
     },
     sampling: {
       temperature: modelProfile.temperature ?? 0.9,
@@ -102,71 +55,26 @@ export function compilePreparedTurn(
       repetitionPenalty: modelProfile.repetitionPenalty ?? 1.05,
     },
   };
-  const prepared: PreparedTurn = {
-    model: profile.model,
-    characterName: fitted.context.persona.name,
-    messages: fitted.messages,
-    tools: fitted.tools,
-    profile,
-    budget: fitted.budget,
-    releasedKnowledge: fitted.context.releasedKnowledge,
-    trace: {
-      characterContentVersionId:
-        fitted.context.persona.characterContentVersionId ?? fail("Character content version is required"),
-      characterReleaseId: fitted.context.persona.characterReleaseId,
-      soulFingerprint: fitted.context.persona.soulFingerprint ?? fail("Soul fingerprint is required"),
-      compilerVersion: fitted.context.persona.compilerVersion ?? fail("Soul compiler version is required"),
-      sceneVersion: fitted.context.sceneVersion,
-      contextRevision: fitted.context.contextRevision.toString(),
-      releasedKnowledgeDigest: fitted.context.releasedKnowledge.digest,
-      profile,
-    },
-  };
-  runtimeByPreparedTurn.set(prepared, {
-    context: fitted.context,
-    currentUserMessageId,
-    turnState: fitted.turnState,
-  });
-  return prepared;
-}
-
-/** Internal runtime state for finalization and deterministic tool planning. */
-export function preparedTurnRuntime(prepared: PreparedTurn): BuiltContext {
-  const runtime = runtimeByPreparedTurn.get(prepared);
-  if (!runtime) throw new Error("PreparedTurn was not produced by prepareCompanionTurn");
-  return runtime.context;
-}
-
-/**
- * Product wire only: stable ids and provenance, no DB handle, API key, DSH type
- * or mutable runtime object may cross this boundary.
- */
-export function toPreparedTurnWire(prepared: PreparedTurn): PreparedTurnWire {
-  const runtime = runtimeByPreparedTurn.get(prepared);
-  if (!runtime) throw new Error("PreparedTurn was not produced by prepareCompanionTurn");
-  const { context, currentUserMessageId, turnState } = runtime;
-  const messages: PreparedTurnWire["messages"] = [
-    {
-      id: [
-        "system",
-        prepared.trace.soulFingerprint,
-        prepared.trace.sceneVersion,
-      ].join(":"),
-      sourceKind: "plugin",
-      role: "system",
-      content: prepared.messages[0]?.content ?? "",
-    },
-  ];
-  for (const message of context.recentMessages) {
+  const messages: PreparedTurnInput["messages"] = [{
+    id: [
+      "system",
+      fitted.context.persona.soulFingerprint,
+      fitted.context.sceneVersion,
+    ].join(":"),
+    sourceKind: "plugin",
+    role: "system",
+    content: fitted.messages[0]?.content ?? "",
+  }];
+  for (const message of fitted.context.recentMessages) {
     const isCurrent = message.id === currentUserMessageId;
     if (isCurrent) {
-      // The per-turn state is a plugin-sourced context message, so DSH seeds it
-      // as history the model reads last and igrep never ingests it.
+      // The state stays immediately before the current message and is never
+      // ingested as user-authored memory.
       messages.push({
         id: `state:${currentUserMessageId}`,
         sourceKind: "plugin",
         role: "user",
-        content: turnState,
+        content: fitted.turnState,
       });
     }
     messages.push({
@@ -178,18 +86,28 @@ export function toPreparedTurnWire(prepared: PreparedTurn): PreparedTurnWire {
         : message.content,
     });
   }
-  const { profile: _runtimeProfile, ...wireTrace } = prepared.trace;
-  return preparedTurnWireSchema.parse({
+  const execution = preparedTurnSchema.parse({
     version: 3,
-    model: prepared.model,
-    characterName: prepared.characterName,
+    model: profile.model,
+    characterName: fitted.context.persona.name,
     messages,
-    tools: prepared.tools,
-    profile: prepared.profile,
-    budget: prepared.budget,
-    releasedKnowledge: prepared.releasedKnowledge,
-    trace: wireTrace,
+    tools: fitted.tools,
+    profile,
+    budget: fitted.budget,
+    trace: {
+      characterContentVersionId:
+        fitted.context.persona.characterContentVersionId ?? fail("Character content version is required"),
+      characterReleaseId: fitted.context.persona.characterReleaseId,
+      soulFingerprint: fitted.context.persona.soulFingerprint ?? fail("Soul fingerprint is required"),
+      compilerVersion: fitted.context.persona.compilerVersion ?? fail("Soul compiler version is required"),
+      sceneVersion: fitted.context.sceneVersion,
+      contextRevision: fitted.context.contextRevision.toString(),
+    },
   });
+  return {
+    ...execution,
+    context: fitted.context,
+  };
 }
 
 function buildModelMessages(context: BuiltContext, turnState: string): ModelMessage[] {

@@ -6,6 +6,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { afterEach, describe, expect, it } from "vitest";
 import { sha256File } from "./model-asset-attestation";
+import { videoProbeBackendTarget } from "./probe-video-pipeline";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -24,6 +25,25 @@ afterEach(() => {
 });
 
 describe("generation launch probe CLIs", () => {
+  it("attests MiniMax H3 against its dedicated listener", () => {
+    const targets = {
+      video: "http://127.0.0.1:8188",
+      h3: "http://127.0.0.1:8190",
+      drawThings: "draw-things-cli",
+    };
+
+    expect(videoProbeBackendTarget({
+      backendKind: "comfyui",
+      workflowKey: "minimax-h3-redcraft-i2v",
+      capabilities: ["video", "audio"],
+    }, targets)).toBe(targets.h3);
+    expect(videoProbeBackendTarget({
+      backendKind: "comfyui",
+      workflowKey: "redgraft-ltx25-i2v",
+      capabilities: ["video", "audio"],
+    }, targets)).toBe(targets.video);
+  });
+
   it("hashes model assets through a file stream", async () => {
     const directory = temporaryDirectory();
     const assetPath = path.join(directory, "model.safetensors");
@@ -58,7 +78,7 @@ describe("generation launch probe CLIs", () => {
 
       expect(result.status).toBe(1);
       expect(result.stdout).toContain("FAIL  (video model bytes)");
-      expect(result.stdout).toContain("10 pinned model bytes checked");
+      expect(result.stdout).toContain("9 pinned model bytes checked");
     } finally {
       const exited = once(server, "exit");
       server.kill();
@@ -128,7 +148,7 @@ describe("generation launch probe CLIs", () => {
         bucket: null,
         root: path.join(directory, "blob"),
       },
-      seconds: 4,
+      seconds: 5,
       terminal: {
         outcome: "succeeded",
         assets: 1,

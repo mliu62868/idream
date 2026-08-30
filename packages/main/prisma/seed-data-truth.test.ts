@@ -35,42 +35,44 @@ async function seedFunctionSource(name: string) {
 }
 
 async function writeLegacyVideoBetaProfile(costMultiplier = 1) {
-  return prisma.generationModelProfile.update({
-    where: { id: "seed-profile-video-beta-v1" },
-    data: {
-      profileKey: "profile_video_beta_v1",
-      label: "Video beta",
-      mode: "video",
-      runner: "external",
-      pipelineModel: "mock-video",
-      workflowKey: null,
-      sourceModelPath: null,
-      convertedModelPath: null,
-      modelFormat: "external",
-      runnerConfig: { disabledUntilFlag: "video_gen" },
-      defaultWidth: 768,
-      defaultHeight: 1024,
-      allowedOrientations: ["9:16", "16:9"],
-      steps: 24,
-      sampler: "video_default",
-      scheduler: "model_default",
-      cfgScale: 5,
-      costMultiplier,
-      requiredEntitlement: "video_generation",
-      maxCount: 1,
-      concurrencyLimit: 1,
-      enabled: true,
-      rolloutPercent: 0,
-      version: 1,
-      status: "active",
-      dryRunSummary: {
-        status: "not_run",
-        source: "seed_configuration_state",
-        disabledByFlag: "video_gen",
-      },
-      publishedAt: new Date("2026-06-24T00:00:00.000Z"),
-      archivedAt: null,
+  const data = {
+    profileKey: "profile_video_beta_v1",
+    label: "Video beta",
+    mode: "video",
+    runner: "external",
+    pipelineModel: "mock-video",
+    workflowKey: null,
+    sourceModelPath: null,
+    convertedModelPath: null,
+    modelFormat: "external",
+    runnerConfig: { disabledUntilFlag: "video_gen" },
+    defaultWidth: 768,
+    defaultHeight: 1024,
+    allowedOrientations: ["9:16", "16:9"],
+    steps: 24,
+    sampler: "video_default",
+    scheduler: "model_default",
+    cfgScale: 5,
+    costMultiplier,
+    requiredEntitlement: "video_generation",
+    maxCount: 1,
+    concurrencyLimit: 1,
+    enabled: true,
+    rolloutPercent: 0,
+    version: 1,
+    status: "active",
+    dryRunSummary: {
+      status: "not_run",
+      source: "seed_configuration_state",
+      disabledByFlag: "video_gen",
     },
+    publishedAt: new Date("2026-06-24T00:00:00.000Z"),
+    archivedAt: null,
+  };
+  return prisma.generationModelProfile.upsert({
+    where: { id: "seed-profile-video-beta-v1" },
+    update: data,
+    create: { id: "seed-profile-video-beta-v1", ...data },
   });
 }
 
@@ -336,66 +338,69 @@ describe("seed data provenance", () => {
     ).toBe(true);
   });
 
-  it("keeps RedMix3 as a disabled exact-version scaled-fp8 comparison candidate", async () => {
-    const profile = await prisma.generationModelProfile.findFirst({
-      where: { profileKey: "redcraft-krea2-redmix3-comparison" },
+  it("keeps only supported scaled-FP8 RedCraft Krea2 profiles executable", async () => {
+    const profiles = await prisma.generationModelProfile.findMany({
+      where: {
+        pipelineModel: {
+          in: [
+            "redcraft-krea2-redmix3-fp8",
+            "redcraft-krea2-identity-edit",
+          ],
+        },
+        status: "active",
+      },
       select: {
         profileKey: true,
         pipelineModel: true,
         workflowKey: true,
-        runner: true,
         sourceModelPath: true,
         convertedModelPath: true,
         steps: true,
-        sampler: true,
-        scheduler: true,
-        cfgScale: true,
         enabled: true,
         rolloutPercent: true,
-        status: true,
+        version: true,
         runnerConfig: true,
       },
+      orderBy: { profileKey: "asc" },
     });
 
-    expect(profile).toMatchObject({
-      profileKey: "redcraft-krea2-redmix3-comparison",
-      pipelineModel: "redcraft-krea2-redmix3-fp8",
-      workflowKey: "redcraft-krea2-redmix3-txt2img",
-      runner: "comfyui",
-      sourceModelPath: expect.stringMatching(
-        /models\/diffusion_models\/Krea2RedMix3\.0-fp8-scaled-ComfyUI\.safetensors$/,
-      ),
-      // The Civitai release file runs as-is on MPS now; there is no conversion product.
-      convertedModelPath: null,
-      steps: 12,
-      sampler: "euler",
-      scheduler: "simple",
-      cfgScale: 1,
-      enabled: false,
-      rolloutPercent: 0,
-      status: "draft",
-      runnerConfig: {
-        templateIntent: "redmix3_text_to_image_comparison",
-        baseModel: "Krea 2",
-        civitaiModelId: 958009,
-        civitaiVersionId: 3139241,
-        civitaiFileId: 3019490,
-        civitaiFileName: "redcraft23INT8INT4FP8_30Krea2.safetensors",
-        civitaiSha256:
-          "F6088960C0FEBD27CBD372FC758BB07D012F2D8AE3CD10C45C903D48B94409EA",
-        comparisonBaseline: {
-          modelId: "redcraft-krea2-redmix3-fp8",
-          workflowKey: "redcraft-krea2-redmix3-txt2img",
+    expect(profiles).toHaveLength(3);
+    for (const profile of profiles) {
+      expect(profile).toMatchObject({
+        sourceModelPath: expect.stringMatching(
+          /models\/diffusion_models\/Krea2RedMix3\.0-fp8-scaled-ComfyUI\.safetensors$/,
+        ),
+        convertedModelPath: null,
+        enabled: true,
+        rolloutPercent: 100,
+        runnerConfig: {
+          precisionPolicy: "fp8_resident_bf16_transient_mps",
         },
-        capabilities: {
-          textToImage: true,
-          stableSeed: true,
-          referenceImages: false,
-          initImage: false,
-          lora: false,
-        },
+      });
+    }
+    expect(profiles).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          profileKey: "character-image-single-identity-redcraft",
+          pipelineModel: "redcraft-krea2-identity-edit",
+          workflowKey: "redcraft-krea2-identity-edit",
+          steps: 8,
+          version: 4,
+        }),
+      ]),
+    );
+
+    const unsupportedActive = await prisma.generationModelProfile.count({
+      where: {
+        status: "active",
+        OR: [
+          { pipelineModel: "redcraft-krea2-comfyui" },
+          { pipelineModel: "redcraft-krea2-redmix3-bf16" },
+          { convertedModelPath: { contains: "RedMix3.0-bf16" } },
+        ],
       },
     });
+    expect(unsupportedActive).toBe(0);
   });
 
   it("seeds both public image routes on the registered RedMix3 descriptor", async () => {
@@ -437,7 +442,7 @@ describe("seed data provenance", () => {
     ]);
   });
 
-  it("migrates the untouched legacy video beta route to the exact LTX workflow", async () => {
+  it("archives the legacy LTX route and seeds RedGraft as the replacement", async () => {
     const profileId = "seed-profile-video-beta-v1";
     await writeLegacyVideoBetaProfile();
 
@@ -446,41 +451,39 @@ describe("seed data provenance", () => {
       env: process.env,
     });
 
-    const migrated = await prisma.generationModelProfile.findUniqueOrThrow({
+    const retired = await prisma.generationModelProfile.findUniqueOrThrow({
       where: { id: profileId },
       select: {
-        runner: true,
-        pipelineModel: true,
-        workflowKey: true,
-        sourceModelPath: true,
-        modelFormat: true,
-        runnerConfig: true,
-        defaultWidth: true,
-        defaultHeight: true,
-        allowedOrientations: true,
+        enabled: true,
         rolloutPercent: true,
+        status: true,
+        archivedAt: true,
       },
     });
-    expect(migrated).toMatchObject({
-      runner: "comfyui",
-      pipelineModel: "ltx23-gtanimation-int4-convrot",
-      workflowKey: "ltx23-gtanimation-i2v",
-      sourceModelPath:
-        "diffusion_models/ltx23Gtanimation25Frames_ltxv23INT4Convrot.safetensors",
-      modelFormat: "safetensors",
-      runnerConfig: {
-        workflowVersion: 1,
-        capabilities: {
-          imageToVideo: true,
-          audio: true,
-          fps: 25,
-          maxDurationSeconds: 4,
+    expect(retired).toMatchObject({
+      enabled: false,
+      rolloutPercent: 0,
+      status: "archived",
+    });
+    expect(retired.archivedAt).not.toBeNull();
+
+    await expect(
+      prisma.generationModelProfile.findUniqueOrThrow({
+        where: { id: "seed-profile-video-redgraft-ltx25-v1" },
+        select: {
+          profileKey: true,
+          workflowKey: true,
+          enabled: true,
+          rolloutPercent: true,
+          status: true,
         },
-      },
-      defaultWidth: 768,
-      defaultHeight: 1152,
-      allowedOrientations: ["2:3"],
+      }),
+    ).resolves.toEqual({
+      profileKey: "profile_video_redgraft_ltx25_v1",
+      workflowKey: "redgraft-ltx25-i2v",
+      enabled: true,
       rolloutPercent: 100,
+      status: "active",
     });
   }, 15_000);
 
@@ -514,7 +517,7 @@ describe("seed data provenance", () => {
       sourceModelPath:
         "diffusion_models/REDMix-MiniMaxH3-A2Ab1-pruned-int8-convrot-ComfyMCP.safetensors",
       runnerConfig: {
-        workflowVersion: 1,
+        workflowVersion: 3,
         capabilities: {
           imageToVideo: true,
           audio: true,
@@ -592,7 +595,7 @@ describe("seed data provenance", () => {
     }
   }, 30_000);
 
-  it("preserves an operator-edited legacy video beta route", async () => {
+  it("archives an operator-edited legacy video route without rewriting its evidence", async () => {
     const profileId = "seed-profile-video-beta-v1";
     await writeLegacyVideoBetaProfile(1.25);
 
@@ -610,15 +613,21 @@ describe("seed data provenance", () => {
             pipelineModel: true,
             workflowKey: true,
             costMultiplier: true,
+            enabled: true,
             rolloutPercent: true,
+            status: true,
+            archivedAt: true,
           },
         }),
-      ).resolves.toEqual({
+      ).resolves.toMatchObject({
         runner: "external",
         pipelineModel: "mock-video",
         workflowKey: null,
         costMultiplier: 1.25,
+        enabled: false,
         rolloutPercent: 0,
+        status: "archived",
+        archivedAt: expect.any(Date),
       });
     } finally {
       await writeLegacyVideoBetaProfile();

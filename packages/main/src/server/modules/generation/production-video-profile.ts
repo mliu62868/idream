@@ -3,6 +3,7 @@ import {
   characterVideoProductionRecipe,
   characterVideoProductionRecipes,
   minimaxH3VideoProductionRecipe,
+  redgraftLtx25VideoProductionRecipe,
   type CharacterVideoProductionRecipe,
 } from "@idream/shared";
 
@@ -45,11 +46,14 @@ function productionVideoProfile(recipe: CharacterVideoProductionRecipe) {
   } as const;
 }
 
-export const PRODUCTION_LTX_VIDEO_PROFILE = productionVideoProfile(
+export const PRODUCTION_DEFAULT_VIDEO_PROFILE = productionVideoProfile(
   characterVideoProductionRecipe,
 );
 export const PRODUCTION_H3_VIDEO_PROFILE = productionVideoProfile(
   minimaxH3VideoProductionRecipe,
+);
+export const PRODUCTION_REDGRAFT_LTX25_VIDEO_PROFILE = productionVideoProfile(
+  redgraftLtx25VideoProductionRecipe,
 );
 
 const PRODUCTION_VIDEO_PROFILE_AUTHORITIES = characterVideoProductionRecipes.map(
@@ -85,10 +89,10 @@ type ProductionVideoProfileCandidate = {
 // INVARIANT: Main only advertises, quotes, or dispatches the exact route that
 // the Gen worker accepts. Operator pricing and labels remain independently
 // editable; execution-critical model, workflow, entitlement, and envelope do not.
-export function isProductionLtxVideoProfile(
+export function isDefaultProductionVideoProfile(
   profile: ProductionVideoProfileCandidate,
 ) {
-  return profileMatchesAuthority(profile, PRODUCTION_LTX_VIDEO_PROFILE);
+  return profileMatchesAuthority(profile, PRODUCTION_DEFAULT_VIDEO_PROFILE);
 }
 
 export function productionVideoRecipeForProfile(

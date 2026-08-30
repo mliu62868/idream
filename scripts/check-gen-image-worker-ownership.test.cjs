@@ -209,6 +209,32 @@ test("accepts PM2 ProcessContainerForkBun as the registered Bun runtime", () => 
   assert.equal(report.video.groups[0].runtimePid, 400);
 });
 
+test("uses the Redis identity to recover an unregistered PM2 Bun worker", () => {
+  const report = classifyOwnership({
+    mode: "quiescent",
+    expected: 0,
+    pm2Processes: [],
+    psRows: [
+      row(100, 1, 100, "PM2 v6.0.14: God Daemon (/tmp/.pm2)"),
+      pm2BunRuntime(200),
+    ],
+    redisWorkers: [redis("stale-release", 0, 200)],
+  });
+
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.groups, [
+    {
+      rootPid: 200,
+      runtimePid: 200,
+      pgid: 200,
+      startedAt: "Tue Aug 11 06:00:00 2026",
+      classification: "daemon_orphan",
+      slot: null,
+    },
+  ]);
+  assert.ok(report.issues.includes("daemon_orphan"));
+});
+
 test("ready accepts a validated zero-video topology while image remains live", () => {
   const report = classifyOwnership({
     mode: "ready",
@@ -436,6 +462,12 @@ test("quiescent permits stopped stale definitions so gated recreation can repair
 });
 
 test("CLI options and Redis authority fail closed on malformed input", () => {
+  assert.deepEqual(parseCliArgs([]), {
+    mode: "steady",
+    expected: 1,
+    expectedVideo: 1,
+    attempts: 1,
+  });
   assert.deepEqual(parseCliArgs(["--mode", "ready", "--expected", "2"]), {
     mode: "ready",
     expected: 2,

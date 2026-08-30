@@ -3,9 +3,7 @@
 import { loadCharacterSoulSnapshot } from "@idream/shared";
 import type { ChatAuthoritySnapshot } from "@idream/shared/bff";
 import type { ChatExecutionSnapshot } from "@idream/shared/contracts";
-import type { ReleasedKnowledgeSnapshot } from "@idream/shared/chat/companion-runtime";
 import { resolvePolicy, snapshotFromView, type ChatPolicy } from "./policy.js";
-import { buildReleasedKnowledgeSnapshot } from "./released-knowledge.js";
 import { emptySceneState, parseSceneState, type SceneState } from "./scene.js";
 
 type CharacterAuthority = NonNullable<ChatAuthoritySnapshot["character"]>;
@@ -32,7 +30,6 @@ export interface BuiltContext {
   lastExchangeAt: Date | null;
   dropped: Array<"transcript">;
   contextRevision: bigint;
-  releasedKnowledge: ReleasedKnowledgeSnapshot;
 }
 
 export interface BuildContextInput {
@@ -59,23 +56,17 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
   if ((character.release?.releaseId ?? null) !== snapshot.characterReleaseId) {
     throw new Error("signed Character Release pin does not match Turn");
   }
+  if (character.release && (
+    !new Set(["published", "superseded"]).has(character.release.status) ||
+    character.release.characterId !== snapshot.characterId ||
+    character.release.characterContentVersionId !== snapshot.characterContentVersionId
+  )) {
+    throw new Error("signed Character Release is not a valid immutable Turn pin");
+  }
   const persona = personaFromImmutableContent(character);
   const policy = resolvePolicy(snapshotFromView(authority.entitlement), {
     memoryEnabled: snapshot.memoryEnabled,
     characterImageToolEnabled: persona.imageToolEnabled,
-  });
-  const releasedKnowledge = buildReleasedKnowledgeSnapshot({
-    characterId: snapshot.characterId,
-    contentVersion: {
-      contentVersionId: character.contentVersion.contentVersionId,
-      characterId: character.contentVersion.characterId,
-    },
-    release: character.release ? {
-      releaseId: character.release.releaseId,
-      characterId: character.release.characterId,
-      characterContentVersionId: character.release.characterContentVersionId,
-      status: character.release.status,
-    } : null,
   });
   const transcript: BuiltContext["recentMessages"] = snapshot.recentTurns.flatMap((turn) => [
     { id: turn.userMessageId, role: "user" as const, content: turn.userContent },
@@ -107,7 +98,6 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
       : null,
     dropped: fitted.dropped ? ["transcript"] : [],
     contextRevision: BigInt(snapshot.contextRevision),
-    releasedKnowledge,
   };
 }
 

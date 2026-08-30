@@ -25,7 +25,7 @@ const STATE_FILENAME = "idream-companion-bootstrap.json";
 const STATE_SCHEMA_VERSION = 2;
 const COMMAND_TIMEOUT_MS = 120_000;
 // INVARIANT: mirrors NORMAL_IGREP_CONFIG / PRIVATE_IGREP_CONFIG in
-// packages/chat-agent/src/igrep.ts; readiness greps every entry out of the
+// packages/chat/src/agent-runtime/igrep.ts; readiness greps every entry out of the
 // installed profile dump, so the two tables must stay identical.
 const PROFILE_CAPABILITIES = Object.freeze({
   normal: Object.freeze({

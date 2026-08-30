@@ -12,8 +12,12 @@ import {
   durableEnvelopeHash,
   durableEventEnvelopeSchema,
 } from "@idream/shared/contracts";
-import { purgeAgentRunsForUser } from "./agent-run-store.js";
-import { purgeCompanionWorkspace } from "./companion-runtime.js";
+import {
+  fenceAgentRunsForUser,
+  purgeAgentRunsForUser,
+} from "./agent-run-store.js";
+import { cancelAgentRunsForUser } from "./agent-runner.js";
+import { purgeCompanionWorkspace } from "./agent-runtime/runtime.js";
 import { env } from "./env.js";
 
 interface LocalDeletionReceipt {
@@ -52,17 +56,13 @@ export async function consumeAccountDeletionRequest(raw: unknown) {
   }
 
   // INVARIANT: retries repeat every idempotent purge before Main advances.
-  const runtime = env.COMPANION_RUNTIME_CONFIG;
-  // Fence the user before any slow sidecar call. Admission takes the same user
-  // lock, so a request already in flight either becomes visible to this purge
-  // or observes the durable deletion marker and is rejected.
+  // Fence new admission, then wait for every in-process writer before removing
+  // its files. Otherwise a cancelled model callback could recreate a purged
+  // proposal or attempt workspace after Main accepted erasure completion.
+  await fenceAgentRunsForUser(payload.userId);
+  await cancelAgentRunsForUser(payload.userId);
   await purgeAgentRunsForUser(payload.userId);
-  await purgeCompanionWorkspace({
-    baseUrl: runtime.sidecarUrl,
-    token: runtime.sidecarToken,
-    target: { scope: "user", userId: payload.userId },
-    timeoutMs: 60_000,
-  });
+  await purgeCompanionWorkspace({ scope: "user", userId: payload.userId });
   await purgeRetiredUserFiles(payload.userId);
 
   const receipt: LocalDeletionReceipt = existing ?? {

@@ -10,16 +10,17 @@
 
 ## 结论
 
-iDream 现在不应在没有同参实测时宣布某个 checkpoint 是最终赢家。真正进入最终资格赛的两条主线是：
+iDream 现在不应在没有同参实测时宣布某个 checkpoint 是质量冠军；但生产实施顺序可以先定。按精确版本采用度、现有本机状态、Apple 格式、身份工作流证据和站外服务权限综合判断：
 
-1. **模块化 incumbent**：RedCraft `3139241` FP8 + Krea 2 Identity Edit v1.2 `3139172` full + `comfyui-krea2edit` v1.2.5 单参考双条件 graph；
-2. **一体化 challenger**：SinoX Edit_v1.1 `3174825` FP8 + 同一套 Krea2Edit 单参考双条件 graph，但不重复加载 Identity LoRA。
+1. **唯一 Krea 生产默认候选**：RedCraft `3139241` FP8 + Krea 2 Identity Edit v1.2 `3139172` full + `comfyui-krea2edit` v1.2.5 单参考双条件 graph；
+2. **低成熟度一体化 challenger**：SinoX Edit_v1.1 `3174825` FP8 + 同一套 Krea2Edit 单参考双条件 graph，但不重复加载 Identity LoRA；
+3. **成人压力候选**：Dark Beast Krea2 3.0 `3173268` FP8 + 外接 Identity v1.2。
 
-如果今天必须在没有新生成的前提下选择实施起点，RedCraft 风险更低：模型已在本机运行，成人 checkpoint、Identity 权重和 node revision 可以分别 pin、替换和归因。但如果问“哪个新模型最可能减少集成变量”，答案是 SinoX：它是本轮唯一同时具备烘入 Identity v1.2、精确参考图 graph、FP8 和作者层 `Rent` 的一体 Edit checkpoint。**最终默认必须由同一参考图、prompt、seed 和 graph 的 A/B 决定。**
+RedCraft 精确版本已有 `35,481` 次下载、`1,100` 个点赞；SinoX Edit_v1.1 只有 `1,084` 次下载、`106` 个点赞。RedCraft 的精确版本下载约为 SinoX 的 `32.7×`，点赞约为 `10.4×`。再加上 RedCraft 已在本机运行，成人 checkpoint、Identity 权重和 node revision 可以分别 pin、替换和归因，因此它是明显更稳妥的实施起点。SinoX 的价值只是减少集成变量：它是本轮唯一同时具备烘入 Identity v1.2、精确参考图 graph、FP8 和作者层 `Rent` 的一体 Edit checkpoint；在没有同参 A/B 显著胜出前，不应升为默认。
 
 RedCraft 之外应分两种问题回答：
 
-1. **允许使用一体 Edit checkpoint 时，第一替代候选是 SinoX Edit_v1.1 `3174825` FP8。** 它是本轮找到的唯一同时具备“作者明确集成 Identity Edit v1.2、精确 Edit graph、FP8、Civitai `Rent`”的候选。它比 Muse Edit 更适合 Apple/站外服务资格赛。限制是精确 Edit_v1.1 画廊最高为 `nsfwLevel=8`，没有 level-16 证据；所以它是最值得实测的替代，不是已经证明更强的默认。
+1. **允许使用一体 Edit checkpoint 时，实验候选是 SinoX Edit_v1.1 `3174825` FP8。** 它是本轮找到的唯一同时具备“作者明确集成 Identity Edit v1.2、精确 Edit graph、FP8、Civitai `Rent`”的候选。它比 Muse Edit 更适合 Apple/站外服务资格赛，但精确 Edit_v1.1 采用度很低，且画廊最高为 `nsfwLevel=8`、没有 level-16 证据；所以它只能进入小流量资格赛。
 2. **若严格要求“成人底模 + 外接 Identity Edit”，第一压力候选是最新 Dark Beast Krea2 3.0 `3173268` FP8。** 它的显式成人 prior 比 RedCraft 更强、同样有 `Rent`，但更激进的 checkpoint prior 更可能压过参考图的脸/体型/肤质，必须把身份漂移率作为一票否决指标。旧 `3078453` 只保留为历史复现，不再作为最新候选。
 
 另外建立一条透明诊断基线：
@@ -78,23 +79,43 @@ RedCraft 之外应分两种问题回答：
 | 路线 | 成人 prior 的精确证据 | 单参考身份层 | Apple/MPS 候选格式 | 站外付费服务 | 判断 |
 |---|---|---|---|---|---|
 | **RedCraft `3139241` + Identity v1.2** | 作者写 `No Mosaics`；精确版本有 2 张 level-16 图，但随图 graph 是 `EmptyLatentImage + CLIPTextEncode` 的 T2I | 外接 v1.2 full；双条件 graph | FP8、INT4、INT8、NVFP4；Apple 首测 FP8 | **有 `Rent`** | 当前主线 |
-| **SinoX Edit_v1.1 `3174825`** | 作者称 uncensored；精确 Edit 画廊最高 level 8，没有 level 16 | **已烘入 v1.2**；精确随图 graph 有 `Krea2EditModelPatch + GroundedEncode`，无需再次加载 Identity 权重 | **FP8**、INT8；Apple 首测 FP8 | **有 `Rent`** | 最值得替代 RedCraft 的一体路线 |
-| **Dark Beast Krea2 `3078453` + Identity v1.2** | 作者明确 uncensored/zero mosaics；精确版本有 2 张 level-16 图 | 外接 v1.2；作者版本页未给精确 edit 同跑 | **FP8** | **有 `Rent`** | 最强成人底模替代；身份竞争风险更高 |
+| **SinoX Edit_v1.1 `3174825`** | 作者称 uncensored；精确 Edit 画廊最高 level 8，没有 level 16 | **已烘入 v1.2**；精确随图 graph 有 `Krea2EditModelPatch + GroundedEncode`，无需再次加载 Identity 权重 | **FP8**、INT8；Apple 首测 FP8 | **有 `Rent`** | 低成熟度一体化挑战者，不是默认 |
+| **Dark Beast Krea2 3.0 `3173268` + Identity v1.2** | 作者明确 uncensored/zero mosaics；精确版本有 level-16 图 | 外接 v1.2；作者版本页未给精确 edit 同跑 | **FP8** | **有 `Rent`** | 成人压力候选；身份竞争风险更高 |
 | **官方 Turbo FP8 + NSFW_Krea2 v2 + Identity v1.2** | 成人适配层 v2 精确画廊含 level-16；底模本身非成人专项 | 外接 v1.2，职责透明 | Turbo FP8 scaled + 两个 FP16 小权重 | 三层作者权限可成立；仍受 Krea 上游许可 | 透明诊断基线 |
 | **Lustify v10 `3112728` + Identity v1.2** | 作者明示面向女性显式场景；精确版本 4 张 level-16，T2I graph | 外接 v1.2；作者 workflow `3159388` 明确依赖该层 | FP8/BF16/GGUF 可选 | **无 `Rent`**，只有 `Image + RentCivit` | 内部画质对照，不能开放站外收费生成 |
 | **Moody V7 `3209007` + Identity v1.2** | 作者称 V7 NSFW tendency 较强；精确版本 2 张 level-16 | 外接 v1.2；作者 graph 仍是 T2I，没有 reference/edit nodes | FP8、NVFP4、INT8 | **无 `Rent`**，只有 `RentCivit` | 样图强，产品许可不成立 |
 | **Muse Edit `3200345`** | 版本页有 level-16 图，但资源 hash `e00c4ae933` 属同系列 NVFP4，不是 Edit 文件 `FD165…` | **已烘入 v1.2**；仍需 Krea2Edit nodes，不能再加载同一 Identity 权重 | **只有 INT8** | **无 `Rent`**，只有 `RentCivit` | NVIDIA 研究对照，不是 Apple/产品路线 |
 | **官方 Krea 2 Turbo/Raw + Identity v1.2** | 官方模型做过安全定向训练，非成人专项 | 作者直接支持 Turbo/Raw | BF16；Comfy-Org 有 FP8 scaled | Krea Community License | 干净兼容性基线 |
 
-成人图数量和 graph 类型来自各精确 [RedCraft Version API](https://civitai.red/api/v1/model-versions/3139241)、[Dark Beast Version API](https://civitai.red/api/v1/model-versions/3078453)、[Moody V7 Version API](https://civitai.red/api/v1/model-versions/3209007)、[Muse Edit Version API](https://civitai.red/api/v1/model-versions/3200345)、[Lustify v10 Version API](https://civitai.red/api/v1/model-versions/3112728)、[SinoX Edit Version API](https://civitai.red/api/v1/model-versions/3174825)。
+成人图数量和 graph 类型来自各精确 [RedCraft Version API](https://civitai.red/api/v1/model-versions/3139241)、[Dark Beast Version API](https://civitai.red/api/v1/model-versions/3173268)、[Moody V7 Version API](https://civitai.red/api/v1/model-versions/3209007)、[Muse Edit Version API](https://civitai.red/api/v1/model-versions/3200345)、[Lustify v10 Version API](https://civitai.red/api/v1/model-versions/3112728)、[SinoX Edit Version API](https://civitai.red/api/v1/model-versions/3174825)。
 
-### 3.1 精确文件、格式和 hash
+### 3.1 下载与点赞：成熟度证据，不是身份质量分数
+
+以下为 2026-08-28 API 快照。生产选型优先比较**精确版本**；模型页累计值横跨不同基础架构和旧版本，只用于判断作者/模型家族生态。
+
+| 候选 | 精确版本下载 / 点赞 | 模型页累计下载 / 点赞 | 采用度判断 |
+|---|---:|---:|---|
+| RedCraft 3.0 `3139241` | **35,481 / 1,100** | **348,110 / 11,176** | 本组显著最成熟的可站外服务 Krea checkpoint |
+| Dark Beast 3.0 `3173268` | **11,232 / 433** | **164,244 / 4,338** | 明显高于 SinoX，足以进入成人压力赛 |
+| SinoX Edit_v1.1 `3174825` | **1,084 / 106** | **2,746 / 259** | 样本量太小，只能视为实验 challenger |
+| Muse Edit `3200345` | **853 / 82** | 38,043 / 1,262 | Edit 精确版本比 SinoX 更低，且格式/权限不合主线 |
+| Identity Edit v1.2 `3139172` | **13,992 / 727** | **18,049 / 930** | 身份层本身已有相对充分的公开采用度 |
+| Lustify v10 `3112728` | **23,154 / 1,559** | **378,189 / 14,238** | 热度最高之一，但无 `Rent` 且精确 graph 是 T2I |
+| Moody V7 `3209007` | **11,511 / 492** | **86,516 / 2,451** | 热度不低，但无 `Rent` 且不是原生身份 Edit |
+
+数字来源：[RedCraft 精确版本](https://civitai.red/api/v1/model-versions/3139241)、[SinoX 精确版本](https://civitai.red/api/v1/model-versions/3174825)、[Dark Beast 精确版本](https://civitai.red/api/v1/model-versions/3173268)、[Identity v1.2 精确版本](https://civitai.red/api/v1/model-versions/3139172) 及对应 model API；快照会随下载和点赞继续增长。
+
+API 的 `downloadCount` 是下载次数，不是去重活跃用户数；它仍是当前能拿到的最好公开采用度代理。下载和点赞衡量的是社区排错概率、工作流复现人数和长期维护信号，不能直接证明单参考身份保持，因为大量下载来自 T2I 使用，点赞还受到作者精选图、发布时间和曝光影响。
+
+SinoX 精确版本的点赞/下载约为 `9.8%`，高于 RedCraft 的约 `3.1%`，可以解释为早期用户反馈不错；但 `106` 个点赞的样本量远不足以抵消 `32.7×` 下载差距所代表的成熟度差距。因此采用度是**生产默认的先验/风险权重**，真正的身份与成人完成质量仍须同参 A/B；在本地 A/B 尚未提供压倒性反证时，不能让只有约一千下载的 SinoX 排在 RedCraft 前面。
+
+### 3.2 精确文件、格式和 hash
 
 | 组件 | 精确文件 | SHA-256 | 说明 |
 |---|---|---|---|
 | RedCraft `3139241` | file `3019490` `redcraftREDMIXHybridA2A_30Krea2.safetensors`，FP8，约 12.24 GiB | `F6088960C0FEBD27CBD372FC758BB07D012F2D8AE3CD10C45C903D48B94409EA` | 主线底模 |
 | SinoX Edit_v1.1 `3174825` | file `3055566` `sinoxKrea2Aesthetics_editV11.safetensors`，FP8，约 12.24 GiB | `D4CE8A5E742330EC96C5E26EDE52C7E3E619C217735E7A58F6ADE65C0EFFD0B8` | 一体 Edit 首选资格赛文件；另有 INT8 `3061571` |
-| Dark Beast `3078453` | file `2958418` `darkBeast30BF16INT8_darkBeastKREA2FP8.safetensors`，FP8，约 11.94 GiB | `0C005BB2DA4AA249CEB4E9A90C3914DA9280660CF480F780C7386B92A8CFFC1B` | 成人压力候选 |
+| Dark Beast 3.0 `3173268` | file `3064149`，FP8 | `49F57CDB7937D9F585D7BD18203FF247A967F5B7740F04DAA55EF8BFB97D014D` | 当前成人压力候选；另有 BF16、INT8、INT4、NVFP4 |
 | Moody V7 `3209007` | file `3090691` `moodyKrea2Mix_v70.safetensors`，FP8，约 13.16 GiB | `405DB6A1D060075D176C3578063B6FA2FEB07B58BB61DDB403DDBA0669A35A6D` | 主文件其实是 NVFP4 `3090679`；Apple 比较应明确选 FP8 |
 | Muse Edit `3200345` | file `3081686` `museByStableYogi_v30ExtendedTurboEdit.safetensors`，INT8，约 11.95 GiB | `FD16550425043577D0173BF5E6110AAB8533FAF87AB2FF23A0B020C2C750C22E` | 无 FP8/BF16/GGUF 同版文件 |
 | Lustify v10 `3112728` | file `2997637` Turbo FP8，约 11.94 GiB | `94D92700FC45200EF053895EC5655D4F64A69B924C1EFAA457521DFC22BD5E00` | 同版另有 BF16、INT8、Q2/Q4 GGUF、Raw |
@@ -107,7 +128,7 @@ RedCraft 之外应分两种问题回答：
 
 官方 Krea 共用的 Qwen3-VL BF16 text encoder SHA 是 `36F3FF447EF59201722E8F9CE6020C9819FDCFBA6AA2608C4E09B1C0CE114E34`，Qwen Image VAE SHA 是 `A70580F0213E67967EE9C95F05BB400E8FB08307E017A924BF3441223E023D1F`。部署清单必须把它们与 DiT 一起 pin，不能只记录 checkpoint 名。
 
-### 3.2 为什么 SinoX 是一体 Edit 的第一候选
+### 3.3 为什么 SinoX 仍保留、但必须降级
 
 SinoX 的证据比 Muse 完整：
 
@@ -116,15 +137,15 @@ SinoX 的证据比 Muse 完整：
 - 集成支路没有再次经过 `LoraLoaderModelOnly`，说明正确用法是“跳过外部 Identity loader，但保留两类 reference nodes”；
 - 精确版本提供 FP8，model `2777406` 权限包含 `Image, RentCivit, Rent`。[Model API](https://civitai.red/api/v1/models/2777406)
 
-但不能跨过的证据缺口也很清楚：精确 Edit_v1.1 画廊没有 level-16 图片；“uncensored”来自作者文字和同系列 prior，不是精确显式 edit 结果。因此，SinoX 可以优先替换测试，不可直接替换生产默认。
+但不能跨过的证据缺口也很清楚：精确 Edit_v1.1 只有 `1,084` 次下载和 `106` 个点赞，画廊没有 level-16 图片；“uncensored”来自作者文字和同系列 prior，不是精确显式 edit 结果。因此 SinoX 只能作为减少集成变量的实验对照，不可直接替换生产默认。
 
-### 3.3 为什么 Dark Beast 是外接 Identity 的第一替代底模
+### 3.4 为什么 Dark Beast 是外接 Identity 的第一替代底模
 
 Dark Beast 具备最强的精确成人画面证据、FP8 和 `Rent`。它的不足不是“不够 NSFW”，而是 prior 过强：当底模把脸型、身材、皮肤、摄影风格都推向自己的高概率分布时，Identity Edit 需要更大 reference influence 才能拉回参考人物；过高的 `ref_boost` 又会降低换场景/姿态服从度。
 
 所以 Dark Beast 的验收标准不能是“能否出图”，而必须是：在相同 reference、seed 集、12 steps、CFG 1 下，它是否在显式场景保持脸、体型和标志特征的通过率不低于 RedCraft。没有这个 A/B，就只能叫更强成人底模，不能叫更好的角色模型。
 
-### 3.4 为什么透明三层基线必须保留
+### 3.5 为什么透明三层基线必须保留
 
 ```text
 official Krea 2 Turbo FP8
@@ -137,7 +158,7 @@ official Krea 2 Turbo FP8
 
 它也不是无条件生产首选：两个附加权重可能互相干扰；`NSFW_Krea2 v2` 的训练细节披露有限；Civitai `allowDerivatives=false` 意味着不要把三层另存为新 merge 分发。正确做法是运行时分别加载、固定各自 hash。
 
-### 3.5 官方 Raw 与 Turbo 的正确分工
+### 3.6 官方 Raw 与 Turbo 的正确分工
 
 官方把 Raw 定义为未做后训练/蒸馏、适合 fine-tuning 或 post-training 的底模，并明确说不推荐用于常规推理；官方 recipe 是 52 steps、CFG 3.5。Turbo 是后训练和蒸馏后的推理版本，官方 recipe 是 8 steps、CFG 0。[Raw 模型卡](https://huggingface.co/krea/Krea-2-Raw)；[Turbo 模型卡](https://huggingface.co/krea/Krea-2-Turbo)
 
@@ -175,8 +196,8 @@ GroundedEncode(empty prompt + same reference) ───────────>
 |---|---:|---|
 | Identity weight | `1.0` | 作者训练/示例契约 |
 | `fit_mode` | `fit` | v1.2 训练匹配几何；允许 source/output 不同纵横比 |
-| `ref_boost` | `4` | 作者给出的强 likeness 起点；再用 2/4/6 小范围资格赛 |
-| `grounding_px` | `768` | v1.2 训练范围上沿；1024 可做人物增强实验，但属于范围外尝试 |
+| `ref_boost` | `4` | 人脸近景固定样本中比 2 更接近参考脸；前提是 reference 不含服装与姿态信号 |
+| `grounding_px` | `768` | 人脸近景使用训练范围上沿增强 likeness；需要更强构图自由度时再降到 512 |
 | sampler/scheduler | `Euler / simple` | Identity 作者和多数 Krea Turbo checkpoint 共通 |
 | steps / CFG | `12 / 1` | 在 8–12 Turbo 区间优先身份细节；CFG 1 避免额外 guidance 变量 |
 | 输出 | `≤2MP` | 上游警告更高分辨率会 source bleed 或复制主体 |
@@ -254,12 +275,13 @@ Muse 的产品形态看似最方便，因为 edit 已烘入；但精确 `3200345
 
 ## 9. 单人物资格赛设计
 
-不下载/生成是本轮研究边界；实际选型必须用相同 graph 做最小资格赛。建议只测四条：
+不下载/生成是本轮研究边界；实际选型必须用相同 reference、prompt、seed、resolution 和评分规则做最小资格赛。建议测五条：
 
 1. RedCraft FP8 + Identity v1.2；
 2. SinoX Edit_v1.1 FP8（不重复加载 Identity）；
-3. Dark Beast FP8 + Identity v1.2；
-4. official Turbo FP8 + NSFW_Krea2 v2 + Identity v1.2。
+3. Dark Beast 3.0 `3173268` FP8 + Identity v1.2；
+4. official Turbo FP8 + NSFW_Krea2 v2 + Identity v1.2；
+5. 当前 Qwen Rapid-AIO NSFW v19 单参考路径，作为现有非 Krea 控制组。
 
 固定一张已批准 reference，每个场景固定 5 个 seed：正面半身、全身换姿态、侧面/三分之二角度、强光/低光、服装改变、背景改变、明确成人场景。每次都从原 reference 开始。
 
@@ -277,10 +299,10 @@ Muse 的产品形态看似最方便，因为 edit 已烘入；但精确 `3200345
 
 ## 最终推荐顺序
 
-1. **保留主线**：RedCraft `3139241` FP8 + Identity Edit v1.2 full + canonical v1.2.5 single-reference graph。
-2. **第一替代资格赛**：SinoX Edit_v1.1 `3174825` FP8。若其身份通过率不低于 RedCraft，且精确显式场景完成率过线，它会成为更简单的一体生产候选。
-3. **成人压力候选**：Dark Beast Krea2 `3078453` FP8 + Identity v1.2。它回答“更强成人 prior 是否值得身份损失”。
-4. **透明控制组**：official Turbo FP8 + NSFW_Krea2 v2 + Identity v1.2。用于定位 merge 失败，不因样图不够华丽而删除。
-5. **非 Krea 控制**：Qwen official 2511 做身份质量上限，Rapid v19 做少步成人 edit 当前对照，MageFlow 做 4B/4-step 延迟下限。
+1. **生产默认候选 / 实施起点**：RedCraft `3139241` FP8 + Identity Edit v1.2 full + canonical v1.2.5 single-reference graph。采用度、权限、本机基础和可归因性综合最强。
+2. **现有控制与回退**：当前 Qwen Rapid-AIO NSFW v19 单参考路径。历史上的双参考失败不能直接否定单参考路径；在 Krea 资格赛胜出前不删除。
+3. **成人压力候选**：Dark Beast Krea2 3.0 `3173268` FP8 + Identity v1.2。采用度显著高于 SinoX，用来回答“更强成人 prior 是否值得身份损失”。
+4. **低成熟度实验候选**：SinoX Edit_v1.1 `3174825` FP8。只有在同参资格赛中对 RedCraft 形成明确、可重复的质量或资源优势，才考虑晋级。
+5. **透明诊断控制组**：official Turbo FP8 + NSFW_Krea2 v2 + Identity v1.2。用于定位 merge 失败，不因样图不够华丽而删除。
 
-在没有新生成证据前，最诚实的决定不是宣布某个新模型“更强”，而是把 **SinoX Edit_v1.1** 提升为 RedCraft 之外的首个端到端替代候选，并把 **Dark Beast** 保留为严格意义上的首选替代成人底模。
+因此，在没有新生成证据前，不应把 SinoX 提升到 RedCraft 同级。iDream 当前最合理的决策仍是 **RedCraft 负责成人画面与构图，Krea 2 Identity Edit v1.2 负责单人物身份保持**；SinoX 和 Dark Beast 只进入受控 A/B，不进入默认路由。

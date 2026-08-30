@@ -7,15 +7,18 @@ import {
   signBffContext,
 } from "@idream/shared/bff";
 import { loadCharacterSoulSnapshot } from "@idream/shared";
+import { createSessionToken, SESSION_COOKIE } from "./lib/auth";
 import {
   companionProbeDshEvidenceSchema,
   projectCompanionProbeDshEvidence,
   type CompanionProbeDshEvidence,
 } from "@idream/shared/chat/companion-runtime";
+import { MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { prisma } from "./lib/db";
+import { companionRelationshipAggregateId } from "./modules/chat/companion-memory-authority";
 import { publicCharacterAudienceWhere } from "./modules/ourdream/public-content-audience";
 import {
-  isRelativeFutureSceneAnchor,
+  isStableRegeneratedSceneAnchor,
   type ChatServiceProbeEvidence,
   type ProbeReportOf,
 } from "./readiness/evidence";
@@ -29,10 +32,10 @@ import { observeChatSseAcrossReconnects } from "./readiness/chat-sse-probe";
 type ProbeOptions = {
   report: string | null;
   serviceUrl: string | null;
+  mainWebUrl: string;
   internalToken: string | null;
   userId: string;
   characterId: string | null;
-  expectedCompanionRuntime: "dsh" | null;
 };
 
 type OperationEvidence = {
@@ -44,7 +47,7 @@ type OperationEvidence = {
 // INTENT: 生产端自己的精确形状（ok 必填、永不为 null），比契约里那份"能容忍脏 JSON 的
 //         全可选声明"更强；报告组装时由 tsc 校验它能落进契约。
 type HealthEvidence = OperationEvidence & { service?: string | null };
-type SignedRequestEvidence = OperationEvidence & { sessionsCount?: number };
+type SignedRequestEvidence = OperationEvidence;
 type RuntimeAuthorityEvidence = OperationEvidence & {
   chatFsRootFingerprint?: string | null;
   sourceRevision?: string | null;
@@ -61,13 +64,10 @@ type RegenerateAnchorEvidence = OperationEvidence & {
   originalAttempt?: number;
   regeneratedAttempt?: number;
   originalSceneVersion?: number | null;
-  futureUserSceneVersion?: number | null;
-  futureSceneVersion?: number | null;
   regeneratedSceneVersion?: number | null;
   recallMatched?: boolean;
   wakeObserved?: boolean;
   memorySearchHit?: boolean;
-  futureDsh?: DshCompanionProbeEvidence;
   regeneratedDsh?: DshCompanionProbeEvidence;
 };
 
@@ -77,33 +77,6 @@ type CleanupEvidence = OperationEvidence & {
   memoryCleared?: boolean;
   sessionDeleted?: boolean;
   sessionGone?: boolean;
-};
-
-type ProbeRolloutAggregate = {
-  schemaVersion: 1;
-  generatedAt?: string;
-  window: { from: string; to: string; durationMs?: number };
-  comparisonStatus?: string;
-  sampleEvidence?: unknown;
-  releaseDecision: { status: "not_evaluated"; reason?: string };
-  runtimes: {
-    native: { attempts: number };
-    dsh: { attempts: number };
-  };
-  dataScope: {
-    userAuthority: "core.chat_user_view";
-    scope: "internal-audit";
-    includedDataClass: "audit";
-    activeCustomersOnly: false;
-    exactAuditActorOnly: true;
-    userFilterApplied: true;
-    windowBasis: "message_versions.created_at";
-  };
-};
-
-type ProbeRolloutEvidence = OperationEvidence & {
-  collectedAt?: string;
-  aggregate?: ProbeRolloutAggregate;
 };
 
 // End-to-end conversation smoke (design §10.4): create → send → stream → get,
@@ -126,7 +99,6 @@ type ConversationEvidence = {
   regenerateAnchor: RegenerateAnchorEvidence;
   noMemory: NoMemoryEvidence;
   blockedInput: OperationEvidence & { status_?: string };
-  rolloutEvidence: ProbeRolloutEvidence;
   cleanup: CleanupEvidence;
   error?: string | null;
 };
@@ -208,20 +180,16 @@ interface CompanionAttemptEvidenceInput {
   messageId: string;
   attempt: number;
   mode: "normal" | "private";
-  fetchImpl?: (
-    input: URL | RequestInfo,
-    init?: RequestInit,
-  ) => Promise<Response>;
 }
 
 /**
- * SPEC: SSE `done` closes the user-visible turn at Chat's terminal CAS; the
- * sidecar's memory settlement (ingest + profile maintenance) lands on the
- * attempt trace afterwards. Evidence is therefore polled until the memory
- * outcome leaves `pending`, the same way Scene derivation is awaited above.
+ * SPEC: Main's terminal row is the attempt authority. Memory is an independent
+ * outbox projection, so launch evidence waits for that relationship projection
+ * without depending on a successful Chat-local trace (which is deleted on ACK).
  */
 export async function fetchProbeCompanionAttemptEvidence(
   input: CompanionAttemptEvidenceInput & {
+    awaitProjection?: boolean;
     settleTimeoutMs?: number;
     sleep?: (ms: number) => Promise<void>;
   },
@@ -230,7 +198,11 @@ export async function fetchProbeCompanionAttemptEvidence(
   const sleep = input.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   for (;;) {
     const evidence = await fetchProbeCompanionAttemptEvidenceOnce(input);
-    if (evidence.memoryOutcome !== "pending" || Date.now() >= deadline) return evidence;
+    if (
+      input.awaitProjection === false ||
+      evidence.memoryOutcome !== "pending" ||
+      Date.now() >= deadline
+    ) return evidence;
     await sleep(COMPANION_MEMORY_SETTLE_POLL_MS);
   }
 }
@@ -241,57 +213,64 @@ async function fetchProbeCompanionAttemptEvidenceOnce(
   if (input.userId !== CHAT_PROBE_USER_ID || !input.internalToken?.trim()) {
     throw new Error("content-free DSH attempt evidence requires the dedicated audit actor and INTERNAL_TOKEN");
   }
-  const url = new URL(
-    "/internal/admin/companion-attempt-evidence",
-    normalizedBase(input.serviceUrl),
-  );
-  url.searchParams.set("userId", input.userId);
-  url.searchParams.set("sessionId", input.sessionId);
-  url.searchParams.set("messageId", input.messageId);
-  url.searchParams.set("mode", input.mode);
-  const response = await (input.fetchImpl ?? fetch)(url, {
-    method: "GET",
-    headers: { "x-internal-token": input.internalToken },
+  const turn = await prisma.chatTurn.findUnique({
+    where: { assistantMessageId: input.messageId },
+    select: {
+      attempt: true,
+      assistantStatus: true,
+      terminalEvidence: true,
+      session: { select: { sessionId: true, userId: true, characterId: true } },
+    },
   });
-  const body = await response.json().catch(() => null);
-  const record = isRecord(body) ? body : {};
   if (
-    !response.ok ||
-    record.messageId !== input.messageId ||
-    record.attempt !== input.attempt
+    !turn ||
+    turn.session.sessionId !== input.sessionId ||
+    turn.session.userId !== input.userId ||
+    turn.attempt !== input.attempt ||
+    turn.assistantStatus !== "sent"
   ) {
-    throw new Error(`content-free DSH attempt evidence returned HTTP ${response.status}`);
+    throw new Error("Main terminal attempt evidence does not match the probe identity");
   }
-  return companionProbeDshEvidenceSchema.parse(record.dsh);
-}
-
-function isIsoDate(value: unknown): value is string {
-  return typeof value === "string" &&
-    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u.test(value) &&
-    Number.isFinite(Date.parse(value));
+  const pending = input.mode === "normal"
+    ? await prisma.mainOutboxEvent.findFirst({
+        where: {
+          eventType: {
+            in: [
+              MAIN_TO_CHAT_EVENTS.companionMemoryProjectRequestedV1,
+              MAIN_TO_CHAT_EVENTS.companionMemoryRebuildRequestedV1,
+              MAIN_TO_CHAT_EVENTS.companionMemoryPurgeRequestedV1,
+            ],
+          },
+          aggregateType: "chat_relationship",
+          aggregateId: companionRelationshipAggregateId(
+            input.userId,
+            turn.session.characterId,
+          ),
+          status: { in: ["pending", "processing"] },
+        },
+        select: { id: true },
+      })
+    : null;
+  return companionProbeDshEvidenceSchema.parse(projectCompanionProbeDshEvidence(
+    turn.terminalEvidence,
+    input.mode,
+    input.mode === "private" ? "disabled" : pending ? "pending" : "projected",
+  ));
 }
 
 function readOptions(): ProbeOptions {
   return {
     report: probeReportPath("chatServiceProbe"),
     serviceUrl: probeCliArg("service-url") ?? process.env.CHAT_SERVICE_URL ?? null,
+    mainWebUrl:
+      probeCliArg("main-web-url") ??
+      process.env.MAIN_WEB_URL ??
+      process.env.BETTER_AUTH_URL ??
+      "http://127.0.0.1:3000",
     internalToken: process.env.INTERNAL_TOKEN ?? null,
     userId: probeCliArg("user-id") ?? process.env.CHAT_SERVICE_PROBE_USER_ID ?? CHAT_PROBE_USER_ID,
     characterId: probeCliArg("character-id") ?? process.env.CHAT_SERVICE_PROBE_CHARACTER_ID ?? null,
-    expectedCompanionRuntime: parseExpectedCompanionRuntime(
-      probeCliArg("expected-companion-runtime") ??
-        process.env.CHAT_SERVICE_PROBE_EXPECTED_COMPANION_RUNTIME,
-    ),
   };
-}
-
-export function parseExpectedCompanionRuntime(
-  value: string | undefined,
-): "dsh" {
-  const normalized = value?.trim();
-  if (!normalized) return "dsh";
-  if (normalized === "dsh") return normalized;
-  throw new Error("expected companion runtime must be dsh");
 }
 
 async function main() {
@@ -299,11 +278,11 @@ async function main() {
   try {
     const report = await runProbe({
       serviceUrl: options.serviceUrl,
+      mainWebUrl: options.mainWebUrl,
       userId: options.userId,
       characterId: options.characterId,
       secret: process.env.CHAT_BFF_SIGNING_SECRET ?? null,
       internalToken: options.internalToken,
-      expectedCompanionRuntime: options.expectedCompanionRuntime,
     });
 
     if (options.report) {
@@ -331,7 +310,6 @@ function skippedConversation(reason: string): ConversationEvidence {
     regenerateAnchor: SKIPPED_OP,
     noMemory: SKIPPED_OP,
     blockedInput: SKIPPED_OP,
-    rolloutEvidence: SKIPPED_OP,
     cleanup: SKIPPED_OP,
     error: reason,
   };
@@ -368,14 +346,16 @@ export function assertDedicatedChatProbeActor(
 
 export async function runProbe(input: {
   serviceUrl: string | null;
+  mainWebUrl?: string;
   userId: string;
   characterId: string | null;
   secret: string | null;
   internalToken?: string | null;
-  expectedCompanionRuntime?: "dsh" | null;
 }): Promise<ChatServiceProbeReport> {
   const checkedAt = new Date().toISOString();
   const startedAt = Date.now();
+  const mainWebUrl = input.mainWebUrl ?? process.env.MAIN_WEB_URL ??
+    process.env.BETTER_AUTH_URL ?? "http://127.0.0.1:3000";
   const baseReport = {
     checkedAt,
     serviceUrl: input.serviceUrl,
@@ -388,7 +368,6 @@ export async function runProbe(input: {
       | "database"
       | "missing",
     usedSignedBff: Boolean(input.secret?.trim()),
-    expectedCompanionRuntime: input.expectedCompanionRuntime ?? null,
   };
 
   const health = await probeHealth(input.serviceUrl);
@@ -407,6 +386,7 @@ export async function runProbe(input: {
   let conversation: ConversationEvidence = skippedConversation(
     "CHAT_SERVICE_PROBE_CHARACTER_ID not set — conversation smoke skipped",
   );
+  let authToken: string | null = null;
 
   try {
     if (!input.serviceUrl?.trim()) {
@@ -429,17 +409,25 @@ export async function runProbe(input: {
     baseReport.actorDataClass = actorAuthority.actorDataClass;
     baseReport.dedicatedActor = actorAuthority.dedicatedActor;
 
-    signedRequest = await probeSignedSessions({
+    authToken = createSessionToken();
+    await prisma.session.create({
+      data: {
+        userId: input.userId,
+        token: authToken,
+        expiresAt: new Date(Date.now() + 30 * 60_000),
+      },
+    });
+    signedRequest = await probeSignedRuntimeAuthority({
       serviceUrl: input.serviceUrl,
       secret: input.secret,
       userId: input.userId,
-    });
+    }).then((result) => ({ ok: result.ok, status: result.status, error: result.error }));
     runtimeAuthority = await probeSignedRuntimeAuthority({
       serviceUrl: input.serviceUrl,
       secret: input.secret,
       userId: input.userId,
     });
-    unsignedRequest = await probeUnsignedSessions(input.serviceUrl);
+    unsignedRequest = await probeUnsignedRuntimeAuthority(input.serviceUrl);
     const character = await resolveProbeCharacter(input.characterId);
     if (!character.id) {
       conversation = skippedConversation(character.error ?? "no probe character available");
@@ -448,13 +436,13 @@ export async function runProbe(input: {
       baseReport.characterSource = character.source;
       conversation = await probeConversation({
         serviceUrl: input.serviceUrl,
+        mainWebUrl,
+        authToken,
         secret: input.secret,
         internalToken: input.internalToken ?? null,
         userId: input.userId,
         characterId: character.id,
         runId: randomUUID(),
-        checkedAt,
-        expectedCompanionRuntime: input.expectedCompanionRuntime ?? null,
       });
     }
   } catch (error) {
@@ -473,6 +461,10 @@ export async function runProbe(input: {
         retryable: true,
       },
     };
+  } finally {
+    if (authToken) {
+      await prisma.session.deleteMany({ where: { token: authToken } }).catch(() => undefined);
+    }
   }
 
   const ok =
@@ -596,10 +588,10 @@ export function selectSoulReadyProbeCharacter(
   return null;
 }
 
-/** Make a signed BFF request to the chat service (signature covers method+path+body). */
-export async function signedFetch(input: {
-  serviceUrl: string;
-  secret: string;
+/** Exercise the real Main façade with a short-lived audit-user session. */
+export async function productFetch(input: {
+  mainWebUrl: string;
+  authToken: string;
   userId: string;
   method: string;
   path: string;
@@ -608,20 +600,12 @@ export async function signedFetch(input: {
   idempotencyKey?: string;
 }): Promise<Response> {
   const body = input.body ?? "";
-  const { signature, context } = signBffContext({
-    secret: input.secret,
-    userId: input.userId,
-    method: input.method,
-    path: input.path,
-    body,
-  });
-  const url = new URL(input.path.replace(/^\//, ""), normalizedBase(input.serviceUrl));
+  const url = new URL(input.path.replace(/^\//, ""), normalizedBase(input.mainWebUrl));
   if (input.query) url.search = input.query;
   return fetch(url, {
     method: input.method,
     headers: {
-      [BFF_HEADER]: signature,
-      [BFF_USER_HEADER]: JSON.stringify(context),
+      cookie: `${SESSION_COOKIE}=${encodeURIComponent(input.authToken)}`,
       ...(body ? { "content-type": "application/json" } : {}),
       ...(input.method === "POST" &&
       /^\/api\/v1\/chat\/sessions\/[^/]+\/messages\/?$/.test(input.path)
@@ -634,13 +618,13 @@ export async function signedFetch(input: {
 
 async function probeConversation(input: {
   serviceUrl: string;
+  mainWebUrl: string;
+  authToken: string;
   secret: string;
   internalToken: string | null;
   userId: string;
   characterId: string;
   runId: string;
-  checkedAt: string;
-  expectedCompanionRuntime: "dsh" | null;
 }): Promise<ConversationEvidence> {
   const evidence: ConversationEvidence = {
     ok: false,
@@ -653,11 +637,9 @@ async function probeConversation(input: {
     regenerateAnchor: { ok: false, error: "not attempted" },
     noMemory: { ok: false, error: "not attempted" },
     blockedInput: { ok: false, error: "not attempted" },
-    rolloutEvidence: { ok: false, error: "not attempted" },
     cleanup: { ok: false, error: "not attempted" },
   };
   let sessionId: string | null = null;
-  let recallSessionId: string | null = null;
   try {
     // A failed prior probe may have left an active audit session. Remove only
     // this dedicated actor's visible state before creating a fresh run.
@@ -669,11 +651,11 @@ async function probeConversation(input: {
     }
 
     // 1) create a fresh audit-only session
-    const createRes = await signedFetch({
+    const createRes = await productFetch({
       ...input, method: "POST", path: "/api/v1/chat/sessions",
       body: JSON.stringify({ characterId: input.characterId }),
     });
-    const session = (await createRes.json().catch(() => ({}))) as { id?: string };
+    const session = productSessionRecord(await createRes.json().catch(() => ({}))) as { id?: string };
     evidence.createSession = { ok: createRes.status === 201 && Boolean(session.id), status: createRes.status };
     if (!session.id) throw new Error(`create session returned HTTP ${createRes.status}`);
     sessionId = session.id;
@@ -684,7 +666,7 @@ async function probeConversation(input: {
       .slice(0, 32)}`;
 
     // 2) send message and persist one unique fact for the later recall proof.
-    const sendRes = await signedFetch({
+    const sendRes = await productFetch({
       ...input, method: "POST", path: `/api/v1/chat/sessions/${sessionId}/messages`,
       body: JSON.stringify({
         content:
@@ -693,7 +675,7 @@ async function probeConversation(input: {
       }),
       idempotencyKey: `chat-probe:${input.runId}:normal`,
     });
-    const sent = (await sendRes.json().catch(() => ({}))) as {
+    const sent = productTurnRecord(await sendRes.json().catch(() => ({}))) as {
       assistantMessageId?: string;
       attempt?: number;
       userMessageId?: string;
@@ -718,28 +700,25 @@ async function probeConversation(input: {
       throw new Error(`normal stream failed: ${evidence.stream.error ?? "terminal event missing"}`);
     }
 
-    // 4) Wait through memory.extract for the normal turn before taking the
-    // memory baseline. SSE done is emitted before that derived job.
+    // 4) Main's terminal Turn closes the user-visible response. The independent
+    // memory projection is checked through its durable outbox below.
     const normal = await waitForSessionMessage({
       ...input,
       sessionId,
       assistantMessageId: sent.assistantMessageId,
-      requireMemoryExtracted: true,
     });
     const assistant = normal.message;
     const assistantSent =
       assistant?.role === "assistant" &&
       assistant.status === "sent" &&
       Boolean(assistant.content?.trim());
-    const normalDsh = input.expectedCompanionRuntime === "dsh"
-      ? await fetchProbeCompanionAttemptEvidence({
-          ...input,
-          sessionId,
-          messageId: sent.assistantMessageId,
-          attempt: sent.attempt ?? 1,
-          mode: "normal",
-        })
-      : undefined;
+    const normalDsh = await fetchProbeCompanionAttemptEvidence({
+      ...input,
+      sessionId,
+      messageId: sent.assistantMessageId,
+      attempt: sent.attempt ?? 1,
+      mode: "normal",
+    });
     evidence.getSession = {
       ok:
         normal.status === 200 &&
@@ -760,20 +739,10 @@ async function probeConversation(input: {
       );
     }
 
-    // 5) Recall from a new session. Its PreparedTurn contains no seed turn, so
-    // the exact marker can arrive only through the companion-memory workspace.
-    const recallCreateRes = await signedFetch({
-      ...input,
-      method: "POST",
-      path: "/api/v1/chat/sessions",
-      body: JSON.stringify({ characterId: input.characterId }),
-    });
-    const recallSession = (await recallCreateRes.json().catch(() => ({}))) as { id?: string };
-    if (recallCreateRes.status !== 201 || !recallSession.id) {
-      throw new Error(`recall session create failed: HTTP ${recallCreateRes.status}`);
-    }
-    recallSessionId = recallSession.id;
-    const recallSend = await signedFetch({
+    // 5) Main has one relationship session per Character. The exact marker
+    // must be returned by the memory_search tool with matching igrep evidence.
+    const recallSessionId = sessionId;
+    const recallSend = await productFetch({
       ...input,
       method: "POST",
       path: `/api/v1/chat/sessions/${recallSessionId}/messages`,
@@ -784,7 +753,7 @@ async function probeConversation(input: {
       }),
       idempotencyKey: `chat-probe:${input.runId}:cross-session-recall`,
     });
-    const recallTurn = (await recallSend.json().catch(() => ({}))) as {
+    const recallTurn = productTurnRecord(await recallSend.json().catch(() => ({}))) as {
       assistantMessageId?: string;
       attempt?: number;
     };
@@ -806,129 +775,36 @@ async function probeConversation(input: {
       ...input,
       sessionId: recallSessionId,
       assistantMessageId: recallTurn.assistantMessageId,
-      requireMemoryExtracted: true,
     });
-    const recallDsh = input.expectedCompanionRuntime === "dsh"
-      ? await fetchProbeCompanionAttemptEvidence({
-          ...input,
-          sessionId: recallSessionId,
-          messageId: recallTurn.assistantMessageId,
-          attempt: recallTurn.attempt ?? 1,
-          mode: "normal",
-        })
-      : undefined;
-    const recall = input.expectedCompanionRuntime === "dsh"
-      ? evaluateDshRecallEvidence({
-          assistantContent: recallState.message?.content,
-          sentinel: recallSentinel,
-          dsh: recallDsh,
-        })
-      : { ok: true, recallMatched: true, wakeObserved: true, memorySearchHit: true };
+    const recallDsh = await fetchProbeCompanionAttemptEvidence({
+      ...input,
+      sessionId: recallSessionId,
+      messageId: recallTurn.assistantMessageId,
+      attempt: recallTurn.attempt ?? 1,
+      mode: "normal",
+      awaitProjection: false,
+    });
+    const recall = evaluateDshRecallEvidence({
+      assistantContent: recallState.message?.content,
+      sentinel: recallSentinel,
+      dsh: recallDsh,
+    });
     if (recallState.status !== 200 || recallState.settled !== true || !recall.ok || !(recallDsh?.ok ?? true)) {
       throw new Error(
-        `cross-session recall failed: HTTP ${recallState.status}; settled=${recallState.settled === true}; ` +
+        `relationship recall failed: HTTP ${recallState.status}; settled=${recallState.settled === true}; ` +
         `dsh=${recallDsh?.ok ?? "not_required"}; ${describeDshRecallFailure(recall, recallDsh)}`,
       );
     }
 
-    // 6) Create a later Scene revision in the seed session, then regenerate
-    // the first assistant attempt. The regenerated PreparedTurn must retain
-    // its original user anchor (Scene v0), not the later Scene head.
-    const futureSend = await signedFetch({
+    // 6) Regenerate the latest turn. Main intentionally forbids editing an old
+    // turn, so the proof is that the new attempt keeps this turn's immutable
+    // Scene anchor while incrementing only the attempt.
+    const originalAttempt = recallState.message?.attempt ?? recallTurn.attempt ?? 1;
+    const originalSceneVersion = sceneVersion(recallState.message?.scene);
+    const regenerate = await productFetch({
       ...input,
       method: "POST",
-      path: `/api/v1/chat/sessions/${sessionId}/messages`,
-      body: JSON.stringify({
-        content: "Move us to the train station at dawn after choosing the train.",
-      }),
-      idempotencyKey: `chat-probe:${input.runId}:future-scene`,
-    });
-    const futureTurn = (await futureSend.json().catch(() => ({}))) as {
-      assistantMessageId?: string;
-      attempt?: number;
-      userMessageId?: string;
-    };
-    const futureStream = futureTurn.assistantMessageId
-      ? await probeStream({
-          ...input,
-          assistantMessageId: futureTurn.assistantMessageId,
-          expectedAttempt: futureTurn.attempt ?? 1,
-        })
-      : { ok: false, error: "missing future assistantMessageId" };
-    if (futureSend.status !== 202 || !futureTurn.assistantMessageId || !futureStream.ok) {
-      const failure = futureSend.status !== 202
-        ? `future scene send failed: HTTP ${futureSend.status}`
-        : `future scene stream failed: ${futureStream.error ?? "terminal event missing"}`;
-      evidence.regenerateAnchor = {
-        ok: false,
-        status: futureSend.status,
-        ...(futureTurn.assistantMessageId
-          ? { assistantMessageId: futureTurn.assistantMessageId }
-          : {}),
-        error: failure,
-      };
-      // INVARIANT: do not issue regenerate/no-memory writes while this turn may
-      // still be generating or retrying. Cleanup owns the one safe exit path.
-      throw new Error(failure);
-    }
-    const futureState = futureTurn.assistantMessageId
-      ? await waitForSessionMessage({
-          ...input,
-          sessionId,
-          assistantMessageId: futureTurn.assistantMessageId,
-          requireMemoryExtracted: true,
-        })
-      : { status: 0, message: null, settled: false };
-    const originalSceneVersion = sceneVersion(assistant?.scene);
-    const futureUserSceneVersion = futureState.messages?.find(
-      (message) => message.id === futureTurn.userMessageId,
-    )?.sceneVersion ?? null;
-    const futureSceneVersion = sceneVersion(futureState.message?.scene);
-    const futureSceneAdvanced = isRelativeFutureSceneAnchor({
-      originalSceneVersion,
-      futureUserSceneVersion,
-      futureSceneVersion,
-    });
-    const futureDsh = input.expectedCompanionRuntime === "dsh"
-      ? await fetchProbeCompanionAttemptEvidence({
-          ...input,
-          sessionId,
-          messageId: futureTurn.assistantMessageId,
-          attempt: futureTurn.attempt ?? 1,
-          mode: "normal",
-        })
-      : undefined;
-    const futureReady =
-      futureState.status === 200 &&
-      futureState.settled === true &&
-      futureSceneAdvanced &&
-      recall.ok &&
-      (futureDsh?.ok ?? true);
-    if (!futureReady) {
-      const failure =
-        `future scene terminal state failed: HTTP ${futureState.status}; ` +
-        `settled=${futureState.settled === true}; scenes=${originalSceneVersion}/${futureUserSceneVersion}/${futureSceneVersion}; ` +
-        `dsh=${futureDsh?.ok ?? "not_required"}; recall=${recall.ok}`;
-      evidence.regenerateAnchor = {
-        ok: false,
-        status: futureState.status,
-        assistantMessageId: futureTurn.assistantMessageId,
-        originalAttempt: assistant?.attempt,
-        originalSceneVersion,
-        futureUserSceneVersion,
-        futureSceneVersion,
-        recallMatched: recall.recallMatched,
-        wakeObserved: recall.wakeObserved,
-        memorySearchHit: recall.memorySearchHit,
-        ...(futureDsh ? { futureDsh } : {}),
-        error: failure,
-      };
-      throw new Error(failure);
-    }
-    const regenerate = await signedFetch({
-      ...input,
-      method: "POST",
-      path: `/api/v1/chat/messages/${sent.assistantMessageId}/regenerate`,
+      path: `/api/v1/chat/messages/${recallTurn.assistantMessageId}/regenerate`,
     });
     const regenerated = (await regenerate.json().catch(() => ({}))) as {
       assistantMessageId?: string;
@@ -943,11 +819,8 @@ async function probeConversation(input: {
       evidence.regenerateAnchor = {
         ok: false,
         status: regenerate.status,
-        originalAttempt: assistant?.attempt,
+        originalAttempt,
         originalSceneVersion,
-        futureUserSceneVersion,
-        futureSceneVersion,
-        ...(futureDsh ? { futureDsh } : {}),
         error: failure,
       };
       throw new Error(failure);
@@ -964,12 +837,9 @@ async function probeConversation(input: {
         ok: false,
         status: regenerate.status,
         assistantMessageId: regenerated.assistantMessageId,
-        originalAttempt: assistant?.attempt,
+        originalAttempt,
         regeneratedAttempt: regenerated.attempt,
         originalSceneVersion,
-        futureUserSceneVersion,
-        futureSceneVersion,
-        ...(futureDsh ? { futureDsh } : {}),
         error: failure,
       };
       throw new Error(failure);
@@ -977,58 +847,55 @@ async function probeConversation(input: {
     const regeneratedState = regenerated.assistantMessageId
       ? await waitForSessionMessage({
           ...input,
-          sessionId,
+          sessionId: recallSessionId,
           assistantMessageId: regenerated.assistantMessageId,
-          requireMemoryExtracted: true,
         })
       : { status: 0, message: null, settled: false };
     const regeneratedSceneVersion = sceneVersion(regeneratedState.message?.scene);
-    const regeneratedDsh = input.expectedCompanionRuntime === "dsh"
-      ? await fetchProbeCompanionAttemptEvidence({
-          ...input,
-          sessionId,
-          messageId: regenerated.assistantMessageId!,
-          attempt: regenerated.attempt ?? regeneratedState.message?.attempt ?? 1,
-          mode: "normal",
-        })
-      : undefined;
+    const regeneratedDsh = await fetchProbeCompanionAttemptEvidence({
+      ...input,
+      sessionId: recallSessionId,
+      messageId: regenerated.assistantMessageId!,
+      attempt: regenerated.attempt ?? regeneratedState.message?.attempt ?? 1,
+      mode: "private",
+      awaitProjection: false,
+    });
     evidence.regenerateAnchor = {
       ok:
-        futureSend.status === 202 &&
-        futureStream.ok &&
-        futureState.settled === true &&
         regenerate.status === 202 &&
         regeneratedStream.ok &&
         regeneratedState.settled === true &&
-        futureSceneAdvanced &&
         recall.ok &&
-        regeneratedSceneVersion === originalSceneVersion &&
+        isStableRegeneratedSceneAnchor({
+          originalAttempt,
+          regeneratedAttempt: regeneratedState.message?.attempt,
+          originalSceneVersion,
+          regeneratedSceneVersion,
+        }) &&
         regeneratedState.message?.attempt === regenerated.attempt &&
-        (futureDsh?.ok ?? true) &&
         (regeneratedDsh?.ok ?? true),
       status: regenerate.status,
       assistantMessageId: regenerated.assistantMessageId,
-      originalAttempt: assistant?.attempt,
+      originalAttempt,
       regeneratedAttempt: regeneratedState.message?.attempt,
       originalSceneVersion,
-      futureUserSceneVersion,
-      futureSceneVersion,
       regeneratedSceneVersion,
       recallMatched: recall.recallMatched,
       wakeObserved: recall.wakeObserved,
       memorySearchHit: recall.memorySearchHit,
-      ...(futureDsh ? { futureDsh } : {}),
       ...(regeneratedDsh ? { regeneratedDsh } : {}),
       error:
-        futureStream.ok &&
         regeneratedStream.ok &&
-        futureSceneAdvanced &&
         recall.ok &&
-        regeneratedSceneVersion === originalSceneVersion &&
-        (futureDsh?.ok ?? true) &&
+        isStableRegeneratedSceneAnchor({
+          originalAttempt,
+          regeneratedAttempt: regeneratedState.message?.attempt,
+          originalSceneVersion,
+          regeneratedSceneVersion,
+        }) &&
         (regeneratedDsh?.ok ?? true)
           ? null
-          : `futureStream=${futureStream.ok}; futureSettled=${futureState.settled}; regenerateStream=${regeneratedStream.ok}; regenerateSettled=${regeneratedState.settled}; scenes=${originalSceneVersion}/${futureUserSceneVersion}/${futureSceneVersion}/${regeneratedSceneVersion}; recall=${recall.ok}; futureDsh=${futureDsh?.ok ?? "not_required"}; regeneratedDsh=${regeneratedDsh?.ok ?? "not_required"}`,
+          : `regenerateStream=${regeneratedStream.ok}; regenerateSettled=${regeneratedState.settled}; attempts=${originalAttempt}/${regeneratedState.message?.attempt ?? "missing"}; scenes=${originalSceneVersion}/${regeneratedSceneVersion}; recall=${recall.ok}; regeneratedDsh=${regeneratedDsh?.ok ?? "not_required"}`,
     };
     if (!evidence.regenerateAnchor.ok) {
       throw new Error(evidence.regenerateAnchor.error ?? "regenerate evidence failed");
@@ -1036,7 +903,7 @@ async function probeConversation(input: {
 
     // 7) no-memory smoke: the assistant row must pin disabled even though the
     // session is later restored, with no Scene or memory derivation.
-    const disableMemory = await signedFetch({
+    const disableMemory = await productFetch({
       ...input, method: "POST", path: `/api/v1/chat/sessions/${sessionId}/memory`,
       body: JSON.stringify({ memoryEnabled: false }),
     });
@@ -1048,14 +915,14 @@ async function probeConversation(input: {
       };
       throw new Error(evidence.noMemory.error!);
     }
-    const noMemSend = await signedFetch({
+    const noMemSend = await productFetch({
       ...input, method: "POST", path: `/api/v1/chat/sessions/${sessionId}/messages`,
       body: JSON.stringify({
         content: "incognito probe: please call me ProbeSecret and I like probe tea",
       }),
       idempotencyKey: `chat-probe:${input.runId}:no-memory`,
     });
-    const noMemTurn = (await noMemSend.json().catch(() => ({}))) as {
+    const noMemTurn = productTurnRecord(await noMemSend.json().catch(() => ({}))) as {
       assistantMessageId?: string;
       attempt?: number;
       userMessageId?: string;
@@ -1084,26 +951,22 @@ async function probeConversation(input: {
       };
       throw new Error(evidence.noMemory.error!);
     }
-    const noMemState = noMemTurn.assistantMessageId
-      ? await waitForSessionMessage({
-          ...input,
-          sessionId,
-          assistantMessageId: noMemTurn.assistantMessageId,
-          requireMemoryExtracted: false,
-        })
-      : { status: 0, message: null };
-    const authorityPinned =
-      noMemState.message?.memoryAuthority === "disabled" &&
-      noMemState.message.memoryExtractedAttempt === 0;
-    const privateDsh = input.expectedCompanionRuntime === "dsh"
-      ? await fetchProbeCompanionAttemptEvidence({
-          ...input,
-          sessionId,
-          messageId: noMemTurn.assistantMessageId,
-          attempt: noMemTurn.attempt ?? 1,
-          mode: "private",
-        })
-      : undefined;
+    if (noMemTurn.assistantMessageId) {
+      await waitForSessionMessage({
+        ...input,
+        sessionId,
+        assistantMessageId: noMemTurn.assistantMessageId,
+      });
+    }
+    const privateDsh = await fetchProbeCompanionAttemptEvidence({
+      ...input,
+      sessionId,
+      messageId: noMemTurn.assistantMessageId,
+      attempt: noMemTurn.attempt ?? 1,
+      mode: "private",
+    });
+    const authorityPinned = privateDsh?.memoryMode === "private" &&
+      privateDsh.memoryOutcome === "disabled";
     evidence.noMemory = {
       ok:
         disableMemory.status === 200 &&
@@ -1128,12 +991,15 @@ async function probeConversation(input: {
     }
 
     // 8) blocked-input smoke: the mock/safety provider blocks the underage keyword.
-    const blockedRes = await signedFetch({
+    const blockedRes = await productFetch({
       ...input, method: "POST", path: `/api/v1/chat/sessions/${sessionId}/messages`,
       body: JSON.stringify({ content: "this references csam content" }),
       idempotencyKey: `chat-probe:${input.runId}:blocked`,
     });
-    const blocked = (await blockedRes.json().catch(() => ({}))) as { status?: string; streamUrl?: string | null };
+    const blocked = productTurnRecord(await blockedRes.json().catch(() => ({}))) as {
+      status?: string;
+      streamUrl?: string | null;
+    };
     evidence.blockedInput = {
       ok: blockedRes.status === 202 && blocked.status === "blocked" && !blocked.streamUrl,
       status: blockedRes.status,
@@ -1142,21 +1008,9 @@ async function probeConversation(input: {
   } catch (error) {
     evidence.error = error instanceof Error ? error.message : String(error);
   } finally {
-    evidence.rolloutEvidence = await collectProbeRolloutEvidenceBeforeCleanup({
-      serviceUrl: input.serviceUrl,
-      internalToken: input.internalToken,
-      userId: input.userId,
-      checkedAt: input.checkedAt,
-      expectedCompanionRuntime: input.expectedCompanionRuntime,
-    });
-    if (!evidence.rolloutEvidence.ok && !evidence.error) {
-      evidence.error =
-        evidence.rolloutEvidence.error ?? "pre-cleanup Gate R evidence failed";
-    }
     evidence.cleanup = await cleanupCompletedProbeState({
       ...input,
       sessionId,
-      additionalSessionIds: recallSessionId ? [recallSessionId] : [],
     });
   }
   return finalizeConversation(evidence);
@@ -1166,135 +1020,22 @@ type ProbeSessionMessage = {
   attempt?: number;
   content?: string;
   id?: string;
-  memoryAuthority?: string;
-  memoryExtractedAttempt?: number;
   role?: string;
   status?: string;
   sceneVersion?: number;
   scene?: unknown;
 };
 
-/**
- * SPEC: Gate E must snapshot Gate R's aggregate audit evidence before privacy
- * cleanup removes the probe MessageVersions. The exact audit actor and window
- * are part of the request authority; neither raw turns nor actor ids enter the
- * returned report.
- */
-export async function collectProbeRolloutEvidenceBeforeCleanup(input: {
-  serviceUrl: string;
-  internalToken: string | null;
-  userId: string;
-  checkedAt: string;
-  expectedCompanionRuntime: "dsh" | null;
-  now?: () => Date;
-  fetchImpl?: (
-    input: URL | RequestInfo,
-    init?: RequestInit,
-  ) => Promise<Response>;
-}): Promise<ProbeRolloutEvidence> {
-  const collectedAt = (input.now ?? (() => new Date()))().toISOString();
-  let status: number | undefined;
-  try {
-    if (input.userId !== CHAT_PROBE_USER_ID) {
-      throw new Error("Gate R internal-audit aggregate requires the dedicated probe actor");
-    }
-    if (!input.internalToken?.trim()) {
-      throw new Error("INTERNAL_TOKEN is required for pre-cleanup Gate R evidence");
-    }
-    if (!isIsoDate(input.checkedAt) || Date.parse(collectedAt) <= Date.parse(input.checkedAt)) {
-      throw new Error("Gate R internal-audit aggregate requires a non-empty checkedAt window");
-    }
-    const url = new URL(
-      "/internal/admin/companion-rollout-evidence",
-      normalizedBase(input.serviceUrl),
-    );
-    url.searchParams.set("from", input.checkedAt);
-    url.searchParams.set("to", collectedAt);
-    url.searchParams.set("scope", "internal-audit");
-    url.searchParams.set("userId", CHAT_PROBE_USER_ID);
-    const response = await (input.fetchImpl ?? fetch)(url, {
-      method: "GET",
-      headers: { "x-internal-token": input.internalToken },
-    });
-    status = response.status;
-    const body = await response.json().catch(() => null);
-    if (!response.ok) {
-      throw new Error(`Gate R internal-audit aggregate returned HTTP ${response.status}`);
-    }
-    const aggregate = validateProbeRolloutAggregate(body, {
-      from: input.checkedAt,
-      to: collectedAt,
-      expectedRuntime: "dsh",
-    });
-    return {
-      ok: true,
-      status: response.status,
-      collectedAt,
-      aggregate,
-      error: null,
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      ...(status === undefined ? {} : { status }),
-      collectedAt,
-      error: error instanceof Error ? error.message : String(error),
-    };
-  }
-}
-
-function validateProbeRolloutAggregate(
-  value: unknown,
-  expected: { from: string; to: string; expectedRuntime: "dsh" },
-): ProbeRolloutAggregate {
-  const aggregate = isRecord(value) ? value : {};
-  const window = isRecord(aggregate.window) ? aggregate.window : {};
-  const decision = isRecord(aggregate.releaseDecision)
-    ? aggregate.releaseDecision
-    : {};
-  const runtimes = isRecord(aggregate.runtimes) ? aggregate.runtimes : {};
-  const native = isRecord(runtimes.native) ? runtimes.native : {};
-  const dsh = isRecord(runtimes.dsh) ? runtimes.dsh : {};
-  const scope = isRecord(aggregate.dataScope) ? aggregate.dataScope : {};
-  const nativeAttempts = native.attempts;
-  const dshAttempts = dsh.attempts;
-  const expectedAttempts = dshAttempts;
-  const valid =
-    aggregate.schemaVersion === 1 &&
-    window.from === expected.from &&
-    window.to === expected.to &&
-    decision.status === "not_evaluated" &&
-    typeof nativeAttempts === "number" &&
-    Number.isInteger(nativeAttempts) &&
-    nativeAttempts >= 0 &&
-    typeof dshAttempts === "number" &&
-    Number.isInteger(dshAttempts) &&
-    dshAttempts >= 0 &&
-    typeof expectedAttempts === "number" &&
-    expectedAttempts > 0 &&
-    scope.userAuthority === "core.chat_user_view" &&
-    scope.scope === "internal-audit" &&
-    scope.includedDataClass === "audit" &&
-    scope.activeCustomersOnly === false &&
-    scope.exactAuditActorOnly === true &&
-    scope.userFilterApplied === true &&
-    scope.windowBasis === "message_versions.created_at";
-  if (!valid) {
-    throw new Error(
-      `Gate R internal-audit aggregate is not attributable to the probe window/runtime (${expected.expectedRuntime})`,
-    );
-  }
-  return value as ProbeRolloutAggregate;
-}
-
 export async function cleanupExistingProbeState(input: {
   serviceUrl: string;
+  mainWebUrl: string;
+  authToken: string;
   secret: string;
   userId: string;
   characterId: string;
 }): Promise<OperationEvidence> {
   try {
-    const list = await signedFetch({
+    const list = await productFetch({
       ...input,
       method: "GET",
       path: "/api/v1/chat/sessions",
@@ -1307,7 +1048,7 @@ export async function cleanupExistingProbeState(input: {
     }
     for (const session of sessions) {
       if (!session.id) continue;
-      const deleted = await signedFetch({
+      const deleted = await productFetch({
         ...input,
         method: "DELETE",
         path: `/api/v1/chat/sessions/${session.id}`,
@@ -1321,7 +1062,7 @@ export async function cleanupExistingProbeState(input: {
       }
     }
     const fileAuthority = await clearProbeFileAuthority(input);
-    const verify = await signedFetch({
+    const verify = await productFetch({
       ...input,
       method: "GET",
       path: "/api/v1/chat/sessions",
@@ -1349,11 +1090,12 @@ export async function cleanupExistingProbeState(input: {
 
 export async function cleanupCompletedProbeState(input: {
   serviceUrl: string;
+  mainWebUrl: string;
+  authToken: string;
   secret: string;
   userId: string;
   characterId: string;
   sessionId: string | null;
-  additionalSessionIds?: readonly string[];
 }): Promise<CleanupEvidence> {
   if (!input.sessionId) {
     return {
@@ -1365,31 +1107,36 @@ export async function cleanupCompletedProbeState(input: {
     };
   }
   try {
-    const restore = await signedFetch({
+    const restore = await productFetch({
       ...input,
       method: "POST",
       path: `/api/v1/chat/sessions/${input.sessionId}/memory`,
       body: JSON.stringify({ memoryEnabled: true }),
     });
-    const sessionIds = [input.sessionId, ...(input.additionalSessionIds ?? [])];
+    // Clear first: it terminalizes any failed/stranded attempt and waits for
+    // the exact destructive mutation. Session deletion can then be final
+    // instead of racing an AgentRun and leaving an archived probe row behind.
+    const fileAuthority = await clearProbeFileAuthority(input);
+    const sessionIds = [input.sessionId];
     const deleted: Response[] = [];
     for (const targetSessionId of sessionIds) {
-      deleted.push(await signedFetch({
+      deleted.push(await productFetch({
         ...input,
         method: "DELETE",
         path: `/api/v1/chat/sessions/${targetSessionId}`,
       }));
     }
-    const fileAuthority = await clearProbeFileAuthority(input);
     const verify: Response[] = [];
     for (const targetSessionId of sessionIds) {
-      verify.push(await signedFetch({
+      verify.push(await productFetch({
         ...input,
         method: "GET",
         path: `/api/v1/chat/sessions/${targetSessionId}`,
       }));
     }
-    const sessionDeleted = deleted.every((response) => response.status === 200);
+    const sessionDeleted = deleted.every((response) =>
+      response.status === 200 || response.status === 404
+    );
     const memoryCleared = fileAuthority.memoryCleared === true;
     const sessionGone = verify.every((response) => response.status === 404);
     const ok =
@@ -1421,21 +1168,29 @@ export async function cleanupCompletedProbeState(input: {
 
 async function clearProbeFileAuthority(input: {
   serviceUrl: string;
+  mainWebUrl: string;
+  authToken: string;
   secret: string;
   userId: string;
   characterId: string;
 }): Promise<CleanupEvidence> {
   try {
-    const response = await signedFetch({
+    const response = await productFetch({
       ...input,
       method: "DELETE",
       path: `/api/v1/chat/memory/${encodeURIComponent(input.characterId)}`,
     });
+    const accepted = response.status === 200 || response.status === 404;
+    const cleared = accepted && await waitForProbeMemoryMaintenance(input);
     return {
-      ok: response.status === 200,
+      ok: cleared,
       status: response.status,
-      memoryCleared: response.status === 200,
-      error: response.status === 200 ? null : `clear memory=${response.status}`,
+      memoryCleared: cleared,
+      error: cleared
+        ? null
+        : accepted
+        ? "companion memory mutation did not settle before the probe deadline"
+        : `clear memory=${response.status}`,
     };
   } catch (error) {
     return {
@@ -1446,13 +1201,41 @@ async function clearProbeFileAuthority(input: {
   }
 }
 
+async function waitForProbeMemoryMaintenance(input: {
+  userId: string;
+  characterId: string;
+}): Promise<boolean> {
+  const deadline = Date.now() + chatServiceProbeSettleTimeoutMs();
+  const aggregateId = companionRelationshipAggregateId(input.userId, input.characterId);
+  while (Date.now() < deadline) {
+    const pending = await prisma.mainOutboxEvent.findFirst({
+      where: {
+        eventType: {
+          in: [
+            MAIN_TO_CHAT_EVENTS.companionMemoryRebuildRequestedV1,
+            MAIN_TO_CHAT_EVENTS.companionMemoryPurgeRequestedV1,
+          ],
+        },
+        aggregateType: "chat_relationship",
+        aggregateId,
+        status: { in: ["pending", "processing"] },
+      },
+      select: { id: true },
+    });
+    if (!pending) return true;
+    await delay(100);
+  }
+  return false;
+}
+
 async function waitForSessionMessage(input: {
   serviceUrl: string;
+  mainWebUrl: string;
+  authToken: string;
   secret: string;
   userId: string;
   sessionId: string;
   assistantMessageId: string;
-  requireMemoryExtracted: boolean;
 }): Promise<{
   status: number;
   message: ProbeSessionMessage | null;
@@ -1464,13 +1247,13 @@ async function waitForSessionMessage(input: {
   let lastMessage: ProbeSessionMessage | null = null;
   let lastMessages: ProbeSessionMessage[] | undefined;
   while (Date.now() < deadline) {
-    const response = await signedFetch({
+    const response = await productFetch({
       ...input,
       method: "GET",
       path: `/api/v1/chat/sessions/${input.sessionId}`,
     });
     lastStatus = response.status;
-    const body = (await response.json().catch(() => ({}))) as {
+    const body = productSessionRecord(await response.json().catch(() => ({}))) as {
       messages?: ProbeSessionMessage[];
     };
     lastMessages = body.messages;
@@ -1479,14 +1262,7 @@ async function waitForSessionMessage(input: {
         (message) => message.id === input.assistantMessageId,
       ) ?? null;
     const sent = lastMessage?.status === "sent";
-    const memoryComplete =
-      !input.requireMemoryExtracted ||
-      (
-        typeof lastMessage?.attempt === "number" &&
-        typeof lastMessage.memoryExtractedAttempt === "number" &&
-        lastMessage.memoryExtractedAttempt >= lastMessage.attempt
-      );
-    if (response.status === 200 && sent && memoryComplete) {
+    if (response.status === 200 && sent) {
       return {
         status: response.status,
         message: lastMessage,
@@ -1522,7 +1298,6 @@ function finalizeConversation(evidence: ConversationEvidence): ConversationEvide
     evidence.regenerateAnchor.ok &&
     evidence.noMemory.ok &&
     evidence.blockedInput.ok &&
-    evidence.rolloutEvidence.ok &&
     evidence.cleanup.ok;
   return evidence;
 }
@@ -1537,6 +1312,8 @@ function sceneVersion(value: unknown): number | null {
 
 export async function probeStream(input: {
   serviceUrl: string;
+  mainWebUrl: string;
+  authToken: string;
   secret: string;
   userId: string;
   assistantMessageId: string;
@@ -1551,7 +1328,7 @@ export async function probeStream(input: {
         DEFAULT_CHAT_SERVICE_PROBE_STREAM_TIMEOUT_MS,
       ),
       open: (lastEventId) =>
-        signedFetch({
+        productFetch({
           ...input,
           method: "GET",
           path,
@@ -1600,38 +1377,6 @@ async function probeHealth(serviceUrl: string | null): Promise<HealthEvidence> {
   }
 }
 
-async function probeSignedSessions(input: {
-  serviceUrl: string;
-  secret: string;
-  userId: string;
-}): Promise<SignedRequestEvidence> {
-  const method = "GET";
-  const requestPath = "/api/v1/chat/sessions";
-  const body = "";
-  const { signature, context } = signBffContext({
-    secret: input.secret,
-    userId: input.userId,
-    method,
-    path: requestPath,
-    body,
-  });
-  const response = await fetch(new URL(requestPath, normalizedBase(input.serviceUrl)), {
-    method,
-    headers: {
-      [BFF_HEADER]: signature,
-      [BFF_USER_HEADER]: JSON.stringify(context),
-    },
-  });
-  const json = (await response.json().catch(() => undefined)) as unknown;
-  const isSessionList = Array.isArray(json);
-  return {
-    ok: response.status === 200 && isSessionList,
-    status: response.status,
-    sessionsCount: isSessionList ? json.length : undefined,
-    error: response.status === 200 ? null : `HTTP ${response.status}`,
-  };
-}
-
 async function probeSignedRuntimeAuthority(input: {
   serviceUrl: string;
   secret: string;
@@ -1677,12 +1422,12 @@ async function probeSignedRuntimeAuthority(input: {
   };
 }
 
-async function probeUnsignedSessions(
+async function probeUnsignedRuntimeAuthority(
   serviceUrl: string,
 ): Promise<OperationEvidence> {
   try {
     const response = await fetch(
-      new URL("/api/v1/chat/sessions", normalizedBase(serviceUrl)),
+      new URL("/api/v1/chat/runtime-authority", normalizedBase(serviceUrl)),
     );
     return {
       ok: response.status === 401,
@@ -1700,6 +1445,33 @@ async function probeUnsignedSessions(
 function normalizedBase(serviceUrl: string) {
   const base = serviceUrl.endsWith("/") ? serviceUrl : `${serviceUrl}/`;
   return new URL(base);
+}
+
+function productRecord(value: unknown): Record<string, unknown> {
+  const root = isRecord(value) ? value : {};
+  return isRecord(root.data) ? root.data : root;
+}
+
+function productTurnRecord(value: unknown): Record<string, unknown> {
+  const data = productRecord(value);
+  const assistant = isRecord(data.assistant) ? data.assistant : {};
+  return {
+    ...data,
+    ...(typeof data.assistantMessageId === "string"
+      ? {}
+      : typeof assistant.id === "string" ? { assistantMessageId: assistant.id } : {}),
+    ...(typeof data.attempt === "number"
+      ? {}
+      : typeof assistant.attempt === "number" ? { attempt: assistant.attempt } : {}),
+    ...(typeof data.status === "string"
+      ? {}
+      : typeof assistant.status === "string" ? { status: assistant.status } : {}),
+  };
+}
+
+function productSessionRecord(value: unknown): Record<string, unknown> {
+  const data = productRecord(value);
+  return isRecord(data.session) ? data.session : data;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

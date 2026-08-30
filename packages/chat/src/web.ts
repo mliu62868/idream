@@ -14,14 +14,19 @@ import {
   chatExecutionSnapshotSchema,
 } from "@idream/shared/contracts";
 import { consumeAccountDeletionRequest } from "./account-deletion.js";
+import { certifyAgentRuntime } from "./agent-runtime/runtime.js";
 import {
   admitAgentRun,
   findAgentRunByAssistant,
   purgeAgentRunsForTurn,
   purgeAgentRunsThroughAttempt,
-  readAgentRunInput,
 } from "./agent-run-store.js";
 import { cancelAgentRun, startAgentRun } from "./agent-runner.js";
+import {
+  prepareCompanionMemory,
+  promoteCompanionMemory,
+  purgeCompanionMemory,
+} from "./companion-memory.js";
 import { env } from "./env.js";
 import { logger } from "./logger.js";
 import { runtimeReadiness, type RuntimeReadiness } from "./runtime-readiness.js";
@@ -58,7 +63,10 @@ export function createChatServer(
     ...(options.port !== undefined ? { port: options.port } : {}),
     async fetch(request, server) {
       try {
-        if (new URL(request.url).pathname === COMPANION_MEMORY_REBUILD_PREPARE_PATH) {
+        const url = new URL(request.url);
+        if (requestOwnsTimeout(url)) {
+          // Full certification and transcript rebuilds own stricter internal
+          // budgets than Bun's short HTTP idle timeout.
           server.timeout(request, 0);
         }
         const response = await handleChatRequest(request, readiness);
@@ -74,27 +82,56 @@ export function createChatServer(
   });
 }
 
+export function requestOwnsTimeout(url: URL): boolean {
+  return url.pathname === COMPANION_MEMORY_REBUILD_PREPARE_PATH
+    || (url.pathname === "/readyz" && url.searchParams.get("full") === "1");
+}
+
 export async function handleChatRequest(
   request: Request,
   readiness: RuntimeReadiness,
 ): Promise<Response> {
   const url = new URL(request.url);
-  if (url.pathname === "/healthz") return json(200, { ok: true, service: "chat-agent-runner" });
+  if (url.pathname === "/healthz") return json(200, { ok: true, service: "chat" });
   if (url.pathname === "/readyz") {
     await readiness.refreshDependencies();
     const snapshot = readiness.snapshot();
-    return json(readiness.canAcceptTurns() ? 200 : 503, {
+    if (!readiness.canAcceptTurns()) return json(503, {
+      ok: false,
+      service: "chat",
+      ...snapshot,
+    });
+    if (url.searchParams.get("full") === "1") {
+      try {
+        return json(200, {
+          ok: true,
+          service: "chat",
+          ...snapshot,
+          certification: await certifyAgentRuntime(),
+        });
+      } catch (error) {
+        return json(503, {
+          ok: false,
+          service: "chat",
+          ...snapshot,
+          certificationError: error instanceof Error ? error.message : "certification_failed",
+        });
+      }
+    }
+    return json(200, {
       ok: readiness.canAcceptTurns(),
-      service: "chat-agent-runner",
+      service: "chat",
       ...snapshot,
     });
   }
   if (url.pathname === "/api/v1/chat/runtime-authority" && request.method === "GET") {
+    const signed = resolveBff(request, "", url.pathname);
+    if (!signed.ok) return json(401, { error: "unauthorized", reason: signed.reason });
     return json(200, {
       chatFsRootFingerprint: chatFsRootFingerprint(env.CHAT_FS_ROOT),
       sourceRevision: env.SOURCE_REVISION?.trim() || null,
       productAuthority: "main_postgresql",
-      localAuthority: "agent_run_only",
+      localAuthority: "terminal_candidate_and_bounded_trace",
     });
   }
 
@@ -120,7 +157,7 @@ export async function handleChatRequest(
     if (admitted.tombstoned) {
       return json(409, { error: "agent_run_attempt_tombstoned" });
     }
-    if (!admitted.terminal) startAgentRun(snapshot.turnId, snapshot.attempt);
+    if (!admitted.terminal) startAgentRun(snapshot.turnId, snapshot.attempt, snapshot.userId);
     return json(202, { ok: true, duplicate: admitted.duplicate, terminal: admitted.terminal });
   }
 
@@ -139,12 +176,21 @@ export async function handleChatRequest(
     if (!internal(request)) return json(401, { error: "unauthorized" });
     await readiness.refreshDependencies();
     if (!readiness.canAcceptTurns()) return json(503, { error: "service_not_ready" });
-    const sidecarPath = url.pathname === COMPANION_MEMORY_PURGE_PATH
-      ? "/v1/workspaces/purge"
-      : url.pathname === COMPANION_MEMORY_REBUILD_PREPARE_PATH
-        ? "/v1/workspaces/rebuild/prepare"
-        : "/v1/workspaces/rebuild/promote";
-    return forwardCompanionWorkspaceRequest(request, sidecarPath);
+    try {
+      if (url.pathname === COMPANION_MEMORY_PURGE_PATH) {
+        const result = await purgeCompanionMemory(request);
+        return json(200, { ok: true, ...result });
+      }
+      if (url.pathname === COMPANION_MEMORY_REBUILD_PREPARE_PATH) {
+        const rebuilt = await prepareCompanionMemory(request);
+        return json(200, { ok: true, rebuilt });
+      }
+      const rebuilt = await promoteCompanionMemory(request);
+      return json(200, { ok: true, rebuilt });
+    } catch (error) {
+      logger.warn({ err: error }, "companion memory request rejected");
+      return json(400, { error: "invalid_companion_memory_request" });
+    }
   }
 
   const cancel = url.pathname.match(/^\/internal\/agent-runs\/([^/]+)\/(\d+)\/cancel$/u);
@@ -177,10 +223,6 @@ export async function handleChatRequest(
     const assistantMessageId = decodeURIComponent(stream[1]);
     const index = await findAgentRunByAssistant(assistantMessageId);
     if (!index || index.userId !== signed.context.userId) return json(404, { error: "agent_run_not_found" });
-    const input = await readAgentRunInput(index.turnId, index.attempt);
-    if (!input || input.snapshot.assistantMessageId !== assistantMessageId) {
-      return json(404, { error: "agent_run_not_found" });
-    }
     const requestedAttempt = positiveAttempt(url.searchParams.get("attempt"));
     if (requestedAttempt !== undefined && requestedAttempt !== index.attempt) {
       return json(409, { error: "agent_run_attempt_mismatch" });
@@ -259,32 +301,6 @@ function json(status: number, value: unknown): Response {
   });
 }
 
-async function forwardCompanionWorkspaceRequest(
-  request: Request,
-  path: string,
-): Promise<Response> {
-  const config = env.COMPANION_RUNTIME_CONFIG;
-  const init: RequestInit & { duplex: "half" } = {
-    method: "POST",
-    headers: {
-      accept: "application/json",
-      authorization: `Bearer ${config.sidecarToken}`,
-      "content-type": request.headers.get("content-type") ?? "application/json",
-    },
-    body: request.body,
-    duplex: "half",
-    signal: request.signal,
-  };
-  const response = await fetch(`${config.sidecarUrl.replace(/\/$/u, "")}${path}`, init);
-  return new Response(response.body, {
-    status: response.status,
-    headers: {
-      "content-type": response.headers.get("content-type") ?? "application/json",
-      "cache-control": "private, no-store, max-age=0",
-    },
-  });
-}
-
 export function assertBffSecretReady(): void {
   if (process.env.APP_ENV !== "test" && !env.BFF_SIGNING_SECRET) {
     throw new Error("CHAT_BFF_SIGNING_SECRET is required outside APP_ENV=test");
@@ -294,6 +310,6 @@ export function assertBffSecretReady(): void {
 export function startWeb(): ReturnType<typeof createChatServer> {
   assertBffSecretReady();
   const server = createChatServer(runtimeReadiness, { port: env.PORT });
-  logger.info({ port: server.port }, "chat AgentRun runner listening");
+  logger.info({ port: server.port }, "Chat listening");
   return server;
 }

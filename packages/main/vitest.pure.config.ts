@@ -23,6 +23,7 @@ export default defineConfig({
       "src/lib/**/*.test.ts",
       "src/server/launch-readiness.test.ts",
       "src/server/modules/voice-defaults.test.ts",
+      "src/server/modules/chat/companion-memory-authority.test.ts",
       "src/server/modules/admin-v2/characters/simplified-release.test.ts",
       "src/server/modules/admin-v2/characters/readiness.test.ts",
       "src/server/modules/admin-v2/characters/character-release-contract.test.ts",

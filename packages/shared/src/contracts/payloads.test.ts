@@ -64,9 +64,9 @@ describe("video generation reference authority", () => {
       prompt: "She looks into the camera and waves.",
       negativePrompt: null,
       controls: {},
-      seconds: 4,
+      seconds: 5,
       seed: "seed-video-1",
-      model: "ltx23-gtanimation-i2v",
+      model: "redgraft-ltx25-i2v",
       outputPrefix: "gen/job-video-1/",
       referenceImages: [
         {

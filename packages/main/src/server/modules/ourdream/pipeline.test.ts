@@ -1,6 +1,10 @@
 import { deflateSync } from "node:zlib";
 import type { Prisma } from "@prisma/client";
 import {
+  minimaxH3VideoProductionRecipe,
+  redgraftLtx25VideoProductionRecipe,
+} from "@idream/shared";
+import {
   generationTerminalRecordChecksum,
   generationTerminalRecordSchema,
 } from "@idream/shared/contracts";
@@ -172,7 +176,7 @@ describe("local AI service pipeline", () => {
     const gen = await api("POST", "generation/jobs", {
       userId,
       ageGate: true,
-      body: { mode: "image", characterId: CHAR, outputCount: 2 },
+      body: { mode: "image", characterId: CHAR, outputCount: 1 },
     });
     expectOk(gen, 202);
     const jobId = gen.data.job.id as string;
@@ -204,10 +208,10 @@ describe("local AI service pipeline", () => {
     const completed = await api("GET", `generation/jobs/${jobId}`, { userId, ageGate: true });
     expectOk(completed);
     expect(completed.data.job.status).toBe("completed");
-    expect(completed.data.assets).toHaveLength(2);
+    expect(completed.data.assets).toHaveLength(1);
     await expect(prisma.generationJob.findUnique({ where: { id: jobId } })).resolves.toMatchObject({
       status: "completed",
-      deliveredOutputCount: 2,
+      deliveredOutputCount: 1,
       // Gen owns provider execution, so Main observes only moderating_output
       // and completed instead of the former inline running sub-transitions.
       version: 3,
@@ -952,11 +956,11 @@ describe("local AI service pipeline", () => {
     });
     const previousVideoProfile =
       await prisma.generationModelProfile.findUniqueOrThrow({
-        where: { id: "seed-profile-video-beta-v1" },
+        where: { id: "seed-profile-video-redgraft-ltx25-v1" },
         select: { rolloutPercent: true },
       });
     await prisma.generationModelProfile.update({
-      where: { id: "seed-profile-video-beta-v1" },
+      where: { id: "seed-profile-video-redgraft-ltx25-v1" },
       data: { rolloutPercent: 100 },
     });
 
@@ -995,17 +999,17 @@ describe("local AI service pipeline", () => {
       expect(videoSpy).toHaveBeenCalledWith(
         expect.objectContaining({
           prompt: "Video generation for Test Character",
-          seconds: 4,
+          seconds: redgraftLtx25VideoProductionRecipe.durationSeconds,
           seed: expect.any(String),
           negativePrompt: null,
-          model: "ltx23-gtanimation-i2v",
+          model: redgraftLtx25VideoProductionRecipe.workflowKey,
           controls: expect.objectContaining({
-            profileId: "profile_video_beta_v1",
+            profileId: redgraftLtx25VideoProductionRecipe.profileKey,
             width: 768,
             height: 1152,
             sourceImageAssetId: expect.any(String),
-            workflowKey: "ltx23-gtanimation-i2v",
-            workflowVersion: 1,
+            workflowKey: redgraftLtx25VideoProductionRecipe.workflowKey,
+            workflowVersion: redgraftLtx25VideoProductionRecipe.workflowVersion,
           }),
           referenceImages: [
             expect.objectContaining({
@@ -1030,13 +1034,13 @@ describe("local AI service pipeline", () => {
         data: { enabled: false, rolloutPercent: 0 },
       });
       await prisma.generationModelProfile.update({
-        where: { id: "seed-profile-video-beta-v1" },
+        where: { id: "seed-profile-video-redgraft-ltx25-v1" },
         data: previousVideoProfile,
       });
     }
   });
 
-  it("rejects non-four-second requests and unpublished Character sources", async () => {
+  it("rejects non-five-second requests and unpublished Character sources", async () => {
     const userId = `${P}video-authority-user`;
     const privateCharacterId = `${P}private-video-char`;
     const privateAssetId = `${P}private-video-source`;
@@ -1082,7 +1086,7 @@ describe("local AI service pipeline", () => {
     });
     const previousVideoProfile =
       await prisma.generationModelProfile.findUniqueOrThrow({
-        where: { id: "seed-profile-video-beta-v1" },
+        where: { id: "seed-profile-video-redgraft-ltx25-v1" },
         select: { rolloutPercent: true },
       });
     await prisma.featureFlag.update({
@@ -1090,7 +1094,7 @@ describe("local AI service pipeline", () => {
       data: { enabled: true, rolloutPercent: 100 },
     });
     await prisma.generationModelProfile.update({
-      where: { id: "seed-profile-video-beta-v1" },
+      where: { id: "seed-profile-video-redgraft-ltx25-v1" },
       data: { rolloutPercent: 100 },
     });
     await prisma.generationModelProfile.create({
@@ -1127,8 +1131,8 @@ describe("local AI service pipeline", () => {
       expect(
         config.data.video.models.map((model: { id: string }) => model.id),
       ).toEqual([
-        "profile_video_beta_v1",
-        "profile_video_h3_v1",
+        redgraftLtx25VideoProductionRecipe.profileKey,
+        minimaxH3VideoProductionRecipe.profileKey,
       ]);
       const invalidDurationQuote = await api("POST", "generation/quote", {
         userId,
@@ -1149,7 +1153,7 @@ describe("local AI service pipeline", () => {
           mode: "video",
           characterId: CHAR,
           model: alternateProfileKey,
-          controls: { seconds: 4 },
+          controls: { seconds: redgraftLtx25VideoProductionRecipe.durationSeconds },
           outputCount: 1,
         },
       });
@@ -1173,7 +1177,7 @@ describe("local AI service pipeline", () => {
         body: {
           mode: "video",
           characterId: privateCharacterId,
-          controls: { seconds: 4 },
+          controls: { seconds: redgraftLtx25VideoProductionRecipe.durationSeconds },
           outputCount: 1,
         },
       });
@@ -1190,7 +1194,7 @@ describe("local AI service pipeline", () => {
         data: previousFlag,
       });
       await prisma.generationModelProfile.update({
-        where: { id: "seed-profile-video-beta-v1" },
+        where: { id: "seed-profile-video-redgraft-ltx25-v1" },
         data: previousVideoProfile,
       });
     }
@@ -1212,7 +1216,7 @@ describe("local AI service pipeline", () => {
     });
     const previousLtxProfile =
       await prisma.generationModelProfile.findUniqueOrThrow({
-        where: { id: "seed-profile-video-beta-v1" },
+        where: { id: "seed-profile-video-redgraft-ltx25-v1" },
         select: { label: true, costMultiplier: true },
       });
     const previousH3Profile =
@@ -1237,7 +1241,7 @@ describe("local AI service pipeline", () => {
       },
     });
     await prisma.generationModelProfile.update({
-      where: { id: "seed-profile-video-beta-v1" },
+      where: { id: "seed-profile-video-redgraft-ltx25-v1" },
       data: {
         label: "ZZZ implicit LTX route",
         costMultiplier: 9,
@@ -1253,8 +1257,8 @@ describe("local AI service pipeline", () => {
       expect(
         config.data.video.models.map((model: { id: string }) => model.id),
       ).toEqual([
-        "profile_video_beta_v1",
-        "profile_video_h3_v1",
+        redgraftLtx25VideoProductionRecipe.profileKey,
+        minimaxH3VideoProductionRecipe.profileKey,
       ]);
 
       const invalidQuote = await api("POST", "generation/quote", {
@@ -1305,7 +1309,7 @@ describe("local AI service pipeline", () => {
           width: 512,
           height: 512,
           workflowKey: "minimax-h3-redcraft-i2v",
-          workflowVersion: 1,
+          workflowVersion: 3,
         }),
       });
       const jobId = created.data.job.id as string;
@@ -1326,7 +1330,7 @@ describe("local AI service pipeline", () => {
         controls: expect.objectContaining({
           profileId: "profile_video_h3_v1",
           workflowKey: "minimax-h3-redcraft-i2v",
-          workflowVersion: 1,
+          workflowVersion: 3,
         }),
       });
 
@@ -1350,9 +1354,9 @@ describe("local AI service pipeline", () => {
       expect(attempt).toMatchObject({
         provider: "comfyui",
         profileKey: "profile_video_h3_v1",
-        profileVersion: 1,
+        profileVersion: 3,
         workflowKey: "minimax-h3-redcraft-i2v",
-        workflowVersion: 1,
+        workflowVersion: 3,
         status: "succeeded",
         terminalRecordRef: expect.any(String),
       });
@@ -1400,7 +1404,7 @@ describe("local AI service pipeline", () => {
         data: previousH3Profile,
       });
       await prisma.generationModelProfile.update({
-        where: { id: "seed-profile-video-beta-v1" },
+        where: { id: "seed-profile-video-redgraft-ltx25-v1" },
         data: previousLtxProfile,
       });
     }
@@ -1408,12 +1412,13 @@ describe("local AI service pipeline", () => {
 
   it.each([
     {
-      label: "LTX",
-      profileRowId: "seed-profile-video-beta-v1",
+      label: "RedGraft LTX 2.5",
+      profileRowId: "seed-profile-video-redgraft-ltx25-v1",
       requestedModel: undefined,
-      seconds: 4,
-      profileKey: "profile_video_beta_v1",
-      workflowKey: "ltx23-gtanimation-i2v",
+      seconds: redgraftLtx25VideoProductionRecipe.durationSeconds,
+      profileKey: redgraftLtx25VideoProductionRecipe.profileKey,
+      workflowKey: redgraftLtx25VideoProductionRecipe.workflowKey,
+      workflowVersion: redgraftLtx25VideoProductionRecipe.workflowVersion,
     },
     {
       label: "MiniMax H3",
@@ -1422,6 +1427,7 @@ describe("local AI service pipeline", () => {
       seconds: 5,
       profileKey: "profile_video_h3_v1",
       workflowKey: "minimax-h3-redcraft-i2v",
+      workflowVersion: minimaxH3VideoProductionRecipe.workflowVersion,
     },
   ])("fails closed on stale $label workflow pins and preserves exact retry authority", async ({
     profileRowId,
@@ -1429,6 +1435,7 @@ describe("local AI service pipeline", () => {
     seconds,
     profileKey,
     workflowKey,
+    workflowVersion,
   }) => {
     const userId = `${P}video-retry-authority-${profileKey}`;
     const retryKey = `${P}video-retry-authority-${profileKey}`;
@@ -1488,7 +1495,7 @@ describe("local AI service pipeline", () => {
           errorCode: "video_retry_fixture",
           controls: {
             ...originalControls,
-            workflowVersion: 2,
+            workflowVersion: workflowVersion + 1,
           } as Prisma.InputJsonValue,
         },
       });
@@ -1545,7 +1552,7 @@ describe("local AI service pipeline", () => {
       expect(retried.data.job.controls).toMatchObject({
         seconds,
         workflowKey,
-        workflowVersion: 1,
+        workflowVersion,
       });
       const retriedJobId = retried.data.job.id as string;
       cleanupJobDedupeKeys.push(`generation:${retriedJobId}`);
@@ -1561,7 +1568,7 @@ describe("local AI service pipeline", () => {
             seconds,
             profileId: profileKey,
             workflowKey,
-            workflowVersion: 1,
+            workflowVersion,
           }),
         },
       });
@@ -1590,11 +1597,11 @@ describe("local AI service pipeline", () => {
     });
     const previousVideoProfile =
       await prisma.generationModelProfile.findUniqueOrThrow({
-        where: { id: "seed-profile-video-beta-v1" },
+        where: { id: "seed-profile-video-redgraft-ltx25-v1" },
         select: { rolloutPercent: true },
       });
     await prisma.generationModelProfile.update({
-      where: { id: "seed-profile-video-beta-v1" },
+      where: { id: "seed-profile-video-redgraft-ltx25-v1" },
       data: { rolloutPercent: 100 },
     });
 
@@ -1631,7 +1638,7 @@ describe("local AI service pipeline", () => {
         data: { enabled: false, rolloutPercent: 0 },
       });
       await prisma.generationModelProfile.update({
-        where: { id: "seed-profile-video-beta-v1" },
+        where: { id: "seed-profile-video-redgraft-ltx25-v1" },
         data: previousVideoProfile,
       });
     }

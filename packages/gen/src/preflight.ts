@@ -27,10 +27,12 @@ import {
   modelLoaderNodeForReference,
   requiredComfyNodeTypes,
 } from "./preflight-model-reference";
+import { comfyUiRunnerForDescriptor } from "./backend/registry";
 
 type Descriptor = {
   workflowKey?: string;
   backendKind?: string;
+  capabilities?: string[];
   apiPrompt?: Record<string, { class_type: string; inputs: Record<string, unknown> }>;
 };
 
@@ -57,20 +59,21 @@ async function availableFiles(base: string, node: string, slot: string): Promise
 }
 
 async function main() {
-  // INTENT: read the worker's own config, never a second copy of it. This used to
-  // resolve `COMFYUI_API_URL ?? COMFYUI_URL ?? "http://127.0.0.1:8188"` while the
-  // worker (env.ts) resolves `COMFYUI_API_URL ?? "http://127.0.0.1:8188"`.
-  // COMFYUI_URL appears nowhere else in the repo, so setting only that pointed
-  // preflight at one runner and left the worker on localhost — every descriptor
-  // verified green against a ComfyUI that serves no generation. Same reason the
-  // workflow dir and the ffprobe/ffmpeg paths come from env.
-  const base = env.COMFYUI_API_URL;
+  // INTENT: probe the same modality-specific authorities the workers use. A
+  // green video runner cannot stand in for an unreachable image runner.
+  const runnerBases = new Set([
+    env.COMFYUI_IMAGE_API_URL,
+    env.COMFYUI_VIDEO_API_URL,
+    env.COMFYUI_H3_API_URL,
+  ]);
   const dir = env.GEN_WORKFLOW_DIR;
 
-  const stats = await fetch(`${base}/system_stats`).catch(() => null);
-  if (!stats?.ok) {
-    process.stderr.write(`preflight: cannot reach ComfyUI at ${base}\n`);
-    process.exit(1);
+  for (const base of runnerBases) {
+    const stats = await fetch(`${base}/system_stats`).catch(() => null);
+    if (!stats?.ok) {
+      process.stderr.write(`preflight: cannot reach ComfyUI at ${base}\n`);
+      process.exit(1);
+    }
   }
 
   const files = (await readdir(dir)).filter((f) => f.endsWith(".json"));
@@ -89,7 +92,7 @@ async function main() {
   }
   const cache = new Map<string, Set<string> | null>();
   const nodeTypeAvailability = new Map<string, boolean>();
-  let needsFp8Shim = false;
+  const fp8RunnerBases = new Set<string>();
   let checked = 0;
   let checkedNodeTypes = 0;
   let checkedModelAssets = 0;
@@ -103,16 +106,26 @@ async function main() {
       continue;
     }
     if (descriptor.backendKind !== "comfyui" || !descriptor.apiPrompt) continue;
+    const runner = comfyUiRunnerForDescriptor({
+      workflowKey: descriptor.workflowKey ?? "",
+      capabilities: descriptor.capabilities ?? [],
+    });
+    const base = runner === "image"
+      ? env.COMFYUI_IMAGE_API_URL
+      : runner === "video-h3"
+        ? env.COMFYUI_H3_API_URL
+        : env.COMFYUI_VIDEO_API_URL;
 
     for (const nodeType of requiredComfyNodeTypes(descriptor.apiPrompt)) {
-      if (!nodeTypeAvailability.has(nodeType)) {
+      const nodeTypeKey = `${base}:${nodeType}`;
+      if (!nodeTypeAvailability.has(nodeTypeKey)) {
         nodeTypeAvailability.set(
-          nodeType,
+          nodeTypeKey,
           await objectInfo(base, nodeType) !== null,
         );
         checkedNodeTypes++;
       }
-      if (!nodeTypeAvailability.get(nodeType)) {
+      if (!nodeTypeAvailability.get(nodeTypeKey)) {
         problems.push({
           workflow: file,
           detail: `required node type ${nodeType} is not registered by ${base}`,
@@ -126,7 +139,7 @@ async function main() {
         if (!nodeType) continue;
         if (typeof value !== "string" || value === "") continue;
         checked++;
-        const cacheKey = `${nodeType}:${slot}`;
+        const cacheKey = `${base}:${nodeType}:${slot}`;
         if (!cache.has(cacheKey)) {
           cache.set(cacheKey, await availableFiles(base, nodeType, slot));
         }
@@ -143,7 +156,9 @@ async function main() {
         }
       }
       const dtype = node.inputs?.weight_dtype;
-      if (typeof dtype === "string" && FP8_DTYPES.has(dtype)) needsFp8Shim = true;
+      if (typeof dtype === "string" && FP8_DTYPES.has(dtype)) {
+        fp8RunnerBases.add(base);
+      }
     }
   }
 
@@ -164,14 +179,16 @@ async function main() {
 
   // The shim has no HTTP surface, so probe the capability it enables: a runner
   // without it lists fp8 dtypes but dies when the sampler casts to MPS.
-  if (needsFp8Shim) {
+  for (const base of fp8RunnerBases) {
     const kj = await objectInfo(base, "CheckpointLoaderKJ");
     if (!kj) {
       problems.push({
         workflow: "(runner)",
-        detail: "descriptors request fp8 weights but CheckpointLoaderKJ is missing — install comfyui-kjnodes",
+        detail: `descriptors request fp8 weights but CheckpointLoaderKJ is missing from ${base} — install comfyui-kjnodes`,
       });
     }
+  }
+  if (fp8RunnerBases.size > 0) {
     // The node registers no ComfyUI nodes (pure runtime patches), so there is
     // no /object_info surface to probe. Point COMFYUI_VENV_PYTHON at the
     // runner interpreter (<comfyui>/.venv/bin/python3); custom_nodes/ is
@@ -200,7 +217,7 @@ async function main() {
   process.stdout.write(
     `preflight: ${files.length} descriptors, ${checkedNodeTypes} node types, ${checked} model refs and ${checkedModelAssets} pinned model bytes checked, ${problems.length} problem(s)\n`,
   );
-  if (needsFp8Shim) {
+  if (fp8RunnerBases.size > 0) {
     process.stdout.write(
       "preflight: fp8 descriptors present — runner needs the ComfyUI-AppleSilicon-FP8 custom node, and must be restarted after installing it\n",
     );

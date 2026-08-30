@@ -2,7 +2,33 @@ import { describe, expect, it } from "vitest";
 import {
   resolveSmokeGenerationOverrides,
   resolveSmokeReferences,
+  resolveSmokeWorkflowPin,
 } from "./smoke-args";
+
+describe("backend smoke workflow pin", () => {
+  const descriptors = [
+    {
+      modelId: "qwen-image-edit",
+      workflowKey: "qwen-image-edit-img2img",
+      version: 1,
+    },
+  ];
+
+  it("pins the exact descriptor selected by model id", () => {
+    expect(
+      resolveSmokeWorkflowPin(descriptors, "qwen-image-edit"),
+    ).toEqual({
+      modelId: "qwen-image-edit",
+      workflowKey: "qwen-image-edit-img2img",
+      workflowVersion: 1,
+    });
+  });
+
+  it("fails before generation when no descriptor matches", () => {
+    expect(() => resolveSmokeWorkflowPin(descriptors, "missing-model"))
+      .toThrow("no workflow descriptor found for --model missing-model");
+  });
+});
 
 describe("backend smoke generation arguments", () => {
   it("parses an explicit seed and positive integer step override", () => {
@@ -11,10 +37,15 @@ describe("backend smoke generation arguments", () => {
         "--seed",
         "486071801727172",
         "--steps=12",
+        "--ref-boost=2",
+        "--grounding-px",
+        "512",
       ]),
     ).toEqual({
       seed: "486071801727172",
       steps: 12,
+      refBoost: 2,
+      groundingPx: 512,
     });
   });
 
@@ -26,6 +57,15 @@ describe("backend smoke generation arguments", () => {
       ).toThrow("--steps must be a positive integer");
     },
   );
+
+  it.each([
+    ["--ref-boost", "-1"],
+    ["--ref-boost", "abc"],
+    ["--grounding-px", "-1"],
+    ["--grounding-px", "1.5"],
+  ])("rejects invalid %s=%s", (flag, value) => {
+    expect(() => resolveSmokeGenerationOverrides([flag, value])).toThrow();
+  });
 });
 
 describe("backend smoke reference arguments", () => {

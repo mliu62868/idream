@@ -20,11 +20,11 @@ export function chatStreamErrorDisposition(
     typeof payload === "object" && payload !== null && !Array.isArray(payload)
       ? payload as Record<string, unknown>
       : {};
-  // A browser transport error has no Chat payload and EventSource reconnects
-  // automatically. A provider error is terminal only when Chat explicitly says
-  // it will not be retried.
+  // INVARIANT: an explicit Chat error is downstream of Main's durable terminal
+  // commit. Transport loss has no Chat payload and EventSource may reconnect;
+  // a new model attempt is a separate, user-authorized regenerate action.
   if (typeof record.code !== "string") return "reconnect";
-  return record.retryable === true ? "reconnect" : "terminal";
+  return "terminal";
 }
 
 export function chatStreamTerminalErrorMessage(payload: unknown): string {

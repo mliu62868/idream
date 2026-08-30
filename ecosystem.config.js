@@ -1,5 +1,5 @@
-// pm2 process topology (design §12). The required DSH companion sidecar is a
-// separate Bun process; mock video omits gen-video in every mode.
+// pm2 process topology (design §12). Chat embeds the DSH/igrep runtime in its
+// single Bun process; mock video omits gen-video in every mode.
 // Development is the default: web apps use Next dev/Fast Refresh and source
 // services use PM2 watch. Production keeps the immutable standalone web runtime.
 //   bun run pm2:start              # development; no build required
@@ -238,20 +238,6 @@ module.exports = {
       },
       // config from packages/admin/.env (next + dotenv load it)
     },
-    {
-      name: "chat-agent",
-      cwd: dir("packages/chat-agent"),
-      // INVARIANT: PM2 directly owns the Bun process holding port 3101.
-      script: isDevelopment ? "src/main.ts" : "dist/main.js",
-      interpreter: bunInterpreter,
-      exec_mode: "fork",
-      instances: 1,
-      kill_timeout: 5 * 60 * 1_000,
-      ...sourceWatch("packages/chat-agent/src", "packages/shared/src"),
-      env: {
-        ...runtimeIdentityEnv,
-      },
-    },
     // fast I/O + slow generation — chat/web (API+SSE) + chat/worker, one process
     {
       name: "chat",
@@ -277,9 +263,10 @@ module.exports = {
       script: isDevelopment ? "src/image.ts" : "dist/image.js",
       interpreter: bunInterpreter,
       exec_mode: "fork",
-      // Draw Things serializes within one worker. Set GEN_IMAGE_INSTANCES=1 for
-      // strict host-wide single-process model loading; other backends may scale out.
-      instances: process.env.GEN_IMAGE_INSTANCES ?? 2,
+      // One Apple GPU/unified-memory authority per host. The worker-level lease
+      // also serializes against gen-video; extra image workers only add resident
+      // model pressure, so scaling out must be an explicit operator decision.
+      instances: process.env.GEN_IMAGE_INSTANCES ?? 1,
       // Provider calls may outlive PM2's default kill window. Queue pause/drain
       // should make this idle; this is the last fail-safe against mid-job kill.
       kill_timeout: 5 * 60 * 1_000,
@@ -291,6 +278,10 @@ module.exports = {
       env: {
         ...runtimeIdentityEnv,
         ...sharedInternalEnv,
+        COMFYUI_IMAGE_API_URL:
+          process.env.COMFYUI_IMAGE_API_URL ??
+          localEnvValue(dir("packages/gen/.env"), "COMFYUI_IMAGE_API_URL") ??
+          "http://127.0.0.1:8189",
         ...(process.env.GEN_IMAGE_WORKER_RUN_ID
           ? { GEN_IMAGE_WORKER_RUN_ID: process.env.GEN_IMAGE_WORKER_RUN_ID }
           : {}),
@@ -313,6 +304,14 @@ module.exports = {
             env: {
               ...runtimeIdentityEnv,
               ...sharedInternalEnv,
+              COMFYUI_VIDEO_API_URL:
+                process.env.COMFYUI_VIDEO_API_URL ??
+                localEnvValue(dir("packages/gen/.env"), "COMFYUI_VIDEO_API_URL") ??
+                "http://127.0.0.1:8188",
+              COMFYUI_H3_API_URL:
+                process.env.COMFYUI_H3_API_URL ??
+                localEnvValue(dir("packages/gen/.env"), "COMFYUI_H3_API_URL") ??
+                "http://127.0.0.1:8190",
               ...(process.env.GEN_VIDEO_WORKER_RUN_ID
                 ? { GEN_VIDEO_WORKER_RUN_ID: process.env.GEN_VIDEO_WORKER_RUN_ID }
                 : {}),

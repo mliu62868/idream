@@ -186,7 +186,7 @@ async function resolveProbeBackendBinding(
     backendKind: descriptor.backendKind,
     backendTarget:
       descriptor.backendKind === "comfyui"
-        ? env.COMFYUI_API_URL
+        ? env.COMFYUI_IMAGE_API_URL
         : env.DRAWTHINGS_CLI,
     workflowKey: descriptor.workflowKey,
     workflowVersion: descriptor.version,

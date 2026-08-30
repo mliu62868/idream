@@ -11,16 +11,53 @@ export type SmokeReference = {
 export type SmokeGenerationOverrides = {
   seed?: string;
   steps?: number;
+  refBoost?: number;
+  groundingPx?: number;
 };
+
+type SmokeWorkflowPin = {
+  readonly modelId: string;
+  readonly workflowKey: string;
+  readonly version: number;
+};
+
+// INVARIANT: the live smoke exercises the same immutable workflow pin that Main
+// records on a real Attempt. A model id without workflowKey@version would now be
+// rejected by BackendImageModel before ComfyUI submission.
+export function resolveSmokeWorkflowPin(
+  descriptors: readonly SmokeWorkflowPin[],
+  requested: string,
+) {
+  const descriptor = descriptors.find(
+    (candidate) =>
+      candidate.modelId === requested || candidate.workflowKey === requested,
+  );
+  if (!descriptor) {
+    throw new Error(`no workflow descriptor found for --model ${requested}`);
+  }
+  return {
+    modelId: descriptor.modelId,
+    workflowKey: descriptor.workflowKey,
+    workflowVersion: descriptor.version,
+  };
+}
 
 export function resolveSmokeGenerationOverrides(
   argv: string[],
 ): SmokeGenerationOverrides {
   const seeds = repeatedFlagValues(argv, "--seed");
   const stepValues = repeatedFlagValues(argv, "--steps");
+  const refBoostValues = repeatedFlagValues(argv, "--ref-boost");
+  const groundingPxValues = repeatedFlagValues(argv, "--grounding-px");
   if (seeds.length > 1) throw new Error("--seed may only be specified once");
   if (stepValues.length > 1) {
     throw new Error("--steps may only be specified once");
+  }
+  if (refBoostValues.length > 1) {
+    throw new Error("--ref-boost may only be specified once");
+  }
+  if (groundingPxValues.length > 1) {
+    throw new Error("--grounding-px may only be specified once");
   }
 
   const rawSteps = stepValues[0];
@@ -31,10 +68,32 @@ export function resolveSmokeGenerationOverrides(
   ) {
     throw new Error("--steps must be a positive integer");
   }
+  const rawRefBoost = refBoostValues[0];
+  const refBoost = rawRefBoost === undefined
+    ? undefined
+    : Number(rawRefBoost);
+  if (
+    refBoost !== undefined &&
+    (!Number.isFinite(refBoost) || refBoost < 0)
+  ) {
+    throw new Error("--ref-boost must be a non-negative number");
+  }
+  const rawGroundingPx = groundingPxValues[0];
+  const groundingPx = rawGroundingPx === undefined
+    ? undefined
+    : Number(rawGroundingPx);
+  if (
+    groundingPx !== undefined &&
+    (!Number.isSafeInteger(groundingPx) || groundingPx < 0)
+  ) {
+    throw new Error("--grounding-px must be a non-negative integer");
+  }
 
   return {
     ...(seeds[0] === undefined ? {} : { seed: seeds[0] }),
     ...(steps === undefined ? {} : { steps }),
+    ...(refBoost === undefined ? {} : { refBoost }),
+    ...(groundingPx === undefined ? {} : { groundingPx }),
   };
 }
 

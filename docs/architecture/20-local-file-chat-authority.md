@@ -1,6 +1,6 @@
 # ADR-20：Main Turn 权威与本地 AgentRun
 
-> 状态：Accepted
+> 状态：部分由 [ADR-21](./21-companion-chat-deep-runtime.md) 取代。Main 产品 Turn 权威仍有效；本地完整 AgentRun 状态机收缩为未决终态候选与有界运行轨迹。
 
 Main 使用 PostgreSQL 保存并展示产品会话、用户消息、唯一选中最终回复、附件状态、Scene、幂等 receipt、权益、用量和结算。`packages/chat` 不连接 PostgreSQL；它使用本地文件保存一次回复所需的 PreparedTurn、DSH 事件、流式暂态、工具调用过程与 igrep workspace。Chat 文件中的 transcript 是从 Main 产品 Turn 派生的 Agent 输入，不是第二份聊天记录权威。
 

@@ -184,7 +184,7 @@ export class OpenAICompatibleChatModel implements OpenAICompatibleChatModelContr
   }): Promise<ChatCompletion> {
     const model = input.model || this.profile.model;
     const controller = new AbortController();
-    const timeoutMs = this.profile.completionTimeoutMs;
+    const timeoutMs = this.profile.idleTimeoutMs;
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     const maxTokens = input.maxTokens ?? Math.min(this.profile.maxOutputTokens, 1_400);
     try {

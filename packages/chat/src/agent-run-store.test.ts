@@ -19,7 +19,7 @@ afterEach(async () => {
 });
 
 describe("AgentRun local authority", () => {
-  it("admits idempotently, fsync-appends events and keeps one immutable terminal", async () => {
+  it("keeps only an exact proposal plus a bounded failed trace", async () => {
     const { root, store } = await fixture();
     const input = {
       schemaVersion: 1 as const,
@@ -87,18 +87,23 @@ describe("AgentRun local authority", () => {
       terminal: { ...proposal.terminal, content: "different" },
     })).rejects.toThrow("proposal is immutable");
     await expect(store.readAgentRunProposal("turn-1", 1)).resolves.toEqual(proposal);
-    expect(await store.listIncompleteAgentRuns()).toEqual([{ turnId: "turn-1", attempt: 1 }]);
-    await store.writeAgentRunTerminal("turn-1", 1, {
-      schemaVersion: 1,
+    expect(await store.listIncompleteAgentRuns()).toEqual([{
+      turnId: "turn-1",
+      attempt: 1,
+      userId: "user-1",
+    }]);
+    expect(await readFile(path.join(root, "runs", "turn-1", "1", "events.jsonl"), "utf8"))
+      .toContain('"kind":"started"');
+    await store.completeAgentRun("turn-1", 1, {
       attemptId: "assistant-message-1:1",
-      outcome: "committed",
-      mainCommit: { accepted: true },
+      outcome: "failed",
       evidence: { digest: "abc" },
       completedAt: "2026-08-27T12:00:01.000Z",
     });
     expect(await store.listIncompleteAgentRuns()).toEqual([]);
-    expect(await readFile(path.join(root, "runs", "turn-1", "1", "events.jsonl"), "utf8"))
-      .toContain('"kind":"started"');
+    await expect(store.admitAgentRun(input)).resolves.toEqual({ duplicate: true, terminal: true });
+    await expect(store.findAgentRunByAssistant("assistant-message-1"))
+      .resolves.toMatchObject({ turnId: "turn-1", attempt: 1, userId: "user-1" });
     await expect(store.purgeAgentRunsForTurn("turn-1")).resolves.toBe(1);
     await expect(store.purgeAgentRunsForTurn("turn-1")).resolves.toBe(0);
     await expect(store.findAgentRunByAssistant("assistant-message-1")).resolves.toBeNull();
@@ -159,5 +164,53 @@ describe("AgentRun local authority", () => {
       ...base,
       snapshot: { ...base.snapshot, attempt: 2 },
     })).resolves.toEqual({ duplicate: false, terminal: false });
+  });
+
+  it("lets a newer Main-signed attempt replace the prior assistant index before local completion", async () => {
+    const { store } = await fixture();
+    const input = {
+      schemaVersion: 1 as const,
+      admittedAt: "2026-08-27T12:00:00.000Z",
+      snapshot: {
+        version: 1 as const,
+        turnId: "turn-regenerate",
+        sessionId: "session-regenerate",
+        userMessageId: "user-regenerate",
+        assistantMessageId: "assistant-regenerate",
+        attempt: 1,
+        userId: "user-regenerate",
+        characterId: "character-regenerate",
+        characterContentVersionId: "content-regenerate",
+        characterReleaseId: null,
+        characterVisualProfileId: null,
+        characterVisualProfileVersion: null,
+        memoryEnabled: true,
+        contextRevision: 0,
+        userContent: "again",
+        recentTurns: [],
+        sceneVersion: 1,
+        scene: { version: 1 },
+      },
+      authority: {
+        version: 1 as const,
+        user: { id: "user-regenerate", displayName: null, locale: "en", status: "active", deletedAt: null, dataClass: "customer" },
+        eligibility: { ageGateAccepted: true, ageVerified: true, jurisdiction: null, restrictedReason: null },
+        entitlement: { modelTier: "free", unlimitedMessages: false, voiceEnabled: false, imageToolEnabled: true },
+      },
+    };
+    await store.admitAgentRun(input);
+
+    await expect(store.admitAgentRun({
+      ...input,
+      snapshot: { ...input.snapshot, attempt: 2, memoryEnabled: false },
+    })).resolves.toEqual({ duplicate: false, terminal: false });
+    await store.completeAgentRun("turn-regenerate", 1, {
+      attemptId: "assistant-regenerate:1",
+      outcome: "committed",
+      evidence: {},
+      completedAt: "2026-08-27T12:00:01.000Z",
+    });
+    await expect(store.findAgentRunByAssistant("assistant-regenerate"))
+      .resolves.toEqual({ turnId: "turn-regenerate", attempt: 2, userId: "user-regenerate" });
   });
 });

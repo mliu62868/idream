@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -9,13 +9,14 @@ function descriptorJson(
   modelId: string,
   backendKind: "comfyui" | "drawthings",
   workflowKey = `${backendKind}-t2i`,
+  capabilities: string[] = ["textToImage"],
 ) {
   return JSON.stringify({
     workflowKey,
     modelId,
     backendKind,
     version: 1,
-    capabilities: ["textToImage"],
+    capabilities,
     ...(backendKind === "comfyui" ? {
       comfyWorkflow: { id: "11111111-1111-4111-8111-111111111111", name: workflowKey },
       apiPrompt: {},
@@ -29,6 +30,7 @@ describe("buildBackendRegistry", () => {
   let dir: string | undefined;
 
   afterEach(async () => {
+    vi.unstubAllGlobals();
     if (dir) await rm(dir, { recursive: true, force: true });
     dir = undefined;
   });
@@ -39,7 +41,8 @@ describe("buildBackendRegistry", () => {
     await writeFile(path.join(dir, "drawthings.json"), descriptorJson("z-turbo", "drawthings"));
 
     const registry = await buildBackendRegistry({
-      comfyApiUrl: "http://127.0.0.1:8188",
+      comfyImageApiUrl: "http://127.0.0.1:8189",
+      comfyVideoApiUrl: "http://127.0.0.1:8188",
       workflowDir: dir,
     });
 
@@ -56,6 +59,48 @@ describe("buildBackendRegistry", () => {
     expect(comfyAgain.backend).toBe(comfy.backend);
   });
 
+  it("routes image and video descriptors to different ComfyUI processes", async () => {
+    dir = await mkdtemp(path.join(tmpdir(), "gen-registry-"));
+    await writeFile(
+      path.join(dir, "image.json"),
+      descriptorJson("image-model", "comfyui", "image-workflow"),
+    );
+    await writeFile(
+      path.join(dir, "video.json"),
+      descriptorJson("video-model", "comfyui", "video-workflow", ["video"]),
+    );
+    await writeFile(
+      path.join(dir, "h3.json"),
+      descriptorJson(
+        "h3-model",
+        "comfyui",
+        "minimax-h3-redcraft-i2v",
+        ["video"],
+      ),
+    );
+
+    const registry = await buildBackendRegistry({
+      comfyImageApiUrl: "http://127.0.0.1:8189",
+      comfyVideoApiUrl: "http://127.0.0.1:8188",
+      comfyH3ApiUrl: "http://127.0.0.1:8190",
+      workflowDir: dir,
+    });
+    const fetchMock = vi.fn(async (input: string | URL | Request) =>
+      Response.json({ system: {}, devices: [] }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await registry.resolveForModel("image-model").backend.health();
+    await registry.resolveForModel("video-model").backend.health();
+    await registry.resolveForModel("h3-model").backend.health();
+
+    expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([
+      "http://127.0.0.1:8189/system_stats",
+      "http://127.0.0.1:8188/system_stats",
+      "http://127.0.0.1:8190/system_stats",
+    ]);
+  });
+
   it("resolves Draw Things descriptors by model id and workflow key", async () => {
     dir = await mkdtemp(path.join(tmpdir(), "gen-registry-"));
     await writeFile(
@@ -64,7 +109,8 @@ describe("buildBackendRegistry", () => {
     );
 
     const registry = await buildBackendRegistry({
-      comfyApiUrl: "http://127.0.0.1:8188",
+      comfyImageApiUrl: "http://127.0.0.1:8189",
+      comfyVideoApiUrl: "http://127.0.0.1:8188",
       drawThingsCli: "/bin/true",
       workflowDir: dir,
     });
@@ -80,7 +126,8 @@ describe("buildBackendRegistry", () => {
     await writeFile(path.join(dir, "comfy.json"), descriptorJson("redcraft-krea2-redmix3-fp8", "comfyui"));
 
     const registry = await buildBackendRegistry({
-      comfyApiUrl: "http://127.0.0.1:8188",
+      comfyImageApiUrl: "http://127.0.0.1:8189",
+      comfyVideoApiUrl: "http://127.0.0.1:8188",
       workflowDir: dir,
     });
 
@@ -93,7 +140,8 @@ describe("buildBackendRegistry", () => {
     await writeFile(path.join(dir, "drawthings.json"), descriptorJson("z-turbo", "drawthings"));
 
     const registry = await buildBackendRegistry({
-      comfyApiUrl: "http://127.0.0.1:8188",
+      comfyImageApiUrl: "http://127.0.0.1:8189",
+      comfyVideoApiUrl: "http://127.0.0.1:8188",
       workflowDir: dir,
     });
 
@@ -113,7 +161,8 @@ describe("buildBackendRegistry", () => {
     await writeFile(path.join(dir, "comfy.json"), descriptorJson("redcraft-krea2-redmix3-fp8", "comfyui"));
 
     const registry = await buildBackendRegistry({
-      comfyApiUrl: "http://127.0.0.1:8188",
+      comfyImageApiUrl: "http://127.0.0.1:8189",
+      comfyVideoApiUrl: "http://127.0.0.1:8188",
       workflowDir: dir,
     });
 
@@ -128,7 +177,8 @@ describe("buildBackendRegistry", () => {
 
     await expect(
       buildBackendRegistry({
-        comfyApiUrl: "http://127.0.0.1:8188",
+        comfyImageApiUrl: "http://127.0.0.1:8189",
+        comfyVideoApiUrl: "http://127.0.0.1:8188",
         workflowDir: dir,
       }),
     ).rejects.toThrow(/duplicate registry key/);
@@ -141,7 +191,8 @@ describe("buildBackendRegistry", () => {
 
     await expect(
       buildBackendRegistry({
-        comfyApiUrl: "http://127.0.0.1:8188",
+        comfyImageApiUrl: "http://127.0.0.1:8189",
+        comfyVideoApiUrl: "http://127.0.0.1:8188",
         workflowDir: dir,
       }),
     ).rejects.toThrow(/duplicate registry key/);
@@ -155,7 +206,8 @@ describe("buildBackendRegistry", () => {
     );
 
     const registry = await buildBackendRegistry({
-      comfyApiUrl: "http://127.0.0.1:8188",
+      comfyImageApiUrl: "http://127.0.0.1:8189",
+      comfyVideoApiUrl: "http://127.0.0.1:8188",
       workflowDir: dir,
     });
 
@@ -170,7 +222,8 @@ describe("buildBackendRegistry", () => {
   // img2img attempt fail the reference-cardinality check before the CLI ran.
   it("admits one source image on the shipped Draw Things img2img descriptor", async () => {
     const registry = await buildBackendRegistry({
-      comfyApiUrl: "http://127.0.0.1:8188",
+      comfyImageApiUrl: "http://127.0.0.1:8189",
+      comfyVideoApiUrl: "http://127.0.0.1:8188",
       workflowDir: path.resolve(import.meta.dirname, "../../workflows"),
     });
     const descriptor = registry.resolveForModel("pornmaster-zimage-drawthings").descriptor;
@@ -179,9 +232,10 @@ describe("buildBackendRegistry", () => {
     expect(assignWorkflowReferenceSlots(descriptor, ["source_image"])).toMatchObject({ ok: true });
   });
 
-  it("binds production ComfyUI workflow slots, including both identity references", async () => {
+  it("binds production Qwen workflow slots, including both identity references", async () => {
     const registry = await buildBackendRegistry({
-      comfyApiUrl: "http://127.0.0.1:8188",
+      comfyImageApiUrl: "http://127.0.0.1:8189",
+      comfyVideoApiUrl: "http://127.0.0.1:8188",
       workflowDir: path.resolve(import.meta.dirname, "../../workflows"),
     });
     const qwen = registry.resolveForModel("qwen-image-edit-img2img").descriptor;
@@ -227,37 +281,33 @@ describe("buildBackendRegistry", () => {
     expect(multiReferencePrompt["8"].inputs.image).toBe("identity.png");
     expect(multiReferencePrompt["12"].inputs.image).toBe("source.png");
 
-    const redcraft = registry.resolveForModel("redcraft-krea2-redmix3-txt2img").descriptor;
-    const redcraftPrompt = bindComfySlots(redcraft, {
-      prompt: "editorial portrait",
-      negative: "text, watermark, extra subject",
+  });
+
+  it("binds the production RedCraft Identity workflow to the image runner", async () => {
+    const registry = await buildBackendRegistry({
+      comfyImageApiUrl: "http://127.0.0.1:8189",
+      comfyVideoApiUrl: "http://127.0.0.1:8188",
+      workflowDir: path.resolve(import.meta.dirname, "../../workflows"),
+    });
+    const identity = registry.resolveForModel(
+      "redcraft-krea2-identity-edit",
+    ).descriptor;
+    const prompt = bindComfySlots(identity, {
+      prompt: "preserve the same adult character",
+      negative: "text, watermark, duplicate person",
+      identity_image: "identity.png",
       seed: 10,
     });
-    expect(redcraftPrompt["5"]).toMatchObject({
-      class_type: "CLIPTextEncode",
-      inputs: { text: "text, watermark, extra subject" },
-    });
 
-    const redMix3 = registry.resolveForModel(
-      "redcraft-krea2-redmix3-fp8",
-    ).descriptor;
-    const redMix3Prompt = bindComfySlots(redMix3, {
-      prompt: "editorial portrait with dramatic foreground perspective",
-      negative: "text, watermark, extra subject",
-      seed: 11,
-    });
-    expect(redMix3Prompt["1"]?.inputs).toEqual({
-      unet_name: "Krea2RedMix3.0-fp8-scaled-ComfyUI.safetensors",
-      weight_dtype: "default",
-    });
-    expect(redMix3Prompt["5"]?.inputs.text).toBe(
-      "text, watermark, extra subject",
+    expect(prompt["1"].inputs.unet_name).toBe(
+      "Krea2RedMix3.0-fp8-scaled-ComfyUI.safetensors",
     );
-    expect(redMix3Prompt["7"]?.inputs).toMatchObject({
-      seed: 11,
-      steps: 12,
-      sampler_name: "euler",
-      scheduler: "simple",
+    expect(prompt["5"].inputs.image).toBe("identity.png");
+    expect(prompt["8"].inputs).toMatchObject({
+      source_latent: ["7", 0],
+      ref_boost: 4,
+      target_latent: ["7", 0],
     });
+    expect(prompt["11"].inputs).toMatchObject({ steps: 8, cfg: 1 });
   });
 });

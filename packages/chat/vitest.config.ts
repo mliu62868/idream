@@ -11,7 +11,6 @@ export default defineConfig({
       APP_ENV: "test",
       NODE_ENV: "test",
       CHAT_BFF_SIGNING_SECRET: "test-bff-secret-0123456789abcdef",
-      DSH_AGENT_TOKEN: "test-sidecar-token",
       CHAT_MODEL_PROVIDER: "mock",
     },
   },

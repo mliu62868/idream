@@ -11,6 +11,7 @@ import { dispatchPendingChatAgentRuns } from "@/server/modules/chat/agent-run-ad
 import { dispatchPendingChatEvents } from "@/processes/chat-outbox";
 import {
   beginChatTurn,
+  cancelChatTurn,
   commitChatTerminal,
   createChatSession,
   deleteChatMessage,
@@ -88,13 +89,26 @@ describe("Main-owned Chat façade", () => {
   });
 
   beforeEach(async () => {
+    const existingTurnIds = await prisma.chatTurn.findMany({
+      where: { session: { characterId: CHARACTER_ID } },
+      select: { id: true },
+    });
     await prisma.mainOutboxEvent.deleteMany({
       where: {
-        eventType: { in: [
-          MAIN_TO_CHAT_EVENTS.companionMemoryRebuildRequestedV1,
-          MAIN_TO_CHAT_EVENTS.companionMemoryPurgeRequestedV1,
-        ] },
-        aggregateId: `${USER_ID}:${CHARACTER_ID}`,
+        OR: [
+          {
+            eventType: MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1,
+            aggregateId: { in: existingTurnIds.map((turn) => turn.id) },
+          },
+          {
+            eventType: { in: [
+              MAIN_TO_CHAT_EVENTS.companionMemoryRebuildRequestedV1,
+              MAIN_TO_CHAT_EVENTS.companionMemoryProjectRequestedV1,
+              MAIN_TO_CHAT_EVENTS.companionMemoryPurgeRequestedV1,
+            ] },
+            aggregateId: `${USER_ID}:${CHARACTER_ID}`,
+          },
+        ],
       },
     });
     await prisma.chatTurnUsageFact.deleteMany({ where: { userId: USER_ID } });
@@ -112,8 +126,20 @@ describe("Main-owned Chat façade", () => {
   afterAll(async () => {
     vi.unstubAllGlobals();
     await prisma.moderationEvent.deleteMany({ where: { targetType: "chat_turn" } });
+    const existingTurnIds = await prisma.chatTurn.findMany({
+      where: { session: { characterId: CHARACTER_ID } },
+      select: { id: true },
+    });
     await prisma.mainOutboxEvent.deleteMany({
-      where: { aggregateId: `${USER_ID}:${CHARACTER_ID}` },
+      where: {
+        OR: [
+          { aggregateId: `${USER_ID}:${CHARACTER_ID}` },
+          {
+            eventType: MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1,
+            aggregateId: { in: existingTurnIds.map((turn) => turn.id) },
+          },
+        ],
+      },
     });
     await prisma.recentChat.deleteMany({ where: { characterId: CHARACTER_ID } });
     await prisma.character.update({
@@ -491,7 +517,7 @@ describe("Main-owned Chat façade", () => {
     })).resolves.toMatchObject({ duplicate: true });
     await expect(prisma.mainOutboxEvent.findFirst({
       where: {
-        eventType: MAIN_TO_CHAT_EVENTS.companionMemoryRebuildRequestedV1,
+        eventType: MAIN_TO_CHAT_EVENTS.companionMemoryProjectRequestedV1,
         aggregateId: `${USER_ID}:${CHARACTER_ID}`,
         status: "pending",
       },
@@ -529,6 +555,41 @@ describe("Main-owned Chat façade", () => {
     expect(replay.status).toBe(202);
     await expect(replay.json()).resolves.toMatchObject({ data: { streamUrl: null } });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("durably delivers user cancellation for the exact AgentRun attempt", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const sessionId = await ensureSession(proxyChatRequest);
+    const begun = await beginChatTurn({
+      userId: USER_ID,
+      sessionId,
+      content: "Stop this reply.",
+      idempotencyKey: `cancel-${randomUUID()}`,
+    });
+
+    await expect(cancelChatTurn(USER_ID, begun.assistant.id)).resolves.toMatchObject({
+      turnId: begun.snapshot!.turnId,
+      attempt: 1,
+      cancelled: true,
+    });
+    const pending = await prisma.mainOutboxEvent.findFirstOrThrow({
+      where: {
+        eventType: MAIN_TO_CHAT_EVENTS.agentRunCancelRequestedV1,
+        aggregateId: begun.snapshot!.turnId,
+      },
+    });
+    expect(pending).toMatchObject({ status: "pending" });
+    expect(pending.payload).toMatchObject({
+      payload: { version: 1, userId: USER_ID, turnId: begun.snapshot!.turnId, attempt: 1 },
+    });
+
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValue(Response.json({ ok: true, active: false }));
+    await expect(dispatchPendingChatEvents()).resolves.toEqual({ delivered: 1, failed: 0 });
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${env.CHAT_SERVICE_URL}/internal/agent-runs/${begun.snapshot!.turnId}/1/cancel`,
+      expect.objectContaining({ method: "POST" }),
+    );
   });
 
   it("allows corrections only on the latest Turn and does not truncate descendants", async () => {
@@ -706,6 +767,94 @@ describe("Main-owned Chat façade", () => {
         eventType: MAIN_TO_CHAT_EVENTS.companionMemoryRebuildRequestedV1,
       },
     })).resolves.toBe(0);
+  });
+
+  it("keeps Chat available without long-term memory while a destructive rebuild is pending", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const sessionId = await ensureSession(proxyChatRequest);
+    const original = await sendAndCommit(
+      proxyChatRequest,
+      sessionId,
+      "Remember the blue observatory.",
+      "I will remember it.",
+    );
+
+    const edited = await editChatTurn(USER_ID, original.userMessageId, "Use the red observatory instead.");
+    expect(edited.snapshot?.memoryEnabled).toBe(false);
+    await commitChatTerminal({
+      version: 1,
+      turnId: original.id,
+      sessionId,
+      assistantMessageId: original.assistantMessageId,
+      attempt: original.attempt + 1,
+      status: "failed",
+      content: "The reply could not be completed.",
+      model: "test-model",
+      promptTokens: 1,
+      completionTokens: 1,
+      sceneVersion: original.sceneVersion,
+      scene: original.scene,
+      terminalEvidence: { authority: "test" },
+    });
+    await expect(prisma.mainOutboxEvent.findFirst({
+      where: {
+        eventType: MAIN_TO_CHAT_EVENTS.companionMemoryRebuildRequestedV1,
+        aggregateId: `${USER_ID}:${CHARACTER_ID}`,
+        status: "pending",
+      },
+    })).resolves.toBeTruthy();
+
+    const next = await beginChatTurn({
+      userId: USER_ID,
+      sessionId,
+      content: "Can we keep talking now?",
+      idempotencyKey: `memory-isolation-${randomUUID()}`,
+    });
+    expect(next.snapshot?.memoryEnabled).toBe(false);
+    expect(next.assistant.status).toBe("pending");
+  });
+
+  it("edits against the Scene before the discarded reply", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const sessionId = await ensureSession(proxyChatRequest);
+    const key = `scene-edit-${randomUUID()}`;
+    const begun = await beginChatTurn({
+      userId: USER_ID,
+      sessionId,
+      content: "We are in Paris.",
+      idempotencyKey: key,
+    });
+    await commitChatTerminal({
+      version: 1,
+      turnId: begun.snapshot!.turnId,
+      sessionId,
+      assistantMessageId: begun.assistant.id,
+      attempt: 1,
+      status: "sent",
+      content: "Paris is beautiful tonight.",
+      model: "test-model",
+      promptTokens: 1,
+      completionTokens: 1,
+      sceneVersion: 1,
+      scene: {
+        schemaVersion: 1,
+        version: 1,
+        location: "Paris",
+        time: null,
+        participants: [],
+        emotionalBeat: null,
+        unresolvedThreads: [],
+      },
+      terminalEvidence: { authority: "test" },
+    });
+
+    const edited = await editChatTurn(USER_ID, begun.userMessage.id, "We are in Tokyo.");
+    expect(edited.snapshot).toMatchObject({
+      attempt: 2,
+      userContent: "We are in Tokyo.",
+      sceneVersion: 0,
+      scene: null,
+    });
   });
 
   it("shows attachments only for the selected attempt and never exposes effect metadata", async () => {

@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
-    "target": "ES2022",
-    "lib": ["ES2022"],
+    "target": "ES2024",
+    "lib": ["ES2024"],
     "module": "esnext",
     "moduleResolution": "bundler",
     "strict": true,
@@ -10,7 +10,7 @@
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "types": ["node"],
+    "types": ["node", "vitest/globals"],
     "paths": {
       "@idream/shared": ["../shared/src/index.ts"],
       "@idream/shared/contracts": ["../shared/src/contracts/index.ts"],

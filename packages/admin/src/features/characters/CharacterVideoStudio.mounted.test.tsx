@@ -104,9 +104,9 @@ const data = characterWorkspaceDetail({
   },
   visual: {
     videoGenerationEstimate: {
-      profileKey: "profile_video_beta_v1",
+      profileKey: "profile_video_redgraft_ltx25_v1",
       estimatedCostDreamcoins: 100,
-      averageDurationMs: 785_800,
+      averageDurationMs: 893_807,
       completedSampleCount: 1,
       windowDays: 7,
     },
@@ -184,9 +184,9 @@ const pendingRun = {
     brief: "A subtle smile.",
     orientation: "2:3",
     profile: {
-      key: "profile_video_beta_v1",
+      key: "profile_video_redgraft_ltx25_v1",
       version: 1,
-      label: "LTX 2.3 GTAnimation I2V",
+      label: "RedGraft LTX 2.5 Fast 2K",
     },
     recipe: {
       key: "template_video_character_default",
@@ -209,9 +209,9 @@ const pendingRun = {
       briefId: "video-run-1",
       directionId: null,
       directionHash: null,
-      generationProfileKey: "profile_video_beta_v1",
+      generationProfileKey: "profile_video_redgraft_ltx25_v1",
       generationProfileVersion: "1",
-      workflowKey: "ltx23-gtanimation-i2v",
+      workflowKey: "redgraft-ltx25-i2v",
       workflowVersion: "1",
       requestId: "video-job-1",
       attemptId: "video-attempt-1",
@@ -327,11 +327,11 @@ describe("Character Video Studio", () => {
     ));
     await waitUntil(() => container.textContent?.includes("Create video") === true);
 
-    expect(container.textContent).toContain("LTX 2.3 GTAnimation");
-    expect(container.textContent).toContain("4 seconds");
+    expect(container.textContent).toContain("RedGraft LTX 2.5 Fast 2K");
+    expect(container.textContent).toContain("5 seconds");
     // 梦币金额走 ui/format 的 formatDreamcoins：千分位 + 统一单位（中文界面显示"梦币"）。
     expect(container.textContent).toContain("Estimated cost: 100 DC");
-    expect(container.textContent).toContain("13m 6s");
+    expect(container.textContent).toContain("14m 54s");
     expect(container.textContent).toContain("7-day average");
     await waitUntil(() => adminV2Request.mock.calls.some(
       ([path, options]) => path.includes("/api/v2/admin/creative/runs?") && options?.method === "GET",
@@ -371,7 +371,7 @@ describe("Character Video Studio", () => {
         purpose: "character_video",
         targetType: "character",
         targetId: "character-video-1",
-        profileId: "profile_video_beta_v1",
+        profileId: "profile_video_redgraft_ltx25_v1",
         referenceAssetIds: ["source-cover"],
         orientation: "2:3",
         count: 1,

@@ -10,7 +10,9 @@ export function startWorker() {
     .then((runs) => {
       if (closed) return;
       let recovered = 0;
-      for (const run of runs) if (startAgentRun(run.turnId, run.attempt)) recovered += 1;
+      for (const run of runs) {
+        if (startAgentRun(run.turnId, run.attempt, run.userId)) recovered += 1;
+      }
       if (recovered > 0) logger.info({ recovered }, "recovered incomplete AgentRuns");
     })
     .catch((error) => logger.error({ err: error }, "AgentRun recovery failed"));

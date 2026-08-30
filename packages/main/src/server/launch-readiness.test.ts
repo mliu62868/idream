@@ -10,6 +10,7 @@ import {
   characterVideoProductionRecipe,
   chatFsRootFingerprint,
   minimaxH3VideoProductionRecipe,
+  redgraftLtx25VideoProductionRecipe,
   type CharacterVideoProductionRecipe,
 } from "@idream/shared";
 import { describe, expect, it, vi } from "vitest";
@@ -28,6 +29,7 @@ import type {
   AgeVerificationProbeEvidence,
   BlobStorageProbeEvidence,
   ChatModelProbeEvidence,
+  ChatProbeDshEvidence,
   ChatServiceProbeEvidence,
   GenerationPersistenceProbeEvidence,
   ImagePipelineProbeEvidence,
@@ -285,7 +287,7 @@ function passingGenerationPersistenceProbe(
       : "image-premium",
     profileVersion: 1,
     workflowKey: isVideo
-      ? "ltx23-gtanimation-i2v"
+      ? characterVideoProductionRecipe.workflowKey
       : "redcraft-krea2-redmix3-txt2img",
     workflowVersion: 1,
     terminal: {
@@ -373,7 +375,6 @@ function passingChatServiceProbe(
     actorDataClass: "audit",
     dedicatedActor: true,
     usedSignedBff: true,
-    expectedCompanionRuntime: "dsh",
     health: {
       ok: true,
       status: 200,
@@ -431,13 +432,10 @@ function passingChatServiceProbe(
         originalAttempt: 1,
         regeneratedAttempt: 2,
         originalSceneVersion: 0,
-        futureUserSceneVersion: 2,
-        futureSceneVersion: 2,
         regeneratedSceneVersion: 0,
         recallMatched: true,
         wakeObserved: true,
         memorySearchHit: true,
-        futureDsh: passingDshEvidence("normal"),
         regeneratedDsh: passingDshEvidence("normal"),
         error: null,
       },
@@ -470,19 +468,19 @@ function passingChatServiceProbe(
   };
 }
 
-function passingDshEvidence(mode: "normal" | "private") {
+function passingDshEvidence(mode: "normal" | "private"): ChatProbeDshEvidence {
   return {
     ok: true,
-    runtime: "dsh",
-    memoryBackend: "igrep-dsh",
-    profile: mode === "normal" ? "idream-companion-memory" : "idream-companion-private",
-    private: mode === "private",
-    primaryRuntime: "dsh",
-    terminalStatus: "sent",
-    sseTerminal: "done",
+    runtime: "embedded_dsh",
+    memoryMode: mode,
     provider: "openai",
     model: "companion-model",
     profileDigest: "a".repeat(64),
+    runtimeInstanceId: "11111111-1111-4111-8111-111111111111",
+    igrepVersion: "0.14.1",
+    pluginVersion: "0.1.0",
+    igrepSearchCalls: 0,
+    igrepSearchFailures: 0,
     ...(mode === "normal"
       ? {
           wakeCalls: 1,
@@ -491,15 +489,19 @@ function passingDshEvidence(mode: "normal" | "private") {
           memorySearchHits: 1,
           memorySearchEvidenceMatches: 1,
           memorySearchFailures: 0,
-          memoryOutcome: "ingested",
-          memoryIngestOutcome: "ingested",
-          memorySettledAt: "2026-06-24T23:57:30.000Z",
-          memorySettleLagMs: 12,
-          sidecarInstanceId: "11111111-1111-4111-8111-111111111111",
+          memoryOutcome: "projected",
         }
-      : { outputAuthority: "model", memoryOutcome: "disabled" }),
+      : {
+          wakeCalls: 0,
+          wakeFailures: 0,
+          memorySearchCalls: 0,
+          memorySearchHits: 0,
+          memorySearchEvidenceMatches: 0,
+          memorySearchFailures: 0,
+          memoryOutcome: "disabled",
+        }),
     error: null,
-  } as const;
+  };
 }
 
 function passingChatProbe(
@@ -642,8 +644,8 @@ function passingVideoEnabledProductConfigProbe(
     videoFeatureEnabled: true,
     activeVideoProfiles: 2,
     activeVideoExecutionBindings: [
-      characterVideoProductionRecipe,
       minimaxH3VideoProductionRecipe,
+      redgraftLtx25VideoProductionRecipe,
     ].map((recipe) => ({
       profileId: recipe.profileKey,
       profileKey: recipe.profileKey,
@@ -894,7 +896,9 @@ function assessLaunchReadiness(
         generationJobId: "job_video_h3_123",
         attemptId: "attempt_video_h3_123",
         profileKey: minimaxH3VideoProductionRecipe.profileKey,
+        profileVersion: minimaxH3VideoProductionRecipe.recipeVersion,
         workflowKey: minimaxH3VideoProductionRecipe.workflowKey,
+        workflowVersion: minimaxH3VideoProductionRecipe.workflowVersion,
       },
     ),
     ...options,
@@ -2584,7 +2588,7 @@ describe("launch readiness", () => {
     }
   });
 
-  it("requires DSH proof for normal, regenerated and private turns", () => {
+  it("requires DSH proof and a stable Scene anchor for regenerated turns", () => {
     const passing = passingChatServiceProbe();
     const failingReport = assessLaunchReadiness({
       env: productionEnv,
@@ -2593,7 +2597,7 @@ describe("launch readiness", () => {
           ...passing.conversation,
           regenerateAnchor: {
             ...passing.conversation?.regenerateAnchor,
-            futureDsh: { ...passingDshEvidence("normal"), ok: false },
+            regeneratedDsh: { ...passingDshEvidence("normal"), ok: false },
           },
         },
       }),
@@ -2602,7 +2606,7 @@ describe("launch readiness", () => {
     const message = failingReport.checks.find(
       (check) => check.id === "chat-service-live-probe",
     )?.message;
-    expect(message).toContain("old-turn Scene anchoring");
+    expect(message).toContain("latest-turn regenerate anchoring");
 
     const recallFailure = assessLaunchReadiness({
       env: productionEnv,
@@ -2619,7 +2623,7 @@ describe("launch readiness", () => {
     });
     expect(recallFailure.checks.find(
       (check) => check.id === "chat-service-live-probe",
-    )?.message).toContain("old-turn Scene anchoring");
+    )?.message).toContain("latest-turn regenerate anchoring");
 
     const sceneMismatch = assessLaunchReadiness({
       env: productionEnv,
@@ -2628,7 +2632,7 @@ describe("launch readiness", () => {
           ...passing.conversation,
           regenerateAnchor: {
             ...passing.conversation?.regenerateAnchor,
-            futureSceneVersion: 3,
+            regeneratedSceneVersion: 3,
           },
         },
       }),
@@ -2636,7 +2640,7 @@ describe("launch readiness", () => {
     });
     expect(sceneMismatch.checks.find(
       (check) => check.id === "chat-service-live-probe",
-    )?.message).toContain("old-turn Scene anchoring");
+    )?.message).toContain("latest-turn regenerate anchoring");
 
     const fractionalScene = assessLaunchReadiness({
       env: productionEnv,
@@ -2645,8 +2649,7 @@ describe("launch readiness", () => {
           ...passing.conversation,
           regenerateAnchor: {
             ...passing.conversation?.regenerateAnchor,
-            futureUserSceneVersion: 1.5,
-            futureSceneVersion: 1.5,
+            regeneratedAttempt: 1.5,
           },
         },
       }),
@@ -2654,7 +2657,7 @@ describe("launch readiness", () => {
     });
     expect(fractionalScene.checks.find(
       (check) => check.id === "chat-service-live-probe",
-    )?.message).toContain("old-turn Scene anchoring");
+    )?.message).toContain("latest-turn regenerate anchoring");
   });
 
   it("fails when the signed Chat probe observed a different Chat FS authority", () => {
@@ -4219,6 +4222,33 @@ describe("launch readiness", () => {
     expect(
       checkById(report, "generation-video-h3-main-persistence")?.remediation,
     ).toContain(".tmp/launch-video-h3-persistence-probe.json");
+  });
+
+  it("fails closed when default RedGraft lacks direct and Main persistence evidence", () => {
+    const report = assessLaunchReadiness({
+      env: productionEnv,
+      imagePipelineProbe: passingImageProbe(),
+      videoGenerationProbe: null,
+      videoGenerationPersistenceProbe: null,
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      voiceModelProbe: passingVoiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingVideoEnabledProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    });
+
+    expect(
+      checkById(report, "video-generation-live-probe")?.status,
+    ).toBe("fail");
+    expect(
+      checkById(report, "generation-video-main-persistence")?.status,
+    ).toBe("fail");
   });
 
   it("rejects H3 Main persistence evidence from the wrong pinned profile", () => {

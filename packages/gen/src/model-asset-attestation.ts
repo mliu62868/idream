@@ -66,7 +66,7 @@ type RuntimeCommand = (
 ) => Promise<string>;
 
 // INVARIANT: hashing a similarly named local file is insufficient. The probe
-// must prove that the process listening at COMFYUI_API_URL resolves each pinned
+// must prove that the selected ComfyUI runner resolves each pinned
 // relative path uniquely from the same COMFYUI_MODEL_ROOT.
 export async function attestLocalComfyUiModelRoot(
   input: {
