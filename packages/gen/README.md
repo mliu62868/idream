@@ -56,6 +56,15 @@ through it. `GEN_WORKFLOW_DIR` defaults to
 `packages/gen/workflows` (repo-root relative); the smoke script below resolves
 it explicitly so it works regardless of cwd.
 
+The active image graphs treat text encoding as a prompt-scoped phase. Krea2
+loads a fresh standalone CLIP for conditioning; Qwen separates checkpoint
+MODEL/VAE ownership from a fresh checkpoint CLIP. Once every positive,
+negative, and reference branch has materialized conditioning,
+`IDreamUnloadOffDeviceModels` destroys that CLIP owner while leaving the
+diffusion model and VAE available to the sampler and decoder. Fresh loaders are
+deliberately non-cacheable so a later prompt never observes the destroyed
+owner.
+
 #### FP8 on Apple Silicon (MPS)
 
 PyTorch MPS has no native Float8 dtype. The runner needs the
@@ -97,8 +106,8 @@ reinstall with the venv python: `pip install -r <node dir>/requirements.txt`.
 ### RedCraft Krea2 routes
 
 The active text-to-image descriptor is
-`redcraft-krea2-redmix3-txt2img@1`. Identity Edit uses
-`redcraft-krea2-identity-edit@4`: the full v1.2 LoRA at strength 1,
+`redcraft-krea2-redmix3-txt2img@2`. Identity Edit uses
+`redcraft-krea2-identity-edit@5`: the full v1.2 LoRA at strength 1,
 `ref_boost=4`, `grounding_px=768`, 832×1216, 8 steps, CFG 1, Euler/Simple. Its
 pixel path receives `vae + source_image + target_latent` and pre-encodes the
 fitted source before sampling; the required `source_latent` socket uses the
@@ -192,11 +201,21 @@ input: one published source image
 MiniMax H3 is registered as `profile_video_h3_v1` with
 `publicSelection.explicitOnly=true`; it never replaces the RedGraft default when a
 caller omits the model. Its request contract is the integer value `seconds=5`,
-which the worker binds to H3's native 124-frame grid. Workflow v3 routes H3 to
+which the worker binds to H3's native 124-frame grid. Workflow v4 routes H3 to
 8190 but keeps exact SDPA: the matched 512×512/124-frame SolAttn A/B saved only
 about eight seconds of an eleven-minute prompt while changing generated pixels,
-which was not enough evidence to accept approximation. RedGraft/LTX continues
-to use its unchanged 8188 split-attention process.
+which was not enough evidence to accept approximation. RedGraft workflow v2
+continues to use the isolated 8188 split-attention process.
+
+Every checked-in ComfyUI image/video workflow places
+`IDreamUnloadOffDeviceModels` after every text/reference conditioning branch
+and before the first sampler. The node detaches only models whose load device
+differs from the MPS render device, then evicts the active RAM-cache entries
+that otherwise keep CPU text-loader outputs alive. Pending diffusion/VAE
+consumers retain their own executor references, so sampling and decode continue
+without reloading the text encoder mid-render. The launch profiles pin ComfyUI's
+RAM-pressure cache (`--cache-ram 10 128`); do not switch them to a different
+cache mode without re-running the physical RSS and full-path probes.
 
 Both recipes pin every executable checkpoint, text encoder, VAE, and LTX
 upscaler by relative model path plus SHA-256. Set `COMFYUI_MODEL_ROOT` to the

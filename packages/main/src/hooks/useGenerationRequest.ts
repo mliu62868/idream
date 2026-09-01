@@ -48,6 +48,8 @@ export type GenerationVariationInput = {
   outputCount?: number;
   consistencyMode: ConsistencyMode;
   model?: string;
+  negativePrompt?: string;
+  prompt?: string;
   /** Supplied to spend a quote already in hand; omit to price afresh. */
   quote?: RuntimeGenerationQuote | null;
 };
@@ -235,6 +237,8 @@ export function useGenerationRequest(
           outputCount: input.outputCount ?? 1,
           consistencyMode: input.consistencyMode,
           model: input.model,
+          negativePrompt: input.negativePrompt,
+          prompt: input.prompt,
           quote: input.quote ?? null,
           quoteKey:
             editSourceMediaId === input.mediaId ? latest.quoteKey : null,

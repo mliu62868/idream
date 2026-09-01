@@ -913,10 +913,8 @@ export function decodeAdminTextProbeEvidence(value: unknown): AdminTextProbeEvid
 // voice model
 // ---------------------------------------------------------------------------
 
-export interface VoiceModelProbeEvidence {
+export interface VoiceProviderProbeEvidence {
   ok?: boolean;
-  checkedAt?: string | null;
-  durationMs?: number;
   provider?: string | null;
   baseUrl?: string | null;
   model?: string | null;
@@ -925,16 +923,17 @@ export interface VoiceModelProbeEvidence {
   audioDurationMs?: number;
   voiceCloningAvailable?: boolean | null;
   voiceCloneVerified?: boolean | null;
+  voiceCatalogAvailable?: boolean | null;
+  voiceCatalogVerified?: boolean | null;
+  voiceCatalogSize?: number;
   bytes?: number;
   contentType?: string | null;
   loadError?: string;
   error?: ProbeErrorEvidence | null;
 }
 
-const voiceModelProbeEvidenceSchema: z.ZodType<VoiceModelProbeEvidence> = z.object({
+const voiceProviderProbeEvidenceSchema = z.object({
   ok: flag,
-  checkedAt: nullableText,
-  durationMs: optionalCount,
   provider: nullableText,
   baseUrl: nullableText,
   model: nullableText,
@@ -942,11 +941,27 @@ const voiceModelProbeEvidenceSchema: z.ZodType<VoiceModelProbeEvidence> = z.obje
   key: nullableText,
   voiceCloningAvailable: nullableFlag,
   voiceCloneVerified: nullableFlag,
+  voiceCatalogAvailable: nullableFlag,
+  voiceCatalogVerified: nullableFlag,
+  voiceCatalogSize: optionalCount,
   audioDurationMs: optionalCount,
   bytes: optionalCount,
   contentType: nullableText,
   error: probeError,
-});
+}) satisfies z.ZodType<VoiceProviderProbeEvidence>;
+
+export interface VoiceModelProbeEvidence extends VoiceProviderProbeEvidence {
+  checkedAt?: string | null;
+  durationMs?: number;
+  identity?: VoiceProviderProbeEvidence | null;
+}
+
+const voiceModelProbeEvidenceSchema: z.ZodType<VoiceModelProbeEvidence> =
+  voiceProviderProbeEvidenceSchema.extend({
+    checkedAt: nullableText,
+    durationMs: optionalCount,
+    identity: voiceProviderProbeEvidenceSchema.nullish(),
+  });
 
 export function decodeVoiceModelProbeEvidence(value: unknown): VoiceModelProbeEvidence {
   return decodeTopLevel(voiceModelProbeEvidenceSchema, value);

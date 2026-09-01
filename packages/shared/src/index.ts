@@ -6,6 +6,8 @@ export * from "./chat/persona-render";
 export * from "./chat/model-profile";
 export * from "./chat/openai-compatible-model";
 export * from "./chat/image-action";
+export * from "./chat/image-skill";
+export * from "./chat/companion-agent-prompt";
 export * from "./chat/runtime-policy";
 export * from "./chat/companion-runtime";
 export * from "./media/mock-video";

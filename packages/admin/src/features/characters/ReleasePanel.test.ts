@@ -3,7 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   characterReleaseCheckLabel,
   characterReleaseConfirmationVisible,
+  characterReleaseDraftBlockers,
+  releaseBlockerGuidance,
+  releaseBlockersFromError,
 } from "./ReleasePanel";
+import { AdminV2RequestError } from "@/lib/admin-v2-api";
+import { characterWorkspaceDetail } from "./character-workspace-fixture";
 
 const workspaceSource = readFileSync(
   new URL("./ReleasePanel.tsx", import.meta.url),
@@ -71,5 +76,79 @@ describe("Character release panel", () => {
     expect(workspaceSource).toContain(
       "Live and draft are identical. There is nothing to release.",
     );
+  });
+
+  it("turns release authority failures into an exact operator repair action", () => {
+    expect(
+      releaseBlockersFromError(
+        new AdminV2RequestError(
+          "Character is not ready to publish",
+          409,
+          "conflict",
+          { blockers: ["release_asset_review_authority"] },
+        ),
+      ),
+    ).toEqual(["release_asset_review_authority"]);
+    expect(
+      releaseBlockerGuidance(
+        "release_asset_review_authority",
+        "character-1",
+      ),
+    ).toEqual({
+      blocker: "release_asset_review_authority",
+      message: "Review every selected image before publishing.",
+      action: "Review selected images",
+      href: "/admin/characters/character-1?tab=assets",
+    });
+  });
+
+  it("blocks publish before the request when a complete draft pack skipped review", () => {
+    const data = characterWorkspaceDetail({
+      project: {
+        draftAssetPack: {
+          character_cover: "cover",
+          character_hero: "hero",
+          character_chat: "chat",
+        },
+        draftAssetSelections: {
+          character_cover: {
+            assetId: "cover",
+            runId: "cover-run",
+            itemId: "cover-item",
+            reviewDecisionId: null,
+            generationJobId: "cover-job",
+            bootstrapIdentity: true,
+            generationRouteFingerprint: null,
+            routeCurrent: true,
+          },
+          character_hero: {
+            assetId: "hero",
+            runId: "hero-run",
+            itemId: "hero-item",
+            reviewDecisionId: null,
+            generationJobId: "hero-job",
+            bootstrapIdentity: false,
+            generationRouteFingerprint: "route-1",
+            routeCurrent: true,
+          },
+          character_chat: {
+            assetId: "chat",
+            runId: "chat-run",
+            itemId: "chat-item",
+            reviewDecisionId: null,
+            generationJobId: "chat-job",
+            bootstrapIdentity: false,
+            generationRouteFingerprint: "route-1",
+            routeCurrent: true,
+          },
+        },
+        draftAssetRouteAuthority: { releaseReady: true },
+      },
+      preview: { draft: { assetPackReady: true } },
+    });
+
+    expect(characterReleaseDraftBlockers(data)).toEqual([
+      "release_asset_review_authority",
+    ]);
   });
 });

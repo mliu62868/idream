@@ -8,6 +8,36 @@ import { z } from "zod";
 
 export type SlotValues = Record<string, string | number>;
 
+export const workflowNegativePromptModes = [
+  "conditioning",
+  "positive_instruction",
+] as const;
+export type WorkflowNegativePromptMode =
+  (typeof workflowNegativePromptModes)[number];
+
+// SPEC: 用户的排除意图必须到达模型真正会读取的输入。
+// INTENT: 只有工作流描述符知道负向 conditioning 是否生效，所以转换留在这个
+// workflow seam；产品层保存原始 prompt / negativePrompt，不各自猜模型语义。
+export function workflowPromptSlots(input: {
+  readonly mode: WorkflowNegativePromptMode;
+  readonly prompt: string;
+  readonly negativePrompt?: string | null;
+}) {
+  const prompt = input.prompt.trim();
+  const negative = input.negativePrompt?.trim() ?? "";
+  if (input.mode === "conditioning") {
+    return { prompt, negative };
+  }
+  if (!negative) return { prompt, negative: "" };
+  return {
+    prompt: [
+      prompt,
+      `Avoid in the result: ${negative}. Treat every item in that list as excluded content, not requested content.`,
+    ].filter(Boolean).join("\n\n"),
+    negative: "",
+  };
+}
+
 export const workflowBackendKinds = ["comfyui", "drawthings"] as const;
 export const workflowBackendKindSchema = z.enum(workflowBackendKinds);
 export type WorkflowBackendKind = z.infer<typeof workflowBackendKindSchema>;
@@ -127,6 +157,9 @@ const workflowDescriptorBaseSchema = z.object({
   modelId: z.string(),
   version: z.number().int().positive(),
   capabilities: z.array(z.string()),
+  negativePromptMode: z
+    .enum(workflowNegativePromptModes)
+    .default("conditioning"),
   identity: workflowIdentityCapabilitySchema.default({
     mode: "none",
     maxReferences: 0,

@@ -29,6 +29,7 @@ function journey(
     servingState: "inactive",
     currentReleaseId: null,
     candidateReleaseId: null,
+    draftPurposesNeedingReview: [],
     activeCommand: null,
     ...overrides,
   });
@@ -205,5 +206,32 @@ describe("Character Production Journey", () => {
       status: "live",
       primaryAction: { code: "monitor_live_character" },
     });
+  });
+
+  it("routes a complete but unreviewed image pack to review before preview or release", () => {
+    expect(
+      journey({
+        draftPurposes: allPurposes,
+        draftPurposesNeedingReview: ["character_cover", "character_hero"],
+      }),
+    ).toMatchObject({
+      stage: "image_production",
+      status: "blocked",
+      primaryAction: {
+        code: "review_asset_pack",
+        deepLink: "/admin/characters/character-1?tab=assets",
+      },
+      blockers: [{ code: "draft_asset_review_missing" }],
+    });
+  });
+
+  it("keeps an active image run ahead of reviewing the previous selected pack", () => {
+    expect(
+      journey({
+        draftPurposes: allPurposes,
+        draftPurposesNeedingReview: ["character_cover"],
+        hasActiveImageRun: true,
+      }).primaryAction.code,
+    ).toBe("continue_image_run");
   });
 });

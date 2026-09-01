@@ -16,6 +16,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import {
   assessLaunchReadiness as assessLaunchReadinessRaw,
+  currentLaunchCapabilities,
   formatLaunchReadinessReport,
   parseLaunchReadinessCliArgs,
   writeLaunchReadinessReport,
@@ -596,6 +597,29 @@ function passingVoiceProbe(
     audioDurationMs: 1_234,
     bytes: 2048,
     contentType: "audio/mpeg",
+    error: null,
+    ...override,
+  };
+}
+
+function passingPocketIdentityProbe(
+  override: NonNullable<VoiceModelProbeEvidence["identity"]> = {},
+): NonNullable<VoiceModelProbeEvidence["identity"]> {
+  return {
+    ok: true,
+    provider: "pocket-tts",
+    baseUrl: "https://pocket.ourdream.internal/v1",
+    model: "pocket-tts",
+    voiceId: "alba",
+    key: "voice/pocket-identity-probe.wav",
+    audioDurationMs: 1_234,
+    voiceCloningAvailable: false,
+    voiceCloneVerified: null,
+    voiceCatalogAvailable: true,
+    voiceCatalogVerified: true,
+    voiceCatalogSize: 21,
+    bytes: 2_048,
+    contentType: "audio/wav",
     error: null,
     ...override,
   };
@@ -2957,12 +2981,18 @@ describe("launch readiness", () => {
     expect(failedIds(report)).toContain("voice-model-live-probe");
   });
 
-  it("requires Pocket TTS probe evidence to include real oMLX voice cloning", () => {
+  it("supports Pocket TTS in the system voice provider slot", () => {
+    expect(
+      currentLaunchCapabilities.mainProviderImplementations.VOICE_PROVIDER,
+    ).toContain("pocket-tts");
+  });
+
+  it("requires the Pocket catalog lifecycle when Pocket owns system speech", () => {
     const pocketEnv = {
       ...productionEnv,
       VOICE_PROVIDER: "pocket-tts",
-      POCKET_TTS_API_URL: "https://voice.ourdream.internal/v1",
-      POCKET_TTS_MODEL: "pocket-tts-4bit",
+      POCKET_TTS_API_URL: "https://pocket.ourdream.internal/v1",
+      POCKET_TTS_MODEL: "pocket-tts",
     };
     const input = {
       env: pocketEnv,
@@ -2978,44 +3008,109 @@ describe("launch readiness", () => {
       publicCatalogProbe: passingPublicCatalogProbe(),
       now,
     };
-    const missingAccess = assessLaunchReadiness({
+    const catalogBroken = assessLaunchReadiness({
       ...input,
       voiceModelProbe: passingVoiceProbe({
         provider: "pocket-tts",
         baseUrl: pocketEnv.POCKET_TTS_API_URL,
         model: pocketEnv.POCKET_TTS_MODEL,
+        voiceId: "alba",
+        contentType: "audio/wav",
         voiceCloningAvailable: false,
-        voiceCloneVerified: false,
+        voiceCloneVerified: null,
+        voiceCatalogAvailable: true,
+        voiceCatalogVerified: false,
+        voiceCatalogSize: 21,
       }),
     });
-    const cloneBroken = assessLaunchReadiness({
+    const catalogReady = assessLaunchReadiness({
       ...input,
       voiceModelProbe: passingVoiceProbe({
         provider: "pocket-tts",
         baseUrl: pocketEnv.POCKET_TTS_API_URL,
         model: pocketEnv.POCKET_TTS_MODEL,
-        voiceCloningAvailable: true,
-        voiceCloneVerified: false,
+        voiceId: "alba",
+        contentType: "audio/wav",
+        voiceCloningAvailable: false,
+        voiceCloneVerified: null,
+        voiceCatalogAvailable: true,
+        voiceCatalogVerified: true,
+        voiceCatalogSize: 21,
       }),
     });
-    const cloneReady = assessLaunchReadiness({
+
+    expect(checkById(catalogBroken, "voice-model-live-probe")?.message).toContain(
+      "Pocket TTS probe did not complete preset alias, synthesize, and delete",
+    );
+    expect(checkById(catalogReady, "voice-model-live-probe")?.status).toBe(
+      "pass",
+    );
+  });
+
+  it("requires official Pocket TTS evidence when it owns Character Voice Identity", () => {
+    const pocketEnv = {
+      ...productionEnv,
+      VOICE_PROVIDER: "fish-audio",
+      VOICE_IDENTITY_PROVIDER: "pocket-tts",
+      FISH_AUDIO_API_URL: "https://fish.ourdream.internal/v1",
+      FISH_AUDIO_MODEL: "fish-audio-s2-pro-8bit",
+      POCKET_TTS_API_URL: "https://pocket.ourdream.internal/v1",
+      POCKET_TTS_MODEL: "pocket-tts",
+    };
+    const input = {
+      env: pocketEnv,
+      imagePipelineProbe: passingImageProbe(),
+      ageVerificationProbe: passingAgeProbe(),
+      blobStorageProbe: passingBlobProbe(),
+      chatModelProbe: passingChatProbe(),
+      chatServiceProbe: passingChatServiceProbe(),
+      paymentProviderProbe: passingPaymentProbe(),
+      safetyGatewayProbe: passingSafetyProbe(),
+      productConfigProbe: passingProductConfigProbe(),
+      webSurfaceProbe: passingWebSurfaceProbe(),
+      publicCatalogProbe: passingPublicCatalogProbe(),
+      now,
+    };
+    const missingEvidence = assessLaunchReadiness({
       ...input,
       voiceModelProbe: passingVoiceProbe({
-        provider: "pocket-tts",
-        baseUrl: pocketEnv.POCKET_TTS_API_URL,
-        model: pocketEnv.POCKET_TTS_MODEL,
+        provider: "fish-audio",
+        baseUrl: pocketEnv.FISH_AUDIO_API_URL,
+        model: pocketEnv.FISH_AUDIO_MODEL,
         voiceCloningAvailable: true,
         voiceCloneVerified: true,
       }),
     });
+    const catalogBroken = assessLaunchReadiness({
+      ...input,
+      voiceModelProbe: passingVoiceProbe({
+        provider: "fish-audio",
+        baseUrl: pocketEnv.FISH_AUDIO_API_URL,
+        model: pocketEnv.FISH_AUDIO_MODEL,
+        voiceCloningAvailable: true,
+        voiceCloneVerified: true,
+        identity: passingPocketIdentityProbe({ voiceCatalogVerified: false }),
+      }),
+    });
+    const catalogReady = assessLaunchReadiness({
+      ...input,
+      voiceModelProbe: passingVoiceProbe({
+        provider: "fish-audio",
+        baseUrl: pocketEnv.FISH_AUDIO_API_URL,
+        model: pocketEnv.FISH_AUDIO_MODEL,
+        voiceCloningAvailable: true,
+        voiceCloneVerified: true,
+        identity: passingPocketIdentityProbe(),
+      }),
+    });
 
     expect(
-      checkById(missingAccess, "voice-model-live-probe")?.message,
-    ).toContain("did not confirm oMLX voice cloning");
-    expect(checkById(cloneBroken, "voice-model-live-probe")?.message).toContain(
-      "did not complete clone, synthesize, and delete",
+      checkById(missingEvidence, "voice-model-live-probe")?.message,
+    ).toContain("Pocket TTS identity probe evidence is missing");
+    expect(checkById(catalogBroken, "voice-model-live-probe")?.message).toContain(
+      "Pocket TTS identity probe did not complete preset alias, synthesize, and delete",
     );
-    expect(checkById(cloneReady, "voice-model-live-probe")?.status).toBe(
+    expect(checkById(catalogReady, "voice-model-live-probe")?.status).toBe(
       "pass",
     );
   });
@@ -3052,26 +3147,30 @@ describe("launch readiness", () => {
     expect(checkById(report, "voice-model-live-probe")?.status).toBe("pass");
   });
 
-  it("preserves Pocket TTS clone evidence when loading the voice probe report", () => {
+  it("preserves Pocket TTS catalog evidence when loading the voice probe report", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "idream-voice-probe-"));
     try {
       const reportPath = path.join(dir, "voice-model.json");
       const pocketEnv = {
         ...productionEnv,
-        VOICE_PROVIDER: "pocket-tts",
-        POCKET_TTS_API_URL: "https://voice.ourdream.internal/v1",
-        POCKET_TTS_MODEL: "pocket-tts-4bit",
+        VOICE_PROVIDER: "fish-audio",
+        VOICE_IDENTITY_PROVIDER: "pocket-tts",
+        FISH_AUDIO_API_URL: "https://fish.ourdream.internal/v1",
+        FISH_AUDIO_MODEL: "fish-audio-s2-pro-8bit",
+        POCKET_TTS_API_URL: "https://pocket.ourdream.internal/v1",
+        POCKET_TTS_MODEL: "pocket-tts",
         VOICE_MODEL_PROBE_REPORT: reportPath,
       };
       writeFileSync(
         reportPath,
         JSON.stringify(
           passingVoiceProbe({
-            provider: "pocket-tts",
-            baseUrl: pocketEnv.POCKET_TTS_API_URL,
-            model: pocketEnv.POCKET_TTS_MODEL,
+            provider: "fish-audio",
+            baseUrl: pocketEnv.FISH_AUDIO_API_URL,
+            model: pocketEnv.FISH_AUDIO_MODEL,
             voiceCloningAvailable: true,
             voiceCloneVerified: true,
+            identity: passingPocketIdentityProbe(),
           }),
         ),
       );
@@ -4642,13 +4741,13 @@ describe("launch readiness", () => {
     expect(genValues.GEN_VIDEO_TIMEOUT_MS).toBe("1800000");
   });
 
-  it("keeps Fish Audio S2 Pro as the production voice authority", () => {
+  it("keeps Pocket TTS as the production English voice authority", () => {
     const mainValues = envTemplateValues("../../.env.production.example");
 
-    expect(mainValues.VOICE_PROVIDER).toBe("fish-audio");
-    expect(mainValues.FISH_AUDIO_API_URL).toBe("http://127.0.0.1:8062/v1");
-    expect(mainValues.FISH_AUDIO_MODEL).toBe("fish-audio-s2-pro-8bit");
-    expect(mainValues.FISH_AUDIO_MODEL_PATH).toBeTruthy();
-    expect(mainValues.FISH_AUDIO_API_TOKEN).toBeTruthy();
+    expect(mainValues.VOICE_PROVIDER).toBe("pocket-tts");
+    expect(mainValues.POCKET_TTS_API_URL).toBe("http://127.0.0.1:8063/v1");
+    expect(mainValues.POCKET_TTS_MODEL).toBe("pocket-tts");
+    expect(mainValues.POCKET_TTS_LANGUAGE).toBe("english");
+    expect(mainValues.POCKET_TTS_API_TOKEN).toBeTruthy();
   });
 });

@@ -107,6 +107,10 @@ export async function loadChatAuthoritySnapshot(
         status: release.status,
         version: release.version,
         snapshotHash: release.snapshotHash,
+        visualProfileId: release.visualProfileId,
+        visualProfileVersion: release.visualProfileVersion,
+        referenceSetRevisionId: release.referenceSetRevisionId,
+        legacy: release.legacy,
       } : null,
     },
   };

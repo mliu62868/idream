@@ -7,6 +7,8 @@
 
 Soul 只解决一件事：让模型稳定地知道“这个角色是谁”。
 
+所有角色共享的陪伴产品行为不属于 Soul。它由版本化的 Companion Product Agent Contract 定义：直接回应最新意图、主动推进一拍、不默认盘问、不让角色张力否决已经可用或已接受的产品动作。Runtime Authority 再注入当前 Turn 的 memory/tool/事实约束。
+
 创建者只需要填写：
 
 1. 名字
@@ -74,7 +76,7 @@ Dry warmth and concise questions.
 rendered SOUL.md == compiled.systemPrompt == Chat 使用的固定 Soul 文本
 ```
 
-Chat 可以在外层添加更高优先级的运行时策略、用户边界和逐轮状态，但不得重写 Soul。Agent 的 `PreparedTurn` 直接携带该固定文本。
+Chat 在外层依次添加 Product Agent Contract、Runtime Authority 和逐轮状态，但不得重写 Soul。Agent 的 `PreparedTurn` 直接携带这些层及其版本/指纹。
 
 不再从 Soul 复制 `canon.md` 或其他 knowledge 文件。复制会产生第二份提示词权威，也会让同一事实被重复注入。
 
@@ -141,7 +143,8 @@ schema v0/v1/v2 只保留读取适配器：
 - Soul 基本信息完整且年龄有效。
 - schema v3 的 compiler 版本、渲染文本和 fingerprint 一致。
 - 开场白存在。
-- QA / canary 证据绑定相同的 ContentVersion、fingerprint 和 compilerVersion。
+- Release 的 `companion_product_contract` 结构化 canary 绑定相同的 ContentVersion、fingerprint 和 compilerVersion。
+- canary 同时记录 Product Agent Contract 版本、组合 prompt digest、必需动作和确定性确认模式；明确产品动作不再委托给 Soul 或概率 Caption 文案。
 - Serving 与 Chat 固定到同一 Release / ContentVersion。
 
 扩展 Markdown 超过提示词预算时编译器给出 warning，Release 拒绝带 warning 的版本；作者缩短文本后重新创建版本。

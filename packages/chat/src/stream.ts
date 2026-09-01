@@ -50,15 +50,30 @@ export async function appendStreamEvent(
   event: ChatStreamEvent,
 ): Promise<StoredStreamEvent> {
   const parsed = chatStreamEventSchema.parse(event);
-  const result = await publisherRedis()
-    .multi()
-    .xadd(key, "MAXLEN", "~", String(STREAM_MAXLEN), "*", "data", JSON.stringify(parsed))
-    .expire(key, STREAM_TTL_SECONDS)
-    .exec();
-  const [error, value] = result?.[0] ?? [];
-  if (error) throw error;
-  const id = typeof value === "string" ? value : null;
+  const redis = publisherRedis();
+  const args = [
+    key,
+    "MAXLEN",
+    "~",
+    String(STREAM_MAXLEN),
+    "*",
+    "data",
+    JSON.stringify(parsed),
+  ] as const;
+  let id: string | null;
+  if (streamEventRefreshesExpiry(parsed)) {
+    const result = await redis.multi().xadd(...args).expire(key, STREAM_TTL_SECONDS).exec();
+    const [error, value] = result?.[0] ?? [];
+    if (error) throw error;
+    id = typeof value === "string" ? value : null;
+  } else {
+    id = await redis.xadd(...args);
+  }
   return { id: id ?? "", event: parsed };
+}
+
+export function streamEventRefreshesExpiry(event: ChatStreamEvent): boolean {
+  return event.type === "start" || event.type === "done" || event.type === "error";
 }
 
 export async function listStreamEvents(key: string, afterId?: string | null): Promise<StoredStreamEvent[]> {

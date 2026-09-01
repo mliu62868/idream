@@ -114,6 +114,7 @@ export function assertCharacterVideoProductionDescriptor(
   }
 
   const graph = executableGraph(descriptor);
+  assertAcyclicExecutableGraph(graph);
   if (
     recipe.workflowKey === minimaxH3VideoProductionRecipe.workflowKey
   ) {
@@ -195,6 +196,16 @@ function assertLtxGraph(
     assertGraphValue(graph, nodeId, "class_type", "CFGGuider");
     assertGraphInput(graph, nodeId, "cfg", recipe.cfgScale);
   }
+  assertGraphValue(
+    graph,
+    "900:3",
+    "class_type",
+    "IDreamUnloadOffDeviceModels",
+  );
+  assertGraphInput(graph, "900:3", "passthrough", ["320:304", 0]);
+  assertGraphInput(graph, "900:3", "after", ["900:1", 0]);
+  assertGraphInput(graph, "320:282", "positive", ["900:2", 0]);
+  assertGraphInput(graph, "320:314", "positive", ["900:3", 0]);
   if (recipe.scheduler !== "manual_sigmas") {
     throw new Error("Production LTX video recipe requires manual sigma scheduling");
   }
@@ -241,6 +252,16 @@ function assertH3Graph(
   assertGraphInput(graph, "9", "steps", recipe.steps);
   assertGraphInput(graph, "9", "denoise", 1);
   assertGraphValue(graph, "10", "class_type", "BasicGuider");
+  assertGraphInput(graph, "10", "conditioning", ["900:0", 0]);
+  assertGraphValue(
+    graph,
+    "900:0",
+    "class_type",
+    "IDreamUnloadOffDeviceModels",
+  );
+  assertGraphInput(graph, "900:0", "passthrough", ["6", 0]);
+  assertGraphInput(graph, "900:0", "after", ["6", 1]);
+  assertGraphInput(graph, "11", "latent_image", ["900:0", 1]);
   assertGraphValue(graph, "14", "class_type", "CreateVideo");
   assertGraphInput(graph, "14", "bit_depth", 8);
   assertGraphValue(graph, "15", "class_type", "SaveVideo");
@@ -260,6 +281,42 @@ function executableGraph(descriptor: WorkflowDescriptor) {
     delete node.is_changed;
   }
   return graph;
+}
+
+function assertAcyclicExecutableGraph(
+  graph: Record<string, Record<string, unknown>>,
+) {
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+
+  const visit = (nodeId: string, path: readonly string[]) => {
+    if (visited.has(nodeId)) return;
+    if (visiting.has(nodeId)) {
+      throw new Error(
+        `Production video workflow has a dependency cycle: ${[
+          ...path,
+          nodeId,
+        ].join(" -> ")}`,
+      );
+    }
+    visiting.add(nodeId);
+    const inputs = recordValue(graph[nodeId]?.inputs);
+    for (const value of Object.values(inputs)) {
+      if (
+        Array.isArray(value) &&
+        value.length === 2 &&
+        typeof value[0] === "string" &&
+        Number.isInteger(value[1]) &&
+        graph[value[0]]
+      ) {
+        visit(value[0], [...path, nodeId]);
+      }
+    }
+    visiting.delete(nodeId);
+    visited.add(nodeId);
+  };
+
+  for (const nodeId of Object.keys(graph)) visit(nodeId, []);
 }
 
 function assertGraphValue(

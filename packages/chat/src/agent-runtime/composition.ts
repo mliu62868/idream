@@ -233,7 +233,7 @@ export function companionCompositionManifest(
         maxParallelToolCalls: AGENT_LOOP_OPTIONS.maxParallelToolCalls,
         effectfulToolConcurrency: EFFECTFUL_TOOL_CONCURRENCY,
         deadlineSource: "invocation.deadlineAt",
-        commitBeforeIngest: true,
+        commitBeforeProjection: true,
       },
       igrepMaintenance: {
         url: maintenanceUrl.toString().replace(/\/$/u, ""),

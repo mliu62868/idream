@@ -155,6 +155,17 @@ export function chatViewIsPinnedToBottom(viewport: {
   );
 }
 
+const ACTIVE_CHAT_ATTACHMENT_STATUSES = new Set([
+  "requesting",
+  "accepted",
+  "queued",
+  "running",
+]);
+
+export function chatAttachmentIsActive(status: string): boolean {
+  return ACTIVE_CHAT_ATTACHMENT_STATUSES.has(status);
+}
+
 export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [title, setTitle] = useState("Chat");
@@ -194,7 +205,6 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     useRef<Map<string, string>>(new Map());
   const streamSources = useRef<Map<string, EventSource>>(new Map());
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const automaticVoiceAttemptIdsRef = useRef<Set<string>>(new Set());
   const voiceClipRequestsRef =
     useRef<Map<string, Promise<VoiceClipRequestResult>>>(new Map());
   const voiceClipUrlsRef = useRef<Map<string, string>>(new Map());
@@ -202,7 +212,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   const sessionMutationEpochRef = useRef(0);
   const hasActiveAttachment = messages.some((message) =>
     (message.attachments ?? []).some((attachment) =>
-      ["requesting", "queued", "running"].includes(attachment.status),
+      chatAttachmentIsActive(attachment.status),
     ),
   );
   const hasGeneratingReply = chatStreamMessagesNeedReconciliation(messages);
@@ -251,7 +261,6 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       setJumpToLatestVisible(false);
       audioRef.current?.pause();
       audioRef.current = null;
-      automaticVoiceAttemptIdsRef.current.clear();
       voiceClipRequestsRef.current.clear();
       voiceClipUrlsRef.current.clear();
       setVoicePreparingIds(new Set());
@@ -377,33 +386,6 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     pending,
   ]);
 
-  useEffect(() => {
-    if (!ageGateAccepted || loadState !== "ready" || !characterId) return;
-    const latestCompletedAssistant = messages.findLast(
-      (message) =>
-        message.role === "assistant" &&
-        message.content.trim().length > 0 &&
-        message.status !== "blocked" &&
-        message.status !== "generating" &&
-        message.status !== "pending",
-    );
-    if (
-      !latestCompletedAssistant ||
-      automaticVoiceAttemptIdsRef.current.has(latestCompletedAssistant.id)
-    ) {
-      return;
-    }
-    automaticVoiceAttemptIdsRef.current.add(latestCompletedAssistant.id);
-    void requestVoiceClip(
-      latestCompletedAssistant.id,
-      latestCompletedAssistant.content,
-      "prewarm",
-    );
-    // requestVoiceClip intentionally coalesces requests by message id. Re-run only
-    // when canonical message state changes or a new session/character loads.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ageGateAccepted, characterId, id, loadState, messages]);
-
   function stopVoice() {
     const audio = audioRef.current;
     if (audio) {
@@ -417,7 +399,6 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   async function requestVoiceClip(
     messageId: string,
     text: string,
-    intent: "play" | "prewarm",
   ): Promise<VoiceClipRequestResult> {
     const cachedUrl = voiceClipUrlsRef.current.get(messageId);
     if (cachedUrl) return { url: cachedUrl, reason: null };
@@ -435,7 +416,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
             messageId,
             sessionId: id,
             text,
-            intent,
+            intent: "play",
           }),
         });
         if (response.status === 402) {
@@ -473,9 +454,8 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     return request;
   }
 
-  // SPEC: Every completed assistant turn is already prewarmed. The play action
-  //       reuses that result (or its in-flight request) and only falls back to an
-  //       explicit paid request when included voice minutes are exhausted.
+  // SPEC: Voice synthesis starts only after the reader presses Play. Chat text
+  //       stays fast by default; repeated plays reuse the clip cached by message.
   async function playMessage(messageId: string, text: string) {
     if (!characterId || !text.trim()) return;
     if (voicePlayingId === messageId) {
@@ -486,10 +466,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     setStatus(null);
     setUpgradeReason(null);
     try {
-      let result = await requestVoiceClip(messageId, text, "play");
-      if (result.reason === "allowance_exhausted") {
-        result = await requestVoiceClip(messageId, text, "play");
-      }
+      const result = await requestVoiceClip(messageId, text);
       if (result.reason === "not_entitled") {
         setUpgradeReason("voice");
         setStatus("Voice playback needs a plan with voice enabled.");
@@ -1224,9 +1201,9 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                             className={`inline-flex items-center gap-1 py-0.5 ${message.content.trim() ? "ml-2" : ""}`}
                             role="status"
                           >
-                            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-white/60 [animation-delay:-0.3s]" />
-                            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-white/60 [animation-delay:-0.15s]" />
-                            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-white/60" />
+                            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white/60 [animation-delay:-0.3s] [animation-timing-function:cubic-bezier(0.16,1,0.3,1)] motion-reduce:animate-none" />
+                            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white/60 [animation-delay:-0.15s] [animation-timing-function:cubic-bezier(0.16,1,0.3,1)] motion-reduce:animate-none" />
+                            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white/60 [animation-timing-function:cubic-bezier(0.16,1,0.3,1)] motion-reduce:animate-none" />
                           </span>
                         </>
                       ) : !isUser && !message.content.trim() ? (
@@ -1583,7 +1560,7 @@ function ChatImageAttachmentCard({
       <figure className="relative w-full max-w-[260px] overflow-hidden rounded-[12px] border border-white/10 bg-black/20">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
-          alt={attachment.promptHint ? `Generated image: ${attachment.promptHint}` : "Generated chat image"}
+          alt="Generated character image from this chat"
           className="aspect-[4/5] w-full object-cover"
           data-asset-id={attachment.mediaAssetId ?? undefined}
           data-testid="chat-image-attachment"
@@ -1611,7 +1588,7 @@ function ChatImageAttachmentCard({
     );
   }
 
-  const isWaiting = ["requesting", "queued", "running"].includes(attachment.status);
+  const isWaiting = chatAttachmentIsActive(attachment.status);
   const failed = ["failed", "blocked", "refunded", "rejected"].includes(attachment.status);
   const paymentRequired = failed && attachment.errorCode === "payment_required";
   const completedUnavailable = attachment.status === "completed" && Boolean(attachment.mediaAssetId);
@@ -1641,7 +1618,7 @@ function ChatImageAttachmentCard({
             >
               <span className="font-bold text-white/80">Preview unavailable</span>
               <span className="line-clamp-2">
-                {attachment.promptHint || "The generated image cannot be previewed."}
+                The image is ready, but its preview could not be loaded.
               </span>
             </div>
           ) : (
@@ -1650,7 +1627,7 @@ function ChatImageAttachmentCard({
                 ? paymentRequired
                   ? "Add dreamcoins to generate this image."
                   : "The image could not be completed."
-                : attachment.promptHint || "Create an image from this chat moment."}
+                : "Your image is being prepared. You can keep chatting while it finishes."}
             </p>
           )}
         </div>

@@ -88,7 +88,7 @@ import {
 export const ADMIN_WORKSPACES = [
   "Today",
   "Character Studio",
-  "Creative Studio",
+  "Operational Assets",
   "Customer Operations",
   "Growth",
   "Platform Operations",
@@ -121,7 +121,9 @@ export type NavItem = {
   group: AdminWorkspace;
   read: { allOf: readonly AdminPermissionKey[] };
   apiWorkspace: AdminV2WorkspaceAccessKey | null;
-  tier: "daily" | "folded";
+  // SPEC: 入口只有三层：跨工作区常驻、区内常规任务、区内低频工具。
+  // INTENT: 用一个互斥枚举表达信息层级，避免多个布尔值组合出「既常驻又是低频工具」之类的无效状态。
+  navigation: "primary" | "workspace" | "tool";
   // SPEC: 这一页需要外壳给多厚的外框。compact = 工作台自己画页面级标题，外壳只出面包屑。
   // INTENT: 这以前是外壳里 `sectionId === "content/official"` 的硬编码特判，在副标题、全局搜索、
   //         工作模式选择器、来源条四处各 null 一次——结果角色页成了全站唯一没有全局搜索的页面，
@@ -134,9 +136,10 @@ export type NavItem = {
   render: (context: SectionContext) => ReactNode;
 };
 
-type ItemInput = Omit<NavItem, "apiWorkspace" | "legacyHref" | "tier" | "chrome"> & {
+type ItemInput = Omit<NavItem, "apiWorkspace" | "legacyHref" | "chrome" | "navigation"> & {
   apiWorkspace?: AdminV2WorkspaceAccessKey;
   chrome?: NavItem["chrome"];
+  navigation?: NavItem["navigation"];
 };
 
 function read(...allOf: AdminPermissionKey[]): NavItem["read"] {
@@ -149,7 +152,7 @@ function item(input: ItemInput): NavItem {
     apiWorkspace: input.apiWorkspace ?? null,
     chrome: input.chrome ?? "default",
     legacyHref: input.id === "dashboard" ? "/admin" : `/admin/${input.id}`,
-    tier: input.group === "Today" ? "daily" : "folded",
+    navigation: input.navigation ?? "workspace",
   };
 }
 
@@ -159,7 +162,7 @@ function targetItem(input: ItemInput): NavItem {
     apiWorkspace: input.apiWorkspace ?? null,
     chrome: input.chrome ?? "default",
     legacyHref: null,
-    tier: input.group === "Today" ? "daily" : "folded",
+    navigation: input.navigation ?? "workspace",
   };
 }
 
@@ -179,19 +182,23 @@ function apiTargetItem(
 // shipped capability stays reachable; `href` is the canonical decision-workspace URL.
 // Permissions are existing effective keys, not client-side role guesses.
 export const navItems: NavItem[] = [
-  apiItem({ id: "dashboard", label: "Today", href: "/admin/today", icon: Gauge, group: "Today", apiWorkspace: "today",
+  apiItem({ id: "dashboard", label: "Today", href: "/admin/today", icon: Gauge, group: "Today", apiWorkspace: "today", navigation: "primary",
     render: (ctx) => <TodayWorkspace workMode={ctx.workMode} /> }),
 
-  apiItem({ id: "content/official", label: "Characters", href: "/admin/characters", icon: UserRound, group: "Character Studio", apiWorkspace: "character_workspace", chrome: "compact",
+  apiItem({ id: "content/official", label: "Characters", href: "/admin/characters", icon: UserRound, group: "Character Studio", apiWorkspace: "character_workspace", chrome: "compact", navigation: "primary",
     render: (ctx) => <CharacterWorkspace actorId={ctx.actorId} permissions={ctx.permissions} view={ctx.view} /> }),
   item({ id: "content/review-queue", label: "Character Review", href: "/admin/characters/review", icon: ClipboardCheck, group: "Character Studio", read: read("safety.review.read"),
     render: () => <ReviewQueueView /> }),
-  item({ id: "content/templates", label: "Character Starters", href: "/admin/characters/starters", icon: Sparkles, group: "Character Studio", read: read("content.read"),
+  item({ id: "content/templates", label: "Character Starters", href: "/admin/characters/starters", icon: Sparkles, group: "Character Studio", read: read("content.read"), navigation: "tool",
     render: (ctx) => <StartersSection view={ctx.view} /> }),
-  item({ id: "content/tags", label: "Taxonomy", href: "/admin/characters/taxonomy", icon: Flag, group: "Character Studio", read: read("content.read"),
+  item({ id: "content/tags", label: "Taxonomy", href: "/admin/characters/taxonomy", icon: Flag, group: "Character Studio", read: read("content.read"), navigation: "tool",
     render: () => <TagsView /> }),
 
-  apiItem({ id: "content/production", label: "Creative Runs", href: "/admin/creative/runs", icon: Play, group: "Creative Studio", apiWorkspace: "creative_runs",
+  item({ id: "content/assets", label: "Library", href: "/admin/creative/library", icon: ImageIcon, group: "Operational Assets", read: read("creative.asset.read"),
+    render: (ctx) => <AssetsSection canReview={ctx.permissions.has("content.asset.review")} view={ctx.view} /> }),
+  item({ id: "content/placements", label: "Placements", href: "/admin/creative/placements", icon: Bookmark, group: "Operational Assets", read: read("creative.placement.read"),
+    render: (ctx) => <PlacementsSection canPublish={ctx.permissions.has("creative.placement.publish")} view={ctx.view} /> }),
+  apiItem({ id: "content/production", label: "Generation History", href: "/admin/creative/runs", icon: Play, group: "Operational Assets", apiWorkspace: "creative_runs", navigation: "tool",
     render: (ctx) => <CreativeRunWorkspace actorId={ctx.actorId} permissions={{
       read: ctx.canRead,
       write: ctx.permissions.has("creative.run.write"),
@@ -199,10 +206,6 @@ export const navItems: NavItem[] = [
       place: ctx.permissions.has("creative.placement.publish"),
       manageIncident: ctx.permissions.has("ops.incident.manage"),
     }} view={ctx.view} /> }),
-  item({ id: "content/assets", label: "Library", href: "/admin/creative/library", icon: ImageIcon, group: "Creative Studio", read: read("creative.asset.read"),
-    render: (ctx) => <AssetsSection canReview={ctx.permissions.has("content.asset.review")} view={ctx.view} /> }),
-  item({ id: "content/placements", label: "Placements", href: "/admin/creative/placements", icon: Bookmark, group: "Creative Studio", read: read("creative.placement.read"),
-    render: (ctx) => <PlacementsSection canPublish={ctx.permissions.has("creative.placement.publish")} view={ctx.view} /> }),
 
   apiItem({ id: "cases", label: "Cases", href: "/admin/cases?view=mine", icon: Ticket, group: "Customer Operations", apiWorkspace: "cases",
     render: (ctx) => <CaseWorkspace
@@ -219,7 +222,7 @@ export const navItems: NavItem[] = [
       canReconcile={ctx.permissions.has("billing.checkout.reconcile")}
       canRefund={ctx.permissions.has("billing.subscription.refund")}
     /> }),
-  item({ id: "compliance", label: "Account Requests", href: "/admin/customer-ops/account-requests", icon: ShieldAlert, group: "Customer Operations", read: read("compliance.read"),
+  item({ id: "compliance", label: "Account Requests", href: "/admin/customer-ops/account-requests", icon: ShieldAlert, group: "Customer Operations", read: read("compliance.read"), navigation: "tool",
     render: () => <ComplianceView /> }),
 
   apiItem({ id: "analytics", label: "Product Health", href: "/admin/growth/health", icon: BarChart3, group: "Growth", apiWorkspace: "metrics",
@@ -233,13 +236,13 @@ export const navItems: NavItem[] = [
     render: () => <ExperimentsView /> }),
   item({ id: "content", label: "Featured Merchandising", href: "/admin/growth/merchandising?view=featured", icon: Library, group: "Growth", read: read("content.read"),
     render: (ctx) => <ContentMerchandisingWorkspace canWrite={ctx.permissions.has("content.takedown.write")} /> }),
-  item({ id: "announcements", label: "Announcements", href: "/admin/growth/merchandising?view=announcements", icon: MessageSquare, group: "Growth", read: read("growth.promo.read"),
+  item({ id: "announcements", label: "Announcements", href: "/admin/growth/merchandising?view=announcements", icon: MessageSquare, group: "Growth", read: read("growth.promo.read"), navigation: "tool",
     render: () => <AnnouncementsView /> }),
   item({ id: "cms", label: "CMS & SEO", href: "/admin/growth/content", icon: FileText, group: "Growth", read: read("content.read"),
     render: () => <CmsView /> }),
   item({ id: "pricing", label: "Pricing", href: "/admin/growth/offers?view=pricing", icon: Coins, group: "Growth", read: read("billing.read"),
     render: (ctx) => <PricingWorkspace canWrite={ctx.permissions.has("config.pricing.write")} /> }),
-  item({ id: "promo", label: "Promotions", href: "/admin/growth/offers?view=promo", icon: Ticket, group: "Growth", read: read("growth.promo.read"),
+  item({ id: "promo", label: "Promotions", href: "/admin/growth/offers?view=promo", icon: Ticket, group: "Growth", read: read("growth.promo.read"), navigation: "tool",
     render: (ctx) => <PromoWorkspace canWrite={ctx.permissions.has("growth.promo.write")} /> }),
 
   apiItem({ id: "ops/incidents", label: "Incidents", href: "/admin/ops/incidents", icon: ShieldAlert, group: "Platform Operations", apiWorkspace: "incidents",
@@ -268,16 +271,16 @@ export const navItems: NavItem[] = [
     render: (ctx) => <InvariantsWorkspace canRead={ctx.canRead} /> }),
   apiItem({ id: "generation/jobs", label: "Generation Jobs", href: "/admin/ops/jobs", icon: Activity, group: "Platform Operations", apiWorkspace: "generation_jobs",
     render: () => <GenerationJobsWorkspace /> }),
-  item({ id: "generation/dead-letter", label: "Dead-letter", href: "/admin/ops/jobs?view=dead-letter", icon: Inbox, group: "Platform Operations", read: read("ops.queue.read"),
+  item({ id: "generation/dead-letter", label: "Dead-letter", href: "/admin/ops/jobs?view=dead-letter", icon: Inbox, group: "Platform Operations", read: read("ops.queue.read"), navigation: "tool",
     render: (ctx) => <DeadLetterWorkspace permissions={{
       requeue: ctx.permissions.has("generation.job.requeue"),
       discard: ctx.permissions.has("ops.deadletter.write"),
     }} /> }),
   item({ id: "ops/providers", label: "Providers", href: "/admin/ops/providers", icon: Gauge, group: "Platform Operations", read: read("ops.queue.read"),
     render: (ctx) => <ProviderOverviewWorkspace canRead={ctx.permissions.has("ops.queue.read")} /> }),
-  item({ id: "generation/backends", label: "Backend Diagnostics", href: "/admin/ops/providers?view=backends", icon: Server, group: "Platform Operations", read: read("ops.queue.read"),
+  item({ id: "generation/backends", label: "Backend Diagnostics", href: "/admin/ops/providers?view=backends", icon: Server, group: "Platform Operations", read: read("ops.queue.read"), navigation: "tool",
     render: () => <BackendsView /> }),
-  item({ id: "generation/metrics", label: "Generation Health", href: "/admin/ops/providers?view=generation-metrics", icon: BarChart3, group: "Platform Operations", read: read("ops.queue.read"),
+  item({ id: "generation/metrics", label: "Generation Health", href: "/admin/ops/providers?view=generation-metrics", icon: BarChart3, group: "Platform Operations", read: read("ops.queue.read"), navigation: "tool",
     render: () => <GenerationMetricsView /> }),
   // SPEC: 这一页按 model-profile id 查健康度、跑不调 provider 的配置检查。
   // INTENT: 它过去叫「Funnels & Retention」、挂在 Growth 下，但页面里既没有漏斗也没有 cohort
@@ -286,7 +289,7 @@ export const navItems: NavItem[] = [
   //         按页面真正提供的能力改名，并归到它受众所在的分组：读它的是平台运维，不是增长。
   //         和邻居 Backend / Workflow Diagnostics 是同一族命名。
   // INVARIANT: href 保持 /admin/growth/funnels —— 换 URL 会废掉现有书签，而这一轮只改元数据。
-  apiItem({ id: "insights", label: "Profile Diagnostics", href: "/admin/growth/funnels", icon: BarChart3, group: "Platform Operations", apiWorkspace: "metrics",
+  apiItem({ id: "insights", label: "Profile Diagnostics", href: "/admin/growth/funnels", icon: BarChart3, group: "Platform Operations", apiWorkspace: "metrics", navigation: "tool",
     render: () => <InsightsView /> }),
   item({ id: "generation/config", label: "Profiles & Rollout", href: "/admin/ops/profiles", icon: SlidersHorizontal, group: "Platform Operations", read: read("generation.config.read", "ops.queue.read", "generation.job.read"),
     render: (ctx) => <GenerationConfigWorkspace permissions={{
@@ -295,9 +298,9 @@ export const navItems: NavItem[] = [
     }} /> }),
   item({ id: "generation/recipes", label: "Prompt Recipes", href: "/admin/ops/recipes", icon: ScrollText, group: "Platform Operations", read: read("generation.config.read"),
     render: (ctx) => <RecipesSection view={ctx.view} /> }),
-  item({ id: "generation/presets", label: "Presets", href: "/admin/ops/recipes?view=presets", icon: Layers, group: "Platform Operations", read: read("generation.config.read"),
+  item({ id: "generation/presets", label: "Presets", href: "/admin/ops/recipes?view=presets", icon: Layers, group: "Platform Operations", read: read("generation.config.read"), navigation: "tool",
     render: (ctx) => <PresetsSection view={ctx.view} /> }),
-  item({ id: "generation/workflows", label: "Workflow Diagnostics", href: "/admin/ops/recipes?view=workflows", icon: Workflow, group: "Platform Operations", read: read("generation.config.read"),
+  item({ id: "generation/workflows", label: "Workflow Diagnostics", href: "/admin/ops/recipes?view=workflows", icon: Workflow, group: "Platform Operations", read: read("generation.config.read"), navigation: "tool",
     render: () => <WorkflowsView /> }),
   item({ id: "chat", label: "Chat Operations", href: "/admin/ops/chat", icon: MessageSquare, group: "Platform Operations", read: read("chat.ops.read"),
     render: (ctx) => <ChatOpsWorkspace
@@ -327,35 +330,15 @@ export const navItems: NavItem[] = [
     render: () => <AuditWorkspace /> }),
 ];
 
-export const NAV_GROUP_ORDER = [...ADMIN_WORKSPACES];
-export const NAV_DAILY = navItems.filter((navItem) => navItem.tier === "daily");
-export const NAV_FOLDED_GROUPS = ADMIN_WORKSPACES.filter((group) => group !== "Today").map(
-  (group) => ({ group, items: navItems.filter((navItem) => navItem.group === group) }),
-);
-
 const MODE_GROUP_ORDER: Record<WorkMode, readonly AdminWorkspace[]> = {
-  character_producer: ["Today", "Character Studio", "Creative Studio", "Growth", "Platform Operations", "Customer Operations", "System"],
-  creative_operator: ["Today", "Creative Studio", "Character Studio", "Platform Operations", "Growth", "Customer Operations", "System"],
-  platform_ops: ["Today", "Platform Operations", "Customer Operations", "System", "Creative Studio", "Character Studio", "Growth"],
-  support: ["Today", "Customer Operations", "Platform Operations", "System", "Character Studio", "Creative Studio", "Growth"],
-  moderator: ["Today", "Customer Operations", "Character Studio", "System", "Platform Operations", "Creative Studio", "Growth"],
-  growth_analyst: ["Today", "Growth", "Character Studio", "Creative Studio", "Customer Operations", "Platform Operations", "System"],
-  admin: ADMIN_WORKSPACES,
+  character_producer: ["Today", "Character Studio", "Operational Assets", "Growth", "Platform Operations", "Customer Operations", "System"],
+  creative_operator: ["Today", "Operational Assets", "Character Studio", "Platform Operations", "Growth", "Customer Operations", "System"],
+  platform_ops: ["Today", "Platform Operations", "Customer Operations", "System", "Operational Assets", "Character Studio", "Growth"],
+  support: ["Today", "Customer Operations", "Platform Operations", "System", "Character Studio", "Operational Assets", "Growth"],
+  moderator: ["Today", "Customer Operations", "Character Studio", "System", "Platform Operations", "Operational Assets", "Growth"],
+  growth_analyst: ["Today", "Growth", "Character Studio", "Operational Assets", "Customer Operations", "Platform Operations", "System"],
+  admin: ["Today", "System", "Platform Operations", "Character Studio", "Operational Assets", "Customer Operations", "Growth"],
 };
-
-// SPEC: 冷启动（还没有 openNavGroups cookie）时侧栏默认展开哪些折叠分组。
-// INTENT: 之前默认全折叠——新运营打开后台只看得见「今日工作」一条加六个不知道里面装什么的
-//         分组标题，34 个能力一个都不露，渐进披露用过了头。工作模式本来就声明了"这个人整天
-//         在干什么"，就按它展开首要分组，再加上当前页所在的分组：冷启动即可上手，侧栏又不至于
-//         长到必须滚动才能看全。剩下的分组仍是一次点击的距离。
-export function defaultOpenNavGroups(mode: WorkMode, activeGroup: AdminWorkspace): AdminWorkspace[] {
-  // "Today" 是固定在顶部、不带分组标题的常驻区，展开它没有意义。
-  const groups = new Set<AdminWorkspace>();
-  const primary = MODE_GROUP_ORDER[mode].find((group) => group !== "Today");
-  if (primary) groups.add(primary);
-  if (activeGroup !== "Today") groups.add(activeGroup);
-  return [...groups];
-}
 
 export function defaultWorkModeForRole(role: string | undefined): WorkMode {
   if (role === "support") return "support";
@@ -389,34 +372,42 @@ export function canReadAnyWorkspace(permissions: ReadonlySet<AdminPermissionKey>
   return ALL_SECTION_ITEMS.some((navItem) => canReadWorkspace(navItem, permissions));
 }
 
-export function navGroupsForPermissions(permissions: ReadonlySet<AdminPermissionKey>, mode: WorkMode) {
+export function navGroupsForPermissions(
+  permissions: ReadonlySet<AdminPermissionKey>,
+  mode: WorkMode,
+) {
+  // SPEC: 工作模式只排序分组，不能成为权限之外的第二套功能可见性门槛。
+  // INVARIANT: 包括兼容工具在内，每个满足 read.allOf 的目的地都进入所属工作区；
+  //            shell 再决定常驻入口、工作区入口与区内切换，不靠搜索或记 URL 补洞。
   return MODE_GROUP_ORDER[mode]
     .map((group) => ({
       group,
-      items: navItems.filter(
-        (navItem) => navItem.group === group && canReadWorkspace(navItem, permissions),
+      items: ALL_SECTION_ITEMS.filter(
+        (navItem) => navItem.group === group
+          && canReadWorkspace(navItem, permissions),
       ),
     }))
     .filter(({ items }) => items.length > 0);
 }
 
 // These routes retain command parity while their Case equivalents are incomplete.
-// They stay out of primary navigation but remain directly addressable for saved links
-// and legacy operators; production traffic telemetry decides their eventual sunset.
-const HIDDEN_COMPATIBILITY_ITEMS: NavItem[] = [
-  item({ id: "moderation", label: "Moderation Cases", href: "/admin/moderation", icon: ShieldAlert, group: "Customer Operations", read: read("safety.review.read"),
+// They do not become global destinations, but they do appear inside Customer Operations:
+// a necessary compatibility tool must be discoverable without pretending it is a new workspace.
+// Production traffic telemetry decides their eventual sunset.
+const COMPATIBILITY_ITEMS: NavItem[] = [
+  item({ id: "moderation", label: "Moderation Cases", href: "/admin/moderation", icon: ShieldAlert, group: "Customer Operations", read: read("safety.review.read"), navigation: "tool",
     render: (ctx) => <ModerationWorkspace canDecide={ctx.permissions.has("safety.review.write")} /> }),
-  item({ id: "support", label: "Support Cases", href: "/admin/support", icon: Ticket, group: "Customer Operations", read: read("support.request.read"),
+  item({ id: "support", label: "Support Cases", href: "/admin/support", icon: Ticket, group: "Customer Operations", read: read("support.request.read"), navigation: "tool",
     render: (ctx) => <SupportWorkspace
       canViewPlaintext={ctx.permissions.has("support.plaintext.view")}
       canWrite={ctx.permissions.has("support.request.write")}
     /> }),
-  item({ id: "risk", label: "Risk Cases", href: "/admin/risk", icon: ShieldAlert, group: "Customer Operations", read: read("billing.read"),
+  item({ id: "risk", label: "Risk Cases", href: "/admin/risk", icon: ShieldAlert, group: "Customer Operations", read: read("billing.read"), navigation: "tool",
     render: (ctx) => <RiskWorkspace canRead={ctx.permissions.has("billing.read")} /> }),
 ];
 
-// 隐藏的兼容项仍是可直达的目的地，命名规则跟导航里的项一视同仁。
-export const ALL_SECTION_ITEMS = [...navItems, ...HIDDEN_COMPATIBILITY_ITEMS];
+// 兼容项仍是可直达的目的地，命名规则跟正式项一视同仁。
+export const ALL_SECTION_ITEMS = [...navItems, ...COMPATIBILITY_ITEMS];
 const SECTION_BY_ID: ReadonlyMap<string, NavItem> = new Map(
   ALL_SECTION_ITEMS.map((navItem) => [navItem.id, navItem]),
 );

@@ -412,6 +412,45 @@ describe("mock providers", () => {
     expect(voiceBody).not.toContain("instructions");
   });
 
+  it("wires Pocket TTS as a first-class system voice provider", async () => {
+    vi.resetModules();
+    const fetchMock = vi.fn(async () =>
+      new Response(wavBytes(1_000), {
+        headers: { "content-type": "audio/wav" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    process.env = {
+      ...oldEnv,
+      VOICE_PROVIDER: "pocket-tts",
+      POCKET_TTS_API_URL: "https://pocket.internal.example.com/v1",
+      POCKET_TTS_MODEL: "pocket-tts",
+      POCKET_TTS_LANGUAGE: "english",
+      POCKET_TTS_DEFAULT_VOICE_ID: "alba",
+    };
+
+    const { createProviderRegistry: createFreshRegistry } = await import("./index");
+    const registry = createFreshRegistry();
+    const result = await registry.voice.clip.synthesize({
+      ...voiceSynthesisIdentity,
+      text: "Hello from the default Pocket voice.",
+    });
+
+    expect(registry.voice.clip.providerKey).toBe("pocket_tts");
+    expect(registry.voice.identity?.providerKey).toBe("pocket_tts");
+    expect(result).toMatchObject({
+      ok: true,
+      data: { durationMs: 1_000 },
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      new URL("https://pocket.internal.example.com/v1/audio/speech"),
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining('"voice":"alba"'),
+      }),
+    );
+  });
+
   it("can opt into pipeline voice instructions for gateways that support them", async () => {
     vi.resetModules();
     const fetchMock = vi.fn(async () =>

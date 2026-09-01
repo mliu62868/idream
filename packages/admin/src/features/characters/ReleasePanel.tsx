@@ -17,6 +17,8 @@ import {
   adminV2Operation,
   adminV2OperationEndpoint,
 } from "@/lib/admin-v2-operation";
+import { AdminV2RequestError } from "@/lib/admin-v2-api";
+import { characterAssetPurposes } from "./character-asset-studio-authority";
 import type {
   CharacterCommandJournal,
   CharacterCommandSubmission,
@@ -64,6 +66,112 @@ const releaseCheckLabels: Record<string, string> = {
 
 export function characterReleaseCheckLabel(checkKey: string) {
   return releaseCheckLabels[checkKey] ?? checkKey.replaceAll("_", " ");
+}
+
+type ReleaseBlockerGuidance = {
+  readonly blocker: string;
+  readonly message: string;
+  readonly action: string;
+  readonly href: string;
+};
+
+export function releaseBlockersFromError(cause: unknown): string[] {
+  if (
+    !(cause instanceof AdminV2RequestError) ||
+    !cause.details ||
+    typeof cause.details !== "object" ||
+    Array.isArray(cause.details)
+  ) {
+    return [];
+  }
+  const blockers = (cause.details as { blockers?: unknown }).blockers;
+  return Array.isArray(blockers)
+    ? [...new Set(blockers.filter((item): item is string => typeof item === "string" && item.length > 0))]
+    : [];
+}
+
+export function releaseBlockerGuidance(
+  blocker: string,
+  characterId: string,
+): ReleaseBlockerGuidance {
+  const base = `/admin/characters/${encodeURIComponent(characterId)}`;
+  if (blocker === "release_asset_review_authority") {
+    return {
+      blocker,
+      message: "Review every selected image before publishing.",
+      action: "Review selected images",
+      href: `${base}?tab=assets`,
+    };
+  }
+  if (
+    [
+      "approved_asset_pack_incomplete",
+      "approved_asset_pack_invalid",
+      "approved_asset_pack_lineage_invalid",
+      "release_asset_manifest_available",
+      "release_assets_customer_publishable",
+      "release_asset_generation_authority",
+      "release_avatar_manifest_available",
+    ].includes(blocker)
+  ) {
+    return {
+      blocker,
+      message: "Complete and repair the selected image pack before publishing.",
+      action: "Open image assets",
+      href: `${base}?tab=assets`,
+    };
+  }
+  if (["opening_complete", "soul_snapshot_valid", "soul_release_policy"].includes(blocker)) {
+    return {
+      blocker,
+      message: "Complete the Character Soul and opening message before publishing.",
+      action: "Open Character Soul",
+      href: `${base}?tab=soul`,
+    };
+  }
+  if (
+    [
+      "visual_identity_exact_version",
+      "reference_set_published_snapshot",
+      "generation_route_qualified",
+      "active_visual_profile_missing_or_unsealed",
+      "active_visual_profile_hash_invalid",
+      "active_reference_set_media_unavailable",
+      "active_reference_set_missing_or_empty",
+      "active_reference_set_hash_invalid",
+      "qualified_generation_route_missing",
+    ].includes(blocker)
+  ) {
+    return {
+      blocker,
+      message: "Repair the visual identity authority before publishing.",
+      action: "Open visual identity",
+      href: `${base}?tab=visual`,
+    };
+  }
+  return {
+    blocker,
+    message: "Refresh the Character and resolve this release check before publishing.",
+    action: "Review release checks",
+    href: `${base}?tab=release`,
+  };
+}
+
+export function characterReleaseDraftBlockers(
+  data: CharacterWorkspaceDetail,
+): string[] {
+  if (
+    !data.project.draftAssetRouteAuthority.releaseReady ||
+    !data.preview.draft.assetPackReady
+  ) {
+    return ["release_asset_manifest_available"];
+  }
+  const selections = data.project.draftAssetSelections;
+  return characterAssetPurposes.some(
+    (purpose) => !selections?.[purpose]?.reviewDecisionId,
+  )
+    ? ["release_asset_review_authority"]
+    : [];
 }
 
 function ReleaseSummary({
@@ -172,6 +280,7 @@ export function ReleasePanel({
   const [releaseConfirmed, setReleaseConfirmed] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [authorityBlockers, setAuthorityBlockers] = useState<string[]>([]);
   const createIdempotencyKeys = useRef<Record<string, string>>({});
 
   const submitCommand = async (
@@ -216,6 +325,7 @@ export function ReleasePanel({
   const publishCharacter = async () => {
     setBusy("publish");
     setError(null);
+    setAuthorityBlockers([]);
     try {
       let releaseRef = candidate
         ? { id: candidate.release.id, version: candidate.release.version }
@@ -245,11 +355,15 @@ export function ReleasePanel({
       }
       await submitCommand("publish", releaseRef.id, releaseRef.version);
     } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : t("Could not publish Character"),
-      );
+      const blockers = releaseBlockersFromError(cause);
+      if (blockers.length > 0) setAuthorityBlockers(blockers);
+      else {
+        setError(
+          cause instanceof Error
+            ? cause.message
+            : t("Could not publish Character"),
+        );
+      }
     } finally {
       setBusy(null);
     }
@@ -323,11 +437,10 @@ export function ReleasePanel({
     ({ release }) => release.id === rollbackSourceId,
   );
   const noUnpublishedChanges = characterHasNoUnpublishedChanges(data);
-  const assetsReady =
-    data.project.draftAssetRouteAuthority.releaseReady &&
-    data.preview.draft.assetPackReady;
+  const draftBlockers = characterReleaseDraftBlockers(data);
+  const blockers = [...new Set([...draftBlockers, ...authorityBlockers])];
   const canPublish =
-    Boolean(candidate) || (!noUnpublishedChanges && assetsReady);
+    Boolean(candidate) || (!noUnpublishedChanges && blockers.length === 0);
   const confirmationVisible = characterReleaseConfirmationVisible({
     hasRollbackSource: rollbackSources.length > 0,
     servingState: data.serving?.state ?? null,
@@ -397,21 +510,31 @@ export function ReleasePanel({
           <p className="mt-3 text-sm text-[var(--ad-text-muted)]">
             {t("Live and draft are identical. There is nothing to release.")}
           </p>
-        ) : !assetsReady && !candidate ? (
-          <div className="mt-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]">
-            <p>{t("Complete the current image pack before publishing.")}</p>
-            <Link
-              className="mt-2 inline-flex font-semibold underline"
-              href={`/admin/characters/${data.character.id}?tab=assets`}
-            >
-              {t("Complete image assets")}
-            </Link>
+        ) : blockers.length > 0 && !candidate ? (
+          <div className="mt-3 space-y-3 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)]">
+            {blockers.map((blocker) => {
+              const guidance = releaseBlockerGuidance(
+                blocker,
+                data.character.id,
+              );
+              return (
+                <div key={blocker}>
+                  <p>{t(guidance.message)}</p>
+                  <Link
+                    className="mt-1 inline-flex font-semibold underline"
+                    href={guidance.href}
+                  >
+                    {t(guidance.action)}
+                  </Link>
+                </div>
+              );
+            })}
           </div>
         ) : null}
 
         {error ? (
           <p className="mt-3 text-xs text-[var(--ad-red-text)]" role="alert">
-            {error}
+            {t(error)}
           </p>
         ) : null}
 

@@ -208,7 +208,11 @@ import {
   pruneUndefined,
   stringFromRecord,
 } from "./json-values";
-import { clampPrompt, cleanPromptText } from "./generation-prompt";
+import {
+  clampPrompt,
+  cleanPromptText,
+  compileChatImagePrompt,
+} from "./generation-prompt";
 import {
   createReferenceSetRevision,
   referenceManifestFromRevision,
@@ -2135,7 +2139,11 @@ export async function createChatImageGenerationJob(payload: ChatImageRequestedPa
   if (!user || user.status !== "active" || user.deletedAt) {
     throw Errors.forbidden("User cannot generate images");
   }
-  const prompt = buildChatImagePrompt(payload);
+  const releasePin = await chatReleaseGenerationPin(payload);
+  const prompt = compileChatImagePrompt(
+    payload.promptHint ?? "candid in-character photo",
+    payload.intent.requestedNudity,
+  );
   const orientation = normalizeImageOrientation(payload.controls.orientation, "4:5");
   const sourceImageAssetId = payload.controls.sourceImageAssetId;
   return createGenerationJobForUser(
@@ -2144,9 +2152,12 @@ export async function createChatImageGenerationJob(payload: ChatImageRequestedPa
       mode: "image",
       characterId: payload.characterId,
       freeplay: false,
-      consistencyMode: "balanced",
+      // INVARIANT: Chat images depict the pinned companion, so identity wins over
+      // stylistic freedom. The Agent owns only the mutable scene; Main pins the
+      // strongest reference weights and the sealed identity profile.
+      consistencyMode: "strict",
       prompt,
-      visualProfileId: payload.visualProfileId,
+      visualProfileId: releasePin?.visualProfileId ?? payload.visualProfileId,
       // Explicit whitelist — never blind-spread payload.controls, it's an untrusted
       // passthrough bag from chat and could otherwise leak arbitrary keys into the job.
       controls: {
@@ -2180,17 +2191,68 @@ export async function createChatImageGenerationJob(payload: ChatImageRequestedPa
           conversationContext: payload.conversationContext,
         }),
       },
-      // Chat is async/fire-and-forget: a passport version that went stale (archived)
-      // or vanished between chat's request and main's processing must never fail the
-      // image — fall back to whatever profile is active now.
-      fallbackToActiveOnStaleVisualProfile: true,
+      // A legacy editorial Release has no native Visual Profile and uses its
+      // exact qualified portrait projection. Modern Releases never fall back:
+      // their sealed identity and Reference Set are the generation authority.
+      fallbackToActiveOnStaleVisualProfile:
+        releasePin?.legacy === true && releasePin.visualProfileId === null,
+      expectedVisualProfileVersion:
+        releasePin?.visualProfileVersion ?? payload.visualProfileVersion,
+      expectedReferenceSetRevisionId:
+        releasePin?.referenceSetRevisionId ?? undefined,
+      requireCharacterVisualIdentity: true,
     },
   );
 }
 
-function buildChatImagePrompt(payload: ChatImageRequestedPayload) {
-  const hint = payload.promptHint?.trim();
-  return hint ? cleanPromptText(hint, 500) : "candid in-character photo";
+async function chatReleaseGenerationPin(payload: ChatImageRequestedPayload) {
+  if (!payload.characterReleaseId) return null;
+  const release = await prisma.characterRelease.findUnique({
+    where: { id: payload.characterReleaseId },
+    select: {
+      id: true,
+      projectId: true,
+      snapshotHash: true,
+      visualProfileId: true,
+      visualProfileVersion: true,
+      referenceSetRevisionId: true,
+      legacy: true,
+      status: true,
+    },
+  });
+  const project = release
+    ? await prisma.characterProject.findUnique({
+        where: { id: release.projectId },
+        select: { characterId: true },
+      })
+    : null;
+  if (
+    !release ||
+    project?.characterId !== payload.characterId ||
+    !["published", "superseded"].includes(release.status)
+  ) {
+    throw Errors.gone("Pinned Character Release is unavailable for Chat image generation");
+  }
+  if (
+    !release.legacy &&
+    (
+      !release.visualProfileId ||
+      !release.visualProfileVersion ||
+      !release.referenceSetRevisionId
+    )
+  ) {
+    throw Errors.conflict("Pinned Character Release has no complete visual identity authority");
+  }
+  if (
+    (payload.releaseSnapshotHash && payload.releaseSnapshotHash !== release.snapshotHash) ||
+    (payload.visualProfileId && payload.visualProfileId !== release.visualProfileId) ||
+    (payload.visualProfileVersion && payload.visualProfileVersion !== release.visualProfileVersion) ||
+    (payload.referenceSetRevisionId &&
+      payload.referenceSetRevisionId !== release.referenceSetRevisionId)
+  ) {
+    throw Errors.conflict("Chat image identity does not match the pinned Character Release");
+  }
+  return release;
 }
 
 async function listGenerationJobs(request: Request) {
@@ -2992,6 +3054,8 @@ async function resolveMediaVariationGenerationInput(
     consistencyMode: "balanced" | "strict" | "creative";
     model?: string;
     orientation?: string;
+    prompt?: string;
+    negativePrompt?: string;
   },
 ) {
   const asset = await assertIdentityImageMedia(id, userId);
@@ -3038,7 +3102,13 @@ async function resolveMediaVariationGenerationInput(
       freeplay: !characterId,
       consistencyMode: input.consistencyMode,
       model: input.model,
-      prompt: variationScenePrompt(asset.prompt ?? sourceJob?.prompt),
+      prompt: variationScenePrompt(
+        asset.prompt ?? sourceJob?.prompt,
+        input.prompt,
+      ),
+      ...(input.negativePrompt?.trim()
+        ? { negativePrompt: input.negativePrompt.trim() }
+        : {}),
       controls,
       presetIds: sourceJob ? jsonStringArray(sourceJob.presetIds) : [],
       orientation,
@@ -3093,6 +3163,8 @@ async function createMediaVariation(request: Request, id: string) {
       outputCount: z.number().int().min(1).max(4).default(1),
       consistencyMode: z.enum(["balanced", "strict", "creative"]).default("balanced"),
       model: z.string().trim().min(1).max(120).optional(),
+      prompt: z.string().trim().min(1).max(2_000).optional(),
+      negativePrompt: z.string().trim().max(1_000).optional(),
       orientation: z.enum(imageOrientations).optional(),
       quoteAuthority: generationQuoteAuthoritySchema,
     })
@@ -3117,6 +3189,8 @@ async function createMediaVariation(request: Request, id: string) {
         consistencyMode: body.consistencyMode,
         model: body.model,
         orientation: body.orientation,
+        prompt: body.prompt,
+        negativePrompt: body.negativePrompt,
       },
     );
     const { asset, sourceJob } = variation;
@@ -5170,7 +5244,10 @@ function stringFromMediaDimensions(width: number | null, height: number | null) 
   return "3:4";
 }
 
-function variationScenePrompt(prompt: string | null | undefined) {
+function variationScenePrompt(
+  prompt: string | null | undefined,
+  editInstruction?: string | null,
+) {
   const clean = cleanPromptText(prompt, 1_200);
   const requested = /Requested scene:\s*([^.]*)/i.exec(clean)?.[1]?.trim();
   const scene = requested && requested.length > 0 ? requested : clean;
@@ -5178,6 +5255,18 @@ function variationScenePrompt(prompt: string | null | undefined) {
     scene && !/Locked identity:|Character:|Subject:/i.test(scene)
       ? scene
       : "the selected image composition, pose, outfit, lighting, and mood";
+  const edit = cleanPromptText(editInstruction, 1_200);
+  if (edit) {
+    return clampPrompt(
+      [
+        "Edit the selected source image",
+        `Requested edit: ${edit}`,
+        "Preserve the same character identity and every source detail that the requested edit does not change",
+        `Source context: ${safeScene}`,
+      ].join(". "),
+      1_600,
+    );
+  }
   return clampPrompt(`More like this image: ${safeScene}`, 900);
 }
 

@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   characterImageSourceListResponseSchema,
   characterImageSourceUploadRequestSchema,
@@ -6,7 +6,6 @@ import {
   type CharacterImageSourceAsset,
 } from "@idream/shared/admin";
 import type { MediaAsset, Prisma } from "@prisma/client";
-import sharp from "sharp";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
@@ -16,14 +15,13 @@ import {
 } from "@/server/modules/metric-data-scope";
 import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { executeAtomicIdempotentMutation } from "@/server/modules/admin-v2/shared/atomic-mutation";
+import {
+  parseAdminImageUpload,
+  type ParsedAdminImageUpload,
+} from "@/server/modules/admin-v2/shared/image-upload";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { providers } from "@/server/providers";
 
-const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
-const MIN_IMAGE_BYTES = 512;
-const MAX_IMAGE_PIXELS = 40_000_000;
-const MAX_IMAGE_EDGE = 8_192;
-const MIN_IMAGE_EDGE = 64;
 const LIST_LIMIT = 24;
 const IMAGE_SOURCE_PURPOSE = "identity_experiment_source";
 const CHARACTER_LIBRARY_PURPOSE = "character_library";
@@ -32,19 +30,9 @@ type CharacterImageUploadPurpose =
   | typeof IMAGE_SOURCE_PURPOSE
   | typeof CHARACTER_LIBRARY_PURPOSE;
 
-type SupportedImageFormat = "jpeg" | "png" | "webp";
-
 export type ParsedCharacterImageSourceForm = {
   purpose: CharacterImageUploadPurpose;
-  image: {
-    filename: string;
-    contentType: "image/jpeg" | "image/png" | "image/webp";
-    extension: ".jpg" | ".png" | ".webp";
-    body: Uint8Array;
-    sha256: string;
-    width: number;
-    height: number;
-  };
+  image: ParsedAdminImageUpload;
 };
 
 export async function parseCharacterImageSourceForm(
@@ -54,62 +42,9 @@ export async function parseCharacterImageSourceForm(
   const fields = characterImageSourceUploadRequestSchema.parse({
     purpose: stringField(form, "purpose"),
   });
-  const image = form.get("image");
-  if (!(image instanceof File)) {
-    throw Errors.badRequest("Image source file is required");
-  }
-  if (image.size < MIN_IMAGE_BYTES) {
-    throw Errors.badRequest("Image source file is too small");
-  }
-  if (image.size > MAX_IMAGE_BYTES) {
-    throw Errors.badRequest("Image source must be 15 MB or smaller");
-  }
-
-  const body = new Uint8Array(await image.arrayBuffer());
-  let metadata: Awaited<ReturnType<ReturnType<typeof sharp>["metadata"]>>;
-  try {
-    metadata = await sharp(body, {
-      failOn: "error",
-      limitInputPixels: MAX_IMAGE_PIXELS,
-    }).metadata();
-  } catch {
-    throw Errors.badRequest("Image source could not be decoded");
-  }
-  if (!isSupportedImageFormat(metadata.format)) {
-    throw Errors.badRequest("Image source must be JPEG, PNG, or WebP");
-  }
-  if ((metadata.pages ?? 1) !== 1) {
-    throw Errors.badRequest("Animated or multi-page images are not supported");
-  }
-  const width = metadata.width ?? 0;
-  const height = metadata.height ?? 0;
-  if (
-    width < MIN_IMAGE_EDGE ||
-    height < MIN_IMAGE_EDGE ||
-    width > MAX_IMAGE_EDGE ||
-    height > MAX_IMAGE_EDGE
-  ) {
-    throw Errors.badRequest(
-      "Image source dimensions must be between 64 and 8192 pixels",
-    );
-  }
-  if (width * height > MAX_IMAGE_PIXELS) {
-    throw Errors.badRequest("Image source contains too many pixels");
-  }
-
-  const contentType = contentTypeFor(metadata.format);
-  const extension = extensionFor(metadata.format);
   return {
     purpose: fields.purpose,
-    image: {
-      filename: normalizedFilename(image.name, extension),
-      contentType,
-      extension,
-      body,
-      sha256: createHash("sha256").update(body).digest("hex"),
-      width,
-      height,
-    },
+    image: await parseAdminImageUpload(form),
   };
 }
 
@@ -309,28 +244,6 @@ function stringField(form: FormData, key: string) {
   return typeof value === "string" ? value : "";
 }
 
-function isSupportedImageFormat(
-  format: string | undefined,
-): format is SupportedImageFormat {
-  return format === "jpeg" || format === "png" || format === "webp";
-}
-
-function contentTypeFor(
-  format: SupportedImageFormat,
-): "image/jpeg" | "image/png" | "image/webp" {
-  if (format === "jpeg") return "image/jpeg";
-  if (format === "png") return "image/png";
-  return "image/webp";
-}
-
-function extensionFor(
-  format: SupportedImageFormat,
-): ".jpg" | ".png" | ".webp" {
-  if (format === "jpeg") return ".jpg";
-  if (format === "png") return ".png";
-  return ".webp";
-}
-
 function supportedContentType(
   value: string | null,
 ): "image/jpeg" | "image/png" | "image/webp" {
@@ -344,18 +257,6 @@ function extensionForContentType(value: string | null) {
   if (value === "image/png") return ".png";
   if (value === "image/webp") return ".webp";
   return ".jpg";
-}
-
-function normalizedFilename(
-  filename: string,
-  extension: ".jpg" | ".png" | ".webp",
-) {
-  const withoutExtension = filename.replace(/\.[^.]+$/, "");
-  const normalized = withoutExtension
-    .replace(/[^A-Za-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 170);
-  return `${normalized || "local-image-source"}${extension}`;
 }
 
 function mediaViewUrl(assetId: string, extension: string) {

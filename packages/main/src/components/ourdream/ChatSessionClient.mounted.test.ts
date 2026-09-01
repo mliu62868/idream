@@ -234,6 +234,109 @@ describe("ChatSessionClient streaming composer", () => {
       .toContain("Get more dreamcoins");
   });
 
+  it("keeps internal generation prompts out of the waiting experience", async () => {
+    sessionMessages = [{
+      ...opening,
+      attachments: [{
+        id: "attachment-running",
+        kind: "generated_image",
+        status: "running",
+        errorCode: null,
+        promptHint: "Create an in-character photo of Melissa. User request: internal prompt",
+      }],
+    }];
+
+    await mountSession();
+
+    const card = container.querySelector('[data-testid="chat-image-attachment-card"]');
+    expect(card?.textContent).toContain("Generating image");
+    expect(card?.textContent).toContain("You can keep chatting while it finishes.");
+    expect(card?.textContent).not.toContain("internal prompt");
+    expect(card?.textContent).not.toContain("Create an in-character photo");
+  });
+
+  it("keeps polling an accepted image until its completed preview arrives", async () => {
+    sessionMessages = [{
+      ...opening,
+      attachments: [{
+        id: "attachment-accepted",
+        kind: "generated_image",
+        status: "accepted",
+        errorCode: null,
+        promptHint: "private prompt",
+      }],
+    }];
+    await mountSession();
+    const readsBeforeCompletion = sessionReads;
+    sessionMessages = [{
+      ...opening,
+      attachments: [{
+        id: "attachment-accepted",
+        kind: "generated_image",
+        status: "completed",
+        mediaAssetId: "media-accepted",
+        mediaUrl: "/api/v1/media/media-accepted/content",
+        thumbnailUrl: null,
+        width: 512,
+        height: 640,
+      }],
+    }];
+
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    await waitUntil(() => sessionReads > readsBeforeCompletion);
+
+    expect(container.querySelector<HTMLImageElement>(
+      '[data-testid="chat-image-attachment"]',
+    )?.src).toContain("/api/v1/media/media-accepted/content");
+  });
+
+  it("keeps internal generation prompts out of completed-image alt text", async () => {
+    sessionMessages = [{
+      ...opening,
+      attachments: [{
+        id: "attachment-completed",
+        kind: "generated_image",
+        status: "completed",
+        mediaAssetId: "media-1",
+        mediaUrl: "/api/v1/media/media-1/content",
+        thumbnailUrl: null,
+        width: 512,
+        height: 640,
+        promptHint: "Create an in-character photo of Melissa. User request: internal prompt",
+      }],
+    }];
+
+    await mountSession();
+
+    const image = container.querySelector<HTMLImageElement>(
+      '[data-testid="chat-image-attachment"]',
+    );
+    expect(image?.alt).toBe("Generated character image from this chat");
+    expect(image?.alt).not.toContain("internal prompt");
+  });
+
+  it("generates voice only after the reader presses Play", async () => {
+    await mountSession();
+
+    expect(voiceRequests()).toHaveLength(0);
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[data-testid="chat-play-voice"]')
+        ?.click();
+    });
+    await waitUntil(() => voiceRequests().length === 1);
+
+    const [, request] = voiceRequests()[0] ?? [];
+    expect(JSON.parse(String(request?.body))).toMatchObject({
+      characterId: "character-1",
+      intent: "play",
+      messageId: "assistant-0",
+      sessionId: "session-1",
+      text: "Hey there.",
+    });
+  });
+
   async function mountSession() {
     await act(async () => {
       root.render(createElement(ChatSessionClient, { id: "session-1" }));
@@ -291,6 +394,12 @@ describe("ChatSessionClient streaming composer", () => {
     container
       .querySelector("form")
       ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  }
+
+  function voiceRequests() {
+    return vi.mocked(fetch).mock.calls.filter(
+      ([input]) => String(input) === "/api/v1/generation/voice",
+    );
   }
 
   async function waitUntil(predicate: () => boolean) {

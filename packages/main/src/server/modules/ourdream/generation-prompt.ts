@@ -15,6 +15,96 @@ import type {
   GenerationSource,
 } from "./generation-request-schema";
 
+const MUTABLE_CLOTHING_TRAIT = /(?:\b(?:jacket|hoodie|coat|shirt|t-?shirt|tank top|crop(?:ped)? top|off-shoulder top|sweater|robe|dress|skirt|shorts|jeans|pants|trousers|blouse|lingerie|bra|panties|underwear|swimsuit|bikini)\b|(?:外套|上衣|衬衫|毛衣|长袍|睡袍|裙|短裤|牛仔裤|内衣|泳装))/i;
+
+/**
+ * SPEC: Chat Agent owns the mutable visual moment, never Character identity.
+ * Main removes accidental age / hair-colour / eye-colour / skin-tone claims
+ * before the direction enters prompt compilation; the pinned Visual Profile
+ * and reference set remain the only identity authority.
+ */
+export function sanitizeChatImageDirection(value: string): string {
+  return cleanPromptText(value, 1_200)
+    .replace(
+      /\b(?:young\s+)?(?:woman|man|person)\s+(?:around|aged?)\s+\d{1,3}\s+years?\s+old\b/gi,
+      "adult character",
+    )
+    .replace(
+      /\b\d{1,3}[\s-]year[\s-]old\s+(?:woman|man|person)\b/gi,
+      "adult character",
+    )
+    .replace(/\byoung\s+(?:woman|man|person)\b/gi, "adult character")
+    .replace(/\b(?:mature[\s-]looking|elderly|teen(?:age)?|adolescent)\s+(?:woman|man|person)\b/gi, "adult character")
+    .replace(
+      /\b(?:jet[\s-]?black|golden[\s-]?blonde|platinum|blonde?|brunette|black|brown|dark|red|auburn|ginger|silver|white|grey|gray|blue|green|pink|purple)\s+(?=(?:(?:long|short|shoulder[\s-]length|wavy|curly|straight|loose|tousled|damp)\s+){0,3}hair\b)/gi,
+      "",
+    )
+    .replace(
+      /\b(?:hazel[\s-]?brown|hazel|amber|blue|green|brown|black|grey|gray|violet)\s+eyes?\b/gi,
+      "eyes",
+    )
+    .replace(
+      /\b(?:very\s+fair|fair|porcelain|olive|tan|tanned|dark|brown|black|white|pale)\s+skin\b/gi,
+      "skin",
+    )
+    .replace(/\b(?:oval|round|heart[\s-]shaped|angular|square)\s+face\b/gi, "face")
+    .replace(
+      /\b(?:(?:very\s+)?(?:long|short|shoulder[\s-]length|waist[\s-]length|wavy|curly|straight|coily|thick|fine)\s+){1,4}hair\b/gi,
+      "hair",
+    )
+    .replace(
+      /\b(?:petite|slim|slender|curvy|voluptuous|athletic|muscular|stocky|tall|short)(?:\s+(?:hourglass|pear[\s-]shaped|broad[\s-]shouldered))?\s+(?:body|figure|build|proportions?)\b/gi,
+      "",
+    )
+    .replace(/\b(?:hourglass|pear[\s-]shaped)\s+(?:body|figure|proportions?)\b/gi, "")
+    .replace(
+      /\bwith\s+(?:an?\s+)?(?:different|small|large|button|aquiline|straight|wide|narrow)\s+nose(?:\s+and\s+(?:full|thin|plump|wide|narrow)\s+lips?)?/gi,
+      "",
+    )
+    .replace(
+      /\b(?:different|small|large|button|aquiline|straight|wide|narrow|full|thin|plump)\s+(?:nose|lips?)\b/gi,
+      "",
+    )
+    .replace(/,\s*,+/g, ",")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s+([,.;:])/g, "$1")
+    .trim();
+}
+
+export function compileChatImagePrompt(
+  agentScene: string,
+  requestedNudity: "unspecified" | "none" | "full",
+): string {
+  let scene = sanitizeChatImageDirection(agentScene || "candid in-character photo");
+  if (requestedNudity === "full") {
+    scene = scene
+      .replace(
+        /\b(?:fully\s+clothed(?:\s+in)?|wearing|dressed\s+in)\s+(?:(?:a|an|the)\s+)?(?:[\w-]+\s+){0,3}(?:robe|dress|shirt|top|lingerie|bra|panties|underwear|swimsuit|bikini|clothes|clothing)\b/gi,
+        "",
+      )
+      .replace(/\b(?:silk|satin|lace)\s+(?:robe|dress|lingerie|underwear)\b/gi, "")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+    return cleanPromptText(
+      `Adult scene requirement: depict the adult character fully nude, with no clothing or robe. Requested scene: ${scene}`,
+      900,
+    );
+  }
+  if (requestedNudity === "none") {
+    scene = scene
+      .replace(/\b(?:fully\s+)?(?:nude|naked|unclothed)\b/gi, "")
+      .replace(/\b(?:without (?:any )?clothes|no clothes)\b/gi, "")
+      .replace(/(?:裸照|裸体|全裸|赤裸|一丝不挂|脱光)/gu, "")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+    return cleanPromptText(
+      `Wardrobe requirement: keep the adult character clothed; no nudity. Requested scene: ${scene}`,
+      900,
+    );
+  }
+  return cleanPromptText(scene || "candid in-character photo", 900);
+}
+
 // SPEC: 把一次生成请求（角色身份 + 用户意图 + 预设/Look 片段）编译成投给 runner 的
 // prompt / negativePrompt / momentSpec。
 //
@@ -147,10 +237,13 @@ function visualDirectionOf(character: GenerationPromptCharacter): {
       typeof appearance.identityAnchor === "string" ? appearance.identityAnchor : "",
       400,
     ),
+    // INTENT: stableTraits 的历史官方数据混进了卡面服装。服装是 Moment/Look，
+    // 不是身份；继续把它当 identity 会直接与换装、裸体等用户意图冲突。
     stableTraits: (Array.isArray(appearance.stableTraits) ? appearance.stableTraits : [])
       .filter((trait): trait is string => typeof trait === "string")
       .map((trait) => cleanPromptText(trait, 120))
       .filter(Boolean)
+      .filter((trait) => !MUTABLE_CLOTHING_TRAIT.test(trait))
       .slice(0, 12),
     traits: {
       face: toTraitRecord(group("faceTraits") ?? visualGroup(character.appearance, "face")),

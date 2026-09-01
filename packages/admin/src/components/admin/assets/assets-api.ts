@@ -1,12 +1,17 @@
 import {
   contentAssetReviewStatusSchema,
+  contentAssetUploadResponseSchema,
   creativeRunPurposeSchema,
+  platformAssetUploadPurposeSchema,
   type ContentAsset as SharedContentAsset,
   type ContentAssetAuthorityDependency,
   type ContentAssetBulkMutationResponse,
   type ContentAssetBulkPreflightResponse,
+  type ContentAssetUploadResponse,
+  type PlatformAssetUploadPurpose,
 } from "@idream/shared/admin";
 import type { ApiEnvelope } from "../api";
+import { adminV2Request } from "@/lib/admin-v2-api";
 
 // SPEC: 图片库列表、详情和批量归档只消费 shared manifest 声明的 v2 Asset 契约；
 // 页面本地只保留展示与交互类型，不复制跨包协议。
@@ -94,6 +99,28 @@ export const ASSET_STATUSES = contentAssetReviewStatusSchema.options.filter(
   (status) => status !== "draft",
 );
 export const ASSET_PURPOSES = creativeRunPurposeSchema.options;
+export const ASSET_UPLOAD_PURPOSES = platformAssetUploadPurposeSchema.options;
+
+export async function uploadPlatformAsset(params: {
+  file: File;
+  purpose: PlatformAssetUploadPurpose;
+  fallbackMessage?: string;
+}): Promise<ContentAssetUploadResponse> {
+  const form = new FormData();
+  form.set("purpose", params.purpose);
+  form.set("image", params.file);
+  try {
+    return await adminV2Request(ASSETS_LIST, {
+      method: "POST",
+      idempotencyKey: crypto.randomUUID(),
+      form,
+      schema: contentAssetUploadResponseSchema,
+    });
+  } catch (cause) {
+    if (cause instanceof Error) throw cause;
+    throw new Error(params.fallbackMessage ?? "Image upload failed");
+  }
+}
 
 // SPEC: 列表页筛选走服务端查询参数（沿用 旧图片库视图 原有拼接方式，不改成客户端过滤——
 // 资产量可观，服务端筛更省）；详情页复用同一构造但不传筛选，等价于裸端点（spec §7 详情页

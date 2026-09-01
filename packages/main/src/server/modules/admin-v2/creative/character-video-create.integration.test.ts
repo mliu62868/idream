@@ -56,7 +56,7 @@ describe("Character video Creative Run authority", () => {
     const profile = await prisma.generationModelProfile.findFirst({
       where: {
         profileKey: "profile_video_redgraft_ltx25_v1",
-        version: 1,
+        version: 2,
       },
     });
     expect(profile && isDefaultProductionVideoProfile(profile)).toBe(true);
@@ -269,7 +269,7 @@ describe("Character video Creative Run authority", () => {
       mode: "video",
       characterId,
       profileId: "profile_video_redgraft_ltx25_v1",
-      profileVersion: 1,
+      profileVersion: 2,
       recipeId: "template_video_character_default",
       orientation: "2:3",
       outputCount: 1,
@@ -292,9 +292,9 @@ describe("Character video Creative Run authority", () => {
     expect(attempts).toHaveLength(1);
     expect(attempts[0]).toMatchObject({
       profileKey: "profile_video_redgraft_ltx25_v1",
-      profileVersion: 1,
+      profileVersion: 2,
       workflowKey: "redgraft-ltx25-i2v",
-      workflowVersion: 1,
+      workflowVersion: 2,
     });
     expect(await prisma.mainOutboxEvent.findUniqueOrThrow({
       where: {

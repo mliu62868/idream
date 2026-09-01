@@ -24,15 +24,22 @@ export interface PocketTtsVoiceModelConfig {
 
 type PocketVoiceResponse = {
   voice_id?: unknown;
+  preset_voice_id?: unknown;
   model?: unknown;
   language?: unknown;
 };
 
 type PocketHealthResponse = {
   voice_cloning?: unknown;
+  catalog_ready?: unknown;
+  catalog_voices?: unknown;
   runtime?: unknown;
   runtime_version?: unknown;
   acceleration?: unknown;
+  model_loaded?: unknown;
+  model_revision?: unknown;
+  config_fingerprint?: unknown;
+  system_voice_ready?: unknown;
 };
 
 export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
@@ -41,6 +48,7 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
 
   private readonly speechEndpoint: URL;
   private readonly voicesEndpoint: URL;
+  private readonly presetVoicesEndpoint: URL;
   private readonly healthEndpoint: URL;
   private readonly apiKey: string | undefined;
   private readonly model: string;
@@ -54,6 +62,7 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
   constructor(config: PocketTtsVoiceModelConfig) {
     this.speechEndpoint = pocketEndpoint(config.baseUrl, "/audio/speech");
     this.voicesEndpoint = pocketEndpoint(config.baseUrl, "/voices");
+    this.presetVoicesEndpoint = pocketEndpoint(config.baseUrl, "/voices/presets");
     this.healthEndpoint = pocketEndpoint(config.baseUrl, "/health");
     this.apiKey = config.apiKey;
     this.model = config.model;
@@ -80,8 +89,9 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
       data: {
         key,
         durationMs: rendered.data.durationMs,
-        sceneApplied: true,
-        sceneAdapter: "pocket-tts-scene-1",
+        // Pocket 3.0.2 does not expose Fish-style scene/delivery controls.
+        sceneApplied: false,
+        sceneAdapter: "pocket-tts-reference-state-1",
       },
     };
   }
@@ -186,6 +196,46 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
     };
   }
 
+  async createPresetVoice(input: {
+    voiceId: string;
+    presetVoiceId: string;
+    language: string;
+  }) {
+    const response = await this.request(this.presetVoicesEndpoint, {
+      method: "POST",
+      headers: this.jsonHeaders(),
+      body: JSON.stringify({
+        voice_id: input.voiceId,
+        preset_voice_id: input.presetVoiceId,
+        language: input.language || this.language,
+      }),
+    });
+    if (!response.ok) return response;
+    const raw = await response.data.json().catch(() => null) as PocketVoiceResponse | null;
+    if (
+      !raw ||
+      typeof raw.voice_id !== "string" ||
+      typeof raw.preset_voice_id !== "string" ||
+      typeof raw.model !== "string" ||
+      typeof raw.language !== "string"
+    ) {
+      return pocketFailure(
+        "invalid_voice_preset_response",
+        "Pocket TTS preset voice response is incomplete",
+        false,
+      );
+    }
+    return {
+      ok: true as const,
+      data: {
+        voiceId: raw.voice_id,
+        presetVoiceId: raw.preset_voice_id,
+        model: raw.model,
+        language: raw.language,
+      },
+    };
+  }
+
   async deleteVoice(input: Parameters<VoiceIdentityPort["deleteVoice"]>[0]) {
     const endpoint = new URL(
       `${this.voicesEndpoint.toString().replace(/\/$/, "")}/${encodeURIComponent(input.voiceId)}`,
@@ -212,14 +262,26 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
     if (
       !raw ||
       typeof raw.voice_cloning !== "boolean" ||
-      raw.runtime !== "omlx" ||
+      raw.catalog_ready !== true ||
+      !Array.isArray(raw.catalog_voices) ||
+      raw.catalog_voices.length === 0 ||
+      !raw.catalog_voices.every(
+        (voiceId) => typeof voiceId === "string" && voiceId.trim().length > 0,
+      ) ||
+      raw.runtime !== "pocket_tts" ||
       typeof raw.runtime_version !== "string" ||
       raw.runtime_version.trim().length === 0 ||
-      raw.acceleration !== "mlx"
+      raw.acceleration !== "cpu" ||
+      raw.model_loaded !== true ||
+      raw.system_voice_ready !== true ||
+      typeof raw.model_revision !== "string" ||
+      raw.model_revision.trim().length === 0 ||
+      typeof raw.config_fingerprint !== "string" ||
+      raw.config_fingerprint.trim().length === 0
     ) {
       return pocketFailure(
         "invalid_voice_health_response",
-        "Pocket TTS gateway is not running the required MLX backend",
+        "Pocket TTS gateway is not running the required official CPU runtime",
         true,
       );
     }
@@ -230,6 +292,7 @@ export class PocketTtsVoiceModel implements VoiceClipPort, VoiceIdentityPort {
         runtime: raw.runtime,
         runtimeVersion: raw.runtime_version,
         acceleration: raw.acceleration,
+        catalogVoices: raw.catalog_voices as string[],
       },
     };
   }

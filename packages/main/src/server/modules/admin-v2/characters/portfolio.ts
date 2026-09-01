@@ -55,12 +55,10 @@ const DAY_MS = 24 * 60 * 60 * 1_000;
 const characterAssetPurposes = characterProductionPurposes;
 type CharacterAssetPack = CharacterProductionAssetPack;
 
-// SPEC: 「需要处理」= 已上线、观察窗口整段走完、却一条观测都没有 —— 铺位定向或事件上报没通，
-// 投放在空转。这是列表上没有任何其他地方会说的事。
-// INTENT: 只收这一条。资产包不完整已经由每张卡片的 Journey 说了；多塞一条都会把这个
-// 筛子稀释成又一个恒真告警，然后没人再点它。
-// 判定必须只依赖 SQL 可精确回答的事实 —— 它跑在主查询之前（要进 where 才能让分页正确），
-// 拿不到主查询里那套资产可用性/路线新鲜度的计算。
+// SPEC: 「需要处理」只收两类会让运营链路静默停住的事实：完整草稿包缺审核，或已上线且
+//       观察窗口整段走完却没有任何观测。两者都必须给出下一步动作。
+// INTENT: 判定必须只依赖分页前可精确查询的权威事实，才能形成真正的跨页工作队列；
+//         不把普通的制作中状态塞进来，避免筛选退化成恒真告警。
 export const ATTENTION_NO_DATA_WINDOW_DAYS = 7;
 
 export function charactersNeedingAttention(input: {
@@ -79,6 +77,24 @@ export function charactersNeedingAttention(input: {
         !input.observedReleaseIds.has(currentReleaseId),
     )
     .map(({ characterId }) => characterId);
+}
+
+export function draftAssetReviewAttentionCharacterIds(
+  projects: readonly {
+    readonly characterId: string;
+    readonly draftAssetPack: Prisma.JsonValue;
+  }[],
+) {
+  return projects.flatMap((project) => {
+    const entries = draftAssetRouteEntries(project.draftAssetPack);
+    const complete = characterAssetPurposes.every(
+      (purpose) => entries[purpose]?.assetId,
+    );
+    const missingReview = characterAssetPurposes.some(
+      (purpose) => entries[purpose] && !entries[purpose]?.reviewDecisionId,
+    );
+    return complete && missingReview ? [project.characterId] : [];
+  });
 }
 
 function assetIds(pack: CharacterAssetPack) {
@@ -290,7 +306,7 @@ async function changeMarkers(
   );
 }
 
-async function attentionCharacterIds(
+async function liveObservationAttentionCharacterIds(
   db: PrismaClient,
   asOf: Date,
   characterIds?: readonly string[],
@@ -340,6 +356,27 @@ async function attentionCharacterIds(
       ),
     ),
   });
+}
+
+async function attentionCharacterIds(
+  db: PrismaClient,
+  asOf: Date,
+  characterIds?: readonly string[],
+) {
+  if (characterIds?.length === 0) return [];
+  const [liveObservationIds, projects] = await Promise.all([
+    liveObservationAttentionCharacterIds(db, asOf, characterIds),
+    db.characterProject.findMany({
+      where: characterIds ? { characterId: { in: [...characterIds] } } : {},
+      select: { characterId: true, draftAssetPack: true },
+    }),
+  ]);
+  return [
+    ...new Set([
+      ...liveObservationIds,
+      ...draftAssetReviewAttentionCharacterIds(projects),
+    ]),
+  ];
 }
 
 // SPEC: 这个筛选必须与 Journey 的 Live x/3 使用同一套 Release placement、素材可用性与归属规则。
@@ -572,8 +609,12 @@ export async function listCharacterPortfolioData(
   const pageCharacterIds = [
     ...new Set(page.map((project) => project.characterId)),
   ];
+  // INTENT: attention=true 的分页集合已经由同一权威函数筛过；不要为当前页重复跑一次
+  //         Live observation 与草稿 Review 查询。
   const pageNeedsAttention = new Set(
-    await attentionCharacterIds(db, asOf, pageCharacterIds),
+    query.attention
+      ? pageCharacterIds
+      : await attentionCharacterIds(db, asOf, pageCharacterIds),
   );
   const activeVisualAuthorities =
     pageCharacterIds.length > 0

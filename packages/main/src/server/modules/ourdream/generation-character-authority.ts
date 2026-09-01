@@ -1,5 +1,8 @@
 import type { CharacterVisualProfile, Prisma } from "@prisma/client";
-import { loadLockedLiveEditorialLegacyGenerationAuthority } from "@/server/modules/generation/attempt-dispatch";
+import {
+  loadLockedLiveEditorialLegacyGenerationAuthority,
+  type LegacyCharacterGenerationAuthority,
+} from "@/server/modules/generation/attempt-dispatch";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import {
@@ -77,6 +80,8 @@ export async function resolveGenerationVisualProfile(
   opts: {
     fallbackToActiveOnStale?: boolean;
     bootstrapIfMissing?: boolean;
+    expectedVersion?: number;
+    allowArchivedPinned?: boolean;
   } = {},
 ): Promise<CharacterVisualProfile | null> {
   if (requestedProfileId) {
@@ -88,7 +93,21 @@ export async function resolveGenerationVisualProfile(
       const legacyReleaseAuthority = await prisma.$transaction((tx) =>
         loadLockedLiveEditorialLegacyGenerationAuthority(tx, character.id),
       );
-      if (legacyReleaseAuthority) return null;
+      if (legacyReleaseAuthority) {
+        const projected = await prisma.characterVisualProfile.findFirst({
+          where: {
+            id: requestedProfileId,
+            characterId: character.id,
+            status: "active",
+          },
+        });
+        return projected && isEditorialLegacyVisualProfileProjection(
+            projected,
+            legacyReleaseAuthority,
+          )
+          ? projected
+          : null;
+      }
     }
     const profile = await prisma.characterVisualProfile.findFirst({
       where: { id: requestedProfileId, characterId: character.id },
@@ -102,7 +121,14 @@ export async function resolveGenerationVisualProfile(
       }
       throw Errors.notFound("Character visual profile not found");
     }
-    if (profile.status === "archived") {
+    if (opts.expectedVersion !== undefined && profile.version !== opts.expectedVersion) {
+      throw Errors.conflict("Character visual profile version does not match the pinned authority", {
+        visualProfileId: requestedProfileId,
+        expectedVersion: opts.expectedVersion,
+        actualVersion: profile.version,
+      });
+    }
+    if (profile.status === "archived" && !opts.allowArchivedPinned) {
       if (opts.fallbackToActiveOnStale) {
         return resolveActiveVisualProfile(character, {
           bootstrapIfMissing: opts.bootstrapIfMissing,
@@ -117,7 +143,35 @@ export async function resolveGenerationVisualProfile(
 
   return resolveActiveVisualProfile(character, {
     bootstrapIfMissing: opts.bootstrapIfMissing,
+    allowEditorialLegacyProjection: opts.fallbackToActiveOnStale,
   });
+}
+
+/**
+ * SPEC: legacy editorial Release 可消费的唯一身份投影。
+ *
+ * INTENT: Release 已经不可变地 pin 住官方 portrait；image-readiness repair 只是把
+ * 这张 portrait 物化成生成器能消费的 Visual Profile。它不是第二份身份权威。
+ * 任意 active/staged profile、不同 portrait、未密封或未 qualified 的 profile 都拒绝。
+ */
+export function isEditorialLegacyVisualProfileProjection(
+  profile: CharacterVisualProfile,
+  authority: LegacyCharacterGenerationAuthority,
+) {
+  const adapterRefs = isRecord(profile.adapterRefs) ? profile.adapterRefs : {};
+  const anchorAssetIds = Array.isArray(profile.anchorAssetIds)
+    ? profile.anchorAssetIds.filter((item): item is string => typeof item === "string")
+    : [];
+  return (
+    authority.sourceAssetId !== undefined &&
+    profile.status === "active" &&
+    profile.evidenceState === "qualified" &&
+    profile.immutableHash === characterVisualProfileSnapshotHash(profile) &&
+    adapterRefs.authority === "editorial_live_portrait" &&
+    adapterRefs.sourceAssetId === authority.sourceAssetId &&
+    anchorAssetIds.length === 1 &&
+    anchorAssetIds[0] === authority.sourceAssetId
+  );
 }
 
 export async function resolveGenerationLook(
@@ -182,16 +236,27 @@ export async function resolveGenerationLook(
 
 async function resolveActiveVisualProfile(
   character: GenerationPromptCharacter,
-  options: { bootstrapIfMissing?: boolean } = {},
+  options: {
+    bootstrapIfMissing?: boolean;
+    allowEditorialLegacyProjection?: boolean;
+  } = {},
 ): Promise<CharacterVisualProfile | null> {
   const legacyReleaseAuthority = await prisma.$transaction((tx) =>
     loadLockedLiveEditorialLegacyGenerationAuthority(tx, character.id),
   );
-  if (legacyReleaseAuthority) return null;
   const active = await prisma.characterVisualProfile.findFirst({
     where: { characterId: character.id, status: "active" },
     orderBy: { version: "desc" },
   });
+  if (legacyReleaseAuthority) {
+    return options.allowEditorialLegacyProjection && active &&
+        isEditorialLegacyVisualProfileProjection(
+          active,
+          legacyReleaseAuthority,
+        )
+      ? active
+      : null;
+  }
   if (active) return active;
   if (options.bootstrapIfMissing === false) return null;
   return bootstrapCharacterVisualProfile(character);

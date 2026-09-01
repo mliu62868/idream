@@ -6,7 +6,8 @@
     "id": "9f1a7932-0097-485c-a6ea-a18c51ffc52b",
     "name": "iDream · RedCraft Krea2 · Identity Edit v1.2"
   },
-  "version": 4,
+  "version": 5,
+  "negativePromptMode": "positive_instruction",
   "capabilities": [
     "img2img",
     "edit",
@@ -42,7 +43,7 @@
       }
     },
     "2": {
-      "class_type": "CLIPLoader",
+      "class_type": "IDreamFreshCLIPLoader",
       "inputs": {
         "clip_name": "qwen3vl_4b_bf16.safetensors",
         "type": "krea2"
@@ -147,7 +148,7 @@
           0
         ],
         "positive": [
-          "9",
+          "900:0",
           0
         ],
         "negative": [
@@ -187,6 +188,23 @@
           0
         ],
         "filename_prefix": "idream_redcraft_krea2_identity"
+      }
+    },
+    "900:0": {
+      "class_type": "IDreamUnloadOffDeviceModels",
+      "inputs": {
+        "passthrough": [
+          "9",
+          0
+        ],
+        "after": [
+          "10",
+          0
+        ],
+        "release": [
+          "2",
+          0
+        ]
       }
     }
   },

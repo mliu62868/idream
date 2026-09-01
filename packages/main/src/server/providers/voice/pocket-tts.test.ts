@@ -9,19 +9,25 @@ const voiceSynthesisIdentity = {
 } as const;
 
 describe("PocketTtsVoiceModel", () => {
-  it("reports the oMLX Pocket runtime and reusable voice-cloning capability", async () => {
+  it("reports the official CPU runtime and reusable voice-cloning capability", async () => {
     const fetchMock = vi.fn(async () =>
       Response.json({
         status: "healthy",
-        runtime: "omlx",
-        runtime_version: "0.5.3",
-        acceleration: "mlx",
+        runtime: "pocket_tts",
+        runtime_version: "3.0.2",
+        acceleration: "cpu",
         voice_cloning: true,
+        catalog_ready: true,
+        catalog_voices: ["alba", "anna"],
+        model_loaded: true,
+        model_revision: "pinned-model-revision",
+        config_fingerprint: "pinned-config-fingerprint",
+        system_voice_ready: true,
       }),
     );
     const voice = new PocketTtsVoiceModel({
-      baseUrl: "http://127.0.0.1:8062/v1",
-      model: "pocket-tts-4bit",
+      baseUrl: "http://127.0.0.1:8063/v1",
+      model: "pocket-tts",
       language: "english",
       blob: stubBlobStore(),
       fetchImpl: fetchMock,
@@ -31,20 +37,21 @@ describe("PocketTtsVoiceModel", () => {
       ok: true,
       data: {
         voiceCloning: true,
-        runtime: "omlx",
-        runtimeVersion: "0.5.3",
-        acceleration: "mlx",
+        runtime: "pocket_tts",
+        runtimeVersion: "3.0.2",
+        acceleration: "cpu",
+        catalogVoices: ["alba", "anna"],
       },
     });
     const [endpoint, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
-    expect(endpoint.toString()).toBe("http://127.0.0.1:8062/v1/health");
+    expect(endpoint.toString()).toBe("http://127.0.0.1:8063/v1/health");
     expect(init.method).toBe("GET");
   });
 
-  it("rejects a legacy Pocket gateway that is not backed by oMLX", async () => {
+  it("rejects a shallow or downgraded Pocket gateway", async () => {
     const voice = new PocketTtsVoiceModel({
-      baseUrl: "http://127.0.0.1:8062/v1",
-      model: "pocket-tts-4bit",
+      baseUrl: "http://127.0.0.1:8063/v1",
+      model: "pocket-tts",
       language: "english",
       blob: stubBlobStore(),
       fetchImpl: async () =>
@@ -63,19 +70,25 @@ describe("PocketTtsVoiceModel", () => {
     });
   });
 
-  it("accepts oMLX patch upgrades without coupling Main to one patch version", async () => {
+  it("accepts official Pocket patch upgrades without coupling Main to one patch", async () => {
     const voice = new PocketTtsVoiceModel({
-      baseUrl: "http://127.0.0.1:8062/v1",
-      model: "pocket-tts-4bit",
+      baseUrl: "http://127.0.0.1:8063/v1",
+      model: "pocket-tts",
       language: "english",
       blob: stubBlobStore(),
       fetchImpl: async () =>
         Response.json({
           status: "healthy",
-          runtime: "omlx",
-          runtime_version: "0.5.4",
-          acceleration: "mlx",
+          runtime: "pocket_tts",
+          runtime_version: "3.0.3",
+          acceleration: "cpu",
           voice_cloning: true,
+          catalog_ready: true,
+          catalog_voices: ["alba", "anna"],
+          model_loaded: true,
+          model_revision: "pinned-model-revision",
+          config_fingerprint: "pinned-config-fingerprint",
+          system_voice_ready: true,
         }),
     });
 
@@ -83,9 +96,44 @@ describe("PocketTtsVoiceModel", () => {
       ok: true,
       data: {
         voiceCloning: true,
-        runtime: "omlx",
-        runtimeVersion: "0.5.4",
-        acceleration: "mlx",
+        runtime: "pocket_tts",
+        runtimeVersion: "3.0.3",
+        acceleration: "cpu",
+        catalogVoices: ["alba", "anna"],
+      },
+    });
+  });
+
+  it("accepts a catalog-only runtime when gated cloning weights are absent", async () => {
+    const voice = new PocketTtsVoiceModel({
+      baseUrl: "http://127.0.0.1:8063/v1",
+      model: "pocket-tts",
+      language: "english",
+      blob: stubBlobStore(),
+      fetchImpl: async () =>
+        Response.json({
+          status: "healthy",
+          runtime: "pocket_tts",
+          runtime_version: "3.0.2",
+          acceleration: "cpu",
+          voice_cloning: false,
+          catalog_ready: true,
+          catalog_voices: ["alba", "anna"],
+          model_loaded: true,
+          model_revision: "pinned-model-revision",
+          config_fingerprint: "pinned-config-fingerprint",
+          system_voice_ready: true,
+        }),
+    });
+
+    await expect(voice.inspectCapabilities()).resolves.toEqual({
+      ok: true,
+      data: {
+        voiceCloning: false,
+        runtime: "pocket_tts",
+        runtimeVersion: "3.0.2",
+        acceleration: "cpu",
+        catalogVoices: ["alba", "anna"],
       },
     });
   });
@@ -94,14 +142,14 @@ describe("PocketTtsVoiceModel", () => {
     const fetchMock = vi.fn(async () =>
       Response.json({
         voice_id: "idream-voice-1",
-        model: "pocket-tts-4bit",
+        model: "pocket-tts",
         language: "english",
       }),
     );
     const voice = new PocketTtsVoiceModel({
-      baseUrl: "http://127.0.0.1:8062/v1",
+      baseUrl: "http://127.0.0.1:8063/v1",
       apiKey: "voice-token",
-      model: "pocket-tts-4bit",
+      model: "pocket-tts",
       language: "english",
       blob: stubBlobStore(),
       fetchImpl: fetchMock,
@@ -120,12 +168,12 @@ describe("PocketTtsVoiceModel", () => {
       ok: true,
       data: {
         voiceId: "idream-voice-1",
-        model: "pocket-tts-4bit",
+        model: "pocket-tts",
         language: "english",
       },
     });
     const [endpoint, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
-    expect(endpoint.toString()).toBe("http://127.0.0.1:8062/v1/voices");
+    expect(endpoint.toString()).toBe("http://127.0.0.1:8063/v1/voices");
     expect(init.headers).toEqual({ authorization: "Bearer voice-token" });
     const form = init.body as FormData;
     expect(form.get("voice_id")).toBe("idream-voice-1");
@@ -136,6 +184,50 @@ describe("PocketTtsVoiceModel", () => {
     expect(form.get("audio")).toBeInstanceOf(File);
   });
 
+  it("creates a durable role-specific alias from an official catalog voice", async () => {
+    const fetchMock = vi.fn(async () =>
+      Response.json({
+        voice_id: "idream-voice-anna-1",
+        preset_voice_id: "anna",
+        model: "pocket-tts",
+        language: "english",
+      }),
+    );
+    const voice = new PocketTtsVoiceModel({
+      baseUrl: "http://127.0.0.1:8063/v1",
+      apiKey: "voice-token",
+      model: "pocket-tts",
+      language: "english",
+      blob: stubBlobStore(),
+      fetchImpl: fetchMock,
+    });
+
+    await expect(voice.createPresetVoice?.({
+      voiceId: "idream-voice-anna-1",
+      presetVoiceId: "anna",
+      language: "english",
+    })).resolves.toEqual({
+      ok: true,
+      data: {
+        voiceId: "idream-voice-anna-1",
+        presetVoiceId: "anna",
+        model: "pocket-tts",
+        language: "english",
+      },
+    });
+    const [endpoint, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(endpoint.toString()).toBe("http://127.0.0.1:8063/v1/voices/presets");
+    expect(init.headers).toEqual({
+      authorization: "Bearer voice-token",
+      "content-type": "application/json",
+    });
+    expect(JSON.parse(String(init.body))).toEqual({
+      voice_id: "idream-voice-anna-1",
+      preset_voice_id: "anna",
+      language: "english",
+    });
+  });
+
   it("renders a cloned voice through the existing chat speech contract", async () => {
     const audio = wavBytes(1_250);
     const fetchMock = vi.fn(async () =>
@@ -143,8 +235,8 @@ describe("PocketTtsVoiceModel", () => {
     );
     const stored: Array<{ key: string; body: Uint8Array; contentType: string }> = [];
     const voice = new PocketTtsVoiceModel({
-      baseUrl: "http://127.0.0.1:8062/v1",
-      model: "pocket-tts-4bit",
+      baseUrl: "http://127.0.0.1:8063/v1",
+      model: "pocket-tts",
       language: "english",
       blob: stubBlobStore(stored),
       fetchImpl: fetchMock,
@@ -164,14 +256,14 @@ describe("PocketTtsVoiceModel", () => {
     expect(stored[0]).toMatchObject({ contentType: "audio/wav" });
     expect(stored[0]?.key).toMatch(/^voice\/.+\.wav$/);
     const [endpoint, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
-    expect(endpoint.toString()).toBe("http://127.0.0.1:8062/v1/audio/speech");
+    expect(endpoint.toString()).toBe("http://127.0.0.1:8063/v1/audio/speech");
     expect(init.headers).toMatchObject({
       "idempotency-key": voiceSynthesisIdentity.idempotencyKey,
       "x-idream-request-id": voiceSynthesisIdentity.requestId,
       "x-idream-attempt-no": String(voiceSynthesisIdentity.attemptNo),
     });
     expect(JSON.parse(String(init.body))).toEqual({
-      model: "pocket-tts-4bit",
+      model: "pocket-tts",
       input: "Hello from the active character voice.",
       voice: "idream-voice-1",
       response_format: "wav",
@@ -185,8 +277,8 @@ describe("PocketTtsVoiceModel", () => {
     );
     const stored: Array<{ key: string; body: Uint8Array; contentType: string }> = [];
     const voice = new PocketTtsVoiceModel({
-      baseUrl: "http://127.0.0.1:8062/v1",
-      model: "pocket-tts-4bit",
+      baseUrl: "http://127.0.0.1:8063/v1",
+      model: "pocket-tts",
       language: "english",
       blob: stubBlobStore(stored),
       fetchImpl: fetchMock,

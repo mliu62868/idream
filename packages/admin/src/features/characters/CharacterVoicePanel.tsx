@@ -2,7 +2,7 @@
 
 import {
   DEFAULT_FISH_AUDIO_DELIVERY,
-  type FishAudioCatalogVoiceId,
+  type SystemVoiceCatalogVoiceId,
   type FishAudioDeliverySettings,
   type CharacterWorkspaceDetail,
 } from "@idream/shared/admin";
@@ -63,7 +63,7 @@ export function CharacterVoicePanel({
   const [file, setFile] = useState<File | null>(null);
   const [referenceText, setReferenceText] = useState("");
   const [sampleText, setSampleText] = useState(
-    locale === "zh"
+    data.voice.provider !== "pocket_tts" && locale === "zh"
       ? `靠近一点，我是${data.character.name}。很高兴让你听见我的声音。`
       : `Come a little closer. I’m ${data.character.name}. It’s good to hear from you.`,
   );
@@ -73,6 +73,9 @@ export function CharacterVoicePanel({
     },
   );
   const [reason, setReason] = useState("");
+  const [presetVoiceId, setPresetVoiceId] = useState(
+    data.voice.catalogVoiceIds[0] ?? "",
+  );
   const [activationReason, setActivationReason] = useState("");
   const [resetReason, setResetReason] = useState("");
   // SPEC: 系统默认语音是全局写，确认走 ConfirmDialog（它自己收 reason ≥3）。
@@ -81,11 +84,11 @@ export function CharacterVoicePanel({
     useState(false);
   const [defaultDraftOverride, setDefaultDraftOverride] = useState<{
     settingVersion: number;
-    defaultVoiceId: FishAudioCatalogVoiceId;
+    defaultVoiceId: SystemVoiceCatalogVoiceId;
     genderVoiceIds: {
-      female: FishAudioCatalogVoiceId;
-      male: FishAudioCatalogVoiceId;
-      trans: FishAudioCatalogVoiceId;
+      female: SystemVoiceCatalogVoiceId;
+      male: SystemVoiceCatalogVoiceId;
+      trans: SystemVoiceCatalogVoiceId;
     };
     delivery: FishAudioDeliverySettings;
   } | null>(null);
@@ -100,9 +103,9 @@ export function CharacterVoicePanel({
           delivery: { ...data.voice.systemDefaults.delivery },
         };
   const [previewBusy, setPreviewBusy] =
-    useState<FishAudioCatalogVoiceId | null>(null);
+    useState<SystemVoiceCatalogVoiceId | null>(null);
   const [catalogPreview, setCatalogPreview] = useState<{
-    voiceId: FishAudioCatalogVoiceId;
+    voiceId: SystemVoiceCatalogVoiceId;
     src: string;
   } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -128,8 +131,18 @@ export function CharacterVoicePanel({
   const candidateReadyCount = candidateReadiness.filter(
     (item) => item.complete,
   ).length;
+  const identityProviderLabel = voiceProviderLabel(data.voice.provider);
+  const selectedPresetVoiceId = data.voice.catalogVoiceIds.includes(
+    presetVoiceId,
+  )
+    ? presetVoiceId
+    : (data.voice.catalogVoiceIds[0] ?? "");
+  const presetCandidateReady =
+    selectedPresetVoiceId.length > 0 &&
+    sampleText.trim().length >= 3 &&
+    reason.trim().length >= 3;
   const activationProviderAvailable =
-    data.voice.provider === "fish_audio" &&
+    candidate?.provider === data.voice.provider &&
     data.voice.runtimeStatus === "ready";
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -155,7 +168,7 @@ export function CharacterVoicePanel({
     })}`;
     try {
       const mutation = await runCommittedMutation({
-        action: "Fish Audio voice clone",
+        action: `${identityProviderLabel} voice clone`,
         commit: () =>
           adminV2Operation("POST /api/v2/admin/characters/:id/voice-clones", {
             path: { id: data.character.id },
@@ -182,6 +195,48 @@ export function CharacterVoicePanel({
     }
   }
 
+  async function submitPreset(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!presetCandidateReady || busy) return;
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    const body = {
+      presetVoiceId: selectedPresetVoiceId,
+      sampleText: sampleText.trim(),
+      reason: reason.trim(),
+    };
+    const signature = `voice-preset:${data.character.id}:${JSON.stringify(body)}`;
+    try {
+      const mutation = await runCommittedMutation({
+        action: "Create Pocket TTS voice candidate",
+        commit: () =>
+          adminV2Operation("POST /api/v2/admin/characters/:id/voice-presets", {
+            path: { id: data.character.id },
+            idempotencyKey: takeIdempotencyKey(signature),
+            body,
+          }),
+        afterRefresh: () => {
+          releaseIdempotencyKey(signature);
+          setReason("");
+        },
+      });
+      setMessage(
+        mutation.result.replayed
+          ? "The existing voice candidate result was recovered."
+          : "The Pocket voice candidate is ready. Review its preview before activation.",
+      );
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Pocket voice candidate creation failed",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function activateCandidate() {
     if (!candidate || busy || activationReason.trim().length < 3) return;
     setBusy(true);
@@ -195,10 +250,10 @@ export function CharacterVoicePanel({
     const signature = `voice-activate:${data.character.id}:${candidate.id}:${JSON.stringify(body)}`;
     try {
       const mutation = await runCommittedMutation({
-        action: "Activate Fish Audio voice",
+        action: `Activate ${identityProviderLabel} voice`,
         commit: () =>
           adminV2Operation(
-            "POST /api/v2/admin/characters/:id/voice-clones/:profileId/activate",
+            "POST /api/v2/admin/characters/:id/voice-profiles/:profileId/activate",
             {
               path: { id: data.character.id, profileId: candidate.id },
               idempotencyKey: takeIdempotencyKey(signature),
@@ -231,6 +286,7 @@ export function CharacterVoicePanel({
     setMessage(null);
     const body = {
       expectedVersion: data.voice.systemDefaults.settingVersion,
+      provider: data.voice.systemDefaults.provider,
       defaultVoiceId: defaultDraft.defaultVoiceId,
       genderVoiceIds: defaultDraft.genderVoiceIds,
       delivery: defaultDraft.delivery,
@@ -316,7 +372,7 @@ export function CharacterVoicePanel({
     }
   }
 
-  async function previewCatalogVoice(voiceId: FishAudioCatalogVoiceId) {
+  async function previewCatalogVoice(voiceId: SystemVoiceCatalogVoiceId) {
     if (previewBusy || busy) return;
     setPreviewBusy(voiceId);
     setError(null);
@@ -325,11 +381,13 @@ export function CharacterVoicePanel({
         "POST /api/v2/admin/voice-defaults/preview",
         {
           body: {
+            provider: data.voice.systemDefaults.provider,
             voiceId,
             text:
+              data.voice.systemDefaults.provider !== "pocket_tts" &&
               locale === "zh"
-                ? `靠近一点，我是${data.character.name}。这是系统女性声音的试听。`
-                : `Come a little closer. I’m ${data.character.name}. This is the system female voice preview.`,
+                ? `靠近一点，我是${data.character.name}。这是系统声音的试听。`
+                : `Come a little closer. I’m ${data.character.name}. This is the system voice preview.`,
             delivery: defaultDraft.delivery,
           },
         },
@@ -388,7 +446,9 @@ export function CharacterVoicePanel({
           ) : (
             <WorkspaceButton
               disabled={previewBusy !== null || busy}
-              onClick={() => void previewCatalogVoice(data.voice.effectiveVoiceId as FishAudioCatalogVoiceId)}
+              onClick={() =>
+                void previewCatalogVoice(data.voice.effectiveVoiceId)
+              }
               type="button"
             >
               <Play aria-hidden="true" className="h-4 w-4" />
@@ -444,7 +504,9 @@ export function CharacterVoicePanel({
                   "Listen to the preview before changing the live character voice. Creating a candidate never changes Character.voiceId.",
                 )}
               </p>
-              <VoiceDeliverySummary delivery={candidate.delivery} t={t} />
+              {candidate.provider === "fish_audio" ? (
+                <VoiceDeliverySummary delivery={candidate.delivery} t={t} />
+              ) : null}
               {candidate.reference.transcript ? (
                 <details className="mt-4 rounded-lg bg-[var(--ad-surface-subtle)] px-3 py-2">
                   <summary className="cursor-pointer text-xs font-semibold text-[var(--ad-text-muted)]">
@@ -523,7 +585,7 @@ export function CharacterVoicePanel({
               role="alert"
             >
               {t(
-                "Fish Audio must be the active voice provider before this candidate can be activated.",
+                "The candidate provider must be ready before this voice can be activated.",
               )}
             </p>
           ) : null}
@@ -531,6 +593,102 @@ export function CharacterVoicePanel({
       ) : null}
 
       <div className="space-y-4">
+        {data.voice.provider === "pocket_tts" &&
+        data.voice.catalogVoiceIds.length > 0 ? (
+          <form
+            className="overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]"
+            data-testid="voice-preset-builder"
+            onSubmit={(event) => void submitPreset(event)}
+          >
+            <div className="border-b border-[var(--ad-border)] px-5 py-4 sm:px-6">
+              <h3 className="font-semibold">
+                {candidate
+                  ? t("Replace voice candidate")
+                  : t("Create voice candidate")}
+              </h3>
+              <p className="mt-1 text-xs text-[var(--ad-text-muted)]">
+                {t(
+                  "Choose an official English Pocket voice. A role-specific durable voice is created for this Character.",
+                )}
+              </p>
+            </div>
+            <div className="grid gap-4 p-5 sm:p-6 lg:grid-cols-2">
+              <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
+                {t("Official English voice")}
+                <select
+                  className={`${fieldClass} mt-1`}
+                  disabled={
+                    !canWrite || data.voice.runtimeStatus !== "ready" || busy
+                  }
+                  id="character-pocket-preset-voice"
+                  onChange={(event) => setPresetVoiceId(event.target.value)}
+                  value={selectedPresetVoiceId}
+                >
+                  {data.voice.catalogVoiceIds.map((voiceId) => (
+                    <option key={voiceId} value={voiceId}>
+                      {formatCatalogVoiceName(voiceId)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
+                {t("Change reason")}
+                <input
+                  className={`${fieldClass} mt-1`}
+                  disabled={!canWrite || busy}
+                  id="character-pocket-preset-reason"
+                  minLength={3}
+                  onChange={(event) => setReason(event.target.value)}
+                  required
+                  value={reason}
+                />
+              </label>
+              <label className="text-xs font-semibold text-[var(--ad-text-muted)] lg:col-span-2">
+                {t("Preview script")}
+                <textarea
+                  className={`${textAreaClass} mt-1 min-h-28`}
+                  disabled={!canWrite || busy}
+                  id="character-pocket-preset-preview-script"
+                  maxLength={500}
+                  minLength={3}
+                  onChange={(event) => setSampleText(event.target.value)}
+                  required
+                  value={sampleText}
+                />
+              </label>
+            </div>
+            {!data.voice.cloningAvailable ? (
+              <p className="border-t border-[var(--ad-border)] bg-[var(--ad-surface-subtle)] px-5 py-3 text-xs text-[var(--ad-text-muted)] sm:px-6">
+                {t(
+                  "Reference-audio cloning weights are unavailable on this host. Official voices remain fully usable.",
+                )}
+              </p>
+            ) : null}
+            <div className="flex justify-end border-t border-[var(--ad-border)] p-5 sm:p-6">
+              <WorkspaceButton
+                disabled={
+                  !canWrite ||
+                  data.voice.runtimeStatus !== "ready" ||
+                  busy ||
+                  !presetCandidateReady
+                }
+                tone="primary"
+                type="submit"
+              >
+                <AudioLines
+                  aria-hidden="true"
+                  className={cn("h-4 w-4", busy && "animate-pulse")}
+                />
+                {busy
+                  ? t("Creating Pocket voice candidate…")
+                  : t("Create Pocket voice candidate")}
+              </WorkspaceButton>
+            </div>
+          </form>
+        ) : null}
+
+        {data.voice.provider !== "pocket_tts" ||
+        data.voice.cloningAvailable ? (
         <form
           className="overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]"
           id="voice-candidate-builder"
@@ -546,7 +704,12 @@ export function CharacterVoicePanel({
               className="m-5 rounded-lg bg-[var(--ad-yellow-bg)] p-3 text-sm text-[var(--ad-yellow-text)] sm:mx-6"
               role="alert"
             >
-              {t(voiceRuntimeMessage(data.voice.runtimeStatus))}
+              {t(
+                voiceRuntimeMessage(
+                  data.voice.provider,
+                  data.voice.runtimeStatus,
+                ),
+              )}
             </p>
           ) : null}
           <div className="grid gap-5 p-5 sm:p-6 lg:grid-cols-2">
@@ -614,7 +777,7 @@ export function CharacterVoicePanel({
                   />
                   <span className="mt-1 block font-normal">
                     {t(
-                      "This transcript is stored with the voice reference and used by Fish Audio when synthesizing.",
+                      voiceReferenceTranscriptHelp(data.voice.provider),
                     )}
                   </span>
                 </label>
@@ -663,22 +826,24 @@ export function CharacterVoicePanel({
             </section>
           </div>
 
-          <details className="border-t border-[var(--ad-border)] bg-[var(--ad-surface-subtle)]">
-            <summary
-              className="cursor-pointer px-5 py-4 text-sm font-semibold sm:px-6"
-              id="character-performance-direction"
-            >
-              {t("Voice style and advanced settings")}
-            </summary>
-            <div className="border-t border-[var(--ad-border)] p-5 sm:p-6">
-              <VoiceDeliveryEditor
-                delivery={cloneDelivery}
-                disabled={!canWrite || busy}
-                onChange={setCloneDelivery}
-                t={t}
-              />
-            </div>
-          </details>
+          {data.voice.provider === "fish_audio" ? (
+            <details className="border-t border-[var(--ad-border)] bg-[var(--ad-surface-subtle)]">
+              <summary
+                className="cursor-pointer px-5 py-4 text-sm font-semibold sm:px-6"
+                id="character-performance-direction"
+              >
+                {t("Voice style and advanced settings")}
+              </summary>
+              <div className="border-t border-[var(--ad-border)] p-5 sm:p-6">
+                <VoiceDeliveryEditor
+                  delivery={cloneDelivery}
+                  disabled={!canWrite || busy}
+                  onChange={setCloneDelivery}
+                  t={t}
+                />
+              </div>
+            </details>
+          ) : null}
 
           <div className="border-t border-[var(--ad-border)] p-5 sm:p-6">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
@@ -716,6 +881,7 @@ export function CharacterVoicePanel({
             </div>
           </div>
         </form>
+        ) : null}
 
         <details className="overflow-hidden rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]">
           <summary className="cursor-pointer px-4 py-4 text-sm font-semibold">
@@ -766,10 +932,12 @@ export function CharacterVoicePanel({
                     {formatBytes(active.reference.sizeBytes, locale)} ·{" "}
                     {t(active.language)}
                   </p>
-                  <VoiceDeliverySummary delivery={active.delivery} t={t} />
+                  {active.provider === "fish_audio" ? (
+                    <VoiceDeliverySummary delivery={active.delivery} t={t} />
+                  ) : null}
                   {active.preview ? (
                     <audio
-                      aria-label={t("Active cloned voice preview")}
+                      aria-label={t("Active character voice preview")}
                       className="mt-4 w-full"
                       controls
                       preload="none"
@@ -846,7 +1014,7 @@ export function CharacterVoicePanel({
               <span
                 aria-hidden="true"
                 className={`h-2.5 w-2.5 rounded-full ${
-                  data.voice.cloningAvailable
+                  data.voice.runtimeStatus === "ready"
                     ? "bg-[var(--ad-green-text)]"
                     : "bg-[var(--ad-yellow-text)]"
                 }`}
@@ -855,17 +1023,26 @@ export function CharacterVoicePanel({
                 {t(voiceRuntimeLabel(data.voice.runtimeStatus))}
               </span>
             </div>
+            {data.voice.provider === "pocket_tts" ? (
+              <p className="mt-2 text-xs text-[var(--ad-text-muted)]">
+                {t("{count} official English voices available", {
+                  count: data.voice.catalogVoiceIds.length,
+                })}
+              </p>
+            ) : null}
             <dl className="mt-4 grid gap-3 text-xs">
               <div className="flex items-center justify-between gap-4 border-t border-[var(--ad-border)] pt-3">
                 <dt className="text-[var(--ad-text-muted)]">{t("Provider")}</dt>
-                <dd className="font-semibold">{t("Fish Audio S2 Pro")}</dd>
+                <dd className="font-semibold">{t(identityProviderLabel)}</dd>
               </div>
               <div className="flex items-center justify-between gap-4 border-t border-[var(--ad-border)] pt-3">
                 <dt className="text-[var(--ad-text-muted)]">{t("Engine")}</dt>
                 <dd className="font-semibold">
                   {data.voice.runtimeEngine === "mlx_audio"
                     ? `MLX ${data.voice.runtimeVersion ?? ""}`.trim()
-                    : data.voice.runtimeEngine}
+                    : data.voice.runtimeEngine === "pocket_tts"
+                      ? `Pocket TTS ${data.voice.runtimeVersion ?? ""}`.trim()
+                      : data.voice.runtimeEngine}
                 </dd>
               </div>
               <div className="flex items-center justify-between gap-4 border-t border-[var(--ad-border)] pt-3">
@@ -907,6 +1084,9 @@ export function CharacterVoicePanel({
                 <StatusBadge
                   value={`${t("version")} ${data.voice.systemDefaults.settingVersion}`}
                 />
+                <StatusBadge
+                  value={voiceProviderLabel(data.voice.systemDefaults.provider)}
+                />
                 {data.voice.authoritySource === "system_default" ? (
                   <StatusBadge tone="good" value={t("used here")} />
                 ) : null}
@@ -932,7 +1112,7 @@ export function CharacterVoicePanel({
               busy={previewBusy}
               catalog={data.voice.systemDefaults.catalog}
               inputId="system-voice-default-global"
-              label={t("System female identity")}
+              label={t("System fallback identity")}
               onChange={(defaultVoiceId) =>
                 setDefaultDraftOverride({
                   ...defaultDraft,
@@ -959,17 +1139,25 @@ export function CharacterVoicePanel({
                   )}
                 </p>
               </div>
-              <VoiceDeliveryEditor
-                disabled={!canManageDefaults || busy}
-                delivery={defaultDraft.delivery}
-                onChange={(delivery) =>
-                  setDefaultDraftOverride({
-                    ...defaultDraft,
-                    delivery,
-                  })
-                }
-                t={t}
-              />
+              {data.voice.systemDefaults.provider === "pocket_tts" ? (
+                <p className="text-sm leading-6 text-[var(--ad-text-muted)]">
+                  {t(
+                    "Pocket TTS uses each official voice's native English delivery; performance controls are not applied.",
+                  )}
+                </p>
+              ) : (
+                <VoiceDeliveryEditor
+                  disabled={!canManageDefaults || busy}
+                  delivery={defaultDraft.delivery}
+                  onChange={(delivery) =>
+                    setDefaultDraftOverride({
+                      ...defaultDraft,
+                      delivery,
+                    })
+                  }
+                  t={t}
+                />
+              )}
             </div>
           </div>
           {catalogPreview ? (
@@ -1296,14 +1484,14 @@ function VoiceDefaultSelect({
   value,
 }: {
   active: boolean;
-  busy: FishAudioCatalogVoiceId | null;
+  busy: SystemVoiceCatalogVoiceId | null;
   catalog: CharacterWorkspaceDetail["voice"]["systemDefaults"]["catalog"];
   inputId: string;
   label: string;
-  onChange: (value: FishAudioCatalogVoiceId) => void;
-  onPreview: (value: FishAudioCatalogVoiceId) => Promise<void>;
+  onChange: (value: SystemVoiceCatalogVoiceId) => void;
+  onPreview: (value: SystemVoiceCatalogVoiceId) => Promise<void>;
   t: (key: string, values?: Record<string, string | number>) => string;
-  value: FishAudioCatalogVoiceId;
+  value: SystemVoiceCatalogVoiceId;
 }) {
   const selected = catalog.find((voice) => voice.id === value);
   return (
@@ -1327,7 +1515,7 @@ function VoiceDefaultSelect({
         className={`${fieldClass} mt-2`}
         id={inputId}
         onChange={(event) =>
-          onChange(event.target.value as FishAudioCatalogVoiceId)
+          onChange(event.target.value as SystemVoiceCatalogVoiceId)
         }
         value={value}
       >
@@ -1368,6 +1556,11 @@ function voiceLabel(data: CharacterWorkspaceDetail, voiceId: string) {
   );
 }
 
+function formatCatalogVoiceName(voiceId: string) {
+  const words = voiceId.replaceAll("_", " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
 function deliveryPresetLabel(preset: FishAudioDeliverySettings["preset"]) {
   return {
     sensual: "Sensual",
@@ -1391,20 +1584,46 @@ function voiceRuntimeLabel(
   status: CharacterWorkspaceDetail["voice"]["runtimeStatus"],
 ) {
   return {
-    ready: "clone ready",
-    unavailable: "clone service unavailable",
-    inactive: "clone provider inactive",
+    ready: "runtime ready",
+    unavailable: "voice service unavailable",
+    inactive: "voice provider inactive",
   }[status];
 }
 
 function voiceRuntimeMessage(
+  provider: CharacterWorkspaceDetail["voice"]["provider"],
   status: CharacterWorkspaceDetail["voice"]["runtimeStatus"],
 ) {
+  if (provider === "pocket_tts") {
+    return {
+      ready: "Pocket TTS official English voice catalog is ready on CPU.",
+      unavailable:
+        "Pocket TTS is configured but unavailable. Verify the official model access, Hugging Face authentication, and the resident Pocket TTS process.",
+      inactive:
+        "Pocket TTS is not the Character voice provider. Set VOICE_PROVIDER=pocket-tts or VOICE_IDENTITY_PROVIDER=pocket-tts and start the Pocket TTS process.",
+    }[status];
+  }
   return {
     ready: "Fish Audio S2 Pro voice cloning through MLX is ready.",
     unavailable:
       "Fish Audio is configured but unavailable. Verify the fish-audio-s2-pro-8bit model, resident MLX process, and system female reference.",
     inactive:
-      "Fish Audio is not the active voice provider. Set VOICE_PROVIDER=fish-audio and start the Fish Audio process.",
+      "Fish Audio is not the Character voice-cloning provider. Set VOICE_IDENTITY_PROVIDER=fish-audio and start the Fish Audio process.",
   }[status];
+}
+
+function voiceProviderLabel(
+  provider: CharacterWorkspaceDetail["voice"]["provider"],
+) {
+  if (provider === "pocket_tts") return "Pocket TTS";
+  if (provider === "fish_audio") return "Fish Audio S2 Pro";
+  return provider;
+}
+
+function voiceReferenceTranscriptHelp(
+  provider: CharacterWorkspaceDetail["voice"]["provider"],
+) {
+  return provider === "pocket_tts"
+    ? "This transcript is stored with the Pocket TTS reference voice for audit and reproducibility."
+    : "This transcript is stored with the voice reference and used by Fish Audio when synthesizing.";
 }

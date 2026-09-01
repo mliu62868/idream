@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildGenerationPrompt } from "./generation-prompt";
+import {
+  buildGenerationPrompt,
+  compileChatImagePrompt,
+  sanitizeChatImageDirection,
+} from "./generation-prompt";
 import type { GenerationPromptCharacter, GenerationVisualProfile } from "./generation-character-authority";
 
 const character: GenerationPromptCharacter = {
@@ -34,6 +38,67 @@ function prompt(
 }
 
 describe("image generation prompt", () => {
+  it("removes Agent-authored identity claims while preserving the concrete scene", () => {
+    const direction = sanitizeChatImageDirection(
+      "Full nude selfie of a young woman around 20 years old at a rainy bedroom window, 4:5 close-up, warm bedside light, dark hair loose around her face, direct gaze, wet porcelain skin.",
+    );
+
+    expect(direction).toContain("Full nude selfie");
+    expect(direction).toContain("rainy bedroom window");
+    expect(direction).toContain("4:5 close-up");
+    expect(direction).toContain("warm bedside light");
+    expect(direction).toContain("hair loose around her face");
+    expect(direction).toContain("direct gaze");
+    expect(direction).not.toContain("around 20 years old");
+    expect(direction).not.toContain("young woman");
+    expect(direction).not.toContain("dark hair");
+    expect(direction).not.toContain("porcelain skin");
+  });
+
+  it("removes remaining Agent-authored hair, face, age, and body identity claims", () => {
+    const direction = sanitizeChatImageDirection(
+      "Full nude selfie, long curly black hair, blue eyes, angular face, petite hourglass body, mature-looking woman with a different nose and full lips, beside a rainy window.",
+    );
+
+    expect(direction).toContain("Full nude selfie");
+    expect(direction).toContain("beside a rainy window");
+    for (const identityClaim of [
+      "long curly",
+      "black hair",
+      "blue eyes",
+      "angular face",
+      "petite",
+      "hourglass",
+      "mature-looking",
+      "different nose",
+      "full lips",
+    ]) {
+      expect(direction).not.toContain(identityClaim);
+    }
+    expect(direction).not.toContain("with a and");
+  });
+
+  it("compiles structural nudity constraints ahead of the complete Agent scene", () => {
+    const longScene = `At the bedroom window, ${"soft rain and warm light, ".repeat(28)}fully clothed in a silk robe`;
+    const compiled = compileChatImagePrompt(longScene, "full");
+
+    expect(compiled).toMatch(/^Adult scene requirement: depict the adult character fully nude/);
+    expect(compiled).toContain("At the bedroom window");
+    expect(compiled).not.toContain("silk robe");
+    expect(compiled.length).toBeLessThanOrEqual(900);
+  });
+
+  it("compiles an explicit no-nudity constraint without trusting Agent wording", () => {
+    const compiled = compileChatImagePrompt(
+      "Fully nude selfie at the observatory in blue light",
+      "none",
+    );
+
+    expect(compiled).toMatch(/^Wardrobe requirement: keep the adult character clothed/);
+    expect(compiled.toLowerCase()).not.toContain("fully nude selfie");
+    expect(compiled).toContain("observatory in blue light");
+  });
+
   it("honours Identity variation for a character with no pinned Visual Profile", () => {
     // 这个控件在 Advanced settings 里对所有角色都点得到。此前只有 pin 了 Visual Profile
     // 的角色才会真的把它写进提示词 —— 16 个公开角色里的 15 个点了等于没点。
@@ -133,6 +198,40 @@ describe("image generation prompt", () => {
     expect(text).toContain("Visual identity anchor: Raya Reyes with an angular olive-toned face");
     expect(text).toContain("Stable visual traits: shoulder-length black hair, dark brown eyes, chipped silver ring");
     expect(text).not.toContain("card-raya-reyes");
+  });
+
+  it("keeps identity traits but drops mutable clothing that conflicts with the requested scene", () => {
+    const text = buildGenerationPrompt({
+      mode: "image",
+      character: {
+        ...character,
+        appearance: {
+          identityAnchor: "Tamsin Jacobs with a soft round face and hazel-brown eyes",
+          stableTraits: [
+            "shoulder-length wavy golden-blonde hair",
+            "hazel-brown eyes",
+            "dusty-rose satin robe",
+          ],
+        },
+      },
+      visualProfile: {
+        identityPrompt: "Preserve the exact same adult person shown in the canonical identity portrait",
+      } as GenerationVisualProfile,
+      consistencyMode: "balanced",
+      userPrompt: [
+        "Create a new in-character photo of Tamsin Jacobs.",
+        "Adult scene requirement: depict the adult character fully nude, with no clothing or robe, while preserving the same identity.",
+        "Original user request: 给我一个你的裸照",
+      ].join(" "),
+      presetFragment: "",
+      lookFragment: "",
+      sourceType: "chat_image",
+    });
+
+    expect(text).toContain("shoulder-length wavy golden-blonde hair");
+    expect(text).toContain("hazel-brown eyes");
+    expect(text).toContain("depict the adult character fully nude");
+    expect(text).not.toContain("dusty-rose satin robe");
   });
 
   it("does not call an unpinned character's identity locked", () => {

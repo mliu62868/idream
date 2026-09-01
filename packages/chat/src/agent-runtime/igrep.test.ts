@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import type { CompanionWorkspaceRebuild } from "@idream/shared/chat/companion-runtime";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  IgrepMemoryRebuilder,
+  IgrepMemoryBuilder,
   observeIgrepWake,
   recallIgrepMemory,
   probeIgrepLifecycle,
@@ -113,7 +113,7 @@ describe("official igrep pre-recall", () => {
     expect(calls).toEqual([expect.objectContaining({
       command: "/opt/igrep",
       args: ["mem-api", "memory-search", "--payload", "-"],
-      timeoutMs: 10_000,
+      timeoutMs: 30_000,
     })]);
     expect(JSON.parse(calls[0]?.stdin ?? "{}")).toEqual({
       workspace: "/private/workspace",
@@ -179,6 +179,7 @@ describe("official igrep canonical rebuild", () => {
       scope: "relationship",
       userId: "user-1",
       characterId: "character-1",
+      mode: "rebuild",
       messages: [
         {
           id: "user-1",
@@ -210,7 +211,7 @@ describe("official igrep canonical rebuild", () => {
         },
       ],
     };
-    const rebuilder = new IgrepMemoryRebuilder(
+    const builder = new IgrepMemoryBuilder(
       "igrep",
       {
         status: async () => ({
@@ -223,7 +224,7 @@ describe("official igrep canonical rebuild", () => {
       run,
     );
 
-    await expect(rebuilder.rebuild(workspace, request)).resolves.toEqual({
+    await expect(builder.build(workspace, request)).resolves.toEqual({
       sessions: 2,
       messages: 4,
     });
@@ -242,7 +243,7 @@ describe("official igrep canonical rebuild", () => {
     const root = await mkdtemp(join(tmpdir(), "chat-runtime-igrep-rebuild-pending-"));
     temporary.push(root);
     await mkdir(join(root, ".igrep"));
-    const rebuilder = new IgrepMemoryRebuilder(
+    const builder = new IgrepMemoryBuilder(
       "igrep",
       {
         status: async () => ({
@@ -255,19 +256,53 @@ describe("official igrep canonical rebuild", () => {
       async () => ({ ok: true }),
     );
 
-    await expect(rebuilder.rebuild(root, {
+    await expect(builder.build(root, {
       scope: "relationship",
       userId: "user-1",
       characterId: "character-1",
+      mode: "rebuild",
       messages: [],
     })).resolves.toEqual({ sessions: 0, messages: 0 });
+  });
+
+  it("maintains an ordinary projection without re-deriving canonical memory", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chat-runtime-igrep-project-"));
+    temporary.push(root);
+    await mkdir(join(root, ".igrep"));
+    const commands: JsonCommandOptions[] = [];
+    const builder = new IgrepMemoryBuilder(
+      "igrep",
+      {
+        status: async () => ({
+          dialogueFiles: 0,
+          pendingProfileRows: 0,
+          processedProfileRows: 0,
+          lastMaintainAt: null,
+        }),
+      },
+      async (options) => {
+        commands.push(options);
+        return { ok: true };
+      },
+    );
+
+    await builder.build(root, {
+      scope: "relationship",
+      userId: "user-1",
+      characterId: "character-1",
+      mode: "project",
+      messages: [],
+    });
+
+    expect(commands[0]?.args.slice(0, 2)).toEqual(["mem", "maintain"]);
+    expect(commands[0]?.args).not.toContain("--rebuild");
   });
 
   it("does not expose malformed ingest output in rebuild errors", async () => {
     const root = await mkdtemp(join(tmpdir(), "chat-runtime-igrep-rebuild-invalid-"));
     temporary.push(root);
     await mkdir(join(root, ".igrep"));
-    const rebuilder = new IgrepMemoryRebuilder(
+    const builder = new IgrepMemoryBuilder(
       "igrep",
       {
         status: async () => ({
@@ -285,10 +320,11 @@ describe("official igrep canonical rebuild", () => {
 
     let thrown: unknown;
     try {
-      await rebuilder.rebuild(root, {
+      await builder.build(root, {
         scope: "relationship",
         userId: "user-1",
         characterId: "character-1",
+        mode: "rebuild",
         messages: [{
           id: "user-1",
           sessionId: "session-1",

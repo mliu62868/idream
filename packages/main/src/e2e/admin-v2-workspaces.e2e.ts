@@ -827,18 +827,19 @@ async function completeResponsiveCoreFlows(
   ).toBeVisible();
   await expect(
     page.getByRole("heading", { level: 2, name: "Create images" }),
-  ).toBeVisible();
-  const creativeBrief = page.getByLabel("Creative brief");
-  await expect(creativeBrief).toBeVisible();
+  ).toHaveCount(0);
+  await expect(page.getByLabel("Creative brief")).toHaveCount(0);
   await expectNoHorizontalOverflow(page);
   await expectWcag22AA(page);
-  await creativeBrief.focus();
-  await expect(creativeBrief).toBeFocused();
 
   await page.goto(`${adminBaseURL()}/admin/content/assets`);
   await expect(
     page.getByRole("heading", { name: "Image Library" }),
   ).toBeVisible();
+  const uploadImages = page.getByRole("button", { name: "Upload images" }).first();
+  await expect(uploadImages).toBeVisible();
+  await uploadImages.focus();
+  await expect(uploadImages).toBeFocused();
   await expectNoHorizontalOverflow(page);
   await expectWcag22AA(page);
 
@@ -3189,57 +3190,42 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await login(page);
     await page.setViewportSize({ width: 1366, height: 900 });
 
-    const runOptionsPromise = page.waitForResponse(
-      (response) =>
-        response.request().method() === "GET" &&
-        new URL(response.url()).pathname ===
-          "/api/v2/admin/creative/run-options",
-    );
-    await page.goto(`${adminBaseURL()}/admin/creative/runs`);
-    const runOptionsResponse = await runOptionsPromise;
-    expect(
-      runOptionsResponse.ok(),
-      await runOptionsResponse.text(),
-    ).toBeTruthy();
-    await expect(page.locator("#creative-runs-title")).toBeVisible();
-    await expect(
-      page.getByRole("link", { name: "Open Character Asset Studio" }),
-    ).toHaveAttribute("href", "/admin/characters");
-    await expect(page.getByLabel("Creative brief")).toBeVisible();
-    await expect(
-      page.getByText(
-        "Ready to create. Destination is chosen only after review.",
-      ),
-    ).toHaveCount(0);
-    const dynamicTitle = `E2E operator-created campaign ${suffix}`;
+    const dynamicTitle = `E2E existing campaign review ${suffix}`;
     const dynamicBrief =
       "One cinematic editorial campaign image with a clear subject, quiet confidence, warm practical lighting, and generous negative space for launch copy.";
-    await page.getByLabel("Creative brief").fill(dynamicBrief);
-    await page.getByLabel("Items").fill("1");
-    await page.getByText("Advanced creation details", { exact: true }).click();
-    await page.getByLabel("Run title").fill(dynamicTitle);
-    await page
-      .getByLabel("Image route")
-      .selectOption(wizardBootstrapProfileKey);
-    await page.getByLabel("Canvas").selectOption("16:9");
-    await expect(
-      page.getByText(
-        "Ready to create. Destination is chosen only after review.",
-      ),
-    ).toBeVisible();
-    const createResponsePromise = page.waitForResponse(
-      (response) =>
-        response.request().method() === "POST" &&
-        new URL(response.url()).pathname === "/api/v2/admin/creative/runs",
+    const createResponse = await page.request.post(
+      `${adminBaseURL()}/api/v2/admin/creative/runs`,
+      {
+        headers: {
+          "idempotency-key": `e2e-existing-campaign-${suffix}`,
+        },
+        data: {
+          title: dynamicTitle,
+          purpose: "campaign",
+          targetType: "none",
+          profileId: wizardBootstrapProfileKey,
+          presetIds: [],
+          orientation: "16:9",
+          count: 1,
+          brief: dynamicBrief,
+          consistencyMode: "balanced",
+          priority: "normal",
+          reason: "Seed an existing reviewed-campaign fixture outside the removed Admin creation UI",
+        },
+      },
     );
-    await page.getByRole("button", { name: "Create and launch" }).click();
-    const createResponse = await createResponsePromise;
-    expect(createResponse.status()).toBe(202);
-    await expect(page).toHaveURL(/\/admin\/creative\/runs\/[^/?]+$/);
-    const dynamicCreativeRunId = new URL(page.url()).pathname.split("/").at(-1);
-    if (!dynamicCreativeRunId)
-      throw new Error("Creative Run creation did not navigate to its detail");
+    const createRaw = await createResponse.text();
+    expect(createResponse.status(), createRaw).toBe(202);
+    const createPayload = JSON.parse(createRaw) as {
+      ok: true;
+      data: { batch: { id: string } };
+    };
+    const dynamicCreativeRunId = createPayload.data.batch.id;
     wizardRunIds.push(dynamicCreativeRunId);
+
+    await page.goto(
+      `${adminBaseURL()}/admin/creative/runs/${dynamicCreativeRunId}`,
+    );
     await expect(page).toHaveURL(
       new RegExp(`/admin/creative/runs/${dynamicCreativeRunId}$`),
     );

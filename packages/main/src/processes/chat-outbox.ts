@@ -14,7 +14,7 @@ import { env } from "@/server/lib/env";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import {
   purgeCompanionMemoryFromMain,
-  rebuildCompanionMemoryFromMain,
+  syncCompanionMemoryFromMain,
 } from "@/server/modules/chat/companion-memory-authority";
 
 type Db = PrismaClient | Prisma.TransactionClient;
@@ -201,7 +201,7 @@ async function deliverToChat(event: DurableEventEnvelope): Promise<void> {
     event.eventType === MAIN_TO_CHAT_EVENTS.companionMemoryRebuildRequestedV1
     || event.eventType === MAIN_TO_CHAT_EVENTS.companionMemoryProjectRequestedV1
   ) {
-    await rebuildCompanionMemoryFromMain(event);
+    await syncCompanionMemoryFromMain(event);
     return;
   }
   if (event.eventType === MAIN_TO_CHAT_EVENTS.companionMemoryPurgeRequestedV1) {

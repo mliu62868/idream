@@ -76,6 +76,20 @@ export function characterSourceVariationBlockerMessage(
   return "More like this needs a compatible active Character identity route.";
 }
 
+export function characterSourceVariationAvailabilityMessage() {
+  return "Normal generation from the locked identity is still available.";
+}
+
+export function characterAssetRunReceiptMessage(input: {
+  readonly executionOutcome: string;
+  readonly items: readonly { readonly asset: unknown | null }[];
+}) {
+  return input.executionOutcome === "succeeded" &&
+    input.items.some((item) => item.asset !== null)
+    ? "The committed generation receipt is visible in this exact Run. Review can continue."
+    : "The image Run is confirmed. Generation is still in progress; review becomes available when the image is ready.";
+}
+
 export function canOfferCharacterAssetTerminalRejection(input: {
   readonly lifecycleState: string;
   readonly decision: string | null;
@@ -148,6 +162,12 @@ export type ReviewDraft = {
   quality: ReviewQuality;
 };
 
+export function characterAssetReviewDefinesIdentity(
+  item: Pick<CreativeRunDetail["items"][number], "identityReviewMode"> | null,
+) {
+  return item?.identityReviewMode === "defines_identity";
+}
+
 export function resolveCharacterAssetReviewEvidence(input: {
   readonly decision: "approved" | "rejected";
   readonly draft: {
@@ -179,11 +199,11 @@ export function resolveCharacterAssetReviewEvidence(input: {
   };
 }
 
-export function emptyReviewDraft(bootstrapMode: boolean): ReviewDraft {
+export function emptyReviewDraft(definesIdentity: boolean): ReviewDraft {
   return {
     reason: "",
     score: "",
-    identity: bootstrapMode ? "unscored" : "passed",
+    identity: definesIdentity ? "unscored" : "passed",
     quality: {
       artifactFree: false,
       singleSubject: false,
@@ -239,8 +259,9 @@ export function characterAssetRunRequestKey(input: {
   readonly orientation: string;
   readonly count: number;
   readonly brief: string;
+  readonly negativePrompt?: string;
 }) {
-  return JSON.stringify({
+  const normalized = {
     characterId: input.characterId,
     title: input.title.trim(),
     purpose: input.purpose,
@@ -250,7 +271,11 @@ export function characterAssetRunRequestKey(input: {
     orientation: input.orientation,
     count: input.count,
     brief: input.brief.trim(),
-  });
+  };
+  const negativePrompt = input.negativePrompt?.trim();
+  return JSON.stringify(
+    negativePrompt ? { ...normalized, negativePrompt } : normalized,
+  );
 }
 
 export function characterAssetReviewRequestKey(input: {

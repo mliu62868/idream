@@ -10,6 +10,12 @@ describe("AgentRun failure evidence", () => {
   it("preserves the embedded runtime failure classification", () => {
     expect(agentRunFailureEvidence({
       cancelled: false,
+      prompt: {
+        productPromptVersion: "companion-product-1",
+        preparedTurnVersion: null,
+        systemPromptDigest: null,
+        soulFingerprint: null,
+      },
       runtimeFailure: {
         code: "provider_first_token_timeout",
         message: "companion provider response failed",
@@ -18,6 +24,7 @@ describe("AgentRun failure evidence", () => {
       reason: "DSH ended without a terminal commit",
     })).toMatchObject({
       authority: "chat_agent_run",
+      prompt: { productPromptVersion: "companion-product-1" },
       failureCode: "provider_first_token_timeout",
     });
   });
@@ -25,6 +32,12 @@ describe("AgentRun failure evidence", () => {
   it("keeps cancellation authoritative over a runtime failure", () => {
     expect(agentRunFailureEvidence({
       cancelled: true,
+      prompt: {
+        productPromptVersion: "companion-product-1",
+        preparedTurnVersion: null,
+        systemPromptDigest: null,
+        soulFingerprint: null,
+      },
       runtimeFailure: {
         code: "provider_idle_timeout",
         message: "companion provider response failed",
@@ -43,6 +56,12 @@ describe("AgentRun failure evidence", () => {
     });
     expect(agentRunFailureEvidence({
       cancelled: cancellation.cancelled,
+      prompt: {
+        productPromptVersion: "companion-product-1",
+        preparedTurnVersion: null,
+        systemPromptDigest: null,
+        soulFingerprint: null,
+      },
       runtimeCancellation: cancellation.reason,
       reason: "DSH ended without a terminal commit",
     })).toMatchObject({

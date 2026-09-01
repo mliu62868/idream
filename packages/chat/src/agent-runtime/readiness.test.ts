@@ -97,6 +97,7 @@ describe("fail-closed companion readiness", () => {
     })();
     expect(readiness).toMatchObject({
       ready: true,
+      productPromptVersion: "companion-product-1",
       dshVersion: "0.1.1-rc.2",
       dshCommit: "b150a551b8d465e31e418e1b2eaf5e79bbb7d28e",
       igrepVersion: "0.1.134",
@@ -122,7 +123,7 @@ describe("fail-closed companion readiness", () => {
         webProvider: false,
         webTool: false,
         memory: true,
-        ingest: true,
+        ingest: false,
         wake: true,
         memorySearchMode: "fast",
         timeoutMs: 10_000,

@@ -24,6 +24,7 @@ import {
   assignWorkflowReferenceSlots,
   type SlotValues,
   type WorkflowDescriptor,
+  workflowPromptSlots,
 } from "./workflow";
 import {
   comfyUiRunnerForDescriptor,
@@ -173,6 +174,11 @@ export class BackendImageModel implements ImageModel {
     const count = Math.max(1, Math.min(input.count, 4));
     const stepsOverride = numericControl(input.controls, "steps");
     const workflowControlSlots = resolveWorkflowControlSlots(descriptor, input.controls);
+    const promptSlots = workflowPromptSlots({
+      mode: descriptor.negativePromptMode,
+      prompt: input.prompt,
+      negativePrompt: input.negativePrompt,
+    });
 
     const providerRequestIds: string[] = [];
     let failurePhase: "pre_submit" | "post_submit" = "pre_submit";
@@ -187,8 +193,8 @@ export class BackendImageModel implements ImageModel {
         for (let index = 0; index < count; index += 1) {
           failurePhase = "pre_submit";
           const slots: SlotValues = {
-            prompt: input.prompt,
-            negative: input.negativePrompt ?? "",
+            prompt: promptSlots.prompt,
+            negative: promptSlots.negative,
             ...(size.width !== undefined ? { width: size.width } : {}),
             ...(size.height !== undefined ? { height: size.height } : {}),
             seed: baseSeed + index,

@@ -117,7 +117,63 @@ export type MediaAssetCustomerPublishabilityReason =
   | "latest_successful_attempt_provider_missing"
   | "latest_attempt_provider_mock"
   | "latest_attempt_provider_untrusted"
-  | "pinned_job_provider_mismatch";
+  | "pinned_job_provider_mismatch"
+  | "operator_upload_authority_invalid"
+  | "operator_upload_blob_missing"
+  | "operator_upload_source_job_present";
+
+export const OPERATOR_UPLOAD_AUTHORITY_SCHEMA =
+  "platform-asset-operator-upload-v1";
+
+/**
+ * SPEC: an operator upload is a separate provenance branch from generated media.
+ * INVARIANT: merely having no GenerationJob never grants this authority; the versioned
+ * marker must bind the actor, bytes digest, and MediaAsset row to durable bytes.
+ */
+export function inspectOperatorUploadAuthority(asset: {
+  id: string;
+  sourceJobId?: string | null;
+  storageKey?: string | null;
+  url?: string | null;
+  metadata?: unknown;
+}): {
+  kind: "operator_upload";
+  publishable: boolean;
+  reasons: MediaAssetCustomerPublishabilityReason[];
+} | null {
+  const metadata = record(asset.metadata);
+  const authority = record(metadata.uploadAuthority);
+  const declaresOperatorUpload = metadata.source === "admin_asset_upload" ||
+    Object.keys(authority).length > 0;
+  if (!declaresOperatorUpload) return null;
+
+  const reasons: MediaAssetCustomerPublishabilityReason[] = [];
+  const digest = normalizedString(metadata.sha256);
+  const authorityDigest = normalizedString(authority.sha256);
+  if (
+    metadata.source !== "admin_asset_upload" ||
+    authority.schemaVersion !== OPERATOR_UPLOAD_AUTHORITY_SCHEMA ||
+    authority.kind !== "operator_upload" ||
+    normalizedString(authority.assetId) !== asset.id ||
+    !normalizedString(authority.uploadedById) ||
+    !digest ||
+    !/^[a-f0-9]{64}$/i.test(digest) ||
+    authorityDigest !== digest
+  ) {
+    reasons.push("operator_upload_authority_invalid");
+  }
+  if (!hasHydratableMediaBlobAuthority(asset)) {
+    reasons.push("operator_upload_blob_missing");
+  }
+  if (asset.sourceJobId) {
+    reasons.push("operator_upload_source_job_present");
+  }
+  return {
+    kind: "operator_upload",
+    publishable: reasons.length === 0,
+    reasons,
+  };
+}
 
 export const CUSTOMER_PUBLISHABLE_GENERATION_PROVIDERS = [
   "backend",

@@ -1,27 +1,29 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildCharacterRuntimePolicy,
+  buildCompanionRuntimeAuthority,
   noMemoryAuthorityReply,
 } from "./runtime-policy";
 
-describe("buildCharacterRuntimePolicy", () => {
+describe("buildCompanionRuntimeAuthority", () => {
   it("requires a direct in-character answer instead of exposing model planning", () => {
-    const policy = buildCharacterRuntimePolicy({ memoryEnabled: true });
+    const policy = buildCompanionRuntimeAuthority({ memoryEnabled: true });
+    expect(policy).toContain("Runtime authority (non-negotiable for this Turn)");
+    expect(policy).toContain("override the Product Contract and Character Soul");
     expect(policy).toContain("Output only the final in-character reply");
     expect(policy).toContain("Never expose analysis, planning, or instructions");
   });
 
   it("makes the no-memory promise boundary explicit", () => {
-    expect(buildCharacterRuntimePolicy({ memoryEnabled: false })).toContain(
+    expect(buildCompanionRuntimeAuthority({ memoryEnabled: false })).toContain(
       "Never promise future recall",
     );
-    expect(buildCharacterRuntimePolicy({ memoryEnabled: true })).not.toContain(
+    expect(buildCompanionRuntimeAuthority({ memoryEnabled: true })).not.toContain(
       "Never promise future recall",
     );
   });
 
   it("requires the image bridge for explicit generate and edit requests", () => {
-    const enabled = buildCharacterRuntimePolicy({
+    const enabled = buildCompanionRuntimeAuthority({
       memoryEnabled: true,
       imageToolEnabled: true,
     });
@@ -29,7 +31,7 @@ describe("buildCharacterRuntimePolicy", () => {
     expect(enabled).toContain("call edit_last_image");
     expect(enabled).toContain("Never claim an image was generated or edited");
 
-    const disabled = buildCharacterRuntimePolicy({
+    const disabled = buildCompanionRuntimeAuthority({
       memoryEnabled: true,
       imageToolEnabled: false,
     });
@@ -38,7 +40,7 @@ describe("buildCharacterRuntimePolicy", () => {
   });
 
   it("keeps consensual adult companion requests inside the product path", () => {
-    const policy = buildCharacterRuntimePolicy({
+    const policy = buildCompanionRuntimeAuthority({
       memoryEnabled: true,
       imageToolEnabled: true,
     });

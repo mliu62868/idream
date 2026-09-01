@@ -7,11 +7,15 @@ import {
   characterAssetBootstrapRequestKey,
   characterAssetDraftSelectionRequestKey,
   characterAssetReviewRequestKey,
+  characterAssetReviewDefinesIdentity,
   characterAssetRunRequestKey,
   characterAssetPurposes,
   characterAssetStudioLayoutClass,
   characterSourceVariationBlockerMessage,
+  characterSourceVariationAvailabilityMessage,
   characterAssetReadinessSummary,
+  characterAssetRunReceiptMessage,
+  emptyReviewDraft,
   isCharacterAssetApprovalActionable,
   isCharacterIdentityAuthorityReady,
   nextIncompleteCharacterAssetPurpose,
@@ -148,6 +152,28 @@ describe("Character Asset Studio flow", () => {
       decision: "approved",
       identityConsistency: "passed",
       score: 90,
+      quality: {
+        artifactFree: true,
+        singleSubject: true,
+        intentMatch: true,
+        noVisibleText: true,
+      },
+    })).toBe(true);
+  });
+
+  it("uses the immutable Run item mode for identity-defining review", () => {
+    expect(characterAssetReviewDefinesIdentity({
+      identityReviewMode: "defines_identity",
+    })).toBe(true);
+    expect(characterAssetReviewDefinesIdentity({
+      identityReviewMode: "preserves_identity",
+    })).toBe(false);
+    expect(emptyReviewDraft(true).identity).toBe("unscored");
+    expect(isCharacterAssetApprovalActionable({
+      bootstrapIdentity: true,
+      decision: "approved",
+      identityConsistency: "unscored",
+      score: 95,
       quality: {
         artifactFree: true,
         singleSubject: true,
@@ -352,12 +378,14 @@ describe("Character Asset Studio flow", () => {
       orientation: "4:5",
       count: 4,
       brief: "  Definitive portrait  ",
+      negativePrompt: "  duplicate subject, visible text  ",
     };
     expect(characterAssetRunRequestKey(request)).toBe(
       characterAssetRunRequestKey({
         ...request,
         title: "Mira · Primary portrait",
         brief: "Definitive portrait",
+        negativePrompt: "duplicate subject, visible text",
       }),
     );
     const changedRequests: Parameters<typeof characterAssetRunRequestKey>[0][] = [
@@ -369,6 +397,7 @@ describe("Character Asset Studio flow", () => {
       { ...request, orientation: "16:9" },
       { ...request, count: 6 },
       { ...request, brief: "Different portrait" },
+      { ...request, negativePrompt: "different face" },
     ];
     for (const changed of changedRequests) {
       expect(characterAssetRunRequestKey(changed)).not.toBe(
@@ -647,6 +676,34 @@ describe("Character Asset Studio flow", () => {
     expect(source).toContain("characterAssetReviewRequestKey({");
     expect(source).toContain("characterAssetBootstrapRequestKey({");
     expect(source).toContain("characterAssetDraftSelectionRequestKey({");
+  });
+
+  it("does not claim review is available while the committed image is still running", () => {
+    expect(
+      characterAssetRunReceiptMessage({
+        executionOutcome: "running",
+        items: [{ asset: null }],
+      }),
+    ).toBe(
+      "The image Run is confirmed. Generation is still in progress; review becomes available when the image is ready.",
+    );
+    expect(
+      characterAssetRunReceiptMessage({
+        executionOutcome: "succeeded",
+        items: [{ asset: { id: "asset-1" } }],
+      }),
+    ).toBe(
+      "The committed generation receipt is visible in this exact Run. Review can continue.",
+    );
+  });
+
+  it("scopes a variation blocker without implying normal generation failed", () => {
+    expect(
+      characterSourceVariationBlockerMessage("workflow_source_image_unsupported"),
+    ).toContain("More like this is unavailable");
+    expect(characterSourceVariationAvailabilityMessage()).toBe(
+      "Normal generation from the locked identity is still available.",
+    );
   });
 
   // INTENT: "取代即取消" 与 "投影确认之后才释放幂等键" 原本靠断言 loadRun 里的源码文本

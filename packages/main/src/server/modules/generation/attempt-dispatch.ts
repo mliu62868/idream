@@ -24,8 +24,10 @@ import {
 } from "@/server/modules/ourdream/public-catalog-qualification";
 import { publicCharacterAudienceWhere } from "@/server/modules/ourdream/public-content-audience";
 
-export const LEGACY_CHARACTER_GENERATION_AUTHORITY_SCHEMA_VERSION =
+const LEGACY_CHARACTER_GENERATION_AUTHORITY_SCHEMA_VERSION_V1 =
   "legacy-character-generation-authority-v1";
+export const LEGACY_CHARACTER_GENERATION_AUTHORITY_SCHEMA_VERSION =
+  "legacy-character-generation-authority-v2";
 
 // SPEC: A video transport gets two recovery attempts after the initial run.
 // GenerationExecution resumes a persisted terminal record before any adapter
@@ -36,10 +38,13 @@ const EDITORIAL_RELEASE_PROVENANCE_SCHEMA_VERSION =
   "character-release-editorial-import-v1";
 
 export type LegacyCharacterGenerationAuthority = {
-  readonly schemaVersion: typeof LEGACY_CHARACTER_GENERATION_AUTHORITY_SCHEMA_VERSION;
+  readonly schemaVersion:
+    | typeof LEGACY_CHARACTER_GENERATION_AUTHORITY_SCHEMA_VERSION_V1
+    | typeof LEGACY_CHARACTER_GENERATION_AUTHORITY_SCHEMA_VERSION;
   readonly characterId: string;
   readonly releaseId: string;
   readonly releaseSnapshotHash: string;
+  readonly sourceAssetId?: string;
   readonly releaseProvenanceSchemaVersion: typeof EDITORIAL_RELEASE_PROVENANCE_SCHEMA_VERSION;
   readonly qualificationId: string;
   readonly qualificationKind: "editorial_import";
@@ -94,10 +99,15 @@ export function legacyCharacterGenerationAuthorityFromControls(
     authority,
     "releaseSnapshotHash",
   );
+  const sourceAssetId = stringFromRecord(authority, "sourceAssetId");
   const qualificationId = stringFromRecord(authority, "qualificationId");
   if (
-    authority.schemaVersion !==
-      LEGACY_CHARACTER_GENERATION_AUTHORITY_SCHEMA_VERSION ||
+    (
+      authority.schemaVersion !==
+        LEGACY_CHARACTER_GENERATION_AUTHORITY_SCHEMA_VERSION_V1 &&
+      authority.schemaVersion !==
+        LEGACY_CHARACTER_GENERATION_AUTHORITY_SCHEMA_VERSION
+    ) ||
     !characterId ||
     !releaseId ||
     !releaseSnapshotHash ||
@@ -112,11 +122,19 @@ export function legacyCharacterGenerationAuthorityFromControls(
   ) {
     return null;
   }
+  if (
+    authority.schemaVersion ===
+      LEGACY_CHARACTER_GENERATION_AUTHORITY_SCHEMA_VERSION &&
+    !sourceAssetId
+  ) {
+    return null;
+  }
   return {
-    schemaVersion: LEGACY_CHARACTER_GENERATION_AUTHORITY_SCHEMA_VERSION,
+    schemaVersion: authority.schemaVersion,
     characterId,
     releaseId,
     releaseSnapshotHash,
+    ...(sourceAssetId ? { sourceAssetId } : {}),
     releaseProvenanceSchemaVersion:
       EDITORIAL_RELEASE_PROVENANCE_SCHEMA_VERSION,
     qualificationId,
@@ -167,6 +185,7 @@ export async function loadLockedLiveEditorialLegacyGenerationAuthority(
   const qualification = release?.publicCatalogQualification ?? null;
   const provenance = jsonRecord(release?.generationProvenance);
   const qualificationEvidence = jsonRecord(qualification?.evidence);
+  const sourceAssetId = stringFromRecord(provenance, "sourceAssetId");
   if (
     serving?.state !== "live" ||
     !release ||
@@ -179,6 +198,7 @@ export async function loadLockedLiveEditorialLegacyGenerationAuthority(
     release.referenceSetRevisionId !== null ||
     provenance.schemaVersion !==
       EDITORIAL_RELEASE_PROVENANCE_SCHEMA_VERSION ||
+    !sourceAssetId ||
     !qualification ||
     qualification.kind !== "editorial_import" ||
     qualification.validationRunId !== null ||
@@ -187,7 +207,8 @@ export async function loadLockedLiveEditorialLegacyGenerationAuthority(
     qualificationEvidence.schemaVersion !==
       PUBLIC_CATALOG_QUALIFICATION_SCHEMA_VERSION ||
     qualificationEvidence.policyVersion !==
-      PUBLIC_CATALOG_EDITORIAL_IMPORT_POLICY_VERSION
+      PUBLIC_CATALOG_EDITORIAL_IMPORT_POLICY_VERSION ||
+    stringFromRecord(qualificationEvidence, "sourceAssetId") !== sourceAssetId
   ) {
     return null;
   }
@@ -196,6 +217,7 @@ export async function loadLockedLiveEditorialLegacyGenerationAuthority(
     characterId,
     releaseId: release.id,
     releaseSnapshotHash: release.snapshotHash,
+    sourceAssetId,
     releaseProvenanceSchemaVersion:
       EDITORIAL_RELEASE_PROVENANCE_SCHEMA_VERSION,
     qualificationId: qualification.id,
@@ -822,12 +844,16 @@ async function assertGenerationCharacterDispatchable(
   }
   // SPEC: Admin 角色视频可固定任意一张仍可用的角色图片；引用解析随后会重新校验
   // 归属、可读取性和 source_image 角色。只有用户侧视频必须继续绑定当前公开主图。
+  const pinnedLegacyAuthority =
+    legacyCharacterGenerationAuthorityFromControls(job.controls);
   if (
     job.mode === "image" &&
-    job.visualProfileId == null &&
     (
-      job.sourceType !== "content_production_item" ||
-      legacyCharacterGenerationAuthorityFromControls(job.controls) !== null
+      pinnedLegacyAuthority !== null ||
+      (
+        job.visualProfileId == null &&
+        job.sourceType !== "content_production_item"
+      )
     )
   ) {
     await assertPinnedLegacyCharacterGenerationAuthority(tx, {
@@ -843,7 +869,17 @@ function legacyCharacterGenerationAuthoritiesEqual(
   right: LegacyCharacterGenerationAuthority,
 ) {
   return (
-    left.schemaVersion === right.schemaVersion &&
+    (
+      left.schemaVersion ===
+        LEGACY_CHARACTER_GENERATION_AUTHORITY_SCHEMA_VERSION_V1 ||
+      (
+        left.schemaVersion ===
+          LEGACY_CHARACTER_GENERATION_AUTHORITY_SCHEMA_VERSION &&
+        right.schemaVersion ===
+          LEGACY_CHARACTER_GENERATION_AUTHORITY_SCHEMA_VERSION &&
+        left.sourceAssetId === right.sourceAssetId
+      )
+    ) &&
     left.characterId === right.characterId &&
     left.releaseId === right.releaseId &&
     left.releaseSnapshotHash === right.releaseSnapshotHash &&

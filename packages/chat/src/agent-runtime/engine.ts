@@ -18,6 +18,7 @@ import { type JsonValue, type ToolDefinition } from "@deepseek-ai/dsh-tools";
 import {
   type CompanionReadiness,
 } from "@idream/shared/chat/companion-runtime";
+import { requiredImageReplyMatchesUserScript } from "@idream/shared/chat/image-action";
 import {
   companionEventSchema,
   companionToolReservationSchema,
@@ -57,13 +58,13 @@ export interface CompanionEngineOptions {
   instance?: CompanionReadiness["instance"];
   workspaces: AttemptWorkspaceStore;
   plugin(): Promise<IgrepPluginModule>;
-  adapter(profile: PreparedTurnProfile): LlmAdapter;
+  adapter(profile: PreparedTurnProfile, requiredToolName?: CompanionToolCall["name"]): LlmAdapter;
   igrepCommand: string;
   observeWake?: typeof observeIgrepWake;
   recallMemory?: typeof recallIgrepMemory;
   igrepLlm: { url: string; model: string };
-  rebuilder?: {
-    rebuild(
+  memoryBuilder?: {
+    build(
       workspace: string,
       request: CompanionWorkspaceRebuildSource,
       signal?: AbortSignal,
@@ -229,7 +230,12 @@ function invocationFailure(input: {
   turnFailure?: LlmFailure;
   igrepFailure?: "wake" | "search" | "memory";
   preflightCode?: string;
-  terminalValidationCode?: "unexecuted_tool_payload";
+  terminalValidationCode?:
+    | "unexecuted_tool_payload"
+    | "required_image_reply_language_mismatch"
+    | "required_image_reply_exposed_process"
+    | "required_image_tool_missing"
+    | "required_image_tool_mismatch";
 }) {
   if (input.preflightCode) {
     return {
@@ -474,6 +480,8 @@ class ToolBridge {
           attemptId: call.attemptId,
           callId: call.callId,
           name: call.name,
+          effectScope: call.effectScope,
+          intent: call.intent,
           argumentsDigest: createHash("sha256")
             .update(stableJson(call.arguments))
             .digest("hex"),
@@ -572,6 +580,8 @@ export async function probeCompanionBridges(invocation: CompanionInvocation): Pr
     attemptId: invocation.attemptId,
     callId: "readiness-tool-call",
     name: "generate_image_async",
+    effectScope: "attempt",
+    intent: { requestedNudity: "unspecified" },
     arguments: { prompt: "readiness" },
   };
   if ((await bridge.execute(call, controller.signal)).outcome !== "succeeded") {
@@ -616,11 +626,7 @@ export class CompanionEngine {
     if (this.active.has(invocation.invocationId)) throw new Error("invocation id is already active");
     const pool = invocation.memoryMode === "private" ? "private" : "normal";
     const limit = this.options.maxConcurrentAgents?.[pool] ?? Number.POSITIVE_INFINITY;
-    // SPEC: the pool bounds live DSH agents. An invocation that has disposed
-    // its agent and is only waiting for igrep to settle holds no agent, so it
-    // must not push a new turn into "at capacity" (memory settlement runs
-    // 2–27 s per turn; with several relationships in flight the settling
-    // tail alone filled the pool).
+    // SPEC: the pool bounds live DSH agents, not post-agent cleanup.
     const activeInPool = [...this.active.values()].filter(({ invocation: current, agentDisposed }) =>
       !agentDisposed && (current.memoryMode === "private" ? "private" : "normal") === pool).length;
     if (activeInPool >= limit) {
@@ -638,7 +644,13 @@ export class CompanionEngine {
     let turnFailure: LlmFailure | undefined;
     let igrepFailure: "wake" | "search" | "memory" | undefined;
     let preflightCode: string | undefined;
-    let terminalValidationCode: "unexecuted_tool_payload" | undefined;
+    let terminalValidationCode:
+      | "unexecuted_tool_payload"
+      | "required_image_reply_language_mismatch"
+      | "required_image_reply_exposed_process"
+      | "required_image_tool_missing"
+      | "required_image_tool_mismatch"
+      | undefined;
     let eventTail = Promise.resolve();
     const event = (payload: EventPayload): Promise<void> => {
       const value = companionEventSchema.parse({
@@ -729,7 +741,10 @@ export class CompanionEngine {
         }
         return next();
       }, { prepend: true });
-      const adapter = this.options.adapter(invocation.preparedTurn.profile);
+      const adapter = this.options.adapter(
+        invocation.preparedTurn.profile,
+        invocation.preparedTurn.requiredAction?.name,
+      );
       ctx.llm.registerAdapter([invocation.preparedTurn.profile.provider], adapter);
 
       let latestAssistant: AssistantMessage | undefined;
@@ -753,7 +768,12 @@ export class CompanionEngine {
           const chunk = sessionEvent.data.chunk;
           if (chunk.type === "text-delta" && chunk.text) {
             currentStepText += chunk.text;
-            event({ type: "text_delta", delta: chunk.text });
+            // Required image replies are short and have deterministic language /
+            // process-exposure checks. Buffer them until terminal validation so
+            // invalid prose never leaks into user-visible SSE as provisional text.
+            if (!invocation.preparedTurn.requiredAction) {
+              event({ type: "text_delta", delta: chunk.text });
+            }
           }
           if (chunk.type === "finish") latestFinish = chunk;
         } else if (sessionEvent.type === "assistant/message") {
@@ -878,10 +898,18 @@ export class CompanionEngine {
                 }],
               },
               async execute(args, execution) {
+                const requiredAction = invocation.preparedTurn.requiredAction;
+                if (requiredAction && bridge.callCount > 0) {
+                  throw new Error("required image action may execute only once");
+                }
                 const call = {
                   attemptId: invocation.attemptId,
                   callId: String(execution.callId),
                   name: tool.name,
+                  effectScope: requiredAction ? "turn_action" : "attempt",
+                  intent: {
+                    requestedNudity: requiredAction?.requestedNudity ?? "unspecified",
+                  },
                   arguments: args,
                 } as CompanionToolCall;
                 const result = await bridge.execute(call, execution.signal);
@@ -925,6 +953,32 @@ export class CompanionEngine {
               }
               throw new Error("terminal assistant candidate contained an unexecuted image tool payload");
             }
+            const requiredAction = invocation.preparedTurn.requiredAction;
+            if (
+              requiredAction &&
+              !requiredImageReplyMatchesUserScript(current.content, content)
+            ) {
+              terminalValidationCode = "required_image_reply_language_mismatch";
+              throw new Error("required image reply did not match the user's writing system");
+            }
+            if (
+              requiredAction &&
+              /\b(?:prompt|tool call|image generation process|translation)\b|(?:提示词|工具调用|生图流程|翻译)/iu.test(content)
+            ) {
+              terminalValidationCode = "required_image_reply_exposed_process";
+              throw new Error("required image reply exposed the generation process");
+            }
+            if (requiredAction && bridge.callCount === 0) {
+              terminalValidationCode = "required_image_tool_missing";
+              throw new Error("required image action ended without a tool call");
+            }
+            if (
+              requiredAction &&
+              (bridge.callCount !== 1 || bridge.reservations[0]?.name !== requiredAction.name)
+            ) {
+              terminalValidationCode = "required_image_tool_mismatch";
+              throw new Error("required image action executed the wrong tool sequence");
+            }
             if (latestFinish.reason.kind !== "stop" && latestFinish.reason.kind !== "max-tokens") {
               throw new Error(`non-terminal finish reason ${latestFinish.reason.kind}`);
             }
@@ -948,6 +1002,8 @@ export class CompanionEngine {
               event({ type: "text_delta", delta: content });
             } else if (currentStepText !== content) {
               throw new Error("streamed assistant text differs from terminal message");
+            } else if (requiredAction) {
+              event({ type: "text_delta", delta: content });
             }
             await event({ type: "terminal_candidate", candidate });
             const ack = await port.commit(candidate);
@@ -1076,14 +1132,15 @@ export class CompanionEngine {
     request: CompanionWorkspaceRebuildSource,
     signal?: AbortSignal,
   ): Promise<{ rebuildId: string; sessions: number; messages: number }> {
-    if (!this.options.rebuilder) throw new Error("igrep workspace rebuild is not configured");
+    if (!this.options.memoryBuilder) throw new Error("igrep workspace build is not configured");
     if (!request.fence) throw new Error("relationship rebuild prepare requires a fence");
     // INVARIANT: Main already isolates destructive mutations and cancels exact
     // affected attempts. A candidate rebuild must never cancel a newer turn.
     return this.options.workspaces.prepareRelationshipRebuild(
       request,
       request.fence,
-      (workspace) => this.options.rebuilder!.rebuild(workspace, request, signal),
+      { seed: request.mode === "project" ? "canonical" : "empty" },
+      (workspace) => this.options.memoryBuilder!.build(workspace, request, signal),
       signal,
     );
   }

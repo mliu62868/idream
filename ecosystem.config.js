@@ -18,7 +18,7 @@
 //    memory lives in the DSH/igrep workspace. Do NOT scale it past 1 without
 //    shared storage plus explicit per-run writer arbitration.
 // ⚠️ Every first-party JavaScript/TypeScript/Next process uses Bun as PM2's
-//    interpreter. Fish Audio's Bun wrapper still owns the Python Uvicorn child;
+//    interpreter. Voice-runtime Bun wrappers own their Python Uvicorn children;
 //    PM2 remains the lifecycle manager and queue-fence authority.
 // Absolute cwds (resolved from this file's dir) so targeted `pm2 start
 // ecosystem.config.js --only <app>` resolves each app's working dir — and thus its
@@ -111,10 +111,20 @@ const fishAudioApiUrl = new URL(
   mainEnvValue("FISH_AUDIO_API_URL", "http://127.0.0.1:8062/v1"),
 );
 const fishAudioApiToken = mainEnvValue("FISH_AUDIO_API_TOKEN");
+const pocketTtsApiUrl = new URL(
+  mainEnvValue("POCKET_TTS_API_URL", "http://127.0.0.1:8063/v1"),
+);
+const pocketTtsApiToken = mainEnvValue("POCKET_TTS_API_TOKEN");
+const configuredVoiceProviders = new Set([
+  mainEnvValue("VOICE_PROVIDER", "pocket-tts"),
+  mainEnvValue("VOICE_IDENTITY_PROVIDER"),
+]);
+const fishAudioEnabled = configuredVoiceProviders.has("fish-audio");
+const pocketTtsEnabled = configuredVoiceProviders.has("pocket-tts");
 
 module.exports = {
   apps: [
-    // Resident Fish Audio S2 Pro MLX runtime + durable reference-voice registry.
+    // Optional Fish Audio S2 Pro MLX runtime + durable reference-voice registry.
     {
       name: "fish-audio",
       cwd: dir("."),
@@ -168,6 +178,56 @@ module.exports = {
         ...(fishAudioApiToken
           ? { FISH_AUDIO_API_TOKEN: fishAudioApiToken }
           : {}),
+      },
+    },
+    // Official Pocket TTS CPU runtime for default English speech and role voices.
+    {
+      name: "pocket-tts",
+      cwd: dir("."),
+      script: "scripts/start-pocket-tts.cjs",
+      interpreter: bunInterpreter,
+      exec_mode: "fork",
+      instances: 1,
+      kill_timeout: 60_000,
+      ...sourceWatch(
+        "scripts/start-pocket-tts.cjs",
+        "scripts/pocket_tts_gateway.py",
+        "scripts/pocket-tts-requirements.in",
+        "scripts/pocket-tts-requirements.lock",
+      ),
+      env: {
+        ...runtimeIdentityEnv,
+        POCKET_TTS_HOST: mainEnvValue(
+          "POCKET_TTS_HOST",
+          pocketTtsApiUrl.hostname,
+        ),
+        POCKET_TTS_PORT: mainEnvValue(
+          "POCKET_TTS_PORT",
+          pocketTtsApiUrl.port ||
+            (pocketTtsApiUrl.protocol === "https:" ? "443" : "80"),
+        ),
+        POCKET_TTS_MODEL: mainEnvValue("POCKET_TTS_MODEL", "pocket-tts"),
+        POCKET_TTS_MODEL_REVISION: mainEnvValue(
+          "POCKET_TTS_MODEL_REVISION",
+          "39592ff23c9ef80098bb74895d104c26275fe2c9",
+        ),
+        POCKET_TTS_LANGUAGE: mainEnvValue("POCKET_TTS_LANGUAGE", "english"),
+        POCKET_TTS_DEFAULT_VOICE_ID: mainEnvValue(
+          "POCKET_TTS_DEFAULT_VOICE_ID",
+          "alba",
+        ),
+        POCKET_TTS_VOICE_DIR: mainEnvValue(
+          "POCKET_TTS_VOICE_DIR",
+          dir(".data/pocket-tts/voices"),
+        ),
+        POCKET_TTS_IDEMPOTENCY_DIR: mainEnvValue(
+          "POCKET_TTS_IDEMPOTENCY_DIR",
+          dir(".data/pocket-tts/idempotency"),
+        ),
+        ...(pocketTtsApiToken
+          ? { POCKET_TTS_API_TOKEN: pocketTtsApiToken }
+          : {}),
+        ...(process.env.HF_TOKEN ? { HF_TOKEN: process.env.HF_TOKEN } : {}),
       },
     },
     // fast · synchronous — public pages, characters, billing, library, chat BFF
@@ -384,5 +444,9 @@ module.exports = {
         ...sharedInternalEnv,
       },
     },
-  ],
+  ].filter((app) => {
+    if (app.name === "fish-audio") return fishAudioEnabled;
+    if (app.name === "pocket-tts") return pocketTtsEnabled;
+    return true;
+  }),
 };

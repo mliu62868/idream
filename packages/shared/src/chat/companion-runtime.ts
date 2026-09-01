@@ -1,7 +1,8 @@
 import { z } from "zod";
+import { COMPANION_PRODUCT_PROMPT_VERSION } from "./companion-agent-prompt";
 
 // Shared contains only Main ↔ Chat contracts and operator evidence.
-export const COMPANION_RUNTIME_PROTOCOL_VERSION = 1 as const;
+export const COMPANION_RUNTIME_PROTOCOL_VERSION = 2 as const;
 export const COMPANION_DSH_VERSION = "0.1.1-rc.2" as const;
 export const COMPANION_DSH_COMMIT =
   "b150a551b8d465e31e418e1b2eaf5e79bbb7d28e" as const;
@@ -39,6 +40,7 @@ const credentialFreeHttpUrlSchema = z
   });
 
 export const companionMemoryModeSchema = z.enum(["normal", "private"]);
+export const companionWorkspaceBuildModeSchema = z.enum(["project", "rebuild"]);
 
 export const companionWorkspaceRebuildMessageSchema = z
   .object({
@@ -73,6 +75,7 @@ export const companionWorkspaceRebuildSchema = z
     scope: z.literal("relationship"),
     userId: nonEmptyStringSchema,
     characterId: nonEmptyStringSchema,
+    mode: companionWorkspaceBuildModeSchema,
     messages: z.array(companionWorkspaceRebuildMessageSchema),
     fence: companionWorkspaceRebuildFenceSchema.optional(),
   })
@@ -130,6 +133,7 @@ export const companionWorkspaceRebuildFrameSchema = z.discriminatedUnion("type",
     scope: z.literal("relationship"),
     userId: nonEmptyStringSchema,
     characterId: nonEmptyStringSchema,
+    mode: companionWorkspaceBuildModeSchema,
     messageCount: nonNegativeIntegerSchema,
     fence: companionWorkspaceRebuildFenceSchema.optional(),
   }).strict(),
@@ -256,6 +260,7 @@ export function createCompanionWorkspaceRebuildBody(
           scope: "relationship",
           userId: request.userId,
           characterId: request.characterId,
+          mode: request.mode,
           messageCount: request.messages.length,
           ...(request.fence ? { fence: request.fence } : {}),
         })));
@@ -320,6 +325,7 @@ export function createCompanionWorkspaceRebuildStream(input: {
   scope: "relationship";
   userId: string;
   characterId: string;
+  mode: CompanionWorkspaceBuildMode;
   fence?: CompanionWorkspaceRebuildFence;
   messageCount: number;
   messages: AsyncIterable<CompanionWorkspaceRebuildMessage>;
@@ -345,6 +351,7 @@ export function createCompanionWorkspaceRebuildStream(input: {
           scope: input.scope,
           userId: input.userId,
           characterId: input.characterId,
+          mode: input.mode,
           messageCount: input.messageCount,
           ...(input.fence ? { fence: input.fence } : {}),
         })));
@@ -461,6 +468,7 @@ export const companionReadinessSchema = z
     service: z.literal("chat-runtime"),
     ready: z.literal(true),
     checkedAt: isoDateTimeSchema,
+    productPromptVersion: z.literal(COMPANION_PRODUCT_PROMPT_VERSION),
     dshVersion: z.literal(COMPANION_DSH_VERSION),
     dshCommit: z.literal(COMPANION_DSH_COMMIT),
     igrepVersion: companionIgrepVersionSchema,
@@ -510,6 +518,10 @@ export const companionReadinessSchema = z
 export const companionProbeDshEvidenceSchema = z
   .object({
     ok: z.boolean(),
+    productPromptVersion: z.literal(COMPANION_PRODUCT_PROMPT_VERSION).optional(),
+    preparedTurnVersion: positiveIntegerSchema.optional(),
+    systemPromptDigest: sha256Schema.optional(),
+    soulFingerprint: sha256Schema.optional(),
     runtime: z.literal("embedded_dsh").optional(),
     memoryMode: companionMemoryModeSchema.optional(),
     provider: nonEmptyStringSchema.optional(),
@@ -545,6 +557,7 @@ export function projectCompanionProbeDshEvidence(
     : "projected",
 ): z.infer<typeof companionProbeDshEvidenceSchema> {
   const evidence = probeRecord(value);
+  const prompt = probeRecord(evidence.prompt);
   const execution = probeRecord(evidence.execution);
   const instance = probeRecord(evidence.runtimeInstance);
   const observations = probeRecord(evidence.igrepObservations);
@@ -559,6 +572,22 @@ export function projectCompanionProbeDshEvidence(
   };
 
   expectFact(evidence.authority === "dsh_terminal_candidate", "authority");
+  expectFact(
+    prompt.productPromptVersion === COMPANION_PRODUCT_PROMPT_VERSION,
+    "prompt.productPromptVersion",
+  );
+  expectFact(
+    Number.isSafeInteger(prompt.preparedTurnVersion) && Number(prompt.preparedTurnVersion) > 0,
+    "prompt.preparedTurnVersion",
+  );
+  expectFact(
+    typeof prompt.systemPromptDigest === "string" && /^[a-f0-9]{64}$/u.test(prompt.systemPromptDigest),
+    "prompt.systemPromptDigest",
+  );
+  expectFact(
+    typeof prompt.soulFingerprint === "string" && /^[a-f0-9]{64}$/u.test(prompt.soulFingerprint),
+    "prompt.soulFingerprint",
+  );
   expectFact(evidence.runtime === "embedded_dsh", "runtime");
   expectFact(evidence.memoryMode === mode, "memoryMode");
   expectFact(
@@ -604,6 +633,18 @@ export function projectCompanionProbeDshEvidence(
 
   return companionProbeDshEvidenceSchema.parse({
     ok: failures.length === 0,
+    ...(prompt.productPromptVersion === COMPANION_PRODUCT_PROMPT_VERSION
+      ? { productPromptVersion: COMPANION_PRODUCT_PROMPT_VERSION }
+      : {}),
+    ...(Number.isSafeInteger(prompt.preparedTurnVersion) && Number(prompt.preparedTurnVersion) > 0
+      ? { preparedTurnVersion: Number(prompt.preparedTurnVersion) }
+      : {}),
+    ...(typeof prompt.systemPromptDigest === "string"
+      ? { systemPromptDigest: prompt.systemPromptDigest }
+      : {}),
+    ...(typeof prompt.soulFingerprint === "string"
+      ? { soulFingerprint: prompt.soulFingerprint }
+      : {}),
     ...(evidence.runtime === "embedded_dsh" ? { runtime: "embedded_dsh" as const } : {}),
     ...(evidence.memoryMode === "normal" || evidence.memoryMode === "private"
       ? { memoryMode: evidence.memoryMode }
@@ -670,6 +711,9 @@ function probeIsoDate(value: unknown): value is string {
 export type CompanionMemoryMode = z.infer<typeof companionMemoryModeSchema>;
 export type CompanionWorkspaceRebuild = z.infer<
   typeof companionWorkspaceRebuildSchema
+>;
+export type CompanionWorkspaceBuildMode = z.infer<
+  typeof companionWorkspaceBuildModeSchema
 >;
 export type CompanionWorkspaceRebuildMessage = z.infer<
   typeof companionWorkspaceRebuildMessageSchema

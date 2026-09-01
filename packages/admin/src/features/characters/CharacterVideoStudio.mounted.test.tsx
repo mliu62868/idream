@@ -50,6 +50,7 @@ vi.mock("@/components/admin/i18n", () => ({
 import { characterWorkspaceDetail } from "./character-workspace-fixture";
 import {
   CharacterVideoStudio,
+  characterVideoProgress,
   characterVideoSourceOptions,
   videoPlaybackIssueMessage,
 } from "./CharacterVideoStudio";
@@ -200,7 +201,7 @@ const pendingRun = {
     id: "video-item-1",
     ordinal: 0,
     status: "queued",
-    executionState: "generating",
+    executionState: "generating" as const,
     identityReviewMode: "preserves_identity",
     version: 1,
     retryability: "unknown",
@@ -245,7 +246,7 @@ const readyRun = {
   items: [{
     ...pendingRun.items[0],
     status: "generated",
-    executionState: "ready",
+    executionState: "ready" as const,
     version: 2,
     lineage: {
       ...pendingRun.items[0].lineage,
@@ -351,6 +352,19 @@ describe("Character Video Studio", () => {
     await waitUntil(() => create?.disabled === false);
     expect(create?.disabled).toBe(false);
 
+    const negativePrompt = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Negative prompt"]',
+    );
+    expect(negativePrompt).not.toBeNull();
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      "value",
+    )?.set;
+    await act(async () => {
+      setter?.call(negativePrompt, "hand distortion, camera shake, visible text");
+      negativePrompt?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
     await act(async () => {
       create?.click();
     });
@@ -375,6 +389,7 @@ describe("Character Video Studio", () => {
         referenceAssetIds: ["source-cover"],
         orientation: "2:3",
         count: 1,
+        negativePrompt: "hand distortion, camera shake, visible text",
       },
     });
     await waitUntil(() => container.textContent?.includes("Generating video") === true);
@@ -694,5 +709,55 @@ describe("Character Video Studio", () => {
     expect(videoPlaybackIssueMessage(0).trim().length).toBeGreaterThan(0);
     expect(videoPlaybackIssueMessage(99).trim().length).toBeGreaterThan(0);
     expect(videoPlaybackIssueMessage("stalled")).toContain("did not start playing");
+  });
+
+  it("shows honest stage, elapsed time, ETA, and long-running guidance", () => {
+    expect(
+      characterVideoProgress({
+        createdAt: "2026-07-30T12:00:00.000Z",
+        estimatedDurationMs: 15 * 60_000,
+        item: pendingRun.items[0],
+        nowMs: new Date("2026-07-30T12:10:00.000Z").getTime(),
+      }),
+    ).toEqual({
+      stage: "Generating video",
+      elapsedMs: 10 * 60_000,
+      estimatedDurationMs: 15 * 60_000,
+      estimatedRemainingMs: 5 * 60_000,
+      longerThanExpected: false,
+    });
+    expect(
+      characterVideoProgress({
+        createdAt: "2026-07-30T12:00:00.000Z",
+        estimatedDurationMs: 15 * 60_000,
+        item: pendingRun.items[0],
+        nowMs: new Date("2026-07-30T12:23:00.000Z").getTime(),
+      }).longerThanExpected,
+    ).toBe(true);
+  });
+
+  it("refreshes Character and library projections when video generation becomes terminal", async () => {
+    const onProjectReload = vi.fn(async () => undefined);
+    adminV2Request.mockImplementation(async (path: string) => {
+      if (path === "/api/v2/admin/creative/runs/video-run-1") return readyRun;
+      return {
+        items: [readyRun],
+        pageInfo: { endCursor: null, hasNextPage: false },
+      };
+    });
+
+    await act(async () => root.render(
+      <CharacterVideoStudio
+        actorId="actor-1"
+        data={data}
+        onCreateImage={vi.fn()}
+        onProjectReload={onProjectReload}
+        permissions={{ create: true, read: true, review: true }}
+        runCommittedMutation={runCommittedMutation}
+      />,
+    ));
+    await waitUntil(() => container.querySelector("video") !== null);
+    await waitUntil(() => onProjectReload.mock.calls.length === 1);
+    expect(onProjectReload).toHaveBeenCalledOnce();
   });
 });

@@ -8,3 +8,7 @@ idream_shared:
   loras: models/loras
   clip: models/clip
   clip_vision: models/clip_vision
+
+idream_custom_nodes:
+  base_path: ..
+  custom_nodes: comfyui_nodes

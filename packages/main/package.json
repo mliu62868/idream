@@ -21,7 +21,7 @@
     "build:workers": "bun ../../scripts/build-bun-service.mjs src/processes/finalizer.ts src/processes/event-consumer.ts src/processes/admin-command-worker.ts",
     "start": "bun --bun next start",
     "lint": "eslint",
-    "typecheck": "bun run db:generate && tsc --noEmit",
+    "typecheck": "bun run db:generate && bun --bun next typegen && tsc --noEmit",
     "check": "bun run lint && bun run typecheck && bun run build",
     "check:launch": "bun src/server/launch-readiness.ts",
     "check:migration-authority": "bun src/scripts/check-migration-authority.ts",

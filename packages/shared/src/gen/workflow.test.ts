@@ -8,6 +8,7 @@ import {
   bindComfySlots,
   bindWorkflowArgs,
   loadWorkflowDescriptors,
+  workflowPromptSlots,
 } from "./workflow";
 
 const comfyDescriptor = workflowDescriptorSchema.parse({
@@ -78,6 +79,45 @@ describe("bindComfySlots", () => {
     const prompt = bindComfySlots(descriptor, { width: 1024 });
     expect(prompt["14"].inputs.width).toBe(1024);
     expect(prompt["15"].inputs.width).toBe(1024);
+  });
+});
+
+describe("workflowPromptSlots", () => {
+  it("turns exclusions into an explicit positive instruction when conditioning is ineffective", () => {
+    expect(
+      workflowPromptSlots({
+        mode: "positive_instruction",
+        prompt: "Editorial portrait in a hotel room.",
+        negativePrompt: "visible text, duplicate person",
+      }),
+    ).toEqual({
+      prompt:
+        "Editorial portrait in a hotel room.\n\nAvoid in the result: visible text, duplicate person. Treat every item in that list as excluded content, not requested content.",
+      negative: "",
+    });
+  });
+
+  it("keeps real negative conditioning separate", () => {
+    expect(
+      workflowPromptSlots({
+        mode: "conditioning",
+        prompt: "Editorial portrait.",
+        negativePrompt: "visible text",
+      }),
+    ).toEqual({
+      prompt: "Editorial portrait.",
+      negative: "visible text",
+    });
+  });
+
+  it("does not add an empty avoidance instruction", () => {
+    expect(
+      workflowPromptSlots({
+        mode: "positive_instruction",
+        prompt: "Editorial portrait.",
+        negativePrompt: "   ",
+      }),
+    ).toEqual({ prompt: "Editorial portrait.", negative: "" });
   });
 });
 

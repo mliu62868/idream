@@ -138,6 +138,22 @@ describe("Character Portfolio card", () => {
     expect(performance).not.toContain("live management");
   });
 
+  it("keeps long Character names readable instead of visually truncating them", () => {
+    const longName = "E2E Admin Operations Character With A Deliberately Long Name";
+    const html = renderToStaticMarkup(
+      <CharacterPortfolioCard
+        canOpenAssets
+        canOpenProject
+        item={{ ...item, name: longName }}
+        mode="studio"
+      />,
+    );
+    expect(html).toContain(`title="${longName}"`);
+    expect(html).not.toContain(
+      'class="truncate text-base font-semibold text-[var(--ad-ink)]"',
+    );
+  });
+
   // SPEC: 草稿主图的可见性由「能不能看素材」决定，与看的是哪个视图无关。
   // INTENT: 「角色表现」曾把 canOpenAssets 硬编码成 false，于是主图来源为 draft 的角色
   //         在那里只剩灰色占位（同一角色在「角色」里有图），requiresAssets 的下一步动作

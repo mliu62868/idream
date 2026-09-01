@@ -34,7 +34,7 @@ export const VOICE_PROVIDER_REPLAY = {
   mock: "durable_same_key",
   fish_audio: "durable_same_key",
   pipeline: "non_replayable",
-  pocket_tts: "non_replayable",
+  pocket_tts: "durable_same_key",
 } as const satisfies Record<
   VoiceProviderKey,
   "durable_same_key" | "non_replayable"
@@ -111,6 +111,18 @@ export interface VoiceIdentityPort {
       language: string;
     }>
   >;
+  createPresetVoice?(input: {
+    voiceId: string;
+    presetVoiceId: string;
+    language: string;
+  }): Promise<
+    ProviderResult<{
+      voiceId: string;
+      presetVoiceId: string;
+      model: string;
+      language: string;
+    }>
+  >;
   deleteVoice(input: {
     voiceId: string;
   }): Promise<ProviderResult<{ deleted: true }>>;
@@ -120,6 +132,7 @@ export interface VoiceIdentityPort {
       runtime?: string;
       runtimeVersion?: string;
       acceleration?: string;
+      catalogVoices?: readonly string[];
     }>
   >;
 }

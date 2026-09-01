@@ -6,7 +6,8 @@
     "id": "7b4d10fa-cce3-4d8b-a2d7-64b132a5c25d",
     "name": "iDream RedGraft LTX 2.5 I2V"
   },
-  "version": 1,
+  "version": 2,
+  "negativePromptMode": "positive_instruction",
   "capabilities": [
     "video",
     "img2video",
@@ -555,7 +556,7 @@
           0
         ],
         "positive": [
-          "320:304",
+          "900:3",
           0
         ],
         "negative": [
@@ -742,6 +743,22 @@
       "class_type": "LTXVCropGuides",
       "_meta": {
         "title": "Stage 2 crop guides"
+      }
+    },
+    "900:3": {
+      "inputs": {
+        "passthrough": [
+          "320:304",
+          0
+        ],
+        "after": [
+          "900:1",
+          0
+        ]
+      },
+      "class_type": "IDreamUnloadOffDeviceModels",
+      "_meta": {
+        "title": "iDream: unload CPU text encoder after conditioning"
       }
     }
   },

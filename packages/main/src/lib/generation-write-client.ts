@@ -47,7 +47,9 @@ type MediaVariationRequest = {
   idempotencyKeys?: Map<string, string>;
   mediaId: string;
   model?: string;
+  negativePrompt?: string;
   outputCount: number;
+  prompt?: string;
   quote?: RuntimeGenerationQuote | null;
 };
 
@@ -241,6 +243,8 @@ export async function requestMediaVariationWithExactQuote(
     {
       body: {
         model: input.model,
+        prompt: input.prompt,
+        negativePrompt: input.negativePrompt,
         outputCount: input.outputCount,
         consistencyMode: input.consistencyMode,
         orientation: quote.defaultOrientation,

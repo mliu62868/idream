@@ -80,8 +80,11 @@ export async function resolveGenerationPlan(
   options: {
     source?: GenerationSource;
     fallbackToActiveOnStaleVisualProfile?: boolean;
+    requireCharacterVisualIdentity?: boolean;
     profileSelectionAuthority?: GenerationProfileSelectionAuthority;
     bootstrapVisualProfile?: boolean;
+    expectedVisualProfileVersion?: number;
+    expectedReferenceSetRevisionId?: string;
   } = {},
 ) {
   const entitlements = await entitlementMap(userId);
@@ -120,8 +123,21 @@ export async function resolveGenerationPlan(
           fallbackToActiveOnStale:
             options.fallbackToActiveOnStaleVisualProfile,
           bootstrapIfMissing: options.bootstrapVisualProfile !== false,
+          expectedVersion: options.expectedVisualProfileVersion,
+          allowArchivedPinned: options.expectedReferenceSetRevisionId !== undefined,
         })
       : null;
+  if (
+    body.mode === "image" &&
+    character &&
+    options.requireCharacterVisualIdentity &&
+    !visualProfile
+  ) {
+    throw Errors.conflict(
+      "Chat image generation requires a qualified Character identity reference",
+      { characterId: character.id },
+    );
+  }
   const selectedLook = await resolveGenerationLook(
     userId,
     character?.id ?? null,
@@ -141,7 +157,10 @@ export async function resolveGenerationPlan(
         : null;
   const referenceRequirements =
     body.mode === "image" && character && visualProfile
-      ? await generationReferenceRouteRequirements(visualProfile.id)
+      ? await generationReferenceRouteRequirements(
+          visualProfile.id,
+          options.expectedReferenceSetRevisionId,
+        )
       : [];
   const hasRequestedSourceImage =
     typeof requestedSourceImageAssetId === "string";

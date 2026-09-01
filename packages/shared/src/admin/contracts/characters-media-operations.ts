@@ -30,47 +30,85 @@ export const characterVoiceCloneCreateRequestSchema = z
   })
   .strict();
 
-export const fishAudioCatalogVoiceIdSchema = z.enum([
-  "fish-female-default",
+export const characterVoicePresetCreateRequestSchema = z
+  .object({
+    presetVoiceId: z.string().trim().min(3).max(160),
+    sampleText: z.string().trim().min(3).max(500),
+    reason: z.string().trim().min(3).max(2_000),
+  })
+  .strict();
+
+export const POCKET_TTS_CATALOG_VOICE_IDS = [
+  "cosette",
+  "marius",
+  "javert",
+  "alba",
+  "jean",
+  "anna",
+  "vera",
+  "fantine",
+  "charles",
+  "paul",
+  "eponine",
+  "azelma",
+  "george",
+  "mary",
+  "jane",
+  "michael",
+  "eve",
+  "bill_boerst",
+  "peter_yearsley",
+  "stuart_bell",
+  "caro_davy",
+] as const;
+
+export const systemVoiceProviderSchema = z.enum([
+  "mock",
+  "pipeline",
+  "pocket_tts",
+  "fish_audio",
 ]);
 
-export const fishAudioCatalogVoiceSchema = z
+export const systemVoiceCatalogVoiceIdSchema = z.string().trim().min(1).max(160);
+
+export const systemVoiceCatalogVoiceSchema = z
   .object({
-    id: fishAudioCatalogVoiceIdSchema,
+    id: systemVoiceCatalogVoiceIdSchema,
     label: z.string().trim().min(1),
-    presentation: z.literal("female"),
+    presentation: z.enum(["female", "male", "neutral", "unspecified"]),
     description: z.string().trim().min(1),
   })
   .strict();
 
 export const voiceDefaultSettingsSchema = z
   .object({
-    provider: z.literal("fish_audio"),
+    provider: systemVoiceProviderSchema,
     source: z.enum(["environment", "app_setting"]),
     settingVersion: z.number().int().nonnegative(),
     updatedAt: adminIsoDateTimeSchema.nullable(),
-    defaultVoiceId: fishAudioCatalogVoiceIdSchema,
+    defaultVoiceId: systemVoiceCatalogVoiceIdSchema,
     genderVoiceIds: z
       .object({
-        female: fishAudioCatalogVoiceIdSchema,
-        male: fishAudioCatalogVoiceIdSchema,
-        trans: fishAudioCatalogVoiceIdSchema,
+        female: systemVoiceCatalogVoiceIdSchema,
+        male: systemVoiceCatalogVoiceIdSchema,
+        trans: systemVoiceCatalogVoiceIdSchema,
       })
       .strict(),
     delivery: fishAudioDeliverySettingsSchema,
-    catalog: z.array(fishAudioCatalogVoiceSchema).min(1).readonly(),
+    catalog: z.array(systemVoiceCatalogVoiceSchema).min(1).readonly(),
   })
   .strict();
 
 export const voiceDefaultSettingsUpdateRequestSchema = z
   .object({
     expectedVersion: z.number().int().nonnegative(),
-    defaultVoiceId: fishAudioCatalogVoiceIdSchema,
+    provider: systemVoiceProviderSchema,
+    defaultVoiceId: systemVoiceCatalogVoiceIdSchema,
     genderVoiceIds: z
       .object({
-        female: fishAudioCatalogVoiceIdSchema,
-        male: fishAudioCatalogVoiceIdSchema,
-        trans: fishAudioCatalogVoiceIdSchema,
+        female: systemVoiceCatalogVoiceIdSchema,
+        male: systemVoiceCatalogVoiceIdSchema,
+        trans: systemVoiceCatalogVoiceIdSchema,
       })
       .strict(),
     delivery: fishAudioDeliverySettingsSchema,
@@ -87,7 +125,8 @@ export const voiceDefaultSettingsUpdateResponseSchema = z
 
 export const voiceDefaultPreviewRequestSchema = z
   .object({
-    voiceId: fishAudioCatalogVoiceIdSchema,
+    provider: systemVoiceProviderSchema,
+    voiceId: systemVoiceCatalogVoiceIdSchema,
     text: z.string().trim().min(3).max(240),
     delivery: fishAudioDeliverySettingsSchema,
   })
@@ -95,7 +134,7 @@ export const voiceDefaultPreviewRequestSchema = z
 
 export const voiceDefaultPreviewResponseSchema = z
   .object({
-    voiceId: fishAudioCatalogVoiceIdSchema,
+    voiceId: systemVoiceCatalogVoiceIdSchema,
     contentType: z.literal("audio/wav"),
     audioBase64: z.string().min(1),
     durationMs: z.number().int().nonnegative(),
@@ -141,9 +180,16 @@ export const characterVoiceWorkspaceSchema = z
     provider: z.enum(["mock", "pipeline", "pocket_tts", "fish_audio"]),
     cloningAvailable: z.boolean(),
     runtimeStatus: z.enum(["ready", "unavailable", "inactive"]),
-    runtimeEngine: z.enum(["omlx", "mlx_audio", "unknown", "inactive"]),
+    runtimeEngine: z.enum([
+      "pocket_tts",
+      "omlx",
+      "mlx_audio",
+      "unknown",
+      "inactive",
+    ]),
     runtimeVersion: z.string().trim().min(1).nullable(),
     runtimeLanguage: z.string().trim().min(1),
+    catalogVoiceIds: z.array(z.string().trim().min(1)).readonly(),
     currentVoiceId: z.string().nullable(),
     effectiveVoiceId: z.string().trim().min(1),
     authoritySource: z.enum(["system_default", "character_clone"]),
@@ -161,6 +207,9 @@ export const characterVoiceCloneCreateResponseSchema = z
     replayed: z.boolean(),
   })
   .strict();
+
+export const characterVoicePresetCreateResponseSchema =
+  characterVoiceCloneCreateResponseSchema;
 
 export const characterVoiceActivationRequestSchema = z
   .object({
@@ -359,7 +408,9 @@ export type CharacterVoiceProfile = z.infer<typeof characterVoiceProfileSchema>;
 
 export type CharacterVoiceWorkspace = z.infer<typeof characterVoiceWorkspaceSchema>;
 
-export type FishAudioCatalogVoiceId = z.infer<typeof fishAudioCatalogVoiceIdSchema>;
+export type SystemVoiceCatalogVoiceId = z.infer<
+  typeof systemVoiceCatalogVoiceIdSchema
+>;
 
 export type VoiceDefaultSettings = z.infer<typeof voiceDefaultSettingsSchema>;
 
@@ -369,6 +420,14 @@ export type CharacterVoiceCloneCreateRequest = z.infer<
 
 export type CharacterVoiceCloneCreateResponse = z.infer<
   typeof characterVoiceCloneCreateResponseSchema
+>;
+
+export type CharacterVoicePresetCreateRequest = z.infer<
+  typeof characterVoicePresetCreateRequestSchema
+>;
+
+export type CharacterVoicePresetCreateResponse = z.infer<
+  typeof characterVoicePresetCreateResponseSchema
 >;
 
 export type CharacterVoiceActivationRequest = z.infer<

@@ -307,4 +307,37 @@ describe("Character workspace details", () => {
 
     expect(container.textContent).not.toContain(VOICE_DEFAULTS_READ_ONLY);
   });
+
+  it("keeps the visible panel synchronized with same-Character tab links", async () => {
+    await act(async () => {
+      root.render(
+        <AdminI18nProvider locale="en">
+          <CharacterWorkspace
+            actorId="operator-a"
+            permissions={permissions}
+            view={{ kind: "detail", id: "character-detail" }}
+          />
+        </AdminI18nProvider>,
+      );
+    });
+    await waitUntil(
+      () => container.textContent?.includes("Character profile and status") === true,
+      "Character overview",
+    );
+    const viewAll = [...container.querySelectorAll("a")].find(
+      (anchor) => anchor.textContent?.includes("View all"),
+    );
+    expect(viewAll?.getAttribute("href")).toContain("?tab=assets");
+
+    await act(async () => {
+      viewAll?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, cancelable: true }),
+      );
+    });
+    await waitUntil(
+      () => container.querySelector("#character-panel-assets") !== null,
+      "Images panel after in-workspace link",
+    );
+    expect(window.location.search).toBe("?tab=assets");
+  });
 });

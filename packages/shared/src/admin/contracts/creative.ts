@@ -23,13 +23,13 @@ export const characterRouteEvaluationMatrixSchemaVersion =
 // INTENT: H3's trained frame grid starts at 124 frames, so the request remains
 // the integer five-second contract while output verification uses 124 / 24.
 export const minimaxH3VideoProductionRecipe = {
-  recipeVersion: 3,
+  recipeVersion: 4,
   profileKey: "profile_video_h3_v1",
   modelLabel: "MiniMax H3 RedCraft A2A",
   runner: "comfyui",
   pipelineModel: "minimax-h3-redcraft-a2a-int8-convrot",
   workflowKey: "minimax-h3-redcraft-i2v",
-  workflowVersion: 3,
+  workflowVersion: 4,
   sourceModelPath:
     "diffusion_models/REDMix-MiniMaxH3-A2Ab1-pruned-int8-convrot-ComfyMCP.safetensors",
   checkpointFilename:
@@ -57,7 +57,7 @@ export const minimaxH3VideoProductionRecipe = {
   scheduler: "simple",
   cfgScale: 1,
   workflowGraphSha256:
-    "f3486e6f4ff5c7a8f13799c25de74734c0db72d7ca77919c9ec77743e566645c",
+    "feedaa62bc6c32455aeec64f5bda90d58e51b530c8e33cf8b29703623e005b25",
   modelAssets: [
     { path: "diffusion_models/REDMix-MiniMaxH3-A2Ab1-pruned-int8-convrot-ComfyMCP.safetensors", sha256: "fc99ff051283ee05f29b1ebcb14e0d7b36c03e93512ac5479411cdfa2e284122" },
     { path: "text_encoders/qwen3vl-32B-MiniMax-H3-Q4_K_M.gguf", sha256: "1bf75e038c5895b97b6ea16cc1e3d32076254b06ec3df10657650d86dc82279e" },
@@ -81,13 +81,13 @@ export const minimaxH3VideoProductionRecipe = {
 // SPEC: RedGraft is the default LTX video route validated on the isolated MPS
 // ComfyUI runtime. H3 remains an explicit alternative.
 export const redgraftLtx25VideoProductionRecipe = {
-  recipeVersion: 1,
+  recipeVersion: 2,
   profileKey: "profile_video_redgraft_ltx25_v1",
   modelLabel: "RedGraft LTX 2.5 Fast 2K",
   runner: "comfyui",
   pipelineModel: "redgraft-ltx25-fast2k-int8-convrot",
   workflowKey: "redgraft-ltx25-i2v",
-  workflowVersion: 1,
+  workflowVersion: 2,
   sourceModelPath:
     "diffusion_models/redgraftLTX25Fast2K_ltx25RedgraftNSFW.safetensors",
   checkpointFilename:
@@ -110,7 +110,7 @@ export const redgraftLtx25VideoProductionRecipe = {
   scheduler: "manual_sigmas",
   cfgScale: 1,
   workflowGraphSha256:
-    "3535e285e10977ba4f4d2c9675a575e01aed1b6c0a440fb2d4d5a622558baf33",
+    "6e00a21674d7a0cfe9df503152f353ac9560ef83ed5d632149bc7a0e7a86b169",
   modelAssets: [
     {
       path: "diffusion_models/redgraftLTX25Fast2K_ltx25RedgraftNSFW.safetensors",
@@ -368,6 +368,7 @@ export const creativeRunCreateRequestSchema = z
     orientation: z.string().trim().min(1).max(20).optional(),
     count: z.number().int().min(1).max(40).default(4),
     brief: z.string().trim().min(1).max(2_000),
+    negativePrompt: z.string().trim().max(2_000).optional(),
     directions: z.array(z.object({
       id: adminIdSchema,
       title: z.string().trim().min(2).max(80),
@@ -1030,6 +1031,7 @@ export const creativeRunDetailSchema = creativeRunBaseSchema
     title: z.string().trim().min(1),
     reviewContext: z.object({
       brief: z.string().trim().min(1),
+      negativePrompt: z.string().nullable().optional(),
       orientation: z.string().trim().min(1).nullable(),
       profile: z.object({
         key: z.string().trim().min(1).nullable(),

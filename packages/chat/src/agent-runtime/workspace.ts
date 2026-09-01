@@ -221,6 +221,7 @@ export class AttemptWorkspaceStore {
   async prepareRelationshipRebuild(
     identity: { userId: string; characterId: string },
     fence: CompanionWorkspaceRebuildFence,
+    options: { seed: "empty" | "canonical" },
     build: (workspace: string) => Promise<{ sessions: number; messages: number }>,
     signal?: AbortSignal,
   ): Promise<PreparedRelationshipRebuild> {
@@ -243,7 +244,26 @@ export class AttemptWorkspaceStore {
       // Each durable claim owns one candidate directory. Removing the shared
       // root here would let a second process destroy a live prepare between
       // Main lease heartbeats.
-      await mkdir(memory, { recursive: true, mode: 0o700 });
+      await mkdir(workspace, { recursive: true, mode: 0o700 });
+      if (options.seed === "canonical") {
+        const releaseRelationship = await this.acquireRelationship(
+          identity.userId,
+          identity.characterId,
+          this.options.canonicalRoot,
+          signal,
+        );
+        try {
+          const versionsRoot = join(relationshipRoot, ".igrep.versions");
+          const canonicalLink = join(relationshipRoot, ".igrep");
+          await mkdir(versionsRoot, { recursive: true, mode: 0o700 });
+          const canonicalVersion = await this.ensureCanonicalVersion(canonicalLink, versionsRoot);
+          await cp(canonicalVersion, memory, { recursive: true, force: false });
+        } finally {
+          releaseRelationship();
+        }
+      } else {
+        await mkdir(memory, { recursive: true, mode: 0o700 });
+      }
       for (const path of [candidatesRoot, candidateRoot, workspace, memory]) {
         await chmod(path, 0o700);
       }

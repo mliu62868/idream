@@ -28,6 +28,7 @@ type CharacterVideoLibraryProps = {
   canCreate: boolean;
   canArchive: boolean;
   onCreateImage: () => void;
+  onProjectReload: () => Promise<void>;
   runCommittedMutation: RunCommittedMutation;
 };
 
@@ -39,6 +40,7 @@ export function CharacterVideoLibrary({
   canCreate,
   canArchive,
   onCreateImage,
+  onProjectReload,
   runCommittedMutation,
 }: CharacterVideoLibraryProps) {
   const { t } = useAdminI18n();
@@ -76,6 +78,11 @@ export function CharacterVideoLibrary({
     const timer = window.setTimeout(() => void loadAssets(), 0);
     return () => window.clearTimeout(timer);
   }, [loadAssets]);
+
+  const refreshAfterProduction = useCallback(async () => {
+    await onProjectReload();
+    await loadAssets();
+  }, [loadAssets, onProjectReload]);
 
   async function upload(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0] ?? null;
@@ -213,6 +220,7 @@ export function CharacterVideoLibrary({
             actorId={actorId}
             data={data}
             onCreateImage={onCreateImage}
+            onProjectReload={refreshAfterProduction}
             permissions={{ read: canReadProduction, create: canCreate, review: false }}
             productionOnly
             runCommittedMutation={runCommittedMutation}

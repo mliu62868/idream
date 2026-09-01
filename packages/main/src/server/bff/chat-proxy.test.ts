@@ -26,6 +26,15 @@ const SECRET = "test-bff-secret-0123456789abcdef";
 const CHARACTER_ID = `chat-ledger-character-${randomUUID()}`;
 const CONTENT_ID = `chat-ledger-content-${randomUUID()}`;
 const CONTENT_V2_ID = `chat-ledger-content-v2-${randomUUID()}`;
+const TEST_TERMINAL_EVIDENCE = {
+  authority: "test",
+  prompt: {
+    productPromptVersion: "companion-product-1",
+    preparedTurnVersion: 4,
+    systemPromptDigest: "a".repeat(64),
+    soulFingerprint: "b".repeat(64),
+  },
+} as const;
 
 describe("Main-owned Chat façade", () => {
   const fetchMock = vi.fn();
@@ -173,7 +182,9 @@ describe("Main-owned Chat façade", () => {
     const userId = `public-chat-user-${suffix}`;
     const characterId = `public-chat-character-${suffix}`;
     const contentId = `public-chat-content-${suffix}`;
+    const contentV2Id = `public-chat-content-v2-${suffix}`;
     const releaseId = `public-chat-release-${suffix}`;
+    const releaseV2Id = `public-chat-release-v2-${suffix}`;
     const visualId = `public-chat-visual-${suffix}`;
     await prisma.user.create({
       data: { id: userId, email: `${suffix}@chat.test`, emailVerified: true },
@@ -251,21 +262,67 @@ describe("Main-owned Chat façade", () => {
         characterVisualProfileVersion: 3,
       });
 
+    await prisma.characterContentVersion.create({
+      data: {
+        id: contentV2Id,
+        characterId,
+        version: 2,
+        contentHash: createHash("sha256").update(contentV2Id).digest("hex"),
+        personaSnapshot: {},
+        openingSnapshot: { firstMessage: "Hello from release two." },
+        appearanceSnapshot: {},
+        sourceType: "test",
+      },
+    });
+    await prisma.characterRelease.create({
+      data: {
+        id: releaseV2Id,
+        projectId: `project-${suffix}`,
+        revisionId: `revision-v2-${suffix}`,
+        characterContentVersionId: contentV2Id,
+        visualProfileId: visualId,
+        visualProfileVersion: 3,
+        generationProvenance: {},
+        releasePlacementManifest: {},
+        snapshotHash: createHash("sha256").update(releaseV2Id).digest("hex"),
+        readiness: "ready",
+        status: "published",
+        publishedAt: new Date(),
+      },
+    });
+    await prisma.characterServing.update({
+      where: { characterId },
+      data: { currentReleaseId: releaseV2Id },
+    });
+
+    const replacement = await createChatSession(userId, { characterId });
+    expect(replacement.id).not.toBe(session.id);
+    await expect(prisma.recentChat.findUniqueOrThrow({ where: { sessionId: session.id } }))
+      .resolves.toMatchObject({ status: "archived", activeKey: null });
+    await expect(prisma.recentChat.findUniqueOrThrow({ where: { sessionId: replacement.id } }))
+      .resolves.toMatchObject({
+        status: "active",
+        activeKey: `${userId}:${characterId}`,
+        characterContentVersionId: contentV2Id,
+        characterReleaseId: releaseV2Id,
+      });
+
     await prisma.characterServing.update({
       where: { characterId },
       data: { state: "paused" },
     });
     await expect(beginChatTurn({
       userId,
-      sessionId: session.id,
+      sessionId: replacement.id,
       content: "This must not run after Serving is paused.",
       idempotencyKey: `paused-serving-${suffix}`,
     })).rejects.toThrow("active Serving Release");
-    await expect(prisma.chatTurn.count({ where: { sessionId: session.id } })).resolves.toBe(0);
+    await expect(prisma.chatTurn.count({ where: { sessionId: replacement.id } })).resolves.toBe(0);
 
     await prisma.recentChat.deleteMany({ where: { userId } });
     await prisma.characterServing.delete({ where: { characterId } });
-    await prisma.characterRelease.delete({ where: { id: releaseId } });
+    await prisma.characterRelease.deleteMany({ where: { id: { in: [releaseId, releaseV2Id] } } });
+    await prisma.characterContentVersion.delete({ where: { id: contentV2Id } });
     await prisma.character.delete({ where: { id: characterId } });
     await prisma.user.delete({ where: { id: userId } });
   });
@@ -478,7 +535,7 @@ describe("Main-owned Chat façade", () => {
         emotionalBeat: "calm",
         unresolvedThreads: [],
       },
-      terminalEvidence: { authority: "test" },
+      terminalEvidence: TEST_TERMINAL_EVIDENCE,
     });
     expect(committed.accepted).toBe(true);
 
@@ -513,7 +570,7 @@ describe("Main-owned Chat façade", () => {
         emotionalBeat: "calm",
         unresolvedThreads: [],
       },
-      terminalEvidence: { authority: "test" },
+      terminalEvidence: TEST_TERMINAL_EVIDENCE,
     })).resolves.toMatchObject({ duplicate: true });
     await expect(prisma.mainOutboxEvent.findFirst({
       where: {
@@ -543,7 +600,7 @@ describe("Main-owned Chat façade", () => {
         emotionalBeat: "calm",
         unresolvedThreads: [],
       },
-      terminalEvidence: { authority: "test" },
+      terminalEvidence: TEST_TERMINAL_EVIDENCE,
     })).rejects.toThrow("lost the active attempt CAS");
 
     fetchMock.mockClear();
@@ -700,6 +757,7 @@ describe("Main-owned Chat façade", () => {
     await expect(dispatchPendingChatEvents()).resolves.toEqual({ delivered: 1, failed: 0 });
     expect(uploaded).toContain(retained.userMessageId);
     expect(uploaded).toContain("Retain me");
+    expect(uploaded).toContain('"mode":"rebuild"');
     expect(uploaded).not.toContain(removed.userMessageId);
     expect(uploaded).not.toContain("Remove me");
   });
@@ -730,7 +788,7 @@ describe("Main-owned Chat façade", () => {
       completionTokens: 4,
       sceneVersion: turn.sceneVersion,
       scene: null,
-      terminalEvidence: { authority: "test" },
+      terminalEvidence: TEST_TERMINAL_EVIDENCE,
     };
     await commitChatTerminal(terminal);
     fetchMock.mockImplementation(async (url: string | URL | Request, init?: RequestInit) => {
@@ -794,7 +852,7 @@ describe("Main-owned Chat façade", () => {
       completionTokens: 1,
       sceneVersion: original.sceneVersion,
       scene: original.scene,
-      terminalEvidence: { authority: "test" },
+      terminalEvidence: TEST_TERMINAL_EVIDENCE,
     });
     await expect(prisma.mainOutboxEvent.findFirst({
       where: {
@@ -845,7 +903,7 @@ describe("Main-owned Chat façade", () => {
         emotionalBeat: null,
         unresolvedThreads: [],
       },
-      terminalEvidence: { authority: "test" },
+      terminalEvidence: TEST_TERMINAL_EVIDENCE,
     });
 
     const edited = await editChatTurn(USER_ID, begun.userMessage.id, "We are in Tokyo.");
@@ -882,7 +940,7 @@ describe("Main-owned Chat façade", () => {
       completionTokens: 3,
       sceneVersion: 0,
       scene: null,
-      terminalEvidence: { authority: "test" },
+      terminalEvidence: TEST_TERMINAL_EVIDENCE,
     });
     await prisma.chatTurnAttachment.create({
       data: {
@@ -918,6 +976,52 @@ describe("Main-owned Chat façade", () => {
       .toEqual([]);
   });
 
+  it("freezes recent delivered-image context for shorthand edit intent", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const sessionId = await ensureSession(proxyChatRequest);
+    const first = await beginChatTurn({
+      userId: USER_ID,
+      sessionId,
+      content: "Send a portrait.",
+      idempotencyKey: `image-context-first-${randomUUID()}`,
+    });
+    if (!first.snapshot) throw new Error("first Chat snapshot was not created");
+    await commitChatTerminal({
+      version: 1,
+      turnId: first.snapshot.turnId,
+      sessionId,
+      assistantMessageId: first.assistant.id,
+      attempt: 1,
+      status: "sent",
+      content: "For you.",
+      model: null,
+      promptTokens: null,
+      completionTokens: null,
+      sceneVersion: 0,
+      scene: null,
+      terminalEvidence: TEST_TERMINAL_EVIDENCE,
+    });
+    await prisma.chatTurnAttachment.create({
+      data: {
+        id: `attachment-${randomUUID()}`,
+        turnId: first.snapshot.turnId,
+        kind: "generated_image",
+        status: "completed",
+        mediaAssetId: `media-${randomUUID()}`,
+        metadata: { attempt: 1 },
+      },
+    });
+
+    const second = await beginChatTurn({
+      userId: USER_ID,
+      sessionId,
+      content: "换个姿势",
+      idempotencyKey: `image-context-second-${randomUUID()}`,
+    });
+
+    expect(second.snapshot?.hasRecentImageContext).toBe(true);
+  });
+
   it("replays an accepted ToolEffect after the Turn is terminal without charging again", async () => {
     const { proxyChatRequest } = await import("./chat-proxy");
     const sessionId = await ensureSession(proxyChatRequest);
@@ -943,7 +1047,7 @@ describe("Main-owned Chat façade", () => {
       completionTokens: 8,
       sceneVersion: 0,
       scene: null,
-      terminalEvidence: { authority: "test" },
+      terminalEvidence: TEST_TERMINAL_EVIDENCE,
     });
     const callId = "tool-call-1";
     const args = {
@@ -975,11 +1079,13 @@ describe("Main-owned Chat façade", () => {
     });
 
     await expect(applyChatToolEffect({
-      version: 1,
+      version: 2,
       turnId: turn.id,
       attempt: 1,
       callId,
       name: "generate_image_async",
+      effectScope: "attempt",
+      intent: { requestedNudity: "unspecified" },
       arguments: args,
     })).resolves.toMatchObject({
       accepted: true,
@@ -987,6 +1093,143 @@ describe("Main-owned Chat façade", () => {
       attachmentId,
       costDreamcoins: 5,
     });
+  });
+
+  it("reuses one required image effect across assistant regenerate attempts", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const sessionId = await ensureSession(proxyChatRequest);
+    const key = `required-effect-${randomUUID()}`;
+    await proxyChatRequest(authRequest(`/api/v1/chat/sessions/${sessionId}/messages`, {
+      method: "POST",
+      headers: { "idempotency-key": key },
+      body: JSON.stringify({ content: "Send a portrait from the garden." }),
+    }), ["chat", "sessions", sessionId, "messages"]);
+    const turn = await prisma.chatTurn.findUniqueOrThrow({
+      where: { sessionId_idempotencyKey: { sessionId, idempotencyKey: key } },
+    });
+    const callId = "model-tool-call-1";
+    const args = {
+      prompt: "A detailed portrait in a quiet garden",
+      orientation: "4:5" as const,
+      outputCount: 1,
+    };
+    const attachmentId = `chatfx_${createHash("sha256")
+      .update(`${turn.id}:generate_image_async`)
+      .digest("hex")
+      .slice(0, 48)}`;
+    const requestDigest = createHash("sha256")
+      .update(JSON.stringify({
+        arguments: { orientation: "4:5", outputCount: 1, prompt: args.prompt },
+        name: "generate_image_async",
+      }))
+      .digest("hex");
+    await prisma.chatTurnAttachment.create({
+      data: {
+        id: attachmentId,
+        turnId: turn.id,
+        kind: "generated_image",
+        status: "accepted",
+        generationJobId: "existing-job",
+        metadata: {
+          attempt: 1,
+          effect: {
+            turnId: turn.id,
+            attempt: 1,
+            callId,
+            name: "generate_image_async",
+            effectScope: "turn_action",
+            intent: { requestedNudity: "unspecified" },
+            requestDigest,
+          },
+          costDreamcoins: 5,
+        },
+      },
+    });
+    await commitChatTerminal({
+      version: 1,
+      turnId: turn.id,
+      sessionId,
+      assistantMessageId: turn.assistantMessageId,
+      attempt: 1,
+      status: "sent",
+      content: "For you.",
+      model: null,
+      promptTokens: null,
+      completionTokens: null,
+      sceneVersion: 0,
+      scene: null,
+      terminalEvidence: TEST_TERMINAL_EVIDENCE,
+    });
+    await regenerateChatTurn(USER_ID, turn.assistantMessageId);
+
+    await expect(applyChatToolEffect({
+      version: 2,
+      turnId: turn.id,
+      attempt: 2,
+      callId,
+      name: "generate_image_async",
+      effectScope: "turn_action",
+      intent: { requestedNudity: "unspecified" },
+      arguments: {
+        ...args,
+        prompt: "A differently worded detailed portrait in the same quiet garden",
+      },
+    })).resolves.toMatchObject({
+      accepted: true,
+      duplicate: true,
+      attachmentId,
+      generationJobId: "existing-job",
+      costDreamcoins: 5,
+    });
+    await expect(prisma.chatTurnAttachment.findUniqueOrThrow({
+      where: { id: attachmentId },
+    })).resolves.toMatchObject({
+      metadata: expect.objectContaining({
+        attempt: 2,
+        effect: expect.objectContaining({ attempt: 2 }),
+      }),
+    });
+  });
+
+  it("rechecks image capability at the Main ToolEffect authority", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const sessionId = await ensureSession(proxyChatRequest);
+    const key = `disabled-effect-${randomUUID()}`;
+    await proxyChatRequest(authRequest(`/api/v1/chat/sessions/${sessionId}/messages`, {
+      method: "POST",
+      headers: { "idempotency-key": key },
+      body: JSON.stringify({ content: "Send a portrait." }),
+    }), ["chat", "sessions", sessionId, "messages"]);
+    const turn = await prisma.chatTurn.findUniqueOrThrow({
+      where: { sessionId_idempotencyKey: { sessionId, idempotencyKey: key } },
+    });
+    await prisma.character.update({
+      where: { id: CHARACTER_ID },
+      data: { advancedDetails: { imageToolEnabled: false } },
+    });
+    try {
+      await expect(applyChatToolEffect({
+        version: 2,
+        turnId: turn.id,
+        attempt: 1,
+        callId: "model-tool-call-1",
+        name: "generate_image_async",
+        effectScope: "turn_action",
+        intent: { requestedNudity: "unspecified" },
+        arguments: {
+          prompt: "A detailed portrait beside a sunlit window",
+          orientation: "4:5",
+          outputCount: 1,
+        },
+      })).rejects.toThrow("Image generation is unavailable for this Chat");
+      await expect(prisma.chatTurnAttachment.count({ where: { turnId: turn.id } }))
+        .resolves.toBe(0);
+    } finally {
+      await prisma.character.update({
+        where: { id: CHARACTER_ID },
+        data: { advancedDetails: { imageToolEnabled: true } },
+      });
+    }
   });
 
   it("redacts generated-image source text in the same Main mutation that edits or deletes Chat", async () => {
@@ -1014,7 +1257,7 @@ describe("Main-owned Chat façade", () => {
       completionTokens: 2,
       sceneVersion: 0,
       scene: null,
-      terminalEvidence: { authority: "test" },
+      terminalEvidence: TEST_TERMINAL_EVIDENCE,
     });
 
     const editedJobId = `chat-privacy-edit-${randomUUID()}`;
@@ -1140,7 +1383,7 @@ async function sendAndCommit(
     completionTokens: 1,
     sceneVersion: turn.sceneVersion,
     scene: turn.scene,
-    terminalEvidence: { authority: "test" },
+    terminalEvidence: TEST_TERMINAL_EVIDENCE,
   });
   return turn;
 }

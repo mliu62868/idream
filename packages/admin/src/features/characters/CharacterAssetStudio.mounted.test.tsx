@@ -59,6 +59,15 @@ async function waitUntil(predicate: () => boolean) {
   }
 }
 
+function setTextAreaValue(input: HTMLTextAreaElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(
+    HTMLTextAreaElement.prototype,
+    "value",
+  )?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((complete) => {
@@ -500,8 +509,12 @@ describe("Character Asset Studio bootstrap route projection", () => {
     expect(container.textContent).toContain("Inspect");
     expect(container.textContent).toContain("Settings");
     expect(container.textContent).toContain("Visual identity");
+    expect(container.textContent).not.toContain("Image purpose");
     expect(container.textContent).not.toContain("Image purpose filters");
     expect(container.textContent).not.toContain("One image per generation");
+    expect(
+      container.querySelector('textarea[aria-label="Negative prompt"]'),
+    ).not.toBeNull();
     expect(
       container.querySelector('img[alt="Alexa Reeves image 1"]'),
     ).not.toBeNull();
@@ -1543,6 +1556,17 @@ describe("Character Asset Studio bootstrap route projection", () => {
       "Regenerate under current route",
     );
 
+    const negativePrompt = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Negative prompt"]',
+    );
+    expect(negativePrompt).not.toBeNull();
+    await act(async () => {
+      setTextAreaValue(
+        negativePrompt!,
+        "cropped hands, duplicated jewelry, visible text",
+      );
+    });
+
     const regenerate = [...container.querySelectorAll("button")].find(
       (button) => button.textContent?.includes("Regenerate Primary portrait"),
     );
@@ -1566,6 +1590,7 @@ describe("Character Asset Studio bootstrap route projection", () => {
         purpose: "character_cover",
         profileId: "profile-q2",
         targetId: "character-stale-pack",
+        negativePrompt: "cropped hands, duplicated jewelry, visible text",
       },
     });
     expect(stalePackData.project.draftAssetPack).toEqual({

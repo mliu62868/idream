@@ -1,7 +1,11 @@
 import { describe, it, expect } from "vitest";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { workflowDescriptorSchema, loadWorkflowDescriptors } from "./workflow";
+import {
+  workflowDescriptorSchema,
+  loadWorkflowDescriptors,
+  type WorkflowDescriptor,
+} from "./workflow";
 
 // Resolve packages/gen/workflows relative to this test file (not process.cwd()),
 // so the test works regardless of which directory vitest is invoked from.
@@ -9,6 +13,31 @@ const WORKFLOWS_DIR = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../workflows",
 );
+
+function expectImageMemoryBarrier(
+  descriptor: WorkflowDescriptor | undefined,
+  samplerNodeId: string,
+  positiveNodeId: string,
+  negativeNodeId: string,
+  releaseNodeId: string,
+  releaseOutputIndex: number,
+) {
+  if (!descriptor || descriptor.backendKind !== "comfyui") {
+    throw new Error("expected ComfyUI image descriptor");
+  }
+  expect(descriptor.apiPrompt["900:0"]).toMatchObject({
+    class_type: "IDreamUnloadOffDeviceModels",
+    inputs: {
+      passthrough: [positiveNodeId, 0],
+      after: [negativeNodeId, 0],
+      release: [releaseNodeId, releaseOutputIndex],
+    },
+  });
+  expect(descriptor.apiPrompt[samplerNodeId]?.inputs.positive).toEqual([
+    "900:0",
+    0,
+  ]);
+}
 
 // Pure-function tests (bindComfySlots/bindWorkflowArgs) and the onSkip-callback
 // contract now live at packages/shared/src/gen/workflow.test.ts, alongside the
@@ -36,7 +65,7 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
     expect(redMix3).toMatchObject({
       workflowKey: "redcraft-krea2-redmix3-txt2img",
       backendKind: "comfyui",
-      version: 1,
+      version: 2,
     });
     if (!redMix3 || redMix3.backendKind !== "comfyui") {
       throw new Error("expected RedMix3 scaled-FP8 ComfyUI descriptor");
@@ -45,7 +74,9 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
       unet_name: "Krea2RedMix3.0-fp8-scaled-ComfyUI.safetensors",
       weight_dtype: "default",
     });
+    expect(redMix3.apiPrompt["2"]?.class_type).toBe("IDreamFreshCLIPLoader");
     expect(JSON.stringify(redMix3)).not.toContain("RedMix3.0-bf16");
+    expectImageMemoryBarrier(redMix3, "7", "4", "5", "2", 0);
   });
 
   it("keeps full Identity Edit on FP8 residency and pre-encodes before sampling", async () => {
@@ -57,7 +88,7 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
     expect(identityEdit).toMatchObject({
       workflowKey: "redcraft-krea2-identity-edit",
       backendKind: "comfyui",
-      version: 4,
+      version: 5,
       identity: {
         mode: "single_reference",
         maxReferences: 1,
@@ -70,6 +101,9 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
       unet_name: "Krea2RedMix3.0-fp8-scaled-ComfyUI.safetensors",
       weight_dtype: "default",
     });
+    expect(identityEdit.apiPrompt["2"]?.class_type).toBe(
+      "IDreamFreshCLIPLoader",
+    );
     expect(identityEdit.apiPrompt["4"]?.inputs).toMatchObject({
       lora_name: "Krea2/krea2_identity_edit_v1_2.safetensors",
       strength_model: 1,
@@ -94,6 +128,7 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
       scheduler: "simple",
     });
     expect(JSON.stringify(identityEdit)).not.toContain("RedMix3.0-bf16");
+    expectImageMemoryBarrier(identityEdit, "11", "9", "10", "2", 0);
   });
 
   it("keeps shared RedCraft loaders cache-identical across text and identity routes", async () => {
@@ -115,7 +150,11 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
       throw new Error("expected both RedCraft ComfyUI descriptors");
     }
 
-    for (const classType of ["UNETLoader", "CLIPLoader", "VAELoader"]) {
+    for (const classType of [
+      "UNETLoader",
+      "IDreamFreshCLIPLoader",
+      "VAELoader",
+    ]) {
       const loaderFor = (descriptor: typeof textToImage) =>
         Object.values(descriptor.apiPrompt).find(
           (node) => node.class_type === classType,
@@ -130,6 +169,18 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
     const qwenEdit = descriptors.find((d) => d.workflowKey === "qwen-image-edit-img2img");
     expect(qwenEdit).toBeDefined();
     expect(() => workflowDescriptorSchema.parse(qwenEdit)).not.toThrow();
+    expect(qwenEdit).toMatchObject({ version: 2 });
+    expect(qwenEdit?.negativePromptMode).toBe("positive_instruction");
+    if (!qwenEdit || qwenEdit.backendKind !== "comfyui") {
+      throw new Error("expected Qwen image edit ComfyUI descriptor");
+    }
+    expect(qwenEdit.apiPrompt["1"]?.class_type).toBe(
+      "IDreamCheckpointModelVaeLoader",
+    );
+    expect(qwenEdit.apiPrompt["1:clip"]?.class_type).toBe(
+      "IDreamFreshCheckpointCLIPLoader",
+    );
+    expectImageMemoryBarrier(qwenEdit, "2", "3", "4", "1:clip", 0);
   });
 
   it("loads the two-reference Qwen identity workflow with two required semantic graph slots", async () => {
@@ -141,6 +192,7 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
     expect(() => workflowDescriptorSchema.parse(multiIdentity)).not.toThrow();
     expect(multiIdentity).toMatchObject({
       modelId: "qwen-image-edit-multi-identity",
+      version: 2,
       identity: {
         mode: "multi_identity",
         maxReferences: 2,
@@ -175,12 +227,14 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
       image1: ["8", 0],
       image2: ["12", 0],
     });
+    expectImageMemoryBarrier(multiIdentity, "2", "3", "4", "1:clip", 0);
 
     const identityAndSource = descriptors.find(
       (descriptor) => descriptor.workflowKey === "qwen-image-edit-multi-reference",
     );
     expect(identityAndSource).toMatchObject({
       modelId: "qwen-image-edit-multi-reference",
+      version: 2,
       identity: {
         mode: "multi_reference",
         maxReferences: 2,
@@ -214,6 +268,7 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
       image1: ["8", 0],
       image2: ["12", 0],
     });
+    expectImageMemoryBarrier(identityAndSource, "2", "3", "4", "1:clip", 0);
   });
 
   it("loads the opt-in Draw Things Pornmaster descriptor", async () => {
@@ -233,7 +288,7 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
     expect(redGraft).toMatchObject({
       modelId: "redgraft-ltx25-fast2k-int8-convrot",
       backendKind: "comfyui",
-      version: 1,
+      version: 2,
       capabilities: [
         "video",
         "img2video",
@@ -271,7 +326,7 @@ describe("loadWorkflowDescriptors (real files on disk)", () => {
       (descriptor) => descriptor.workflowKey === "minimax-h3-redcraft-i2v",
     );
 
-    expect(h3).toMatchObject({ version: 3 });
+    expect(h3).toMatchObject({ version: 4 });
     if (!h3 || h3.backendKind !== "comfyui") {
       throw new Error("expected MiniMax H3 ComfyUI descriptor");
     }

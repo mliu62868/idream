@@ -218,6 +218,7 @@ const base = {
     runtimeEngine: "omlx",
     runtimeVersion: null,
     runtimeLanguage: "en",
+    catalogVoiceIds: [],
     currentVoiceId: null,
     effectiveVoiceId: "fish-female-default",
     authoritySource: "system_default",

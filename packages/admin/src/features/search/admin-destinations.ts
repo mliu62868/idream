@@ -3,10 +3,9 @@ import type { LucideIcon } from "lucide-react";
 import { translateAdmin } from "@/components/admin/i18n";
 import { ALL_SECTION_ITEMS, canReadWorkspace } from "@/components/admin/nav-config";
 
-// SPEC: 把 34 个能力页（外加 3 个不在侧栏、只能靠记 URL 到达的兼容目的地）变成可搜索的
-//       跳转目标，供全局搜索框当命令面板用。
-// INTENT: 这是一个 34 页的控制台，侧栏按分组折叠，运营想去「死信队列」或「配置与灰度」
-//         只能靠记路径或一层层展开分组——而全站唯一的搜索框只搜实体，搜不到页面。
+// SPEC: 把每个已授权能力页变成可直接搜索的跳转目标，供全局搜索框当命令面板用。
+// INTENT: 侧栏负责工作区发现，页头负责区内浏览；搜索负责知道目标名称时的快速直达，
+//         包括尚未完成命令迁移的兼容工具，但不能反过来成为这些工具的唯一入口。
 export type AdminDestination = {
   id: string;
   href: string;

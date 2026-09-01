@@ -8,7 +8,11 @@ import {
   stableNumericSeed,
   type VideoModel,
 } from "../providers";
-import { assignWorkflowReferenceSlots, type SlotValues } from "./workflow";
+import {
+  assignWorkflowReferenceSlots,
+  type SlotValues,
+  workflowPromptSlots,
+} from "./workflow";
 import {
   comfyUiRunnerForDescriptor,
   validateWorkflowPin,
@@ -93,9 +97,14 @@ export class BackendVideoModel implements VideoModel {
     }
     const seed =
       stableNumericSeed(input.seed ?? input.requestId ?? "video") ?? 0;
-    const slots = productionVideoSlots(recipe, {
+    const promptSlots = workflowPromptSlots({
+      mode: descriptor.negativePromptMode,
       prompt: input.prompt,
       negativePrompt: input.negativePrompt,
+    });
+    const slots = productionVideoSlots(recipe, {
+      prompt: promptSlots.prompt,
+      negativePrompt: promptSlots.negative,
       width,
       height,
       seed,

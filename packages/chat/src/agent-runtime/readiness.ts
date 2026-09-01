@@ -8,6 +8,7 @@ import {
   COMPANION_DSH_COMMIT,
   COMPANION_DSH_VERSION,
   COMPANION_IGREP_PLUGIN_VERSION,
+  COMPANION_RUNTIME_PROTOCOL_VERSION,
   companionReadinessSchema,
   type CompanionReadiness,
   type CompanionWorkspaceRebuild,
@@ -16,7 +17,10 @@ import {
 } from "@idream/shared/chat/companion-runtime";
 import type { CompanionInvocation, PreparedTurnProfile } from "./contracts";
 import type { AgentRuntimeConfig } from "./config";
-import type { ChatModelProfile } from "@idream/shared";
+import {
+  COMPANION_PRODUCT_PROMPT_VERSION,
+  type ChatModelProfile,
+} from "@idream/shared";
 import {
   NORMAL_IGREP_CONFIG,
   PRIVATE_IGREP_CONFIG,
@@ -234,7 +238,7 @@ function bridgeInvocation(
     expectedProfileDigest,
     deadlineAt: new Date(Date.now() + 60_000).toISOString(),
     preparedTurn: {
-      version: 3,
+      version: 4,
       model: profile.model,
       characterName: "Readiness",
       messages: [{
@@ -247,6 +251,8 @@ function bridgeInvocation(
       profile,
       budget: { maxInputTokens: 16, usedInputTokens: 1, dropped: [] },
       trace: {
+        productPromptVersion: COMPANION_PRODUCT_PROMPT_VERSION,
+        systemPromptDigest: "0".repeat(64),
         characterContentVersionId: "readiness-content",
         characterReleaseId: null,
         soulFingerprint: "0".repeat(64),
@@ -254,6 +260,7 @@ function bridgeInvocation(
         sceneVersion: 0,
         contextRevision: "0",
       },
+      requiredAction: null,
     },
   };
 }
@@ -305,6 +312,7 @@ export async function probeWorkspaceRebuild(
     const prepared = await port.prepareRebuild({
       scope: "relationship",
       ...identity,
+      mode: "rebuild",
       messages: [],
       fence,
     });
@@ -352,7 +360,7 @@ export function createReadinessProbe(
       "private",
       options.config.igrepCommand,
     );
-    if (normal.ingest !== true || normal.wake !== true || normal.memory !== true || normal.search !== false
+    if (normal.ingest !== false || normal.wake !== true || normal.memory !== true || normal.search !== false
       || normal.webProvider !== false || normal.webTool !== false
       || normal.memorySearchMode !== "fast") {
       throw new Error("normal igrep profile did not normalize to the required capability set");
@@ -382,10 +390,11 @@ export function createReadinessProbe(
     await options.workspaceRebuildProbe();
 
     return companionReadinessSchema.parse({
-      protocolVersion: 1,
+      protocolVersion: COMPANION_RUNTIME_PROTOCOL_VERSION,
       service: "chat-runtime",
       ready: true,
       checkedAt: new Date().toISOString(),
+      productPromptVersion: COMPANION_PRODUCT_PROMPT_VERSION,
       dshVersion: COMPANION_DSH_VERSION,
       dshCommit: COMPANION_DSH_COMMIT,
       igrepVersion: resolvedIgrepVersion,

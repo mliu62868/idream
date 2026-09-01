@@ -462,7 +462,7 @@ describe("Character image Creative Run authority", () => {
       "Polished reusable portrait photography.",
     ].join("\n"));
     expect(jobs[0]?.prompt).not.toMatch(
-      /Production purpose|Recipe:|template|collage|contact sheet|split panel|comparison grid|late-night confidante/i,
+      /Production purpose|Recipe:|template|late-night confidante/i,
     );
     expect(jobs[0]?.controls).toMatchObject({
       compositionRequirement: "single_subject_single_frame",
@@ -1532,6 +1532,7 @@ describe("Character image Creative Run authority", () => {
       orientation: "4:5",
       count: 1,
       brief: "A natural environmental hero scene that preserves Mara's identity.",
+      negativePrompt: "cropped hands, duplicated jewelry, visible text",
       consistencyMode: "strict",
       priority: "normal",
       reason: "Create a customer-facing hero from the sealed identity authority",
@@ -1558,6 +1559,10 @@ describe("Character image Creative Run authority", () => {
     expect(jobs.every((job) =>
       job.prompt?.includes("render exactly one person total") === true
     )).toBe(true);
+    expect(jobs[0]?.negativePrompt).toContain(
+      "cropped hands, duplicated jewelry, visible text",
+    );
+    expect(jobs[0]?.prompt).not.toContain("Avoid in the result:");
     const operationalRoute =
       await prisma.generationRouteQualification.findFirstOrThrow({
         where: {

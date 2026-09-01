@@ -54,6 +54,7 @@ export async function findReusableChatImage(
   // pre-generated scene may be textually similar, but it cannot preserve that
   // source image, so it must always continue through img2img generation.
   if (payload.controls.sourceImageAssetId) return null;
+  if (!chatImageMayReuse(payload)) return null;
   if (!payload.characterReleaseId) return null;
 
   const queries = reusableImageQueries(payload);
@@ -149,6 +150,12 @@ export async function findReusableChatImage(
   }
 
   return best;
+}
+
+export function chatImageMayReuse(payload: ChatImageRequestedPayload): boolean {
+  // No reusable asset currently carries audited wardrobe/nudity metadata.
+  // Semantic scene similarity must never override an explicit user boundary.
+  return payload.intent.requestedNudity === "unspecified";
 }
 
 export function isReusablePlatformAssetWhere(userId: string): Prisma.MediaAssetWhereInput {

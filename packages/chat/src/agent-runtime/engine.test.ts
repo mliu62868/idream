@@ -44,10 +44,17 @@ class OneStepAdapter extends LlmAdapter {
 class ToolThenTextAdapter extends LlmAdapter {
   private calls = 0;
 
+  constructor(
+    private readonly imagePrompt = "Mira fully nude at the blue-lit observatory tonight",
+    private readonly reply = "I sent the observatory view to the image studio.",
+  ) {
+    super();
+  }
+
   async *stream(): AsyncIterable<StreamChunk> {
     this.calls += 1;
     if (this.calls === 1) {
-      const args = JSON.stringify({ prompt: "Mira at the blue-lit observatory tonight" });
+      const args = JSON.stringify({ prompt: this.imagePrompt });
       yield { type: "block-start", index: 0, blockType: "tool-call" };
       yield {
         type: "tool-call-delta",
@@ -69,7 +76,7 @@ class ToolThenTextAdapter extends LlmAdapter {
       yield { type: "finish", reason: { kind: "tool-calls" } };
       return;
     }
-    const text = "I sent the observatory view to the image studio.";
+    const text = this.reply;
     yield { type: "block-start", index: 0, blockType: "text" };
     yield { type: "text-delta", index: 0, text };
     yield { type: "block-end", index: 0, block: { type: "text", text } };
@@ -109,7 +116,7 @@ function invocation(withTool = false): CompanionInvocation {
     ),
     deadlineAt: new Date(Date.now() + 30_000).toISOString(),
     preparedTurn: {
-      version: 3,
+      version: 4,
       model: "deepseek/test",
       characterName: "Mira",
       messages: [
@@ -150,6 +157,8 @@ function invocation(withTool = false): CompanionInvocation {
       },
       budget: { maxInputTokens: 8_000, usedInputTokens: 120, dropped: [] },
       trace: {
+        productPromptVersion: "companion-product-1",
+        systemPromptDigest: "b".repeat(64),
         characterContentVersionId: "content-1",
         characterReleaseId: "release-1",
         soulFingerprint: "a".repeat(64),
@@ -157,13 +166,30 @@ function invocation(withTool = false): CompanionInvocation {
         sceneVersion: 1,
         contextRevision: "3",
       },
+      requiredAction: null,
+    },
+  };
+}
+
+function requiredImageInvocation(): CompanionInvocation {
+  const value = invocation(true);
+  return {
+    ...value,
+    invocationId: "invocation-required-image",
+    attemptId: "attempt-required-image",
+    preparedTurn: {
+      ...value.preparedTurn,
+      requiredAction: {
+        name: "generate_image_async",
+        requestedNudity: "full",
+      },
     },
   };
 }
 
 async function engine(
   adapter: LlmAdapter,
-  rebuilder?: CompanionEngineOptions["rebuilder"],
+  memoryBuilder?: CompanionEngineOptions["memoryBuilder"],
 ): Promise<CompanionEngine> {
   const root = await mkdtemp(join(tmpdir(), "chat-runtime-engine-"));
   temporary.push(root);
@@ -176,7 +202,7 @@ async function engine(
     adapter: () => adapter,
     igrepCommand: "igrep",
     igrepLlm: IGREP_LLM,
-    ...(rebuilder ? { rebuilder } : {}),
+    ...(memoryBuilder ? { memoryBuilder } : {}),
   });
 }
 
@@ -276,6 +302,105 @@ describe("Chat embedded companion runtime", () => {
     });
   });
 
+  it("requires the Agent to author and execute the concrete image prompt", async () => {
+    const runtime = await engine(new ToolThenTextAdapter());
+    const calls: CompanionToolCall[] = [];
+    const connection = port({
+      executeTool: async (call) => {
+        calls.push(call);
+        return {
+          attemptId: call.attemptId,
+          callId: call.callId,
+          name: call.name,
+          outcome: "succeeded",
+          output: { generationJobId: "job-required" },
+        };
+      },
+    });
+
+    await runtime.run(requiredImageInvocation(), connection.runtimePort);
+
+    expect(calls).toEqual([
+      expect.objectContaining({
+        name: "generate_image_async",
+        effectScope: "turn_action",
+        intent: { requestedNudity: "full" },
+        arguments: expect.objectContaining({
+          prompt: "Mira fully nude at the blue-lit observatory tonight",
+        }),
+      }),
+    ]);
+    expect(connection.candidates[0]).toMatchObject({
+      execution: { steps: 2, toolCalls: 1 },
+      tools: [expect.objectContaining({
+        effectScope: "turn_action",
+        intent: { requestedNudity: "full" },
+      })],
+    });
+  });
+
+  it("forwards structured nudity intent even when the Agent prompt drops it", async () => {
+    const runtime = await engine(new ToolThenTextAdapter(
+      "Mira wearing a silk robe at the blue-lit observatory tonight",
+    ));
+    const calls: CompanionToolCall[] = [];
+    const connection = port({
+      executeTool: async (call) => {
+        calls.push(call);
+        return {
+          attemptId: call.attemptId,
+          callId: call.callId,
+          name: call.name,
+          outcome: "succeeded",
+          output: { generationJobId: "job-structured-intent" },
+        };
+      },
+    });
+
+    await runtime.run(requiredImageInvocation(), connection.runtimePort);
+
+    expect(calls).toEqual([
+      expect.objectContaining({
+        effectScope: "turn_action",
+        intent: { requestedNudity: "full" },
+        arguments: expect.objectContaining({ prompt: expect.stringContaining("silk robe") }),
+      }),
+    ]);
+    expect(connection.candidates).toHaveLength(1);
+  });
+
+  it("does not expose a required image reply written in the wrong script", async () => {
+    const value = requiredImageInvocation();
+    const invocation = {
+      ...value,
+      preparedTurn: {
+        ...value.preparedTurn,
+        messages: value.preparedTurn.messages.map((message) =>
+          message.sourceKind === "current_user"
+            ? { ...message, content: "给我一张今晚的自拍" }
+            : message,
+        ),
+      },
+    };
+    const runtime = await engine(new ToolThenTextAdapter(
+      "A concrete selfie at the observatory tonight",
+      "Je peux te renvoyer la dernière photo.",
+    ));
+    const connection = port();
+
+    await runtime.run(invocation, connection.runtimePort);
+
+    expect(connection.candidates).toEqual([]);
+    expect(connection.events).not.toContainEqual(expect.objectContaining({
+      type: "text_delta",
+      delta: expect.stringContaining("Je peux"),
+    }));
+    expect(connection.events.at(-1)).toMatchObject({
+      type: "failed",
+      error: { code: "required_image_reply_language_mismatch", retryable: true },
+    });
+  });
+
   it("turns a rejected Main CAS into a failed runtime terminal", async () => {
     const runtime = await engine(new OneStepAdapter());
     const connection = port({
@@ -339,7 +464,7 @@ describe("Chat embedded companion runtime", () => {
 
   it("promotes an async projection without cancelling an active turn", async () => {
     const runtime = await engine(new BlockingAdapter(), {
-      async rebuild() {
+      async build() {
         return { sessions: 1, messages: 2 };
       },
     });
@@ -352,6 +477,7 @@ describe("Chat embedded companion runtime", () => {
       scope: "relationship" as const,
       userId: "user-1",
       characterId: "character-1",
+      mode: "project" as const,
       messages: [],
       fence,
     };

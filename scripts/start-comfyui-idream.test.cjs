@@ -23,10 +23,15 @@ test("video runner pins the validated RedGraft LTX 2.5 MPS runtime", () => {
   );
   assert.equal(
     runtime.env.ASFP8_ENABLE_ONLY,
-    "tensor_to_fp8,int_mm_mps",
+    "tensor_to_fp8,int_mm_mps,fused_norm_mps,rope_fast_mps",
   );
   assert.equal(runtime.env.ASFP8_FP8_EXT, "off");
   assert.equal(runtime.env.ASFP8_FP8_NATIVE, "off");
+  const extraPathsIndex = runtime.args.indexOf("--extra-model-paths-config");
+  assert.deepEqual(runtime.args.slice(extraPathsIndex + 1, extraPathsIndex + 3), [
+    "/Users/kk/Library/Application Support/Comfy Desktop/shared_model_paths.yaml",
+    path.resolve(__dirname, "../packages/gen/workflows/comfy-extra-models-idream.yaml"),
+  ]);
   assert.equal(runtime.args[runtime.args.indexOf("--port") + 1], "8188");
   assert.equal(runtime.userDirectory, "/Users/kk/ComfyUI-Shared/user");
   assert.equal(
@@ -36,6 +41,10 @@ test("video runner pins the validated RedGraft LTX 2.5 MPS runtime", () => {
   assert.equal(
     runtime.args.filter((arg) => arg === "--use-split-cross-attention").length,
     1,
+  );
+  assert.deepEqual(
+    runtime.args.slice(-3),
+    ["--cache-ram", "10", "128"],
   );
 });
 
@@ -55,6 +64,7 @@ test("image runner isolates state and uses the faster verified PyTorch attention
   assert.match(runtime.userDirectory, /\/runners\/image\/user$/);
   assert.match(runtime.inputDirectory, /\/runners\/image\/input$/);
   assert.match(runtime.outputDirectory, /\/runners\/image\/output$/);
+  assert.deepEqual(runtime.args.slice(-3), ["--cache-ram", "10", "128"]);
 });
 
 test("MiniMax H3 runner isolates exact PyTorch attention", () => {
@@ -69,6 +79,7 @@ test("MiniMax H3 runner isolates exact PyTorch attention", () => {
   assert.match(runtime.userDirectory, /\/runners\/video-h3\/user$/);
   assert.match(runtime.inputDirectory, /\/runners\/video-h3\/input$/);
   assert.match(runtime.outputDirectory, /\/runners\/video-h3\/output$/);
+  assert.deepEqual(runtime.args.slice(-3), ["--cache-ram", "10", "128"]);
 });
 
 test("launcher rejects an unknown profile instead of silently sharing a runner", () => {

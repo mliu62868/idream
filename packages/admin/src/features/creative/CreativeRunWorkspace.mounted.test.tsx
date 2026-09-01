@@ -50,10 +50,6 @@ vi.mock("@/features/collaboration/CollaborationPanel", () => ({
 }));
 
 import { CreativeRunWorkspace } from "./CreativeRunWorkspace";
-import {
-  beginDurableMutationIntent,
-  readActiveDurableMutationIntent,
-} from "@/lib/durable-mutation-intent";
 
 const runId = "creative-run-retry-mounted";
 const itemId = "creative-item-failed";
@@ -186,18 +182,6 @@ function buttonByText(container: HTMLElement, label: string) {
   return [...container.querySelectorAll("button")].find((button) =>
     button.textContent?.includes(label),
   );
-}
-
-function changeTextarea(
-  textarea: HTMLTextAreaElement,
-  value: string,
-) {
-  const setter = Object.getOwnPropertyDescriptor(
-    HTMLTextAreaElement.prototype,
-    "value",
-  )?.set;
-  setter?.call(textarea, value);
-  textarea.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
 function createMemoryStorage(): Storage {
@@ -671,195 +655,8 @@ describe("Creative Run asynchronous retry command", () => {
     ).toBe(false);
   });
 
-  it("recovers a lost create response with the exact actor-scoped request and verifies without a second create", async () => {
-    vi.useRealTimers();
-    const settle = async () => {
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      });
-    };
-    const createKeys: string[] = [];
-    const createBodies: unknown[] = [];
-    let createPosts = 0;
-    let projectionReads = 0;
-    const options = {
-      purposes: [{
-        value: "campaign",
-        label: "Campaign image",
-        description: "A reviewed campaign candidate",
-        defaultOrientation: "4:5",
-        runtimePlacementSupported: true,
-      }],
-      profiles: [{
-        profileKey: "campaign-profile-v1",
-        profileVersion: 1,
-        label: "Campaign profile",
-        workflowKey: "campaign-workflow",
-        workflowVersion: 1,
-        allowedOrientations: ["4:5"],
-        recommended: true,
-      }],
-      readiness: { ready: true, blocker: null },
-      characterAssetStudioHref: "/admin/characters",
-    };
-    adminV2Request.mockImplementation(async (path, requestOptions) => {
-      if (path === "/api/v2/admin/creative/run-options") {
-        return options;
-      }
-      if (path.startsWith("/api/v2/admin/creative/runs?")) {
-        return {
-          items: [],
-          pageInfo: { endCursor: null, hasNextPage: false },
-          asOf: "2026-07-17T12:00:00.000Z",
-        };
-      }
-      if (
-        path === "/api/v2/admin/creative/runs" &&
-        requestOptions?.method === "POST"
-      ) {
-        createPosts += 1;
-        createKeys.push(requestOptions.idempotencyKey ?? "");
-        createBodies.push(requestOptions.body);
-        if (createPosts === 1) {
-          throw new TypeError("Response ended after the server commit");
-        }
-        return {
-          batch: { id: "created-run-recovered" },
-          replayed: true,
-        };
-      }
-      if (
-        path ===
-        "/api/v2/admin/creative/runs/created-run-recovered"
-      ) {
-        projectionReads += 1;
-        throw new Error("projection replica unavailable");
-      }
-      throw new Error(`Unexpected Admin request: ${path}`);
-    });
-
-    await act(async () => {
-      root.render(
-        <CreativeRunWorkspace
-          actorId="operator-a"
-          permissions={permissions}
-          view={{ kind: "list" }}
-        />,
-      );
-    });
-    await settle();
-    const brief = container.querySelector("textarea");
-    expect(brief).not.toBeNull();
-    act(() => {
-      if (brief) changeTextarea(
-        brief,
-        "A precise campaign portrait with natural evening light.",
-      );
-    });
-    expect(buttonByText(container, "Create and launch")?.disabled).toBe(
-      false,
-    );
-
-    await act(async () => {
-      buttonByText(container, "Create and launch")?.click();
-      await Promise.resolve();
-    });
-    expect(createPosts).toBe(1);
-    expect(createKeys[0]).toBeTruthy();
-    expect(container.textContent).toContain(
-      "Creation outcome is unknown",
-    );
-    expect(buttonByText(container, "Resume creation")).toBeDefined();
-
-    await act(async () => root.unmount());
-    root = createRoot(container);
-    await act(async () => {
-      root.render(
-        <CreativeRunWorkspace
-          actorId="operator-a"
-          permissions={permissions}
-          view={{ kind: "list" }}
-        />,
-      );
-    });
-    await settle();
-    expect(buttonByText(container, "Resume creation")).toBeDefined();
-    expect(container.querySelector("textarea")?.disabled).toBe(true);
-
-    await act(async () => {
-      buttonByText(container, "Resume creation")?.click();
-      await Promise.resolve();
-    });
-    expect(createPosts).toBe(2);
-    expect(createKeys[1]).toBe(createKeys[0]);
-    expect(createBodies[1]).toEqual(createBodies[0]);
-    expect(projectionReads).toBe(1);
-    expect(container.textContent).toContain(
-      "Created Run receipt",
-    );
-    expect(
-      buttonByText(container, "Verify created Run"),
-    ).toBeDefined();
-
-    await act(async () => {
-      buttonByText(container, "Verify created Run")?.click();
-      await Promise.resolve();
-    });
-    expect(projectionReads).toBe(2);
-    expect(createPosts).toBe(2);
-    expect(container.textContent).toContain(
-      "Verification can be retried without another create request",
-    );
-
-    await act(async () => root.unmount());
-    root = createRoot(container);
-    await act(async () => {
-      root.render(
-        <CreativeRunWorkspace
-          actorId="operator-b"
-          permissions={permissions}
-          view={{ kind: "list" }}
-        />,
-      );
-    });
-    await settle();
-    expect(buttonByText(container, "Resume creation")).toBeUndefined();
-    expect(buttonByText(container, "Verify created Run")).toBeUndefined();
-    expect(createPosts).toBe(2);
-  });
-
-  it("reconciles an unreplayable create receipt before unlocking a new generic image request", async () => {
-    vi.useRealTimers();
-    beginDurableMutationIntent({
-      scope: "creative-run:create:operator-a",
-      signature: "legacy-generic-create",
-      now: 1,
-      createIdempotencyKey: () => "legacy-generic-key",
-      requestSnapshot: { legacyBrief: true },
-    });
+  it("keeps the list as generation history and never exposes the removed generic creation flow", async () => {
     adminV2Request.mockImplementation(async (path, options) => {
-      if (path === "/api/v2/admin/creative/run-options") {
-        return {
-          purposes: [{
-            value: "campaign",
-            label: "Campaign image",
-            description: "A reviewed campaign candidate",
-            defaultOrientation: "4:5",
-            runtimePlacementSupported: true,
-          }],
-          profiles: [{
-            profileKey: "campaign-profile-v1",
-            profileVersion: 1,
-            label: "Campaign profile",
-            workflowKey: "campaign-workflow",
-            workflowVersion: 1,
-            allowedOrientations: ["4:5"],
-            recommended: true,
-          }],
-          readiness: { ready: true, blocker: null },
-          characterAssetStudioHref: "/admin/characters",
-        };
-      }
       if (path.startsWith("/api/v2/admin/creative/runs?")) {
         return {
           items: [],
@@ -867,20 +664,7 @@ describe("Creative Run asynchronous retry command", () => {
           asOf: "2026-07-17T12:00:00.000Z",
         };
       }
-      if (
-        path === "/api/v2/admin/mutation-receipts/reconcile" &&
-        options?.method === "POST"
-      ) {
-        return {
-          state: "cancelled",
-          commandType: "creative.run.create",
-          commandId: "cancelled-generic-command",
-          status: "cancelled",
-          committedTargetId: null,
-          verification: null,
-        };
-      }
-      throw new Error(`Unexpected Admin request: ${path}`);
+      throw new Error(`Unexpected Admin request: ${path} ${options?.method ?? "GET"}`);
     });
 
     await act(async () => {
@@ -892,37 +676,17 @@ describe("Creative Run asynchronous retry command", () => {
         />,
       );
     });
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-    expect(
-      buttonByText(container, "Reconcile saved request"),
-    ).toBeDefined();
+    await advance();
 
-    await act(async () => {
-      buttonByText(container, "Reconcile saved request")?.click();
-      await Promise.resolve();
-    });
-
-    expect(adminV2Request).toHaveBeenCalledWith(
-      "/api/v2/admin/mutation-receipts/reconcile",
-      expect.objectContaining({
-        method: "POST",
-        idempotencyKey: "legacy-generic-key",
-        body: { commandType: "creative.run.create" },
-      }),
-    );
-    expect(readActiveDurableMutationIntent({
-      scope: "creative-run:create:operator-a",
-    })).toBeNull();
-    expect(container.textContent).toContain(
-      "Its key was sealed on the server",
-    );
+    expect(container.textContent).toContain("Execution, review, placement, and verification remain separate facts.");
+    expect(container.textContent).not.toContain("Create images");
+    expect(container.querySelector('textarea[aria-label="Negative prompt"]')).toBeNull();
     expect(adminV2Request.mock.calls.some(([path, options]) =>
-      path === "/api/v2/admin/creative/runs" &&
-      options?.method === "POST"
+      path === "/api/v2/admin/creative/run-options" ||
+      (path === "/api/v2/admin/creative/runs" && options?.method === "POST")
     )).toBe(false);
   });
+
 });
 
 const campaignRunId = "creative-run-campaign-mounted";

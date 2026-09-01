@@ -171,6 +171,33 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
     return typeof value === "string" && value ? enumLabel(value) : format.display(value);
   }
 
+  function rowActions(row: DeadLetterRecord) {
+    const id = text(row.id);
+    return (
+      <div className="flex flex-wrap gap-1">
+        {permissions.requeue && requeueAllowed(row) ? <ActionButton icon={<RefreshCcw className="h-4 w-4" />} label={t("Requeue")} onClick={() => requestAction({
+          allowed: permissions.requeue,
+          title: t("Requeue {id}", { id }),
+          effect: requeueEffect(t, 1, 0),
+          endpoint: `/api/v2/admin/generation/dead-letter/${id}/commands/requeue`,
+          ids: [id],
+          kind: "requeue",
+          reasonRequired: false,
+        })} /> : null}
+        {permissions.discard && discardAllowed(row) ? <ActionButton danger icon={<Trash2 className="h-4 w-4" />} label={t("Discard")} onClick={() => requestAction({
+          allowed: permissions.discard,
+          title: t("Discard {id}", { id }),
+          effect: discardEffect(t, 1, 0),
+          endpoint: `/api/v2/admin/generation/dead-letter/${id}/commands/discard`,
+          ids: [id],
+          kind: "discard",
+          reasonRequired: true,
+        })} /> : null}
+        {!permissions.requeue && !permissions.discard ? t("Read only") : null}
+      </div>
+    );
+  }
+
   const tableRows: DataTableRow[] = rows.map((row) => {
     const id = text(row.id);
     return {
@@ -199,27 +226,7 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
         enumOr(row.ledgerState),
         format.display(row.costDreamcoins),
         format.dateTime(row.updatedAt),
-        <div className="flex gap-1" key="actions">
-          {permissions.requeue && requeueAllowed(row) ? <ActionButton icon={<RefreshCcw className="h-4 w-4" />} label={t("Requeue")} onClick={() => requestAction({
-            allowed: permissions.requeue,
-            title: t("Requeue {id}", { id }),
-            effect: requeueEffect(t, 1, 0),
-            endpoint: `/api/v2/admin/generation/dead-letter/${id}/commands/requeue`,
-            ids: [id],
-            kind: "requeue",
-            reasonRequired: false,
-          })} /> : null}
-          {permissions.discard && discardAllowed(row) ? <ActionButton danger icon={<Trash2 className="h-4 w-4" />} label={t("Discard")} onClick={() => requestAction({
-            allowed: permissions.discard,
-            title: t("Discard {id}", { id }),
-            effect: discardEffect(t, 1, 0),
-            endpoint: `/api/v2/admin/generation/dead-letter/${id}/commands/discard`,
-            ids: [id],
-            kind: "discard",
-            reasonRequired: true,
-          })} /> : null}
-          {!permissions.requeue && !permissions.discard ? t("Read only") : null}
-        </div>,
+        <div key="actions">{rowActions(row)}</div>,
       ],
     };
   });
@@ -228,6 +235,7 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
   // 只读运营勾不动任何批量命令；给他们一列永远无效的勾选框只是噪音。
   const canSelect = permissions.requeue || permissions.discard;
   const errorMessage = error === null ? null : authorityMessage(error);
+  const empty = <EmptyState hint={t(filtered ? "The complete dead-letter authority query returned no matches." : "No failed or blocked generation requests require triage.")} kind={filtered ? "filtered" : "empty"} onClearFilters={filtered ? () => navigate(defaultDeadLetterQuery) : undefined} title={t(canonicalListEmptyTitle("dead_letter", filtered))} />;
   return (
     <section aria-labelledby="dead-letter-workspace-title" className="space-y-5">
       <div id="dead-letter-workspace-title">
@@ -257,54 +265,100 @@ export function DeadLetterWorkspace({ permissions }: { permissions: { requeue: b
         <AuthorityRequestError cause={error} message={authorityMessage(error)} onRetry={() => void load(query)} snapshotAt={refreshedAt} />
       ) : null}
 
-      <DataTable
-        caption="Dead-letter Queue"
-        empty={<EmptyState hint={t(filtered ? "The complete dead-letter authority query returned no matches." : "No failed or blocked generation requests require triage.")} kind={filtered ? "filtered" : "empty"} onClearFilters={filtered ? () => navigate(defaultDeadLetterQuery) : undefined} title={t(canonicalListEmptyTitle("dead_letter", filtered))} />}
-        error={data ? null : errorMessage}
-        headers={HEADERS}
-        loading={loading}
-        minimumWidthClassName="min-w-[1120px]"
-        onRetry={() => void load(query)}
-        rows={tableRows}
-        selection={canSelect ? {
-          selected,
-          onChange: setSelected,
-          actions: (
-            <>
-              {permissions.requeue ? (
-                <button className={BULK_ACTION_CLASS} disabled={selectedRequeueIds.length === 0} onClick={() => requestAction({
-                  allowed: permissions.requeue,
-                  title: t("Requeue {count} requests", { count: selectedRequeueIds.length }),
-                  effect: requeueEffect(t, selectedRequeueIds.length, selected.length - selectedRequeueIds.length),
-                  endpoint: "/api/v2/admin/generation/dead-letter/commands/requeue",
-                  ids: selectedRequeueIds,
-                  kind: "requeue",
-                  reasonRequired: true,
-                })} type="button">
-                  <RefreshCcw className="h-4 w-4" />{t("Requeue selected")}
-                  <span className="font-mono">({selectedRequeueIds.length})</span>
-                </button>
-              ) : null}
-              {permissions.discard ? (
-                <button className={BULK_ACTION_CLASS} disabled={selectedDiscardIds.length === 0} onClick={() => requestAction({
-                  allowed: permissions.discard,
-                  title: t("Discard {count} requests", { count: selectedDiscardIds.length }),
-                  effect: discardEffect(t, selectedDiscardIds.length, selected.length - selectedDiscardIds.length),
-                  endpoint: "/api/v2/admin/generation/dead-letter/commands/discard",
-                  ids: selectedDiscardIds,
-                  kind: "discard",
-                  reasonRequired: true,
-                })} type="button">
-                  <Trash2 className="h-4 w-4" />{t("Discard selected")}
-                  <span className="font-mono">({selectedDiscardIds.length})</span>
-                </button>
-              ) : null}
-            </>
-          ),
-        } : undefined}
-        skeletonRows={PAGE_SIZE}
-        stickyLastColumn
-      />
+      {/* 手机上危险动作改用完整判断卡片；桌面保留高密度表格与批量命令。 */}
+      <div aria-label={t("Dead-letter Queue")} className="space-y-3 sm:hidden">
+        {!data && errorMessage ? (
+          <AuthorityRequestError cause={error} message={errorMessage} onRetry={() => void load(query)} />
+        ) : !data && loading ? (
+          <div aria-busy="true" className="space-y-3" role="status">
+            <span className="sr-only">{t("Loading {caption}…", { caption: t("Dead-letter Queue") })}</span>
+            {Array.from({ length: 3 }, (_, index) => (
+              <div className="h-52 animate-pulse rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)]" key={index} />
+            ))}
+          </div>
+        ) : !loading && rows.length === 0 ? empty : (
+          rows.map((row) => {
+            const id = text(row.id);
+            return (
+              <article className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4" key={id}>
+                <header className="flex items-start justify-between gap-3 border-b border-[var(--ad-border)] pb-3">
+                  <div className="min-w-0">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.05em] text-[var(--ad-text-muted)]">{t("Job")}</p>
+                    <a className="block truncate font-mono text-sm font-semibold underline decoration-dotted underline-offset-2" href={`/admin/ops/jobs?job=${encodeURIComponent(id)}`}>{id}</a>
+                    <p className="mt-1 truncate font-mono text-xs text-[var(--ad-text-muted)]">{text(row.userId)}</p>
+                  </div>
+                  <span className="shrink-0 rounded-full bg-black/[0.05] px-2 py-1 text-xs font-semibold">{enumOr(row.status)}</span>
+                </header>
+                <dl className="grid grid-cols-2 gap-x-4 gap-y-3 py-4 text-sm">
+                  <MobileFact label={t("Mode")}>{enumOr(row.mode)}</MobileFact>
+                  <MobileFact label={t("Provider")}>{format.display(row.provider)}</MobileFact>
+                  <MobileFact className="col-span-2" label={t("Failure reason")}>
+                    {row.errorCode ? <FailureReason code={text(row.errorCode)} /> : <span className="text-[var(--ad-text-muted)]">—</span>}
+                  </MobileFact>
+                  <MobileFact className="col-span-2" label={t("Replay authority")}>
+                    <RetryAuthority verdict={retryVerdict(row.retryEligibility)} />
+                  </MobileFact>
+                  <MobileFact label={t("Ledger")}>{enumOr(row.ledgerState)}</MobileFact>
+                  <MobileFact label={t("Cost")}>{format.display(row.costDreamcoins)}</MobileFact>
+                  <MobileFact className="col-span-2" label={t("Updated")}>{format.dateTime(row.updatedAt)}</MobileFact>
+                </dl>
+                <footer className="border-t border-[var(--ad-border)] pt-3">{rowActions(row)}</footer>
+              </article>
+            );
+          })
+        )}
+      </div>
+
+      <div className="hidden sm:block">
+        <DataTable
+          caption="Dead-letter Queue"
+          empty={empty}
+          error={data ? null : errorMessage}
+          headers={HEADERS}
+          loading={loading}
+          minimumWidthClassName="min-w-[1120px]"
+          onRetry={() => void load(query)}
+          rows={tableRows}
+          selection={canSelect ? {
+            selected,
+            onChange: setSelected,
+            actions: (
+              <>
+                {permissions.requeue ? (
+                  <button className={BULK_ACTION_CLASS} disabled={selectedRequeueIds.length === 0} onClick={() => requestAction({
+                    allowed: permissions.requeue,
+                    title: t("Requeue {count} requests", { count: selectedRequeueIds.length }),
+                    effect: requeueEffect(t, selectedRequeueIds.length, selected.length - selectedRequeueIds.length),
+                    endpoint: "/api/v2/admin/generation/dead-letter/commands/requeue",
+                    ids: selectedRequeueIds,
+                    kind: "requeue",
+                    reasonRequired: true,
+                  })} type="button">
+                    <RefreshCcw className="h-4 w-4" />{t("Requeue selected")}
+                    <span className="font-mono">({selectedRequeueIds.length})</span>
+                  </button>
+                ) : null}
+                {permissions.discard ? (
+                  <button className={BULK_ACTION_CLASS} disabled={selectedDiscardIds.length === 0} onClick={() => requestAction({
+                    allowed: permissions.discard,
+                    title: t("Discard {count} requests", { count: selectedDiscardIds.length }),
+                    effect: discardEffect(t, selectedDiscardIds.length, selected.length - selectedDiscardIds.length),
+                    endpoint: "/api/v2/admin/generation/dead-letter/commands/discard",
+                    ids: selectedDiscardIds,
+                    kind: "discard",
+                    reasonRequired: true,
+                  })} type="button">
+                    <Trash2 className="h-4 w-4" />{t("Discard selected")}
+                    <span className="font-mono">({selectedDiscardIds.length})</span>
+                  </button>
+                ) : null}
+              </>
+            ),
+          } : undefined}
+          skeletonRows={PAGE_SIZE}
+          stickyLastColumn
+        />
+      </div>
 
       {data?.pageInfo?.hasNextPage && data.pageInfo.endCursor ? <button className="inline-flex min-h-11 items-center gap-2 rounded-md border border-[var(--ad-border)] px-4 text-sm font-semibold" disabled={loading} onClick={() => navigate({ ...query, cursor: data.pageInfo?.endCursor ?? "" })} type="button"><RefreshCcw className="h-4 w-4" />{t("Next dead-letter page")}</button> : null}
       {confirmation ? <ConfirmDialog onClose={() => setConfirmation(null)} spec={confirmation} /> : null}
@@ -338,6 +392,15 @@ function RetryAuthority({ verdict }: { verdict: RetryVerdict | null }) {
       <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
       <span>{label ? t(label) : <>{t("Reason not recognised")} <code className="font-mono">{verdict.reason || "—"}</code></>}</span>
     </span>
+  );
+}
+
+function MobileFact({ children, className = "", label }: { children: ReactNode; className?: string; label: string }) {
+  return (
+    <div className={className}>
+      <dt className="text-[10px] font-semibold uppercase tracking-[0.05em] text-[var(--ad-text-muted)]">{label}</dt>
+      <dd className="mt-1 min-w-0 break-words">{children}</dd>
+    </div>
   );
 }
 

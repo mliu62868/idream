@@ -24,6 +24,7 @@ import { jsonStringArray, pruneUndefined } from "./json-values";
 import { dimensionsForImageOrientation } from "./generation-dimensions";
 import {
   resolveGenerationVisualProfile,
+  isEditorialLegacyVisualProfileProjection,
   type resolveGenerationLook,
 } from "./generation-character-authority";
 import {
@@ -80,8 +81,11 @@ export async function createGenerationJobForUser(
     requestFingerprint?: string;
     source?: GenerationSource;
     fallbackToActiveOnStaleVisualProfile?: boolean;
+    requireCharacterVisualIdentity?: boolean;
     profileSelectionAuthority?: GenerationProfileSelectionAuthority;
     requireQuoteAuthority?: boolean;
+    expectedVisualProfileVersion?: number;
+    expectedReferenceSetRevisionId?: string;
   } = {},
 ) {
   const preexisting = await findExistingGenerationJob(userId, options);
@@ -105,7 +109,11 @@ export async function createGenerationJobForUser(
     source: options.source,
     fallbackToActiveOnStaleVisualProfile:
       options.fallbackToActiveOnStaleVisualProfile,
+    requireCharacterVisualIdentity:
+      options.requireCharacterVisualIdentity,
     profileSelectionAuthority: options.profileSelectionAuthority,
+    expectedVisualProfileVersion: options.expectedVisualProfileVersion,
+    expectedReferenceSetRevisionId: options.expectedReferenceSetRevisionId,
     // A public write validates route, price, count, orientation, and balance
     // before a legacy Character bootstrap can create any row.
     bootstrapVisualProfile:
@@ -237,7 +245,13 @@ export async function createGenerationJobForUser(
   const negativePrompt =
     body.mode === "image"
       ? imageNegativePrompt(
-          body.negativePrompt ?? defaultImageNegativePrompt(recipe.negativeBase, options.source?.sourceType),
+          [
+            defaultImageNegativePrompt(
+              recipe.negativeBase,
+              options.source?.sourceType,
+            ),
+            body.negativePrompt,
+          ].filter(Boolean).join(", "),
           visualProfile,
         )
       : (body.negativePrompt ?? null);
@@ -315,7 +329,14 @@ export async function createGenerationJobForUser(
             tx,
             character.id,
           );
-        if (lockedLegacyReleaseAuthority && visualProfile) {
+        if (
+          lockedLegacyReleaseAuthority &&
+          visualProfile &&
+          !isEditorialLegacyVisualProfileProjection(
+            visualProfile,
+            lockedLegacyReleaseAuthority,
+          )
+        ) {
           throw Errors.conflict(
             "Character Release authority changed after generation identity was selected",
             { characterId: character.id },
@@ -346,6 +367,7 @@ export async function createGenerationJobForUser(
             visualProfile,
             consistencyMode,
             additionalMediaAssetIds,
+            options.expectedReferenceSetRevisionId,
           )
         : null;
     if (!referenceAuthority) {
@@ -363,6 +385,28 @@ export async function createGenerationJobForUser(
     const referenceSetRevision = referenceAuthority?.referenceSetRevision ?? null;
     const referenceManifest =
       referenceAuthority?.referenceManifest ?? [];
+    if (
+      legacyReleaseAuthority &&
+      visualProfile &&
+      (
+        !legacyReleaseAuthority.sourceAssetId ||
+        referenceManifest.length !== 1 ||
+        referenceManifest[0]?.mediaAssetId !==
+          legacyReleaseAuthority.sourceAssetId ||
+        normalizedGenerationReferenceRole(
+          referenceManifest[0]?.role ?? "",
+        ) !== "identity_anchor"
+      )
+    ) {
+      throw Errors.conflict(
+        "Legacy editorial Character identity must use its exact canonical portrait",
+        {
+          characterId: character?.id ?? null,
+          visualProfileId: visualProfile.id,
+          sourceAssetId: legacyReleaseAuthority.sourceAssetId ?? null,
+        },
+      );
+    }
     if (
       referenceAssetIds.length > 0 ||
       sourceImageAssetId ||

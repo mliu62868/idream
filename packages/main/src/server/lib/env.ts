@@ -43,10 +43,16 @@ const EnvSchema = z.object({
   LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error", "fatal", "silent"]).default("info"),
   CHAT_PROVIDER: z.enum(["mock", "pipeline"]).default("mock"),
   // Tests with no environment remain isolated on mock. Versioned local and
-  // production env templates select Fish Audio as the product authority.
+  // production env templates select Pocket TTS as the English product authority.
   VOICE_PROVIDER: z
     .enum(["mock", "pipeline", "pocket-tts", "fish-audio"])
     .default("mock"),
+  // Character voice cloning can move independently from the system/default
+  // speech route. Once activated, the persisted CharacterVoiceProfile provider
+  // remains authoritative for that character's future clips.
+  VOICE_IDENTITY_PROVIDER: z
+    .enum(["pocket-tts", "fish-audio"])
+    .optional(),
   PAYMENT_PROVIDER: z.enum(["mock", "btcpay"]).default("mock"),
   BLOB_PROVIDER: z.enum(["mock", "r2", "s3"]).default("mock"),
   AGE_VERIFICATION_PROVIDER: z.enum(["mock", "gocam"]).default("mock"),
@@ -93,16 +99,12 @@ const EnvSchema = z.object({
     .int()
     .positive()
     .default(35 * 60 * 1_000),
-  POCKET_TTS_API_URL: z.string().url().default("http://127.0.0.1:8062/v1"),
+  POCKET_TTS_API_URL: z.string().url().default("http://127.0.0.1:8063/v1"),
   POCKET_TTS_API_TOKEN: z.string().optional(),
-  POCKET_TTS_MODEL: z.string().min(1).default("pocket-tts-4bit"),
+  POCKET_TTS_MODEL: z.string().min(1).default("pocket-tts"),
   POCKET_TTS_LANGUAGE: z.literal("english").default("english"),
   POCKET_TTS_DEFAULT_VOICE_ID: z.string().min(1).default("alba"),
   POCKET_TTS_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
-  POCKET_TTS_OMLX_API_URL: z.string().url().default("http://127.0.0.1:8061/v1"),
-  POCKET_TTS_OMLX_API_TOKEN: z.string().optional(),
-  POCKET_TTS_OMLX_RUNTIME_VERSION: z.string().min(1).default("0.5.3"),
-  POCKET_TTS_OMLX_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
   FISH_AUDIO_API_URL: z.string().url().default("http://127.0.0.1:8062/v1"),
   FISH_AUDIO_API_TOKEN: z.string().optional(),
   FISH_AUDIO_MODEL: z.string().min(1).default("fish-audio-s2-pro-8bit"),

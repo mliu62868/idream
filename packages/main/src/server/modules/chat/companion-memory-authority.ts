@@ -162,7 +162,7 @@ export async function scheduleCompanionMemoryRebuild(
   return eventId;
 }
 
-export async function rebuildCompanionMemoryFromMain(
+export async function syncCompanionMemoryFromMain(
   event: DurableEventEnvelope,
 ): Promise<void> {
   const payload = memoryRebuildPayload(event);
@@ -172,7 +172,7 @@ export async function rebuildCompanionMemoryFromMain(
     event.aggregateType !== "chat_relationship" ||
     event.aggregateId !== companionRelationshipAggregateId(payload.userId, payload.characterId)
   ) {
-    throw new Error("companion memory rebuild event identity is invalid");
+    throw new Error("companion memory sync event identity is invalid");
   }
   for (const turnId of payload.purgeTurnIds) {
     await purgeAgentRun(turnId);
@@ -181,7 +181,7 @@ export async function rebuildCompanionMemoryFromMain(
     await purgeAgentRun(fence.turnId, fence.throughAttempt);
   }
 
-  const metrics = await rebuildMetrics(payload.userId, payload.characterId);
+  const metrics = await memorySourceMetrics(payload.userId, payload.characterId);
   const fence: CompanionWorkspaceRebuildFence = {
     mutationId: event.sourceEventId,
     claimToken: payload.claimToken,
@@ -198,9 +198,12 @@ export async function rebuildCompanionMemoryFromMain(
       scope: "relationship",
       userId: payload.userId,
       characterId: payload.characterId,
+      mode: event.eventType === MAIN_TO_CHAT_EVENTS.companionMemoryProjectRequestedV1
+        ? "project"
+        : "rebuild",
       fence,
       messageCount: metrics.messageCount,
-      messages: rebuildMessages(payload.userId, payload.characterId),
+      messages: memorySourceMessages(payload.userId, payload.characterId),
     }),
     duplex: "half",
     signal: AbortSignal.timeout(companionWorkspaceRebuildBudget(metrics).totalTimeoutMs),
@@ -390,7 +393,7 @@ export async function clearCompanionMemory(userId: string, characterId: string) 
   };
 }
 
-async function rebuildMetrics(userId: string, characterId: string): Promise<{
+async function memorySourceMetrics(userId: string, characterId: string): Promise<{
   messageCount: number;
   sessionCount: number;
   estimatedBytes: number;
@@ -429,7 +432,7 @@ async function rebuildMetrics(userId: string, characterId: string): Promise<{
   };
 }
 
-async function* rebuildMessages(
+async function* memorySourceMessages(
   userId: string,
   characterId: string,
 ): AsyncGenerator<CompanionWorkspaceRebuildMessage> {

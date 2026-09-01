@@ -9,7 +9,7 @@ import {
 } from "./contracts";
 
 const preparedTurn = {
-  version: 3 as const,
+  version: 4 as const,
   model: "model-1",
   characterName: "Mira",
   messages: [
@@ -30,6 +30,8 @@ const preparedTurn = {
   },
   budget: { maxInputTokens: 1_000, usedInputTokens: 10, dropped: [] },
   trace: {
+    productPromptVersion: "companion-product-1",
+    systemPromptDigest: "b".repeat(64),
     characterContentVersionId: "content-1",
     characterReleaseId: "release-1",
     soulFingerprint: "a".repeat(64),
@@ -37,6 +39,7 @@ const preparedTurn = {
     sceneVersion: 1,
     contextRevision: "1",
   },
+  requiredAction: null,
 };
 
 describe("embedded companion runtime contracts", () => {
@@ -71,12 +74,16 @@ describe("embedded companion runtime contracts", () => {
       attemptId: "attempt-1",
       callId: "call-1",
       name: "generate_image_async",
+      effectScope: "turn_action",
+      intent: { requestedNudity: "full" },
       argumentsDigest: "c".repeat(64),
     }).success).toBe(true);
     expect(companionToolReservationSchema.safeParse({
       attemptId: "attempt-1",
       callId: "call-1",
       name: "generate_image_async",
+      effectScope: "turn_action",
+      intent: { requestedNudity: "full" },
       argumentsDigest: "c".repeat(64),
       arguments: { prompt: "must not persist" },
     }).success).toBe(false);
@@ -119,4 +126,3 @@ describe("embedded companion runtime contracts", () => {
     }).success).toBe(true);
   });
 });
-

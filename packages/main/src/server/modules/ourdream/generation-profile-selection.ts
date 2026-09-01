@@ -24,9 +24,12 @@ type GenerationReferenceProfile = {
 
 export async function generationReferenceRouteRequirements(
   visualProfileId: string,
+  referenceSetRevisionId?: string,
 ): Promise<GenerationReferenceRouteRequirement[]> {
   const revision = await prisma.referenceSetRevision.findFirst({
-    where: { visualProfileId, status: "active" },
+    where: referenceSetRevisionId
+      ? { id: referenceSetRevisionId, visualProfileId }
+      : { visualProfileId, status: "active" },
     orderBy: { revision: "desc" },
     select: {
       references: {

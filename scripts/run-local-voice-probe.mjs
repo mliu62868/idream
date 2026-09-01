@@ -7,37 +7,37 @@ import { fileURLToPath } from "node:url";
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..");
 
-const provider = process.env.VOICE_PROVIDER ?? "fish-audio";
-const fishAudio = provider === "fish-audio";
+const provider = process.env.VOICE_PROVIDER ?? "pocket-tts";
 const pocketTts = provider === "pocket-tts";
+const fishAudio = provider === "fish-audio";
 const voiceUrl = trimTrailingSlash(
-  fishAudio
+  pocketTts
+    ? process.env.POCKET_TTS_API_URL ?? "http://127.0.0.1:8063/v1"
+    : fishAudio
     ? process.env.FISH_AUDIO_API_URL ?? "http://127.0.0.1:8062/v1"
-    : pocketTts
-    ? process.env.POCKET_TTS_API_URL ?? "http://127.0.0.1:8062/v1"
     : process.env.PIPELINE_VOICE_API_URL ??
       process.env.MOSS_TTS_API_URL ??
       "http://127.0.0.1:8000/v1",
 );
-const voiceToken = fishAudio
-  ? process.env.FISH_AUDIO_API_TOKEN ?? ""
-  : pocketTts
+const voiceToken = pocketTts
   ? process.env.POCKET_TTS_API_TOKEN ?? ""
+  : fishAudio
+  ? process.env.FISH_AUDIO_API_TOKEN ?? ""
   : process.env.PIPELINE_VOICE_API_TOKEN ??
     process.env.MOSS_TTS_API_TOKEN ??
     process.env.PIPELINE_API_TOKEN ??
     "";
-const voiceModel = fishAudio
+const voiceModel = pocketTts
+  ? process.env.POCKET_TTS_MODEL ?? "pocket-tts"
+  : fishAudio
   ? process.env.FISH_AUDIO_MODEL ?? "fish-audio-s2-pro-8bit"
-  : pocketTts
-  ? process.env.POCKET_TTS_MODEL ?? "pocket-tts-4bit"
   : process.env.PIPELINE_VOICE_MODEL_DEFAULT ??
     process.env.MOSS_TTS_MODEL ??
     "OpenMOSS/MOSS-TTS-Local-Transformer-v1.5";
 const report = process.env.VOICE_MODEL_PROBE_REPORT ?? ".tmp/launch-voice-probe.json";
 const text =
   process.env.VOICE_MODEL_PROBE_TEXT ??
-  "Internal beta voice probe. Fish Audio should return a short audio sample.";
+  "Internal beta voice probe. The configured voice runtimes should return short audio samples.";
 const voice = process.env.VOICE_MODEL_PROBE_VOICE_ID ?? defaultVoiceForModel(voiceModel);
 
 mkdirSync(path.join(repoRoot, ".tmp"), { recursive: true });
@@ -81,17 +81,20 @@ const result = spawnSync("bun", probeArgs, {
   env: {
     ...process.env,
     VOICE_PROVIDER: provider,
-    ...(fishAudio
-      ? {
-          FISH_AUDIO_API_URL: voiceUrl,
-          FISH_AUDIO_API_TOKEN: voiceToken,
-          FISH_AUDIO_MODEL: voiceModel,
-        }
-      : pocketTts
+    ...(process.env.VOICE_IDENTITY_PROVIDER
+      ? { VOICE_IDENTITY_PROVIDER: process.env.VOICE_IDENTITY_PROVIDER }
+      : {}),
+    ...(pocketTts
       ? {
           POCKET_TTS_API_URL: voiceUrl,
           POCKET_TTS_API_TOKEN: voiceToken,
           POCKET_TTS_MODEL: voiceModel,
+        }
+      : fishAudio
+      ? {
+          FISH_AUDIO_API_URL: voiceUrl,
+          FISH_AUDIO_API_TOKEN: voiceToken,
+          FISH_AUDIO_MODEL: voiceModel,
         }
       : {
           PIPELINE_VOICE_API_URL: voiceUrl,

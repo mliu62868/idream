@@ -1,7 +1,12 @@
 // SPEC: CompanionTurn is the single generation-facing seam. It owns pinned Soul,
 // Scene, memory, transcript, prompt order, tool exposure, budget,
 // and trace assembly; the worker must not rebuild any of those independently.
-import type { ChatToolDefinition, ModelMessage } from "@idream/shared";
+import { createHash } from "node:crypto";
+import {
+  COMPANION_PRODUCT_PROMPT_VERSION,
+  type ChatToolDefinition,
+} from "@idream/shared";
+import { requiredImageActionForUserRequest } from "@idream/shared/chat/image-action";
 import type { ChatAuthoritySnapshot } from "@idream/shared/bff";
 import type { ChatExecutionSnapshot } from "@idream/shared/contracts";
 import { buildContext, type BuiltContext } from "./context.js";
@@ -35,7 +40,7 @@ export function compilePreparedTurn(
   currentUserMessageId: string,
   now: Date = new Date(),
 ): PreparedTurn {
-  const fitted = fitPreparedTurnBudget(context, now);
+  const fitted = fitPreparedTurnBudget(context, currentUserMessageId, now);
   const modelProfile = fitted.context.policy.modelProfile;
   const profile: PreparedTurnInput["profile"] = {
     tier: fitted.context.policy.tier,
@@ -55,17 +60,48 @@ export function compilePreparedTurn(
       repetitionPenalty: modelProfile.repetitionPenalty ?? 1.05,
     },
   };
+  const execution = preparedTurnSchema.parse({
+    version: 4,
+    model: profile.model,
+    characterName: fitted.context.persona.name,
+    messages: fitted.messages,
+    tools: fitted.tools,
+    profile,
+    budget: fitted.budget,
+    trace: {
+      productPromptVersion: COMPANION_PRODUCT_PROMPT_VERSION,
+      systemPromptDigest: sha256(
+        fitted.messages.find((message) => message.role === "system")?.content ?? "",
+      ),
+      characterContentVersionId:
+        fitted.context.persona.characterContentVersionId ?? fail("Character content version is required"),
+      characterReleaseId: fitted.context.persona.characterReleaseId,
+      soulFingerprint: fitted.context.persona.soulFingerprint ?? fail("Soul fingerprint is required"),
+      compilerVersion: fitted.context.persona.compilerVersion ?? fail("Soul compiler version is required"),
+      sceneVersion: fitted.context.sceneVersion,
+      contextRevision: fitted.context.contextRevision.toString(),
+    },
+    requiredAction: fitted.requiredAction,
+  });
+  return {
+    ...execution,
+    context: fitted.context,
+  };
+}
+
+function buildPreparedMessages(
+  context: BuiltContext,
+  currentUserMessageId: string,
+  turnState: string,
+): PreparedTurnInput["messages"] {
+  const systemContent = buildCompanionSystemPrompt(context);
   const messages: PreparedTurnInput["messages"] = [{
-    id: [
-      "system",
-      fitted.context.persona.soulFingerprint,
-      fitted.context.sceneVersion,
-    ].join(":"),
+    id: `system:${sha256(systemContent)}`,
     sourceKind: "plugin",
     role: "system",
-    content: fitted.messages[0]?.content ?? "",
+    content: systemContent,
   }];
-  for (const message of fitted.context.recentMessages) {
+  for (const message of context.recentMessages) {
     const isCurrent = message.id === currentUserMessageId;
     if (isCurrent) {
       // The state stays immediately before the current message and is never
@@ -74,7 +110,7 @@ export function compilePreparedTurn(
         id: `state:${currentUserMessageId}`,
         sourceKind: "plugin",
         role: "user",
-        content: fitted.turnState,
+        content: turnState,
       });
     }
     messages.push({
@@ -86,70 +122,48 @@ export function compilePreparedTurn(
         : message.content,
     });
   }
-  const execution = preparedTurnSchema.parse({
-    version: 3,
-    model: profile.model,
-    characterName: fitted.context.persona.name,
-    messages,
-    tools: fitted.tools,
-    profile,
-    budget: fitted.budget,
-    trace: {
-      characterContentVersionId:
-        fitted.context.persona.characterContentVersionId ?? fail("Character content version is required"),
-      characterReleaseId: fitted.context.persona.characterReleaseId,
-      soulFingerprint: fitted.context.persona.soulFingerprint ?? fail("Soul fingerprint is required"),
-      compilerVersion: fitted.context.persona.compilerVersion ?? fail("Soul compiler version is required"),
-      sceneVersion: fitted.context.sceneVersion,
-      contextRevision: fitted.context.contextRevision.toString(),
-    },
-  });
-  return {
-    ...execution,
-    context: fitted.context,
-  };
-}
-
-function buildModelMessages(context: BuiltContext, turnState: string): ModelMessage[] {
-  const transcript: ModelMessage[] = context.recentMessages.map((message) => ({
-    role: message.role,
-    content: message.photoSummary
-      ? `${message.content}\n[You sent a photo: ${message.photoSummary}]`
-      : message.content,
-  }));
-  // The state block sits directly before the current user message (the
-  // transcript anchor); a transcript that does not end with a user turn keeps
-  // the state last so its position stays "right before the model speaks".
-  const anchorIndex = transcript.at(-1)?.role === "user" ? transcript.length - 1 : transcript.length;
-  transcript.splice(anchorIndex, 0, { role: "user", content: turnState });
-  return [
-    { role: "system", content: buildCompanionSystemPrompt(context) },
-    ...transcript,
-  ];
+  return messages;
 }
 
 /**
  * INVARIANT: the tier budget covers every adapter byte. Degradation order is
  * fixed and observable: drop only the oldest complete transcript exchange.
  */
-export function fitPreparedTurnBudget(context: BuiltContext, now: Date = new Date()): {
+export function fitPreparedTurnBudget(
+  context: BuiltContext,
+  currentUserMessageId: string,
+  now: Date = new Date(),
+): {
   context: BuiltContext;
-  messages: ModelMessage[];
+  messages: PreparedTurnInput["messages"];
   tools: ChatToolDefinition[];
+  requiredAction: PreparedTurnInput["requiredAction"];
   budget: PreparedTurn["budget"];
-  turnState: string;
 } {
   const fitted: BuiltContext = {
     ...context,
     recentMessages: context.recentMessages.map((message) => ({ ...message })),
     dropped: [...context.dropped],
   };
-  const tools = fitted.policy.imageToolEnabled ? registryChatTools() : [];
+  const currentUser = fitted.recentMessages.find((message) => message.id === currentUserMessageId);
+  if (!currentUser || currentUser.role !== "user") {
+    throw new Error("PreparedTurn current user message is missing");
+  }
+  const requiredAction = fitted.policy.imageToolEnabled
+      ? requiredImageActionForUserRequest({
+        userText: currentUser.content,
+        hasRecentImageContext: fitted.hasRecentImageContext,
+      })
+    : null;
+  const registeredTools = fitted.policy.imageToolEnabled ? registryChatTools() : [];
+  const tools = requiredAction
+    ? registeredTools.filter((tool) => tool.name === requiredAction.name)
+    : registeredTools;
   const maxInputTokens = Math.max(1, Math.ceil(fitted.policy.maxContextChars / 4));
   const dropped = new Set(fitted.dropped);
   const turnState = buildTurnStateBlock(fitted, now);
   const calculate = () => {
-    const messages = buildModelMessages(fitted, turnState);
+    const messages = buildPreparedMessages(fitted, currentUserMessageId, turnState);
     const usedInputTokens = estimateTokens(
       `${messages.map((message) => message.content).join("\n")}\n${JSON.stringify(tools)}`,
     );
@@ -181,7 +195,7 @@ export function fitPreparedTurnBudget(context: BuiltContext, now: Date = new Dat
     context: fitted,
     messages: calculated.messages,
     tools,
-    turnState,
+    requiredAction,
     budget: {
       maxInputTokens,
       usedInputTokens: calculated.usedInputTokens,
@@ -192,6 +206,10 @@ export function fitPreparedTurnBudget(context: BuiltContext, now: Date = new Dat
 
 function estimateTokens(text: string): number {
   return Math.max(1, Math.ceil(text.length / 4));
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function fail(message: string): never {

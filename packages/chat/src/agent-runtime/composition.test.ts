@@ -42,7 +42,7 @@ describe("companion composition identity", () => {
           maxParallelToolCalls: 1,
           effectfulToolConcurrency: 1,
           deadlineSource: "invocation.deadlineAt",
-          commitBeforeIngest: true,
+          commitBeforeProjection: true,
         },
       },
     });

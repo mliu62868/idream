@@ -137,7 +137,7 @@ async function typeInto(selector: string, value: string) {
   });
 }
 
-describe("CharacterVoicePanel Fish Audio controls", () => {
+describe("CharacterVoicePanel voice identity controls", () => {
   let container: HTMLDivElement;
   let root: Root;
 
@@ -240,6 +240,135 @@ describe("CharacterVoicePanel Fish Audio controls", () => {
     expect(container.textContent).not.toContain("Pocket TTS");
   });
 
+  it("shows the official Pocket CPU runtime without Fish-only delivery controls", async () => {
+    const pocketCandidate = {
+      ...candidateProfile,
+      provider: "pocket_tts" as const,
+      providerVoiceId: "pocket-candidate-1",
+      model: "pocket-tts",
+    };
+    await render(
+      characterWorkspaceDetail({
+        character: { id: "character-pocket-1", name: "Mira" },
+        voice: {
+          provider: "pocket_tts",
+          runtimeStatus: "ready",
+          runtimeEngine: "pocket_tts",
+          runtimeVersion: "3.0.2",
+          runtimeLanguage: "english",
+          catalogVoiceIds: ["alba", "anna"],
+          cloningAvailable: false,
+          currentVoiceId: null,
+          effectiveVoiceId: "alba",
+          authoritySource: "system_default",
+          systemDefaults: {
+            provider: "pocket_tts",
+            defaultVoiceId: "alba",
+            genderVoiceIds: {
+              female: "alba",
+              male: "alba",
+              trans: "alba",
+            },
+            catalog: [
+              {
+                id: "alba",
+                label: "Alba",
+                presentation: "unspecified",
+                description: "Official English Pocket TTS voice",
+              },
+              {
+                id: "anna",
+                label: "Anna",
+                presentation: "unspecified",
+                description: "Official English Pocket TTS voice",
+              },
+            ],
+          },
+          activeProfile: null,
+          candidateProfile: pocketCandidate,
+          history: [pocketCandidate],
+        },
+      }),
+    );
+
+    expect(container.textContent).toContain("Pocket TTS 3.0.2");
+    expect(container.textContent).toContain(
+      "Choose an official English Pocket voice",
+    );
+    expect(container.textContent).toContain("2 official English voices available");
+    expect(container.textContent).toContain(
+      "Pocket TTS uses each official voice's native English delivery",
+    );
+    expect(container.querySelector('[data-testid="voice-preset-builder"]'))
+      .not.toBeNull();
+    expect(container.querySelector("#voice-candidate-builder")).toBeNull();
+    expect(container.querySelector("#character-performance-direction")).toBeNull();
+  });
+
+  it("creates a role-specific candidate from the selected Pocket catalog voice", async () => {
+    adminV2Request.mockResolvedValue({
+      profile: {
+        ...candidateProfile,
+        provider: "pocket_tts",
+        providerVoiceId: "idream-pocket-anna-1",
+        model: "pocket-tts",
+      },
+      replacedCandidateProfileId: null,
+      replayed: false,
+    });
+    await render(
+      characterWorkspaceDetail({
+        character: { id: "character-pocket-2", name: "Mira" },
+        voice: {
+          provider: "pocket_tts",
+          runtimeStatus: "ready",
+          runtimeEngine: "pocket_tts",
+          runtimeVersion: "3.0.2",
+          runtimeLanguage: "english",
+          catalogVoiceIds: ["alba", "anna"],
+          cloningAvailable: false,
+          currentVoiceId: null,
+          authoritySource: "system_default",
+          activeProfile: null,
+          candidateProfile: null,
+          history: [],
+        },
+      }),
+    );
+    const select = container.querySelector<HTMLSelectElement>(
+      "#character-pocket-preset-voice",
+    );
+    await act(async () => {
+      if (!select) throw new Error("Pocket preset selector is missing");
+      select.value = "anna";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await typeInto(
+      "#character-pocket-preset-reason",
+      "Assign a distinct fast voice to Mira",
+    );
+    await act(async () => {
+      container
+        .querySelector<HTMLFormElement>('[data-testid="voice-preset-builder"]')
+        ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+
+    expect(adminV2Request).toHaveBeenCalledTimes(1);
+    const [path, options] = adminV2Request.mock.calls[0] ?? [];
+    expect(path).toBe(
+      "/api/v2/admin/characters/character-pocket-2/voice-presets",
+    );
+    expect(options).toMatchObject({
+      method: "POST",
+      idempotencyKey: expect.any(String),
+      body: {
+        presetVoiceId: "anna",
+        sampleText: expect.stringContaining("Mira"),
+        reason: "Assign a distinct fast voice to Mira",
+      },
+    });
+  });
+
   it("names the exact authority it expects when activating a reviewed candidate", async () => {
     adminV2Request.mockResolvedValue({
       profile: { ...candidateProfile, status: "active" },
@@ -263,7 +392,7 @@ describe("CharacterVoicePanel Fish Audio controls", () => {
     expect(adminV2Request).toHaveBeenCalledTimes(1);
     const [path, options] = adminV2Request.mock.calls[0] ?? [];
     expect(path).toContain(
-      "/voice-clones/voice-candidate-1/activate",
+      "/voice-profiles/voice-candidate-1/activate",
     );
     // SPEC: 激活必须声明它以为的当前权威；服务端据此拒绝基于旧投影的激活。
     expect(options?.body).toMatchObject({
@@ -295,7 +424,7 @@ describe("CharacterVoicePanel Fish Audio controls", () => {
     expect(keys[1]).toBe(keys[0]);
   });
 
-  it("blocks activation while the Fish Audio runtime is not ready", async () => {
+  it("blocks activation while the candidate provider runtime is not ready", async () => {
     await render(
       characterWorkspaceDetail({
         character: { id: "character-voice-1", name: "Mira" },
@@ -314,7 +443,7 @@ describe("CharacterVoicePanel Fish Audio controls", () => {
     );
     expect(button("Activate reviewed voice")?.disabled).toBe(true);
     expect(container.textContent).toContain(
-      "Fish Audio must be the active voice provider",
+      "The candidate provider must be ready",
     );
     expect(adminV2Request).not.toHaveBeenCalled();
   });
@@ -349,7 +478,7 @@ describe("CharacterVoicePanel Fish Audio controls", () => {
     expect([...container.querySelectorAll("details")]
       .every((element) => element.open === false)).toBe(true);
     expect(
-      container.querySelector('audio[aria-label="Active cloned voice preview"]')
+      container.querySelector('audio[aria-label="Active character voice preview"]')
         ?.getAttribute("src"),
     ).toBe("/voice-active-1.mp3");
   });
@@ -385,6 +514,7 @@ describe("CharacterVoicePanel Fish Audio controls", () => {
       "/api/v2/admin/voice-defaults",
       expect.objectContaining({
         body: expect.objectContaining({
+          provider: "fish_audio",
           reason: "Rotate the shared default after provider change",
         }),
       }),

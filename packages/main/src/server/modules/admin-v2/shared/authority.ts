@@ -173,6 +173,46 @@ export async function jsonBody(request: Request, declared?: string): Promise<unk
 
 /** The read half of the manifest — the only operations that carry a contract in the URL. */
 type AdminV2DeclaredReadOperationId = Extract<AdminV2DeclaredOperationId, `GET ${string}`>;
+type AdminV2DeclaredWriteOperationId = Exclude<
+  AdminV2DeclaredOperationId,
+  `GET ${string}`
+>;
+
+/**
+ * SPEC: multipart Route Handlers submit their text fields through the same manifest-owned
+ * request contract as JSON handlers; file parts stay at the dedicated byte parser boundary.
+ * INTENT: `jsonBody` cannot consume multipart without destroying the file carrier, but a
+ * Route Handler importing its request schema directly would create a second authority seam.
+ */
+export function multipartFields<const Id extends AdminV2DeclaredWriteOperationId>(
+  request: Request,
+  operationId: Id,
+  fields: unknown,
+): AdminV2RequestBody<AdminV2DeclaredRequestRefFor<Id>> {
+  const operation = findAdminV2ApiOperation(
+    request.method,
+    new URL(request.url).pathname,
+  );
+  if (!operation || operation.id !== operationId) {
+    throw Errors.internal("Admin v2 multipart fields belong to a different operation", {
+      declared: operationId,
+      resolved: operation?.id ?? null,
+    });
+  }
+  if (operation.mutation) {
+    assertMutationTransportHeaders(request, operation.mutation.transport);
+  }
+  const contract = requireExecutableAdminV2Contract(operation.contract.request);
+  if (contract.kind !== "zod") {
+    throw Errors.internal("Admin v2 multipart operation declares no field contract", {
+      operationId,
+      contract: operation.contract.request,
+    });
+  }
+  return contract.schema.parse(fields) as AdminV2RequestBody<
+    AdminV2DeclaredRequestRefFor<Id>
+  >;
+}
 
 /**
  * SPEC: parses an Admin read query with the schema the manifest declares for `operationId`.

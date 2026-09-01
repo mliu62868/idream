@@ -51,15 +51,17 @@ import {
   candidateState,
   characterAssetBootstrapRequestKey,
   characterAssetDraftSelectionRequestKey,
-  characterAssetPurposes,
   characterAssetReviewIntentSnapshot,
   characterAssetReviewRequestKey,
+  characterAssetReviewDefinesIdentity,
   characterAssetRunRequestKey,
+  characterAssetRunReceiptMessage,
   characterAssetSelectionIntentCommandType,
   characterAssetSelectionIntentSnapshot,
   characterAssetSelectionRecoveryVerification,
   characterAssetStudioLayoutClass,
   characterSourceVariationBlockerMessage,
+  characterSourceVariationAvailabilityMessage,
   committedCharacterRunProjectionMatches,
   committedRunProjectionUnavailable,
   emptyReviewDraft,
@@ -156,6 +158,13 @@ export function CharacterAssetStudio({
       ),
     }),
   );
+  const [negativePrompts, setNegativePrompts] = useState<
+    Record<CharacterAssetPurpose, string>
+  >({
+    character_cover: "",
+    character_hero: "",
+    character_chat: "",
+  });
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<
     "generate" | "review" | "select" | "prepare" | null
@@ -387,9 +396,7 @@ export function CharacterAssetStudio({
       }
       if (verdict.kind === "reflected") {
         setRefreshWarning(null);
-        setMessage(
-          "The committed generation receipt is visible in this exact Run. Review can continue.",
-        );
+        setMessage(characterAssetRunReceiptMessage(detail));
       }
     },
   });
@@ -489,6 +496,7 @@ export function CharacterAssetStudio({
     existingImages[0] ??
     null;
   const selectedItem = activeRunDetail?.items[selectedIndex] ?? null;
+  const reviewDefinesIdentity = characterAssetReviewDefinesIdentity(selectedItem);
   const comparisonItem = comparisonItemId
     ? (activeRunDetail?.items.find((item) => item.id === comparisonItemId) ??
       null)
@@ -508,14 +516,14 @@ export function CharacterAssetStudio({
     setWorkspaceMode(productionOnly ? "library" : "review");
   };
   const reviewDraft = selectedItem
-    ? (reviewDrafts[selectedItem.id] ?? emptyReviewDraft(bootstrapMode))
-    : emptyReviewDraft(bootstrapMode);
+    ? (reviewDrafts[selectedItem.id] ?? emptyReviewDraft(reviewDefinesIdentity))
+    : emptyReviewDraft(reviewDefinesIdentity);
   const updateReviewDraft = (update: (current: ReviewDraft) => ReviewDraft) => {
     if (!selectedItem) return;
     setReviewDrafts((current) => ({
       ...current,
       [selectedItem.id]: update(
-        current[selectedItem.id] ?? emptyReviewDraft(bootstrapMode),
+        current[selectedItem.id] ?? emptyReviewDraft(reviewDefinesIdentity),
       ),
     }));
   };
@@ -575,7 +583,7 @@ export function CharacterAssetStudio({
     productionOnly && bootstrapMode
       ? Boolean(selectedItem?.asset)
       : isCharacterAssetApprovalActionable({
-          bootstrapIdentity: bootstrapMode,
+          bootstrapIdentity: reviewDefinesIdentity,
           decision: selectedItem?.review?.decision ?? null,
           identityConsistency:
             selectedItem?.review?.identityConsistency ?? null,
@@ -606,7 +614,7 @@ export function CharacterAssetStudio({
     reviewDraft.score.trim().length > 0 &&
     Number.isInteger(Number(reviewDraft.score)) &&
     Number(reviewDraft.score) >=
-      (bootstrapMode ? 0 : CHARACTER_IDENTITY_APPROVAL_MIN_SCORE) &&
+      (reviewDefinesIdentity ? 0 : CHARACTER_IDENTITY_APPROVAL_MIN_SCORE) &&
     Number(reviewDraft.score) <= 100 &&
     Object.values(reviewDraft.quality).every(Boolean);
   // 拒绝一张图通常就是「不好看，重生成」，不必先写一段理由。
@@ -849,6 +857,9 @@ export function CharacterAssetStudio({
           orientation,
           count,
           brief,
+          ...(negativePrompts[purpose].trim()
+            ? { negativePrompt: negativePrompts[purpose].trim() }
+            : {}),
           consistencyMode: "strict" as const,
           priority: "normal" as const,
           reason: bootstrapMode
@@ -877,6 +888,7 @@ export function CharacterAssetStudio({
       orientation: body.orientation ?? "",
       count: body.count,
       brief: body.brief,
+      negativePrompt: body.negativePrompt,
     });
     let intent = runCreationIntent;
     if (!intent) {
@@ -905,6 +917,10 @@ export function CharacterAssetStudio({
           setBriefs((current) => ({
             ...current,
             [saved.data.purpose]: saved.data.brief,
+          }));
+          setNegativePrompts((current) => ({
+            ...current,
+            [saved.data.purpose]: saved.data.negativePrompt ?? "",
           }));
         }
         updateRunCreationIntentState(intent);
@@ -1476,12 +1492,12 @@ export function CharacterAssetStudio({
       numericScore !== undefined &&
       Number.isInteger(numericScore) &&
       numericScore >=
-        (bootstrapMode ? 0 : CHARACTER_IDENTITY_APPROVAL_MIN_SCORE) &&
+        (reviewDefinesIdentity ? 0 : CHARACTER_IDENTITY_APPROVAL_MIN_SCORE) &&
       numericScore <= 100;
     if (decision === "approved" && !validScore) {
       setError(
         decision === "approved"
-          ? bootstrapMode
+          ? reviewDefinesIdentity
             ? "Approval requires an integer score from 0 to 100 and concrete visible evidence."
             : `Approval requires an identity match score from ${CHARACTER_IDENTITY_APPROVAL_MIN_SCORE} to 100 and concrete visible evidence.`
           : "Rejection requires a concrete visible reason.",
@@ -1490,10 +1506,10 @@ export function CharacterAssetStudio({
     }
     if (
       decision === "approved" &&
-      reviewDraft.identity !== (bootstrapMode ? "unscored" : "passed")
+      reviewDraft.identity !== (reviewDefinesIdentity ? "unscored" : "passed")
     ) {
       setError(
-        bootstrapMode
+        reviewDefinesIdentity
           ? "The first portrait defines identity and must remain unscored for identity consistency."
           : "A customer-facing approval requires identity consistency to pass.",
       );
@@ -2177,11 +2193,17 @@ export function CharacterAssetStudio({
           selectedItem &&
           !variationRouteReady ? (
             <div className="mt-3 flex flex-col gap-2 rounded-lg bg-[var(--ad-blue-bg)] p-3 text-xs leading-5 text-[var(--ad-blue-text)] sm:flex-row sm:items-center sm:justify-between">
-              <p>
-                {t(
-                  characterSourceVariationBlockerMessage(variationRouteBlocker),
-                )}
-              </p>
+              <div>
+                <p className="font-semibold">{t("More like this unavailable")}</p>
+                <p className="mt-1">
+                  {t(
+                    characterSourceVariationBlockerMessage(variationRouteBlocker),
+                  )}
+                </p>
+                <p className="mt-1">
+                  {t(characterSourceVariationAvailabilityMessage())}
+                </p>
+              </div>
               <WorkspaceButton onClick={() => onContinue("visual")}>
                 {t("Review generation route")}
               </WorkspaceButton>
@@ -2351,22 +2373,25 @@ export function CharacterAssetStudio({
                 {t("Settings")}
               </summary>
               <label className="mt-3 block font-semibold text-[var(--ad-text-muted)]">
-                {t("Image purpose")}
-                <select
-                  className={`${fieldClass} mt-1`}
+                {t("Negative prompt")}
+                <textarea
+                  aria-label={t("Negative prompt")}
+                  className={`${textAreaClass} mt-1 min-h-24`}
                   disabled={mutationContextLocked}
                   onChange={(event) =>
-                    choosePurpose(event.target.value as CharacterAssetPurpose)
+                    setNegativePrompts((current) => ({
+                      ...current,
+                      [activePurpose]: event.target.value,
+                    }))
                   }
-                  value={activePurpose}
-                >
-                  {characterAssetPurposes.map((purpose) => (
-                    <option key={purpose} value={purpose}>
-                      {t(purposeConfig[purpose].label)}
-                    </option>
-                  ))}
-                </select>
+                  value={negativePrompts[activePurpose]}
+                />
               </label>
+              <p className="mt-2 leading-5 text-[var(--ad-text-muted)]">
+                {t(
+                  "Identity and quality safeguards are automatic. Add only exclusions specific to this image.",
+                )}
+              </p>
             </details>
             <WorkspaceButton
               aria-describedby={
@@ -2492,7 +2517,7 @@ export function CharacterAssetStudio({
                     {t(
                       hasDecision
                         ? "The earlier immutable decision is preserved, but it is missing required visible evidence. Record a superseding review to make this candidate actionable."
-                        : bootstrapMode
+                        : reviewDefinesIdentity
                           ? "This portrait defines identity, so identity consistency is intentionally unscored. Judge artifacts, subject count, composition, and customer intent."
                           : "Score the artifact and state identity consistency separately. A composition rejection does not automatically mean identity failed.",
                     )}
@@ -2532,7 +2557,7 @@ export function CharacterAssetStudio({
                   </fieldset>
                   <div className="mt-3 grid grid-cols-2 gap-2">
                     <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-                      {bootstrapMode
+                      {reviewDefinesIdentity
                         ? t("Quality score")
                         : t("Identity match score ({minimum}–100 required)", {
                             minimum: CHARACTER_IDENTITY_APPROVAL_MIN_SCORE,
@@ -2541,7 +2566,7 @@ export function CharacterAssetStudio({
                         className={`${fieldClass} mt-1`}
                         max={100}
                         min={
-                          bootstrapMode
+                          reviewDefinesIdentity
                             ? 0
                             : CHARACTER_IDENTITY_APPROVAL_MIN_SCORE
                         }
@@ -2561,7 +2586,7 @@ export function CharacterAssetStudio({
                       {t("Identity consistency")}
                       <select
                         className={`${fieldClass} mt-1`}
-                        disabled={bootstrapMode}
+                        disabled={reviewDefinesIdentity}
                         onChange={(event) =>
                           updateReviewDraft((current) => ({
                             ...current,
@@ -2571,7 +2596,7 @@ export function CharacterAssetStudio({
                         }
                         value={reviewDraft.identity}
                       >
-                        {bootstrapMode ? (
+                        {reviewDefinesIdentity ? (
                           <option value="unscored">
                             {t("Unscored · defines identity")}
                           </option>

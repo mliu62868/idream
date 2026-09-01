@@ -679,6 +679,8 @@ export type GenerationWriteRequest =
       outputCount: number;
       consistencyMode: ConsistencyMode;
       model?: string;
+      negativePrompt?: string;
+      prompt?: string;
       /** Null lets the write client price the variation itself. */
       quote: RuntimeGenerationQuote | null;
       /** Non-null only when the form's own quote is the one being spent. */
@@ -806,6 +808,8 @@ async function writeOnce(
           outputCount: request.outputCount,
           consistencyMode: request.consistencyMode,
           model: request.model,
+          negativePrompt: request.negativePrompt,
+          prompt: request.prompt,
           quote: request.quote,
           idempotencyKeys: context.keys.variation,
         },

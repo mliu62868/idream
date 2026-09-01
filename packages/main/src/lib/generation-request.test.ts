@@ -685,6 +685,44 @@ describe("generation retry refusal", () => {
 });
 
 describe("generation write outcome protocol", () => {
+  it("keeps image-edit instructions and exclusions in the variation write", async () => {
+    let body: Record<string, unknown> | null = null;
+    const fetcher = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        body = typeof init?.body === "string" ? JSON.parse(init.body) : null;
+        return jobResponse("edit-job-1");
+      },
+    ) as unknown as typeof fetch;
+
+    await runGenerationWrite(
+      {
+        kind: "variation",
+        mediaId: "source-media-1",
+        outputCount: 1,
+        consistencyMode: "balanced",
+        prompt: "Change the jacket to deep red velvet.",
+        negativePrompt: "visible text, duplicate person",
+        quote,
+        quoteKey: "route-key",
+        queuedMessage: "Image edit queued.",
+      },
+      {
+        state: heldQuote(),
+        dispatch: () => {},
+        effects: recordingEffects(),
+        keys: createGenerationIdempotencyKeys(),
+        fetcher,
+      },
+    );
+
+    expect(body).toMatchObject({
+      prompt: "Change the jacket to deep red velvet.",
+      negativePrompt: "visible text, duplicate person",
+      outputCount: 1,
+      consistencyMode: "balanced",
+    });
+  });
+
   it("marks in flight, applies the job, reveals it, and reprices — in that order", async () => {
     const dispatched: GenerationRequestAction[] = [];
     const effects = recordingEffects();

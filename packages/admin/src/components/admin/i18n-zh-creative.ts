@@ -1,10 +1,12 @@
-// SPEC: Creative Studio 文案：创意生产批次、图片库、投放位。
-// INTENT: 对应 nav 的 Creative Studio 组。
+// SPEC: 运营素材文案：外部图片上传、素材库、投放位，以及角色工作流留下的生成记录。
+// INTENT: 对应 nav 的 Operational Assets 组。
 // INVARIANT: key 在所有 i18n-zh-*.ts 之间互斥——同一个 key 只能有一个域文件持有；
 // 由 i18n-zh-exclusivity.test.ts 强制。新增文案放它所属的域文件，不要另开「杂项」文件。
 // TRAP: 本域约 17 个键是后端下发的短语（packages/main/src/server/modules/admin-v2/creative/**、
 // packages/shared/src/admin/contracts/creative.ts），经 t(后端字符串) 动态取值，静态扫描看不见。
 export const adminZhCreative: Record<string, string> = {
+  "Describe artifacts, subjects, text, or composition to exclude.":
+    "描述需要排除的瑕疵、主体、文字或构图。",
   "1 approved asset is hidden because generation authority is incomplete or untrusted.":
     "有 1 个已通过素材因生成权威不完整或不可信而被隐藏。",
   "A Creative publisher permission is required for activation.": "激活需要创意投放权限。",
@@ -12,6 +14,7 @@ export const adminZhCreative: Record<string, string> = {
   "Active character generation job": "进行中的角色生成任务",
   "Active character look": "当前角色造型",
   "Active visual identity": "当前视觉身份",
+  "Applied exclusions": "已应用的排除项",
   "Add a concrete brief to make the Run ready.": "填写具体创意简报后即可创建。",
   "Add a creative brief or scene prompt for more control, or generate starter directions from the locked identity and references.":
     "填写创意简报或场景提示词可获得更精确的控制，也可以直接根据已锁定身份和参考图生成起始方向。",
@@ -55,6 +58,23 @@ export const adminZhCreative: Record<string, string> = {
     "批量生成封面、主视觉和聊天图片资产包，审核图片并发布铺位。",
   "Batches": "批次",
   "Browse and curate generated image assets.": "浏览与治理生成图片资产。",
+  "Upload, organize, and stage operational image assets.": "上传、整理并暂存运营图片素材。",
+  "Upload operational images": "上传运营图片",
+  "Create artwork with any tool, then upload the final JPEG, PNG, or WebP here. Character images still belong in the Character workspace.":
+    "可使用任意工具制作图片，再将最终 JPEG、PNG 或 WebP 上传到这里。角色图片仍在角色工作台中管理。",
+  "Upload purpose": "上传用途",
+  "Choose images to upload": "选择要上传的图片",
+  "Upload images": "上传图片",
+  "Uploading…": "上传中…",
+  "Image upload failed": "图片上传失败",
+  "{count} images uploaded to the Library.": "已上传 {count} 张图片到素材库。",
+  "{count} images uploaded; the next upload failed: {message}":
+    "已上传 {count} 张图片；下一张上传失败：{message}",
+  "Widen the filters to find an existing asset, or upload new artwork above.":
+    "放宽筛选条件查找已有素材，或在上方上传新图片。",
+  "Upload final artwork to create the first platform asset.":
+    "上传最终图片，创建第一项平台素材。",
+  "No operational image assets have been uploaded yet.": "尚未上传运营图片素材。",
   "Build candidate": "创建候选声音",
   "Bulk archive": "批量归档",
   "Bulk archive is atomic. If one asset is still in use, none of the selected assets will change.":

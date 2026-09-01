@@ -128,7 +128,7 @@ describe("canonical Admin route shell", () => {
     expect(markup).toContain('name="review-queue-search"');
   });
 
-  // SPEC: 服务端第一帧就使用运营的语言；一级导航稳定为今日工作 / 角色 / 更多。
+  // SPEC: 服务端第一帧使用运营的语言与工作模式；已授权的低频入口由关闭的工作区目录承载。
   it("renders the operator's stored language and minimal primary navigation in the first server frame", () => {
     const markup = renderToString(
       <AdminConsoleClient
@@ -140,7 +140,10 @@ describe("canonical Admin route shell", () => {
             "character.performance.read",
             "content.read",
           ],
-          preferences: { locale: "zh", openNavGroups: ["Character Studio"] },
+          preferences: {
+            locale: "zh",
+            workMode: "character_producer",
+          },
         })}
       />,
     );
@@ -149,7 +152,8 @@ describe("canonical Admin route shell", () => {
     expect(markup).not.toContain(">Today<");
     expect(markup).toContain('href="/admin/characters"');
     expect(markup).toContain(">角色<");
-    expect(markup).toContain(">更多<");
+    expect(markup).toContain(">工作区<");
+    expect(markup).toContain('aria-expanded="false"');
     expect(markup).not.toContain(">分类体系<");
   });
 
@@ -163,7 +167,7 @@ describe("canonical Admin route shell", () => {
     expect(source).not.toContain("requestAnimationFrame");
   });
 
-  // SPEC: 冷启动的侧栏直接暴露核心对象，其余能力仍可从「更多」进入。
+  // SPEC: 角色生产模式的侧栏直接暴露核心对象，其他能力从「工作区」进入。
   it("keeps the cold-start navigation focused without deleting destinations", () => {
     const permissions = [
       "dashboard.read",
@@ -174,12 +178,15 @@ describe("canonical Admin route shell", () => {
       "safety.review.read",
     ] as AdminPermissionKey[];
     const markup = renderToString(
-      <AdminConsoleClient {...shellProps({ initialPermissions: permissions })} />,
+      <AdminConsoleClient {...shellProps({
+        initialPermissions: permissions,
+        preferences: { workMode: "character_producer" },
+      })} />,
     );
 
     expect(markup).toContain(">Today<");
     expect(markup).toContain(">Characters<");
-    expect(markup).toContain(">More<");
+    expect(markup).toContain(">Workspaces<");
     expect(markup).not.toContain(">Character Review<");
     expect(markup).not.toContain(">Character Starters<");
     expect(markup).not.toContain(">Taxonomy<");
@@ -288,7 +295,7 @@ describe("canonical Admin route shell", () => {
     expect(source).toContain('aria-modal="true"');
     expect(source).toContain('event.key === "Escape"');
     expect(source).toContain("trigger?.focus()");
-    expect(source).toContain('window.matchMedia("(min-width: 1280px)")');
-    expect(source).toContain("xl:flex xl:flex-col");
+    expect(source).toContain('window.matchMedia("(min-width: 1200px)")');
+    expect(source).toContain("min-[1200px]:flex min-[1200px]:flex-col");
   });
 });

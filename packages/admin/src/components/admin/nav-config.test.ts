@@ -4,18 +4,18 @@ import {
   type AdminV2WorkspaceAccessKey,
 } from "./workspace-access";
 import type { AdminPermissionKey } from "@idream/shared/admin/permissions";
+import { ADMIN_WORK_MODES } from "./shell-preferences";
 import {
+  ALL_SECTION_ITEMS,
   ADMIN_WORKSPACES,
   adminEntryRedirect,
   canReadAnyWorkspace,
-  defaultOpenNavGroups,
   defaultWorkModeForRole,
   missingWorkspacePermissions,
   navGroupsForPermissions,
   navItems,
   parseAdminPath,
   sectionIsPermitted,
-  type WorkMode,
 } from "./nav-config";
 
 // parseAdminPath 解析出的是导航项本身；断言只关心它的 id 与子视图。
@@ -53,6 +53,34 @@ describe("admin navigation information architecture", () => {
 
   it("presents Character as the primary admin object", () => {
     expect(navItems.find((item) => item.id === "content/official")?.label).toBe("Characters");
+    expect(navItems.filter((item) => item.navigation === "primary").map((item) => item.label))
+      .toEqual(["Today", "Characters"]);
+  });
+
+  // SPEC: 入口层级是产品语义，不由组件按 URL 或名字猜。
+  //       常规工作页直接出现；低频配置、诊断和兼容子视图进入渐进披露区。
+  it("classifies low-frequency tools without removing their destinations", () => {
+    expect(ALL_SECTION_ITEMS.filter((item) => item.navigation === "tool").map((item) => item.id).sort())
+      .toEqual([
+        "announcements",
+        "compliance",
+        "content/production",
+        "content/tags",
+        "content/templates",
+        "generation/backends",
+        "generation/dead-letter",
+        "generation/metrics",
+        "generation/presets",
+        "generation/workflows",
+        "insights",
+        "moderation",
+        "promo",
+        "risk",
+        "support",
+      ].sort());
+    expect(ALL_SECTION_ITEMS.every((item) =>
+      ["primary", "workspace", "tool"].includes(item.navigation),
+    )).toBe(true);
   });
 
   // SPEC: 导航项的名字只承诺页面真正提供的东西。
@@ -165,15 +193,20 @@ describe("permission and work-mode navigation", () => {
 
   it("uses the exact workspace read predicate for navigation and direct access", () => {
     const supportPermissions = new Set<AdminPermissionKey>([
-      "dashboard.read", "case.read", "support.request.read", "customer.read", "billing.read", "audit.read",
+      "dashboard.read", "case.read", "support.request.read", "customer.read", "billing.read", "compliance.read", "audit.read",
     ]);
     const groups = navGroupsForPermissions(supportPermissions, "support");
     const ids = groups.flatMap((group) => group.items.map((item) => item.id));
 
-    expect(ids).toContain("cases");
-    expect(ids).toContain("users");
-    expect(ids).not.toContain("generation/config");
+    expect(ids).toEqual([
+      "dashboard", "cases", "users", "billing", "compliance", "support", "risk",
+      "audit-log", "pricing",
+    ]);
+    // 同一个 read key 可能打开多个工作区；模式只改变分组顺序，不能擅自隐藏其中一个入口。
     expect(ids).toContain("pricing");
+    expect(ids).toContain("audit-log");
+    expect(sectionIsPermitted("pricing", supportPermissions)).toBe(true);
+    expect(sectionIsPermitted("audit-log", supportPermissions)).toBe(true);
     for (const id of ids) expect(sectionIsPermitted(id, supportPermissions)).toBe(true);
     expect(sectionIsPermitted("content/official", new Set(["character.project.write"]))).toBe(false);
     expect(sectionIsPermitted("content/official", new Set([
@@ -221,21 +254,38 @@ describe("permission and work-mode navigation", () => {
     }
   });
 
-  it("uses work mode only to reorder permitted workspaces, never to grant access", () => {
-    const permissions = new Set(navItems.flatMap((item) => item.read.allOf));
-    const expectedIds = new Set(navItems.map((item) => item.id));
-    const modes: WorkMode[] = [
-      "character_producer", "creative_operator", "platform_ops", "support",
-      "moderator", "growth_analyst", "admin",
-    ];
+  // SPEC: 工作模式回答“先看哪组”，权限回答“能去哪里”；模式不能成为第二套权限系统。
+  // INVARIANT: 包括迁移期兼容工具在内，每个已授权目的地都必须进入所属工作区。
+  it("keeps every permitted destination visible while work mode only reorders groups", () => {
+    const permissions = new Set(ALL_SECTION_ITEMS.flatMap((item) => item.read.allOf));
+    const expectedIds = new Set(ALL_SECTION_ITEMS.map((item) => item.id));
 
-    for (const mode of modes) {
+    for (const mode of ADMIN_WORK_MODES) {
       const groups = navGroupsForPermissions(permissions, mode);
-      expect(new Set(groups.flatMap((group) => group.items.map((item) => item.id)))).toEqual(expectedIds);
+      expect(new Set(groups.flatMap((group) => group.items.map((item) => item.id))), mode)
+        .toEqual(expectedIds);
     }
     expect(navGroupsForPermissions(permissions, "support")[0]?.group).toBe("Today");
     expect(navGroupsForPermissions(permissions, "support")[1]?.group).toBe("Customer Operations");
     expect(navGroupsForPermissions(permissions, "platform_ops")[1]?.group).toBe("Platform Operations");
+
+    expect(sectionIsPermitted("generation/dead-letter", permissions)).toBe(true);
+    expect(at("ops/jobs?view=dead-letter")?.sectionId).toBe("generation/dead-letter");
+    expect(navGroupsForPermissions(permissions, "support")
+      .flatMap((group) => group.items.map((item) => item.id)))
+      .toContain("generation/dead-letter");
+  });
+
+  it("keeps permitted low-frequency operations reachable in an unrelated work mode", () => {
+    const permissions = new Set<AdminPermissionKey>(["generation.job.read", "ops.queue.read"]);
+    const ids = navGroupsForPermissions(permissions, "support")
+      .flatMap((group) => group.items.map((item) => item.id));
+
+    expect(ids).toContain("generation/jobs");
+    expect(ids).toContain("generation/dead-letter");
+    expect(ids).toContain("generation/backends");
+    expect(ids).toContain("generation/metrics");
+    expect(ids).not.toContain("system/access");
   });
 
   it("maps v2 grant bundles to their canonical workspaces", () => {
@@ -254,22 +304,12 @@ describe("permission and work-mode navigation", () => {
       "experiment.manage",
       "character.performance.read",
     ]), "growth_analyst").flatMap((group) => group.items.map((item) => item.id));
-    expect(growth).toEqual(expect.arrayContaining(["analytics", "insights", "experiments", "growth/characters"]));
+    expect(growth).toEqual(expect.arrayContaining(["analytics", "experiments"]));
+    expect(growth).toContain("insights");
+    expect(growth).toContain("growth/characters");
+    expect(sectionIsPermitted("insights", new Set(["analytics.metric.read"]))).toBe(true);
+    expect(sectionIsPermitted("growth/characters", new Set(["character.performance.read"]))).toBe(true);
     expect(growth).not.toContain("content/official");
-  });
-
-  // SPEC: 冷启动的侧栏至少要露出一整个分组，而不是只剩「今日工作」一条。
-  // INTENT: 默认全折叠时，全新运营看到的是 1 个目的地和 6 个不知道装了什么的标题。
-  it("opens the work mode's primary group and the current page's group on a cold start", () => {
-    expect(defaultOpenNavGroups("support", "Today")).toEqual(["Customer Operations"]);
-    expect(defaultOpenNavGroups("platform_ops", "Growth"))
-      .toEqual(["Platform Operations", "Growth"]);
-    expect(defaultOpenNavGroups("growth_analyst", "Growth")).toEqual(["Growth"]);
-    // Today 常驻在顶部且不带分组标题，展开它没有意义。
-    expect(defaultOpenNavGroups("admin", "Today")).toEqual(["Character Studio"]);
-    for (const mode of ["character_producer", "creative_operator", "moderator"] as WorkMode[]) {
-      expect(defaultOpenNavGroups(mode, "Today"), mode).not.toEqual([]);
-    }
   });
 
   it("derives conservative default modes from existing auth roles", () => {

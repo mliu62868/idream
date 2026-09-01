@@ -4,6 +4,7 @@ import {
   characterVoiceActivationResponseSchema,
   characterVoiceCloneCreateRequestSchema,
   characterVoiceCloneCreateResponseSchema,
+  characterVoicePresetCreateResponseSchema,
   characterVoiceProfileSchema,
   characterVoiceSystemDefaultResetResponseSchema,
   fishAudioDeliverySettingsSchema,
@@ -16,7 +17,11 @@ import { env } from "@/server/lib/env";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { providers } from "@/server/providers";
-import type { VoiceIdentityPort } from "@/server/providers/types";
+import { createVoicePortsForKey } from "@/server/providers/voice/factory";
+import type {
+  VoiceIdentityPort,
+  VoiceProviderKey,
+} from "@/server/providers/types";
 import type {
   AdminActor,
   AdminV2RequestBody,
@@ -41,6 +46,11 @@ type VoiceProfileWithAssets = CharacterVoiceProfileRecord & {
   previewAsset: MediaAsset | null;
 };
 
+type CharacterVoiceProviderKey = Extract<
+  VoiceProviderKey,
+  "fish_audio" | "pocket_tts"
+>;
+
 export type ConfiguredVoiceIdentityRuntime = Pick<
   CharacterVoiceWorkspace,
   | "provider"
@@ -49,55 +59,72 @@ export type ConfiguredVoiceIdentityRuntime = Pick<
   | "runtimeEngine"
   | "runtimeVersion"
   | "runtimeLanguage"
+  | "catalogVoiceIds"
 >;
 
 // SPEC: Voice Identity owns the meaning of provider health for Character operations.
 // INTENT: Workspace consumes a stable runtime projection and never reaches into the
 // provider registry or translates provider-specific capability fields itself.
-export async function inspectConfiguredVoiceIdentityRuntime(): Promise<
-  ConfiguredVoiceIdentityRuntime
-> {
-  const configuredProvider = providers.voice.clip.providerKey;
-  const voice = providers.voice.identity;
-  const base = {
-    provider: configuredProvider,
-    runtimeLanguage: env.FISH_AUDIO_LANGUAGE,
-  } as const;
-  if (configuredProvider !== "fish_audio") {
+export async function inspectConfiguredVoiceIdentityRuntime(): Promise<ConfiguredVoiceIdentityRuntime> {
+  const configuredProvider = configuredVoiceIdentityProviderKey();
+  if (!isCharacterVoiceProviderKey(configuredProvider)) {
     return {
-      ...base,
+      provider: configuredProvider,
+      runtimeLanguage: env.FISH_AUDIO_LANGUAGE,
       cloningAvailable: false,
       runtimeStatus: "inactive",
       runtimeEngine: "inactive",
       runtimeVersion: null,
+      catalogVoiceIds: [],
     };
   }
-  if (!voice || voice.providerKey !== "fish_audio") {
-    return {
-      ...base,
-      cloningAvailable: false,
-      runtimeStatus: "unavailable",
-      runtimeEngine: "unknown",
-      runtimeVersion: null,
-    };
-  }
+  return inspectVoiceIdentityProviderRuntime(configuredProvider);
+}
 
+async function inspectVoiceIdentityProviderRuntime(
+  providerKey: CharacterVoiceProviderKey,
+): Promise<ConfiguredVoiceIdentityRuntime> {
+  const base = {
+    provider: providerKey,
+    runtimeLanguage:
+      providerKey === "pocket_tts"
+        ? env.POCKET_TTS_LANGUAGE
+        : env.FISH_AUDIO_LANGUAGE,
+  } as const;
   try {
+    const voice = voiceIdentityPortForKey(providerKey);
     const capabilities = await voice.inspectCapabilities();
-    const ready =
+    const expectedRuntime =
+      providerKey === "pocket_tts" ? "pocket_tts" : "mlx_audio";
+    const expectedAcceleration =
+      providerKey === "pocket_tts" ? "cpu" : "mlx";
+    const runtimeCompatible =
       capabilities.ok &&
-      capabilities.data.voiceCloning &&
-      capabilities.data.runtime === "mlx_audio";
+      capabilities.data.runtime === expectedRuntime &&
+      capabilities.data.acceleration === expectedAcceleration;
+    const catalogVoiceIds =
+      runtimeCompatible && providerKey === "pocket_tts"
+        ? [...(capabilities.data.catalogVoices ?? [])]
+        : [];
+    const cloningAvailable =
+      runtimeCompatible && capabilities.data.voiceCloning;
+    const ready =
+      runtimeCompatible &&
+      (providerKey === "pocket_tts"
+        ? catalogVoiceIds.length > 0
+        : cloningAvailable);
     return {
       ...base,
-      cloningAvailable: ready,
+      cloningAvailable,
       runtimeStatus: ready ? "ready" : "unavailable",
       runtimeEngine:
-        capabilities.ok && capabilities.data.runtime === "mlx_audio"
-          ? "mlx_audio"
+        capabilities.ok && capabilities.data.runtime === expectedRuntime
+          ? expectedRuntime
           : "unknown",
-      runtimeVersion:
-        capabilities.ok ? capabilities.data.runtimeVersion ?? null : null,
+      runtimeVersion: capabilities.ok
+        ? (capabilities.data.runtimeVersion ?? null)
+        : null,
+      catalogVoiceIds,
     };
   } catch {
     return {
@@ -106,20 +133,24 @@ export async function inspectConfiguredVoiceIdentityRuntime(): Promise<
       runtimeStatus: "unavailable",
       runtimeEngine: "unknown",
       runtimeVersion: null,
+      catalogVoiceIds: [],
     };
   }
 }
 
 export async function previewConfiguredVoiceIdentity(input: {
+  readonly providerKey?: CharacterVoiceProviderKey;
   readonly text: string;
   readonly voiceId: string;
   readonly delivery: FishAudioDeliverySettings;
 }) {
-  const voice = configuredFishVoiceIdentityPort("Voice preview");
+  const providerKey =
+    input.providerKey ?? configuredCharacterVoiceIdentity().providerKey;
+  const voice = voiceIdentityPortForKey(providerKey);
   const result = await voice.previewVoice(input);
   if (!result.ok) {
     throw Errors.unavailable(
-      "Fish Audio could not render the voice preview",
+      `${voiceProviderLabel(providerKey)} could not render the voice preview`,
       result.error,
     );
   }
@@ -182,7 +213,7 @@ export async function createCharacterVoiceClone(input: {
   requestId: string;
   form: ParsedVoiceCloneForm;
 }) {
-  const voice = configuredFishVoiceIdentityPort();
+  const { providerKey, voice } = configuredCharacterVoiceIdentity();
   const character = await prisma.character.findFirst({
     where: operationalCharacterWhere({
       id: input.characterId,
@@ -191,6 +222,13 @@ export async function createCharacterVoiceClone(input: {
     select: { id: true },
   });
   if (!character) throw Errors.notFound("Character not found");
+  const runtime = await inspectVoiceIdentityProviderRuntime(providerKey);
+  if (!runtime.cloningAvailable || runtime.runtimeStatus !== "ready") {
+    throw Errors.unavailable(
+      `${voiceProviderLabel(providerKey)} voice cloning is unavailable`,
+      runtime,
+    );
+  }
 
   // Every external preparation attempt owns a distinct provider voice. The
   // idempotency receipt decides which attempt wins; losing attempts can then be
@@ -222,6 +260,7 @@ export async function createCharacterVoiceClone(input: {
       commandType: "character.voice.clone",
       target: { type: "character", id: input.characterId },
       payload: {
+        provider: providerKey,
         language: input.form.language,
         sampleText: input.form.sampleText,
         delivery: input.form.delivery,
@@ -242,7 +281,10 @@ export async function createCharacterVoiceClone(input: {
           referenceText: input.form.referenceText,
         });
         if (!cloned.ok) {
-          throw Errors.unavailable("Fish Audio could not clone the reference voice", cloned.error);
+          throw Errors.unavailable(
+            `${voiceProviderLabel(providerKey)} could not clone the reference voice`,
+            cloned.error,
+          );
         }
         preparedArtifacts.voiceId = cloned.data.voiceId;
         const preview = await voice.previewVoice({
@@ -252,7 +294,10 @@ export async function createCharacterVoiceClone(input: {
         });
         if (!preview.ok) {
           await voice.deleteVoice({ voiceId: cloned.data.voiceId });
-          throw Errors.unavailable("Fish Audio cloned the voice but could not render its preview", preview.error);
+          throw Errors.unavailable(
+            `${voiceProviderLabel(providerKey)} cloned the voice but could not render its preview`,
+            preview.error,
+          );
         }
         const storedPreview = await providers.blob.putPrivate({
           key: previewKey,
@@ -262,7 +307,7 @@ export async function createCharacterVoiceClone(input: {
         if (!storedPreview.ok) {
           await voice.deleteVoice({ voiceId: cloned.data.voiceId });
           throw Errors.unavailable(
-            "Fish Audio rendered the preview but storage failed",
+            `${voiceProviderLabel(providerKey)} rendered the preview but storage failed`,
             storedPreview.error,
           );
         }
@@ -326,7 +371,7 @@ export async function createCharacterVoiceClone(input: {
               referenceText: input.form.referenceText,
               sizeBytes: input.form.reference.body.byteLength,
               sha256: input.form.reference.sha256,
-              provider: "fish_audio",
+              provider: providerKey,
               providerVoiceId: prepared.cloned.voiceId,
               delivery: input.form.delivery,
             }),
@@ -346,7 +391,7 @@ export async function createCharacterVoiceClone(input: {
             metadata: toInputJson({
               purpose: "voice_clone_preview",
               durationMs: prepared.preview.durationMs,
-              provider: "fish_audio",
+              provider: providerKey,
               providerVoiceId: prepared.cloned.voiceId,
               delivery: input.form.delivery,
             }),
@@ -357,7 +402,7 @@ export async function createCharacterVoiceClone(input: {
             id: profileId,
             characterId: input.characterId,
             version: (latest?.version ?? 0) + 1,
-            provider: "fish_audio",
+            provider: providerKey,
             providerVoiceId: prepared.cloned.voiceId,
             model: prepared.cloned.model,
             language: prepared.cloned.language,
@@ -385,6 +430,7 @@ export async function createCharacterVoiceClone(input: {
               characterId: input.characterId,
               profileId: profile.id,
               version: profile.version,
+              provider: profile.provider,
               providerVoiceId: profile.providerVoiceId,
               replacedCandidateProfileId: currentCandidate?.id ?? null,
             }),
@@ -400,6 +446,7 @@ export async function createCharacterVoiceClone(input: {
               characterId: input.characterId,
               profileId: profile.id,
               version: profile.version,
+              provider: profile.provider,
               providerVoiceId: profile.providerVoiceId,
               actorId: input.actor.id,
             }),
@@ -437,7 +484,301 @@ export async function createCharacterVoiceClone(input: {
   }
 }
 
-// SPEC: the bodies the manifest declares for the two voice write operations, already
+type VoicePresetRequest = AdminV2RequestBody<
+  "characterVoicePresetCreateRequestSchema+idempotency-key"
+>;
+
+export async function createCharacterVoicePreset(input: {
+  characterId: string;
+  actor: AdminActor;
+  idempotencyKey: string;
+  requestId: string;
+  request: VoicePresetRequest;
+}) {
+  const { providerKey, voice } = configuredCharacterVoiceIdentity();
+  if (providerKey !== "pocket_tts" || !voice.createPresetVoice) {
+    throw Errors.unavailable(
+      "Official voice presets require VOICE_IDENTITY_PROVIDER=pocket-tts",
+      { providerKey },
+    );
+  }
+  const character = await prisma.character.findFirst({
+    where: operationalCharacterWhere({
+      id: input.characterId,
+      deletedAt: null,
+    }),
+    select: { id: true },
+  });
+  if (!character) throw Errors.notFound("Character not found");
+  const runtime = await inspectVoiceIdentityProviderRuntime(providerKey);
+  if (
+    runtime.runtimeStatus !== "ready" ||
+    !runtime.catalogVoiceIds.includes(input.request.presetVoiceId)
+  ) {
+    throw Errors.unavailable(
+      "The requested Pocket TTS English catalog voice is unavailable",
+      {
+        requestedVoiceId: input.request.presetVoiceId,
+        runtime,
+      },
+    );
+  }
+
+  // INVARIANT: every Character candidate owns a distinct durable alias even
+  // when several Characters select the same official Pocket catalog voice.
+  const voiceId = `idream-${randomUUID()}`;
+  const referenceAssetId = `media_voice_reference_${voiceId}`;
+  const previewAssetId = `media_voice_preview_${voiceId}`;
+  const profileId = `voice_profile_${voiceId}`;
+  const referenceKey =
+    `voice-references/${input.characterId}/${voiceId}.json`;
+  const previewKey = `voice-previews/${input.characterId}/${voiceId}.wav`;
+  const preparedArtifacts = {
+    voiceId: null as string | null,
+    previewKey: null as string | null,
+    referenceStored: false,
+  };
+  let mutationCompleted = false;
+
+  try {
+    const result = await executeAtomicIdempotentMutation({
+      environment: env.APP_ENV,
+      actor: input.actor,
+      idempotencyKey: input.idempotencyKey,
+      requestId: input.requestId,
+      commandType: "character.voice.preset",
+      target: { type: "character", id: input.characterId },
+      payload: {
+        provider: providerKey,
+        presetVoiceId: input.request.presetVoiceId,
+        sampleText: input.request.sampleText,
+        reason: input.request.reason,
+      },
+      prepare: async () => {
+        const created = await voice.createPresetVoice!({
+          voiceId,
+          presetVoiceId: input.request.presetVoiceId,
+          language: runtime.runtimeLanguage,
+        });
+        if (!created.ok) {
+          throw Errors.unavailable(
+            "Pocket TTS could not create the catalog voice alias",
+            created.error,
+          );
+        }
+        preparedArtifacts.voiceId = created.data.voiceId;
+        const preview = await voice.previewVoice({
+          text: input.request.sampleText,
+          voiceId: created.data.voiceId,
+          delivery: DEFAULT_FISH_AUDIO_DELIVERY,
+        });
+        if (!preview.ok) {
+          await voice.deleteVoice({ voiceId: created.data.voiceId });
+          throw Errors.unavailable(
+            "Pocket TTS created the voice alias but could not render its preview",
+            preview.error,
+          );
+        }
+        const storedPreview = await providers.blob.putPrivate({
+          key: previewKey,
+          body: preview.data.body,
+          contentType: preview.data.contentType,
+        });
+        if (!storedPreview.ok) {
+          await voice.deleteVoice({ voiceId: created.data.voiceId });
+          throw Errors.unavailable(
+            "Pocket TTS rendered the preview but storage failed",
+            storedPreview.error,
+          );
+        }
+        preparedArtifacts.previewKey = storedPreview.data.key;
+        const descriptor = new TextEncoder().encode(JSON.stringify({
+          schemaVersion: 1,
+          provider: providerKey,
+          providerVoiceId: created.data.voiceId,
+          presetVoiceId: created.data.presetVoiceId,
+          model: created.data.model,
+          language: created.data.language,
+        }));
+        const storedReference = await providers.blob.putPrivate({
+          key: referenceKey,
+          body: descriptor,
+          contentType: "application/vnd.idream.pocket-tts-preset+json",
+        });
+        if (!storedReference.ok) {
+          await Promise.all([
+            voice.deleteVoice({ voiceId: created.data.voiceId }),
+            providers.blob.delete({ key: storedPreview.data.key }),
+          ]);
+          throw Errors.unavailable(
+            "Pocket TTS voice descriptor storage failed",
+            storedReference.error,
+          );
+        }
+        preparedArtifacts.referenceStored = true;
+        return {
+          created: created.data,
+          reference: {
+            key: storedReference.data.key,
+            sizeBytes: storedReference.data.size,
+            sha256: createHash("sha256").update(descriptor).digest("hex"),
+          },
+          preview: {
+            key: storedPreview.data.key,
+            durationMs: preview.data.durationMs,
+          },
+        };
+      },
+      mutate: async (tx, prepared) => {
+        await tx.$queryRaw`SELECT "id" FROM "characters" WHERE "id" = ${input.characterId} FOR UPDATE`;
+        const currentCandidate = await tx.characterVoiceProfile.findFirst({
+          where: { characterId: input.characterId, status: "candidate" },
+          orderBy: [{ version: "desc" }, { id: "desc" }],
+        });
+        const latest = await tx.characterVoiceProfile.findFirst({
+          where: { characterId: input.characterId },
+          orderBy: [{ version: "desc" }, { id: "desc" }],
+          select: { version: true },
+        });
+        const now = new Date();
+        if (currentCandidate) {
+          await tx.characterVoiceProfile.update({
+            where: { id: currentCandidate.id },
+            data: { status: "archived", archivedAt: now },
+          });
+        }
+        await tx.mediaAsset.create({
+          data: {
+            id: referenceAssetId,
+            ownerId: input.actor.id,
+            characterId: input.characterId,
+            type: "voice",
+            url: mediaViewUrl(referenceAssetId, ".json"),
+            storageKey: prepared.reference.key,
+            contentType: "application/vnd.idream.pocket-tts-preset+json",
+            visibility: "private",
+            safetyStatus: "passed",
+            metadata: toInputJson({
+              purpose: "voice_preset_reference",
+              filename: `${input.request.presetVoiceId}.pocket-voice`,
+              sizeBytes: prepared.reference.sizeBytes,
+              sha256: prepared.reference.sha256,
+              provider: providerKey,
+              providerVoiceId: prepared.created.voiceId,
+              presetVoiceId: prepared.created.presetVoiceId,
+            }),
+          },
+        });
+        await tx.mediaAsset.create({
+          data: {
+            id: previewAssetId,
+            ownerId: input.actor.id,
+            characterId: input.characterId,
+            type: "voice",
+            url: mediaViewUrl(previewAssetId, ".wav"),
+            storageKey: prepared.preview.key,
+            contentType: "audio/wav",
+            visibility: "private",
+            safetyStatus: "passed",
+            metadata: toInputJson({
+              purpose: "voice_preset_preview",
+              durationMs: prepared.preview.durationMs,
+              provider: providerKey,
+              providerVoiceId: prepared.created.voiceId,
+              presetVoiceId: prepared.created.presetVoiceId,
+            }),
+          },
+        });
+        const profile = await tx.characterVoiceProfile.create({
+          data: {
+            id: profileId,
+            characterId: input.characterId,
+            version: (latest?.version ?? 0) + 1,
+            provider: providerKey,
+            providerVoiceId: prepared.created.voiceId,
+            model: prepared.created.model,
+            language: prepared.created.language,
+            deliverySettings: toInputJson(DEFAULT_FISH_AUDIO_DELIVERY),
+            status: "candidate",
+            referenceAssetId,
+            previewAssetId,
+            sampleText: input.request.sampleText,
+            createdById: input.actor.id,
+          },
+          include: {
+            referenceAsset: true,
+            previewAsset: true,
+          },
+        });
+        await tx.adminAuditLog.create({
+          data: {
+            actorId: input.actor.id,
+            actorRole: input.actor.role,
+            action: "character.voice_candidate.created",
+            targetType: "character_voice_profile",
+            targetId: profile.id,
+            reason: input.request.reason,
+            after: toInputJson({
+              characterId: input.characterId,
+              profileId: profile.id,
+              version: profile.version,
+              provider: profile.provider,
+              providerVoiceId: profile.providerVoiceId,
+              presetVoiceId: prepared.created.presetVoiceId,
+              replacedCandidateProfileId: currentCandidate?.id ?? null,
+            }),
+            requestId: input.requestId,
+          },
+        });
+        await tx.mainOutboxEvent.create({
+          data: {
+            eventType: "character.voice_candidate.created.v2",
+            aggregateType: "character",
+            aggregateId: input.characterId,
+            payload: toInputJson({
+              characterId: input.characterId,
+              profileId: profile.id,
+              version: profile.version,
+              provider: profile.provider,
+              providerVoiceId: profile.providerVoiceId,
+              presetVoiceId: prepared.created.presetVoiceId,
+              actorId: input.actor.id,
+            }),
+          },
+        });
+        return {
+          profile: characterVoiceProfileDto(profile),
+          replacedCandidateProfileId: currentCandidate?.id ?? null,
+        };
+      },
+      decorateResult: (value, replayed) => ({
+        ...(value as Record<string, unknown>),
+        replayed,
+      }),
+    });
+    mutationCompleted = true;
+    const parsed = characterVoicePresetCreateResponseSchema.parse(result);
+    if (parsed.replayed && preparedArtifacts.previewKey) {
+      await cleanupPreparedArtifacts({
+        voice,
+        preparedArtifacts,
+        referenceKey,
+      });
+    }
+    return parsed;
+  } catch (cause) {
+    if (!mutationCompleted && preparedArtifacts.voiceId) {
+      await cleanupPreparedArtifacts({
+        voice,
+        preparedArtifacts,
+        referenceKey,
+      });
+    }
+    throw cause;
+  }
+}
+
+// SPEC: the bodies the manifest declares for the voice write operations, already
 // parsed by their Route Handlers.
 type VoiceActivationRequest = AdminV2RequestBody<
   "characterVoiceActivationRequestSchema+idempotency-key"
@@ -454,7 +795,6 @@ export async function activateCharacterVoiceProfile(input: {
   requestId: string;
   request: VoiceActivationRequest;
 }) {
-  configuredFishVoiceIdentityPort("Voice activation");
   const request = input.request;
   const result = await executeAtomicIdempotentMutation({
     environment: env.APP_ENV,
@@ -468,7 +808,52 @@ export async function activateCharacterVoiceProfile(input: {
       profileId: input.profileId,
       ...request,
     },
-    mutate: async (tx) => {
+    prepare: async () => {
+      const candidate = await prisma.characterVoiceProfile.findFirst({
+        where: {
+          id: input.profileId,
+          characterId: input.characterId,
+          provider: { in: ["fish_audio", "pocket_tts"] },
+          status: "candidate",
+        },
+        select: {
+          provider: true,
+          providerVoiceId: true,
+          sampleText: true,
+          deliverySettings: true,
+        },
+      });
+      if (!candidate || !isCharacterVoiceProviderKey(candidate.provider)) {
+        throw Errors.conflict("Voice profile is no longer an activatable candidate", {
+          characterId: input.characterId,
+          profileId: input.profileId,
+        });
+      }
+      const runtime = await inspectVoiceIdentityProviderRuntime(candidate.provider);
+      if (runtime.runtimeStatus !== "ready") {
+        throw Errors.unavailable(
+          `${voiceProviderLabel(candidate.provider)} must be ready before activation`,
+          runtime,
+        );
+      }
+      const voice = voiceIdentityPortForKey(candidate.provider);
+      const preview = await voice.previewVoice({
+        text: candidate.sampleText,
+        voiceId: candidate.providerVoiceId,
+        delivery: deliverySettings(candidate.deliverySettings),
+      });
+      if (!preview.ok) {
+        throw Errors.unavailable(
+          `${voiceProviderLabel(candidate.provider)} could not verify the candidate voice before activation`,
+          preview.error,
+        );
+      }
+      return {
+        provider: candidate.provider,
+        providerVoiceId: candidate.providerVoiceId,
+      };
+    },
+    mutate: async (tx, prepared) => {
       const lockedCharacters = await tx.$queryRaw<Array<{
         id: string;
         voiceId: string | null;
@@ -479,7 +864,8 @@ export async function activateCharacterVoiceProfile(input: {
         where: {
           id: input.profileId,
           characterId: input.characterId,
-          provider: "fish_audio",
+          provider: prepared.provider,
+          providerVoiceId: prepared.providerVoiceId,
           status: "candidate",
         },
         include: {
@@ -497,12 +883,11 @@ export async function activateCharacterVoiceProfile(input: {
           profileId: input.profileId,
         });
       }
-      const currentFishProfileId =
-        current?.provider === "fish_audio" ? current.id : null;
-      if (currentFishProfileId !== request.expectedActiveProfileId) {
+      const currentActiveProfileId = current?.id ?? null;
+      if (currentActiveProfileId !== request.expectedActiveProfileId) {
         throw Errors.conflict("Active voice changed while this candidate was under review", {
           expectedActiveProfileId: request.expectedActiveProfileId,
-          currentActiveProfileId: currentFishProfileId,
+          currentActiveProfileId,
         });
       }
       if (lockedCharacter.voiceId !== request.expectedCurrentVoiceId) {
@@ -614,14 +999,13 @@ export async function resetCharacterVoiceToSystemDefault(input: {
         where: { characterId: input.characterId, status: "active" },
         orderBy: [{ version: "desc" }, { id: "desc" }],
       });
-      const currentFishProfileId =
-        current?.provider === "fish_audio" ? current.id : null;
-      if (currentFishProfileId !== request.expectedActiveProfileId) {
+      const currentActiveProfileId = current?.id ?? null;
+      if (currentActiveProfileId !== request.expectedActiveProfileId) {
         throw Errors.conflict(
           "Active voice changed before the system-default reset",
           {
             expectedActiveProfileId: request.expectedActiveProfileId,
-            currentActiveProfileId: currentFishProfileId,
+            currentActiveProfileId,
           },
         );
       }
@@ -771,22 +1155,56 @@ async function cleanupPreparedArtifacts(input: {
   await Promise.allSettled(cleanup);
 }
 
-function configuredFishVoiceIdentityPort(
-  operation = "Voice cloning",
-): VoiceIdentityPort {
-  const configuredProvider = providers.voice.clip.providerKey;
-  const identity = providers.voice.identity;
-  if (
-    configuredProvider !== "fish_audio" ||
-    !identity ||
-    identity.providerKey !== "fish_audio"
-  ) {
+// SPEC: Character voice identity can canary independently from the system voice
+// route. Activated profiles persist this provider and clip creation later pins it.
+function configuredCharacterVoiceIdentity(): {
+  providerKey: CharacterVoiceProviderKey;
+  voice: VoiceIdentityPort;
+} {
+  const configuredProvider = configuredVoiceIdentityProviderKey();
+  if (!isCharacterVoiceProviderKey(configuredProvider)) {
     throw Errors.unavailable(
-      `${operation} requires VOICE_PROVIDER=fish-audio`,
+      "Character Voice Identity requires VOICE_IDENTITY_PROVIDER=pocket-tts or fish-audio",
       { configuredProvider },
     );
   }
+  return {
+    providerKey: configuredProvider,
+    voice: voiceIdentityPortForKey(configuredProvider),
+  };
+}
+
+function configuredVoiceIdentityProviderKey(): VoiceProviderKey {
+  if (env.VOICE_IDENTITY_PROVIDER === "pocket-tts") return "pocket_tts";
+  if (env.VOICE_IDENTITY_PROVIDER === "fish-audio") return "fish_audio";
+  return providers.voice.clip.providerKey;
+}
+
+function voiceIdentityPortForKey(
+  providerKey: CharacterVoiceProviderKey,
+): VoiceIdentityPort {
+  const configuredIdentity = providers.voice.identity;
+  if (configuredIdentity?.providerKey === providerKey) {
+    return configuredIdentity;
+  }
+  const identity = createVoicePortsForKey(providerKey, providers.blob).identity;
+  if (!identity) {
+    throw Errors.unavailable(
+      `${voiceProviderLabel(providerKey)} does not support Character Voice Identity`,
+      { providerKey },
+    );
+  }
   return identity;
+}
+
+function isCharacterVoiceProviderKey(
+  providerKey: string,
+): providerKey is CharacterVoiceProviderKey {
+  return providerKey === "fish_audio" || providerKey === "pocket_tts";
+}
+
+function voiceProviderLabel(providerKey: CharacterVoiceProviderKey) {
+  return providerKey === "pocket_tts" ? "Pocket TTS" : "Fish Audio";
 }
 
 function mediaViewUrl(assetId: string, extension: string) {

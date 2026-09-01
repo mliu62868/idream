@@ -6,7 +6,7 @@ import {
   IMAGE_AGENT_TOOL_DEFINITIONS,
   imageIntentForUserRequest,
   parseImageAgentToolCall,
-  requiredImageToolCallForUserRequest,
+  requiredImageActionForUserRequest,
   type EditLastImageArgs,
   type EditLastImageToolCall,
   type GenerateImageAsyncArgs,
@@ -22,7 +22,7 @@ export {
   GENERATE_IMAGE_ASYNC_TOOL,
   generateImageAsyncArgsSchema,
   imageIntentForUserRequest,
-  requiredImageToolCallForUserRequest,
+  requiredImageActionForUserRequest,
 };
 export type {
   EditLastImageArgs,
@@ -57,13 +57,4 @@ export function findAgentTool(name: string): AgentTool | undefined {
 
 export function registryChatTools(): ChatToolDefinition[] {
   return AGENT_TOOL_REGISTRY.map((tool) => tool.toChatTool());
-}
-
-export function imageToolCaption(
-  toolCall: ImageAgentToolCall,
-  characterName: string,
-): string {
-  const caption = toolCall.arguments.caption?.trim();
-  if (caption) return caption;
-  return `${characterName || "I"} will make that image for you now.`;
 }

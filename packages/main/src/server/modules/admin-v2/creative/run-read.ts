@@ -390,6 +390,8 @@ export async function getCreativeRunDetail(input: {
     purpose: run.purpose,
     reviewContext: {
       brief: run.brief?.trim() || "No brief was preserved for this legacy Run.",
+      negativePrompt:
+        run.items[0]?.job?.negativePrompt?.trim() || null,
       orientation: run.orientation,
       profile: {
         key: run.profileId,

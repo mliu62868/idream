@@ -135,6 +135,7 @@ export async function loadLockedGenerationReferenceAuthority(
   expectedProfile: GenerationVisualProfile,
   consistencyMode: "balanced" | "strict" | "creative",
   additionalMediaAssetIds: readonly string[] = [],
+  expectedReferenceSetRevisionId?: string,
 ) {
   await lockCharacterGenerationAuthority(tx, characterId);
   const lockedCharacter = await tx.character.findFirst({
@@ -150,10 +151,18 @@ export async function loadLockedGenerationReferenceAuthority(
       { characterId },
     );
   }
-  const activeProfile = await tx.characterVisualProfile.findFirst({
-    where: { characterId, status: "active" },
-    orderBy: { version: "desc" },
-  });
+  const activeProfile = expectedReferenceSetRevisionId
+    ? await tx.characterVisualProfile.findFirst({
+        where: {
+          id: expectedProfile.id,
+          version: expectedProfile.version,
+          characterId,
+        },
+      })
+    : await tx.characterVisualProfile.findFirst({
+        where: { characterId, status: "active" },
+        orderBy: { version: "desc" },
+      });
   if (
     !activeProfile ||
     activeProfile.id !== expectedProfile.id ||
@@ -184,7 +193,9 @@ export async function loadLockedGenerationReferenceAuthority(
   }
 
   const candidate = await tx.referenceSetRevision.findFirst({
-    where: { visualProfileId: activeProfile.id, status: "active" },
+    where: expectedReferenceSetRevisionId
+      ? { id: expectedReferenceSetRevisionId, visualProfileId: activeProfile.id }
+      : { visualProfileId: activeProfile.id, status: "active" },
     include: { references: { orderBy: { position: "asc" } } },
     orderBy: { revision: "desc" },
   });
@@ -205,10 +216,9 @@ export async function loadLockedGenerationReferenceAuthority(
     ],
   );
   const referenceSetRevision = await tx.referenceSetRevision.findFirst({
-    where: {
-      visualProfileId: activeProfile.id,
-      status: "active",
-    },
+    where: expectedReferenceSetRevisionId
+      ? { id: expectedReferenceSetRevisionId, visualProfileId: activeProfile.id }
+      : { visualProfileId: activeProfile.id, status: "active" },
     include: {
       references: {
         include: { mediaAsset: true },

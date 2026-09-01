@@ -37,6 +37,36 @@ async function grantVoice(userId: string, minutes = 0) {
   }
 }
 
+async function createSentChatReply(input: {
+  userId: string;
+  sessionId: string;
+  messageId: string;
+  text: string;
+}) {
+  await prisma.recentChat.create({
+    data: {
+      sessionId: input.sessionId,
+      userId: input.userId,
+      characterId: CHAR,
+    },
+  });
+  await prisma.chatTurn.create({
+    data: {
+      id: `${input.messageId}-turn`,
+      sessionId: input.sessionId,
+      idempotencyKey: `${input.messageId}-fixture`,
+      requestHash: `${input.messageId}-request`,
+      userMessageId: `${input.messageId}-user`,
+      assistantMessageId: input.messageId,
+      userContent: "Read the completed assistant reply aloud.",
+      assistantContent: input.text,
+      assistantStatus: "sent",
+      memoryEnabled: true,
+      terminalAt: new Date(),
+    },
+  });
+}
+
 beforeAll(async () => {
   await purgeTestData(P);
   await createUser({ id: SYS });
@@ -687,19 +717,25 @@ describe("voice generation service contract", () => {
 
   it("synthesizes on demand, charges once, and caches replays by message", async () => {
     const userId = `${P}play-user`;
+    const messageId = `${P}msg-1`;
+    const sessionId = `${P}sess`;
+    const text = "This is the selected final assistant reply from Main.";
     await createUser({ id: userId });
     await grantCoins(userId, 100, "seed");
     await grantVoice(userId);
+    await createSentChatReply({ userId, sessionId, messageId, text });
 
     const first = await api("POST", "generation/voice", {
       userId,
       ageGate: true,
-      body: { characterId: CHAR, messageId: `${P}msg-1`, sessionId: `${P}sess`, text: "Hello there" },
+      body: { characterId: CHAR, messageId, sessionId, text: "Spoofed client text" },
     });
     expectOk(first, 201);
     expect(typeof first.data.assetId).toBe("string");
     expect(first.data.contentUrl).toBe(`/api/v1/media/${first.data.assetId}/content`);
-    expect(first.data.durationMs).toBeGreaterThan(0);
+    // Main's committed Turn is the speech-content authority. The caller's
+    // compatibility `text` field must neither override it nor change replay identity.
+    expect(first.data.durationMs).toBe(text.length * 35);
     expect(await dreamcoinBalance(userId)).toBe(98);
 
     // The clip is a real, fetchable artifact (mock persists a playable WAV) — not a
@@ -707,7 +743,7 @@ describe("voice generation service contract", () => {
     const asset = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: first.data.assetId } });
     expect(asset.storageKey).toBeTruthy();
     expect(asset.metadata).toMatchObject({
-      voiceId: "fish-female-default",
+      voiceId: "default",
       voiceAuthority: "system_default",
       systemVoiceSettingVersion: 0,
     });
@@ -736,7 +772,7 @@ describe("voice generation service contract", () => {
     const second = await api("POST", "generation/voice", {
       userId,
       ageGate: true,
-      body: { characterId: CHAR, messageId: `${P}msg-1`, sessionId: `${P}sess`, text: "Hello there" },
+      body: { characterId: CHAR, messageId, sessionId, text: "Another spoofed value" },
     });
     expectOk(second, 200);
     expect(second.data.assetId).toBe(first.data.assetId);
@@ -744,7 +780,7 @@ describe("voice generation service contract", () => {
     expect(await prisma.mediaAsset.count({ where: { ownerId: userId, type: "voice" } })).toBe(1);
   });
 
-  it("pins an activated Character voice profile instead of requiring a system setting version", async () => {
+  it("pins an activated Pocket Character profile instead of the system Fish provider", async () => {
     const userId = `${P}character-clone-user`;
     const messageId = `${P}character-clone-message`;
     const referenceAssetId = `${P}character-clone-reference`;
@@ -770,9 +806,9 @@ describe("voice generation service contract", () => {
         id: profileId,
         characterId: CHAR,
         version: 1,
-        provider: "fish_audio",
+        provider: "pocket_tts",
         providerVoiceId,
-        model: "fish-audio-s2-pro-8bit",
+        model: "pocket-tts",
         language: "english",
         deliverySettings: DEFAULT_FISH_AUDIO_DELIVERY,
         status: "active",
@@ -786,6 +822,15 @@ describe("voice generation service contract", () => {
       data: { voiceId: providerVoiceId },
     });
 
+    const configuredVoice = providers.voice;
+    providers.voice = {
+      clip: {
+        providerKey: "pocket_tts",
+        providerReplay: "durable_same_key",
+        synthesize: configuredVoice.clip.synthesize.bind(configuredVoice.clip),
+      },
+      identity: null,
+    };
     try {
       const response = await api("POST", "generation/voice", {
         userId,
@@ -805,6 +850,7 @@ describe("voice generation service contract", () => {
         }),
       ).toMatchObject({
         providerPayload: {
+          providerKey: "pocket_tts",
           voiceId: providerVoiceId,
           voiceAuthority: "character_clone",
           characterVoiceProfileVersion: 1,
@@ -818,6 +864,7 @@ describe("voice generation service contract", () => {
         }),
       ).toMatchObject({
         metadata: {
+          provider: "pocket_tts",
           voiceId: providerVoiceId,
           voiceAuthority: "character_clone",
           characterVoiceProfileVersion: 1,
@@ -825,6 +872,7 @@ describe("voice generation service contract", () => {
         },
       });
     } finally {
+      providers.voice = configuredVoice;
       await prisma.character.update({
         where: { id: CHAR },
         data: { voiceId: null },
@@ -923,18 +971,22 @@ describe("voice generation service contract", () => {
 
   it("prewarms an entitled assistant reply from included minutes without charging coins", async () => {
     const userId = `${P}prewarm-user`;
+    const messageId = `${P}msg-prewarm`;
+    const sessionId = `${P}session-prewarm`;
+    const text = "This completed assistant reply should already be voiced.";
     await createUser({ id: userId });
     await grantCoins(userId, 100, "seed");
     await grantVoice(userId, 30);
+    await createSentChatReply({ userId, sessionId, messageId, text });
 
     const res = await api("POST", "generation/voice", {
       userId,
       ageGate: true,
       body: {
         characterId: CHAR,
-        messageId: `${P}msg-prewarm`,
-        sessionId: `${P}session-prewarm`,
-        text: "This completed assistant reply should already be voiced.",
+        messageId,
+        sessionId,
+        text,
         intent: "prewarm",
       },
     });
@@ -947,17 +999,20 @@ describe("voice generation service contract", () => {
     expect(asset.metadata).toMatchObject({
       costDreamcoins: 0,
       generationIntent: "automatic",
-      messageId: `${P}msg-prewarm`,
-      sessionId: `${P}session-prewarm`,
+      messageId,
+      sessionId,
     });
   });
 
   it("replays a prewarmed clip when the user later requests play", async () => {
     const userId = `${P}prewarm-play-user`;
     const messageId = `${P}prewarm-play-message`;
+    const sessionId = `${P}prewarm-play-session`;
+    const text = "Warm this once, then play the same artifact.";
     await createUser({ id: userId });
     await grantCoins(userId, 100, "seed");
     await grantVoice(userId, 30);
+    await createSentChatReply({ userId, sessionId, messageId, text });
     const providerCall = vi.spyOn(providers.voice.clip, "synthesize");
     try {
       const prewarm = await api("POST", "generation/voice", {
@@ -966,8 +1021,8 @@ describe("voice generation service contract", () => {
         body: {
           characterId: CHAR,
           messageId,
-          sessionId: `${P}prewarm-play-session`,
-          text: "Warm this once, then play the same artifact.",
+          sessionId,
+          text,
           intent: "prewarm",
         },
       });
@@ -979,8 +1034,8 @@ describe("voice generation service contract", () => {
         body: {
           characterId: CHAR,
           messageId,
-          sessionId: `${P}prewarm-play-session`,
-          text: "Warm this once, then play the same artifact.",
+          sessionId,
+          text,
           intent: "play",
         },
       });

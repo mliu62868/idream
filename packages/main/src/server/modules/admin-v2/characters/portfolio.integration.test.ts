@@ -262,14 +262,17 @@ describe("Character Portfolio authority/read model", () => {
             character_cover: {
               assetId: draftCoverAssetId,
               bootstrapIdentity: true,
+              reviewDecisionId: `portfolio-review-cover-${suffix}`,
             },
             character_hero: {
               assetId: draftHeroAssetId,
               generationRouteFingerprint: routeFingerprint,
+              reviewDecisionId: `portfolio-review-hero-${suffix}`,
             },
             character_chat: {
               assetId: draftChatAssetId,
               generationRouteFingerprint: staleRouteFingerprint,
+              reviewDecisionId: `portfolio-review-chat-${suffix}`,
             },
           },
         },
@@ -671,6 +674,47 @@ describe("Character Portfolio authority/read model", () => {
       all.items.find((item) => item.characterId === characterB)
         ?.needsAttention,
     ).toBe(true);
+  });
+
+  it("surfaces a complete draft image pack with missing reviews as actionable attention", async () => {
+    const originalProject = await prisma.characterProject.findUniqueOrThrow({
+      where: { id: projectA },
+      select: { draftAssetPack: true },
+    });
+    await prisma.characterProject.update({
+      where: { id: projectA },
+      data: {
+        draftAssetPack: {
+          character_cover: { assetId: draftCoverAssetId },
+          character_hero: { assetId: draftHeroAssetId },
+          character_chat: { assetId: draftChatAssetId },
+        },
+      },
+    });
+
+    try {
+      const flagged = await listCharacterPortfolioData(
+        prisma,
+        characterPortfolioQuerySchema.parse({
+          search: "Astra",
+          limit: 20,
+          attention: true,
+        }),
+        { asOf, authorizedDraftAssetCharacterIds: null },
+      );
+      expect(flagged.items).toHaveLength(1);
+      expect(flagged.items[0]?.needsAttention).toBe(true);
+      expect(flagged.items[0]?.journey.primaryAction).toEqual({
+        code: "review_asset_pack",
+        deepLink: `/admin/characters/${characterA}?tab=assets`,
+        command: null,
+      });
+    } finally {
+      await prisma.characterProject.update({
+        where: { id: projectA },
+        data: { draftAssetPack: toInputJson(originalProject.draftAssetPack) },
+      });
+    }
   });
 
   it("returns a cross-page work queue for incomplete live image packs", async () => {

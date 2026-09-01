@@ -3,6 +3,7 @@
   "modelId": "pornmaster-zimage-drawthings",
   "backendKind": "drawthings",
   "version": 1,
+  "negativePromptMode": "positive_instruction",
   "capabilities": ["textToImage", "img2img", "stableSeed"],
   "identity": {
     "mode": "single_reference",

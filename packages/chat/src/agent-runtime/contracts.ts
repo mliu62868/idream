@@ -85,15 +85,17 @@ const preparedBudget = z.object({
   }
 });
 const preparedTrace = z.object({
+  productPromptVersion: nonEmptyString,
+  systemPromptDigest: sha256,
   characterContentVersionId: nonEmptyString,
   characterReleaseId: nonEmptyString.nullable(),
-  soulFingerprint: nonEmptyString,
+  soulFingerprint: sha256,
   compilerVersion: nonEmptyString,
   sceneVersion: nonNegativeInteger,
   contextRevision: z.string().regex(/^\d+$/),
 }).strict();
 export const preparedTurnSchema = z.object({
-  version: z.literal(3),
+  version: z.literal(4),
   model: nonEmptyString,
   characterName: nonEmptyString,
   messages: z.array(preparedTurnMessageSchema).min(1),
@@ -101,6 +103,10 @@ export const preparedTurnSchema = z.object({
   profile: preparedTurnProfileSchema,
   budget: preparedBudget,
   trace: preparedTrace,
+  requiredAction: z.object({
+    name: toolName,
+    requestedNudity: z.enum(["unspecified", "none", "full"]),
+  }).strict().nullable(),
 }).strict().superRefine((turn, context) => {
   if (turn.model !== turn.profile.model) {
     context.addIssue({ code: "custom", path: ["model"], message: "prepared model must equal profile model" });
@@ -114,6 +120,23 @@ export const preparedTurnSchema = z.object({
   }
   if (new Set(turn.tools.map(({ name }) => name)).size !== turn.tools.length) {
     context.addIssue({ code: "custom", path: ["tools"], message: "prepared tool names must be unique" });
+  }
+  if (
+    turn.requiredAction &&
+    (turn.tools.length !== 1 || turn.tools[0]?.name !== turn.requiredAction.name)
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["tools"],
+      message: "a required action must expose exactly its matching Agent tool",
+    });
+  }
+  if (turn.requiredAction && !turn.profile.supportsTools) {
+    context.addIssue({
+      code: "custom",
+      path: ["profile", "supportsTools"],
+      message: "a required action needs a tool-capable model profile",
+    });
   }
 });
 
@@ -129,13 +152,20 @@ export const companionInvocationSchema = z.object({
   deadlineAt: isoDateTime,
 }).strict();
 
+const imageEffectAuthority = {
+  effectScope: z.enum(["attempt", "turn_action"]),
+  intent: z.object({
+    requestedNudity: z.enum(["unspecified", "none", "full"]),
+  }).strict(),
+};
 const toolIdentity = { attemptId: nonEmptyString, callId: nonEmptyString };
 export const companionToolCallSchema = z.discriminatedUnion("name", [
-  z.object({ ...toolIdentity, name: z.literal(GENERATE_IMAGE_ASYNC_TOOL), arguments: generateImageAsyncArgsSchema }).strict(),
-  z.object({ ...toolIdentity, name: z.literal(EDIT_LAST_IMAGE_TOOL), arguments: editLastImageArgsSchema }).strict(),
+  z.object({ ...toolIdentity, ...imageEffectAuthority, name: z.literal(GENERATE_IMAGE_ASYNC_TOOL), arguments: generateImageAsyncArgsSchema }).strict(),
+  z.object({ ...toolIdentity, ...imageEffectAuthority, name: z.literal(EDIT_LAST_IMAGE_TOOL), arguments: editLastImageArgsSchema }).strict(),
 ]);
 export const companionToolReservationSchema = z.object({
   ...toolIdentity,
+  ...imageEffectAuthority,
   name: toolName,
   argumentsDigest: sha256,
 }).strict();

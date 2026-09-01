@@ -101,8 +101,13 @@ export const chatImageRequestedPayloadSchema = z
     // normal generation when it is absent instead of reusing an arbitrary
     // historical character image.
     characterReleaseId: z.string().min(1).optional(),
+    releaseSnapshotHash: z.string().min(1).optional(),
+    referenceSetRevisionId: z.string().min(1).optional(),
     promptHint: z.string().nullable(),
     conversationContext: z.string().nullable(),
+    intent: z.object({
+      requestedNudity: z.enum(["unspecified", "none", "full"]),
+    }).strict(),
     controls: z
       .object({
         orientation: z.string().default("4:5"),

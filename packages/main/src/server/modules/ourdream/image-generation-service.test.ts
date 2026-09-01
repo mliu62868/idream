@@ -18,7 +18,10 @@ import {
 import { reserveInitialGenerationAttempt } from "@/server/modules/generation/generation-attempt-authority";
 import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
-import { referenceSetSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
+import {
+  characterVisualProfileSnapshotHash,
+  referenceSetSnapshotHash,
+} from "@/server/modules/admin-v2/characters/release-snapshot";
 import * as generationCatalog from "@/server/modules/generation/generation-catalog";
 import {
   api,
@@ -1188,7 +1191,7 @@ describe("image generation service contract", () => {
     });
     expect(job.controls).toMatchObject({
       legacyReleaseAuthority: {
-        schemaVersion: "legacy-character-generation-authority-v1",
+        schemaVersion: "legacy-character-generation-authority-v2",
         characterId,
         releaseId: published.releaseId,
         releaseSnapshotHash: `${published.releaseId}-snapshot`,
@@ -1316,7 +1319,7 @@ describe("image generation service contract", () => {
     });
     await grantCoins(userId, 100, "seed");
 
-    const job = await import("@/server/modules/ourdream/service").then((mod) =>
+    await expect(import("@/server/modules/ourdream/service").then((mod) =>
       mod.createChatImageGenerationJob({
         version: 1,
         kind: "chat.image.requested",
@@ -1331,26 +1334,198 @@ describe("image generation service contract", () => {
         visualProfileVersion: 1,
         promptHint: "standing beside a sunlit window",
         conversationContext: "The user asked for a photo by the window.",
+        intent: { requestedNudity: "unspecified" },
+        controls: { orientation: "4:5", outputCount: 1 },
+      }),
+    )).rejects.toMatchObject({ status: 409 });
+    await expect(prisma.generationJob.count({
+      where: { sourceType: "chat_image", sourceId: attachmentId },
+    })).resolves.toBe(0);
+
+    await runQueuedGenerationJobs(8);
+  });
+
+  it("routes Chat through the exact qualified portrait projection of a live legacy editorial Release", async () => {
+    const userId = `${P}legacy-chat-projection-user`;
+    const characterId = `${P}legacy-chat-projection-character`;
+    const profileId = `${P}legacy-chat-projection-profile`;
+    const referenceSetId = `${P}legacy-chat-projection-reference-set`;
+    const attachmentId = `${P}legacy-chat-projection-attachment`;
+    await createUser({ id: userId });
+    await createCharacter({
+      id: characterId,
+      creatorId: userId,
+      name: "Legacy Portrait Muse",
+      source: "official",
+      visibility: "public",
+      status: "approved",
+    });
+    const published = await publishCharacterForPublicAudience({
+      characterId,
+      ownerId: SYS,
+    });
+    const profileSnapshot = {
+      version: 1,
+      style: "realistic",
+      identityPrompt:
+        "Preserve the exact same adult person shown in the canonical identity portrait",
+      negativeIdentityPrompt: "different face, identity drift",
+      faceTraits: { source: "canonical_portrait" },
+      hairTraits: { source: "canonical_portrait" },
+      bodyTraits: { source: "canonical_portrait" },
+      signatureTraits: {},
+      styleTraits: { style: "realistic" },
+    };
+    await prisma.characterVisualProfile.create({
+      data: {
+        id: profileId,
+        characterId,
+        version: profileSnapshot.version,
+        status: "active",
+        style: profileSnapshot.style,
+        identityPrompt: profileSnapshot.identityPrompt,
+        negativeIdentityPrompt: profileSnapshot.negativeIdentityPrompt,
+        faceTraits: profileSnapshot.faceTraits,
+        hairTraits: profileSnapshot.hairTraits,
+        bodyTraits: profileSnapshot.bodyTraits,
+        signatureTraits: profileSnapshot.signatureTraits,
+        styleTraits: profileSnapshot.styleTraits,
+        anchorAssetIds: [published.assetId],
+        adapterRefs: {
+          authority: "editorial_live_portrait",
+          sourceReleaseId: published.releaseId,
+          sourceAssetId: published.assetId,
+        },
+        immutableHash: characterVisualProfileSnapshotHash(profileSnapshot),
+        evidenceState: "qualified",
+        createdFrom: `editorial_live_portrait:${published.releaseId}`,
+      },
+    });
+    await createSealedReferenceSet({
+      id: referenceSetId,
+      visualProfileId: profileId,
+      references: [{
+        mediaAssetId: published.assetId,
+        role: "primary_face",
+        weight: 1,
+        selectionReason: "canonical_editorial_portrait",
+      }],
+    });
+    await grantCoins(userId, 100, "seed");
+
+    const job = await import("@/server/modules/ourdream/service").then((mod) =>
+      mod.createChatImageGenerationJob({
+        version: 1,
+        kind: "chat.image.requested",
+        requestId: `${P}legacy-chat-projection-request`,
+        attachmentId,
+        sessionId: `${P}legacy-chat-projection-session`,
+        messageId: `${P}legacy-chat-projection-message`,
+        userId,
+        characterId,
+        characterReleaseId: published.releaseId,
+        promptHint: "standing beside a sunlit window",
+        conversationContext: "The user asked for a photo by the window.",
+        intent: { requestedNudity: "unspecified" },
         controls: { orientation: "4:5", outputCount: 1 },
       }),
     );
 
-    await expect(
-      prisma.generationJob.findUniqueOrThrow({ where: { id: job.id } }),
-    ).resolves.toMatchObject({
+    await expect(prisma.generationJob.findUniqueOrThrow({
+      where: { id: job.id },
+    })).resolves.toMatchObject({
       sourceType: "chat_image",
       sourceId: attachmentId,
-      visualProfileId: null,
-      visualProfileVersion: null,
+      visualProfileId: profileId,
+      visualProfileVersion: 1,
+      referenceSetRevisionId: referenceSetId,
+      referenceAssetIds: [published.assetId],
+      referenceManifest: [expect.objectContaining({
+        mediaAssetId: published.assetId,
+        role: "primary_face",
+      })],
       controls: {
         legacyReleaseAuthority: {
           releaseId: published.releaseId,
           releaseSnapshotHash: `${published.releaseId}-snapshot`,
+          sourceAssetId: published.assetId,
         },
+        workflowIdentity: expect.objectContaining({
+          mode: expect.not.stringMatching(/^none$/),
+        }),
       },
     });
 
     await runQueuedGenerationJobs(8);
+  });
+
+  it("keeps the exact Release Reference Set after the profile gets a newer active revision", async () => {
+    const userId = `${P}chat-release-reference-user`;
+    const attachmentId = `${P}chat-release-reference-attachment`;
+    const releaseId = `${P}sys-char-release`;
+    const profileId = `${P}sys-char-profile`;
+    const pinnedReferenceSetId = `${P}sys-char-reference-set`;
+    const newerReferenceSetId = `${P}sys-char-reference-set-newer`;
+    const assetId = `${P}sys-char-asset`;
+    await createUser({ id: userId });
+    await grantCoins(userId, 100, "seed");
+    await createSealedReferenceSet({
+      id: newerReferenceSetId,
+      visualProfileId: profileId,
+      revision: 2,
+      references: [{
+        mediaAssetId: assetId,
+        role: "primary_face",
+        weight: 1,
+        selectionReason: "newer_unreleased_identity_anchor",
+      }],
+    });
+    await prisma.referenceSetRevision.update({
+      where: { id: pinnedReferenceSetId },
+      data: { status: "superseded" },
+    });
+
+    try {
+      const job = await import("@/server/modules/ourdream/service").then((mod) =>
+        mod.createChatImageGenerationJob({
+          version: 1,
+          kind: "chat.image.requested",
+          requestId: `${P}chat-release-reference-request`,
+          attachmentId,
+          sessionId: `${P}chat-release-reference-session`,
+          messageId: `${P}chat-release-reference-message`,
+          userId,
+          characterId: CHAR,
+          characterReleaseId: releaseId,
+          releaseSnapshotHash: `${releaseId}:snapshot`,
+          visualProfileId: profileId,
+          visualProfileVersion: 1,
+          referenceSetRevisionId: pinnedReferenceSetId,
+          promptHint: "standing beside a rain-lit observatory window",
+          conversationContext: "user: send me a photo by the observatory window",
+          intent: { requestedNudity: "unspecified" },
+          controls: { orientation: "4:5", outputCount: 1 },
+        }),
+      );
+
+      await expect(prisma.generationJob.findUniqueOrThrow({ where: { id: job.id } }))
+        .resolves.toMatchObject({
+          visualProfileId: profileId,
+          visualProfileVersion: 1,
+          referenceSetRevisionId: pinnedReferenceSetId,
+          referenceAssetIds: [assetId],
+        });
+      await runQueuedGenerationJobs(8);
+    } finally {
+      await prisma.referenceSetRevision.update({
+        where: { id: pinnedReferenceSetId },
+        data: { status: "active" },
+      });
+      await prisma.referenceSetRevision.update({
+        where: { id: newerReferenceSetId },
+        data: { status: "superseded" },
+      });
+    }
   });
 
   it("replays a committed legacy retry but fails new retry and dispatch after serving switches authority", async () => {
@@ -2923,6 +3098,11 @@ describe("image generation service contract", () => {
       ],
     });
     await grantCoins(userId, 100, "seed");
+    const agentScene = [
+      "sitting beside a rain-streaked window, soft evening light",
+      "soft rain reflections and warm practical light, ".repeat(18),
+      "fully clothed in a silk robe",
+    ].join(" ");
 
     const job = await import("@/server/modules/ourdream/service").then((mod) =>
       mod.createChatImageGenerationJob({
@@ -2934,8 +3114,9 @@ describe("image generation service contract", () => {
         messageId: `${P}message`,
         userId,
         characterId,
-        promptHint: "sitting beside a rain-streaked window, soft evening light",
+        promptHint: agentScene,
         conversationContext: "The user asked for a quiet photo from the current scene.",
+        intent: { requestedNudity: "full" },
         controls: { orientation: "4:5", outputCount: 1 },
       }),
     );
@@ -2946,9 +3127,12 @@ describe("image generation service contract", () => {
     expect(stored.prompt).toContain("Locked identity");
     expect(stored.prompt).toContain("copper curly hair");
     expect(stored.prompt).toContain("rain-streaked window");
+    expect(stored.prompt).toContain("Adult scene requirement: depict the adult character fully nude");
+    expect(stored.prompt).not.toContain("silk robe");
     expect(stored.prompt).not.toContain("Recent chat context");
+    expect(stored.consistencyMode).toBe("strict");
     expect(stored.controls).toMatchObject({
-      consistencyMode: "balanced",
+      consistencyMode: "strict",
       visualIdentity: {
         visualProfileId: `${P}chat-cvp`,
         visualProfileVersion: 1,
@@ -3833,7 +4017,7 @@ describe("image generation service contract", () => {
         mode: "image",
         controls: {
           legacyReleaseAuthority: {
-            schemaVersion: "legacy-character-generation-authority-v1",
+            schemaVersion: "legacy-character-generation-authority-v2",
             characterId,
             releaseId: `${P}historical-release`,
             releaseSnapshotHash: `${P}historical-snapshot`,
@@ -5710,6 +5894,8 @@ describe("image generation service contract", () => {
     const variationBody = {
       outputCount: 1,
       consistencyMode: "creative" as const,
+      prompt: "Change the outfit to a deep red velvet jacket and keep the library unchanged.",
+      negativePrompt: "visible text, duplicate person",
       orientation: variationQuote.defaultOrientation,
       quoteAuthority: quoteAuthority(variationQuote),
     };
@@ -5729,6 +5915,14 @@ describe("image generation service contract", () => {
     expect(job.characterId).toBe(characterId);
     expect(job.visualProfileId).toBe(`${P}variation-cvp`);
     expect(job.consistencyMode).toBe("creative");
+    expect(job.prompt).toContain(
+      "Requested edit: Change the outfit to a deep red velvet jacket and keep the library unchanged",
+    );
+    expect(job.prompt).toContain(
+      "Preserve the same character identity and every source detail that the requested edit does not change",
+    );
+    expect(job.negativePrompt).toContain("visible text, duplicate person");
+    expect(job.negativePrompt).toContain("low quality");
     expect(job.orientation).toBe(variationQuote.defaultOrientation);
     expect(job.profileId).toBe(variationQuote.profileId);
     expect(job.profileVersion).toBe(variationQuote.profileVersion);

@@ -15,7 +15,7 @@ import { AdminConsoleClientOnly } from "../AdminConsoleClientOnly";
 export type AdminSearchParams = Promise<Record<string, string | string[] | undefined>>;
 
 // SPEC: 标签页的名字也随运营选的语言，且首帧就对。
-// INTENT: 语言、侧栏、工作模式都已随 cookie 首帧到位，只有标签页标题还先出英文、
+// INTENT: 语言与工作模式都已随 cookie 首帧到位，只有标签页标题还先出英文、
 //         hydration 后才变中文——运营同时开七八个后台标签页时，那一栏是他找回某一页的
 //         唯一线索，闪一下就等于闪在最需要认字的地方。locale 就在 cookie 里，服务端读得到。
 // INVARIANT: 品牌名不翻译；翻的只有导航 label 那一半。
@@ -70,8 +70,8 @@ export async function renderAdminRoute(
   if (!parseAdminPath(initialSection)) notFound();
 
   const [headerList, cookieStore] = await Promise.all([headers(), cookies()]);
-  // SPEC: 语言、工作模式、展开的分组在服务端就读出来，随首帧下发。
-  // INTENT: 它们过去存 localStorage、挂载后才读，于是首帧必然是 English + 全折叠侧栏，
+  // SPEC: 语言、工作模式在服务端就读出来，随首帧下发。
+  // INTENT: 它们过去存 localStorage、挂载后才读，于是首帧必然是 English + 默认工作模式，
   //         几百毫秒后整页跳变一次。cookie 让首帧就是最终形态。
   const preferences = readAdminShellPreferences((name) => cookieStore.get(name)?.value);
 

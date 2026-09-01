@@ -209,6 +209,7 @@ async function stageWorkspaceRebuild(request: Request): Promise<StagedWorkspaceR
         scope: "relationship",
         userId: start.userId,
         characterId: start.characterId,
+        mode: start.mode,
         messageCount: messages,
         sessionCount: sessions,
         estimatedBytes,

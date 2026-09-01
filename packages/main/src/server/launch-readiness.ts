@@ -455,6 +455,23 @@ function addProviderChecks(
     });
   }
 
+  const identityProvider = env.VOICE_IDENTITY_PROVIDER?.trim();
+  if (identityProvider) {
+    const supportedIdentityProviders = ["fish-audio", "pocket-tts"];
+    const implementationReady = supportedIdentityProviders.includes(identityProvider);
+    addCheck(checks, {
+      id: "voice-identity-provider-implementation",
+      area: "Providers",
+      status: implementationReady ? "pass" : "fail",
+      message: implementationReady
+        ? `VOICE_IDENTITY_PROVIDER=${identityProvider} is supported by this build.`
+        : `VOICE_IDENTITY_PROVIDER=${identityProvider} is configured, but this build only wires: ${supportedIdentityProviders.join(", ")}.`,
+      remediation: implementationReady
+        ? undefined
+        : "Set VOICE_IDENTITY_PROVIDER=fish-audio or pocket-tts.",
+    });
+  }
+
   if (env.CHAT_PROVIDER === "pipeline") {
     addValueCheck(checks, {
       id: "main-chat-pipeline-api-url",
@@ -819,17 +836,17 @@ function addVoiceModelProbeCheck(
   const probeName: ProbeName = "voiceModelProbe";
   const configuredProvider = env.VOICE_PROVIDER ?? "mock";
   const configuredBaseUrl =
-    configuredProvider === "fish-audio"
+    configuredProvider === "pocket-tts"
+      ? env.POCKET_TTS_API_URL
+      : configuredProvider === "fish-audio"
       ? env.FISH_AUDIO_API_URL
-      : configuredProvider === "pocket-tts"
-        ? env.POCKET_TTS_API_URL
-        : (env.PIPELINE_VOICE_API_URL ?? env.PIPELINE_API_URL);
+      : (env.PIPELINE_VOICE_API_URL ?? env.PIPELINE_API_URL);
   const configuredModel =
-    configuredProvider === "fish-audio"
+    configuredProvider === "pocket-tts"
+      ? env.POCKET_TTS_MODEL
+      : configuredProvider === "fish-audio"
       ? env.FISH_AUDIO_MODEL
-      : configuredProvider === "pocket-tts"
-        ? env.POCKET_TTS_MODEL
-        : env.PIPELINE_VOICE_MODEL_DEFAULT;
+      : env.PIPELINE_VOICE_MODEL_DEFAULT;
 
   addMissingProbeReportProblem(problems, env, probeName);
   if (!probe) {
@@ -855,22 +872,6 @@ function addVoiceModelProbeCheck(
         );
       }
     }
-    if (configuredProvider === "pocket-tts") {
-      if (!sameUrl(probe.baseUrl, configuredBaseUrl)) {
-        problems.push("probe base URL does not match POCKET_TTS_API_URL");
-      }
-      if (hasMinLength(configuredModel, 1) && probe.model !== configuredModel) {
-        problems.push("probe model does not match POCKET_TTS_MODEL");
-      }
-      if (probe.voiceCloningAvailable !== true) {
-        problems.push("Pocket TTS probe did not confirm oMLX voice cloning");
-      }
-      if (probe.voiceCloneVerified !== true) {
-        problems.push(
-          "Pocket TTS probe did not complete clone, synthesize, and delete",
-        );
-      }
-    }
     if (configuredProvider === "fish-audio") {
       if (!sameUrl(probe.baseUrl, configuredBaseUrl)) {
         problems.push("probe base URL does not match FISH_AUDIO_API_URL");
@@ -887,6 +888,15 @@ function addVoiceModelProbeCheck(
         );
       }
     }
+    if (configuredProvider === "pocket-tts") {
+      if (!sameUrl(probe.baseUrl, configuredBaseUrl)) {
+        problems.push("probe base URL does not match POCKET_TTS_API_URL");
+      }
+      if (hasMinLength(configuredModel, 1) && probe.model !== configuredModel) {
+        problems.push("probe model does not match POCKET_TTS_MODEL");
+      }
+      addPocketTtsCatalogProbeProblems(problems, "Pocket TTS probe", probe);
+    }
     if (!hasMinLength(probe.key ?? undefined, 1)) {
       problems.push("probe did not return a voice asset key");
     }
@@ -895,6 +905,23 @@ function addVoiceModelProbeCheck(
     }
     if (probe.bytes !== undefined && probe.bytes <= 0) {
       problems.push("probe stored an empty audio payload");
+    }
+    const configuredIdentityProvider = env.VOICE_IDENTITY_PROVIDER?.trim();
+    if (configuredIdentityProvider) {
+      const identityProbe =
+        configuredIdentityProvider === configuredProvider ? probe : probe.identity;
+      if (!identityProbe) {
+        problems.push(
+          `${voiceProviderName(configuredIdentityProvider)} identity probe evidence is missing`,
+        );
+      } else {
+        addVoiceIdentityProbeProblems(
+          problems,
+          env,
+          configuredIdentityProvider,
+          identityProbe,
+        );
+      }
     }
     addProbeFreshnessProblems(problems, env, probeName, probe.checkedAt, now);
   }
@@ -912,6 +939,86 @@ function addVoiceModelProbeCheck(
         ? undefined
         : `Run \`bun run --filter @idream/main probe:voice -- --report .tmp/launch-voice-probe.json\` against the real voice model gateway, then set ${PROBE_REPORTS[probeName].reportEnvKey} before check:launch.`,
   });
+}
+
+function addVoiceIdentityProbeProblems(
+  problems: string[],
+  env: EnvLike,
+  configuredProvider: string,
+  probe: NonNullable<VoiceModelProbeEvidence["identity"]>,
+) {
+  const label = voiceProviderName(configuredProvider);
+  const configuredBaseUrl =
+    configuredProvider === "pocket-tts"
+      ? env.POCKET_TTS_API_URL
+      : env.FISH_AUDIO_API_URL;
+  const configuredModel =
+    configuredProvider === "pocket-tts"
+      ? env.POCKET_TTS_MODEL
+      : env.FISH_AUDIO_MODEL;
+  if (probe.ok !== true) {
+    problems.push(`${label} identity probe did not complete successfully`);
+  }
+  if (probe.provider !== configuredProvider) {
+    problems.push(
+      `${label} identity probe provider is ${probe.provider ?? "unknown"}, not ${configuredProvider}`,
+    );
+  }
+  if (!sameUrl(probe.baseUrl, configuredBaseUrl)) {
+    problems.push(`${label} identity probe base URL does not match configuration`);
+  }
+  if (hasMinLength(configuredModel, 1) && probe.model !== configuredModel) {
+    problems.push(`${label} identity probe model does not match configuration`);
+  }
+  if (configuredProvider === "pocket-tts") {
+    addPocketTtsCatalogProbeProblems(
+      problems,
+      `${label} identity probe`,
+      probe,
+    );
+  } else {
+    if (probe.voiceCloningAvailable !== true) {
+      problems.push(`${label} identity probe did not confirm voice cloning`);
+    }
+    if (probe.voiceCloneVerified !== true) {
+      problems.push(
+        `${label} identity probe did not complete clone, synthesize, and delete`,
+      );
+    }
+  }
+  if (!hasMinLength(probe.key ?? undefined, 1)) {
+    problems.push(`${label} identity probe did not return a voice asset key`);
+  }
+  if ((probe.audioDurationMs ?? 0) <= 0) {
+    problems.push(`${label} identity probe returned no positive audio duration`);
+  }
+  if (probe.bytes !== undefined && probe.bytes <= 0) {
+    problems.push(`${label} identity probe stored an empty audio payload`);
+  }
+}
+
+function addPocketTtsCatalogProbeProblems(
+  problems: string[],
+  label: string,
+  probe: NonNullable<VoiceModelProbeEvidence["identity"]>,
+) {
+  if (
+    probe.voiceCatalogAvailable !== true ||
+    (probe.voiceCatalogSize ?? 0) < 1
+  ) {
+    problems.push(`${label} did not confirm an English voice catalog`);
+  }
+  if (probe.voiceCatalogVerified !== true) {
+    problems.push(
+      `${label} did not complete preset alias, synthesize, and delete`,
+    );
+  }
+}
+
+function voiceProviderName(provider: string) {
+  if (provider === "pocket-tts") return "Pocket TTS";
+  if (provider === "fish-audio") return "Fish Audio";
+  return provider;
 }
 
 function addPaymentProviderProbeCheck(

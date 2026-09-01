@@ -33,7 +33,7 @@ const PROFILE_CAPABILITIES = Object.freeze({
     webProvider: false,
     webTool: false,
     memory: true,
-    ingest: true,
+    ingest: false,
     wake: true,
     memorySearchMode: "fast",
     timeoutMs: 10000,

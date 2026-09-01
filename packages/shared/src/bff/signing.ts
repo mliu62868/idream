@@ -66,6 +66,10 @@ export interface ChatAuthoritySnapshot {
       status: string;
       version: number;
       snapshotHash: string;
+      visualProfileId: string | null;
+      visualProfileVersion: number | null;
+      referenceSetRevisionId: string | null;
+      legacy: boolean;
     } | null;
   };
 }

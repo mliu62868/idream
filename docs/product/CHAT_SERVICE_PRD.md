@@ -4,14 +4,37 @@
 
 Companion Chat 是 Main 产品中的角色陪伴会话。用户看到的是稳定的会话列表和 Turn；AgentRun、模型 trace、工具中间步骤不是产品对象。
 
+### 1.1 所有角色共享的 Product Agent Contract
+
+`SOUL.md` 只定义「这个角色是谁、如何表达」。所有角色共同的陪伴产品行为由版本化的 Product Agent Contract 定义，并在每个 `PreparedTurn` 中固定版本：
+
+- 用户感受到的是主动、直接、在场的成人陪伴，而不是通用助手、客服流程或问卷。
+- 先完成最新且明确的用户意图，再用 Soul 添加角色语气、情绪、调侃和场景推进。
+- 角色张力可以改变表达，但不能把产品能力变成资格审查、交换条件、拖延或任意拒绝。
+- 不默认用问题、选项菜单或复述把行动推回给用户；信息足够时做一个合理的角色内选择。
+- 附件和工具状态拥有交付事实；角色文案必须与已经接受的产品动作一致。
+
+唯一运行时层级为：
+
+```text
+Product Agent Contract（所有角色共同的陪伴行为）
+  -> Runtime Authority（本 Turn 的能力与事实约束）
+  -> immutable Character Soul（角色身份与表达）
+  -> Turn State（opening / transcript / memory / Scene / time）
+```
+
+不得把共同产品行为复制进每个 Soul，也不得建立第二套角色 prompt 或 provider prompt。
+
 ## 2. 产品不变量
 
 1. 一个 `Turn` = 一条 user message + 一条 selected final assistant reply。
 2. 用户刷新、换设备或 Chat runner 重启后，消息列表由 Main PostgreSQL 恢复。
 3. regenerate/edit 替换同一 Turn 的 assistant 结果，不展示内部候选分叉。
 4. Chat runner 故障不能丢失已经提交的用户消息；该 Turn 显示可恢复的 pending/failed 状态。
-5. Scene、Character content/release pin、附件和计费都与精确 Turn attempt 绑定。
+5. Scene、Character content/release pin 与选中附件归属精确 Turn attempt；同一用户意图形成的必需产品动作跨 regenerate 复用同一计费效果并重绑当前 attempt。
 6. Agent 执行完成只有在 Main 持久接受最终回复后才对用户成立。
+7. 每个终态都能归因到精确 Product Agent Contract 版本和 Soul fingerprint。
+8. 已接受的产品动作不能与最终角色文案相互矛盾；概率模型失败时仍保留动作并返回确定性真实文案。
 
 ## 3. 数据所有权
 
@@ -105,5 +128,8 @@ opening message 是 Session snapshot，不伪造成数据库 Turn。内部 tool 
 - runner 重启能恢复不完整 AgentRun。
 - regenerate 的旧 attempt 晚到不会覆盖新 attempt。
 - 图片工具只建立一个 Generation Request；成功结算，失败退款。
+- 明确图片动作成功后直接提交按用户 locale 选择的确定性确认文案；该路径不调用 Caption 模型，角色拒绝、讨价还价或 provider 超时不能覆盖已接受动作。
+- 第一轮 `PreparedTurn` 包含 Session 从不可变 ContentVersion 固定的 opening message。
+- `PreparedTurn.trace` 与 Main terminal evidence 均包含 Product Agent Contract 版本、最终 system prompt SHA-256 与 Soul fingerprint。
 - Chat package 在依赖、源码、构建和运行环境中都不需要 PostgreSQL/Prisma。
 - 账号删除会清除 Main 产品事实、Blob、AgentRun、boundaries 和 DSH workspace。

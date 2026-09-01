@@ -150,12 +150,10 @@ export async function getCharacterWorkspace(characterId: string) {
   const activeVoiceProfile =
     voiceProfiles.find((profile) => profile.status === "active") ?? null;
   const candidateVoiceProfile =
-    voiceProfiles.find(
-      (profile) =>
-        profile.status === "candidate" && profile.provider === "fish_audio",
-    ) ?? null;
+    voiceProfiles.find((profile) => profile.status === "candidate") ?? null;
   const usableActiveVoiceProfile =
-    activeVoiceProfile?.provider === "fish_audio" &&
+    (activeVoiceProfile?.provider === "fish_audio" ||
+      activeVoiceProfile?.provider === "pocket_tts") &&
     activeVoiceProfile.providerVoiceId === character.voiceId
       ? activeVoiceProfile
       : null;

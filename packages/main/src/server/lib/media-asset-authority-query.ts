@@ -2,6 +2,7 @@ import type { Prisma, PrismaClient } from "@prisma/client";
 import { Errors } from "@/server/lib/errors";
 import {
   evaluateMediaAssetCustomerPublishability,
+  inspectOperatorUploadAuthority,
   type MediaAssetCustomerPublishabilityReason,
 } from "@/server/lib/media-asset-authority";
 
@@ -10,6 +11,8 @@ type Db = PrismaClient | Prisma.TransactionClient;
 export type MediaAssetAuthoritySubject = {
   readonly id: string;
   readonly sourceJobId: string | null;
+  readonly storageKey?: string | null;
+  readonly url?: string | null;
   readonly metadata: unknown;
 };
 
@@ -57,20 +60,35 @@ export async function resolveMediaAssetAuthorityMap(
 
   return new Map(
     assets.map((asset) => {
-      const authority = evaluateMediaAssetCustomerPublishability({
-        metadata: asset.metadata,
-        jobProvider: asset.sourceJobId
-          ? jobProviderById.get(asset.sourceJobId) ?? null
-          : null,
-        jobProviderRequired: true,
-        latestAttemptProvider: asset.sourceJobId
-          ? latestAttemptProviderByJobId.get(asset.sourceJobId) ?? null
-          : null,
-        latestAttemptProviderRequired: true,
-      });
+      const uploadAuthority = inspectOperatorUploadAuthority(asset);
+      const authority = uploadAuthority
+        ? combineAuthorityReasons(
+            evaluateMediaAssetCustomerPublishability({
+              metadata: asset.metadata,
+            }),
+            uploadAuthority,
+          )
+        : evaluateMediaAssetCustomerPublishability({
+            metadata: asset.metadata,
+            jobProvider: asset.sourceJobId
+              ? jobProviderById.get(asset.sourceJobId) ?? null
+              : null,
+            jobProviderRequired: true,
+            latestAttemptProvider: asset.sourceJobId
+              ? latestAttemptProviderByJobId.get(asset.sourceJobId) ?? null
+              : null,
+            latestAttemptProviderRequired: true,
+          });
       return [asset.id, authority] as const;
     }),
   );
+}
+
+function combineAuthorityReasons(
+  ...authorities: readonly ResolvedMediaAssetAuthority[]
+): ResolvedMediaAssetAuthority {
+  const reasons = [...new Set(authorities.flatMap((authority) => authority.reasons))];
+  return { publishable: reasons.length === 0, reasons };
 }
 
 export function assertResolvedMediaAssetCustomerPublishable(

@@ -43,6 +43,12 @@ const auditActor = {
 function completedDshTrace() {
   return {
     authority: "dsh_terminal_candidate",
+    prompt: {
+      productPromptVersion: "companion-product-1",
+      preparedTurnVersion: 4,
+      systemPromptDigest: "c".repeat(64),
+      soulFingerprint: "d".repeat(64),
+    },
     attemptId: "assistant-normal:1",
     runtime: "embedded_dsh",
     memoryMode: "normal",
@@ -298,6 +304,10 @@ describe("chat service DSH evidence", () => {
 
     expect(evidence).toEqual({
       ok: true,
+      productPromptVersion: "companion-product-1",
+      preparedTurnVersion: 4,
+      systemPromptDigest: "c".repeat(64),
+      soulFingerprint: "d".repeat(64),
       runtime: "embedded_dsh",
       memoryMode: "normal",
       provider: "openai",

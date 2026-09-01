@@ -52,7 +52,7 @@ export const adminZhShell: Record<string, string> = {
   "Missing asset": "资产缺失",
   "Missing permission keys": "缺少的权限键",
   "Moderator": "审核员",
-  "More": "更多",
+  "Workspaces": "工作区",
   "No activity yet. The first comment or handoff will appear here.": "暂无协作动态；第一条评论或交接会显示在这里。",
   "No permission for this workspace": "无此工作区权限",
   "No permitted records match this search.": "没有获准访问且符合搜索条件的记录。",
@@ -95,6 +95,7 @@ export const adminZhShell: Record<string, string> = {
   "This admin route does not exist.": "此后台路由不存在。",
   "This workspace requires permission keys your account does not have.":
     "此工作区需要你的账号尚未持有的权限键。",
+  "Tools & diagnostics": "工具与诊断",
   "Type the name to confirm": "输入名称以确认",
   "Update v": "更新版本 v",
   "View label": "视图名称",

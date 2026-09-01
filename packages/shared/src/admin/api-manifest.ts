@@ -425,6 +425,13 @@ export const ADMIN_V2_API_OPERATIONS = [
   ),
   operation(
     "POST",
+    "/api/v2/admin/characters/:id/voice-presets",
+    allOf("character.project.write"),
+    "characterVoicePresetCreateRequestSchema+idempotency-key",
+    "characterVoicePresetCreateResponseSchema",
+  ),
+  operation(
+    "POST",
     "/api/v2/admin/characters/:id/voice-clones",
     allOf("character.project.write"),
     "characterVoiceCloneCreateRequestSchema+idempotency-key",
@@ -432,7 +439,7 @@ export const ADMIN_V2_API_OPERATIONS = [
   ),
   operation(
     "POST",
-    "/api/v2/admin/characters/:id/voice-clones/:profileId/activate",
+    "/api/v2/admin/characters/:id/voice-profiles/:profileId/activate",
     allOf("character.release.publish"),
     "characterVoiceActivationRequestSchema+idempotency-key",
     "characterVoiceActivationResponseSchema",
@@ -728,6 +735,13 @@ export const ADMIN_V2_API_OPERATIONS = [
     allOf("creative.asset.read"),
     "contentAssetQuerySchema",
     "contentAssetListResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/assets",
+    allOf("content.asset.review"),
+    "contentAssetUploadRequestSchema+idempotency-key",
+    "contentAssetUploadResponseSchema",
   ),
   operation(
     "GET",

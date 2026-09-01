@@ -15,6 +15,7 @@ export const adminZhCharacters: Record<string, string> = {
   "Actual seed": "实际种子",
   "Add at least one stable visual trait.": "至少添加一项稳定视觉特征。",
   "Add either a personality or a tone.": "性格或语气至少填写一项。",
+  "Write the first message users will receive.": "填写用户进入角色后收到的第一条消息。",
   "Add reference image": "添加参考图",
   "Adding…": "正在添加…",
   "Adopt this image": "采用这张图",
@@ -308,6 +309,7 @@ export const adminZhCharacters: Record<string, string> = {
   "Activation reason": "启用原因",
   "Active cloned voice": "当前克隆声音",
   "Active cloned voice preview": "当前克隆声音试听",
+  "Active character voice preview": "当前角色声音试听",
   "Active identity": "当前身份",
   "Add official character": "上架新角色",
   "Adjust the creative brief": "调整创意简报",
@@ -495,6 +497,8 @@ export const adminZhCharacters: Record<string, string> = {
   "Create video": "生成视频",
   "Create visual identity version": "创建视觉身份版本",
   "Create voice candidate": "创建候选声音",
+  "Create Pocket voice candidate": "创建 Pocket 声音候选",
+  "Creating Pocket voice candidate…": "正在创建 Pocket 声音候选…",
   "Create, review, and adopt the remaining portrait, hero, or chat images without changing the locked identity.":
     "继续创建、审核并采用剩余的肖像、角色主视觉或聊天场景图，已锁定的身份不会改变。",
   "Create, review, and adopt the remaining portrait, hero, or chat images.":
@@ -604,8 +608,8 @@ export const adminZhCharacters: Record<string, string> = {
     "通过 MLX 运行的 Fish Audio S2 Pro 声音克隆已就绪。",
   "Fish Audio is configured but unavailable. Verify the fish-audio-s2-pro-8bit model, resident MLX process, and system female reference.":
     "Fish Audio 已配置但当前不可用；请检查 fish-audio-s2-pro-8bit 模型、常驻 MLX 进程和系统女性声音参考。",
-  "Fish Audio is not the active voice provider. Set VOICE_PROVIDER=fish-audio and start the Fish Audio process.":
-    "Fish Audio 当前不是生效的声音供应器；请设置 VOICE_PROVIDER=fish-audio 并启动 Fish Audio 进程。",
+  "Fish Audio is not the Character voice-cloning provider. Set VOICE_IDENTITY_PROVIDER=fish-audio and start the Fish Audio process.":
+    "Fish Audio 当前不是角色声音克隆供应器；请设置 VOICE_IDENTITY_PROVIDER=fish-audio 并启动 Fish Audio 进程。",
   "Fish Audio must be the active voice provider before this candidate can be activated.":
     "启用此候选声音前，必须先将 Fish Audio 设为当前声音供应器。",
   "Generate 40 route test images": "生成 40 张线路测试图",
@@ -628,6 +632,8 @@ export const adminZhCharacters: Record<string, string> = {
   Hybrid: "混合",
   "I confirm this release action": "我确认执行该发布操作",
   "Identity anchor": "身份锚点",
+  "Identity and quality safeguards are automatic. Add only exclusions specific to this image.":
+    "系统会自动应用身份与质量约束；这里只填写这张图片需要额外避免的内容。",
   "Identity images": "身份图片",
   "Identity lock": "身份锁定",
   "Identity locked": "身份已锁定",
@@ -730,6 +736,9 @@ export const adminZhCharacters: Record<string, string> = {
   "Monitor the live character": "监控线上角色",
   "More filters": "更多筛选",
   "More like this": "生成相似图",
+  "More like this unavailable": "相似图暂不可用",
+  "Normal generation from the locked identity is still available.":
+    "仍可基于已锁定的角色身份正常生成图片。",
   "More like this is unavailable because the active model profile cannot use the selected image as an init image.":
     "当前模型配置无法把所选图片作为初始图，因此不能生成相似图。",
   "More like this is unavailable because the active workflow cannot combine a source image with the canonical identity references.":
@@ -884,14 +893,14 @@ export const adminZhCharacters: Record<string, string> = {
   "Playback was aborted before the video loaded.":
     "视频尚未加载完成，播放已被中止。",
   Playful: "俏皮",
-  "Pocket TTS is not the active voice provider. Set VOICE_PROVIDER=pocket-tts and start the Pocket TTS process.":
-    "Pocket TTS 当前不是生效的声音供应器。请设置 VOICE_PROVIDER=pocket-tts 并启动 Pocket TTS 进程。",
   "Pocket TTS must be the active voice provider before this candidate can be activated.":
     "启用此候选声音前，必须先将 Pocket TTS 设为当前声音供应器。",
-  "Pocket TTS on oMLX is configured but unavailable. Verify oMLX, the pocket-tts-4bit model, and the voice adapter.":
-    "Pocket TTS oMLX 线路已配置但当前不可用。请检查 oMLX、pocket-tts-4bit 模型和声音适配服务。",
-  "Pocket TTS voice cloning through oMLX is ready.":
-    "通过 oMLX 运行的 Pocket TTS 声音克隆已就绪。",
+  "Pocket TTS official English voice catalog is ready on CPU.":
+    "Pocket TTS 官方英语音色目录已在 CPU 上就绪。",
+  "Pocket TTS is configured but unavailable. Verify the official model access, Hugging Face authentication, and the resident Pocket TTS process.":
+    "Pocket TTS 已配置但当前不可用；请检查官方模型访问权限、Hugging Face 登录和常驻 Pocket TTS 进程。",
+  "Pocket TTS is not the Character voice provider. Set VOICE_PROVIDER=pocket-tts or VOICE_IDENTITY_PROVIDER=pocket-tts and start the Pocket TTS process.":
+    "Pocket TTS 当前不是角色声音供应器；请设置 VOICE_PROVIDER=pocket-tts 或 VOICE_IDENTITY_PROVIDER=pocket-tts，并启动 Pocket TTS 进程。",
   Portfolio: "角色组合",
   Portrait: "肖像",
   "Premium image": "高级图片",
@@ -1119,9 +1128,11 @@ export const adminZhCharacters: Record<string, string> = {
   "Summary (≤200)": "摘要（≤200）",
   "System default change reason": "系统默认声音变更原因",
   "System default voice": "系统默认声音",
-  "System female identity": "系统女性声音身份",
+  "System fallback identity": "系统回退声音身份",
   "System inheritance": "系统继承",
   "System performance direction": "系统演绎方向",
+  "Pocket TTS uses each official voice's native English delivery; performance controls are not applied.":
+    "Pocket TTS 使用各官方音色原生的英语演绎，当前不会应用演绎参数。",
   "System voice defaults": "系统默认声音",
   "System voice defaults could not be saved": "无法保存系统默认声音",
   "System voice defaults were saved. New speech now uses this mapping.":
@@ -1151,6 +1162,8 @@ export const adminZhCharacters: Record<string, string> = {
   "The character voice could not be reset": "无法将角色声音恢复为系统默认",
   "The committed generation receipt is visible in this exact Run. Review can continue.":
     "生成回执已在当前生产记录中确认，可以继续审核。",
+  "The image Run is confirmed. Generation is still in progress; review becomes available when the image is ready.":
+    "图片生成任务已确认，当前仍在生成；图片就绪后即可审核。",
   "The committed generation receipt was recovered from the server.":
     "已从服务端恢复生成回执。",
   "The current Character image is available and will be carried forward as the anchor for this identity version.":
@@ -1163,6 +1176,37 @@ export const adminZhCharacters: Record<string, string> = {
     "之前的不可变审核决定会保留，但缺少必需的可见证据。请记录一条替代审核，使该候选图可以继续处理。",
   "The exact draft asset selection is verified in the Character workspace.":
     "已在角色工作区确认这张图片写入草稿资产包。",
+  "Identity bootstrap authority is verified in the Character workspace.":
+    "已在角色工作区确认初始身份权威。",
+  "Review every selected image before publishing.":
+    "发布前请审核每一张已选图片。",
+  "Review selected images": "审核已选图片",
+  "Complete and repair the selected image pack before publishing.":
+    "发布前请补齐并修复已选图片资产包。",
+  "Open image assets": "打开图片资产",
+  "Complete the Character Soul and opening message before publishing.":
+    "发布前请补齐角色设定与开场消息。",
+  "Open Character Soul": "打开角色设定",
+  "Repair the visual identity authority before publishing.":
+    "发布前请修复视觉身份权威。",
+  "Open visual identity": "打开视觉身份",
+  "Refresh the Character and resolve this release check before publishing.":
+    "刷新角色，并在发布前解决这项发布检查。",
+  "Review release checks": "查看发布检查",
+  "Image review required": "需要审核图片",
+  "Review the selected portrait, hero, and chat images before publishing.":
+    "发布前请审核已选的主肖像、头图和聊天图片。",
+  "Every selected image must have an approved review decision before publishing.":
+    "每张已选图片都必须先通过审核，才能发布。",
+  "Video generation progress": "视频生成进度",
+  "Current stage": "当前阶段",
+  "Elapsed {duration}": "已耗时 {duration}",
+  "Recent average {duration}": "近期平均 {duration}",
+  "Estimated remaining {duration}": "预计还需 {duration}",
+  "This run is taking longer than the recent average. Progress is still checked automatically every 5 seconds.":
+    "本次生成已超过近期平均时长；页面仍会每 5 秒自动检查进度。",
+  "Video is ready, but the Character library could not refresh. Use Refresh to try again.":
+    "视频已就绪，但角色素材库刷新失败。请点击“刷新”重试。",
   "The existing reset to system default was recovered.":
     "已恢复现有的系统默认声音重置结果。",
   "The existing voice activation result was recovered.":
@@ -1228,6 +1272,16 @@ export const adminZhCharacters: Record<string, string> = {
     "这张图将建立第一张经过审核的身份锚点。",
   "This is the authoritative voice used for new chat speech.":
     "这是新聊天语音当前实际使用的权威配置。",
+  "Choose an official English Pocket voice. A role-specific durable voice is created for this Character.":
+    "选择一个 Pocket 官方英语音色；系统会为该角色创建独立、持久的声音标识。",
+  "Official English voice": "官方英语音色",
+  "Reference-audio cloning weights are unavailable on this host. Official voices remain fully usable.":
+    "当前主机没有参考音频克隆权重，但官方音色仍可完整使用。",
+  "{count} official English voices available":
+    "可用的官方英语音色：{count} 个",
+  "runtime ready": "运行时已就绪",
+  "voice service unavailable": "声音服务不可用",
+  "voice provider inactive": "声音供应器未启用",
   "This portrait defines identity, so identity consistency is intentionally unscored. Judge artifacts, subject count, composition, and customer intent.":
     "这张肖像用于定义身份，因此身份一致性有意不评分；请判断瑕疵、主体数量、构图和用户用途。",
   "This preview checks the role card and opening message. Use the public preview before final release to verify the full page and chat behavior.":
@@ -1246,6 +1300,10 @@ export const adminZhCharacters: Record<string, string> = {
     "转录文本会随声音参考一起保存，并在合成时发送给 oMLX。",
   "This transcript is stored with the voice reference and used by Fish Audio when synthesizing.":
     "转录文本会随声音参考一起保存，并在 Fish Audio 合成时使用。",
+  "This transcript is stored with the Pocket TTS reference voice for audit and reproducibility.":
+    "转录文本会随 Pocket TTS 参考声音保存，用于审计和可复现性。",
+  "The candidate provider must be ready before this voice can be activated.":
+    "启用此声音前，候选声音对应的供应器必须已就绪。",
   "Top K": "Top K",
   "Top P": "Top P",
   "Trans characters": "跨性别角色",
@@ -1556,6 +1614,10 @@ export const adminZhCharacters: Record<string, string> = {
   "The video will be archived and hidden from this Character's library.":
     "视频将被归档，并从该角色的素材库中隐藏。",
   "Video creator": "视频创作器",
+  "Extra motion, camera, anatomy, or text artifacts to exclude":
+    "补充需要排除的动作、镜头、肢体或文字瑕疵",
+  "The saved request keeps its original source image, motion brief, and exclusions until recovery completes.":
+    "恢复完成前，已保存请求会锁定原始来源图片、动作说明和排除项。",
   "Video could not be removed": "无法移出视频",
   "Video for {name}": "{name} 的视频",
   "Video import failed": "视频导入失败",

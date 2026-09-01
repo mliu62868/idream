@@ -2,13 +2,76 @@ import { describe, expect, it } from "vitest";
 import {
   evaluateMediaAssetCustomerPublishability,
   hasHydratableMediaBlobAuthority,
+  inspectOperatorUploadAuthority,
   isMediaAssetOperationalForAuthority,
   isSyntheticMediaAsset,
   resolveMediaAssetBlobLocator,
   SHARED_IMMUTABLE_BLOB_LOCATOR_SCHEMA,
+  OPERATOR_UPLOAD_AUTHORITY_SCHEMA,
 } from "./media-asset-authority";
 
 describe("media asset customer publishability", () => {
+  it("accepts only a versioned operator upload with matching asset, actor, digest, and durable bytes", () => {
+    const asset = {
+      id: "media-upload-1",
+      sourceJobId: null,
+      storageKey: "platform-assets/feed/media-upload-1.png",
+      url: "/user-content/upload/content.png",
+      metadata: {
+        source: "admin_asset_upload",
+        sha256: "a".repeat(64),
+        uploadAuthority: {
+          schemaVersion: OPERATOR_UPLOAD_AUTHORITY_SCHEMA,
+          kind: "operator_upload",
+          assetId: "media-upload-1",
+          uploadedById: "admin-1",
+          sha256: "a".repeat(64),
+        },
+      },
+    };
+
+    expect(inspectOperatorUploadAuthority(asset)).toEqual({
+      kind: "operator_upload",
+      publishable: true,
+      reasons: [],
+    });
+    expect(inspectOperatorUploadAuthority({
+      ...asset,
+      storageKey: null,
+    })).toEqual({
+      kind: "operator_upload",
+      publishable: false,
+      reasons: ["operator_upload_blob_missing"],
+    });
+    expect(inspectOperatorUploadAuthority({
+      ...asset,
+      sourceJobId: "generation-job-1",
+      metadata: {
+        ...asset.metadata,
+        uploadAuthority: {
+          ...asset.metadata.uploadAuthority,
+          assetId: "different-asset",
+        },
+      },
+    })).toEqual({
+      kind: "operator_upload",
+      publishable: false,
+      reasons: [
+        "operator_upload_authority_invalid",
+        "operator_upload_source_job_present",
+      ],
+    });
+  });
+
+  it("does not mistake legacy standalone assets for trusted operator uploads", () => {
+    expect(inspectOperatorUploadAuthority({
+      id: "legacy-asset",
+      sourceJobId: null,
+      storageKey: "legacy/asset.png",
+      metadata: { platformAsset: { status: "approved" } },
+    })).toBeNull();
+  });
+
   it("resolves owned storage and a versioned immutable duplicate locator", () => {
     expect(resolveMediaAssetBlobLocator({
       storageKey: "owner/source.webp",

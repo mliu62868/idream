@@ -164,7 +164,7 @@ test("setup materializes both official profiles, dumps with the same DSH_HOME, a
     "cordis.patch.yml",
   ));
   assert.match(normalPatch, /memory: true/);
-  assert.match(normalPatch, /ingest: true/);
+  assert.match(normalPatch, /ingest: false/);
   assert.match(normalPatch, /wake: true/);
   assert.match(privatePatch, /search: false/);
   assert.match(privatePatch, /webProvider: false/);
@@ -463,7 +463,7 @@ function createFixture(options = {}) {
             webProvider: false,
             webTool: false,
             memory: true,
-            ingest: true,
+            ingest: false,
             wake: true,
             memorySearchMode: "fast",
             timeoutMs: 10000,

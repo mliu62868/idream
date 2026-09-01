@@ -16,6 +16,20 @@ export const contentAssetReviewStatusSchema = z.enum([
   "archived",
 ]);
 
+export const platformAssetUploadPurposeSchema = z.enum([
+  "campaign",
+  "homepage",
+  "feed",
+  "seo",
+  "template_cover",
+]);
+
+// SPEC: the schema governs multipart text fields; the `image` part is decoded and
+// validated at the server's shared Admin image-upload boundary.
+export const contentAssetUploadRequestSchema = z.object({
+  purpose: platformAssetUploadPurposeSchema,
+}).strict();
+
 export const contentAssetQuerySchema = z.object({
   mediaType: z.enum(["image", "video"]).default("image"),
   status: contentAssetReviewStatusSchema.optional(),
@@ -194,6 +208,7 @@ export const contentAssetDetailResponseSchema = z.object({
 }).strict();
 
 export const contentAssetMutationResponseSchema = contentAssetDetailResponseSchema;
+export const contentAssetUploadResponseSchema = contentAssetDetailResponseSchema;
 
 export const contentAssetBulkPreflightResponseSchema = z.object({
   assetIds: z.array(adminIdSchema),
@@ -217,6 +232,9 @@ export type ContentAsset = z.infer<typeof contentAssetSchema>;
 export type ContentAssetListResponse = z.infer<typeof contentAssetListResponseSchema>;
 export type ContentAssetDetailResponse = z.infer<typeof contentAssetDetailResponseSchema>;
 export type ContentAssetMutationResponse = z.infer<typeof contentAssetMutationResponseSchema>;
+export type ContentAssetUploadRequest = z.infer<typeof contentAssetUploadRequestSchema>;
+export type ContentAssetUploadResponse = z.infer<typeof contentAssetUploadResponseSchema>;
+export type PlatformAssetUploadPurpose = z.infer<typeof platformAssetUploadPurposeSchema>;
 export type ContentAssetBulkPreflightResponse = z.infer<
   typeof contentAssetBulkPreflightResponseSchema
 >;

@@ -23,6 +23,7 @@ describe("Creative Run create contract", () => {
     presetIds: [],
     count: 4,
     brief: "Create an explicit feed direction with four candidates.",
+    negativePrompt: "duplicate subject, visible text",
     consistencyMode: "balanced" as const,
     priority: "high" as const,
     reason: "Launch the approved operator brief",
@@ -43,10 +44,11 @@ describe("Creative Run create contract", () => {
       minimaxH3VideoProductionRecipe,
     );
     expect(minimaxH3VideoProductionRecipe).toMatchObject({
+      recipeVersion: 4,
       profileKey: "profile_video_h3_v1",
       pipelineModel: "minimax-h3-redcraft-a2a-int8-convrot",
       workflowKey: "minimax-h3-redcraft-i2v",
-      workflowVersion: 3,
+      workflowVersion: 4,
       checkpointFilename:
         "REDMix-MiniMaxH3-A2Ab1-pruned-int8-convrot-ComfyMCP.safetensors",
       width: 512,
@@ -75,10 +77,11 @@ describe("Creative Run create contract", () => {
 
   it("pins RedGraft LTX 2.5 and all validated MPS assets as the default route", () => {
     expect(redgraftLtx25VideoProductionRecipe).toMatchObject({
+      recipeVersion: 2,
       profileKey: "profile_video_redgraft_ltx25_v1",
       pipelineModel: "redgraft-ltx25-fast2k-int8-convrot",
       workflowKey: "redgraft-ltx25-i2v",
-      workflowVersion: 1,
+      workflowVersion: 2,
       checkpointFilename:
         "redgraftLTX25Fast2K_ltx25RedgraftNSFW.safetensors",
       width: 768,

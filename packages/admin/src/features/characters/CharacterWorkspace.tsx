@@ -17,6 +17,7 @@ import {
   useState,
   useSyncExternalStore,
   type KeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
 } from "react";
 import type { AdminSubview } from "@/components/admin/nav-config";
 import { CharacterVideoLibrary } from "@/features/characters/CharacterVideoLibrary";
@@ -771,6 +772,43 @@ function CharacterDetail({
       mode: "push",
     });
   };
+  const onWorkspacePanelClick = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (
+      event.defaultPrevented ||
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey
+    ) {
+      return;
+    }
+    const target = event.target;
+    const anchor =
+      target instanceof Element ? target.closest<HTMLAnchorElement>("a[href]") : null;
+    if (!anchor || anchor.target === "_blank") return;
+    const destination = new URL(anchor.href, window.location.href);
+    if (
+      destination.origin !== window.location.origin ||
+      destination.pathname !== window.location.pathname ||
+      !destination.searchParams.has("tab")
+    ) {
+      return;
+    }
+    const next = characterWorkspaceTabFromSearch(destination.search);
+    event.preventDefault();
+    if (
+      (journal.getSnapshot().writesLocked || data.activeCommand) &&
+      next !== tab
+    ) {
+      return;
+    }
+    setTab(next);
+    setWorkspaceUrl(new URLSearchParams({ tab: next }), {
+      hash: destination.hash,
+      mode: "push",
+    });
+  };
   const onTabKey = (
     event: KeyboardEvent<HTMLButtonElement>,
     current: number,
@@ -1054,6 +1092,7 @@ function CharacterDetail({
       <div
         className="mt-5 scroll-mt-24"
         id={`character-panel-${tab}`}
+        onClickCapture={onWorkspacePanelClick}
         role="tabpanel"
         aria-labelledby={`character-tab-${tab}`}
       >
@@ -1086,6 +1125,7 @@ function CharacterDetail({
                 guardedPermissions.createAssets &&
                 guardedPermissions.writeProject
               }
+              canReview={guardedPermissions.reviewAssets}
               canRead={permissions.readAssets}
               canReadProduction={permissions.readProduction}
               commitProjectMutation={runCommittedMutation}
@@ -1103,6 +1143,7 @@ function CharacterDetail({
             canReadProduction={permissions.readProduction}
             data={data}
             onCreateImage={() => selectTab("assets")}
+            onProjectReload={load}
             runCommittedMutation={runCommittedMutation}
           />
         ) : tab === "voice" ? (

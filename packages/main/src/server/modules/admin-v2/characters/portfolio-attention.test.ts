@@ -1,6 +1,9 @@
 import { characterPortfolioQuerySchema } from "@idream/shared/admin";
 import { describe, expect, it } from "vitest";
-import { charactersNeedingAttention } from "./portfolio";
+import {
+  charactersNeedingAttention,
+  draftAssetReviewAttentionCharacterIds,
+} from "./portfolio";
 
 function attention(overrides: {
   live: readonly { characterId: string; currentReleaseId: string | null }[];
@@ -54,6 +57,27 @@ describe("characters needing attention", () => {
       live: [{ characterId: "alexa", currentReleaseId: null }],
       windowClosed: ["release-1"],
     })).toEqual([]);
+  });
+
+  it("flags a complete draft pack that cannot publish because selections skipped review", () => {
+    expect(
+      draftAssetReviewAttentionCharacterIds([
+        {
+          characterId: "needs-review",
+          draftAssetPack: {
+            character_cover: { assetId: "cover", reviewDecisionId: null },
+            character_hero: { assetId: "hero", reviewDecisionId: "review-2" },
+            character_chat: { assetId: "chat", reviewDecisionId: "review-3" },
+          },
+        },
+        {
+          characterId: "still-producing",
+          draftAssetPack: {
+            character_cover: { assetId: "cover", reviewDecisionId: null },
+          },
+        },
+      ]),
+    ).toEqual(["needs-review"]);
   });
 });
 

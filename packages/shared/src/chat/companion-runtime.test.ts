@@ -33,12 +33,14 @@ describe("shared companion authority contracts", () => {
       scope: "relationship",
       userId: "user-1",
       characterId: "character-1",
+      mode: "rebuild",
       messages,
     }).success).toBe(true);
     expect(companionWorkspaceRebuildSchema.safeParse({
       scope: "relationship",
       userId: "user-1",
       characterId: "character-1",
+      mode: "rebuild",
       messages: messages.slice(0, 1),
     }).success).toBe(false);
   });
@@ -60,6 +62,7 @@ describe("shared companion authority contracts", () => {
       scope: "relationship",
       userId: "user-1",
       characterId: "character-1",
+      mode: "project",
       messageCount: 0,
       messages: (async function* () { yield messages[0]!; })(),
     });
@@ -83,6 +86,12 @@ describe("shared companion authority contracts", () => {
   it("projects internal evidence into a content-free operator shape", () => {
     const projected = projectCompanionProbeDshEvidence({
       authority: "dsh_terminal_candidate",
+      prompt: {
+        productPromptVersion: "companion-product-1",
+        preparedTurnVersion: 4,
+        systemPromptDigest: "c".repeat(64),
+        soulFingerprint: "d".repeat(64),
+      },
       runtime: "embedded_dsh",
       memoryMode: "private",
       provider: "openai",
@@ -104,7 +113,14 @@ describe("shared companion authority contracts", () => {
       },
     }, "private");
 
-    expect(projected).toMatchObject({ ok: true, memoryOutcome: "disabled" });
+    expect(projected).toMatchObject({
+      ok: true,
+      productPromptVersion: "companion-product-1",
+      preparedTurnVersion: 4,
+      systemPromptDigest: "c".repeat(64),
+      soulFingerprint: "d".repeat(64),
+      memoryOutcome: "disabled",
+    });
     expect(projected).not.toHaveProperty("content");
     expect(projected).not.toHaveProperty("contentDigest");
   });

@@ -23,7 +23,7 @@ import type {
 } from "./workspace";
 
 // SPEC: the normal profile exposes exactly one model-visible igrep surface:
-// memory (wake profile + memory_search + ingest). `igrep_search` is off.
+// memory (wake profile + memory_search). `igrep_search` is off.
 // INTENT: the working-tree search tool only ever saw `knowledge/canon.md`,
 // whose bytes are already inside the compiled Soul, while its coding-agent
 // guidance ("grep, glob, bash, repository facts") landed verbatim in every
@@ -38,7 +38,9 @@ export const NORMAL_IGREP_CONFIG = Object.freeze({
   webProvider: false,
   webTool: false,
   memory: true,
-  ingest: true,
+  // Main projects only committed Turns into canonical memory. Attempt-local
+  // ingest would maintain a disposable copy after commit and then delete it.
+  ingest: false,
   wake: true,
   memorySearchMode: "fast",
   timeoutMs: 10_000,
@@ -180,6 +182,10 @@ export interface IgrepRecall {
 
 const RECALL_MAX_RESULTS = 6;
 const RECALL_NOTE_MAX_CHARS = 320;
+// INTENT: fast recall is normally sub-second, but the local maintenance model
+// can cold-load past 10s after a runtime restart. The Turn deadline still owns
+// the outer bound; this prevents a healthy cold start from failing the reply.
+const RECALL_TIMEOUT_MS = 30_000;
 
 /**
  * SPEC: recall is pushed, not pulled. Before the model speaks, the current
@@ -207,7 +213,7 @@ export async function recallIgrepMemory(
       search_mode: "fast",
       reference_at: options.referenceAt ?? new Date().toISOString(),
     })}\n`,
-    timeoutMs: 10_000,
+    timeoutMs: RECALL_TIMEOUT_MS,
     signal: options.signal,
   }));
   if (!payload || payload.failed === true || payload.error || !Array.isArray(payload.results)) {
@@ -288,14 +294,14 @@ export class IgrepMemoryProbe implements MemoryProbe {
   }
 }
 
-export class IgrepMemoryRebuilder {
+export class IgrepMemoryBuilder {
   constructor(
     private readonly command: string,
     private readonly probe: MemoryProbe = new IgrepMemoryProbe(command),
     private readonly run: RunJsonCommand = runJsonCommand,
   ) {}
 
-  async rebuild(
+  async build(
     workspace: string,
     input: CompanionWorkspaceRebuildSource,
     signal?: AbortSignal,
@@ -406,7 +412,13 @@ export class IgrepMemoryRebuilder {
     }
     await this.run({
       command: this.command,
-      args: ["mem", "maintain", "--workspace", workspace, "--rebuild"],
+      args: [
+        "mem",
+        "maintain",
+        "--workspace",
+        workspace,
+        ...(source.mode === "rebuild" ? ["--rebuild"] : []),
+      ],
       timeoutMs: 300_000,
       signal,
     });
@@ -420,7 +432,7 @@ export class IgrepMemoryRebuilder {
     const expectedDialogueFiles = metrics.sessionCount;
     if (status.dialogueFiles !== expectedDialogueFiles) {
       throw new Error(
-        `igrep rebuild dialogue count mismatch: expected ${expectedDialogueFiles}, got ${status.dialogueFiles}`,
+        `igrep memory build dialogue count mismatch: expected ${expectedDialogueFiles}, got ${status.dialogueFiles}`,
       );
     }
     // INTENT: A finished profile pass may leave retryable rows pending when the
@@ -429,7 +441,7 @@ export class IgrepMemoryRebuilder {
     // rejecting it here makes privacy deletion depend on optional derivation
     // work and permanently blocks every later mutation for the same user.
     if (metrics.messageCount > 0 && !status.lastMaintainAt) {
-      throw new Error("igrep rebuild did not expose a completed maintain pass");
+      throw new Error("igrep memory build did not expose a completed maintain pass");
     }
     return { sessions: metrics.sessionCount, messages: metrics.messageCount };
   }

@@ -184,7 +184,7 @@ function actionIndex(
     ].includes(code)
   )
     return 0;
-  if (["continue_image_run", "continue_asset_pack"].includes(code)) return 1;
+  if (["continue_image_run", "continue_asset_pack", "review_asset_pack"].includes(code)) return 1;
   if (code === "preview_character") return 2;
   if (code === "publish_character") return 3;
   return 4;
@@ -204,6 +204,7 @@ export function projectCharacterProductionJourneySnapshot(input: {
   routeQualified: boolean;
   hasActiveImageRun: boolean;
   draftPurposes: readonly CharacterProductionPurpose[];
+  draftPurposesNeedingReview: readonly CharacterProductionPurpose[];
   livePurposes: readonly CharacterProductionPurpose[];
   servingState: CharacterProductionJourney["release"]["servingState"];
   currentReleaseId: string | null;
@@ -290,6 +291,23 @@ export function projectCharacterProductionJourneySnapshot(input: {
     };
     stage = "image_production";
     status = "in_progress";
+  } else if (
+    draft.completed === draft.total &&
+    input.draftPurposesNeedingReview.length > 0
+  ) {
+    const deepLink = tabLink("assets");
+    blockers.push({
+      code: "draft_asset_review_missing",
+      message: "Every selected image must have an approved review decision before publishing.",
+      deepLink,
+    });
+    primaryAction = {
+      code: "review_asset_pack",
+      deepLink,
+      command: null,
+    };
+    stage = "image_production";
+    status = "blocked";
   } else {
     const liveNow = input.servingState === "live";
     const workingPack = liveNow && draft.completed === 0 ? live : draft;
@@ -604,6 +622,12 @@ export async function projectCharacterProductionJourneys(
         draftPurposes: availablePurposes(
           draftPackByCharacter.get(characterId) ?? {},
           availableIds,
+        ),
+        draftPurposesNeedingReview: characterProductionPurposes.filter(
+          (purpose) => {
+            const entry = draftAssetRouteEntries(project.draftAssetPack)[purpose];
+            return Boolean(entry && !entry.reviewDecisionId);
+          },
         ),
         livePurposes: availablePurposes(
           livePackByCharacter.get(characterId) ?? {},

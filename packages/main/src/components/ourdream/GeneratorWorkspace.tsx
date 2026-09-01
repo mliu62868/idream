@@ -716,6 +716,8 @@ export function GeneratorWorkspace() {
     quoteError: generationQuoteError,
     submitting: pending,
   } = generationRequest.view;
+  const formCanSubmit =
+    canSubmit && (!imageEditMode || prompt.trim().length > 0);
   const modeUnavailableMessage = generationModeUnavailableMessage(config, mode);
   const galleryTabs = useMemo<GalleryTab[]>(
     () => (videoModeEnabled ? ["image", "video", "liked"] : ["image", "liked"]),
@@ -1456,9 +1458,11 @@ export function GeneratorWorkspace() {
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!canSubmit) {
+    if (!formCanSubmit) {
       if (imageEditMode && !selectedEditSource) {
         setStatus("Choose a source image to edit.");
+      } else if (imageEditMode && !prompt.trim()) {
+        setStatus("Describe the change you want to make.");
       }
       return;
     }
@@ -1467,6 +1471,8 @@ export function GeneratorWorkspace() {
       await createMediaVariation(selectedEditSource, {
         outputCount,
         quote: generationQuote,
+        prompt: prompt.trim(),
+        negativePrompt: negativePrompt.trim() || undefined,
       });
       return;
     }
@@ -1686,6 +1692,8 @@ export function GeneratorWorkspace() {
     options?: {
       outputCount?: number;
       quote?: RuntimeGenerationQuote | null;
+      prompt?: string;
+      negativePrompt?: string;
     },
   ) {
     if (item.type !== "image") return;
@@ -1695,6 +1703,8 @@ export function GeneratorWorkspace() {
         outputCount: options?.outputCount,
         consistencyMode,
         model: modelSelectionProjection.requestModelId,
+        prompt: options?.prompt,
+        negativePrompt: options?.negativePrompt,
         quote: options?.quote,
       },
       generationRequestEffects,
@@ -2028,6 +2038,10 @@ export function GeneratorWorkspace() {
                       if (imageWorkflow !== item) {
                         setModelSelection({ id: "", explicit: false });
                       }
+                      if (item !== imageWorkflow) {
+                        setPrompt("");
+                        setNegativePrompt("");
+                      }
                       setImageWorkflow(item);
                       setStatus("");
                       if (item === "image-edit") {
@@ -2054,7 +2068,7 @@ export function GeneratorWorkspace() {
                       Source image
                     </p>
                     <p className="mt-1 text-[12px] font-medium text-[rgb(170,170,170)]">
-                      Pick a Gallery image to create a more-like-this edit.
+                      Pick a Gallery image, then describe the exact change you want.
                     </p>
                   </div>
                   <button
@@ -2318,22 +2332,25 @@ export function GeneratorWorkspace() {
               </div>
             ) : null}
 
-            {!imageEditMode && (
-              <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
-                {mode === "video"
+            <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
+                {imageEditMode
+                  ? "Edit instructions"
+                  : mode === "video"
                   ? videoModeCopy.promptLabel
                   : characterImageMode
                     ? "Describe the moment"
                     : "Scene Prompt"}
                 <textarea
-                  aria-label="Prompt"
+                  aria-label={imageEditMode ? "Edit instructions" : "Prompt"}
                   className="mt-2 min-h-24 w-full rounded-[10px] bg-[rgb(36,36,36)] p-4 text-[13px] font-semibold text-white outline-none disabled:text-[rgb(114,113,112)]"
-                  disabled={!canDescribeMoment}
+                  disabled={!imageEditMode && !canDescribeMoment}
                   id="generator-prompt"
                   name="prompt"
                   onChange={(event) => setPrompt(event.target.value)}
                   placeholder={
-                    canDescribeMoment
+                    imageEditMode
+                      ? "Describe exactly what should change. Everything else stays the same."
+                      : canDescribeMoment
                       ? mode === "video"
                         ? videoModeCopy.promptPlaceholder
                         : characterImageMode
@@ -2344,7 +2361,6 @@ export function GeneratorWorkspace() {
                   value={prompt}
                 />
               </label>
-            )}
 
             {!imageEditMode ? (
               <div className="mt-4 grid grid-cols-2 gap-3">
@@ -2584,16 +2600,16 @@ export function GeneratorWorkspace() {
               </div>
             )}
 
-            {!imageEditMode && (!characterImageMode || advancedOpen) && (
+            {(!characterImageMode || advancedOpen) && (
               <label className="mt-4 block text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
                 Negative Prompt
                 <input
                   className="mt-2 h-11 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] font-semibold text-white outline-none disabled:text-[rgb(114,113,112)]"
-                  disabled={!canUsePrompt}
+                  disabled={!imageEditMode && !canUsePrompt}
                   id="generator-negative-prompt"
                   name="negativePrompt"
                   onChange={(event) => setNegativePrompt(event.target.value)}
-                  placeholder={canUsePrompt ? "Artifacts to avoid" : "Premium control"}
+                  placeholder={imageEditMode || canUsePrompt ? "Artifacts to avoid" : "Premium control"}
                   value={negativePrompt}
                 />
               </label>
@@ -2759,7 +2775,7 @@ export function GeneratorWorkspace() {
             ) : (
               <button
                 className="mt-4 flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[rgb(255,48,170)] text-[14px] font-black text-white disabled:bg-[rgb(64,64,64)] disabled:text-[rgb(150,150,150)]"
-                disabled={!canSubmit}
+                disabled={!formCanSubmit}
                 type="submit"
               >
                 <WandSparkles className="h-4 w-4" />

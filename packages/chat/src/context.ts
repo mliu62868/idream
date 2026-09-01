@@ -16,6 +16,8 @@ export type ResolvedChatPersona = CharacterAuthority & {
 };
 
 export interface BuiltContext {
+  userLocale: string;
+  hasRecentImageContext: boolean;
   persona: ResolvedChatPersona;
   policy: ChatPolicy;
   recentMessages: Array<{
@@ -68,10 +70,19 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
     memoryEnabled: snapshot.memoryEnabled,
     characterImageToolEnabled: persona.imageToolEnabled,
   });
-  const transcript: BuiltContext["recentMessages"] = snapshot.recentTurns.flatMap((turn) => [
+  const openingMessage = immutableOpeningMessage(character.contentVersion.openingSnapshot);
+  const transcript: BuiltContext["recentMessages"] = openingMessage
+    ? [{
+        id: `opening:${snapshot.sessionId}`,
+        role: "assistant",
+        content: openingMessage,
+        opening: true,
+      }]
+    : [];
+  transcript.push(...snapshot.recentTurns.flatMap((turn) => [
     { id: turn.userMessageId, role: "user" as const, content: turn.userContent },
     { id: turn.assistantMessageId, role: "assistant" as const, content: turn.assistantContent },
-  ]);
+  ]));
   transcript.push({
     id: snapshot.userMessageId,
     role: "user",
@@ -88,6 +99,8 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
     throw new Error(`Scene revision ${snapshot.sceneVersion} is invalid`);
   }
   return {
+    userLocale: authority.user.locale,
+    hasRecentImageContext: snapshot.hasRecentImageContext,
     persona,
     policy,
     recentMessages: fitted.messages,
@@ -99,6 +112,14 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
     dropped: fitted.dropped ? ["transcript"] : [],
     contextRevision: BigInt(snapshot.contextRevision),
   };
+}
+
+function immutableOpeningMessage(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const firstMessage = (value as Record<string, unknown>).firstMessage;
+  return typeof firstMessage === "string" && firstMessage.trim()
+    ? firstMessage.trim()
+    : null;
 }
 
 function personaFromImmutableContent(current: CharacterAuthority): ResolvedChatPersona {

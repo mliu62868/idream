@@ -8,6 +8,8 @@
 
 > **2026-08-27 Character 产品取舍覆盖：** 本文关于 Character 的项目简报、负责人、计划上线、手工 QA、Portfolio 决策记录和交接/认领要求不再是目标设计。Character Admin 以角色资料、素材、预览、自动发布预检、Release/Serving 和线上表现事实为主流程；旧章节保留为历史方案，不得据此恢复已删除字段或入口。Case、Incident、Creative Run 等真正需要分派和 SLA 的运营对象不受此覆盖影响。
 
+> **2026-08-31 非角色运营素材产品取舍覆盖：** Campaign、Homepage、Feed、SEO 与 Template Cover 不再从 Admin 通用 Creative Run 表单调用系统生图。运营使用任意外部工具制作最终图片，再走 `上传 → 素材库 → 草稿投放`；Character 图片仍由 Character Workspace 的身份、参考集、生成、审核、Release/Serving 链路负责。Creative Run 列表降为角色工作流与历史任务的生成记录，不得据旧章节恢复通用生图入口。
+
 ## 0. 文档地位与使用方式
 
 本文记录管理后台从“功能控制面”升级的历史目标模型；与上方 Character 产品取舍冲突的内容已被覆盖。
@@ -336,6 +338,9 @@ System
 
 ### 5.2 全局 Shell 规则
 
+- 全局入口只保留 `Today`、`Characters`、`Workspaces`：前两项是跨角色最高频对象；`Workspaces` 每个业务工作区只列一次，不把页面、saved view 和诊断子视图平铺成同级入口。
+- 当前工作区的面包屑同时承担区内切换：先直接列出常规任务，再由 `Tools & diagnostics` 渐进披露低频配置、诊断、迁移期兼容工具。当前页本身是工具时自动展开；账号只拥有工具权限时直接展示工具，不制造无入口状态。
+- 入口层级只有互斥的三种产品语义：`primary`（Today、Characters）、`workspace`（区内常规任务）、`tool`（低频但仍必要的操作）。频率只决定视觉优先级，不改变权限、路由、搜索索引和 deep link。
 - 导航由 effective permission keys 生成；没有权限的模块不出现，直接访问时显示页面级无权限状态。
 - `admin` 可选择主工作模式，避免因为拥有全部权限而看到一个超级导航和超级 Inbox。
 - 固定显示环境 `Production / Staging / Local`、数据分类、fixture 是否包含、产品时区、数据最后更新时间。
@@ -343,6 +348,17 @@ System
 - 列表 filter、sort、cursor/page、view 和 selection 进入 URL；刷新、分享和返回可恢复。
 - Desktop 使用侧边栏，tablet 使用可折叠 rail/drawer，mobile 使用抽屉；核心操作不依赖横向铺开导航。
 - 所有详情页有稳定 breadcrumb、对象 ID、线上版本/草稿版本和 Activity/Audit 深链。
+
+低频入口的当前归类如下；未列出的已授权页面都是区内常规任务：
+
+| 工作区 | `Tools & diagnostics` |
+| --- | --- |
+| Character Studio | Character Starters、Taxonomy |
+| Operational Assets | Generation History（角色工作流与既有任务） |
+| Customer Operations | Account Requests、Moderation Cases、Support Cases、Risk Cases（后三项为迁移期兼容工具） |
+| Growth | Announcements、Promotions |
+| Platform Operations | Dead-letter、Backend Diagnostics、Generation Health、Profile Diagnostics、Presets、Workflow Diagnostics |
+| System | 无 |
 
 ### 5.3 现有 34 个入口的迁移归宿
 
@@ -383,7 +399,7 @@ System
 | `/admin/approvals` | `/admin/system/approvals` | 现有 approval permissions | keep |
 | `/admin/audit-log` | `/admin/system/audit` | `audit.read` | keep |
 
-每个 legacy route 必须有 redirect、permission mapping、saved-view/query migration 和 usage telemetry。只有连续两个业务周期无真实访问且无外部 deep link 后才能 sunset；diagnostic 不等于删除，只是从普通运营导航折叠。
+每个 legacy route 必须有 redirect、permission mapping、saved-view/query migration 和 usage telemetry。只有连续两个业务周期无真实访问且无外部 deep link 后才能 sunset；diagnostic 不等于删除，只是从全局工作区目录下沉到区内切换器。
 
 ## 6. Today 与统一工作队列
 

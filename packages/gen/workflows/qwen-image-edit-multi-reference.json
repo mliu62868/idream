@@ -6,7 +6,8 @@
     "id": "8bf807d5-cfc7-4fb2-90d6-774b983df93c",
     "name": "iDream · Qwen Image Edit · Identity + Source"
   },
-  "version": 1,
+  "version": 2,
+  "negativePromptMode": "positive_instruction",
   "capabilities": [
     "img2img",
     "edit",
@@ -35,14 +36,17 @@
   },
   "apiPrompt": {
     "1": {
-      "class_type": "CheckpointLoaderKJ",
+      "class_type": "IDreamCheckpointModelVaeLoader",
       "inputs": {
         "ckpt_name": "Qwen-Rapid-AIO-NSFW-v19.safetensors",
         "weight_dtype": "fp8_e4m3fn",
-        "compute_dtype": "default",
-        "patch_cublaslinear": false,
-        "sage_attention": "disabled",
-        "enable_fp16_accumulation": false
+        "compute_dtype": "default"
+      }
+    },
+    "1:clip": {
+      "class_type": "IDreamFreshCheckpointCLIPLoader",
+      "inputs": {
+        "ckpt_name": "Qwen-Rapid-AIO-NSFW-v19.safetensors"
       }
     },
     "2": {
@@ -53,7 +57,7 @@
           0
         ],
         "positive": [
-          "3",
+          "900:0",
           0
         ],
         "negative": [
@@ -76,12 +80,12 @@
       "class_type": "TextEncodeQwenImageEditPlus",
       "inputs": {
         "clip": [
-          "1",
-          1
+          "1:clip",
+          0
         ],
         "vae": [
           "1",
-          2
+          1
         ],
         "image1": [
           "8",
@@ -98,8 +102,8 @@
       "class_type": "TextEncodeQwenImageEditPlus",
       "inputs": {
         "clip": [
-          "1",
-          1
+          "1:clip",
+          0
         ],
         "prompt": ""
       }
@@ -127,7 +131,7 @@
         ],
         "vae": [
           "1",
-          2
+          1
         ]
       }
     },
@@ -145,6 +149,23 @@
       "class_type": "LoadImage",
       "inputs": {
         "image": ""
+      }
+    },
+    "900:0": {
+      "class_type": "IDreamUnloadOffDeviceModels",
+      "inputs": {
+        "passthrough": [
+          "3",
+          0
+        ],
+        "after": [
+          "4",
+          0
+        ],
+        "release": [
+          "1:clip",
+          0
+        ]
       }
     }
   },

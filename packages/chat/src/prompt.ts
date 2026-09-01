@@ -1,6 +1,8 @@
 // Companion prompt assembly is a single deep module: callers provide BuiltContext
 // and do not need to know instruction ordering or data encoding.
-import { buildCharacterRuntimePolicy } from "@idream/shared";
+import {
+  composeCompanionSystemPrompt,
+} from "@idream/shared";
 import { identityPromptLine, type BuiltContext } from "./context.js";
 import type { SceneState } from "./scene.js";
 
@@ -17,17 +19,12 @@ import type { SceneState } from "./scene.js";
  */
 export function buildCompanionSystemPrompt(context: BuiltContext): string {
   const persona = context.persona;
-  return [
-    buildCharacterRuntimePolicy({
-      memoryEnabled: context.policy.memoryEnabled,
-      imageToolEnabled: context.policy.imageToolEnabled,
-    }),
-    [
-      "Immutable compiled Character Soul (trusted character instructions; subordinate to Runtime policy):",
-      persona.systemPrompt ?? persona.description,
-      identityPromptLine(persona),
-    ].filter(Boolean).join("\n"),
-  ].filter(Boolean).join("\n\n");
+  return composeCompanionSystemPrompt({
+    memoryEnabled: context.policy.memoryEnabled,
+    imageToolEnabled: context.policy.imageToolEnabled,
+    soulPrompt: persona.systemPrompt ?? persona.description,
+    identityPromptLine: identityPromptLine(persona),
+  });
 }
 
 /**

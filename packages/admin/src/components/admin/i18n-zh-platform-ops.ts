@@ -287,7 +287,6 @@ export const adminZhPlatformOps: Record<string, string> = {
   "Creating matrix…": "正在创建矩阵…",
   "Creating route test…": "正在创建线路测试…",
   "Current draft summary": "当前草稿摘要",
-  "Daily": "常用",
   "Dead-letter Queue": "死信队列",
   "Dead-letter Queue scrollable table": "死信队列可滚动表格",
   "Dead-letter authority refresh failed:": "死信权威刷新失败：",

@@ -934,7 +934,7 @@ async function seedAdminControlPlane() {
           textEncoderPath: REDMIX3_TEXT_ENCODER_PATH,
           vaePath: REDMIX3_VAE_PATH,
           workflowPath: REDMIX3_WORKFLOW_PATH,
-          workflowVersion: 1,
+          workflowVersion: 2,
           apiModelId: "redcraft-krea2-redmix3-fp8",
           precisionPolicy: "fp8_resident_bf16_transient_mps",
           capabilities: {
@@ -958,7 +958,7 @@ async function seedAdminControlPlane() {
         concurrencyLimit: 1,
         enabled: true,
         rolloutPercent: 100,
-        version: 1,
+        version: 2,
         status: "active",
         dryRunSummary: {
           status: "runtime_verified_mps",
@@ -992,7 +992,7 @@ async function seedAdminControlPlane() {
           textEncoderPath: REDMIX3_TEXT_ENCODER_PATH,
           vaePath: REDMIX3_VAE_PATH,
           workflowPath: REDMIX3_WORKFLOW_PATH,
-          workflowVersion: 1,
+          workflowVersion: 2,
           apiModelId: "redcraft-krea2-redmix3-fp8",
           precisionPolicy: "fp8_resident_bf16_transient_mps",
           capabilities: {
@@ -1016,7 +1016,7 @@ async function seedAdminControlPlane() {
         concurrencyLimit: 1,
         enabled: true,
         rolloutPercent: 100,
-        version: 1,
+        version: 2,
         status: "active",
         dryRunSummary: {
           status: "runtime_verified_mps",
@@ -1051,7 +1051,7 @@ async function seedAdminControlPlane() {
           vaePath: REDMIX3_VAE_PATH,
           identityLoraPath: REDMIX3_IDENTITY_LORA_PATH,
           workflowPath: REDMIX3_IDENTITY_WORKFLOW_PATH,
-          workflowVersion: 4,
+          workflowVersion: 5,
           apiModelId: "redcraft-krea2-identity-edit",
           precisionPolicy: "fp8_resident_bf16_transient_mps",
           templateIntent: "single_face_reference_identity_restaging",
@@ -1089,7 +1089,7 @@ async function seedAdminControlPlane() {
         concurrencyLimit: 1,
         enabled: true,
         rolloutPercent: 100,
-        version: 4,
+        version: 5,
         status: "active",
         dryRunSummary: {
           status: "runtime_smoke_passed_reference_limited",
@@ -1116,6 +1116,7 @@ async function seedAdminControlPlane() {
       convertedModelPath: null,
       modelFormat: "safetensors",
       runnerConfig: {
+        workflowVersion: 2,
         capabilities: {
           textToImage: false,
           stableSeed: true,
@@ -1136,7 +1137,7 @@ async function seedAdminControlPlane() {
       concurrencyLimit: 1,
       enabled: true,
       rolloutPercent: 100,
-      version: 1,
+      version: 2,
       status: "active",
       dryRunSummary: { status: "not_run", source: "seed_configuration_state", notes: "Qwen-Edit img2img profile for chat edit_last_image; landing without a provider test batch." },
       publishedAt: new Date("2026-07-07T00:00:00.000Z"),
@@ -1153,6 +1154,7 @@ async function seedAdminControlPlane() {
       convertedModelPath: null,
       modelFormat: "safetensors",
       runnerConfig: {
+        workflowVersion: 2,
         capabilities: {
           textToImage: false,
           stableSeed: true,
@@ -1173,7 +1175,7 @@ async function seedAdminControlPlane() {
       concurrencyLimit: 1,
       enabled: true,
       rolloutPercent: 100,
-      version: 1,
+      version: 2,
       status: "active",
       dryRunSummary: { status: "not_run", source: "seed_configuration_state", notes: "Qwen-Edit img2img profile for chat edit_last_image; landing without a provider test batch." },
       publishedAt: new Date("2026-07-07T00:00:00.000Z"),
@@ -1195,6 +1197,7 @@ async function seedAdminControlPlane() {
         convertedModelPath: null,
         modelFormat: "safetensors",
         runnerConfig: {
+          workflowVersion: 2,
           capabilities: {
             textToImage: false,
             stableSeed: true,
@@ -1216,7 +1219,7 @@ async function seedAdminControlPlane() {
         concurrencyLimit: 1,
         enabled: true,
         rolloutPercent: 100,
-        version: 1,
+        version: 2,
         status: "active",
         dryRunSummary: {
           status: "configuration_validated",
@@ -1238,6 +1241,7 @@ async function seedAdminControlPlane() {
         convertedModelPath: null,
         modelFormat: "safetensors",
         runnerConfig: {
+          workflowVersion: 2,
           capabilities: {
             textToImage: false,
             stableSeed: true,
@@ -1259,7 +1263,7 @@ async function seedAdminControlPlane() {
         concurrencyLimit: 1,
         enabled: true,
         rolloutPercent: 100,
-        version: 1,
+        version: 2,
         status: "active",
         dryRunSummary: {
           status: "configuration_validated",
@@ -1286,6 +1290,7 @@ async function seedAdminControlPlane() {
         convertedModelPath: null,
         modelFormat: "safetensors",
         runnerConfig: {
+          workflowVersion: 2,
           capabilities: {
             textToImage: false,
             stableSeed: true,
@@ -1307,7 +1312,7 @@ async function seedAdminControlPlane() {
         concurrencyLimit: 1,
         enabled: true,
         rolloutPercent: 100,
-        version: 1,
+        version: 2,
         status: "active",
         dryRunSummary: {
           status: "configuration_validated",
@@ -1329,6 +1334,7 @@ async function seedAdminControlPlane() {
         convertedModelPath: null,
         modelFormat: "safetensors",
         runnerConfig: {
+          workflowVersion: 2,
           capabilities: {
             textToImage: false,
             stableSeed: true,
@@ -1350,7 +1356,7 @@ async function seedAdminControlPlane() {
         concurrencyLimit: 1,
         enabled: true,
         rolloutPercent: 100,
-        version: 1,
+        version: 2,
         status: "active",
         dryRunSummary: {
           status: "configuration_validated",

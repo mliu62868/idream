@@ -1,6 +1,10 @@
 import type { Prisma } from "@prisma/client";
 import { parseCharacterReleaseAssetManifest } from "@idream/shared/admin";
-import { loadCharacterSoulSnapshot } from "@idream/shared";
+import {
+  companionProductContractCanary,
+  COMPANION_PRODUCT_PROMPT_VERSION,
+  loadCharacterSoulSnapshot,
+} from "@idream/shared";
 import { env } from "@/server/lib/env";
 import {
   evaluateMediaAssetCustomerPublishability,
@@ -48,6 +52,7 @@ export const releaseCheckKeys = [
   "revision_is_immutable_and_pinned",
   "soul_snapshot_valid",
   "soul_release_policy",
+  "companion_product_contract",
   "opening_complete",
   "visual_identity_exact_version",
   "reference_set_published_snapshot",
@@ -90,6 +95,7 @@ const RELEASE_PROPOSAL_BLOCKER_CODES = {
   revision_is_immutable_and_pinned: () => "revision_missing",
   soul_snapshot_valid: null,
   soul_release_policy: null,
+  companion_product_contract: null,
   opening_complete: null,
   visual_identity_exact_version: (evidence) =>
     evidence.immutableHash === null
@@ -592,6 +598,11 @@ export async function evaluateCharacterReleaseSnapshot(
   const soulResult = content
     ? loadCharacterSoulSnapshot(content.personaSnapshot)
     : null;
+  const companionCanary = soulResult?.ok
+    ? companionProductContractCanary({
+        soulPrompt: soulResult.snapshot.compiled.systemPrompt,
+      })
+    : null;
   const storedSoulSchemaVersion =
     content?.personaSnapshot &&
     typeof content.personaSnapshot === "object" &&
@@ -669,6 +680,26 @@ export async function evaluateCharacterReleaseSnapshot(
               .filter((item) => item.severity === "warning")
               .map((item) => item.code)
           : [],
+      },
+    },
+    {
+      key: "companion_product_contract",
+      passed: companionCanary?.passed === true,
+      evidence: {
+        characterContentVersionId: release.characterContentVersionId,
+        soulFingerprint: soulResult?.ok
+          ? soulResult.snapshot.compiled.fingerprint
+          : null,
+        compilerVersion: soulResult?.ok
+          ? soulResult.snapshot.compiled.compilerVersion
+          : null,
+        productPromptVersion: COMPANION_PRODUCT_PROMPT_VERSION,
+        canaryPromptDigest: companionCanary
+          ? canonicalSha256(companionCanary.systemPrompt)
+          : null,
+        actionName: companionCanary?.actionName ?? null,
+        imagePromptAuthority: companionCanary?.imagePromptAuthority ?? null,
+        executionMode: companionCanary?.executionMode ?? null,
       },
     },
     {

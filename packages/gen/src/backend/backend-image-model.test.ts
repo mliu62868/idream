@@ -54,6 +54,13 @@ const noLookDescriptor = workflowDescriptorSchema.parse({
   ],
 });
 
+const positiveInstructionDescriptor = workflowDescriptorSchema.parse({
+  ...descriptor,
+  workflowKey: "cfg-one-t2i",
+  modelId: "cfg-one-model",
+  negativePromptMode: "positive_instruction",
+});
+
 // Main pins workflowKey@workflowVersion into controls on every dispatched
 // attempt, and the worker now fails closed without it (registry.validateWorkflowPin).
 // Tests that are about anything downstream of that check carry the matching pin.
@@ -104,6 +111,29 @@ function modelWithDescriptor(
 }
 
 describe("BackendImageModel", () => {
+  it("applies workflow-native negative prompt semantics before submission", async () => {
+    const backend = makeStubBackend();
+    const model = modelWithDescriptor(backend, positiveInstructionDescriptor);
+
+    const result = await model.generate({
+      prompt: "Editorial portrait.",
+      negativePrompt: "visible text, duplicate person",
+      count: 1,
+      model: "cfg-one-model",
+      controls: {
+        workflowKey: positiveInstructionDescriptor.workflowKey,
+        workflowVersion: positiveInstructionDescriptor.version,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(submittedSlots(backend)).toMatchObject({
+      prompt:
+        "Editorial portrait.\n\nAvoid in the result: visible text, duplicate person. Treat every item in that list as excluded content, not requested content.",
+      negative: "",
+    });
+  });
+
   it("prepares the selected ComfyUI runner inside the host lease before submit", async () => {
     const events: string[] = [];
     const stub = makeStubBackend({

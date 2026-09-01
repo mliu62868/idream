@@ -26,6 +26,18 @@
 
 Main 与 Chat 同时保存数据并不重复：Main 保存产品事实，Chat 只保存尚未判定的恢复输入或短期诊断事实。两者不能互相回填为另一类权威。
 
+### 2.1 Agent system prompt 权威
+
+Chat 只构造一条 system message，层级固定：
+
+1. Shared 中版本化的 `COMPANION_PRODUCT_AGENT_PROMPT`：所有角色共同的陪伴目标、直接性、主动性和动作一致性。
+2. `buildCompanionRuntimeAuthority`：当前 Turn 的 memory、tool、事实与输出约束。
+3. immutable compiled Character Soul：角色身份、声音和角色特有互动方式。
+
+opening、历史 Turn、memory recall、Scene 与时间是可变事实，作为紧邻当前用户消息的 replay/plugin messages 输入；不得复制进 system prompt。`PreparedTurn.trace` 固定 Product Contract 版本、最终 system prompt SHA-256 与 Soul fingerprint，三者原样进入 Main 终态证据。
+
+Product Contract 决定「这是怎样的陪伴产品」，Soul 决定「此刻由谁、用什么声音表达」。Soul 不能覆盖 Product Contract 或 Runtime Authority，Runtime 也不能重写 Soul 的角色事实。
+
 ## 3. Turn 热路径
 
 ```text
@@ -94,7 +106,14 @@ DSH tool_call
   -> Chat observes tool result and continues DSH
 ```
 
-幂等键由 `turnId + attempt + toolCallId` 决定；参数 digest 不同则冲突。当前 Chat 工具只有图片生成与编辑，因此实现只覆盖 image。将来真实 video tool 出现时复用同一端口和既有 Generation 生命周期，不增加通用 hook 框架。
+ToolEffect 明确携带作用域，不能把调用语义编码进模型生成的 `callId`。普通模型 tool call 使用 `effectScope=attempt`，幂等键由 `turnId + attempt + toolCallId` 决定，参数 digest 不同则冲突。`PreparedTurn.requiredAction` 表示产品已经接受的明确用户图片意图，使用 `effectScope=turn_action`，效果身份仅由 `turnId + tool name` 决定：regenerate 即使让 Agent 写出不同的具体场景，也只把首次接受的同一附件重绑到当前 attempt，不创建第二个 Generation Job、不改写已经持久化的生成控制，也不重复扣费。`intent.requestedNudity` 是独立的结构化用户边界，由 Main 编译进最终生图 prompt；Agent 负责具体场景，不负责重建或猜测这条边界。当前 Chat 工具只有图片生成与编辑，因此实现只覆盖 image。将来真实 video tool 出现时复用同一端口和既有 Generation 生命周期，不增加通用 hook 框架。
+
+明确图片意图在模型运行前由 `PreparedTurn` 固化并预留一次 Main ToolEffect。Main 接受动作后，Chat 不再运行 DSH/Caption 模型，而是按当前消息脚本和签名 locale 直接提交版本化的确定性确认文案：
+
+- 确认文案一次性进入 SSE 和 Main terminal，不能被 Character Soul 改写成拒绝、交换条件或拖延；
+- 附件状态独立拥有 `requesting/accepted/queued/running/completed/failed` 交付事实，文案不虚构图片已完成；
+- Main ACK 不确定时，Chat 使用完全相同的 effect identity 有界重试并对账；
+- terminal evidence 记录 Product Contract、PreparedTurn、system prompt digest、Soul fingerprint，以及 required action 的 call/attachment/job/media id 和确认语言；不能用 DSH 的 `toolCalls=0` 冒充没有产品动作。
 
 ## 6. API
 

@@ -61,7 +61,7 @@ function validGenerationInput() {
     model: "redgraft-ltx25-i2v",
     controls: {
       workflowKey: "redgraft-ltx25-i2v",
-      workflowVersion: 1,
+      workflowVersion: 2,
       width: 768,
       height: 1152,
     },
@@ -136,7 +136,7 @@ describe("BackendVideoModel", () => {
       requestId: "request-video-1",
       controls: {
         workflowKey: "redgraft-ltx25-i2v",
-        workflowVersion: 1,
+        workflowVersion: 2,
         width: 768,
         height: 1152,
       },
@@ -162,8 +162,9 @@ describe("BackendVideoModel", () => {
         requestId: "request-video-1",
         referenceImages,
         slots: {
-          prompt: "She smiles, blinks, and waves naturally.",
-          negative: "flicker, identity drift",
+          prompt:
+            "She smiles, blinks, and waves naturally.\n\nAvoid in the result: flicker, identity drift. Treat every item in that list as excluded content, not requested content.",
+          negative: "",
           width: 768,
           height: 1152,
           seconds: 5,
@@ -195,13 +196,14 @@ describe("BackendVideoModel", () => {
 
     const result = await model.generate({
       prompt: "She smiles and moves naturally.",
+      negativePrompt: "visible text, duplicate person",
       seconds: 5,
       seed: "42",
       model: "minimax-h3-redcraft-i2v",
       requestId: "request-h3-video-1",
       controls: {
         workflowKey: "minimax-h3-redcraft-i2v",
-        workflowVersion: 3,
+        workflowVersion: 4,
         width: 512,
         height: 512,
         fps: 24,
@@ -226,7 +228,8 @@ describe("BackendVideoModel", () => {
       expect.objectContaining({
         descriptor: h3Descriptor,
         slots: expect.objectContaining({
-          prompt: "She smiles and moves naturally.",
+          prompt:
+            "She smiles and moves naturally.\n\nAvoid in the result: visible text, duplicate person. Treat every item in that list as excluded content, not requested content.",
           width: 512,
           height: 512,
           fps: 24,
@@ -263,7 +266,7 @@ describe("BackendVideoModel", () => {
       requestId: "request-redgraft-video-1",
       controls: {
         workflowKey: "redgraft-ltx25-i2v",
-        workflowVersion: 1,
+        workflowVersion: 2,
         width: 768,
         height: 1152,
         fps: 24,
@@ -289,8 +292,9 @@ describe("BackendVideoModel", () => {
         descriptor: redgraftDescriptor,
         requestId: "request-redgraft-video-1",
         slots: {
-          prompt: "She smiles, speaks, and waves naturally.",
-          negative: "flicker, identity drift",
+          prompt:
+            "She smiles, speaks, and waves naturally.\n\nAvoid in the result: flicker, identity drift. Treat every item in that list as excluded content, not requested content.",
+          negative: "",
           width: 768,
           height: 1152,
           seconds: 5,
@@ -325,7 +329,7 @@ describe("BackendVideoModel", () => {
       model: "minimax-h3-redcraft-i2v",
       controls: {
         workflowKey: "minimax-h3-redcraft-i2v",
-        workflowVersion: 3,
+        workflowVersion: 4,
         width: 512,
         height: 512,
       },
@@ -468,7 +472,7 @@ describe("BackendVideoModel", () => {
       model: "redgraft-ltx25-i2v",
       controls: {
         workflowKey: "redgraft-ltx25-i2v",
-        workflowVersion: 2,
+        workflowVersion: 1,
       },
       referenceImages: [{
         assetId: "source-1",
@@ -509,6 +513,32 @@ describe("BackendVideoModel", () => {
     expect(stub.submit).not.toHaveBeenCalled();
   });
 
+  it("rejects a production graph with a memory-barrier dependency cycle", async () => {
+    const stub = backend();
+    const tampered = structuredClone(descriptor);
+    if (tampered.backendKind !== "comfyui") throw new Error("expected comfyui");
+    const barrier = tampered.apiPrompt["900:3"];
+    if (!barrier || typeof barrier.inputs !== "object" || !barrier.inputs) {
+      throw new Error("expected production memory barrier");
+    }
+    barrier.inputs.passthrough = ["320:283", 0];
+    const model = new BackendVideoModel({
+      resolveForModel: vi.fn(() => ({ backend: stub, descriptor: tampered })),
+    });
+
+    const result = await model.generate(validGenerationInput());
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "unsupported_video_workflow",
+        message: expect.stringContaining("dependency cycle"),
+        retryable: false,
+      },
+    });
+    expect(stub.submit).not.toHaveBeenCalled();
+  });
+
   it("rejects a descriptor whose seconds slot was rebound", async () => {
     const stub = backend();
     const tampered = workflowDescriptorSchema.parse({
@@ -544,7 +574,7 @@ describe("BackendVideoModel", () => {
       model: "redgraft-ltx25-i2v",
       controls: {
         workflowKey: "redgraft-ltx25-i2v",
-        workflowVersion: 1,
+        workflowVersion: 2,
       },
       referenceImages: [{
         assetId: "source-1",
@@ -592,7 +622,7 @@ describe("BackendVideoModel", () => {
       model: "redgraft-ltx25-i2v",
       controls: {
         workflowKey: "redgraft-ltx25-i2v",
-        workflowVersion: 1,
+        workflowVersion: 2,
         width: 1024,
         height: 1152,
       },
@@ -620,7 +650,7 @@ describe("BackendVideoModel", () => {
       model: "other-video-model",
       controls: {
         workflowKey: "redgraft-ltx25-i2v",
-        workflowVersion: 1,
+        workflowVersion: 2,
         width: 768,
         height: 1152,
       },

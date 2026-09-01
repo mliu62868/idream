@@ -6,7 +6,8 @@
     "id": "abea5b3f-6ba1-4bbd-86b0-95e0261a7ee1",
     "name": "iDream · RedCraft Krea2 RedMix3 · Text to Image"
   },
-  "version": 1,
+  "version": 2,
+  "negativePromptMode": "positive_instruction",
   "capabilities": [
     "textToImage",
     "stableSeed"
@@ -34,7 +35,7 @@
       }
     },
     "2": {
-      "class_type": "CLIPLoader",
+      "class_type": "IDreamFreshCLIPLoader",
       "inputs": {
         "clip_name": "qwen3vl_4b_bf16.safetensors",
         "type": "krea2"
@@ -82,7 +83,7 @@
           0
         ],
         "positive": [
-          "4",
+          "900:0",
           0
         ],
         "negative": [
@@ -122,6 +123,23 @@
           0
         ],
         "filename_prefix": "idream_redmix3"
+      }
+    },
+    "900:0": {
+      "class_type": "IDreamUnloadOffDeviceModels",
+      "inputs": {
+        "passthrough": [
+          "4",
+          0
+        ],
+        "after": [
+          "5",
+          0
+        ],
+        "release": [
+          "2",
+          0
+        ]
       }
     }
   },

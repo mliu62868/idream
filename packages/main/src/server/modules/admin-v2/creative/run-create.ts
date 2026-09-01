@@ -536,6 +536,14 @@ export async function createCreativeRun(
   // bootstrap image must remain a true no-reference/no-profile definition.
   const generationVisualProfile =
     body.bootstrapIdentity || identityExperimentRun ? null : visualProfile;
+  const effectiveNegativePrompt = productionNegativePrompt(
+    recipe.negativeBase,
+    identityExperimentRun
+      ? body.identityExperiment?.negativePrompt
+      : generationVisualProfile?.negativeIdentityPrompt,
+    body.purpose,
+    body.negativePrompt,
+  );
   const canonicalReferenceManifest = activeReferenceSet
     ? activeReferenceSet.references.map((reference) => ({
         mediaAssetId: reference.mediaAssetId,
@@ -1161,13 +1169,7 @@ export async function createCreativeRun(
           referenceManifest: referenceManifest.length > 0 ? toInputJson(referenceManifest) : undefined,
           mode: productionMode,
           prompt,
-          negativePrompt: productionNegativePrompt(
-            recipe.negativeBase,
-            identityExperimentRun
-              ? body.identityExperiment?.negativePrompt
-              : generationVisualProfile?.negativeIdentityPrompt,
-            body.purpose,
-          ),
+          negativePrompt: effectiveNegativePrompt,
           controls: toInputJson(controls),
           presetIds: toInputJson(body.presetIds),
           model: workflowKey,

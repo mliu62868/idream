@@ -19,7 +19,7 @@ import {
   type CompanionRuntimePort,
 } from "./engine.js";
 import {
-  IgrepMemoryRebuilder,
+  IgrepMemoryBuilder,
   igrepVersion,
   loadIgrepPlugin,
 } from "./igrep.js";
@@ -69,14 +69,15 @@ function createRuntime(): AgentRuntime {
     instance,
     workspaces,
     plugin: async () => (await plugin).module,
-    adapter: (profile) => new OpenAiCompatibleAdapter({
+    adapter: (profile, requiredToolName) => new OpenAiCompatibleAdapter({
       profile,
       apiKey: config.modelProfile.apiKey,
       openRouterProviderOnly: config.openRouterProviderOnly,
+      ...(requiredToolName ? { requiredToolName } : {}),
     }),
     igrepCommand: config.igrepCommand,
     igrepLlm: config.igrepLlm,
-    rebuilder: new IgrepMemoryRebuilder(config.igrepCommand),
+    memoryBuilder: new IgrepMemoryBuilder(config.igrepCommand),
     maxSteps: config.maxSteps,
     maxConcurrentAgents: config.maxConcurrentAgents,
   });

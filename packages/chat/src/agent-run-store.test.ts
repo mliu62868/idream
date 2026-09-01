@@ -40,6 +40,7 @@ describe("AgentRun local authority", () => {
         memoryEnabled: true,
         contextRevision: 0,
         userContent: "hello",
+        hasRecentImageContext: false,
         recentTurns: [],
         sceneVersion: 0,
         scene: null,
@@ -78,7 +79,15 @@ describe("AgentRun local authority", () => {
         completionTokens: 3,
         sceneVersion: 0,
         scene: null,
-        terminalEvidence: { authority: "test" },
+        terminalEvidence: {
+          authority: "test",
+          prompt: {
+            productPromptVersion: "companion-product-1",
+            preparedTurnVersion: 4,
+            systemPromptDigest: "a".repeat(64),
+            soulFingerprint: "b".repeat(64),
+          },
+        },
       },
     };
     await store.writeAgentRunProposal("turn-1", 1, proposal);
@@ -142,6 +151,7 @@ describe("AgentRun local authority", () => {
         memoryEnabled: false,
         contextRevision: 0,
         userContent: "first",
+        hasRecentImageContext: false,
         recentTurns: [],
         sceneVersion: 0,
         scene: null,
@@ -187,6 +197,7 @@ describe("AgentRun local authority", () => {
         memoryEnabled: true,
         contextRevision: 0,
         userContent: "again",
+        hasRecentImageContext: false,
         recentTurns: [],
         sceneVersion: 1,
         scene: { version: 1 },

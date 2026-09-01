@@ -6,7 +6,10 @@ import type {
 } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
-import { mediaAssetPlatformStatus } from "@/server/lib/media-asset-authority";
+import {
+  inspectOperatorUploadAuthority,
+  mediaAssetPlatformStatus,
+} from "@/server/lib/media-asset-authority";
 import {
   assertMediaAssetCustomerPublishable,
   resolveMediaAssetAuthorityMap,
@@ -304,8 +307,24 @@ async function assertApprovedAsset(
   const platformStatus = item?.mediaAsset
     ? mediaAssetPlatformStatus(item.mediaAsset.metadata)
     : null;
+  if (!item?.mediaAsset) {
+    const uploadedAsset = await db.mediaAsset.findFirst({
+      where: operationalMediaAssetWhere({ id: mediaAssetId, deletedAt: null }),
+    });
+    const uploadAuthority = uploadedAsset
+      ? inspectOperatorUploadAuthority(uploadedAsset)
+      : null;
+    if (
+      !uploadedAsset ||
+      mediaAssetPlatformStatus(uploadedAsset.metadata) !== "approved" ||
+      uploadAuthority?.publishable !== true
+    ) {
+      throw Errors.badRequest("Only approved content assets can be placed");
+    }
+    await assertMediaAssetCustomerPublishable(db, uploadedAsset);
+    return;
+  }
   if (
-    !item?.mediaAsset ||
     (typeof platformStatus === "string" && ["archived", "rejected"].includes(platformStatus)) ||
     !latestDecision ||
     latestDecision.artifactId !== mediaAssetId ||

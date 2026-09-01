@@ -6,15 +6,18 @@ import { prisma } from "@/server/lib/db";
 const providerState = vi.hoisted(() => ({
   providerKey: "fish_audio",
   cloneCalls: 0,
+  presetCalls: 0,
   synthesizeCalls: 0,
   failSynthesizeCall: null as number | null,
   deletedVoiceIds: [] as string[],
   referenceTexts: [] as string[],
   storedKeys: [] as string[],
   inspectOk: true,
+  persistedPreviewOk: true,
   voiceCloning: true,
   runtime: "mlx_audio",
   runtimeVersion: "mlx-audio-test",
+  catalogVoices: [] as string[],
 }));
 
 vi.mock("@/server/providers", () => ({
@@ -48,9 +51,28 @@ vi.mock("@/server/providers", () => ({
             },
           };
         },
+        async createPresetVoice(input: {
+          voiceId: string;
+          presetVoiceId: string;
+          language: string;
+        }) {
+          providerState.presetCalls += 1;
+          return {
+            ok: true as const,
+            data: {
+              voiceId: input.voiceId,
+              presetVoiceId: input.presetVoiceId,
+              model: "pocket-tts",
+              language: input.language,
+            },
+          };
+        },
         async previewVoice() {
           providerState.synthesizeCalls += 1;
-          if (providerState.synthesizeCalls === providerState.failSynthesizeCall) {
+          if (
+            !providerState.persistedPreviewOk ||
+            providerState.synthesizeCalls === providerState.failSynthesizeCall
+          ) {
             return {
               ok: false as const,
               error: {
@@ -81,7 +103,9 @@ vi.mock("@/server/providers", () => ({
                   voiceCloning: providerState.voiceCloning,
                   runtime: providerState.runtime,
                   runtimeVersion: providerState.runtimeVersion,
-                  acceleration: "mlx",
+                  acceleration:
+                    providerState.providerKey === "pocket_tts" ? "cpu" : "mlx",
+                  catalogVoices: providerState.catalogVoices,
                 },
               }
             : {
@@ -113,15 +137,84 @@ vi.mock("@/server/providers", () => ({
   },
 }));
 
+vi.mock("@/server/providers/voice/factory", () => ({
+  createVoicePortsForKey(providerKey: "fish_audio" | "pocket_tts") {
+    return {
+      clip: {
+        providerKey,
+        async synthesize() {
+          throw new Error("Voice Clip is outside this Voice Identity test");
+        },
+      },
+      identity: {
+        providerKey,
+        async cloneVoice() {
+          throw new Error("Clone is outside persisted-candidate activation");
+        },
+        async previewVoice() {
+          providerState.synthesizeCalls += 1;
+          if (!providerState.persistedPreviewOk) {
+            return {
+              ok: false as const,
+              error: {
+                code: "preview_failed",
+                message: "Persisted candidate voice is unavailable",
+                retryable: true,
+              },
+            };
+          }
+          return {
+            ok: true as const,
+            data: {
+              body: new Uint8Array([82, 73, 70, 70]),
+              contentType: "audio/wav" as const,
+              durationMs: 1_500,
+            },
+          };
+        },
+        async deleteVoice() {
+          return { ok: true as const, data: { deleted: true as const } };
+        },
+        async inspectCapabilities() {
+          if (!providerState.inspectOk) {
+            return {
+              ok: false as const,
+              error: {
+                code: "voice_runtime_unavailable",
+                message: "Synthetic runtime outage",
+                retryable: true,
+              },
+            };
+          }
+          return {
+            ok: true as const,
+            data: {
+              voiceCloning: providerState.voiceCloning,
+              runtime: providerKey === "pocket_tts" ? "pocket_tts" : "mlx_audio",
+              runtimeVersion: providerState.runtimeVersion,
+              acceleration: providerKey === "pocket_tts" ? "cpu" : "mlx",
+              catalogVoices:
+                providerKey === "pocket_tts"
+                  ? providerState.catalogVoices
+                  : [],
+            },
+          };
+        },
+      },
+    };
+  },
+}));
+
 import {
   activateCharacterVoiceProfile,
   createCharacterVoiceClone,
+  createCharacterVoicePreset,
   inspectConfiguredVoiceIdentityRuntime,
   parseVoiceCloneForm,
   resetCharacterVoiceToSystemDefault,
 } from "./voice-identity";
 
-describe("Character Fish Audio voice clone authority", () => {
+describe("Character voice identity authority", () => {
   const suffix = randomUUID();
   const actorId = `voice-admin-${suffix}`;
   const characterId = `voice-character-${suffix}`;
@@ -200,6 +293,134 @@ describe("Character Fish Audio voice clone authority", () => {
     providerState.inspectOk = true;
   });
 
+  it("creates and activates a Pocket catalog candidate without cloning weights", async () => {
+    providerState.providerKey = "pocket_tts";
+    providerState.inspectOk = true;
+    providerState.voiceCloning = false;
+    providerState.runtime = "pocket_tts";
+    providerState.runtimeVersion = "3.0.2";
+    providerState.catalogVoices = ["alba", "anna"];
+    providerState.presetCalls = 0;
+    providerState.synthesizeCalls = 0;
+    providerState.deletedVoiceIds = [];
+
+    try {
+      await expect(inspectConfiguredVoiceIdentityRuntime()).resolves.toEqual({
+        provider: "pocket_tts",
+        cloningAvailable: false,
+        runtimeStatus: "ready",
+        runtimeEngine: "pocket_tts",
+        runtimeVersion: "3.0.2",
+        runtimeLanguage: expect.any(String),
+        catalogVoiceIds: ["alba", "anna"],
+      });
+
+      const candidate = await createCharacterVoicePreset({
+        characterId,
+        actor: { id: actorId, role: "admin" },
+        idempotencyKey: `voice-preset-${suffix}`,
+        requestId: `voice-preset-request-${suffix}`,
+        request: {
+          presetVoiceId: "anna",
+          sampleText: "Anna is the reviewed Pocket catalog voice.",
+          reason: "Assign a fast distinct voice to this role",
+        },
+      });
+      expect(providerState.presetCalls).toBe(1);
+      expect(candidate).toMatchObject({
+        replayed: false,
+        profile: {
+          provider: "pocket_tts",
+          status: "candidate",
+          language: "english",
+          reference: {
+            filename: "anna.pocket-voice",
+            contentType: "application/vnd.idream.pocket-tts-preset+json",
+            sizeBytes: expect.any(Number),
+            transcript: null,
+          },
+          preview: { durationMs: 1_500 },
+        },
+      });
+      expect(candidate.profile.reference.sizeBytes).toBeGreaterThan(0);
+      expect(candidate.profile.providerVoiceId).not.toBe("anna");
+
+      const [character, active] = await Promise.all([
+        prisma.character.findUniqueOrThrow({
+          where: { id: characterId },
+          select: { voiceId: true },
+        }),
+        prisma.characterVoiceProfile.findFirst({
+          where: { characterId, status: "active" },
+          select: { id: true },
+        }),
+      ]);
+      await expect(activateCharacterVoiceProfile({
+        characterId,
+        profileId: candidate.profile.id,
+        actor: { id: actorId, role: "admin" },
+        idempotencyKey: `voice-preset-activate-${suffix}`,
+        requestId: `voice-preset-activate-request-${suffix}`,
+        request: {
+          reason: "The Pocket catalog preview matches this character",
+          expectedActiveProfileId: active?.id ?? null,
+          expectedCurrentVoiceId: character.voiceId,
+        },
+      })).resolves.toMatchObject({
+        replayed: false,
+        profile: {
+          id: candidate.profile.id,
+          provider: "pocket_tts",
+          status: "active",
+        },
+      });
+      await expect(prisma.character.findUniqueOrThrow({
+        where: { id: characterId },
+        select: { voiceId: true },
+      })).resolves.toEqual({ voiceId: candidate.profile.providerVoiceId });
+    } finally {
+      const presetProfiles = await prisma.characterVoiceProfile.findMany({
+        where: { characterId, provider: "pocket_tts" },
+        select: { id: true, referenceAssetId: true, previewAssetId: true },
+      });
+      await prisma.character.update({
+        where: { id: characterId },
+        data: { voiceId: null },
+      });
+      await prisma.characterVoiceProfile.deleteMany({
+        where: { id: { in: presetProfiles.map((profile) => profile.id) } },
+      });
+      await prisma.mediaAsset.deleteMany({
+        where: {
+          id: {
+            in: presetProfiles.flatMap((profile) => [
+              profile.referenceAssetId,
+              ...(profile.previewAssetId ? [profile.previewAssetId] : []),
+            ]),
+          },
+        },
+      });
+      await prisma.adminAuditLog.deleteMany({
+        where: {
+          requestId: {
+            in: [
+              `voice-preset-request-${suffix}`,
+              `voice-preset-activate-request-${suffix}`,
+            ],
+          },
+        },
+      });
+      await prisma.mainOutboxEvent.deleteMany({
+        where: { aggregateType: "character", aggregateId: characterId },
+      });
+      providerState.providerKey = "fish_audio";
+      providerState.voiceCloning = true;
+      providerState.runtime = "mlx_audio";
+      providerState.runtimeVersion = "mlx-audio-test";
+      providerState.catalogVoices = [];
+    }
+  });
+
   it("rejects audio containers that the installed soundfile runtime cannot decode", async () => {
     const form = new FormData();
     form.set("language", "english");
@@ -219,12 +440,12 @@ describe("Character Fish Audio voice clone authority", () => {
     }))).rejects.toMatchObject({ status: 400 });
   });
 
-  it("parses the exact transcript required by the oMLX reference-audio contract", async () => {
+  it("parses the exact transcript stored with the reference-audio contract", async () => {
     const form = new FormData();
     form.set("language", "english");
     form.set("referenceText", "The rain in Spain stays mainly in the plain.");
     form.set("sampleText", "Preview this voice candidate.");
-    form.set("reason", "Verify the oMLX reference transcript");
+    form.set("reason", "Verify the reference transcript");
     form.set(
       "audio",
       new File([new Uint8Array(2_048)], "reference.wav", {
@@ -444,7 +665,7 @@ describe("Character Fish Audio voice clone authority", () => {
     })).status).toBe("candidate");
   });
 
-  it("refuses to activate a Fish candidate while another voice provider is active", async () => {
+  it("activates a persisted candidate even when the system provider changes", async () => {
     providerState.providerKey = "fish_audio";
     providerState.synthesizeCalls = 0;
     providerState.failSynthesizeCall = null;
@@ -453,7 +674,10 @@ describe("Character Fish Audio voice clone authority", () => {
       actor: { id: actorId, role: "admin" },
       idempotencyKey: `voice-clone-provider-switch-${suffix}`,
       requestId: `voice-request-provider-switch-${suffix}`,
-      form: cloneForm("provider-switch-reference.wav", "Provider switch preview."),
+      form: cloneForm(
+        "provider-switch-reference.wav",
+        "Provider switch preview.",
+      ),
     });
     const character = await prisma.character.findUniqueOrThrow({
       where: { id: characterId },
@@ -466,29 +690,157 @@ describe("Character Fish Audio voice clone authority", () => {
 
     providerState.providerKey = "pipeline";
     try {
-      await expect(activateCharacterVoiceProfile({
-        characterId,
-        profileId: candidate.profile.id,
-        actor: { id: actorId, role: "admin" },
-        idempotencyKey: `voice-activate-provider-switch-${suffix}`,
-        requestId: `voice-activate-request-provider-switch-${suffix}`,
-        request: {
-          reason: "This must not cross provider authority",
-          expectedActiveProfileId: active?.id ?? null,
-          expectedCurrentVoiceId: character.voiceId,
+      await expect(
+        activateCharacterVoiceProfile({
+          characterId,
+          profileId: candidate.profile.id,
+          actor: { id: actorId, role: "admin" },
+          idempotencyKey: `voice-activate-provider-switch-${suffix}`,
+          requestId: `voice-activate-request-provider-switch-${suffix}`,
+          request: {
+            reason: "This must not cross provider authority",
+            expectedActiveProfileId: active?.id ?? null,
+            expectedCurrentVoiceId: character.voiceId,
+          },
+        }),
+      ).resolves.toMatchObject({
+        replayed: false,
+        profile: {
+          id: candidate.profile.id,
+          provider: "fish_audio",
+          status: "active",
         },
-      })).rejects.toMatchObject({ status: 503 });
+      });
     } finally {
       providerState.providerKey = "fish_audio";
     }
-    expect((await prisma.character.findUniqueOrThrow({
+    expect(
+      (
+        await prisma.character.findUniqueOrThrow({
+          where: { id: characterId },
+          select: { voiceId: true },
+        })
+      ).voiceId,
+    ).toBe(candidate.profile.providerVoiceId);
+    expect(
+      (
+        await prisma.characterVoiceProfile.findUniqueOrThrow({
+          where: { id: candidate.profile.id },
+          select: { status: true },
+        })
+      ).status,
+    ).toBe("active");
+  });
+
+  it("rejects activation when the candidate provider is unavailable", async () => {
+    providerState.providerKey = "fish_audio";
+    providerState.inspectOk = true;
+    providerState.voiceCloning = true;
+    providerState.synthesizeCalls = 0;
+    providerState.failSynthesizeCall = null;
+    const candidate = await createCharacterVoiceClone({
+      characterId,
+      actor: { id: actorId, role: "admin" },
+      idempotencyKey: `voice-clone-unavailable-${suffix}`,
+      requestId: `voice-request-unavailable-${suffix}`,
+      form: cloneForm("unavailable-reference.wav", "Unavailable preview."),
+    });
+    const before = await prisma.character.findUniqueOrThrow({
       where: { id: characterId },
       select: { voiceId: true },
-    })).voiceId).toBe(character.voiceId);
-    expect((await prisma.characterVoiceProfile.findUniqueOrThrow({
-      where: { id: candidate.profile.id },
-      select: { status: true },
-    })).status).toBe("candidate");
+    });
+    const active = await prisma.characterVoiceProfile.findFirst({
+      where: { characterId, status: "active" },
+      select: { id: true },
+    });
+
+    providerState.inspectOk = false;
+    try {
+      await expect(
+        activateCharacterVoiceProfile({
+          characterId,
+          profileId: candidate.profile.id,
+          actor: { id: actorId, role: "admin" },
+          idempotencyKey: `voice-activate-unavailable-${suffix}`,
+          requestId: `voice-activate-request-unavailable-${suffix}`,
+          request: {
+            reason: "Unavailable providers must not become live authority",
+            expectedActiveProfileId: active?.id ?? null,
+            expectedCurrentVoiceId: before.voiceId,
+          },
+        }),
+      ).rejects.toMatchObject({ status: 503 });
+    } finally {
+      providerState.inspectOk = true;
+    }
+
+    await expect(
+      prisma.character.findUniqueOrThrow({
+        where: { id: characterId },
+        select: { voiceId: true },
+      }),
+    ).resolves.toEqual(before);
+    await expect(
+      prisma.characterVoiceProfile.findUniqueOrThrow({
+        where: { id: candidate.profile.id },
+        select: { status: true },
+      }),
+    ).resolves.toEqual({ status: "candidate" });
+  });
+
+  it("rejects activation when the exact persisted candidate voice cannot render", async () => {
+    providerState.providerKey = "fish_audio";
+    providerState.inspectOk = true;
+    providerState.voiceCloning = true;
+    providerState.persistedPreviewOk = true;
+    const candidate = await createCharacterVoiceClone({
+      characterId,
+      actor: { id: actorId, role: "admin" },
+      idempotencyKey: `voice-clone-broken-preview-${suffix}`,
+      requestId: `voice-request-broken-preview-${suffix}`,
+      form: cloneForm("broken-preview-reference.wav", "Broken preview candidate."),
+    });
+    const before = await prisma.character.findUniqueOrThrow({
+      where: { id: characterId },
+      select: { voiceId: true },
+    });
+    const active = await prisma.characterVoiceProfile.findFirst({
+      where: { characterId, status: "active" },
+      select: { id: true },
+    });
+
+    providerState.persistedPreviewOk = false;
+    try {
+      await expect(
+        activateCharacterVoiceProfile({
+          characterId,
+          profileId: candidate.profile.id,
+          actor: { id: actorId, role: "admin" },
+          idempotencyKey: `voice-activate-broken-preview-${suffix}`,
+          requestId: `voice-activate-request-broken-preview-${suffix}`,
+          request: {
+            reason: "The exact candidate voice must still render",
+            expectedActiveProfileId: active?.id ?? null,
+            expectedCurrentVoiceId: before.voiceId,
+          },
+        }),
+      ).rejects.toMatchObject({ status: 503 });
+    } finally {
+      providerState.persistedPreviewOk = true;
+    }
+
+    await expect(
+      prisma.character.findUniqueOrThrow({
+        where: { id: characterId },
+        select: { voiceId: true },
+      }),
+    ).resolves.toEqual(before);
+    await expect(
+      prisma.characterVoiceProfile.findUniqueOrThrow({
+        where: { id: candidate.profile.id },
+        select: { status: true },
+      }),
+    ).resolves.toEqual({ status: "candidate" });
   });
 
   it("returns an active character voice to inherited system authority idempotently", async () => {

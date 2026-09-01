@@ -1309,7 +1309,7 @@ describe("local AI service pipeline", () => {
           width: 512,
           height: 512,
           workflowKey: "minimax-h3-redcraft-i2v",
-          workflowVersion: 3,
+          workflowVersion: 4,
         }),
       });
       const jobId = created.data.job.id as string;
@@ -1330,7 +1330,7 @@ describe("local AI service pipeline", () => {
         controls: expect.objectContaining({
           profileId: "profile_video_h3_v1",
           workflowKey: "minimax-h3-redcraft-i2v",
-          workflowVersion: 3,
+          workflowVersion: 4,
         }),
       });
 
@@ -1354,9 +1354,9 @@ describe("local AI service pipeline", () => {
       expect(attempt).toMatchObject({
         provider: "comfyui",
         profileKey: "profile_video_h3_v1",
-        profileVersion: 3,
+        profileVersion: 4,
         workflowKey: "minimax-h3-redcraft-i2v",
-        workflowVersion: 3,
+        workflowVersion: 4,
         status: "succeeded",
         terminalRecordRef: expect.any(String),
       });

@@ -3,18 +3,14 @@
 import Link from "next/link";
 import {
   adminCommandStatusSchema,
-  creativeRunCreateRequestSchema,
-  creativeRunCreateResultSchema,
-  creativeRunCreateOptionsSchema,
   creativeRunDetailSchema,
   creativeRunListResponseSchema,
-  type CreativeRunCreateOptions,
   type CreativeRun,
   type CreativeRunDetail,
   type AdminCommandStatus,
   type AdminPageInfo,
 } from "@idream/shared/admin";
-import { ArrowLeft, Check, ImageIcon, Plus, RefreshCcw, RotateCcw, Send, ShieldAlert, X } from "lucide-react";
+import { ArrowLeft, Check, ImageIcon, RefreshCcw, RotateCcw, Send, ShieldAlert, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { AdminSubview } from "@/components/admin/nav-config";
 import { AdminText, useAdminI18n } from "@/components/admin/i18n";
@@ -33,14 +29,6 @@ import {
   usePollingTask,
   type PollingTask,
 } from "@/lib/authority-resource";
-import {
-  claimDurableMutationIntent,
-  clearDurableMutationIntent,
-  readActiveDurableMutationIntent,
-  updateDurableMutationIntent,
-  type DurableMutationIntent,
-} from "@/lib/durable-mutation-intent";
-import { reconcileDurableMutationIntent } from "@/lib/durable-mutation-recovery";
 import { cn } from "@/lib/utils";
 
 type Permissions = { read: boolean; write: boolean; review: boolean; place: boolean; manageIncident?: boolean };
@@ -263,481 +251,6 @@ function denied() {
   return <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-8"><ShieldAlert className="h-6 w-6" /><h2 className="mt-4 text-lg font-semibold"><AdminText text="No permission" /></h2><p className="mt-2 text-sm text-[var(--ad-text-muted)]"><AdminText text="creative.run.read is required for this workspace." /></p></section>;
 }
 
-function isGenericCreativePurpose(
-  value: string,
-): value is CreativeRunCreateOptions["purposes"][number]["value"] {
-  return [
-    "feed",
-    "homepage",
-    "seo",
-    "template_cover",
-    "campaign",
-  ].includes(value);
-}
-
-function CreateRunForm({
-  actorId,
-  enabled,
-}: {
-  actorId: string;
-  enabled: boolean;
-}) {
-  const { t } = useAdminI18n();
-  const createScope = `creative-run:create:${actorId}`;
-  const [createIntent, setCreateIntent] =
-    useState<DurableMutationIntent | null>(() =>
-      readActiveDurableMutationIntent({ scope: createScope })
-    );
-  const [recoveredCreateRequest] = useState(() => {
-    const parsed = creativeRunCreateRequestSchema.safeParse(
-      createIntent?.requestSnapshot,
-    );
-    return parsed.success ? parsed.data : null;
-  });
-  const [title, setTitle] = useState(
-    recoveredCreateRequest?.title ?? "",
-  );
-  const [purpose, setPurpose] = useState<CreativeRunCreateOptions["purposes"][number]["value"]>(
-    recoveredCreateRequest &&
-      isGenericCreativePurpose(recoveredCreateRequest.purpose)
-      ? recoveredCreateRequest.purpose
-      : "campaign",
-  );
-  const [profileId, setProfileId] = useState(
-    recoveredCreateRequest?.profileId ?? "",
-  );
-  const [orientation, setOrientation] = useState(
-    recoveredCreateRequest?.orientation ?? "",
-  );
-  const [count, setCount] = useState(
-    String(recoveredCreateRequest?.count ?? 4),
-  );
-  const [brief, setBrief] = useState(
-    recoveredCreateRequest?.brief ?? "",
-  );
-  const [options, setOptions] = useState<CreativeRunCreateOptions | null>(null);
-  const [loadingOptions, setLoadingOptions] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [recoveryNotice, setRecoveryNotice] = useState<string | null>(
-    null,
-  );
-  useEffect(() => {
-    if (!enabled) return;
-    let active = true;
-    const loadOptions = async () => {
-      setLoadingOptions(true);
-      setError(null);
-      try {
-        const next = await adminV2Request("/api/v2/admin/creative/run-options", {
-          schema: creativeRunCreateOptionsSchema,
-        });
-        if (!active) return;
-        setOptions(next);
-        const recommended = next.profiles.find((profile) => profile.recommended) ?? next.profiles[0];
-        if (recommended && !recoveredCreateRequest) {
-          setProfileId(recommended.profileKey);
-          const purposeOption = next.purposes.find((option) => option.value === "campaign");
-          setOrientation(
-            purposeOption && recommended.allowedOrientations.includes(purposeOption.defaultOrientation)
-              ? purposeOption.defaultOrientation
-              : recommended.allowedOrientations[0] ?? "",
-          );
-        }
-      } catch (cause) {
-        if (active) {
-          setError(cause instanceof Error ? cause.message : t("Creation options could not be loaded."));
-        }
-      } finally {
-        if (active) setLoadingOptions(false);
-      }
-    };
-    void loadOptions();
-    return () => {
-      active = false;
-    };
-  }, [enabled, recoveredCreateRequest, t]);
-  if (!enabled) return null;
-  const selectedProfile = options?.profiles.find((profile) => profile.profileKey === profileId) ?? null;
-  const selectedPurpose = options?.purposes.find((option) => option.value === purpose) ?? null;
-  const choosePurpose = (next: CreativeRunCreateOptions["purposes"][number]["value"]) => {
-    setPurpose(next);
-    const purposeOption = options?.purposes.find((option) => option.value === next);
-    if (purposeOption && selectedProfile) {
-      setOrientation(
-        selectedProfile.allowedOrientations.includes(purposeOption.defaultOrientation)
-          ? purposeOption.defaultOrientation
-          : selectedProfile.allowedOrientations[0] ?? "",
-      );
-    }
-  };
-  const chooseProfile = (next: string) => {
-    setProfileId(next);
-    const profile = options?.profiles.find((option) => option.profileKey === next);
-    if (profile) {
-      setOrientation(
-        selectedPurpose && profile.allowedOrientations.includes(selectedPurpose.defaultOrientation)
-          ? selectedPurpose.defaultOrientation
-          : profile.allowedOrientations[0] ?? "",
-      );
-    }
-  };
-  const restoreCreateRequest = (
-    request: ReturnType<
-      typeof creativeRunCreateRequestSchema.parse
-    >,
-  ) => {
-    setTitle(request.title ?? "");
-    if (isGenericCreativePurpose(request.purpose)) {
-      setPurpose(request.purpose);
-    }
-    setProfileId(request.profileId);
-    setOrientation(request.orientation ?? "");
-    setCount(String(request.count));
-    setBrief(request.brief);
-  };
-  const create = async () => {
-    if (
-      createIntent?.status === "committed_projection_pending" &&
-      createIntent.committedTargetId
-    ) {
-      setBusy(true);
-      setError(null);
-      try {
-        await adminV2Request(
-          `/api/v2/admin/creative/runs/${createIntent.committedTargetId}`,
-          { schema: creativeRunDetailSchema },
-        );
-        clearDurableMutationIntent(createIntent);
-        setCreateIntent(null);
-        window.location.assign(
-          `/admin/creative/runs/${createIntent.committedTargetId}`,
-        );
-      } catch (cause) {
-        setError(
-          `The committed Run projection is still unavailable${
-            cause instanceof Error ? `: ${cause.message}` : ""
-          }. Verification can be retried without another create request.`,
-        );
-      } finally {
-        setBusy(false);
-      }
-      return;
-    }
-    const savedRequest = createIntent
-      ? creativeRunCreateRequestSchema.safeParse(
-          createIntent.requestSnapshot,
-        )
-      : null;
-    if (
-      createIntent &&
-      (
-        createIntent.status === "reconciliation_required" ||
-        (savedRequest !== null && !savedRequest.success)
-      )
-    ) {
-      setBusy(true);
-      setError(null);
-      setRecoveryNotice(null);
-      try {
-        const receipt = await reconcileDurableMutationIntent({
-          intent: createIntent,
-          commandType: "creative.run.create",
-        });
-        if (receipt.state === "committed") {
-          if (
-            !receipt.committedTargetId ||
-            receipt.verification?.kind !== "creative_run" ||
-            receipt.verification.runId !==
-              receipt.committedTargetId
-          ) {
-            throw new Error(
-              "The committed Run receipt is missing exact projection evidence. The workspace remains locked.",
-            );
-          }
-          const committed = updateDurableMutationIntent(createIntent, {
-            status: "committed_projection_pending",
-            committedTargetId: receipt.committedTargetId,
-          });
-          setCreateIntent(committed);
-          await adminV2Request(
-            `/api/v2/admin/creative/runs/${receipt.committedTargetId}`,
-            { schema: creativeRunDetailSchema },
-          );
-          clearDurableMutationIntent(committed);
-          setCreateIntent(null);
-          window.location.assign(
-            `/admin/creative/runs/${receipt.committedTargetId}`,
-          );
-          return;
-        }
-        if (receipt.state === "cancelled") {
-          clearDurableMutationIntent(createIntent);
-          setCreateIntent(null);
-          setRecoveryNotice(
-            "The old request had no committed effect. Its key was sealed on the server, so a new image request is now safe.",
-          );
-          return;
-        }
-        setError(receipt.state === "failed"
-          ? `The saved command ${receipt.commandId} is terminally failed. Its key remains locked for operator investigation; do not submit a replacement Run.`
-          : `The saved request is ${receipt.state}. Keep this workspace locked and reconcile again after the server reaches a terminal receipt.`);
-      } catch (cause) {
-        setError(
-          cause instanceof Error
-            ? cause.message
-            : "The saved request could not be reconciled.",
-        );
-      } finally {
-        setBusy(false);
-      }
-      return;
-    }
-    const currentBody = {
-      ...(title.trim() ? { title: title.trim() } : {}),
-      purpose,
-      targetType: "none" as const,
-      profileId: profileId.trim(),
-      presetIds: [],
-      orientation,
-      count: Number(count),
-      brief: brief.trim(),
-      consistencyMode: "balanced" as const,
-      priority: "normal" as const,
-      reason: "Launch an operator-authored Creative Run from its explicit brief",
-    };
-    const recovered = savedRequest;
-    if (recovered && !recovered.success) {
-      setError(
-        "The saved creation intent is invalid and cannot be replayed. Clear expired browser data or contact an administrator.",
-      );
-      return;
-    }
-    let body;
-    if (recovered?.success) {
-      body = recovered.data;
-    } else {
-      const parsedCurrent =
-        creativeRunCreateRequestSchema.safeParse(currentBody);
-      if (!parsedCurrent.success) {
-        setError(
-          "The creation request is incomplete or no longer matches the active contract.",
-        );
-        return;
-      }
-      body = parsedCurrent.data;
-    }
-    const requestSignature = JSON.stringify(body);
-    let intent = createIntent;
-    if (!intent) {
-      const claim = await claimDurableMutationIntent({
-        scope: createScope,
-        signature: requestSignature,
-        requestSnapshot: body,
-      });
-      intent = claim.intent;
-      if (
-        intent.signature !== requestSignature ||
-        [
-          "committed_projection_pending",
-          "reconciliation_required",
-        ].includes(intent.status)
-      ) {
-        const saved = creativeRunCreateRequestSchema.safeParse(
-          intent.requestSnapshot,
-        );
-        if (saved.success) restoreCreateRequest(saved.data);
-        setCreateIntent(intent);
-        setError(
-          intent.status === "committed_projection_pending"
-            ? "Another tab already has a committed Run receipt. Verify that receipt before creating again."
-            : intent.status === "reconciliation_required"
-              ? "Another tab has an aged request receipt. Reconcile it with the server before creating again."
-            : "Another tab already started a different image creation request. Its exact request has been restored for safe resume.",
-        );
-        return;
-      }
-    }
-    setCreateIntent(intent);
-    setBusy(true); setError(null); setRecoveryNotice(null);
-    let result: {
-      readonly batch: { readonly id: string };
-      readonly replayed: boolean;
-    };
-    try {
-      result = await adminV2Request(
-        "/api/v2/admin/creative/runs",
-        {
-          method: "POST",
-          idempotencyKey: intent.idempotencyKey,
-          schema: creativeRunCreateResultSchema,
-          body,
-        },
-      );
-    } catch (cause) {
-      if (isDefinitiveAdminMutationRejection(cause)) {
-        clearDurableMutationIntent(intent);
-        setCreateIntent(null);
-        setError(cause.message);
-      } else {
-        const unknown = updateDurableMutationIntent(intent, {
-          status: "outcome_unknown",
-        });
-        setCreateIntent(unknown);
-        setError(
-          "Creation outcome is unknown. Choose Resume creation to replay the same intent without creating a duplicate Run.",
-        );
-      }
-      setBusy(false);
-      return;
-    }
-    const committed = updateDurableMutationIntent(intent, {
-      status: "committed_projection_pending",
-      committedTargetId: result.batch.id,
-    });
-    setCreateIntent(committed);
-    try {
-      await adminV2Request(
-        `/api/v2/admin/creative/runs/${result.batch.id}`,
-        { schema: creativeRunDetailSchema },
-      );
-      clearDurableMutationIntent(committed);
-      setCreateIntent(null);
-      window.location.assign(`/admin/creative/runs/${result.batch.id}`);
-    } catch (cause) {
-      setError(
-        `The Run was created, but its projection could not be opened${
-          cause instanceof Error ? `: ${cause.message}` : ""
-        }. Choose Verify created Run to retry safely.`,
-      );
-    } finally {
-      setBusy(false);
-    }
-  };
-  const ready = !loadingOptions &&
-    options?.readiness.ready === true &&
-    Boolean(selectedProfile) &&
-    Boolean(orientation) &&
-    brief.trim().length > 0 &&
-    Number.isInteger(Number(count)) &&
-    Number(count) >= 1 &&
-    Number(count) <= 24;
-  const readiness = loadingOptions
-    ? t("Checking available image routes…")
-    : options?.readiness.blocker
-      ? t(options.readiness.blocker)
-      : !selectedProfile
-        ? t("No compatible text-to-image route is currently available.")
-      : !brief.trim()
-        ? t("Add a concrete brief to make the Run ready.")
-        : t("Ready to create. Destination is chosen only after review.");
-  return (
-    <section className="mt-5 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 sm:p-5" aria-labelledby="create-creative-run-title">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--ad-text-muted)]">{t("Image creation")}</p>
-          <h2 className="mt-1 text-lg font-semibold" id="create-creative-run-title">{t("Create images")}</h2>
-          <p className="mt-1 max-w-2xl text-sm leading-6 text-[var(--ad-text-muted)]">{t("Start from the intended use and a concrete brief. Creation does not publish anything.")}</p>
-        </div>
-        <div className="rounded-lg bg-[var(--ad-blue-bg)] px-3 py-2 text-sm text-[var(--ad-blue-text)]">
-          <span>{t("Creating Character images?")}</span>{" "}
-          <Link className="font-semibold underline" href={options?.characterAssetStudioHref ?? "/admin/characters"}>
-            {t("Open Character Asset Studio")}
-          </Link>
-        </div>
-      </div>
-      <fieldset className="mt-5">
-        <legend className="text-xs font-semibold text-[var(--ad-text-muted)]">{t("What are you making?")}</legend>
-        <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
-          {(options?.purposes ?? []).map((option) => (
-            <button
-              aria-pressed={purpose === option.value}
-              className={cn(
-                "min-h-24 rounded-lg border p-3 text-left transition-colors focus-visible:outline focus-visible:outline-2",
-                purpose === option.value
-                  ? "border-[var(--ad-ink)] bg-black/[0.04]"
-                  : "border-[var(--ad-border)] hover:border-[var(--ad-text-muted)]",
-              )}
-              key={option.value}
-              disabled={Boolean(createIntent)}
-              onClick={() => choosePurpose(option.value)}
-              type="button"
-            >
-              <strong className="text-sm">{t(option.label)}</strong>
-              <span className="mt-1 block text-xs leading-5 text-[var(--ad-text-muted)]">{t(option.description)}</span>
-            </button>
-          ))}
-        </div>
-      </fieldset>
-      <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_140px]">
-        <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-          {t("Creative brief")}
-          <textarea
-            className={`${textAreaClass} mt-1 min-h-28`}
-            disabled={Boolean(createIntent)}
-            onChange={(event) => setBrief(event.target.value)}
-            placeholder={t("Describe the subject, setting, composition, mood, and what success looks like.")}
-            value={brief}
-          />
-        </label>
-        <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-          {t("Items")}
-          <input className={`${fieldClass} mt-1`} disabled={Boolean(createIntent)} max={24} min={1} onChange={(event) => setCount(event.target.value)} type="number" value={count} />
-        </label>
-      </div>
-      <details className="mt-3 rounded-lg border border-[var(--ad-border)] px-3 py-2">
-        <summary className="cursor-pointer text-xs font-semibold text-[var(--ad-text-muted)]">{t("Advanced creation details")}</summary>
-        <div className="mt-3 grid gap-3 sm:grid-cols-3">
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-            {t("Run title")}
-            <input className={`${fieldClass} mt-1`} disabled={Boolean(createIntent)} onChange={(event) => setTitle(event.target.value)} value={title} />
-          </label>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-            {t("Image route")}
-            <select className={`${fieldClass} mt-1`} disabled={Boolean(createIntent)} onChange={(event) => chooseProfile(event.target.value)} value={profileId}>
-              {(options?.profiles ?? []).map((profile) => (
-                <option key={`${profile.profileKey}:${profile.profileVersion}`} value={profile.profileKey}>
-                  {t(profile.label)}{profile.recommended ? ` · ${t("Recommended")}` : ""}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
-            {t("Canvas")}
-            <select className={`${fieldClass} mt-1`} disabled={Boolean(createIntent)} onChange={(event) => setOrientation(event.target.value)} value={orientation}>
-              {(selectedProfile?.allowedOrientations ?? []).map((value) => <option key={value}>{value}</option>)}
-            </select>
-          </label>
-        </div>
-      </details>
-      {error ? <p className="mt-3 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p> : null}
-      {recoveryNotice ? <p className="mt-3 rounded-md bg-[var(--ad-green-bg)] px-3 py-2 text-sm text-[var(--ad-green-text)]" role="status">{recoveryNotice}</p> : null}
-      {createIntent?.committedTargetId ? <p className="mt-3 text-sm" role="status">{t("Created Run receipt:")} <Link className="font-medium underline underline-offset-4" href={`/admin/creative/runs/${createIntent.committedTargetId}`}>{t("open")} {createIntent.committedTargetId}</Link></p> : null}
-      <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <p className={cn("text-xs", ready ? "text-[var(--ad-green-text)]" : "text-[var(--ad-text-muted)]")} role="status">{readiness}</p>
-        <WorkspaceButton disabled={busy || (!createIntent && !ready)} onClick={() => void create()} tone="primary">
-          <Plus className="h-4 w-4" /> {t(
-            createIntent?.status === "reconciliation_required" ||
-                  (
-                    createIntent !== null &&
-                    !creativeRunCreateRequestSchema.safeParse(
-                      createIntent.requestSnapshot,
-                    ).success
-                  )
-              ? "Reconcile saved request"
-              : createIntent?.status === "outcome_unknown" ||
-                  createIntent?.status === "submitting"
-                ? "Resume creation"
-              : createIntent?.status === "committed_projection_pending"
-                ? "Verify created Run"
-                : "Create and launch",
-          )}
-        </WorkspaceButton>
-      </div>
-    </section>
-  );
-}
-
 type CreativeRunListQuery = {
   search: string;
   outcome: string;
@@ -769,13 +282,7 @@ function creativeRunListParams(query: CreativeRunListQuery) {
   return params;
 }
 
-function RunList({
-  actorId,
-  permissions,
-}: {
-  actorId: string;
-  permissions: Permissions;
-}) {
+function RunList({ permissions }: { permissions: Permissions }) {
   const { locale, t } = useAdminI18n();
   const [search, setSearch] = useState("");
   const [outcome, setOutcome] = useState("all");
@@ -870,7 +377,6 @@ function RunList({
           <WorkspaceButton tone="primary" type="submit">{t("Apply")}</WorkspaceButton>
         </form>
       </div>
-      <CreateRunForm actorId={actorId} enabled={permissions.write} />
       {error ? <div className="mt-5 rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">{error} <button className="ml-2 underline" onClick={() => void runs.refresh()} type="button">{t("Retry")}</button></div> : null}
       <div className="mt-6">{loading && items.length === 0 ? <LoadingWorkspace label="Loading Creative Run facts" /> : items.length === 0 ? error ? null : <EmptyWorkspace filtered={filtered} onClear={() => applyQuery({ search: "", outcome: "all" }, "push")} /> : <div className="grid gap-3">{items.map((run) => <Link className="grid gap-4 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 transition-colors hover:border-[var(--ad-ink)] focus-visible:outline focus-visible:outline-2 sm:grid-cols-[1fr_auto]" href={`/admin/creative/runs/${run.id}`} key={run.id}><div><div className="flex flex-wrap items-center gap-2"><strong>{t(run.purpose)}</strong><StatusBadge value={run.executionOutcome} /><StatusBadge value={run.reviewState} /><StatusBadge value={run.deploymentState} /><StatusBadge value={run.verificationState} /></div><p className="mt-2 text-xs text-[var(--ad-text-muted)]">{run.target.type === "none" ? t("Destination chosen after review") : `${run.target.type}:${run.target.id}`} · {t(run.workflowStage)}  {t("· owner")} {run.ownerId ?? t("unassigned")}</p><div className="mt-3 flex flex-wrap gap-3 text-xs tabular-nums"><span>{run.counts.generated}/{run.counts.total}  {t("generated")}</span><span>{run.counts.failed}  {t("failed")}</span><span>{run.counts.approved}  {t("approved")}</span><span>{run.counts.placed}  {t("placed")}</span></div></div><span className="self-center text-xs text-[var(--ad-text-muted)]">{t("Open operator flow →")}</span></Link>)}</div>}</div>
       <div className="mt-4">
@@ -921,6 +427,12 @@ function ReviewContext({ run, itemIndex }: { run: CreativeRunDetail; itemIndex: 
         <p className="text-xs text-[var(--ad-text-muted)]">{t("The brief and generation route are frozen evidence for this Run.")}</p>
       </div>
       <blockquote className="mt-4 border-l-2 border-[var(--ad-ink)] pl-4 text-sm leading-6">{run.reviewContext.brief}</blockquote>
+      {run.reviewContext.negativePrompt ? (
+        <p className="mt-3 text-xs leading-5 text-[var(--ad-text-muted)]">
+          <strong className="text-[var(--ad-ink)]">{t("Applied exclusions")}:</strong>{" "}
+          {run.reviewContext.negativePrompt}
+        </p>
+      ) : null}
       <dl className="mt-4 grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-5">
         <div><dt className="text-[var(--ad-text-muted)]">{t("Intended use")}</dt><dd className="mt-1 font-medium">{t(run.purpose.replaceAll("_", " "))}</dd></div>
         <div><dt className="text-[var(--ad-text-muted)]">{t("Canvas")}</dt><dd className="mt-1 font-medium">{run.reviewContext.orientation ?? t("Unavailable")}</dd></div>
@@ -1784,5 +1296,5 @@ export function CreativeRunWorkspace({
 }) {
   return view.kind === "detail"
     ? <RunDetail actorId={actorId} id={view.id} key={`${actorId}:${view.id}`} permissions={permissions} />
-    : <RunList actorId={actorId} key={actorId} permissions={permissions} />;
+    : <RunList permissions={permissions} />;
 }

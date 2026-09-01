@@ -50,6 +50,7 @@ const productionQuiescenceTargets = [
   ...productionAdmissionTargets,
   ...productionDrainWorkerTargets,
 ];
+const voiceRuntimeTargets = ["fish-audio", "pocket-tts"];
 const productionRuntimeTargets = ["fish-audio", ...productionQuiescenceTargets];
 const quiescedStatuses = new Set(["stopped", "errored"]);
 const runtimeModes = new Set(["development", "production"]);
@@ -57,6 +58,13 @@ const productionProcessDefinitions = new Map([
   ["fish-audio", {
     cwd: repoRoot,
     execPath: path.join(repoRoot, "scripts/start-fish-audio.cjs"),
+    args: [],
+    execInterpreter: bunInterpreter,
+    execMode: "fork_mode",
+  }],
+  ["pocket-tts", {
+    cwd: repoRoot,
+    execPath: path.join(repoRoot, "scripts/start-pocket-tts.cjs"),
     args: [],
     execInterpreter: bunInterpreter,
     execMode: "fork_mode",
@@ -122,6 +130,13 @@ const developmentProcessDefinitions = new Map([
   ["fish-audio", {
     cwd: repoRoot,
     execPath: path.join(repoRoot, "scripts/start-fish-audio.cjs"),
+    args: [],
+    execInterpreter: bunInterpreter,
+    execMode: "fork_mode",
+  }],
+  ["pocket-tts", {
+    cwd: repoRoot,
+    execPath: path.join(repoRoot, "scripts/start-pocket-tts.cjs"),
     args: [],
     execInterpreter: bunInterpreter,
     execMode: "fork_mode",
@@ -320,9 +335,16 @@ function developmentDefinitionPlan(processes, runtimeEnv = process.env) {
           : 1,
     ]),
   );
-  const deleteNames = productionRuntimeTargets.filter((name) => {
+  const inactiveVoiceTargets = voiceRuntimeTargets.filter(
+    (name) => !configuredVoiceRuntimeTargets(runtimeEnv).includes(name),
+  );
+  const managedTargets = [
+    ...new Set([...productionRuntimeTargets, ...inactiveVoiceTargets]),
+  ];
+  const deleteNames = managedTargets.filter((name) => {
     const registered = processes.filter((process) => process?.name === name);
     if (registered.length === 0) return false;
+    if (inactiveVoiceTargets.includes(name)) return true;
     return registered.length !== expectedInstances.get(name) ||
       registered.some(
         (process) =>
@@ -401,8 +423,12 @@ function developmentVideoWorkerCount(runtimeEnv) {
 }
 
 function productionExpectedInstances(runtimeEnv) {
+  const targets = [
+    ...configuredVoiceRuntimeTargets(runtimeEnv),
+    ...productionQuiescenceTargets,
+  ];
   return new Map(
-    productionRuntimeTargets.map((name) => [
+    targets.map((name) => [
       name,
       name === "main-web"
         ? positiveInstanceCount(runtimeEnv.MAIN_WEB_INSTANCES, 1)
@@ -413,6 +439,14 @@ function productionExpectedInstances(runtimeEnv) {
             : 1,
     ]),
   );
+}
+
+function configuredVoiceRuntimeTargets(runtimeEnv) {
+  const configured = [
+    runtimeEnv.VOICE_PROVIDER ?? "pocket-tts",
+    runtimeEnv.VOICE_IDENTITY_PROVIDER,
+  ];
+  return voiceRuntimeTargets.filter((name) => configured.includes(name));
 }
 
 function runtimeIsOnline(processes, expectedInstances) {
@@ -455,7 +489,7 @@ function verifyProductionRuntime(options) {
     if (attempt < attempts) delay(500);
   }
   if (!runtimeIsOnline(lastProcesses, expectedInstances)) {
-    const observed = productionRuntimeTargets.map((name) => ({
+    const observed = [...expectedInstances.keys()].map((name) => ({
       name,
       statuses: lastProcesses
         .filter((process) => process?.name === name)
@@ -487,6 +521,17 @@ function verifyProductionRuntime(options) {
     ],
     cwd: repoRoot,
   });
+  const voiceProbes = configuredVoiceRuntimeTargets(runtimeEnv).map((name) =>
+    name === "pocket-tts"
+      ? curlProbe(
+          name,
+          `http://127.0.0.1:${runtimeEnv.POCKET_TTS_PORT ?? "8063"}/health`,
+        )
+      : curlProbe(
+          name,
+          `http://127.0.0.1:${runtimeEnv.FISH_AUDIO_PORT ?? "8062"}/health`,
+        ),
+  );
   const probes = [
     curlProbe(
       "main-web",
@@ -500,10 +545,7 @@ function verifyProductionRuntime(options) {
       "chat",
       `http://127.0.0.1:${runtimeEnv.CHAT_PORT ?? "3100"}/readyz`,
     ),
-    curlProbe(
-      "fish-audio",
-      `http://127.0.0.1:${runtimeEnv.FISH_AUDIO_PORT ?? "8062"}/health`,
-    ),
+    ...voiceProbes,
     {
       name: "gen-backend",
       command: "bun",
@@ -772,7 +814,7 @@ function runPm2Ecosystem(options = {}) {
       spawn,
       runtimeEnv,
       quiescedProcesses,
-      ["fish-audio"],
+      voiceRuntimeTargets,
     );
     if (voiceStopped !== 0) return voiceStopped;
     const finalSnapshot = readPm2ProcessList(spawn, runtimeEnv);
@@ -780,7 +822,7 @@ function runPm2Ecosystem(options = {}) {
     if (
       hasUnsafeProductionTarget(
         finalSnapshot.processes,
-        productionRuntimeTargets,
+        [...productionRuntimeTargets, "pocket-tts"],
       )
     ) {
       return 1;
@@ -834,9 +876,8 @@ function runPm2Ecosystem(options = {}) {
     definitionRecreated = definitionPlan.requiresStart;
   }
 
-  // The retired Pocket process used the same 8062 listener as Fish Audio. PM2
-  // otherwise keeps orphaned apps across ecosystem renames, so remove it before
-  // starting the current topology. A missing legacy process is the normal case.
+  // Pocket owns default English speech. Recreate it on every topology start so
+  // model revision and optional HF credentials cannot remain stale in PM2.
   spawn("pm2", ["delete", "pocket-tts"], {
     cwd: repoRoot,
     env: runtimeEnv,
@@ -899,6 +940,7 @@ module.exports = {
   productionAdmissionTargets,
   productionDrainWorkerTargets,
   productionQuiescenceTargets,
+  voiceRuntimeTargets,
   productionRuntimeTargets,
   productionGateCwd,
   productionGenCwd,

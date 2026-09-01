@@ -292,10 +292,19 @@ describe("Character Voice clip reclaim authority", () => {
           reclaimExpiredVoiceClip({ characterId, requestId, deps }),
         ).rejects.toMatchObject({
           code: "conflict",
-          details: expect.objectContaining({
-            provider: providerKey,
-            reason: "provider_not_durably_replayable",
-          }),
+          details: expect.objectContaining(
+            providerKey === "pipeline"
+              ? {
+                  provider: providerKey,
+                  reason: "provider_not_durably_replayable",
+                }
+              : {
+                  pinnedProvider: providerKey,
+                  adapterProvider: providerKey,
+                  adapterReplay: "non_replayable",
+                  reason: "provider_adapter_not_durably_replayable",
+                },
+          ),
         });
         expect(synthesize).not.toHaveBeenCalled();
         const after = await prisma.voiceClipRequest.findUniqueOrThrow({

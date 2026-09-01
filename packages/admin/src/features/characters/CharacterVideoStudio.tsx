@@ -149,6 +149,33 @@ function videoExecutionLabel(item: CreativeRunDetail["items"][number] | null) {
   }[item.executionState];
 }
 
+export function characterVideoProgress(input: {
+  readonly createdAt: string;
+  readonly estimatedDurationMs: number | null;
+  readonly item: Pick<CreativeRunDetail["items"][number], "asset" | "executionState"> | null;
+  readonly nowMs: number;
+}) {
+  const createdAtMs = new Date(input.createdAt).getTime();
+  const elapsedMs = Number.isFinite(createdAtMs)
+    ? Math.max(0, input.nowMs - createdAtMs)
+    : 0;
+  const estimatedDurationMs =
+    input.estimatedDurationMs && input.estimatedDurationMs > 0
+      ? input.estimatedDurationMs
+      : null;
+  return {
+    stage: videoExecutionLabel(input.item as CreativeRunDetail["items"][number] | null),
+    elapsedMs,
+    estimatedDurationMs,
+    estimatedRemainingMs:
+      estimatedDurationMs === null
+        ? null
+        : Math.max(0, estimatedDurationMs - elapsedMs),
+    longerThanExpected:
+      estimatedDurationMs !== null && elapsedMs > estimatedDurationMs * 1.25,
+  };
+}
+
 function isDefinitiveMutationRejection(
   cause: unknown,
 ): cause is AdminV2RequestError {
@@ -222,6 +249,8 @@ const VIDEO_STALL_TIMEOUT_MS = 15_000;
 
 // INTENT: 稳定引用，避免"列表还没到"时每次渲染都换一个空数组。
 const EMPTY_VIDEO_RUNS: readonly CreativeRun[] = [];
+const VIDEO_LIBRARY_REFRESH_ERROR =
+  "Video is ready, but the Character library could not refresh. Use Refresh to try again.";
 
 const videoErrorReasons: Record<number, string> = {
   1: "Playback was aborted before the video loaded.",
@@ -285,6 +314,7 @@ export function CharacterVideoStudio({
   actorId,
   data,
   onCreateImage,
+  onProjectReload,
   permissions,
   productionOnly = false,
   runCommittedMutation,
@@ -292,6 +322,7 @@ export function CharacterVideoStudio({
   readonly actorId: string;
   readonly data: CharacterWorkspaceDetail;
   readonly onCreateImage: () => void;
+  readonly onProjectReload?: () => Promise<void>;
   readonly permissions: CharacterVideoPermissions;
   readonly productionOnly?: boolean;
   readonly runCommittedMutation: RunCommittedMutation;
@@ -315,6 +346,7 @@ export function CharacterVideoStudio({
       "Subtle natural breathing, a gentle smile, and direct eye contact. Keep the camera steady and preserve the exact face and background.",
     )
   );
+  const [negativePrompt, setNegativePrompt] = useState("");
   // SPEC: 选中哪个 Run 是这一屏唯一的"取数身份"；null 表示跟随列表最新一条。
   // INTENT: 原来 loadRuns 与 loadRun 互写 runs/selectedRun 两份 state——列表取完顺手把
   //         第一条的详情也取了，详情取完又把自己塞回列表。两条路径都能改对方的状态，
@@ -330,6 +362,8 @@ export function CharacterVideoStudio({
     useState<"passed" | "failed">("passed");
   const [score, setScore] = useState("90");
   const [reviewReason, setReviewReason] = useState("");
+  const [progressNowMs, setProgressNowMs] = useState(0);
+  const refreshedTerminalRunIds = useRef(new Set<string>());
   const [createIntent, setCreateIntent] = useState<DurableMutationIntent | null>(
     () => readActiveDurableMutationIntent({ scope: createIntentScope }),
   );
@@ -396,6 +430,19 @@ export function CharacterVideoStudio({
     },
   );
   const selectedRun = runDetail.data;
+  const progressRunId =
+    selectedRun && ["pending", "running"].includes(selectedRun.executionOutcome)
+      ? selectedRun.id
+      : null;
+
+  useEffect(() => {
+    if (!progressRunId) return;
+    const updateProgressClock = () => setProgressNowMs(Date.now());
+    updateProgressClock();
+    const timer = window.setInterval(updateProgressClock, 1_000);
+    return () => window.clearInterval(timer);
+  }, [progressRunId]);
+
   // SPEC: 刚创建、还没进过列表的 Run 也要出现在历史里。
   // INTENT: 这是从两份只读投影推出来的，不再是 loadRun 往 runs 里回写的副作用。
   const runs: readonly CreativeRun[] =
@@ -406,6 +453,22 @@ export function CharacterVideoStudio({
   const loading =
     (runList.loading && runList.data === null) ||
     (activeRunId !== null && runDetail.loading && selectedRun === null);
+
+  useEffect(() => {
+    if (
+      !selectedRun ||
+      selectedRun.executionOutcome !== "succeeded" ||
+      !selectedRun.items.some((item) => item.asset) ||
+      refreshedTerminalRunIds.current.has(selectedRun.id)
+    ) {
+      return;
+    }
+    refreshedTerminalRunIds.current.add(selectedRun.id);
+    void onProjectReload?.().catch(() => {
+      refreshedTerminalRunIds.current.delete(selectedRun.id);
+      setError(VIDEO_LIBRARY_REFRESH_ERROR);
+    });
+  }, [onProjectReload, selectedRun]);
 
   const { setData: setRunDetailData } = runDetail;
   // SPEC: 恢复/校验路径已经拿到 detail 了，直接让它成为当前 Run。
@@ -451,6 +514,9 @@ export function CharacterVideoStudio({
           orientation: characterVideoProductionRecipe.orientation,
           count: characterVideoProductionRecipe.outputCount,
           brief,
+          ...(negativePrompt.trim()
+            ? { negativePrompt: negativePrompt.trim() }
+            : {}),
           consistencyMode: "balanced",
           priority: "normal",
           reason: "Create one Character video for the role library",
@@ -608,6 +674,9 @@ export function CharacterVideoStudio({
       // SPEC: 有选中 Run 就只刷它，否则刷列表——列表刷完自然带出最新一条的详情。
       if (activeRunId) await runDetail.refresh();
       else await runList.refresh();
+      await onProjectReload?.();
+    } catch {
+      setError(VIDEO_LIBRARY_REFRESH_ERROR);
     } finally {
       setBusy(null);
     }
@@ -621,6 +690,14 @@ export function CharacterVideoStudio({
       characterVideoProductionRecipe.profileKey
       ? data.visual.videoGenerationEstimate
       : null;
+  const progress = selectedRun && progressNowMs > 0
+    ? characterVideoProgress({
+        createdAt: selectedRun.createdAt,
+        estimatedDurationMs: estimate?.averageDurationMs ?? null,
+        item: selectedItem,
+        nowMs: progressNowMs,
+      })
+    : null;
   const lockedCreateRequest = createIntent
     ? savedCreateRequest(createIntent, data.character.id)
     : null;
@@ -901,6 +978,42 @@ export function CharacterVideoStudio({
                   <div className="max-w-md px-5">
                     {selectedItem.executionState === "failed" ? <Video className="mx-auto h-7 w-7" /> : <Loader2 className="mx-auto h-7 w-7 animate-spin" />}
                     <p className="mt-3 text-sm font-semibold">{t(videoExecutionLabel(selectedItem))}</p>
+                    {selectedItem.executionState !== "failed" && progress ? (
+                      <div
+                        aria-label={t("Video generation progress")}
+                        className="mt-4 rounded-md bg-[var(--ad-surface)] px-3 py-2 text-left text-xs leading-5"
+                        role="status"
+                      >
+                        <p>
+                          <strong>{t("Current stage")}</strong>: {t(progress.stage)}
+                        </p>
+                        <p>
+                          {t("Elapsed {duration}", {
+                            duration: formatDuration(progress.elapsedMs),
+                          })}
+                          {progress.estimatedDurationMs !== null
+                            ? ` · ${t("Recent average {duration}", {
+                                duration: formatDuration(progress.estimatedDurationMs),
+                              })}`
+                            : ""}
+                        </p>
+                        {progress.estimatedRemainingMs !== null &&
+                        !progress.longerThanExpected ? (
+                          <p>
+                            {t("Estimated remaining {duration}", {
+                              duration: formatDuration(progress.estimatedRemainingMs),
+                            })}
+                          </p>
+                        ) : null}
+                        {progress.longerThanExpected ? (
+                          <p className="mt-1 text-[var(--ad-yellow-text)]">
+                            {t(
+                              "This run is taking longer than the recent average. Progress is still checked automatically every 5 seconds.",
+                            )}
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : null}
                     {/* SPEC: 失败要说原因，并给出真正能重跑的去处。
                         INTENT: 契约的 failure.operatorGuidance / errorCode 此前只有视觉实验台读；
                         重试是 CreativeRunWorkspace 那台带幂等键的持久命令机，不在这里复制第二份。 */}
@@ -997,11 +1110,22 @@ export function CharacterVideoStudio({
               {t("Motion brief")}
               <textarea className={`${textAreaClass} mt-1 min-h-32`} disabled={busy !== null || createIntent !== null} onChange={(event) => setBrief(event.target.value)} value={brief} />
             </label>
+            <label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">
+              {t("Negative prompt")}
+              <textarea
+                aria-label={t("Negative prompt")}
+                className={`${textAreaClass} mt-1 min-h-20`}
+                disabled={busy !== null || createIntent !== null}
+                onChange={(event) => setNegativePrompt(event.target.value)}
+                placeholder={t("Extra motion, camera, anatomy, or text artifacts to exclude")}
+                value={negativePrompt}
+              />
+            </label>
             {createIntent ? (
               <p className="mt-3 text-xs leading-5 text-[var(--ad-text-muted)]" role="status">
                 {t(
                   lockedCreateRequest
-                    ? "The saved request keeps its original source image and motion brief until recovery completes."
+                    ? "The saved request keeps its original source image, motion brief, and exclusions until recovery completes."
                     : "The saved request must be reconciled before these controls can be edited.",
                 )}
               </p>
@@ -1041,6 +1165,7 @@ export function CharacterVideoStudio({
               <div className="flex justify-between gap-3"><dt>{t("Model")}</dt><dd className="font-semibold text-[var(--ad-ink)]">{t(characterVideoProductionRecipe.modelLabel)}</dd></div>
               <div className="flex justify-between gap-3"><dt>{t("Clip")}</dt><dd>{t("{seconds} seconds · {fps} fps", { seconds: characterVideoProductionRecipe.durationSeconds, fps: characterVideoProductionRecipe.fps })}</dd></div>
               <div className="flex justify-between gap-3"><dt>{t("Frame")}</dt><dd>{t("{width}×{height} · {orientation}", { width: characterVideoProductionRecipe.width, height: characterVideoProductionRecipe.height, orientation: characterVideoProductionRecipe.orientation })}</dd></div>
+              {selectedRun?.reviewContext.negativePrompt ? <div><dt>{t("Applied exclusions")}</dt><dd className="mt-1 break-words">{selectedRun.reviewContext.negativePrompt}</dd></div> : null}
               {selectedItem ? <><div className="flex justify-between gap-3"><dt>{t("Workflow")}</dt><dd className="max-w-48 truncate">{selectedItem.lineage.workflowKey ?? t("Pending")}</dd></div><div className="flex justify-between gap-3"><dt>{t("Provider request")}</dt><dd className="max-w-48 truncate">{selectedItem.lineage.providerRequestId ?? t("Pending")}</dd></div></> : null}
             </dl>
           </details>

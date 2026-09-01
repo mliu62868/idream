@@ -4,7 +4,15 @@ const path = require("node:path");
 
 const defaultRoot = "/Users/kk/ComfyUI-Installs/idream-ltx25-v0342/ComfyUI";
 const defaultAppleSiliconFp8Patches = "tensor_to_fp8,int_mm_mps";
+const videoAppleSiliconFp8Patches =
+  `${defaultAppleSiliconFp8Patches},fused_norm_mps,rope_fast_mps`;
 const sharedRoot = "/Users/kk/ComfyUI-Shared";
+const desktopExtraModelPaths =
+  "/Users/kk/Library/Application Support/Comfy Desktop/shared_model_paths.yaml";
+const idreamExtraModelPaths = path.resolve(
+  __dirname,
+  "../packages/gen/workflows/comfy-extra-models-idream.yaml",
+);
 
 const profiles = {
   // INVARIANT: this is the exact RedGraft configuration that produced the
@@ -13,6 +21,12 @@ const profiles = {
   video: {
     port: "8188",
     attentionArg: "--use-split-cross-attention",
+    // INTENT: these compile_shader kernels work on M4 and fuse the exact
+    // LTX rms_adaln/RoPE seams without enabling the failed Metal 4.1 kernels.
+    appleSiliconFp8Patches: videoAppleSiliconFp8Patches,
+    // INVARIANT: the workflow memory barrier uses ComfyUI's active RAM-cache
+    // eviction hook to drop CPU text-loader ownership after conditioning.
+    cacheArgs: ["--cache-ram", "10", "128"],
     inputDirectory: path.join(sharedRoot, "input"),
     outputDirectory: path.join(sharedRoot, "output"),
     userDirectory: path.join(sharedRoot, "user"),
@@ -22,6 +36,10 @@ const profiles = {
   image: {
     port: "8189",
     attentionArg: "--use-pytorch-cross-attention",
+    // INVARIANT: image workflows use the same graph-scoped lifecycle node as
+    // video; deterministic RAM-cache ownership is required for physical text
+    // encoder release after all positive/negative/reference encoding finishes.
+    cacheArgs: ["--cache-ram", "10", "128"],
     inputDirectory: path.join(sharedRoot, "runners/image/input"),
     outputDirectory: path.join(sharedRoot, "runners/image/output"),
     userDirectory: path.join(sharedRoot, "runners/image/user"),
@@ -31,6 +49,7 @@ const profiles = {
   "video-h3": {
     port: "8190",
     attentionArg: "--use-pytorch-cross-attention",
+    cacheArgs: ["--cache-ram", "10", "128"],
     inputDirectory: path.join(sharedRoot, "runners/video-h3/input"),
     outputDirectory: path.join(sharedRoot, "runners/video-h3/output"),
     userDirectory: path.join(sharedRoot, "runners/video-h3/user"),
@@ -50,10 +69,16 @@ function resolveRuntime(env = process.env) {
   const userDirectory = env.COMFYUI_USER_DIRECTORY || profile.userDirectory;
   const inputDirectory = env.COMFYUI_INPUT_DIRECTORY || profile.inputDirectory;
   const outputDirectory = env.COMFYUI_OUTPUT_DIRECTORY || profile.outputDirectory;
+  const extraModelPaths = [...new Set([
+    env.COMFYUI_EXTRA_MODEL_PATHS || desktopExtraModelPaths,
+    idreamExtraModelPaths,
+  ])];
   const runtimeEnv = {
     ...env,
     ASFP8_ENABLE_ONLY:
-      env.ASFP8_ENABLE_ONLY || defaultAppleSiliconFp8Patches,
+      env.ASFP8_ENABLE_ONLY ||
+      profile.appleSiliconFp8Patches ||
+      defaultAppleSiliconFp8Patches,
     // M4/macOS 26 cannot compile the Metal 4.1 native FP8 extension. Pinning
     // these off avoids a capability probe/build attempt on every runner start.
     ASFP8_FP8_EXT: env.ASFP8_FP8_EXT || "off",
@@ -76,8 +101,7 @@ function resolveRuntime(env = process.env) {
       "--port",
       env.COMFYUI_PORT || profile.port,
       "--extra-model-paths-config",
-      env.COMFYUI_EXTRA_MODEL_PATHS ||
-        "/Users/kk/Library/Application Support/Comfy Desktop/shared_model_paths.yaml",
+      ...extraModelPaths,
       "--output-directory",
       outputDirectory,
       "--input-directory",
@@ -85,6 +109,7 @@ function resolveRuntime(env = process.env) {
       "--user-directory",
       userDirectory,
       profile.attentionArg,
+      ...(profile.cacheArgs || []),
     ],
   };
 }

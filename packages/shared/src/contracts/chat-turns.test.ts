@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { chatExecutionSnapshotSchema } from "./chat-turns";
+import {
+  chatExecutionSnapshotSchema,
+  chatTerminalCommitSchema,
+  chatToolEffectSchema,
+} from "./chat-turns";
 
 const snapshot = {
   version: 1,
@@ -33,5 +37,53 @@ describe("Chat execution snapshot", () => {
       ...snapshot,
       characterVisualProfileId: null,
     }).success).toBe(false);
+  });
+
+  it("requires exact product prompt attribution on every Chat terminal", () => {
+    const terminal = {
+      version: 1,
+      turnId: "turn-1",
+      sessionId: "session-1",
+      assistantMessageId: "assistant-message-1",
+      attempt: 1,
+      status: "sent",
+      content: "Hello",
+      model: "model-1",
+      promptTokens: 10,
+      completionTokens: 2,
+      sceneVersion: 0,
+      scene: null,
+      terminalEvidence: { authority: "dsh_terminal_candidate" },
+    };
+    expect(chatTerminalCommitSchema.safeParse(terminal).success).toBe(false);
+    expect(chatTerminalCommitSchema.safeParse({
+      ...terminal,
+      terminalEvidence: {
+        authority: "dsh_terminal_candidate",
+        prompt: {
+          productPromptVersion: "companion-product-1",
+          preparedTurnVersion: 4,
+          systemPromptDigest: "a".repeat(64),
+          soulFingerprint: "b".repeat(64),
+        },
+      },
+    }).success).toBe(true);
+  });
+
+  it("carries explicit effect scope and image intent instead of encoding them in callId", () => {
+    expect(chatToolEffectSchema.parse({
+      version: 2,
+      turnId: "turn-1",
+      attempt: 1,
+      callId: "provider-call-9",
+      name: "generate_image_async",
+      effectScope: "turn_action",
+      intent: { requestedNudity: "full" },
+      arguments: { prompt: "A concrete observatory scene" },
+    })).toMatchObject({
+      callId: "provider-call-9",
+      effectScope: "turn_action",
+      intent: { requestedNudity: "full" },
+    });
   });
 });

@@ -4134,6 +4134,12 @@ test("generator Image Edit queues a variation from a gallery source", async ({ p
   await expect(sourceCard).toBeVisible({ timeout: 10_000 });
   await sourceCard.click();
   await expect(sourceCard).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("textbox", { name: "Edit instructions" }).fill(
+    "Change the outfit to a deep red velvet jacket and keep the background unchanged.",
+  );
+  await page.getByRole("textbox", { name: "Negative Prompt" }).fill(
+    "visible text, duplicate person",
+  );
   const createEdit = page.getByRole("button", {
     name: /^Create edit · \d[\d,]* coins$/,
   });
@@ -4150,6 +4156,8 @@ test("generator Image Edit queues a variation from a gallery source", async ({ p
       sourceId: true,
       sourceMeta: true,
       sourceType: true,
+      prompt: true,
+      negativePrompt: true,
     },
   });
   expect(stored.outputCount).toBe(1);
@@ -4157,6 +4165,8 @@ test("generator Image Edit queues a variation from a gallery source", async ({ p
   expect(stored.sourceType).toBe("media_variation");
   expect(stored.sourceId).toContain(`media:${sourceMediaId}:variation:`);
   expect(stored.sourceMeta).toMatchObject({ sourceMediaId });
+  expect(stored.prompt).toContain("Requested edit: Change the outfit to a deep red velvet jacket");
+  expect(stored.negativePrompt).toContain("visible text, duplicate person");
 
   await drainWorker(page.request, job.id);
   await expect(page.getByText("Generation complete.")).toBeVisible({ timeout: 10_000 });

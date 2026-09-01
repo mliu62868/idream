@@ -16,6 +16,7 @@ const request = {
   characterId: "character-1",
   promptHint: "a sunset selfie",
   conversationContext: "user: send a sunset selfie",
+  intent: { requestedNudity: "unspecified" as const },
   controls: { orientation: "4:5", outputCount: 1 },
 };
 

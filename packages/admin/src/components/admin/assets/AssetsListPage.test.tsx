@@ -201,6 +201,60 @@ describe("AssetsListPage request authority", () => {
     expect(container.querySelector('input[aria-label="Select asset asset-read-only"]')).toBeNull();
     expect(findButton("Select page", container)).toBeNull();
     expect(findButton("Archive selected", container)).toBeNull();
+    expect(findButton("Upload images", container)).toBeNull();
+    expect(container.querySelector('input[aria-label="Choose images to upload"]')).toBeNull();
+  });
+
+  it("uploads external artwork with its operational purpose and refreshes the Library", async () => {
+    apiGet.mockResolvedValue(listResponse());
+    const fetchMock = vi.fn().mockResolvedValue({
+      status: 200,
+      text: async () => JSON.stringify({
+        ok: true,
+        data: { asset: asset("uploaded-platform-asset", "approved") },
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await act(async () => root.render(<AssetsListPage />));
+    await waitUntil(() => apiGet.mock.calls.length > 0);
+
+    const purpose = container.querySelector<HTMLSelectElement>(
+      'select[aria-label="Upload purpose"]',
+    );
+    expect(purpose).not.toBeNull();
+    await act(async () => {
+      if (!purpose) return;
+      purpose.value = "feed";
+      purpose.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const input = container.querySelector<HTMLInputElement>(
+      'input[aria-label="Choose images to upload"]',
+    );
+    expect(input).not.toBeNull();
+    const file = new File([new Uint8Array(1_024)], "finished-feed.png", {
+      type: "image/png",
+    });
+    Object.defineProperty(input, "files", {
+      configurable: true,
+      value: [file],
+    });
+    await act(async () => {
+      input?.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    await waitUntil(() => fetchMock.mock.calls.length === 1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/v2/admin/assets");
+    expect(init.method).toBe("POST");
+    expect(init.headers).toBeInstanceOf(Headers);
+    expect((init.headers as Headers).get("idempotency-key")).toEqual(expect.any(String));
+    expect((init.headers as Headers).get("x-request-id")).toEqual(expect.any(String));
+    expect(init.body).toBeInstanceOf(FormData);
+    expect((init.body as FormData).get("purpose")).toBe("feed");
+    expect((init.body as FormData).get("image")).toBe(file);
+    await waitUntil(() => container.textContent?.includes("1 images uploaded to the Library.") === true);
+    await waitUntil(() => apiGet.mock.calls.length > 1);
   });
 
   it("preflights dependencies and deep-links the repair without calling the mutation", async () => {

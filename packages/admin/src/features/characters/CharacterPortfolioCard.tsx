@@ -89,6 +89,13 @@ const characterPortfolioPrimaryActionCopy: Record<
     label: "Continue filling image pack",
     requiresAssets: true,
   },
+  review_asset_pack: {
+    description:
+      "Review the selected portrait, hero, and chat images before publishing.",
+    eyebrow: "Image review required",
+    label: "Review selected images",
+    requiresAssets: true,
+  },
   preview_character: {
     description: "Preview the customer-facing draft before publishing.",
     eyebrow: "Ready to preview",
@@ -239,7 +246,10 @@ export function CharacterPortfolioCard({
         />
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="truncate font-semibold text-[var(--ad-ink)]">
+            <h3
+              className="min-w-0 break-words font-semibold text-[var(--ad-ink)]"
+              title={item.name}
+            >
               {canOpenProject ? (
                 <Link
                   className="hover:underline"
@@ -296,7 +306,10 @@ export function CharacterPortfolioCard({
       />
       <div className="p-4 pb-3">
         <div className="flex min-w-0 items-center justify-between gap-3">
-          <h3 className="truncate text-base font-semibold text-[var(--ad-ink)]">
+          <h3
+            className="min-w-0 break-words text-base font-semibold text-[var(--ad-ink)]"
+            title={item.name}
+          >
             {item.name}
           </h3>
           <span

@@ -149,6 +149,8 @@ export const adminZhCommon: Record<string, string> = {
   "Creative": "创意",
   "Creative Runs": "创意生产批次",
   "Creative Studio": "创意工作室",
+  "Generation History": "生成记录",
+  "Operational Assets": "运营素材",
   "Creative brief": "创意简报",
   "Current setup task": "当前设置任务",
   "Current step": "当前步骤",

@@ -399,18 +399,26 @@ export function productionNegativePrompt(
   base: string | null,
   identity: string | null | undefined,
   purpose: CreativeRunCreateInput["purpose"],
+  operator: string | null | undefined = null,
 ) {
   if (purpose === "character_video") {
     return [
       base?.trim(),
+      identity?.trim(),
+      operator?.trim(),
       "identity drift, face morphing, flicker, jitter, camera cut, reframing, duplicate person, extra people, text, watermark",
-    ].filter(Boolean).join(", ");
+    ].filter(Boolean).join(", ") || null;
   }
   const characterCompositionGuard =
     purpose.startsWith("character_") || purpose === "identity_calibration"
     ? "collage, contact sheet, split screen, multiple panels, comparison grid, duplicate person, extra people"
     : null;
-  return [base?.trim(), identity?.trim(), characterCompositionGuard].filter(Boolean).join(", ") || null;
+  return [
+    base?.trim(),
+    identity?.trim(),
+    operator?.trim(),
+    characterCompositionGuard,
+  ].filter(Boolean).join(", ") || null;
 }
 
 function presetIdForType(presets: Array<{ id: string; type: string }>, type: string) {

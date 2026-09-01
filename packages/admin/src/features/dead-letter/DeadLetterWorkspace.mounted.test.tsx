@@ -70,6 +70,25 @@ describe("DeadLetterWorkspace retry authority", () => {
     expect(container.textContent).toContain("Safe to requeue");
   });
 
+  // SPEC: 手机端的危险动作前必须先显示本次判断所需的上下文，不能只留下 Job 与按钮。
+  it("puts failure, replay, ledger, and cost context before mobile actions", async () => {
+    apiGet.mockResolvedValue({ items: [retryable], pageInfo: { endCursor: null, hasNextPage: false } });
+
+    await render({ discard: true, requeue: true });
+    await waitUntil(() => container.textContent?.includes(retryable.id) ?? false);
+
+    const mobileList = container.querySelector<HTMLElement>('.sm\\:hidden[aria-label="Dead-letter Queue"]');
+    expect(mobileList).not.toBeNull();
+    expect(mobileList?.className).toContain("sm:hidden");
+    expect(mobileList?.textContent).toContain("Failure reason");
+    expect(mobileList?.textContent).toContain("Replay authority");
+    expect(mobileList?.textContent).toContain("Ledger");
+    expect(mobileList?.textContent).toContain("Cost");
+    expect(mobileList?.textContent?.indexOf("Cost")).toBeLessThan(
+      mobileList?.textContent?.indexOf("Requeue") ?? -1,
+    );
+  });
+
   it("reports the authority's own requeue outcome instead of claiming the batch completed", async () => {
     apiGet.mockResolvedValue({ items: [retryable], pageInfo: { endCursor: null, hasNextPage: false } });
     apiWrite.mockResolvedValue({

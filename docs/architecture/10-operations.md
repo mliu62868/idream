@@ -1,6 +1,6 @@
 # 10 · 运行与发布
 
-更新日期：2026-08-28
+更新日期：2026-08-31
 
 ## 1. 运行拓扑
 
@@ -15,7 +15,8 @@
 | `gen-finalizer` | Generation terminal relay/finalize |
 | `main-event-consumer` | Main durable events |
 | `admin-command-worker` | Admin command execution |
-| `fish-audio` | 本地 Fish Audio 进程 |
+| `fish-audio` | 可选的参考音频克隆与 Fish 角色声音进程 |
+| `pocket-tts` | 默认英语语音与 Pocket 角色声音进程 |
 
 PM2 是生命周期管理器，Bun 是所有一方 JavaScript/TypeScript/Next 进程的解释器。Docker Compose 只提供本地 PostgreSQL/Redis。
 
@@ -52,6 +53,9 @@ bun run pm2:start:production
 - `CHAT_SERVICE_URL` / `CHAT_BFF_SIGNING_SECRET`
 - `INTERNAL_TOKEN`
 - `REDIS_URL` / `BULLMQ_PREFIX`
+- `VOICE_PROVIDER=pocket-tts`：未绑定角色声音时的默认英语语音权威
+- `VOICE_IDENTITY_PROVIDER=fish-audio`：可选的参考音频克隆入口；未设置时新角色声音候选跟随 Pocket；已激活 profile 始终以自身持久化 provider 为权威
+- `FISH_AUDIO_*` / `POCKET_TTS_*`：两个独立 runtime 的 endpoint、token、model、language 与 voice registry
 - Main moderation、billing、Blob、Generation 和 Sentry 配置
 
 ### Chat
@@ -81,6 +85,7 @@ Chat 没有独立 moderation provider。输入/输出产品策略属于 Main。
 - Chat admission readiness 只检查可写 `CHAT_FS_ROOT`、Redis 与签名配置；full certification 另行检查内嵌 DSH package、official igrep plugin/bootstrap、provider/model 和 profile pin。
 - Gen readiness 检查 worker ownership、provider/workflow/model bytes 和 terminal ingress。
 - Main readiness 检查 migration、Turn ledger、Character/Soul pins、Generation/settlement 和跨服务 secrets。
+- Voice live probe 默认验证 Pocket 可播放输出、官方英语 catalog 与 preset alias → synthesize → delete。配置 Fish identity override 时，同一份报告还必须包含 Fish clone → synthesize → delete。生产 PM2 按实际 system/identity provider 要求对应进程和 `/health`，不能只凭进程 online。
 
 ```bash
 bun run check:launch -- \
@@ -127,7 +132,7 @@ Cutover 顺序：
 
 1. 固定 source revision，构建 immutable artifact。
 2. pause Generation admission/queues；等待 active attempt terminal 或明确对账。
-3. 停止 Main/Admin/Chat/event/admin workers，再停止 Gen；finalizer 最后。
+3. 停止 Main/Admin/Chat/event/admin workers，再停止 Gen；finalizer 最后；PM2 wrapper 在 drain 与 ownership fence 后停止 Fish 和 Pocket 两个语音 runtime。
 4. 执行 migration/cutover（如有）。
 5. 启动进程，等待期望实例数和 full readiness。
 6. 运行 Main/Chat/Gen probes 与最小真实生成。

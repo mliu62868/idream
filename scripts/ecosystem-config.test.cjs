@@ -29,6 +29,8 @@ const {
 function loadConfig(mode, overrides = {}) {
   const originalMode = process.env.IDREAM_PM2_MODE;
   const originalVideoProvider = process.env.GEN_VIDEO_PROVIDER;
+  const originalVoiceProvider = process.env.VOICE_PROVIDER;
+  const originalVoiceIdentityProvider = process.env.VOICE_IDENTITY_PROVIDER;
   try {
     if (mode === undefined) {
       delete process.env.IDREAM_PM2_MODE;
@@ -45,6 +47,12 @@ function loadConfig(mode, overrides = {}) {
     } else {
       process.env.GEN_VIDEO_PROVIDER = videoProvider;
     }
+    process.env.VOICE_PROVIDER = overrides.VOICE_PROVIDER ?? "pocket-tts";
+    if (overrides.VOICE_IDENTITY_PROVIDER === undefined) {
+      delete process.env.VOICE_IDENTITY_PROVIDER;
+    } else {
+      process.env.VOICE_IDENTITY_PROVIDER = overrides.VOICE_IDENTITY_PROVIDER;
+    }
     delete require.cache[require.resolve(configPath)];
     return require(configPath);
   } finally {
@@ -57,6 +65,16 @@ function loadConfig(mode, overrides = {}) {
       delete process.env.GEN_VIDEO_PROVIDER;
     } else {
       process.env.GEN_VIDEO_PROVIDER = originalVideoProvider;
+    }
+    if (originalVoiceProvider === undefined) {
+      delete process.env.VOICE_PROVIDER;
+    } else {
+      process.env.VOICE_PROVIDER = originalVoiceProvider;
+    }
+    if (originalVoiceIdentityProvider === undefined) {
+      delete process.env.VOICE_IDENTITY_PROVIDER;
+    } else {
+      process.env.VOICE_IDENTITY_PROVIDER = originalVoiceIdentityProvider;
     }
     delete require.cache[require.resolve(configPath)];
   }
@@ -122,6 +140,7 @@ function productionEnv(overrides = {}) {
     BULLMQ_PREFIX: "idream:production",
     REDIS_URL: "redis://production-redis:6379/4",
     GEN_VIDEO_PROVIDER: "backend",
+    VOICE_PROVIDER: "pocket-tts",
     ...overrides,
   };
 }
@@ -142,7 +161,7 @@ function commandList(calls) {
 }
 
 function onlineProductionProcesses() {
-  return productionRuntimeTargets.flatMap((name) =>
+  return ["pocket-tts", ...productionQuiescenceTargets].flatMap((name) =>
     Array.from({ length: 1 }, () =>
       pm2Process(name, "online"),
     ),
@@ -234,6 +253,38 @@ test("Fish Audio direct and PM2 launchers use Bun while preserving the Python ga
       path.join(repoRoot, "scripts/start-fish-audio.cjs"),
     );
   }
+});
+
+test("Pocket TTS runs the pinned official default CPU gateway on 8063", () => {
+  assert.equal(
+    rootPackage.scripts["voice:pocket:start"],
+    "bun scripts/start-pocket-tts.cjs",
+  );
+  for (const mode of ["development", "production"]) {
+    const pocket = byName(loadConfig(mode), "pocket-tts");
+    assert.equal(path.basename(pocket.interpreter), "bun");
+    assert.equal(pocket.script, "scripts/start-pocket-tts.cjs");
+    assert.equal(pocket.env.POCKET_TTS_PORT, "8063");
+    assert.equal(pocket.env.POCKET_TTS_MODEL, "pocket-tts");
+    assert.equal(pocket.env.POCKET_TTS_LANGUAGE, "english");
+    assert.match(pocket.env.POCKET_TTS_MODEL_REVISION, /^[a-f0-9]{40}$/);
+  }
+});
+
+test("the ecosystem loads Fish only when system or identity configuration requires it", () => {
+  const pocketOnly = loadConfig("production");
+  const withFishIdentity = loadConfig("production", {
+    VOICE_IDENTITY_PROVIDER: "fish-audio",
+  });
+
+  assert.equal(
+    pocketOnly.apps.some((app) => app.name === "fish-audio"),
+    false,
+  );
+  assert.equal(
+    withFishIdentity.apps.some((app) => app.name === "fish-audio"),
+    true,
+  );
 });
 
 test("obsolete rollout flags cannot enter the embedded Chat runtime", () => {
@@ -447,6 +498,27 @@ test("development recreates gen-image when the requested instance count shrinks"
   );
 });
 
+test("development replaces an inactive Fish runtime with the Pocket default", () => {
+  const fish = pm2ProcessFromApp(
+    byName(
+      loadConfig("development", {
+        VOICE_IDENTITY_PROVIDER: "fish-audio",
+      }),
+      "fish-audio",
+    ),
+    "online",
+    "development",
+  );
+
+  assert.deepEqual(
+    developmentDefinitionPlan([fish], {
+      VOICE_PROVIDER: "pocket-tts",
+      GEN_VIDEO_PROVIDER: "mock",
+    }),
+    { deleteNames: ["fish-audio"], requiresStart: true },
+  );
+});
+
 test("every production definition field fails closed on drift", () => {
   const exact = pm2Process("main-web", "online");
   assert.equal(matchesProductionProcessDefinition(exact), true);
@@ -474,7 +546,7 @@ test("production stop phases classify every non-voice app exactly once", () => {
   const config = loadConfig("production");
   const expected = config.apps
     .map((app) => app.name)
-    .filter((name) => name !== "fish-audio")
+    .filter((name) => name !== "fish-audio" && name !== "pocket-tts")
     .sort();
   const classified = [...productionQuiescenceTargets].sort();
 
@@ -522,7 +594,46 @@ test("production readiness requires every process instance and service probe", (
       ["curl", "http://127.0.0.1:3000/"],
       ["curl", "http://127.0.0.1:3001/"],
       ["curl", "http://127.0.0.1:3100/readyz"],
+      ["curl", "http://127.0.0.1:8063/health"],
+      ["bun", "preflight"],
+      ["pm2", "jlist"],
+    ],
+  );
+});
+
+test("production readiness conditionally owns the Fish identity runtime", () => {
+  const calls = [];
+  const fish = pm2Process("fish-audio", "online");
+  const processes = [...onlineProductionProcesses(), fish];
+  const status = verifyProductionRuntime({
+    runtimeEnv: productionEnv({ VOICE_IDENTITY_PROVIDER: "fish-audio" }),
+    onlineAttempts: 1,
+    delay: () => undefined,
+    spawnSync: scriptedSpawn(
+      [
+        { status: 0, stdout: noisyPm2List(processes) },
+        { status: 0 },
+        { status: 0 },
+        { status: 0 },
+        { status: 0 },
+        { status: 0 },
+        { status: 0 },
+        { status: 0, stdout: noisyPm2List(processes) },
+      ],
+      calls,
+    ),
+  });
+
+  assert.equal(status, 0);
+  assert.deepEqual(
+    commandList(calls).map(([command, args]) => [command, args.at(-1)]),
+    [
+      ["pm2", "jlist"],
+      ["curl", "http://127.0.0.1:3000/"],
+      ["curl", "http://127.0.0.1:3001/"],
+      ["curl", "http://127.0.0.1:3100/readyz"],
       ["curl", "http://127.0.0.1:8062/health"],
+      ["curl", "http://127.0.0.1:8063/health"],
       ["bun", "preflight"],
       ["pm2", "jlist"],
     ],
@@ -832,6 +943,7 @@ test("pm2 stop uses the same drain and ownership fence before stopping voice", (
     pm2Process("gen-image", "online"),
     pm2Process("gen-finalizer", "online"),
     pm2Process("fish-audio", "online"),
+    pm2Process("pocket-tts", "online"),
   ];
   const admissionStopped = running.map((process) =>
     process.name === "main-web" ? pm2Process("main-web", "stopped") : process,
@@ -842,7 +954,9 @@ test("pm2 stop uses the same drain and ownership fence before stopping voice", (
       : process,
   );
   const allStopped = workersStopped.map((process) =>
-    process.name === "fish-audio" ? pm2Process("fish-audio", "stopped") : process,
+    new Set(["fish-audio", "pocket-tts"]).has(process.name)
+      ? pm2Process(process.name, "stopped")
+      : process,
   );
   const status = runPm2Ecosystem({
     args: ["current", "stop"],
@@ -857,6 +971,7 @@ test("pm2 stop uses the same drain and ownership fence before stopping voice", (
         { status: 0 },
         { status: 0 },
         { status: 0, stdout: JSON.stringify(workersStopped) },
+        { status: 0 },
         { status: 0 },
         { status: 0, stdout: JSON.stringify(allStopped) },
       ],
@@ -880,6 +995,7 @@ test("pm2 stop uses the same drain and ownership fence before stopping voice", (
     ["pm2", ["stop", "gen-finalizer"]],
     ["pm2", ["jlist"]],
     ["pm2", ["stop", "fish-audio"]],
+    ["pm2", ["stop", "pocket-tts"]],
     ["pm2", ["jlist"]],
   ]);
   assert.equal(

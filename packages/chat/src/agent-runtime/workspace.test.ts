@@ -28,7 +28,7 @@ function invocation(memoryMode: "normal" | "private"): CompanionInvocation {
     expectedProfileDigest: "d".repeat(64),
     deadlineAt: new Date(Date.now() + 60_000).toISOString(),
     preparedTurn: {
-      version: 3,
+      version: 4,
       model: "model-1",
       characterName: "Mira",
       messages: [{
@@ -51,6 +51,8 @@ function invocation(memoryMode: "normal" | "private"): CompanionInvocation {
       },
       budget: { maxInputTokens: 2_000, usedInputTokens: 100, dropped: [] },
       trace: {
+        productPromptVersion: "companion-product-1",
+        systemPromptDigest: "b".repeat(64),
         characterContentVersionId: "content-1",
         characterReleaseId: "release-1",
         soulFingerprint: "a".repeat(64),
@@ -58,6 +60,7 @@ function invocation(memoryMode: "normal" | "private"): CompanionInvocation {
         sceneVersion: 1,
         contextRevision: "1",
       },
+      requiredAction: null,
     },
   };
 }
@@ -96,6 +99,7 @@ async function rebuildRelationship(
   const candidate = await store.prepareRelationshipRebuild(
     identity,
     rebuildFence,
+    { seed: "empty" },
     async (workspace) => {
       await build(workspace);
       return { sessions: 1, messages: 1 };
@@ -142,6 +146,31 @@ describe("Chat companion workspace", () => {
       .rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("seeds ordinary projections from canonical memory", async () => {
+    const { store } = await fixture();
+    const identity = { userId: "user-1", characterId: "character-1" };
+    await rebuildRelationship(store, identity, async (workspace) => {
+      await writeFile(join(workspace, ".igrep", "memory.txt"), "canonical-memory");
+    });
+    const projectionFence = fence("2");
+    const prepared = await store.prepareRelationshipRebuild(
+      identity,
+      projectionFence,
+      { seed: "canonical" },
+      async (workspace) => {
+        expect(await readFile(join(workspace, ".igrep", "memory.txt"), "utf8"))
+          .toBe("canonical-memory");
+        return { sessions: 1, messages: 2 };
+      },
+    );
+
+    await store.discardRelationshipRebuild({
+      ...identity,
+      rebuildId: prepared.rebuildId,
+      fence: projectionFence,
+    });
+  });
+
   it("does not lock a normal turn behind an asynchronous projection build", async () => {
     const { store } = await fixture();
     const identity = { userId: "user-1", characterId: "character-1" };
@@ -150,6 +179,7 @@ describe("Chat companion workspace", () => {
     const preparing = store.prepareRelationshipRebuild(
       identity,
       fence("1"),
+      { seed: "empty" },
       async (workspace) => {
         buildStarted.resolve();
         await releaseBuild.promise;
@@ -182,6 +212,7 @@ describe("Chat companion workspace", () => {
     const prepared = await store.prepareRelationshipRebuild(
       identity,
       rebuildFence,
+      { seed: "empty" },
       async (workspace) => {
         await writeFile(join(workspace, ".igrep", "projection.txt"), "projected");
         return { sessions: 1, messages: 2 };
@@ -209,6 +240,7 @@ describe("Chat companion workspace", () => {
     const first = await store.prepareRelationshipRebuild(
       identity,
       firstFence,
+      { seed: "empty" },
       async (workspace) => {
         await writeFile(join(workspace, ".igrep", "projection.txt"), "v1");
         return { sessions: 1, messages: 2 };
@@ -227,6 +259,7 @@ describe("Chat companion workspace", () => {
     const second = await store.prepareRelationshipRebuild(
       identity,
       secondFence,
+      { seed: "empty" },
       async (workspace) => {
         await writeFile(join(workspace, ".igrep", "projection.txt"), "v2");
         return { sessions: 2, messages: 4 };
@@ -242,6 +275,7 @@ describe("Chat companion workspace", () => {
     const stale = await store.prepareRelationshipRebuild(
       identity,
       firstFence,
+      { seed: "empty" },
       async (workspace) => {
         await writeFile(join(workspace, ".igrep", "projection.txt"), "stale");
         return { sessions: 1, messages: 2 };
@@ -289,6 +323,7 @@ describe("Chat companion workspace", () => {
     const preparing = store.prepareRelationshipRebuild(
       identity,
       rebuildFence,
+      { seed: "empty" },
       async (workspace) => {
         buildStarted.resolve();
         await releaseBuild.promise;
@@ -311,6 +346,7 @@ describe("Chat companion workspace", () => {
     await expect(store.prepareRelationshipRebuild(
       identity,
       fence("2"),
+      { seed: "empty" },
       async () => ({ sessions: 0, messages: 0 }),
     )).rejects.toThrow(/deleted user/);
     await expect(lstat(relationshipWorkspacePath(

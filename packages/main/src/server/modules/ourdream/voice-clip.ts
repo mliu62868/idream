@@ -248,7 +248,7 @@ export async function createVoiceClip(
     gender: character.gender,
   });
   const proposedProviderPayload = pinnedVoiceProviderPayloadSchema.parse({
-    providerKey: providers.voice.clip.providerKey,
+    providerKey: voiceAuthority.providerKey,
     voiceId: voiceAuthority.voiceId,
     voiceAuthority: voiceAuthority.source,
     systemVoiceSettingVersion: voiceAuthority.settingVersion,
@@ -750,6 +750,7 @@ async function executeOwnedVoiceClaim(input: {
         tone: providerPayload.tone,
         delivery: providerPayload.delivery,
         durationMs,
+        provider: providerPayload.providerKey,
         providerKey: result.data.key,
         sceneVersion: body.sceneVersion ?? 0,
         scene: body.scene ?? null,

@@ -3,6 +3,7 @@ import { createInterface } from "node:readline";
 import {
   companionWorkspaceRebuildMetrics,
   type CompanionWorkspaceRebuild,
+  type CompanionWorkspaceBuildMode,
   type CompanionWorkspaceRebuildFence,
   type CompanionWorkspaceRebuildPromotion,
 } from "@idream/shared/chat/companion-runtime";
@@ -12,6 +13,7 @@ export interface CompanionWorkspaceRebuildSpool {
   scope: "relationship";
   userId: string;
   characterId: string;
+  mode: CompanionWorkspaceBuildMode;
   messageCount: number;
   sessionCount: number;
   estimatedBytes: number;

@@ -89,7 +89,17 @@ export async function createChatSession(
   }
   const activeKey = `${userId}:${characterId}`;
   const existing = await prisma.recentChat.findUnique({ where: { activeKey } });
-  if (existing) return publicSession(existing);
+  if (existing) {
+    if (owner || existing.characterReleaseId === release?.id) {
+      return publicSession(existing);
+    }
+    // INVARIANT: a session keeps its immutable Release pin. When Serving moves,
+    // preserve that history and open a new active session instead of mutating it.
+    await prisma.recentChat.updateMany({
+      where: { sessionId: existing.sessionId, activeKey },
+      data: { status: "archived", activeKey: null },
+    });
+  }
 
   const openingMessage = firstMessage(content?.openingSnapshot) ?? null;
   const visual = release
@@ -641,6 +651,11 @@ async function frozenExecutionSnapshot(
     },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     take: 24,
+    include: {
+      attachments: {
+        select: { status: true, mediaAssetId: true, metadata: true },
+      },
+    },
   });
   recent.reverse();
   const snapshot: ChatExecutionSnapshot = {
@@ -660,6 +675,13 @@ async function frozenExecutionSnapshot(
     memoryEnabled: turn.memoryEnabled && memoryEnabled,
     contextRevision: turn.session.contextRevision,
     userContent: turn.userContent,
+    hasRecentImageContext: recent.some((item) =>
+      item.attachments.some((attachment) =>
+        attachment.status === "completed" &&
+        attachment.mediaAssetId !== null &&
+        attachmentAttempt(attachment.metadata) === item.attempt
+      )
+    ),
     recentTurns: recent.map((item) => ({
       turnId: item.id,
       userMessageId: item.userMessageId,

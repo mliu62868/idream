@@ -1,9 +1,6 @@
 import { createHash } from "node:crypto";
-import {
-  REQUIRED_IMAGE_CAPTION_INSTRUCTION,
-  requiredImageToolCallForUserRequest,
-} from "@idream/shared/chat/image-action";
 import type { ChatTerminalCommit, ChatToolEffect } from "@idream/shared/contracts";
+import { COMPANION_PRODUCT_PROMPT_VERSION } from "@idream/shared";
 import type {
   CompanionCommitAck,
   CompanionEvent,
@@ -12,6 +9,7 @@ import type {
   CompanionToolCall,
   CompanionToolResult,
 } from "./agent-runtime/contracts.js";
+import type { CompanionRuntimePort } from "./agent-runtime/engine.js";
 import {
   agentRuntimeProfileDigest,
   agentRuntimeVersions,
@@ -42,6 +40,8 @@ interface ActiveAgentRun {
   userId: string;
   done: Promise<void>;
 }
+
+type TerminalPromptAttribution = ChatTerminalCommit["terminalEvidence"]["prompt"];
 
 const activeRuns = new Map<string, ActiveAgentRun>();
 
@@ -104,6 +104,12 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
   let committedAck: Extract<CompanionCommitAck, { accepted: true }> | null = null;
   let runtimeFailure: Extract<CompanionEvent, { type: "failed" }>["error"] | undefined;
   let runtimeCancellation: Extract<CompanionEvent, { type: "cancelled" }>["reason"] | undefined;
+  let promptAttribution: TerminalPromptAttribution = {
+    productPromptVersion: COMPANION_PRODUCT_PROMPT_VERSION,
+    preparedTurnVersion: null,
+    systemPromptDigest: null,
+    soulFingerprint: null,
+  };
   try {
     await appendStreamEvent(key, { type: "start", attempt: snapshot.attempt });
     await appendAgentRunEvent(turnId, attempt, "admitted", {
@@ -113,34 +119,19 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
       assistantMessageId: snapshot.assistantMessageId,
     });
     const prepared = await prepareCompanionTurn({ snapshot, authority: input.authority });
+    promptAttribution = {
+      productPromptVersion: prepared.trace.productPromptVersion,
+      preparedTurnVersion: prepared.version,
+      systemPromptDigest: prepared.trace.systemPromptDigest,
+      soulFingerprint: prepared.trace.soulFingerprint,
+    };
     const memoryMode = snapshot.memoryEnabled ? "normal" : "private";
+    const { context, ...executionTurn } = prepared;
+    const wire = executionTurn;
     const profileDigest = await agentRuntimeProfileDigest(memoryMode);
     const runtimeVersions = await agentRuntimeVersions();
     let runtimeInstance: { id: string; startedAt: string } | undefined;
     const igrepObservations = emptyIgrepObservations();
-    const { context, ...executionTurn } = prepared;
-    let wire = executionTurn;
-    const requiredTool = requiredImageToolCallForUserRequest({
-      userText: snapshot.userContent,
-      characterName: prepared.characterName,
-    });
-    if (requiredTool) {
-      const result = await executeMainTool({
-        attemptId,
-        callId: `required:${requiredTool.name}`,
-        ...requiredTool,
-      }, snapshot.turnId, snapshot.attempt);
-      if (result.outcome !== "succeeded") {
-        throw new Error(result.error.message);
-      }
-      wire = {
-        ...wire,
-        tools: [],
-        messages: wire.messages.map((message, index) => index === 0
-          ? { ...message, content: `${message.content}\n\n${REQUIRED_IMAGE_CAPTION_INSTRUCTION}` }
-          : message),
-      };
-    }
     const invocation: CompanionInvocation = {
       invocationId: `inv:${attemptId}`,
       attemptId,
@@ -153,7 +144,7 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
       deadlineAt: new Date(Date.now() + env.AGENT_RUN_DEADLINE_MS).toISOString(),
     };
     let sequence = 0;
-    await runCompanion(invocation, {
+    const port: CompanionRuntimePort = {
       emit: async (event) => {
         const trace = agentRunTraceEvent(event);
         if (trace) await appendAgentRunEvent(turnId, attempt, trace.kind, trace.payload);
@@ -196,6 +187,7 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
             memoryMode,
             runtimeInstance,
             igrepObservations,
+            promptAttribution,
           ),
         };
         const proposal: AgentRunProposal = {
@@ -213,7 +205,8 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
         }
         return ack;
       },
-    }, signal);
+    };
+    await runCompanion(invocation, port, signal);
     if (!committed) throw new Error("DSH ended without a terminal commit");
     if (!committedProposal || !committedAck) {
       throw new Error("DSH committed without durable terminal evidence");
@@ -246,6 +239,7 @@ async function executeAgentRun(turnId: string, attempt: number, signal: AbortSig
       scene: snapshot.scene,
       terminalEvidence: agentRunFailureEvidence({
         cancelled,
+        prompt: promptAttribution,
         runtimeCancellation: cancellation.reason,
         runtimeFailure,
         reason,
@@ -359,11 +353,13 @@ async function executeMainTool(
   attempt: number,
 ): Promise<CompanionToolResult> {
   const effect: ChatToolEffect = {
-    version: 1,
+    version: 2,
     turnId,
     attempt,
     callId: call.callId,
     name: call.name,
+    effectScope: call.effectScope,
+    intent: call.intent,
     arguments: call.arguments,
   };
   await appendAgentRunEvent(turnId, attempt, "tool.requested", {
@@ -372,33 +368,81 @@ async function executeMainTool(
     name: call.name,
     argumentsDigest: sha256(stableJson(call.arguments)),
   });
-  const response = await postMain("/api/internal/chat/tool-effects", effect);
-  const value = await response.json() as Record<string, unknown>;
-  if (response.ok && value.accepted === true) {
-    return {
-      attemptId: call.attemptId,
-      callId: call.callId,
-      name: call.name,
-      outcome: "succeeded",
-      output: value as never,
-    };
+  for (let ackAttempt = 1; ackAttempt <= 2; ackAttempt += 1) {
+    try {
+      const response = await postMain("/api/internal/chat/tool-effects", effect);
+      const value = await response.json() as Record<string, unknown>;
+      if (response.ok && value.accepted === true) {
+        return {
+          attemptId: call.attemptId,
+          callId: call.callId,
+          name: call.name,
+          outcome: "succeeded",
+          output: value as never,
+        };
+      }
+      if (response.status >= 500) {
+        await appendAgentRunEvent(turnId, attempt, "tool.ack_unknown", {
+          attemptId: call.attemptId,
+          callId: call.callId,
+          name: call.name,
+          ackAttempt,
+          status: response.status,
+        });
+        if (ackAttempt < 2) continue;
+        return {
+          attemptId: call.attemptId,
+          callId: call.callId,
+          name: call.name,
+          outcome: "unknown",
+          error: {
+            code: "main_tool_ack_unknown",
+            message: "Main tool effect outcome is unknown",
+            retryable: true,
+          },
+        };
+      }
+      const error = record(value.error);
+      const topLevelCode = typeof value.error === "string" ? value.error : undefined;
+      const topLevelMessage = typeof value.message === "string" ? value.message : undefined;
+      return {
+        attemptId: call.attemptId,
+        callId: call.callId,
+        name: call.name,
+        outcome: "failed",
+        error: {
+          code: typeof error?.code === "string"
+            ? error.code
+            : topLevelCode ?? `main_http_${response.status}`,
+          message: typeof error?.message === "string"
+            ? error.message
+            : topLevelMessage ?? "Main rejected the tool effect",
+          retryable: error?.retryable === true || response.status >= 500,
+        },
+      };
+    } catch (error) {
+      await appendAgentRunEvent(turnId, attempt, "tool.ack_unknown", {
+        attemptId: call.attemptId,
+        callId: call.callId,
+        name: call.name,
+        ackAttempt,
+        errorDigest: sha256(error instanceof Error ? error.message : String(error)),
+      });
+      if (ackAttempt < 2) continue;
+      return {
+        attemptId: call.attemptId,
+        callId: call.callId,
+        name: call.name,
+        outcome: "unknown",
+        error: {
+          code: "main_tool_ack_unknown",
+          message: "Main tool effect outcome is unknown",
+          retryable: true,
+        },
+      };
+    }
   }
-  const error = record(value.error);
-  const topLevelCode = typeof value.error === "string" ? value.error : undefined;
-  const topLevelMessage = typeof value.message === "string" ? value.message : undefined;
-  return {
-    attemptId: call.attemptId,
-    callId: call.callId,
-    name: call.name,
-    outcome: "failed",
-    error: {
-      code: typeof error?.code === "string" ? error.code : topLevelCode ?? `main_http_${response.status}`,
-      message: typeof error?.message === "string"
-        ? error.message
-        : topLevelMessage ?? "Main rejected the tool effect",
-      retryable: error?.retryable === true || response.status >= 500,
-    },
-  };
+  throw new Error("unreachable Main tool acknowledgement loop");
 }
 
 async function projectStreamEvent(
@@ -477,6 +521,7 @@ function terminalEvidence(
   memoryMode: "normal" | "private",
   runtimeInstance: { id: string; startedAt: string } | undefined,
   igrepObservations: IgrepObservations,
+  prompt: TerminalPromptAttribution,
 ) {
   return {
     authority: "dsh_terminal_candidate",
@@ -489,6 +534,7 @@ function terminalEvidence(
     tools: candidate.tools,
     attribution: candidate.attribution ?? null,
     profileDigest,
+    prompt,
     memoryMode,
     runtime: "embedded_dsh",
     runtimeInstance: runtimeInstance ?? null,
@@ -501,6 +547,7 @@ function terminalEvidence(
 
 export function agentRunFailureEvidence(input: {
   cancelled: boolean;
+  prompt: TerminalPromptAttribution;
   runtimeCancellation?: Extract<CompanionEvent, { type: "cancelled" }>["reason"];
   runtimeFailure?: Extract<CompanionEvent, { type: "failed" }>["error"];
   reason: string;
@@ -510,6 +557,7 @@ export function agentRunFailureEvidence(input: {
     : input.runtimeFailure?.code ?? "agent_run_failed";
   return {
     authority: "chat_agent_run",
+    prompt: input.prompt,
     failureCode,
     ...(input.runtimeCancellation ? { cancellationReason: input.runtimeCancellation } : {}),
     failureDigest: sha256(input.reason),

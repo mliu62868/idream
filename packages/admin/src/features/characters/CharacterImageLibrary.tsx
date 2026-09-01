@@ -25,6 +25,7 @@ type CharacterImageLibraryProps = {
   canRead: boolean;
   canReadProduction: boolean;
   canCreate: boolean;
+  canReview: boolean;
   canArchive: boolean;
   onContinue: (tab: "visual" | "preview") => void;
   onProjectReload: () => Promise<void>;
@@ -37,6 +38,7 @@ export function CharacterImageLibrary({
   canRead,
   canReadProduction,
   canCreate,
+  canReview,
   canArchive,
   onContinue,
   onProjectReload,
@@ -223,10 +225,10 @@ export function CharacterImageLibrary({
             permissions={{
               read: canReadProduction,
               create: canCreate,
-              review: false,
+              review: canReview,
               selectDraft: canCreate,
             }}
-            productionOnly
+            productionOnly={false}
           />
         </section>
       ) : null}

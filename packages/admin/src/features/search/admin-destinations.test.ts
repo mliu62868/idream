@@ -49,7 +49,7 @@ describe("admin destination search", () => {
     expect(ranked.indexOf("content/tags")).toBeGreaterThan(ranked.indexOf("content/review-queue"));
   });
 
-  // SPEC: 那三个不在侧栏、只能靠记 URL 到达的兼容目的地也必须搜得到。
+  // SPEC: 兼容目的地既在所属工作区可发现，也必须支持命令面板直达。
   it("reaches the compatibility destinations that navigation does not list", () => {
     expect(navItems.some((item) => item.id === "moderation")).toBe(false);
     expect(ids("Moderation Cases")).toContain("moderation");

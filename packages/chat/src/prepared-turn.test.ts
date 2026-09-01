@@ -1,4 +1,8 @@
 import { describe, expect, it } from "vitest";
+import {
+  EDIT_LAST_IMAGE_TOOL,
+  GENERATE_IMAGE_ASYNC_TOOL,
+} from "@idream/shared/chat/image-action";
 import type { BuiltContext } from "./context.js";
 import {
   compilePreparedTurn,
@@ -14,10 +18,12 @@ function context(): BuiltContext {
       voiceEnabled: false,
       imageToolEnabled: false,
     }),
-    maxContextChars: 4_000,
+    maxContextChars: 5_000,
     imageToolEnabled: false,
   };
   return {
+    userLocale: "en",
+    hasRecentImageContext: false,
     persona: {
       characterId: "character-1",
       creatorId: null,
@@ -37,11 +43,11 @@ function context(): BuiltContext {
       release: null,
       characterContentVersionId: "content-1",
       characterReleaseId: "release-1",
-      soulFingerprint: "fingerprint",
+      soulFingerprint: "a".repeat(64),
       compilerVersion: "character-soul-3",
     },
     policy,
-    recentMessages: Array.from({ length: 8 }, (_, index) => ({
+    recentMessages: Array.from({ length: 7 }, (_, index) => ({
       id: `message-${index}`,
       role: index % 2 === 0 ? "user" as const : "assistant" as const,
       content: `turn ${index} ${"t".repeat(600)}`,
@@ -64,12 +70,13 @@ function context(): BuiltContext {
 
 describe("PreparedTurn budget", () => {
   it("counts all adapter input and drops only complete transcript exchanges", () => {
-    const result = fitPreparedTurnBudget(context());
+    const result = fitPreparedTurnBudget(context(), "message-6");
     expect(result.budget.usedInputTokens).toBeLessThanOrEqual(result.budget.maxInputTokens);
     expect(result.budget.dropped).toEqual(["transcript"]);
-    expect(result.context.recentMessages.length).toBeLessThan(8);
+    expect(result.context.recentMessages.length).toBeLessThan(7);
     expect(result.context.recentMessages[0]?.role).toBe("user");
-    expect(result.context.recentMessages.length % 2).toBe(0);
+    expect(result.context.recentMessages.at(-1)?.id).toBe("message-6");
+    expect(result.context.recentMessages.length % 2).toBe(1);
   });
 
   it("serializes stable replay/current ids and a credential-free pinned profile", () => {
@@ -100,11 +107,13 @@ describe("PreparedTurn budget", () => {
       maxOutputTokens: source.policy.modelProfile.maxOutputTokens,
     });
     expect(wire).toMatchObject({
-      version: 3,
+      version: 4,
       trace: {
+        productPromptVersion: "companion-product-1",
         characterReleaseId: "release-1",
       },
     });
+    expect(wire.messages[0]?.id).toContain(wire.trace.systemPromptDigest);
   });
 
   it("preserves Soul and Scene in the sole DSH projection", () => {
@@ -131,5 +140,48 @@ describe("PreparedTurn budget", () => {
     expect(sameWire).toEqual(wire);
     // The budget counts the state block as adapter input.
     expect(prepared.messages.at(-2)?.content).toBe(state);
+  });
+
+  it("reserves the required image action while leaving its concrete prompt to the Agent", () => {
+    const source = context();
+    source.policy = {
+      ...source.policy,
+      imageToolEnabled: true,
+      modelProfile: { ...source.policy.modelProfile, supportsTools: true },
+    };
+    source.persona = { ...source.persona, imageToolEnabled: true };
+    source.recentMessages = [{
+      id: "user-current",
+      role: "user",
+      content: "Don't talk, send me a photo",
+    }];
+
+    const prepared = compilePreparedTurn(source, "user-current");
+
+    expect(prepared.requiredAction).toEqual({
+      name: GENERATE_IMAGE_ASYNC_TOOL,
+      requestedNudity: "unspecified",
+    });
+    expect(prepared.tools).toEqual([
+      expect.objectContaining({ name: GENERATE_IMAGE_ASYNC_TOOL }),
+    ]);
+    expect(JSON.stringify(prepared.requiredAction)).not.toContain("prompt");
+    expect(prepared.trace.systemPromptDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(prepared.messages[0]?.id).toContain(prepared.trace.systemPromptDigest);
+  });
+
+  it("uses recent delivered-image context for shorthand edits", () => {
+    const source = context();
+    source.policy = {
+      ...source.policy,
+      imageToolEnabled: true,
+      modelProfile: { ...source.policy.modelProfile, supportsTools: true },
+    };
+    source.persona = { ...source.persona, imageToolEnabled: true };
+    source.hasRecentImageContext = true;
+    source.recentMessages = [{ id: "user-current", role: "user", content: "换个姿势" }];
+
+    expect(compilePreparedTurn(source, "user-current").requiredAction)
+      .toMatchObject({ name: EDIT_LAST_IMAGE_TOOL });
   });
 });

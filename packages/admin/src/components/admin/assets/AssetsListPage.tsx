@@ -27,12 +27,14 @@ import {
 import {
   ASSET_PURPOSES,
   ASSET_STATUSES,
+  ASSET_UPLOAD_PURPOSES,
   AssetBulkArchiveError,
   assetAuthorityDependencyView,
   assetsListPath,
   bulkArchiveAssets,
   canonicalAssetIds,
   preflightArchiveAssets,
+  uploadPlatformAsset,
   type AssetAuthorityDependency,
   type AssetBulkArchiveErrorDetails,
   type ContentAsset,
@@ -69,8 +71,14 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
   const [pendingArchiveIds, setPendingArchiveIds] = useState<string[] | null>(null);
   const [serverConflict, setServerConflict] = useState<AssetBulkArchiveErrorDetails | null>(null);
   const [bulkStatus, setBulkStatus] = useState<string | null>(null);
+  const [uploadPurpose, setUploadPurpose] = useState<(typeof ASSET_UPLOAD_PURPOSES)[number]>("campaign");
+  const [uploadBusy, setUploadBusy] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadStatus, setUploadStatus] = useState<string | null>(null);
+  const [uploadRevision, setUploadRevision] = useState(0);
   const requestGate = useRef(createLatestRequestGate());
   const preflightRequestGate = useRef(createLatestRequestGate());
+  const uploadInput = useRef<HTMLInputElement>(null);
 
   const clearBulkFeedback = useCallback(() => {
     preflightRequestGate.current.invalidate();
@@ -93,6 +101,7 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
   }, [clearBulkFeedback]);
 
   const reload = useCallback(async (nextCursor: string | undefined, nextPage: number) => {
+    void uploadRevision;
     const request = requestGate.current.begin();
     setLoading(true);
     setError(null);
@@ -115,7 +124,7 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
     } finally {
       if (request.isCurrent()) setLoading(false);
     }
-  }, [purpose, search, status, targetId, t]);
+  }, [purpose, search, status, targetId, t, uploadRevision]);
 
   useUrlBootstrap(useCallback((params: URLSearchParams) => {
     setStatus(params.get("status") ?? "all");
@@ -200,6 +209,52 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
     }
   }
 
+  async function uploadSelectedImages(files: readonly File[]) {
+    if (files.length === 0) return;
+    setUploadBusy(true);
+    setUploadError(null);
+    setUploadStatus(null);
+    let uploadedCount = 0;
+    try {
+      for (const file of files) {
+        await uploadPlatformAsset({
+          file,
+          purpose: uploadPurpose,
+          fallbackMessage: t("Image upload failed"),
+        });
+        uploadedCount += 1;
+      }
+      setUploadStatus(t("{count} images uploaded to the Library.", {
+        count: uploadedCount,
+      }));
+    } catch (uploadFailure) {
+      setUploadError(
+        uploadedCount > 0
+          ? t("{count} images uploaded; the next upload failed: {message}", {
+              count: uploadedCount,
+              message: uploadFailure instanceof Error
+                ? uploadFailure.message
+                : t("Image upload failed"),
+            })
+          : uploadFailure instanceof Error
+            ? uploadFailure.message
+            : t("Image upload failed"),
+      );
+    } finally {
+      setUploadBusy(false);
+      if (uploadedCount > 0) {
+        clearForNextQuery();
+        setStatus("all");
+        setPurpose("all");
+        setSearch("");
+        setTargetId("");
+        setCursor(undefined);
+        setPage(1);
+        setUploadRevision((revision) => revision + 1);
+      }
+    }
+  }
+
   const submitBulkArchive = useCallback(async (assetIds: readonly string[], reason: string) => {
     try {
       const result = await bulkArchiveAssets({ assetIds, reason, fallbackMessage: t("Request failed") });
@@ -222,7 +277,70 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
 
   return (
     <div aria-busy={loading}>
-      <PageHeader purpose={t("Browse and curate generated image assets.")} title={t("Library")} />
+      <PageHeader purpose={t("Upload, organize, and stage operational image assets.")} title={t("Library")} />
+      {canReview ? (
+        <section
+          aria-label={t("Upload operational images")}
+          className="mb-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4"
+        >
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+            <div className="max-w-2xl">
+              <h2 className="font-semibold text-[var(--ad-ink)]">
+                {t("Upload operational images")}
+              </h2>
+              <p className="mt-1 text-sm text-[var(--ad-text-muted)]">
+                {t("Create artwork with any tool, then upload the final JPEG, PNG, or WebP here. Character images still belong in the Character workspace.")}
+              </p>
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+              <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">
+                {t("Purpose")}
+                <select
+                  aria-label={t("Upload purpose")}
+                  className="min-h-11 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] px-3 text-sm text-[var(--ad-ink)]"
+                  disabled={uploadBusy}
+                  onChange={(event) => setUploadPurpose(event.target.value as typeof uploadPurpose)}
+                  value={uploadPurpose}
+                >
+                  {ASSET_UPLOAD_PURPOSES.map((item) => (
+                    <option key={item} value={item}>{value(item)}</option>
+                  ))}
+                </select>
+              </label>
+              <input
+                accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
+                aria-label={t("Choose images to upload")}
+                className="sr-only"
+                disabled={uploadBusy}
+                multiple
+                onChange={(event) => {
+                  const files = [...(event.currentTarget.files ?? [])];
+                  event.currentTarget.value = "";
+                  void uploadSelectedImages(files);
+                }}
+                ref={uploadInput}
+                type="file"
+              />
+              <PrimaryButton
+                disabled={uploadBusy}
+                onClick={() => uploadInput.current?.click()}
+              >
+                {uploadBusy ? t("Uploading…") : t("Upload images")}
+              </PrimaryButton>
+            </div>
+          </div>
+          {uploadError ? (
+            <p className="mt-3 rounded-md bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">
+              {uploadError}
+            </p>
+          ) : null}
+          {uploadStatus ? (
+            <p className="mt-3 rounded-md bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]" role="status">
+              {uploadStatus}
+            </p>
+          ) : null}
+        </section>
+      ) : null}
       {targetId ? (
         // SPEC: 收窄范围必须可见且可撤销。
         // INTENT: 从角色工作台"查看全部"跳进来时列表只剩该角色的图，不说明就像图库丢了数据。
@@ -361,8 +479,7 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
       {loading && rows.length === 0 ? (
         <LoadingWorkspace label="Loading the image library…" />
       ) : rows.length === 0 && !error ? (
-        // SPEC: 空态要给出路。图库没有 /new——资产由 Creative Run 产出，所以出路是"放宽筛选"
-        // 或"去 Creative Run 生成"，不是一句灰字。
+        // SPEC: 非角色运营素材从上传进入；筛选空态只需放宽筛选，真正空态直接复用上方上传入口。
         <EmptyState
           action={
             <div className="flex flex-wrap justify-center gap-2">
@@ -380,14 +497,18 @@ export function AssetsListPage({ canReview = true }: { canReview?: boolean }) {
                   {t("Reset filters")}
                 </GhostButton>
               ) : null}
-              <Link href="/admin/creative/runs">
-                <PrimaryButton>{t("Go to Creative Runs")}</PrimaryButton>
-              </Link>
+              {!hasFilters && canReview ? (
+                <PrimaryButton onClick={() => uploadInput.current?.click()}>
+                  {t("Upload images")}
+                </PrimaryButton>
+              ) : null}
             </div>
           }
           hint={hasFilters
-            ? t("Assets are produced by Creative Runs. Widen the filters, or start a run to create new ones.")
-            : t("Assets are produced by Creative Runs. Start a run to create the first one.")}
+            ? t("Widen the filters to find an existing asset, or upload new artwork above.")
+            : canReview
+              ? t("Upload final artwork to create the first platform asset.")
+              : t("No operational image assets have been uploaded yet.")}
           kind={hasFilters ? "filtered" : "empty"}
           title={hasFilters ? t("No platform assets match these filters.") : t("No platform assets yet.")}
         />
