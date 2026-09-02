@@ -21,6 +21,16 @@ import {
   type GenerationWriteRequest,
 } from "./generation-request";
 import { GENERATION_JOB_STATUSES } from "@idream/shared/catalog";
+import {
+  listGenerationReceipts,
+  readGenerationReceipts,
+  requestGenerationReceipt,
+  requestGenerationJobWithExactAuthority,
+  requestGenerationRetryWithExactAuthority,
+  requestMediaEnhancementWithExactQuote,
+  requestMediaVariationWithExactQuote,
+  type GenerationReceiptPersistence,
+} from "./generation-write-client";
 import type {
   RuntimeGenerationQuote,
   RuntimeGenerationRetryQuote,
@@ -1318,5 +1328,156 @@ describe("generation request projection", () => {
     expect(
       projectGenerationRequest(failed, viewInput({ quoteKey: "route-b" })).quoteError,
     ).toBe("");
+  });
+});
+
+// These cases cross the writer boundary: storage is a receipt, never proof
+// that a later rejected check cancelled an earlier accepted request.
+describe("generation receipts across page lifetimes", () => {
+  function memoryStorage() {
+    const values = new Map<string, string>();
+    return {
+      values,
+      get length() { return values.size; },
+      key: (index: number) => [...values.keys()][index] ?? null,
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+      removeItem: (key: string) => { values.delete(key); },
+    };
+  }
+  const authority = {
+    profileId: quote.profileId, profileVersion: quote.profileVersion,
+    routeFingerprint: quote.routeFingerprint, pricingFingerprint: quote.pricing.fingerprint,
+    outputCount: 1, costDreamcoins: 7,
+  };
+  const kinds = ["generation", "variation", "retry", "enhancement"] as const;
+  function send(kind: typeof kinds[number], keys: Map<string, string>, persistence: GenerationReceiptPersistence,
+    fetcher: Parameters<typeof requestGenerationJobWithExactAuthority>[1]) {
+    const common = { idempotencyKeys: keys, persistence, createIdempotencyKey: () => `${kind}-original-key` };
+    if (kind === "generation") return requestGenerationJobWithExactAuthority({ ...common, body: {
+      mode: "image", freeplay: true, prompt: "User portrait", outputCount: 1,
+      controls: { orientation: "4:5" }, quoteAuthority: authority,
+    } }, fetcher);
+    if (kind === "variation") return requestMediaVariationWithExactQuote({ ...common, mediaId: "source-1",
+      outputCount: 1, consistencyMode: "balanced", prompt: "Blue coat", quote,
+    }, fetcher);
+    if (kind === "retry") return requestGenerationRetryWithExactAuthority({ ...common, jobId: "failed-job", quoteAuthority: authority }, fetcher);
+    return requestMediaEnhancementWithExactQuote({ ...common, mediaId: "source-1", quote }, fetcher);
+  }
+
+  it.each(kinds)("persists %s before POST and restores the original body without a new quote", async (kind) => {
+    const storage = memoryStorage();
+    const persistence = { ownerScope: "user:one", storage };
+    let sent = "";
+    await expect(send(kind, new Map(), persistence, async (_url, init) => {
+      expect(storage.values.size).toBe(1);
+      sent = String(init?.body);
+      throw new TypeError("connection lost");
+    })).rejects.toThrow();
+    expect(readGenerationReceipts({ ...persistence, ownerScope: "user:two" })).toEqual([]);
+    const [receipt] = readGenerationReceipts(persistence);
+    expect(receipt).toBeDefined();
+    const restored = new Map([[receipt.record, receipt.key]]);
+    const accepted = await requestGenerationReceipt(receipt, { idempotencyKeys: restored, persistence }, async (_url, init) => {
+      expect(init?.body).toBe(sent);
+      expect(new Headers(init?.headers).get("idempotency-key")).toBe(`${kind}-original-key`);
+      return jobResponse("accepted-once");
+    });
+    expect(accepted.job.id).toBe("accepted-once");
+    expect(restored.size).toBe(0);
+    expect(storage.values.size).toBe(0);
+  });
+
+  it.each([400, 401, 402, 403, 404, 409, 429])("retains a previously unknown request after a %i check until its Job ACK", async (status) => {
+    const storage = memoryStorage();
+    const persistence = { ownerScope: "user:one", storage };
+    const keys = new Map<string, string>();
+    await expect(send("generation", keys, persistence, async () => { throw new TypeError("lost"); })).rejects.toThrow();
+    const [receipt] = listGenerationReceipts(keys);
+    await expect(requestGenerationReceipt(receipt, { idempotencyKeys: keys, persistence }, async () =>
+      Response.json({ ok: false, error: { message: "Current request rejected" } }, { status }),
+    )).rejects.toThrow("Current request rejected");
+    expect(readGenerationReceipts(persistence)).toEqual([receipt]);
+    expect(keys.get(receipt.record)).toBe(receipt.key);
+    await requestGenerationReceipt(receipt, { idempotencyKeys: keys, persistence }, async () => jobResponse("original-committed-later"));
+    expect(storage.values.size).toBe(0);
+  });
+
+  it("clears an initial definite refusal and does not block new writes when storage is denied", async () => {
+    const storage = memoryStorage();
+    const persistence = { ownerScope: "user:one", storage };
+    const keys = new Map<string, string>();
+    await expect(send("generation", keys, persistence, async () => Response.json({ ok: false }, { status: 402 }))).rejects.toThrow();
+    expect(keys.size).toBe(0);
+    expect(storage.values.size).toBe(0);
+    const warning = vi.fn();
+    storage.setItem = () => { throw new Error("Storage denied"); };
+    const fetcher = vi.fn(async () => { throw new TypeError("lost"); });
+    await expect(send("generation", keys, { ...persistence, onWarning: warning }, fetcher)).rejects.toThrow();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(keys.size).toBe(1);
+    expect(warning).toHaveBeenCalled();
+  });
+
+  it("keeps an old owner's receipt when JSON resolves after the viewer is revoked", async () => {
+    const storage = memoryStorage();
+    const persistence = { ownerScope: "user:one", storage };
+    const keys = new Map<string, string>();
+    let current = true;
+    let resolveJson!: (value: unknown) => void;
+    const response = jobResponse("old-viewer-job");
+    vi.spyOn(response, "json").mockImplementation(() => new Promise((resolve) => { resolveJson = resolve; }));
+    const pending = requestGenerationJobWithExactAuthority({ body: { mode: "image", freeplay: true, outputCount: 1, quoteAuthority: authority },
+      idempotencyKeys: keys, persistence, isCurrent: () => current, createIdempotencyKey: () => "old-viewer-request",
+    }, async () => response);
+    await Promise.resolve();
+    current = false;
+    resolveJson({ ok: true, data: { job: { id: "old-viewer-job" }, assets: [] } });
+    await expect(pending).rejects.toThrow("Viewer changed");
+    expect(readGenerationReceipts({ ...persistence, ownerScope: "user:two" })).toEqual([]);
+    expect(readGenerationReceipts(persistence)).toHaveLength(1);
+  });
+
+  it("ignores corrupt or foreign target storage and never turns its URL into a POST", async () => {
+    const storage = memoryStorage();
+    const persistence = { ownerScope: "user:one", storage };
+    await expect(send("generation", new Map(), persistence, async () => { throw new TypeError("lost"); })).rejects.toThrow();
+    const [name, value] = [...storage.values][0];
+    const saved = JSON.parse(value);
+    const record = JSON.parse(saved.record);
+    saved.record = JSON.stringify({ ...record, url: "https://example.com/collect" });
+    storage.values.set(name, JSON.stringify(saved));
+    const onWarning = vi.fn();
+    expect(readGenerationReceipts({ ...persistence, onWarning })).toEqual([]);
+    expect(onWarning).toHaveBeenCalled();
+  });
+
+  it("keeps two independently submitted identical bodies addressable and ACKs only the selected key", async () => {
+    const storage = memoryStorage();
+    const persistence = { ownerScope: "user:one", storage };
+    for (const key of ["first-tab-key", "second-tab-key"]) {
+      await expect(requestGenerationJobWithExactAuthority({ body: { mode: "image", freeplay: true, outputCount: 1, quoteAuthority: authority },
+        idempotencyKeys: new Map(), persistence, createIdempotencyKey: () => key,
+      }, async () => { throw new TypeError("lost"); })).rejects.toThrow();
+    }
+    const receipts = readGenerationReceipts(persistence);
+    const keys = new Map(receipts.map((receipt) => [receipt.record, receipt.key]));
+    expect(keys.size).toBe(2);
+    await requestGenerationReceipt(receipts[1], { idempotencyKeys: keys, persistence }, async (_url, init) => {
+      expect(new Headers(init?.headers).get("idempotency-key")).toBe("second-tab-key");
+      return jobResponse("second-tab-job");
+    });
+    expect(readGenerationReceipts(persistence).map((receipt) => receipt.key)).toEqual(["first-tab-key"]);
+  });
+
+  it("does not consume a receipt for an unreadable success Job", async () => {
+    const storage = memoryStorage();
+    const persistence = { ownerScope: "user:one", storage };
+    const keys = new Map<string, string>();
+    await expect(send("generation", keys, persistence, async () =>
+      Response.json({ ok: true, data: { job: { id: "incomplete" }, assets: [] } }),
+    )).rejects.toThrow();
+    expect(keys.size).toBe(1);
+    expect(readGenerationReceipts(persistence)).toHaveLength(1);
   });
 });

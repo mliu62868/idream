@@ -1,6 +1,8 @@
 "use client";
 
+import { z } from "zod";
 import {
+  parseGenerationJobDetailResponse,
   parseGenerationQuoteResponse,
   type RuntimeGenerationQuote,
 } from "@/lib/public-api-contracts";
@@ -42,6 +44,7 @@ type GenerationSubmissionRequest = {
   createIdempotencyKey?: () => string;
   idempotencyKeys?: Map<string, string>;
   isCurrent?: () => boolean;
+  persistence?: GenerationReceiptPersistence;
 };
 
 type MediaVariationRequest = {
@@ -49,6 +52,7 @@ type MediaVariationRequest = {
   createIdempotencyKey?: () => string;
   idempotencyKeys?: Map<string, string>;
   isCurrent?: () => boolean;
+  persistence?: GenerationReceiptPersistence;
   mediaId: string;
   model?: string;
   negativePrompt?: string;
@@ -65,6 +69,128 @@ export class GenerationRequestError extends Error {
     super(message);
     this.name = "GenerationRequestError";
   }
+}
+
+type GenerationReceiptKind = "generation" | "media_variation" | "generation_retry" | "media_enhancement";
+export type GenerationReceipt = {
+  record: string;
+  key: string;
+  kind: GenerationReceiptKind;
+  url: string;
+  body: Record<string, unknown>;
+};
+export type GenerationReceiptPersistence = {
+  ownerScope: string;
+  storage?: Pick<Storage, "length" | "key" | "getItem" | "setItem" | "removeItem">;
+  onWarning?: (message: string) => void;
+};
+const receiptPrefix = "idream:generation-receipt:v1:";
+const storageWarning = "This browser cannot save pending requests. Keep this page open until your job appears.";
+const receiptQuoteSchema = z.object({
+  profileId: z.string().min(1).max(160), profileVersion: z.number().int().positive(),
+  routeFingerprint: z.string().regex(/^[a-f0-9]{64}$/), pricingFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  outputCount: z.number().int().min(1).max(8), costDreamcoins: z.number().int().nonnegative(),
+});
+const receiptRecordSchema = z.object({
+  version: z.literal(1), ownerScope: z.string().startsWith("user:").max(240),
+  record: z.string().max(24_000), idempotencyKey: z.string().min(8).max(160),
+}).strict();
+
+function receiptStorage(input: GenerationReceiptPersistence) {
+  return input.storage ?? window.localStorage;
+}
+function receiptStorageKey(ownerScope: string, key: string) {
+  return `${receiptPrefix}${encodeURIComponent(ownerScope)}:${encodeURIComponent(key)}`;
+}
+function parseGenerationReceipt(record: string, key: string): GenerationReceipt | null {
+  const value = pendingWriteFromKey(record);
+  if (!value || key.length < 8 || key.length > 160 || (value.requestKey !== undefined && value.requestKey !== key) ||
+    !receiptQuoteSchema.safeParse(value.body.quoteAuthority).success) return null;
+  const localId = "[A-Za-z0-9._~%\\-]+";
+  if (value.kind === "generation") {
+    if (value.url !== "/api/v1/generation/jobs" || !["image", "video"].includes(String(value.body.mode)) ||
+      !Number.isInteger(value.body.outputCount) || Number(value.body.outputCount) < 1 || Number(value.body.outputCount) > 8) return null;
+  } else if (value.kind === "media_variation") {
+    if (!new RegExp(`^/api/v1/media/${localId}/variation$`).test(value.url) ||
+      !Number.isInteger(value.body.outputCount) || Number(value.body.outputCount) < 1 || Number(value.body.outputCount) > 4 ||
+      !["balanced", "strict", "creative"].includes(String(value.body.consistencyMode))) return null;
+  } else if (value.kind === "generation_retry") {
+    if (!new RegExp(`^/api/v1/generation/jobs/${localId}/retry$`).test(value.url)) return null;
+  } else if (value.kind === "media_enhancement") {
+    if (!new RegExp(`^/api/v1/media/${localId}/enhance$`).test(value.url) || value.body.scale !== 2) return null;
+  } else return null;
+  // Stored IDs must stay a single local path segment, including after decoding.
+  try {
+    if (value.url.split("/").some((part) => {
+      const decoded = decodeURIComponent(part);
+      return decoded === "." || decoded === ".." || /[/\\]/.test(decoded);
+    })) return null;
+  } catch { return null; }
+  return { record, key, ...value, kind: value.kind };
+}
+
+export function listGenerationReceipts(keys: ReadonlyMap<string, string>): GenerationReceipt[] {
+  return [...keys].flatMap(([record, key]) => {
+    const receipt = parseGenerationReceipt(record, key);
+    return receipt ? [receipt] : [];
+  });
+}
+
+export function readGenerationReceipts(input: GenerationReceiptPersistence): GenerationReceipt[] {
+  const receipts: GenerationReceipt[] = [];
+  try {
+    const storage = receiptStorage(input);
+    const ownerPrefix = `${receiptPrefix}${encodeURIComponent(input.ownerScope)}:`;
+    for (let index = 0; index < storage.length; index += 1) {
+      const name = storage.key(index);
+      if (!name?.startsWith(ownerPrefix)) continue;
+      const raw = storage.getItem(name);
+      let receipt: GenerationReceipt | null = null;
+      try {
+        const saved = receiptRecordSchema.parse(JSON.parse(raw ?? "null"));
+        if (saved.ownerScope === input.ownerScope && name === receiptStorageKey(input.ownerScope, saved.idempotencyKey)) {
+          receipt = parseGenerationReceipt(saved.record, saved.idempotencyKey);
+        }
+      } catch { /* An invalid local record never becomes a callable URL. */ }
+      if (receipt) receipts.push(receipt);
+      else input.onWarning?.("A saved request could not be restored. Check Jobs or contact support before repeating it.");
+    }
+  } catch { input.onWarning?.(storageWarning); }
+  return receipts;
+}
+
+function saveGenerationReceipt(input: GenerationReceiptPersistence | undefined, record: string, key: string) {
+  if (!input) return;
+  try {
+    receiptStorage(input).setItem(receiptStorageKey(input.ownerScope, key), JSON.stringify({
+      version: 1, ownerScope: input.ownerScope, record, idempotencyKey: key,
+    }));
+  } catch { input.onWarning?.(storageWarning); }
+}
+
+function removeGenerationReceipt(input: GenerationReceiptPersistence | undefined, record: string, key: string) {
+  if (!input) return;
+  try {
+    const storage = receiptStorage(input);
+    const name = receiptStorageKey(input.ownerScope, key);
+    const raw = storage.getItem(name);
+    // A late response must not erase a different request's saved authority.
+    if (raw && JSON.parse(raw).record === record) storage.removeItem(name);
+  } catch { input.onWarning?.("The accepted request could not be cleared from this browser. Checking it again will return the same job."); }
+}
+
+export function requestGenerationReceipt(
+  receipt: GenerationReceipt,
+  input: { idempotencyKeys: Map<string, string>; persistence?: GenerationReceiptPersistence; isCurrent?: () => boolean },
+  fetcher: GenerationFetcher = fetch,
+) {
+  const checked = parseGenerationReceipt(receipt.record, receipt.key);
+  if (!checked || input.idempotencyKeys.get(receipt.record) !== receipt.key) {
+    return Promise.reject(new GenerationRequestError("This pending request is no longer available. Refresh Jobs.", 409));
+  }
+  return requestIdempotentGenerationWrite({ ...input, body: checked.body, url: checked.url, intentKind: checked.kind, replayReceipt: checked,
+    fallbackMessage: "The original request could not be confirmed. Check it again or contact support.",
+  }, fetcher);
 }
 
 export function exactGenerationQuoteForCount(
@@ -102,7 +228,7 @@ function generationWriteIntentKey(kind: string, url: string, body: Record<string
 
 function pendingWriteFromKey(record: string) {
   try {
-    const value = JSON.parse(record) as { kind: string; url: string; body: Record<string, unknown> };
+    const value = JSON.parse(record) as { kind: string; url: string; body: Record<string, unknown>; requestKey?: string };
     return typeof value.kind === "string" && typeof value.url === "string" &&
       value.body && typeof value.body === "object" && !Array.isArray(value.body) ? value : null;
   } catch { return null; }
@@ -167,20 +293,26 @@ async function requestIdempotentGenerationWrite(
     fallbackMessage: string;
     idempotencyKeys?: Map<string, string>;
     isCurrent?: () => boolean;
+    persistence?: GenerationReceiptPersistence;
+    replayReceipt?: GenerationReceipt;
     intentKind: "generation" | "media_variation" | "media_enhancement" | "generation_retry";
     url: string;
   },
   fetcher: GenerationFetcher,
 ): Promise<GenerationWriteResult> {
-  const unconfirmed = unconfirmedGenerationWrite(input.intentKind, input.url, input.body, input.idempotencyKeys);
+  if (input.isCurrent?.() === false) throw new DOMException("Viewer changed", "AbortError");
+  const unconfirmed = input.replayReceipt ?? unconfirmedGenerationWrite(input.intentKind, input.url, input.body, input.idempotencyKeys);
   // The map is an in-memory receipt: semantic matching ignores a later quote,
   // but replay preserves the entire originally submitted body and authority.
-  const intentKey = unconfirmed?.record ?? JSON.stringify({ kind: input.intentKind, url: input.url, body: input.body });
   const createKey =
     input.createIdempotencyKey ?? (() => crypto.randomUUID());
   const idempotencyKey =
     unconfirmed?.key ?? createKey();
+  // Two tabs can independently submit the same body before either sees the
+  // other's receipt. Keep both requests addressable in the existing Map.
+  const intentKey = unconfirmed?.record ?? JSON.stringify({ kind: input.intentKind, url: input.url, body: input.body, requestKey: idempotencyKey });
   input.idempotencyKeys?.set(intentKey, idempotencyKey);
+  saveGenerationReceipt(input.persistence, intentKey, idempotencyKey);
 
   const response = await fetcher(input.url, {
     method: "POST",
@@ -205,8 +337,11 @@ async function requestIdempotentGenerationWrite(
   if (input.isCurrent?.() === false) throw new DOMException("Viewer changed", "AbortError");
 
   if (!response.ok || !raw?.ok || !raw.data?.job) {
-    if (response.status >= 400 && response.status < 500) {
+    // A rejection of a later check says nothing about the earlier POST, which
+    // may still be committing or may precede today's auth/schema/route rules.
+    if (!unconfirmed && response.status >= 400 && response.status < 500) {
       if (input.idempotencyKeys?.get(intentKey) === idempotencyKey) input.idempotencyKeys.delete(intentKey);
+      removeGenerationReceipt(input.persistence, intentKey, idempotencyKey);
     }
     throw new GenerationRequestError(
       raw?.error?.message ?? input.fallbackMessage,
@@ -214,8 +349,11 @@ async function requestIdempotentGenerationWrite(
     );
   }
 
+  // A malformed 2xx is still ambiguous; only the normal Job DTO is an ACK.
+  const result = parseGenerationJobDetailResponse(raw);
   if (input.idempotencyKeys?.get(intentKey) === idempotencyKey) input.idempotencyKeys.delete(intentKey);
-  return raw.data;
+  removeGenerationReceipt(input.persistence, intentKey, idempotencyKey);
+  return result;
 }
 
 export function requestGenerationJobWithExactAuthority(
@@ -242,6 +380,7 @@ export async function requestGenerationRetryWithExactAuthority(
     createIdempotencyKey?: () => string;
     idempotencyKeys?: Map<string, string>;
     isCurrent?: () => boolean;
+    persistence?: GenerationReceiptPersistence;
     jobId: string;
     quoteAuthority?: GenerationQuoteAuthority;
   },
@@ -257,6 +396,7 @@ export async function requestGenerationRetryWithExactAuthority(
       fallbackMessage: "Retry failed",
       idempotencyKeys: input.idempotencyKeys,
       isCurrent: input.isCurrent,
+      persistence: input.persistence,
       intentKind: "generation_retry",
       url: `/api/v1/generation/jobs/${encodeURIComponent(input.jobId)}/retry`,
     },
@@ -275,6 +415,7 @@ export async function requestMediaVariationWithExactQuote(
     createIdempotencyKey: input.createIdempotencyKey,
     idempotencyKeys: input.idempotencyKeys,
     isCurrent: input.isCurrent,
+    persistence: input.persistence,
     fallbackMessage: "Variation could not be confirmed. Retry to check the same request.",
     intentKind: "media_variation",
     url: `/api/v1/media/${encodeURIComponent(input.mediaId)}/variation`,
@@ -333,6 +474,7 @@ export async function requestMediaVariationWithExactQuote(
       fallbackMessage: "Generation failed.",
       idempotencyKeys: input.idempotencyKeys,
       isCurrent: input.isCurrent,
+      persistence: input.persistence,
       intentKind: "media_variation",
       url: `/api/v1/media/${encodeURIComponent(input.mediaId)}/variation`,
     },
@@ -347,6 +489,7 @@ export function requestMediaEnhancementWithExactQuote(
     createIdempotencyKey?: () => string;
     idempotencyKeys?: Map<string, string>;
     isCurrent?: () => boolean;
+    persistence?: GenerationReceiptPersistence;
   },
   fetcher: GenerationFetcher = fetch,
 ): Promise<GenerationWriteResult> {
@@ -367,6 +510,7 @@ export function requestMediaEnhancementWithExactQuote(
     createIdempotencyKey: input.createIdempotencyKey,
     idempotencyKeys: input.idempotencyKeys,
     isCurrent: input.isCurrent,
+    persistence: input.persistence,
     fallbackMessage: "Enhancement could not be confirmed. Retry to check the same request.",
     intentKind: "media_enhancement",
     url: `/api/v1/media/${encodeURIComponent(input.mediaId)}/enhance`,

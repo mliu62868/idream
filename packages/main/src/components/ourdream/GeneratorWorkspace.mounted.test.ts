@@ -63,6 +63,7 @@ describe("GeneratorWorkspace media journeys", () => {
   let requests: string[];
 
   beforeEach(() => {
+    window.localStorage.clear();
     window.history.replaceState(null, "", "/generate");
     requests = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
@@ -119,6 +120,105 @@ describe("GeneratorWorkspace media journeys", () => {
     await settle();
     expect(container.textContent).toContain("100 coins");
   }
+
+  it.each(["variation", "enhance"] as const)("restores an independent %s request after unmount, without its source or quote, and hides it from another viewer", async (kind) => {
+    const originalFetch = globalThis.fetch;
+    const writes: Array<{ key: string | null; body: string }> = [];
+    let viewer: string | null = "user:generator-viewer";
+    const job = { id: "restored-original", mode: "image", status: "completed", costDreamcoins: 5, outputCount: 1, errorCode: null, createdAt: new Date().toISOString() };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/generation/config") return Response.json({ ok: true, data: {
+        ...config, viewer: { authenticated: viewer !== null, scope: viewer ?? "anonymous" }, dreamcoins: { balance: writes.length ? 0 : 100 },
+        image: { ...config.image, enhance: { available: writes.length === 0, scale: 2 } },
+      } });
+      if (path.startsWith("/api/v1/media?")) return Response.json({ ok: true, data: {
+        items: writes.length ? [] : [{ ...mediaItem("source"), enhanceEligible: true }], nextCursor: null,
+      } });
+      if (path.endsWith("/quote")) return writes.length
+        ? Response.json({ ok: false, error: { message: "Original route no longer quotes" } }, { status: 409 })
+        : Response.json({ ok: true, data: { quote, ...(kind === "enhance" ? {
+          enhancement: { sourceMediaId: "source", scale: 2, sourceWidth: 512, sourceHeight: 512, width: 1024, height: 1024 },
+        } : {}) } });
+      if (path === `/api/v1/media/source/${kind}` && init?.method === "POST") {
+        writes.push({ key: new Headers(init.headers).get("idempotency-key"), body: String(init.body) });
+        if (writes.length === 1) throw new TypeError("lost after accepting original");
+        if (writes.length === 2) return Response.json({ ok: false, error: { message: "Sign in again" } }, { status: 401 });
+        return Response.json({ ok: true, data: { job, assets: [] } }, { status: 202 });
+      }
+      if (path === "/api/v1/generation/jobs/restored-original") return Response.json({ ok: true, data: { job, assets: [] } });
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(button(kind === "enhance" ? "Enhance image 2×" : "Create variation"));
+    if (kind === "enhance") await click(button("Enhance 2× · 5 coins"));
+    expect(writes).toHaveLength(1);
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await act(async () => root.render(createElement(GeneratorWorkspace)));
+    await settle();
+    expect(container.querySelector('[data-media-id="source"]')).toBeNull();
+    expect(container.querySelector('[data-testid="generation-pending-requests"]')).not.toBeNull();
+    expect(writes).toHaveLength(1);
+    await click(button("Check original request"));
+    expect(writes).toHaveLength(2);
+    expect(container.textContent).toContain("pending request is kept");
+    expect(container.querySelector('[data-testid="generation-pending-requests"]')).not.toBeNull();
+    viewer = null;
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await settle();
+    expect(container.querySelector('[data-testid="generation-pending-requests"]')).toBeNull();
+    expect(writes).toHaveLength(2);
+    viewer = "user:another-viewer";
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await settle();
+    expect(container.querySelector('[data-testid="generation-pending-requests"]')).toBeNull();
+    expect(writes).toHaveLength(2);
+    viewer = "user:generator-viewer";
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await settle();
+    await click(button("Check original request"));
+    expect(writes).toHaveLength(3);
+    expect(writes[1]).toEqual(writes[0]);
+    expect(writes[2]).toEqual(writes[0]);
+    expect(container.querySelector('[data-testid="generation-pending-requests"]')).toBeNull();
+    expect(container.querySelector('[data-generation-job-id="restored-original"]')).not.toBeNull();
+  });
+
+  it("confirms a different Gallery variation in the edit form while keeping the earlier unknown request", async () => {
+    const originalFetch = globalThis.fetch;
+    const writes: Array<{ path: string; key: string | null; body: Record<string, unknown> }> = [];
+    const job = { id: "new-edit", mode: "image", status: "completed", costDreamcoins: 5, outputCount: 1, errorCode: null, createdAt: new Date().toISOString() };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.endsWith("/variation") && init?.method === "POST") {
+        writes.push({ path, key: new Headers(init.headers).get("idempotency-key"), body: JSON.parse(String(init.body)) });
+        if (writes.length === 1) throw new TypeError("first response lost");
+        return Response.json({ ok: true, data: { job, assets: [] } }, { status: 202 });
+      }
+      if (path === "/api/v1/generation/jobs/new-edit") return Response.json({ ok: true, data: { job, assets: [] } });
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(container.querySelector('[data-media-id="image-1"] button[aria-label="Create variation"]')!);
+    expect(writes).toHaveLength(1);
+    await click(container.querySelector('[data-media-id="image-2"] button[aria-label="Create variation"]')!);
+    expect(writes).toHaveLength(1);
+    expect(container.textContent).toContain("confirm this new edit at its current price");
+    const prompt = container.querySelector<HTMLTextAreaElement>('[aria-label="Edit instructions"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(prompt, "A red raincoat");
+      prompt.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await settle();
+    await click(button("Generate new · 5 coins"));
+    expect(writes).toHaveLength(2);
+    expect(writes[1].path).toBe("/api/v1/media/image-2/variation");
+    expect(writes[1].body.prompt).toBe("A red raincoat");
+    expect(writes[1].key).not.toBe(writes[0].key);
+    expect(container.querySelectorAll('[data-pending-request-key]')).toHaveLength(1);
+    expect(container.querySelector('[data-pending-request-key]')?.getAttribute("data-pending-request-key")).toBe(writes[0].key);
+  });
 
   it("quotes enhancement before confirmation and sends the exact price only after confirming", async () => {
     const originalFetch = globalThis.fetch;
