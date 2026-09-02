@@ -177,6 +177,7 @@ describe("GeneratorWorkspace owned preset editing", () => {
     const baseFetch = globalThis.fetch;
     vi.stubGlobal("fetch", vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       if (init?.method === "POST") {
+        expect(new Headers(init.headers).get("x-idream-viewer-scope")).toBe(config.viewer.scope);
         const body = JSON.parse(String(init.body));
         writes.push({ path: String(url), body });
         const preset = { id: "new-pose", ...body };
@@ -210,6 +211,7 @@ describe("GeneratorWorkspace owned preset editing", () => {
     vi.stubGlobal("fetch", vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       if (String(url) === "/api/v1/generation/config" && ++configReads === 2) return reconnect.promise;
       if (init?.method === "PATCH" || init?.method === "POST") {
+        expect(new Headers(init.headers).get("x-idream-viewer-scope")).toBe(config.viewer.scope);
         writes.push({ url: String(url), method: init.method, body: JSON.parse(String(init.body)) });
         return pending.promise;
       }

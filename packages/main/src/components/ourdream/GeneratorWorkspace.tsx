@@ -2029,7 +2029,7 @@ export function GeneratorWorkspace() {
     try {
       const response = await fetch(original ? `/api/v1/generation/presets/${encodeURIComponent(original.id)}` : "/api/v1/generation/presets", {
         method: original ? "PATCH" : "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-idream-viewer-scope": viewer.scope },
         body: JSON.stringify({ ...(original ? {} : { type: presetEditorType === "setup" ? "mode" : presetEditorType }), label, controls,
           category: presetCategory.trim(), visibility: original?.visibility ?? "private" }),
       });
@@ -2160,7 +2160,10 @@ export function GeneratorWorkspace() {
     presetSavingRef.current = true;
     setPresetSaving(true);
     try {
-      const response = await fetch(`/api/v1/generation/presets/${encodeURIComponent(id)}`, { method: "DELETE", signal: viewer.controller.signal });
+      const response = await fetch(`/api/v1/generation/presets/${encodeURIComponent(id)}`, {
+        method: "DELETE", signal: viewer.controller.signal,
+        headers: { "x-idream-viewer-scope": viewer.scope },
+      });
       if (!privateViewerRequestIsCurrent(viewer)) return;
       if (!response.ok) {
         setDeleteConfirmPresetId(null);
