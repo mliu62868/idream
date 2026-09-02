@@ -572,7 +572,7 @@ describe("generator exact quote authority", () => {
     const fetcher: GenerationFetcher = async (input, init) => {
       writes.push({ path: String(input), key: new Headers(init?.headers).get("idempotency-key"), body: JSON.parse(String(init?.body)) });
       if (writes.length === 1) throw new TypeError("connection reset after commit");
-      return Response.json({ ok: true, data: { job: { id: "same-enhancement", mode: "image", status: "queued" }, assets: [] } });
+      return Response.json({ ok: true, data: { job: { id: "same-enhancement", mode: "image", status: "queued", costDreamcoins: 7, outputCount: 1, errorCode: null, createdAt: "2026-09-02T23:00:00.000Z" }, assets: [] } });
     };
     const input = { mediaId: "source-image", quote: { ...quote, balance: 20 }, idempotencyKeys, createIdempotencyKey: () => "enhance-once" };
     await expect(requestMediaEnhancementWithExactQuote(input, fetcher)).rejects.toThrow("connection reset");
@@ -597,7 +597,7 @@ describe("generator exact quote authority", () => {
     const fetcher: GenerationFetcher = async (_input, init) => {
       observed.push(new Headers(init?.headers).get("idempotency-key"));
       if (observed.length === 1) throw new TypeError("connection lost after reservation");
-      return Response.json({ ok: true, data: { job: { id: "already-accepted" }, assets: [] } });
+      return Response.json({ ok: true, data: { job: { id: "already-accepted", mode: "image", status: "queued", costDreamcoins: 7, outputCount: 1, errorCode: null, createdAt: "2026-09-02T23:00:00.000Z" }, assets: [] } });
     };
     await expect(requestMediaEnhancementWithExactQuote({ mediaId: "source", quote: { ...quote, balance: 20 }, idempotencyKeys: keys, createIdempotencyKey: () => "accepted-enhancement" }, fetcher)).rejects.toThrow("connection lost");
     await expect(requestMediaEnhancementWithExactQuote({ mediaId: "source", quote: { ...quote, balance: 0 }, idempotencyKeys: keys }, fetcher)).resolves.toMatchObject({ job: { id: "already-accepted" } });
