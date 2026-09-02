@@ -189,6 +189,8 @@ model UserPreferences {
   mutedTags            Json
   safeModeFlags        Json
   notificationSettings Json
+  chatPersona          Json?
+  chatPersonaVersion   Int      @default(0)
   locale               String   @default("en")
   updatedAt            DateTime @updatedAt
   user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -651,6 +653,7 @@ model ChatExperiencePreference {
   sessionId            String   @id
   responseLength       String   @default("auto")
   interactionIntensity String   @default("balanced")
+  sceneGeneration      String   @default("follow")
   version              Int      @default(1)
   updatedAt            DateTime @updatedAt
   session              RecentChat @relation(fields: [sessionId], references: [sessionId], onDelete: Cascade)

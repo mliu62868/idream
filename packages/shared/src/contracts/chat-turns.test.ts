@@ -4,6 +4,8 @@ import {
   chatTerminalCommitSchema,
   chatToolEffectSchema,
   chatContextDirectivesSchema,
+  userChatPersonaResponseSchema,
+  DEFAULT_CHAT_EXPERIENCE,
 } from "./chat-turns";
 
 const snapshot = {
@@ -30,16 +32,33 @@ const snapshot = {
 describe("Chat execution snapshot", () => {
   it("keeps historical reply defaults implicit and accepts only versioned expression preferences", () => {
     expect(chatExecutionSnapshotSchema.parse(snapshot)).not.toHaveProperty("experience");
+    expect(chatExecutionSnapshotSchema.parse({ ...snapshot, experience: DEFAULT_CHAT_EXPERIENCE }).experience).toEqual(DEFAULT_CHAT_EXPERIENCE);
     const experience = { responseLength: "short", interactionIntensity: "gentle", version: 1 };
     expect(chatExecutionSnapshotSchema.parse({ ...snapshot, experience }).experience).toEqual(experience);
+    expect(chatExecutionSnapshotSchema.parse({ ...snapshot, experience: { ...experience, sceneGeneration: "advance" } }).experience?.sceneGeneration).toBe("advance");
     for (const invalid of [
       { ...experience, version: 0 },
       { ...experience, responseLength: "unlimited" },
       { ...experience, interactionIntensity: "unrestricted" },
       { ...experience, imageToolEnabled: true },
+      { ...experience, sceneGeneration: "auto-image" },
     ]) {
       expect(chatExecutionSnapshotSchema.safeParse({ ...snapshot, experience: invalid }).success).toBe(false);
     }
+  });
+
+  it("accepts a bounded, versioned global persona without adding it to historical snapshots", () => {
+    expect(chatExecutionSnapshotSchema.parse(snapshot)).not.toHaveProperty("userPersona");
+    const userPersona = { name: "Robin", description: "A botanist with a blue notebook.", enabled: true, version: 2 };
+    expect(chatExecutionSnapshotSchema.parse({ ...snapshot, userPersona }).userPersona).toEqual(userPersona);
+    expect(chatExecutionSnapshotSchema.parse({ ...snapshot, userPersona: { ...userPersona, enabled: false } }).userPersona?.enabled).toBe(false);
+    for (const invalid of [
+      { ...userPersona, version: 0 }, { ...userPersona, name: "x".repeat(81) },
+      { ...userPersona, description: "x".repeat(1_501) }, { ...userPersona, name: " ", description: " " },
+      { ...userPersona, characterReleaseId: "forged" },
+    ]) expect(chatExecutionSnapshotSchema.safeParse({ ...snapshot, userPersona: invalid }).success).toBe(false);
+    expect(userChatPersonaResponseSchema.safeParse({ persona: userPersona, version: 1 }).success).toBe(false);
+    expect(userChatPersonaResponseSchema.parse({ persona: null, version: 3 })).toEqual({ persona: null, version: 3 });
   });
 
   it("accepts historical context without settings, and bounds each explicit user context kind", () => {

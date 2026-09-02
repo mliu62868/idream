@@ -25,13 +25,15 @@ describe("Conversation preferences", () => {
     await render();
     await choose("Reply length", "short");
     await choose("Interaction style", "gentle");
+    await choose("Scene direction", "advance");
     await click("Save preferences");
-    expect(requests).toEqual([{ responseLength: "short", interactionIntensity: "gentle", version: 0 }]);
+    expect(requests).toEqual([{ responseLength: "short", interactionIntensity: "gentle", sceneGeneration: "advance", version: 0 }]);
     expect(container.textContent).toContain("Saved for new messages");
     await act(async () => root.render(null));
     await render();
     expect(field("Reply length").value).toBe("short");
     expect(field("Interaction style").value).toBe("gentle");
+    expect(field("Scene direction").value).toBe("advance");
     expect(container.textContent).toContain("Saved preferences");
   });
 
@@ -41,12 +43,16 @@ describe("Conversation preferences", () => {
       ? Response.json({ error: { message: "Changed elsewhere" } }, { status: 409 })
       : Response.json({ settings: { responseLength: ++reads === 1 ? "auto" : "short", interactionIntensity: "balanced", version: reads }, editable: true })));
     await render();
+    expect(field("Scene direction").value).toBe("follow");
     await choose("Reply length", "long");
+    await choose("Scene direction", "advance");
     await click("Save preferences");
     expect(field("Reply length").value).toBe("long");
+    expect(field("Scene direction").value).toBe("advance");
     expect(container.textContent).toContain("Changed elsewhere");
     await click("Reload preferences");
     expect(field("Reply length").value).toBe("short");
+    expect(field("Scene direction").value).toBe("follow");
     expect(container.textContent).not.toContain("Changed elsewhere");
   });
 

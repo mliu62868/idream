@@ -53,9 +53,10 @@ describe("versioned conversation preferences", () => {
   it("persists owned choices with exact retries, rejects stale concurrent changes and cleans up with the account", async () => {
     const f = await fixture();
     const other = await fixture();
-    expect((await f.call("GET")).json).toMatchObject({ settings: { responseLength: "auto", interactionIntensity: "balanced", version: 0 }, editable: true });
+    expect((await f.call("GET")).json).toMatchObject({ settings: { responseLength: "auto", interactionIntensity: "balanced", sceneGeneration: "follow", version: 0 }, editable: true });
     expect((await f.call("GET", undefined, other.userId)).status).toBe(404);
     expect((await f.call("PUT", { responseLength: "endless", interactionIntensity: "balanced", version: 0 })).status).toBe(400);
+    expect((await f.call("PUT", { responseLength: "auto", interactionIntensity: "balanced", sceneGeneration: "control-user", version: 0 })).status).toBe(400);
     const choices = { responseLength: "short", interactionIntensity: "gentle", version: 0 };
     expect((await f.call("PUT", choices, other.userId)).status).toBe(404);
     const first = await f.call("PUT", choices);
@@ -75,31 +76,38 @@ describe("versioned conversation preferences", () => {
 
   it("freezes preferences for replay/edit/regenerate and only applies changed choices to a new Turn", async () => {
     const f = await fixture();
-    const original = { responseLength: "short", interactionIntensity: "gentle", version: 1 };
+    const original = { responseLength: "short", interactionIntensity: "gentle", sceneGeneration: "follow", version: 1 };
     expect((await f.call("PUT", { ...original, version: 0 })).status).toBe(200);
     const key = randomUUID();
     const first = await f.begin(key);
     expect(first.snapshot?.experience).toEqual(original);
-    await f.call("PUT", { responseLength: "long", interactionIntensity: "expressive", version: 1 });
+    await f.call("PUT", { responseLength: "long", interactionIntensity: "expressive", sceneGeneration: "advance", version: 1 });
     expect((await f.begin(key)).snapshot?.experience).toEqual(original);
     await finish(first.snapshot!);
     const regenerated = await regenerateChatTurn(f.userId, first.snapshot!.assistantMessageId);
     expect(regenerated.snapshot.experience).toEqual(original);
+    expect(regenerated.snapshot.sceneVersion).toBe(first.snapshot?.sceneVersion);
     await prisma.mainOutboxEvent.updateMany({ where: { aggregateId: `${f.userId}:${f.characterId}` }, data: { status: "delivered", deliveredAt: new Date() } });
     await finish(regenerated.snapshot);
     const edited = await editChatTurn(f.userId, first.snapshot!.userMessageId, "Tell me a little more.");
     expect(edited.snapshot?.experience).toEqual(original);
+    expect(edited.snapshot?.sceneVersion).toBe(first.snapshot?.sceneVersion);
     await finish(edited.snapshot!);
     await setChatMemory(f.userId, f.sessionId, false);
     const next = await f.begin();
-    expect(next.snapshot?.experience).toEqual({ responseLength: "long", interactionIntensity: "expressive", version: 2 });
+    expect(next.snapshot?.experience).toEqual({ responseLength: "long", interactionIntensity: "expressive", sceneGeneration: "advance", version: 2 });
     expect(next.snapshot?.memoryEnabled).toBe(false);
+    expect(next.snapshot?.sceneVersion).toBe(1);
+    expect(next.snapshot?.scene).toMatchObject({ version: 1 });
   });
 
   it("keeps historical missing preferences unchanged and starts a new chat at defaults after Clear", async () => {
     const f = await fixture();
     const first = await f.begin();
-    expect(first.snapshot).not.toHaveProperty("experience");
+    expect(first.snapshot?.experience).toEqual({ responseLength: "auto", interactionIntensity: "balanced", sceneGeneration: "follow", version: 0 });
+    const historical = JSON.parse(JSON.stringify(first.snapshot));
+    delete historical.experience;
+    await prisma.chatTurn.update({ where: { id: first.snapshot!.turnId }, data: { executionSnapshot: historical } });
     await finish(first.snapshot!);
     await f.call("PUT", { responseLength: "long", interactionIntensity: "expressive", version: 0 });
     const regenerated = await regenerateChatTurn(f.userId, first.snapshot!.assistantMessageId);
@@ -109,6 +117,24 @@ describe("versioned conversation preferences", () => {
     expect((await f.call("GET")).json.editable).toBe(false);
     expect((await f.call("PUT", { responseLength: "short", interactionIntensity: "gentle", version: 1 })).status).toBe(410);
     const fresh = await createChatSession(f.userId, { characterId: f.characterId });
-    expect((await f.call("GET", undefined, f.userId, fresh.id)).json.settings).toEqual({ responseLength: "auto", interactionIntensity: "balanced", version: 0 });
+    expect((await f.call("GET", undefined, f.userId, fresh.id)).json.settings).toEqual({ responseLength: "auto", interactionIntensity: "balanced", sceneGeneration: "follow", version: 0 });
+  });
+
+  it("does not backfill the new Scene preference into an accepted historical snapshot", async () => {
+    const f = await fixture();
+    await setChatMemory(f.userId, f.sessionId, false);
+    await f.call("PUT", { responseLength: "short", interactionIntensity: "gentle", sceneGeneration: "follow", version: 0 });
+    const first = await f.begin();
+    const historical = JSON.parse(JSON.stringify(first.snapshot));
+    delete historical.experience.sceneGeneration;
+    await prisma.chatTurn.update({ where: { id: first.snapshot!.turnId }, data: { executionSnapshot: historical } });
+    await finish(first.snapshot!);
+    await f.call("PUT", { responseLength: "long", interactionIntensity: "expressive", sceneGeneration: "advance", version: 1 });
+    const regenerated = await regenerateChatTurn(f.userId, first.snapshot!.assistantMessageId);
+    expect(regenerated.snapshot.experience).toEqual({ responseLength: "short", interactionIntensity: "gentle", version: 1 });
+    await finish(regenerated.snapshot);
+    await prisma.mainOutboxEvent.updateMany({ where: { aggregateId: `${f.userId}:${f.characterId}` }, data: { status: "delivered", deliveredAt: new Date() } });
+    const edited = await editChatTurn(f.userId, first.snapshot!.userMessageId, "Stay in this scene.");
+    expect(edited.snapshot?.experience).toEqual(historical.experience);
   });
 });
