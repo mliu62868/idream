@@ -164,7 +164,7 @@ describe("Case mutation reliability", () => {
         "x-request-id": `rollback-${suffix}`,
       }, { sourceId: undefined });
       const rollbackContext = { params: Promise.resolve({ id: rollbackCaseId }) };
-      await expect(assignCaseRoute(request, rollbackContext)).rejects.toThrow("injected case receipt failure");
+      await expect(assignCaseRoute(request, rollbackContext)).resolves.toMatchObject({ status: 500 });
     } finally {
       await prisma.$executeRawUnsafe(`
         DROP TRIGGER IF EXISTS fail_case_mutation_receipt_trigger ON "control_plane_commands";

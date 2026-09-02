@@ -1,6 +1,12 @@
+import { devNull } from "node:os";
 import { defineConfig } from "vitest/config";
 import { defaultTestDatabaseUrl } from "./test-database-url";
 import { testBullMqPrefixForDatabase } from "./test-redis";
+
+// Bun can inherit the local identity route before Vitest loads. Keep it absent
+// in the parent and workers; dotenv must not restore it from the real .env.
+delete process.env.VOICE_IDENTITY_PROVIDER;
+process.env.DOTENV_CONFIG_PATH = devNull;
 
 // SPEC: Integration tests run against a dedicated, freshly-seeded test database
 // (Postgres in TEST_DATABASE_URL, or the local compose Postgres by default),
@@ -20,10 +26,15 @@ export default defineConfig({
     fileParallelism: false,
     globalSetup: ["./src/server/test/global-setup.ts"],
     env: {
+      DOTENV_CONFIG_PATH: devNull,
       APP_ENV: "test",
       DB_PROVIDER: "postgresql",
       DATABASE_URL,
       CHAT_PROVIDER: "mock",
+      // Transport tests inject fetch; importing env must never borrow a live
+      // Chat endpoint or signing key from a developer's .env.
+      CHAT_SERVICE_URL: "http://chat.test.invalid",
+      CHAT_BFF_SIGNING_SECRET: "test-chat-bff-secret-0123456789abcdef",
       GEN_IMAGE_PROVIDER: "mock",
       GEN_VIDEO_PROVIDER: "mock",
       VOICE_PROVIDER: "mock",

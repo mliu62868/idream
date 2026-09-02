@@ -10,6 +10,7 @@
 //   调 refundGenerationRequest 全额退回（未扣费的任务由结算 clamp 退 0）。所以
 //   每一条失败文案都带这句；哪天那条路径变成有条件的，这里必须跟着改。
 const FAILURE_COPY: Readonly<Record<string, string>> = {
+  preparation_failed: "The generator could not start. Your coins are back — try again.",
   provider_timeout: "The generator timed out. Your coins are back — try again.",
   stale_timeout: "This job waited too long and was reclaimed. Your coins are back — try again.",
   operator_confirmed_provider_failure:

@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { legacySoulDetailsMarkdown } from "@idream/shared";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
+import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import {
   createCharacter,
   createMedia,
@@ -649,6 +650,7 @@ describe("official character CMS", () => {
     const routeFingerprint = `${P}publish-route`;
     const generationProfileKey = `${P}publish-profile`;
     const workflowKey = "qwen-image-edit-img2img";
+    const workflowVersion = (await generationWorkflowDescriptor(workflowKey))!.version;
     await prisma.generationModelProfile.create({
       data: {
         id: `${P}publish-model-profile`,
@@ -662,6 +664,7 @@ describe("official character CMS", () => {
           capabilities: {
             textToImage: true,
             referenceImages: true,
+            initImage: true,
           },
         },
         allowedOrientations: ["4:5"],
@@ -677,7 +680,7 @@ describe("official character CMS", () => {
         generationProfileKey,
         generationProfileVersion: 1,
         workflowKey,
-        workflowVersion: 1,
+        workflowVersion,
         style: "realistic",
         matrixKey: "default-character",
         sampleCount: 40,
@@ -729,7 +732,6 @@ describe("official character CMS", () => {
         bootstrapIdentity: false,
       },
     };
-    const draftAssetPackHash = canonicalSha256(draftAssetPack);
     await prisma.characterProject.update({
       where: { id: project.id },
       data: {
@@ -831,7 +833,7 @@ describe("official character CMS", () => {
           profileKey: generationProfileKey,
           profileVersion: 1,
           workflowKey,
-          workflowVersion: 1,
+          workflowVersion,
           status: "succeeded",
           creativeRunItemId: fixture.itemId,
           finishedAt: new Date(),
@@ -855,7 +857,7 @@ describe("official character CMS", () => {
         generationProfileKey,
         generationProfileVersion: 1,
         workflowKey,
-        workflowVersion: 1,
+        workflowVersion,
       },
       placements: releaseAssetFixtures.map((fixture) => ({
         slotKey: fixture.slotKey,
@@ -867,7 +869,7 @@ describe("official character CMS", () => {
         generationProfileKey,
         generationProfileVersion: 1,
         workflowKey,
-        workflowVersion: 1,
+        workflowVersion,
         visualProfileId: activeProfile.id,
         visualProfileVersion: activeProfile.version,
         referenceSetRevisionId: referenceSet.id,
@@ -898,7 +900,7 @@ describe("official character CMS", () => {
       generationProvenance,
       releasePlacementManifest,
     };
-    const release = await prisma.characterRelease.create({
+    await prisma.characterRelease.create({
       data: {
         id: `${P}publish-release`,
         ...releaseSnapshot,

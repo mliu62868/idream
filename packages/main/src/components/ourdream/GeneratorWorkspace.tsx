@@ -10,6 +10,7 @@ import {
   Heart,
   ImageIcon,
   ListChecks,
+  Pencil,
   RefreshCw,
   Settings2,
   Square,
@@ -118,6 +119,33 @@ type ImageWorkflow = "presets" | "image-edit";
 type ConsistencyMode = "balanced" | "strict" | "creative";
 type WorkspaceView = "create" | "jobs" | "gallery";
 type GalleryTab = "image" | "video" | "liked";
+type GalleryPageRequest = { tab: GalleryTab; cursors: Array<string | null> };
+type GalleryPage = { items: MediaItem[]; nextCursor?: string | null };
+
+const galleryTabs: readonly GalleryTab[] = ["image", "video", "liked"];
+
+function generatorImageEditSources(
+  items: readonly MediaItem[],
+  selected: MediaItem | null,
+) {
+  const sources = items.filter(
+    (item) => item.type === "image" &&
+      !isBuiltInMediaPlaceholderUrl(item.thumbnailUrl ?? item.url),
+  );
+  // Keep the user's source pinned while Gallery moves between pages or filters.
+  return selected && !sources.some((item) => item.id === selected.id)
+    ? [selected, ...sources]
+    : sources;
+}
+
+function generatorImageWorkflowAvailable(
+  image: Pick<RuntimeGenerationConfig["image"], "availability" | "models" | "editModels"> | undefined,
+  workflow: ImageWorkflow,
+) {
+  return workflow === "image-edit"
+    ? Boolean(image?.editModels.length)
+    : image?.availability.state === "available" && image.models.length > 0;
+}
 
 /**
  * Identity a private read was issued under. `epoch` and `scope` are compared
@@ -409,6 +437,7 @@ export function GeneratorWorkspace() {
   const [backgroundPresetId, setBackgroundPresetId] = useState("");
   const [posePresetId, setPosePresetId] = useState("");
   const [outfitPresetId, setOutfitPresetId] = useState("");
+  const appliedRoutePresetRef = useRef<string | null>(null);
   const viewerAuthenticatedRef = useRef<boolean | null>(null);
   const viewerScopeRef = useRef<string | null>(null);
   const viewerEpochRef = useRef(0);
@@ -479,6 +508,8 @@ export function GeneratorWorkspace() {
   const [identityMedia, setIdentityMedia] = useState<MediaItem[]>([]);
   const [identityMediaAuthority, setIdentityMediaAuthority] = useState(initialAuthorityStatus);
   const [galleryTab, setGalleryTab] = useState<GalleryTab>("image");
+  const galleryTabRef = useRef<GalleryTab>("image");
+  useEffect(() => { galleryTabRef.current = galleryTab; }, [galleryTab]);
   const [view, setView] = useState<WorkspaceView>("create");
   const [status, setStatus] = useState("");
   const { openReport, reportDialog } = useReportDialog(setStatus);
@@ -493,36 +524,53 @@ export function GeneratorWorkspace() {
   const [deleteConfirmMediaId, setDeleteConfirmMediaId] = useState<string | null>(null);
   const [bulkDeleteConfirmKey, setBulkDeleteConfirmKey] = useState<string | null>(null);
   const [deleteConfirmPresetId, setDeleteConfirmPresetId] = useState<string | null>(null);
+  const [mediaCursorTrail, setMediaCursorTrail] = useState<Array<string | null>>([null]);
+  const [imageEditSources, setImageEditSources] = useState<MediaItem[]>([]);
 
   const {
-    data: media,
+    data: mediaPage,
     status: mediaAuthority,
-    setData: setMedia,
+    setData: setMediaPage,
     reset: resetMedia,
-    refresh: refreshMedia,
-  } = useViewerResource<MediaItem[], GalleryTab, PrivateViewerTicket>({
-    request: (tab) => ({
-      path: `/api/v1/media?${tab === "liked" ? "liked=1" : `type=${tab}`}`,
+    refresh: refreshMediaPage,
+  } = useViewerResource<GalleryPage, GalleryPageRequest, PrivateViewerTicket>({
+    request: ({ tab, cursors }) => ({
+      path: `/api/v1/media?${tab === "liked" ? "liked=1" : `type=${tab}`}${cursors.at(-1) ? `&cursor=${encodeURIComponent(cursors.at(-1)!)}` : ""}`,
       init: { cache: "no-store" },
     }),
-    parse: (raw) => parseWorkspaceMediaResponse(raw).items,
+    parse: parseWorkspaceMediaResponse,
     fallbackError: "Gallery could not load.",
-    initialData: [],
+    initialData: { items: [], nextCursor: null },
     gate: privateViewerGate,
     // Each gallery tab is its own projection: switching tabs must drop the old
     // one rather than leave it on screen looking like the new tab's contents.
-    snapshotKey: (tab) => tab,
+    snapshotKey: ({ tab }) => tab,
     initialSnapshotKey: "image",
     onSnapshotChange: () => {
       setSelectedMediaIds(new Set());
       setDeleteConfirmMediaId(null);
       setBulkDeleteConfirmKey(null);
+      setMediaCursorTrail([null]);
     },
-    onLoaded: () => {
+    onLoaded: (page, request) => {
       setDeleteConfirmMediaId(null);
       setBulkDeleteConfirmKey(null);
+      setSelectedMediaIds(new Set());
+      setMediaCursorTrail(request.cursors);
+      if (request.tab === "image") setImageEditSources(page.items);
     },
   });
+  const media = mediaPage.items;
+  const setMedia = useCallback((update: React.SetStateAction<MediaItem[]>) => {
+    setMediaPage((current) => ({
+      ...current,
+      items: typeof update === "function" ? update(current.items) : update,
+    }));
+  }, [setMediaPage]);
+  const refreshMedia = useCallback(
+    (tab: GalleryTab) => refreshMediaPage({ tab, cursors: [null] }),
+    [refreshMediaPage],
+  );
 
   const {
     data: userPresets,
@@ -543,7 +591,11 @@ export function GeneratorWorkspace() {
     onLoaded: () => setDeleteConfirmPresetId(null),
   });
 
-  const [editSourceMediaId, setEditSourceMediaId] = useState("");
+  const [selectedEditSource, setSelectedEditSource] = useState<MediaItem | null>(null);
+  const selectedEditSourceRef = useRef<MediaItem | null>(null);
+  useEffect(() => { selectedEditSourceRef.current = selectedEditSource; }, [selectedEditSource]);
+  const suspendedEditSourceRef = useRef<{ scope: string; source: MediaItem } | null>(null);
+  const editSourceMediaId = selectedEditSource?.id ?? "";
   const [lookEditorMediaId, setLookEditorMediaId] = useState<string | null>(null);
   const [lookLabel, setLookLabel] = useState("");
   const [lookDescription, setLookDescription] = useState("");
@@ -589,20 +641,9 @@ export function GeneratorWorkspace() {
     mode === "image" && imageWorkflow === "image-edit";
   const characterImageMode =
     mode === "image" && !freeplay && !imageEditMode;
-  const selectedEditSourceForModel = editSourceMediaId
-    ? media.find((item) => item.id === editSourceMediaId) ?? null
-    : null;
   const imageEditCandidates = useMemo(
-    () =>
-      media
-        .filter((item) => item.type === "image")
-        .filter((item) => !isBuiltInMediaPlaceholderUrl(item.thumbnailUrl ?? item.url))
-        .slice(0, 6),
-    [media],
-  );
-  const selectedEditSource = useMemo(
-    () => imageEditCandidates.find((item) => item.id === editSourceMediaId) ?? null,
-    [editSourceMediaId, imageEditCandidates],
+    () => generatorImageEditSources(imageEditSources, selectedEditSource),
+    [imageEditSources, selectedEditSource],
   );
   const availableModels = useMemo(
     () => {
@@ -612,8 +653,8 @@ export function GeneratorWorkspace() {
       if (imageEditMode) {
         return generatorImageEditModelOptions(
           config?.image.editModels ?? [],
-          selectedEditSourceForModel
-            ? (selectedEditSourceForModel.imageEditModelIds ?? [])
+          selectedEditSource
+            ? (selectedEditSource.imageEditModelIds ?? [])
             : null,
         );
       }
@@ -623,7 +664,7 @@ export function GeneratorWorkspace() {
       config,
       imageEditMode,
       mode,
-      selectedEditSourceForModel,
+      selectedEditSource,
       videoModeEnabled,
     ],
   );
@@ -638,8 +679,7 @@ export function GeneratorWorkspace() {
   );
   const modeAvailable =
     mode === "image"
-      ? config?.image.availability.state === "available" &&
-        config.image.models.length > 0
+      ? generatorImageWorkflowAvailable(config?.image, imageWorkflow)
       : videoModeEnabled;
   // Null while the form does not describe a route the server can price.
   const generationQuoteRequest: GenerationQuoteRequest | null =
@@ -718,11 +758,7 @@ export function GeneratorWorkspace() {
   } = generationRequest.view;
   const formCanSubmit =
     canSubmit && (!imageEditMode || prompt.trim().length > 0);
-  const modeUnavailableMessage = generationModeUnavailableMessage(config, mode);
-  const galleryTabs = useMemo<GalleryTab[]>(
-    () => (videoModeEnabled ? ["image", "video", "liked"] : ["image", "liked"]),
-    [videoModeEnabled],
-  );
+  const modeUnavailableMessage = modeAvailable ? "" : generationModeUnavailableMessage(config, mode);
   const canUsePrompt = Boolean(config?.entitlements.premium_controls);
   const canDescribeMoment = canUsePrompt || characterImageMode;
   const anonymousViewer = config?.viewer?.authenticated === false;
@@ -823,7 +859,9 @@ export function GeneratorWorkspace() {
     setLatestResults([]);
     setIdentityMedia([]);
     setIdentityMediaAuthority(readyAuthorityStatus());
-    setEditSourceMediaId("");
+    setSelectedEditSource(null);
+    setImageEditSources([]);
+    setMediaCursorTrail([null]);
     setSelectedMediaIds(new Set());
     setDeleteConfirmMediaId(null);
     setBulkDeleteConfirmKey(null);
@@ -842,6 +880,7 @@ export function GeneratorWorkspace() {
   ]);
 
   const resetPrivateViewerData = useCallback(() => {
+    suspendedEditSourceRef.current = null;
     clearPrivateViewerProjections();
     setPresetName("");
     setModePresetId("");
@@ -901,6 +940,7 @@ export function GeneratorWorkspace() {
 
   const failConfigAuthority = useCallback(
     (message: string) => {
+      suspendedEditSourceRef.current = null;
       invalidateGeneratorConfigAuthority(
         {
           authenticated: viewerAuthenticatedRef,
@@ -923,6 +963,13 @@ export function GeneratorWorkspace() {
   );
 
   const suspendViewerAuthority = useCallback(() => {
+    if (viewerAuthenticatedRef.current && viewerScopeRef.current && selectedEditSourceRef.current) {
+      // Retain only a suspended draft; private projections stay empty until its owner is confirmed.
+      suspendedEditSourceRef.current = {
+        scope: viewerScopeRef.current,
+        source: selectedEditSourceRef.current,
+      };
+    }
     configRequestSerialRef.current += 1;
     configRequestControllerRef.current?.abort();
     configRequestControllerRef.current = null;
@@ -986,6 +1033,11 @@ export function GeneratorWorkspace() {
       }
       viewerAuthenticatedRef.current = data.viewer.authenticated;
       if (!data.viewer.authenticated) resetPrivateViewerData();
+      const suspendedSource = suspendedEditSourceRef.current;
+      suspendedEditSourceRef.current = null;
+      if (data.viewer.authenticated && suspendedSource?.scope === nextScope) {
+        setSelectedEditSource(suspendedSource.source);
+      }
       setConfig({
         ...data,
         viewer: {
@@ -997,7 +1049,6 @@ export function GeneratorWorkspace() {
       const nextVideoModeEnabled = data.video.enabled && data.video.models.length > 0;
       if (!nextVideoModeEnabled) {
         setMode((current) => (current === "video" ? "image" : current));
-        setGalleryTab((current) => (current === "video" ? "image" : current));
       }
       setModelSelection((current) =>
         current.explicit &&
@@ -1284,7 +1335,7 @@ export function GeneratorWorkspace() {
           loadConfig: refreshConfig,
           loadCharacters: refreshCharacters,
           loadJobs: refreshJobs,
-          loadMedia: () => refreshMedia("image"),
+          loadMedia: () => refreshMedia(galleryTabRef.current),
           loadPresets: refreshPresets,
           loadIdentityMedia: refreshIdentityMedia,
         },
@@ -1489,7 +1540,7 @@ export function GeneratorWorkspace() {
         controls: {
           orientation,
           model: modelSelectionProjection.requestModelId,
-          seconds: mode === "video" ? 4 : undefined,
+          // Main pins duration from the same production recipe used for the quote.
           modePresetId: mode === "image" && modePresetId ? modePresetId : undefined,
           backgroundPresetId: mode === "image" && backgroundPresetId ? backgroundPresetId : undefined,
           posePresetId: mode === "image" && posePresetId ? posePresetId : undefined,
@@ -1547,6 +1598,8 @@ export function GeneratorWorkspace() {
         void refreshMedia(galleryTab);
         return;
       }
+      setImageEditSources((current) => current.filter((item) => item.id !== id));
+      setSelectedEditSource((current) => current?.id === id ? null : current);
       setStatus("Media deleted.");
     } catch {
       setStatus("Delete failed.");
@@ -1721,6 +1774,17 @@ export function GeneratorWorkspace() {
     void refreshMedia(tab);
   }
 
+  function editGalleryImage(item: MediaItem) {
+    setMode("image");
+    setImageWorkflow("image-edit");
+    setSelectedEditSource(item);
+    setModelSelection({ id: "", explicit: false });
+    setPrompt("");
+    setNegativePrompt("");
+    setView("create");
+    setStatus("");
+  }
+
   async function saveCurrentPreset() {
     const label = presetName.trim();
     if (!label) {
@@ -1786,7 +1850,7 @@ export function GeneratorWorkspace() {
     }
   }
 
-  function applyPreset(preset: UserPreset) {
+  const applyPreset = useCallback((preset: UserPreset) => {
     const controls = isRecord(preset.controls) ? preset.controls : {};
     setModePresetId(presetControlString(controls, "modePresetId"));
     setBackgroundPresetId(presetControlString(controls, "backgroundPresetId"));
@@ -1797,7 +1861,29 @@ export function GeneratorWorkspace() {
     setMode("image");
     setDeleteConfirmPresetId(null);
     setStatus(`Applied preset "${preset.label}".`);
-  }
+  }, [canUsePrompt]);
+
+  useEffect(() => {
+    const scope = config?.viewer.scope;
+    if (!config?.viewer.authenticated || !scope || presetsAuthority.phase !== "ready") return;
+    const presetId = new URLSearchParams(window.location.search).get("presetId");
+    if (!presetId) return;
+    const routeKey = `${scope}:${presetId}`;
+    if (appliedRoutePresetRef.current === routeKey) return;
+    // The owned list is the authority: a URL must never load another viewer's
+    // preset. Apply only once so a focus refresh does not erase form edits.
+    const preset = userPresets.find((candidate) => candidate.id === presetId);
+    const timer = window.setTimeout(() => {
+      if (viewerScopeRef.current !== scope || viewerAuthenticatedRef.current !== true) return;
+      appliedRoutePresetRef.current = routeKey;
+      setView("create");
+      setImageWorkflow("presets");
+      setAdvancedOpen(true);
+      if (preset) applyPreset(preset);
+      else setStatus("This saved preset is unavailable. Choose one of your presets below.");
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [applyPreset, config?.viewer.authenticated, config?.viewer.scope, presetsAuthority.phase, userPresets]);
 
   async function deletePreset(id: string) {
     if (deleteConfirmPresetId !== id) {
@@ -1868,6 +1954,10 @@ export function GeneratorWorkspace() {
       if (!response.ok || !payload.ok) {
         setStatus(payload.error?.message ?? "Bulk action failed.");
         return;
+      }
+      if (action === "delete") {
+        setImageEditSources((current) => current.filter((item) => !ids.includes(item.id)));
+        setSelectedEditSource((current) => current && ids.includes(current.id) ? null : current);
       }
       setStatus(
         action === "delete"
@@ -2073,10 +2163,7 @@ export function GeneratorWorkspace() {
                   </div>
                   <button
                     className="h-8 rounded-full bg-[rgb(36,36,36)] px-3 text-[11px] font-black text-white"
-                    onClick={() => {
-                      setView("gallery");
-                      void refreshMedia("image");
-                    }}
+                    onClick={() => switchGallery("image")}
                     type="button"
                   >
                     Open Gallery
@@ -2100,7 +2187,7 @@ export function GeneratorWorkspace() {
                     No editable images yet. Generate an image first, then return to Image Edit.
                   </p>
                 ) : imageEditCandidates.length > 0 ? (
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid max-h-72 grid-cols-3 gap-2 overflow-y-auto p-1">
                     {imageEditCandidates.map((item, index) => {
                       const source = item.thumbnailUrl ?? item.url;
                       const selected = item.id === selectedEditSource?.id;
@@ -2121,7 +2208,7 @@ export function GeneratorWorkspace() {
                                 explicit: false,
                               });
                             }
-                            setEditSourceMediaId(item.id);
+                            setSelectedEditSource(item);
                           }}
                           type="button"
                         >
@@ -3008,9 +3095,16 @@ export function GeneratorWorkspace() {
                         </p>
                       </div>
                       <span className="rounded-full bg-black/30 px-3 py-1 text-[11px] font-bold uppercase text-white">
-                        {job.status}
+                        {job.errorCode === "provider_outcome_unknown" ? "Needs review" : job.status}
                       </span>
                     </div>
+                    {job.errorCode === "provider_outcome_unknown" && (
+                      <p className="mt-3 text-[12px] font-medium text-[rgb(170,170,170)]">
+                        The result could not be confirmed. Please contact support before trying again.
+                        {" "}<Link className="underline" href="/helpdesk">Contact support</Link>
+                        <span className="mt-1 block break-all">Request: {job.id}</span>
+                      </p>
+                    )}
                     {job.status === "failed" && (
                       <div className="mt-3 flex flex-col gap-2">
                         <button
@@ -3301,6 +3395,12 @@ export function GeneratorWorkspace() {
                         <>
                           {item.type === "image" && (
                             <div className="absolute left-2 top-2 flex gap-2 opacity-100 md:opacity-0 md:transition-opacity md:group-hover:opacity-100">
+                              <IconButton
+                                label="Edit image"
+                                onClick={() => editGalleryImage(item)}
+                              >
+                                <Pencil className="h-4 w-4" />
+                              </IconButton>
                               {item.characterId && (
                                 <>
                                   <IconButton
@@ -3429,6 +3529,28 @@ export function GeneratorWorkspace() {
                   </div>
                 )}
               </div>
+              {!configAuthorityUnavailable && !anonymousViewer &&
+              (mediaPage.nextCursor || mediaCursorTrail.length > 1) && (
+                <nav aria-label="Gallery pages" className="mt-4 flex items-center justify-between gap-3">
+                  <button
+                    className="h-9 rounded-full bg-[rgb(36,36,36)] px-4 text-[12px] font-bold text-white disabled:opacity-40"
+                    disabled={mediaAuthority.phase === "loading" || mediaCursorTrail.length <= 1}
+                    onClick={() => void refreshMediaPage({ tab: galleryTab, cursors: mediaCursorTrail.slice(0, -1) })}
+                    type="button"
+                  >
+                    Previous page
+                  </button>
+                  <span className="text-[12px] text-[rgb(170,170,170)]">Page {mediaCursorTrail.length}</span>
+                  <button
+                    className="h-9 rounded-full bg-[rgb(36,36,36)] px-4 text-[12px] font-bold text-white disabled:opacity-40"
+                    disabled={mediaAuthority.phase === "loading" || !mediaPage.nextCursor}
+                    onClick={() => void refreshMediaPage({ tab: galleryTab, cursors: [...mediaCursorTrail, mediaPage.nextCursor ?? null] })}
+                    type="button"
+                  >
+                    Next page
+                  </button>
+                </nav>
+              )}
             </section>
           </div>
         </div>
@@ -3866,12 +3988,13 @@ export function generatorJobStatusLabel(
   status: string,
   errorCode: string | null,
 ) {
+  if (errorCode === "provider_outcome_unknown") return "Result needs review";
   if (!isCatalogMember(GENERATION_JOB_STATUSES, status)) return status;
   if (mode === "video" && status === "queued") {
-    return "Waiting to render · usually 6–10 min";
+    return "Waiting for a rendering slot";
   }
   if (mode === "video" && status === "running") {
-    return "Rendering source image · usually 6–10 min";
+    return "Rendering source image · you can return later";
   }
   const label = jobStatusLabels[status];
   const reason = generationFailureCopy(errorCode);

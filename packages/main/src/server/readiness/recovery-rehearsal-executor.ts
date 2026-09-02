@@ -728,20 +728,17 @@ function manifestCounts(manifest: string) {
   return { files, bytes };
 }
 
-async function directoryBytes(root: string) {
+async function directoryBytes(root: string, manifest: string) {
   let bytes = 0;
-  async function visit(directory: string) {
-    const entries = await readdir(directory, { withFileTypes: true });
-    for (const entry of entries) {
-      const target = path.join(directory, entry.name);
-      const targetStat = await lstat(target);
-      if (targetStat.isSymbolicLink()) throw new Error("file authority contains a symlink");
-      if (targetStat.isDirectory()) await visit(target);
-      else if (targetStat.isFile()) bytes += targetStat.size;
-      else throw new Error("file authority contains a non-regular entry");
-    }
+  // INVARIANT: count only real files already recorded by the validated walk.
+  // Canonical pointers are separate manifest entries, never a second file tree.
+  for (const line of manifest.trimEnd().split("\n")) {
+    const [kind, , , authorityPath] = line.split("\t");
+    if (kind !== "file") continue;
+    const stat = await lstat(path.join(root, authorityPath!));
+    if (!stat.isFile()) throw new Error("file authority changed during byte count");
+    bytes += stat.size;
   }
-  await visit(root);
   return bytes;
 }
 
@@ -1235,8 +1232,9 @@ async function captureLocalFiles(
   restoreManifestFile: string,
   scratch: string,
   label: string,
+  options: { readonly canonicalIgrepLinks?: boolean } = {},
 ) {
-  const sourceManifest = await buildFileAuthorityManifest(root);
+  const sourceManifest = await buildFileAuthorityManifest(root, options);
   await writeFile(sourceManifestFile, sourceManifest, { mode: 0o600 });
   runner.run({
     command: "tar",
@@ -1251,7 +1249,7 @@ async function captureLocalFiles(
     stage: `${label}_restore`,
   });
   const restoredRoot = path.join(restoreParent, path.basename(root));
-  const restoredManifest = await buildFileAuthorityManifest(restoredRoot);
+  const restoredManifest = await buildFileAuthorityManifest(restoredRoot, options);
   await writeFile(restoreManifestFile, restoredManifest, { mode: 0o600 });
   if (sourceManifest !== restoredManifest) {
     throw new Error(`${label} isolated restore manifest differs from source`);
@@ -1259,7 +1257,7 @@ async function captureLocalFiles(
   return {
     manifest: sourceManifest,
     files: manifestCounts(sourceManifest).files,
-    bytes: await directoryBytes(root),
+    bytes: await directoryBytes(root, sourceManifest),
   };
 }
 
@@ -1609,6 +1607,7 @@ export async function executeRecoveryRehearsal(input: {
       files.dshCanonicalRestoreManifest,
       scratch,
       "dsh_canonical",
+      { canonicalIgrepLinks: true },
     );
     const dshPrivate = await captureLocalFiles(
       runner,
@@ -1691,7 +1690,7 @@ export async function executeRecoveryRehearsal(input: {
       throw new Error("AgentRun authority changed during checkpoint");
     }
     if (
-      await buildFileAuthorityManifest(dshCanonicalRoot) !==
+      await buildFileAuthorityManifest(dshCanonicalRoot, { canonicalIgrepLinks: true }) !==
         dshCanonical.manifest
     ) {
       throw new Error("DSH canonical authority changed during checkpoint");
@@ -1862,7 +1861,7 @@ export async function executeRecoveryRehearsal(input: {
       throw new Error("AgentRun authority changed during isolated restore");
     }
     if (
-      await buildFileAuthorityManifest(dshCanonicalRoot) !==
+      await buildFileAuthorityManifest(dshCanonicalRoot, { canonicalIgrepLinks: true }) !==
         dshCanonical.manifest
     ) {
       throw new Error("DSH canonical authority changed during isolated restore");

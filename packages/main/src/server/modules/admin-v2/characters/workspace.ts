@@ -107,7 +107,7 @@ export async function getCharacterWorkspace(characterId: string) {
   if (!project) {
     const approvedSubmission =
       character.source === "user" &&
-      character.visibility === "public" &&
+      ["public", "unlisted"].includes(character.visibility) &&
       character.status === "approved" &&
       character.currentContentVersionId
         ? await prisma.characterSubmission.findFirst({

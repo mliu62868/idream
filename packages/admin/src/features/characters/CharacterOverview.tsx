@@ -228,7 +228,7 @@ export function CharacterOverview({
               </>
             ) : (
               <p className="mt-7 text-xs text-[var(--ad-text-muted)]" role="status">
-                {t("Your effective grants do not include")} content.read
+                {t("Your effective grants do not include")} <code>{"content.read"}</code>
               </p>
             )}
           </div>

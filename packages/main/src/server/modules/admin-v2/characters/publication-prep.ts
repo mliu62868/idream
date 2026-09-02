@@ -17,10 +17,10 @@ export type CustomerCharacterPublicationPrep = {
 };
 
 /**
- * SPEC: customer public approval opens production authority; it does not publish.
- * INVARIANT: this seam may create Project / Revision / inactive Serving only. A
- * public Release, qualification, asset visibility and live Serving remain owned
- * by the Release publish executor.
+ * SPEC: approval for public or unlisted sharing opens production authority; it does not publish.
+ * INVARIANT: new sharing creates inactive Serving; sharing after withdrawal
+ * retains the paused Release. Qualification, asset visibility and live Serving
+ * remain owned by the Release publish/resume executor.
  */
 export async function ensureCustomerCharacterPublicationPrep(
   tx: Prisma.TransactionClient,
@@ -43,7 +43,7 @@ export async function ensureCustomerCharacterPublicationPrep(
   if (!character) throw Errors.notFound("Character not found");
   if (character.source !== "user") return null;
   if (
-    character.visibility !== "public" ||
+    !["public", "unlisted"].includes(character.visibility) ||
     !["pending_review", "approved"].includes(character.status)
   ) {
     throw Errors.conflict("Customer Character is not eligible for publication preparation");
@@ -130,7 +130,18 @@ export async function ensureCustomerCharacterPublicationPrep(
     });
     created = true;
   }
-  if (serving.state !== "inactive" || serving.currentReleaseId) {
+  const pausedRelease = serving.state === "paused" && serving.currentReleaseId
+    ? await tx.characterRelease.findFirst({
+        where: {
+          id: serving.currentReleaseId,
+          projectId: project.id,
+          status: "published",
+          publishedAt: { not: null },
+        },
+        select: { id: true },
+      })
+    : null;
+  if (!((serving.state === "inactive" && !serving.currentReleaseId) || pausedRelease)) {
     throw Errors.conflict("Customer Character Serving authority is inconsistent");
   }
 
@@ -165,10 +176,10 @@ export async function prepareApprovedCustomerCharacterPublication(
   if (!character) throw Errors.notFound("Character not found");
   if (
     character.source !== "user" ||
-    character.visibility !== "public" ||
+    !["public", "unlisted"].includes(character.visibility) ||
     character.status !== "approved"
   ) {
-    throw Errors.conflict("Only an approved public customer Character can enter publication preparation");
+    throw Errors.conflict("Only an approved public or unlisted customer Character can enter publication preparation");
   }
   const submission = await tx.characterSubmission.findFirst({
     where: {

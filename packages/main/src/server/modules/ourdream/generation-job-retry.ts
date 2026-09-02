@@ -31,7 +31,7 @@ import {
   stringFromRecord,
 } from "./json-values";
 import { entitlementMap, lockUserLedger } from "./subscription-lifecycle";
-import { publicCharacterAudienceWhere } from "./public-content-audience";
+import { directCharacterAudienceWhere } from "./public-content-audience";
 import { isExecutableGenerationProfile } from "./generation-profile-catalog";
 import {
   assertGenerationProfileCanDispatchReferences,
@@ -479,14 +479,12 @@ export async function retryGenerationJobForUser(input: {
               age: { gte: 18 },
               status: "approved",
             },
-            job.mode === "video"
-              ? publicCharacterAudienceWhere
-              : {
-                  OR: [
-                    { creatorId: userId },
-                    publicCharacterAudienceWhere,
-                  ],
-                },
+            {
+              OR: [
+                { creatorId: userId },
+                directCharacterAudienceWhere,
+              ],
+            },
           ],
         },
         select: { id: true, imageAssetId: true },

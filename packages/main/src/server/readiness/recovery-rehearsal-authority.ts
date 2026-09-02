@@ -10,7 +10,7 @@ import {
   renderRecoveryDatabaseAuthoritySql,
   type RecoveryDatabaseAuthority,
 } from "./recovery-database-authority";
-import { buildFileAuthorityManifest } from "./recovery-rehearsal-producer";
+import { buildFileAuthorityManifest, isCanonicalIgrepPointer } from "./recovery-rehearsal-producer";
 
 export type RecoveryArchiveCommandRunner = {
   run(input: {
@@ -252,12 +252,21 @@ async function validateArchiveReconstruction(input: {
   readonly archiveLabel: string;
   readonly expectedRoot: string;
   readonly expectedManifest: Buffer | undefined;
+  readonly canonicalIgrepLinks?: boolean;
   readonly problems: string[];
   readonly runner: RecoveryArchiveCommandRunner;
 }) {
   if (!input.expectedManifest) return;
   let scratch: string | null = null;
   try {
+    const manifestProblems: string[] = [];
+    validateFileManifest(input.expectedManifest, input.archiveLabel, manifestProblems, input.canonicalIgrepLinks);
+    if (manifestProblems.length > 0) throw new Error("invalid source manifest");
+    const expectedEntries = new Set(input.expectedManifest.toString("utf8").trimEnd().split("\n")
+      .map((line) => {
+        const authorityPath = line.split("\t")[3]!;
+        return authorityPath === "." ? input.expectedRoot : `${input.expectedRoot}/${authorityPath.slice(2)}`;
+      }));
     const listing = input.runner.run({
       command: "tar",
       args: ["-tzf", input.archivePath],
@@ -265,16 +274,20 @@ async function validateArchiveReconstruction(input: {
     }).stdout.toString("utf8");
     const entries = listing.split(/\r?\n/u).filter(Boolean);
     if (entries.length === 0) throw new Error("empty archive");
+    const seen = new Set<string>();
     for (const entry of entries) {
       const normalized = entry.replace(/\/$/u, "");
       if (
         path.posix.isAbsolute(normalized) ||
         normalized.split("/").includes("..") ||
-        normalized.split("/")[0] !== input.expectedRoot
+        normalized.split("/")[0] !== input.expectedRoot ||
+        !expectedEntries.has(normalized) || seen.has(normalized)
       ) {
         throw new Error("unsafe or split archive root");
       }
+      seen.add(normalized);
     }
+    if (seen.size !== expectedEntries.size) throw new Error("archive omits manifest entries");
     scratch = await mkdtemp(path.join(tmpdir(), "idream-recovery-inspect-"));
     input.runner.run({
       command: "tar",
@@ -291,6 +304,7 @@ async function validateArchiveReconstruction(input: {
     }
     const reconstructed = await buildFileAuthorityManifest(
       path.join(scratch, input.expectedRoot),
+      { canonicalIgrepLinks: input.canonicalIgrepLinks },
     );
     if (reconstructed !== input.expectedManifest.toString("utf8")) {
       throw new Error("archive manifest differs");
@@ -429,32 +443,56 @@ function validateFileManifest(
   value: Buffer | undefined,
   label: string,
   problems: string[],
+  canonicalIgrepLinks = false,
 ) {
   if (!value) return;
   const lines = value.toString("utf8").trimEnd().split(/\r?\n/u);
-  const paths = new Set<string>();
+  const paths = new Map<string, string>();
+  const pointers: Array<{ entryPath: string; target: string }> = [];
   let hasRoot = false;
   for (const line of lines) {
-    const match = /^(directory|file)\t([0-7]{3,4})\t(-|[a-f0-9]{64})\t(\.(?:\/[^\t\r\n]+)?)$/u.exec(line);
+    const match = /^(directory|file|symlink)\t([0-7]{3,4})\t(-|[a-f0-9]{64})\t(\.(?:\/[^\t\r\n]+)?)(?:\t([^\t\r\n]+))?$/u.exec(line);
     if (!match) {
       problems.push(`${label} contains an invalid authority entry`);
       return;
     }
-    const [, kind, , digest, entryPath] = match;
+    const [, kind, , digest, entryPath, target] = match;
     if (
       paths.has(entryPath) ||
-      entryPath.includes("/../") ||
-      entryPath.endsWith("/..") ||
+      entryPath.split("/").slice(1).some((part) => !part || part === "." || part === "..") ||
+      (kind !== "symlink" && target !== undefined) ||
+      (kind === "symlink" && (
+        !canonicalIgrepLinks || !target ||
+        !isCanonicalIgrepPointer(entryPath, target) || digest !== sha256(target)
+      )) ||
       (kind === "directory" ? digest !== "-" : !hasSha256(digest))
     ) {
       problems.push(`${label} contains an invalid authority entry`);
       return;
     }
-    paths.add(entryPath);
+    paths.set(entryPath, kind);
+    if (kind === "symlink" && target) pointers.push({ entryPath, target });
     hasRoot ||= kind === "directory" && entryPath === ".";
   }
   if (!hasRoot) {
     problems.push(`${label} does not declare the authority root`);
+  }
+  if (canonicalIgrepLinks) {
+    // Canonical files are a physical tree. Remote Blob keys intentionally do
+    // not declare virtual parent directories and retain their existing format.
+    for (const entryPath of paths.keys()) {
+      if (entryPath !== "." && paths.get(path.posix.dirname(entryPath)) !== "directory") {
+        problems.push(`${label} contains an entry outside a real directory`);
+        return;
+      }
+    }
+  }
+  for (const { entryPath, target } of pointers) {
+    const targetPath = `./${path.posix.join(path.posix.dirname(entryPath), target)}`;
+    if (paths.get(targetPath) !== "directory") {
+      problems.push(`${label} canonical pointer does not target a real version directory`);
+      return;
+    }
   }
 }
 
@@ -1162,6 +1200,7 @@ export async function inspectRecoveryRehearsalBundle(input: {
           archiveLabel: authority.label,
           expectedRoot: path.basename(authority.root),
           expectedManifest: artifact(authority.manifest),
+          canonicalIgrepLinks: authority.manifest === "dsh-canonical.source.sha256",
           problems,
           runner: commandRunner,
         });
@@ -1187,7 +1226,10 @@ export async function inspectRecoveryRehearsalBundle(input: {
       "blob.source.sha256",
       "blob.restore.sha256",
     ]) {
-      validateFileManifest(artifact(suffix), filenameForSuffix(suffix), problems);
+      validateFileManifest(
+        artifact(suffix), filenameForSuffix(suffix), problems,
+        suffix === "dsh-canonical.source.sha256" || suffix === "dsh-canonical.restore.sha256",
+      );
     }
 
     for (const [sourceSuffix, restoreSuffix] of pairedAuthoritySuffixes) {

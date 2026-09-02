@@ -574,6 +574,7 @@ export async function listCharacterPortfolioData(
   } = {},
 ) {
   const asOf = input.asOf ?? new Date();
+  const includePerformance = query.includePerformance !== false;
   const characterIds = await filteredCharacterIds(
     db,
     query,
@@ -825,7 +826,7 @@ export async function listCharacterPortfolioData(
         },
         orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
       });
-      const previousRelease = currentRelease
+      const previousRelease = currentRelease && includePerformance
         ? currentRelease.supersedesId
           ? await db.characterRelease.findUnique({
               where: { id: currentRelease.supersedesId },
@@ -857,7 +858,7 @@ export async function listCharacterPortfolioData(
             (placementId) => placementId === query.placementId,
           )
         : availablePlacements;
-      const performance = currentRelease
+      const performance = currentRelease && includePerformance
         ? await Promise.all(
             placements.flatMap((placementId) =>
               (["7d", "28d"] as const).map((window) =>
@@ -989,7 +990,7 @@ export async function listCharacterPortfolioData(
               ? "high"
               : "normal",
         performance,
-        changeMarkers: currentRelease
+        changeMarkers: currentRelease && includePerformance
           ? await changeMarkers(
               db,
               character.id,
@@ -1011,7 +1012,7 @@ export async function listCharacterPortfolioData(
           workflowState: journey.stage,
           servingState: serving?.state ?? "inactive",
           // SPEC: 汇总取最坏，但"全是无观测"要报 no_data，不能借 invalid 冒充数据故障。
-          qualityState: performance.some(
+          qualityState: !includePerformance ? "not_requested" : performance.some(
             (item) => item.qualityState === "invalid",
           )
             ? "invalid"

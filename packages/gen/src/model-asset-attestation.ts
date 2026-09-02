@@ -76,6 +76,7 @@ export async function attestLocalComfyUiModelRoot(
   },
   dependencies: {
     readonly runCommand?: RuntimeCommand;
+    readonly readProcessArgv?: (pid: number) => Promise<readonly string[]>;
     readonly readTextFile?: (filePath: string) => Promise<string>;
     readonly resolveRealPath?: (filePath: string) => Promise<string>;
     readonly fileExists?: (filePath: string) => Promise<boolean>;
@@ -123,8 +124,9 @@ export async function attestLocalComfyUiModelRoot(
   if (!runtimeCwd) {
     throw new Error("ComfyUI listener cwd could not be attested");
   }
-  const configPath = commandLineValue(command, "--extra-model-paths-config");
-  if (!configPath) {
+  const argv = await (dependencies.readProcessArgv ?? readProcessArgv)(listenerPid);
+  const configPaths = commandLineValues(argv, "--extra-model-paths-config");
+  if (configPaths.length === 0) {
     throw new Error(
       "ComfyUI listener does not declare --extra-model-paths-config",
     );
@@ -141,10 +143,14 @@ export async function attestLocalComfyUiModelRoot(
       return false;
     }
   });
-  const configuredRoots = modelRootsFromConfig(
-    await readTextFile(configPath),
-    path.dirname(configPath),
-  );
+  const configuredRoots: string[] = [];
+  for (const configuredPath of configPaths) {
+    const configPath = path.resolve(runtimeCwd, configuredPath);
+    configuredRoots.push(...modelRootsFromConfig(
+      await readTextFile(configPath),
+      path.dirname(configPath),
+    ));
+  }
   const expectedModelRoot = await resolveRealPath(input.modelRoot);
   const candidateRoots = await uniqueRealPaths(
     [...configuredRoots, path.join(runtimeCwd, "models")],
@@ -188,13 +194,67 @@ async function systemCommand(command: string, args: readonly string[]) {
   return String(result.stdout);
 }
 
-function commandLineValue(command: string, flag: string) {
-  const marker = `${flag} `;
-  const start = command.indexOf(marker);
-  if (start < 0) return null;
-  const rest = command.slice(start + marker.length);
-  const nextFlag = rest.search(/\s--[a-z0-9-]+(?:\s|$)/i);
-  return rest.slice(0, nextFlag < 0 ? undefined : nextFlag).trim().replace(/^['"]|['"]$/g, "");
+async function readProcessArgv(pid: number): Promise<readonly string[]> {
+  if (process.platform === "linux") {
+    const raw = await readFile(`/proc/${pid}/cmdline`, "utf8");
+    if (!raw.endsWith("\0")) throw new Error("ComfyUI listener argv is incomplete");
+    return raw.slice(0, -1).split("\0");
+  }
+  if (process.platform !== "darwin") {
+    throw new Error("ComfyUI listener argv attestation requires Linux or macOS");
+  }
+  // SPEC: ps flattens argv and loses boundaries around paths containing spaces.
+  // Read the kernel's argc arguments only; never print the following environment.
+  const raw = await systemCommand("python3", ["-I", "-S", "-c", String.raw`
+import ctypes, json, struct, sys
+libc = ctypes.CDLL(None, use_errno=True)
+mib = (ctypes.c_int * 3)(1, 49, int(sys.argv[1]))  # CTL_KERN, KERN_PROCARGS2
+size = ctypes.c_size_t(0)
+if libc.sysctl(mib, 3, None, ctypes.byref(size), None, 0):
+    raise OSError(ctypes.get_errno(), "Cannot read listener argv size")
+buffer = ctypes.create_string_buffer(size.value)
+if libc.sysctl(mib, 3, buffer, ctypes.byref(size), None, 0):
+    raise OSError(ctypes.get_errno(), "Cannot read listener argv")
+data = buffer.raw[:size.value]
+argc = struct.unpack_from("i", data)[0]
+if not 1 <= argc <= len(data):
+    raise ValueError("Invalid listener argc")
+cursor = data.index(b"\0", 4) + 1
+while cursor < len(data) and data[cursor] == 0:
+    cursor += 1
+argv = []
+for _ in range(argc):
+    end = data.index(b"\0", cursor)
+    argv.append(data[cursor:end].decode("utf-8"))
+    cursor = end + 1
+print(json.dumps(argv))
+`, String(pid)]);
+  const argv: unknown = JSON.parse(raw);
+  if (!Array.isArray(argv) || argv.length === 0 || !argv.every((value) => typeof value === "string")) {
+    throw new Error("ComfyUI listener argv could not be attested");
+  }
+  return argv;
+}
+
+function commandLineValues(argv: readonly string[], flag: string) {
+  const values: string[] = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index]!;
+    if (argument.startsWith(`${flag}=`)) {
+      const value = argument.slice(flag.length + 1);
+      if (!value) throw new Error(`${flag} requires at least one config path`);
+      values.push(value);
+    } else if (argument === flag) {
+      const start = values.length;
+      while (index + 1 < argv.length && !argv[index + 1]!.startsWith("-")) {
+        const value = argv[++index]!;
+        if (!value) throw new Error(`${flag} requires at least one config path`);
+        values.push(value);
+      }
+      if (values.length === start) throw new Error(`${flag} requires at least one config path`);
+    }
+  }
+  return values;
 }
 
 function modelRootsFromConfig(body: string, configDirectory: string) {

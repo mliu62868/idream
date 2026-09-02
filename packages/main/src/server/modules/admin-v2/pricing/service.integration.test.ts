@@ -451,7 +451,7 @@ describe.sequential("Admin v2 pricing control plane", () => {
         reason: "verify transactional pricing writes",
         confirmation: createRuleKey,
       },
-    })).rejects.toThrow();
+    })).resolves.toMatchObject({ status: 500, ok: false, error: { code: "internal" } });
     await expect(prisma.pricingRule.count({ where: { ruleKey: createRuleKey } })).resolves.toBe(0);
 
     const patchId = `${P}audit-failure-patch`;
@@ -464,7 +464,7 @@ describe.sequential("Admin v2 pricing control plane", () => {
       role: "admin",
       requestId: `${P}fail-audit-patch`,
       body: { baseCost: 21 },
-    })).rejects.toThrow();
+    })).resolves.toMatchObject({ status: 500, ok: false, error: { code: "internal" } });
     await expect(prisma.pricingRule.findUnique({ where: { id: patchId } }))
       .resolves.toMatchObject({ baseCost: 20 });
 
@@ -480,7 +480,7 @@ describe.sequential("Admin v2 pricing control plane", () => {
       role: "admin",
       requestId: `${P}fail-audit-publish`,
       body: { reason: "verify transactional pricing publish", confirmation: publishId },
-    })).rejects.toThrow();
+    })).resolves.toMatchObject({ status: 500, ok: false, error: { code: "internal" } });
     await expect(prisma.pricingRule.findUnique({ where: { id: activeId } }))
       .resolves.toMatchObject({ status: "active" });
     await expect(prisma.pricingRule.findUnique({ where: { id: publishId } }))
@@ -499,7 +499,7 @@ describe.sequential("Admin v2 pricing control plane", () => {
       role: "admin",
       requestId: `${P}fail-audit-rollback`,
       body: { reason: "verify transactional pricing rollback", confirmation: rollbackCurrentId },
-    })).rejects.toThrow();
+    })).resolves.toMatchObject({ status: 500, ok: false, error: { code: "internal" } });
     await expect(prisma.pricingRule.findUnique({ where: { id: rollbackPreviousId } }))
       .resolves.toMatchObject({ status: "archived" });
     await expect(prisma.pricingRule.findUnique({ where: { id: rollbackCurrentId } }))

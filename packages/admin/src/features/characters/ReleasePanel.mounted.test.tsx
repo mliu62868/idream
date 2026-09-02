@@ -3,12 +3,13 @@
 import type { AdminPermissionKey, CharacterWorkspaceDetail } from "@idream/shared/admin";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AdminI18nProvider } from "@/components/admin/i18n";
 import { createCharacterCommandJournal } from "./character-command-journal";
 import { characterWorkspaceDetail } from "./character-workspace-fixture";
 import { characterWorkspacePermissions } from "./character-workspace-permissions";
 import { ReleasePanel } from "./ReleasePanel";
+import * as transport from "@/lib/admin-v2-api";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -50,6 +51,7 @@ describe("Character release history empty state", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    vi.restoreAllMocks();
   });
 
   async function render(data: CharacterWorkspaceDetail, canPublish = true) {
@@ -64,7 +66,7 @@ describe("Character release history empty state", () => {
               storage: null,
             })}
             permissions={characterWorkspacePermissions(
-              new Set<AdminPermissionKey>(canPublish ? ["character.release.publish"] : []),
+              new Set<AdminPermissionKey>(canPublish ? ["character.release.publish", "content.takedown.write"] : []),
               false,
             )}
             runCommittedMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
@@ -106,5 +108,27 @@ describe("Character release history empty state", () => {
 
     expect(container.textContent).toContain("还没有发布版本");
     expect(publishButton()?.disabled).toBe(true);
+  });
+
+  it("hides a live Character from Explore with its current Serving version", async () => {
+    const request = vi.spyOn(transport, "adminV2Request").mockResolvedValue({
+      character: { id: "character-fixture", visibility: "unlisted", status: "approved" }, replayed: false,
+    });
+    await render(characterWorkspaceDetail({ character: { visibility: "public" }, serving: { state: "live", version: 7 } }));
+    const hide = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "从 Explore 隐藏");
+    expect(hide).toBeDefined();
+    await act(async () => hide!.click());
+    expect(request).toHaveBeenCalledWith("/api/v2/admin/content/characters/character-fixture/visibility", expect.objectContaining({
+      method: "POST", idempotencyKey: expect.any(String),
+      body: expect.objectContaining({ visibility: "unlisted", entityVersion: 7, confirmation: "character-fixture:visibility:unlisted" }),
+    }));
+  });
+
+  it("offers Show in Explore for unlisted live Characters and respects its own permission", async () => {
+    const data = characterWorkspaceDetail({ character: { visibility: "unlisted" }, serving: { state: "live", version: 7 } });
+    await render(data, false);
+    const show = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "在 Explore 显示");
+    expect(show).toBeDefined();
+    expect(show!.disabled).toBe(true);
   });
 });

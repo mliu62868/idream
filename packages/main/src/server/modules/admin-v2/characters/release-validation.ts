@@ -679,14 +679,9 @@ export async function evaluateCharacterReleaseSnapshot(
               release.referenceSetRevisionId &&
             manifestEntry.snapshotHash === referenceSet.snapshotHash,
         ) &&
-        sourceMeta.referenceSetRevisionId === release.referenceSetRevisionId &&
-        job.profileId === releaseRoute.generationProfileKey &&
-        job.profileVersion === releaseRoute.generationProfileVersion &&
-        job.model === releaseRoute.workflowKey &&
-        attempt.profileKey === releaseRoute.generationProfileKey &&
-        attempt.profileVersion === releaseRoute.generationProfileVersion &&
-        attempt.workflowKey === releaseRoute.workflowKey &&
-        attempt.workflowVersion === releaseRoute.workflowVersion,
+        // SPEC: A route upgrade governs future generation. Delivered images keep
+        // their historical Job/Attempt pins, checked by commonAuthorityMatches.
+        sourceMeta.referenceSetRevisionId === release.referenceSetRevisionId,
       );
       return bootstrapAuthorityMatches || identityRouteAuthorityMatches
         ? []

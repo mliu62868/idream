@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { Prisma, type CharacterPreviewJob } from "@prisma/client";
 import {
   CHARACTER_STYLES,
   CHARACTER_VISIBILITY,
@@ -30,6 +30,7 @@ import {
 } from "./billing-checkout";
 import {
   characterDraftDetailsWriteSchema,
+  characterDraftVoiceSelectionSchema,
   mergeCurrentCharacterDraftDetails,
   readCurrentCharacterDraftDetails,
 } from "./character-draft-details";
@@ -101,7 +102,7 @@ import {
   resolveMediaAssetBlobLocator,
 } from "@/server/lib/media-asset-authority";
 import { mediaAssetAuthorityDependencies } from "@/server/modules/admin-v2/shared/media-asset-authority-dependencies";
-import { canonicalJsonHash } from "@/server/modules/admin-v2/shared/idempotency";
+import { canonicalJsonEqual, canonicalJsonHash } from "@/server/modules/admin-v2/shared/idempotency";
 import {
   transitionCharacterServing,
 } from "@/server/modules/admin-v2/characters/transition";
@@ -142,6 +143,7 @@ import {
   verifyExposureContext,
 } from "./exposure-context";
 import { createVoiceClip as createDurableVoiceClip } from "./voice-clip";
+import { getCharacterDraftVoiceCatalog, previewCharacterDraftVoice } from "./character-draft-voice";
 import { trackEvent, trackEventBestEffort } from "./product-events";
 import { enforceRateLimit } from "@/server/lib/rate-limit";
 import { submitReport } from "./reports";
@@ -176,6 +178,7 @@ import {
   mutedTagSlugsForUser,
   normalizeMutedTagSlugs,
   publicCharacterAudienceWhere,
+  directCharacterAudienceWhere,
   publicReadableMediaAssetWhere,
   resolvePublicCharacterReleaseAssetPack,
 } from "./public-content-audience";
@@ -217,6 +220,8 @@ import {
   wakeQueuedGenerationDispatch,
 } from "./generation-job-authority";
 import {
+  effectiveGenerationJobStatus,
+  generationExecutionErrorCode,
   generationJobDTO,
   generationJobInclude,
   generationRefundAmount,
@@ -237,6 +242,7 @@ import {
 } from "./customer-media-authority";
 import {
   assertDraftOwner,
+  characterPreviewMatchesDraft,
   previewCharacterDraft,
   submitCharacterDraft,
 } from "./character-draft-write";
@@ -536,6 +542,21 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
     return listActiveTemplates();
   }
   if (resource === "search" && id === "suggest" && method === "GET") return suggest(request);
+
+  if (resource === "character-voices") {
+    const ctx = await getAuthCtx(request);
+    requireAgeGate(ctx);
+    if (!id && method === "GET") return ok(await getCharacterDraftVoiceCatalog());
+    if (id === "preview" && !action && method === "POST") {
+      requireUser(ctx);
+      requireAgeVerified(ctx);
+      const selection = characterDraftVoiceSelectionSchema.parse(await jsonBody(request));
+      return ok(await previewCharacterDraftVoice({
+        ...selection,
+        text: "Hello, it's good to meet you. I'm happy we can spend some time together.",
+      }));
+    }
+  }
 
   if (resource === "character-drafts") {
     if (!id && method === "POST") return createDraft(request);
@@ -1263,7 +1284,7 @@ async function getCharacter(request: Request, id: string) {
       id,
       deletedAt: null,
       OR: [
-        publicCharacterAudienceWhere,
+        directCharacterAudienceWhere,
         ctx.userId ? { creatorId: ctx.userId } : {},
       ].filter((item) => Object.keys(item).length > 0),
     },
@@ -1462,7 +1483,7 @@ async function likeCharacter(request: Request, id: string) {
     prisma.character.findFirst({
       where: {
         AND: [
-          publicCharacterAudienceWhere,
+          directCharacterAudienceWhere,
           { id },
         ],
       },
@@ -1653,7 +1674,8 @@ async function updateDraft(request: Request, id: string) {
 }
 
 function jsonFieldChanged(next: Record<string, unknown> | undefined, current: unknown) {
-  return next !== undefined && JSON.stringify(next) !== JSON.stringify(current ?? {});
+  // PostgreSQL JSONB reorders object keys; saving unchanged traits must retain the confirmed identity.
+  return next !== undefined && !canonicalJsonEqual(next, current ?? {});
 }
 
 async function currentDraft(request: Request) {
@@ -1678,7 +1700,7 @@ async function currentDraft(request: Request) {
     ? latest
     : null;
   if (!draft) return ok({ draft: null, previewJob: null, asset: null });
-  const previewJob = draft.previewJobId
+  const storedPreviewJob = draft.previewJobId
     ? await prisma.characterPreviewJob.findFirst({
         where: { id: draft.previewJobId, draftId: draft.id },
       })
@@ -1686,6 +1708,9 @@ async function currentDraft(request: Request) {
         where: { draftId: draft.id },
         orderBy: { createdAt: "desc" },
       });
+  const previewJob = storedPreviewJob && await characterPreviewMatchesDraft(draft, storedPreviewJob.id)
+    ? await previewWithExecutionStatus(storedPreviewJob, user.id)
+    : null;
   const asset = previewJob?.resultAssetId
     ? await prisma.mediaAsset.findUnique({ where: { id: previewJob.resultAssetId } })
     : null;
@@ -1705,13 +1730,27 @@ async function previewDraft(request: Request, id: string) {
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const idempotencyKey = requireGenerationWriteIdempotencyKey(request);
-  return ok(
-    await previewCharacterDraft({
-      userId: user.id,
-      draftId: id,
-      idempotencyKey,
-    }),
-  );
+  const accepted = await previewCharacterDraft({ userId: user.id, draftId: id, idempotencyKey });
+  return ok({ previewJob: await previewWithExecutionStatus(accepted.previewJob, user.id) });
+}
+
+async function previewWithExecutionStatus(job: CharacterPreviewJob, userId: string) {
+  if (!["queued", "running"].includes(job.status)) return job;
+  const request = await prisma.generationJob.findFirst({
+    where: { userId, sourceType: "character_preview", sourceId: job.id },
+    select: { id: true, status: true },
+    orderBy: { createdAt: "desc" },
+  });
+  if (!request) return job;
+  const attempts = await latestGenerationAttemptStatuses([request.id]);
+  const status = effectiveGenerationJobStatus(request.status, attempts.get(request.id) ?? null);
+  // Reuse the Generation execution read model. Preview still owns completion
+  // and failure; a stale running Attempt cannot revive a terminal preview.
+  return {
+    ...job,
+    status: status === "running" ? status : job.status,
+    errorCode: generationExecutionErrorCode(request.status, attempts.get(request.id) ?? null, job.errorCode),
+  };
 }
 
 // GET character-drafts/:id/preview — poll one async preview by durable identity.
@@ -1736,7 +1775,7 @@ async function previewStatus(request: Request, id: string) {
     const asset = await prisma.mediaAsset.findUnique({ where: { id: job.resultAssetId } });
     return ok({ previewJob: job, asset: asset ? mediaDTO(asset) : null });
   }
-  return ok({ previewJob: job, asset: null });
+  return ok({ previewJob: await previewWithExecutionStatus(job, user.id), asset: null });
 }
 
 async function selectPreviewAnchor(request: Request, id: string) {
@@ -1744,32 +1783,29 @@ async function selectPreviewAnchor(request: Request, id: string) {
   const user = requireUser(ctx);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
-  await assertDraftOwner(id, user.id);
   const body = draftPreviewSelectSchema.parse(await jsonBody(request));
-  const job = await prisma.characterPreviewJob.findFirst({
-    where: {
-      id: body.previewJobId,
-      draftId: id,
-      status: "completed",
-      resultAssetId: { not: null },
-    },
+  const selected = await prisma.$transaction(async (tx) => {
+    // Serialize confirmation with draft edits; the validated traits and the
+    // saved anchor must belong to the same current draft.
+    await tx.$queryRaw`SELECT id FROM character_drafts WHERE id = ${id} AND "ownerId" = ${user.id} FOR UPDATE`;
+    const current = await tx.characterDraft.findFirst({ where: { id, ownerId: user.id } });
+    if (!current) throw Errors.notFound("Character draft not found");
+    const job = await tx.characterPreviewJob.findFirst({
+      where: { id: body.previewJobId, draftId: id, status: "completed", resultAssetId: { not: null } },
+    });
+    if (!job?.resultAssetId) throw Errors.badRequest("Preview anchor must be a completed preview image");
+    const asset = await tx.mediaAsset.findFirst({
+      where: { id: job.resultAssetId, ownerId: user.id, deletedAt: null, type: "image" },
+    });
+    if (!asset) throw Errors.notFound("Preview anchor asset not found");
+    assertNonSyntheticMediaAsset(asset, "Demo preview images cannot be used as a character identity");
+    if (!await characterPreviewMatchesDraft(current, job.id, tx)) {
+      throw Errors.badRequest("This preview no longer matches the draft. Generate new candidates before confirming an identity.");
+    }
+    const draft = await tx.characterDraft.update({ where: { id }, data: { previewJobId: job.id } });
+    return { draft, previewJob: job, asset: mediaDTO(asset) };
   });
-  if (!job?.resultAssetId) {
-    throw Errors.badRequest("Preview anchor must be a completed preview image");
-  }
-  const asset = await prisma.mediaAsset.findFirst({
-    where: { id: job.resultAssetId, ownerId: user.id, deletedAt: null, type: "image" },
-  });
-  if (!asset) throw Errors.notFound("Preview anchor asset not found");
-  assertNonSyntheticMediaAsset(
-    asset,
-    "Demo preview images cannot be used as a character identity",
-  );
-  const draft = await prisma.characterDraft.update({
-    where: { id },
-    data: { previewJobId: job.id },
-  });
-  return ok({ draft, previewJob: job, asset: mediaDTO(asset) });
+  return ok(selected);
 }
 
 async function submitDraft(request: Request, id: string) {
@@ -2401,15 +2437,32 @@ async function listMedia(request: Request) {
   const liked = url.searchParams.get("liked") === "1";
   const type = url.searchParams.get("type");
   const visibility = url.searchParams.get("visibility");
+  const q = url.searchParams.get("q")?.trim() ?? "";
+  // Media has no persisted title: the customer card uses a kind label. Search
+  // those labels and the existing prompt text, never arbitrary runtime metadata.
+  const matchingTypes = Object.entries({
+    image: "generated image",
+    video: "generated video",
+    voice: "generated voice clip",
+  }).filter(([, label]) => label.includes(q.toLowerCase())).map(([kind]) => kind);
   const limit = clampInt(url.searchParams.get("limit"), 1, 80, 40);
   const offset = decodeCursor(url.searchParams.get("cursor"));
   const assets = await prisma.mediaAsset.findMany({
     where: {
       ownerId: user.id,
       deletedAt: null,
+      // Preset descriptors are private identity evidence, not playable clips.
+      AND: [{ OR: [
+        { contentType: null },
+        { contentType: { not: "application/vnd.idream.pocket-tts-preset+json" } },
+      ] }],
       type: type ?? undefined,
       visibility: visibility ?? undefined,
       likes: liked ? { some: { userId: user.id } } : undefined,
+      OR: q ? [
+        { prompt: { contains: q, mode: "insensitive" } },
+        { type: { in: matchingTypes } },
+      ] : undefined,
     },
     include: {
       sourceJob: {
@@ -2453,7 +2506,7 @@ async function listMedia(request: Request) {
             status: "approved",
             age: { gte: 18 },
             OR: [
-              publicCharacterAudienceWhere,
+              directCharacterAudienceWhere,
               { creatorId: user.id },
             ],
           },
@@ -3561,7 +3614,7 @@ async function library(request: Request, tab: string) {
         // the same Release-backed audience predicate as every public surface.
         where: {
           userId: user.id,
-          character: publicCharacterAudienceWhere,
+          character: directCharacterAudienceWhere,
         },
         include: { character: { include: characterInclude(user.id) } },
         orderBy: { createdAt: "desc" },
@@ -3574,7 +3627,15 @@ async function library(request: Request, tab: string) {
         take: 12,
       }),
       prisma.mediaAsset.findMany({
-        where: { ownerId: user.id, deletedAt: null },
+        where: {
+          ownerId: user.id,
+          deletedAt: null,
+          // Recent and Media both expose playable customer media, not voice identity descriptors.
+          OR: [
+            { contentType: null },
+            { contentType: { not: "application/vnd.idream.pocket-tts-preset+json" } },
+          ],
+        },
         orderBy: { createdAt: "desc" },
         take: 12,
       }),
@@ -3621,7 +3682,7 @@ async function library(request: Request, tab: string) {
     const likes = await prisma.characterLike.findMany({
       where: {
         userId: user.id,
-        character: publicCharacterAudienceWhere,
+        character: directCharacterAudienceWhere,
       },
       include: { character: { include: characterInclude(user.id) } },
       orderBy: { createdAt: "desc" },
@@ -4025,7 +4086,7 @@ async function archiveCharacter(request: Request, id: string) {
   const user = requireUser(ctx);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
-  const archived = await prisma.$transaction(async (tx) => {
+  await prisma.$transaction(async (tx) => {
     await lockCharacterGenerationAuthority(tx, id);
     const character = await tx.character.findFirst({
       where: { id, creatorId: user.id },

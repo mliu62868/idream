@@ -76,7 +76,7 @@ describe("feature flag authority", () => {
       const requestId = `${P}fail-${failure}-flag`;
       await expect(
         patchFlag(key, true, requestId, `${P}${failure}-failure-key`),
-      ).rejects.toThrow();
+      ).resolves.toMatchObject({ status: 500 });
       await expect(prisma.featureFlag.findUnique({ where: { key } })).resolves.toBeNull();
       await expect(prisma.adminAuditLog.count({ where: { requestId } })).resolves.toBe(0);
       await expect(prisma.mainOutboxEvent.count({

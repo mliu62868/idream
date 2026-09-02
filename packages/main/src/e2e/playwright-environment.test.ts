@@ -25,7 +25,7 @@ describe("managed Playwright environment", () => {
     expect(configSource).toContain("createPlaywrightLifecycleVerifier");
   });
 
-  it("derives one Playwright-only authority database and six non-reused managed processes", () => {
+  it("derives one Playwright-only authority database and eight non-reused managed processes", () => {
     const first = resolvePlaywrightEnvironment({
       TEST_DATABASE_URL:
         "postgresql://postgres:postgres@localhost:5433/idream_test_workspace",
@@ -52,13 +52,15 @@ describe("managed Playwright environment", () => {
     expect(databaseName.length).toBeLessThanOrEqual(63);
     expect(first.chatBaseURL).toBe("http://127.0.0.1:3113");
     expect(first.chatBaseURL).not.toBe("http://127.0.0.1:3100");
-    expect(servers).toHaveLength(6);
+    expect(servers).toHaveLength(8);
     expect(servers.every((server) => server.reuseExistingServer === false)).toBe(true);
     expect(servers.map((server) => server.url)).toEqual([
-      `${first.chatBaseURL}/healthz`,
+      `${first.chatBaseURL}/readyz`,
       first.mainBaseURL,
       first.adminBaseURL,
       `${first.pipelineBaseURL}/health`,
+      undefined,
+      undefined,
       undefined,
       undefined,
     ]);
@@ -107,22 +109,37 @@ describe("managed Playwright environment", () => {
       first.serviceEnv.INTERNAL_TOKEN,
     );
     expect(servers[4]?.env.LOG_LEVEL).toBe("info");
-    expect(servers[5]?.command).toBe("bun src/processes/finalizer.ts");
-    expect(servers[5]?.wait).toEqual({
+    expect(servers[5]?.command).toBe("bun src/e2e/start-playwright-video-worker.ts");
+    expect(servers[5]?.wait).toEqual({ stdout: /Playwright video worker started/ });
+    expect(servers[5]?.gracefulShutdown).toEqual({ signal: "SIGTERM", timeout: 30_000 });
+    expect(servers[5]?.env.GEN_REDIS_URL).toBe(first.redisURL);
+    expect(servers[5]?.env.BULLMQ_PREFIX).toBe(first.bullmqPrefix);
+    expect(servers[5]?.env.GEN_VIDEO_PROVIDER).toBe("backend");
+    expect(servers[5]?.env.GEN_BLOB_PROVIDER).toBe("mock");
+    expect(servers[5]?.env.BLOB_ROOT).toBe(first.blobRoot);
+    expect(servers[5]?.env.MAIN_WEB_URL).toBe(first.mainBaseURL);
+    expect(servers[6]?.command).toBe("bun src/processes/finalizer.ts");
+    expect(servers[6]?.wait).toEqual({
       stdout: /gen-finalizer started/,
     });
-    expect(servers[5]?.gracefulShutdown).toEqual({
+    expect(servers[6]?.gracefulShutdown).toEqual({
       signal: "SIGTERM",
       timeout: 30_000,
     });
-    expect(servers[5]?.env.REDIS_URL).toBe(first.redisURL);
-    expect(servers[5]?.env.BULLMQ_PREFIX).toBe(first.bullmqPrefix);
-    expect(servers[5]?.env.GEN_FINALIZER_QUEUES).toBe("app.ai.finalize");
-    expect(servers[5]?.env.INTERNAL_TOKEN).toBe(
+    expect(servers[6]?.env.REDIS_URL).toBe(first.redisURL);
+    expect(servers[6]?.env.BULLMQ_PREFIX).toBe(first.bullmqPrefix);
+    expect(servers[6]?.env.GEN_FINALIZER_QUEUES).toBe("app.ai.finalize");
+    expect(servers[6]?.env.INTERNAL_TOKEN).toBe(
       first.serviceEnv.INTERNAL_TOKEN,
     );
-    expect(servers[5]?.env.BLOB_ROOT).toBe(first.blobRoot);
-    expect(servers[5]?.env.LOG_LEVEL).toBe("info");
+    expect(servers[6]?.env.BLOB_ROOT).toBe(first.blobRoot);
+    expect(servers[6]?.env.LOG_LEVEL).toBe("info");
+    expect(servers[7]?.command).toBe("bun src/processes/event-consumer.ts");
+    expect(servers[7]?.wait).toEqual({ stdout: /main durable event projector ready/ });
+    expect(servers[7]?.gracefulShutdown).toEqual({ signal: "SIGTERM", timeout: 30_000 });
+    expect(servers[7]?.env.DATABASE_URL).toBe(first.databaseURL);
+    expect(servers[7]?.env.CHAT_SERVICE_URL).toBe(first.chatBaseURL);
+    expect(servers[7]?.env.BLOB_ROOT).toBe(first.blobRoot);
     expect(first.serviceEnv.BLOB_ROOT).toBe(first.blobRoot);
     expect(first.blobRoot).toBe(
       path.resolve(
@@ -139,6 +156,35 @@ describe("managed Playwright environment", () => {
     expect(
       assertPlaywrightCleanupPlan(createPlaywrightCleanupPlan(first)),
     ).toEqual(createPlaywrightCleanupPlan(first));
+  });
+
+  it("isolates the actual Chat runtime model and memory from ambient live settings", () => {
+    const environment = resolvePlaywrightEnvironment({
+      PW_RUN_ID: "a1b2c3d4",
+      CHAT_MODEL_PROVIDER: "openai",
+      CHAT_MODEL_BASE_URL: "https://live-model.invalid/v1",
+      CHAT_MODEL_API_KEY: "live-secret",
+      CHAT_MODEL_NAME: "live-model",
+      DSH_IGREP_CANONICAL_ROOT: "/live/companion-memory",
+      DSH_IGREP_PRIVATE_ROOT: "/live/companion-private",
+      IGREP_LLM_URL: "https://live-maintenance.invalid/v1",
+      IGREP_LLM_MODEL: "live-maintenance",
+      IGREP_LLM_API_KEY: "live-maintenance-secret",
+    });
+    expect(environment.serviceEnv).toMatchObject({
+      CHAT_MODEL_PROVIDER: "openai",
+      CHAT_MODEL_BASE_URL: `${environment.pipelineBaseURL}/v1`,
+      CHAT_MODEL_NAME: "playwright-companion",
+      CHAT_MODEL_API_KEY: "playwright-model-key",
+      DSH_IGREP_CANONICAL_ROOT: path.join(environment.chatFsRoot, "companion-memory"),
+      DSH_IGREP_PRIVATE_ROOT: path.join(environment.chatFsRoot, "companion-private"),
+      IGREP_LLM_URL: `${environment.pipelineBaseURL}/v1`,
+      IGREP_LLM_MODEL: "playwright-maintenance",
+      IGREP_LLM_API_KEY: "playwright-model-key",
+    });
+    const servers = managedPlaywrightWebServers(environment);
+    expect(servers[0]?.url).toBe(`${environment.chatBaseURL}/readyz`);
+    expect(servers[0]?.env.CHAT_MODEL_BASE_URL).toBe(servers[1]?.env.CHAT_MODEL_BASE_URL);
   });
 
   it("rejects a cleanup plan whose Chat directory is not the exact run authority", () => {

@@ -31,6 +31,7 @@ vi.mock("./CharacterAssetStudio", () => ({
 
 import { characterWorkspaceDetail } from "./character-workspace-fixture";
 import { CharacterImageLibrary } from "./CharacterImageLibrary";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -127,6 +128,27 @@ describe("Character image library imported Review", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+  });
+
+  it("refreshes completed image facts from the shell without losing the library filter", async () => {
+    let current = importedAsset();
+    adminV2Operation.mockImplementation(async () => ({ items: [current] }));
+    await act(async () => root.render(
+      <CharacterImageLibrary actorId="operator-1" canArchive={false} canCreate canRead
+        canReadProduction canReview canReviewImported={false}
+        commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
+        data={characterWorkspaceDetail()} onContinue={() => undefined}
+        onProjectReload={async () => undefined} />,
+    ));
+    await waitUntil(() => container.textContent?.includes("final-character.webp") === true);
+    const input = container.querySelector<HTMLInputElement>('input[placeholder="Search images"]')!;
+    await act(async () => setInputValue(input, "final-character"));
+    expect(container.textContent).toContain("candidate");
+    current = importedAsset("selectable");
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    await waitUntil(() => container.textContent?.includes("selectable") === true);
+    expect(input.value).toBe("final-character");
+    expect(container.textContent).not.toContain("Needs attention: review pending");
   });
 
   it("keeps generated Review separate from imported image Review permission", async () => {

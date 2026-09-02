@@ -165,6 +165,7 @@ describe("generation terminal record persistence", () => {
       providerInvoked: false,
       providerRequestId: null,
       accounting: undefined,
+      usage: {},
       outcome: "blocked",
       assets: undefined,
       block: {

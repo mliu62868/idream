@@ -271,7 +271,7 @@ describe("Chat embedded companion runtime", () => {
       .toEqual(connection.events.map((_event, index) => index + 1));
   });
 
-  it("executes a Chat-owned product tool and resumes the DSH loop", async () => {
+  it("does not execute an unsolicited image tool even when an invocation exposes it", async () => {
     const runtime = await engine(new ToolThenTextAdapter());
     const calls: CompanionToolCall[] = [];
     const connection = port({
@@ -289,17 +289,8 @@ describe("Chat embedded companion runtime", () => {
 
     await runtime.run(invocation(true), connection.runtimePort);
 
-    expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({ name: "generate_image_async" });
-    expect(connection.events.map((event) => event.type)).toEqual(expect.arrayContaining([
-      "tool_started",
-      "tool_finished",
-      "terminal_candidate",
-    ]));
-    expect(connection.candidates[0]).toMatchObject({
-      content: "I sent the observatory view to the image studio.",
-      execution: { steps: 2, toolCalls: 1 },
-    });
+    expect(calls).toHaveLength(0);
+    expect(connection.events.some(event => event.type === "tool_started")).toBe(false);
   });
 
   it("requires the Agent to author and execute the concrete image prompt", async () => {

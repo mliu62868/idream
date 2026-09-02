@@ -1,16 +1,17 @@
 import { createHash } from "node:crypto";
 import {
   parseImageAgentToolCall,
+  requiredImageActionForUserRequest,
   type ImageAgentToolCall,
 } from "@idream/shared/chat/image-action";
 import {
   chatToolEffectSchema,
+  chatExecutionSnapshotSchema,
   type ChatToolEffect,
 } from "@idream/shared/contracts";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
-import { findReusableChatImage } from "@/server/modules/ourdream/chat-image-reuse";
 import { sanitizeChatImageDirection } from "@/server/modules/ourdream/generation-prompt";
 import { createChatImageGenerationJob } from "@/server/modules/ourdream/service";
 import { loadChatAuthoritySnapshot } from "./chat-authority-snapshot";
@@ -39,31 +40,40 @@ export type ChatToolEffectResult =
  */
 export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectResult> {
   const effect = chatToolEffectSchema.parse(raw);
+  const turn = await chatTurnForEffect(effect.turnId);
   const requestDigest = sha256(JSON.stringify(canonical({
     name: effect.name,
     arguments: effect.arguments,
   })));
   const attachmentId = effectAttachmentId(effect);
   let prior = await prisma.chatTurnAttachment.findUnique({ where: { id: attachmentId } });
+  // An exact historical ACK is a read, with no execution or reattachment.
+  if (prior && prior.status !== "requesting" && turn.attempt === effect.attempt && effectAttempt(prior.metadata) === effect.attempt) {
+    if (effect.effectScope === "attempt") assertEffectRequest(prior, requestDigest);
+    else assertTurnActionIntent(prior, effect.intent);
+    return existingEffect(prior, requestDigest, effect.effectScope);
+  }
+  assertFrozenImageAction(turn, effect);
   // INVARIANT: an accepted effect remains replayable after its Turn becomes
   // terminal. HTTP timeout must not turn a successful reservation into a 409.
   if (prior && prior.status !== "requesting") {
     if (effect.effectScope === "attempt") assertEffectRequest(prior, requestDigest);
     else assertTurnActionIntent(prior, effect.intent);
     if (effect.effectScope === "turn_action" && effectAttempt(prior.metadata) !== effect.attempt) {
-      const current = await chatTurnForEffect(effect.turnId);
       if (
-        current.attempt !== effect.attempt ||
-        !["pending", "generating"].includes(current.assistantStatus)
+        turn.attempt !== effect.attempt ||
+        !["pending", "generating"].includes(turn.assistantStatus)
       ) {
         throw Errors.conflict("Required effect replay does not belong to the active Chat attempt");
       }
-      prior = await rebindTurnActionAttempt(prior, effect.attempt, requestDigest);
+      prior = await rebindTurnActionAttempt(prior, effect, requestDigest);
     }
     return existingEffect(prior, requestDigest, effect.effectScope);
   }
 
-  const turn = await chatTurnForEffect(effect.turnId);
+  if (effect.effectScope !== "turn_action") {
+    throw Errors.forbidden("New image effects must use the authorized Turn action");
+  }
   if (turn.attempt !== effect.attempt || !["pending", "generating"].includes(turn.assistantStatus)) {
     throw Errors.conflict("Tool effect does not belong to the active Chat attempt");
   }
@@ -88,11 +98,8 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
   }
 
   if (prior) {
-    if (effect.effectScope === "attempt") assertEffectRequest(prior, requestDigest);
-    else {
-      assertTurnActionIntent(prior, effect.intent);
-      call = persistedTurnActionCall(prior, call);
-    }
+    assertTurnActionIntent(prior, effect.intent);
+    call = persistedTurnActionCall(prior, call);
   } else {
     try {
       await prisma.chatTurnAttachment.create({
@@ -122,11 +129,8 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
         throw error;
       }
       const raced = await prisma.chatTurnAttachment.findUniqueOrThrow({ where: { id: attachmentId } });
-      if (effect.effectScope === "attempt") assertEffectRequest(raced, requestDigest);
-      else {
-        assertTurnActionIntent(raced, effect.intent);
-        call = persistedTurnActionCall(raced, call);
-      }
+      assertTurnActionIntent(raced, effect.intent);
+      call = persistedTurnActionCall(raced, call);
       if (raced.status !== "requesting") {
         return existingEffect(raced, requestDigest, effect.effectScope);
       }
@@ -175,34 +179,8 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
         : {}),
     };
 
-    const reusable = await findReusableChatImage(payload);
-    if (reusable) {
-      const completed = await prisma.chatTurnAttachment.update({
-        where: { id: attachmentId },
-        data: {
-          status: "completed",
-          mediaAssetId: reusable.asset.id,
-          width: reusable.asset.width,
-          height: reusable.asset.height,
-          metadata: toJson({
-            attempt: effect.attempt,
-            effect: { turnId: effect.turnId, attempt: effect.attempt, callId: effect.callId, name: effect.name, effectScope: effect.effectScope, intent: effect.intent, requestDigest },
-            reused: true,
-            reuseScore: reusable.score,
-          }),
-        },
-      });
-      return {
-        accepted: true,
-        duplicate: false,
-        attachmentId,
-        status: "completed",
-        generationJobId: null,
-        mediaAssetId: completed.mediaAssetId,
-        costDreamcoins: 0,
-      };
-    }
-
+    // A new action promises this moment. Shared words cannot establish that a
+    // curated asset matches its scene or wardrobe; only the prior ACK above is reusable.
     // Existing generation authority performs pricing, balance check, wallet
     // reservation, Request/Attempt creation and dispatch under attachment idempotency.
     const job = await createChatImageGenerationJob(payload);
@@ -244,11 +222,30 @@ export async function applyChatToolEffect(raw: unknown): Promise<ChatToolEffectR
 
 function effectAttachmentId(effect: ChatToolEffect): string {
   // INVARIANT: a deterministic product action survives assistant regenerate.
-  // Ordinary model tool calls remain scoped to their exact attempt.
+  // Historical ordinary-call ACKs retain their original attempt identity.
   const identity = effect.effectScope === "turn_action"
     ? `${effect.turnId}:${effect.name}`
     : `${effect.turnId}:${effect.attempt}:${effect.callId}`;
   return `chatfx_${sha256(identity).slice(0, 48)}`;
+}
+
+function assertFrozenImageAction(
+  turn: { id: string; attempt: number; userContent: string; executionSnapshot: Prisma.JsonValue | null },
+  effect: ChatToolEffect,
+) {
+  const frozen = chatExecutionSnapshotSchema.safeParse(turn.executionSnapshot);
+  const action = frozen.success && frozen.data.turnId === turn.id &&
+    frozen.data.attempt === turn.attempt && frozen.data.userContent === turn.userContent
+    ? requiredImageActionForUserRequest({
+        userText: frozen.data.userContent,
+        hasRecentImageContext: frozen.data.hasRecentImageContext,
+        previousAssistantText: frozen.data.recentTurns.at(-1)?.assistantContent,
+      })
+    : null;
+  // Main owns consent; neither the caller's tool name nor scope can grant it.
+  if (!action || action.name !== effect.name || action.requestedNudity !== effect.intent.requestedNudity) {
+    throw Errors.forbidden("Image generation requires a confirmed user image request");
+  }
 }
 
 function promptHint(call: ImageAgentToolCall): string {
@@ -349,20 +346,29 @@ function effectAttempt(metadata: Prisma.JsonValue): number {
 
 async function rebindTurnActionAttempt(
   attachment: { id: string; metadata: Prisma.JsonValue },
-  attempt: number,
+  effect: ChatToolEffect,
   replayRequestDigest: string,
 ) {
+  const attempt = effect.attempt;
   const metadata = record(attachment.metadata) ?? {};
-  const effect = record(metadata.effect) ?? {};
-  return prisma.chatTurnAttachment.update({
-    where: { id: attachment.id },
-    data: {
-      metadata: toJson({
-        ...metadata,
-        attempt,
-        effect: { ...effect, attempt, replayRequestDigest },
-      }),
-    },
+  const previousEffect = record(metadata.effect) ?? {};
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "chat_turns" WHERE id = ${effect.turnId} FOR UPDATE`;
+    const current = await tx.chatTurn.findUniqueOrThrow({ where: { id: effect.turnId } });
+    assertFrozenImageAction(current, effect);
+    if (current.attempt !== attempt || !["pending", "generating"].includes(current.assistantStatus)) {
+      throw Errors.conflict("Required effect replay does not belong to the active Chat attempt");
+    }
+    return tx.chatTurnAttachment.update({
+      where: { id: attachment.id },
+      data: {
+        metadata: toJson({
+          ...metadata,
+          attempt,
+          effect: { ...previousEffect, attempt, replayRequestDigest },
+        }),
+      },
+    });
   });
 }
 

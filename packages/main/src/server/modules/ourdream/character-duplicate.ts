@@ -12,7 +12,7 @@ import {
   lockMediaAssetAuthority,
 } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 import { jsonRecord } from "./json-values";
-import { publicCharacterAudienceWhere } from "./public-content-audience";
+import { directCharacterAudienceWhere } from "./public-content-audience";
 import { mediaViewUrl } from "./public-read-model";
 import { assertNonSyntheticMediaAsset } from "./customer-media-authority";
 import {
@@ -39,7 +39,7 @@ export async function duplicateCharacterForUser(input: {
         id,
         deletedAt: null,
         OR: [
-          publicCharacterAudienceWhere,
+          directCharacterAudienceWhere,
           { creatorId: userId },
         ],
       },

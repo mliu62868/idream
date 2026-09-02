@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import {
-  clearGenerationIdempotencyKeys,
   createGenerationIdempotencyKeys,
   generationQuoteKeyFor,
   initialGenerationRequestState,
@@ -111,11 +110,13 @@ export function useGenerationRequest(
   });
 
   const keysRef = useRef(createGenerationIdempotencyKeys());
+  const viewerEpochRef = useRef(0);
   const quoteControllerRef = useRef<AbortController | null>(null);
   const retryQuoteControllerRef = useRef<AbortController | null>(null);
 
   useEffect(
     () => () => {
+      viewerEpochRef.current += 1;
       quoteControllerRef.current?.abort();
       retryQuoteControllerRef.current?.abort();
     },
@@ -191,12 +192,16 @@ export function useGenerationRequest(
   }, [retryQuoteScopeKey, state.retryQuoteNonce]);
 
   const context = useCallback(
-    (effects: GenerationRequestEffects) => ({
-      state: latestRef.current.state,
-      dispatch,
-      effects,
-      keys: keysRef.current,
-    }),
+    (effects: GenerationRequestEffects) => {
+      const viewerEpoch = viewerEpochRef.current;
+      return {
+        state: latestRef.current.state,
+        dispatch,
+        effects,
+        keys: keysRef.current,
+        isCurrent: () => viewerEpochRef.current === viewerEpoch,
+      };
+    },
     [],
   );
 
@@ -275,9 +280,11 @@ export function useGenerationRequest(
     [],
   );
   const resetViewerScope = useCallback(() => {
-    // A key only means anything to the viewer who minted it: keeping one across
-    // a scope change would let the next viewer replay someone else's write.
-    clearGenerationIdempotencyKeys(keysRef.current);
+    // In-flight requests keep their own keys and cannot project into the next viewer.
+    viewerEpochRef.current += 1;
+    keysRef.current = createGenerationIdempotencyKeys();
+    quoteControllerRef.current?.abort();
+    retryQuoteControllerRef.current?.abort();
     dispatch({ type: "viewer_scope_reset" });
   }, []);
 

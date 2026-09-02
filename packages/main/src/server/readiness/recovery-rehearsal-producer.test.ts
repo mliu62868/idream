@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -500,6 +501,51 @@ describe("recovery rehearsal producer", () => {
 
     await symlink(path.join(root, "nested", "a.txt"), path.join(root, "link"));
     await expect(buildFileAuthorityManifest(root)).rejects.toThrow("symlink");
+  });
+
+  it("records canonical version pointers without traversing them, including reset quarantine", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "idream-canonical-links-"));
+    temporaryDirectories.push(root);
+    const target = ".igrep.versions/v1";
+    for (const relative of ["user/relationship", ".reset-quarantine/old/user/relationship"]) {
+      const relationship = path.join(root, relative);
+      await mkdir(path.join(relationship, target), { recursive: true });
+      await writeFile(path.join(relationship, target, "memory.md"), "memory");
+      await symlink(target, path.join(relationship, ".igrep"));
+    }
+
+    const manifest = await buildFileAuthorityManifest(root, { canonicalIgrepLinks: true });
+    const links = manifest.trimEnd().split("\n").filter((line) => line.startsWith("symlink\t"));
+    expect(links).toHaveLength(2);
+    expect(links.every((line) => line.endsWith(`\t${target}`))).toBe(true);
+    expect(links.every((line) => line.split("\t")[2] ===
+      createHash("sha256").update(target).digest("hex"))).toBe(true);
+    expect(manifest).not.toContain("/.igrep/memory.md");
+    expect(manifest.match(/\/memory\.md/g)).toHaveLength(2);
+    await expect(buildFileAuthorityManifest(root)).rejects.toThrow("symlink");
+  });
+
+  it.each([
+    ["escape", "../../outside", "directory"],
+    ["absolute", "/tmp/outside", "directory"],
+    ["dangling", ".igrep.versions/missing", "missing"],
+    ["file target", ".igrep.versions/v1", "file"],
+    ["cycle", ".igrep.versions/v1", "cycle"],
+    ["version directory link", ".igrep.versions/v1", "linked-parent"],
+  ])("rejects a canonical pointer with %s", async (_name, target, targetKind) => {
+    const root = await mkdtemp(path.join(tmpdir(), "idream-canonical-links-"));
+    temporaryDirectories.push(root);
+    await mkdir(path.join(root, ".igrep.versions"));
+    if (targetKind === "file") await writeFile(path.join(root, ".igrep.versions/v1"), "file");
+    if (targetKind === "cycle") await symlink("../.igrep", path.join(root, ".igrep.versions/v1"));
+    if (targetKind === "linked-parent") {
+      await rm(path.join(root, ".igrep.versions"), { recursive: true });
+      await mkdir(path.join(root, "other/v1"), { recursive: true });
+      await symlink("other", path.join(root, ".igrep.versions"));
+    }
+    await symlink(target, path.join(root, ".igrep"));
+    await expect(buildFileAuthorityManifest(root, { canonicalIgrepLinks: true }))
+      .rejects.toThrow();
   });
 
   it("selects only live versioned objects and rejects an unversioned bucket", () => {

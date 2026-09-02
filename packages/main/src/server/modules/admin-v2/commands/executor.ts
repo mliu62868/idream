@@ -132,6 +132,21 @@ async function executeCloseCase(commandId: string) {
       ) {
         throw Errors.conflict("Case decision and downstream verification are incomplete");
       }
+      const supportSource = ["support_request", "billing_dispute"].includes(adminCase.type)
+        ? await tx.caseEvidence.findFirst({ where: { caseId: adminCase.id, sourceType: "support_request" }, select: { sourceId: true } })
+        : null;
+      if (supportSource) {
+        // Match Support → Case lock order and re-read the current episode after
+        // locking. Closing history must not close an already-active recurrence.
+        await tx.$queryRaw`SELECT id FROM support_requests WHERE id = ${supportSource.sourceId} FOR UPDATE`;
+        const currentEpisode = await tx.caseEvidence.findFirst({
+          where: { sourceType: "support_request", sourceId: supportSource.sourceId },
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }], select: { caseId: true },
+        });
+        if (currentEpisode?.caseId === adminCase.id) {
+          await tx.supportRequest.update({ where: { id: supportSource.sourceId }, data: { status: "closed" } });
+        }
+      }
       const updated = await transitionCase(tx, {
         caseId: adminCase.id,
         to: "closed",

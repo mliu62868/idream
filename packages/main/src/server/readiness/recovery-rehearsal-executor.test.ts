@@ -1,13 +1,18 @@
+import { spawnSync } from "node:child_process";
 import {
   cpSync,
   chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  lstatSync,
+  readFileSync,
+  readlinkSync,
   realpathSync,
   rmSync,
   statSync,
   readdirSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { readdir } from "node:fs/promises";
@@ -45,6 +50,7 @@ function fakeRunner(
   counts: Record<string, unknown>,
   failStage?: string,
   pm2Processes: readonly Record<string, unknown>[] = [],
+  realTar = false,
 ) {
   const archives = new Map<string, string>();
   const calls: string[] = [];
@@ -137,6 +143,13 @@ function fakeRunner(
       }
       if (input.stage === failStage) {
         throw new Error(`injected failure at ${input.stage}`);
+      }
+      if (realTar && input.command === "tar") {
+        const result = spawnSync("tar", [...(input.args ?? [])], { encoding: null });
+        if (result.error || result.status !== 0) {
+          throw result.error ?? new Error(`${input.stage} failed: ${result.stderr}`);
+        }
+        return { stdout: result.stdout, stderr: result.stderr, status: result.status };
       }
       const result = (stdout = "", status = 0) => ({
         stdout: Buffer.from(stdout),
@@ -467,7 +480,7 @@ describe("recovery rehearsal executor", () => {
       .toThrow("database ACL grant chain is not replayable");
   });
 
-  it("publishes only after PostgreSQL, AgentRun, DSH, and Blob restores all match", async () => {
+  it.each([false, true])("publishes only after all restores match, with canonical pointers=%s", async (canonicalPointers) => {
     const workspaceRoot = realpathSync(
       mkdtempSync(path.join(tmpdir(), "idream-recovery-executor-")),
     );
@@ -482,6 +495,14 @@ describe("recovery rehearsal executor", () => {
     mkdirSync(path.join(blobRoot, "objects"), { recursive: true, mode: 0o700 });
     writeFileSync(path.join(agentRunRoot, "runs", "one.json"), "agent", { mode: 0o600 });
     writeFileSync(path.join(dshCanonicalRoot, "memory.md"), "canonical", { mode: 0o600 });
+    if (canonicalPointers) {
+      for (const relationship of ["user/relationship", ".reset-quarantine/old/user/relationship"]) {
+        const root = path.join(dshCanonicalRoot, relationship);
+        mkdirSync(path.join(root, ".igrep.versions/v1"), { recursive: true, mode: 0o700 });
+        writeFileSync(path.join(root, ".igrep.versions/v1/state.md"), "memory", { mode: 0o600 });
+        symlinkSync(".igrep.versions/v1", path.join(root, ".igrep"));
+      }
+    }
     writeFileSync(path.join(dshPrivateRoot, "memory.md"), "private", { mode: 0o600 });
     writeFileSync(path.join(blobRoot, "objects", "one.bin"), "blob", { mode: 0o600 });
 
@@ -542,7 +563,7 @@ describe("recovery rehearsal executor", () => {
       databaseExecutionUsers,
       quiescenceEnvironments,
       runner,
-    } = fakeRunner(counts);
+    } = fakeRunner(counts, undefined, [], canonicalPointers);
     const exactMigrationAuthority: MigrationAuthority = {
       expectedCount: 2,
       appliedCount: 2,
@@ -597,6 +618,21 @@ describe("recovery rehearsal executor", () => {
     expect(entries).toContain(`${bundleName}.quiescence-receipt.json`);
     expect(entries).toContain(`${bundleName}.sha256`);
     expect(entries.every((entry) => !entry.includes("staging"))).toBe(true);
+    if (canonicalPointers) {
+      const base = path.join(result.bundlePath, bundleName);
+      const manifest = readFileSync(`${base}.dsh-canonical.source.sha256`, "utf8");
+      expect(readFileSync(`${base}.dsh-canonical.restore.sha256`, "utf8")).toBe(manifest);
+      expect(manifest.split("\n").filter((line) => line.startsWith("symlink\t"))).toHaveLength(2);
+      expect(JSON.parse(readFileSync(`${base}.file-authorities.json`, "utf8")).dsh.canonical)
+        .toEqual({ files: 3, bytes: 21, manifest });
+      const restored = path.join(workspaceRoot, "verified-restore");
+      mkdirSync(restored);
+      expect(spawnSync("tar", ["-xzf", `${base}.dsh-canonical.tar.gz`, "-C", restored]).status).toBe(0);
+      const pointer = path.join(restored, "dsh-canonical/user/relationship/.igrep");
+      expect(lstatSync(pointer).isSymbolicLink()).toBe(true);
+      expect(readlinkSync(pointer)).toBe(".igrep.versions/v1");
+      expect(readFileSync(path.join(pointer, "state.md"), "utf8")).toBe("memory");
+    }
   });
 
   it.each([

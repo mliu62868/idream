@@ -18,6 +18,7 @@ import {
 } from "@/components/admin/assets/assets-api";
 import { WorkspaceButton, fieldClass, textAreaClass } from "@/features/operations/WorkspaceUi";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { CharacterAssetStudio } from "./CharacterAssetStudio";
 import {
   emptyReviewDraft,
@@ -91,8 +92,13 @@ export function CharacterImageLibrary({
   }, [canRead, data.character.id, t]);
 
   useEffect(() => {
+    const refresh = () => void loadAssets();
     const timer = window.setTimeout(() => void loadAssets(), 0);
-    return () => window.clearTimeout(timer);
+    window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
+    };
   }, [loadAssets]);
 
   const refreshAfterProduction = useCallback(async () => {
@@ -271,6 +277,7 @@ export function CharacterImageLibrary({
           <div className="flex flex-wrap gap-2">
             <input
               accept="image/jpeg,image/png,image/webp"
+              aria-label={t("Import image")}
               className="sr-only"
               onChange={(event) => void upload(event)}
               ref={inputRef}

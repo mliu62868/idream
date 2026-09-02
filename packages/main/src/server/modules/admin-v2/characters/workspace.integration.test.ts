@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   characterWorkspaceDetailSchema,
-  collaborationActivityListResponseSchema,
 } from "@idream/shared/admin";
 import { prisma } from "@/server/lib/db";
+import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
 import { POST as refreshReleaseMonitor } from "@/app/api/v2/admin/characters/[id]/releases/[releaseId]/monitors/[window]/refresh/route";
 import { GET as listActivityRoute } from "@/app/api/v2/admin/collaboration/[targetType]/[targetId]/activity/route";
 import { PATCH as patchCharacterProjectRoute } from "@/app/api/v2/admin/characters/[id]/project/route";
@@ -42,6 +42,7 @@ describe("Character operator workspace", () => {
   const qualificationId = `workspace-qualification-${suffix}`;
   const generationProfileId = `workspace-generation-profile-${suffix}`;
   const generationProfileKey = `workspace-generation-${suffix}`;
+  let imageWorkflowVersion: number;
   const referenceSnapshotHash = referenceSetSnapshotHash({
     visualProfileId,
     revision: 1,
@@ -57,6 +58,7 @@ describe("Character operator workspace", () => {
   });
 
   beforeAll(async () => {
+    imageWorkflowVersion = (await generationWorkflowDescriptor("qwen-image-edit-img2img"))!.version;
     await prisma.user.create({
       data: {
         id: readOnlyActorId,
@@ -179,7 +181,7 @@ describe("Character operator workspace", () => {
         snapshotHash: `workspace-snapshot-${suffix}`,
         readiness: "blocked",
         legacy: true,
-        status: "draft",
+        status: "approved",
       },
     });
     await prisma.characterServing.create({
@@ -261,7 +263,7 @@ describe("Character operator workspace", () => {
         generationProfileKey,
         generationProfileVersion: 1,
         workflowKey: "qwen-image-edit-img2img",
-        workflowVersion: 1,
+        workflowVersion: imageWorkflowVersion,
         style: "realistic",
         matrixKey: `workspace-matrix-${suffix}`,
         sampleCount: 40,
@@ -324,7 +326,7 @@ describe("Character operator workspace", () => {
     );
     expect(detail.activeCommand).toBeNull();
     expect(detail.visual.videoGenerationEstimate).toMatchObject({
-      profileKey: "profile_video_beta_v1",
+      profileKey: "profile_video_redgraft_ltx25_v1",
       estimatedCostDreamcoins: 100,
       completedSampleCount: expect.any(Number),
       windowDays: 7,
@@ -523,7 +525,7 @@ describe("Character operator workspace", () => {
           generationProfileKey,
           generationProfileVersion: 1,
           workflowKey: "qwen-image-edit-img2img",
-          workflowVersion: 1,
+          workflowVersion: imageWorkflowVersion,
         },
       };
       const releasePlacementManifest = {
@@ -643,7 +645,7 @@ describe("Character operator workspace", () => {
         generationProfileKey,
         generationProfileVersion: 1,
         workflowKey: "qwen-image-edit-img2img",
-        workflowVersion: 1,
+        workflowVersion: imageWorkflowVersion,
         style: "realistic",
         matrixKey: `workspace-noisy-matrix-${index}-${suffix}`,
         sampleCount: 40,
@@ -1074,7 +1076,7 @@ describe("Character operator workspace", () => {
     ).not.toContain("generation_route_unqualified");
     await prisma.generationRouteQualification.update({
       where: { id: qualificationId },
-      data: { workflowVersion: 1 },
+      data: { workflowVersion: imageWorkflowVersion },
     });
   });
 
@@ -1245,15 +1247,8 @@ describe("Character operator workspace", () => {
         }),
       },
     );
-    expect(activityResponse.status).toBe(200);
-    const activityPayload = await activityResponse.json();
-    const activity = collaborationActivityListResponseSchema.parse(
-      activityPayload.data,
-    ).items[0];
-    expect(activity).toMatchObject({
-      targetId: projectId,
-      kind: "draft_saved",
-    });
+    // Character operations use Audit/Outbox; retired collaboration URLs stay closed.
+    expect(activityResponse.status).toBe(400);
 
     await prisma.character.update({
       where: { id: characterId },

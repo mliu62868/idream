@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 
 const catalog = vi.hoisted(() => ({
   generationWorkflowDescriptor: vi.fn(),
@@ -11,6 +13,7 @@ vi.mock("@/server/modules/generation/generation-catalog", () => ({
 import {
   filterPublicTextToImageGenerationProfiles,
   generationProfileDeclaresTextToImage,
+  projectPublicImageEditGenerationProfiles,
 } from "./generation-profile-selection";
 
 const profile = {
@@ -96,5 +99,39 @@ describe("public text-to-image generation profiles", () => {
     expect(generationProfileDeclaresTextToImage({
       runnerConfig: { capabilities: { imageToImage: true } },
     })).toBe(false);
+  });
+});
+
+describe("public image-edit workflow authority", () => {
+  it("offers the shipped source-only and identity+source graphs, excluding stale pins and identity-only graphs", async () => {
+    const workflowKeys = [
+      "qwen-image-edit-img2img",
+      "qwen-image-edit-multi-reference",
+      "qwen-image-edit-multi-identity",
+    ];
+    const workflows = await Promise.all(workflowKeys.map(async (key) =>
+      JSON.parse(await readFile(path.resolve(process.cwd(), `../gen/workflows/${key}.json`), "utf8")),
+    ));
+    catalog.generationWorkflowDescriptor.mockImplementation(async (key) =>
+      workflows.find((workflow) => workflow.workflowKey === key),
+    );
+    const profiles = workflowKeys.map((workflowKey) => ({
+      ...profile,
+      workflowKey,
+      runnerConfig: {
+        workflowVersion: 2,
+        publicSelection: { surface: "generator_image_edit" },
+        capabilities: { textToImage: false, initImage: true },
+      },
+    }));
+    const selected = await projectPublicImageEditGenerationProfiles([
+      ...profiles,
+      { ...profiles[0], runnerConfig: { ...profiles[0].runnerConfig, workflowVersion: 1 } },
+      { ...profiles[0], runnerConfig: { workflowVersion: 2, capabilities: { initImage: true } } },
+    ]);
+    expect(selected.map(({ profile, referenceMode }) => ({ workflowKey: profile.workflowKey, referenceMode }))).toEqual([
+      { workflowKey: "qwen-image-edit-img2img", referenceMode: "source_only" },
+      { workflowKey: "qwen-image-edit-multi-reference", referenceMode: "identity_source" },
+    ]);
   });
 });

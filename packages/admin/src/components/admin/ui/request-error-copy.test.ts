@@ -31,6 +31,26 @@ describe("operatorErrorCopy", () => {
     expect(copy.technical.code).toBeNull();
   });
 
+  it("explains a terminal Case assignment conflict without inventing a version race", () => {
+    const copy = operatorErrorCopy(new AdminV2RequestError(
+      "Case cannot be assigned from its present state", 409, "conflict", { status: "resolved" }, "req-case-state",
+    ));
+    expect(copy.headline).toBe("This case is resolved or closed.");
+    expect(copy.nextStep).toBe("Reopen this case before changing its assignment.");
+    expect(copy.technical.message).toBe("Case cannot be assigned from its present state");
+    expect(copy.technical.requestId).toBe("req-case-state");
+  });
+
+  it("directs a historical support Case reopen to the current Case", () => {
+    const copy = operatorErrorCopy(new AdminV2RequestError(
+      "A newer support Case owns this request; reopen that Case instead", 409, "conflict", { currentCaseId: "current-case-2" }, "req-history",
+    ));
+    expect(copy.headline).toBe("This request has a newer support case.");
+    expect(copy.nextStep).toBe("Open case {caseId} and reopen it there. This historical case was not changed.");
+    expect(copy.nextStepValues).toEqual({ caseId: "current-case-2" });
+    expect(copy.technical.requestId).toBe("req-history");
+  });
+
   // SPEC: 「假 reason 禁令」在错误文案上的落点。
   it("says the cause is unknown rather than inventing one for an unmapped failure", () => {
     const copy = operatorErrorCopy(

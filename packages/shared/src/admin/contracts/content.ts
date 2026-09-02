@@ -127,6 +127,8 @@ export const contentCharacterDetailResponseSchema = z.object({
 
 export const contentCharacterVisibilityRequestSchema = z.object({
   visibility: z.enum(CHARACTER_VISIBILITY),
+  // Official catalog changes consume the current Serving authority version.
+  entityVersion: z.number().int().positive().optional(),
   reason: reasonSchema,
   confirmation: confirmationSchema,
 }).strict();

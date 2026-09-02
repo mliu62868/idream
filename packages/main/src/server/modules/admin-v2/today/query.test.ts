@@ -759,7 +759,7 @@ describe("Today mentions and collaboration watch aliases", () => {
     }
   });
 
-  it("bridges collaboration target aliases and maps a watched Character Project to current and candidate Releases", async () => {
+  it("bridges active collaboration aliases without reviving retired Character Project watches", async () => {
     const projection = await buildTodayProjection({
       actor: { id: actorId, role: "admin" },
       permissions: resolvePermissions("admin"),
@@ -768,8 +768,6 @@ describe("Today mentions and collaboration watch aliases", () => {
     expect(new Set(projection.watching.items.map((item) => item.sourceId))).toEqual(new Set([
       visibleCaseId,
       incidentId,
-      currentReleaseId,
-      candidateReleaseId,
       creativeRunId,
     ]));
   });

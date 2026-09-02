@@ -300,7 +300,10 @@ describe("seed data provenance", () => {
         scheduler: "beta",
         cfgScale: 1,
         version: 2,
-        runnerConfig: expect.objectContaining({ workflowVersion: 2 }),
+        runnerConfig: expect.objectContaining({
+          workflowVersion: 2,
+          publicSelection: { surface: "generator_image_edit" },
+        }),
         enabled: true,
         rolloutPercent: 100,
         status: "active",
@@ -313,7 +316,10 @@ describe("seed data provenance", () => {
         scheduler: "beta",
         cfgScale: 1,
         version: 2,
-        runnerConfig: expect.objectContaining({ workflowVersion: 2 }),
+        runnerConfig: expect.objectContaining({
+          workflowVersion: 2,
+          publicSelection: { surface: "generator_image_edit" },
+        }),
         enabled: true,
         rolloutPercent: 100,
         status: "active",
@@ -668,9 +674,8 @@ describe("seed data provenance", () => {
     expect(characters).toContain("originalOwnerId");
     expect(characters).toContain("hasExistingStructuredPersona");
     expect(characters).not.toContain("relationshipArchetype");
-    expect(characters).toMatch(
-      /officialAdvancedDetails:[\s\S]*?\.\.\.personaDetails,[\s\S]*?\.\.\.existingAdvancedDetails,/,
-    );
+    expect(characters).toContain("resolveOfficialColdStartPersonaWrite({");
+    expect(characters).toContain("...personaWrite.advancedDetails");
     expect(characters).toMatch(
       /characterStats\.upsert\(\{[\s\S]*?update: \{\},/,
     );

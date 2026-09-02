@@ -261,6 +261,24 @@ function genAuthorityValue(
     : env[legacyKey];
 }
 
+function genComfyUiAuthority(env: EnvLike, targetKind: "image" | "video" | "h3") {
+  const suffix = targetKind.toUpperCase();
+  const endpoint = genAuthorityValue(
+    env,
+    `IDREAM_GEN_COMFYUI_${suffix}_API_URL`,
+    `COMFYUI_${suffix}_API_URL`,
+  );
+  // INVARIANT: mirror Gen's endpoint resolution even for direct gate callers.
+  // H3 is an independent runner; only image/video inherit the legacy URL.
+  return endpoint ?? (targetKind === "h3"
+    ? "http://127.0.0.1:8190"
+    : env.COMFYUI_API_URL ?? (
+        targetKind === "image"
+          ? "http://127.0.0.1:8189"
+          : "http://127.0.0.1:8188"
+      ));
+}
+
 function isPlaceholderValue(value: string | undefined) {
   const normalized = value?.trim().toLowerCase();
   if (!normalized) return true;
@@ -1436,11 +1454,7 @@ function addImagePipelineChecks(
     "IDREAM_GEN_PIPELINE_API_TOKEN",
     "PIPELINE_API_TOKEN",
   );
-  const genComfyuiApiUrl = genAuthorityValue(
-    env,
-    "IDREAM_GEN_COMFYUI_API_URL",
-    "COMFYUI_API_URL",
-  );
+  const genComfyuiApiUrl = genComfyUiAuthority(env, "image");
   const genDrawThingsCli = genAuthorityValue(
     env,
     "IDREAM_GEN_DRAWTHINGS_CLI",
@@ -1495,7 +1509,7 @@ function addImagePipelineChecks(
         value: genComfyuiApiUrl,
         url: true,
         remediation:
-          "Set COMFYUI_API_URL, or configure DRAWTHINGS_CLI for the backend workflows in use.",
+          "Set COMFYUI_IMAGE_API_URL (or legacy COMFYUI_API_URL), or configure DRAWTHINGS_CLI for the backend workflows in use.",
       });
     }
   } else if (configured === "pipeline") {
@@ -1546,11 +1560,7 @@ function addVideoPipelineChecks(
   productConfigProbe: ProductConfigProbeEvidence | null,
 ) {
   const configured = env.GEN_VIDEO_PROVIDER ?? "mock";
-  const genComfyuiApiUrl = genAuthorityValue(
-    env,
-    "IDREAM_GEN_COMFYUI_API_URL",
-    "COMFYUI_API_URL",
-  );
+  const genComfyuiApiUrl = genComfyUiAuthority(env, "video");
   if (!configured || configured === "mock") {
     const productConfigOk =
       productConfigProbe?.ok === true && !productConfigProbe.loadError;
@@ -1602,7 +1612,7 @@ function addVideoPipelineChecks(
       value: genComfyuiApiUrl,
       url: true,
       remediation:
-        "Set COMFYUI_API_URL in Gen's production environment to the ComfyUI runtime hosting the pinned LTX video workflow.",
+        "Set COMFYUI_VIDEO_API_URL (or legacy COMFYUI_API_URL) in Gen's production environment to the ComfyUI runtime hosting the pinned LTX video workflow.",
     });
   }
 }
@@ -1617,10 +1627,11 @@ function addVideoGenerationProbeCheck(
   probeName: ProbeName,
   checkId: string,
 ) {
-  const genComfyuiApiUrl = genAuthorityValue(
+  const genComfyuiApiUrl = genComfyUiAuthority(
     env,
-    "IDREAM_GEN_COMFYUI_API_URL",
-    "COMFYUI_API_URL",
+    recipe.workflowKey === minimaxH3VideoProductionRecipe.workflowKey
+      ? "h3"
+      : "video",
   );
   if (
     productConfigProbe?.ok === true &&
@@ -2278,11 +2289,7 @@ function addImagePipelineProbeCheck(
     "IDREAM_GEN_PIPELINE_API_URL",
     "PIPELINE_API_URL",
   );
-  const genComfyuiApiUrl = genAuthorityValue(
-    env,
-    "IDREAM_GEN_COMFYUI_API_URL",
-    "COMFYUI_API_URL",
-  );
+  const genComfyuiApiUrl = genComfyUiAuthority(env, "image");
   const genDrawThingsCli = genAuthorityValue(
     env,
     "IDREAM_GEN_DRAWTHINGS_CLI",

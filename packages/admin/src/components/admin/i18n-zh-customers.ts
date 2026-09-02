@@ -3,6 +3,17 @@
 // INVARIANT: key 在所有 i18n-zh-*.ts 之间互斥——同一个 key 只能有一个域文件持有；
 // 由 i18n-zh-exclusivity.test.ts 强制。新增文案放它所属的域文件，不要另开「杂项」文件。
 export const adminZhCustomers: Record<string, string> = {
+  "Customer": "客户",
+  "Message to customer": "给客户的回复",
+  "Visible to the customer in Help Desk. Internal reasons stay private.": "客户可在帮助中心看到此回复，内部处理原因不会公开。",
+  "Write a message to the customer before continuing.": "请先填写给客户的回复。",
+  "Support conversation": "客服对话",
+  "Close conversation": "收起对话",
+  "Support conversation could not load": "客服对话加载失败",
+  "Loading conversation…": "正在加载对话…",
+  "Reply to support request {id}": "回复客服工单 {id}",
+  "Send reply": "发送回复",
+  "Refresh conversation": "刷新对话",
   "Case Detail": "案件详情",
   ". This records an already-completed provider refund and closes the late-settlement exception; it does not issue a refund.":
     "。此操作只记录供应商已完成的退款并关闭延迟结算异常，不会实际发起退款。",

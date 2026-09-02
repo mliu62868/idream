@@ -23,7 +23,8 @@ const deploymentId =
   `idream-${randomUUID()}`;
 process.env.NEXT_DEPLOYMENT_ID = deploymentId;
 
-const build = spawnSync(process.execPath, [nextBin, "build"], {
+// Next's generated external-package links need Node's loader on a cold build.
+const build = spawnSync("node", [nextBin, "build"], {
   cwd: packageDir,
   env: {
     ...process.env,

@@ -1133,7 +1133,8 @@ export async function createCreativeRun(
         : body.brief;
       const prompt = productionPrompt({
         purpose: body.purpose,
-        target,
+        bootstrapIdentity: body.bootstrapIdentity,
+        target: verifiedBootstrapAuthority?.target ?? target,
         recipeBody: recipe.body,
         presetFragment,
         brief: directionBrief,

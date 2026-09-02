@@ -158,8 +158,18 @@ export function resolvePlaywrightEnvironment(
     DATABASE_URL: databaseURL,
     REDIS_URL: redisURL,
     BULLMQ_PREFIX: bullmqPrefix,
-    CHAT_PROVIDER: input.PW_CHAT_PROVIDER ?? "mock",
-    CHAT_MODEL_PROVIDER: input.PW_CHAT_PROVIDER ?? "mock",
+    CHAT_PROVIDER: "mock",
+    // Exercise the real Agent runtime through this run's OpenAI-compatible
+    // fixture. Its maintenance model and writable memory must be isolated too.
+    CHAT_MODEL_PROVIDER: "openai",
+    CHAT_MODEL_BASE_URL: `${pipelineBaseURL}/v1`,
+    CHAT_MODEL_NAME: "playwright-companion",
+    CHAT_MODEL_API_KEY: "playwright-model-key",
+    DSH_IGREP_CANONICAL_ROOT: path.join(chatFsRoot, "companion-memory"),
+    DSH_IGREP_PRIVATE_ROOT: path.join(chatFsRoot, "companion-private"),
+    IGREP_LLM_URL: `${pipelineBaseURL}/v1`,
+    IGREP_LLM_MODEL: "playwright-maintenance",
+    IGREP_LLM_API_KEY: "playwright-model-key",
     CHAT_SERVICE_URL: chatBaseURL,
     CHAT_REDIS_URL: redisURL,
     CHAT_FS_ROOT: chatFsRoot,
@@ -220,11 +230,13 @@ export function managedPlaywrightWebServers(
   ManagedPlaywrightWebServer,
   ManagedPlaywrightWebServer,
   ManagedPlaywrightWebServer,
+  ManagedPlaywrightWebServer,
+  ManagedPlaywrightWebServer,
 ] {
   return [
     {
       command: "bun src/e2e/start-playwright-chat-service.ts",
-      url: `${environment.chatBaseURL}/healthz`,
+      url: `${environment.chatBaseURL}/readyz`,
       reuseExistingServer: false,
       timeout: 120_000,
       gracefulShutdown: {
@@ -275,7 +287,7 @@ export function managedPlaywrightWebServers(
     {
       // Playwright 1.61 supports managed background processes without a
       // port/url. Readiness is the Gen entrypoint's stable startup log after
-      // both image-generation and character-preview workers are constructed.
+      // the shared image-generation/character-preview worker is constructed.
       command: "bun run --cwd ../gen start:image",
       reuseExistingServer: false,
       timeout: 30_000,
@@ -300,6 +312,22 @@ export function managedPlaywrightWebServers(
       },
     },
     {
+      command: "bun src/e2e/start-playwright-video-worker.ts",
+      reuseExistingServer: false,
+      timeout: 30_000,
+      wait: { stdout: /Playwright video worker started/ },
+      gracefulShutdown: { signal: "SIGTERM", timeout: 30_000 },
+      env: {
+        ...environment.serviceEnv,
+        GEN_REDIS_URL: environment.redisURL,
+        GEN_IMAGE_PROVIDER: environment.serviceEnv.GEN_IMAGE_PROVIDER,
+        GEN_VIDEO_PROVIDER: "backend",
+        GEN_MODERATION_PROVIDER: environment.serviceEnv.MODERATION_PROVIDER,
+        GEN_BLOB_PROVIDER: environment.serviceEnv.BLOB_PROVIDER,
+        LOG_LEVEL: "info",
+      },
+    },
+    {
       // Gen durably acknowledges completion manifests into Main's outbox.
       // Production uses gen-finalizer to dispatch those manifests onto
       // app.ai.finalize and project terminal GenerationJob state.
@@ -318,6 +346,14 @@ export function managedPlaywrightWebServers(
         GEN_FINALIZER_QUEUES: "app.ai.finalize",
         LOG_LEVEL: "info",
       },
+    },
+    {
+      command: "bun src/processes/event-consumer.ts",
+      reuseExistingServer: false,
+      timeout: 30_000,
+      wait: { stdout: /main durable event projector ready/ },
+      gracefulShutdown: { signal: "SIGTERM", timeout: 30_000 },
+      env: { ...environment.serviceEnv, LOG_LEVEL: "info" },
     },
   ];
 }

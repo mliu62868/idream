@@ -62,15 +62,16 @@ export function characterDTO(
   const creatorName = official
     ? "Official"
     : (character.creator?.displayName ?? character.creator?.name ?? null);
+  const shared = character.visibility === "public" || character.visibility === "unlisted";
   const publicationState =
-    character.visibility === "public" &&
+    shared &&
     character.status === "approved" &&
     character.serving?.state === "live" &&
     character.serving.currentRelease?.status === "published"
       ? "live"
-      : character.visibility === "public" && character.status === "approved"
+      : shared && character.status === "approved"
         ? "awaiting_publication"
-        : character.visibility === "public" && character.status === "pending_review"
+        : shared && character.status === "pending_review"
           ? "pending_review"
           : "not_public";
   return {

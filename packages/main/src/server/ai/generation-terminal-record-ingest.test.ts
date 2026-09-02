@@ -567,7 +567,7 @@ describe("generation terminal record durable ingest", () => {
             id,
             requestId: unknownJobIds[index]!,
             attemptNo: 1,
-            status: "unknown",
+            status: "running",
             createdAt: staleAt,
             startedAt: staleAt,
             finishedAt: staleAt,
@@ -583,6 +583,13 @@ describe("generation terminal record durable ingest", () => {
           },
         ],
       });
+      for (const [index, id] of unknownAttemptIds.entries()) {
+        await prisma.$transaction((tx) => recordGenerationAttemptEvent(tx, {
+          eventId: `${id}:terminal`, attemptId: id,
+          eventType: "generation.attempt.unknown.v1", outcome: "unknown",
+          occurredAt: staleAt, payload: { requestId: unknownJobIds[index]! },
+        }));
+      }
       await prisma.generationTransportExecution.create({
         data: {
           attemptId: targetAttemptId,
@@ -1371,10 +1378,11 @@ describe("generation terminal record durable ingest", () => {
 
   it("does not reopen a succeeded business Attempt from a late terminal record", async () => {
     await reserveAttempt();
-    await prisma.generationAttempt.update({
-      where: { id: attemptId },
-      data: { status: "succeeded", finishedAt: new Date() },
-    });
+    await prisma.$transaction((tx) => recordGenerationAttemptEvent(tx, {
+      eventId: `${attemptId}:terminal`, attemptId,
+      eventType: "generation.attempt.succeeded.v1", outcome: "succeeded",
+      occurredAt: new Date(), payload: { requestId: terminalRecord.generationJobId },
+    }));
     const input = {
       terminalRecordRef: `gen/terminal-records/${attemptId}/late.json`,
       terminalRecordChecksum: generationTerminalRecordChecksum(terminalRecord),
@@ -1542,9 +1550,13 @@ describe("generation terminal record durable ingest", () => {
         requestId: jobId,
         attemptNo: 1,
         provider: lateTerminalRecord.provider,
-        status: "cancelled",
-        finishedAt: new Date(),
+        status: "queued",
       } });
+      await prisma.$transaction((tx) => recordGenerationAttemptEvent(tx, {
+        eventId: `${cancelledAttemptId}:terminal`, attemptId: cancelledAttemptId,
+        eventType: "generation.attempt.cancelled.v1", outcome: "cancelled",
+        occurredAt: new Date(), payload: { requestId: jobId },
+      }));
       await ensureDispatchAuthority(lateTerminalRecord);
       const input = { terminalRecordRef: `gen/terminal-records/${cancelledAttemptId}/terminal.json`, terminalRecordChecksum: generationTerminalRecordChecksum(lateTerminalRecord), terminalRecord: lateTerminalRecord };
       await expect(ingestGenerationTerminalRecord(input)).resolves.toMatchObject({ acknowledged: true, status: "persisted" });
@@ -1610,11 +1622,15 @@ describe("generation terminal record durable ingest", () => {
           requestId: jobId,
           attemptNo: 1,
           provider: lateTerminalRecord.provider,
-          status: "failed",
+          status: "queued",
           errorCode: "stale_timeout",
-          finishedAt: new Date(),
         },
       });
+      await prisma.$transaction((tx) => recordGenerationAttemptEvent(tx, {
+        eventId: `${failedAttemptId}:terminal`, attemptId: failedAttemptId,
+        eventType: "generation.attempt.failed.v1", outcome: "failed",
+        occurredAt: new Date(), payload: { requestId: jobId }, errorCode: "stale_timeout",
+      }));
       await ensureDispatchAuthority(lateTerminalRecord);
       const input = {
         terminalRecordRef: `gen/terminal-records/${failedAttemptId}/terminal.json`,

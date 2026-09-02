@@ -24,6 +24,7 @@ import { adminV2Request, setWorkspaceUrl } from "@/lib/admin-v2-api";
 import { createWorkspaceHistoryController, observeWorkspacePopState, workspaceDetailId } from "@/lib/workspace-history";
 import { CollaborationPanel } from "@/features/collaboration/CollaborationPanel";
 import { SavedViewsControl } from "@/features/collaboration/SavedViewsControl";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import {
   caseQueryFromSavedState,
   caseSavedState,
@@ -140,6 +141,17 @@ export function CaseWorkspace({ canAssign, canDecide, initialCaseId = null }: { 
       if (restored.selectedId) void loadDetail(restored.selectedId);
     });
   }, [loadDetail, loadList]);
+
+  useEffect(() => {
+    const refresh = () => {
+      // Shell refresh reloads facts without resetting the in-flight mutation
+      // or remounting the inspector and losing its assignment retry key.
+      void loadList(history.current.current().query);
+      if (selectedId) void loadDetail(selectedId);
+    };
+    window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
+    return () => window.removeEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
+  }, [loadDetail, loadList, selectedId]);
 
   function updateDraft(patch: Partial<CaseQueryDraft>) {
     const next = { ...query, ...patch, cursor: undefined };
@@ -383,6 +395,7 @@ function CaseInspector({ busy, canAssign, canDecide, detail, onClose, onConfirme
   const [decisionIdempotencyKey, setDecisionIdempotencyKey] = useState(() => crypto.randomUUID());
   const [verificationIdempotencyKey, setVerificationIdempotencyKey] = useState(() => crypto.randomUUID());
   const [verificationOverrideIdempotencyKey, setVerificationOverrideIdempotencyKey] = useState(() => crypto.randomUUID());
+  const assignmentRequest = useRef<{ signature: string; key: string } | null>(null);
   const [mobileStep, setMobileStep] = useState<CaseMobileStep>("summary");
   const refs = evidenceRefs.split(",").map((item) => item.trim()).filter(Boolean);
   const canRecordDecision = Boolean(
@@ -393,6 +406,7 @@ function CaseInspector({ busy, canAssign, canDecide, detail, onClose, onConfirme
     (!customerCase || outcomeRef.trim()),
   );
   const verified = ["passed", "overridden"].includes(adminCase.verification?.state ?? "");
+  const assignmentBlocked = ["resolved", "closed"].includes(adminCase.status);
   const canClose = adminCase.status === "resolved" && verified;
   // SPEC: 说清楚为什么关不了，而不是给一个灰按钮。
   // INTENT: 关闭要「已解决 + 下游已验证」两个前提，此前两个前提都不在界面上，
@@ -400,6 +414,22 @@ function CaseInspector({ busy, canAssign, canDecide, detail, onClose, onConfirme
   const closeBlockedBy = canClose ? null : adminCase.status !== "resolved"
     ? t("Close needs a recorded decision first — this case is {status}, not resolved.", { status: value(adminCase.status) })
     : t("Close needs downstream verification to pass or be explicitly overridden first.");
+
+  async function saveAssignment() {
+    const body = { entityVersion: adminCase.version, ownerId: ownerId.trim() || null, priority, reason: reason.trim() };
+    const signature = JSON.stringify(body);
+    // A lost response must replay the same assignment; an edited request is a new intent.
+    if (assignmentRequest.current?.signature !== signature) {
+      assignmentRequest.current = { signature, key: crypto.randomUUID() };
+    }
+    const result = await adminV2Request(`/api/v2/admin/cases/${encodeURIComponent(adminCase.id)}/assignment`, {
+      method: "POST",
+      idempotencyKey: assignmentRequest.current.key,
+      body,
+    });
+    assignmentRequest.current = null;
+    return result;
+  }
 
   // SPEC: 生命周期与关闭走全站统一的 ConfirmDialog（确认串 + reason 都在框里收）。
   // INTENT: 此前这三个操作的确认串输入框散落在详情页里，而 reason 只在「分配」表单里存在——
@@ -473,7 +503,7 @@ function CaseInspector({ busy, canAssign, canDecide, detail, onClose, onConfirme
       <section aria-labelledby="case-evidence-title" className={mobileStepClass("evidence")} data-case-step="evidence"><div className="flex items-center justify-between"><h4 className="text-sm font-semibold" id="case-evidence-title">{t("Evidence")}</h4><span className="text-xs text-[var(--ad-text-muted)]">{t("immutable sources")}</span></div><ol className="mt-3 space-y-2">{detail.evidence.map((item) => <li className="rounded-md bg-[var(--ad-surface-subtle)] p-3" key={item.id}><div className="flex flex-wrap items-center justify-between gap-2"><span className="font-mono text-xs">{item.id}</span><span className="text-xs text-[var(--ad-text-muted)]"><RelativeTime referenceTime={referenceTime} value={item.occurredAt} /></span></div><p className="mt-2 text-sm leading-6">{item.summary}</p><p className="mt-2 text-xs text-[var(--ad-text-muted)]">{value(item.evidenceType)} · {value(item.access)}</p></li>)}</ol></section>
 
       <div className={`${mobileStepClass("decision")} space-y-5`} data-case-step="decision">
-      {canAssign ? <form className="space-y-3 border-t border-[var(--ad-border)] pt-5" onSubmit={(event) => { event.preventDefault(); void onMutate("Case assignment saved", () => adminV2Request(`/api/v2/admin/cases/${encodeURIComponent(adminCase.id)}/assignment`, { method: "POST", body: { entityVersion: adminCase.version, ownerId: ownerId.trim() || null, priority, reason: reason.trim() } })); }}><h4 className="text-sm font-semibold">{t("Assignment")}</h4><div className="grid gap-3 sm:grid-cols-2"><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Owner ID")}<input className={fieldClass} onChange={(event) => setOwnerId(event.target.value)} value={ownerId} /></label><Select label="Priority" onChange={(value) => setPriority(value as OperationsCase["priority"])} options={["urgent", "high", "normal", "low"]} value={priority} /></div><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Audit reason")}<input className={fieldClass} onChange={(event) => setReason(event.target.value)} required value={reason} /></label><WorkspaceButton disabled={busy || reason.trim().length < 3} tone="primary" type="submit">{t("Save assignment")}</WorkspaceButton></form> : null}
+      {canAssign ? <form className="space-y-3 border-t border-[var(--ad-border)] pt-5" onSubmit={(event) => { event.preventDefault(); if (!busy && !assignmentBlocked) void onMutate("Case assignment saved", saveAssignment); }}><h4 className="text-sm font-semibold">{t("Assignment")}</h4>{assignmentBlocked ? <p className="text-xs text-[var(--ad-text-muted)]">{t("Reopen this case before changing its assignment.")}</p> : null}<fieldset className="space-y-3" disabled={busy || assignmentBlocked}><div className="grid gap-3 sm:grid-cols-2"><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Owner ID")}<input className={fieldClass} onChange={(event) => setOwnerId(event.target.value)} value={ownerId} /></label><Select label="Priority" onChange={(value) => setPriority(value as OperationsCase["priority"])} options={["urgent", "high", "normal", "low"]} value={priority} /></div><label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Audit reason")}<input className={fieldClass} onChange={(event) => setReason(event.target.value)} required value={reason} /></label><WorkspaceButton disabled={busy || assignmentBlocked || reason.trim().length < 3} tone="primary" type="submit">{t("Save assignment")}</WorkspaceButton></fieldset></form> : null}
 
       {canAssign || canDecide ? <section className="space-y-3 border-t border-[var(--ad-border)] pt-5"><h4 className="text-sm font-semibold">{t("Lifecycle")}</h4>{canAssign && ["new", "triaged", "in_progress", "reopened"].includes(adminCase.status) ? <label className="grid gap-1 text-xs font-semibold text-[var(--ad-text-muted)]">{t("Resume after (optional)")}<input className={fieldClass} onChange={(event) => setResumeAt(event.target.value)} type="datetime-local" value={resumeAt} /></label> : null}<div className="flex flex-wrap gap-2">{canAssign && ["new", "triaged", "in_progress", "reopened"].includes(adminCase.status) ? <WorkspaceButton disabled={busy} onClick={() => confirmCommand({ command: "wait", title: t("Park this case on a dependency"), effect: t("The case leaves the active queue until someone resumes it. SLA keeps running."), submitLabel: t("Wait for dependency"), notice: "Case moved to waiting", body: (waitReason) => ({ reason: waitReason, resumeAt: resumeAt ? new Date(resumeAt).toISOString() : undefined }) })}>{t("Wait for dependency")}</WorkspaceButton> : null}{canDecide && ["resolved", "closed"].includes(adminCase.status) ? <WorkspaceButton disabled={busy} onClick={() => confirmCommand({ command: "reopen", title: t("Reopen this case"), effect: t("A resolved case goes back to the active queue, or a recurrence is filed against it."), submitLabel: t("Reopen / create recurrence"), notice: "Case reopened or recurrence created", body: (reopenReason) => ({ reason: reopenReason }) })}>{t("Reopen / create recurrence")}</WorkspaceButton> : null}</div></section> : null}
 

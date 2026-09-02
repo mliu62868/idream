@@ -37,10 +37,11 @@ describe("main admin permission adapter", () => {
     expect(effective).not.toContain("generation.job.read");
   });
 
-  it("expands bundles but keeps high-risk publish/export permissions separate", () => {
+  it("expands the Character producer workflow while keeping analytics export separate", () => {
     expect(expandGrantBundles(["character_producer"])).toEqual(
       new Set(ADMIN_GRANT_BUNDLES.character_producer.permissions),
     );
-    expect(expandGrantBundles(["character_producer"])).not.toContain("character.release.publish");
+    expect(expandGrantBundles(["character_producer"])).toContain("character.release.publish");
+    expect(expandGrantBundles(["character_producer"])).not.toContain("analytics.metric.export");
   });
 });

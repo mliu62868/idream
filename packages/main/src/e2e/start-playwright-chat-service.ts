@@ -67,6 +67,24 @@ async function preparePlaywrightAuthority(
     signal,
   });
   throwIfAborted(signal);
+  if (environment.serviceEnv.GEN_IMAGE_PROVIDER === "pipeline") {
+    const client = new pg.Client({
+      connectionString: databaseURL,
+      connectionTimeoutMillis: 3_000,
+      query_timeout: 5_000,
+    });
+    try {
+      await client.connect();
+      throwIfAborted(signal);
+      // The fresh run-owned seed targets production ComfyUI. Pin its image
+      // profiles to this run's pipeline fixture before any jobs are created.
+      await client.query(
+        `UPDATE generation_model_profiles SET runner = 'pipeline' WHERE mode = 'image'`,
+      );
+    } finally {
+      await client.end().catch(() => undefined);
+    }
+  }
 }
 
 async function recreateOwnedDatabase(url: string, signal: AbortSignal) {

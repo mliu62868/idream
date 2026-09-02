@@ -20,12 +20,16 @@ import {
 import type { AdminActor } from "../shared/authority";
 import { toInputJson } from "../shared/prisma-json";
 import { contentAuditData } from "./audit";
+import { lockCharacterGenerationAuthority } from "../characters/generation-authority-lock";
+import { transitionCharacterServing } from "../characters/transition";
+import { evaluateEditorialReleaseAuthorityInTransaction } from "../../ourdream/public-release-authority";
+import { CHARACTER_RELEASE_POLICY_VERSION, evaluateCharacterReleaseSnapshot } from "../characters/release-validation";
 
 // SPEC: 目录商品化的读写权威 —— 角色列表 / 详情，以及 visibility / status / tags 三条运营写。
 // INTENT: 从 v1 `admin/content/merchandising.ts` 原样搬来。唯一的实质变化是响应显式投影成
 //         `contentCharacter*` 契约声明的形状：v1 直接回吐 Prisma 行，v2 里那属于违约。
-// INVARIANT: 官方角色的 visibility / status 由 Character Release 与 Serving 命令持有，
-//            这两条写仍然对 source==="official" fail closed；tags 例外（见 setCharacterTags）。
+// INVARIANT: Official catalog visibility can only switch public/unlisted for an
+// already-live Release; publishing and pausing remain Serving commands.
 
 const listSelect = {
   id: true,
@@ -270,11 +274,41 @@ export async function setCharacterVisibility(input: {
   if (body.confirmation !== `${id}:visibility:${body.visibility}`) {
     throw Errors.badRequest("Confirmation did not match visibility target");
   }
+  await lockCharacterGenerationAuthority(tx, id);
+  // Share the Release lock order: generation authority, Serving, Character.
+  await tx.$queryRaw`SELECT "id" FROM "character_serving" WHERE "characterId" = ${id} FOR UPDATE`;
+  await tx.$queryRaw`SELECT "id" FROM "characters" WHERE "id" = ${id} FOR UPDATE`;
   const before = await tx.character.findFirst({
     where: operationalCharacterWhere({ id, deletedAt: null }),
   });
   if (!before) throw Errors.notFound("Character not found");
-  rejectOfficialCharacter(before.source, id, "visibility");
+  if (before.source === "official") {
+    const serving = await tx.characterServing.findUnique({
+      where: { characterId: id }, include: { currentRelease: { include: { publicCatalogQualification: true } } },
+    });
+    const release = serving?.currentRelease;
+    if (
+      !["public", "unlisted"].includes(before.visibility) || body.visibility === "private" ||
+      before.status !== "approved" || serving?.state !== "live" || !release || release.status !== "published"
+    ) {
+      throw Errors.conflict("Only a live official Character can change its Explore listing; use Release and Serving commands to publish or pause", {
+        repairDeepLink: `/admin/characters/${id}?tab=release`,
+      });
+    }
+    if (body.entityVersion !== serving.version) {
+      throw Errors.conflict("Character Serving changed; refresh before changing its Explore listing", { expectedVersion: serving.version });
+    }
+    if (body.visibility === "public") {
+      const qualification = release.publicCatalogQualification;
+      const valid = release.legacy
+        ? (await evaluateEditorialReleaseAuthorityInTransaction(tx, { releaseId: release.id })).valid
+        : (await evaluateCharacterReleaseSnapshot(tx, release, CHARACTER_RELEASE_POLICY_VERSION, new Date())).failed.length === 0;
+      if (!valid || release.readiness !== "ready" || !qualification || qualification.revokedAt !== null || qualification.releaseSnapshotHash !== release.snapshotHash) {
+        throw Errors.conflict("The current Release must be qualified before showing this Character in Explore");
+      }
+    }
+    await transitionCharacterServing(tx, { servingId: serving.id, to: "live", expectedVersion: body.entityVersion });
+  }
   const after = await tx.character.update({
     where: { id },
     data: { visibility: body.visibility },

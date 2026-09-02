@@ -15,6 +15,9 @@ import { isPrivateMediaUrl } from "@/lib/image-delivery";
 import {
   isRenderableMediaSource,
   parseTemplatesResponse,
+  parseCharacterVoiceCatalogResponse,
+  parseCharacterVoicePreviewResponse,
+  type CharacterVoiceCatalog,
   parseViewerAuthorityResponse,
   type PublicCharacterTemplate as CreateTemplate,
 } from "@/lib/public-api-contracts";
@@ -30,6 +33,7 @@ import {
   continueCreatePreviewBatch,
   newCreatePreviewBatch,
   parseCreatePreviewBatch,
+  parseCreatePreviewCandidate,
   retryCreatePreviewBatch,
   type CreatePreviewBatch,
   type CreatePreviewCandidate,
@@ -75,6 +79,15 @@ function pickString(value: unknown, ...keys: string[]): string {
   return "";
 }
 
+function pickVisualText(value: unknown, ...keys: string[]): string {
+  const direct = pickString(value, ...keys);
+  if (direct || !isRecord(value)) return direct;
+  return Object.entries(value)
+    .filter(([, trait]) => typeof trait === "string" || typeof trait === "number")
+    .map(([key, trait]) => `${key}: ${trait}`)
+    .join(", ");
+}
+
 /** Historical templates and local drafts are read once into the one current field. */
 function templateDetailsMarkdown(value: unknown): string {
   return legacySoulDetailsMarkdown(value);
@@ -103,10 +116,26 @@ export function viewerScopeFromAuthority(input: {
 }
 
 const STEPS = ["Identity", "Appearance", "Soul", "Preview", "Publish"] as const;
+const VISUAL_FIELDS = [
+  { key: "ethnicity", label: "Ethnicity / fantasy race", suggestions: ["East Asian", "South Asian", "Black", "Latina", "Middle Eastern", "White", "Mixed", "Elf", "Vampire"] },
+  { key: "skinTone", label: "Skin tone", suggestions: ["Fair", "Light", "Olive", "Tan", "Brown", "Dark"] },
+  { key: "eyeColor", label: "Eye color", suggestions: ["Brown", "Hazel", "Green", "Blue", "Gray", "Amber"] },
+  { key: "faceShape", label: "Face shape / features", suggestions: ["Oval", "Round", "Heart-shaped", "Angular", "Freckles", "Dimples"] },
+  { key: "hair", label: "Hair", suggestions: ["Long dark waves", "Short auburn curls", "Straight blonde hair", "Black braided hair", "Silver bob"] },
+  { key: "body", label: "Body", suggestions: ["Slim", "Athletic", "Curvy", "Muscular", "Petite", "Tall"] },
+] as const;
+const SOUL_DETAIL_FIELDS = [
+  { label: "Personality", suggestions: ["Warm and curious", "Playful and confident", "Shy and thoughtful", "Calm and protective", "Bold and adventurous"] },
+  { label: "Occupation", suggestions: ["Artist", "Teacher", "Writer", "Musician", "Chef", "Doctor", "Scientist", "Entrepreneur", "Adventurer"] },
+  { label: "Relationship", suggestions: ["New acquaintance", "Friend", "Childhood friend", "Best friend", "Romantic partner", "Spouse", "Roommate", "Rival"] },
+  { label: "Hobbies", suggestions: ["Reading", "Music", "Cooking", "Gaming", "Hiking", "Photography", "Stargazing"] },
+  { label: "Fetishes and preferences", suggestions: ["Romance", "Playful flirting", "Praise", "Roleplay"] },
+] as const;
 
 export type WizardState = {
   draftId: string;
   previewBatch: CreatePreviewBatch | null;
+  restoredPreviewCandidate: CreatePreviewCandidate | null;
   confirmedPreviewJobId: string;
   confirmedPreviewUrl: string;
   step: number;
@@ -115,6 +144,10 @@ export type WizardState = {
   gender: string;
   style: string;
   appearance: string;
+  ethnicity: string;
+  skinTone: string;
+  eyeColor: string;
+  faceShape: string;
   hair: string;
   body: string;
   description: string;
@@ -122,11 +155,13 @@ export type WizardState = {
   firstMessage: string;
   tags: string;
   visibility: string;
+  voiceSelection: { provider: "pocket_tts"; voiceId: string } | null;
 };
 
 const INITIAL: WizardState = {
   draftId: "",
   previewBatch: null,
+  restoredPreviewCandidate: null,
   confirmedPreviewJobId: "",
   confirmedPreviewUrl: "",
   step: 0,
@@ -135,6 +170,10 @@ const INITIAL: WizardState = {
   gender: "female",
   style: "realistic",
   appearance: "",
+  ethnicity: "",
+  skinTone: "",
+  eyeColor: "",
+  faceShape: "",
   hair: "",
   body: "",
   description: "",
@@ -142,6 +181,7 @@ const INITIAL: WizardState = {
   firstMessage: "",
   tags: "",
   visibility: "private",
+  voiceSelection: null,
 };
 
 export function initialCharacterDraft(): WizardState {
@@ -153,6 +193,8 @@ export function wizardStateFromServerDraft(
 ): WizardState | null {
   if (!value.id || !isRecord(value.advancedDetails)) return null;
   const details = value.advancedDetails;
+  const appearance = isRecord(value.appearance) ? value.appearance : {};
+  const face = isRecord(appearance.face) ? appearance.face : appearance;
   const age = typeof details.age === "number" ? details.age : INITIAL.age;
   return parseWizardDraft({
     ...INITIAL,
@@ -162,15 +204,25 @@ export function wizardStateFromServerDraft(
     age,
     gender: value.gender ?? INITIAL.gender,
     style: value.style ?? INITIAL.style,
-    appearance: pickString(value.appearance, "prompt", "summary"),
-    hair: pickString(value.hair, "prompt", "summary"),
-    body: pickString(value.body, "type", "prompt", "summary"),
+    appearance: pickString(face, "prompt", "summary"),
+    ethnicity: pickString(face, "ethnicity", "race"),
+    skinTone: pickString(face, "skinTone"),
+    eyeColor: pickString(face, "eyes", "eyeColor"),
+    faceShape: pickString(face, "faceShape"),
+    hair: pickVisualText(value.hair, "prompt", "summary") || pickVisualText(appearance.hair, "prompt", "summary"),
+    body: pickVisualText(value.body, "type", "prompt", "summary") || pickVisualText(appearance.body, "type", "prompt", "summary"),
     description: pickString(details, "description"),
     detailsMarkdown: templateDetailsMarkdown(details),
     firstMessage: pickString(details, "firstMessage"),
+    voiceSelection: details.voiceSelection,
     tags: pickTags(value.tags),
     confirmedPreviewJobId: value.previewJobId ?? "",
   });
+}
+
+function samePreviewInputs(left: WizardState, right: WizardState) {
+  const keys = ["name", "age", "gender", "style", "appearance", "ethnicity", "skinTone", "eyeColor", "faceShape", "hair", "body", "description", "detailsMarkdown", "firstMessage"] as const;
+  return keys.every((key) => JSON.stringify(left[key]) === JSON.stringify(right[key]));
 }
 
 export function CreateWorkspace() {
@@ -178,6 +230,7 @@ export function CreateWorkspace() {
   const [state, setState] = useState<WizardState>(initialCharacterDraft);
   const [preview, setPreview] = useState(DEFAULT_PREVIEW);
   const [previewStatus, setPreviewStatus] = useState<PreviewStatus>("idle");
+  const [restoredPreviewReviewId, setRestoredPreviewReviewId] = useState("");
   const [selectedPreviewJobId, setSelectedPreviewJobId] = useState("");
   const [status, setStatus] = useState("");
   const [createdCharacterId, setCreatedCharacterId] = useState("");
@@ -196,12 +249,20 @@ export function CreateWorkspace() {
     "loading" | "ready" | "error"
   >("loading");
   const [templatesAttempt, setTemplatesAttempt] = useState(0);
+  const [voiceCatalog, setVoiceCatalog] = useState<CharacterVoiceCatalog | null>(null);
+  const [voiceCatalogError, setVoiceCatalogError] = useState(false);
+  const [voiceCatalogAttempt, setVoiceCatalogAttempt] = useState(0);
+  const [voicePreviewUrl, setVoicePreviewUrl] = useState("");
+  const [voicePreviewPending, setVoicePreviewPending] = useState(false);
+  const [voicePreviewStatus, setVoicePreviewStatus] = useState("");
+  const voicePreviewSequence = useRef(0);
   const previewRunRef = useRef(0);
   const previewRunSequenceRef = useRef(0);
   const stateRef = useRef(state);
 
   const step = state.step;
-  const previewCandidates = state.previewBatch?.candidates ?? [];
+  const previewCandidates = state.previewBatch?.candidates ??
+    (state.restoredPreviewCandidate ? [state.restoredPreviewCandidate] : []);
   const set = useCallback(
     <K extends keyof WizardState>(key: K, value: WizardState[K]) =>
       setState((current) => ({ ...current, [key]: value })),
@@ -294,19 +355,40 @@ export function CreateWorkspace() {
     }
     const applyRestored = (
       next: WizardState,
-      serverAsset?: { url: string } | null,
+      serverAsset?: { id?: string; url: string; isSynthetic?: boolean } | null,
       serverPreviewJob?: { id: string; status: string; errorCode?: string | null } | null,
     ) => {
       restored = next;
       if (serverAsset?.url && next.confirmedPreviewJobId) {
         restored = { ...next, confirmedPreviewUrl: serverAsset.url };
       }
+      // The server may have finished a preview before this browser ever saw
+      // it. Restore that exact candidate without enqueueing another batch.
+      if (!next.previewBatch && serverPreviewJob?.status === "completed" && serverAsset) {
+        restored = {
+          ...restored,
+          restoredPreviewCandidate: parseCreatePreviewCandidate({
+            previewJobId: serverPreviewJob.id,
+            assetId: serverAsset.id,
+            url: serverAsset.url,
+            isSynthetic: serverAsset.isSynthetic,
+          }),
+        };
+      }
+      // Another device has no batch count or request key. Keep only the known
+      // job and check it without inventing a replacement four-image batch.
+      setRestoredPreviewReviewId("");
+      if (!next.previewBatch && serverPreviewJob?.errorCode === "provider_outcome_unknown") {
+        setRestoredPreviewReviewId(serverPreviewJob.id);
+        setPreviewStatus("failed");
+        setStatus(`The preview result needs review. Contact support with request ${serverPreviewJob.id}.`);
+      }
       const applied = restored;
       if (!applied) return;
       setState(applied);
       const restoredCandidate = applied.previewBatch?.candidates.find(
         (candidate) => candidate.previewJobId === applied.confirmedPreviewJobId,
-      ) ?? applied.previewBatch?.candidates[0];
+      ) ?? applied.previewBatch?.candidates[0] ?? applied.restoredPreviewCandidate;
       const restoredPreviewUrl = applied.confirmedPreviewUrl || restoredCandidate?.url;
       if (restoredPreviewUrl) {
         setPreview(restoredPreviewUrl);
@@ -328,13 +410,15 @@ export function CreateWorkspace() {
         );
       }
     };
+    const recoverMissingCandidate = Boolean(restored?.draftId && restored.step === 3 &&
+      !restored.previewBatch && !restored.restoredPreviewCandidate && !restored.confirmedPreviewJobId);
     if (restored) {
       queueMicrotask(() => {
         if (controller.signal.aborted || !restored) return;
         applyRestored(restored);
-        setHydrated(true);
+        if (!recoverMissingCandidate) setHydrated(true);
       });
-      return () => controller.abort();
+      if (!recoverMissingCandidate) return () => controller.abort();
     }
     if (viewerScope && !isAnonymousScope(viewerScope)) {
       void requestApi(
@@ -346,8 +430,11 @@ export function CreateWorkspace() {
         if (controller.signal.aborted || !payload.data?.draft) return;
         const serverState = wizardStateFromServerDraft(payload.data.draft);
         if (serverState) {
+          // Recover a lost confirmation without discarding unsaved local traits
+          // or attaching a server image to different local inputs.
+          if (restored && (restored.draftId !== serverState.draftId || !samePreviewInputs(restored, serverState))) return;
           applyRestored(
-            serverState,
+            restored ?? serverState,
             payload.data.asset ?? null,
             payload.data.previewJob ?? null,
           );
@@ -397,17 +484,70 @@ export function CreateWorkspace() {
     };
   }, [ageGateAccepted, templatesAttempt]);
 
+  useEffect(() => {
+    if (!ageGateAccepted) return;
+    const controller = new AbortController();
+    fetch("/api/v1/character-voices", { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Voice catalog unavailable");
+        return parseCharacterVoiceCatalogResponse(await response.json());
+      })
+      .then((catalog) => { if (!controller.signal.aborted) { setVoiceCatalog(catalog); setVoiceCatalogError(false); } })
+      .catch(() => { if (!controller.signal.aborted) setVoiceCatalogError(true); });
+    return () => controller.abort();
+  }, [ageGateAccepted, voiceCatalogAttempt]);
+
+  useEffect(() => () => { voicePreviewSequence.current += 1; }, [viewerScope]);
+
+  function selectVoice(voiceId: string) {
+    voicePreviewSequence.current += 1;
+    setVoicePreviewUrl("");
+    setVoicePreviewPending(false);
+    setVoicePreviewStatus("");
+    set("voiceSelection", voiceId ? { provider: "pocket_tts", voiceId } : null);
+  }
+
+  async function previewVoice() {
+    if (!voiceCatalog?.items.length) return;
+    const voiceId = state.voiceSelection?.voiceId ?? voiceCatalog.defaultVoiceId;
+    const sequence = ++voicePreviewSequence.current;
+    setVoicePreviewUrl("");
+    setVoicePreviewPending(true);
+    setVoicePreviewStatus("");
+    try {
+      const payload = await requestApi("/api/v1/character-voices/preview", { provider: voiceCatalog.provider, voiceId });
+      const result = parseCharacterVoicePreviewResponse(payload);
+      if (sequence !== voicePreviewSequence.current) return;
+      if (result.voiceId !== voiceId) throw new Error("The preview did not match the selected voice. Try again.");
+      setVoicePreviewUrl(`data:${result.contentType};base64,${result.audioBase64}`);
+    } catch (error) {
+      if (sequence === voicePreviewSequence.current) setVoicePreviewStatus(messageFrom(error));
+    } finally {
+      if (sequence === voicePreviewSequence.current) setVoicePreviewPending(false);
+    }
+  }
+
   function applyTemplate(template: CreateTemplate) {
+    setRestoredPreviewReviewId("");
     // Selecting a template seeds the draft; the user is then free to edit everything (no runtime link).
     setTemplateId(template.id);
+    const appearance = isRecord(template.appearance) ? template.appearance : {};
+    const face = isRecord(appearance.face) ? appearance.face : appearance;
     setState((current) => ({
       ...current,
       previewBatch: null,
+      restoredPreviewCandidate: null,
       confirmedPreviewJobId: "",
       confirmedPreviewUrl: "",
       gender: template.gender || current.gender,
       style: template.style || current.style,
-      appearance: pickString(template.appearance, "prompt", "summary") || current.appearance,
+      appearance: pickString(face, "prompt", "summary") || current.appearance,
+      ethnicity: pickString(face, "ethnicity", "race") || current.ethnicity,
+      skinTone: pickString(face, "skinTone") || current.skinTone,
+      eyeColor: pickString(face, "eyes", "eyeColor") || current.eyeColor,
+      faceShape: pickString(face, "faceShape") || current.faceShape,
+      hair: pickVisualText(appearance.hair, "prompt", "summary") || current.hair,
+      body: pickVisualText(appearance.body, "type", "prompt", "summary") || current.body,
       description:
         pickString(template.advancedDetails, "description") || template.summary || current.description,
       detailsMarkdown:
@@ -422,16 +562,27 @@ export function CreateWorkspace() {
   }
 
   function setIdentityField<K extends keyof WizardState>(key: K, value: WizardState[K]) {
+    setRestoredPreviewReviewId("");
     setState((current) => ({
       ...current,
       [key]: value,
       previewBatch: null,
+      restoredPreviewCandidate: null,
       confirmedPreviewJobId: "",
       confirmedPreviewUrl: "",
     }));
     setPreview(DEFAULT_PREVIEW);
     setPreviewStatus("idle");
     setSelectedPreviewJobId("");
+  }
+
+  function updateGuidedSoul(label: string, value: string) {
+    const details = updateSoulDetail(state.detailsMarkdown, label, value);
+    if (details.length > 24_000) {
+      setStatus("Additional details must be 24,000 characters or fewer.");
+      return;
+    }
+    setIdentityField("detailsMarkdown", details);
   }
 
   const nameError = state.name.trim().length < 2 ? "Name needs at least 2 characters." : "";
@@ -462,13 +613,20 @@ export function CreateWorkspace() {
         age: state.age,
         style: state.style,
         gender: state.gender,
-        appearance: { prompt: state.appearance },
+        appearance: {
+          prompt: state.appearance,
+          ...(state.ethnicity ? { ethnicity: state.ethnicity } : {}),
+          ...(state.skinTone ? { skinTone: state.skinTone } : {}),
+          ...(state.eyeColor ? { eyes: state.eyeColor } : {}),
+          ...(state.faceShape ? { faceShape: state.faceShape } : {}),
+        },
         hair: { prompt: state.hair },
         body: { type: state.body },
         advancedDetails: {
           description: state.description,
           detailsMarkdown: state.detailsMarkdown,
           firstMessage: state.firstMessage,
+          voiceSelection: state.voiceSelection,
         },
         tags: normalizedTags(state.tags),
       },
@@ -555,6 +713,7 @@ export function CreateWorkspace() {
               id: previewJob?.id ?? "",
               status: normalizePreviewJobStatus(previewJob?.status),
               asset: candidate,
+              errorCode: previewJob?.errorCode,
               errorMessage: previewJob?.errorCode
                 ? `Preview generation failed (${previewJob.errorCode}). Try again.`
                 : undefined,
@@ -587,6 +746,39 @@ export function CreateWorkspace() {
 
   async function generatePreview() {
     if (pending) return;
+    if (restoredPreviewReviewId) {
+      setPending(true);
+      try {
+        const payload = await requestApi(
+          `/api/v1/character-drafts/${state.draftId}/preview?previewJobId=${encodeURIComponent(restoredPreviewReviewId)}`,
+          undefined, "GET",
+        );
+        const job = payload.data?.previewJob;
+        if (job?.id !== restoredPreviewReviewId) throw new Error("Preview status did not match the saved job. Try again.");
+        const candidate = job.status === "completed" ? parseCreatePreviewCandidate({
+          previewJobId: job.id, assetId: payload.data?.asset?.id,
+          url: payload.data?.asset?.url, isSynthetic: payload.data?.asset?.isSynthetic,
+        }) : null;
+        if (candidate) {
+          setState((current) => ({ ...current, restoredPreviewCandidate: candidate }));
+          setPreview(candidate.url);
+          setSelectedPreviewJobId(candidate.previewJobId);
+          setPreviewStatus("complete");
+          setRestoredPreviewReviewId("");
+          setStatus("Your saved preview is ready. Confirm this identity to continue.");
+        } else if (job.status === "failed") {
+          setRestoredPreviewReviewId("");
+          setStatus("Preview generation failed. You can retry preview candidates.");
+        } else {
+          setStatus(`The preview result is not ready. Contact support with request ${job.id} or check again later.`);
+        }
+      } catch (error) {
+        setStatus(messageFrom(error));
+      } finally {
+        setPending(false);
+      }
+      return;
+    }
     setPending(true);
     setPreviewStatus("generating");
     setStatus("");
@@ -605,6 +797,7 @@ export function CreateWorkspace() {
       setState((current) => ({
         ...current,
         previewBatch: batch,
+        restoredPreviewCandidate: null,
         confirmedPreviewJobId: "",
         confirmedPreviewUrl: "",
       }));
@@ -716,6 +909,7 @@ export function CreateWorkspace() {
         setState((current) => ({
           ...current,
           previewBatch: null,
+          restoredPreviewCandidate: null,
           confirmedPreviewJobId: "",
           confirmedPreviewUrl: "",
           step: 3,
@@ -799,7 +993,7 @@ export function CreateWorkspace() {
             的预览栏，iPad 竖屏装不下 —— 整页溢出 141px，且右栏被压到把 select 的
             选中值裁掉（"Female" 显示成 "Femal"）。双栏推到 lg(1024)。 */}
         <div className="mt-8 grid gap-4 lg:grid-cols-[360px_1fr]">
-          <div className="relative min-h-[560px] overflow-hidden rounded-[20px] bg-[rgb(18,18,18)]">
+          <div className="relative aspect-[4/5] w-full max-w-[448px] self-start justify-self-center overflow-hidden rounded-[20px] bg-[rgb(18,18,18)]">
             <Image
               alt=""
               className="object-cover object-top"
@@ -962,20 +1156,20 @@ export function CreateWorkspace() {
                     value={state.appearance}
                   />
                 </Field>
-                <Field label="Hair">
-                  <input
-                    className="mt-2 w-full bg-transparent text-[14px] font-semibold leading-6 outline-none"
-                    onChange={(event) => setIdentityField("hair", event.target.value)}
-                    value={state.hair}
-                  />
-                </Field>
-                <Field label="Body">
-                  <input
-                    className="mt-2 w-full bg-transparent text-[14px] font-semibold leading-6 outline-none"
-                    onChange={(event) => setIdentityField("body", event.target.value)}
-                    value={state.body}
-                  />
-                </Field>
+                {VISUAL_FIELDS.map(({ key, label, suggestions }) => (
+                  <Field key={key} label={label} hint="Choose a suggestion or write your own.">
+                    <input
+                      className="mt-2 w-full bg-transparent text-[14px] font-semibold leading-6 outline-none"
+                      list={`create-${key}-options`}
+                      maxLength={key === "hair" || key === "body" ? 2000 : 160}
+                      onChange={(event) => setIdentityField(key, event.target.value)}
+                      value={state[key]}
+                    />
+                    <datalist id={`create-${key}-options`}>
+                      {suggestions.map((suggestion) => <option key={suggestion} value={suggestion} />)}
+                    </datalist>
+                  </Field>
+                ))}
               </div>
             )}
 
@@ -999,6 +1193,53 @@ export function CreateWorkspace() {
                     value={state.description}
                   />
                 </Field>
+                <div className="grid gap-3 md:grid-cols-2">
+                  {SOUL_DETAIL_FIELDS.map(({ label, suggestions }, index) => (
+                    <Field key={label} label={label} hint="Choose a suggestion or write your own.">
+                      <input
+                        className="mt-2 w-full bg-transparent text-[14px] font-semibold leading-6 outline-none"
+                        list={`create-soul-${index}-options`}
+                        maxLength={1000}
+                        onChange={(event) => updateGuidedSoul(label, event.target.value)}
+                        value={readSoulDetail(state.detailsMarkdown, label)}
+                      />
+                      <datalist id={`create-soul-${index}-options`}>
+                        {suggestions.map((suggestion) => <option key={suggestion} value={suggestion} />)}
+                      </datalist>
+                    </Field>
+                  ))}
+                </div>
+                <div className="rounded-[14px] bg-[rgb(36,36,36)] p-4 text-left text-white">
+                  <label className="block text-[12px] font-bold uppercase text-[rgb(170,170,170)]" htmlFor="create-voice-select">Voice</label>
+                  <div className="mt-2 flex flex-wrap items-center gap-3">
+                    <select
+                      className="min-w-48 flex-1 bg-[rgb(36,36,36)] text-[14px] font-semibold leading-6"
+                      data-testid="create-voice-select"
+                      id="create-voice-select"
+                      onChange={(event) => selectVoice(event.target.value)}
+                      value={state.voiceSelection?.voiceId ?? ""}
+                    >
+                      <option value="">System default</option>
+                      {state.voiceSelection && !voiceCatalog?.items.some((voice) => voice.id === state.voiceSelection?.voiceId) && (
+                        <option value={state.voiceSelection.voiceId}>Saved voice: {state.voiceSelection.voiceId} (unavailable)</option>
+                      )}
+                      {voiceCatalog?.items.map((voice) => <option key={voice.id} value={voice.id}>{voice.label}</option>)}
+                    </select>
+                    <button
+                      className="rounded-full border border-white/20 px-4 py-2 text-[13px] font-bold disabled:opacity-50"
+                      data-testid="create-voice-preview"
+                      disabled={voicePreviewPending || !voiceCatalog?.items.length || Boolean(state.voiceSelection && !voiceCatalog.items.some((voice) => voice.id === state.voiceSelection?.voiceId))}
+                      onClick={() => void previewVoice()}
+                      type="button"
+                    >
+                      {voicePreviewPending ? "Preparing preview…" : "Preview voice"}
+                    </button>
+                  </div>
+                  <p className="mt-2 text-[12px] text-[rgb(170,170,170)]">Choose how this character sounds. Personality and speech style stay in their Soul.</p>
+                  {voiceCatalogError && <p className="mt-2 text-[12px]" role="status">Voice choices could not load. <button className="underline" onClick={() => setVoiceCatalogAttempt((attempt) => attempt + 1)} type="button">Retry voices</button></p>}
+                  {voicePreviewStatus && <p className="mt-2 text-[12px]" role="status">{voicePreviewStatus}</p>}
+                  {voicePreviewUrl && <audio aria-label="Selected voice preview" className="mt-3 w-full" controls src={voicePreviewUrl} />}
+                </div>
                 <Field
                   hint="This is the exact opening line for a new conversation."
                   label="First message"
@@ -1012,7 +1253,7 @@ export function CreateWorkspace() {
                   />
                 </Field>
                 <Field
-                  hint="Optional Markdown for personality, voice, background, preferences, scenarios, or dialogue examples."
+                  hint="Guided fields above update this same text. Add background, speech style, custom details, scenarios, or dialogue examples here."
                   label="Additional details (optional)"
                 >
                   <textarea
@@ -1050,7 +1291,9 @@ export function CreateWorkspace() {
                   </pre>
                 </section>
                 <p className="text-[13px] font-medium text-[rgb(170,170,170)]">
-                  Generate four identity candidates, then choose the image that should define how {state.name} looks.
+                  {state.restoredPreviewCandidate && !state.previewBatch
+                    ? "Your saved preview is ready. Confirm this identity or generate new candidates."
+                    : `Generate four identity candidates, then choose the image that should define how ${state.name} looks.`}
                 </p>
                 {state.previewBatch && (
                   <p
@@ -1064,8 +1307,10 @@ export function CreateWorkspace() {
                     {state.previewBatch.phase === "complete"
                       ? "completed"
                       : state.previewBatch.phase === "failed"
-                        ? "failed"
-                        : (state.previewBatch.activeJobStatus ?? "queued")}
+                        ? state.previewBatch.failureReason === "outcome_unknown" ? "needs review" : "failed"
+                        : state.previewBatch.activeJobStatus === "running"
+                          ? "processing"
+                          : "queued"}
                     {" · "}
                     {state.previewBatch.candidates.length} completed
                   </p>
@@ -1084,9 +1329,12 @@ export function CreateWorkspace() {
                   {previewStatus === "complete"
                     ? "Regenerate preview candidates"
                     : previewStatus === "failed"
-                      ? "Retry preview candidates"
+                      ? restoredPreviewReviewId || state.previewBatch?.failureReason === "outcome_unknown" ? "Check preview status" : "Retry preview candidates"
                       : "Generate preview candidates"}
                 </button>
+                {(restoredPreviewReviewId || state.previewBatch?.failureReason === "outcome_unknown") && (
+                  <Link className="text-[13px] text-white underline" href="/helpdesk">Contact support</Link>
+                )}
                 {previewCandidates.length > 0 && (
                   <div className="grid grid-cols-2 gap-3" data-testid="create-preview-candidates">
                     {previewCandidates.map((candidate, index) => {
@@ -1099,6 +1347,7 @@ export function CreateWorkspace() {
                             selected ? "border-[rgb(253,95,194)]" : "border-white/10"
                           }`}
                           key={candidate.previewJobId}
+                          disabled={pending}
                           onClick={() => handleCandidateSelect(candidate)}
                           type="button"
                         >
@@ -1165,6 +1414,7 @@ export function CreateWorkspace() {
                       </button>
                       <button
                         className="inline-flex h-10 items-center gap-2 rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)]"
+                        disabled={pending}
                         onClick={() => {
                           set("step", 1);
                           setStatus("Adjust appearance traits, then generate a new identity family.");
@@ -1220,7 +1470,7 @@ export function CreateWorkspace() {
                     {state.visibility === "public"
                       ? "Public characters are reviewed before appearing in Explore and Community."
                       : state.visibility === "unlisted"
-                        ? "Unlisted characters are only reachable by direct link."
+                        ? "After review and publication, unlisted characters are reachable by direct link and stay out of Explore."
                         : "Private characters stay in your My AI only."}
                   </p>
                 </div>
@@ -1232,7 +1482,7 @@ export function CreateWorkspace() {
                   type="button"
                 >
                   <Wand2 className="h-4 w-4" />
-                  {pending ? "Submitting…" : state.visibility === "public" ? "Submit for review" : "Save character"}
+                  {pending ? "Submitting…" : state.visibility === "private" ? "Save character" : "Submit for review"}
                 </button>
               </div>
             )}
@@ -1424,6 +1674,7 @@ export function parseWizardDraft(value: unknown): WizardState | null {
   const restored: WizardState = {
     draftId: draftString(value.draftId, 200),
     previewBatch: parseCreatePreviewBatch(value.previewBatch),
+    restoredPreviewCandidate: parseCreatePreviewCandidate(value.restoredPreviewCandidate),
     confirmedPreviewJobId: draftString(
       value.confirmedPreviewJobId,
       200,
@@ -1451,12 +1702,19 @@ export function parseWizardDraft(value: unknown): WizardState | null {
     gender: draftString(value.gender, 80) || INITIAL.gender,
     style: draftString(value.style, 80) || INITIAL.style,
     appearance: draftString(value.appearance, 4000),
+    ethnicity: draftString(value.ethnicity, 160),
+    skinTone: draftString(value.skinTone, 160),
+    eyeColor: draftString(value.eyeColor, 160),
+    faceShape: draftString(value.faceShape, 160),
     hair: draftString(value.hair, 2000),
     body: draftString(value.body, 2000),
     description: draftString(value.description, 1_000),
     detailsMarkdown:
       draftString(value.detailsMarkdown, 24_000) || templateDetailsMarkdown(value),
     firstMessage: draftString(value.firstMessage, 4000),
+    voiceSelection: isRecord(value.voiceSelection) && value.voiceSelection.provider === "pocket_tts" && typeof value.voiceSelection.voiceId === "string" && value.voiceSelection.voiceId.trim()
+      ? { provider: "pocket_tts", voiceId: draftString(value.voiceSelection.voiceId.trim(), 160) }
+      : null,
     tags: draftString(value.tags, 2000),
     visibility: isCatalogMember(CHARACTER_VISIBILITY, value.visibility)
       ? value.visibility
@@ -1484,6 +1742,28 @@ function normalizedTags(value: string) {
     .map((tag) => tag.trim())
     .filter(Boolean)
     .slice(0, 12);
+}
+
+// Guided authoring edits the one Soul Markdown authority; it never creates a
+// parallel set of runtime personality fields that could disagree with that text.
+function soulDetailSection(markdown: string, label: string) {
+  const headings = [...markdown.matchAll(/^## ([^\n]+)\n?/gm)];
+  const index = headings.findIndex((heading) => heading[1]?.trim() === label);
+  if (index < 0) return null;
+  const heading = headings[index]!;
+  return { start: heading.index, contentStart: heading.index + heading[0].length, end: headings[index + 1]?.index ?? markdown.length };
+}
+
+function readSoulDetail(markdown: string, label: string) {
+  const section = soulDetailSection(markdown, label);
+  return section ? markdown.slice(section.contentStart, section.end).trim() : "";
+}
+
+function updateSoulDetail(markdown: string, label: string, value: string) {
+  const section = soulDetailSection(markdown, label);
+  const replacement = value ? `## ${label}\n${value}` : "";
+  if (!section) return [markdown.trimEnd(), replacement].filter(Boolean).join("\n\n");
+  return [markdown.slice(0, section.start).trimEnd(), replacement, markdown.slice(section.end).trimStart()].filter(Boolean).join("\n\n");
 }
 
 function requiredPersonaMessage(state: WizardState) {

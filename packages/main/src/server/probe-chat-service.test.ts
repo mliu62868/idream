@@ -24,6 +24,8 @@ import {
   DEFAULT_CHAT_SERVICE_PROBE_STREAM_TIMEOUT_MS,
   chatServiceProbeSettleTimeoutMs,
   assertDedicatedChatProbeActor,
+  cleanupCompletedProbeState,
+  cleanupExistingProbeState,
   describeDshRecallFailure,
   fetchProbeCompanionAttemptEvidence,
   evaluateDshRecallEvidence,
@@ -80,6 +82,7 @@ function completedDshTrace() {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
   db.findUser.mockReset();
@@ -90,16 +93,25 @@ afterEach(() => {
 });
 
 function installFailFastProbeFetch(
-  scenario: "normal_fatal" | "recall_fatal" | "regenerate_fatal",
+  scenario: "normal_fatal" | "recall_fatal" | "recall_mismatch" | "regenerate_fatal"
+    | "recall_create_failed" | "recall_session_reused" | "archive_failed",
 ): string[] {
-  db.findTurn.mockImplementation(async (_args: { where: { assistantMessageId: string } }) => ({
+  let recallSessionId = "session-probe";
+  db.findTurn.mockImplementation(async (args: { where: { assistantMessageId: string } }) => ({
+    id: args.where.assistantMessageId === "assistant-normal" ? "turn-normal" : "turn-recall",
     attempt: 1,
     assistantStatus: "sent",
-    terminalEvidence: completedDshTrace(),
+    terminalEvidence: {
+      ...completedDshTrace(),
+      attribution: {
+        requestId: `chatcmpl-${args.where.assistantMessageId}`,
+        actualProvider: "local-openai",
+      },
+    },
     memoryEnabled: true,
     sceneVersion: 0,
     session: {
-      sessionId: "session-probe",
+      sessionId: args.where.assistantMessageId === "assistant-normal" ? "session-probe" : recallSessionId,
       userId: auditActor.id,
       characterId: "lola-moonstruck",
     },
@@ -109,6 +121,7 @@ function installFailFastProbeFetch(
   let messagePosts = 0;
   let regenerated = false;
   let seededRecallMarker: string | undefined;
+  let archived = false;
   const deletedSessions = new Set<string>();
   vi.stubGlobal("fetch", vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
     const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
@@ -131,9 +144,16 @@ function installFailFastProbeFetch(
       return json({ ok: true });
     }
     if (url.pathname === "/api/v1/chat/sessions" && method === "POST") {
-      return json({ id: "session-probe" }, 201);
+      if (archived && scenario === "recall_create_failed") return json({}, 503);
+      if (archived && scenario !== "recall_session_reused") recallSessionId = "session-recall";
+      return json({ id: recallSessionId }, 201);
     }
-    if (url.pathname === "/api/v1/chat/sessions/session-probe/messages" && method === "POST") {
+    if (url.pathname === "/api/v1/chat/sessions/session-probe/archive" && method === "POST") {
+      if (scenario === "archive_failed") return json({}, 409);
+      archived = true;
+      return json({ id: "session-probe", status: "archived" });
+    }
+    if (/^\/api\/v1\/chat\/sessions\/(session-probe|session-recall)\/messages$/u.test(url.pathname) && method === "POST") {
       messagePosts += 1;
       const normal = messagePosts === 1;
       if (normal) {
@@ -175,7 +195,8 @@ function installFailFastProbeFetch(
           ]);
     }
     if (url.pathname === "/api/v1/chat/messages/assistant-recall/stream") {
-      if (scenario === "recall_fatal" || (scenario === "regenerate_fatal" && regenerated)) {
+      if (scenario === "recall_fatal" || scenario === "archive_failed" || scenario === "recall_create_failed"
+        || scenario === "recall_session_reused" || (scenario === "regenerate_fatal" && regenerated)) {
         return sse([
           "event: error",
           `data: {"type":"error","attempt":${regenerated ? 2 : 1},"code":"provider_failed","retryable":false}`,
@@ -198,11 +219,12 @@ function installFailFastProbeFetch(
       regenerated = true;
       return json({ assistantMessageId: "assistant-recall", attempt: 2 }, 202);
     }
-    if (url.pathname === "/api/v1/chat/sessions/session-probe" && method === "GET") {
-      if (deletedSessions.has("session-probe")) return json({}, 404);
+    const sessionMatch = /^\/api\/v1\/chat\/sessions\/(session-probe|session-recall)$/u.exec(url.pathname);
+    if (sessionMatch && method === "GET") {
+      if (deletedSessions.has(sessionMatch[1])) return json({}, 404);
       return json({
         messages: [
-          {
+          ...(sessionMatch[1] === "session-probe" ? [{
             id: "assistant-normal",
             role: "assistant",
             status: "sent",
@@ -211,13 +233,15 @@ function installFailFastProbeFetch(
             memoryExtractedAttempt: 1,
             scene: { version: 0 },
             runtimeTrace: { primaryTelemetry: { sseTerminal: "done" } },
-          },
-          ...(messagePosts > 1
+          }] : []),
+          ...(messagePosts > 1 && sessionMatch[1] === recallSessionId
             ? [{
                 id: "assistant-recall",
                 role: "assistant",
                 status: "sent",
-                content: `You told me ${seededRecallMarker}.`,
+                content: scenario === "recall_mismatch"
+                  ? "You told me the code word was rooftop."
+                  : `You told me ${seededRecallMarker}.`,
                 attempt: 1,
                 scene: { version: 0 },
               }]
@@ -225,11 +249,11 @@ function installFailFastProbeFetch(
         ],
       });
     }
-    if (url.pathname === "/api/v1/chat/sessions/session-probe/memory" && method === "POST") {
+    if (/^\/api\/v1\/chat\/sessions\/(session-probe|session-recall)\/memory$/u.test(url.pathname) && method === "POST") {
       return json({ ok: true });
     }
-    if (url.pathname === "/api/v1/chat/sessions/session-probe" && method === "DELETE") {
-      deletedSessions.add("session-probe");
+    if (sessionMatch && method === "DELETE") {
+      deletedSessions.add(sessionMatch[1]);
       return json({ ok: true });
     }
     return json({ error: "unexpected probe request" }, 500);
@@ -352,6 +376,145 @@ describe("chat service DSH evidence", () => {
 });
 
 describe("chat service conversation probe", () => {
+  it.each([
+    ["preflight", false, false],
+    ["preflight", false, true],
+    ["preflight", true, false],
+    ["finally", false, false],
+    ["finally", true, false],
+  ] as const)("waits for each relationship mutation during %s cleanup (final stall: %s, initial pending: %s)", async (phase, finalStall, initialPending) => {
+    vi.useFakeTimers();
+    vi.stubEnv("CHAT_SERVICE_PROBE_SETTLE_TIMEOUT_MS", "250");
+    let pending = initialPending;
+    if (initialPending) setTimeout(() => { pending = false; }, 100);
+    const remaining = new Set(["session-source", "session-recall"]);
+    const deletes: string[] = [];
+    db.findPendingProjection.mockImplementation(async () => pending ? { id: "relationship-rebuild" } : null);
+    vi.stubGlobal("fetch", vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+      const method = init?.method ?? "GET";
+      const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
+        status,
+        headers: { "content-type": "application/json" },
+      });
+      if (url.pathname === "/api/v1/chat/sessions" && method === "GET") {
+        return json([...remaining].map((id) => ({ id })));
+      }
+      if (url.pathname === "/api/v1/chat/memory/lola-moonstruck" && method === "DELETE") {
+        return json({ ok: true });
+      }
+      if (url.pathname.endsWith("/memory") && method === "POST") return json({ ok: true });
+      const sessionId = url.pathname.split("/").at(-1)!;
+      if (method === "DELETE") {
+        deletes.push(sessionId);
+        if (pending) return json({ error: "Companion memory is changing; retry shortly" }, 409);
+        remaining.delete(sessionId);
+        pending = true;
+        if (!finalStall || sessionId === "session-source") setTimeout(() => { pending = false; }, 100);
+        return json({ ok: true });
+      }
+      return json({}, remaining.has(sessionId) ? 200 : 404);
+    }));
+    const input = {
+      serviceUrl: "http://127.0.0.1:3100",
+      mainWebUrl: "http://127.0.0.1:3000",
+      authToken: "probe-auth-token",
+      secret: "probe-secret",
+      userId: auditActor.id,
+      characterId: "lola-moonstruck",
+      sessionId: "session-recall",
+      sessionIds: ["session-source", "session-recall"],
+    };
+    const resultPromise = phase === "preflight"
+      ? cleanupExistingProbeState(input)
+      : cleanupCompletedProbeState(input);
+    await vi.runAllTimersAsync();
+    const result = await resultPromise;
+
+    expect(deletes).toEqual(["session-source", "session-recall"]);
+    expect(remaining.size).toBe(0);
+    expect(result.ok).toBe(!finalStall);
+    if (finalStall) {
+      expect(result.error).toContain(phase === "finally"
+        ? "memorySettled=false; memoryStage=after_delete:session-recall"
+        : "companion memory did not settle after deleting session session-recall");
+    } else {
+      expect(pending).toBe(false);
+    }
+  });
+
+  it("preserves exact recall diagnostics before cleanup without passing a mismatched answer", async () => {
+    db.findUser.mockResolvedValue(auditActor);
+    vi.stubEnv("CHAT_SERVICE_PROBE_SETTLE_TIMEOUT_MS", "1");
+    const requests = installFailFastProbeFetch("recall_mismatch");
+
+    const report = await runProbe({
+      serviceUrl: "http://127.0.0.1:3100",
+      secret: "probe-secret",
+      internalToken: "internal-probe-token",
+      userId: auditActor.id,
+      characterId: "lola-moonstruck",
+    });
+
+    expect(report.ok).toBe(false);
+    expect(report.conversation.recall).toMatchObject({
+      ok: false,
+      expectedPhrase: expect.stringMatching(/^idreamrecall_[a-f0-9]{32}$/u),
+      actualAnswer: "You told me the code word was rooftop.",
+      sourceSessionId: "session-probe",
+      sourceTurnId: "turn-normal",
+      sourceAssistantMessageId: "assistant-normal",
+      sessionId: "session-recall",
+      distinctSession: true,
+      turnId: "turn-recall",
+      assistantMessageId: "assistant-recall",
+      recallMatched: false,
+      wakeObserved: true,
+      memorySearchHit: true,
+      dsh: { requestId: "chatcmpl-assistant-recall", memorySearchEvidenceMatches: 1 },
+    });
+    expect(report.conversation.error).toContain("matched=false");
+    expect(report.conversation.cleanup.ok).toBe(true);
+    expect(requests).toContain("DELETE /api/v1/chat/sessions/session-probe");
+    expect(report.conversation.cleanup.sessions).toEqual([
+      { sessionId: "session-probe", deleted: true, gone: true, deleteStatus: 200, verifyStatus: 404 },
+      { sessionId: "session-recall", deleted: true, gone: true, deleteStatus: 200, verifyStatus: 404 },
+    ]);
+    expect(requests.filter((request) => request.endsWith("/messages"))).toEqual([
+      "POST /api/v1/chat/sessions/session-probe/messages",
+      "POST /api/v1/chat/sessions/session-recall/messages",
+    ]);
+    expect(requests.some((request) => request.includes("/regenerate"))).toBe(false);
+    expect(JSON.stringify(report)).not.toContain("must-not-leak");
+  });
+
+  it.each([
+    ["archive_failed", "archive source session failed: HTTP 409"],
+    ["recall_create_failed", "create recall session failed: HTTP 503"],
+    ["recall_session_reused", "recall requires a distinct session"],
+  ] as const)("cleans the source session when cross-session setup fails: %s", async (scenario, error) => {
+    db.findUser.mockResolvedValue(auditActor);
+    vi.stubEnv("CHAT_SERVICE_PROBE_SETTLE_TIMEOUT_MS", "1");
+    const requests = installFailFastProbeFetch(scenario);
+    const report = await runProbe({
+      serviceUrl: "http://127.0.0.1:3100",
+      secret: "probe-secret",
+      internalToken: "internal-probe-token",
+      userId: auditActor.id,
+      characterId: "lola-moonstruck",
+    });
+
+    expect(report.ok).toBe(false);
+    expect(report.conversation.error).toBe(error);
+    expect(report.conversation.cleanup).toMatchObject({
+      ok: true,
+      sessions: [{ sessionId: "session-probe", deleted: true, gone: true }],
+    });
+    expect(requests.filter((request) => request.endsWith("/messages"))).toEqual([
+      "POST /api/v1/chat/sessions/session-probe/messages",
+    ]);
+  });
+
   it("requires actual wake and a memory_search hit without exposing the recall sentinel", () => {
     const sentinel = "recall-probe-secret-42";
     const evidence = evaluateDshRecallEvidence({
@@ -528,7 +691,10 @@ describe("chat service conversation probe", () => {
     expect(report.conversation?.error).toBe("recall stream failed: provider_failed");
     expect(requests.some((request) => request.includes("/regenerate"))).toBe(false);
     expect(requests.filter((request) =>
-      request === "POST /api/v1/chat/sessions/session-probe/messages")).toHaveLength(2);
+      request.endsWith("/messages"))).toEqual([
+        "POST /api/v1/chat/sessions/session-probe/messages",
+        "POST /api/v1/chat/sessions/session-recall/messages",
+      ]);
   });
 
   it("stops after a fatal regenerate stream error and preserves its code", async () => {
@@ -556,7 +722,7 @@ describe("chat service conversation probe", () => {
     expect(requests).toContain("POST /api/v1/chat/messages/assistant-recall/regenerate");
     expect(
       requests.filter((request) =>
-        request === "POST /api/v1/chat/sessions/session-probe/messages"),
+        request.endsWith("/messages")),
     ).toHaveLength(2);
     expect(conversation.cleanup?.ok).toBe(true);
   });

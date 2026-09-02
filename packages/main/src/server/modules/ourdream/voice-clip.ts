@@ -221,7 +221,9 @@ export async function createVoiceClip(
     entitlements,
   );
   const staleAssets = await voiceAssetsForMessage(user.id, body.messageId);
-  const hasStaleCachedClip = staleAssets.length > 0;
+  const hasStaleCachedClip = staleAssets.length > 0 || await hasDeliveredVoiceUsage(
+    voiceRequestId(user.id, body.messageId),
+  );
   if (
     prewarming &&
     !hasStaleCachedClip &&
@@ -639,13 +641,16 @@ async function executeOwnedVoiceClaim(input: {
       }
       const mediaId = reusableProviderAsset?.id ?? proposedMediaId;
       const durationMs = Math.max(0, result.data.durationMs);
+      const previouslyDelivered = await hasDeliveredVoiceUsage(owned.id, tx);
+      const providerUsageRecorded = voiceProvider.providerReplay === "durable_same_key" &&
+        (await tx.voiceUsageFact.count({ where: { requestId: owned.id } })) > 0;
       const remainingMs = await voiceMinutesRemainingMs(
         user.id,
         entitlements,
         tx,
       );
       const cost =
-        staleAssetIds.length > 0 || remainingMs >= durationMs
+        previouslyDelivered || staleAssetIds.length > 0 || remainingMs >= durationMs
           ? 0
           : overflowCost;
       if (prewarming && cost > 0) {
@@ -665,7 +670,7 @@ async function executeOwnedVoiceClaim(input: {
             completedAt: new Date(),
           },
         });
-        await tx.voiceUsageFact.create({
+        if (!providerUsageRecorded) await tx.voiceUsageFact.create({
           data: {
             id: `voice_usage_${owned.id}_${owned.attemptNo}`,
             requestId: owned.id,
@@ -705,7 +710,7 @@ async function executeOwnedVoiceClaim(input: {
               completedAt: new Date(),
             },
           });
-          await tx.voiceUsageFact.create({
+          if (!providerUsageRecorded) await tx.voiceUsageFact.create({
             data: {
               id: `voice_usage_${owned.id}_${owned.attemptNo}`,
               requestId: owned.id,
@@ -786,7 +791,10 @@ async function executeOwnedVoiceClaim(input: {
               ...assetAuthority,
             },
           });
-      await tx.voiceUsageFact.create({
+      // A deleted clip can be restored from the same provider reservation.
+      // Its original delivery receipt survives media deletion; neither its
+      // Dreamcoins nor its included minutes belong to this delivery attempt.
+      if (!previouslyDelivered) await tx.voiceUsageFact.create({
         data: {
           id: `voice_usage_${owned.id}_${owned.attemptNo}`,
           requestId: owned.id,
@@ -794,7 +802,9 @@ async function executeOwnedVoiceClaim(input: {
           userId: user.id,
           characterId: character.id,
           mediaAssetId: created.id,
-          durationMs,
+          // A previously rendered but undelivered clip can settle on this
+          // attempt. Record its delivery/cost without counting synthesis twice.
+          durationMs: providerUsageRecorded ? 0 : durationMs,
           costDreamcoins: cost,
           intent: body.intent,
         },
@@ -936,7 +946,7 @@ async function authorizeVoiceSynthesisTurn(input: {
       const hasCachedClip =
         (await tx.mediaAsset.count({
           where: voiceAssetWhere(input.userId, input.messageId),
-        })) > 0;
+        })) > 0 || await hasDeliveredVoiceUsage(owned.id, tx);
       const remainingMs = await voiceMinutesRemainingMs(
         input.userId,
         input.entitlements,
@@ -1260,6 +1270,18 @@ async function voiceMinutesRemainingMs(
     0,
     allowanceMinutes * 60_000 - (usage._sum.durationMs ?? 0),
   );
+}
+
+async function hasDeliveredVoiceUsage(
+  requestId: string,
+  db: Prisma.TransactionClient | typeof prisma = prisma,
+) {
+  return (await db.voiceUsageFact.count({
+    where: {
+      requestId,
+      OR: [{ mediaAssetId: { not: null } }, { costDreamcoins: { gt: 0 } }],
+    },
+  })) > 0;
 }
 
 function voiceAssetsForMessage(userId: string, messageId: string) {

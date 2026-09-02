@@ -71,6 +71,7 @@ describe("content operations media authority", () => {
         attemptNo: 1,
         provider: input.attemptProvider,
         status: "succeeded",
+        finishedAt: new Date(),
       },
     });
     await prisma.mediaAsset.create({

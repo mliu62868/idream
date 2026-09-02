@@ -19,6 +19,7 @@ export type CreatePreviewJobStatus = "queued" | "running" | "completed" | "faile
 export type CreatePreviewFailureReason =
   | "generation_failed"
   | "request_failed"
+  | "outcome_unknown"
   | "timed_out";
 
 export type CreatePreviewBatch = {
@@ -38,6 +39,7 @@ export type CreatePreviewJobSnapshot = {
   status: CreatePreviewJobStatus;
   asset: CreatePreviewCandidate | null;
   errorMessage?: string;
+  errorCode?: string | null;
 };
 
 export type CreatePreviewFlowDependencies = {
@@ -250,6 +252,12 @@ async function pollCreatePreviewJob(
         "Preview status did not match the active job. Try again.",
       );
     }
+    if (snapshot.errorCode === "provider_outcome_unknown" && snapshot.status !== "completed" && snapshot.status !== "failed") {
+      throw new CreatePreviewFlowError(
+        "outcome_unknown",
+        `The preview result needs review. Contact support with request ${previewJobId} before generating more candidates.`,
+      );
+    }
     if (snapshot.status === "completed") {
       if (!snapshot.asset?.assetId || !snapshot.asset.url) {
         throw new CreatePreviewFlowError(
@@ -330,7 +338,7 @@ export function parseCreatePreviewBatch(value: unknown): CreatePreviewBatch | nu
   }
   const candidates = Array.isArray(value.candidates)
     ? value.candidates.flatMap((candidate) => {
-        const parsed = parseCandidate(candidate);
+        const parsed = parseCreatePreviewCandidate(candidate);
         return parsed ? [parsed] : [];
       })
     : [];
@@ -346,6 +354,7 @@ export function parseCreatePreviewBatch(value: unknown): CreatePreviewBatch | nu
   const failureReason =
     value.failureReason === "generation_failed" ||
     value.failureReason === "request_failed" ||
+    value.failureReason === "outcome_unknown" ||
     value.failureReason === "timed_out"
       ? value.failureReason
       : null;
@@ -378,7 +387,7 @@ export function parseCreatePreviewBatch(value: unknown): CreatePreviewBatch | nu
   };
 }
 
-function parseCandidate(value: unknown): CreatePreviewCandidate | null {
+export function parseCreatePreviewCandidate(value: unknown): CreatePreviewCandidate | null {
   if (!isRecord(value)) return null;
   const previewJobId = boundedString(value.previewJobId, 200);
   const assetId = boundedString(value.assetId, 200);

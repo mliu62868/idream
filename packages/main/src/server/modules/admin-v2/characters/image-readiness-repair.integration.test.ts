@@ -369,7 +369,7 @@ describe("Character image-readiness repair", () => {
         },
       ), {
         params: Promise.resolve({ id: characterId }),
-      })).rejects.toThrow("injected image-readiness receipt failure");
+      })).resolves.toMatchObject({ status: 500 });
     } finally {
       await prisma.$executeRawUnsafe(`
         DROP TRIGGER IF EXISTS fail_image_readiness_receipt_trigger ON "control_plane_commands";

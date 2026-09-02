@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { adminIdSchema, adminIsoDateTimeSchema, adminPageInfoSchema } from "./common";
+import { supportMessageBodySchema } from "../../contracts/support";
+export { supportConversationResponseSchema } from "../../contracts/support";
 
 export const supportRequestStatusSchema = z.enum([
   "received",
@@ -81,6 +83,7 @@ export const supportRequestPatchSchema = z
     assignedToId: z.string().trim().min(1).max(160).nullable().optional(),
     priority: z.number().int().min(1).max(5).optional(),
     resolutionNotes: z.string().trim().max(2_000).nullable().optional(),
+    customerMessage: supportMessageBodySchema.optional(),
     reason: z.string().trim().min(3).max(2_000),
     confirmation: z.string().trim().min(1).max(160),
   })

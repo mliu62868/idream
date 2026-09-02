@@ -294,7 +294,7 @@ describe("plans billing mode", () => {
         select: { enabled: true, rolloutPercent: true },
       }),
       prisma.generationModelProfile.findUniqueOrThrow({
-        where: { id: "seed-profile-video-beta-v1" },
+        where: { id: "seed-profile-video-redgraft-ltx25-v1" },
         select: { enabled: true, rolloutPercent: true },
       }),
     ]);
@@ -304,7 +304,7 @@ describe("plans billing mode", () => {
       data: { enabled: true, rolloutPercent: 100 },
     });
     await prisma.generationModelProfile.update({
-      where: { id: "seed-profile-video-beta-v1" },
+      where: { id: "seed-profile-video-redgraft-ltx25-v1" },
       data: { rolloutPercent: 100 },
     });
 
@@ -317,7 +317,7 @@ describe("plans billing mode", () => {
     ).toMatchObject({ videoGeneration: true });
 
     await prisma.generationModelProfile.update({
-      where: { id: "seed-profile-video-beta-v1" },
+      where: { id: "seed-profile-video-redgraft-ltx25-v1" },
       data: { rolloutPercent: 0 },
     });
     await prisma.generationModelProfile.create({
@@ -348,7 +348,7 @@ describe("plans billing mode", () => {
         where: { id: alternateProfileId },
       });
       await prisma.generationModelProfile.update({
-        where: { id: "seed-profile-video-beta-v1" },
+        where: { id: "seed-profile-video-redgraft-ltx25-v1" },
         data: productionProfile,
       });
       await prisma.featureFlag.update({
@@ -2803,26 +2803,26 @@ describe("dreamcoin ledger invariants", () => {
     const gen = await api("POST", "generation/jobs", {
       userId,
       ageGate: true,
-      body: { mode: "image", characterId: charId, outputCount: 2 },
+      body: { mode: "image", characterId: charId, outputCount: 1 },
     });
     expectOk(gen, 202);
     expect(gen.data.job.status).toBe("queued");
     await runQueuedGenerationJobs(8);
 
-    // image costs 5 per output → 10 reserved and settled (no refund).
+    // The active route accepts one output: 5 coins reserved and settled (no refund).
     const after = await dreamcoinBalance(userId);
-    expect(after).toBe(90);
+    expect(after).toBe(95);
 
     const dc = await api("GET", "dreamcoins", { userId });
     expectOk(dc);
-    expect(dc.data.balance).toBe(90);
+    expect(dc.data.balance).toBe(95);
     // Ledger is append-only and the running sum matches the balance.
     const sum = (dc.data.ledger as Array<{ delta: number }>).reduce((acc, e) => acc + e.delta, 0);
-    expect(sum).toBe(90);
+    expect(sum).toBe(95);
     // The spend entry's balanceAfter reflects the post-spend balance.
     const spend = (dc.data.ledger as Array<{ reason: string; balanceAfter: number }>).find(
       (e) => e.reason === "generation_spend",
     );
-    expect(spend?.balanceAfter).toBe(90);
+    expect(spend?.balanceAfter).toBe(95);
   });
 });

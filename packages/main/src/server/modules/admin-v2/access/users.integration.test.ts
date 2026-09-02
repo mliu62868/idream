@@ -225,8 +225,7 @@ describe("idempotent user authority commands", () => {
   });
 
   // SPEC: 注入持久化失败时，命令回执 / 用户状态 / 审计 / Outbox 一起回滚。
-  // INTENT: v1 经 `handle()` 把未知错误折成 500 响应；`adminV2Route` 只折 AppError，其余原样抛给
-  // 框架（线上仍是 500）。所以这里断言的是「抛出」而不是「返回 500」—— 换成后者只会掩盖真实行为。
+  // INTENT: Route Handler 把未知错误折成稳定的 500 信封，下面继续验证事务没有部分提交。
   it("rolls back receipt, user state, Audit, and Outbox on injected persistence failures", async () => {
     for (const failure of ["audit", "outbox"] as const) {
       const targetId = `${P}${failure}-failure-target`;
@@ -236,7 +235,7 @@ describe("idempotent user authority commands", () => {
         status: "suspended",
         reason: `inject ${failure} persistence failure`,
         confirmation: `${targetId}:suspended`,
-      }, `${P}${failure}-failure-key`, requestId)).rejects.toThrow();
+      }, `${P}${failure}-failure-key`, requestId)).resolves.toMatchObject({ status: 500 });
 
       await expect(prisma.user.findUnique({ where: { id: targetId } })).resolves.toMatchObject({ status: "active" });
       await expect(prisma.controlPlaneCommand.count({ where: { actorId, targetId } })).resolves.toBe(0);

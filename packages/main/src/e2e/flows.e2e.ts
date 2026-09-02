@@ -24,6 +24,9 @@ async function waitForAuthWorkspaceReady(page: Page) {
     .locator('form[data-auth-ready="true"]')
     .filter({ visible: true });
   await expect(readyForm).toHaveCount(1);
+  // Hydration can finish while the access boundary still makes the form inert.
+  // Playwright fill does not wait for overlays like a user click does.
+  await expect(page.locator("[data-age-gate-content]")).not.toHaveAttribute("inert", "");
 }
 
 function uniqueEmail(tag: string) {
@@ -345,8 +348,9 @@ test("age gate re-materializes database authority from a legacy cookie", async (
 
 test("flow 2: signup through the UI creates an authenticated session", async ({ page }) => {
   const email = uniqueEmail("signup");
+  const access = await page.request.post("/api/v1/age-gate/accept", { data: { sourcePath: "/signup" } });
+  expect(access.ok()).toBe(true);
   await page.goto("/signup");
-  await dismissAgeGate(page);
   await waitForAuthWorkspaceReady(page);
 
   await page

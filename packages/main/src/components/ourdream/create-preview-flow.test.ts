@@ -31,6 +31,27 @@ function resumedLastCandidate(overrides: Partial<CreatePreviewBatch> = {}): Crea
 }
 
 describe("create preview batch", () => {
+  it("pauses an unknown outcome and rechecks the same preview after support resolves it", async () => {
+    const enqueue = vi.fn();
+    const read = vi.fn(async () => ({ id: "job-4", status: "queued" as const, errorCode: "provider_outcome_unknown", asset: null }));
+    let clock = 0;
+    const failed = await continueCreatePreviewBatch(resumedLastCandidate(), {
+      enqueue, read, persist: vi.fn(), now: () => clock, sleep: async (ms) => { clock += ms; },
+    });
+    expect(failed).toMatchObject({ phase: "failed", failureReason: "outcome_unknown", activePreviewJobId: "job-4" });
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(failed.errorMessage).toContain("Contact support");
+    const restored = parseCreatePreviewBatch(JSON.parse(JSON.stringify(failed)))!;
+    const retry = retryCreatePreviewBatch(restored, clock);
+    expect(retry.activeRequestKey).toBe(failed.activeRequestKey);
+    const completed = await continueCreatePreviewBatch(retry, {
+      enqueue, read: async () => ({ id: "job-4", status: "completed", asset: candidate(4) }),
+      persist: vi.fn(), now: () => clock,
+    });
+    expect(completed.phase).toBe("complete");
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
   it("keeps polling the same durable job when a normal preview completes after 90 seconds", async () => {
     let clock = 0;
     const enqueue = vi.fn();

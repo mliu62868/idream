@@ -34,6 +34,13 @@ describe("chatFailureCopy", () => {
     }
   });
 
+  it("does not offer endless retries for Main-owned archived or missing chats", () => {
+    expect(chatFailureCopy({ error: { code: "gone", message: "Chat session is archived" } }, FALLBACK))
+      .toBe("This chat is no longer active. Start a new chat to continue.");
+    expect(chatFailureCopy({ error: { code: "not_found", message: "Chat message not found" } }, FALLBACK))
+      .toBe("This chat or message no longer exists. Reload your chats.");
+  });
+
   it("falls back to the caller's sentence instead of leaking an internal code", () => {
     expect(chatFailureCopy({ error: "runtime_trace_invalid" }, FALLBACK)).toBe(FALLBACK);
     expect(chatFailureCopy({ error: "some_code_we_never_registered" }, FALLBACK)).toBe(FALLBACK);

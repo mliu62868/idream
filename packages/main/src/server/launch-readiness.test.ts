@@ -211,6 +211,11 @@ function passingVideoProbe(
   override: Partial<VideoGenerationProbeEvidence> = {},
   recipe: CharacterVideoProductionRecipe = characterVideoProductionRecipe,
 ): VideoGenerationProbeEvidence {
+  const backendTarget = override.backendTarget ?? (
+    recipe.workflowKey === minimaxH3VideoProductionRecipe.workflowKey
+      ? "http://127.0.0.1:8190"
+      : productionEnv.COMFYUI_API_URL
+  );
   return {
     ok: true,
     checkedAt: "2026-06-24T23:55:30.000Z",
@@ -218,7 +223,7 @@ function passingVideoProbe(
     provider: "backend",
     sourceRevision: productionEnv.IDREAM_GEN_SOURCE_REVISION,
     backendKind: "comfyui",
-    backendTarget: productionEnv.COMFYUI_API_URL,
+    backendTarget,
     workflowKey: recipe.workflowKey,
     workflowVersion: recipe.workflowVersion,
     model: recipe.workflowKey,
@@ -227,7 +232,7 @@ function passingVideoProbe(
     modelAssets: recipe.modelAssets.map((asset) => ({ ...asset })),
     runtimeModelRoot: {
       authority: "local_listener_process",
-      backendTarget: productionEnv.COMFYUI_API_URL,
+      backendTarget,
       listenerPid: 123,
       processCommandSha256: "e".repeat(64),
       expectedModelRoot: "/srv/comfy/models",
@@ -1676,12 +1681,13 @@ describe("launch readiness", () => {
     expect(failedIds(report)).toContain("pipeline-image-live-probe");
   });
 
-  it("fails the ComfyUI URL check for a backend deploy missing COMFYUI_API_URL", () => {
+  it("fails the ComfyUI URL check for an explicitly empty image endpoint", () => {
     const report = assessLaunchReadiness({
       env: {
         ...productionEnv,
         GEN_IMAGE_PROVIDER: "backend",
         COMFYUI_API_URL: undefined,
+        COMFYUI_IMAGE_API_URL: "",
       },
       imagePipelineProbe: null,
       ageVerificationProbe: passingAgeProbe(),
@@ -1708,7 +1714,7 @@ describe("launch readiness", () => {
         ...productionEnv,
         GEN_IMAGE_PROVIDER: "backend",
         COMFYUI_API_URL: "https://main-comfy.ourdream.internal",
-        IDREAM_GEN_COMFYUI_API_URL: "https://gen-comfy.ourdream.internal",
+        IDREAM_GEN_COMFYUI_IMAGE_API_URL: "https://gen-comfy.ourdream.internal",
       },
       imagePipelineProbe: passingBackendImageProbe({
         backendTarget: "https://main-comfy.ourdream.internal",
@@ -1785,6 +1791,7 @@ describe("launch readiness", () => {
         GEN_IMAGE_PROVIDER: "backend",
         GEN_VIDEO_PROVIDER: "mock",
         COMFYUI_API_URL: undefined,
+        COMFYUI_IMAGE_API_URL: "",
         DRAWTHINGS_CLI: "/opt/drawthings/draw-things-cli",
       },
       imagePipelineProbe: null,
@@ -4254,6 +4261,123 @@ describe("launch readiness", () => {
     });
   });
 
+  it.each([
+    {
+      name: "three distinct runtime endpoints",
+      env: {
+        COMFYUI_API_URL: "https://legacy.ourdream.internal",
+        COMFYUI_IMAGE_API_URL: "https://image.ourdream.internal",
+        COMFYUI_VIDEO_API_URL: "https://video.ourdream.internal",
+        COMFYUI_H3_API_URL: "https://h3.ourdream.internal",
+      },
+      image: "https://image.ourdream.internal",
+      video: "https://video.ourdream.internal",
+      h3: "https://h3.ourdream.internal",
+    },
+    {
+      name: "Gen file authority instead of conflicting Main endpoints",
+      env: {
+        COMFYUI_IMAGE_API_URL: "https://wrong-main.ourdream.internal",
+        COMFYUI_VIDEO_API_URL: "https://wrong-main.ourdream.internal",
+        COMFYUI_H3_API_URL: "https://wrong-main.ourdream.internal",
+        IDREAM_GEN_COMFYUI_IMAGE_API_URL: "https://image.ourdream.internal",
+        IDREAM_GEN_COMFYUI_VIDEO_API_URL: "https://video.ourdream.internal",
+        IDREAM_GEN_COMFYUI_H3_API_URL: "https://h3.ourdream.internal",
+      },
+      image: "https://image.ourdream.internal",
+      video: "https://video.ourdream.internal",
+      h3: "https://h3.ourdream.internal",
+    },
+    {
+      name: "the legacy image/video endpoint and independent H3 default",
+      env: {
+        COMFYUI_API_URL: "https://legacy.ourdream.internal",
+        COMFYUI_H3_API_URL: undefined,
+      },
+      image: "https://legacy.ourdream.internal",
+      video: "https://legacy.ourdream.internal",
+      h3: "http://127.0.0.1:8190",
+    },
+    {
+      name: "the exact local Gen defaults",
+      env: { COMFYUI_API_URL: undefined, COMFYUI_H3_API_URL: undefined },
+      image: "http://127.0.0.1:8189",
+      video: "http://127.0.0.1:8188",
+      h3: "http://127.0.0.1:8190",
+    },
+  ])("binds all generation probes to $name", ({ env, image, video, h3 }) => {
+    const report = assessLaunchReadiness({
+      env: { ...productionEnv, GEN_IMAGE_PROVIDER: "backend", ...env },
+      imagePipelineProbe: passingBackendImageProbe({ backendTarget: image }),
+      videoGenerationProbe: passingVideoProbe({ backendTarget: video }),
+      videoH3GenerationProbe: passingH3VideoProbe({ backendTarget: h3 }),
+      productConfigProbe: passingVideoEnabledProductConfigProbe({
+        activeImageExecutionBindings:
+          passingBackendProductConfigProbe().activeImageExecutionBindings,
+      }),
+      now,
+    });
+
+    for (const id of [
+      "comfyui-api-url",
+      "video-comfyui-api-url",
+      "pipeline-image-live-probe",
+      "video-generation-live-probe",
+      "video-h3-generation-live-probe",
+    ]) {
+      expect(checkById(report, id), id).toMatchObject({ status: "pass" });
+    }
+  });
+
+  it.each([
+    ["image", "pipeline-image-live-probe"],
+    ["video", "video-generation-live-probe"],
+    ["h3", "video-h3-generation-live-probe"],
+  ])("rejects %s evidence from another ComfyUI listener", (kind, checkId) => {
+    const report = assessLaunchReadiness({
+      env: {
+        ...productionEnv,
+        GEN_IMAGE_PROVIDER: "backend",
+        IDREAM_GEN_COMFYUI_IMAGE_API_URL: "https://image.ourdream.internal",
+        IDREAM_GEN_COMFYUI_VIDEO_API_URL: "https://video.ourdream.internal",
+        IDREAM_GEN_COMFYUI_H3_API_URL: "https://h3.ourdream.internal",
+      },
+      imagePipelineProbe: passingBackendImageProbe({
+        backendTarget: kind === "image"
+          ? "https://video.ourdream.internal"
+          : "https://image.ourdream.internal",
+      }),
+      videoGenerationProbe: passingVideoProbe({
+        backendTarget: kind === "video"
+          ? "https://image.ourdream.internal"
+          : "https://video.ourdream.internal",
+      }),
+      videoH3GenerationProbe: passingH3VideoProbe({
+        backendTarget: kind === "h3"
+          ? "https://video.ourdream.internal"
+          : "https://h3.ourdream.internal",
+      }),
+      productConfigProbe: passingVideoEnabledProductConfigProbe({
+        activeImageExecutionBindings:
+          passingBackendProductConfigProbe().activeImageExecutionBindings,
+      }),
+      now,
+    });
+
+    for (const id of [
+      "pipeline-image-live-probe",
+      "video-generation-live-probe",
+      "video-h3-generation-live-probe",
+    ]) {
+      expect(checkById(report, id), id).toMatchObject({
+        status: id === checkId ? "fail" : "pass",
+      });
+    }
+    expect(checkById(report, checkId)?.message).toContain(
+      "probe ComfyUI target does not match Gen ComfyUI authority",
+    );
+  });
+
   it("passes the production video provider check for a ComfyUI backend", () => {
     const report = assessLaunchReadiness({
       env: {
@@ -4518,7 +4642,7 @@ describe("launch readiness", () => {
       },
       imagePipelineProbe: passingImageProbe(),
       videoGenerationProbe: passingVideoProbe({
-        workflowVersion: 2,
+        workflowVersion: 999,
         referenceSha256: "not-a-source-hash",
         runtimeModelRoot: null,
       }),

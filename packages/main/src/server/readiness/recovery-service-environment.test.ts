@@ -5,6 +5,75 @@ import { describe, expect, it } from "vitest";
 import { loadRecoveryServiceEnvironment } from "./recovery-service-environment";
 
 describe("recovery service environment", () => {
+  it.each([
+    {
+      name: "distinct image, video, and H3 endpoints",
+      config: [
+        "COMFYUI_API_URL=https://legacy.ourdream.internal",
+        "COMFYUI_IMAGE_API_URL=https://image.ourdream.internal",
+        "COMFYUI_VIDEO_API_URL=https://video.ourdream.internal",
+        "COMFYUI_H3_API_URL=https://h3.ourdream.internal",
+      ],
+      image: "https://image.ourdream.internal",
+      video: "https://video.ourdream.internal",
+      h3: "https://h3.ourdream.internal",
+    },
+    {
+      name: "the legacy shared endpoint without redirecting H3",
+      config: ["COMFYUI_API_URL=https://legacy.ourdream.internal"],
+      image: "https://legacy.ourdream.internal",
+      video: "https://legacy.ourdream.internal",
+      h3: "http://127.0.0.1:8190",
+    },
+    {
+      name: "the three local runtime defaults",
+      config: [],
+      image: "http://127.0.0.1:8189",
+      video: "http://127.0.0.1:8188",
+      h3: "http://127.0.0.1:8190",
+    },
+    {
+      name: "explicit empty endpoints without silently falling back",
+      config: [
+        "COMFYUI_API_URL=https://legacy.ourdream.internal",
+        "COMFYUI_IMAGE_API_URL=",
+        "COMFYUI_VIDEO_API_URL=",
+        "COMFYUI_H3_API_URL=",
+      ],
+      image: "",
+      video: "",
+      h3: "",
+    },
+  ])("resolves Gen ComfyUI authority from $name", ({ config, image, video, h3 }) => {
+    const workspaceRoot = mkdtempSync(path.join(tmpdir(), "idream-service-env-"));
+    try {
+      const main = path.join(workspaceRoot, "main.env");
+      const gen = path.join(workspaceRoot, "gen.env");
+      writeFileSync(main, [
+        "COMFYUI_IMAGE_API_URL=https://wrong-main.ourdream.internal",
+        "COMFYUI_VIDEO_API_URL=https://wrong-main.ourdream.internal",
+        "COMFYUI_H3_API_URL=https://wrong-main.ourdream.internal",
+      ].join("\n"));
+      writeFileSync(gen, config.join("\n"));
+      const env = loadRecoveryServiceEnvironment({
+        workspaceRoot,
+        launchEnvFile: main,
+        chatEnvFile: null,
+        genEnvFile: gen,
+        processEnv: { NODE_ENV: "test" },
+        loadDefaultFiles: false,
+      });
+
+      expect(env).toMatchObject({
+        IDREAM_GEN_COMFYUI_IMAGE_API_URL: image,
+        IDREAM_GEN_COMFYUI_VIDEO_API_URL: video,
+        IDREAM_GEN_COMFYUI_H3_API_URL: h3,
+      });
+    } finally {
+      rmSync(workspaceRoot, { force: true, recursive: true });
+    }
+  });
+
   it("does not inherit ambient product credentials or probe evidence into explicit service files", () => {
     const workspaceRoot = mkdtempSync(path.join(tmpdir(), "idream-service-env-"));
     try {
@@ -206,7 +275,9 @@ describe("recovery service environment", () => {
         PIPELINE_API_TOKEN: "main-pipeline-token",
         IDREAM_GEN_PIPELINE_API_URL: "https://gen-image.example.com/v1",
         IDREAM_GEN_PIPELINE_API_TOKEN: "gen-pipeline-token",
-        IDREAM_GEN_COMFYUI_API_URL: "https://gen-comfy.example.com",
+        IDREAM_GEN_COMFYUI_IMAGE_API_URL: "https://gen-comfy.example.com",
+        IDREAM_GEN_COMFYUI_VIDEO_API_URL: "https://gen-comfy.example.com",
+        IDREAM_GEN_COMFYUI_H3_API_URL: "http://127.0.0.1:8190",
         IDREAM_GEN_DRAWTHINGS_CLI: "/opt/gen/draw-things-cli",
         IDREAM_GEN_PIPELINE_IMAGE_MODEL_DEFAULT: "gen-image-model",
       });

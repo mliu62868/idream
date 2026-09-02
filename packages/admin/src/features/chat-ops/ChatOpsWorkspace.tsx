@@ -291,11 +291,12 @@ export function ChatOpsWorkspace({
     navigate({ ...draft, sessionCursor: "", usageCursor: "", eventCursor: "" });
   }
 
-  // SPEC: 五个 authority 各自独立报 configured；顶栏必须说清"几个还活着"。
-  // INTENT: 旧口径是 .some(configured)——五个里活一个也照样显示"Chat Service connected"，
-  //         值班的人看一眼以为没事，实际四个authority已经拿不到数据了。
-  const answered = authorities.filter((authority) => states[authority].data !== null);
-  const degraded = answered.filter((authority) => !states[authority].data?.configured);
+  // SPEC: Connected requires a current successful answer from every authority.
+  // INTENT: A failed refresh must not let previously loaded data hide an outage.
+  const pending = authorities.some((authority) => states[authority].loading ||
+    (states[authority].data === null && !states[authority].error));
+  const degraded = authorities.filter((authority) => states[authority].error ||
+    states[authority].data?.configured === false);
   const overview = states.overview.data?.overview ?? null;
   return (
     <section className="space-y-5">
@@ -316,7 +317,7 @@ export function ChatOpsWorkspace({
         </div>
         {!canRead ? (
           <strong>{t("No access · chat.ops.read is not granted")}</strong>
-        ) : answered.length === 0 ? (
+        ) : degraded.length === 0 && pending ? (
           <strong>{t("Chat Service state not established yet")}</strong>
         ) : degraded.length === 0 ? (
           <strong>{t("Chat Service connected")}</strong>

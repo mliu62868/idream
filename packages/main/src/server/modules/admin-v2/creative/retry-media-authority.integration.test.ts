@@ -63,7 +63,7 @@ describe("Creative retry media and dispatch authority", () => {
       attemptId: `creative-retry-authority-attempt-${label}-${suffix}`,
       sourceAssetId: `creative-retry-authority-source-${label}-${suffix}`,
       pinnedWorkflowKey: overrides.pinnedWorkflowKey ?? workflowKey,
-      pinnedWorkflowVersion: overrides.pinnedWorkflowVersion ?? 1,
+      pinnedWorkflowVersion: overrides.pinnedWorkflowVersion ?? 2,
     };
   }
 
@@ -91,7 +91,7 @@ describe("Creative retry media and dispatch authority", () => {
         controls: {
           sourceImageAssetId: fixture.sourceAssetId,
           workflowKey,
-          workflowVersion: 1,
+          workflowVersion: 2,
         },
         presetIds: [],
         outputCount: 1,
@@ -316,7 +316,7 @@ describe("Creative retry media and dispatch authority", () => {
         workflowKey,
         runnerConfig: {
           verificationStatus: "passed",
-          workflowVersion: 1,
+          workflowVersion: 2,
           capabilities: {
             textToImage: true,
             stableSeed: true,
@@ -470,7 +470,7 @@ describe("Creative retry media and dispatch authority", () => {
               details: {
                 generationJobId: fixture.jobId,
                 pinnedWorkflowVersion: fixture.pinnedWorkflowVersion,
-                effectiveWorkflowVersion: 1,
+                effectiveWorkflowVersion: 2,
               },
             },
       });
@@ -552,7 +552,7 @@ describe("Creative retry media and dispatch authority", () => {
       controls: {
         sourceImageAssetId: fixture.sourceAssetId,
         workflowKey,
-        workflowVersion: 1,
+        workflowVersion: 2,
       },
     });
     await expect(
@@ -584,7 +584,7 @@ describe("Creative retry media and dispatch authority", () => {
         attemptNo: 1,
         status: "failed",
         workflowKey,
-        workflowVersion: 1,
+        workflowVersion: 2,
       }),
       expect.objectContaining({
         requestId: fixture.jobId,
@@ -594,7 +594,7 @@ describe("Creative retry media and dispatch authority", () => {
         sourceCommandId: commandId,
         creativeRunItemId: fixture.itemId,
         workflowKey,
-        workflowVersion: 1,
+        workflowVersion: 2,
       }),
     ]);
     await expect(

@@ -18,6 +18,7 @@ export type ResolvedChatPersona = CharacterAuthority & {
 export interface BuiltContext {
   userLocale: string;
   hasRecentImageContext: boolean;
+  previousAssistantText?: string;
   persona: ResolvedChatPersona;
   policy: ChatPolicy;
   recentMessages: Array<{
@@ -101,6 +102,7 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
   return {
     userLocale: authority.user.locale,
     hasRecentImageContext: snapshot.hasRecentImageContext,
+    previousAssistantText: snapshot.recentTurns.at(-1)?.assistantContent,
     persona,
     policy,
     recentMessages: fitted.messages,

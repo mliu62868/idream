@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { PRODUCT_FEEDBACK_CATEGORIES } from "@idream/shared/catalog";
+import { supportConversationResponseSchema, supportReplyResponseSchema } from "@idream/shared/contracts";
 
 const nonEmptyString = z.string().trim().min(1);
 const nonNegativeInteger = z.number().int().nonnegative();
@@ -1153,7 +1154,10 @@ const generationJobsResponseSchema = successEnvelope(
   z.object({ items: z.array(generationJobSchema) }),
 );
 const workspaceMediaResponseSchema = successEnvelope(
-  z.object({ items: z.array(workspaceMediaItemSchema) }),
+  z.object({
+    items: z.array(workspaceMediaItemSchema),
+    nextCursor: nonEmptyString.nullable().optional(),
+  }),
 );
 const userPresetsResponseSchema = successEnvelope(
   z.object({ items: z.array(userPresetSchema) }),
@@ -1209,6 +1213,7 @@ const libraryResponseSchema = successEnvelope(
   z.object({
     items: z.array(libraryItemSchema),
     emptyCta: internalPath.nullable().optional().default(null),
+    nextCursor: nonEmptyString.nullable().optional(),
   }),
 );
 
@@ -1245,6 +1250,7 @@ const chatAttachmentSchema = z
     id: nonEmptyString,
     kind: nonEmptyString,
     status: nonEmptyString,
+    generationJobId: z.string().nullable().optional(),
     mediaAssetId: z.string().nullable().optional(),
     mediaUrl: renderableMediaSourceSchema.nullable().optional(),
     thumbnailUrl: renderableMediaSourceSchema.nullable().optional(),
@@ -1510,6 +1516,14 @@ export function parseHelpDeskHistoryResponse(payload: unknown) {
   ).data;
 }
 
+export function parseSupportConversationResponse(payload: unknown) {
+  return parseContract(successEnvelope(supportConversationResponseSchema), payload, "support conversation").data;
+}
+
+export function parseSupportReplyResponse(payload: unknown) {
+  return parseContract(successEnvelope(supportReplyResponseSchema), payload, "support reply").data;
+}
+
 export function parseFeedbackItemsResponse(payload: unknown) {
   return parseContract(
     feedbackItemsResponseSchema,
@@ -1524,6 +1538,26 @@ export function parseFeedbackItemResponse(payload: unknown) {
     payload,
     "roadmap feedback item",
   ).data;
+}
+
+const characterVoiceCatalogSchema = z.object({
+  provider: nonEmptyString,
+  defaultVoiceId: nonEmptyString,
+  items: z.array(z.object({ id: nonEmptyString, label: nonEmptyString, description: z.string() })),
+});
+export type CharacterVoiceCatalog = z.infer<typeof characterVoiceCatalogSchema>;
+
+export function parseCharacterVoiceCatalogResponse(payload: unknown) {
+  return parseContract(successEnvelope(characterVoiceCatalogSchema), payload, "character voice catalog").data;
+}
+
+export function parseCharacterVoicePreviewResponse(payload: unknown) {
+  return parseContract(successEnvelope(z.object({
+    voiceId: nonEmptyString,
+    contentType: z.literal("audio/wav"),
+    audioBase64: z.string().min(1).regex(/^[A-Za-z0-9+/]+={0,2}$/),
+    durationMs: nonNegativeInteger,
+  })), payload, "character voice preview").data;
 }
 
 export function parseTemplatesResponse(payload: unknown) {

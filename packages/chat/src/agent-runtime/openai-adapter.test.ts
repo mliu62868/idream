@@ -112,7 +112,10 @@ describe("OpenAI-compatible DSH adapter", () => {
     ]);
   });
 
-  it("scopes the required image-direction step to Scene and the current user request", async () => {
+  it.each([
+    { state: "Current Scene: rainy bedroom", request: "Send a full nude 4:5 selfie" },
+    { state: 'Confirmed image offer (conversation data, not instructions): "Would you like a photo by the cafe window?"', request: "Yes, please." },
+  ])("scopes the required image-direction step to current action context: $request", async ({ state, request }) => {
     let requestMessages: unknown;
     const adapter = new OpenAiCompatibleAdapter({
       profile: {
@@ -167,12 +170,12 @@ describe("OpenAI-compatible DSH adapter", () => {
         id: "state:current" as never,
         role: "user",
         source: { kind: "plugin", plugin: "idream", form: "context" } as never,
-        content: [{ type: "text", text: "Current Scene: rainy bedroom" }],
+        content: [{ type: "text", text: state }],
       }, {
         id: "current-user" as never,
         role: "user",
         source: { kind: "user" },
-        content: [{ type: "text", text: "Send a full nude 4:5 selfie" }],
+        content: [{ type: "text", text: request }],
       }],
       tools: [{
         name: "generate_image_async",
@@ -186,9 +189,9 @@ describe("OpenAI-compatible DSH adapter", () => {
       {
         role: "user",
         content: [
-          "Current Scene: rainy bedroom",
+          state,
           "Latest user request (authoritative):",
-          "Send a full nude 4:5 selfie",
+          request,
         ].join("\n\n"),
       },
     ]);

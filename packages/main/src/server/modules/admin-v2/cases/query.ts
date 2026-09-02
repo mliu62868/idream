@@ -308,6 +308,8 @@ export async function getCaseDetail(request: Request, caseId: string) {
             ? snapshot.description
             : typeof snapshot.appealText === "string"
               ? snapshot.appealText
+              : row.sourceType === "support_message" && typeof snapshot.body === "string"
+                ? snapshot.body
               : `${row.sourceType} ${row.sourceId}`,
         occurredAt: row.occurredAt.toISOString(),
         access: "full",

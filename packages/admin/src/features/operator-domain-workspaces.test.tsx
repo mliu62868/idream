@@ -43,7 +43,7 @@ describe("Character and Creative operator workspaces", () => {
     expect(parsed?.view).toEqual({ kind: "detail", id: "run-42" });
   });
 
-  it("exposes the Creative brief-and-launch front half only with write authority", () => {
+  it("keeps the Creative list as generation history for both read and write operators", () => {
     const writable = renderToStaticMarkup(
       <CreativeRunWorkspace
         permissions={{ read: true, write: true, review: true, place: true }}
@@ -56,13 +56,14 @@ describe("Character and Creative operator workspaces", () => {
         view={{ kind: "list" }}
       />,
     );
-    expect(writable).toContain("Create images");
-    expect(writable).toContain("Open Character Asset Studio");
-    expect(writable).toContain("Creative brief");
-    expect(writable).toContain("Create and launch");
-    expect(writable).not.toContain("active profile key");
-    expect(writable).not.toContain(">Target ID<");
-    expect(readOnly).not.toContain("Create and launch");
+    for (const html of [writable, readOnly]) {
+      expect(html).toContain("Execution, review, placement, and verification remain separate facts.");
+      expect(html).toContain("Run, title or purpose");
+      expect(html).toContain("Loading Creative Run facts");
+      expect(html).not.toContain("Create images");
+      expect(html).not.toContain("Creative brief");
+      expect(html).not.toContain("Create and launch");
+    }
   });
 
   it("renders Character-first search controls while Character data is loading", () => {
@@ -80,7 +81,9 @@ describe("Character and Creative operator workspaces", () => {
     expect(html).toContain("Search name or character ID");
     expect(html).not.toContain("Character stage");
     expect(html).not.toContain("Project phase");
-    expect(html).toContain('aria-label="Character status"');
+    expect(html).toContain('aria-label="Character operations filters"');
+    expect(html).toContain('role="group"');
+    expect(html).toContain('aria-pressed="true"');
     expect(html).toContain(">Draft<");
     expect(html).toContain(">Live<");
     expect(html).toContain(">Needs attention<");

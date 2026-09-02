@@ -21,6 +21,7 @@ import type {
 } from "./providers";
 import {
   loadPersistedTerminalRecord,
+  loadGenerationInvocationGuard,
   persistTerminalRecord,
   reserveGenerationInvocation,
 } from "./terminal-record";
@@ -156,17 +157,47 @@ export class GenerationExecution {
     }, evidence.providerReplayIsSafe);
   }
 
+  async failPreparation(error: unknown): Promise<void> {
+    if (!this.isFinalAttempt()) throw error;
+    // A preparation error on a later transport must not erase a prior call,
+    // including one made by a provider with deterministic replay support.
+    const guard = await loadGenerationInvocationGuard(this.options.blob, this.#identity.attemptId);
+    if (guard) {
+      const expected = this.invocationGuard();
+      if (
+        guard.attemptId !== expected.attemptId || guard.attemptNo !== expected.attemptNo ||
+        guard.requestId !== expected.requestId || guard.generationJobId !== expected.generationJobId ||
+        guard.providerIdempotencyKey !== expected.providerIdempotencyKey ||
+        guard.mode !== expected.mode || guard.provider !== expected.provider || guard.model !== expected.model ||
+        guard.transportAttemptNo >= expected.transportAttemptNo
+      ) throw new Error(`provider invocation cannot be excluded for ${expected.attemptId}`);
+      await this.fail(
+        "ambiguous_incomplete_provider_invocation",
+        "A prior provider invocation did not leave terminal evidence before retry preparation failed",
+        { outcome: "unknown", retryability: "not_retryable" },
+        { providerInvoked: true, providerReplayIsSafe: false },
+      );
+      return;
+    }
+    await this.fail(
+      "preparation_failed",
+      error instanceof Error ? error.message : "Generation input preparation failed",
+      { retryability: "retryable" },
+      { providerInvoked: false },
+    );
+  }
+
   async execute<TProviderOutput>(
     adapter: GenerationAdapter<TProviderOutput>,
   ): Promise<void> {
     await this.recordTransport("running");
     const providerReplayIsSafe =
       adapter.model.retryCapabilities?.deterministicIdempotencyKey === true;
+    const reservation = await reserveGenerationInvocation(
+      this.options.blob,
+      this.invocationGuard(),
+    );
     if (!providerReplayIsSafe) {
-      const reservation = await reserveGenerationInvocation(
-        this.options.blob,
-        this.invocationGuard(),
-      );
       if (!reservation.created) {
         if (
           reservation.guard.transportAttemptNo >=

@@ -148,8 +148,9 @@ export async function evaluateEditorialReleaseAuthorityInTransaction(
   const projectionState = input.projectionState ?? "live";
   const expectedCharacterStatus =
     projectionState === "live" ? "approved" : "archived";
-  const expectedCharacterVisibility =
-    projectionState === "live" ? "public" : "private";
+  const expectedCharacterVisibilities = projectionState === "live"
+    ? ["public", "unlisted"]
+    : ["private", "public", "unlisted"];
   const checks: EditorialReleaseAuthorityCheck[] = [
     check(
       "release_not_published",
@@ -213,7 +214,7 @@ export async function evaluateEditorialReleaseAuthorityInTransaction(
         character &&
           character.source === "official" &&
           character.status === expectedCharacterStatus &&
-          character.visibility === expectedCharacterVisibility &&
+          expectedCharacterVisibilities.includes(character.visibility) &&
           character.deletedAt === null &&
           character.imageAssetId === avatarAssetId,
       ),
@@ -224,7 +225,7 @@ export async function evaluateEditorialReleaseAuthorityInTransaction(
         deletedAt: character?.deletedAt?.toISOString() ?? null,
         characterImageAssetId: character?.imageAssetId ?? null,
         expectedStatus: expectedCharacterStatus,
-        expectedVisibility: expectedCharacterVisibility,
+        expectedVisibilities: expectedCharacterVisibilities,
       },
     ),
     check(

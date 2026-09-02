@@ -656,7 +656,7 @@ describe("local AI service pipeline", () => {
     expectOk(unknownStatus);
     expect(unknownStatus.data.previewJob).toMatchObject({
       status: "queued",
-      errorCode: null,
+      errorCode: "provider_outcome_unknown",
     });
     expect(unknownStatus.data.asset).toBeNull();
     await expect(
@@ -833,16 +833,16 @@ describe("local AI service pipeline", () => {
     cleanupModerationTargetIds.push(jobId);
 
     await requeueAsFinalAttempt("ai.image.generate", jobId);
-    vi.spyOn(genProviders.blob, "putPrivateIfAbsent").mockResolvedValueOnce({
-      ok: false,
-      error: {
-        code: "blob_write_failed",
-        message: "object store unavailable",
-        retryable: true,
-      },
+    const originalPut = genProviders.blob.putPrivateIfAbsent.bind(genProviders.blob);
+    // Fail only this Job's output bytes; invocation and terminal evidence must
+    // remain durable so this still tests artifact failure and the real refund.
+    const blobWriteSpy = vi.spyOn(genProviders.blob, "putPrivateIfAbsent").mockImplementation(async (input) => {
+      if (!input.key.startsWith(`gen/${jobId}/attempts/`)) return originalPut(input);
+      return { ok: false, error: { code: "blob_write_failed", message: "object store unavailable", retryable: true } };
     });
 
     await runQueuedGenerationJobs(8);
+    expect(artifactWriteKeys(blobWriteSpy)).toHaveLength(1);
 
     const failed = await api("GET", `generation/jobs/${jobId}`, { userId, ageGate: true });
     expectOk(failed);
@@ -969,16 +969,6 @@ describe("local AI service pipeline", () => {
       const videoSpy = vi
         .spyOn(genProviders.video, "generate")
         .mockImplementation((input) => originalVideoGenerate(input));
-      // 视频产物走 putPrivateIfAbsent（同 key 重复投递不覆盖已发布字节），不是 putPrivate。
-      vi.spyOn(genProviders.blob, "putPrivateIfAbsent").mockResolvedValueOnce({
-        ok: false,
-        error: {
-          code: "blob_write_failed",
-          message: "object store unavailable",
-          retryable: true,
-        },
-      });
-
       const gen = await api("POST", "generation/jobs", {
         userId,
         ageGate: true,
@@ -994,7 +984,15 @@ describe("local AI service pipeline", () => {
       cleanupModerationTargetIds.push(jobId);
 
       await requeueAsFinalAttempt("ai.video.generate", jobId);
+      const originalPut = genProviders.blob.putPrivateIfAbsent.bind(genProviders.blob);
+      // The provider guard is written first; target output bytes rather than
+      // whichever Blob write happens to arrive first.
+      const blobWriteSpy = vi.spyOn(genProviders.blob, "putPrivateIfAbsent").mockImplementation(async (input) => {
+        if (!input.key.startsWith(`gen/${jobId}/attempts/`)) return originalPut(input);
+        return { ok: false, error: { code: "blob_write_failed", message: "object store unavailable", retryable: true } };
+      });
       await runQueuedGenerationJobs(8);
+      expect(artifactWriteKeys(blobWriteSpy)).toHaveLength(1);
 
       expect(videoSpy).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1040,7 +1038,7 @@ describe("local AI service pipeline", () => {
     }
   });
 
-  it("rejects non-five-second requests and unpublished Character sources", async () => {
+  it("rejects non-five-second requests and another owner's private Character source", async () => {
     const userId = `${P}video-authority-user`;
     const privateCharacterId = `${P}private-video-char`;
     const privateAssetId = `${P}private-video-source`;
@@ -1055,7 +1053,7 @@ describe("local AI service pipeline", () => {
     });
     await createCharacter({
       id: privateCharacterId,
-      creatorId: userId,
+      creatorId: SYS,
       source: "user",
       visibility: "private",
       status: "approved",
@@ -1063,7 +1061,7 @@ describe("local AI service pipeline", () => {
     await prisma.mediaAsset.create({
       data: {
         id: privateAssetId,
-        ownerId: userId,
+        ownerId: SYS,
         characterId: privateCharacterId,
         type: "image",
         storageKey: `${P}private-video-source.webp`,
@@ -1171,7 +1169,7 @@ describe("local AI service pipeline", () => {
       });
       expectError(invalidDuration, 400, "bad_request");
 
-      const unpublished = await api("POST", "generation/jobs", {
+      const privateSource = await api("POST", "generation/jobs", {
         userId,
         ageGate: true,
         body: {
@@ -1181,7 +1179,7 @@ describe("local AI service pipeline", () => {
           outputCount: 1,
         },
       });
-      expectError(unpublished, 404, "not_found");
+      expectError(privateSource, 404, "not_found");
       await expect(
         prisma.generationJob.count({
           where: { userId, mode: "video" },

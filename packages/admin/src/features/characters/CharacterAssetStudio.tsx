@@ -220,6 +220,21 @@ export function CharacterAssetStudio({
       (route) => route.result === "qualified" && !route.stale,
     ) ?? null;
   const bootstrapProfile = identityBootstrap.profile;
+  const qualifiedImageProfile = data.visual.identityCalibration?.profiles.find(
+    (profile) =>
+      profile.profileKey === qualifiedRoute?.generationProfileKey &&
+      profile.profileVersion === qualifiedRoute.generationProfileVersion &&
+      profile.workflowKey === qualifiedRoute.workflowKey &&
+      profile.workflowVersion === qualifiedRoute.workflowVersion,
+  );
+  const orientationForPurpose = (purpose: CharacterAssetPurpose) => {
+    if (bootstrapMode) return bootstrapProfile?.orientation;
+    const preferred = purposeConfig[purpose].orientation;
+    const allowed = qualifiedImageProfile?.allowedOrientations;
+    // Purpose ratios are preferences; the qualified profile owns supported
+    // dimensions. Missing capability data leaves the choice to Main's profile.
+    return allowed?.includes(preferred) ? preferred : allowed?.[0];
+  };
   const variationRouteReady =
     qualifiedRoute?.sourceVariationAuthority?.ready === true;
   const variationRouteBlocker =
@@ -693,7 +708,8 @@ export function CharacterAssetStudio({
     selectRunId(nextRunId);
     if (!nextRunId || nextRunId !== selectedRun?.id) setSelectedRun(null);
     setSelectedIndex(0);
-    if (!bootstrapMode) setWorkspaceMode("library");
+    // The bootstrap completion callback still closes over pre-commit authority.
+    if (!bootstrapMode || options.identityCommitted) setWorkspaceMode("library");
   };
 
   const createRun = async (
@@ -826,14 +842,11 @@ export function CharacterAssetStudio({
     const profileId = bootstrapMode
       ? bootstrapProfile?.profileKey
       : qualifiedRoute?.generationProfileKey;
-    const orientation = bootstrapMode
-      ? bootstrapProfile?.orientation
-      : purposeConfig[purpose].orientation;
+    const orientation = orientationForPurpose(purpose);
     if (
       !recovered?.success &&
       (!profileId ||
-        !orientation ||
-        (bootstrapMode && purpose !== "character_cover"))
+        (bootstrapMode && (!orientation || purpose !== "character_cover")))
     )
       return;
     const count = 1;
@@ -1073,6 +1086,8 @@ export function CharacterAssetStudio({
         "The exact review receipt is not present in the latest Run projection yet.",
       );
     }
+    // The surrounding library must observe the same committed review as the inspector.
+    await onProjectReload();
     clearDurableMutationIntent(intent);
     setReviewMutationIntent(null);
     setRefreshWarning(null);
@@ -2321,7 +2336,7 @@ export function CharacterAssetStudio({
         {recurringProductionReady &&
         (productionOnly || workspaceMode === "library") ? (
           <aside
-            className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 xl:sticky xl:top-4"
+            className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 xl:sticky xl:top-24"
             aria-labelledby="new-image-title"
           >
             {!productionOnly ? (
@@ -2368,6 +2383,9 @@ export function CharacterAssetStudio({
                 value={briefs[activePurpose]}
               />
             </label>
+            <p className="mt-3 text-xs text-[var(--ad-text-muted)]">
+              {t("Aspect ratio")}: {orientationForPurpose(activePurpose) ?? t("Default")}
+            </p>
             <details className="mt-4 border-t border-[var(--ad-border)] pt-3 text-xs">
               <summary className="cursor-pointer font-semibold">
                 {t("Settings")}
@@ -2420,7 +2438,7 @@ export function CharacterAssetStudio({
           bootstrapMode &&
           !productionBlocked &&
           selectedItem?.asset ? (
-          <aside className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 xl:sticky xl:top-4">
+          <aside className="rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 xl:sticky xl:top-24">
             <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--ad-text-muted)]">
               {t("First identity portrait")}
             </p>
@@ -2448,7 +2466,7 @@ export function CharacterAssetStudio({
           </aside>
         ) : !productionBlocked && selectedItem?.asset ? (
           <aside
-            className="space-y-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 xl:sticky xl:top-4"
+            className="space-y-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 xl:sticky xl:top-24"
             aria-label={t("Current candidate decision inspector")}
           >
             {recurringProductionReady ? (

@@ -17,7 +17,6 @@ vi.mock("./AgeGateBoundary", () => ({
 }));
 vi.mock("./AppSidebar", () => ({ AppSidebar: () => null }));
 vi.mock("./MobileBottomNav", () => ({ MobileBottomNav: () => null }));
-vi.mock("./chat/ChatHeaderControls", () => ({ ChatHeaderControls: () => null }));
 vi.mock("./chat/ChatSessionListDrawer", () => ({
   ChatSessionListDrawer: () => null,
 }));
@@ -194,8 +193,149 @@ describe("ChatSessionClient streaming composer", () => {
     expect(container.querySelector('[data-testid="chat-stop-reply"]')).toBeNull();
     expect(container.querySelector('[aria-label="Send message"]')).not.toBeNull();
     expect(replyBubble()?.querySelector('[data-testid="chat-regenerate"]')).not.toBeNull();
+    expect(replyBubble()?.querySelector('[data-testid="chat-play-voice"]')).toBeNull();
     expect(container.querySelector('[data-testid="chat-session-status"]')?.textContent)
       .toContain("Reply stopped.");
+  });
+
+  it.each(["user-1", "assistant-1"])(
+    "deletes the complete latest exchange from the %s bubble",
+    async (messageId) => {
+      sessionMessages = [opening, userTurn, {
+        ...streamingReply,
+        content: "The final reply",
+        status: "sent",
+      }];
+      await mountSession();
+      const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+      vi.mocked(fetch).mockImplementation(async (input, init) => {
+        if (String(input) === `/api/v1/messages/${messageId}` && init?.method === "DELETE") {
+          sessionMessages = [opening];
+          return Response.json({ ok: true });
+        }
+        return originalFetch(input, init);
+      });
+      const deleteButton = () => container.querySelector<HTMLButtonElement>(
+        `[data-message-id="${messageId}"] [data-testid="chat-delete-message"]`,
+      );
+      await act(async () => deleteButton()?.click());
+      await act(async () => deleteButton()?.click());
+
+      expect(container.querySelector('[data-message-id="user-1"]')).toBeNull();
+      expect(replyBubble()).toBeNull();
+      expect(container.querySelector('[data-message-id="assistant-0"]')).not.toBeNull();
+    },
+  );
+
+  it("keeps the committed reply when completion wins the stop race", async () => {
+    await startStreamingReply();
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input).endsWith("/cancel")) {
+        sessionMessages = [opening, userTurn, {
+          ...streamingReply,
+          content: "The complete canonical reply",
+          status: "sent",
+        }];
+        return Response.json({ ok: true, cancelled: false, attempt: 1 });
+      }
+      return originalFetch(input, init);
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="chat-stop-reply"]')?.click();
+    });
+
+    expect(replyBubble()?.textContent).toContain("The complete canonical reply");
+    expect(container.textContent).not.toContain("Reply stopped.");
+  });
+
+  it("keeps a stopped reply's new pending attempt alive until it can stream", async () => {
+    await startStreamingReply();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="chat-stop-reply"]')?.click();
+    });
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input).endsWith("/regenerate")) {
+        sessionMessages = [opening, userTurn, { ...streamingReply, attempt: 2, status: "pending" }];
+        return Response.json({
+          assistantMessageId: "assistant-1",
+          attempt: 2,
+          status: "pending",
+          streamUrl: "/api/v1/chat/messages/assistant-1/stream?attempt=2",
+        });
+      }
+      return originalFetch(input, init);
+    });
+    await act(async () => {
+      replyBubble()?.querySelector<HTMLButtonElement>('[data-testid="chat-regenerate"]')?.click();
+    });
+    const readsBeforePoll = sessionReads;
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    await waitUntil(() => sessionReads > readsBeforePoll);
+
+    expect(container.querySelector('[aria-label="Assistant is typing"]')).not.toBeNull();
+    expect(replyBubble()?.textContent).not.toContain("Once upon");
+
+    sessionMessages = [opening, userTurn, { ...streamingReply, attempt: 2 }];
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    await waitUntil(() => FakeEventSource.instances.length === 2);
+    expect(FakeEventSource.instances.at(-1)?.url).toContain("attempt=2");
+  });
+
+  it("shows a recoverable error when changing memory loses its connection", async () => {
+    await mountSession();
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input).endsWith("/memory")) throw new TypeError("Network connection lost");
+      return originalFetch(input, init);
+    });
+    const toggle = () => container.querySelector<HTMLButtonElement>('[data-testid="memory-toggle"]');
+    await act(async () => toggle()?.click());
+
+    expect(container.querySelector('[data-testid="chat-session-status"]')?.textContent)
+      .toContain("Couldn't update memory. Please try again.");
+    expect(toggle()?.disabled).toBe(false);
+    expect(toggle()?.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("ignores the old attempt's delayed recovery after the reader regenerates", async () => {
+    await startStreamingReply();
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    let releaseRecovery: ((response: Response) => void) | undefined;
+    let delayNextRead = true;
+    const recovery = new Promise<Response>((resolve) => { releaseRecovery = resolve; });
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === "/api/v1/chat/sessions/session-1" && delayNextRead) {
+        delayNextRead = false;
+        return recovery;
+      }
+      if (url.endsWith("/regenerate")) {
+        return Response.json({
+          assistantMessageId: "assistant-1", attempt: 2, status: "generating",
+          streamUrl: "/api/v1/chat/messages/assistant-1/stream?attempt=2",
+        });
+      }
+      return originalFetch(input, init);
+    });
+    await act(async () => FakeEventSource.instances[0]?.emit("error", { code: "provider_error" }));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="chat-stop-reply"]')?.click());
+    await act(async () => replyBubble()?.querySelector<HTMLButtonElement>('[data-testid="chat-regenerate"]')?.click());
+    const currentStream = FakeEventSource.instances.at(-1);
+    expect(currentStream?.url).toContain("attempt=2");
+    await act(async () => releaseRecovery?.(Response.json({
+      ok: true,
+      data: { session: {
+        id: "session-1", title: "Test chat", characterId: "character-1",
+        character: { name: "Avery" },
+        messages: [opening, userTurn, { ...streamingReply, attempt: 1, status: "cancelled" }],
+      } },
+    })));
+
+    expect(currentStream?.closed).toBe(false);
+    expect(container.querySelector('[aria-label="Assistant is typing"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Reply failed to load");
   });
 
   it("retracts provisional tool-step prose before rendering the final step", async () => {
@@ -253,6 +393,22 @@ describe("ChatSessionClient streaming composer", () => {
     expect(card?.textContent).toContain("You can keep chatting while it finishes.");
     expect(card?.textContent).not.toContain("internal prompt");
     expect(card?.textContent).not.toContain("Create an in-character photo");
+  });
+
+  it("shows an unconfirmed image without a spinner or paid retry", async () => {
+    sessionMessages = [{ ...opening, attachments: [{
+      id: "attachment-unknown", kind: "generated_image", status: "accepted",
+      generationJobId: "unknown-image", errorCode: "provider_outcome_unknown",
+    }] }];
+    await mountSession();
+    const card = container.querySelector('[data-testid="chat-image-attachment-card"]');
+    expect(card?.textContent).toContain("Image result needs review");
+    expect(card?.textContent).not.toMatch(/Generating image|being prepared|Retry image|refunded/);
+    expect(card?.querySelector(".animate-spin")).toBeNull();
+    expect(card?.querySelector('a[href="/helpdesk"]')?.textContent).toContain("Contact support");
+    const before = sessionReads;
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    expect(sessionReads).toBe(before);
   });
 
   it("keeps polling an accepted image until its completed preview arrives", async () => {
@@ -335,6 +491,158 @@ describe("ChatSessionClient streaming composer", () => {
       sessionId: "session-1",
       text: "Hey there.",
     });
+  });
+
+  it("requests a fresh voice clip when the same reply id is regenerated", async () => {
+    const playedUrls: string[] = [];
+    let endPlayback: (() => void) | undefined;
+    vi.stubGlobal("Audio", class {
+      src: string;
+      onended?: () => void;
+      constructor(src: string) { this.src = src; }
+      pause() {}
+      async play() {
+        playedUrls.push(this.src);
+        endPlayback = () => this.onended?.();
+      }
+    });
+    sessionMessages = [opening, userTurn, {
+      ...streamingReply,
+      attempt: 1,
+      content: "First answer",
+      status: "sent",
+    }];
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    let voiceAttempt = 0;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === "/api/v1/generation/voice") {
+        voiceAttempt += 1;
+        return Response.json({ data: { contentUrl: `/voice/attempt-${voiceAttempt}.wav` } });
+      }
+      if (String(input).endsWith("/regenerate")) {
+        sessionMessages = [opening, userTurn, {
+          ...streamingReply,
+          attempt: 2,
+          content: "Regenerated answer",
+          status: "sent",
+        }];
+        return Response.json({
+          assistantMessageId: "assistant-1",
+          attempt: 2,
+          status: "pending",
+          streamUrl: "/api/v1/chat/messages/assistant-1/stream?attempt=2",
+        });
+      }
+      return originalFetch(input, init);
+    });
+    await mountSession();
+    const play = () => replyBubble()?.querySelector<HTMLButtonElement>('[data-testid="chat-play-voice"]')?.click();
+    await act(async () => play());
+    await act(async () => endPlayback?.());
+    await act(async () => {
+      replyBubble()?.querySelector<HTMLButtonElement>('[data-testid="chat-regenerate"]')?.click();
+    });
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    await waitUntil(() => Boolean(replyBubble()?.textContent?.includes("Regenerated answer")));
+    await act(async () => play());
+
+    expect(voiceRequests()).toHaveLength(2);
+    expect(playedUrls).toEqual(["/voice/attempt-1.wav", "/voice/attempt-2.wav"]);
+  });
+
+  it("requests a replacement only on the next Play after cached media fails, ignoring an old player error", async () => {
+    const players: Array<{ src: string; onerror: (() => void) | null; onended: (() => void) | null }> = [];
+    vi.stubGlobal("Audio", class {
+      onerror: (() => void) | null = null;
+      onended: (() => void) | null = null;
+      constructor(public src: string) { players.push(this); }
+      pause() {}
+      async play() {}
+    });
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    let deliveries = 0;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === "/api/v1/generation/voice") return Response.json({ data: { contentUrl: `/voice/delivery-${++deliveries}.wav` } });
+      return originalFetch(input, init);
+    });
+    await mountSession();
+    const play = () => container.querySelector<HTMLButtonElement>('[data-testid="chat-play-voice"]')?.click();
+    await act(async () => play());
+    await act(async () => players[0]?.onerror?.());
+    expect(voiceRequests()).toHaveLength(1);
+    expect(container.textContent).toContain("Voice playback failed. Please try again.");
+    await act(async () => play());
+    expect(voiceRequests()).toHaveLength(2);
+    expect(players[1]?.src).toBe("/voice/delivery-2.wav");
+    await act(async () => players[0]?.onerror?.());
+    expect(container.textContent).not.toContain("Voice playback failed. Please try again.");
+    await act(async () => players[1]?.onended?.());
+    await act(async () => play());
+    expect(voiceRequests()).toHaveLength(2);
+    expect(players[2]?.src).toBe("/voice/delivery-2.wav");
+  });
+
+  it("does not revive the old voice state when audio startup resolves after regeneration", async () => {
+    let finishAudioStartup: (() => void) | undefined;
+    const startup = new Promise<void>((resolve) => { finishAudioStartup = resolve; });
+    vi.stubGlobal("Audio", class {
+      src = "/voice/old.wav";
+      pause() {}
+      play() { return startup; }
+    });
+    sessionMessages = [opening, userTurn, {
+      ...streamingReply, attempt: 1, content: "First answer", status: "sent",
+    }];
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === "/api/v1/generation/voice") {
+        return Response.json({ data: { contentUrl: "/voice/old.wav" } });
+      }
+      if (String(input).endsWith("/regenerate")) {
+        sessionMessages = [opening, userTurn, {
+          ...streamingReply, attempt: 2, content: "Regenerated answer", status: "sent",
+        }];
+        return Response.json({
+          assistantMessageId: "assistant-1", attempt: 2, status: "pending",
+          streamUrl: "/api/v1/chat/messages/assistant-1/stream?attempt=2",
+        });
+      }
+      return originalFetch(input, init);
+    });
+    await mountSession();
+    await act(async () => replyBubble()?.querySelector<HTMLButtonElement>('[data-testid="chat-play-voice"]')?.click());
+    await act(async () => replyBubble()?.querySelector<HTMLButtonElement>('[data-testid="chat-regenerate"]')?.click());
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    await waitUntil(() => Boolean(replyBubble()?.textContent?.includes("Regenerated answer")));
+    await act(async () => finishAudioStartup?.());
+
+    expect(replyBubble()?.querySelector('[data-testid="chat-play-voice"]')?.getAttribute("aria-pressed"))
+      .toBe("false");
+  });
+
+  it("stops voice playback when its exchange is deleted", async () => {
+    const pause = vi.fn();
+    vi.stubGlobal("Audio", class {
+      src = "/voice/reply.wav";
+      pause = pause;
+      async play() {}
+    });
+    sessionMessages = [opening, userTurn, {
+      ...streamingReply, attempt: 1, content: "The answer", status: "sent",
+    }];
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) =>
+      String(input) === "/api/v1/generation/voice"
+        ? Response.json({ data: { contentUrl: "/voice/reply.wav" } })
+        : originalFetch(input, init),
+    );
+    await mountSession();
+    await act(async () => replyBubble()?.querySelector<HTMLButtonElement>('[data-testid="chat-play-voice"]')?.click());
+    await act(async () => replyBubble()?.querySelector<HTMLButtonElement>('[data-testid="chat-delete-message"]')?.click());
+    await act(async () => replyBubble()?.querySelector<HTMLButtonElement>('[data-testid="chat-delete-message"]')?.click());
+
+    expect(replyBubble()).toBeNull();
+    expect(pause).toHaveBeenCalledOnce();
   });
 
   async function mountSession() {

@@ -209,6 +209,16 @@ describe("truthful public UI states", () => {
   it("states that approval still awaits operator Release publication", () => {
     expect(createdCharacterPublicationStatus({
       status: "approved",
+      visibility: "unlisted",
+      publicationState: "awaiting_publication",
+    })).toBe("approved · awaiting publication");
+    expect(createdCharacterPublicationStatus({
+      status: "approved",
+      visibility: "unlisted",
+      publicationState: "live",
+    })).toBe("live");
+    expect(createdCharacterPublicationStatus({
+      status: "approved",
       visibility: "public",
       publicationState: "awaiting_publication",
     })).toBe("approved · awaiting publication");

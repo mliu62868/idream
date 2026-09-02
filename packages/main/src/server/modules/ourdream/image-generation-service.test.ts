@@ -58,6 +58,17 @@ const COMPLETE_PERSONA_DETAILS = {
   firstMessage: "There you are. Tell me what happened.",
 };
 
+async function createCompletedPreviewFixture(userId: string, draftId: string, assetId: string) {
+  // Reserve through the real write boundary so confirmation can verify the
+  // immutable input. The existing asset keeps these tests focused on adoption.
+  const queued = await api("POST", `character-drafts/${draftId}/preview`, { userId, ageGate: true });
+  expectOk(queued);
+  return prisma.characterPreviewJob.update({
+    where: { id: queued.data.previewJob.id },
+    data: { status: "completed", resultAssetId: assetId, completedAt: new Date() },
+  });
+}
+
 function asInputJson(value: AiFinalizePayload): Prisma.InputJsonValue {
   return value as unknown as Prisma.InputJsonValue;
 }
@@ -308,7 +319,7 @@ beforeAll(async () => {
   await purgeTestData(P);
   await prisma.generationModelProfile.create({
     data: {
-      id: `${P}compatible-reference-route-v2`,
+      id: `${P}compatible-reference-route-v3`,
       profileKey: "chat-image-edit",
       label: "Compatible Character reference test route",
       mode: "image",
@@ -316,7 +327,7 @@ beforeAll(async () => {
       pipelineModel: "qwen-image-edit",
       workflowKey: "qwen-image-edit-img2img",
       runnerConfig: {
-        workflowVersion: 1,
+        workflowVersion: 2,
         capabilities: {
           textToImage: true,
           stableSeed: true,
@@ -328,7 +339,7 @@ beforeAll(async () => {
       allowedOrientations: ["4:5", "16:9"],
       costMultiplier: 1,
       maxCount: 4,
-      version: 2,
+      version: 3,
       status: "active",
     },
   });
@@ -777,6 +788,15 @@ describe("image generation service contract", () => {
     const userId = `${P}quote-drift-user`;
     await createUser({ id: userId });
     await grantCoins(userId, 1_000, "seed");
+    const profile = await prisma.generationModelProfile.findFirstOrThrow({
+      where: { profileKey: "profile_image_default_v1", status: "active" },
+    });
+    const originalMaxCount = profile.maxCount;
+    // This scenario needs two initially quoted quantities, independently of
+    // the production route's current single-output capacity.
+    await prisma.generationModelProfile.update({
+      where: { id: profile.id }, data: { maxCount: 2 },
+    });
     const body = {
       mode: "image" as const,
       freeplay: true,
@@ -794,14 +814,6 @@ describe("image generation service contract", () => {
     };
     expect(quote.maxCount).toBeGreaterThan(1);
     expect(quote.orientations.length).toBeGreaterThan(1);
-    const profile = await prisma.generationModelProfile.findFirstOrThrow({
-      where: {
-        profileKey: quote.profileId,
-        version: quote.profileVersion,
-        status: "active",
-      },
-    });
-    const originalMaxCount = profile.maxCount;
     const originalOrientations = Array.isArray(profile.allowedOrientations)
       ? profile.allowedOrientations.filter(
           (orientation): orientation is string =>
@@ -1851,15 +1863,7 @@ describe("image generation service contract", () => {
       body: { age: 25, advancedDetails: COMPLETE_PERSONA_DETAILS },
     });
     expectOk(completedPersona);
-    const preview = await prisma.characterPreviewJob.create({
-      data: {
-        draftId,
-        status: "completed",
-        provider: "backend",
-        resultAssetId: assetId,
-        completedAt: new Date(),
-      },
-    });
+    const preview = await createCompletedPreviewFixture(userId, draftId, assetId);
     const selected = await api("POST", `character-drafts/${draftId}/preview-anchor`, {
       userId,
       ageGate: true,
@@ -2027,24 +2031,8 @@ describe("image generation service contract", () => {
         },
       ],
     });
-    const firstPreview = await prisma.characterPreviewJob.create({
-      data: {
-        draftId,
-        status: "completed",
-        provider: "mock",
-        resultAssetId: firstAssetId,
-        completedAt: new Date(Date.now() - 5_000),
-      },
-    });
-    await prisma.characterPreviewJob.create({
-      data: {
-        draftId,
-        status: "completed",
-        provider: "mock",
-        resultAssetId: secondAssetId,
-        completedAt: new Date(),
-      },
-    });
+    const firstPreview = await createCompletedPreviewFixture(userId, draftId, firstAssetId);
+    await createCompletedPreviewFixture(userId, draftId, secondAssetId);
 
     const selected = await api("POST", `character-drafts/${draftId}/preview-anchor`, {
       userId,
@@ -2234,7 +2222,7 @@ describe("image generation service contract", () => {
     }
   });
 
-  it("re-dispatches a stale queued Attempt without fabricating failure or refund", async () => {
+  it("quarantines an exhausted source without resetting its budget or fabricating failure and refund", async () => {
     const userId = `${P}stale-user`;
     await createUser({ id: userId });
     await grantCoins(userId, 100, "seed");
@@ -2280,10 +2268,6 @@ describe("image generation service contract", () => {
       where: { id: attempt.id },
       data: { createdAt: staleAt },
     });
-    await prisma.generationAttemptEvent.updateMany({
-      where: { attemptId: attempt.id },
-      data: { occurredAt: staleAt, createdAt: staleAt },
-    });
     await prisma.mainOutboxEvent.update({
       where: { id: dispatch.id },
       data: { createdAt: staleAt, updatedAt: staleAt, nextRunAt: staleAt },
@@ -2294,24 +2278,32 @@ describe("image generation service contract", () => {
       timeoutMs: 60_000,
       generationJobIds: [jobId],
     });
-    expect(reconciled).toMatchObject({ enqueued: 1, quarantined: 0 });
+    expect(reconciled).toMatchObject({ enqueued: 0, quarantined: 1 });
 
     const poll = await api("GET", `generation/jobs/${jobId}`, { userId, ageGate: true });
     expectOk(poll);
     expect(poll.data.job.status).toBe("queued");
     expect(poll.data.job.completedAt).toBeNull();
-    expect(poll.data.job.errorCode).toBeNull();
+    expect(poll.data.job.errorCode).toBe("provider_outcome_unknown");
     expect(await dreamcoinBalance(userId)).toBe(95);
     await expect(prisma.generationAttempt.findUniqueOrThrow({
       where: { id: attempt.id },
-    })).resolves.toMatchObject({ status: "queued", terminalSequence: null });
+    })).resolves.toMatchObject({
+      status: "unknown",
+      errorCode: "generation_source_exhausted",
+      retryability: "operator_retry",
+      terminalRecordRef: null,
+    });
     await expect(prisma.mainOutboxEvent.findUniqueOrThrow({
       where: { id: dispatch.id },
     })).resolves.toMatchObject({ status: "delivered" });
     await expect(jobQueue.getByDedupeKey("ai.image.generate", dedupeKey)).resolves.toMatchObject({
-      state: expect.stringMatching(/waiting|prioritized|delayed/),
-      attemptsMade: 0,
+      state: "failed",
+      attemptsMade: 1,
+      maxAttempts: 1,
     });
+    expect(await prisma.dreamcoinLedger.count({ where: { sourceId: jobId, reason: "refund" } })).toBe(0);
+    expect(await prisma.generationTransportExecution.count({ where: { attemptId: attempt.id } })).toBe(0);
     await jobQueue.removeByDedupePrefix(`generation:${jobId}`, ["ai.image.generate"]);
   });
 
@@ -2332,10 +2324,9 @@ describe("image generation service contract", () => {
       (dispatch.payload as Record<string, unknown>).queueInput as Record<string, unknown>
     ).payload as Record<string, unknown>;
     const staleAt = new Date("2026-01-01T00:00:00.000Z");
-    const freshAt = new Date("2026-01-01T00:19:30.000Z");
+    const freshAt = new Date("2030-01-01T00:19:30.000Z");
     await prisma.generationJob.update({ where: { id: jobId }, data: { status: "running", updatedAt: staleAt } });
     await prisma.generationAttempt.update({ where: { id: attempt.id }, data: { createdAt: staleAt } });
-    await prisma.generationAttemptEvent.updateMany({ where: { attemptId: attempt.id }, data: { occurredAt: staleAt, createdAt: staleAt } });
     await prisma.mainOutboxEvent.update({ where: { id: dispatch.id }, data: { createdAt: staleAt, updatedAt: staleAt, nextRunAt: staleAt } });
     await recordGenerationTransportExecution({
       version: 1,
@@ -2353,8 +2344,9 @@ describe("image generation service contract", () => {
     });
 
     const reconciled = await reconcileStaleGenerationJobs({
-      now: new Date("2026-01-01T00:20:00.000Z"),
+      now: new Date("2030-01-01T00:20:00.000Z"),
       timeoutMs: 60_000,
+      generationJobIds: [jobId],
     });
     expect(reconciled).toMatchObject({ enqueued: 0, quarantined: 0 });
     await expect(prisma.generationAttempt.findUniqueOrThrow({ where: { id: attempt.id } })).resolves.toMatchObject({ status: "running", terminalSequence: null });
@@ -2382,7 +2374,6 @@ describe("image generation service contract", () => {
     const staleAt = new Date("2026-01-01T00:00:00.000Z");
     await prisma.generationJob.update({ where: { id: jobId }, data: { status: "running", updatedAt: staleAt } });
     await prisma.generationAttempt.update({ where: { id: attempt.id }, data: { createdAt: staleAt } });
-    await prisma.generationAttemptEvent.updateMany({ where: { attemptId: attempt.id }, data: { occurredAt: staleAt, createdAt: staleAt } });
     await prisma.mainOutboxEvent.update({ where: { id: dispatch.id }, data: { createdAt: staleAt, updatedAt: staleAt, nextRunAt: staleAt } });
     await recordGenerationTransportExecution({
       version: 1,
@@ -2400,8 +2391,8 @@ describe("image generation service contract", () => {
     });
 
     const results = await Promise.all([
-      reconcileStaleGenerationJobs({ now: new Date("2026-01-01T00:20:00.000Z"), timeoutMs: 60_000 }),
-      reconcileStaleGenerationJobs({ now: new Date("2026-01-01T00:20:00.000Z"), timeoutMs: 60_000 }),
+      reconcileStaleGenerationJobs({ now: new Date("2030-01-01T00:20:00.000Z"), timeoutMs: 60_000, generationJobIds: [jobId] }),
+      reconcileStaleGenerationJobs({ now: new Date("2030-01-01T00:20:00.000Z"), timeoutMs: 60_000, generationJobIds: [jobId] }),
     ]);
     expect(results.reduce((sum, result) => sum + result.quarantined, 0)).toBe(1);
     await expect(prisma.generationAttempt.findUniqueOrThrow({ where: { id: attempt.id } })).resolves.toMatchObject({
@@ -4733,7 +4724,7 @@ describe("image generation service contract", () => {
         generationProfileKey: profileKey,
         generationProfileVersion: 1,
         workflowKey: "qwen-image-edit-img2img",
-        workflowVersion: 1,
+        workflowVersion: 2,
         style: "realistic",
         matrixKey: `${P}source-runtime-matrix`,
         sampleCount: 40,
@@ -4835,7 +4826,7 @@ describe("image generation service contract", () => {
       details: {
         generationJobId: jobId,
         workflowKey: "qwen-image-edit-img2img",
-        workflowVersion: 1,
+        workflowVersion: 2,
       },
     });
     await expect(
@@ -5322,7 +5313,7 @@ describe("image generation service contract", () => {
         generationProfileKey: routedProfileId,
         generationProfileVersion: routedProfileVersion,
         workflowKey: "qwen-image-edit-multi-identity",
-        workflowVersion: 1,
+        workflowVersion: 2,
       },
     });
     expect(generated.data.job.prompt).toContain("midnight blue evening dress");
@@ -5389,7 +5380,7 @@ describe("image generation service contract", () => {
         generationProfileKey: routedProfileId,
         generationProfileVersion: routedProfileVersion,
         workflowKey: "qwen-image-edit-multi-identity",
-        workflowVersion: 1,
+        workflowVersion: 2,
       },
     });
     const retriedJobId = retriedLookGeneration.data.job.id as string;
@@ -5838,7 +5829,7 @@ describe("image generation service contract", () => {
       ),
     ).toMatchObject({
       characterId,
-      imageEditModelIds: [],
+      imageEditModelIds: ["character-image-variation"],
     });
     expect(
       mediaList.data.items.find(
@@ -5847,7 +5838,7 @@ describe("image generation service contract", () => {
     ).toMatchObject({
       characterId: CHAR,
       canEditIdentity: false,
-      imageEditModelIds: [],
+      imageEditModelIds: ["character-image-variation"],
     });
     const automaticVariation = await api(
       "POST",
@@ -5865,7 +5856,7 @@ describe("image generation service contract", () => {
       "character-image-variation",
     );
 
-    const internalProfileVariation = await api(
+    const explicitProfileVariation = await api(
       "POST",
       `media/${mediaId}/variation/quote`,
       {
@@ -5877,7 +5868,8 @@ describe("image generation service contract", () => {
         },
       },
     );
-    expectError(internalProfileVariation, 409, "conflict");
+    expectOk(explicitProfileVariation);
+    expect(explicitProfileVariation.data.quote).toEqual(automaticVariation.data.quote);
 
     const variationQuote =
       automaticVariation.data.quote as ExactGenerationQuote & {

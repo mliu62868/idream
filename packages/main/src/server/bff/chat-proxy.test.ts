@@ -12,6 +12,7 @@ import { dispatchPendingChatEvents } from "@/processes/chat-outbox";
 import {
   beginChatTurn,
   cancelChatTurn,
+  chatVoiceAuthority,
   commitChatTerminal,
   createChatSession,
   deleteChatMessage,
@@ -20,6 +21,7 @@ import {
   regenerateChatTurn,
 } from "@/server/modules/chat/turn-ledger";
 import { applyChatToolEffect } from "@/server/modules/chat/tool-effect";
+import { characterReleaseSnapshotHash } from "@/server/modules/admin-v2/characters/release-snapshot";
 
 const USER_ID = "seed-dev-user";
 const SECRET = "test-bff-secret-0123456789abcdef";
@@ -38,6 +40,39 @@ const TEST_TERMINAL_EVIDENCE = {
 
 describe("Main-owned Chat façade", () => {
   const fetchMock = vi.fn();
+
+  it("allows voice for the session's immutable opening without trusting another session id", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const sessionId = await ensureSession(proxyChatRequest);
+    const messageId = `opening:${sessionId}`;
+    await prisma.character.update({
+      where: { id: CHARACTER_ID },
+      data: { currentContentVersionId: CONTENT_V2_ID },
+    });
+
+    try {
+      await expect(chatVoiceAuthority(USER_ID, sessionId, messageId)).resolves.toMatchObject({
+        schemaVersion: 1,
+        sessionId,
+        messageId,
+        characterId: CHARACTER_ID,
+        text: "You made it.",
+        attempt: 1,
+        sceneVersion: 0,
+        scene: null,
+        characterContentVersionId: CONTENT_ID,
+      });
+      await expect(chatVoiceAuthority("another-user", sessionId, messageId))
+        .rejects.toThrow("Message not found");
+      await expect(chatVoiceAuthority(USER_ID, sessionId, "opening:another-session"))
+        .rejects.toThrow("Message not found");
+    } finally {
+      await prisma.character.update({
+        where: { id: CHARACTER_ID },
+        data: { currentContentVersionId: CONTENT_ID },
+      });
+    }
+  });
 
   beforeAll(async () => {
     process.env.APP_ENV = "test";
@@ -200,153 +235,203 @@ describe("Main-owned Chat façade", () => {
   });
 
   it("requires public sessions to pin the live published Release and its visual identity", async () => {
-    const suffix = randomUUID();
-    const userId = `public-chat-user-${suffix}`;
-    const characterId = `public-chat-character-${suffix}`;
-    const contentId = `public-chat-content-${suffix}`;
-    const contentV2Id = `public-chat-content-v2-${suffix}`;
-    const releaseId = `public-chat-release-${suffix}`;
-    const releaseV2Id = `public-chat-release-v2-${suffix}`;
-    const visualId = `public-chat-visual-${suffix}`;
-    await prisma.user.create({
-      data: { id: userId, email: `${suffix}@chat.test`, emailVerified: true },
-    });
-    await prisma.character.create({
-      data: {
-        id: characterId,
-        name: "Released Companion",
-        age: 26,
-        description: "Release-only public fixture.",
-        visibility: "public",
-        status: "approved",
-        appearance: {},
-        advancedDetails: {},
-      },
-    });
-    await prisma.characterContentVersion.create({
-      data: {
-        id: contentId,
-        characterId,
-        version: 1,
-        contentHash: createHash("sha256").update(contentId).digest("hex"),
-        personaSnapshot: {},
-        openingSnapshot: { firstMessage: "Hello." },
-        appearanceSnapshot: {},
-        sourceType: "test",
-      },
-    });
-    await expect(createChatSession(userId, { characterId })).rejects.toThrow(
-      "active Serving Release",
-    );
-    await prisma.characterVisualProfile.create({
-      data: {
-        id: visualId,
-        characterId,
-        version: 3,
-        status: "active",
-        identityPrompt: "exact released identity",
-        faceTraits: {},
-        hairTraits: {},
-        bodyTraits: {},
-        signatureTraits: {},
-        styleTraits: {},
-        anchorAssetIds: [],
-        adapterRefs: [],
-        createdFrom: "test",
-      },
-    });
-    await prisma.characterRelease.create({
-      data: {
-        id: releaseId,
-        projectId: `project-${suffix}`,
-        revisionId: `revision-${suffix}`,
-        characterContentVersionId: contentId,
-        visualProfileId: visualId,
-        visualProfileVersion: 3,
-        generationProvenance: {},
-        releasePlacementManifest: {},
-        snapshotHash: createHash("sha256").update(releaseId).digest("hex"),
-        readiness: "ready",
-        status: "published",
-        publishedAt: new Date(),
-      },
-    });
-    await prisma.characterServing.create({
-      data: { characterId, currentReleaseId: releaseId, state: "live" },
-    });
+    const rolledBack = new Error("completed public Chat Release fixture");
+    await expect(prisma.$transaction(async (tx) => {
+      function inFixture<T>(run: (client: Prisma.TransactionClient) => Promise<T>): Promise<T> { return run(tx); }
+      // Keep append-only qualification evidence in a rollback fixture. These
+      // bindings execute the production reads/writes against real PostgreSQL.
+      const bindings = [
+        vi.spyOn(prisma.character, "findFirst").mockImplementation(tx.character.findFirst),
+        vi.spyOn(prisma.characterContentVersion, "findUnique").mockImplementation(tx.characterContentVersion.findUnique),
+        vi.spyOn(prisma.recentChat, "findFirst").mockImplementation(tx.recentChat.findFirst),
+        vi.spyOn(prisma.recentChat, "findUnique").mockImplementation(tx.recentChat.findUnique),
+        vi.spyOn(prisma.recentChat, "create").mockImplementation(tx.recentChat.create),
+        vi.spyOn(prisma.recentChat, "updateMany").mockImplementation(tx.recentChat.updateMany),
+        vi.spyOn(prisma.moderationEvent, "create").mockImplementation(tx.moderationEvent.create),
+        vi.spyOn(prisma, "$transaction").mockImplementation(inFixture),
+      ];
+      try {
+        const suffix = randomUUID();
+        const userId = `public-chat-user-${suffix}`;
+        const characterId = `public-chat-character-${suffix}`;
+        const contentId = `public-chat-content-${suffix}`;
+        const contentV2Id = `public-chat-content-v2-${suffix}`;
+        const releaseId = `public-chat-release-${suffix}`;
+        const releaseV2Id = `public-chat-release-v2-${suffix}`;
+        const visualId = `public-chat-visual-${suffix}`;
+        const projectId = `project-${suffix}`;
+        const placements = ["avatar", "hero", "chat"].map(slot => ({
+          slotKey: `character_${slot}`,
+          assetId: `public-chat-${slot}-${suffix}`,
+          slotVersion: 1,
+        }));
+        const assetIds = placements.map(placement => placement.assetId);
+        await tx.user.create({
+          data: { id: userId, email: `${suffix}@chat.test`, emailVerified: true },
+        });
+        await tx.character.create({
+          data: {
+            id: characterId,
+            name: "Released Companion",
+            age: 26,
+            description: "Release-only public fixture.",
+            visibility: "public",
+            status: "approved",
+            appearance: {},
+            advancedDetails: {},
+          },
+        });
+        await tx.characterContentVersion.create({
+          data: {
+            id: contentId,
+            characterId,
+            version: 1,
+            contentHash: createHash("sha256").update(contentId).digest("hex"),
+            personaSnapshot: {},
+            openingSnapshot: { firstMessage: "Hello." },
+            appearanceSnapshot: {},
+            sourceType: "test",
+          },
+        });
+        await expect(createChatSession(userId, { characterId })).rejects.toThrow(
+          "active Serving Release",
+        );
+        await tx.mediaAsset.createMany({
+          data: assetIds.map(id => ({
+            id, ownerId: userId, characterId, type: "image",
+            url: `/user-content/${id}/content.webp`, storageKey: `tests/${id}.webp`,
+            contentType: "image/webp", visibility: "public_pack", safetyStatus: "passed",
+            metadata: { synthetic: false, provider: "pipeline" },
+          })),
+        });
+        await tx.character.update({
+          where: { id: characterId },
+          data: { imageAssetId: assetIds[0], currentContentVersionId: contentId },
+        });
+        await tx.characterProject.create({ data: { id: projectId, characterId } });
 
-    const session = await createChatSession(userId, { characterId });
-    await expect(prisma.recentChat.findUniqueOrThrow({ where: { sessionId: session.id } }))
-      .resolves.toMatchObject({
-        characterContentVersionId: contentId,
-        characterReleaseId: releaseId,
-        characterVisualProfileId: visualId,
-        characterVisualProfileVersion: 3,
-      });
+        async function publishFixtureRelease(id: string, contentVersionId: string, revision: number) {
+          const revisionId = `${id}-revision`;
+          await tx.characterRevision.create({
+            data: { id: revisionId, projectId, revision, characterContentVersionId: contentVersionId, projectSnapshot: {} },
+          });
+          const releasePlacements = placements.map(placement => ({
+            ...placement,
+            runId: `${id}:${placement.slotKey}:run`,
+            itemId: `${id}:${placement.slotKey}:item`,
+            reviewDecisionId: `${id}:${placement.slotKey}:decision`,
+            generationJobId: `${id}:${placement.slotKey}:job`,
+          }));
+          const snapshot = {
+            projectId, revisionId, characterContentVersionId: contentVersionId,
+            visualProfileId: visualId, visualProfileVersion: 3, referenceSetRevisionId: null,
+            generationProvenance: {
+              schemaVersion: "character-release-generation-provenance-v2",
+              policyVersion: "character-release-policy-v2",
+              requiredReleaseRoute: {
+                routeFingerprint: `${id}:route`, matrixKey: "chat-session-release-fixture",
+                generationProfileKey: "chat-session-image-profile", generationProfileVersion: 1,
+                workflowKey: "qwen-image-edit-img2img", workflowVersion: 2,
+              },
+              placements: releasePlacements.map(placement => ({ ...placement, provider: "pipeline" })),
+            },
+            releasePlacementManifest: { schemaVersion: 2, placements: releasePlacements },
+          };
+          const release = await tx.characterRelease.create({
+            data: { id, ...snapshot, snapshotHash: characterReleaseSnapshotHash(snapshot),
+              readiness: "ready", status: "published", publishedAt: new Date() },
+          });
+          const validation = await tx.releaseValidationRun.create({
+            data: { releaseId: id, snapshotHash: release.snapshotHash,
+              policyVersion: "character-release-policy-v2", result: "passed", finishedAt: new Date() },
+          });
+          await tx.publicCatalogQualification.create({
+            data: { releaseId: id, releaseSnapshotHash: release.snapshotHash,
+              kind: "generated_release", validationRunId: validation.id,
+              evidence: { schemaVersion: "public-catalog-qualification-v1", policyVersion: "character-release-policy-v2" } },
+          });
+        }
+        await tx.characterVisualProfile.create({
+          data: {
+            id: visualId,
+            characterId,
+            version: 3,
+            status: "active",
+            identityPrompt: "exact released identity",
+            faceTraits: {},
+            hairTraits: {},
+            bodyTraits: {},
+            signatureTraits: {},
+            styleTraits: {},
+            anchorAssetIds: [],
+            adapterRefs: [],
+            createdFrom: "test",
+          },
+        });
+        await publishFixtureRelease(releaseId, contentId, 1);
+        await tx.characterServing.create({
+          data: { characterId, currentReleaseId: releaseId, state: "live" },
+        });
 
-    await prisma.characterContentVersion.create({
-      data: {
-        id: contentV2Id,
-        characterId,
-        version: 2,
-        contentHash: createHash("sha256").update(contentV2Id).digest("hex"),
-        personaSnapshot: {},
-        openingSnapshot: { firstMessage: "Hello from release two." },
-        appearanceSnapshot: {},
-        sourceType: "test",
-      },
-    });
-    await prisma.characterRelease.create({
-      data: {
-        id: releaseV2Id,
-        projectId: `project-${suffix}`,
-        revisionId: `revision-v2-${suffix}`,
-        characterContentVersionId: contentV2Id,
-        visualProfileId: visualId,
-        visualProfileVersion: 3,
-        generationProvenance: {},
-        releasePlacementManifest: {},
-        snapshotHash: createHash("sha256").update(releaseV2Id).digest("hex"),
-        readiness: "ready",
-        status: "published",
-        publishedAt: new Date(),
-      },
-    });
-    await prisma.characterServing.update({
-      where: { characterId },
-      data: { currentReleaseId: releaseV2Id },
-    });
+        await tx.$executeRaw`SET CONSTRAINTS ALL IMMEDIATE`;
+        const session = await createChatSession(userId, { characterId });
+        await expect(tx.recentChat.findUniqueOrThrow({ where: { sessionId: session.id } }))
+          .resolves.toMatchObject({
+            characterContentVersionId: contentId,
+            characterReleaseId: releaseId,
+            characterVisualProfileId: visualId,
+            characterVisualProfileVersion: 3,
+          });
 
-    const replacement = await createChatSession(userId, { characterId });
-    expect(replacement.id).not.toBe(session.id);
-    await expect(prisma.recentChat.findUniqueOrThrow({ where: { sessionId: session.id } }))
-      .resolves.toMatchObject({ status: "archived", activeKey: null });
-    await expect(prisma.recentChat.findUniqueOrThrow({ where: { sessionId: replacement.id } }))
-      .resolves.toMatchObject({
-        status: "active",
-        activeKey: `${userId}:${characterId}`,
-        characterContentVersionId: contentV2Id,
-        characterReleaseId: releaseV2Id,
-      });
+        await tx.characterContentVersion.create({
+          data: {
+            id: contentV2Id,
+            characterId,
+            version: 2,
+            contentHash: createHash("sha256").update(contentV2Id).digest("hex"),
+            personaSnapshot: {},
+            openingSnapshot: { firstMessage: "Hello from release two." },
+            appearanceSnapshot: {},
+            sourceType: "test",
+          },
+        });
+        await publishFixtureRelease(releaseV2Id, contentV2Id, 2);
+        await tx.character.update({ where: { id: characterId }, data: { currentContentVersionId: contentV2Id } });
+        await tx.characterServing.update({
+          where: { characterId },
+          data: { currentReleaseId: releaseV2Id },
+        });
 
-    await prisma.characterServing.update({
-      where: { characterId },
-      data: { state: "paused" },
-    });
-    await expect(beginChatTurn({
-      userId,
-      sessionId: replacement.id,
-      content: "This must not run after Serving is paused.",
-      idempotencyKey: `paused-serving-${suffix}`,
-    })).rejects.toThrow("active Serving Release");
-    await expect(prisma.chatTurn.count({ where: { sessionId: replacement.id } })).resolves.toBe(0);
+        const replacement = await createChatSession(userId, { characterId });
+        expect(replacement.id).not.toBe(session.id);
+        await expect(tx.recentChat.findUniqueOrThrow({ where: { sessionId: session.id } }))
+          .resolves.toMatchObject({ status: "archived", activeKey: null });
+        await expect(tx.recentChat.findUniqueOrThrow({ where: { sessionId: replacement.id } }))
+          .resolves.toMatchObject({
+            status: "active",
+            activeKey: `${userId}:${characterId}`,
+            characterContentVersionId: contentV2Id,
+            characterReleaseId: releaseV2Id,
+          });
 
-    await prisma.recentChat.deleteMany({ where: { userId } });
-    await prisma.characterServing.delete({ where: { characterId } });
-    await prisma.characterRelease.deleteMany({ where: { id: { in: [releaseId, releaseV2Id] } } });
-    await prisma.characterContentVersion.delete({ where: { id: contentV2Id } });
-    await prisma.character.delete({ where: { id: characterId } });
-    await prisma.user.delete({ where: { id: userId } });
+        await tx.characterServing.update({
+          where: { characterId },
+          data: { state: "paused" },
+        });
+        await expect(beginChatTurn({
+          userId,
+          sessionId: replacement.id,
+          content: "This must not run after Serving is paused.",
+          idempotencyKey: `paused-serving-${suffix}`,
+        })).rejects.toThrow("active Serving Release");
+        await expect(tx.chatTurn.count({ where: { sessionId: replacement.id } })).resolves.toBe(0);
+
+        await tx.$executeRaw`SET CONSTRAINTS ALL IMMEDIATE`;
+        throw rolledBack;
+      } finally {
+        bindings.reverse().forEach(binding => binding.mockRestore());
+      }
+    }, { timeout: 10_000 })).rejects.toBe(rolledBack);
   });
 
   it("commits one Main Turn before admitting one signed local AgentRun", async () => {

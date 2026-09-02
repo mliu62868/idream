@@ -82,5 +82,5 @@ export const STATUS_TONE_CLASS: Record<StatusTone, string> = {
   pending: "bg-[var(--ad-yellow-bg)] text-[var(--ad-yellow-text)]",
   danger: "bg-[var(--ad-red-bg)] text-[var(--ad-red-text)]",
   info: "bg-[var(--ad-blue-bg)] text-[var(--ad-blue-text)]",
-  neutral: "bg-black/[0.05] text-[var(--ad-text-muted)]",
+  neutral: "bg-black/[0.05] text-[var(--ad-text)]",
 };

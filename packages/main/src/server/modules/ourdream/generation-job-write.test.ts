@@ -30,7 +30,7 @@ const P = "zt-genwrite-";
 const PINNED_RETRY_JOB_AUTHORITY = {
   model: "redcraft-krea2-redmix3-txt2img",
   profileId: "profile_image_default_v1",
-  profileVersion: 1,
+  profileVersion: 2,
   orientation: "1:1",
   outputCount: 1,
   provider: "comfyui",

@@ -131,6 +131,9 @@ export function applyLocalStreamState(
   return messages.map((message) => {
     const local = localState.get(message.id);
     if (!local) return message;
+    if (chatStreamMessageIsTerminal(message) && message.status !== STOPPED_REPLY_STATUS) {
+      return message;
+    }
     if (local.stopped) {
       return { ...message, content: local.content, status: STOPPED_REPLY_STATUS };
     }
@@ -162,8 +165,8 @@ const ACTIVE_CHAT_ATTACHMENT_STATUSES = new Set([
   "running",
 ]);
 
-export function chatAttachmentIsActive(status: string): boolean {
-  return ACTIVE_CHAT_ATTACHMENT_STATUSES.has(status);
+export function chatAttachmentIsActive(status: string, errorCode?: string | null): boolean {
+  return ACTIVE_CHAT_ATTACHMENT_STATUSES.has(status) && errorCode !== "provider_outcome_unknown";
 }
 
 export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
@@ -205,14 +208,15 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     useRef<Map<string, string>>(new Map());
   const streamSources = useRef<Map<string, EventSource>>(new Map());
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const voicePlaybackIntentRef = useRef(0);
   const voiceClipRequestsRef =
-    useRef<Map<string, Promise<VoiceClipRequestResult>>>(new Map());
-  const voiceClipUrlsRef = useRef<Map<string, string>>(new Map());
+    useRef<Map<string, { key: string; promise: Promise<VoiceClipRequestResult> }>>(new Map());
+  const voiceClipUrlsRef = useRef<Map<string, { key: string; url: string }>>(new Map());
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const sessionMutationEpochRef = useRef(0);
   const hasActiveAttachment = messages.some((message) =>
     (message.attachments ?? []).some((attachment) =>
-      chatAttachmentIsActive(attachment.status),
+      chatAttachmentIsActive(attachment.status, attachment.errorCode),
     ),
   );
   const hasGeneratingReply = chatStreamMessagesNeedReconciliation(messages);
@@ -261,6 +265,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       setJumpToLatestVisible(false);
       audioRef.current?.pause();
       audioRef.current = null;
+      voicePlaybackIntentRef.current += 1;
       voiceClipRequestsRef.current.clear();
       voiceClipUrlsRef.current.clear();
       setVoicePreparingIds(new Set());
@@ -303,6 +308,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       sources.clear();
       audioRef.current?.pause();
       audioRef.current = null;
+      voicePlaybackIntentRef.current += 1;
     };
   }, []);
 
@@ -387,6 +393,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   ]);
 
   function stopVoice() {
+    voicePlaybackIntentRef.current += 1;
     const audio = audioRef.current;
     if (audio) {
       audio.pause();
@@ -400,10 +407,13 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     messageId: string,
     text: string,
   ): Promise<VoiceClipRequestResult> {
-    const cachedUrl = voiceClipUrlsRef.current.get(messageId);
-    if (cachedUrl) return { url: cachedUrl, reason: null };
+    // INVARIANT: a regenerated Turn keeps its message id but changes its text
+    // and attempt. Its audio must never come from the discarded reply.
+    const key = JSON.stringify([id, messages.find((message) => message.id === messageId)?.attempt, text]);
+    const cachedClip = voiceClipUrlsRef.current.get(messageId);
+    if (cachedClip?.key === key) return { url: cachedClip.url, reason: null };
     const existingRequest = voiceClipRequestsRef.current.get(messageId);
-    if (existingRequest) return existingRequest;
+    if (existingRequest?.key === key) return existingRequest.promise;
 
     setVoicePreparingIds((current) => new Set(current).add(messageId));
     const request = (async (): Promise<VoiceClipRequestResult> => {
@@ -432,7 +442,9 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
         };
         const url = payload.data?.contentUrl;
         if (url) {
-          voiceClipUrlsRef.current.set(messageId, url);
+          if (voiceClipRequestsRef.current.get(messageId)?.key === key) {
+            voiceClipUrlsRef.current.set(messageId, { key, url });
+          }
           return { url, reason: null };
         }
         return {
@@ -443,6 +455,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
         return { url: null, reason: "failed" };
       }
     })().finally(() => {
+      if (voiceClipRequestsRef.current.get(messageId)?.key !== key) return;
       voiceClipRequestsRef.current.delete(messageId);
       setVoicePreparingIds((current) => {
         const next = new Set(current);
@@ -450,12 +463,12 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
         return next;
       });
     });
-    voiceClipRequestsRef.current.set(messageId, request);
+    voiceClipRequestsRef.current.set(messageId, { key, promise: request });
     return request;
   }
 
-  // SPEC: Voice synthesis starts only after the reader presses Play. Chat text
-  //       stays fast by default; repeated plays reuse the clip cached by message.
+  // SPEC: Voice synthesis starts only after the reader presses Play. Repeated
+  // plays of the same selected reply reuse its clip.
   async function playMessage(messageId: string, text: string) {
     if (!characterId || !text.trim()) return;
     if (voicePlayingId === messageId) {
@@ -463,10 +476,12 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       return;
     }
     stopVoice();
+    const playbackIntent = voicePlaybackIntentRef.current;
     setStatus(null);
     setUpgradeReason(null);
     try {
       const result = await requestVoiceClip(messageId, text);
+      if (playbackIntent !== voicePlaybackIntentRef.current) return;
       if (result.reason === "not_entitled") {
         setUpgradeReason("voice");
         setStatus("Voice playback needs a plan with voice enabled.");
@@ -481,17 +496,29 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
         setStatus("Voice playback failed. Please try again.");
         return;
       }
+      const clipKey = voiceClipUrlsRef.current.get(messageId)?.key;
       const audio = new Audio(result.url);
       audioRef.current = audio;
-      audio.onended = () =>
+      audio.onended = () => {
+        if (playbackIntent !== voicePlaybackIntentRef.current) return;
         setVoicePlayingId((current) => (current === messageId ? null : current));
+      };
       audio.onerror = () => {
+        if (playbackIntent !== voicePlaybackIntentRef.current) return;
+        const cached = voiceClipUrlsRef.current.get(messageId);
+        // A deleted/unreadable clip must be revalidated on the next explicit
+        // Play. An old player's error must never evict a replacement clip.
+        if (cached?.key === clipKey && cached?.url === result.url) {
+          voiceClipUrlsRef.current.delete(messageId);
+        }
         setStatus("Voice playback failed. Please try again.");
         setVoicePlayingId((current) => (current === messageId ? null : current));
       };
       await audio.play();
+      if (playbackIntent !== voicePlaybackIntentRef.current) return;
       setVoicePlayingId(messageId);
     } catch {
+      if (playbackIntent !== voicePlaybackIntentRef.current) return;
       setStatus("Voice playback failed. Please try again.");
     }
   }
@@ -616,6 +643,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     setDeleteConfirmMessageId(null);
     setUpgradeReason(null);
     setEditingPending(true);
+    stopVoice();
     sessionMutationEpochRef.current += 1;
     try {
       const response = await fetch(`/api/v1/messages/${encodeURIComponent(messageId)}`, {
@@ -640,6 +668,9 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
         streamUrl?: string | null;
         status?: "pending" | "generating" | "blocked";
       };
+      if (payload.assistantMessageId) {
+        localStreamStateRef.current.delete(payload.assistantMessageId);
+      }
       cancelEdit();
       const session = await fetchSession();
       applySession(session);
@@ -682,6 +713,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     let recoveredStream = false;
     for (const message of session.messages) {
       if (!chatStreamMessageIsTerminal(message)) continue;
+      if (message.status !== STOPPED_REPLY_STATUS) localStreamStateRef.current.delete(message.id);
       const source = streamSources.current.get(message.id);
       if (!source) continue;
       source.close();
@@ -708,6 +740,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   //       updated session row the BFF returns (raw, not {ok,data}).
   async function toggleMemory() {
     if (memoryPending) return;
+    setStatus(null);
     setDeleteConfirmMessageId(null);
     const next = !memoryEnabled;
     setMemoryPending(true);
@@ -724,6 +757,8 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       }
       const row = (await response.json()) as { memoryEnabled?: boolean };
       setMemoryEnabled(typeof row.memoryEnabled === "boolean" ? row.memoryEnabled : next);
+    } catch {
+      setStatus("Couldn't update memory. Please try again.");
     } finally {
       setMemoryPending(false);
     }
@@ -733,16 +768,30 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     setStatus(null);
     if (deleteConfirmMessageId !== messageId) {
       setDeleteConfirmMessageId(messageId);
-      setStatus("Press Confirm delete to remove this message.");
+      setStatus("Press Confirm delete to remove your message and the reply.");
       return;
     }
+    stopVoice();
     sessionMutationEpochRef.current += 1;
     try {
       const response = await fetch(`/api/v1/messages/${encodeURIComponent(messageId)}`, {
         method: "DELETE",
       });
       if (response.ok) {
-        setMessages((current) => current.filter((message) => message.id !== messageId));
+        // INVARIANT: Main deletes one complete Turn from either message id.
+        const target = messages.find((message) => message.id === messageId);
+        const userMessageId = target?.role === "user" ? target.id : target?.replyToMessageId;
+        for (const message of messages) {
+          if (message.id !== messageId && message.id !== userMessageId && message.replyToMessageId !== userMessageId) continue;
+          localStreamStateRef.current.delete(message.id);
+          voiceClipUrlsRef.current.delete(message.id);
+          voiceClipRequestsRef.current.delete(message.id);
+        }
+        setMessages((current) => current.filter((message) =>
+          message.id !== messageId &&
+          message.id !== userMessageId &&
+          message.replyToMessageId !== userMessageId,
+        ));
         setDeleteConfirmMessageId(null);
       } else {
         setStatus(chatFailureCopy(
@@ -848,11 +897,12 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     }
   }
 
-  // SPEC: Regenerate an assistant turn — POST returns a fresh attempt id + streamUrl;
-  //       swap the bubble to that id, clear it, and reuse streamAssistant() so the
-  //       new reply streams in identically to a normal turn.
+  // SPEC: Regenerate keeps the assistant message identity and advances its
+  // attempt. Discard the old stream cache before displaying the new attempt.
   async function regenerate(messageId: string) {
     if (pending || hasGeneratingReply) return;
+    setPending(true);
+    stopVoice();
     setStatus(null);
     setDeleteConfirmMessageId(null);
     sessionMutationEpochRef.current += 1;
@@ -870,6 +920,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       }
       const payload = (await response.json()) as {
         assistantMessageId?: string;
+        attempt?: number;
         streamUrl?: string | null;
         status?: "pending" | "generating";
       };
@@ -879,16 +930,19 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
         setStatus("Couldn't regenerate. Please try again.");
         return;
       }
+      localStreamStateRef.current.delete(messageId);
       setMessages((current) =>
         current.map((message) =>
           message.id === messageId
-            ? { ...message, id: newId, content: "", status: payload.status ?? "pending" }
+            ? { ...message, id: newId, attempt: payload.attempt, content: "", status: payload.status ?? "pending" }
             : message,
         ),
       );
       if (payload.status === "generating") streamAssistant(streamUrl, newId, "");
     } catch {
       setStatus("Couldn't regenerate. Please try again.");
+    } finally {
+      setPending(false);
     }
   }
 
@@ -922,6 +976,9 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
 
     const close = () => {
       source.close();
+      // A late recovery from the previous attempt must not close the newer
+      // EventSource registered under the same durable assistant message id.
+      if (streamSources.current.get(assistantId) !== source) return;
       streamSources.current.delete(assistantId);
       if (!localStreamStateRef.current.get(assistantId)?.stopped) {
         localStreamStateRef.current.delete(assistantId);
@@ -931,6 +988,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     const finish = async () => {
       if (finished) return;
       finished = true;
+      const mutationEpoch = sessionMutationEpochRef.current;
       if (!streamed && fallback) {
         setMessages((current) =>
           current.map((message) =>
@@ -939,6 +997,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
         );
       }
       const outcome = await recoverAssistantFromSession(assistantId);
+      if (mutationEpoch !== sessionMutationEpochRef.current) return;
       if (!streamed && !fallback && outcome === "terminal_empty") {
         setMessages((current) => current.filter((message) => message.id !== assistantId));
         setStatus("Reply failed to load. Please try again.");
@@ -946,6 +1005,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     };
 
     source.addEventListener("delta", (event) => {
+      if (finished || streamSources.current.get(assistantId) !== source) return;
       const data = parseStreamEvent(event);
       const delta = typeof data.delta === "string" ? data.delta : "";
       streamed += delta;
@@ -961,6 +1021,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     });
 
     source.addEventListener("replace", (event) => {
+      if (finished || streamSources.current.get(assistantId) !== source) return;
       const data = parseStreamEvent(event);
       streamed = typeof data.content === "string" ? data.content : "";
       localStreamStateRef.current.set(assistantId, {
@@ -975,21 +1036,23 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     });
 
     source.addEventListener("done", () => {
+      if (finished || streamSources.current.get(assistantId) !== source) return;
       setStatus(null);
       void finish().finally(close);
     });
 
     source.addEventListener("error", (event) => {
+      if (finished || streamSources.current.get(assistantId) !== source) return;
       const payload = parseStreamEvent(event);
       if (chatStreamErrorDisposition(payload) === "reconnect") {
         setStatus("Reply interrupted. Reconnecting…");
         return;
       }
-      if (finished) return;
       finished = true;
+      const mutationEpoch = sessionMutationEpochRef.current;
       const terminalMessage = chatStreamTerminalErrorMessage(payload);
       void recoverAssistantFromSession(assistantId).finally(() => {
-        setStatus(terminalMessage);
+        if (mutationEpoch === sessionMutationEpochRef.current) setStatus(terminalMessage);
         close();
       });
     });
@@ -1000,6 +1063,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   // exact durable attempt and signalled the active DSH invocation.
   async function stopStreamingReply() {
     if (stoppingReply) return;
+    sessionMutationEpochRef.current += 1;
     const stoppedIds = new Set<string>();
     for (const [messageId, source] of streamSources.current) {
       source.close();
@@ -1012,20 +1076,25 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     if (stoppedIds.size === 0) return;
     setStoppingReply(true);
     setStatus("Stopping reply…");
+    let completionWonRace = false;
     const results = await Promise.all(
       [...stoppedIds].map(async (messageId) => {
         const response = await fetch(
           `/api/v1/messages/${encodeURIComponent(messageId)}/cancel`,
           { method: "POST" },
         );
+        if (response.ok) {
+          const result = await response.json() as { cancelled?: boolean };
+          completionWonRace ||= result.cancelled === false;
+        }
         return response.ok;
       }),
     ).catch(() => stoppedIds.size === 0 ? [] : [false]);
-    if (!results.every(Boolean)) {
+    if (!results.every(Boolean) || completionWonRace) {
       for (const messageId of stoppedIds) {
         localStreamStateRef.current.delete(messageId);
       }
-      setStatus("Couldn't stop the reply. Reconnecting…");
+      setStatus(completionWonRace ? null : "Couldn't stop the reply. Reconnecting…");
       try {
         const session = await fetchSession();
         applySession(session);
@@ -1062,8 +1131,11 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   }
 
   async function recoverAssistantFromSession(assistantId: string) {
+    const mutationEpoch = sessionMutationEpochRef.current;
     return reconcileChatStreamAuthority({
-      apply: applySession,
+      apply: (session) => {
+        if (mutationEpoch === sessionMutationEpochRef.current) applySession(session);
+      },
       assistantId,
       messages: (session: ChatSession) => session.messages,
       read: () => fetchSession(),
@@ -1121,7 +1193,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                     !latestReplyInProgress &&
                     (message.id === latestUserMessageId ||
                       message.replyToMessageId === latestUserMessageId);
-                  const canPlayMessage = !isUser && Boolean(message.content.trim());
+                  const canPlayMessage = !isUser && message.status === "sent" && Boolean(message.content.trim());
                   const messageActionCount = showMessageActions
                     ? 1 +
                       Number(canDeleteMessage) +
@@ -1588,7 +1660,8 @@ function ChatImageAttachmentCard({
     );
   }
 
-  const isWaiting = chatAttachmentIsActive(attachment.status);
+  const requiresReview = attachment.errorCode === "provider_outcome_unknown";
+  const isWaiting = chatAttachmentIsActive(attachment.status, attachment.errorCode);
   const failed = ["failed", "blocked", "refunded", "rejected"].includes(attachment.status);
   const paymentRequired = failed && attachment.errorCode === "payment_required";
   const completedUnavailable = attachment.status === "completed" && Boolean(attachment.mediaAssetId);
@@ -1603,7 +1676,9 @@ function ChatImageAttachmentCard({
         </div>
         <div className="min-w-0 flex-1">
           <p className="text-[12px] font-bold text-white">
-            {attachment.status === "proposed"
+            {requiresReview
+              ? "Image result needs review"
+              : attachment.status === "proposed"
               ? "Image request"
               : paymentRequired
                 ? "Not enough dreamcoins"
@@ -1623,7 +1698,9 @@ function ChatImageAttachmentCard({
             </div>
           ) : (
             <p className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-white/60">
-              {failed
+              {requiresReview
+                ? "The result could not be confirmed. Contact support before trying again."
+                : failed
                 ? paymentRequired
                   ? "Add dreamcoins to generate this image."
                   : "The image could not be completed."
@@ -1632,7 +1709,12 @@ function ChatImageAttachmentCard({
           )}
         </div>
       </div>
-      {paymentRequired ? (
+      {requiresReview ? (
+        <div className="mt-3 text-[11px] text-white/70">
+          <Link className="underline" href="/helpdesk">Contact support</Link>
+          <p className="mt-1 break-all">Request: {attachment.generationJobId ?? attachment.id}</p>
+        </div>
+      ) : paymentRequired ? (
         <Link
           className="mt-3 inline-flex h-8 items-center rounded-full bg-white px-3 text-[12px] font-bold text-[rgb(13,13,13)]"
           href={paymentHref}

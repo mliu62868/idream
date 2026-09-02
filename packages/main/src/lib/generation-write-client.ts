@@ -5,6 +5,8 @@ import {
   type RuntimeGenerationQuote,
 } from "@/lib/public-api-contracts";
 
+export type GenerationFetcher = (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch>;
+
 export type GenerationQuoteAuthority = {
   profileId: string;
   profileVersion: number;
@@ -99,7 +101,7 @@ async function requestIdempotentGenerationWrite(
     intentKind: "generation" | "media_variation" | "generation_retry";
     url: string;
   },
-  fetcher: typeof fetch,
+  fetcher: GenerationFetcher,
 ): Promise<GenerationWriteResult> {
   const semanticBody = Object.fromEntries(
     Object.entries(input.body).filter(
@@ -151,7 +153,7 @@ async function requestIdempotentGenerationWrite(
 
 export function requestGenerationJobWithExactAuthority(
   input: GenerationSubmissionRequest,
-  fetcher: typeof fetch = fetch,
+  fetcher: GenerationFetcher = fetch,
 ) {
   return requestIdempotentGenerationWrite(
     {
@@ -175,7 +177,7 @@ export async function requestGenerationRetryWithExactAuthority(
     jobId: string;
     quoteAuthority: GenerationQuoteAuthority;
   },
-  fetcher: typeof fetch = fetch,
+  fetcher: GenerationFetcher = fetch,
 ): Promise<GenerationWriteJob> {
   const result = await requestIdempotentGenerationWrite(
     {
@@ -193,7 +195,7 @@ export async function requestGenerationRetryWithExactAuthority(
 
 export async function requestMediaVariationWithExactQuote(
   input: MediaVariationRequest,
-  fetcher: typeof fetch = fetch,
+  fetcher: GenerationFetcher = fetch,
 ): Promise<GenerationWriteResult> {
   let quote = input.quote ?? null;
   if (!quote) {

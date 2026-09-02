@@ -24,7 +24,10 @@ describe("production seed authority boundaries", () => {
     const source = await readFile(seedPath, "utf8");
 
     expect(source).toContain("...existingMetadata");
-    expect(source).toContain("...existingAdvancedDetails");
+    // Persona merge precedence is covered by official-cold-start-content.test;
+    // this guard verifies the seed writes that authority's merged result.
+    expect(source).toContain("resolveOfficialColdStartPersonaWrite({");
+    expect(source).toContain("...personaWrite.advancedDetails");
     expect(source).toContain("...existingProvenance");
   });
 

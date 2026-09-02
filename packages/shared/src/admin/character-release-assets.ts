@@ -16,7 +16,15 @@ export const characterReleaseAssetPlacementSchema = z.object({
   reviewDecisionId: z.string().trim().min(1).optional(),
   generationJobId: z.string().trim().min(1).optional(),
   bootstrapIdentity: z.boolean().optional(),
-}).strict();
+}).strict().superRefine((placement, ctx) => {
+  // Imports have no generation lineage; partial generated evidence is never an import.
+  if (![placement.runId, placement.itemId, placement.generationJobId].some(Boolean)) return;
+  for (const field of ["runId", "itemId", "reviewDecisionId", "generationJobId"] as const) {
+    if (!placement[field]) {
+      ctx.addIssue({ code: "custom", path: [field], message: "Generated placements require complete generation and review lineage" });
+    }
+  }
+});
 
 export const characterReleaseAssetManifestSchema = z.object({
   schemaVersion: z.literal(2),

@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { compileCharacterSoul } from "@idream/shared";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { POST as createCreativeRun } from "@/app/api/v2/admin/creative/runs/route";
 import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
+import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import {
   characterVisualProfileSnapshotHash,
   referenceSetSnapshotHash,
@@ -223,12 +225,12 @@ describe("Character image Creative Run authority", () => {
         id: characterId,
         creatorId: actorId,
         name: "Legacy character shell",
-        age: 28,
-        gender: "female",
-        style: "realistic",
-        description: "A grounded late-night confidante.",
+        age: 63,
+        gender: "male",
+        style: "anime",
+        description: "PRIVATE_MUTABLE_STORY on a crowded street",
         source: "official",
-        appearance: {},
+        appearance: { identityAnchor: "White hair and a plaid shirt" },
         advancedDetails: {},
       },
     });
@@ -239,13 +241,19 @@ describe("Character image Creative Run authority", () => {
         activeKey: `character-image-create:${characterId}`,
       },
     });
+    const compiledSoul = compileCharacterSoul({
+      name: "Mara", age: 28, gender: "female",
+      characterPromise: "A grounded late-night confidante.",
+      detailsMarkdown: "PRIVATE_SOUL_MEMO and PRIVATE_REPLY_STYLE; these are not visual directions.",
+    });
+    if (!compiledSoul.ok) throw new Error("Character Soul fixture must compile");
     await prisma.characterContentVersion.create({
       data: {
         id: contentId,
         characterId,
         version: 1,
         contentHash: `character-image-create-content-${suffix}`,
-        personaSnapshot: { name: "Mara", description: "A grounded late-night confidante." },
+        personaSnapshot: toInputJson(compiledSoul.snapshot),
         openingSnapshot: { firstMessage: "What followed you home tonight?" },
         appearanceSnapshot: {
           identityAnchor: "Composed late-night radio host",
@@ -267,7 +275,7 @@ describe("Character image Creative Run authority", () => {
         pipelineModel: "qwen-image-edit",
         workflowKey: "qwen-image-edit-img2img",
         runnerConfig: {
-          workflowVersion: 1,
+          workflowVersion: 2,
           capabilities: {
             textToImage: true,
             stableSeed: true,
@@ -300,7 +308,7 @@ describe("Character image Creative Run authority", () => {
         pipelineModel: "qwen-image-edit",
         workflowKey: multiReferenceWorkflowKey,
         runnerConfig: {
-          workflowVersion: 1,
+          workflowVersion: 2,
           capabilities: {
             textToImage: true,
             stableSeed: true,
@@ -821,9 +829,13 @@ describe("Character image Creative Run authority", () => {
     await expect(prisma.contentProductionBatch.count({
       where: { title: "Mara first identity portrait" },
     })).resolves.toBe(1);
-    expect(jobs.every((job) => job.prompt?.includes("Target character: Mara."))).toBe(true);
+    expect(jobs.every((job) => job.prompt?.includes("Subject: Mara, an adult 28-year-old female."))).toBe(true);
     expect(jobs.every((job) => !job.prompt?.includes("Legacy character shell"))).toBe(true);
-    expect(jobs.every((job) => job.prompt?.includes("render exactly one person total"))).toBe(true);
+    expect(jobs.every((job) => job.prompt?.includes("Composition: one person centered in one continuous camera frame"))).toBe(true);
+    for (const fact of ["dark wavy hair", "warm brown eyes", "Intimate tungsten editorial portrait", "Visual style: realistic"]) {
+      expect(jobs[0]?.prompt).toContain(fact);
+    }
+    expect(jobs[0]?.prompt).not.toMatch(/PRIVATE_|White hair|plaid shirt|63-year-old|late-night confidante/);
     expect(jobs.every((job) => job.negativePrompt?.includes("contact sheet"))).toBe(true);
     expect(jobs).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -938,7 +950,7 @@ describe("Character image Creative Run authority", () => {
         generationProfileKey: profileKey,
         generationProfileVersion: 1,
         workflowKey: "qwen-image-edit-img2img",
-        workflowVersion: 1,
+        workflowVersion: 2,
         style: "realistic",
         matrixKey: `character-image-legacy-matrix-${suffix}`,
         sampleCount: 40,
@@ -1120,7 +1132,7 @@ describe("Character image Creative Run authority", () => {
         generationProfileKey: profileKey,
         generationProfileVersion: 1,
         workflowKey: "qwen-image-edit-img2img",
-        workflowVersion: 1,
+        workflowVersion: 2,
         style: archiveRaceStyle,
         matrixKey: `character-image-archive-race-matrix-${suffix}`,
         sampleCount: 40,
@@ -1614,7 +1626,7 @@ describe("Character image Creative Run authority", () => {
         generationProfileKey: multiReferenceProfileKey,
         generationProfileVersion: 1,
         workflowKey: multiReferenceWorkflowKey,
-        workflowVersion: 1,
+        workflowVersion: 2,
         style: "realistic",
         matrixKey: `character-image-create-multi-matrix-${suffix}`,
         sampleCount: 40,
@@ -1749,7 +1761,7 @@ describe("Character image Creative Run authority", () => {
       where: { id: multiReferenceProfileId },
       data: {
         runnerConfig: {
-          workflowVersion: 1,
+          workflowVersion: 2,
           capabilities: {
             textToImage: true,
             stableSeed: true,
@@ -1804,7 +1816,7 @@ describe("Character image Creative Run authority", () => {
       where: { id: multiReferenceProfileId },
       data: {
         runnerConfig: {
-          workflowVersion: 1,
+          workflowVersion: 2,
           capabilities: {
             textToImage: true,
             stableSeed: true,

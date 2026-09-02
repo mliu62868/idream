@@ -9,9 +9,7 @@
 //         把判据抽出来共用，是为了让展示与执行只有一个权威，不会再各说各话。
 
 import type { Prisma } from "@prisma/client";
-// import type：仅类型引用，编译后擦除，不会和 service.ts 形成运行时循环依赖。
-import type { FailedAttemptSource } from "./service";
-
+import { resolveGenerationAttemptRetryAuthority } from "@/server/modules/generation/generation-attempt-authority";
 type Db = Prisma.TransactionClient;
 
 export const OPEN_INCIDENT_STATUSES = ["detected", "triaged", "mitigating", "monitoring"] as const;
@@ -64,7 +62,7 @@ export function eligibleOccurrenceIds(
   action: string,
   occurrences: ReadonlyArray<{
     id: string;
-    attempt: FailedAttemptSource | null;
+    retryAllowed: boolean;
     capturedSpend: number;
     refunded: number;
   }>,
@@ -77,12 +75,7 @@ export function eligibleOccurrenceIds(
   }
   if (action !== "retry_eligible") return occurrences.map((row) => row.id).sort();
   return occurrences
-    .filter(
-      (row) =>
-        row.attempt &&
-        ["failed", "unknown"].includes(row.attempt.status) &&
-        ["retryable", "auto_retry", "operator_retry"].includes(row.attempt.retryability ?? ""),
-    )
+    .filter((row) => row.retryAllowed)
     .map((row) => row.id)
     .sort();
 }
@@ -92,10 +85,19 @@ export async function occurrenceSnapshot(db: Db, incidentId: string) {
     where: { incidentId },
     orderBy: [{ observedAt: "asc" }, { id: "asc" }],
   });
-  const attemptIds = occurrences.flatMap((row) => (row.attemptId ? [row.attemptId] : []));
-  const requestIds = occurrences.flatMap((row) => (row.requestId ? [row.requestId] : []));
-  const attempts = attemptIds.length
-    ? await db.generationAttempt.findMany({ where: { id: { in: attemptIds } } })
+  const requestIds = [...new Set(occurrences.flatMap((row) => (row.requestId ? [row.requestId] : [])))];
+  const attempts = requestIds.length
+    ? await db.generationAttempt.findMany({
+        where: { requestId: { in: requestIds } },
+        distinct: ["requestId"],
+        orderBy: [{ requestId: "asc" }, { attemptNo: "desc" }],
+      })
+    : [];
+  const requests = requestIds.length
+    ? await db.generationJob.findMany({
+        where: { id: { in: requestIds } },
+        select: { id: true, status: true, errorCode: true, deliveredOutputCount: true },
+      })
     : [];
   const ledger = requestIds.length
     ? await db.dreamcoinLedger.findMany({
@@ -103,10 +105,20 @@ export async function occurrenceSnapshot(db: Db, incidentId: string) {
         select: { sourceId: true, reason: true, delta: true },
       })
     : [];
-  const attemptsById = new Map(attempts.map((attempt) => [attempt.id, attempt]));
+  const attemptsByRequestId = new Map(attempts.map((attempt) => [attempt.requestId, attempt]));
+  const retryAllowedByRequestId = new Map<string, boolean>();
+  // INVARIANT: recommendation, preview and execution use the same current
+  // Request/Attempt authority. operator_retry alone never resolves unknown.
+  for (const request of requests) {
+    const latestAttempt = attemptsByRequestId.get(request.id) ?? null;
+    retryAllowedByRequestId.set(request.id, latestAttempt !== null && (
+      await resolveGenerationAttemptRetryAuthority(db, { request, latestAttempt })
+    ).allowed);
+  }
   return occurrences.map((row) => ({
     id: row.id,
-    attempt: row.attemptId ? attemptsById.get(row.attemptId) ?? null : null,
+    attempt: row.requestId ? attemptsByRequestId.get(row.requestId) ?? null : null,
+    retryAllowed: row.requestId ? retryAllowedByRequestId.get(row.requestId) ?? false : false,
     capturedSpend: -ledger.filter((entry) => entry.sourceId === row.requestId && entry.reason === "generation_spend" && entry.delta < 0).reduce((sum, entry) => sum + entry.delta, 0),
     refunded: ledger.filter((entry) => entry.sourceId === row.requestId && entry.reason === "refund" && entry.delta > 0).reduce((sum, entry) => sum + entry.delta, 0),
   }));

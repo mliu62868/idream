@@ -1117,6 +1117,7 @@ async function seedAdminControlPlane() {
       modelFormat: "safetensors",
       runnerConfig: {
         workflowVersion: 2,
+        publicSelection: { surface: "generator_image_edit" },
         capabilities: {
           textToImage: false,
           stableSeed: true,
@@ -1155,6 +1156,7 @@ async function seedAdminControlPlane() {
       modelFormat: "safetensors",
       runnerConfig: {
         workflowVersion: 2,
+        publicSelection: { surface: "generator_image_edit" },
         capabilities: {
           textToImage: false,
           stableSeed: true,
@@ -1198,6 +1200,7 @@ async function seedAdminControlPlane() {
         modelFormat: "safetensors",
         runnerConfig: {
           workflowVersion: 2,
+          publicSelection: { surface: "generator_image_edit" },
           capabilities: {
             textToImage: false,
             stableSeed: true,
@@ -1242,6 +1245,7 @@ async function seedAdminControlPlane() {
         modelFormat: "safetensors",
         runnerConfig: {
           workflowVersion: 2,
+          publicSelection: { surface: "generator_image_edit" },
           capabilities: {
             textToImage: false,
             stableSeed: true,

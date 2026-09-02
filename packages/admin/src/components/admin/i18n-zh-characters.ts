@@ -6,6 +6,11 @@
 // packages/main/src/server/modules/admin-v2/characters/{production-journey,readiness,renderer-preview}.ts。
 // 它们在 admin 源码里没有字面量，静态扫描判不出「在用」。删之前先查后端。
 export const adminZhCharacters: Record<string, string> = {
+  "Hide from Explore": "从 Explore 隐藏",
+  "Show in Explore": "在 Explore 显示",
+  "Hidden from Explore": "已从 Explore 隐藏",
+  "Listed in Explore": "正在 Explore 展示",
+  "Could not update Explore visibility": "无法更新 Explore 可见范围",
   "28d QCE {value}": "28 天 QCE {value}",
   "28d performance will appear after sufficient live traffic.":
     "28 天表现数据会在线上流量足够后出现。",

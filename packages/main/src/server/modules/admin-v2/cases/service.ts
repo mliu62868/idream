@@ -132,6 +132,7 @@ export async function ensureSupportCaseForRequest(db: Db, request: SupportReques
   const keyActive = adminCaseActiveKey(type, "user", request.userId, key);
   const sourceEvidence = await db.caseEvidence.findFirst({
     where: { sourceType: "support_request", sourceId: request.id },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
   });
   if (sourceEvidence) {
     return db.adminCase.findUnique({ where: { id: sourceEvidence.caseId } });
@@ -237,13 +238,12 @@ export async function ensureSupportCaseForRequest(db: Db, request: SupportReques
 }
 
 export async function synchronizeSupportCaseFromRequest(db: Db, request: SupportRequest) {
-  await ensureSupportCaseForRequest(db, request);
+  const current = await ensureSupportCaseForRequest(db, request);
+  if (!current) throw Errors.internal("Support Case is missing");
   const evidence = await db.caseEvidence.findFirst({
-    where: { sourceType: "support_request", sourceId: request.id },
+    where: { caseId: current.id, sourceType: "support_request", sourceId: request.id },
   });
   if (!evidence) throw Errors.internal("Support Case intake evidence is missing");
-  const current = await db.adminCase.findUnique({ where: { id: evidence.caseId } });
-  if (!current) throw Errors.internal("Support Case is missing");
   const terminal = ["resolved", "closed"].includes(request.status);
   const priority = priorityForSupport(request.priority);
   let resolutionEvidenceId = evidence.id;
@@ -253,13 +253,13 @@ export async function synchronizeSupportCaseFromRequest(db: Db, request: Support
         caseId_sourceType_sourceId: {
           caseId: current.id,
           sourceType: "support_resolution",
-          sourceId: request.id,
+          sourceId: `${request.id}:${current.version}`,
         },
       },
       create: {
         caseId: current.id,
         sourceType: "support_resolution",
-        sourceId: request.id,
+        sourceId: `${request.id}:${current.version}`,
         snapshot: toInputJson({
           sourceStatus: request.status,
           resolutionNotes: request.resolutionNotes,
@@ -702,6 +702,23 @@ export async function assignReviewCaseInTransaction(
   if (!isAdminCaseTransitionAllowed(current.status, nextStatus)) {
     throw Errors.conflict("Case cannot be assigned from its present state", { status: current.status });
   }
+  if (["support_request", "billing_dispute"].includes(current.type)) {
+    const source = await tx.caseEvidence.findFirst({
+      where: { caseId: current.id, sourceType: "support_request" },
+      select: { sourceId: true },
+    });
+    if (source) {
+      // INVARIANT: Match Support updates' Support → Case lock order. A losing
+      // Case CAS must roll back the ticket assignment in this same transaction.
+      await tx.supportRequest.update({
+        where: { id: source.sourceId },
+        data: {
+          assignedToId: input.ownerId,
+          priority: input.priority === undefined ? undefined : priorityRank(input.priority) + 1,
+        },
+      });
+    }
+  }
   const updated = await transitionCase(tx, {
     caseId: current.id,
     to: nextStatus as "triaged" | "in_progress" | "waiting" | "resolved" | "closed" | "reopened",
@@ -964,21 +981,6 @@ export async function verifyReviewCase(input: {
         authorityEvidence: authority.evidence,
       },
     };
-    const updated = await transitionCase(tx, {
-      caseId: current.id,
-      to: nextStatus,
-      expected: {
-        from: current.status as "new" | "triaged" | "in_progress" | "waiting" | "resolved" | "closed" | "reopened",
-        version: current.version,
-      },
-      data: {
-        activeKey: input.state === "failed"
-          ? current.activeKey ?? `${current.type}:${current.targetType}:${current.targetId}:${current.caseKey}`
-          : null,
-        verificationState: input.state,
-        resolution: toInputJson(resolution),
-      },
-    });
     if (
       input.state !== "failed" &&
       ["support_request", "billing_dispute"].includes(current.type)
@@ -999,6 +1001,21 @@ export async function verifyReviewCase(input: {
         });
       }
     }
+    const updated = await transitionCase(tx, {
+      caseId: current.id,
+      to: nextStatus,
+      expected: {
+        from: current.status as "new" | "triaged" | "in_progress" | "waiting" | "resolved" | "closed" | "reopened",
+        version: current.version,
+      },
+      data: {
+        activeKey: input.state === "failed"
+          ? current.activeKey ?? `${current.type}:${current.targetType}:${current.targetId}:${current.caseKey}`
+          : null,
+        verificationState: input.state,
+        resolution: toInputJson(resolution),
+      },
+    });
     await tx.adminAuditLog.create({
       data: {
         actorId: input.actor.id,
@@ -1188,6 +1205,14 @@ export async function waitCase(input: {
     const prior = current.resolution && typeof current.resolution === "object" && !Array.isArray(current.resolution)
       ? current.resolution as Record<string, unknown>
       : {};
+    const supportSource = ["support_request", "billing_dispute"].includes(current.type)
+      ? await tx.caseEvidence.findFirst({ where: { caseId: current.id, sourceType: "support_request" }, select: { sourceId: true } })
+      : null;
+    if (supportSource) {
+      // Waiting for an internal dependency does not mean the customer owes a reply.
+      // Write Support first, matching its PATCH/reply lock order before Case CAS.
+      await tx.supportRequest.update({ where: { id: supportSource.sourceId }, data: { status: "open", resolvedAt: null } });
+    }
     const updated = await transitionCase(tx, {
       caseId: current.id,
       to: "waiting",
@@ -1244,11 +1269,43 @@ export async function reopenOrRecurCase(input: {
       current.targetId,
       current.caseKey,
     );
+    const supportSource = ["support_request", "billing_dispute"].includes(current.type)
+      ? await tx.caseEvidence.findFirst({ where: { caseId: current.id, sourceType: "support_request" } })
+      : null;
+    if (supportSource) {
+      // Keep the ticket bound to its latest episode. Reopening history would
+      // send later customer replies to a different, still-terminal Case.
+      await tx.$queryRaw`SELECT id FROM support_requests WHERE id = ${supportSource.sourceId} FOR UPDATE`;
+      const currentEpisode = await tx.caseEvidence.findFirst({
+        where: { sourceType: "support_request", sourceId: supportSource.sourceId },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }], select: { caseId: true },
+      });
+      if (currentEpisode && currentEpisode.caseId !== current.id) {
+        throw Errors.conflict("A newer support Case owns this request; reopen that Case instead", { currentCaseId: currentEpisode.caseId });
+      }
+      await tx.supportRequest.update({ where: { id: supportSource.sourceId }, data: { status: "open", resolvedAt: null } });
+    }
+    // A recurrence leaves the prior terminal row unchanged. Lock it after Support
+    // so concurrent reopen commands still recheck one current version/active key.
+    const locked = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT id FROM admin_cases WHERE id = ${current.id} AND version = ${input.expectedVersion} FOR UPDATE
+    `;
+    if (locked.length !== 1) throw Errors.conflict("Case version changed");
     const existingActive = await tx.adminCase.findFirst({ where: { activeKey, id: { not: current.id } }, select: { id: true } });
     if (existingActive) throw Errors.conflict("A recurrence of this Case is already active", { activeCaseId: existingActive.id });
     const cutoff = Date.now() - (input.reopenWindowMs ?? 7 * 24 * 60 * 60 * 1_000);
     const reopenSameCase = current.updatedAt.getTime() >= cutoff;
     if (reopenSameCase) {
+      const priorResolution = current.resolution && typeof current.resolution === "object" && !Array.isArray(current.resolution)
+        ? current.resolution as Record<string, unknown>
+        : {};
+      const priorResolutionEvidence = await tx.caseEvidence.create({ data: {
+        caseId: current.id,
+        sourceType: "case_resolution",
+        sourceId: `${current.id}:${current.version}`,
+        snapshot: toInputJson({ status: current.status, version: current.version, resolution: current.resolution, verificationState: current.verificationState }),
+        occurredAt: current.updatedAt,
+      } });
       const updated = await transitionCase(tx, {
         caseId: current.id,
         to: "reopened",
@@ -1256,7 +1313,10 @@ export async function reopenOrRecurCase(input: {
           from: current.status as "resolved" | "closed",
           version: current.version,
         },
-        data: { activeKey, verificationState: "pending" },
+        data: {
+          activeKey, verificationState: "pending",
+          resolution: toInputJson({ ...priorResolution, verification: { state: "pending", evidenceRefs: [priorResolutionEvidence.id], verifiedAt: null, overrideReason: null } }),
+        },
       });
       await tx.adminAuditLog.create({ data: {
         actorId: input.actor.id,
@@ -1285,6 +1345,14 @@ export async function reopenOrRecurCase(input: {
       resolution: toInputJson({ recurrenceOfCaseId: current.id, recurrenceReason: input.reason }),
       verificationState: "pending",
     } });
+    if (supportSource) {
+      // Keep the old intake and resolution evidence attached to the old episode;
+      // a fresh immutable link makes this recurrence the ticket's current Case.
+      await tx.caseEvidence.create({ data: {
+        caseId: recurrence.id, sourceType: "support_request", sourceId: supportSource.sourceId,
+        snapshot: toInputJson(supportSource.snapshot), occurredAt: supportSource.occurredAt,
+      } });
+    }
     await tx.caseEvidence.create({ data: {
       caseId: recurrence.id,
       sourceType: "case_recurrence",

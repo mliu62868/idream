@@ -135,6 +135,63 @@ describe("Character create wizard restore authority", () => {
     vi.restoreAllMocks();
   });
 
+  it("retains every field when autofill updates the persona in one render batch", async () => {
+    await act(async () => {
+      root.render(<CharacterCreateWizard actorId="operator-a" canCreate />);
+    });
+    await waitUntil(() => container.querySelector("fieldset")?.disabled === false);
+
+    const values = {
+      "persona.name": "Mira",
+      "persona.characterPromise": "A dependable conversational presence",
+      "persona.firstMessage": "Where should we begin?",
+      "persona.detailsMarkdown": "Warm and observant.",
+    };
+    await act(async () => {
+      for (const [name, value] of Object.entries(values)) {
+        const input = container.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[name="${name}"]`)!;
+        const prototype = input instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        Object.getOwnPropertyDescriptor(prototype, "value")?.set?.call(input, value);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    });
+
+    for (const [name, value] of Object.entries(values)) {
+      expect(container.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[name="${name}"]`)?.value, name).toBe(value);
+    }
+    await waitUntil(() => container.textContent?.includes("Saved locally") === true);
+    const saved = JSON.parse(window.localStorage.getItem("idream.admin.character-create-draft.v3:operator-a")!);
+    expect(saved.persona).toMatchObject({
+      name: values["persona.name"],
+      characterPromise: values["persona.characterPromise"],
+      firstMessage: values["persona.firstMessage"],
+      detailsMarkdown: values["persona.detailsMarkdown"],
+    });
+  });
+
+  it("preserves spaces and newlines while typing stable visual traits", async () => {
+    window.localStorage.setItem("idream.admin.character-create-draft.v3:operator-a", JSON.stringify({
+      ...restoredDraft,
+      visualDirection: { ...restoredDraft.visualDirection, stableTraits: [] },
+    }));
+    await act(async () => {
+      root.render(<CharacterCreateWizard actorId="operator-a" canCreate />);
+    });
+    await waitUntil(() => container.querySelector('[name="visualDirection.stableTraits"]') !== null);
+    const input = container.querySelector<HTMLTextAreaElement>('[name="visualDirection.stableTraits"]')!;
+    const text = "Brown eyes\nDark brown hair\n\nLight freckles ";
+    for (const letter of text) {
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(input, input.value + letter);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    }
+    expect(input.value).toBe(text);
+    const saved = JSON.parse(window.localStorage.getItem("idream.admin.character-create-draft.v3:operator-a")!);
+    expect(saved.visualDirection.stableTraits).toEqual(["Brown eyes", "Dark brown hair", "Light freckles"]);
+  });
+
   it("locks navigation before a requested draft has been checked", async () => {
     window.history.replaceState(
       null,

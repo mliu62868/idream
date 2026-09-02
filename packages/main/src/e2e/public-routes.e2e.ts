@@ -513,7 +513,7 @@ test.describe("public route smoke", () => {
     }
   });
 
-  test("active app copy avoids unavailable video and unsupported sale promises", async ({
+  test("active app copy reflects video availability and avoids unsupported sale promises", async ({
     page,
   }) => {
     await startSignedInAdultSession(page, "/");
@@ -567,10 +567,12 @@ test.describe("public route smoke", () => {
     expect(comparisonCopy).toContain("image generation tools");
 
     const plansResponse = await page.request.get("/api/v1/plans");
+    expect(plansResponse.ok()).toBe(true);
     const plansPayload = (await plansResponse.json()) as {
       data: {
         items: Array<{
           billingPeriod: string;
+          features: Record<string, unknown>;
           includedDreamcoins: number;
           name: string;
           priceCents: number;
@@ -592,10 +594,10 @@ test.describe("public route smoke", () => {
       await expect(planCard).toContainText(
         `${plan.includedDreamcoins.toLocaleString()} dreamcoins`,
       );
+      await expect(planCard.getByText("Video generation", { exact: true })).toHaveCount(
+        plan.features.videoGeneration === true || plan.features.video_generation === true ? 1 : 0,
+      );
     }
-    const planCardCopy = (await page.locator("article").allInnerTexts()).join("\n").toLowerCase();
-    expect(planCardCopy).not.toContain("video");
-    expect(planCardCopy).not.toContain("videos");
   });
 
   test("my ai metadata does not market deferred group chats or packs as active features", async ({

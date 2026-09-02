@@ -84,14 +84,17 @@ export function CharacterPortfolio({
   // INTENT: keyset 分页没有 offset，也没有 total——不自己记一份就只能一直往前翻。
   //         任何改查询的动作都清空它（applyQuery 默认参数），否则页码会挂在旧结果上。
   const [cursorStack, setCursorStack] = useState<readonly string[]>([]);
+  const portfolioRequestQuery = new URLSearchParams(characterPortfolioQuery(applied, true));
+  portfolioRequestQuery.set("includePerformance", String(performanceMode));
+  const portfolioRequestKey = portfolioRequestQuery.toString();
 
   const portfolio = useAuthorityResource({
-    key: characterPortfolioQuery(applied, true),
+    key: portfolioRequestKey,
     enabled: canRead,
     load: useCallback(async () => {
       try {
         return await adminV2Operation("GET /api/v2/admin/characters/portfolio", {
-          query: characterPortfolioQuery(applied, true),
+          query: portfolioRequestKey,
         });
       } catch (reason) {
         // INTENT: 两种模式各有一句能读懂的兜底；抛出去让 resource 统一收成 error。
@@ -101,7 +104,7 @@ export function CharacterPortfolio({
             : "Characters could not be loaded",
         );
       }
-    }, [applied, performanceMode]),
+    }, [portfolioRequestKey, performanceMode]),
   });
   const items = portfolio.data?.items ?? EMPTY_PORTFOLIO_ITEMS;
   const pageInfo = portfolio.data?.pageInfo ?? EMPTY_PORTFOLIO_PAGE_INFO;

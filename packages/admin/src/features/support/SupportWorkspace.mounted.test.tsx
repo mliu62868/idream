@@ -5,20 +5,22 @@ import { hydrateRoot, type Root } from "react-dom/client";
 import { renderToString } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { apiGet } = vi.hoisted(() => ({
+const { apiGet, apiWrite } = vi.hoisted(() => ({
   apiGet: vi.fn<(path: string) => Promise<unknown>>(),
+  apiWrite: vi.fn<(...args: unknown[]) => Promise<unknown>>(),
 }));
 
 vi.mock("@/components/admin/api", () => ({
   apiDelete: vi.fn(),
   apiGet,
-  apiWrite: vi.fn(),
+  apiWrite,
 }));
 
 import { createRoot } from "react-dom/client";
 import { AdminI18nProvider } from "@/components/admin/i18n";
 import { ToastProvider } from "@/components/admin/ui/Toast";
 import { SupportWorkspace } from "./SupportWorkspace";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -117,6 +119,107 @@ describe("SupportWorkspace mounted URL state", () => {
       container.querySelector('[aria-label="Support Requests scrollable table"] table')?.className,
     ).toContain("min-w-[2688px]");
     expect(consoleError).not.toHaveBeenCalled();
+  });
+});
+
+describe("SupportWorkspace customer replies", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  beforeEach(() => {
+    window.history.replaceState(null, "", "/admin/support");
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    apiWrite.mockReset(); apiWrite.mockResolvedValue({});
+    apiGet.mockReset(); apiGet.mockResolvedValue({ items: [{ ...baseTicket, status: "open" }], pageInfo: { endCursor: null, hasNextPage: false } });
+  });
+  afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.restoreAllMocks(); });
+  async function mount() {
+    await act(async () => root.render(<ToastProvider><SupportWorkspace canViewPlaintext={false} canWrite /></ToastProvider>));
+    await waitUntil(() => container.textContent?.includes("SUP-CLOCK-1") === true);
+  }
+  async function change(element: HTMLInputElement | HTMLTextAreaElement, value: string) {
+    expect(element).not.toBeNull();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, "value")!.set!.call(element, value);
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+  it("asks for a customer-facing question separately from the internal reason", async () => {
+    await mount();
+    expect([...container.querySelectorAll("button")].some((node) => node.textContent?.trim() === "Close")).toBe(false);
+    const waiting = [...container.querySelectorAll("button")].find((node) => node.textContent?.trim() === "Waiting")!;
+    await act(async () => waiting.click());
+    const dialog = document.querySelector('[role="dialog"]')!;
+    await change(dialog.querySelector('textarea[aria-label="Message to customer"]')!, "Please send the image ID.");
+    await change(dialog.querySelector('input[aria-label="Reason"]')!, "Need reproduction evidence.");
+    await change(dialog.querySelector('input[aria-label="Confirmation"]')!, "SUP-CLOCK-1");
+    await act(async () => ([...dialog.querySelectorAll("button")].find((node) => node.textContent?.trim() === "Confirm") as HTMLButtonElement).click());
+    await waitUntil(() => apiWrite.mock.calls.length === 1);
+    expect(apiWrite.mock.calls[0][2]).toMatchObject({ status: "waiting_on_user", customerMessage: "Please send the image ID.", reason: "Need reproduction evidence." });
+    expect(apiWrite.mock.calls[0][2]).not.toHaveProperty("resolutionNotes", "Please send the image ID.");
+  });
+  it("opens the full customer conversation from the ticket number", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => Response.json({ ok: true, data: String(input).includes("/support/requests/")
+      ? { request: { ticketId: "SUP-CLOCK-1", subject: "Charged twice", description: "Customer intake", status: "open", canReply: true, createdAt: "2026-09-02T12:00:00.000Z", updatedAt: "2026-09-02T12:00:00.000Z", messages: [{ id: "reply", author: "customer", body: "The failing image is ABC.", createdAt: "2026-09-02T12:00:00.000Z" }] } }
+      : { items: [] } })));
+    await mount();
+    const ticketButton = [...container.querySelectorAll("button")].find((node) => node.textContent?.trim() === "SUP-CLOCK-1");
+    expect(ticketButton).toBeDefined();
+    await act(async () => ticketButton!.click());
+    await waitUntil(() => container.textContent?.includes("The failing image is ABC.") === true);
+    expect(container.querySelector('textarea[aria-label="Message to customer"]')).not.toBeNull();
+  });
+  it("refreshes only the selected conversation, preserving its draft and ignoring an old ticket response", async () => {
+    apiGet.mockResolvedValue({ items: [baseTicket, { ...baseTicket, ticketId: "SUP-CLOCK-2" }], pageInfo: { endCursor: null, hasNextPage: false } });
+    let oldResponse: ((response: Response) => void) | undefined;
+    let secondReads = 0;
+    const response = (ticketId: string, body: string) => Response.json({ ok: true, data: { request: {
+      ticketId, subject: ticketId, description: "Customer intake", status: "open", canReply: true,
+      createdAt: "2026-09-02T12:00:00.000Z", updatedAt: "2026-09-02T12:00:00.000Z",
+      messages: [{ id: body, author: "customer", body, createdAt: "2026-09-02T12:00:00.000Z" }],
+    } } });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/support/requests/SUP-CLOCK-1")) return new Promise<Response>((resolve) => { oldResponse = resolve; });
+      if (path.endsWith("/support/requests/SUP-CLOCK-2")) return response("SUP-CLOCK-2", ++secondReads === 1 ? "Initial second ticket" : "New second ticket reply");
+      return Response.json({ ok: true, data: { items: [] } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await mount();
+    await act(async () => [...container.querySelectorAll("button")].find((node) => node.textContent?.trim() === "SUP-CLOCK-1")!.click());
+    await waitUntil(() => oldResponse !== undefined);
+    await act(async () => [...container.querySelectorAll("button")].find((node) => node.textContent?.trim() === "SUP-CLOCK-2")!.click());
+    await waitUntil(() => container.textContent?.includes("Initial second ticket") === true);
+    await change(container.querySelector("textarea")!, "Unsent guidance for the second ticket.");
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    await waitUntil(() => container.textContent?.includes("New second ticket reply") === true);
+    await act(async () => { oldResponse!(response("SUP-CLOCK-1", "Outdated first ticket response")); });
+    expect(container.textContent).not.toContain("Outdated first ticket response");
+    expect(container.querySelector("textarea")?.value).toBe("Unsent guidance for the second ticket.");
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/support/requests/SUP-CLOCK-1"))).toHaveLength(1);
+    expect(secondReads).toBe(2);
+    await act(async () => [...container.querySelectorAll("button")].find((node) => node.textContent?.trim() === "Close conversation")!.click());
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    expect(secondReads).toBe(2);
+  });
+  it("refreshes the open conversation after a status command without losing an unsent reply", async () => {
+    let status = "open";
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => Response.json({ ok: true, data: String(input).includes("/support/requests/")
+      ? { request: { ticketId: "SUP-CLOCK-1", subject: "Charged twice", description: "Customer intake", status, canReply: true, createdAt: "2026-09-02T12:00:00.000Z", updatedAt: "2026-09-02T12:00:00.000Z", messages: status === "open" ? [] : [{ id: "question", author: "support", body: "Which image failed?", createdAt: "2026-09-02T12:00:00.000Z" }] } }
+      : { items: [] } })));
+    apiWrite.mockImplementation(async () => { status = "waiting_on_user"; return {}; });
+    await mount();
+    await act(async () => [...container.querySelectorAll("button")].find((node) => node.textContent?.trim() === "SUP-CLOCK-1")!.click());
+    await waitUntil(() => container.querySelector("textarea") !== null);
+    await change(container.querySelector("textarea")!, "Draft guidance to send later.");
+    await act(async () => [...container.querySelectorAll("button")].find((node) => node.textContent?.trim() === "Waiting")!.click());
+    const dialog = document.querySelector('[role="dialog"]')!;
+    await change(dialog.querySelector("textarea")!, "Which image failed?");
+    await change(dialog.querySelector('input[aria-label="Reason"]')!, "Collect missing detail");
+    await change(dialog.querySelector('input[aria-label="Confirmation"]')!, "SUP-CLOCK-1");
+    await act(async () => [...dialog.querySelectorAll("button")].find((node) => node.textContent?.trim() === "Confirm")!.click());
+    await waitUntil(() => container.textContent?.includes("Which image failed?") === true);
+    expect(container.querySelector("textarea")?.value).toBe("Draft guidance to send later.");
+    expect(container.textContent).toContain("waiting_on_user");
   });
 });
 

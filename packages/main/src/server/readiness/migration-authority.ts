@@ -36,6 +36,7 @@ export type MigrationPostconditionSnapshot = {
     readonly activeCount: number;
     readonly versionOneCount: number;
     readonly versionTwoCount: number;
+    readonly versionThreeCount: number;
     readonly legacyIdCount: number;
     readonly replacementIdCount: number;
     readonly freshCanonicalCount: number;
@@ -286,15 +287,14 @@ export function evaluateMigrationPostconditions(
       premium.replacementIdCount === 0) ||
     (premium.totalCount === 1 &&
       premium.activeCount === 1 &&
-      premium.versionOneCount === 1 &&
-      premium.versionTwoCount === 0 &&
+      premium.versionOneCount + premium.versionTwoCount + premium.versionThreeCount === 1 &&
       premium.legacyIdCount === 1 &&
       premium.replacementIdCount === 0 &&
       premium.freshCanonicalCount === 1) ||
     (premium.totalCount === 2 &&
       premium.activeCount === 1 &&
       premium.versionOneCount === 1 &&
-      premium.versionTwoCount === 1 &&
+      premium.versionTwoCount + premium.versionThreeCount === 1 &&
       premium.legacyIdCount === 1 &&
       premium.replacementIdCount === 1 &&
       premium.legacyArchivedCount === 1 &&
@@ -400,11 +400,15 @@ WITH premium AS (
     count(*) FILTER (WHERE "status" = 'active')::int AS "activeCount",
     count(*) FILTER (WHERE "version" = 1)::int AS "versionOneCount",
     count(*) FILTER (WHERE "version" = 2)::int AS "versionTwoCount",
+    count(*) FILTER (WHERE "version" = 3)::int AS "versionThreeCount",
     count(*) FILTER (WHERE "id" = 'seed-profile-image-premium-v1')::int AS "legacyIdCount",
     count(*) FILTER (WHERE "id" = 'seed-profile-image-premium-v2')::int AS "replacementIdCount",
     count(*) FILTER (WHERE
       "id" = 'seed-profile-image-premium-v1'
-      AND "version" = 1
+      -- The conditioning-lifecycle rollout advances the fresh canonical row
+      -- in place. Accept only the released profile/workflow pin pairs.
+      AND (("version" = 1 AND coalesce("runnerConfig" ->> 'workflowVersion', '1') = '1')
+        OR ("version" IN (2, 3) AND "runnerConfig" ->> 'workflowVersion' = '2'))
       AND "mode" = 'image'
       AND "status" = 'active'
       AND "publishedAt" IS NOT NULL
@@ -434,13 +438,15 @@ WITH premium AS (
       AND "workflowKey" = 'redcraft-krea2-txt2img'
       AND "status" = 'archived'
       AND "archivedAt" IS NOT NULL
-      AND "enabled" = true
-      AND "rolloutPercent" = 100
+      -- The supported-FP8 rollout explicitly disabled this already archived route.
+      AND (("enabled" = true AND "rolloutPercent" = 100)
+        OR ("enabled" = false AND "rolloutPercent" = 0))
       AND "requiredEntitlement" = 'premium_models'
     )::int AS "legacyArchivedCount",
     count(*) FILTER (WHERE
       "id" = 'seed-profile-image-premium-v2'
-      AND "version" = 2
+      AND (("version" = 2 AND coalesce("runnerConfig" ->> 'workflowVersion', '1') IN ('1', '2'))
+        OR ("version" = 3 AND "runnerConfig" ->> 'workflowVersion' = '2'))
       AND "mode" = 'image'
       AND "status" = 'active'
       AND "publishedAt" IS NOT NULL

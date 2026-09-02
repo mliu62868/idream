@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import {
   mkdtempSync,
   mkdirSync,
+  lstatSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -104,6 +105,9 @@ function writeRecoveryBundle(overrides?: {
   remoteRecoveryChecksumSha256?: string;
   remoteRecoveryRetention?: string | null;
   queuePrefix?: string;
+  pointerAuthority?: "dsh-canonical" | "agent-runs" | "dsh-private" | "blob";
+  manifestPointerTarget?: string;
+  blobObjectKey?: string;
 }) {
   const parent = mkdtempSync(path.join(tmpdir(), "idream-recovery-"));
   temporaryDirectories.push(parent);
@@ -116,6 +120,22 @@ function writeRecoveryBundle(overrides?: {
     const root = path.join(parent, rootName);
     mkdirSync(root, { mode: 0o755 });
     writeFileSync(path.join(root, "state.json"), content, { mode: 0o600 });
+    let pointerEntries = "";
+    if (overrides?.pointerAuthority === rootName) {
+      mkdirSync(path.join(root, ".igrep.versions"), { mode: 0o700 });
+      for (const version of ["v1", "v2"]) {
+        mkdirSync(path.join(root, ".igrep.versions", version), { mode: 0o700 });
+        writeFileSync(path.join(root, ".igrep.versions", version, "memory.md"), version, { mode: 0o600 });
+      }
+      symlinkSync(".igrep.versions/v1", path.join(root, ".igrep"));
+      const target = overrides.manifestPointerTarget ?? ".igrep.versions/v1";
+      const mode = (lstatSync(path.join(root, ".igrep")).mode & 0o7777).toString(8).padStart(3, "0");
+      pointerEntries = `symlink\t${mode}\t${sha256(target)}\t./.igrep\t${target}\n` +
+        "directory\t700\t-\t./.igrep.versions\n" +
+        ["v1", "v2"].map((version) =>
+          `directory\t700\t-\t./.igrep.versions/${version}\nfile\t600\t${sha256(version)}\t./.igrep.versions/${version}/memory.md\n`
+        ).join("");
+    }
     const archive = path.join(parent, `${rootName}.tar.gz`);
     const archived = spawnSync(
       "tar",
@@ -128,7 +148,7 @@ function writeRecoveryBundle(overrides?: {
     return {
       archive: readFileSync(archive),
       manifest:
-        `directory\t755\t-\t.\nfile\t600\t${sha256(content)}\t./state.json\n`,
+        `directory\t755\t-\t.\n${pointerEntries}file\t600\t${sha256(content)}\t./state.json\n`,
     };
   };
   const agentRunFixture = fileAuthorityFixture("agent-runs", "agent-run");
@@ -137,6 +157,9 @@ function writeRecoveryBundle(overrides?: {
     "canonical",
   );
   const dshPrivateFixture = fileAuthorityFixture("dsh-private", "private");
+  const blobPointerFixture = overrides?.pointerAuthority === "blob"
+    ? fileAuthorityFixture("blob", "blob") : null;
+  const blobObjectKey = overrides?.blobObjectKey ?? "asset.bin";
 
   const sourceCounts = JSON.stringify(
     {
@@ -271,8 +294,8 @@ function writeRecoveryBundle(overrides?: {
     "dsh-private.source.sha256": dshPrivateFixture.manifest,
     "dsh-private.restore.sha256":
       overrides?.dshPrivateRestoreManifest ?? dshPrivateFixture.manifest,
-    "blob.source.sha256": `directory\t755\t-\t.\nfile\t600\t${"e".repeat(64)}\t./asset.bin\n`,
-    "blob.restore.sha256": `directory\t755\t-\t.\nfile\t600\t${"e".repeat(64)}\t./asset.bin\n`,
+    "blob.source.sha256": blobPointerFixture?.manifest ?? `directory\t755\t-\t.\nfile\t600\t${"e".repeat(64)}\t./${blobObjectKey}\n`,
+    "blob.restore.sha256": blobPointerFixture?.manifest ?? `directory\t755\t-\t.\nfile\t600\t${"e".repeat(64)}\t./${blobObjectKey}\n`,
   };
   const files: Record<string, string | Buffer> = {
     ...pairedFiles,
@@ -295,10 +318,13 @@ function writeRecoveryBundle(overrides?: {
       ? "-- \\set ON_ERROR_STOP on\n-- \\if :{?target_database}\n-- ALTER DATABASE\nSELECT 1;\n"
       : renderRecoveryDatabaseAuthoritySql(databaseAuthority),
     "file-authorities.json": `${JSON.stringify({
-      agent_run: { files: 1, bytes: 9 },
+      agent_run: overrides?.pointerAuthority === "agent-runs"
+        ? { files: 3, bytes: 13 } : { files: 1, bytes: 9 },
       dsh: {
-        canonical: { files: 1, bytes: 9 },
-        private: { files: 1, bytes: 7 },
+        canonical: overrides?.pointerAuthority === "dsh-canonical"
+          ? { files: 3, bytes: 13 } : { files: 1, bytes: 9 },
+        private: overrides?.pointerAuthority === "dsh-private"
+          ? { files: 3, bytes: 11 } : { files: 1, bytes: 7 },
       },
       queue: {
         ...currentSourceAuthority.queue,
@@ -331,7 +357,7 @@ function writeRecoveryBundle(overrides?: {
         retentionDays: 30,
       },
       objects: [{
-        key: "asset.bin",
+        key: blobObjectKey,
         versionId: "version-1",
         etag: "etag-1",
         size: 32,
@@ -347,7 +373,7 @@ function writeRecoveryBundle(overrides?: {
         recovery: {
           endpoint: "https://recovery.r2.cloudflarestorage.com/",
           bucket: "idream-recovery",
-          key: `.idream-recovery/${bundleName}/asset.bin`,
+          key: `.idream-recovery/${bundleName}/${blobObjectKey}`,
           versionId: "recovery-version-1",
           checksumSha256: overrides?.remoteRecoveryChecksumSha256 ??
             Buffer.from("e".repeat(64), "hex").toString("base64"),
@@ -487,6 +513,57 @@ describe("recovery rehearsal bundle authority", () => {
       latestMigration: "002_launch_authority",
       problems: [],
     });
+  });
+
+  it("accepts a canonical pointer only when real tar restore preserves its exact target", async () => {
+    const result = await inspectRecoveryRehearsalBundle({
+      bundlePath: writeRecoveryBundle({ pointerAuthority: "dsh-canonical" }),
+      expectedMigrations,
+      commandRunner: validArchiveRunner,
+      now: new Date(),
+      maxAgeMinutes: 60,
+    });
+    expect(result).toMatchObject({ ok: true, problems: [] });
+
+    const changedPointer = await inspectRecoveryRehearsalBundle({
+      bundlePath: writeRecoveryBundle({
+        pointerAuthority: "dsh-canonical",
+        manifestPointerTarget: ".igrep.versions/v2",
+      }),
+      expectedMigrations,
+      commandRunner: validArchiveRunner,
+      now: new Date(),
+      maxAgeMinutes: 60,
+    });
+    expect(changedPointer.ok).toBe(false);
+    expect(changedPointer.problems).toContain(
+      "DSH canonical archive does not reconstruct its source authority manifest",
+    );
+  });
+
+  it.each(["agent-runs", "dsh-private", "blob"] as const)("rejects the canonical pointer form in %s authority", async (pointerAuthority) => {
+    const result = await inspectRecoveryRehearsalBundle({
+      bundlePath: writeRecoveryBundle({ pointerAuthority }),
+      expectedMigrations,
+      commandRunner: validArchiveRunner,
+      now: new Date(),
+      maxAgeMinutes: 60,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.problems).toEqual(expect.arrayContaining([
+      expect.stringContaining("contains an invalid authority entry"),
+    ]));
+  });
+
+  it("preserves remote Blob object keys without inventing parent directories", async () => {
+    const result = await inspectRecoveryRehearsalBundle({
+      bundlePath: writeRecoveryBundle({ blobObjectKey: "media/character/image.png" }),
+      expectedMigrations,
+      commandRunner: validArchiveRunner,
+      now: new Date(),
+      maxAgeMinutes: 60,
+    });
+    expect(result).toMatchObject({ ok: true, problems: [] });
   });
 
   it("rejects a bundle from an older migration authority", async () => {

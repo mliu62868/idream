@@ -13,6 +13,7 @@ import { moderateText } from "@/server/moderation/text-authority";
 import { updateGenerationRequestSourceMeta } from "@/server/ai/generation-request-transition";
 import { recordMainToChatEvent } from "@/processes/chat-outbox";
 import { isReusablePlatformAssetWhere } from "@/server/modules/ourdream/chat-image-reuse";
+import { generationExecutionErrorCode, latestGenerationAttemptStatuses } from "@/server/modules/ourdream/generation-job-read-model";
 import {
   assertNoPendingCompanionMemoryRebuild,
   hasPendingCompanionMemoryMutation,
@@ -595,6 +596,24 @@ export async function setChatMemory(userId: string, sessionId: string, memoryEna
 }
 
 export async function chatVoiceAuthority(userId: string, sessionId: string, messageId: string) {
+  if (messageId === `opening:${sessionId}`) {
+    const session = await prisma.recentChat.findFirst({ where: { sessionId, userId } });
+    if (!session?.openingMessage?.trim()) throw Errors.notFound("Message not found");
+    // INVARIANT: the greeting belongs to the immutable Session snapshot, not
+    // the Character's current draft and not a caller-provided voice text.
+    return {
+      schemaVersion: 1 as const,
+      sessionId,
+      messageId,
+      characterId: session.characterId,
+      text: session.openingMessage,
+      attempt: 1,
+      sceneVersion: 0,
+      scene: null,
+      characterContentVersionId: session.characterContentVersionId,
+      characterReleaseId: session.characterReleaseId,
+    };
+  }
   const turn = await prisma.chatTurn.findFirst({
     where: { sessionId, assistantMessageId: messageId, session: { userId } },
     include: { session: true },
@@ -1046,15 +1065,28 @@ function streamUrl(assistantMessageId: string, attempt: number) {
 
 async function enrichAttachmentMedia(messages: Array<Record<string, unknown>>, userId: string) {
   const ids = new Set<string>();
+  const jobIds = new Set<string>();
   for (const message of messages) {
     const attachments = Array.isArray(message.attachments) ? message.attachments : [];
     for (const attachment of attachments) {
       if (!isRecord(attachment)) continue;
       const mediaAssetId = typeof attachment.mediaAssetId === "string" ? attachment.mediaAssetId : null;
       if (mediaAssetId) ids.add(mediaAssetId);
+      if (typeof attachment.generationJobId === "string" && ["requesting", "accepted", "queued", "running"].includes(String(attachment.status))) {
+        jobIds.add(attachment.generationJobId);
+      }
     }
   }
-  if (ids.size === 0) return messages;
+  if (ids.size === 0 && jobIds.size === 0) return messages;
+
+  const jobs = jobIds.size ? await prisma.generationJob.findMany({
+    where: { id: { in: [...jobIds] }, userId },
+    select: { id: true, status: true, errorCode: true },
+  }) : [];
+  const attemptStatuses = await latestGenerationAttemptStatuses(jobs.map((job) => job.id));
+  const executionErrors = new Map(jobs.map((job) => [
+    job.id, generationExecutionErrorCode(job.status, attemptStatuses.get(job.id) ?? null, job.errorCode),
+  ]));
 
   const assets = await prisma.mediaAsset.findMany({
     where: {
@@ -1078,6 +1110,10 @@ async function enrichAttachmentMedia(messages: Array<Record<string, unknown>>, u
       ...message,
       attachments: attachments.map((attachment) => {
         if (!isRecord(attachment)) return attachment;
+        const errorCode = typeof attachment.generationJobId === "string"
+          ? executionErrors.get(attachment.generationJobId)
+          : null;
+        if (errorCode === "provider_outcome_unknown") return { ...attachment, errorCode };
         const mediaAssetId = typeof attachment.mediaAssetId === "string" ? attachment.mediaAssetId : null;
         const asset = mediaAssetId ? byId.get(mediaAssetId) : null;
         return asset

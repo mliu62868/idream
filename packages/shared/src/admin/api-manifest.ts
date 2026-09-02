@@ -210,6 +210,7 @@ const collaborationWrite = [
 ] as const;
 export const ADMIN_COMMAND_TARGET_READ_PERMISSIONS = {
   admin_case: "case.read",
+  character_project: "character.project.read",
   character_release: "character.release.read",
   character_serving: "character.release.read",
   chat_session: "character.release.read",
@@ -224,6 +225,7 @@ export type AdminCommandTargetType =
 
 const commandTargetRead = [
   "case.read",
+  "character.project.read",
   "character.release.read",
   "creative.run.read",
   "ops.incident.read",
@@ -1286,6 +1288,13 @@ export const ADMIN_V2_API_OPERATIONS = [
     allOf("support.request.read"),
     "supportRequestListQuerySchema",
     "supportRequestListResponseSchema",
+  ),
+  operation(
+    "GET",
+    "/api/v2/admin/support/requests/:id",
+    allOf("support.request.read"),
+    "path:id",
+    "supportConversationResponseSchema",
   ),
   operation(
     "PATCH",

@@ -115,6 +115,8 @@ export const generationTerminalRecordSchema = z.discriminatedUnion("outcome", [
 ]).superRefine((record, context) => {
   const blockedAtInput =
     record.outcome === "blocked" && record.block.layer === "input";
+  const failedPreparation =
+    record.outcome === "failed" && record.error.code === "preparation_failed";
   if (blockedAtInput && record.providerInvoked) {
     context.addIssue({
       code: "custom",
@@ -122,11 +124,11 @@ export const generationTerminalRecordSchema = z.discriminatedUnion("outcome", [
       message: "input moderation must block before provider invocation",
     });
   }
-  if (!record.providerInvoked && !blockedAtInput) {
+  if (!record.providerInvoked && !blockedAtInput && !failedPreparation) {
     context.addIssue({
       code: "custom",
       path: ["providerInvoked"],
-      message: "only an input-moderation block may precede provider invocation",
+      message: "only an input block or preparation failure may precede provider invocation",
     });
   }
   if (!record.providerInvoked && record.providerRequestId !== null) {
@@ -141,6 +143,13 @@ export const generationTerminalRecordSchema = z.discriminatedUnion("outcome", [
       code: "custom",
       path: ["accounting"],
       message: "a non-invoked provider cannot have provider accounting",
+    });
+  }
+  if (!record.providerInvoked && Object.keys(record.usage).length > 0) {
+    context.addIssue({
+      code: "custom",
+      path: ["usage"],
+      message: "a non-invoked provider cannot have provider usage",
     });
   }
   if (record.providerInvoked && !record.providerIdempotencyKey) {

@@ -29,7 +29,6 @@ import {
 } from "./generation-request-schema";
 import {
   generationCharacter,
-  publishedGenerationVideoCharacter,
   resolveGenerationLook,
   resolveGenerationVisualProfile,
 } from "./generation-character-authority";
@@ -112,9 +111,7 @@ export async function resolveGenerationPlan(
     body.characterId ? "character" : "freeplay",
   );
   const character = body.characterId
-    ? body.mode === "video"
-      ? await publishedGenerationVideoCharacter(body.characterId)
-      : await generationCharacter(body.characterId, userId)
+    ? await generationCharacter(body.characterId, userId)
     : null;
   const consistencyMode = body.consistencyMode ?? "balanced";
   const visualProfile =

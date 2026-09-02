@@ -19,8 +19,10 @@ import {
   savedViewDeleteSchema,
   savedViewListResponseSchema,
   savedViewMutationResponseSchema,
+  supportConversationResponseSchema,
   type SavedView,
 } from "@idream/shared/admin";
+import type { SupportConversation } from "@idream/shared/contracts";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { GhostButton } from "@/components/admin/ui/buttons";
 import { StatusPill } from "@/components/admin/ui/StatusPill";
@@ -94,6 +96,8 @@ export function SupportWorkspace({
   const [savedViewError, setSavedViewError] = useState<string | null>(null);
   const [savedViewErrorCause, setSavedViewErrorCause] = useState<unknown>(undefined);
   const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
+  const [conversationTicket, setConversationTicket] = useState<string | null>(null);
+  const [conversationRevision, setConversationRevision] = useState(0);
   const [savingView, setSavingView] = useState(false);
   // SPEC: 「上一页」走自己走过的游标回头，不给后端发 `before`。
   // INTENT: 支持工单列表还是单向 keyset（响应里没有 startCursor / hasPreviousPage），
@@ -272,9 +276,15 @@ export function SupportWorkspace({
     includeResolution?: boolean;
   }) {
     if (!canWrite) return;
-    const idempotencyKey = crypto.randomUUID();
+    const publicMessage = { value: "" };
+    const needsMessage = input.status === "waiting_on_user" || input.status === "resolved";
+    const attempt = { signature: "", idempotencyKey: crypto.randomUUID() };
     setConfirmation({
       title: t("{action} support request {id}", { action: t(input.label), id: input.id }),
+      summary: needsMessage ? <label className="grid gap-2 font-medium">{t("Message to customer")}
+        <textarea aria-label={t("Message to customer")} className="min-h-28 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3" maxLength={2000} onChange={(event) => { publicMessage.value = event.target.value; }} />
+        <span className="text-xs text-[var(--ad-text-muted)]">{t("Visible to the customer in Help Desk. Internal reasons stay private.")}</span>
+      </label> : undefined,
       destructive: { expectedName: input.id, inputLabel: "Confirmation" },
       // INTENT: 支持工单的状态可以再改回去，唯独升级会通知到值班——所以分开说。
       consequence: {
@@ -287,18 +297,24 @@ export function SupportWorkspace({
       reasonLabel: "Reason",
       submitLabel: "Confirm",
       onSubmit: async (reason) => {
+        if (needsMessage && !publicMessage.value.trim()) throw new Error(t("Write a message to the customer before continuing."));
+        const body = {
+          confirmation: input.id, reason,
+          resolutionNotes: input.includeResolution ? reason : undefined,
+          customerMessage: needsMessage ? publicMessage.value.trim() : undefined,
+          status: input.status,
+        };
+        const signature = JSON.stringify(body);
+        if (attempt.signature && attempt.signature !== signature) attempt.idempotencyKey = crypto.randomUUID();
+        attempt.signature = signature;
         await apiWrite(
           input.endpoint,
           input.method,
-          {
-            confirmation: input.id,
-            reason,
-            resolutionNotes: input.includeResolution ? reason : undefined,
-            status: input.status,
-          },
-          { "idempotency-key": idempotencyKey },
+          body,
+          { "idempotency-key": attempt.idempotencyKey },
         );
         toast({ tone: "success", title: t("{action} applied to {id}", { action: t(input.label), id: input.id }) });
+        setConversationRevision((revision) => revision + 1);
         navigate({ ...query, cursor: "" }, "replace");
       },
     });
@@ -466,6 +482,11 @@ export function SupportWorkspace({
           snapshotAt={data ? refreshedAt : null}
         />
       ) : null}
+      {conversationTicket ? <SupportConversationPanel
+        key={conversationTicket} ticketId={conversationTicket} canWrite={canWrite}
+        refreshRevision={conversationRevision}
+        onClose={() => setConversationTicket(null)} onUpdated={() => void load(query)}
+      /> : null}
       {!data && loading ? (
         <div className="rounded-lg border p-4" role="status">
           <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
@@ -524,7 +545,7 @@ export function SupportWorkspace({
             { label: "Actions", width: "23rem" },
           ]}
           minimumWidthClassName="min-w-[2688px]"
-          rows={supportRows(rows, canWrite, confirmAction, t, value, format, refreshedAt ?? "")}
+          rows={supportRows(rows, canWrite, confirmAction, t, value, format, refreshedAt ?? "", setConversationTicket)}
           stickyLastColumn
         />
       ) : null}
@@ -553,6 +574,85 @@ export function SupportWorkspace({
       ) : null}
     </section>
   );
+}
+
+function SupportConversationPanel({ ticketId, canWrite, refreshRevision, onClose, onUpdated }: {
+  ticketId: string; canWrite: boolean; refreshRevision: number; onClose: () => void; onUpdated: () => void;
+}) {
+  const { t, value } = useAdminI18n();
+  const format = useAdminFormat();
+  const [conversation, setConversation] = useState<SupportConversation | null>(null);
+  const [draft, setDraft] = useState("");
+  const [error, setError] = useState<unknown>(null);
+  const [loading, setLoading] = useState(false);
+  const [confirmation, setConfirmation] = useState<ConfirmSpec | null>(null);
+  const gate = useRef(createLatestRequestGate());
+  const section = useRef<HTMLElement>(null);
+  const load = useCallback(async () => {
+    const request = gate.current.begin();
+    setLoading(true); setError(null);
+    try {
+      const result = await adminV2Request(`/api/v2/admin/support/requests/${encodeURIComponent(ticketId)}`, { schema: supportConversationResponseSchema });
+      if (request.isCurrent()) setConversation(result.request);
+    } catch (cause) { if (request.isCurrent()) setError(cause); }
+    finally { if (request.isCurrent()) setLoading(false); }
+  }, [ticketId]);
+  useEffect(() => {
+    const requestGate = gate.current;
+    const refresh = () => { void load(); };
+    window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
+    const timer = window.setTimeout(() => {
+      void load();
+      section.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+    }, 0);
+    return () => {
+      window.removeEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
+      window.clearTimeout(timer);
+      requestGate.invalidate();
+    };
+  }, [load, refreshRevision]);
+
+  function reply() {
+    const customerMessage = draft.trim();
+    if (!customerMessage || !canWrite) return;
+    const attempt = { reason: "", key: crypto.randomUUID() };
+    setConfirmation({
+      title: t("Reply to support request {id}", { id: ticketId }),
+      summary: <p className="whitespace-pre-wrap break-words">{customerMessage}</p>,
+      destructive: { expectedName: ticketId, inputLabel: "Confirmation" },
+      reasonLabel: "Reason", submitLabel: "Send reply",
+      onSubmit: async (reason) => {
+        if (attempt.reason && attempt.reason !== reason) attempt.key = crypto.randomUUID();
+        attempt.reason = reason;
+        await apiWrite(`/api/v2/admin/support/requests/${encodeURIComponent(ticketId)}`, "PATCH", {
+          customerMessage, reason, confirmation: ticketId,
+        }, { "idempotency-key": attempt.key });
+        setDraft(""); await load(); onUpdated();
+      },
+    });
+  }
+  return <section className="space-y-4 rounded-lg border border-[var(--ad-border)] bg-[var(--ad-surface)] p-5" ref={section}>
+    <div className="flex items-center justify-between gap-3"><h2 className="font-semibold">{t("Support conversation")} · {ticketId}</h2><GhostButton onClick={onClose}>{t("Close conversation")}</GhostButton></div>
+    {error ? <AuthorityRequestError cause={error} message={t("Support conversation could not load")} onRetry={() => void load()} /> : null}
+    {loading ? <p role="status">{t("Loading conversation…")}</p> : null}
+    {conversation ? <>
+      <p className="font-medium">{conversation.subject} · {value(conversation.status)}</p>
+      <p className="whitespace-pre-wrap break-words text-sm">{conversation.description}</p>
+      <div className="max-h-96 space-y-3 overflow-y-auto">
+        {conversation.messages.map((message) => <article className="rounded-md bg-[var(--ad-surface-subtle)] p-3" key={message.id}>
+          <p className="text-xs font-semibold">{message.author === "customer" ? t("Customer") : t("Support")} · {format.dateTime(message.createdAt)}</p>
+          <p className="mt-1 whitespace-pre-wrap break-words text-sm">{message.body}</p>
+        </article>)}
+      </div>
+      {canWrite && conversation.canReply ? <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); reply(); }}>
+        <label className="grid gap-2 text-sm font-medium">{t("Message to customer")}<textarea aria-label={t("Message to customer")} className="min-h-28 rounded-md border border-[var(--ad-border)] bg-[var(--ad-surface)] p-3" maxLength={2000} onChange={(event) => setDraft(event.target.value)} value={draft} /></label>
+        <p className="text-xs text-[var(--ad-text-muted)]">{t("Visible to the customer in Help Desk. Internal reasons stay private.")}</p>
+        <GhostButton disabled={!draft.trim() || loading} type="submit">{t("Send reply")}</GhostButton>
+      </form> : null}
+      <GhostButton disabled={loading} onClick={() => void load()}>{t("Refresh conversation")}</GhostButton>
+    </> : null}
+    {confirmation ? <ConfirmDialog onClose={() => setConfirmation(null)} spec={confirmation} /> : null}
+  </section>;
 }
 
 function PlaintextAccessPanel() {
@@ -707,6 +807,7 @@ function supportRows(
   format: AdminFormat,
   // 这批数据的抓取时刻——「多久没动过」相对它算，见 LastUpdateCell。
   referenceTime: string,
+  openConversation: (ticketId: string) => void,
 ): DataTableRow[] {
   return rows.map((row, index) => {
     const id = format.text(row.ticketId);
@@ -752,7 +853,7 @@ function supportRows(
         next: "resolved",
         resolution: true,
       });
-    if (status !== "closed")
+    if (status === "resolved")
       actions.push({
         label: "Close",
         icon: <Check className="h-4 w-4" />,
@@ -762,7 +863,7 @@ function supportRows(
     return {
       id: id || `support-${index}`,
       cells: [
-        id,
+        <button className="font-semibold underline underline-offset-4" key="ticket" onClick={() => openConversation(id)} type="button">{id}</button>,
         format.display(row.userEmail),
         value(format.text(row.category)) || "—",
         format.display(row.subject),

@@ -18,7 +18,12 @@ export function buildCompanionRuntimeAuthority(input: {
           "- When the latest user explicitly asks to modify the last delivered image, call edit_last_image instead of only describing the edit.",
           "- Never claim an image was generated or edited unless the corresponding tool call succeeds.",
         ]
-      : []),
+      : [
+          "- No image action is authorized for this turn. Discuss the scene in words; you may offer an image for the user to confirm.",
+          '- If you offer an image, end with exactly one question that explicitly names a photo, image, portrait, or selfie (or 照片/图片/自拍). Example: "Would you like me to send you a portrait by the window?" Never offer only "it" or add another question; wait for the user\'s answer.',
+          "- Do not claim you sent, generated, or attached an image. Only a successful authorized tool action can establish that fact.",
+          "- Do not claim a photo is already taken, framed, or ready to send before an authorized tool succeeds.",
+        ]),
     ...(input.memoryEnabled
       ? []
       : [

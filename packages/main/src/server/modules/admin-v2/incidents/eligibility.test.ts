@@ -4,9 +4,9 @@ import { eligibleOccurrenceIds } from "./eligibility";
 // 实测抓自本地事故 cmt6zba3h…：两条 occurrence 的 Attempt 都是
 // unknown / not_retryable / ambiguous_non_replayable —— 结果不确定，重放可能二次扣费或二次交付。
 const AMBIGUOUS = [
-  { id: "occ-a", capturedSpend: 0, refunded: 0, attempt: { status: "unknown", retryability: "not_retryable" } },
-  { id: "occ-b", capturedSpend: 0, refunded: 0, attempt: { status: "unknown", retryability: "not_retryable" } },
-] as never[];
+  { id: "occ-a", capturedSpend: 0, refunded: 0, retryAllowed: false, attempt: { status: "unknown", retryability: "not_retryable" } },
+  { id: "occ-b", capturedSpend: 0, refunded: 0, retryAllowed: false, attempt: { status: "unknown", retryability: "not_retryable" } },
+];
 
 describe("incident mitigation eligibility", () => {
   // SPEC: 结果不确定且被判定不可重试的 occurrence，绝不进重试集合。
@@ -16,20 +16,22 @@ describe("incident mitigation eligibility", () => {
     expect(eligibleOccurrenceIds("retry_eligible", AMBIGUOUS)).toEqual([]);
   });
 
-  it("offers a retry once the attempt says it is retryable", () => {
+  it("offers only retries permitted by current Request and Attempt authority", () => {
     const retryable = [
-      { id: "occ-a", capturedSpend: 0, refunded: 0, attempt: { status: "failed", retryability: "retryable" } },
-      { id: "occ-b", capturedSpend: 0, refunded: 0, attempt: { status: "failed", retryability: "not_retryable" } },
-    ] as never[];
-    expect(eligibleOccurrenceIds("retry_eligible", retryable)).toEqual(["occ-a"]);
+      { id: "occ-a", capturedSpend: 0, refunded: 0, retryAllowed: true, attempt: { status: "failed", retryability: "retryable" } },
+      { id: "occ-b", capturedSpend: 0, refunded: 0, retryAllowed: false, attempt: { status: "failed", retryability: "not_retryable" } },
+      { id: "occ-c", capturedSpend: 0, refunded: 0, retryAllowed: false, attempt: { status: "unknown", retryability: "operator_retry" } },
+      { id: "occ-d", capturedSpend: 0, refunded: 0, retryAllowed: true, attempt: { status: "unknown", retryability: "operator_retry" } },
+    ];
+    expect(eligibleOccurrenceIds("retry_eligible", retryable)).toEqual(["occ-a", "occ-d"]);
   });
 
   // SPEC: 只退还真正捕获过、且还没退过的那部分。
   it("only refunds occurrences whose captured spend is not yet refunded", () => {
     const ledgered = [
-      { id: "occ-paid", capturedSpend: 8, refunded: 0, attempt: null },
-      { id: "occ-done", capturedSpend: 8, refunded: 8, attempt: null },
-    ] as never[];
+      { id: "occ-paid", capturedSpend: 8, refunded: 0, retryAllowed: false },
+      { id: "occ-done", capturedSpend: 8, refunded: 8, retryAllowed: false },
+    ];
     expect(eligibleOccurrenceIds("refund", ledgered)).toEqual(["occ-paid"]);
   });
 

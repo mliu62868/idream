@@ -9,7 +9,7 @@ export type OperatorErrorCopy = {
   headline: string;
   /** 下一步该做什么。 */
   nextStep: string;
-  /** nextStep 的插值实参（目前只有校验失败的字段名列表）。 */
+  /** nextStep 的插值实参。 */
   nextStepValues?: Record<string, string>;
   technical: {
     code: string | null;
@@ -108,14 +108,35 @@ const FIELD_REJECTED: Copy = {
   nextStep: "These fields were rejected: {fields}. Correct them and submit again — nothing was written.",
 };
 
+const CASE_ASSIGNMENT_BLOCKED: Copy = {
+  headline: "This case is resolved or closed.",
+  nextStep: "Reopen this case before changing its assignment.",
+};
+
+const SUPPORT_CASE_SUPERSEDED: Copy = {
+  headline: "This request has a newer support case.",
+  nextStep: "Open case {caseId} and reopen it there. This historical case was not changed.",
+};
+
 export function operatorErrorCopy(cause: unknown): OperatorErrorCopy {
   const message = errorText(cause);
   if (cause instanceof AdminV2RequestError) {
     const code = cause.code ?? CODE_BY_STATUS[cause.status] ?? null;
     const fields = code === "bad_request" ? apiErrorFieldNames(cause.details) : [];
+    const terminalAssignment = code === "conflict" &&
+      message === "Case cannot be assigned from its present state" &&
+      cause.details !== null && typeof cause.details === "object" &&
+      "status" in cause.details &&
+      (cause.details.status === "resolved" || cause.details.status === "closed");
+    const currentCaseId = code === "conflict" &&
+      message === "A newer support Case owns this request; reopen that Case instead" &&
+      cause.details !== null && typeof cause.details === "object" &&
+      "currentCaseId" in cause.details && typeof cause.details.currentCaseId === "string"
+      ? cause.details.currentCaseId : null;
     return {
-      ...(fields.length > 0 ? FIELD_REJECTED : (COPY_BY_CODE[code ?? ""] ?? UNMAPPED)),
+      ...(currentCaseId ? SUPPORT_CASE_SUPERSEDED : terminalAssignment ? CASE_ASSIGNMENT_BLOCKED : fields.length > 0 ? FIELD_REJECTED : (COPY_BY_CODE[code ?? ""] ?? UNMAPPED)),
       ...(fields.length > 0 ? { nextStepValues: { fields: fields.join("、") } } : {}),
+      ...(currentCaseId ? { nextStepValues: { caseId: currentCaseId } } : {}),
       technical: {
         code: cause.code ?? null,
         status: cause.status,
@@ -149,6 +170,8 @@ export const OPERATOR_ERROR_COPY_KEYS: readonly string[] = [
   UNMAPPED,
   OFFLINE,
   FIELD_REJECTED,
+  CASE_ASSIGNMENT_BLOCKED,
+  SUPPORT_CASE_SUPERSEDED,
 ].flatMap((copy) => [copy.headline, copy.nextStep]);
 
 function errorText(cause: unknown) {

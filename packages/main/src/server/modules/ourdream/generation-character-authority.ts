@@ -19,7 +19,7 @@ import {
   toTraitRecord,
   type IdentityTraits,
 } from "./identity-assembler";
-import { publicCharacterAudienceWhere } from "./public-content-audience";
+import { directCharacterAudienceWhere } from "./public-content-audience";
 
 export interface GenerationPromptCharacter {
   id: string;
@@ -40,7 +40,7 @@ export async function readableCharacter(id: string, userId: string) {
     where: {
       id,
       deletedAt: null,
-      OR: [publicCharacterAudienceWhere, { creatorId: userId }],
+      OR: [directCharacterAudienceWhere, { creatorId: userId }],
     },
   });
   if (!character) throw Errors.notFound("Character not found");
@@ -50,7 +50,7 @@ export async function readableCharacter(id: string, userId: string) {
 export async function generationCharacter(id: string, userId: string) {
   const character = await readableCharacter(id, userId);
   // readableCharacter 的 creatorId 分支绕开了公开受众谓词，所以这里是创作者自有角色的唯一年龄闸，
-  // 不是 publicCharacterAudienceWhere 的重复。
+  // 不是 directCharacterAudienceWhere 的重复。
   if (character.age < 18) {
     throw Errors.badRequest("Character is not eligible for generation", {
       policyCode: "UNDERAGE",
@@ -61,16 +61,6 @@ export async function generationCharacter(id: string, userId: string) {
       status: character.status,
     });
   }
-  return character;
-}
-
-export async function publishedGenerationVideoCharacter(id: string) {
-  const character = await prisma.character.findFirst({
-    where: {
-      AND: [{ id }, publicCharacterAudienceWhere],
-    },
-  });
-  if (!character) throw Errors.notFound("Character not found");
   return character;
 }
 

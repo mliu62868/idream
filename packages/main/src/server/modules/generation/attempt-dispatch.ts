@@ -22,7 +22,7 @@ import {
   PUBLIC_CATALOG_EDITORIAL_IMPORT_POLICY_VERSION,
   PUBLIC_CATALOG_QUALIFICATION_SCHEMA_VERSION,
 } from "@/server/modules/ourdream/public-catalog-qualification";
-import { publicCharacterAudienceWhere } from "@/server/modules/ourdream/public-content-audience";
+import { directCharacterAudienceWhere } from "@/server/modules/ourdream/public-content-audience";
 
 const LEGACY_CHARACTER_GENERATION_AUTHORITY_SCHEMA_VERSION_V1 =
   "legacy-character-generation-authority-v1";
@@ -781,18 +781,6 @@ async function assertGenerationCharacterDispatchable(
           deletedAt: null,
           status: { notIn: ["archived", "removed"] },
         }
-      : job.mode === "video"
-      ? {
-          AND: [
-            {
-              id: job.characterId,
-              deletedAt: null,
-              age: { gte: 18 },
-              status: "approved",
-            },
-            publicCharacterAudienceWhere,
-          ],
-        }
       : {
         AND: [
           {
@@ -804,7 +792,7 @@ async function assertGenerationCharacterDispatchable(
           {
             OR: [
               { creatorId: job.userId },
-              publicCharacterAudienceWhere,
+              directCharacterAudienceWhere,
             ],
           },
         ],

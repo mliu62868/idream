@@ -71,12 +71,19 @@ type RegenerateAnchorEvidence = OperationEvidence & {
   regeneratedDsh?: DshCompanionProbeEvidence;
 };
 
-export type DshCompanionProbeEvidence = CompanionProbeDshEvidence;
+export type DshCompanionProbeEvidence = CompanionProbeDshEvidence & { turnId?: string };
 
 type CleanupEvidence = OperationEvidence & {
   memoryCleared?: boolean;
   sessionDeleted?: boolean;
   sessionGone?: boolean;
+  sessions?: Array<{
+    sessionId: string;
+    deleted: boolean;
+    gone: boolean;
+    deleteStatus: number | null;
+    verifyStatus: number | null;
+  }>;
 };
 
 // End-to-end conversation smoke (design §10.4): create → send → stream → get,
@@ -96,6 +103,23 @@ type ConversationEvidence = {
     derivationSettled?: boolean;
     dsh?: DshCompanionProbeEvidence;
   };
+  recall: OperationEvidence & {
+    archiveSession?: OperationEvidence;
+    createSession?: OperationEvidence;
+    distinctSession?: boolean;
+    sourceSessionId?: string;
+    sourceTurnId?: string;
+    sourceAssistantMessageId?: string;
+    sessionId?: string;
+    turnId?: string;
+    assistantMessageId?: string;
+    expectedPhrase?: string;
+    actualAnswer?: string | null;
+    recallMatched?: boolean;
+    wakeObserved?: boolean;
+    memorySearchHit?: boolean;
+    dsh?: DshCompanionProbeEvidence;
+  };
   regenerateAnchor: RegenerateAnchorEvidence;
   noMemory: NoMemoryEvidence;
   blockedInput: OperationEvidence & { status_?: string };
@@ -106,7 +130,9 @@ type ConversationEvidence = {
 // SPEC: 写出的 JSON 由 launch gate 的 evidence 契约约束，两端共用 readiness/evidence.ts。
 // INTENT: 只把顶层收到契约上 —— 上面那几个嵌套类型（characterSource 的字面量联合、各步骤的
 //         OperationEvidence）比契约更精确，赋值时由 tsc 校验它们能落进契约，精度不丢。
-type ChatServiceProbeReport = ProbeReportOf<ChatServiceProbeEvidence>;
+type ChatServiceProbeReport = ProbeReportOf<ChatServiceProbeEvidence> & {
+  conversation: ConversationEvidence;
+};
 
 const CHAT_PROBE_USER_ID = "seed-chat-probe-user";
 // INVARIANT: the observer envelope must outlive Chat's default 300s DSH
@@ -216,6 +242,7 @@ async function fetchProbeCompanionAttemptEvidenceOnce(
   const turn = await prisma.chatTurn.findUnique({
     where: { assistantMessageId: input.messageId },
     select: {
+      id: true,
       attempt: true,
       assistantStatus: true,
       terminalEvidence: true,
@@ -251,11 +278,14 @@ async function fetchProbeCompanionAttemptEvidenceOnce(
         select: { id: true },
       })
     : null;
-  return companionProbeDshEvidenceSchema.parse(projectCompanionProbeDshEvidence(
-    turn.terminalEvidence,
-    input.mode,
-    input.mode === "private" ? "disabled" : pending ? "pending" : "projected",
-  ));
+  return {
+    ...companionProbeDshEvidenceSchema.parse(projectCompanionProbeDshEvidence(
+      turn.terminalEvidence,
+      input.mode,
+      input.mode === "private" ? "disabled" : pending ? "pending" : "projected",
+    )),
+    turnId: turn.id,
+  };
 }
 
 function readOptions(): ProbeOptions {
@@ -307,6 +337,7 @@ function skippedConversation(reason: string): ConversationEvidence {
     sendMessage: SKIPPED_OP,
     stream: SKIPPED_OP,
     getSession: SKIPPED_OP,
+    recall: SKIPPED_OP,
     regenerateAnchor: SKIPPED_OP,
     noMemory: SKIPPED_OP,
     blockedInput: SKIPPED_OP,
@@ -634,12 +665,14 @@ async function probeConversation(input: {
     sendMessage: { ok: false, error: "not attempted" },
     stream: { ok: false, error: "not attempted" },
     getSession: { ok: false, error: "not attempted" },
+    recall: { ok: false, error: "not attempted" },
     regenerateAnchor: { ok: false, error: "not attempted" },
     noMemory: { ok: false, error: "not attempted" },
     blockedInput: { ok: false, error: "not attempted" },
     cleanup: { ok: false, error: "not attempted" },
   };
   let sessionId: string | null = null;
+  const createdSessionIds: string[] = [];
   try {
     // A failed prior probe may have left an active audit session. Remove only
     // this dedicated actor's visible state before creating a fresh run.
@@ -659,6 +692,7 @@ async function probeConversation(input: {
     evidence.createSession = { ok: createRes.status === 201 && Boolean(session.id), status: createRes.status };
     if (!session.id) throw new Error(`create session returned HTTP ${createRes.status}`);
     sessionId = session.id;
+    createdSessionIds.push(sessionId);
 
     const recallSentinel = `idreamrecall_${createHash("sha256")
       .update(input.runId)
@@ -739,9 +773,39 @@ async function probeConversation(input: {
       );
     }
 
-    // 5) Main has one relationship session per Character. The exact marker
-    // must be returned by the memory_search tool with matching igrep evidence.
-    const recallSessionId = sessionId;
+    // 5) Archive preserves relationship memory while releasing the active key.
+    // A distinct session excludes the original Turn from the new replay history.
+    const sourceSessionId = sessionId;
+    evidence.recall = {
+      ok: false,
+      sourceSessionId,
+      sourceTurnId: normalDsh.turnId,
+      sourceAssistantMessageId: sent.assistantMessageId,
+      expectedPhrase: recallSentinel,
+    };
+    const archiveRes = await productFetch({
+      ...input, method: "POST", path: `/api/v1/chat/sessions/${sourceSessionId}/archive`,
+    });
+    const archived = productSessionRecord(await archiveRes.json().catch(() => ({}))) as { status?: string };
+    evidence.recall.archiveSession = { ok: archiveRes.status === 200 && archived.status === "archived", status: archiveRes.status };
+    if (!evidence.recall.archiveSession.ok) {
+      throw new Error(`archive source session failed: HTTP ${archiveRes.status}`);
+    }
+    const recallCreateRes = await productFetch({
+      ...input, method: "POST", path: "/api/v1/chat/sessions",
+      body: JSON.stringify({ characterId: input.characterId }),
+    });
+    const recallSession = productSessionRecord(await recallCreateRes.json().catch(() => ({}))) as { id?: string };
+    if (recallSession.id) createdSessionIds.push(recallSession.id);
+    evidence.recall.createSession = { ok: recallCreateRes.status === 201 && Boolean(recallSession.id), status: recallCreateRes.status };
+    evidence.recall.sessionId = recallSession.id;
+    evidence.recall.distinctSession = Boolean(recallSession.id && recallSession.id !== sourceSessionId);
+    if (!evidence.recall.createSession.ok || !recallSession.id) {
+      throw new Error(`create recall session failed: HTTP ${recallCreateRes.status}`);
+    }
+    if (!evidence.recall.distinctSession) throw new Error("recall requires a distinct session");
+    const recallSessionId = recallSession.id;
+    sessionId = recallSessionId;
     const recallSend = await productFetch({
       ...input,
       method: "POST",
@@ -757,6 +821,7 @@ async function probeConversation(input: {
       assistantMessageId?: string;
       attempt?: number;
     };
+    evidence.recall.assistantMessageId = recallTurn.assistantMessageId;
     const recallStream = recallTurn.assistantMessageId
       ? await probeStream({
           ...input,
@@ -776,6 +841,7 @@ async function probeConversation(input: {
       sessionId: recallSessionId,
       assistantMessageId: recallTurn.assistantMessageId,
     });
+    evidence.recall.actualAnswer = recallState.message?.content ?? null;
     const recallDsh = await fetchProbeCompanionAttemptEvidence({
       ...input,
       sessionId: recallSessionId,
@@ -789,7 +855,24 @@ async function probeConversation(input: {
       sentinel: recallSentinel,
       dsh: recallDsh,
     });
-    if (recallState.status !== 200 || recallState.settled !== true || !recall.ok || !(recallDsh?.ok ?? true)) {
+    // SPEC: runProbe admits only the dedicated audit actor. Keep its synthetic
+    // source and answer before cleanup so a strict recall failure is diagnosable.
+    evidence.recall = {
+      ...evidence.recall,
+      ...recall,
+      ok: recallState.status === 200 && recallState.settled === true && recall.ok && (recallDsh?.ok ?? true),
+      status: recallState.status,
+      sourceSessionId,
+      sourceTurnId: normalDsh.turnId,
+      sourceAssistantMessageId: sent.assistantMessageId,
+      sessionId: recallSessionId,
+      turnId: recallDsh.turnId,
+      assistantMessageId: recallTurn.assistantMessageId,
+      expectedPhrase: recallSentinel,
+      actualAnswer: recallState.message?.content ?? null,
+      dsh: recallDsh,
+    };
+    if (!evidence.recall.ok) {
       throw new Error(
         `relationship recall failed: HTTP ${recallState.status}; settled=${recallState.settled === true}; ` +
         `dsh=${recallDsh?.ok ?? "not_required"}; ${describeDshRecallFailure(recall, recallDsh)}`,
@@ -1011,6 +1094,7 @@ async function probeConversation(input: {
     evidence.cleanup = await cleanupCompletedProbeState({
       ...input,
       sessionId,
+      sessionIds: createdSessionIds,
     });
   }
   return finalizeConversation(evidence);
@@ -1046,8 +1130,12 @@ export async function cleanupExistingProbeState(input: {
     if (list.status !== 200 || !Array.isArray(sessions)) {
       return { ok: false, status: list.status, error: "could not list prior audit sessions" };
     }
+    let lastDeletedSessionId: string | null = null;
     for (const session of sessions) {
       if (!session.id) continue;
+      if (!await waitForProbeMemoryMaintenance(input)) {
+        return { ok: false, error: `companion memory did not settle before deleting session ${session.id}` };
+      }
       const deleted = await productFetch({
         ...input,
         method: "DELETE",
@@ -1060,6 +1148,10 @@ export async function cleanupExistingProbeState(input: {
           error: `could not delete prior audit session ${session.id}`,
         };
       }
+      lastDeletedSessionId = session.id;
+    }
+    if (!await waitForProbeMemoryMaintenance(input)) {
+      return { ok: false, error: `companion memory did not settle after deleting session ${lastDeletedSessionId ?? "none"}` };
     }
     const fileAuthority = await clearProbeFileAuthority(input);
     const verify = await productFetch({
@@ -1096,6 +1188,7 @@ export async function cleanupCompletedProbeState(input: {
   userId: string;
   characterId: string;
   sessionId: string | null;
+  sessionIds?: readonly string[];
 }): Promise<CleanupEvidence> {
   if (!input.sessionId) {
     return {
@@ -1117,28 +1210,41 @@ export async function cleanupCompletedProbeState(input: {
     // the exact destructive mutation. Session deletion can then be final
     // instead of racing an AgentRun and leaving an archived probe row behind.
     const fileAuthority = await clearProbeFileAuthority(input);
-    const sessionIds = [input.sessionId];
-    const deleted: Response[] = [];
+    const sessionIds = [...new Set([...(input.sessionIds ?? []), input.sessionId])];
+    const deleted: Array<Response | null> = [];
+    let memorySettled = true;
+    let memoryStage: string | null = null;
     for (const targetSessionId of sessionIds) {
+      // Each deletion schedules a relationship-wide rebuild. Its durable idle
+      // authority must settle before the next session can be deleted once.
+      if (!await waitForProbeMemoryMaintenance(input)) {
+        memorySettled = false;
+        memoryStage = `before_delete:${targetSessionId}`;
+        break;
+      }
       deleted.push(await productFetch({
         ...input,
         method: "DELETE",
         path: `/api/v1/chat/sessions/${targetSessionId}`,
-      }));
+      }).catch(() => null));
     }
-    const verify: Response[] = [];
+    if (memorySettled && !await waitForProbeMemoryMaintenance(input)) {
+      memorySettled = false;
+      memoryStage = `after_delete:${sessionIds.at(-1)}`;
+    }
+    const verify: Array<Response | null> = [];
     for (const targetSessionId of sessionIds) {
       verify.push(await productFetch({
         ...input,
         method: "GET",
         path: `/api/v1/chat/sessions/${targetSessionId}`,
-      }));
+      }).catch(() => null));
     }
-    const sessionDeleted = deleted.every((response) =>
-      response.status === 200 || response.status === 404
+    const sessionDeleted = deleted.length === sessionIds.length && deleted.every((response) =>
+      response?.status === 200 || response?.status === 404
     );
-    const memoryCleared = fileAuthority.memoryCleared === true;
-    const sessionGone = verify.every((response) => response.status === 404);
+    const memoryCleared = fileAuthority.memoryCleared === true && memorySettled;
+    const sessionGone = verify.every((response) => response?.status === 404);
     const ok =
       restore.status === 200 &&
       sessionDeleted &&
@@ -1151,9 +1257,16 @@ export async function cleanupCompletedProbeState(input: {
       sessionDeleted,
       memoryCleared,
       sessionGone,
+      sessions: sessionIds.map((targetSessionId, index) => ({
+        sessionId: targetSessionId,
+        deleted: deleted[index]?.status === 200 || deleted[index]?.status === 404,
+        gone: verify[index]?.status === 404,
+        deleteStatus: deleted[index]?.status ?? null,
+        verifyStatus: verify[index]?.status ?? null,
+      })),
       error: ok
         ? null
-        : `restore=${restore.status}; delete=${deleted.map((response) => response.status).join(",")}; fileAuthority=${fileAuthority.error ?? fileAuthority.ok}; verify=${verify.map((response) => response.status).join(",")}`,
+        : `restore=${restore.status}; delete=${deleted.map((response) => response?.status ?? "network_error").join(",")}; fileAuthority=${fileAuthority.error ?? fileAuthority.ok}; memorySettled=${memorySettled}; memoryStage=${memoryStage}; verify=${verify.map((response) => response?.status ?? "network_error").join(",")}`,
     };
   } catch (error) {
     return {
@@ -1295,6 +1408,7 @@ function finalizeConversation(evidence: ConversationEvidence): ConversationEvide
     evidence.sendMessage.ok &&
     evidence.stream.ok &&
     evidence.getSession.ok &&
+    evidence.recall.ok &&
     evidence.regenerateAnchor.ok &&
     evidence.noMemory.ok &&
     evidence.blockedInput.ok &&

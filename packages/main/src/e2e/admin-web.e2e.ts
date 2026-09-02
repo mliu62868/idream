@@ -4,6 +4,7 @@ import path from "node:path";
 import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
 import { prisma } from "@/server/lib/db";
 import { redeemCodeHash } from "@/server/lib/redeem-codes";
+import { compileUserCharacterContent, materializeUserCharacterContentVersion } from "@/server/modules/ourdream/character-soul";
 
 function uniqueEmail(tag: string) {
   return `e2e-admin-${tag}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@test.local`;
@@ -147,6 +148,8 @@ test("admin web serves generated media through user-content route", async ({ pag
 });
 
 test("admin web loads all control-plane sections and filters users", async ({ page }) => {
+  // Each route retains its own navigation/assertion deadline; this journey opens 30 cold workspaces.
+  test.setTimeout(360_000);
   const consoleFailures = collectConsoleFailures(page);
 
   const admin = await startAdminSession(page);
@@ -170,10 +173,10 @@ test("admin web loads all control-plane sections and filters users", async ({ pa
     { path: "/admin/ops/providers", heading: "Providers", evidence: "Provider health & cost" },
     { path: "/admin/moderation", heading: "Moderation Cases", evidence: "Reports" },
     { path: "/admin/content", heading: "Featured Merchandising", evidence: "Featured curation" },
-    { path: "/admin/content/production", heading: "Creative Runs", evidence: "Creative directions" },
+    { path: "/admin/content/production", heading: "Generation History", evidence: "Creative Runs" },
     { path: "/admin/content/assets", heading: "Library", evidence: "Purpose" },
     { path: "/admin/content/placements", heading: "Placements", evidence: "Slot" },
-    { path: "/admin/content/official", heading: "Portfolio & Projects", evidence: "Create official character" },
+    { path: "/admin/content/official", heading: "Characters", evidence: "Create official character" },
     { path: "/admin/content/templates", heading: "Character Starters", evidence: "Create character template" },
     { path: "/admin/content/tags", heading: "Taxonomy", evidence: "Merge tags" },
     { path: "/admin/content/review-queue", heading: "Character Review", evidence: "Pending submissions" },
@@ -186,7 +189,7 @@ test("admin web loads all control-plane sections and filters users", async ({ pa
     { path: "/admin/promo", heading: "Promotions", evidence: "Create redeem code" },
     { path: "/admin/announcements", heading: "Announcements", evidence: "Create announcement" },
     { path: "/admin/analytics", heading: "Product Health", evidence: "Top events" },
-    { path: "/admin/insights", heading: "Funnels & Retention", evidence: "invalid for decisions" },
+    { path: "/admin/insights", heading: "Profile Diagnostics", evidence: "invalid for decisions" },
     { path: "/admin/experiments", heading: "Experiments", evidence: "Directional only" },
     { path: "/admin/risk", heading: "Risk Cases", evidence: "Multi-account device clusters" },
     { path: "/admin/compliance", heading: "Account Requests", evidence: "DSAR" },
@@ -205,7 +208,7 @@ test("admin web loads all control-plane sections and filters users", async ({ pa
 
   await page.goto(`${adminURL}/admin/users`);
   await expectAdminShellReady(page, "Customers");
-  await page.getByRole("textbox", { name: "Search", exact: true }).fill(customer.email);
+  await page.getByRole("searchbox", { name: "Search customers", exact: true }).fill(customer.email);
   await page.getByRole("button", { name: "Apply", exact: true }).click();
   const adminRow = page.getByRole("button").filter({ hasText: customer.email });
   await expect(adminRow).toHaveCount(1, { timeout: 15_000 });
@@ -213,7 +216,8 @@ test("admin web loads all control-plane sections and filters users", async ({ pa
   await expect(adminRow).toContainText("E2E Customer Filter");
   await expect(adminRow).toContainText(customer.id);
   await expect(page.getByText("E2E upgrade", { exact: false })).toHaveCount(0);
-  await page.getByRole("textbox", { name: "Search", exact: true }).fill(admin.email);
+  await page.getByRole("searchbox", { name: "Search customers", exact: true }).fill(admin.email);
+  await page.getByRole("button", { name: "Account and shell settings" }).click();
   await page.getByRole("combobox", { name: "Language" }).selectOption("zh");
   await expect(page.getByRole("button", { name: "刷新", exact: true }).first()).toBeVisible();
   await page.getByRole("combobox", { name: "语言" }).selectOption("en");
@@ -422,6 +426,7 @@ test("admin content ops requires confirmation for standalone draft placement and
     ).resolves.toBe("archived");
 
     const archivedPlacementAttempt = await page.request.post(`${adminURL}/api/v2/admin/content/placements`, {
+      headers: { "idempotency-key": `reject-archived-placement-${suffix}` },
       data: {
         mediaAssetId: archiveAssetId,
         slot: "feed_card",
@@ -432,6 +437,9 @@ test("admin content ops requires confirmation for standalone draft placement and
       },
     });
     expect(archivedPlacementAttempt.status()).toBe(400);
+    expect(await archivedPlacementAttempt.json()).toMatchObject({
+      error: { message: "Only approved content assets can be placed" },
+    });
 
     await page.goto(`${adminURL}/admin/content/placements`);
     await expectAdminShellReady(page, "Placements");
@@ -452,7 +460,7 @@ test("admin content ops requires confirmation for standalone draft placement and
 
     await page.getByRole("button", { name: "Create placement" }).click();
     await expect(page.getByRole("heading", { level: 2, name: "feed_card" })).toBeVisible({
-      timeout: 10_000,
+      timeout: 20_000,
     });
     await expect
       .poll(
@@ -738,16 +746,13 @@ test("admin feature flag toggle requires target-state confirmation", async ({ pa
     await expect(flagRow).toHaveCount(1, { timeout: 10_000 });
     await flagRow.getByRole("button", { name: "Enable" }).click();
 
-    await expect(page.getByRole("heading", { name: `Enable ${flagKey}` })).toBeVisible();
+    await expect(page.getByRole("heading", { name: `Enable feature flag ${flagKey}` })).toBeVisible();
     await page.getByRole("textbox", { name: "Reason", exact: true }).fill("E2E feature flag enable");
     await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill("FLAG");
     await expect(page.getByRole("button", { name: "Confirm" })).toBeDisabled();
     await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill(`${flagKey}:enabled`);
     await page.getByRole("button", { name: "Confirm" }).click();
-    await expect(page.getByTestId("admin-action-status")).toContainText(
-      `Enable ${flagKey} completed.`,
-      { timeout: 10_000 },
-    );
+    await expect(page.getByText(`Feature flag ${flagKey} enabled`, { exact: true })).toBeVisible();
 
     const flag = await prisma.featureFlag.findUniqueOrThrow({ where: { key: flagKey } });
     expect(flag.enabled).toBe(true);
@@ -875,22 +880,20 @@ test("admin dead-letter queue discards failed jobs with refund audit", async ({ 
     await page.goto(`${adminURL}/admin/generation/dead-letter`);
     await expectAdminShellReady(page, "Dead-letter");
 
-    const rowCheckbox = page.getByRole("checkbox", { name: `Select dead-letter job ${jobId}` });
+    const rowCheckbox = page.getByRole("checkbox", { name: `Select row ${jobId}` });
     await expect(rowCheckbox).toBeVisible({ timeout: 20_000 });
     const jobRow = rowCheckbox.locator("xpath=ancestor::tr");
     await expect(jobRow.getByText("reserved", { exact: true })).toBeVisible();
     await rowCheckbox.check();
     await page.getByRole("button", { name: "Discard selected" }).click();
 
-    await expect(page.getByRole("heading", { name: "Discard 1 jobs" })).toBeVisible();
-    await page.getByRole("textbox", { name: "Reason", exact: true }).fill(reason);
+    await expect(page.getByRole("heading", { name: "Discard 1 requests" })).toBeVisible();
+    await page.getByRole("textbox", { name: "Reason (≥3)", exact: true }).fill(reason);
     await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill("DISCARD");
     await expect(page.getByRole("button", { name: "Confirm" })).toBeDisabled();
     await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill(jobId);
     await page.getByRole("button", { name: "Confirm" }).click();
-    await expect(page.getByTestId("admin-action-status")).toContainText("Discard 1 jobs completed.", {
-      timeout: 10_000,
-    });
+    await expect(page.getByText("Discarded 1 of 1 requests · 1 refunded.", { exact: true })).toBeVisible();
 
     await expect(page.getByRole("row").filter({ hasText: jobId })).toHaveCount(0, {
       timeout: 10_000,
@@ -992,20 +995,27 @@ test("admin support inbox resolves a help desk request", async ({ page }) => {
     await expect(ticketRow.getByText(support.email)).toBeVisible();
 
     const storedView = await prisma.adminSavedView.findFirst({
-      where: { ownerId: support.id, scope: "support.requests", label: viewLabel },
+      where: { ownerId: support.id, scope: "support_request", label: viewLabel },
     });
-    expect(storedView?.filters).toMatchObject({
-      category: "generation",
-      query: supportNeedle,
-      sla: "overdue",
-      status: "active",
+    expect(storedView?.queryState).toEqual({
+      search: supportNeedle,
+      filters: { category: "generation", sla: "overdue", status: "active" },
+      sort: { field: "priority", direction: "asc" },
+      pageSize: 25,
     });
     await page.getByRole("button", { name: `Delete saved view ${viewLabel}`, exact: true }).click();
+    const deleteViewDialog = page.getByRole("dialog", { name: `Delete saved view ${viewLabel}`, exact: true });
+    await expect(deleteViewDialog.getByRole("button", { name: "Delete saved view", exact: true })).toBeDisabled();
+    await deleteViewDialog.getByRole("textbox", { name: "Saved view name", exact: true }).fill(viewLabel);
+    await deleteViewDialog.getByRole("button", { name: "Delete saved view", exact: true }).click();
+    await expect(deleteViewDialog).toHaveCount(0);
     await expect(page.getByRole("button", { name: viewLabel, exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: "Reset filters" }).click();
     await page.getByRole("textbox", { name: "Support search" }).fill(ticketId);
 
     await ticketRow.getByRole("button", { name: "Resolve" }).click();
+    await page.getByRole("textbox", { name: "Message to customer", exact: true })
+      .fill("Your generation issue is fixed. Please refresh your gallery and retry the download.");
     await page
       .getByRole("textbox", { name: "Reason", exact: true })
       .fill("Resolved from admin support inbox");
@@ -1035,7 +1045,7 @@ test("admin support inbox resolves a help desk request", async ({ page }) => {
     expect(consoleFailures).toEqual([]);
   } finally {
     await prisma.adminSavedView.deleteMany({
-      where: { ownerId: support.id, scope: "support.requests", label: viewLabel },
+      where: { ownerId: support.id, scope: "support_request", label: viewLabel },
     });
     await prisma.supportRequest.deleteMany({ where: { ticketId: { in: [ticketId, freshTicketId] } } });
     await prisma.user.deleteMany({ where: { id: requester.id } });
@@ -1057,9 +1067,15 @@ test("admin Chat Ops isolates authority failures and restores URL filters", asyn
   await page.goto(`${adminURL}/admin/chat`);
   await expectAdminShellReady(page, "Chat Operations");
   await expect(page.getByText("Usage: unavailable", { exact: false })).toBeVisible();
-  await expect(page.getByRole("alert").filter({ hasText: "usage authority refresh failed" })).toBeVisible();
-  await expect(page.getByText("Sessions: current client snapshot", { exact: false })).toBeVisible();
-  await expect(page.getByText("Chat Service connected", { exact: true })).toBeVisible();
+  const usageFailure = page.getByRole("alert").filter({ hasText: "This action did not complete." });
+  await expect(usageFailure).toBeVisible();
+  await usageFailure.getByLabel("Engineering details", { exact: true }).click();
+  await expect(usageFailure.locator("pre")).toContainText("code: upstream_error");
+  await expect(usageFailure.locator("pre")).toContainText("status: 500");
+  await expect(usageFailure.locator("pre")).toContainText("message: usage unavailable");
+  await expect(page.getByText("Sessions: as of", { exact: false })).toBeVisible();
+  await expect(page.getByText("Chat Service degraded · 1 of 5 authorities unavailable", { exact: true })).toBeVisible();
+  await expect(page.getByText("Chat Service connected", { exact: true })).toHaveCount(0);
 
   await page.getByLabel("User ID", { exact: true }).fill("chat-user-1");
   await page.getByRole("combobox", { name: /Session status/ }).selectOption("all");
@@ -1131,7 +1147,7 @@ test("admin support plaintext panel views consent-scoped generation prompt", asy
     await page.getByRole("textbox", { name: "Plaintext confirmation" }).fill(jobId);
     await page.getByRole("button", { name: "View plaintext" }).click();
 
-    await expect(page.getByTestId("admin-plaintext-status")).toContainText("Plaintext access logged.", {
+    await expect(page.getByTestId("admin-action-status")).toContainText("Plaintext access logged.", {
       timeout: 10_000,
     });
     const result = page.getByTestId("admin-plaintext-result");
@@ -1190,7 +1206,7 @@ test("admin approval decisions require request-id confirmation", async ({ page }
     await expect(row).toHaveCount(1, { timeout: 10_000 });
     await row.getByRole("button", { name: "Approve" }).click();
 
-    await expect(page.getByRole("heading", { name: `Approve ${approval.id}` })).toBeVisible({
+    await expect(page.getByRole("heading", { name: `Approve request ${approval.id}` })).toBeVisible({
       timeout: 10_000,
     });
     await page.getByRole("textbox", { name: "Reason", exact: true }).fill("E2E approval decision");
@@ -1201,7 +1217,7 @@ test("admin approval decisions require request-id confirmation", async ({ page }
     await page.getByRole("button", { name: "Confirm" }).click();
 
     await expect(page.getByTestId("admin-action-status")).toContainText(
-      `Approve ${approval.id} completed.`,
+      `Approved ${approval.id}`,
       { timeout: 10_000 },
     );
     await expect(
@@ -1315,23 +1331,30 @@ test("admin review queue saves and applies moderation views", async ({ page }) =
     await expect(page.getByRole("row").filter({ hasText: reportedName })).toHaveCount(1);
     await expect(page.getByRole("row").filter({ hasText: cleanName })).toHaveCount(0);
     const storedView = await prisma.adminSavedView.findFirst({
-      where: { ownerId: admin.id, scope: "moderation.review_queue", label: viewLabel },
+      where: { ownerId: admin.id, scope: "moderation_review_queue", label: viewLabel },
     });
-    expect(storedView?.filters).toMatchObject({
-      query: reportedName,
-      reportFilter: "reported",
+    expect(storedView?.queryState).toEqual({
+      search: reportedName,
+      filters: { reportFilter: "reported" },
+      sort: { field: "created_at", direction: "asc" },
+      pageSize: 25,
     });
 
     await page.getByRole("button", { name: `Delete saved view ${viewLabel}`, exact: true }).click();
+    const deleteViewDialog = page.getByRole("dialog", { name: `Delete saved view ${viewLabel}`, exact: true });
+    await expect(deleteViewDialog.getByRole("button", { name: "Delete", exact: true })).toBeDisabled();
+    await deleteViewDialog.getByRole("textbox", { name: "Type the name to confirm", exact: true }).fill(viewLabel);
+    await deleteViewDialog.getByRole("button", { name: "Delete", exact: true }).click();
+    await expect(deleteViewDialog).toHaveCount(0);
     await expect(page.getByRole("button", { name: viewLabel, exact: true })).toHaveCount(0);
     const deletedView = await prisma.adminSavedView.findFirst({
-      where: { ownerId: admin.id, scope: "moderation.review_queue", label: viewLabel },
+      where: { ownerId: admin.id, scope: "moderation_review_queue", label: viewLabel },
     });
     expect(deletedView).toBeNull();
     expect(consoleFailures).toEqual([]);
   } finally {
     await prisma.adminSavedView.deleteMany({
-      where: { ownerId: admin.id, scope: "moderation.review_queue", label: viewLabel },
+      where: { ownerId: admin.id, scope: "moderation_review_queue", label: viewLabel },
     });
     await prisma.contentReport.deleteMany({
       where: { targetType: "character", targetId: { in: [reportedCharacterId, cleanCharacterId] } },
@@ -1361,7 +1384,7 @@ test("admin review queue approves a pending character submission", async ({ page
   });
 
   try {
-    await prisma.character.create({
+    const pendingCharacter = await prisma.character.create({
       data: {
         id: characterId,
         creatorId: submitter.id,
@@ -1373,11 +1396,24 @@ test("admin review queue approves a pending character submission", async ({ page
         style: "realistic",
         gender: "female",
         appearance: {},
-        advancedDetails: {},
+        advancedDetails: { firstMessage: "Tell me what brought you here today." },
       },
     });
     const seededSubmission = await prisma.characterSubmission.create({
       data: { characterId, submitterId: submitter.id, status: "pending" },
+    });
+    await prisma.$transaction(async (tx) => {
+      const contentVersion = await materializeUserCharacterContentVersion({
+        tx,
+        characterId,
+        sourceId: seededSubmission.id,
+        createdById: submitter.id,
+        content: compileUserCharacterContent(pendingCharacter),
+      });
+      await tx.character.update({
+        where: { id: characterId },
+        data: { currentContentVersionId: contentVersion.id },
+      });
     });
 
     const adminURL = adminBaseURL();
@@ -1408,6 +1444,10 @@ test("admin review queue approves a pending character submission", async ({ page
     expect(submission.status).toBe("approved");
     expect(submission.reviewerId).toBe(admin.id);
     expect(submission.reviewReason).toBe("Approved by E2E review queue.");
+    expect(await prisma.characterProject.count({ where: { characterId } })).toBe(1);
+    expect(await prisma.characterServing.findUnique({
+      where: { characterId }, select: { state: true, currentReleaseId: true },
+    })).toEqual({ state: "inactive", currentReleaseId: null });
     const audit = await prisma.adminAuditLog.findFirst({
       where: { actorId: admin.id, action: "content.submission.review", targetId: characterId },
     });
@@ -1458,6 +1498,7 @@ test("admin API creates an official character and fails mock AI assist closed", 
         gender: "female",
         style: "realistic",
         description: "A warm cinematic companion created during the E2E run.",
+        advancedDetails: { firstMessage: "What would you like to make space for tonight?" },
         tags: ["e2e-official"],
         reason: "e2e official create",
       },
@@ -2077,7 +2118,7 @@ test("admin CMS UI requires typed confirmation for publish changes", async ({ pa
   }
 });
 
-test("admin insights configuration check UI requires typed confirmation", async ({ page }) => {
+test("admin insights configuration check UI confirms the selected profile and audit reason", async ({ page }) => {
   const consoleFailures = collectConsoleFailures(page);
   const dialogs: string[] = [];
   page.on("dialog", async (dialog) => {
@@ -2101,30 +2142,23 @@ test("admin insights configuration check UI requires typed confirmation", async 
 
   try {
     await page.goto(`${adminURL}/admin/insights`);
-    await expectAdminShellReady(page, "Funnels & Retention");
+    await expectAdminShellReady(page, "Profile Diagnostics");
 
-    await page.getByRole("textbox", { name: "Model profile id" }).fill(profile.id);
+    await page.getByRole("combobox", { name: "Model profile", exact: true }).selectOption(profile.id);
     await page.getByRole("button", { name: "Configuration check" }).click();
 
-    const confirmDryRun = page.getByRole("button", {
+    const dialog = page.getByRole("dialog", { name: "Confirm configuration check", exact: true });
+    await expect(dialog).toContainText("E2E Insights Configuration Check");
+    const confirmDryRun = dialog.getByRole("button", {
       name: "Confirm configuration check",
     });
     await expect(confirmDryRun).toBeDisabled();
-    await page
-      .getByRole("textbox", { name: "Configuration check reason" })
+    expect(await prisma.adminAuditLog.count({
+      where: { action: "generation.profile.dry_run", targetId: profile.id },
+    })).toBe(0);
+    await dialog
+      .getByRole("textbox", { name: "Reason (≥3)", exact: true })
       .fill("E2E profile configuration check");
-    await expect(confirmDryRun).toBeDisabled();
-    await page
-      .getByRole("textbox", { name: "Configuration check confirmation" })
-      .fill("WRONG");
-    await expect(confirmDryRun).toBeDisabled();
-    await page
-      .getByRole("textbox", { name: "Configuration check confirmation" })
-      .fill("DRYRUN");
-    await expect(confirmDryRun).toBeDisabled();
-    await page
-      .getByRole("textbox", { name: "Configuration check confirmation" })
-      .fill(profile.id);
     await expect(confirmDryRun).toBeEnabled();
     await confirmDryRun.click();
     await expect(

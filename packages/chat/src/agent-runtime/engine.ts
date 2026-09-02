@@ -899,6 +899,9 @@ export class CompanionEngine {
               },
               async execute(args, execution) {
                 const requiredAction = invocation.preparedTurn.requiredAction;
+                if (!requiredAction || requiredAction.name !== tool.name) {
+                  throw new Error("image tool requires an authorized user image action");
+                }
                 if (requiredAction && bridge.callCount > 0) {
                   throw new Error("required image action may execute only once");
                 }
@@ -906,9 +909,9 @@ export class CompanionEngine {
                   attemptId: invocation.attemptId,
                   callId: String(execution.callId),
                   name: tool.name,
-                  effectScope: requiredAction ? "turn_action" : "attempt",
+                  effectScope: "turn_action",
                   intent: {
-                    requestedNudity: requiredAction?.requestedNudity ?? "unspecified",
+                    requestedNudity: requiredAction.requestedNudity,
                   },
                   arguments: args,
                 } as CompanionToolCall;

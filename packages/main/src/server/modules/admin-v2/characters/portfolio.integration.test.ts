@@ -1027,6 +1027,29 @@ describe("Character Portfolio authority/read model", () => {
     }
   });
 
+  it("loads Studio lifecycle evidence without running hidden performance queries", async () => {
+    const costCount = vi.spyOn(prisma.aiUsageFact, "count");
+    const economicsRead = vi.spyOn(prisma.characterEconomicsFact, "findMany");
+    try {
+      const data = await listCharacterPortfolioData(prisma,
+        characterPortfolioQuerySchema.parse({ limit: 20, includePerformance: "false" }),
+        { asOf, authorizedCharacterIds: [characterA, characterB], authorizedDraftAssetCharacterIds: null },
+      );
+      expect(data.items).toHaveLength(2);
+      for (const item of data.items) {
+        expect(item).toMatchObject({
+          performance: [], changeMarkers: [], operationalState: { qualityState: "not_requested" },
+        });
+        expect(item.journey.primaryAction.deepLink).toContain(`/admin/characters/${item.characterId}`);
+      }
+      expect(costCount).not.toHaveBeenCalled();
+      expect(economicsRead).not.toHaveBeenCalled();
+    } finally {
+      costCount.mockRestore();
+      economicsRead.mockRestore();
+    }
+  });
+
   it("uses one complete UTC product-day cohort and excludes the current partial day", async () => {
     const partialDayFactId = `portfolio-partial-day-${suffix}`;
     await prisma.characterFunnelDaily.create({

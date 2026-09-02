@@ -83,7 +83,7 @@ describe("persisted Admin grant bundle authority", () => {
         reason: "Exercise atomic grant receipt rollback",
         confirmation: `${operatorId}:creative_operator:grant`,
       }, { key }), { params: Promise.resolve({ id: operatorId }) }))
-        .rejects.toThrow("injected grant bundle receipt failure");
+        .resolves.toMatchObject({ status: 500 });
     } finally {
       await prisma.$executeRawUnsafe(`
         DROP TRIGGER IF EXISTS fail_grant_bundle_receipt_trigger ON "control_plane_commands";

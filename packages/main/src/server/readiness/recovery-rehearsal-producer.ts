@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, readdir, readFile } from "node:fs/promises";
+import { lstat, readdir, readFile, readlink, realpath } from "node:fs/promises";
 import path from "node:path";
 import { Client } from "pg";
 import { resolveChatFsRoot } from "@idream/shared";
@@ -728,27 +728,53 @@ function safeAuthorityPath(relativePath: string) {
   }
 }
 
-export async function buildFileAuthorityManifest(root: string) {
+export function isCanonicalIgrepPointer(authorityPath: string, target: string) {
+  return path.posix.basename(authorityPath) === ".igrep" &&
+    /^\.igrep\.versions\/[^/\\\t\r\n]+$/u.test(target) &&
+    ![".", ".."].includes(path.posix.basename(target));
+}
+
+export async function buildFileAuthorityManifest(
+  root: string,
+  options: { readonly canonicalIgrepLinks?: boolean } = {},
+) {
   const canonicalRoot = path.resolve(root);
   const rootStat = await lstat(canonicalRoot);
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
     throw new Error(`file authority root is not a real directory: ${canonicalRoot}`);
   }
   const entries: Array<{
-    kind: "directory" | "file";
+    kind: "directory" | "file" | "symlink";
     mode: string;
     digest: string;
     authorityPath: string;
+    target?: string;
   }> = [];
 
   async function visit(absolute: string, relative: string) {
     safeAuthorityPath(relative);
     const stat = await lstat(absolute);
-    if (stat.isSymbolicLink()) {
-      throw new Error(`file authority contains a symlink: ${relative || "."}`);
-    }
     const authorityPath = relative ? `./${relative.split(path.sep).join("/")}` : ".";
     const mode = (stat.mode & 0o7777).toString(8).padStart(3, "0");
+    if (stat.isSymbolicLink()) {
+      const target = await readlink(absolute);
+      if (!options.canonicalIgrepLinks || !isCanonicalIgrepPointer(authorityPath, target)) {
+        throw new Error(`file authority contains an unsupported symlink: ${authorityPath}`);
+      }
+      const versionsRoot = path.join(path.dirname(absolute), ".igrep.versions");
+      const targetPath = path.resolve(path.dirname(absolute), target);
+      if (!(await lstat(versionsRoot)).isDirectory() || !(await lstat(targetPath)).isDirectory()) {
+        throw new Error(`canonical symlink target is not a real version directory: ${authorityPath}`);
+      }
+      const inside = path.relative(await realpath(canonicalRoot), await realpath(targetPath));
+      if (!inside || inside.startsWith(`..${path.sep}`) || inside === ".." || path.isAbsolute(inside)) {
+        throw new Error(`canonical symlink target escapes authority: ${authorityPath}`);
+      }
+      // SPEC: preserve the pointer itself. Version files are visited only at
+      // their real paths, so restore proves identity without materializing links.
+      entries.push({ kind: "symlink", mode, digest: sha256(target), authorityPath, target });
+      return;
+    }
     if (stat.isDirectory()) {
       entries.push({ kind: "directory", mode, digest: "-", authorityPath });
       const children = await readdir(absolute);
@@ -771,7 +797,7 @@ export async function buildFileAuthorityManifest(root: string) {
 
   await visit(canonicalRoot, "");
   return `${entries.map((entry) =>
-    `${entry.kind}\t${entry.mode}\t${entry.digest}\t${entry.authorityPath}`
+    `${entry.kind}\t${entry.mode}\t${entry.digest}\t${entry.authorityPath}${entry.target === undefined ? "" : `\t${entry.target}`}`
   ).join("\n")}\n`;
 }
 

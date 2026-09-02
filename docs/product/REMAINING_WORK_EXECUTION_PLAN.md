@@ -1,8 +1,10 @@
 # iDream 剩余工作执行计划
 
-更新日期：2026-09-01
+更新日期：2026-09-02
 
 本文件只保留尚未完成的工作。已完成能力与历史运行证据见 `CURRENT_FUNCTIONAL_COVERAGE.md`。
+
+2026-09-02 核心审计已真实完成 Create 私有保存/声音/聊天/图片、两条视频、Admin 三图审核发布/回滚和客服多轮闭环。最终串行测试、浏览器组合、恢复演练与重启后的同版本结果见 `.tmp/product-audit-20260902/FINAL_REPORT.md`；该报告未完成时仍不能把本轮早期证据当作公开上线签发。支付与年龄功能不在本轮修复范围。
 
 ## 当前状态
 
@@ -17,7 +19,7 @@
 
 1. 建立带观察日期的逐功能 parity matrix，覆盖 Explore、完整 Create、Chat、Generate、My AI/Profile、Feed/Community/Creator Economy、Upgrade、Affiliate、Support 与公开内容。每项绑定 OurDream 可验证契约、iDream 当前代码/运行证据、真实缺口和退出 Gate。
 2. 区分“未实现空态”、“受 feature/provider/entitlement 条件限制”、“本地受控可用”和“公开生产已认证”，不用路由存在或历史截图代替能力证明。
-3. 保留完整六步 Create 为 P0 主能力：Style → General → Face → Body → Details → Image，覆盖 Gender/Style、外观/race、发型/面部、体型、名称、tags、personality/Soul、Voice、Occupation、hobbies/fetishes、relationship type、custom details、草稿恢复、视觉候选/anchor、私有/公开和 Release/Serving 边界；对 40+ personality、19 voice、135 occupation、29 relationship type 的日期化基线逐项记录 matched/equivalent/intentional divergence，Quick Start 只能预填这条完整链。
+3. Create 的完整五步输入、声音选择/试听、身份确认、保存、Chat 与 Character 图片已在 2026-09-02 核心审计实际走通；目录广度仍需独立对标：40+ personality、19 voice、135 occupation、29 relationship 的日期化观察应逐项记录 matched/equivalent/intentional divergence。继续复用现有五步与同一 Soul Markdown，不按对方的步骤数重构；Quick Start 只能预填这条链。
 4. 将 Recent、Characters、Presets、Created 和 Media 共同作为 My AI P0 核心面；Group Chats/Packs/Comics 作为 P1 对标缺口，发布前只显示明确 unavailable 空态或不暴露入口。
 5. 补齐 Generate 的 Presets、Create/Edit/Enhance、reference-guided lineage、Advanced Settings、Gallery 管理、多 scene/时长/比例/质量/AI voice Video 与 Chat Product Action 交接；持续保证 Character/Release/VisualProfile/Scene pins、quote、settlement/refund 和 replay 幂等。
 6. 补齐 Feed、Community、Creator Profile/levels/Studio、Pack 收益、Dreamcoin/现金激励、Remix/Like/Follow/Share/Report、Affiliate RevShare/CPA/归因/佣金、Images/Videos/Glossary/Authors、SEO/Library/Article/Comparison 和 Support 的真实数据、副作用、权限与发布证据；分期受依赖和资源约束，不受 WSCU 或同角色留存 Gate 约束。

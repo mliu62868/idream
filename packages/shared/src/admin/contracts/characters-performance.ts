@@ -418,6 +418,11 @@ export const characterPortfolioQuerySchema = adminCursorQuerySchema.extend({
   servingState: characterServingStateSchema.optional(),
   readiness: adminReadinessSchema.optional(),
   placementId: adminIdSchema.optional(),
+  // Studio needs lifecycle and asset readiness; Growth explicitly consumes metrics.
+  includePerformance: z.union([
+    z.boolean(),
+    z.enum(["true", "false"]).transform((value) => value === "true"),
+  ]).optional(),
   // SPEC: attention 只收「已上线但整个观察窗口零观测」。故意不含资产包不完整（Journey
   // 已经在说）——多收一条就把这个筛子稀释成恒真告警。
   // INTENT: 做成筛选而不是排序 —— 列表是 keyset 分页，排序只在页内生效，第三页的问题角色照样发现不了。

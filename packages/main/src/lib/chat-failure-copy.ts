@@ -8,6 +8,9 @@
 //   对用户还有点线索价值，聊天的码（message_version_drift）纯属内部黑话，
 //   给了不如不给。
 const CHAT_FAILURE_COPY: Readonly<Record<string, string>> = {
+  // Main owns these routes and reports standard AppError codes.
+  gone: "This chat is no longer active. Start a new chat to continue.",
+  not_found: "This chat or message no longer exists. Reload your chats.",
   // —— 角色侧：重试无用，得换个角色 ——
   character_not_found: "This character is no longer available.",
   character_unavailable: "This character isn't available right now. Try another one.",
@@ -54,7 +57,7 @@ export function chatFailureCopy(payload: unknown, fallback: string): string {
   return CHAT_FAILURE_COPY[code] ?? fallback;
 }
 
-/** chat 的错误信封是 `{ error: "<code>", message }`，与 main 的 `{ error: { code } }` 不同。 */
+/** Main's product errors and Chat's stream errors use distinct envelopes. */
 export function chatFailureCode(payload: unknown): string | null {
   if (!payload || typeof payload !== "object") return null;
   const error = (payload as { error?: unknown }).error;

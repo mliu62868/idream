@@ -17,14 +17,17 @@ const AUTHORITY_SOURCE = new URL(
   import.meta.url,
 );
 
-const AUTHORITY_KEYS: readonly string[] = (() => {
-  const source = readFileSync(AUTHORITY_SOURCE, "utf8");
-  // 权威里 key 有两种写法：SQL 表驱动的 `key: "..."`，和 8 条编程式检查的
-  // `invariantCheck(\n  "..."`（invariants.ts:1224 起）。两种都要抓，漏一种就等于漏一批检查。
-  const keys = [
+function authorityKeys(source: string): readonly string[] {
+  // 权威里 key 有两种写法：SQL 表驱动的 `key: "..."` 和编程式
+  // `invariantCheck(\n  "..."`。两种都要抓，漏一种就等于漏一批检查。
+  return [
     ...[...source.matchAll(/^\s*key: "([a-z0-9_]+)",$/gm)].map((match) => match[1]!),
     ...[...source.matchAll(/invariantCheck\(\s*\n\s*"([a-z0-9_]+)"/g)].map((match) => match[1]!),
   ];
+}
+
+const AUTHORITY_KEYS: readonly string[] = (() => {
+  const keys = authorityKeys(readFileSync(AUTHORITY_SOURCE, "utf8"));
   if (keys.length < 30) {
     throw new Error(`Only parsed ${keys.length} invariant keys — the authority file shape changed`);
   }
@@ -96,10 +99,20 @@ describe("data-integrity invariant copy", () => {
 //         「对空数组断言」——全绿，而实际上一条都没在守。这里把解析结果本身钉住。
 describe("the drift guard itself", () => {
   it("parses both declaration shapes the authority uses", () => {
+    expect(authorityKeys(`
+      {
+        key: "sql_table_check",
+        severity: "critical",
+      },
+      invariantCheck(
+        "programmatic_check",
+        "critical",
+        0,
+      ),
+    `)).toEqual(["sql_table_check", "programmatic_check"]);
     // SQL 表驱动的一条 + 编程式 invariantCheck() 的一条，各取一个代表。
     expect(AUTHORITY_KEYS).toContain("character_project_orphan");
     expect(AUTHORITY_KEYS).toContain("serving_character_pointer_orphan");
-    expect(AUTHORITY_KEYS.length).toBeGreaterThanOrEqual(35);
     expect(new Set(AUTHORITY_KEYS).size).toBe(AUTHORITY_KEYS.length);
   });
 });

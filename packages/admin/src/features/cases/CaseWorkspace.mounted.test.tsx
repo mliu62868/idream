@@ -21,6 +21,7 @@ vi.mock("@/lib/admin-v2-api", async (importOriginal) => {
 });
 
 import { CaseWorkspace } from "./CaseWorkspace";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -305,6 +306,7 @@ describe("CaseWorkspace decision loop", () => {
   });
 
   async function mount(permissions: { canAssign: boolean; canDecide: boolean }) {
+    container.innerHTML = renderToString(<CaseWorkspace canAssign={permissions.canAssign} canDecide={permissions.canDecide} initialCaseId="case-1" />);
     await act(async () => {
       root = hydrateRoot(container, <CaseWorkspace canAssign={permissions.canAssign} canDecide={permissions.canDecide} initialCaseId="case-1" />);
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -320,6 +322,80 @@ describe("CaseWorkspace decision loop", () => {
     expect(panel).toContain("Audit trail");
     expect(panel).toContain("case.decision.recorded");
     expect(panel).toContain("Provider confirmed the duplicate charge.");
+  });
+
+  it("sends a stable assignment key when retrying a lost response", async () => {
+    const read = adminV2Request.getMockImplementation()!;
+    let assignmentWrites = 0;
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path.endsWith("/assignment")) {
+        assignmentWrites += 1;
+        if (assignmentWrites === 1) throw new TypeError("Assignment response lost");
+        return { caseId: "case-1", version: 5 };
+      }
+      if (path === "/api/v2/admin/cases/case-1") return { ...resolvedDetail, case: { ...resolvedCase, status: "in_progress" } };
+      return read(path, options);
+    });
+    await mount({ canAssign: true, canDecide: false });
+    const reason = [...container.querySelectorAll("label")]
+      .find((label) => label.textContent === "Audit reason")!
+      .querySelector<HTMLInputElement>("input")!;
+    await act(async () => setReactValue(reason, "Assign follow-up owner"));
+    const save = () => [...container.querySelectorAll("button")]
+      .find((button) => button.textContent === "Save assignment")!;
+    await act(async () => save().click());
+    await waitUntil(() => assignmentWrites === 1 && !save().disabled);
+    await act(async () => save().click());
+    await waitUntil(() => assignmentWrites === 2 && !save().disabled);
+    const requests = adminV2Request.mock.calls.filter(([path]) => path.endsWith("/assignment"));
+    expect(requests[0]?.[1]).toMatchObject({ method: "POST", idempotencyKey: expect.any(String) });
+    expect(requests[1]?.[1]).toEqual(requests[0]?.[1]);
+  });
+
+  it.each(["resolved", "closed"])("requires reopening a %s case before assigning it", async (status) => {
+    const read = adminV2Request.getMockImplementation()!;
+    adminV2Request.mockImplementation(async (path, options) => path === "/api/v2/admin/cases/case-1"
+      ? { ...resolvedDetail, case: { ...resolvedCase, status } }
+      : read(path, options));
+    await mount({ canAssign: true, canDecide: true });
+    const reason = [...container.querySelectorAll("label")].find((label) => label.textContent === "Audit reason")!.querySelector<HTMLInputElement>("input")!;
+    await act(async () => setReactValue(reason, "Assign follow-up owner"));
+    const save = [...container.querySelectorAll("button")].find((button) => button.textContent === "Save assignment")!;
+    expect(save.disabled).toBe(true);
+    expect(container.textContent).toContain("Reopen this case before changing its assignment.");
+    const reopen = [...container.querySelectorAll("button")].find((button) => button.textContent === "Reopen / create recurrence")!;
+    expect(reopen.disabled).toBe(false);
+    await act(async () => save.click());
+    expect(adminV2Request.mock.calls.some(([path]) => path.endsWith("/assignment"))).toBe(false);
+  });
+
+  it("refreshes the selected Case and current queue from the shell without resetting a pending write", async () => {
+    const read = adminV2Request.getMockImplementation()!;
+    let releaseAssignment!: () => void;
+    let version = 4;
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path.endsWith("/assignment")) return new Promise<void>((resolve) => { releaseAssignment = resolve; });
+      if (path === "/api/v2/admin/cases/case-1") return { ...resolvedDetail, case: { ...resolvedCase, status: "in_progress", version, resolutionSummary: `Verified state ${version}` } };
+      return read(path, options);
+    });
+    await mount({ canAssign: true, canDecide: false });
+    const reason = [...container.querySelectorAll("label")].find((label) => label.textContent === "Audit reason")!.querySelector<HTMLInputElement>("input")!;
+    await act(async () => setReactValue(reason, "Assign follow-up owner"));
+    const save = () => [...container.querySelectorAll("button")].find((button) => button.textContent === "Save assignment")!;
+    await act(async () => save().click());
+    await waitUntil(() => Boolean(releaseAssignment));
+    expect(save().disabled).toBe(true);
+    adminV2Request.mockClear();
+    version = 5;
+    await act(async () => window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)));
+    await waitUntil(() => container.textContent?.includes("Verified state 5") ?? false);
+    expect(adminV2Request.mock.calls.some(([path]) => path.startsWith("/api/v2/admin/cases?"))).toBe(true);
+    expect(adminV2Request.mock.calls.some(([path]) => path === "/api/v2/admin/cases/case-1")).toBe(true);
+    expect(window.location.pathname).toBe("/admin/cases/case-1");
+    expect(save().disabled).toBe(true);
+    expect(reason.value).toBe("Assign follow-up owner");
+    await act(async () => releaseAssignment());
+    await waitUntil(() => !save().disabled);
   });
 
   it("exposes mobile Summary, Evidence, and Decision steps with a bottom action bar", async () => {

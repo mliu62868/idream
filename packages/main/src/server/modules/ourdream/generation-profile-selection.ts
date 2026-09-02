@@ -441,6 +441,7 @@ export async function projectPublicImageEditGenerationProfiles<
       );
       if (
         !workflow ||
+        jsonRecord(profile.runnerConfig).workflowVersion !== workflow.version ||
         !workflow.capabilities.includes("img2img") ||
         !workflow.inputs.some(
           (input) =>

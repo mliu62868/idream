@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
-import { act } from "react";
+import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -250,6 +250,95 @@ describe("Character Asset Studio bootstrap route projection", () => {
     vi.useRealTimers();
     container.remove();
     vi.restoreAllMocks();
+  });
+
+  it("opens the hero composer immediately after committing the first identity portrait", async () => {
+    const runId = "bootstrap-to-hero-run";
+    const assetId = "bootstrap-to-hero-asset";
+    const referenceSetId = "bootstrap-to-hero-references";
+    const run = {
+      id: runId,
+      purpose: "character_cover",
+      executionOutcome: "succeeded",
+      reviewState: "approved",
+      counts: { total: 1, generated: 1, reviewed: 1, approved: 1, placed: 0, failed: 0 },
+      updatedAt: "2026-09-02T12:00:00.000Z",
+    };
+    const readyData = withCharacterWorkspaceDetail(data, {
+      journey: journeyFor(["character_cover"]),
+      project: {
+        version: 2,
+        draftImageAssetId: assetId,
+        draftAssetPack: { character_cover: assetId },
+      },
+      visual: {
+        activeIdentity: { id: "bootstrap-to-hero-identity", version: 1, immutableHash: "identity-hash" },
+        activeReferenceSet: {
+          id: referenceSetId,
+          references: [{ mediaAssetId: assetId, role: "primary_face", available: true, url: "/portrait.png", thumbnailUrl: null, qualityScore: 95, identityScore: null }],
+        },
+        routeQualifications: [routeQualification()],
+        identityBootstrap: { allowed: false, state: "blocked_existing_authority" },
+        readiness: { ready: true, blockers: [] },
+      },
+    });
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path.includes("/api/v2/admin/creative/runs?")) {
+        return { items: [run], pageInfo: { endCursor: null, hasNextPage: false } };
+      }
+      if (path === `/api/v2/admin/creative/runs/${runId}`) {
+        return {
+          ...run,
+          version: 1,
+          items: [{
+            id: "bootstrap-to-hero-item",
+            ordinal: 0,
+            status: "approved",
+            version: 1,
+            identityReviewMode: "defines_identity",
+            asset: { id: assetId, url: "/portrait.png", thumbnailUrl: "/portrait.png" },
+            review: {
+              id: "bootstrap-to-hero-review",
+              decision: "approved",
+              identityConsistency: "unscored",
+              score: 95,
+              reason: "The intended face is clear and suitable as the identity anchor.",
+              quality: { artifactFree: true, singleSubject: true, intentMatch: true, noVisibleText: true },
+            },
+            lineage: { requestId: "bootstrap-to-hero-request" },
+          }],
+        };
+      }
+      if (path.endsWith("/identity-bootstrap") && options?.method === "POST") {
+        return { referenceSetRevisionId: referenceSetId };
+      }
+      throw new Error(`Unexpected Admin request: ${path}`);
+    });
+    function BootstrapJourney() {
+      const [current, setCurrent] = useState(data);
+      return <CharacterAssetStudio
+        actorId="operator-bootstrap"
+        data={current}
+        permissions={{ read: true, create: true, review: true, selectDraft: true }}
+        onContinue={() => undefined}
+        onProjectReload={async () => undefined}
+        commitProjectMutation={async ({ commit, afterRefresh }) => {
+          const result = await commit();
+          setCurrent(readyData);
+          afterRefresh?.();
+          return { result, refreshed: true };
+        }}
+      />;
+    }
+    await act(async () => root.render(<BootstrapJourney />));
+    await waitUntil(() => [...container.querySelectorAll("button")].some((button) => button.textContent?.includes("Set as identity anchor")));
+    const select = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Set as identity anchor"));
+    expect(select?.disabled).toBe(false);
+    await act(async () => select?.click());
+    await waitUntil(() => container.textContent?.includes("Identity bootstrap authority is verified") === true);
+    const generateHero = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Generate 1 hero image"));
+    expect(generateHero, "The next image must be creatable without remounting the studio").toBeDefined();
+    expect(generateHero?.disabled).toBe(false);
   });
 
   it("stays in first-portrait mode and disables generation when authority is allowed but no profile exists", async () => {
@@ -524,6 +613,70 @@ describe("Character Asset Studio bootstrap route projection", () => {
       button.textContent?.includes("Generate 1 portrait"),
     );
     expect(generate?.disabled).toBe(false);
+  });
+
+  it.each([
+    { purpose: "character_hero", allowed: ["1:1"], version: 1, expected: "1:1" },
+    { purpose: "character_chat", allowed: ["1:1"], version: 1, expected: "1:1" },
+    { purpose: "character_hero", allowed: ["1:1", "16:9"], version: 1, expected: "16:9" },
+    { purpose: "character_chat", allowed: ["1:1", "4:5"], version: 1, expected: "4:5" },
+    { purpose: "character_hero", allowed: ["16:9"], version: 2, expected: undefined },
+  ] as const)("uses the qualified profile's supported ratio for $purpose ($allowed, profile v$version)", async ({ purpose, allowed, version, expected }) => {
+    const pendingCreate = deferred<never>();
+    adminV2Request.mockImplementation(async (path, options) => {
+      if (path === "/api/v2/admin/creative/runs" && options?.method === "POST") {
+        return pendingCreate.promise;
+      }
+      return { items: [], pageInfo: { endCursor: null, hasNextPage: false } };
+    });
+    const readyData = withCharacterWorkspaceDetail(data, {
+      journey: journeyFor(purpose === "character_hero"
+        ? ["character_cover"]
+        : ["character_cover", "character_hero"]),
+      visual: {
+        ...data.visual,
+        identityBootstrap: {
+          ...data.visual.identityBootstrap,
+          state: "blocked_existing_authority",
+          allowed: false,
+        },
+        readiness: { ...data.visual.readiness, ready: true, blockers: [] },
+        routeQualifications: [routeQualification()],
+        identityCalibration: {
+          profiles: [{
+            profileKey: "profile-reference-v1",
+            profileVersion: version,
+            label: "Qualified image profile",
+            modelId: "redcraft",
+            workflowKey: "qwen-image-edit-img2img",
+            workflowVersion: 1,
+            orientation: allowed[0],
+            allowedOrientations: allowed,
+            modes: ["image_to_image"],
+            recommended: true,
+          }],
+          blocker: null,
+        },
+      },
+    });
+    await act(async () => root.render(
+      <CharacterAssetStudio
+        commitProjectMutation={async ({ commit }) => ({ result: await commit(), refreshed: true })}
+        data={readyData}
+        onContinue={() => undefined}
+        onProjectReload={async () => undefined}
+        permissions={{ read: true, create: true, review: true, selectDraft: true }}
+      />,
+    ));
+    const label = purpose === "character_hero" ? "Generate 1 hero image" : "Generate 1 chat image";
+    await waitUntil(() => container.textContent?.includes(label) === true);
+    const generate = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes(label));
+    expect(generate?.disabled).toBe(false);
+    await act(async () => generate?.click());
+    await waitUntil(() => adminV2Request.mock.calls.some(([path, options]) => path === "/api/v2/admin/creative/runs" && options?.method === "POST"));
+    const request = adminV2Request.mock.calls.find(([path, options]) => path === "/api/v2/admin/creative/runs" && options?.method === "POST")?.[1]?.body;
+    expect(request).toMatchObject({ purpose, profileId: "profile-reference-v1", orientation: expected });
+    expect(container.textContent).toContain(`Aspect ratio: ${expected ?? "Default"}`);
   });
 
   it("does not claim the generation route is locked when only identity evidence is ready", async () => {

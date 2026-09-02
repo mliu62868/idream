@@ -248,6 +248,7 @@ export function ReleasePanel({
   permissions,
   journal,
   writesLocked,
+  runCommittedMutation,
 }: {
   data: CharacterWorkspaceDetail;
   permissions: CharacterWorkspacePermissions;
@@ -411,6 +412,31 @@ export function ReleasePanel({
     }
   };
 
+  const changeCatalogVisibility = async () => {
+    if (!data.serving || data.serving.state !== "live" || !permissions.manageCatalogVisibility || writesLocked || busy) return;
+    const visibility = data.character.visibility === "unlisted" ? "public" : "unlisted";
+    const action = visibility === "public" ? "Show in Explore" : "Hide from Explore";
+    const signature = `catalog:${data.character.id}:${data.serving.version}:${visibility}`;
+    const idempotencyKey = createIdempotencyKeys.current[signature] ?? crypto.randomUUID();
+    createIdempotencyKeys.current[signature] = idempotencyKey;
+    setBusy("visibility");
+    setError(null);
+    try {
+      await runCommittedMutation({
+        action,
+        commit: () => adminV2Operation("POST /api/v2/admin/content/characters/:id/visibility", {
+          path: { id: data.character.id }, idempotencyKey,
+          body: { visibility, entityVersion: data.serving!.version, reason: action, confirmation: `${data.character.id}:visibility:${visibility}` },
+        }),
+      });
+      delete createIdempotencyKeys.current[signature];
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t("Could not update Explore visibility"));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const rollbackCharacter = async () => {
     if (!rollbackSource || !releaseConfirmed || writesLocked) return;
     setBusy("rollback");
@@ -454,7 +480,7 @@ export function ReleasePanel({
             hint={canPublish
               ? "Publish the current Character to create the first release."
               : "Complete the release requirements shown here before creating the first release."}
-            title="No Character releases yet"
+            title={t("No Character releases yet")}
           />
         ) : (
           <>
@@ -562,6 +588,19 @@ export function ReleasePanel({
           <summary className="cursor-pointer text-xs font-semibold">
             {t("Rollback and live operations")}
           </summary>
+          {data.serving?.state === "live" && ["public", "unlisted"].includes(data.character.visibility) ? (
+            <div className="mt-4 space-y-2">
+              <p className="text-xs text-[var(--ad-text-muted)]">
+                {t(data.character.visibility === "unlisted" ? "Hidden from Explore" : "Listed in Explore")}
+              </p>
+              <WorkspaceButton
+                disabled={!permissions.manageCatalogVisibility || Boolean(busy) || writesLocked}
+                onClick={() => void changeCatalogVisibility()}
+              >
+                {t(data.character.visibility === "unlisted" ? "Show in Explore" : "Hide from Explore")}
+              </WorkspaceButton>
+            </div>
+          ) : null}
           {confirmationVisible ? (
             <>
               <label className="mt-4 block text-xs font-semibold text-[var(--ad-text-muted)]">

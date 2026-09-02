@@ -1,17 +1,17 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import type { Prisma } from "@prisma/client";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { deflateSync } from "node:zlib";
 import path from "node:path";
 import {
   MAIN_TO_CHAT_EVENTS,
+  characterVideoProductionRecipe,
+  compileCharacterSoul,
   mockVideoMp4Bytes,
 } from "@idream/shared";
 import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
-import { dispatchPendingChatEvents } from "@/processes/chat-outbox";
-import {
-  ACCOUNT_DELETION_GRACE_PERIOD_MS,
-  dispatchPendingAccountDeletionBlobDeletes,
-} from "@/server/account-deletion-authority";
+import { hasPendingCompanionMemoryMutation } from "@/server/modules/chat/companion-memory-authority";
+import { ACCOUNT_DELETION_GRACE_PERIOD_MS } from "@/server/account-deletion-authority";
 import { localAiQueueNames } from "@/server/ai/local-pipeline";
 import {
   characterVisualProfileSnapshotHash,
@@ -19,6 +19,7 @@ import {
 } from "@/server/modules/admin-v2/characters/release-snapshot";
 import { jobQueue } from "@/server/jobs/queue";
 import { prisma } from "@/server/lib/db";
+import { relationshipWorkspacePath } from "../../../chat/src/agent-runtime/workspace";
 import { redeemCodeHash } from "@/server/lib/redeem-codes";
 const accountErasureCompletionReceiptSource =
   "main.product_projection:chat.account_erasure_completion_v2";
@@ -50,6 +51,17 @@ async function waitForAuthWorkspaceReady(page: Page) {
     .locator('form[data-auth-ready="true"]')
     .filter({ visible: true });
   await expect(readyForm).toHaveCount(1);
+  await expect(page.locator("[data-age-gate-content]")).not.toHaveAttribute("inert", "");
+}
+
+async function readyGlobalSearch(page: Page) {
+  // The header is visible while restored access still makes its input inert.
+  await expect(page.locator("[data-age-gate-content]")).not.toHaveAttribute("inert", "");
+  const input = page.getByRole("searchbox", {
+    name: "Search characters, guides, and generators",
+  });
+  await expect(input).toBeVisible();
+  return input;
 }
 
 async function localStorageKeysStartingWith(page: Page, prefix: string) {
@@ -371,7 +383,7 @@ async function seedOwnedIdentityMedia(email: string) {
       "base64",
     ),
   );
-  await prisma.character.create({
+  const character = await prisma.character.create({
     data: {
       id: characterId,
       creatorId: user.id,
@@ -384,6 +396,24 @@ async function seedOwnedIdentityMedia(email: string) {
       advancedDetails: {},
     },
   });
+  const soul = compileCharacterSoul({
+    name: character.name,
+    age: character.age,
+    gender: character.gender ?? "female",
+    characterPromise: character.description,
+    detailsMarkdown: "Warm, attentive, and playful in conversation.",
+  });
+  if (!soul.ok) throw new Error("Owned E2E Character Soul must compile");
+  const content = await prisma.characterContentVersion.create({ data: {
+    characterId,
+    version: 1,
+    contentHash: soul.snapshot.compiled.fingerprint,
+    personaSnapshot: soul.snapshot as unknown as Prisma.InputJsonValue,
+    openingSnapshot: { firstMessage: "Welcome back. How is your day going?" },
+    appearanceSnapshot: {},
+    sourceType: "playwright",
+  } });
+  await prisma.character.update({ where: { id: characterId }, data: { currentContentVersionId: content.id } });
   await prisma.characterStats.create({ data: { characterId } });
   await prisma.mediaAsset.create({
     data: {
@@ -425,11 +455,10 @@ async function seedOwnedCharacterGenerationAuthority(email: string) {
     signatureTraits: {},
     styleTraits: { style: "realistic" },
     anchorAssetIds: [character.mediaId],
-    referenceAssetIds: [],
     adapterRefs: {},
     evidenceState: "qualified",
     createdFrom: "playwright_chat_variation_authority",
-  };
+  } satisfies Prisma.CharacterVisualProfileUncheckedCreateInput;
   await prisma.character.update({
     where: { id: character.characterId },
     data: { imageAssetId: character.mediaId },
@@ -636,7 +665,7 @@ async function seedCompletedChatImageAttachment(input: {
   });
   const turn = await prisma.chatTurn.findFirstOrThrow({
     where: { sessionId: input.sessionId, assistantMessageId: input.messageId },
-    select: { id: true },
+    select: { id: true, attempt: true },
   });
   await prisma.chatTurnAttachment.create({
     data: {
@@ -652,7 +681,7 @@ async function seedCompletedChatImageAttachment(input: {
           : "E2E completed in-character image from this chat moment",
       width: fixture === "blank" ? 16 : 512,
       height: fixture === "blank" ? 16 : 640,
-      metadata: { e2e: true, fixture: `completed-chat-image-${fixture}`, costDreamcoins: 5 },
+      metadata: { e2e: true, fixture: `completed-chat-image-${fixture}`, costDreamcoins: 5, attempt: turn.attempt },
     },
   });
   return { attachmentId, mediaId };
@@ -676,29 +705,20 @@ async function grantVoicePlayback(email: string) {
   return user.id;
 }
 
-async function seedCompletedVoiceChat(email: string, characterId: string) {
-  const user = await prisma.user.findUniqueOrThrow({
-    where: { email },
-    select: { id: true },
+async function seedCompletedVoiceChat(page: Page, characterId: string) {
+  const response = await page.request.post("/api/v1/chat/sessions", {
+    data: { characterId, title: "Voice playback fixture" },
   });
+  expect(response.ok()).toBe(true);
+  const payload = await response.json() as { data: { session: { id: string } } };
+  const sessionId = payload.data.session.id;
+  const session = await prisma.recentChat.findUniqueOrThrow({ where: { sessionId } });
   const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
-  const sessionId = `e2e-ui-voice-session-${suffix}`;
   const userMessageId = `e2e-ui-voice-user-${suffix}`;
   const assistantMessageId = `e2e-ui-voice-assistant-${suffix}`;
   const assistantText =
     "Here is a calm voice playback fixture for the browser. It should become playable and stay tied to this assistant turn.";
   const now = new Date();
-  await prisma.recentChat.create({
-    data: {
-      sessionId,
-      userId: user.id,
-      characterId,
-      title: "Voice playback fixture",
-      status: "active",
-      activeKey: `${user.id}:${characterId}`,
-      lastMessageAt: now,
-    },
-  });
   await prisma.chatTurn.create({
     data: {
       id: `e2e-ui-voice-turn-${suffix}`,
@@ -712,7 +732,11 @@ async function seedCompletedVoiceChat(email: string, characterId: string) {
       assistantContent: assistantText,
       assistantStatus: "sent",
       model: "e2e-fixture",
-      memoryEnabled: true,
+      memoryEnabled: session.memoryEnabled,
+      characterContentVersionId: session.characterContentVersionId,
+      characterReleaseId: session.characterReleaseId,
+      characterVisualProfileId: session.characterVisualProfileId,
+      characterVisualProfileVersion: session.characterVisualProfileVersion,
       terminalAt: now,
       createdAt: new Date(now.getTime() - 1_000),
     },
@@ -838,30 +862,12 @@ async function fileExists(target: string) {
   }
 }
 
-async function seedLegacyRelationshipFile(email: string, characterId: string) {
-  const user = await prisma.user.findUniqueOrThrow({
-    where: { email },
-    select: { id: true },
-  });
-  const root = chatFsRoot();
-  const dir = path.join(root, "mem", user.id, characterId);
+async function seedCanonicalRelationshipFile(userId: string, characterId: string) {
+  const dir = relationshipWorkspacePath(path.join(chatFsRoot(), "companion-memory"), userId, characterId);
   await mkdir(dir, { recursive: true });
-  await writeFile(
-    path.join(dir, "relationship.md"),
-    [
-      "---",
-      "stage: close",
-      "warmth: 12",
-      "familiarity: 11",
-      "turns: 8",
-      "version: 1",
-      "---",
-      "",
-      "## Summary",
-      "They have built a warm, familiar rapport.",
-      "",
-    ].join("\n"),
-  );
+  const file = path.join(dir, "purge-sentinel.txt");
+  await writeFile(file, "Canonical relationship data that must disappear after confirmed memory clear.\n");
+  return file;
 }
 
 async function cleanupPublicE2EFixtures() {
@@ -1605,10 +1611,6 @@ async function enableVideoGenerationForUser(email: string) {
     where: { key: "video_gen" },
     select: { enabled: true, rolloutPercent: true },
   });
-  const previousProfiles = await prisma.generationModelProfile.findMany({
-    where: { mode: "video", status: "active" },
-    select: { id: true, rolloutPercent: true },
-  });
   await prisma.entitlement.upsert({
     where: { userId_key: { userId: user.id, key: "video_generation" } },
     update: { value: true, source: "e2e" },
@@ -1618,28 +1620,7 @@ async function enableVideoGenerationForUser(email: string) {
     where: { key: "video_gen" },
     data: { enabled: true, rolloutPercent: 100 },
   });
-  await prisma.generationModelProfile.updateMany({
-    where: { mode: "video", status: "active", enabled: true },
-    data: { rolloutPercent: 100 },
-  });
-  await prisma.generationRecipe.upsert({
-    where: { id: "e2e-template-video-freeplay-v1" },
-    update: { status: "active" },
-    create: {
-      id: "e2e-template-video-freeplay-v1",
-      recipeKey: "e2e_template_video_freeplay",
-      label: "E2E video freeplay",
-      mode: "video",
-      useCase: "freeplay",
-      body: "E2E video freeplay prompt template.",
-      presetOrder: [],
-      safetyHints: {},
-      sampleMatrix: [{ freeplay: true, seconds: 4 }],
-      version: 1,
-      status: "active",
-    },
-  });
-  return { previousFlag, previousProfiles };
+  return { previousFlag };
 }
 
 async function restoreVideoGenerationRuntime(previousRuntime: {
@@ -1647,12 +1628,8 @@ async function restoreVideoGenerationRuntime(previousRuntime: {
     enabled: boolean;
     rolloutPercent: number;
   } | null;
-  previousProfiles: Array<{
-    id: string;
-    rolloutPercent: number;
-  }>;
 }) {
-  const { previousFlag, previousProfiles } = previousRuntime;
+  const { previousFlag } = previousRuntime;
   if (!previousFlag) {
     await prisma.featureFlag.update({
       where: { key: "video_gen" },
@@ -1664,17 +1641,6 @@ async function restoreVideoGenerationRuntime(previousRuntime: {
       data: previousFlag,
     });
   }
-  await prisma.$transaction(
-    previousProfiles.map((profile) =>
-      prisma.generationModelProfile.update({
-        where: { id: profile.id },
-        data: { rolloutPercent: profile.rolloutPercent },
-      }),
-    ),
-  );
-  await prisma.generationRecipe.deleteMany({
-    where: { id: "e2e-template-video-freeplay-v1" },
-  });
 }
 
 async function seedCommunityDreamer() {
@@ -1873,6 +1839,23 @@ async function seedStrictPublicCharacterAuthority(input: {
   const projectId = `${input.characterId}:project`;
   const validationRunId = `${releaseId}:validation`;
   const snapshotHash = `${releaseId}:snapshot`;
+  const character = await prisma.character.findUniqueOrThrow({ where: { id: input.characterId } });
+  const soul = compileCharacterSoul({
+    name: character.name,
+    age: character.age,
+    gender: character.gender ?? "female",
+    characterPromise: character.description ?? "A warm and attentive conversation partner.",
+    detailsMarkdown: "Respond naturally, stay attentive, and remember the details of the conversation.",
+  });
+  if (!soul.ok) throw new Error("Public E2E Character Soul must compile");
+  const content = await prisma.characterContentVersion.create({ data: {
+    id: `${releaseId}:content`, characterId: character.id, version: 1,
+    contentHash: soul.snapshot.compiled.fingerprint,
+    personaSnapshot: soul.snapshot as unknown as Prisma.InputJsonValue,
+    openingSnapshot: { firstMessage: "Hi, how is your day going?" },
+    appearanceSnapshot: character.appearance as Prisma.InputJsonValue,
+    sourceType: "playwright",
+  } });
   const sourceFiles = {
     character_avatar: "card-sarah-mercer.webp",
     character_hero: "card-alexa-reeves.webp",
@@ -1932,7 +1915,7 @@ async function seedStrictPublicCharacterAuthority(input: {
   const referenceSetRevisionId = `${input.characterId}:reference-set`;
   await prisma.character.update({
     where: { id: input.characterId },
-    data: { imageAssetId: avatar.assetId },
+    data: { imageAssetId: avatar.assetId, currentContentVersionId: content.id },
   });
   await prisma.mediaAsset.updateMany({
     where: { id: { in: placements.map((placement) => placement.assetId) } },
@@ -1953,15 +1936,10 @@ async function seedStrictPublicCharacterAuthority(input: {
     signatureTraits: {},
     styleTraits: { style: "realistic" },
     anchorAssetIds: [avatar.assetId],
-    referenceAssetIds: [
-      placements.find(
-        (placement) => placement.slotKey === "character_hero",
-      )!.assetId,
-    ],
     adapterRefs: {},
     evidenceState: "qualified",
     createdFrom: "playwright_strict_public_authority",
-  };
+  } satisfies Prisma.CharacterVisualProfileUncheckedCreateInput;
   await prisma.characterVisualProfile.create({
     data: {
       ...visualProfile,
@@ -2015,6 +1993,11 @@ async function seedStrictPublicCharacterAuthority(input: {
       characterId: input.characterId,
     },
   });
+  await prisma.characterRevision.create({ data: {
+    id: `${releaseId}:revision`, projectId, revision: 1,
+    characterContentVersionId: content.id,
+    projectSnapshot: {},
+  } });
   await prisma.characterRelease.create({
     data: {
       id: releaseId,
@@ -2242,7 +2225,7 @@ async function generateAndConfirmCharacterIdentity(page: Page) {
   await expect(progress).toHaveAttribute("role", "status");
   await expect(progress).toHaveAttribute("aria-live", "polite");
   await expect(progress).toHaveText(
-    /Candidate [1-4] of 4 · (queued|running|completed) · \d completed/,
+    /Candidate [1-4] of 4 · (queued|processing|completed) · \d completed/,
     { timeout: 10_000 },
   );
   const candidates = page.getByTestId("create-preview-candidates").locator("button");
@@ -2610,12 +2593,10 @@ test("global header search routes app pages into Explore results", async ({ page
   const ids = await seedExploreCharacters(token);
 
   await page.goto("/generate?characterId=melissa-burke");
-  const globalSearch = page.getByRole("searchbox", {
-    name: "Search characters, guides, and generators",
-  });
-  await expect(globalSearch).toBeVisible();
+  const globalSearch = await readyGlobalSearch(page);
 
   await globalSearch.fill(token);
+  await expect(globalSearch).toHaveValue(token);
   await globalSearch.press("Enter");
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/");
@@ -2634,12 +2615,10 @@ test("global header search suggestions open character detail", async ({ page }) 
   const ids = await seedExploreCharacters(token);
 
   await page.goto("/generate?characterId=melissa-burke");
-  const globalSearch = page.getByRole("searchbox", {
-    name: "Search characters, guides, and generators",
-  });
-  await expect(globalSearch).toBeVisible();
+  const globalSearch = await readyGlobalSearch(page);
 
   await globalSearch.fill(`${token} Alpha`);
+  await expect(globalSearch).toHaveValue(`${token} Alpha`);
   await expect(page.getByRole("listbox", { name: "Search suggestions" })).toBeVisible({
     timeout: 10_000,
   });
@@ -2655,10 +2634,7 @@ test("global header search suggestions open guide routes", async ({ page }) => {
   await startSignedInAdultSession(page, "global-search-route-suggestions");
 
   await page.goto("/generate?characterId=melissa-burke");
-  const globalSearch = page.getByRole("searchbox", {
-    name: "Search characters, guides, and generators",
-  });
-  await expect(globalSearch).toBeVisible();
+  const globalSearch = await readyGlobalSearch(page);
 
   await globalSearch.fill("character cards");
   await expect(page.getByRole("listbox", { name: "Search suggestions" })).toBeVisible({
@@ -2679,10 +2655,7 @@ test("global header search suggestions expose empty status semantics", async ({ 
   await startSignedInAdultSession(page, "global-search-empty-status");
 
   await page.goto("/generate?characterId=melissa-burke");
-  const globalSearch = page.getByRole("searchbox", {
-    name: "Search characters, guides, and generators",
-  });
-  await expect(globalSearch).toBeVisible();
+  const globalSearch = await readyGlobalSearch(page);
 
   const query = `zz no suggestions ${Date.now()} ${Math.floor(Math.random() * 1e6)}`;
   await globalSearch.fill(query);
@@ -2708,9 +2681,7 @@ test("global search rejects malformed 200 responses instead of showing a false e
   });
 
   await page.goto("/generate?characterId=melissa-burke");
-  const globalSearch = page.getByRole("searchbox", {
-    name: "Search characters, guides, and generators",
-  });
+  const globalSearch = await readyGlobalSearch(page);
   await globalSearch.fill("malformed authority");
 
   await expect(page.getByTestId("app-search-status")).toHaveText(
@@ -2737,9 +2708,7 @@ test("global search distinguishes dependency failure from an intentional empty r
   });
 
   await page.goto("/generate?characterId=melissa-burke");
-  const globalSearch = page.getByRole("searchbox", {
-    name: "Search characters, guides, and generators",
-  });
+  const globalSearch = await readyGlobalSearch(page);
   await globalSearch.fill("dependency authority");
 
   await expect(page.getByTestId("app-search-status")).toHaveText(
@@ -3003,7 +2972,11 @@ test("create UI walks the multi-step builder and shows the character in My AI", 
   await page.getByTestId("create-next").click();
   // Step 3 — Soul
   await expect(page.getByTestId("create-step-soul")).toBeVisible();
-  await page.getByLabel("Advanced Details").fill(
+  await page.getByLabel("Character promise").fill(
+    "A warm, observant companion who makes everyday conversations thoughtful and playful.",
+  );
+  await page.getByLabel("First message").fill("Welcome back. What made you smile today?");
+  await page.getByLabel("Additional details (optional)").fill(
     "A complete E2E-created companion used to verify the creator and My AI loop.",
   );
   await page.getByTestId("create-next").click();
@@ -3134,7 +3107,7 @@ test("create UI resumes a draft and submits public characters for review", async
   await page.getByLabel("Name").fill(characterName);
   await page.getByLabel("Age").fill("17");
   await page.getByTestId("create-next").click();
-  await expect(page.getByTestId("create-status")).toHaveText("Age must be between 18 and 99.");
+  await expect(page.getByTestId("create-status")).toHaveText("Age must be between 18 and 120.");
   await expect(page.getByTestId("create-status")).toHaveAttribute("role", "status");
   await expect(page.getByTestId("create-status")).toHaveAttribute("aria-live", "polite");
   await expect(page.getByTestId("create-step-identity")).toBeVisible();
@@ -3150,7 +3123,11 @@ test("create UI resumes a draft and submits public characters for review", async
   await page.getByLabel("Appearance").fill("editorial portrait lighting with a confident smile");
   await page.getByTestId("create-next").click();
   await expect(page.getByTestId("create-step-soul")).toBeVisible({ timeout: 10_000 });
-  await page.getByLabel("Advanced Details").fill(
+  await page.getByLabel("Character promise").fill(
+    "A curious storyteller who turns small moments into engaging conversations.",
+  );
+  await page.getByLabel("First message").fill("There you are. Tell me about your day.");
+  await page.getByLabel("Additional details (optional)").fill(
     "A public review submission that verifies failed preview recovery and pending review UX.",
   );
   await page.getByTestId("create-next").click();
@@ -3170,7 +3147,7 @@ test("create UI resumes a draft and submits public characters for review", async
       }),
     });
   });
-  await page.getByRole("button", { name: "Generate preview" }).click();
+  await page.getByRole("button", { name: "Generate preview candidates", exact: true }).click();
   await expect(page.getByText("Preview failed. Your draft is saved; retry before publishing.")).toBeVisible({
     timeout: 10_000,
   });
@@ -3367,7 +3344,9 @@ test("chat UI starts from character detail, sends a message, and persists histor
     .toBeGreaterThan(0);
   await expect(openingBubble.getByTestId("chat-regenerate")).toHaveCount(0);
   await expect(openingBubble.getByTestId("chat-play-voice")).toBeVisible();
-  await expect(openingBubble).toHaveClass(/pr-\[108px\]/);
+  await expect(openingBubble.getByRole("button", { name: "Report message" })).toBeVisible();
+  await expect(openingBubble.getByRole("button")).toHaveCount(2);
+  await expect(openingBubble).toHaveClass(/pr-\[76px\]/);
 
   const messageInput = page.getByRole("textbox", { name: "Message", exact: true });
   const sendButton = page.getByRole("button", { name: "Send message" });
@@ -3382,6 +3361,7 @@ test("chat UI starts from character detail, sends a message, and persists histor
     timeout: 10_000,
   });
   const reportedMessage = page.getByTestId("chat-message-user").filter({ hasText: message });
+  await expect(reportedMessage.getByRole("button", { name: "Report message" })).toBeVisible();
   const reportedMessageId = await reportedMessage.getAttribute("data-message-id");
   expect(reportedMessageId).toBeTruthy();
   await reportedMessage.getByRole("button", { name: "Report message" }).click();
@@ -3445,18 +3425,49 @@ test("chat UI opens Generate with character context and renders chat image attac
   const assistantMessageId = await assistantBubble.getAttribute("data-message-id");
   expect(assistantMessageId).toBeTruthy();
 
-  const { mediaId } = await seedCompletedChatImageAttachment({
-    email,
-    sessionId,
-    messageId: assistantMessageId ?? "",
-    characterId,
+  const attachment = await prisma.chatTurnAttachment.findFirstOrThrow({
+    where: { turn: { assistantMessageId: assistantMessageId! }, kind: "generated_image" },
+    select: { id: true, generationJobId: true, status: true, errorCode: true, metadata: true },
   });
+  expect(attachment.generationJobId, JSON.stringify(attachment)).toBeTruthy();
+  await drainWorker(page.request, attachment.generationJobId!);
+  const { id: mediaId } = await expectGeneratedAssetServed(page.request, attachment.generationJobId!);
   await page.reload();
 
   const completedImage = page.getByTestId("chat-image-attachment");
   await expect(completedImage).toBeVisible({ timeout: 10_000 });
-  await expect(completedImage).toHaveAttribute("src", /\/user-content\/.+\/content\.jpg/);
-  await expect(completedImage).toHaveAttribute("alt", /Generated image:/);
+  await expect(completedImage).toHaveAttribute("src", /\/user-content\/.+\/content\.(?:jpg|png|webp)/);
+  await expect(completedImage).toHaveAttribute("alt", "Generated character image from this chat");
+  const generatedJob = await prisma.generationJob.findUniqueOrThrow({ where: { id: attachment.generationJobId! } });
+  expect(generatedJob.characterId).toBe(characterId);
+  expect(generatedJob.sourceType).toBe("chat_image");
+  expect(generatedJob.costDreamcoins).toBeGreaterThan(0);
+  const debits = await prisma.dreamcoinLedger.findMany({
+    where: { sourceId: generatedJob.id, delta: { lt: 0 } },
+    select: { id: true, delta: true },
+  });
+  expect(debits).toHaveLength(1);
+  expect(debits[0]?.delta).toBe(-generatedJob.costDreamcoins);
+
+  // Regenerating the prose must keep the accepted image effect and its debit.
+  const regenerateResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST" && response.url().includes(`/messages/${assistantMessageId}/regenerate`),
+  );
+  await assistantBubble.getByTestId("chat-regenerate").click();
+  expect((await regenerateResponse).ok()).toBe(true);
+  await expectAssistantReplyVisible(page);
+  await expect.poll(() => prisma.chatTurn.findUnique({
+    where: { assistantMessageId: assistantMessageId! }, select: { attempt: true, assistantStatus: true },
+  })).toEqual({ attempt: 2, assistantStatus: "sent" });
+  expect(await prisma.chatTurnAttachment.findMany({
+    where: { turn: { assistantMessageId: assistantMessageId! } },
+    select: { id: true, generationJobId: true, mediaAssetId: true, status: true },
+  })).toEqual([{ id: attachment.id, generationJobId: generatedJob.id, mediaAssetId: mediaId, status: "completed" }]);
+  expect(await prisma.generationJob.count({ where: { characterId, sourceType: "chat_image" } })).toBe(1);
+  expect(await prisma.mediaAsset.count({ where: { sourceJobId: generatedJob.id } })).toBe(1);
+  expect(await prisma.dreamcoinLedger.findMany({
+    where: { sourceId: generatedJob.id, delta: { lt: 0 } }, select: { id: true, delta: true },
+  })).toEqual(debits);
   await expect(assistantBubble.getByRole("button", { name: "More like this" })).toBeVisible();
   await expect(assistantBubble.getByRole("button", { name: "Looks like them" })).toBeVisible();
   await expect(assistantBubble.getByRole("button", { name: "Doesn't match" })).toBeVisible();
@@ -3725,7 +3736,7 @@ test("chat UI preserves input and shows upgrade path at the free daily limit", a
   });
 });
 
-test("chat UI prewarms and plays assistant voice clips for entitled users", async ({ page }) => {
+test("chat UI generates on Play and reuses assistant voice clips for entitled users", async ({ page }) => {
   await page.addInitScript(() => {
     const originalPause = window.HTMLMediaElement.prototype.pause;
     window.HTMLMediaElement.prototype.play = function play() {
@@ -3745,9 +3756,15 @@ test("chat UI prewarms and plays assistant voice clips for entitled users", asyn
   const characterId = "melissa-burke";
   const userId = await grantVoicePlayback(email);
   const { assistantMessageId, assistantText, sessionId } = await seedCompletedVoiceChat(
-    email,
+    page,
     characterId,
   );
+  const voiceRequests: unknown[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST" && new URL(request.url()).pathname === "/api/v1/generation/voice") {
+      voiceRequests.push(request.postDataJSON());
+    }
+  });
 
   await page.goto(`/chat/${sessionId}`);
   const assistantBubble = page.getByTestId("chat-message-assistant").filter({
@@ -3758,6 +3775,18 @@ test("chat UI prewarms and plays assistant voice clips for entitled users", asyn
 
   const playButton = assistantBubble.getByRole("button", { name: "Play voice" });
   await expect(playButton).toBeVisible();
+  expect(voiceRequests).toHaveLength(0);
+  expect(await prisma.mediaAsset.count({ where: { ownerId: userId, type: "voice" } })).toBe(0);
+
+  const voiceResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST"
+    && new URL(response.url()).pathname === "/api/v1/generation/voice",
+  );
+  await playButton.click();
+  expect((await voiceResponse).ok()).toBe(true);
+  expect(voiceRequests).toEqual([{
+    characterId, messageId: assistantMessageId, sessionId, text: assistantText, intent: "play",
+  }]);
   await expect
     .poll(async () => {
       const asset = await prisma.mediaAsset.findFirst({
@@ -3782,11 +3811,15 @@ test("chat UI prewarms and plays assistant voice clips for entitled users", asyn
       cost: 0,
       url: expect.stringContaining("/api/v1/media/"),
     });
-  await playButton.click();
   const stopButton = assistantBubble.getByRole("button", { name: "Stop voice" });
   await expect(stopButton).toBeVisible({ timeout: 30_000 });
   await expect(stopButton).toHaveAttribute("data-state", "playing");
   await expect(stopButton).toHaveAttribute("aria-pressed", "true");
+  await stopButton.click();
+  await playButton.click();
+  await expect(stopButton).toHaveAttribute("data-state", "playing");
+  expect(voiceRequests).toHaveLength(1);
+  expect(await prisma.mediaAsset.count({ where: { ownerId: userId, type: "voice" } })).toBe(1);
 });
 
 // P1-A management controls (plan §10.3): edit latest user turn, regenerate,
@@ -3795,7 +3828,8 @@ test("chat UI prewarms and plays assistant voice clips for entitled users", asyn
 test("chat UI exposes edit, regenerate, delete, memory toggle, and the session list", async ({
   page,
 }) => {
-  await startSignedInAdultSession(page, "chat-manage");
+  const { email } = await startSignedInAdultSession(page, "chat-manage");
+  const user = await prisma.user.findUniqueOrThrow({ where: { email }, select: { id: true } });
   const message = `manage me ${Date.now()}`;
   const editedMessage = `edited chat turn ${Date.now()}`;
 
@@ -3815,7 +3849,18 @@ test("chat UI exposes edit, regenerate, delete, memory toggle, and the session l
   const userBubble = page.getByTestId("chat-message-user").filter({ hasText: message });
   await userBubble.getByTestId("chat-edit-message").click();
   await page.getByTestId("chat-edit-input").fill(editedMessage);
+  const edited = page.waitForResponse((response) =>
+    response.request().method() === "PATCH" && /\/messages\/[^/]+$/.test(new URL(response.url()).pathname),
+  );
   await page.getByTestId("chat-save-edit").click();
+  const editResponse = await edited;
+  expect(editResponse.status()).toBe(202);
+  const editResult = await editResponse.json() as { assistantMessageId: string; attempt: number };
+  expect(editResult.attempt).toBe(2);
+  await expect.poll(() => prisma.chatTurn.findUnique({
+    where: { assistantMessageId: editResult.assistantMessageId },
+    select: { attempt: true, assistantStatus: true },
+  })).toEqual({ attempt: 2, assistantStatus: "sent" });
   await expect(page.getByTestId("chat-message-user").filter({ hasText: editedMessage })).toBeVisible({
     timeout: 10_000,
   });
@@ -3824,14 +3869,31 @@ test("chat UI exposes edit, regenerate, delete, memory toggle, and the session l
 
   // Regenerate: the single reply bubble refreshes its content; the immutable
   // opening remains a separate, non-regenerable assistant message.
+  await expect.poll(() => hasPendingCompanionMemoryMutation(prisma, user.id, "melissa-burke")).toBe(false);
+  const regenerated = page.waitForResponse((response) =>
+    response.request().method() === "POST" && /\/messages\/[^/]+\/regenerate$/.test(new URL(response.url()).pathname),
+  );
   await page.getByTestId("chat-message-assistant").getByTestId("chat-regenerate").click();
+  const regenerateResponse = await regenerated;
+  expect(regenerateResponse.status()).toBe(202);
   await expectAssistantReplyVisible(page);
+  await expect.poll(() => prisma.chatTurn.findUnique({
+    where: { assistantMessageId: editResult.assistantMessageId },
+    select: { attempt: true, assistantStatus: true },
+  })).toEqual({ attempt: 3, assistantStatus: "sent" });
 
   // No-memory toggle flips the header copy to the incognito explanation.
+  const sessionId = new URL(page.url()).pathname.split("/").at(-1)!;
+  const memoryToggled = page.waitForResponse((response) =>
+    response.request().method() === "POST" &&
+    new URL(response.url()).pathname === `/api/v1/chat/sessions/${sessionId}/memory`,
+  );
   await page.getByTestId("memory-toggle").click();
+  expect((await memoryToggled).status()).toBe(200);
   await expect(page.getByText(/No-memory: this character won't read/)).toBeVisible({
     timeout: 10_000,
   });
+  await expect.poll(() => hasPendingCompanionMemoryMutation(prisma, user.id, "melissa-burke")).toBe(false);
 
   // Session list drawer lists at least this conversation.
   await page.getByTestId("session-list-open").click();
@@ -3845,7 +3907,7 @@ test("chat UI exposes edit, regenerate, delete, memory toggle, and the session l
     .filter({ hasText: editedMessage });
   await editedBubbleBeforeConfirm.getByTestId("chat-delete-message").click();
   await expect(editedBubbleBeforeConfirm).toHaveClass(/pr-\[144px\]/);
-  await expect(page.getByText("Press Confirm delete to remove this message.")).toBeVisible({
+  await expect(page.getByText("Press Confirm delete to remove your message and the reply.")).toBeVisible({
     timeout: 10_000,
   });
   await expect(
@@ -3857,10 +3919,19 @@ test("chat UI exposes edit, regenerate, delete, memory toggle, and the session l
     .filter({ hasText: editedMessage });
   await expect(editedBubbleAfterFirstClick).toBeVisible({ timeout: 10_000 });
   await editedBubbleAfterFirstClick.getByTestId("chat-delete-message").click();
+  const deletedMessagePath = new URL(editResponse.url()).pathname;
+  const deleted = page.waitForResponse((response) =>
+    response.request().method() === "DELETE" && new URL(response.url()).pathname === deletedMessagePath,
+  );
   await editedBubbleAfterFirstClick
     .getByRole("button", { name: "Confirm delete message" })
     .click();
+  expect((await deleted).status()).toBe(200);
+  await expect.poll(() => prisma.chatTurn.findUnique({
+    where: { assistantMessageId: editResult.assistantMessageId },
+  })).toBeNull();
   await page.reload();
+  await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeVisible();
   await expect(page.getByTestId("chat-message-user").filter({ hasText: editedMessage })).toHaveCount(0, {
     timeout: 10_000,
   });
@@ -3926,18 +3997,11 @@ test("chat memory panel controls memory mode and clears character memory", async
   page,
 }) => {
   const { email } = await startSignedInAdultSession(page, "chat-memory-panel");
-  await seedLegacyRelationshipFile(email, "melissa-burke");
   const user = await prisma.user.findUniqueOrThrow({
     where: { email },
     select: { id: true },
   });
-  const legacyRelationshipPath = path.join(
-    chatFsRoot(),
-    "mem",
-    user.id,
-    "melissa-burke",
-    "relationship.md",
-  );
+
 
   await page.goto("/characters/melissa-burke");
   await expect(page.getByRole("heading", { name: "Melissa Burke" })).toBeVisible({ timeout: 10_000 });
@@ -3955,15 +4019,37 @@ test("chat memory panel controls memory mode and clears character memory", async
   await memoryToggle.click();
   await expect(memoryToggle).toHaveAttribute("aria-pressed", "true", { timeout: 10_000 });
 
+  await expect.poll(() => hasPendingCompanionMemoryMutation(prisma, user.id, "melissa-burke")).toBe(false);
+  const canonicalRelationshipPath = await seedCanonicalRelationshipFile(user.id, "melissa-burke");
   await page.getByTestId("memory-clear").click();
   await expect(page.getByRole("button", { name: "Confirm clear memory" })).toBeVisible({
     timeout: 10_000,
   });
-  await expect.poll(() => fileExists(legacyRelationshipPath)).toBe(true);
+  await expect.poll(() => fileExists(canonicalRelationshipPath)).toBe(true);
+  const cleared = page.waitForResponse((response) =>
+    response.request().method() === "DELETE" && new URL(response.url()).pathname === "/api/v1/chat/memory/melissa-burke",
+  ).then((response) => ({ status: response.status() }));
   await page.getByRole("button", { name: "Confirm clear memory" }).click();
-  await expect(page).toHaveURL(/\/chat\/[^/]+$/, { timeout: 10_000 });
-  expect(page.url()).not.toBe(originalSessionUrl);
-  await expect.poll(() => fileExists(legacyRelationshipPath)).toBe(false);
+  const clearResponse = await cleared;
+  expect(clearResponse.status).toBe(200);
+  const purge = await prisma.mainOutboxEvent.findFirstOrThrow({
+    where: { aggregateId: `${user.id}:melissa-burke`, eventType: MAIN_TO_CHAT_EVENTS.companionMemoryPurgeRequestedV1 },
+    orderBy: { createdAt: "desc" }, select: { id: true },
+  });
+  await expect(page).not.toHaveURL(originalSessionUrl);
+  await expect(page).toHaveURL(/\/chat\/[^/]+$/);
+  expect(await prisma.recentChat.findUnique({
+    where: { sessionId: new URL(originalSessionUrl).pathname.split("/").at(-1)! },
+    select: { status: true, memoryEnabled: true },
+  })).toEqual({ status: "archived", memoryEnabled: false });
+  await expect.poll(() => prisma.mainOutboxEvent.findUnique({
+    where: { id: purge.id }, select: { status: true },
+  })).toEqual({ status: "delivered" });
+  await expect.poll(() => fileExists(canonicalRelationshipPath)).toBe(false);
+  await test.info().attach("memory-clear-authority", {
+    contentType: "application/json",
+    body: JSON.stringify({ httpStatus: clearResponse.status, eventId: purge.id, originalSessionUrl, currentSessionUrl: page.url(), purgeStatus: "delivered", canonicalFileRemoved: true }, null, 2),
+  });
   await expect(page.getByTestId("relationship-badge")).toHaveCount(0);
 });
 
@@ -4073,7 +4159,7 @@ test("generator UI explains failed and blocked job recovery states", async ({ pa
 
   const failedCard = page.locator(`[data-generation-job-id="${failedJobId}"]`);
   await expect(failedCard).toBeVisible({ timeout: 45_000 });
-  await expect(failedCard).toContainText("Failed: provider_timeout");
+  await expect(failedCard).toContainText("Failed: The generator timed out. Your coins are back — try again.");
   await expect(
     failedCard.getByRole("button", {
       name: "Retry price unavailable",
@@ -4216,7 +4302,7 @@ test("generator UI queues an image job and surfaces completed media in the galle
   // (the page loads in ~3s in isolation); allow generous slack so this isn't flaky.
   await expect(generate).toBeEnabled({ timeout: 45_000 });
   await expect(page.getByRole("button", { name: "Video", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Videos", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Videos", exact: true })).toBeVisible();
   await generate.click();
 
   await expectGenerationAccepted(page);
@@ -4340,10 +4426,28 @@ test("generator UI queues a video job and surfaces completed video in the galler
   test.setTimeout(120_000);
   const { email } = await startSignedInAdultSession(page, "generate-video");
   const previousRuntime = await enableVideoGenerationForUser(email);
+  const owner = await prisma.user.findUniqueOrThrow({ where: { email }, select: { id: true } });
+  const characterId = `e2e-ui-video-${Date.now()}`;
+  await prisma.character.create({ data: {
+    id: characterId,
+    creatorId: owner.id,
+    name: uniqueName("Video character"),
+    age: 25,
+    gender: "female",
+    style: "realistic",
+    description: "An attentive companion used to verify the complete video delivery journey.",
+    visibility: "public",
+    status: "approved",
+    appearance: {},
+    advancedDetails: {},
+    stats: { create: {} },
+  } });
+  const characterAuthority = await seedStrictPublicCharacterAuthority({ characterId, ownerId: owner.id });
 
   try {
-    await page.goto("/generate");
+    await page.goto(`/generate?characterId=${characterId}`);
     await page.getByRole("button", { name: "Video", exact: true }).click();
+    await expect(page.getByRole("combobox", { name: "Character", exact: true })).toHaveValue(characterId);
     const generate = page.getByRole("button", { name: "Generate" });
     // Generous slack: generator config can be slow to serve under full-suite load (see image test).
     await expect(generate).toBeEnabled({ timeout: 45_000 });
@@ -4351,6 +4455,20 @@ test("generator UI queues a video job and surfaces completed video in the galler
 
     await expectGenerationAccepted(page, 30_000);
     const job = await latestGenerationJob(page.request, "video");
+    await expect(prisma.generationJob.findUniqueOrThrow({ where: { id: job.id } })).resolves.toMatchObject({
+      characterId,
+      provider: characterVideoProductionRecipe.runner,
+      profileId: characterVideoProductionRecipe.profileKey,
+      profileVersion: characterVideoProductionRecipe.recipeVersion,
+      orientation: characterVideoProductionRecipe.orientation,
+      outputCount: 1,
+      controls: expect.objectContaining({
+        seconds: characterVideoProductionRecipe.durationSeconds,
+        sourceImageAssetId: characterAuthority.avatarAssetId,
+        workflowKey: characterVideoProductionRecipe.workflowKey,
+        workflowVersion: characterVideoProductionRecipe.workflowVersion,
+      }),
+    });
     await drainWorker(page.request, job.id);
 
     await expect(page.getByText("Generation complete.")).toBeVisible({ timeout: 30_000 });
@@ -4362,6 +4480,12 @@ test("generator UI queues a video job and surfaces completed video in the galler
       "src",
       /\/user-content\/.+\.mp4$/,
     );
+    // Stopping new video generation must not hide videos already delivered.
+    await prisma.featureFlag.update({ where: { key: "video_gen" }, data: { enabled: false } });
+    await page.reload();
+    await expect(page.getByRole("button", { name: "Video", exact: true })).toHaveCount(0);
+    await page.getByRole("button", { name: "Videos", exact: true }).click();
+    await expect(page.getByTestId("gallery-media-video")).toBeVisible();
   } finally {
     await restoreVideoGenerationRuntime(previousRuntime);
   }
@@ -5265,7 +5389,12 @@ test("feed UI supports share, report, and remix actions", async ({ page }) => {
     "false",
   );
 
+  const liked = page.waitForResponse((response) =>
+    response.request().method() === "POST" &&
+    new URL(response.url()).pathname === `/api/v1/feed/items/${encodeURIComponent(`character:${characterId}`)}/like`,
+  );
   await feedCard.getByRole("button", { name: "Like" }).click();
+  expect((await liked).status()).toBe(200);
   await expect(feedCard.getByRole("button", { name: "Liked" })).toHaveAttribute(
     "aria-pressed",
     "true",
@@ -5837,15 +5966,7 @@ test("profile account management signs out sessions and deletes the account", as
       userId: user.id,
     },
   })}\n`);
-  const chatRelationshipPath = path.join(
-    chatFsRoot(),
-    "mem",
-    user.id,
-    "account-delete-canary",
-    "relationship.md",
-  );
-  await mkdir(path.dirname(chatRelationshipPath), { recursive: true });
-  await writeFile(chatRelationshipPath, "Account deletion terminal canary relationship.\n");
+  const chatRelationshipPath = await seedCanonicalRelationshipFile(user.id, "account-delete-canary");
 
   await page.goto("/profile");
   const deleteButton = page.getByRole("button", { name: "Delete", exact: true });
@@ -5857,23 +5978,19 @@ test("profile account management signs out sessions and deletes the account", as
   const deletionResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "POST" &&
     new URL(response.url()).pathname === "/api/v1/account/delete-request"
-  );
+  ).then((response) => ({ status: response.status() }));
   await deleteButton.click();
   const deletionResponse = await deletionResponsePromise;
-  const deletionResponseBody = await deletionResponse.text();
-  expect(deletionResponse.ok(), deletionResponseBody).toBeTruthy();
-  const deletionPayload = JSON.parse(deletionResponseBody) as {
-    data: { deletion: { graceEndsAt: string } };
-  };
+  expect(deletionResponse.status).toBe(200);
   await expect(page).toHaveURL(/\/login\?accountDeletionGraceEndsAt=/);
   expect(new URL(page.url()).pathname).toBe("/login");
-  expect(new URL(page.url()).searchParams.get("accountDeletionGraceEndsAt"))
-    .toBe(deletionPayload.data.deletion.graceEndsAt);
   await expect(page.getByTestId("account-deletion-grace-notice")).toBeVisible();
 
   const deletion = await prisma.accountDeletion.findUniqueOrThrow({
     where: { userId: user.id },
   });
+  expect(new URL(page.url()).searchParams.get("accountDeletionGraceEndsAt"))
+    .toBe(deletion.graceEndsAt.toISOString());
   const requestEventId = `user_deleted_${user.id}`;
   const requestOutbox = await prisma.mainOutboxEvent.findUniqueOrThrow({
     where: { id: requestEventId },
@@ -5950,16 +6067,14 @@ test("profile account management signs out sessions and deletes the account", as
     }
   });
 
+  // The managed event consumer owns all three deletion stages. Observe its
+  // durable completion instead of racing intermediate receipts with a second dispatcher.
   await expect.poll(async () => {
-    await dispatchPendingChatEvents(10);
-    return (await prisma.mainOutboxEvent.findUnique({
-      where: { id: requestEventId },
+    return (await prisma.accountDeletion.findUnique({
+      where: { id: deletion.id },
       select: { status: true },
     }))?.status;
-  }, { timeout: 45_000 }).toBe("delivered");
-  await expect(
-    prisma.mainOutboxEvent.findUniqueOrThrow({ where: { id: requestEventId } }),
-  ).resolves.toMatchObject({ status: "delivered", deliveredAt: expect.any(Date) });
+  }, { timeout: 45_000 }).toBe("completed");
   expect(await fileExists(chatLogPath)).toBe(false);
   expect(await fileExists(chatRelationshipPath)).toBe(false);
 
@@ -5981,36 +6096,12 @@ test("profile account management signs out sessions and deletes the account", as
     processingState: "processed",
     processedAt: expect.any(Date),
   });
-  await expect(
-    prisma.accountDeletion.findUniqueOrThrow({ where: { id: deletion.id } }),
-  ).resolves.toMatchObject({
-    status: "deleting_blobs",
-    chatCompletionEventId: advancedDeletion.chatCompletionEventId,
-    chatCompletedAt: expect.any(Date),
-    blobExpectedCount: 1,
-    blobDeletedCount: 0,
-  });
-  await expect(
-    prisma.accountDeletionBlobReceipt.findMany({
-      where: { deletionId: deletion.id },
-    }),
-  ).resolves.toEqual([
-    expect.objectContaining({
-      storageKey: media.storageKey,
-      status: "pending",
-    }),
-  ]);
-
-  await expect(
-    dispatchPendingAccountDeletionBlobDeletes({
-      deletionIds: [deletion.id],
-      now: new Date(),
-      workerId: `e2e-account-delete-${process.env.PW_RUN_ID}`,
-    }),
-  ).resolves.toEqual({ deleted: 1, failed: 0, completed: 1 });
   expect(await fileExists(blobPath)).toBe(false);
   await expect(
     prisma.user.findUnique({ where: { id: user.id } }),
+  ).resolves.toBeNull();
+  await expect(
+    prisma.recentChat.findUnique({ where: { sessionId: chatSessionId } }),
   ).resolves.toBeNull();
   await expect(
     prisma.mediaAsset.findUnique({ where: { id: mediaId } }),
@@ -6021,6 +6112,8 @@ test("profile account management signs out sessions and deletes the account", as
     userId: null,
     status: "completed",
     chatRequestEventId: null,
+    chatCompletionEventId: advancedDeletion.chatCompletionEventId,
+    chatCompletedAt: expect.any(Date),
     blobExpectedCount: 1,
     blobDeletedCount: 1,
     mainPurgedAt: expect.any(Date),

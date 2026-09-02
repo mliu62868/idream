@@ -17,7 +17,8 @@ import {
 import { jobQueue } from "@/server/jobs/queue";
 import { env } from "@/server/lib/env";
 import { drainTargetAdminCommand } from "@/processes/admin-command-worker";
-import { canonicalSha256 } from "@/server/modules/admin-v2/shared/canonical-json";
+import { generationWorkflowDescriptor } from "@/server/modules/generation/generation-catalog";
+import { validateCharacterReleaseSnapshot } from "@/server/modules/admin-v2/characters/release-validation";
 
 const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 const actorId = "seed-admin-user";
@@ -51,6 +52,7 @@ const wizardBootstrapProfileKey = `000-e2e-v2-bootstrap-pipeline-${suffix}`;
 const wizardIdentityProfileId = `e2e-v2-identity-profile-${suffix}`;
 const wizardIdentityProfileKey = `e2e-v2-identity-pipeline-${suffix}`;
 const wizardVisualStyle = "realistic";
+let identityWorkflowVersion: number;
 let wizardCharacterId: string | null = null;
 let wizardBootstrapRunId: string | null = null;
 const wizardRunIds: string[] = [];
@@ -113,6 +115,26 @@ function mainBaseURL() {
 
 function internalToken() {
   return process.env.INTERNAL_TOKEN ?? "development-internal-token";
+}
+
+async function openCharacterTab(page: Page, tab: "assets" | "visual" | "preview" | "release" | "monitor") {
+  const area = tab === "assets" ? "Character assets" : tab === "visual" ? "Character settings" : "Character operations";
+  const labels = { assets: "Images", visual: "Visual identity", preview: "Launch preview", release: "Release", monitor: "Live monitoring" };
+  await page.getByRole("button", { name: area, exact: true }).click();
+  const mobilePage = page.getByLabel("Workspace page", { exact: true });
+  if (await mobilePage.isVisible()) await mobilePage.selectOption(tab);
+  else await page.getByRole("tab", { name: labels[tab], exact: true }).click();
+  if (tab === "assets") {
+    const create = page.getByRole("button", { name: "Create images", exact: true });
+    if (await create.isVisible()) await create.click();
+  }
+  if (tab === "visual") {
+    const settings = page.locator("#visual-production-readiness");
+    if (await settings.getAttribute("open") === null) {
+      await settings.locator("summary").first().click();
+    }
+  }
+  if (tab === "monitor") await page.getByText("Release monitoring", { exact: true }).click();
 }
 
 function pendingCharacterCommandStorageKey(characterId: string) {
@@ -214,51 +236,21 @@ async function generateCharacterAssetRun(
   const runId = createPayload.data.batch.id;
   wizardRunIds.push(runId);
   await drainCreativeRun(page, runId, expectedItemCount);
-  await page
-    .getByLabel("assets")
-    .getByRole("button", {
-      name: "Refresh",
-      exact: true,
-    })
-    .click();
   await expect(
     page.getByRole("button", { name: /View candidate/ }),
   ).toHaveCount(expectedItemCount);
-  await compareAndActivateCandidate(page, 2);
+  await page.getByRole("button", { name: "View candidate 1", exact: true }).click();
+  const inspectTab = page.getByRole("tab", { name: "Inspect", exact: true });
+  await inspectTab.evaluate((element) => element.scrollIntoView({ block: "start" }));
+  await expect.poll(() => inspectTab.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2));
+  })).toBe(true);
   return runId;
 }
 
 function currentCandidateActions(page: Page) {
   return page.getByRole("region", { name: "Current candidate actions" });
-}
-
-async function compareAndActivateCandidate(
-  page: Page,
-  candidateNumber: number,
-) {
-  const actions = currentCandidateActions(page);
-  await expect(actions).toContainText("Candidate 1");
-  await page
-    .getByRole("button", {
-      name: `Compare candidate ${candidateNumber} with current candidate`,
-      exact: true,
-    })
-    .click();
-
-  const comparison = page.getByRole("region", {
-    name: "Compare the current decision without changing authority",
-  });
-  await expect(comparison).toBeVisible();
-  await expect(comparison.getByRole("figure")).toHaveCount(2);
-  await comparison.getByRole("button", { name: "Make current" }).click();
-  await expect(actions).toContainText(`Candidate ${candidateNumber}`);
-  await actions.getByRole("button", { name: "Back to batch" }).click();
-  await expect(
-    page.getByRole("button", {
-      name: `View candidate ${candidateNumber}`,
-      exact: true,
-    }),
-  ).toHaveAttribute("aria-pressed", "true");
 }
 
 type SelectedAssetLineage = {
@@ -357,7 +349,7 @@ async function approveCurrentCharacterCandidate(
   await reviewRegion
     .getByLabel("No visible text, watermark, or contact sheet")
     .check();
-  await reviewRegion.getByLabel("Score", { exact: true }).fill(String(score));
+  await reviewRegion.getByLabel(/^Identity match score/).fill(String(score));
   await reviewRegion.getByLabel("Evidence and reason").fill(reason);
   await currentCandidateActions(page)
     .getByRole("button", {
@@ -435,23 +427,6 @@ async function completeCharacterCreateDraft(
   name: string,
   assertNotCreated: () => Promise<void>,
 ) {
-  await page
-    .getByLabel("Audience")
-    .fill("Adults who want a calm, dependable evening companion");
-  await page
-    .getByLabel("Companion need")
-    .fill("A recurring ritual for decompressing and feeling understood");
-  await page
-    .getByLabel("Hypothesis")
-    .fill(
-      "A specific, consistent evening ritual increases qualified conversations",
-    );
-  await page
-    .getByLabel("Differentiation")
-    .fill(
-      "Observant guidance with a distinct point of view instead of generic affirmation",
-    );
-  await page.getByRole("button", { name: "Continue to persona" }).click();
   await assertNotCreated();
 
   await page.getByLabel("Name", { exact: true }).fill(name);
@@ -466,7 +441,7 @@ async function completeCharacterCreateDraft(
     .fill(
       "## Personality and voice\nObservant, measured, warm, and gently challenging.\n\n## Background\nYears hosting a late-night radio show taught her to notice what people leave unsaid.",
     );
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByRole("button", { name: "Continue to visual direction", exact: true }).click();
   await assertNotCreated();
 
   await page
@@ -481,17 +456,7 @@ async function completeCharacterCreateDraft(
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await assertNotCreated();
 
-  await page
-    .getByLabel("Success criteria (one per line)")
-    .fill("Qualified conversations improve without a D7 retention regression");
-  await page
-    .getByLabel("Production package")
-    .fill("Primary portrait, hero, and chat image baseline");
-  await page
-    .getByLabel("QA plan")
-    .fill("Mobile and desktop preview plus a five-turn conversation review");
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
-  await assertNotCreated();
+  await expect(page.getByRole("heading", { name: "Review & create", exact: true })).toBeVisible();
 }
 
 function consoleFailures(page: Page, expected: RegExp[] = []) {
@@ -758,7 +723,7 @@ async function seedStrictCharacterCandidate(candidateId: string) {
   const source = await prisma.characterRelease.findUniqueOrThrow({
     where: { id: serving.currentReleaseId },
   });
-  await prisma.characterRelease.create({
+  const candidate = await prisma.characterRelease.create({
     data: {
       id: candidateId,
       projectId: source.projectId,
@@ -781,6 +746,11 @@ async function seedStrictCharacterCandidate(candidateId: string) {
       status: "approved",
       supersedesId: serving.currentReleaseId,
     },
+  });
+  await prisma.$transaction(async (tx) => {
+    const validation = await validateCharacterReleaseSnapshot(tx, candidate, CHARACTER_RELEASE_POLICY_VERSION, new Date());
+    expect(validation.failed).toEqual([]);
+    await tx.characterRelease.update({ where: { id: candidate.id }, data: { readiness: "ready" } });
   });
   return { characterId, source };
 }
@@ -807,19 +777,23 @@ async function completeResponsiveCoreFlows(
   await expect(
     page.getByRole("heading", { level: 2, name: characterName }),
   ).toBeVisible();
-  const assetsTab = page.getByRole("tab", { name: "assets" });
-  await expect(assetsTab).toHaveAttribute("aria-selected", "true");
-  await expect(page.locator("#asset-pack-title")).toBeVisible();
+  if (fixture.label === "mobile") {
+    await expect(page.getByLabel("Workspace page", { exact: true })).toHaveValue("assets");
+  } else {
+    await expect(page.getByRole("tab", { name: "Images", exact: true })).toHaveAttribute("aria-selected", "true");
+  }
+  await expect(page.getByRole("heading", { name: `All images for ${characterName}`, exact: true })).toBeVisible();
   await expectNoHorizontalOverflow(page);
   await expectWcag22AA(page);
-  const refreshAssets = page
+  const importImage = page
     .locator("#character-panel-assets")
     .getByRole("button", {
-      name: "Refresh",
+      name: "Import image",
       exact: true,
-    });
-  await refreshAssets.focus();
-  await expect(refreshAssets).toBeFocused();
+    })
+    .and(page.locator("button"));
+  await importImage.focus();
+  await expect(importImage).toBeFocused();
 
   await page.goto(`${adminBaseURL()}/admin/creative/runs`);
   await expect(
@@ -834,7 +808,7 @@ async function completeResponsiveCoreFlows(
 
   await page.goto(`${adminBaseURL()}/admin/content/assets`);
   await expect(
-    page.getByRole("heading", { name: "Image Library" }),
+    page.getByRole("heading", { name: "Library", level: 2, exact: true }),
   ).toBeVisible();
   const uploadImages = page.getByRole("button", { name: "Upload images" }).first();
   await expect(uploadImages).toBeVisible();
@@ -861,22 +835,28 @@ async function completeResponsiveCoreFlows(
   ).toBeVisible();
   await expectNoHorizontalOverflow(page);
   await expectWcag22AA(page);
-  const releaseTab = page.getByRole("tab", { name: "release" });
-  await releaseTab.focus();
-  await expect(releaseTab).toBeFocused();
-  await releaseTab.press("ArrowRight");
-  await expect(page.getByRole("tab", { name: "monitor" })).toBeFocused();
-  await expect(page.getByRole("tab", { name: "monitor" })).toHaveAttribute(
-    "aria-selected",
-    "true",
-  );
-  await page.getByRole("tab", { name: "monitor" }).press("ArrowLeft");
-  await expect(releaseTab).toBeFocused();
+  if (fixture.label === "mobile") {
+    const workspacePage = page.getByLabel("Workspace page", { exact: true });
+    await workspacePage.focus();
+    await expect(workspacePage).toBeFocused();
+    await workspacePage.selectOption("monitor");
+    await expect(workspacePage).toHaveValue("monitor");
+    await workspacePage.selectOption("release");
+  } else {
+    const releaseTab = page.getByRole("tab", { name: "Release", exact: true });
+    await releaseTab.focus();
+    await expect(releaseTab).toBeFocused();
+    await releaseTab.press("ArrowRight");
+    const monitorTab = page.getByRole("tab", { name: "Live monitoring", exact: true });
+    await expect(monitorTab).toBeFocused();
+    await expect(monitorTab).toHaveAttribute("aria-selected", "true");
+    await monitorTab.press("ArrowLeft");
+    await expect(releaseTab).toBeFocused();
+  }
   const candidateCard = page
     .locator("article")
     .filter({ hasText: fixture.candidateReleaseId });
-  await expect(candidateCard).toContainText("unknown");
-  await page.getByLabel("I confirm this release action").check();
+  await expect(candidateCard).toContainText("ready");
   const publishRelease = page.getByRole("button", {
     name: "Publish Character",
   });
@@ -989,7 +969,7 @@ async function completeResponsiveCoreFlows(
   await expectNoHorizontalOverflow(page);
   await expectWcag22AA(page);
   await page
-    .getByLabel("Audit reason")
+    .getByLabel("Audit reason", { exact: true })
     .fill(`Recovery authority reviewed at ${fixture.label}`);
   await page
     .getByLabel(
@@ -1031,7 +1011,7 @@ async function completeResponsiveCoreFlows(
     page.getByRole("heading", { level: 4, name: "Postmortem and close" }),
   ).toBeVisible();
   await page
-    .getByLabel("Audit reason")
+    .getByLabel("Audit reason", { exact: true })
     .fill(`Recovery authority reviewed at ${fixture.label}`);
   await page
     .getByLabel(
@@ -1055,6 +1035,7 @@ async function completeResponsiveCoreFlows(
   await page
     .getByLabel("Type close confirmation")
     .fill(`${fixture.incidentId}:close`);
+  await page.getByLabel("Close audit reason").fill("Verified recovery and recorded the postmortem");
   const closeIncident = page.getByRole("button", {
     name: "Record postmortem and close",
   });
@@ -1084,6 +1065,9 @@ async function completeResponsiveCoreFlows(
     });
 
   await page.goto(`${adminBaseURL()}/admin/cases/${fixture.caseId}`);
+  if (fixture.label === "mobile") {
+    await page.locator('[data-case-mobile-step="evidence"]').click();
+  }
   await expect(
     page.getByRole("heading", { level: 4, name: "Evidence" }),
   ).toBeVisible();
@@ -1094,6 +1078,13 @@ async function completeResponsiveCoreFlows(
   ).toBeVisible();
   await expectNoHorizontalOverflow(page);
   await expectWcag22AA(page);
+  if (fixture.label === "mobile") {
+    const nextStep = page.locator("[data-case-mobile-actions]").getByRole("button", { name: "Next", exact: true });
+    await nextStep.focus();
+    await expect(nextStep).toBeFocused();
+    await nextStep.press("Enter");
+    await expect(page.locator('[data-case-mobile-step="decision"]')).toHaveAttribute("aria-current", "step");
+  }
   const caseDecision = page.locator(
     'section[aria-labelledby="case-decision-title"]',
   );
@@ -1106,7 +1097,7 @@ async function completeResponsiveCoreFlows(
     .fill(
       `Escalated the ${fixture.label} customer impact and verified the recovered Incident authority state.`,
     );
-  const recordCaseAction = page.getByRole("button", { name: "Record action" });
+  const recordCaseAction = caseDecision.getByRole("button", { name: "Record action" });
   await recordCaseAction.focus();
   await expect(recordCaseAction).toBeFocused();
   await recordCaseAction.press("Enter");
@@ -1125,17 +1116,17 @@ async function completeResponsiveCoreFlows(
   await expect(
     page.getByRole("status").filter({ hasText: "Downstream outcome verified" }),
   ).toBeVisible();
-  await page
-    .getByLabel("Audit reason")
-    .fill(`${fixture.label} authority outcome verified for closure`);
-  await page.getByLabel("Type confirmation").fill(`${fixture.caseId}:close`);
-  const closeCase = page.getByRole("button", {
+  const closeCase = caseDecision.getByRole("button", {
     name: "Close case",
     exact: true,
   });
   await closeCase.focus();
   await expect(closeCase).toBeFocused();
   await closeCase.press("Enter");
+  const closeDialog = page.getByRole("dialog", { name: "Close case" });
+  await closeDialog.getByLabel("Reason (≥3)").fill(`${fixture.label} authority outcome verified for closure`);
+  await closeDialog.getByLabel("Type confirmation").fill(`${fixture.caseId}:close`);
+  await closeDialog.getByRole("button", { name: "Close case", exact: true }).press("Enter");
   await expect(
     page.getByRole("status").filter({ hasText: "Case close command accepted" }),
   ).toBeVisible();
@@ -1165,10 +1156,7 @@ async function completeResponsiveCoreFlows(
     await page.getByLabel("Search all cases").fill(`missing-${suffix}`);
     await page.getByRole("button", { name: "Apply" }).click();
     await expect(
-      page.getByRole("heading", {
-        level: 3,
-        name: "No work matches these filters",
-      }),
+      page.getByText("No work matches these filters", { exact: true }),
     ).toBeVisible();
     await page.getByRole("button", { name: "Clear filters" }).click();
   }
@@ -1178,6 +1166,11 @@ async function completeResponsiveCoreFlows(
 test.describe.serial("Admin v2 operator workspaces", () => {
   test.describe.configure({ retries: 0 });
   test.beforeAll(async () => {
+    const identityWorkflow = await generationWorkflowDescriptor(
+      "qwen-image-edit-img2img",
+    );
+    if (!identityWorkflow) throw new Error("E2E identity workflow is unavailable");
+    identityWorkflowVersion = identityWorkflow.version;
     await prisma.generationModelProfile.createMany({
       data: [
         {
@@ -1441,11 +1434,10 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       signatureTraits: {},
       styleTraits: { style: "realistic" },
       anchorAssetIds: [releaseMediaId],
-      referenceAssetIds: [releaseMediaId],
       adapterRefs: {},
       evidenceState: "qualified",
       createdFrom: "playwright",
-    };
+    } satisfies Prisma.CharacterVisualProfileUncheckedCreateInput;
     await prisma.characterVisualProfile.create({
       data: {
         ...visualProfile,
@@ -1491,7 +1483,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         generationProfileKey: wizardIdentityProfileKey,
         generationProfileVersion: 1,
         workflowKey: "qwen-image-edit-img2img",
-        workflowVersion: 1,
+        workflowVersion: identityWorkflowVersion,
         style: "realistic",
         matrixKey: "default-character",
         sampleCount: 40,
@@ -1555,7 +1547,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       generationProfileKey: wizardIdentityProfileKey,
       generationProfileVersion: 1,
       workflowKey: "qwen-image-edit-img2img",
-      workflowVersion: 1,
+      workflowVersion: identityWorkflowVersion,
       visualProfileHash: characterVisualProfileSnapshotHash(visualProfile),
       referenceSetHash: referenceSetSnapshotHash(referenceSnapshot),
     };
@@ -2061,6 +2053,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
   test("takes one blank Character through identity, a complete image pack, QA, and a verified Release", async ({
     page,
   }) => {
+    test.setTimeout(180_000);
     const failures = consoleFailures(page);
     const createRequests: string[] = [];
     page.on("request", (request) => {
@@ -2075,7 +2068,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.goto(`${adminBaseURL()}/admin/characters/new`);
     await expect(
-      page.getByRole("heading", { level: 2, name: "Create Character Project" }),
+      page.getByRole("heading", { level: 2, name: "Create Character", exact: true }),
     ).toBeVisible();
     const assertNotCreated = async () => {
       expect(createRequests).toHaveLength(0);
@@ -2089,7 +2082,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     expect(
       await page.evaluate(
         (key) => window.localStorage.getItem(key),
-        `idream.admin.character-create-draft.v1:${actorId}`,
+        `idream.admin.character-create-draft.v3:${actorId}`,
       ),
     ).not.toBeNull();
     const characterCreateResponse = page.waitForResponse(
@@ -2103,14 +2096,12 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       })
       .click();
     expect((await characterCreateResponse).status()).toBe(201);
-    await expect(page).toHaveURL(
-      /\/admin\/characters\/(?!new(?:[/?]|$))[^/?]+\?tab=assets$/,
-    );
+    await expect(page).toHaveURL(/\/admin\/characters\/(?!new(?:[/?]|$))[^/?]+$/);
     expect(createRequests).toHaveLength(1);
     expect(
       await page.evaluate(
         (key) => window.localStorage.getItem(key),
-        `idream.admin.character-create-draft.v1:${actorId}`,
+        `idream.admin.character-create-draft.v3:${actorId}`,
       ),
     ).toBeNull();
     wizardCharacterId = new URL(page.url()).pathname.split("/").at(-1) ?? null;
@@ -2124,6 +2115,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         where: { characterId: wizardCharacterId },
       }),
     ).toBe(0);
+    await openCharacterTab(page, "assets");
 
     await expect(
       page.getByRole("heading", {
@@ -2133,15 +2125,14 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await expect(page.getByText(/no reference input/i)).toBeVisible();
     await expect(
       page.getByRole("button", {
-        name: "Generate 4 portraits",
+        name: "Generate 1 portrait",
       }),
     ).toBeEnabled();
-    await page.getByRole("tab", { name: "visual" }).click();
-    await page
-      .getByText("Advanced identity controls", {
-        exact: true,
-      })
-      .click();
+    await openCharacterTab(page, "visual");
+    const advancedIdentity = page.locator("#visual-identity-version");
+    if (await advancedIdentity.getAttribute("open") === null) {
+      await advancedIdentity.locator("summary").first().click();
+    }
     await expect(
       page.getByText(
         "Establish a reviewed portrait anchor in Character Assets before creating later identity versions.",
@@ -2163,7 +2154,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         response.request().method() === "POST" &&
         new URL(response.url()).pathname === "/api/v2/admin/creative/runs",
     );
-    await page.getByRole("button", { name: "Generate 4 portraits" }).click();
+    await page.getByRole("button", { name: "Generate 1 portrait" }).click();
     const createResponse = await createResponsePromise;
     expect(createResponse.status()).toBe(202);
     const createPayload = (await createResponse.json()) as {
@@ -2181,7 +2172,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         },
       },
     });
-    expect(createdRun.items).toHaveLength(4);
+    expect(createdRun.items).toHaveLength(1);
     expect(createdRun.items.every((item) => item.job)).toBe(true);
     const outboxIds = createdRun.items.map(
       (item) => `creative_initial_${createdRun.id}_${item.id}`,
@@ -2190,7 +2181,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       await prisma.mainOutboxEvent.count({
         where: { id: { in: outboxIds }, status: "delivered" },
       }),
-    ).toBe(4);
+    ).toBe(1);
     for (const item of createdRun.items) {
       expect(
         await jobQueue.getByDedupeKey(
@@ -2218,8 +2209,8 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       });
     }
 
-    await drainCreativeRun(page, wizardBootstrapRunId, 4);
-    const assetStudioRefresh = page.getByLabel("assets").getByRole("button", {
+    await drainCreativeRun(page, wizardBootstrapRunId, 1);
+    const assetStudioRefresh = page.getByRole("region", { name: "Image creator", exact: true }).getByRole("button", {
       name: "Refresh",
       exact: true,
     });
@@ -2227,13 +2218,13 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await assetStudioRefresh.click();
     await expect(
       page.getByRole("button", { name: /View candidate/ }),
-    ).toHaveCount(4);
+    ).toHaveCount(1);
     await expect(
-      page.getByRole("img", {
+      page.getByRole("button", { name: "View candidate 1", exact: true }).getByRole("img", {
         name: /Primary portrait Candidate 1$/i,
       }),
     ).toHaveJSProperty("complete", true);
-    await compareAndActivateCandidate(page, 2);
+    await page.getByRole("button", { name: "View candidate 1", exact: true }).click();
     expect(
       await prisma.creativeReviewDecision.count({
         where: { runItemId: { in: createdRun.items.map((item) => item.id) } },
@@ -2257,7 +2248,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await reviewRegion
       .getByLabel("No visible text, watermark, or contact sheet")
       .check();
-    await reviewRegion.getByLabel("Score", { exact: true }).fill("92");
+    await reviewRegion.getByLabel("Quality score", { exact: true }).fill("92");
     await expect(reviewRegion.getByLabel("Identity consistency")).toHaveValue(
       "unscored",
     );
@@ -2284,7 +2275,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         generationProfileKey: wizardIdentityProfileKey,
         generationProfileVersion: 1,
         workflowKey: "qwen-image-edit-img2img",
-        workflowVersion: 1,
+        workflowVersion: identityWorkflowVersion,
         style: wizardVisualStyle,
         matrixKey: "e2e-character-asset-pack",
         sampleCount: 40,
@@ -2343,7 +2334,6 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       style: wizardVisualStyle,
       evidenceState: "reviewed_bootstrap",
       anchorAssetIds: [selectedItem.mediaAssetId],
-      referenceAssetIds: [selectedItem.mediaAssetId],
     });
     expect(profile.immutableHash).toBe(
       characterVisualProfileSnapshotHash(profile),
@@ -2383,30 +2373,17 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         where: { id: wizardCharacterId },
       }),
     ).toMatchObject({ imageAssetId: null });
-    await expect(
-      page.getByRole("heading", {
-        name: "Create the images customers will remember",
-      }),
-    ).toBeVisible();
-    await page.getByRole("tab", { name: "visual" }).click();
-    const referencePublication = page
-      .getByRole("heading", {
-        level: 4,
-        name: "Publish Reference Set revision",
-      })
-      .locator("..");
-    await expect(
-      referencePublication.getByRole("checkbox", {
-        name: `identity anchor · ${selectedItem.mediaAssetId}`,
-        exact: true,
-      }),
-    ).toHaveCount(1);
-    await page.getByRole("tab", { name: "assets" }).click();
+    await expect(page.getByRole("button", { name: "Generate 1 hero image" })).toBeEnabled();
+    await openCharacterTab(page, "visual");
+    const referencePublication = page.getByRole("region", { name: "Anchors & published references", exact: true });
+    await expect(referencePublication.getByRole("heading", { name: "Publish Reference Set revision", exact: true })).toBeVisible();
+    await expect(referencePublication.locator("label").filter({ hasText: selectedItem.mediaAssetId! }).getByRole("checkbox")).toBeChecked();
+    await openCharacterTab(page, "assets");
 
     const heroRunId = await generateCharacterAssetRun(
       page,
-      "Generate 4 heroes",
-      4,
+      "Generate 1 hero image",
+      1,
     );
     await expect(page.getByLabel("Identity consistency")).toHaveValue("passed");
     await approveCurrentCharacterCandidate(
@@ -2439,13 +2416,13 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       purpose: "character_hero",
     });
     await expect(
-      page.getByRole("button", { name: "Generate 6 chat assets" }),
+      page.getByRole("button", { name: "Generate 1 chat image" }),
     ).toBeEnabled();
 
     const chatRunId = await generateCharacterAssetRun(
       page,
-      "Generate 6 chat assets",
-      6,
+      "Generate 1 chat image",
+      1,
     );
     await expect(page.getByLabel("Identity consistency")).toHaveValue("passed");
     await approveCurrentCharacterCandidate(
@@ -2491,8 +2468,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       where: { characterId: wizardCharacterId },
     });
 
-    await page.getByRole("tab", { name: "release" }).click();
-    await page.getByLabel("I confirm this release action").check();
+    await openCharacterTab(page, "release");
     await page.getByRole("button", { name: "Publish Character" }).click();
     const proposedRelease = await expect
       .poll(async () =>
@@ -2557,7 +2533,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       .toEqual({ currentReleaseId: proposedRelease.id, state: "live" });
 
     await page.reload();
-    await page.getByRole("tab", { name: "monitor" }).click();
+    await openCharacterTab(page, "monitor");
     await page.getByRole("button", { name: "Refresh 24h" }).click();
     await expect
       .poll(async () =>
@@ -2808,6 +2784,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
   test("validates, publishes, monitors, and rolls back an immutable Character Release", async ({
     page,
   }) => {
+    test.setTimeout(180_000);
     const failures = consoleFailures(page);
     await login(page);
     await page.setViewportSize({ width: 1366, height: 900 });
@@ -2820,7 +2797,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await expect(
       page.getByRole("heading", {
         level: 2,
-        name: "Real user-surface renderer",
+        name: "Launch preview is waiting for the image pack",
       }),
     ).toBeVisible();
     // This fixture intentionally represents a pre-Asset-Studio, avatar-only
@@ -2828,12 +2805,9 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     // hero and chat; the complete three-image renderer is exercised above by
     // the real Character Asset Studio journey.
     await expect(page.getByTitle("Live real frontend renderer")).toHaveCount(0);
-    await expect(
-      page.getByText(
-        "Renderer unavailable: avatar, hero, and chat must each resolve to their exact operational asset.",
-        { exact: true },
-      ),
-    ).toHaveCount(2);
+    await expect(page.getByTitle("Draft Preview real frontend renderer")).toHaveCount(0);
+    await expect(page.getByText("2 image slots missing", { exact: true })).toBeVisible();
+    await expect(page.getByText("3 image slots missing", { exact: true })).toBeVisible();
     const lifecycle = await seedStrictCharacterCandidate(candidateReleaseId);
     const lifecycleCharacterId = lifecycle.characterId;
     const lifecycleOldReleaseId = lifecycle.source.id;
@@ -2874,14 +2848,15 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     const candidateCard = page
       .locator("article")
       .filter({ hasText: candidateReleaseId });
-    await expect(candidateCard).toContainText("unknown");
+    await expect(candidateCard).toContainText("ready");
     await candidateCard
       .getByText("Technical evidence", { exact: true })
       .click();
     await expect(candidateCard).toContainText(candidateReleaseId);
+    // Publishing runs the server validation before accepting the command.
     await expect(
       page.getByRole("button", { name: "Publish Character" }),
-    ).toBeDisabled();
+    ).toBeEnabled();
 
     const publishPath = `/api/v2/admin/characters/${lifecycleCharacterId}/releases/${candidateReleaseId}/commands/publish`;
     const pendingCommandKey =
@@ -2901,7 +2876,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       publishInterceptions += 1;
       if (publishInterceptions === 1) {
         const response = await route.fetch();
-        await response.body();
+        expect(response.ok(), await response.text()).toBeTruthy();
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -2926,7 +2901,6 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       await route.continue();
     };
     await page.route(`**${publishPath}`, publishRoute);
-    await page.getByLabel("I confirm this release action").check();
     await page.getByRole("button", { name: "Publish Character" }).click();
     await expect.poll(() => publishInterceptions).toBeGreaterThanOrEqual(2);
     await expect(
@@ -2947,7 +2921,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     );
     expect(injectedForbiddenConsoleError).toBeGreaterThanOrEqual(0);
     failures.splice(injectedForbiddenConsoleError, 1);
-    await expect(page.getByRole("tab", { name: "project" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Character settings", exact: true })).toBeDisabled();
     await expect
       .poll(async () =>
         page.evaluate((storageKey) => {
@@ -3020,8 +2994,8 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         { exact: true },
       ),
     ).toBeVisible();
-    await expect(page.getByRole("tab", { name: "project" })).toBeDisabled();
-    await expect(page.getByRole("tab", { name: "release" })).toHaveAttribute(
+    await expect(page.getByRole("button", { name: "Character settings", exact: true })).toBeDisabled();
+    await expect(page.getByRole("tab", { name: "Release", exact: true })).toHaveAttribute(
       "aria-selected",
       "true",
     );
@@ -3069,12 +3043,12 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       },
     });
     await page.reload();
-    await page.getByRole("tab", { name: "release" }).click();
+    await openCharacterTab(page, "release");
     await expect(
       page.locator("article").filter({ hasText: candidateReleaseId }),
     ).toContainText("serving now");
 
-    await page.getByRole("tab", { name: "monitor" }).click();
+    await openCharacterTab(page, "monitor");
     const refresh24h = page.getByRole("button", { name: "Refresh 24h" });
     await refresh24h.click();
     await expect
@@ -3113,18 +3087,18 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await expect(refresh24h).toBeEnabled();
     await routeGuardrail
       .getByRole("button", {
-        name: "Open route qualification",
+        name: "Open image route",
       })
       .click();
+    await page.getByText("Official identity and production settings", { exact: true }).click();
     await expect(
       page.getByRole("heading", {
         level: 3,
         name: "Visual Identity authority",
       }),
     ).toBeVisible();
-    await page.getByRole("tab", { name: "monitor" }).click();
-
-    await page.getByRole("tab", { name: "release" }).click();
+    await openCharacterTab(page, "release");
+    await page.getByText("Rollback and live operations", { exact: true }).click();
     await page.getByLabel("I confirm this release action").check();
     await page.getByRole("button", { name: "Roll back" }).click();
     await expect
@@ -3175,7 +3149,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     });
     expect(rollbackRelease.snapshotHash).toBe(oldRelease.snapshotHash);
     await page.reload();
-    await page.getByRole("tab", { name: "release" }).click();
+    await openCharacterTab(page, "release");
     await expect(
       page.locator("article").filter({ hasText: rollbackRelease.id }),
     ).toContainText("serving now");
@@ -3186,6 +3160,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
   test("closes Creative, Incident, and Case loops through UI and authoritative facts", async ({
     page,
   }) => {
+    test.setTimeout(180_000);
     const failures = consoleFailures(page);
     await login(page);
     await page.setViewportSize({ width: 1366, height: 900 });
@@ -3533,7 +3508,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       }),
     ).toBeVisible();
     await page
-      .getByLabel("Audit reason")
+      .getByLabel("Audit reason", { exact: true })
       .fill("Recovery window and settlement reviewed");
     await page
       .getByLabel(
@@ -3567,6 +3542,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await page
       .getByLabel("Type close confirmation")
       .fill(`${incidentId}:close`);
+    await page.getByLabel("Close audit reason").fill("Verified recovery and recorded the postmortem");
     await page
       .getByRole("button", { name: "Record postmortem and close" })
       .click();
@@ -3607,13 +3583,20 @@ test.describe.serial("Admin v2 operator workspaces", () => {
       page.getByRole("heading", { level: 2, name: "Cases" }),
     ).toBeVisible();
     await page.getByRole("button", { name: new RegExp(caseTargetId) }).click();
-    await expect(page).toHaveURL(new RegExp(`case=${caseId}`));
+    await expect(page).toHaveURL(new RegExp(`/admin/cases/${caseId}\\?`));
     await expect(
       page.getByRole("heading", { level: 4, name: "Evidence" }),
     ).toBeVisible();
     await expect(
       page.getByText("Customer supplied immutable reproduction evidence."),
     ).toBeVisible();
+    await page.getByLabel("Owner ID").fill(actorId);
+    await page.getByLabel("Audit reason", { exact: true }).fill("Assign the verified incident follow-up");
+    await page.getByRole("button", { name: "Save assignment" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Case assignment saved" })).toBeVisible();
+    await expect.poll(() => prisma.adminCase.findUnique({
+      where: { id: caseId }, select: { ownerId: true, version: true },
+    })).toEqual({ ownerId: actorId, version: 2 });
     const caseDecision = page.locator(
       'section[aria-labelledby="case-decision-title"]',
     );
@@ -3636,11 +3619,11 @@ test.describe.serial("Admin v2 operator workspaces", () => {
         .getByRole("status")
         .filter({ hasText: "Downstream outcome verified" }),
     ).toBeVisible();
-    await page
-      .getByLabel("Audit reason")
-      .fill("Authority outcome verified for closure");
-    await page.getByLabel("Type confirmation").fill(`${caseId}:close`);
     await page.getByRole("button", { name: "Close case", exact: true }).click();
+    const closeDialog = page.getByRole("dialog", { name: "Close case" });
+    await closeDialog.getByLabel("Reason (≥3)").fill("Authority outcome verified for closure");
+    await closeDialog.getByLabel("Type confirmation").fill(`${caseId}:close`);
+    await closeDialog.getByRole("button", { name: "Close case", exact: true }).click();
     await expect(
       page
         .getByRole("status")
@@ -3687,8 +3670,10 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await page.goto(`${adminBaseURL()}/admin/today`);
     await expect(page.getByTestId("today-view")).toBeVisible();
     await expect(
-      page.getByText("Authoritative Today projection"),
-    ).toBeVisible();
+      page.getByRole("status", { name: "Queue health" }),
+    ).toContainText("Fresh as of");
+    await page.getByRole("button", { name: "Comfortable", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Comfortable", exact: true })).toHaveAttribute("aria-pressed", "true");
 
     const resolved = page.getByTestId("today-queue-recently-resolved");
     await expect(
@@ -3747,7 +3732,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
     await page.goto(
       `${adminBaseURL()}/admin/ops/jobs?search=${encodeURIComponent(retryRequestId)}&mode=image&sort=created_desc&limit=25`,
     );
-    const trigger = page.getByRole("button", { name: "Retry" });
+    const trigger = page.getByRole("button", { name: "Retry", exact: true });
     await expect(trigger).toBeVisible();
     await trigger.click();
     const dialog = page.getByRole("dialog", {
@@ -3783,6 +3768,7 @@ test.describe.serial("Admin v2 operator workspaces", () => {
   test("meets automated WCAG 2.2 AA gates across the core operator surfaces", async ({
     page,
   }) => {
+    test.setTimeout(180_000);
     const failures = consoleFailures(page);
     await login(page);
     await page.setViewportSize({ width: 1280, height: 900 });

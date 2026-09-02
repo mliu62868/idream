@@ -89,7 +89,7 @@ describe("Character mutation reliability", () => {
         },
         body: JSON.stringify({ source: rollbackSource, kind: "funnel", dryRun: true, batchSize: 10, cursor: null }),
       });
-      await expect(performanceBackfillRoute(request)).rejects.toThrow("injected character receipt failure");
+      await expect(performanceBackfillRoute(request)).resolves.toMatchObject({ status: 500 });
     } finally {
       await prisma.$executeRawUnsafe(`
         DROP TRIGGER IF EXISTS fail_character_mutation_receipt_trigger ON "control_plane_commands";

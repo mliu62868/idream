@@ -345,6 +345,7 @@ export async function publishCharacterForPublicAudience(input: {
   const projectId = `${input.characterId}-public-project`;
   const releaseId = `${input.characterId}-public-release`;
   const snapshotHash = `${releaseId}-snapshot`;
+  const dataset = "integration-test-editorial";
 
   await prisma.$transaction(async (tx) => {
     const character = await tx.character.findUnique({
@@ -381,6 +382,7 @@ export async function publishCharacterForPublicAudience(input: {
         safetyStatus: "passed",
         metadata: {
           source: "editorial_import",
+          seedSource: dataset,
           synthetic: false,
           platformAsset: { status: "approved" },
         },
@@ -404,6 +406,8 @@ export async function publishCharacterForPublicAudience(input: {
         characterContentVersionId: `${releaseId}-content`,
         generationProvenance: {
           schemaVersion: "character-release-editorial-import-v1",
+          recordId: input.characterId,
+          dataset,
           sourceAssetId: assetId,
         },
         releasePlacementManifest: {
@@ -433,7 +437,15 @@ export async function publishCharacterForPublicAudience(input: {
         evidence: {
           schemaVersion: "public-catalog-qualification-v1",
           policyVersion: "public-catalog-editorial-import-v1",
+          characterId: input.characterId,
           sourceAssetId: assetId,
+          checks: {
+            exactSeedRecord: true,
+            nonSynthetic: true,
+            safetyPassed: true,
+            publicPack: true,
+            imageAvailable: true,
+          },
         },
       },
     });

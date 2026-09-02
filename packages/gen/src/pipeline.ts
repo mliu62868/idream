@@ -93,19 +93,23 @@ export async function processImageGenerate(
     recordTransportExecution: deps.recordTransportExecution,
   });
   if (await execution.resumeTerminalRecord()) return;
-  assertWorkerAdapterMatchesRecordedProvider(payload.provider, env.IMAGE_PROVIDER, "image");
-
-  const inputModeration = await providers.moderation.check({
-    targetType: "text",
-    content: `${payload.prompt} ${payload.negativePrompt ?? ""}`,
-  });
-  if (!inputModeration.ok) {
-    // INTENT: moderation infrastructure failure is not a provider outcome.
-    // Let Bull retry the pre-provider phase; emitting a provider terminal fact
-    // here would fabricate transport/usage authority.
-    throw new Error(
-      `Input moderation failed (${inputModeration.error.code}): ${inputModeration.error.message}`,
-    );
+  let inputModeration;
+  let referenceImages;
+  try {
+    assertWorkerAdapterMatchesRecordedProvider(payload.provider, env.IMAGE_PROVIDER, "image");
+    inputModeration = await providers.moderation.check({
+      targetType: "text",
+      content: `${payload.prompt} ${payload.negativePrompt ?? ""}`,
+    });
+    if (!inputModeration.ok) {
+      throw new Error(`Input moderation failed (${inputModeration.error.code}): ${inputModeration.error.message}`);
+    }
+    referenceImages = inputModeration.data.status === "blocked"
+      ? []
+      : await hydratedImageReferenceInputs(payload.referenceImages, providers.blob);
+  } catch (error) {
+    await execution.failPreparation(error);
+    return;
   }
   if (inputModeration.data.status === "blocked") {
     await execution.block(
@@ -116,10 +120,6 @@ export async function processImageGenerate(
     return;
   }
 
-  const referenceImages = await hydratedImageReferenceInputs(
-    payload.referenceImages,
-    providers.blob,
-  );
   const imageModel = providers.image;
   await execution.execute({
     model: imageModel,
@@ -256,16 +256,23 @@ export async function processVideoGenerate(
     recordTransportExecution: deps.recordTransportExecution,
   });
   if (await execution.resumeTerminalRecord()) return;
-  assertWorkerAdapterMatchesRecordedProvider(payload.provider, env.VIDEO_PROVIDER, "video");
-
-  const inputModeration = await providers.moderation.check({
-    targetType: "text",
-    content: `${payload.prompt} ${payload.negativePrompt ?? ""}`,
-  });
-  if (!inputModeration.ok) {
-    throw new Error(
-      `Input moderation failed (${inputModeration.error.code}): ${inputModeration.error.message}`,
-    );
+  let inputModeration;
+  let referenceImages;
+  try {
+    assertWorkerAdapterMatchesRecordedProvider(payload.provider, env.VIDEO_PROVIDER, "video");
+    inputModeration = await providers.moderation.check({
+      targetType: "text",
+      content: `${payload.prompt} ${payload.negativePrompt ?? ""}`,
+    });
+    if (!inputModeration.ok) {
+      throw new Error(`Input moderation failed (${inputModeration.error.code}): ${inputModeration.error.message}`);
+    }
+    referenceImages = inputModeration.data.status === "blocked"
+      ? []
+      : await hydratedImageReferenceInputs(payload.referenceImages, providers.blob);
+  } catch (error) {
+    await execution.failPreparation(error);
+    return;
   }
   if (inputModeration.data.status === "blocked") {
     await execution.block(
@@ -276,10 +283,6 @@ export async function processVideoGenerate(
     return;
   }
 
-  const referenceImages = await hydratedImageReferenceInputs(
-    payload.referenceImages,
-    providers.blob,
-  );
   const videoModel = providers.video;
   await execution.execute({
     model: videoModel,

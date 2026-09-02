@@ -18,6 +18,7 @@ import { AdminI18nProvider } from "@/components/admin/i18n";
 import { AdminV2RequestError } from "@/lib/admin-v2-api";
 import { characterWorkspaceDetail } from "./character-workspace-fixture";
 import { CharacterWorkspace } from "./CharacterWorkspace";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -72,6 +73,8 @@ describe("Character workspace details", () => {
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -93,6 +96,35 @@ describe("Character workspace details", () => {
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+  });
+
+  it("refreshes Character facts from the shell refresh action", async () => {
+    let current = workspace;
+    const original = adminV2Request.getMockImplementation()!;
+    adminV2Request.mockImplementation(async (path: string, ...args: unknown[]) =>
+      path === "/api/v2/admin/characters/character-detail"
+        ? current
+        : original(path, ...args),
+    );
+    await act(async () => {
+      root.render(
+        <AdminI18nProvider locale="en">
+          <CharacterWorkspace actorId="operator-a" permissions={permissions}
+            view={{ kind: "detail", id: "character-detail" }} />
+        </AdminI18nProvider>,
+      );
+    });
+    await waitUntil(() => container.textContent?.includes("Mira") === true, "initial Character");
+    current = {
+      ...workspace,
+      preview: {
+        ...workspace.preview,
+        draft: { ...workspace.preview.draft, name: "Mira refreshed" },
+      },
+      character: { ...workspace.character, name: "Mira refreshed" },
+    };
+    await act(async () => { window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT)); });
+    await waitUntil(() => container.textContent?.includes("Mira refreshed") === true, "refreshed Character");
   });
 
   it("loads the above-fold primary portrait and recent asset eagerly", async () => {

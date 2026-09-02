@@ -202,6 +202,7 @@ function exactPostconditionSnapshot(
       activeCount: 1,
       versionOneCount: 1,
       versionTwoCount: 1,
+      versionThreeCount: 0,
       legacyIdCount: 1,
       replacementIdCount: 1,
       freshCanonicalCount: 0,
@@ -441,6 +442,7 @@ describe("migration schema postconditions", () => {
         activeCount: 2,
         versionOneCount: 1,
         versionTwoCount: 1,
+        versionThreeCount: 0,
         legacyIdCount: 1,
         replacementIdCount: 1,
         freshCanonicalCount: 0,
@@ -467,5 +469,36 @@ describe("migration schema postconditions", () => {
       "account-deletion: index account_deletions_userId_key is not usable",
       "account-deletion: terminal trigger authority drifted",
     ]);
+  });
+
+  it("accepts the released in-place image workflow update but rejects an unrecognized profile version", () => {
+    const premium = {
+      totalCount: 1, activeCount: 1, versionOneCount: 0, versionTwoCount: 1,
+      versionThreeCount: 0,
+      legacyIdCount: 1, replacementIdCount: 0, freshCanonicalCount: 1,
+      legacyArchivedCount: 0, replacementCount: 0,
+    };
+    expect(evaluateMigrationPostconditions(exactPostconditionSnapshot({ premium }))).toEqual([]);
+    expect(evaluateMigrationPostconditions(exactPostconditionSnapshot({
+      premium: { ...premium, versionTwoCount: 0 },
+    }))).toContain("redmix3-premium: terminal profile shape drifted");
+    expect(evaluateMigrationPostconditions(exactPostconditionSnapshot({
+      premium: { ...premium, freshCanonicalCount: 0 },
+    }))).toContain("redmix3-premium: terminal profile shape drifted");
+  });
+
+  it("accepts the released existing-installation v3/workflow2 replacement without relaxing its shape", () => {
+    const premium = {
+      ...exactPostconditionSnapshot().premium,
+      versionTwoCount: 0,
+      versionThreeCount: 1,
+    };
+    expect(evaluateMigrationPostconditions(exactPostconditionSnapshot({ premium }))).toEqual([]);
+    expect(evaluateMigrationPostconditions(exactPostconditionSnapshot({
+      premium: { ...premium, replacementCount: 0 },
+    }))).toContain("redmix3-premium: terminal profile shape drifted");
+    expect(evaluateMigrationPostconditions(exactPostconditionSnapshot({
+      premium: { ...premium, versionThreeCount: 0 },
+    }))).toContain("redmix3-premium: terminal profile shape drifted");
   });
 });

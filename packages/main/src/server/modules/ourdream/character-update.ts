@@ -33,6 +33,8 @@ export async function updateCharacterForUser(input: {
   };
 }) {
   const { characterId: id, patch: body, userId } = input;
+  // A direct link shares the same publication authority as a directory listing.
+  const requestsSharing = body.visibility === "public" || body.visibility === "unlisted";
   const shouldRebuildPrompt = body.name !== undefined || body.description !== undefined;
   await prisma.$transaction(async (tx) => {
     await lockCharacterGenerationAuthority(tx, id);
@@ -40,6 +42,15 @@ export async function updateCharacterForUser(input: {
       where: { id, creatorId: userId, deletedAt: null },
     });
     if (!existing) throw Errors.notFound("Character not found");
+    const serving = body.visibility
+      ? await tx.characterServing.findUnique({ where: { characterId: id }, include: { currentRelease: true } })
+      : null;
+    // An already published shared Character only changes its listing preference.
+    // Withdrawal to private followed by sharing must still re-enter review.
+    const listingChange = requestsSharing && !shouldRebuildPrompt &&
+      ["public", "unlisted"].includes(existing.visibility) && existing.status === "approved" &&
+      serving?.state === "live" && serving.currentRelease?.status === "published";
+    const requiresReview = requestsSharing && !listingChange;
     const nextName = body.name ?? existing.name;
     const nextDescription = body.description ?? existing.description;
     const immutableContentSnapshot = shouldRebuildPrompt
@@ -82,7 +93,7 @@ export async function updateCharacterForUser(input: {
         })
       : null;
     await lockCharacterMediaAssetAuthorities(tx, [
-      ...(body.visibility === "public" && existing.imageAssetId
+      ...(requestsSharing && existing.imageAssetId
         ? [existing.imageAssetId]
         : []),
       // anchorAssetIds 是候选图池仍要锁；参考集本身取 active Reference Set，不读影子副本。
@@ -93,7 +104,7 @@ export async function updateCharacterForUser(input: {
     if (shouldRebuildPrompt) {
       await assertCharacterIdentityAuthorityMutable(tx, id);
     }
-    if (body.visibility === "public" && existing.imageAssetId) {
+    if (requestsSharing && existing.imageAssetId) {
       const imageAsset = await tx.mediaAsset.findFirst({
         where: {
           id: existing.imageAssetId,
@@ -130,9 +141,6 @@ export async function updateCharacterForUser(input: {
         })
       : null;
     if (body.visibility === "private") {
-      const serving = await tx.characterServing.findUnique({
-        where: { characterId: existing.id },
-      });
       if (serving?.state === "live") {
         // INVARIANT: private presentation and live Serving authority cannot coexist.
         // Keep the immutable Release pinned so a later reviewed publication can resume it.
@@ -153,14 +161,14 @@ export async function updateCharacterForUser(input: {
         systemPrompt: userContent?.personaSnapshot.compiled.systemPrompt,
         currentContentVersionId: contentVersion?.id,
         visibility: body.visibility,
-        status: body.visibility === "public"
+        status: requiresReview
           ? "pending_review"
           : body.visibility && existing.status === "pending_review"
             ? "approved"
             : undefined,
       },
     });
-    if (body.visibility === "public") {
+    if (requiresReview) {
       const pendingSubmission = await tx.characterSubmission.findFirst({
         where: { characterId: updated.id, status: "pending" },
         orderBy: [{ submittedAt: "desc" }, { id: "desc" }],

@@ -115,12 +115,12 @@ describe("generator video product contract", () => {
     });
   });
 
-  it("sets an honest minutes-level expectation while local video is waiting or rendering", () => {
+  it("explains queued and durable rendering states without an unmeasured time promise", () => {
     expect(generatorJobStatusLabel("video", "queued", null)).toBe(
-      "Waiting to render · usually 6–10 min",
+      "Waiting for a rendering slot",
     );
     expect(generatorJobStatusLabel("video", "running", null)).toBe(
-      "Rendering source image · usually 6–10 min",
+      "Rendering source image · you can return later",
     );
     expect(generatorJobStatusLabel("video", "completed", null)).toBe("Completed");
     expect(generatorJobStatusLabel("image", "running", null)).toBe("Generating");

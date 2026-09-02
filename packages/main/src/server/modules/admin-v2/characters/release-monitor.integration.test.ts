@@ -383,7 +383,7 @@ describe("Release route qualification and post-publish monitor", () => {
         engagementSessions: 1,
         operationalChecks: {
           servingPointerLive: true,
-          publicProjectionLive: true,
+          servingProjectionLive: true,
           immutableContentAvailable: true,
           releaseAvatarRenderable: true,
           releaseAvatarVisible: true,

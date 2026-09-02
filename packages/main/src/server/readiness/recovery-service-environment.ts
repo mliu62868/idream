@@ -220,7 +220,14 @@ export function loadRecoveryServiceEnvironment(input: {
     // inspection without allowing Gen to replace Main's chat pipeline config.
     IDREAM_GEN_PIPELINE_API_URL: gen.PIPELINE_API_URL ?? "",
     IDREAM_GEN_PIPELINE_API_TOKEN: gen.PIPELINE_API_TOKEN ?? "",
-    IDREAM_GEN_COMFYUI_API_URL: gen.COMFYUI_API_URL ?? "",
+    // INVARIANT: match Gen's modality-specific runtime fallbacks. H3 owns its
+    // listener and must never inherit the legacy image/video shared endpoint.
+    IDREAM_GEN_COMFYUI_IMAGE_API_URL:
+      gen.COMFYUI_IMAGE_API_URL ?? gen.COMFYUI_API_URL ?? "http://127.0.0.1:8189",
+    IDREAM_GEN_COMFYUI_VIDEO_API_URL:
+      gen.COMFYUI_VIDEO_API_URL ?? gen.COMFYUI_API_URL ?? "http://127.0.0.1:8188",
+    IDREAM_GEN_COMFYUI_H3_API_URL:
+      gen.COMFYUI_H3_API_URL ?? "http://127.0.0.1:8190",
     IDREAM_GEN_DRAWTHINGS_CLI: gen.DRAWTHINGS_CLI ?? "",
     IDREAM_GEN_PIPELINE_IMAGE_MODEL_DEFAULT:
       gen.PIPELINE_IMAGE_MODEL_DEFAULT ?? "",

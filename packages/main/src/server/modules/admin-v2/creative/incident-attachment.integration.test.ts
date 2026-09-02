@@ -126,7 +126,7 @@ describe("Creative Run Incident attachment", () => {
     try {
       await expect(attachIncident(request({ key: `rollback-${key}` }), {
         params: Promise.resolve({ id: runId }),
-      })).rejects.toThrow("injected creative receipt failure");
+      })).resolves.toMatchObject({ status: 500 });
     } finally {
       await prisma.$executeRawUnsafe(`
         DROP TRIGGER IF EXISTS fail_creative_mutation_receipt_trigger ON "control_plane_commands";

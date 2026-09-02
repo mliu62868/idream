@@ -53,6 +53,18 @@ describe("Character Release asset manifest", () => {
     })).not.toBeNull();
   });
 
+  it.each(["runId", "itemId", "reviewDecisionId", "generationJobId"] as const)(
+    "rejects a generated placement missing %s instead of treating it as an import",
+    (field) => {
+      const partial: Record<string, unknown> = { ...placement("character_chat") };
+      delete partial[field];
+      expect(parseCharacterReleaseAssetManifest({
+        schemaVersion: 2,
+        placements: [placement("character_avatar"), placement("character_hero"), partial],
+      })).toBeNull();
+    },
+  );
+
   it.each([
     {
       schemaVersion: 1,

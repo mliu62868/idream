@@ -15,6 +15,7 @@ import {
   requestGenerationJobWithExactAuthority,
   requestGenerationRetryWithExactAuthority,
   requestMediaVariationWithExactQuote,
+  type GenerationFetcher,
   type GenerationQuoteAuthority,
   type GenerationWriteJob,
 } from "@/lib/generation-write-client";
@@ -405,14 +406,14 @@ export type GenerationJobFact = {
 };
 
 /**
- * INVARIANT: polling stops at a terminal status and nowhere else. `queued`,
- * `running`, and both moderation waypoints are still in motion.
+ * Polling stops at a terminal status or an outcome requiring operator review.
+ * Unknown outcomes retain their reservation; stopping a spinner is not settlement.
  */
 export function pendingGenerationJobIds(
   jobs: readonly GenerationJobFact[],
 ): string[] {
   return jobs
-    .filter((job) => !isTerminalGenerationJobStatus(job.status))
+    .filter((job) => !isTerminalGenerationJobStatus(job.status) && job.errorCode !== "provider_outcome_unknown")
     .map((job) => job.id);
 }
 
@@ -439,6 +440,14 @@ export type ServerJobArrival = {
 };
 
 export function projectServerJobArrival(job: GenerationJobFact): ServerJobArrival {
+  if (!isTerminalGenerationJobStatus(job.status) && job.errorCode === "provider_outcome_unknown") {
+    return {
+      settled: true,
+      statusMessage: "The generation result needs review. Contact support before trying again.",
+      showResults: false,
+      refreshBalanceAndQuote: false,
+    };
+  }
   const settled = isTerminalGenerationJobStatus(job.status);
   const completed = job.status === "completed";
   return {
@@ -506,7 +515,7 @@ export type GenerationQuoteOutcome =
   | { kind: "failed"; key: string; message: string };
 
 type TransportDeps = {
-  fetcher?: typeof fetch;
+  fetcher?: GenerationFetcher;
   signal?: AbortSignal;
 };
 
@@ -515,6 +524,9 @@ function isAbortError(error: unknown) {
 }
 
 function requestErrorMessage(error: unknown, fallback: string) {
+  // Browsers reject failed network fetches with engine-specific TypeError text.
+  // HTTP errors are parsed separately and retain the server's actionable message.
+  if (error instanceof TypeError) return fallback;
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
@@ -644,12 +656,6 @@ export function createGenerationIdempotencyKeys(): GenerationIdempotencyKeys {
   return { generation: new Map(), variation: new Map(), retry: new Map() };
 }
 
-export function clearGenerationIdempotencyKeys(keys: GenerationIdempotencyKeys) {
-  keys.generation.clear();
-  keys.variation.clear();
-  keys.retry.clear();
-}
-
 /**
  * What the owning surface must do that this module cannot: it does not own the
  * jobs projection, the status line, the view, or the coin balance.
@@ -697,7 +703,9 @@ export type GenerationRequestContext = {
   dispatch: (action: GenerationRequestAction) => void;
   effects: GenerationRequestEffects;
   keys: GenerationIdempotencyKeys;
-  fetcher?: typeof fetch;
+  fetcher?: GenerationFetcher;
+  /** The surface invalidates this write when its viewer is no longer confirmed. */
+  isCurrent?: () => boolean;
 };
 
 /**
@@ -773,7 +781,14 @@ async function writeOnce(
   request: GenerationWriteRequest,
   context: GenerationRequestContext,
 ): Promise<GenerationWriteOutcome> {
-  const fetcher = context.fetcher ?? fetch;
+  const fetcher: GenerationFetcher = (input, init) => {
+    // A variation can read its price before writing. Never continue that chain
+    // with another viewer's cookies after the price response arrives.
+    if (context.isCurrent?.() === false) {
+      return Promise.reject(new DOMException("Viewer changed", "AbortError"));
+    }
+    return (context.fetcher ?? fetch)(input, init);
+  };
   try {
     if (request.kind === "generation") {
       // INVARIANT: refuse locally rather than spend a round trip proving the
@@ -901,6 +916,9 @@ export async function runGenerationWrite(
     context.effects.showStatus("Checking the exact variation price…");
   }
   const outcome = await writeOnce(request, context);
+  // The server may have accepted the old viewer's job. Its projection will be
+  // recovered by that viewer's next read, never by the current viewer's UI.
+  if (context.isCurrent?.() === false) return outcome;
   const quoteKey = request.kind === "retry" ? null : request.quoteKey;
   context.dispatch({ type: "write_settled", write, outcome, quoteKey });
 

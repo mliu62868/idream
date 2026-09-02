@@ -42,6 +42,19 @@ export const ADMIN_V2_PENDING_CONTRACTS = {} as const satisfies Record<
 
 const bindingCache = new Map<string, ExecutableAdminV2Contract>();
 const fixtureOverrides: Readonly<Record<string, unknown>> = {
+  // Approval requires evidence across fields; structural defaults cannot express it.
+  characterImageReviewRequestSchema: {
+    decision: "approved",
+    identityConsistency: "passed",
+    score: 95,
+    quality: {
+      artifactFree: true,
+      singleSubject: true,
+      intentMatch: true,
+      noVisibleText: true,
+    },
+    reason: "Reviewed against the Character visual identity",
+  },
   characterVoiceClipReclaimRequestSchema: {
     requestId: "voice-request-fixture",
     confirmation: "RECLAIM VOICE voice-request-fixture",

@@ -9,5 +9,6 @@ export * from "./metric-events";
 export * from "./voice";
 export * from "./generation-identity";
 export * from "./content-report";
+export * from "./support";
 export * from "./chat-turns";
 export * from "./chat-runtime-diagnostics";

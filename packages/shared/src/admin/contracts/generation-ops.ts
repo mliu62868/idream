@@ -635,6 +635,7 @@ export const generationWorkflowDetailResponseSchema = z
         backendKind: z.enum(["comfyui", "drawthings"]),
         version: z.number().int().positive(),
         capabilities: z.array(z.string().min(1)).readonly(),
+        negativePromptMode: z.enum(["conditioning", "positive_instruction"]),
         identity: z
           .object({
             mode: z.string().min(1),

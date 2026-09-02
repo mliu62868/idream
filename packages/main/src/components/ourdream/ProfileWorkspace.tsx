@@ -114,6 +114,7 @@ export function profileLibraryCardPresentation(item: LibraryItem) {
     title:
       item.title ??
       item.name ??
+      (typeof item.label === "string" ? item.label : undefined) ??
       character?.title ??
       character?.name ??
       (isMediaItem ? fallbackMediaTitle : item.id),
@@ -128,9 +129,10 @@ export function createdCharacterPublicationStatus(input: {
   visibility?: string | null;
   publicationState?: string | null;
 }) {
-  if (input.visibility === "public" && input.publicationState === "live") return "live";
+  const shared = input.visibility === "public" || input.visibility === "unlisted";
+  if (shared && input.publicationState === "live") return "live";
   if (
-    input.visibility === "public" &&
+    shared &&
     (
       input.publicationState === "awaiting_publication" ||
       (input.publicationState === undefined && input.status === "approved")
@@ -165,6 +167,11 @@ export function loadProfileForViewer(fetcher: ViewerFetcher = fetch) {
 
 const tabs = ["recent", "characters", "created", "presets", "media", "group-chats", "packs"] as const;
 type LibraryTab = (typeof tabs)[number];
+
+function libraryTabFromSearch(search: string): LibraryTab {
+  const requested = new URLSearchParams(search).get("tab");
+  return tabs.find((candidate) => candidate === requested) ?? "recent";
+}
 
 const tabLabels: Record<LibraryTab, string> = {
   recent: "recent",
@@ -266,11 +273,16 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
   const [entitlements, setEntitlements] = useState<Record<string, unknown>>({});
   const [displayName, setDisplayName] = useState("");
   const [profileName, setProfileName] = useState("");
-  const [tab, setTab] = useState<LibraryTab>("recent");
+  const [tab, setTab] = useState<LibraryTab>(() =>
+    typeof window === "undefined" ? "recent" : libraryTabFromSearch(window.location.search),
+  );
   const [items, setItems] = useState<LibraryItem[]>([]);
   const [libraryAuthority, setLibraryAuthority] = useState(initialAuthorityStatus);
   const [emptyCta, setEmptyCta] = useState<string | null>(null);
+  const [libraryCursorTrail, setLibraryCursorTrail] = useState<Array<string | null>>([null]);
+  const [nextLibraryCursor, setNextLibraryCursor] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const mediaSearchQuery = tab === "media" ? query.trim() : "";
   const [redeemCode, setRedeemCode] = useState("");
   const [emailUpdates, setEmailUpdates] = useState<boolean | null>(null);
   const [mutedTags, setMutedTags] = useState<string[]>([]);
@@ -293,6 +305,8 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
   );
   const [publishedCollectionHref, setPublishedCollectionHref] = useState("");
   const libraryTabRef = useRef<LibraryTab | null>(null);
+  const libraryCursorTrailRef = useRef<Array<string | null>>([null]);
+  const libraryQueryRef = useRef("");
   const profileRequestSerialRef = useRef(0);
   const libraryRequestSerialRef = useRef(0);
   const mediaCollectionsRequestSerialRef = useRef(0);
@@ -303,6 +317,10 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
     mediaCollectionsRequestSerialRef.current += 1;
     preferencesRequestSerialRef.current += 1;
     libraryTabRef.current = null;
+    libraryCursorTrailRef.current = [null];
+    libraryQueryRef.current = "";
+    setLibraryCursorTrail([null]);
+    setNextLibraryCursor(null);
     setAuthState("anonymous");
     setProfileAuthority(readyAuthorityStatus());
     setBalance(null);
@@ -388,22 +406,37 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
     }
   }, [showAnonymousProfile]);
 
-  const refreshLibrary = useCallback(async (nextTab: LibraryTab) => {
+  const refreshLibrary = useCallback(async function loadLibrary(
+    nextTab: LibraryTab,
+    cursors = libraryTabRef.current === nextTab ? libraryCursorTrailRef.current : [null],
+    searchQuery = libraryQueryRef.current,
+  ) {
     const requestSerial = libraryRequestSerialRef.current + 1;
     libraryRequestSerialRef.current = requestSerial;
-    const hasMatchingSnapshot = libraryTabRef.current === nextTab;
+    const nextCursors = nextTab === "media" ? cursors : [null];
+    const nextQuery = nextTab === "media" ? searchQuery : "";
+    const cursor = nextCursors.at(-1);
+    const hasMatchingSnapshot = libraryTabRef.current === nextTab &&
+      libraryCursorTrailRef.current.at(-1) === cursor && libraryQueryRef.current === nextQuery;
+    libraryTabRef.current = nextTab;
+    libraryCursorTrailRef.current = nextCursors;
+    libraryQueryRef.current = nextQuery;
+    setLibraryCursorTrail(nextCursors);
     if (!hasMatchingSnapshot) {
-      libraryTabRef.current = nextTab;
       setItems([]);
       setEmptyCta(null);
+      setNextLibraryCursor(null);
     }
     setLibraryAuthority((current) =>
       loadingAuthorityStatus(
         hasMatchingSnapshot ? current : initialAuthorityStatus(),
       ),
     );
+    const params = new URLSearchParams();
+    if (nextQuery) params.set("q", nextQuery);
+    if (cursor) params.set("cursor", cursor);
     const outcome = await loadViewerResource({
-      path: `/api/v1/library/${nextTab}`,
+      path: `/api/v1/library/${nextTab}${params.size ? `?${params}` : ""}`,
       parse: parseLibraryResponse,
       fallbackError: "Library data could not load.",
       errorFrom: "fallback",
@@ -416,9 +449,23 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
       );
       return;
     }
+    // Deleting the last item on a later page should reveal the preceding media,
+    // not claim that the customer's entire library is empty.
+    if (outcome.data.items.length === 0 && nextCursors.length > 1) {
+      await loadLibrary(nextTab, nextCursors.slice(0, -1), nextQuery);
+      return;
+    }
     setItems(outcome.data.items);
     setEmptyCta(outcome.data.emptyCta);
+    setNextLibraryCursor(outcome.data.nextCursor ?? null);
     setLibraryAuthority(readyAuthorityStatus());
+  }, []);
+
+  useEffect(() => () => {
+    libraryRequestSerialRef.current += 1;
+    profileRequestSerialRef.current += 1;
+    mediaCollectionsRequestSerialRef.current += 1;
+    preferencesRequestSerialRef.current += 1;
   }, []);
 
   const refreshMediaCollections = useCallback(async () => {
@@ -535,9 +582,12 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
 
   useEffect(() => {
     if (!ageGateAccepted || authState !== "authenticated") return;
-    const timer = window.setTimeout(() => void refreshLibrary(tab), 0);
+    const timer = window.setTimeout(
+      () => void refreshLibrary(tab, [null], mediaSearchQuery),
+      mediaSearchQuery ? 250 : 0,
+    );
     return () => window.clearTimeout(timer);
-  }, [ageGateAccepted, authState, refreshLibrary, tab]);
+  }, [ageGateAccepted, authState, mediaSearchQuery, refreshLibrary, tab]);
 
   useEffect(() => {
     if (
@@ -806,10 +856,10 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
   }
 
   async function toggleCharacterVisibility(id: string, current?: string) {
-    // public characters re-enter review on publish; private/unlisted publish straight to review.
+    // Withdraw either kind of shared Character; private characters enter review on publish.
     setStatus("");
     setDeleteConfirmCharacterId(null);
-    const next = current === "public" ? "private" : "public";
+    const next = current === "public" || current === "unlisted" ? "private" : "public";
     try {
       const response = await fetch(`/api/v1/characters/${id}`, {
         method: "PATCH",
@@ -904,9 +954,9 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
   }
 
   const normalizedQuery = query.trim().toLowerCase();
-  const visibleItems = normalizedQuery
+  const visibleItems = normalizedQuery && tab !== "media"
     ? items.filter((item) =>
-        `${item.title ?? ""} ${item.name ?? ""} ${item.character?.name ?? ""} ${item.prompt ?? ""}`
+        `${item.title ?? ""} ${item.name ?? ""} ${typeof item.label === "string" ? item.label : ""} ${item.character?.name ?? ""} ${item.prompt ?? ""}`
           .toLowerCase()
           .includes(normalizedQuery),
       )
@@ -946,14 +996,44 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
     ? "Your characters, generated media, presets, and created companions live in your private My AI library."
     : "Your account settings, billing, referrals, preferences, and private AI library live in your profile.";
 
-  function selectLibraryTab(nextTab: LibraryTab) {
+  const selectLibraryTab = useCallback((nextTab: LibraryTab, updateHistory = true) => {
     if (nextTab === tab) return;
+    if (updateHistory) {
+      const url = new URL(window.location.href);
+      url.searchParams.set("tab", nextTab);
+      window.history.pushState(null, "", `${url.pathname}${url.search}${url.hash}`);
+    }
     libraryRequestSerialRef.current += 1;
     libraryTabRef.current = nextTab;
+    libraryCursorTrailRef.current = [null];
+    libraryQueryRef.current = nextTab === "media" ? query.trim() : "";
+    setLibraryCursorTrail([null]);
+    setNextLibraryCursor(null);
     setItems([]);
     setEmptyCta(null);
     setLibraryAuthority(initialAuthorityStatus());
     setTab(nextTab);
+  }, [query, tab]);
+
+  useEffect(() => {
+    const restoreTab = () => selectLibraryTab(libraryTabFromSearch(window.location.search), false);
+    window.addEventListener("popstate", restoreTab);
+    return () => window.removeEventListener("popstate", restoreTab);
+  }, [selectLibraryTab]);
+
+  function updateLibraryQuery(value: string) {
+    setQuery(value);
+    if (tab !== "media" || value.trim() === query.trim()) return;
+    // Invalidate immediately, before the debounce: an older page must not be
+    // painted under the new search term while its replacement is still waiting.
+    libraryRequestSerialRef.current += 1;
+    libraryQueryRef.current = value.trim();
+    libraryCursorTrailRef.current = [null];
+    setLibraryCursorTrail([null]);
+    setNextLibraryCursor(null);
+    setItems([]);
+    setEmptyCta(null);
+    setLibraryAuthority(loadingAuthorityStatus(initialAuthorityStatus()));
   }
 
   if (authState === "loading") {
@@ -1401,7 +1481,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
           <input
             aria-label="Search your library"
             className="h-11 min-w-0 flex-1 bg-transparent text-[14px] text-white outline-none placeholder:text-[rgb(114,113,112)]"
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => updateLibraryQuery(event.target.value)}
             placeholder={`Search ${tabLabels[tab]}…`}
             value={query}
           />
@@ -1409,7 +1489,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
             <button
               aria-label="Clear search"
               className="text-[12px] font-bold text-[rgb(170,170,170)] hover:text-white"
-              onClick={() => setQuery("")}
+              onClick={() => updateLibraryQuery("")}
               type="button"
             >
               Clear
@@ -1466,6 +1546,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
                   imageLoading={index < 3 ? "eager" : "lazy"}
                   invalidPreviewImageIds={invalidPreviewImageIds}
                   item={item}
+                  isPreset={tab === "presets"}
                   key={item.id}
                   onDelete={deleteMedia}
                   onDownload={downloadMedia}
@@ -1526,6 +1607,27 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
               ) : null}
             </div>
           ) : null}
+          {tab === "media" && (nextLibraryCursor || libraryCursorTrail.length > 1) ? (
+            <nav aria-label="Library pages" className="mt-4 flex items-center justify-between gap-3">
+              <button
+                className="h-9 rounded-full bg-[rgb(36,36,36)] px-4 text-[12px] font-bold text-white disabled:opacity-40"
+                disabled={libraryAuthority.phase === "loading" || libraryCursorTrail.length <= 1}
+                onClick={() => void refreshLibrary(tab, libraryCursorTrail.slice(0, -1))}
+                type="button"
+              >
+                Previous page
+              </button>
+              <span className="text-[12px] text-[rgb(170,170,170)]">Page {libraryCursorTrail.length}</span>
+              <button
+                className="h-9 rounded-full bg-[rgb(36,36,36)] px-4 text-[12px] font-bold text-white disabled:opacity-40"
+                disabled={libraryAuthority.phase === "loading" || !nextLibraryCursor}
+                onClick={() => void refreshLibrary(tab, [...libraryCursorTrail, nextLibraryCursor])}
+                type="button"
+              >
+                Next page
+              </button>
+            </nav>
+          ) : null}
         </div>
       </div>
       {reportDialog}
@@ -1568,6 +1670,7 @@ function LibraryCard({
   imageLoading = "lazy",
   invalidPreviewImageIds,
   item,
+  isPreset = false,
   onAddToCollection,
   onCreateCollection,
   onDelete,
@@ -1588,6 +1691,7 @@ function LibraryCard({
   imageLoading?: "eager" | "lazy";
   invalidPreviewImageIds: Set<string>;
   item: LibraryItem;
+  isPreset?: boolean;
   onAddToCollection?: (mediaAssetId: string, collectionId: string) => Promise<void>;
   onCreateCollection?: (
     mediaAssetId: string,
@@ -1628,11 +1732,15 @@ function LibraryCard({
     (isVisualMediaItem && source ? isBuiltInMediaPlaceholderUrl(source) : false) ||
     (isMediaItem && !source);
   const href =
-    character?.id
-      ? `/characters/${character.id}`
-      : isMediaItem
-        ? undefined
-        : `/characters/${item.id}`;
+    item.type === "chat"
+      ? `/chat/${encodeURIComponent(item.id)}`
+      : isPreset
+        ? `/generate?presetId=${encodeURIComponent(item.id)}`
+        : character?.id
+          ? `/characters/${character.id}`
+          : isMediaItem
+            ? undefined
+            : `/characters/${item.id}`;
   const appealHref =
     showCharacterActions && !isMediaItem && isAppealableCharacterStatus(item.status)
       ? characterAppealHref(character?.id ?? item.id, title)
@@ -1881,7 +1989,7 @@ function LibraryCard({
             onClick={() => onToggleVisibility?.(item.id, item.visibility)}
             type="button"
           >
-            {item.visibility === "public" ? "Make private" : "Publish"}
+            {item.visibility === "public" || item.visibility === "unlisted" ? "Make private" : "Publish"}
           </button>
           <button
             aria-label="Duplicate character"

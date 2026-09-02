@@ -693,6 +693,13 @@ export function CharacterCreateWizard({
     return () => window.clearTimeout(timer);
   }, [authority, draft, persist]);
 
+  useEffect(() => {
+    if (authorityRef.current || createIntent || !userEditedRef.current) return;
+    // Keep persistence outside the state updater: React may replay an updater.
+    const saved = saveLocalDraft(actorId, draft);
+    setSaveState(saved ? "Saved locally" : "In memory only");
+  }, [actorId, createIntent, draft]);
+
   if (!canCreate) {
     return (
       <section className="rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-6 sm:p-8">
@@ -756,16 +763,12 @@ export function CharacterCreateWizard({
     }
   }
 
-  const update = <K extends keyof Draft>(section: K, value: Draft[K]) => {
+  const update = <K extends keyof Draft>(
+    section: K,
+    updateSection: (current: Draft[K]) => Draft[K],
+  ) => {
     userEditedRef.current = true;
-    const nextDraft = { ...draft, [section]: value };
-    setDraft(nextDraft);
-    if (!authorityRef.current && !createIntent) {
-      setSaveState(
-        saveLocalDraft(actorId, nextDraft) ? "Saved locally" : "In memory only",
-      );
-      return;
-    }
+    setDraft((current) => ({ ...current, [section]: updateSection(current[section]) }));
     setSaveState("Not saved");
   };
   const currentLabel = steps[step];
@@ -1149,7 +1152,7 @@ function Area({
 type StepProps = {
   draft: Draft;
   errors: Record<string, string>;
-  update: <K extends keyof Draft>(section: K, value: Draft[K]) => void;
+  update: <K extends keyof Draft>(section: K, updateSection: (current: Draft[K]) => Draft[K]) => void;
 };
 
 // SPEC: 基本信息与开场白必填；其余角色细节只是一段可选 Markdown。
@@ -1158,7 +1161,7 @@ function PersonaStep({ draft, errors, update }: StepProps) {
   const set = <K extends keyof Draft["persona"]>(
     field: K,
     value: Draft["persona"][K],
-  ) => update("persona", { ...draft.persona, [field]: value });
+  ) => update("persona", (current) => ({ ...current, [field]: value }));
   return (
     <div className="space-y-4">
       <Grid>
@@ -1232,10 +1235,12 @@ function PersonaStep({ draft, errors, update }: StepProps) {
 
 function VisualStep({ draft, errors, update }: StepProps) {
   const { t } = useAdminI18n();
+  // Editing must retain the trailing space/newline needed to type the next word/trait.
+  const [stableTraitsText, setStableTraitsText] = useState(() => draft.visualDirection.stableTraits.join("\n"));
   const set = <K extends keyof Draft["visualDirection"]>(
     field: K,
     value: Draft["visualDirection"][K],
-  ) => update("visualDirection", { ...draft.visualDirection, [field]: value });
+  ) => update("visualDirection", (current) => ({ ...current, [field]: value }));
   return (
     <Grid>
       <Area
@@ -1250,9 +1255,12 @@ function VisualStep({ draft, errors, update }: StepProps) {
         error={errors.stableTraits}
         label="Stable traits (one per line)"
         name="visualDirection.stableTraits"
-        onChange={(value) => set("stableTraits", lines(value))}
+        onChange={(value) => {
+          setStableTraitsText(value);
+          set("stableTraits", lines(value));
+        }}
         placeholder={"Dark wavy hair\nWarm brown eyes"}
-        value={draft.visualDirection.stableTraits.join("\n")}
+        value={stableTraitsText}
       />
       <label className="text-xs font-semibold text-[var(--ad-text-muted)]">
         {t("Visual style")}

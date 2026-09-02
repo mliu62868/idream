@@ -20,7 +20,6 @@ vi.mock("@/server/modules/generation/generation-catalog", () => ({
 }));
 vi.mock("./generation-character-authority", () => ({
   generationCharacter: vi.fn(),
-  publishedGenerationVideoCharacter: vi.fn(),
   resolveGenerationLook: authority.resolveGenerationLook,
   resolveGenerationVisualProfile: vi.fn(),
 }));

@@ -249,7 +249,7 @@ describe("Admin backfill mutation reliability", () => {
     `);
     try {
       await expect(customerCaseBackfill(request(continuationKey, { runId })))
-        .rejects.toThrow("injected continuation receipt failure");
+        .resolves.toMatchObject({ status: 500 });
     } finally {
       await prisma.$executeRawUnsafe(`
         DROP TRIGGER IF EXISTS fail_continuation_receipt_trigger ON "control_plane_commands";
@@ -300,7 +300,7 @@ describe("Admin backfill mutation reliability", () => {
       FOR EACH ROW EXECUTE FUNCTION fail_admin_backfill_receipt();
     `);
     try {
-      await expect(customerCaseBackfill(request(1))).rejects.toThrow("injected Admin backfill receipt failure");
+      await expect(customerCaseBackfill(request(1))).resolves.toMatchObject({ status: 500 });
     } finally {
       await prisma.$executeRawUnsafe(`
         DROP TRIGGER IF EXISTS fail_admin_backfill_receipt_trigger ON "control_plane_commands";

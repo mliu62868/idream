@@ -19,6 +19,7 @@ import {
   encodeAdminListCursor,
 } from "@/server/modules/admin-v2/shared/list-cursor";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
+import { appendSupportMessage, supportConversation } from "./conversation";
 
 type PlaintextFields = Record<string, string | null>;
 
@@ -263,6 +264,9 @@ export async function patchSupportRequest(request: Request, ticketId: string) {
     execute: async (tx, requestId) => {
       const before = await tx.supportRequest.findUnique({ where: { ticketId } });
       if (!before) throw Errors.notFound("Support request not found");
+      if (body.status === "closed" && before.status !== "resolved") {
+        throw Errors.conflict("Resolve the support request before closing it");
+      }
       const updated = await tx.supportRequest.update({
         where: { ticketId },
         data: {
@@ -274,7 +278,12 @@ export async function patchSupportRequest(request: Request, ticketId: string) {
         },
         include: supportRequestIncludes,
       });
-      await synchronizeSupportCaseFromRequest(tx, updated);
+      if (body.status !== undefined || body.priority !== undefined || body.assignedToId !== undefined) {
+        await synchronizeSupportCaseFromRequest(tx, updated);
+      }
+      if (body.customerMessage) {
+        await appendSupportMessage(tx, updated, { messageId: requireIdempotencyKey(request), body: body.customerMessage, author: "support", authorId: actor.id, actorRole: actor.role });
+      }
       await tx.adminAuditLog.create({ data: {
         actorId: actor.id,
         actorRole: actor.role,
@@ -299,6 +308,13 @@ export async function patchSupportRequest(request: Request, ticketId: string) {
       return { request: supportRequestDTO(updated) };
     },
   });
+}
+
+export async function getSupportRequestConversation(request: Request, ticketId: string) {
+  await actorWithPermission(request, "support.request.read");
+  const ticket = await prisma.supportRequest.findFirst({ where: operationalSupportRequestWhere({ ticketId }) });
+  if (!ticket) throw Errors.notFound("Support request not found");
+  return { request: await supportConversation(prisma, ticket) };
 }
 
 export async function escalateSupportRequest(request: Request, ticketId: string) {

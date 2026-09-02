@@ -105,6 +105,34 @@ describe("Character placement qualification", () => {
     container.remove();
   });
 
+  it("reuses the placement request after its committed response is lost", async () => {
+    const available = reviewedUpload("available-cover", "review-cover");
+    let writes = 0;
+    adminV2Operation.mockImplementation(async (operationId: string) => {
+      if (operationId.startsWith("GET ")) return { items: [available] };
+      writes += 1;
+      if (writes === 1) throw new TypeError("Connection lost after commit");
+      return { selectedAssetId: available.id };
+    });
+    const runCommittedMutation = vi.fn(async ({ commit, afterRefresh }) => {
+      const result = await commit();
+      afterRefresh?.();
+      return { result, refreshed: true };
+    });
+    await act(async () => root.render(<CharacterPlacementEditor
+      canWrite data={characterWorkspaceDetail()} runCommittedMutation={runCommittedMutation}
+    />));
+    await act(async () => container.querySelector("article button")?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await waitUntil(() => container.textContent?.includes("Use image") === true);
+    const useImage = () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "Use image")!;
+    await act(async () => useImage().click());
+    await waitUntil(() => container.textContent?.includes("Connection lost after commit") === true);
+    await act(async () => useImage().click());
+    await waitUntil(() => writes === 2);
+    const requests = adminV2Operation.mock.calls.filter(([operationId]) => operationId.startsWith("PATCH "));
+    expect(requests[1]?.[1]).toEqual(requests[0]?.[1]);
+  });
+
   it("submits the visible Review pin and keeps an image used elsewhere disabled", async () => {
     const used = reviewedUpload("used-cover", "review-cover", ["character_cover"]);
     const available = reviewedUpload("available-hero", "review-hero");

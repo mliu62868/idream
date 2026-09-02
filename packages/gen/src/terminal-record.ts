@@ -42,9 +42,10 @@ export class GenerationInvocationGuardConflictError extends Error {
   }
 }
 
-// SPEC: Non-replayable providers reserve one immutable invocation guard before
-// the remote call. A later Bull attempt may recover an unknown outcome, but it
-// must never invoke the provider again when this guard already exists.
+// SPEC: Every provider reserves immutable invocation evidence before the call.
+// A replayable provider may reuse its key; a non-replayable provider must never
+// invoke again when this guard exists. Preparation failure can then distinguish
+// no invocation from an earlier call whose terminal evidence is missing.
 // INTENT: The guard is deliberately separate from the terminal record. It
 // survives the exact failure window where the provider returned but both the
 // terminal object write and Main transport update were unavailable.

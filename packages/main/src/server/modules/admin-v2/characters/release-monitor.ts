@@ -491,9 +491,9 @@ export async function collectReleaseMonitorFacts(
       ? placementBySlot.size === 3
       : !strictManifestDeclared && Boolean(legacyAvatarAssetId),
     servingPointerLive: serving?.state === "live" && serving.currentReleaseId === release.id,
-    publicProjectionLive:
+    servingProjectionLive:
       character?.status === "approved" &&
-      character.visibility === "public" &&
+      ["public", "unlisted"].includes(character.visibility) &&
       character.deletedAt === null &&
       character.imageAssetId === avatarSlot.assetId,
     immutableContentAvailable: contentVersion?.characterId === projectCharacterId,

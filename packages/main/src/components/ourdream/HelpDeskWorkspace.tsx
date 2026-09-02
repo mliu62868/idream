@@ -56,6 +56,7 @@ import {
 } from "./draft-transfer";
 import { fetchViewerScope } from "./viewer-auth";
 import { isRecord } from "./workspace-helpers";
+import { HelpDeskConversation } from "./HelpDeskConversation";
 
 type SupportPayload = {
   ok?: boolean;
@@ -991,6 +992,8 @@ export function HelpDeskWorkspace() {
         </div>
 
         <HelpDeskHistoryPanel
+          key={viewerScope ?? "anonymous"}
+          viewerScope={viewerScope}
           authenticated={viewerScope?.startsWith("user:") ?? false}
           error={historyError}
           errorRetryable={historyErrorRetryable}
@@ -1216,6 +1219,7 @@ export function HelpDeskWorkspace() {
 }
 
 export function HelpDeskHistoryPanel({
+  viewerScope,
   authenticated,
   error,
   errorRetryable = true,
@@ -1223,6 +1227,7 @@ export function HelpDeskHistoryPanel({
   loading,
   onRefresh,
 }: Readonly<{
+  viewerScope?: string | null;
   authenticated: boolean;
   error: string;
   errorRetryable?: boolean;
@@ -1316,6 +1321,7 @@ export function HelpDeskHistoryPanel({
                   {item.resolution ? (
                     <p>Resolution: {historyStatusLabel(item.resolution.outcome)}</p>
                   ) : null}
+                  {viewerScope ? <HelpDeskConversation key={`${viewerScope}:${item.id}`} ticketId={item.ticketId} viewerScope={viewerScope} onReplied={onRefresh} /> : null}
                 </HistoryCard>
               ))}
             </HistoryGroup>

@@ -40,8 +40,11 @@ async function runDevelopment(options = {}) {
   // schema, and this wrapper remains PM2's parent authority until the exact CLI
   // exits. Requiring Next's CLI lets its asynchronous dev bootstrap outlive this
   // process during a restart, leaving an unowned listener on the product port.
+  // Next 16.2 creates external-package symlinks during cold compilation. Bun
+  // 1.4 cannot reliably resolve their dependencies in that same process; use
+  // Node for Next instead of relying on a previous build warming those paths.
   const child = runChild(
-    runtime.execPath,
+    "node",
     [nextCli, "dev", ...runtime.argv.slice(2)],
     {
       cwd: packageRoot,

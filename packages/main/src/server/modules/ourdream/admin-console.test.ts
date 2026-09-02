@@ -357,7 +357,7 @@ async function seedCharacterAssetAuthority(input: {
       generationProfileKey: input.generationProfileKey,
       generationProfileVersion: 1,
       workflowKey: "qwen-image-edit-img2img",
-      workflowVersion: 1,
+      workflowVersion: 2,
       style,
       matrixKey: `${input.generationProfileKey}-matrix-v1`,
       sampleCount: 40,
@@ -982,7 +982,10 @@ describe("generation config control plane", () => {
           "chat-image-edit",
         ]),
       );
-      expect(config.data.image.editModels).toEqual([]);
+      expect(config.data.image.editModels).toEqual(expect.arrayContaining([
+        expect.objectContaining({ profileId: "chat-image-edit", referenceMode: "source_only", entitlement: null }),
+        expect.objectContaining({ profileId: "character-image-variation", referenceMode: "identity_source", entitlement: null }),
+      ]));
       expect(JSON.stringify(config.data.image.models)).not.toContain("profile_image_premium_v1");
 
       const beforeRejectedJobs = await prisma.generationJob.count({ where: { userId } });
@@ -1023,7 +1026,7 @@ describe("generation config control plane", () => {
       expect(gen.data.job).toMatchObject({
         status: "queued",
         profileId: "profile_image_default_v1",
-        profileVersion: 1,
+        profileVersion: 2,
         recipeId: "template_image_character_default",
         recipeVersion: 1,
       });
@@ -2144,7 +2147,7 @@ describe("generation config control plane", () => {
         pipelineModel: "qwen-image-edit",
         workflowKey: "qwen-image-edit-img2img",
         runnerConfig: {
-          workflowVersion: 1,
+          workflowVersion: 2,
           capabilities: {
             textToImage: false,
             stableSeed: true,
@@ -2370,8 +2373,6 @@ describe("generation config control plane", () => {
     }>;
     expect(generatedItems.every((item) => item.status === "generated" && item.asset?.id)).toBe(true);
 
-    const approveItemId = generatedItems[0]?.id as string;
-
     const assetId = generatedItems[0]?.asset?.id as string;
     const libraryApprove = await adminV2Api("PATCH", `/api/v2/admin/assets/${assetId}`, {
       userId: admin,
@@ -2432,15 +2433,8 @@ describe("generation config control plane", () => {
     expect(assetDetail.data.asset).toMatchObject({
       id: assetId,
       platformStatus: "generated",
-      authorityDependencies: [
-        expect.objectContaining({
-          kind: "creative_run_asset",
-          runId: created.data.batch.id,
-          itemId: approveItemId,
-          status: "generated",
-          repairPath: `/admin/creative/runs/${created.data.batch.id}`,
-        }),
-      ],
+      // Character image runs retain production history without pinning an unused library asset.
+      authorityDependencies: [],
     });
 
     const placement = await adminV2Api("POST", "/api/v2/admin/content/placements", {
@@ -2510,7 +2504,7 @@ describe("generation config control plane", () => {
         pipelineModel: "redcraft-krea2-redmix3-txt2img",
         workflowKey: "redcraft-krea2-redmix3-txt2img",
         runnerConfig: {
-          workflowVersion: 1,
+          workflowVersion: 2,
           capabilities: { textToImage: true },
         },
         allowedOrientations: ["4:5"],

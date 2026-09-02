@@ -339,7 +339,7 @@ describe("character review queue (D)", () => {
       replayed: true,
     });
     await expect(getCharacterWorkspace(seeded.characterId)).resolves.toMatchObject({
-      project: { phase: "producing" },
+      project: { characterId: seeded.characterId, version: 1 },
       serving: { state: "inactive" },
       releases: [],
     });
@@ -349,7 +349,7 @@ describe("character review queue (D)", () => {
     });
     expect(workspaceRoute.status).toBe(200);
     expect(workspaceRoute.data).toMatchObject({
-      project: { phase: "producing" },
+      project: { characterId: seeded.characterId, version: 1 },
       serving: { state: "inactive" },
       releases: [],
     });

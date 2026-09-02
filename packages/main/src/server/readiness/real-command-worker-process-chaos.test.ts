@@ -320,7 +320,7 @@ describe.runIf(process.env.RUN_ADMIN_REAL_COMMAND_WORKER_CHAOS === "1")(
       });
       await expect(prisma.character.findUnique({ where: { id: characterId } })).resolves.toMatchObject({
         status: "archived",
-        visibility: "private",
+        visibility: "public",
       });
       await expect(prisma.characterRelease.findUnique({ where: { id: releaseId } })).resolves.toMatchObject({
         readiness: "ready",

@@ -31,7 +31,7 @@ import {
   assertGenerationProfileCanDispatchReferences,
   normalizedGenerationReferenceRole,
 } from "./generation-profile-selection";
-import { publicCharacterAudienceWhere } from "./public-content-audience";
+import { directCharacterAudienceWhere } from "./public-content-audience";
 import {
   assertQuoteStillValid,
   generationPlanRouteFingerprint,
@@ -292,14 +292,12 @@ export async function createGenerationJobForUser(
               age: { gte: 18 },
               status: "approved",
             },
-            body.mode === "video"
-              ? publicCharacterAudienceWhere
-              : {
-                  OR: [
-                    { creatorId: userId },
-                    publicCharacterAudienceWhere,
-                  ],
-                },
+            {
+              OR: [
+                { creatorId: userId },
+                directCharacterAudienceWhere,
+              ],
+            },
           ],
         },
         select: { id: true, imageAssetId: true },

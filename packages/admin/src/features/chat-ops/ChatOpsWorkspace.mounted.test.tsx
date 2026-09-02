@@ -236,6 +236,39 @@ describe("ChatOpsWorkspace Main to Chat failed-delivery operations", () => {
     vi.restoreAllMocks();
   });
 
+  it("does not claim connected while an authority has not answered", async () => {
+    let finishProviderRead: (value: unknown) => void = () => undefined;
+    apiGet.mockImplementation((path: string) => path.endsWith("/provider-health")
+      ? new Promise((resolve) => { finishProviderRead = resolve; })
+      : Promise.resolve(chatReadFixtures.get(path)));
+
+    await act(async () => {
+      root.render(<ChatOpsWorkspace canRead />);
+    });
+    await waitUntil(() => apiGet.mock.calls.length === chatReadFixtures.size);
+    expect(container.textContent).not.toContain("Chat Service connected");
+    expect(container.textContent).toContain("Chat Service state not established yet");
+
+    await act(async () => finishProviderRead(
+      chatReadFixtures.get("/api/v2/admin/chat/provider-health"),
+    ));
+    await waitUntil(() => container.textContent?.includes("Chat Service connected") === true);
+  });
+
+  it("counts an authority request failure as degraded", async () => {
+    apiGet.mockImplementation(async (path: string) => {
+      if (path.endsWith("/provider-health")) throw new Error("Provider diagnostics unavailable");
+      return chatReadFixtures.get(path);
+    });
+
+    await act(async () => {
+      root.render(<ChatOpsWorkspace canRead />);
+    });
+    await waitUntil(() => apiGet.mock.calls.length === chatReadFixtures.size);
+    expect(container.textContent).not.toContain("Chat Service connected");
+    expect(container.textContent).toContain("Chat Service degraded · 1 of 5 authorities unavailable");
+  });
+
   it("requeues the exact selected revision through the typed operation and refreshes", async () => {
     let reads = 0;
     adminV2Operation.mockImplementation(async (operation: string) => {

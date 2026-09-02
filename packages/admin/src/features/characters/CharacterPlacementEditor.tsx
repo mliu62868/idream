@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Check, ImageIcon, Loader2, Replace } from "lucide-react";
 import Image from "next/image";
 import type {
@@ -37,6 +37,7 @@ export function CharacterPlacementEditor({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const pendingSelection = useRef<{ signature: string; key: string } | null>(null);
 
   const loadAssets = useCallback(async () => {
     setLoading(true);
@@ -69,6 +70,24 @@ export function CharacterPlacementEditor({
   ) {
     setBusyAssetId(asset.id);
     setError(null);
+    const body = {
+      entityVersion: data.project.version,
+      purpose,
+      assetId: asset.id,
+      ...(asset.qualification?.authority.runId
+        ? { runId: asset.qualification.authority.runId } : {}),
+      ...(asset.qualification?.authority.itemId
+        ? { itemId: asset.qualification.authority.itemId } : {}),
+      ...(asset.qualification?.authority.reviewDecisionId
+        ? { reviewDecisionId: asset.qualification.authority.reviewDecisionId } : {}),
+      reason: `Selected from ${data.character.name}'s image library`,
+    };
+    const signature = JSON.stringify([data.character.id, body]);
+    // A lost response must replay the committed selection before checking its old version.
+    if (pendingSelection.current?.signature !== signature) {
+      pendingSelection.current = { signature, key: crypto.randomUUID() };
+    }
+    const idempotencyKey = pendingSelection.current.key;
     try {
       await runCommittedMutation({
         action: `${purpose} image selection`,
@@ -77,25 +96,14 @@ export function CharacterPlacementEditor({
           {
             path: { id: data.character.id },
             ifMatch: data.project.version,
-            idempotencyKey: crypto.randomUUID(),
-            body: {
-              entityVersion: data.project.version,
-              purpose,
-              assetId: asset.id,
-              ...(asset.qualification?.authority.runId
-                ? { runId: asset.qualification.authority.runId }
-                : {}),
-              ...(asset.qualification?.authority.itemId
-                ? { itemId: asset.qualification.authority.itemId }
-                : {}),
-              ...(asset.qualification?.authority.reviewDecisionId
-                ? { reviewDecisionId: asset.qualification.authority.reviewDecisionId }
-                : {}),
-              reason: `Selected from ${data.character.name}'s image library`,
-            },
+            idempotencyKey,
+            body,
           },
         ),
-        afterRefresh: () => setChoosing(null),
+        afterRefresh: () => {
+          pendingSelection.current = null;
+          setChoosing(null);
+        },
       });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t("Image placement could not be saved"));

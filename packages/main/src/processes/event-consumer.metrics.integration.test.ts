@@ -7,7 +7,7 @@ import {
 } from "@/server/modules/admin-v2/metrics/projector";
 import { selectQualityChecksForMetric } from "@/server/modules/admin-v2/metrics/query";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
-import { dispatchPendingProductEvents } from "./event-consumer";
+import { applyChatEvent, dispatchPendingProductEvents } from "./event-consumer";
 
 describe("metric product-event recovery", () => {
   const prefix = `metric-outbox-${randomUUID()}`;
@@ -333,7 +333,7 @@ describe("metric product-event recovery", () => {
     })).resolves.toBe(1);
   });
 
-  it("terminally quarantines an outbox replay whose canonical payload changed", async () => {
+  it("terminally quarantines an outbox whose canonical payload conflicts with its prior projection", async () => {
     const sourceEventId = `${prefix}-tampered-message`;
     const [firstCharacter, secondCharacter] = await Promise.all([
       prisma.character.create({
@@ -359,7 +359,7 @@ describe("metric product-event recovery", () => {
         },
       }),
     ]);
-    const { event, outbox } = await persistEvent({
+    const { outbox } = await persistEvent({
       sourceEventId,
       sourceService: "chat",
       eventType: "chat.message.completed",
@@ -371,27 +371,17 @@ describe("metric product-event recovery", () => {
       },
     });
 
-    await expect(dispatchOutboxes([outbox.id])).resolves.toEqual({
-      delivered: 1,
-      failed: 0,
-    });
-    await prisma.analyticsEvent.update({
-      where: { id: event.id },
-      data: {
-        props: toInputJson({
-          userId,
-          characterId: secondCharacter.id,
-        }),
-      },
-    });
-    await prisma.mainOutboxEvent.update({
-      where: { id: outbox.id },
-      data: {
-        status: "pending",
-        deliveredAt: null,
-        nextRunAt: new Date("2000-01-01T00:00:00Z"),
-      },
-    });
+    // Canonical analytics rows are immutable. Reproduce the conflict at the
+    // receiver boundary by committing an earlier projection with a different payload.
+    await expect(applyChatEvent({
+      eventId: sourceEventId,
+      sourceService: "chat",
+      eventType: "chat.message.completed",
+      schemaVersion: 2,
+      occurredAt: "2026-07-16T12:45:44.000Z",
+      aggregateId: `${prefix}-tampered-message`,
+      payload: { userId, characterId: secondCharacter.id },
+    })).resolves.toEqual({ status: "applied" });
 
     await expect(dispatchOutboxes([outbox.id])).resolves.toEqual({
       delivered: 0,
@@ -562,7 +552,7 @@ describe("metric product-event recovery", () => {
       },
     });
     await prisma.generationAttempt.create({
-      data: { id: attemptId, requestId, attemptNo: 1, status: "succeeded" },
+      data: { id: attemptId, requestId, attemptNo: 1, status: "succeeded", finishedAt: new Date("2026-07-04T00:00:00Z") },
     });
     await prisma.generationArtifact.create({
       data: {

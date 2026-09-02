@@ -18,6 +18,7 @@ import {
   type GenerationRequestEffects,
   type GenerationRequestState,
   type GenerationRequestViewInput,
+  type GenerationWriteRequest,
 } from "./generation-request";
 import { GENERATION_JOB_STATUSES } from "@idream/shared/catalog";
 import type {
@@ -512,6 +513,17 @@ describe("generator config authority", () => {
 
 // INVARIANT 5 — terminal job detection
 describe("generation job settlement", () => {
+  it("stops polling an unconfirmed outcome without announcing a refund", () => {
+    const job = { id: "uncertain-job", mode: "video" as const, status: "queued", errorCode: "provider_outcome_unknown" };
+    expect(pendingGenerationJobIds([job])).toEqual([]);
+    expect(projectServerJobArrival(job)).toEqual({
+      settled: true,
+      statusMessage: "The generation result needs review. Contact support before trying again.",
+      showResults: false,
+      refreshBalanceAndQuote: false,
+    });
+  });
+
   it("keeps polling every non-terminal status and stops at every terminal one", () => {
     const jobs = GENERATION_JOB_STATUSES.map((status) => ({
       id: status,
@@ -777,6 +789,36 @@ describe("generation write outcome protocol", () => {
     ]);
   });
 
+  it.each(["generation", "variation", "retry"] as const)(
+    "does not publish an accepted %s result after its viewer is invalidated",
+    async (kind) => {
+      let resolve!: (response: Response) => void;
+      const response = new Promise<Response>((complete) => { resolve = complete; });
+      let current = true;
+      const dispatch = vi.fn();
+      const effects = recordingEffects();
+      const request: GenerationWriteRequest = kind === "generation"
+        ? { kind, body: submissionBody(), quote, quoteKey: "route-key" }
+        : kind === "retry"
+          ? { kind, jobId: "job-1" }
+          : {
+            kind, mediaId: "image-1", outputCount: 1, consistencyMode: "balanced",
+            quote, quoteKey: "route-key", queuedMessage: "Variation queued.",
+          };
+      const pending = runGenerationWrite(request, {
+        state: stateWith({ retryQuotes: { "job-1": retryQuote } }),
+        dispatch, effects, keys: createGenerationIdempotencyKeys(),
+        fetcher: () => response,
+        isCurrent: () => current,
+      });
+      current = false;
+      resolve(jobResponse("previous-viewer-job"));
+      expect(await pending).toMatchObject({ kind: "queued" });
+      expect(dispatch.mock.calls.map(([action]) => action.type)).toEqual(["write_started"]);
+      expect(effects.calls).toEqual([]);
+    },
+  );
+
   it("names the failure the way its own intent does", async () => {
     const failing = (async () =>
       Response.json({ ok: false }, { status: 500 })) as unknown as typeof fetch;
@@ -811,7 +853,7 @@ describe("generation write outcome protocol", () => {
     expect(submitOutcome).toMatchObject({ statusMessage: "Generation failed." });
   });
 
-  it("falls back to a connection message when the write never reached a status", async () => {
+  it.each(["Failed to fetch", "NetworkError when attempting to fetch resource.", ""])("uses actionable retry copy for the browser network error %s", async (message) => {
     const outcome = await runGenerationWrite(
       { kind: "retry", jobId: "job-1" },
       {
@@ -819,9 +861,7 @@ describe("generation write outcome protocol", () => {
         dispatch: () => {},
         effects: recordingEffects(),
         keys: createGenerationIdempotencyKeys(),
-        fetcher: (async () => {
-          throw new TypeError("");
-        }) as unknown as typeof fetch,
+        fetcher: async () => { throw new TypeError(message); },
       },
     );
 
@@ -829,6 +869,18 @@ describe("generation write outcome protocol", () => {
       kind: "rejected",
       statusMessage: "Retry failed. Check your connection and try again.",
       authorityAction: "none",
+    });
+  });
+
+  it("preserves the server's actionable retry error after an HTTP response", async () => {
+    const outcome = await runGenerationWrite({ kind: "retry", jobId: "job-1" }, {
+      state: stateWith({ retryQuotes: { "job-1": retryQuote } }), dispatch: () => {},
+      effects: recordingEffects(), keys: createGenerationIdempotencyKeys(),
+      fetcher: async () => Response.json({ ok: false, error: { message: "The generation route is unavailable. Refresh and choose another model." } }, { status: 503 }),
+    });
+    expect(outcome).toMatchObject({
+      kind: "rejected",
+      statusMessage: "The generation route is unavailable. Refresh and choose another model.",
     });
   });
 

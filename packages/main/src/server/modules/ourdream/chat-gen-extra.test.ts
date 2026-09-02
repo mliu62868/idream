@@ -29,7 +29,7 @@ const CHAR = `${P}char`;
 const PINNED_RETRY_JOB_AUTHORITY = {
   model: "redcraft-krea2-redmix3-txt2img",
   profileId: "profile_image_default_v1",
-  profileVersion: 1,
+  profileVersion: 2,
   orientation: "1:1",
   outputCount: 1,
   provider: "comfyui",
@@ -64,11 +64,11 @@ describe("video generation (Deluxe)", () => {
     });
     const previousVideoProfile =
       await prisma.generationModelProfile.findUniqueOrThrow({
-        where: { id: "seed-profile-video-beta-v1" },
+        where: { id: "seed-profile-video-redgraft-ltx25-v1" },
         select: { rolloutPercent: true },
       });
     await prisma.generationModelProfile.update({
-      where: { id: "seed-profile-video-beta-v1" },
+      where: { id: "seed-profile-video-redgraft-ltx25-v1" },
       data: { rolloutPercent: 100 },
     });
 
@@ -86,11 +86,11 @@ describe("video generation (Deluxe)", () => {
       );
       expect(queued?.payload).toMatchObject({
         kind: "video",
-        model: "ltx23-gtanimation-i2v",
+        model: "redgraft-ltx25-i2v",
         controls: {
           sourceImageAssetId: expect.any(String),
-          workflowKey: "ltx23-gtanimation-i2v",
-          workflowVersion: 1,
+          workflowKey: "redgraft-ltx25-i2v",
+          workflowVersion: 2,
         },
         referenceImages: [
           expect.objectContaining({
@@ -129,7 +129,7 @@ describe("video generation (Deluxe)", () => {
         data: { enabled: false, rolloutPercent: 0 },
       });
       await prisma.generationModelProfile.update({
-        where: { id: "seed-profile-video-beta-v1" },
+        where: { id: "seed-profile-video-redgraft-ltx25-v1" },
         data: previousVideoProfile,
       });
     }

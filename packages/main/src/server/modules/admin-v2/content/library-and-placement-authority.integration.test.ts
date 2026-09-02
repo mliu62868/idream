@@ -2046,7 +2046,7 @@ describe("Image Library and legacy Placement authority", () => {
         confirmation: freeAssetId,
       }, requestId),
       freeAssetId,
-    )).rejects.toThrow("injected content asset audit failure");
+    )).rejects.toThrow("Internal error");
     await expect(prisma.mediaAsset.findUniqueOrThrow({
       where: { id: freeAssetId },
     })).resolves.toMatchObject({ metadata: {} });
@@ -2067,7 +2067,7 @@ describe("Image Library and legacy Placement authority", () => {
         reason: "prove bulk assets and Audit atomicity",
         confirmation: bulkAssetIds.join(","),
       }, requestId),
-    )).rejects.toThrow("injected content asset audit failure");
+    )).rejects.toThrow("Internal error");
     const assets = await prisma.mediaAsset.findMany({
       where: { id: { in: [freeAssetId, bulkFreeAssetId] } },
       orderBy: { id: "asc" },

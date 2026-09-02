@@ -27,7 +27,7 @@ import {
 } from "../shared/list-cursor";
 import { toInputJson } from "../shared/prisma-json";
 
-// SPEC: 角色人审队列 —— 把 public 角色提交（CharacterSubmission status=pending）显式化为一个审核入口，
+// SPEC: 角色人审队列 —— 把 public/unlisted 角色提交（CharacterSubmission status=pending）显式化为一个审核入口，
 //       审核员 approve/reject 后同步角色 status 与提交记录，并写审计。
 // INVARIANT: 只处理 status=pending 的提交（已审 → 409）；approve/reject 在单事务内同时落地
 //            character + submission；每次决策恰好一条审计（action=content.submission.review）。
@@ -150,10 +150,10 @@ export async function reviewSubmission(input: {
     throw Errors.conflict("Submission already has a terminal review decision");
   }
   if (
-    submission.character.visibility !== "public" ||
+    !["public", "unlisted"].includes(submission.character.visibility) ||
     submission.character.status !== "pending_review"
   ) {
-    throw Errors.conflict("Character is no longer awaiting public review");
+    throw Errors.conflict("Character is no longer awaiting sharing review");
   }
 
   const imageAssetId = submission.character.imageAssetId;

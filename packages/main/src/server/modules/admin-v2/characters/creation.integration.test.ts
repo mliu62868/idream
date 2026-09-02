@@ -158,7 +158,7 @@ describe("Character Project creation authority", () => {
       await prisma.adminCollaborationActivity.count({
         where: { targetId: projectId, kind: "status_change" },
       }),
-    ).toBe(1);
+    ).toBe(0);
     expect(
       await prisma.mainOutboxEvent.count({
         where: {
@@ -367,16 +367,22 @@ describe("Character Project creation authority", () => {
   it("rolls back every domain root when transaction evidence cannot be committed", async () => {
     const atomicKey = `atomic-${suffix}`;
     const atomicName = `Atomic rollback ${suffix}`;
-    await prisma.adminCollaborationActivity.create({
-      data: {
-        targetType: "character_project",
-        targetId: `collision-${suffix}`,
-        kind: "fixture",
-        actorId,
-        metadata: {},
-        idempotencyKey: `character_project_create:${atomicKey}`,
-      },
-    });
+    const contentCount = await prisma.characterContentVersion.count({ where: { createdById: actorId } });
+    const revisionCount = await prisma.characterRevision.count({ where: { createdById: actorId } });
+    // Fail the retained durable evidence seam, not the retired collaboration feed.
+    await prisma.$executeRawUnsafe(`
+      CREATE OR REPLACE FUNCTION fail_character_create_outbox() RETURNS trigger AS $$
+      BEGIN
+        IF NEW."eventType" = 'character.project.created.v2' AND NEW.payload->>'actorId' = '${actorId}' THEN
+          RAISE EXCEPTION 'injected Character creation outbox failure';
+        END IF;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+      CREATE TRIGGER fail_character_create_outbox_trigger
+      BEFORE INSERT ON "main_outbox_events"
+      FOR EACH ROW EXECUTE FUNCTION fail_character_create_outbox();
+    `);
     try {
       const response = await createCharacterProjectRoute(
         request(
@@ -390,7 +396,7 @@ describe("Character Project creation authority", () => {
           `atomic-request-${suffix}`,
         ),
       );
-      expect(response.status).toBe(409);
+      expect(response.status).toBe(500);
       expect(
         await prisma.character.count({ where: { name: atomicName } }),
       ).toBe(0);
@@ -399,13 +405,14 @@ describe("Character Project creation authority", () => {
           where: { actorId, idempotencyKey: atomicKey },
         }),
       ).toBe(0);
+      expect(await prisma.characterContentVersion.count({ where: { createdById: actorId } })).toBe(contentCount);
+      expect(await prisma.characterRevision.count({ where: { createdById: actorId } })).toBe(revisionCount);
+      expect(await prisma.adminAuditLog.count({ where: { requestId: `atomic-request-${suffix}` } })).toBe(0);
     } finally {
-      await prisma.adminCollaborationActivity.deleteMany({
-        where: {
-          actorId,
-          idempotencyKey: `character_project_create:${atomicKey}`,
-        },
-      });
+      await prisma.$executeRawUnsafe(`
+        DROP TRIGGER IF EXISTS fail_character_create_outbox_trigger ON "main_outbox_events";
+        DROP FUNCTION IF EXISTS fail_character_create_outbox();
+      `);
     }
   });
 });

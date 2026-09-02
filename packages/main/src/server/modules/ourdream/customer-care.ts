@@ -4,7 +4,7 @@ import {
   PRODUCT_FEEDBACK_CATEGORIES,
   SUPPORT_REQUEST_CATEGORIES,
 } from "@idream/shared/catalog";
-import { METRIC_PRODUCT_EVENTS } from "@idream/shared/contracts";
+import { METRIC_PRODUCT_EVENTS, supportReplyRequestSchema } from "@idream/shared/contracts";
 import { z } from "zod";
 import {
   ensureReviewCaseForAppeal,
@@ -28,6 +28,9 @@ import {
 } from "./public-content-audience";
 import { trackEvent } from "./product-events";
 import { submitReport } from "./reports";
+import { appendSupportMessage, supportConversation } from "@/server/modules/admin-v2/support/conversation";
+import { transitionCase } from "@/server/modules/admin-v2/cases/transition";
+import { operationsCaseStatusSchema } from "@idream/shared/admin";
 
 type ApiMethod = "GET" | "POST" | "PATCH" | "DELETE" | "PUT";
 
@@ -110,6 +113,10 @@ export async function dispatchCustomerCareRequest(
   }
   if (resource === "support" && id === "history" && !action && method === "GET") {
     return customerHelpDeskHistory(request);
+  }
+  if (resource === "support" && id === "requests" && action) {
+    if (!child && method === "GET") return customerSupportDetail(request, action);
+    if (child === "messages" && method === "POST") return replyToSupportRequest(request, action);
   }
 
   return null;
@@ -474,6 +481,39 @@ async function customerHelpDeskHistory(request: Request) {
         : null,
     })),
   });
+}
+
+async function customerSupportDetail(request: Request, ticketId: string) {
+  const viewer = requireUser(await getAuthCtx(request));
+  const ticket = await prisma.supportRequest.findFirst({
+    where: { ticketId, userId: viewer.id, user: { is: { dataClass: "customer", status: "active", deletedAt: null } } },
+  });
+  if (!ticket) throw Errors.notFound("Support request not found");
+  return ok({ request: await supportConversation(prisma, ticket) });
+}
+
+async function replyToSupportRequest(request: Request, ticketId: string) {
+  const viewer = requireUser(await getAuthCtx(request));
+  const body = supportReplyRequestSchema.parse(await jsonBody(request));
+  const result = await prisma.$transaction(async (tx) => {
+    // INVARIANT: Serialize replies with ticket status changes, so a retry cannot
+    // duplicate a message or reopen a request that an operator has resolved.
+    await tx.$queryRaw`SELECT id FROM support_requests WHERE "ticketId" = ${ticketId} AND "userId" = ${viewer.id} FOR UPDATE`;
+    const ticket = await tx.supportRequest.findFirst({
+      where: { ticketId, userId: viewer.id, user: { is: { dataClass: "customer", status: "active", deletedAt: null } } },
+    });
+    if (!ticket) throw Errors.notFound("Support request not found");
+    const added = await appendSupportMessage(tx, ticket, { ...body, author: "customer", authorId: viewer.id, actorRole: "customer" });
+    if (added.replayed) return { request: await supportConversation(tx, ticket), replayed: true };
+    const updated = await tx.supportRequest.update({ where: { id: ticket.id }, data: { status: "open", resolvedAt: null } });
+    const adminCase = await tx.adminCase.findUniqueOrThrow({ where: { id: added.caseId } });
+    await transitionCase(tx, {
+      caseId: adminCase.id, to: "in_progress",
+      expected: { from: operationsCaseStatusSchema.parse(adminCase.status), version: adminCase.version },
+    });
+    return { request: await supportConversation(tx, updated), replayed: false };
+  });
+  return ok(result, { status: result.replayed ? 200 : 201 });
 }
 
 async function listFeedbackItems(request: Request) {

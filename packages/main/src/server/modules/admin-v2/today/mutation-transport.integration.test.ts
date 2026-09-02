@@ -196,7 +196,7 @@ describe("Today mutation transport", () => {
         "idempotency-key": `rollback-key-${suffix}`,
         "x-request-id": `rollback-request-${suffix}`,
       }, { sourceId: rollbackCaseId });
-      await expect(claimTodayRoute(request)).rejects.toThrow("injected today receipt failure");
+      await expect(claimTodayRoute(request)).resolves.toMatchObject({ status: 500 });
     } finally {
       await prisma.$executeRawUnsafe(`
         DROP TRIGGER IF EXISTS fail_today_claim_receipt_trigger ON "control_plane_commands";

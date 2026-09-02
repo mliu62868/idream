@@ -1,37 +1,34 @@
 import type { Prisma } from "@prisma/client";
 import { CHARACTER_SERVING_STATES } from "../shared/state-transition-authority";
+import { toInputJson } from "../shared/prisma-json";
+import { releaseRecord } from "./release-snapshot-values";
+import { Errors } from "@/server/lib/errors";
 
 type ServingState = (typeof CHARACTER_SERVING_STATES)[number];
 
 /**
- * SPEC: 从 Serving 状态推导可变 Character 行的 status / visibility —— 全仓唯一一份。
- *
- * INTENT: 受治理的发布链（Project → Release → Serving）与客户实际读到的 Character 行是两条并行
- * 生命周期，靠手写投影缝合。缝合点此前散在 release-executor 的两处硬编码字面量里：发布路径写
- * `status:"approved", visibility:"public"`，暂停/退役路径写 `status:"archived",
- * visibility:"private"`。两处各自独立，改一处不改另一处就会出现「Release 认为已下线、客户仍能
- * 看到」。
- *
- * INVARIANT: chat 侧的 `character-eligibility` 只读 Character 行，不看 Release/Serving。因此这个
- * 投影是发布权威唯一能影响客户可见性的地方——绕过它写 Character.status/visibility 就等于让
- * 发布链和实际服务状态分叉。
+ * SPEC: Serving controls availability; visibility preserves the operator's
+ * catalog choice. First publication promotes private to public. Republishing,
+ * pausing, resuming and retiring must not erase an existing unlisted choice.
+ * INVARIANT: Non-live Characters are archived, so retained public visibility
+ * cannot make a paused or retired Character available to customers.
  */
 export function servingCharacterProjection(input: {
   readonly state: ServingState;
+  readonly visibility: string;
   readonly avatarAssetId?: string | null;
 }) {
   return input.state === "live"
     ? {
         status: "approved",
-        visibility: "public",
+        visibility: input.visibility === "unlisted" ? "unlisted" : "public",
         ...(input.avatarAssetId !== undefined
           ? { imageAssetId: input.avatarAssetId }
           : {}),
       }
     : {
-        // paused 是运营暂扣、retired 是终态，客户侧一律不可见；封面指针保留，恢复时原样回到线上。
         status: "archived",
-        visibility: "private",
+        visibility: input.visibility,
       };
 }
 
@@ -47,12 +44,31 @@ export async function projectServingToCharacter(
     readonly content?: Prisma.CharacterUncheckedUpdateInput;
   },
 ) {
+  // The same row lock serializes catalog choices and chat-tool settings with
+  // Release projection, including resume which has no new content payload.
+  const [character] = await tx.$queryRaw<Array<{ visibility: string; advancedDetails: Prisma.JsonValue }>>`
+    SELECT "visibility", "advancedDetails" FROM "characters"
+    WHERE "id" = ${input.characterId} FOR UPDATE
+  `;
+  if (!character) throw Errors.notFound("Character not found");
+  let advancedDetails = input.content?.advancedDetails;
+  if (advancedDetails !== undefined) {
+    // SPEC: Release owns Soul/opening projections; operator switches survive
+    // publish and rollback. Lock the row before merging so concurrent tool
+    // settings cannot restore stale released content or be silently reset.
+    advancedDetails = toInputJson({
+      ...releaseRecord(character.advancedDetails),
+      ...releaseRecord(advancedDetails),
+    });
+  }
   await tx.character.update({
     where: { id: input.characterId },
     data: {
       ...input.content,
+      ...(advancedDetails !== undefined ? { advancedDetails } : {}),
       ...servingCharacterProjection({
         state: input.state,
+        visibility: character.visibility,
         avatarAssetId: input.avatarAssetId,
       }),
     },

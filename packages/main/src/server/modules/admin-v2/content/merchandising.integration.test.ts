@@ -155,9 +155,7 @@ describe("content merchandising commands", () => {
       visibility: "public",
       status: "approved",
     });
-    // INTENT: an infrastructure failure is not an authority decision, so `adminV2Route` lets it
-    // out untouched and the framework turns it into a 500. Invoking the handler directly here
-    // therefore observes the raw throw; the invariant under test is the rollback below.
+    // INTENT: the operator receives a stable error envelope while all domain writes roll back.
     await installFaultInjection(requestId);
     await expect(command(
       characterId,
@@ -169,7 +167,11 @@ describe("content merchandising commands", () => {
         confirmation: `${characterId}:visibility:private`,
       },
       requestId,
-    )).rejects.toThrow(/injected content command outbox failure/);
+    )).resolves.toMatchObject({
+      status: 500,
+      ok: false,
+      error: { code: "internal", message: "Internal error" },
+    });
     await expect(
       prisma.character.findUniqueOrThrow({ where: { id: characterId } }),
     ).resolves.toMatchObject({ visibility: "public" });

@@ -1,11 +1,14 @@
+import type { CharacterDraft, Prisma } from "@prisma/client";
 import { dispatchGenerationAttemptOutbox } from "@/server/modules/generation/generation-attempt-authority";
 import { lockCharacterMediaAssetAuthorities } from "@/server/modules/admin-v2/characters/generation-authority-lock";
+import { canonicalJsonEqual } from "@/server/modules/admin-v2/shared/idempotency";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
-import { toInputJson } from "@/server/lib/request-json";
+import { isRecord, toInputJson } from "@/server/lib/request-json";
 import { moderateText } from "@/server/moderation/text-authority";
 import {
   jsonNonBlankString,
+  jsonRecord,
   jsonStringArray,
   pruneUndefined,
 } from "./json-values";
@@ -33,6 +36,12 @@ import {
   materializeUserCharacterContentVersion,
 } from "./character-soul";
 import { readCurrentCharacterDraftDetails } from "./character-draft-details";
+import {
+  prepareCharacterDraftVoice,
+  bindCharacterDraftVoice,
+  cleanupPreparedCharacterDraftVoice,
+} from "./character-draft-voice";
+import { logger } from "@/server/lib/logger";
 
 // SPEC: 用户侧建角色向导的两个写入动作 —— 生成身份预览图、把草稿提交成 Character。
 //
@@ -45,6 +54,60 @@ export async function assertDraftOwner(id: string, userId: string) {
   });
   if (!draft) throw Errors.notFound("Character draft not found");
   return draft;
+}
+
+const PREVIEW_PROMPT_SUFFIX = ". single subject, clear face, identity reference portrait";
+
+function characterPreviewDetails(value: unknown) {
+  const details = { ...jsonRecord(value) };
+  delete details.voiceSelection;
+  return details;
+}
+
+function characterPreviewPromptPrefix(draft: CharacterDraft, recipeBody: string) {
+  return [
+    recipeBody,
+    `${draft.style ?? "realistic"} portrait of an adult ${draft.gender ?? "female"} character`,
+    draft.name ? `Character name: ${draft.name}` : null,
+    `Appearance: ${JSON.stringify(draft.appearance ?? {})}`,
+    `Hair: ${JSON.stringify(draft.hair ?? {})}`,
+    `Body: ${JSON.stringify(draft.body ?? {})}`,
+  ].filter((part): part is string => Boolean(part)).join(". ") + ". Details: ";
+}
+
+function characterPreviewPrompt(draft: CharacterDraft, recipeBody: string) {
+  return characterPreviewPromptPrefix(draft, recipeBody) +
+    JSON.stringify(characterPreviewDetails(draft.advancedDetails)) + PREVIEW_PROMPT_SUFFIX;
+}
+
+export async function characterPreviewMatchesDraft(
+  draft: CharacterDraft,
+  previewJobId: string,
+  db: Prisma.TransactionClient | typeof prisma = prisma,
+) {
+  const request = await db.generationJob.findFirst({
+    where: { userId: draft.ownerId, sourceType: "character_preview", sourceId: previewJobId },
+    select: { prompt: true, recipeId: true, recipeVersion: true },
+    orderBy: { createdAt: "desc" },
+  });
+  if (!request?.recipeId || !request.prompt || request.recipeVersion === null) return false;
+  const recipe = await db.generationRecipe.findFirst({
+    where: { recipeKey: request.recipeId, version: request.recipeVersion },
+    select: { body: true },
+  });
+  if (!recipe) return false;
+  const prefix = characterPreviewPromptPrefix(draft, recipe.body);
+  if (!request.prompt.startsWith(prefix) || !request.prompt.endsWith(PREVIEW_PROMPT_SUFFIX)) return false;
+  // Existing prompts may contain voiceSelection. Only that nonvisual field is
+  // ignored; the pinned recipe, portrait traits and remaining details must match.
+  try {
+    const details: unknown = JSON.parse(request.prompt.slice(prefix.length, -PREVIEW_PROMPT_SUFFIX.length));
+    return isRecord(details) && canonicalJsonEqual(
+      characterPreviewDetails(details), characterPreviewDetails(draft.advancedDetails),
+    );
+  } catch {
+    return false;
+  }
 }
 
 export async function previewCharacterDraft(input: {
@@ -98,18 +161,7 @@ export async function previewCharacterDraft(input: {
     defaultWidth: profile.defaultWidth,
     defaultHeight: profile.defaultHeight,
   });
-  const prompt = [
-    recipe.body,
-    `${draft.style ?? "realistic"} portrait of an adult ${draft.gender ?? "female"} character`,
-    draft.name ? `Character name: ${draft.name}` : null,
-    `Appearance: ${JSON.stringify(draft.appearance ?? {})}`,
-    `Hair: ${JSON.stringify(draft.hair ?? {})}`,
-    `Body: ${JSON.stringify(draft.body ?? {})}`,
-    `Details: ${JSON.stringify(draft.advancedDetails ?? {})}`,
-    "single subject, clear face, identity reference portrait",
-  ]
-    .filter((part): part is string => Boolean(part))
-    .join(". ");
+  const prompt = characterPreviewPrompt(draft, recipe.body);
 
   // INVARIANT: Preview business state, Generation Request, first Attempt and
   // dispatch Outbox either all exist or none do. Gen consumes the same formal
@@ -315,13 +367,23 @@ export async function submitCharacterDraft(input: {
       missingFields: missingPersonaFields,
     });
   }
+  // The draft stores these groups separately; the permanent Character and its
+  // immutable content/Visual Profile consume one complete appearance snapshot.
+  const face = draftVisualFields(draft.appearance);
+  const hair = { ...draftVisualFields(face.hair ?? null), ...draftVisualFields(draft.hair) };
+  const body = { ...draftVisualFields(face.body ?? null), ...draftVisualFields(draft.body) };
+  const appearance = {
+    ...face,
+    ...(Object.keys(hair).length ? { hair } : {}),
+    ...(Object.keys(body).length ? { body } : {}),
+  };
   const userContent = compileUserSoulOrBadRequest({
     name: draftName,
     age,
     description,
     style,
     gender,
-    appearance: draft.appearance,
+    appearance,
     advancedDetails,
   });
   const characterAdvancedDetails = {
@@ -329,6 +391,10 @@ export async function submitCharacterDraft(input: {
     soulFingerprint: userContent.personaSnapshot.compiled.fingerprint,
     compilerVersion: userContent.personaSnapshot.compiled.compilerVersion,
   };
+
+  const preparedVoice = advancedDetails.voiceSelection
+    ? await prepareCharacterDraftVoice({ ...advancedDetails.voiceSelection, userId, draftId: draft.id })
+    : null;
 
   const character = await prisma.$transaction(async (tx) => {
     await lockCharacterMediaAssetAuthorities(tx, [anchorAssetId]);
@@ -355,14 +421,18 @@ export async function submitCharacterDraft(input: {
         description,
         systemPrompt: userContent.personaSnapshot.compiled.systemPrompt,
         visibility: input.visibility,
-        status: input.visibility === "public" ? "pending_review" : "approved",
+        status: input.visibility === "private" ? "approved" : "pending_review",
         style,
         gender,
         imageAssetId: anchorAssetId,
-        appearance: toInputJson(draft.appearance ?? {}),
+        appearance: toInputJson(appearance),
         advancedDetails: toInputJson(characterAdvancedDetails),
       },
     });
+
+    if (preparedVoice) {
+      await bindCharacterDraftVoice(tx, { characterId: created.id, userId, prepared: preparedVoice });
+    }
 
     const contentVersion = await materializeUserCharacterContentVersion({
       tx,
@@ -405,7 +475,7 @@ export async function submitCharacterDraft(input: {
         age,
         description,
         gender,
-        appearance: draft.appearance,
+        appearance,
         advancedDetails,
         anchorAssetIds: [anchorAssetId],
         createdFrom: "create_preview",
@@ -421,7 +491,7 @@ export async function submitCharacterDraft(input: {
       data: {
         characterId: created.id,
         submitterId: userId,
-        status: input.visibility === "public" ? "pending" : "approved",
+        status: input.visibility === "private" ? "approved" : "pending",
       },
     });
     await tx.characterDraft.update({
@@ -436,9 +506,20 @@ export async function submitCharacterDraft(input: {
     });
 
     return tx.character.findUniqueOrThrow({ where: { id: created.id } });
+  }).catch(async (error) => {
+    if (preparedVoice) {
+      await cleanupPreparedCharacterDraftVoice(preparedVoice).catch((cleanupError) => {
+        logger.error({ err: cleanupError, draftId: draft.id }, "Could not clean up a prepared Character voice after submit failure");
+      });
+    }
+    throw error;
   });
 
   return { character };
+}
+
+function draftVisualFields(value: Prisma.JsonValue): Prisma.JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : {};
 }
 
 function requiredCharacterPersonaFields(input: {

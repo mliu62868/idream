@@ -43,6 +43,7 @@ import {
   type PollingTask,
 } from "@/lib/authority-resource";
 import { createLatestRequestGate } from "@/lib/latest-request";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { cn } from "@/lib/utils";
 import { characterWorkspacePermissions } from "./character-workspace-permissions";
 import { permissionDenied } from "./character-permission-denied";
@@ -503,6 +504,20 @@ function CharacterDetail({
       window.clearTimeout(timer);
     };
   }, [load, permissions.read]);
+  useEffect(() => {
+    if (!permissions.read) return;
+    // INTENT: Shell refresh must reload client-owned Character facts while
+    // preserving the journal's lock for an unresolved write.
+    const refresh = () => {
+      if (journal.getSnapshot().notice) {
+        void refreshAuthoritativeWorkspace();
+      } else {
+        void load().catch(() => undefined);
+      }
+    };
+    window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
+    return () => window.removeEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
+  }, [journal, load, permissions.read, refreshAuthoritativeWorkspace]);
   useEffect(() => {
     const restore = () => {
       if (!journal.restore()) return;

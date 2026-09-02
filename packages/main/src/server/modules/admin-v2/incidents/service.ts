@@ -449,6 +449,9 @@ export async function previewIncidentActionPlan(input: {
     const allIds = snapshot.map((row) => row.id).sort();
     const skippedIds = allIds.filter((id) => !eligibleIds.includes(id));
     if (eligibleIds.length === 0) {
+      if (input.action === "retry_eligible" && snapshot.some((row) => row.attempt?.status === "unknown")) {
+        throw Errors.badRequest("Unknown provider outcome requires reconciliation. Review the affected request in Jobs and confirm failure before retrying.", { action: input.action });
+      }
       throw Errors.badRequest("Incident action has no eligible occurrences", { action: input.action });
     }
     const occurrenceSetHash = canonicalSha256({ action: input.action, eligibleIds, skippedIds });

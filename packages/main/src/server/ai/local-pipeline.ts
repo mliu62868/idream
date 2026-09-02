@@ -343,6 +343,39 @@ async function inspectAndQuarantineStaleGeneration(input: {
     ) {
       return { kind: "none" };
     }
+    if (
+      input.recoveryProbe.attemptId === attempt.id &&
+      input.recoveryProbe.sourceExhausted
+    ) {
+      // Bull exhaustion proves only that execution stopped. Without a Gen
+      // terminal record it cannot prove whether a provider call happened.
+      const result = await recordGenerationAttemptEvent(tx, {
+        eventId: `${attempt.id}:source-exhausted-outcome-unknown`,
+        attemptId: attempt.id,
+        eventType: "generation.attempt.unknown.v1",
+        outcome: "unknown",
+        occurredAt: evidenceAt,
+        payload: { requestId: job.id, reason: "source_exhausted_without_terminal_record" },
+        errorClass: "generation_source_exhausted",
+        errorCode: "generation_source_exhausted",
+        errorSignature: `generation_source_exhausted:${attempt.provider ?? "unresolved"}`,
+        retryability: "operator_retry",
+        operatorGuidance: "Inspect the exhausted source job and reconcile provider execution before refunding or retrying.",
+      });
+      await tx.generationJobEvent.upsert({
+        where: { id: `generation_request_unknown_${attempt.id}` },
+        create: {
+          id: `generation_request_unknown_${attempt.id}`,
+          jobId: job.id,
+          type: "provider_outcome_unknown",
+          message: "Generation execution stopped without terminal evidence and requires operator reconciliation",
+          metadata: toInputJson({ attemptId: attempt.id, errorCode: "generation_source_exhausted" }),
+        },
+        update: {},
+      });
+      // Retain the failed source row for inspection; never reset its budget.
+      return { kind: "quarantined", created: result.disposition === "created", queue: null };
+    }
     if (!transport) {
       return dispatch && queue
         ? {
@@ -414,6 +447,7 @@ type RecoverableTerminalProbe = {
   readonly attemptId: string | null;
   readonly defer: boolean;
   readonly sourceDispatchRecoverable: boolean;
+  readonly sourceExhausted: boolean;
 };
 
 // INTENT: Redis and Blob probes must never run while PostgreSQL authority rows
@@ -455,6 +489,7 @@ async function probeRecoverableTerminalEvidence(
       attemptId: null,
       defer: false,
       sourceDispatchRecoverable: false,
+      sourceExhausted: false,
     };
   }
   const dispatch = generationDispatchForAttempt(dispatchRows, attempt.id);
@@ -470,6 +505,7 @@ async function probeRecoverableTerminalEvidence(
       attemptId: attempt.id,
       defer: true,
       sourceDispatchRecoverable: false,
+      sourceExhausted: false,
     };
   }
 }
@@ -491,7 +527,7 @@ async function hasRecoverableTerminalEvidence(input: {
       })
     : null;
   if (!input.dispatch || !resolved?.ok) {
-    return { defer: false, sourceDispatchRecoverable: false };
+    return { defer: false, sourceDispatchRecoverable: false, sourceExhausted: false };
   }
   const { authority } = resolved;
   const envelope = {
@@ -502,6 +538,7 @@ async function hasRecoverableTerminalEvidence(input: {
   };
 
   let sourceDispatchRecoverable = false;
+  let sourceExhausted = false;
   // Source first, relay last: if recovery changes failed -> waiting ->
   // completed while this probe runs, the final relay read observes the durable
   // admission that allowed source completion.
@@ -520,7 +557,9 @@ async function hasRecoverableTerminalEvidence(input: {
     if (source.state !== "failed") {
       sourceDispatchRecoverable = true;
     } else if (await hasExactBlobTerminal(envelope)) {
-      return { defer: true, sourceDispatchRecoverable: false };
+      return { defer: true, sourceDispatchRecoverable: false, sourceExhausted: false };
+    } else {
+      sourceExhausted = source.attemptsMade >= source.maxAttempts;
     }
   }
 
@@ -529,13 +568,14 @@ async function hasRecoverableTerminalEvidence(input: {
     idempotencyKeys.generationTerminalRelay(input.attempt.id),
   );
   if (!relay || !RECOVERABLE_QUEUE_STATES.has(relay.state)) {
-    return { defer: false, sourceDispatchRecoverable };
+    return { defer: false, sourceDispatchRecoverable, sourceExhausted };
   }
   const validation = validateGenerationTerminalRelaySnapshot(relay);
   return {
     defer: validation.valid &&
       exactAttemptTerminalEvidence(envelope, validation.payload.terminalRecord),
     sourceDispatchRecoverable,
+    sourceExhausted,
   };
 }
 
@@ -579,7 +619,7 @@ async function recoverStaleGenerationDispatch(
     decision.queue.dedupeKey,
   );
   if (queued) {
-    if (!["completed", "failed"].includes(queued.state)) return 0;
+    if (queued.state !== "completed") return 0;
     const finishedAt = queued.finishedOn ? new Date(queued.finishedOn) : null;
     if (finishedAt && finishedAt >= decision.staleCutoff) return 0;
     const removed = await jobQueue.removeByDedupeKey(

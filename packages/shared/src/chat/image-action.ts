@@ -112,15 +112,16 @@ export function parseImageAgentToolCall(
 }
 
 const CHINESE_IMAGE_NOUN = "(?:裸照|自拍照?|随手照|写真(?:照|片)?|照片|相片|图片|图像)";
-const ENGLISH_IMAGE_NOUN = "(?:photo|picture|pic|selfie|image|nude)";
+const ENGLISH_IMAGE_NOUN = "(?:photo|picture|pic|selfie|image|portrait|nude)";
 const CHINESE_NON_NUDE_IMAGE_NOUN = "(?:自拍照?|随手照|写真(?:照|片)?|照片|相片|图片|图像)";
-const ENGLISH_NON_NUDE_IMAGE_NOUN = "(?:photo|picture|pic|selfie|image)";
+const ENGLISH_NON_NUDE_IMAGE_NOUN = "(?:photo|picture|pic|selfie|image|portrait)";
 
 export type ImageIntentDecision =
   | {
       kind: "generate";
-      reason: "explicit_media_command" | "show_companion_command" | "visual_gift_command";
+      reason: "explicit_media_command" | "show_companion_command" | "visual_gift_command" | "confirmed_image_offer";
       action: RequiredImageAction & { readonly name: typeof GENERATE_IMAGE_ASYNC_TOOL };
+      confirmedOffer?: string;
     }
   | {
       kind: "edit";
@@ -136,26 +137,34 @@ export type ImageIntentDecision =
 export function imageIntentForUserRequest(input: {
   userText: string;
   hasRecentImageContext?: boolean;
+  previousAssistantText?: string;
 }): ImageIntentDecision {
   const userText = input.userText.replace(/\s+/g, " ").trim();
   if (!userText) return { kind: "none", reason: "empty" };
   if (negatesImageAction(userText)) return { kind: "none", reason: "negated" };
 
-  if (explicitLastImageEdit(userText)) {
+  // Discussion may quote an image command. Only the actionable sentences can
+  // authorize spending; a separate direct request still works after a question.
+  const actionableText = userText.split(/(?<=[.!?。！？])\s*/u)
+    .filter((sentence) => !isImageDiscussion(sentence)).join(" ");
+  if (explicitLastImageEdit(actionableText)) {
     return editDecision(userText, "explicit_last_image_edit");
   }
-  if (input.hasRecentImageContext && contextualImageEdit(userText)) {
+  if (input.hasRecentImageContext && contextualImageEdit(actionableText)) {
     return editDecision(userText, "contextual_image_edit");
   }
 
-  const reason = explicitNewImageRequest(userText);
+  const directReason = explicitNewImageRequest(actionableText);
+  const confirmedOffer = directReason ? null : confirmedImageOffer(userText, input.previousAssistantText);
+  const reason = directReason ?? (confirmedOffer ? "confirmed_image_offer" : null);
   if (!reason) return { kind: "none", reason: "discussion_or_ambiguous" };
   return {
     kind: "generate",
     reason,
+    ...(confirmedOffer ? { confirmedOffer } : {}),
     action: {
       name: GENERATE_IMAGE_ASYNC_TOOL,
-      requestedNudity: requestedNudityIntent(userText),
+      requestedNudity: requestedNudityIntent(confirmedOffer ?? userText),
     },
   };
 }
@@ -163,9 +172,31 @@ export function imageIntentForUserRequest(input: {
 export function requiredImageActionForUserRequest(input: {
   userText: string;
   hasRecentImageContext?: boolean;
+  previousAssistantText?: string;
 }): RequiredImageAction | null {
   const decision = imageIntentForUserRequest(input);
   return decision.kind === "none" ? null : decision.action;
+}
+
+function isImageDiscussion(value: string): boolean {
+  return /^\s*(?:if you (?:could|were to)\b|(?:please\s+)?(?:explain|describe|discuss|translate|imagine)\b|how (?:do|does|would|could|can|should)\b|(?:what|which|where) (?:would|could|should)\b|(?:can|could|would|will) you (?:please\s+)?(?:explain|describe|discuss|translate|tell me how)\b)/iu.test(value) ||
+    /^\s*(?:请)?(?:解释|翻译|想象|设想)/u.test(value) ||
+    /^\s*(?:假设|假如|要是|如果让你|如果你能).{0,100}(?:怎么|如何|什么|哪|你会|会选)/u.test(value) ||
+    /^\s*(?:如何|怎样|怎么|你会如何|你会怎么).{0,80}(?:拍|画|生成|制作|修改)/u.test(value);
+}
+
+function confirmedImageOffer(userText: string, previousAssistantText?: string): string | null {
+  if (!previousAssistantText) return null;
+  const affirmative = /^(?:yes|yeah|yep|sure|okay|ok|please do|go ahead)(?:[,，]?\s*(?:please|do|send it|show me|go ahead))?[.!！。\s]*$/iu.test(userText) ||
+    /^(?:好|好啊|好的|可以|行|要|想看)(?:[，,]?\s*(?:发吧|给我看|发给我|请发|看看))?[！!。\s]*$/u.test(userText);
+  if (!affirmative) return null;
+  const offer = previousAssistantText.replace(/\s+/g, " ").trim();
+  if (!/[?？]$/u.test(offer) || (offer.match(/[?？]/gu)?.length ?? 0) !== 1) return null;
+  const proposal = offer.match(new RegExp(`\\b(?:want me to|would you like me to|shall i|can i|may i|should i)\\s+(?:send|show|take|make|generate|create)\\b[^?!.]{0,60}\\b${ENGLISH_IMAGE_NOUN}s?\\b[^?!.]{0,60}\\?`, "i"))?.[0] ??
+    offer.match(new RegExp(`\\b(?:do you want|would you like|want)\\s+(?:to see\\s+)?(?:(?:a|an|one|my)\\s+)?(?:new\\s+|another\\s+)?${ENGLISH_IMAGE_NOUN}\\b[^?!.]{0,60}\\?`, "i"))?.[0] ??
+    offer.match(new RegExp(`(?:要不要|想不想)(?:我)?(?:给你|发|拍|生成|画|送你|看|看看)[^。？！]{0,24}${CHINESE_IMAGE_NOUN}[^。？！]{0,12}[？?]`, "u"))?.[0] ??
+    offer.match(new RegExp(`想(?:看|要)[^。？！]{0,24}${CHINESE_IMAGE_NOUN}[^。？！]{0,12}吗[？?]`, "u"))?.[0];
+  return proposal && !negatesImageAction(proposal) ? proposal : null;
 }
 
 function requestedNudityIntent(value: string): RequestedNudity {

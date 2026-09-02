@@ -1,5 +1,5 @@
 import type { Prisma } from "@prisma/client";
-import { characterVideoProductionRecipe } from "@idream/shared";
+import { characterVideoProductionRecipe, loadCharacterSoulSnapshot } from "@idream/shared";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { toInputJson } from "@/server/lib/request-json";
@@ -95,7 +95,8 @@ export async function resolveProductionTarget(targetType: string, targetId?: str
       }),
     ]);
     if (!character) throw Errors.badRequest("Target character not found");
-    const persona = jsonRecord(content?.personaSnapshot);
+    const loadedSoul = content ? loadCharacterSoulSnapshot(content.personaSnapshot) : null;
+    const persona = jsonRecord(loadedSoul?.ok ? loadedSoul.snapshot.soul : content?.personaSnapshot);
     const appearance = jsonRecord(content?.appearanceSnapshot);
     const name = stringFromRecord(persona, "name") ?? character.name;
     const age = numberFromRecord(persona, "age") ?? character.age;
@@ -220,9 +221,19 @@ export async function resolveProductionBootstrapAuthority(
   const content = await db.characterContentVersion.findFirst({
     where: { characterId },
     orderBy: { version: "desc" },
-    select: { id: true, appearanceSnapshot: true },
+    select: { id: true, version: true, personaSnapshot: true, appearanceSnapshot: true },
   });
   if (!project || !content) return null;
+  const loaded = loadCharacterSoulSnapshot(content.personaSnapshot);
+  const appearance = jsonRecord(content.appearanceSnapshot);
+  const style = stringFromRecord(appearance, "style");
+  if (!loaded.ok || !style) {
+    throw Errors.conflict("The first portrait requires valid immutable Soul and visual direction", {
+      characterContentVersionId: content.id,
+      diagnostics: loaded.diagnostics,
+    });
+  }
+  const soul = loaded.snapshot.soul;
   return {
     projectId: project.id,
     projectVersion: project.version,
@@ -232,6 +243,26 @@ export async function resolveProductionBootstrapAuthority(
       appearanceSnapshot: content.appearanceSnapshot,
       brief,
     }),
+    // The first image has no reference yet. Its visual brief must consume the
+    // same immutable bytes we pin, never the mutable Character synopsis.
+    target: {
+      type: "character" as const,
+      id: characterId,
+      label: soul.name,
+      detail: "",
+      contentVersionId: content.id,
+      contentVersion: content.version,
+      visualIdentity: {
+        age: soul.age,
+        gender: soul.gender,
+        style,
+        traits: [
+          stringFromRecord(appearance, "identityAnchor"),
+          ...jsonStringArray(appearance.stableTraits),
+        ].filter((value): value is string => Boolean(value)),
+        artDirection: stringFromRecord(appearance, "referenceDirection") ?? null,
+      },
+    },
   };
 }
 
@@ -258,6 +289,7 @@ function productionConsistencyPrompt(
 
 export function productionPrompt(input: {
   purpose: CreativeRunCreateInput["purpose"];
+  bootstrapIdentity?: boolean;
   target: Awaited<ReturnType<typeof resolveProductionTarget>>;
   recipeBody: string;
   presetFragment: string;
@@ -282,7 +314,7 @@ export function productionPrompt(input: {
       .join("\n");
   }
   if (
-    input.purpose === "identity_calibration" &&
+    (input.bootstrapIdentity || input.purpose === "identity_calibration") &&
     input.target?.type === "character" &&
     input.target.visualIdentity
   ) {

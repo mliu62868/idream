@@ -1,4 +1,5 @@
 import type { Prisma } from "@prisma/client";
+import { isGenerationRequestCancellableStatus } from "@idream/shared/catalog";
 import { prisma } from "@/server/lib/db";
 import { isRecord } from "@/server/lib/request-json";
 
@@ -27,6 +28,18 @@ export function effectiveGenerationJobStatus(
   return storedStatus === "queued" && latestAttemptStatus === "running"
     ? "running"
     : storedStatus;
+}
+
+export function generationExecutionErrorCode(
+  storedStatus: string,
+  latestAttemptStatus: string | null,
+  errorCode: string | null,
+) {
+  // Unknown is an execution fact, not a failed/refunded business outcome.
+  // A later operator settlement or retry must supersede this read projection.
+  return latestAttemptStatus === "unknown" && isGenerationRequestCancellableStatus(storedStatus)
+    ? "provider_outcome_unknown"
+    : errorCode;
 }
 
 export function generationJobDTO(
@@ -66,7 +79,7 @@ export function generationJobDTO(
     sourceType: job.sourceType,
     sourceId: job.sourceId,
     sourceMeta: job.sourceMeta,
-    errorCode: job.errorCode,
+    errorCode: generationExecutionErrorCode(job.status, latestAttemptStatus, job.errorCode),
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
     completedAt: job.completedAt,

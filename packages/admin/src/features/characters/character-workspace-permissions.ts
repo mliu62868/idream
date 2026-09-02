@@ -20,6 +20,7 @@ export const CHARACTER_WORKSPACE_WRITES = {
   // SPEC: 内容设置使用各自的写权限，character.project.write 不授予这些操作。
   writeTags: "content.tag.write",
   manageChatTools: "content.production.write",
+  manageCatalogVisibility: "content.takedown.write",
 } as const satisfies Record<string, AdminPermissionKey>;
 
 type CharacterWorkspaceWrite = keyof typeof CHARACTER_WORKSPACE_WRITES;

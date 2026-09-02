@@ -199,7 +199,7 @@ describe("durable cross-service contracts", () => {
     }).success).toBe(false);
   });
 
-  it("permits providerInvoked=false only for an evidence-free input block", () => {
+  it("permits providerInvoked=false only for an evidence-free input block or preparation failure", () => {
     const common = {
       version: 1 as const,
       attemptId: "attempt-input-block",
@@ -258,5 +258,24 @@ describe("durable cross-service contracts", () => {
       ...inputBlock,
       block: { ...inputBlock.block, layer: "provider" },
     }).success).toBe(false);
+    const preparationFailure = {
+      ...common,
+      providerInvoked: false,
+      outcome: "failed",
+      error: {
+        code: "preparation_failed",
+        message: "Reference image could not be loaded",
+        retryability: "retryable",
+      },
+    };
+    expect(generationTerminalRecordSchema.safeParse(preparationFailure).success).toBe(true);
+    for (const invalid of [
+      { providerRequestId: "invented-provider-request" },
+      { accounting: { usage: {}, latencyMs: 0, costMicros: null, pricingVersion: null } },
+      { usage: { images: 1 } },
+      { outcome: "unknown" },
+    ]) {
+      expect(generationTerminalRecordSchema.safeParse({ ...preparationFailure, ...invalid }).success).toBe(false);
+    }
   });
 });
