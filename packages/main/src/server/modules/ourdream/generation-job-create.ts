@@ -672,8 +672,7 @@ async function resolvePresetPromptFragment(
       id: { in: ids },
       status: "active",
       OR: [
-        { scope: "built_in" },
-        { scope: "community", visibility: "public" },
+        { scope: { in: ["built_in", "community"] }, visibility: "public" },
         { ownerId: userId },
       ],
     },

@@ -17,6 +17,7 @@ import {
   type DedicatedStaticArticlePath,
 } from "@/lib/static-article-authority";
 import { isPublicRouteDiscoverable } from "@/lib/public-route-authority";
+import type { ResourceLibrary } from "@/lib/resource-library";
 import { toSafetyHref } from "@/lib/ourdream-safety-data";
 import type { OurdreamRoute } from "@/types/ourdream";
 import { AppSidebar } from "./AppSidebar";
@@ -311,16 +312,16 @@ function ProfilePage({ route }: Readonly<{ route: OurdreamRoute }>) {
   );
 }
 
-function LibraryPage({ route }: Readonly<{ route: OurdreamRoute }>) {
-  const cards = libraryCardsForRoute(route);
+function LibraryPage({ route, resourceLibrary }: Readonly<{ route: OurdreamRoute; resourceLibrary?: ResourceLibrary }>) {
+  const cards = resourceLibrary?.items ?? libraryCardsForRoute(route).slice(0, 24);
 
   return (
     <RouteShell route={route}>
       <PageHero route={route} />
       <section className="px-4 pb-12 md:px-[60px]">
         {cards.length > 0 ? (
-          <div className="grid gap-3 md:grid-cols-3">
-            {cards.slice(0, 24).map((card) => (
+          <div className="grid gap-3 md:grid-cols-3" data-testid="resource-library-results">
+            {cards.map((card) => (
             <Link
               className="group rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-5 transition-colors hover:bg-[rgb(36,36,36)]"
               href={card.path}
@@ -371,6 +372,21 @@ function LibraryPage({ route }: Readonly<{ route: OurdreamRoute }>) {
             </div>
           </div>
         )}
+        {resourceLibrary && resourceLibrary.pageCount > 1 && (
+          <nav aria-label="Resource pages" className="mt-6 flex items-center justify-between gap-4 text-[13px] text-white">
+            {resourceLibrary.page > 1 ? (
+              <Link className="rounded-full bg-[rgb(46,46,46)] px-5 py-3 font-bold" href={resourceLibrary.page === 2 ? route.path : `${route.path}?page=${resourceLibrary.page - 1}`}>
+                Previous
+              </Link>
+            ) : <span />}
+            <span>Page {resourceLibrary.page} of {resourceLibrary.pageCount}</span>
+            {resourceLibrary.page < resourceLibrary.pageCount ? (
+              <Link className="rounded-full bg-[rgb(46,46,46)] px-5 py-3 font-bold" href={`${route.path}?page=${resourceLibrary.page + 1}`}>
+                Next
+              </Link>
+            ) : <span />}
+          </nav>
+        )}
       </section>
       <PublicCharacterStrip />
     </RouteShell>
@@ -394,19 +410,6 @@ function libraryCardsForRoute(route: OurdreamRoute) {
     return getRoutesByPrefix("/videos/").filter((item) =>
       isPublicRouteDiscoverable(item.path),
     );
-  }
-  if (route.path === "/resources-hub") {
-    return routeCardsFromPaths([
-      "/guides/character-cards",
-      "/guides/character-card-creator",
-      "/guides/sillytavern-setup-guide",
-      "/comparison",
-      "/create",
-      "/generate",
-      "/upgrade",
-      "/helpdesk",
-      "/safety/introduction",
-    ]);
   }
   if (route.path === "/games") {
     return routeCardsFromPaths([
@@ -1065,7 +1068,7 @@ function RelatedRoutes({ route }: Readonly<{ route: OurdreamRoute }>) {
   );
 }
 
-export function OurdreamRoutePage({ route }: Readonly<{ route: OurdreamRoute }>) {
+export function OurdreamRoutePage({ route, resourceLibrary }: Readonly<{ route: OurdreamRoute; resourceLibrary?: ResourceLibrary }>) {
   // /chat is a real chat hub (sessions list), not the marketing template the
   // route metadata otherwise resolves to.
   if (route.path === "/chat") return <ChatHubPage route={route} />;
@@ -1081,7 +1084,7 @@ export function OurdreamRoutePage({ route }: Readonly<{ route: OurdreamRoute }>)
     case "generator":
       return <GeneratorPage route={route} />;
     case "library":
-      return <LibraryPage route={route} />;
+      return <LibraryPage route={route} resourceLibrary={resourceLibrary} />;
     case "marketing":
       return <MarketingPage route={route} />;
     case "profile":

@@ -1469,6 +1469,34 @@ async function seedAdminControlPlane() {
     publishedAt: new Date("2026-06-24T00:00:00.000Z"),
   });
 
+  // The native 2× model was exercised on the shared MPS backend before this
+  // route was published. It is never an automatic text/character generator.
+  if (!existingProfileKeys.has("image-enhance-2x")) {
+    await prisma.generationModelProfile.create({ data: {
+      id: "seed-profile-image-enhance-2x-v1", profileKey: "image-enhance-2x", label: "Enhance 2×",
+      mode: "image", runner: "comfyui", pipelineModel: "realesrgan-x2plus-enhance", workflowKey: "realesrgan-x2plus-enhance",
+      sourceModelPath: "upscale_models/RealESRGAN_x2plus.pth", modelFormat: "pytorch",
+      runnerConfig: {
+        workflowVersion: 1, publicSelection: { surface: "gallery_enhance", explicitOnly: true },
+        capabilities: { textToImage: false, initImage: true, referenceImages: true, stableSeed: false, lora: false },
+        enhancement: { scale: 2 },
+        modelAsset: { filename: "RealESRGAN_x2plus.pth", sha256: "49fafd45f8fd7aa8d31ab2a22d14d91b536c34494a5cfe31eb5d89c2fa266abb", source: "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth", license: "BSD-3-Clause" },
+      },
+      defaultWidth: 1024, defaultHeight: 1024, allowedOrientations: ["original"], steps: 1,
+      sampler: "native", scheduler: "native", cfgScale: 1, costMultiplier: 1, maxCount: 1,
+      status: "active", enabled: true, rolloutPercent: 100,
+      publishedAt: new Date("2026-09-02T21:37:19.133Z"),
+      dryRunSummary: { status: "runtime_verified_mps", source: "native_realesrgan_x2plus", sourceWidth: 512, sourceHeight: 640, width: 1024, height: 1280, elapsedMs: 3260, sourceSha256: "f5080a1fb7c9ff5db42fd8ed3fb3c1c3a068090e77e2e395424425133d6bdfe1", outputSha256: "4943ceb81006bfb4986b526578085309eece0f6f2dc38297c2380d2be7d8a18b" },
+    } });
+  }
+  if (!await prisma.generationRecipe.findFirst({ where: { recipeKey: "image-enhance-2x" } })) {
+    await prisma.generationRecipe.create({ data: {
+      id: "seed-recipe-image-enhance-2x-v1", recipeKey: "image-enhance-2x", label: "Enhance 2×",
+      mode: "image", useCase: "enhance", body: "Enhance the source image at its original aspect ratio by exactly 2×.",
+      presetOrder: [], safetyHints: {}, sampleMatrix: [], status: "active", publishedAt: new Date("2026-09-02T21:37:19.133Z"),
+    } });
+  }
+
   await ensureDefaultPricingRule({
     id: "seed-pricing-video-default-v1",
     ruleKey: "generation_video_default",

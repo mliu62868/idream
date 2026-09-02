@@ -20,6 +20,7 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import {
   parseChatSendResponse,
   parseChatSessionDetailResponse,
+  parseGenerationRetryQuoteResponse,
   type RuntimeChatAttachment as ChatAttachment,
   type RuntimeChatMessage as ChatMessage,
   type RuntimeChatSession as ChatSession,
@@ -30,6 +31,7 @@ import { MobileBottomNav } from "./MobileBottomNav";
 import { ChatHeaderControls } from "./chat/ChatHeaderControls";
 import { ChatSessionListDrawer } from "./chat/ChatSessionListDrawer";
 import { MemoryPanel } from "./chat/MemoryPanel";
+import { ConversationPreferences } from "./chat/ConversationPreferences";
 import { MessageActions } from "./chat/MessageActions";
 import { authHrefForTarget } from "./authRedirect";
 import { LegacyTestAssetBadge } from "./LegacyTestAssetBadge";
@@ -54,6 +56,8 @@ import {
 } from "./chat-message-actions";
 import {
   GenerationRequestError,
+  hasUnconfirmedGenerationRetry,
+  requestGenerationRetryWithExactAuthority,
   requestMediaVariationWithExactQuote,
 } from "@/lib/generation-write-client";
 
@@ -196,6 +200,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   const [deleteConfirmMessageId, setDeleteConfirmMessageId] = useState<string | null>(null);
   const [variationPendingMediaId, setVariationPendingMediaId] =
     useState<string | null>(null);
+  const [retryingImageIds, setRetryingImageIds] = useState<ReadonlySet<string>>(() => new Set());
   const [jumpToLatestVisible, setJumpToLatestVisible] = useState(false);
   const localStreamStateRef = useRef<Map<string, LocalStreamState>>(new Map());
   const pinnedToBottomRef = useRef(true);
@@ -206,6 +211,8 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
   } | null>(null);
   const variationIdempotencyKeysRef =
     useRef<Map<string, string>>(new Map());
+  const imageRetryKeysRef = useRef<Map<string, string>>(new Map());
+  const imageRetryPendingRef = useRef(new Set<string>());
   const streamSources = useRef<Map<string, EventSource>>(new Map());
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const voicePlaybackIntentRef = useRef(0);
@@ -272,6 +279,9 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
       setVoicePlayingId(null);
       sessionMutationEpochRef.current += 1;
       variationIdempotencyKeysRef.current.clear();
+      imageRetryKeysRef.current.clear();
+      imageRetryPendingRef.current.clear();
+      setRetryingImageIds(new Set());
       setVariationPendingMediaId(null);
       setTitle("Chat");
       setMessages([]);
@@ -294,6 +304,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     }, 0);
     return () => {
       cancelled = true;
+      sessionMutationEpochRef.current += 1;
       controller.abort();
       window.clearTimeout(timer);
     };
@@ -806,30 +817,38 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
     }
   }
 
-  async function confirmImageAttachment(attachmentId: string) {
+  async function retryImageAttachment(attachment: ChatAttachment) {
+    const jobId = attachment.generationJobId;
+    if (!jobId || imageRetryPendingRef.current.has(attachment.id)) return;
+    imageRetryPendingRef.current.add(attachment.id);
+    setRetryingImageIds(new Set(imageRetryPendingRef.current));
     setStatus(null);
     setDeleteConfirmMessageId(null);
-    sessionMutationEpochRef.current += 1;
-    setMessages((current) => updateAttachmentStatus(current, attachmentId, "requesting"));
+    const epoch = ++sessionMutationEpochRef.current;
     try {
-      const response = await fetch(
-        `/api/v1/chat/attachments/${encodeURIComponent(attachmentId)}/confirm`,
-        { method: "POST" },
-      );
-      if (!response.ok) {
-        setMessages((current) => updateAttachmentStatus(current, attachmentId, "proposed"));
-        if (response.status === 402) {
-          setUpgradeReason("dreamcoins");
-          setStatus("Not enough dreamcoins for this image.");
-        } else {
-          setStatus("Image request failed.");
-        }
-        return;
+      let quoteAuthority;
+      if (!hasUnconfirmedGenerationRetry(jobId, imageRetryKeysRef.current)) {
+        const response = await fetch(`/api/v1/generation/jobs/${encodeURIComponent(jobId)}/retry/quote`, { method: "POST", cache: "no-store" });
+        const payload: unknown = await response.json().catch(() => null);
+        if (!response.ok) throw new GenerationRequestError(chatFailureCopy(payload, "Couldn't check the image retry price."), response.status);
+        const { quote } = parseGenerationRetryQuoteResponse(payload);
+        quoteAuthority = { profileId: quote.profileId, profileVersion: quote.profileVersion, routeFingerprint: quote.routeFingerprint, pricingFingerprint: quote.pricing.fingerprint, outputCount: quote.outputCount, costDreamcoins: quote.costDreamcoins };
       }
-      fetchSession().then(applySession).catch(() => {});
-    } catch {
-      setMessages((current) => updateAttachmentStatus(current, attachmentId, "proposed"));
-      setStatus("Image request failed.");
+      if (epoch !== sessionMutationEpochRef.current) return;
+      const job = await requestGenerationRetryWithExactAuthority({ jobId, quoteAuthority, idempotencyKeys: imageRetryKeysRef.current });
+      if (epoch !== sessionMutationEpochRef.current) return;
+      setMessages(current => current.map(message => ({ ...message, attachments: message.attachments?.map(item => item.id === attachment.id
+        ? { ...item, generationJobId: job.id, status: "accepted", errorCode: null, costDreamcoins: job.costDreamcoins }
+        : item) })));
+      const session = await fetchSession();
+      if (epoch === sessionMutationEpochRef.current && session.id === id) applySession(session);
+    } catch (error) {
+      if (epoch !== sessionMutationEpochRef.current) return;
+      if (error instanceof GenerationRequestError && error.status === 402) setUpgradeReason("dreamcoins");
+      setStatus(error instanceof GenerationRequestError ? error.message : "Couldn't confirm the image request. Try again to check the same request.");
+    } finally {
+      imageRetryPendingRef.current.delete(attachment.id);
+      setRetryingImageIds(new Set(imageRetryPendingRef.current));
     }
   }
 
@@ -1169,6 +1188,7 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                 onOpenSessions={() => setSessionsOpen(true)}
                 onOpenMemory={() => setMemoryOpen(true)}
               />
+              <ConversationPreferences key={id} sessionId={id} />
               <div className="mt-6 flex min-h-[55vh] flex-1 flex-col gap-3 rounded-[20px] border border-white/10 bg-[rgb(18,18,18)] p-4">
                 {messages.map((message) => {
                   const isUser = message.role === "user";
@@ -1301,7 +1321,8 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                                   ? () => addAttachmentToIdentity(attachment.mediaAssetId as string)
                                   : undefined
                               }
-                              onConfirm={() => confirmImageAttachment(attachment.id)}
+                              onRetry={() => retryImageAttachment(attachment)}
+                              retryPending={retryingImageIds.has(attachment.id)}
                               onIdentityMatch={
                                 attachment.mediaAssetId
                                   ? () => recordAttachmentIdentityFeedback(attachment.mediaAssetId as string, "identity_match")
@@ -1359,7 +1380,8 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
                     </div>
                   );
                 })}
-                <div ref={messagesEndRef} />
+                {/* Keep auto-follow and New messages above the sticky composer/mobile navigation. */}
+                <div className="scroll-mb-40 md:scroll-mb-20" ref={messagesEndRef} />
               </div>
               {jumpToLatestVisible ? (
                 <button
@@ -1442,9 +1464,11 @@ export function ChatSessionClient({ id }: Readonly<{ id: string }>) {
         currentSessionId={id}
       />
       <MemoryPanel
+        key={id}
         open={memoryOpen}
         onClose={() => setMemoryOpen(false)}
         characterId={characterId}
+        sessionId={id}
         memoryEnabled={memoryEnabled}
         memoryPending={memoryPending}
         onToggleMemory={toggleMemory}
@@ -1555,19 +1579,6 @@ function isChatAuthError(error: unknown) {
   );
 }
 
-function updateAttachmentStatus(
-  messages: ChatMessage[],
-  attachmentId: string,
-  status: string,
-): ChatMessage[] {
-  return messages.map((message) => ({
-    ...message,
-    attachments: message.attachments?.map((attachment) =>
-      attachment.id === attachmentId ? { ...attachment, status } : attachment,
-    ),
-  }));
-}
-
 function newestUserMessageId(messages: ChatMessage[]) {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
@@ -1599,7 +1610,8 @@ function ChatImageAttachmentCard({
   attachment,
   canAddToIdentity,
   characterId,
-  onConfirm,
+  onRetry,
+  retryPending,
   onAddToIdentity,
   onIdentityMatch,
   onIdentityMismatch,
@@ -1610,7 +1622,8 @@ function ChatImageAttachmentCard({
   attachment: ChatAttachment;
   canAddToIdentity: boolean;
   characterId: string | null;
-  onConfirm: () => void;
+  onRetry: () => void;
+  retryPending: boolean;
   onAddToIdentity?: () => void;
   onIdentityMatch?: () => void;
   onIdentityMismatch?: () => void;
@@ -1663,6 +1676,7 @@ function ChatImageAttachmentCard({
   const requiresReview = attachment.errorCode === "provider_outcome_unknown";
   const isWaiting = chatAttachmentIsActive(attachment.status, attachment.errorCode);
   const failed = ["failed", "blocked", "refunded", "rejected"].includes(attachment.status);
+  const canRetry = Boolean(attachment.generationJobId) && ["failed", "refunded"].includes(attachment.status);
   const paymentRequired = failed && attachment.errorCode === "payment_required";
   const completedUnavailable = attachment.status === "completed" && Boolean(attachment.mediaAssetId);
   return (
@@ -1678,11 +1692,9 @@ function ChatImageAttachmentCard({
           <p className="text-[12px] font-bold text-white">
             {requiresReview
               ? "Image result needs review"
-              : attachment.status === "proposed"
-              ? "Image request"
               : paymentRequired
                 ? "Not enough dreamcoins"
-              : failed || completedUnavailable
+              : failed || attachment.status === "proposed" || completedUnavailable
                 ? "Image unavailable"
                 : "Generating image"}
           </p>
@@ -1700,10 +1712,10 @@ function ChatImageAttachmentCard({
             <p className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-white/60">
               {requiresReview
                 ? "The result could not be confirmed. Contact support before trying again."
-                : failed
+                : failed || attachment.status === "proposed"
                 ? paymentRequired
                   ? "Add dreamcoins to generate this image."
-                  : "The image could not be completed."
+                  : canRetry ? "The image could not be completed. Retry uses the current image price." : "The image could not be completed. You can send a new image request in this chat."
                 : "Your image is being prepared. You can keep chatting while it finishes."}
             </p>
           )}
@@ -1721,14 +1733,15 @@ function ChatImageAttachmentCard({
         >
           Get more dreamcoins
         </Link>
-      ) : attachment.status === "proposed" || failed ? (
+      ) : canRetry ? (
         <button
           className="mt-3 inline-flex h-8 items-center gap-1.5 rounded-full bg-white px-3 text-[12px] font-bold text-[rgb(13,13,13)] disabled:opacity-70"
-          onClick={onConfirm}
+          disabled={retryPending}
+          onClick={onRetry}
           type="button"
         >
-          {failed ? <RefreshCw className="h-3.5 w-3.5" /> : <ImageIcon className="h-3.5 w-3.5" />}
-          {failed ? "Retry image" : `Generate image${attachment.costDreamcoins ? ` · ${attachment.costDreamcoins} coins` : ""}`}
+          <RefreshCw className="h-3.5 w-3.5" />
+          {retryPending ? "Checking image request…" : "Retry image"}
         </button>
       ) : null}
       {completedUnavailable ? (

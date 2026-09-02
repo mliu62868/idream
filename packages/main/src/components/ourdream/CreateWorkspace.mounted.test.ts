@@ -281,6 +281,48 @@ describe("CreateWorkspace identity confirmation", () => {
     expect(container.textContent).toContain("Additional details must be 24,000 characters or fewer.");
   });
 
+  it("saves catalog suggestions and custom details in the same Soul and restores both", async () => {
+    const key = draftStorageKeyForScope("user:creator-1");
+    window.localStorage.setItem(key, JSON.stringify({
+      ...initialCharacterDraft(), draftId: "draft-1", step: 2, name: "Avery",
+      description: "Warm and direct", firstMessage: "Hello there",
+      detailsMarkdown: "## Background\nAn observatory keeper on a remote island.",
+    }));
+    await act(async () => root.render(createElement(CreateWorkspace)));
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="create-step-soul"]')));
+    for (const [label, choice] of [
+      ["Personality", "Quiet and perceptive"],
+      ["Occupation", "Astronomer"],
+      ["Relationship", "Allies with a shared mission"],
+    ]) {
+      const list = document.getElementById(field(label!).getAttribute("list")!);
+      expect([...list!.querySelectorAll("option")].some(option => option.value === choice)).toBe(true);
+      // Real typing reads the controlled value back between keystrokes.
+      for (const character of choice!) {
+        await changeField(label!, field(label!).value + character);
+      }
+    }
+    await changeField("Occupation", "Keeper of a lunar observatory");
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => button.textContent?.trim() === "Next")?.click());
+    const saved = vi.mocked(fetch).mock.calls.find(([input, init]) =>
+      String(input) === "/api/v1/character-drafts/draft-1" && init?.method === "PATCH");
+    const markdown = JSON.parse(String(saved?.[1]?.body)).advancedDetails.detailsMarkdown;
+    expect(markdown).toContain("## Background\nAn observatory keeper on a remote island.");
+    expect(markdown).toContain("## Personality\nQuiet and perceptive");
+    expect(markdown).toContain("## Occupation\nKeeper of a lunar observatory");
+    expect(markdown).toContain("## Relationship\nAllies with a shared mission");
+    expect(markdown).not.toContain("Astronomer");
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => button.textContent?.trim() === "Back")?.click());
+    await act(async () => root.render(null));
+    await act(async () => root.render(createElement(CreateWorkspace)));
+    await waitUntil(() => Boolean(container.querySelector('[data-testid="create-step-soul"]')));
+    expect(field("Personality").value).toBe("Quiet and perceptive");
+    expect(field("Occupation").value).toBe("Keeper of a lunar observatory");
+    expect(field("Relationship").value).toBe("Allies with a shared mission");
+  });
+
   it("selects and previews a real catalog voice, then saves and restores the exact selection", async () => {
     window.localStorage.setItem(draftStorageKeyForScope("user:creator-1"), JSON.stringify({
       ...initialCharacterDraft(), draftId: "draft-1", step: 2, name: "Avery", description: "Warm and direct", firstMessage: "Hello there",

@@ -28,6 +28,7 @@ import {
   stashDraftTransfer,
 } from "./draft-transfer";
 import { isRecord } from "./workspace-helpers";
+import { CREATE_SOUL_DETAIL_FIELDS } from "./create-soul-catalog";
 import {
   CREATE_PREVIEW_CANDIDATE_COUNT,
   continueCreatePreviewBatch,
@@ -123,13 +124,6 @@ const VISUAL_FIELDS = [
   { key: "faceShape", label: "Face shape / features", suggestions: ["Oval", "Round", "Heart-shaped", "Angular", "Freckles", "Dimples"] },
   { key: "hair", label: "Hair", suggestions: ["Long dark waves", "Short auburn curls", "Straight blonde hair", "Black braided hair", "Silver bob"] },
   { key: "body", label: "Body", suggestions: ["Slim", "Athletic", "Curvy", "Muscular", "Petite", "Tall"] },
-] as const;
-const SOUL_DETAIL_FIELDS = [
-  { label: "Personality", suggestions: ["Warm and curious", "Playful and confident", "Shy and thoughtful", "Calm and protective", "Bold and adventurous"] },
-  { label: "Occupation", suggestions: ["Artist", "Teacher", "Writer", "Musician", "Chef", "Doctor", "Scientist", "Entrepreneur", "Adventurer"] },
-  { label: "Relationship", suggestions: ["New acquaintance", "Friend", "Childhood friend", "Best friend", "Romantic partner", "Spouse", "Roommate", "Rival"] },
-  { label: "Hobbies", suggestions: ["Reading", "Music", "Cooking", "Gaming", "Hiking", "Photography", "Stargazing"] },
-  { label: "Fetishes and preferences", suggestions: ["Romance", "Playful flirting", "Praise", "Roleplay"] },
 ] as const;
 
 export type WizardState = {
@@ -1194,7 +1188,7 @@ export function CreateWorkspace() {
                   />
                 </Field>
                 <div className="grid gap-3 md:grid-cols-2">
-                  {SOUL_DETAIL_FIELDS.map(({ label, suggestions }, index) => (
+                  {CREATE_SOUL_DETAIL_FIELDS.map(({ label, suggestions }, index) => (
                     <Field key={label} label={label} hint="Choose a suggestion or write your own.">
                       <input
                         className="mt-2 w-full bg-transparent text-[14px] font-semibold leading-6 outline-none"
@@ -1756,7 +1750,8 @@ function soulDetailSection(markdown: string, label: string) {
 
 function readSoulDetail(markdown: string, label: string) {
   const section = soulDetailSection(markdown, label);
-  return section ? markdown.slice(section.contentStart, section.end).trim() : "";
+  // Keep spaces while typing; trimming every keystroke joins separate words.
+  return section ? markdown.slice(section.contentStart, section.end).replace(/^[\r\n]+|[\r\n]+$/g, "") : "";
 }
 
 function updateSoulDetail(markdown: string, label: string, value: string) {

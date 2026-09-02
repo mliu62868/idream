@@ -230,9 +230,14 @@ export async function selectGenerationProfile(
       ? [{ version: "desc" }]
       : [{ costMultiplier: "asc" }, { version: "desc" }],
   });
+  // Pixel enhancement has its own source/hash quote; a generic image request
+  // cannot select it as a cheaper character/text generation route.
+  const generationCandidates = queriedCandidates.filter(
+    (candidate) => generationProfilePublicSelection(candidate).surface !== "gallery_enhance",
+  );
   const automaticCandidates = requested
-    ? queriedCandidates
-    : queriedCandidates.filter(
+    ? generationCandidates
+    : generationCandidates.filter(
         (candidate) => !generationProfileIsExplicitSelectionOnly(candidate),
       );
   const eligibleCandidates =

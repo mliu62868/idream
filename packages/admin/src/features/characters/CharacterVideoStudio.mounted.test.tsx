@@ -395,6 +395,48 @@ describe("Character Video Studio", () => {
     await waitUntil(() => container.textContent?.includes("Generating video") === true);
   });
 
+  it.each(["Motion brief", "Negative prompt"])("keeps an oversized %s editable without starting a video", async (label) => {
+    await act(async () => root.render(
+      <CharacterVideoStudio
+        actorId="actor-1"
+        data={data}
+        onCreateImage={vi.fn()}
+        permissions={{ create: true, read: true, review: true }}
+        runCommittedMutation={runCommittedMutation}
+      />,
+    ));
+    const create = () => [...container.querySelectorAll("button")]
+      .find((button) => button.textContent?.includes("Create video"));
+    await waitUntil(() => create()?.disabled === false);
+    const input = [...container.querySelectorAll("label")]
+      .find((element) => element.textContent?.trim().startsWith(label))
+      ?.querySelector("textarea");
+    expect(input).toBeInstanceOf(HTMLTextAreaElement);
+    const oversized = "x".repeat(2_001);
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+    await act(async () => {
+      setter.call(input, oversized);
+      input!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => create()!.click());
+
+    expect(container.querySelector('[role="alert"]')?.textContent)
+      .toContain("Keep the motion brief and negative prompt within 2,000 characters each.");
+    expect(input!.value).toBe(oversized);
+    expect(input!.disabled).toBe(false);
+    expect(create()!.disabled).toBe(false);
+    expect(runCommittedMutationSpy).not.toHaveBeenCalled();
+    expect(adminV2Request.mock.calls.some(([, options]) => options?.method === "POST")).toBe(false);
+    expect(readActiveDurableMutationIntent({ scope: "character-video:create:actor-1:character-video-1" })).toBeNull();
+
+    await act(async () => {
+      setter.call(input, "A subtle smile.");
+      input!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => create()!.click());
+    await waitUntil(() => runCommittedMutationSpy.mock.calls.length === 1);
+  });
+
   it("does not present a zero duration as evidence when there are no completed samples", async () => {
     const noSamples = characterWorkspaceDetail({
       ...data,

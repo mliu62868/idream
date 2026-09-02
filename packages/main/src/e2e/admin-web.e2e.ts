@@ -546,7 +546,7 @@ test("admin users and billing actions write audit trail and clear adjustment for
     const adminURL = adminBaseURL();
     await page.goto(`${adminURL}/admin/users`);
     await expectAdminShellReady(page, "Customers");
-    await page.getByRole("textbox", { name: "Search", exact: true }).fill(targetId);
+    await page.getByRole("searchbox", { name: "Search customers", exact: true }).fill(targetId);
     await page.getByRole("button", { name: "Apply", exact: true }).click();
     const customerRow = page.getByRole("button").filter({ hasText: targetId });
     await expect(customerRow).toHaveCount(1, { timeout: 15_000 });
@@ -562,7 +562,7 @@ test("admin users and billing actions write audit trail and clear adjustment for
     await page.getByRole("combobox", { name: "Permission key" }).selectOption("billing.ledger.adjust");
     await page.getByRole("combobox", { name: "Permission effect" }).selectOption("grant");
     await page.getByRole("button", { name: "Apply" }).click();
-    await expect(page.getByRole("heading", { name: "grant billing.ledger.adjust" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "grant the permission for: Adjusting customer Dreamcoin balances" })).toBeVisible();
     await page.getByRole("textbox", { name: "Reason", exact: true }).fill("E2E permission grant");
     await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill("PERMISSION");
     await expect(page.getByRole("button", { name: "Confirm" })).toBeDisabled();
@@ -570,35 +570,36 @@ test("admin users and billing actions write audit trail and clear adjustment for
       .getByRole("textbox", { name: "Confirmation", exact: true })
       .fill(`${targetId}:billing.ledger.adjust:grant`);
     await page.getByRole("button", { name: "Confirm" }).click();
-    await expect(page.getByTestId("admin-action-status")).toContainText(
-      "grant billing.ledger.adjust completed.",
+    const permissionToast = page.getByTestId("admin-action-status").filter({ hasText: `Permission override applied to ${targetId}` });
+    await expect(permissionToast).toContainText(
+      `Permission override applied to ${targetId}`,
       { timeout: 10_000 },
     );
-    await expect(page.getByTestId("admin-action-status")).toHaveAttribute("role", "status");
-    await expect(page.getByTestId("admin-action-status")).toHaveAttribute("aria-live", "polite");
+    await expect(permissionToast).toHaveAttribute("role", "status");
+    await expect(permissionToast).toHaveAttribute("aria-live", "polite");
 
     await targetRow.getByRole("button", { name: "Suspend" }).click();
-    await expect(page.getByRole("heading", { name: `Suspend ${targetId}` })).toBeVisible();
+    await expect(page.getByRole("heading", { name: `Suspend access for ${targetId}` })).toBeVisible();
     await page.getByRole("textbox", { name: "Reason", exact: true }).fill("E2E admin suspend smoke");
     await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill("SUSPENDED");
     await expect(page.getByRole("button", { name: "Confirm" })).toBeDisabled();
     await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill(`${targetId}:suspended`);
     await page.getByRole("button", { name: "Confirm" }).click();
-    await expect(page.getByTestId("admin-action-status")).toContainText(
-      `Suspend ${targetId} completed.`,
+    await expect(page.getByTestId("admin-action-status").filter({ hasText: `Access suspended for ${targetId}` })).toContainText(
+      `Access suspended for ${targetId}`,
       { timeout: 10_000 },
     );
     await expect(targetRow.getByText("suspended", { exact: true })).toBeVisible();
 
     await targetRow.getByRole("button", { name: "Restore" }).click();
-    await expect(page.getByRole("heading", { name: `Restore ${targetId}` })).toBeVisible();
+    await expect(page.getByRole("heading", { name: `Restore access for ${targetId}` })).toBeVisible();
     await page.getByRole("textbox", { name: "Reason", exact: true }).fill("E2E admin restore smoke");
     await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill("ACTIVE");
     await expect(page.getByRole("button", { name: "Confirm" })).toBeDisabled();
     await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill(`${targetId}:active`);
     await page.getByRole("button", { name: "Confirm" }).click();
-    await expect(page.getByTestId("admin-action-status")).toContainText(
-      `Restore ${targetId} completed.`,
+    await expect(page.getByTestId("admin-action-status").filter({ hasText: `Access restored for ${targetId}` })).toContainText(
+      `Access restored for ${targetId}`,
       { timeout: 10_000 },
     );
     await expect(targetRow.getByText("active", { exact: true })).toBeVisible();
@@ -608,14 +609,14 @@ test("admin users and billing actions write audit trail and clear adjustment for
     await page.getByLabel("Adjustment user ID").fill(targetId);
     await page.getByLabel("Adjustment delta").fill("37");
     await page.getByRole("button", { name: "Adjust" }).click();
-    await expect(page.getByRole("heading", { name: `Adjust ledger ${targetId}` })).toBeVisible();
+    await expect(page.getByRole("heading", { name: `Adjust ledger for ${targetId}` })).toBeVisible();
     await page.getByRole("textbox", { name: "Reason", exact: true }).fill("E2E admin billing adjustment");
     await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill("ADJUST");
     await expect(page.getByRole("button", { name: "Confirm" })).toBeDisabled();
     await page.getByRole("textbox", { name: "Confirmation", exact: true }).fill(`${targetId}:37`);
     await page.getByRole("button", { name: "Confirm" }).click();
-    await expect(page.getByTestId("admin-action-status")).toContainText(
-      `Adjust ledger ${targetId} completed.`,
+    await expect(page.getByTestId("admin-action-status").filter({ hasText: `Ledger adjusted for ${targetId}` })).toContainText(
+      `Ledger adjusted for ${targetId}`,
       { timeout: 10_000 },
     );
     await expect(page.getByLabel("Adjustment user ID")).toHaveValue("");
@@ -623,7 +624,8 @@ test("admin users and billing actions write audit trail and clear adjustment for
     const ledgerRow = page.getByRole("row").filter({ hasText: targetId });
     await expect(ledgerRow).toHaveCount(1, { timeout: 10_000 });
     await expect(ledgerRow.getByText("admin_adjust", { exact: true })).toBeVisible();
-    await expect(ledgerRow.getByText("37", { exact: true })).toHaveCount(2);
+    await expect(ledgerRow.getByText("+37", { exact: true })).toBeVisible();
+    await expect(ledgerRow.getByText("37", { exact: true })).toHaveCount(1);
 
     const refreshLedgerId = `e2e-shell-refresh-${Date.now()}`;
     await prisma.dreamcoinLedger.create({
@@ -650,16 +652,19 @@ test("admin users and billing actions write audit trail and clear adjustment for
     await expect(page.getByRole("row").filter({ hasText: refreshLedgerId })).toHaveCount(1, {
       timeout: 10_000,
     });
-    await expect(page.getByRole("alert").filter({ hasText: "subscriptions authority refresh failed" })).toBeVisible();
+    const subscriptionError = page.getByRole("alert").filter({ hasText: "This action did not complete." });
+    await expect(subscriptionError).toBeVisible();
+    await subscriptionError.locator("summary").click();
+    await expect(subscriptionError).toContainText("injected subscription read failure");
     await expect(page.getByText("No subscriptions exist yet", { exact: true })).toBeVisible();
     await page.unroute(subscriptionRoute);
-    await page.getByRole("button", { name: "Retry subscriptions" }).click();
-    await expect(page.getByText(/Subscriptions: current client snapshot/)).toBeVisible();
+    await subscriptionError.getByRole("button", { name: "Retry", exact: true }).click();
+    await expect(page.getByText(/^Subscriptions: as of/)).toBeVisible();
     await prisma.dreamcoinLedger.delete({ where: { id: refreshLedgerId } });
 
     await page.goto(`${adminURL}/admin/audit-log`);
     await expectAdminShellReady(page, "Audit Log");
-    await page.getByRole("textbox", { name: "Search audit authority" }).fill(targetId);
+    await page.getByRole("textbox", { name: "action, target, reason, or request" }).fill(targetId);
     await page.getByRole("button", { name: "Apply", exact: true }).click();
     await expect(
       page.getByRole("row").filter({ hasText: targetId }).filter({ hasText: "billing.ledger.adjust" }),
@@ -2035,7 +2040,7 @@ test("admin API Phase 3: CMS write (admin) + compliance/analytics gating", async
   expect(ageList.status()).toBe(403);
 });
 
-test("admin CMS UI requires typed confirmation for publish changes", async ({ page }) => {
+test("admin CMS UI requires confirmation and updates Resources Hub discovery", async ({ page }) => {
   const consoleFailures = collectConsoleFailures(page);
   const dialogs: string[] = [];
   page.on("dialog", async (dialog) => {
@@ -2053,6 +2058,7 @@ test("admin CMS UI requires typed confirmation for publish changes", async ({ pa
       data: {
         path: routePath,
         title: "E2E CMS confirmation page",
+        indexingStatus: "index",
         description:
           "An end-to-end confirmation page with complete editorial content for the CMS publication workflow.",
         body: {
@@ -2100,6 +2106,14 @@ test("admin CMS UI requires typed confirmation for publish changes", async ({ pa
     await confirmPublish.click();
     await expect(row).toContainText("published", { timeout: 10_000 });
 
+    await page.goto("/resources-hub");
+    const resourceLink = page.getByTestId("resource-library-results").locator(`a[href="${routePath}"]`);
+    await expect(resourceLink).toContainText("E2E CMS confirmation page");
+    await resourceLink.click();
+    await expect(page.getByRole("heading", { level: 1, name: "Confirmation page" })).toBeVisible();
+    await page.goto(`${adminURL}/admin/cms`);
+    await expectAdminShellReady(page, "CMS & SEO");
+
     await row.getByRole("button", { name: "Unpublish" }).click();
     await expect(confirmPublish).toBeDisabled();
     await page.getByRole("textbox", { name: "CMS publish reason" }).fill("E2E unpublish CMS page");
@@ -2107,6 +2121,8 @@ test("admin CMS UI requires typed confirmation for publish changes", async ({ pa
     await expect(confirmPublish).toBeEnabled();
     await confirmPublish.click();
     await expect(row).toContainText("draft", { timeout: 10_000 });
+    await page.goto("/resources-hub");
+    await expect(page.getByTestId("resource-library-results").locator(`a[href="${routePath}"]`)).toHaveCount(0);
 
     expect(dialogs).toEqual([]);
     expect(consoleFailures).toEqual([]);

@@ -34,6 +34,7 @@ model User {
   characterDrafts    CharacterDraft[]
   recentChats        RecentChat[]
   chatTurnUsageFacts ChatTurnUsageFact[]
+  chatContextDirectives ChatContextDirective[]
   generationJobs     GenerationJob[]
   mediaAssets        MediaAsset[]
   voiceClipRequests  VoiceClipRequest[]
@@ -258,6 +259,7 @@ model Character {
   stats                 CharacterStats?
   submissions           CharacterSubmission[]
   recentChats           RecentChat[]
+  chatContextDirectives ChatContextDirective[]
   generationJobs        GenerationJob[]
   mediaAssets           MediaAsset[]             @relation("CharacterAssets")
   voiceClipRequests     VoiceClipRequest[]
@@ -637,10 +639,23 @@ model RecentChat {
   user                          User       @relation(fields: [userId], references: [id], onDelete: Cascade)
   character                     Character  @relation(fields: [characterId], references: [id], onDelete: Cascade)
   turns                         ChatTurn[]
+  experiencePreference          ChatExperiencePreference?
 
   @@index([userId, lastMessageAt])
   @@index([characterId])
   @@map("recent_chats")
+}
+
+// Explicit per-conversation controls. Main copies a version into each new Turn.
+model ChatExperiencePreference {
+  sessionId            String   @id
+  responseLength       String   @default("auto")
+  interactionIntensity String   @default("balanced")
+  version              Int      @default(1)
+  updatedAt            DateTime @updatedAt
+  session              RecentChat @relation(fields: [sessionId], references: [sessionId], onDelete: Cascade)
+
+  @@map("chat_experience_preferences")
 }
 
 // One row is exactly what the product displays: one user message and its one
@@ -710,6 +725,25 @@ model CompanionMemoryAuthority {
   updatedAt   DateTime @updatedAt
 
   @@map("companion_memory_authorities")
+}
+
+// Explicit user settings copied into each new Turn. Automatic companion memory
+// remains derived only from committed Turns by official igrep.
+model ChatContextDirective {
+  id          String    @id
+  userId      String
+  characterId String
+  kind        String    // pinned_memory | custom_instruction
+  content     String
+  status      String    @default("active") // active | archived; archived content is erased
+  version     Int       @default(1)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  character   Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  @@index([userId, characterId, status])
+  @@map("chat_context_directives")
 }
 
 model ChatTurnAttachment {

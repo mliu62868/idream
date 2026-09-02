@@ -1284,6 +1284,22 @@ export const ADMIN_V2_API_OPERATIONS = [
 
   operation(
     "GET",
+    "/api/v2/admin/support/feedback",
+    allOf("support.request.read"),
+    "productFeedbackListQuerySchema",
+    "productFeedbackListResponseSchema",
+  ),
+  operation(
+    "PATCH",
+    "/api/v2/admin/support/feedback/:id",
+    allOf("support.request.write"),
+    "productFeedbackUpdateSchema+idempotency-key",
+    "productFeedbackMutationResponseSchema",
+    undefined,
+    { commandType: "support.feedback.update" },
+  ),
+  operation(
+    "GET",
     "/api/v2/admin/support/requests",
     allOf("support.request.read"),
     "supportRequestListQuerySchema",

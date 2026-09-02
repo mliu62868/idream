@@ -303,9 +303,32 @@ test("generator retry locks double-clicks and preserves intent keys across netwo
 }) => {
   await mountRetryableGenerator(page);
   const idempotencyKeys: string[] = [];
+  const submittedBodies: string[] = [];
+  const acceptedRetries = new Map<string, {
+    body: string;
+    job: Omit<typeof failedJob, "errorCode"> & {
+      errorCode: null;
+      derivedFromJobId: string;
+    };
+  }>();
   let releaseFailedRequest: () => void = () => undefined;
   const failFirstRequest = new Promise<void>((resolve) => {
     releaseFailedRequest = resolve;
+  });
+  await page.route("**/api/v1/generation/jobs?limit=20", (route) =>
+    fulfillJson(route, {
+      ok: true,
+      data: { items: [failedJob, ...Array.from(acceptedRetries.values(), ({ job }) => job)] },
+    }),
+  );
+  await page.route(/\/api\/v1\/generation\/jobs\/[^/?]+$/, (route) => {
+    const jobId = new URL(route.request().url()).pathname.split("/").at(-1);
+    const job = jobId === failedJobId
+      ? failedJob
+      : Array.from(acceptedRetries.values()).find(({ job }) => job.id === jobId)?.job;
+    return job
+      ? fulfillJson(route, { ok: true, data: { job, assets: [] } })
+      : fulfillJson(route, { ok: false, error: { message: "Job not found" } }, 404);
   });
 
   await page.route(
@@ -327,6 +350,25 @@ test("generator retry locks double-clicks and preserves intent keys across netwo
         costDreamcoins: 8,
       });
       idempotencyKeys.push(key);
+      const submittedBody = route.request().postData() ?? "";
+      submittedBodies.push(submittedBody);
+      let acceptedRetry = acceptedRetries.get(key);
+      if (acceptedRetry) {
+        expect(submittedBody).toBe(acceptedRetry.body);
+      } else {
+        acceptedRetry = {
+          body: submittedBody,
+          job: {
+            ...failedJob,
+            id: `generator-retry-ui-derived-${acceptedRetries.size + 1}`,
+            derivedFromJobId: failedJobId,
+            status: "queued",
+            costDreamcoins: 8,
+            errorCode: null,
+          },
+        };
+        acceptedRetries.set(key, acceptedRetry);
+      }
       if (idempotencyKeys.length === 1) {
         await failFirstRequest;
         await route.abort("failed");
@@ -337,12 +379,8 @@ test("generator retry locks double-clicks and preserves intent keys across netwo
         {
           ok: true,
           data: {
-            job: {
-              ...failedJob,
-              id: `generator-retry-ui-derived-${idempotencyKeys.length}`,
-              status: "queued",
-              errorCode: null,
-            },
+            job: acceptedRetry.job,
+            assets: [],
           },
         },
         202,
@@ -351,6 +389,7 @@ test("generator retry locks double-clicks and preserves intent keys across netwo
   );
 
   await page.goto("/generate");
+  await expect(page.locator("[data-age-gate-content]")).not.toHaveAttribute("inert", "");
   const failedCard = page.locator(
     `[data-generation-job-id="${failedJobId}"]`,
   );
@@ -363,24 +402,36 @@ test("generator retry locks double-clicks and preserves intent keys across netwo
   await expect.poll(() => idempotencyKeys.length).toBe(1);
   await expect(retryButton).toHaveText("Retrying…");
   await expect(retryButton).toBeDisabled();
-  await page.waitForTimeout(100);
   expect(idempotencyKeys).toHaveLength(1);
 
   releaseFailedRequest();
   await expect(page.getByTestId("generator-status")).toHaveText(
     "Retry failed. Check your connection and try again.",
   );
-  await expect(retryButton).toHaveText("Retry · 8 coins");
+  await expect(retryButton).toHaveText("Check retry request");
+  await expect(failedCard).toContainText("Check the existing request before starting another retry.");
   await expect(retryButton).toBeEnabled();
 
   await retryButton.click();
   await expect.poll(() => idempotencyKeys.length).toBe(2);
   expect(idempotencyKeys[1]).toBe(idempotencyKeys[0]);
+  expect(submittedBodies[1]).toBe(submittedBodies[0]);
+  expect(acceptedRetries.size).toBe(1);
   await expect(page.getByTestId("generator-status")).toHaveText("Retry queued.");
+  await expect(failedCard).toBeVisible();
+  await expect(page.locator('[data-generation-job-id="generator-retry-ui-derived-1"]')).toBeVisible();
+
+  // Main keeps the source failed and creates a derived Job per accepted key.
+  // After the ACK, an explicit new retry is a separate accepted intent.
+  await expect(retryButton).toHaveText("Retry · 8 coins");
   await expect(retryButton).toBeEnabled();
 
   await retryButton.click();
   await expect.poll(() => idempotencyKeys.length).toBe(3);
   expect(idempotencyKeys[2]).not.toBe(idempotencyKeys[1]);
   await expect(page.getByTestId("generator-status")).toHaveText("Retry queued.");
+  await expect(page.locator('[data-generation-job-id="generator-retry-ui-derived-2"]')).toBeVisible();
+  expect(acceptedRetries.size).toBe(2);
+  expect(failedJob.status).toBe("failed");
+  await expect(failedCard).toBeVisible();
 });

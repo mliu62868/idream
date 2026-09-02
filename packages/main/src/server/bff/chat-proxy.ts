@@ -27,6 +27,8 @@ import {
   regenerateAndAdmitChatTurn,
 } from "@/server/modules/chat/agent-run-admission";
 import { clearCompanionMemory } from "@/server/modules/chat/companion-memory-authority";
+import { createChatContextDirective, deleteChatContextDirective, listChatContextDirectives, updateChatContextDirective } from "@/server/modules/chat/context-directives";
+import { getChatExperiencePreference, updateChatExperiencePreference } from "@/server/modules/chat/experience-preferences";
 
 const PRIVATE_HEADERS = {
   "cache-control": "private, no-store, max-age=0",
@@ -101,6 +103,16 @@ async function routeMainChat(request: Request, segments: string[], userId: strin
 
   if (root === "chat" && path[0] === "sessions" && path[1]) {
     const sessionId = path[1];
+    if (path[2] === "experience" && path.length === 3) {
+      if (method === "GET") return json(await getChatExperiencePreference(userId, sessionId));
+      if (method === "PUT") return json(await updateChatExperiencePreference(userId, sessionId, body));
+    }
+    if (path[2] === "context-directives") {
+      if (path.length === 3 && method === "GET") return json(await listChatContextDirectives(userId, sessionId));
+      if (path.length === 3 && method === "POST") return json(await createChatContextDirective(userId, sessionId, body, request.headers.get("idempotency-key")), 201);
+      if (path.length === 4 && method === "PATCH") return json(await updateChatContextDirective(userId, sessionId, path[3], body));
+      if (path.length === 4 && method === "DELETE") return json(await deleteChatContextDirective(userId, sessionId, path[3], body));
+    }
     if (path.length === 2) {
       if (method === "GET") return envelope({ session: await getChatSession(userId, sessionId) });
       if (method === "PATCH") return json(await renameChatSession(userId, sessionId, text(body.title)));

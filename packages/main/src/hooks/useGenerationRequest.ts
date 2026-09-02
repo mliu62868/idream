@@ -20,6 +20,11 @@ import type {
   RuntimeGenerationQuote,
   RuntimeGenerationRetryQuote,
 } from "@/lib/public-api-contracts";
+import {
+  hasUnconfirmedGenerationRetry,
+  hasUnconfirmedGenerationSubmission,
+  hasUnconfirmedMediaVariation,
+} from "@/lib/generation-write-client";
 
 // SPEC: binds the generation request lifecycle to React — the machine's state,
 // the two price reads that feed it, and the three writes that spend it.
@@ -78,8 +83,12 @@ export type GenerationRequestController = {
   requestRetryQuoteRetry: () => void;
   /** Coins moved outside a write we ran — reprice everything. */
   balanceChanged: () => void;
-  /** The signed-in viewer changed; nothing priced for the old one survives. */
-  resetViewerScope: () => void;
+  /** Suspend projections; retain receipts only during revalidation of the current viewer. */
+  resetViewerScope: (preserveUnconfirmed?: boolean) => void;
+  isSubmissionUnconfirmed: (body: Record<string, unknown>) => boolean;
+  isVariationUnconfirmed: (input: GenerationVariationInput) => boolean;
+  hasUnconfirmedVariations: () => boolean;
+  isRetryUnconfirmed: (jobId: string) => boolean;
 };
 
 export function useGenerationRequest(
@@ -279,14 +288,21 @@ export function useGenerationRequest(
     () => dispatch({ type: "balance_changed" }),
     [],
   );
-  const resetViewerScope = useCallback(() => {
+  const resetViewerScope = useCallback((preserveUnconfirmed = false) => {
     // In-flight requests keep their own keys and cannot project into the next viewer.
     viewerEpochRef.current += 1;
-    keysRef.current = createGenerationIdempotencyKeys();
+    if (!preserveUnconfirmed) keysRef.current = createGenerationIdempotencyKeys();
     quoteControllerRef.current?.abort();
     retryQuoteControllerRef.current?.abort();
     dispatch({ type: "viewer_scope_reset" });
   }, []);
+  const isSubmissionUnconfirmed = useCallback((body: Record<string, unknown>) =>
+    hasUnconfirmedGenerationSubmission(body, keysRef.current.generation), []);
+  const isVariationUnconfirmed = useCallback((input: GenerationVariationInput) =>
+    hasUnconfirmedMediaVariation({ ...input, outputCount: input.outputCount ?? 1 }, keysRef.current.variation), []);
+  const hasUnconfirmedVariations = useCallback(() => keysRef.current.variation.size > 0, []);
+  const isRetryUnconfirmed = useCallback((jobId: string) =>
+    hasUnconfirmedGenerationRetry(jobId, keysRef.current.retry), []);
 
   return {
     view,
@@ -301,5 +317,9 @@ export function useGenerationRequest(
     requestRetryQuoteRetry,
     balanceChanged,
     resetViewerScope,
+    isSubmissionUnconfirmed,
+    isVariationUnconfirmed,
+    hasUnconfirmedVariations,
+    isRetryUnconfirmed,
   };
 }

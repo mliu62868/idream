@@ -374,6 +374,49 @@ describe("ChatSessionClient streaming composer", () => {
       .toContain("Get more dreamcoins");
   });
 
+  it("retries a failed image through its exact quote and preserves the key after an uncertain response", async () => {
+    const attachment = { id: "failed-image", kind: "generated_image", status: "failed", generationJobId: "job-old", errorCode: "provider_error" };
+    sessionMessages = [{ ...opening, attachments: [attachment] }];
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    const writes: RequestInit[] = [];
+    let quotes = 0;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === "/api/v1/generation/jobs/job-old/retry/quote") {
+        quotes += 1;
+        return Response.json({ ok: true, data: { quote: { mode: "image", generationJobId: "job-old", profileId: "image-profile", profileVersion: 2, routeFingerprint: "a".repeat(64), pricing: { ruleId: "price", ruleKey: "image", version: 1, effectiveFrom: null, fingerprint: "b".repeat(64) }, outputCount: 1, costDreamcoins: 5, balance: 10 } } });
+      }
+      if (String(input) === "/api/v1/generation/jobs/job-old/retry") {
+        writes.push(init!);
+        if (writes.length === 1) throw new TypeError("Network response lost");
+        sessionMessages = [{ ...opening, attachments: [{ ...attachment, status: "completed", errorCode: null, generationJobId: "job-new", mediaAssetId: "new-image", mediaUrl: "/new-image.png" }] }];
+        return Response.json({ ok: true, data: { job: { id: "job-new", mode: "image", status: "queued", costDreamcoins: 5, outputCount: 1, errorCode: null, createdAt: new Date().toISOString() }, assets: [] } }, { status: 202 });
+      }
+      return originalFetch(input, init);
+    });
+    await mountSession();
+    const retry = () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => /Retry image|Check image request/.test(button.textContent ?? ""));
+    await act(async () => retry()!.click());
+    expect(writes).toHaveLength(1);
+    expect(retry()).toBeDefined();
+    await act(async () => retry()!.click());
+    expect(writes).toHaveLength(2);
+    expect(quotes).toBe(1);
+    expect(new Headers(writes[0]?.headers).get("idempotency-key")).toBeTruthy();
+    expect(new Headers(writes[0]?.headers).get("idempotency-key")).toBe(new Headers(writes[1]?.headers).get("idempotency-key"));
+    expect(JSON.parse(String(writes[0]?.body)).quoteAuthority).toMatchObject({ profileId: "image-profile", profileVersion: 2, costDreamcoins: 5 });
+    await waitUntil(() => Boolean(container.querySelector('img[data-asset-id="new-image"]')));
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/attachments/"))).toBe(false);
+  });
+
+  it("does not offer a dead retry for an image that never reserved a generation job", async () => {
+    sessionMessages = [{ ...opening, attachments: [{ id: "no-job", kind: "generated_image", status: "failed", errorCode: "generation_unavailable" }] }];
+    await mountSession();
+    const card = container.querySelector('[data-testid="chat-image-attachment-card"]');
+    expect(card?.textContent).toContain("Image unavailable");
+    expect(card?.textContent).not.toContain("Retry image");
+    expect(card?.textContent).toContain("new image request");
+  });
+
   it("keeps internal generation prompts out of the waiting experience", async () => {
     sessionMessages = [{
       ...opening,

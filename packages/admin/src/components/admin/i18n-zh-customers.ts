@@ -3,6 +3,19 @@
 // INVARIANT: key 在所有 i18n-zh-*.ts 之间互斥——同一个 key 只能有一个域文件持有；
 // 由 i18n-zh-exclusivity.test.ts 强制。新增文案放它所属的域文件，不要另开「杂项」文件。
 export const adminZhCustomers: Record<string, string> = {
+  "Product feedback": "产品反馈",
+  "Under review": "待评估",
+  "Planned": "已规划",
+  "Shipped": "已交付",
+  "Votes": "票数",
+  "Update product feedback": "更新产品反馈",
+  "Save feedback status": "保存反馈状态",
+  "Search product feedback": "搜索产品反馈",
+  "Feedback status filter": "反馈状态筛选",
+  "Feedback status for {title}": "{title} 的反馈状态",
+  "Loading product feedback…": "正在加载产品反馈…",
+  "Product feedback could not load": "产品反馈加载失败",
+  "Review customer ideas and bugs. Status changes appear in Help Desk; reasons stay in the audit log.": "评估客户建议与问题。状态变更会显示在帮助中心，处理原因仅保存在审计日志中。",
   "Customer": "客户",
   "Message to customer": "给客户的回复",
   "Visible to the customer in Help Desk. Internal reasons stay private.": "客户可在帮助中心看到此回复，内部处理原因不会公开。",

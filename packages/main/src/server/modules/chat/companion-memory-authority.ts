@@ -295,6 +295,12 @@ export async function clearCompanionMemory(userId: string, characterId: string) 
       select: { sessionId: true },
     });
     if (sessions.length === 0) throw Errors.notFound("Chat relationship not found");
+    // Clear includes explicitly pinned facts. Saved interaction preferences are
+    // settings, remain visible, and can be removed separately in the same panel.
+    await tx.chatContextDirective.updateMany({
+      where: { userId, characterId, kind: "pinned_memory", status: "active" },
+      data: { status: "archived", content: "", version: { increment: 1 } },
+    });
     const sessionIds = sessions.map((session) => session.sessionId);
     const active = await tx.chatTurn.findMany({
       where: {

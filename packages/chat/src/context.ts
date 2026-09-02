@@ -2,7 +2,7 @@
 // Local files contain execution evidence only; they never contribute product facts.
 import { loadCharacterSoulSnapshot } from "@idream/shared";
 import type { ChatAuthoritySnapshot } from "@idream/shared/bff";
-import type { ChatExecutionSnapshot } from "@idream/shared/contracts";
+import type { ChatContextDirective, ChatExecutionSnapshot, ChatExperiencePreference } from "@idream/shared/contracts";
 import { resolvePolicy, snapshotFromView, type ChatPolicy } from "./policy.js";
 import { emptySceneState, parseSceneState, type SceneState } from "./scene.js";
 
@@ -19,6 +19,8 @@ export interface BuiltContext {
   userLocale: string;
   hasRecentImageContext: boolean;
   previousAssistantText?: string;
+  contextDirectives?: ChatContextDirective[];
+  experience?: ChatExperiencePreference;
   persona: ResolvedChatPersona;
   policy: ChatPolicy;
   recentMessages: Array<{
@@ -103,6 +105,8 @@ export async function buildContext(input: BuildContextInput): Promise<BuiltConte
     userLocale: authority.user.locale,
     hasRecentImageContext: snapshot.hasRecentImageContext,
     previousAssistantText: snapshot.recentTurns.at(-1)?.assistantContent,
+    contextDirectives: snapshot.contextDirectives ?? [],
+    experience: snapshot.experience,
     persona,
     policy,
     recentMessages: fitted.messages,

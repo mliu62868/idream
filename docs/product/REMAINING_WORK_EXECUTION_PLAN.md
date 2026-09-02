@@ -4,7 +4,7 @@
 
 本文件只保留尚未完成的工作。已完成能力与历史运行证据见 `CURRENT_FUNCTIONAL_COVERAGE.md`。
 
-2026-09-02 核心审计已真实完成 Create 私有保存/声音/聊天/图片、两条视频、Admin 三图审核发布/回滚和客服多轮闭环。最终串行测试、浏览器组合、恢复演练与重启后的同版本结果见 `.tmp/product-audit-20260902/FINAL_REPORT.md`；该报告未完成时仍不能把本轮早期证据当作公开上线签发。支付与年龄功能不在本轮修复范围。
+2026-09-02 首轮核心审计已真实完成 Create 私有保存/声音/聊天/图片、两条视频、Admin 三图审核发布/回滚和客服多轮闭环；原冻结版本的结果见 `.tmp/product-audit-20260902/FINAL_REPORT.md`。第二轮新增记忆设置、会话偏好、Enhance、目录广度与公开内容/反馈分页的实际证据见 `CURRENT_FUNCTIONAL_COVERAGE.md`，仍在修复下一轮发现的缺陷并等待新的统一门禁。首轮报告不能替代新改动的验证。支付、年龄检查与合规不在本轮范围。
 
 ## 当前状态
 
@@ -19,12 +19,12 @@
 
 1. 建立带观察日期的逐功能 parity matrix，覆盖 Explore、完整 Create、Chat、Generate、My AI/Profile、Feed/Community/Creator Economy、Upgrade、Affiliate、Support 与公开内容。每项绑定 OurDream 可验证契约、iDream 当前代码/运行证据、真实缺口和退出 Gate。
 2. 区分“未实现空态”、“受 feature/provider/entitlement 条件限制”、“本地受控可用”和“公开生产已认证”，不用路由存在或历史截图代替能力证明。
-3. Create 的完整五步输入、声音选择/试听、身份确认、保存、Chat 与 Character 图片已在 2026-09-02 核心审计实际走通；目录广度仍需独立对标：40+ personality、19 voice、135 occupation、29 relationship 的日期化观察应逐项记录 matched/equivalent/intentional divergence。继续复用现有五步与同一 Soul Markdown，不按对方的步骤数重构；Quick Start 只能预填这条链。
+3. Create 五步链及目录扩展已有实际证据：48 personality / 135 occupation / 29 relationship、运行声音目录 21 项；继续核对内容语义差异，不能只按总数认定 matched。沿用同一 Soul Markdown 与既有五步，Quick Start 只能预填这条链。
 4. 将 Recent、Characters、Presets、Created 和 Media 共同作为 My AI P0 核心面；Group Chats/Packs/Comics 作为 P1 对标缺口，发布前只显示明确 unavailable 空态或不暴露入口。
-5. 补齐 Generate 的 Presets、Create/Edit/Enhance、reference-guided lineage、Advanced Settings、Gallery 管理、多 scene/时长/比例/质量/AI voice Video 与 Chat Product Action 交接；持续保证 Character/Release/VisualProfile/Scene pins、quote、settlement/refund 和 replay 幂等。
-6. 补齐 Feed、Community、Creator Profile/levels/Studio、Pack 收益、Dreamcoin/现金激励、Remix/Like/Follow/Share/Report、Affiliate RevShare/CPA/归因/佣金、Images/Videos/Glossary/Authors、SEO/Library/Article/Comparison 和 Support 的真实数据、副作用、权限与发布证据；分期受依赖和资源约束，不受 WSCU 或同角色留存 Gate 约束。
-7. 保持 Chat 历史、Scene、official igrep memory、记忆控制、编辑/重生成、明确 Product Action 真实交付和角色身份连续性；补 Pinned Memories、Custom Instructions、conversation controls、5 档或功能等价 profiles、最多 12 角色 Group Chat 和双向 Voice Call。这些是完整 Chat 体验的能力，不是其他产品范围的 Gate。
-8. 保持 Upgrade/Profile 的一次性预付、`benefitsEndAt`、重新购买、no-renewal 与既有历史/媒体不锁回承诺；补真实 provider checkout→activation→expiry→repurchase probe。另补独立 dreamcoin coin store 的 offer→quote→one-time checkout→provider confirmation→幂等 topup ledger→购买历史闭环，充值不得创建、延长或续订访问计划。
+5. Generate 的 Create / Edit / 独立 Enhance 2×、已发布 reference lineage 与单段视频已真实交付。剩余为完整 Preset 浏览/编辑与内容目录、Gallery 过滤与组织、Advanced seed / 合格 model 选择、多 scene / 可选时长 / 比例 / 质量 / AI voice Video，以及精确 Chat Product Action 上下文交接；同挂载未知提交恢复收口后，继续关闭整页刷新丢失 receipt、首次 Job 读取早于原提交落库的缺口，保证历史 pins、quote、settlement/refund 和 replay 幂等。
+6. Creator Profile 跨页可达、路线图分页投票、Admin feedback 状态运营、CMS 发布后的 Resources 发现与分页已补齐并有真实 Chrome 证据。继续覆盖 Feed / Community / Creator levels / Studio、公开集合、Pack / Comic、非支付 Affiliate 归因运营、Images / Videos / Glossary / Authors 与完整内容族的真实数据、副作用和权限；不因这些入口存在就推定完整能力。收益、充值和支付执行保留为后续独立范围。
+7. Pinned Memories、Custom Instructions 与 session 级回复长度/表达风格已实现，真实模型验证了版本冻结、重生成、no-memory 与清除。末条操作遮挡、失败图片 Retry 入口和 50 条以后会话可达性已有修复与聚焦证据，待本批统一门禁；后续补 Scene / 用户 persona、主动消息、5 档或功能等价 profiles、最多 12 角色 Group Chat 和双向 Voice Call。继续保持 Main 历史权威、official igrep、角色身份及 Product Action 连续性。
+8. **本轮不执行支付范围**。后续独立工作仍包括 Upgrade/Profile 的 provider checkout → activation → expiry → repurchase，以及 coin store 的 offer → quote → one-time checkout → provider confirmation → 幂等 topup ledger → 购买历史。既有历史/媒体访问与一次性预付承诺保持；本轮内部测试加币不算用户充值产品闭环。
 9. WPCU 保持 `official`；WSCU/WSCrU/WPSCU/WSR 保持 shadow/directional 诊断。补生产回放、成熟窗口和质量认证，但不执行指标 cutover。
 
 退出条件：parity matrix 中每个目标域都有明确状态、真实产品能力与同 revision 浏览器/运行证据；所有公开声明与当前实现状态一致；指标保持 WPCU official 与其他诊断指标的正确层级。

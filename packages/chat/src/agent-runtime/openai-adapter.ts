@@ -431,7 +431,13 @@ export class OpenAiCompatibleAdapter extends LlmAdapter {
       temperature: jsonCompatibilityMode ? 0 : this.profile.sampling.temperature,
       top_p: this.profile.sampling.topP,
       repetition_penalty: this.profile.sampling.repetitionPenalty,
-      max_tokens: options.maxTokens ?? this.profile.maxOutputTokens,
+      // A response-length preference must not truncate native/JSON tool arguments.
+      // The required visual direction step retains its original model budget.
+      max_tokens: Math.min(
+        options.maxTokens ?? this.profile.maxOutputTokens,
+        this.profile.maxOutputTokens,
+        forceRequiredTool ? this.profile.maxOutputTokens : this.profile.answerMaxOutputTokens ?? this.profile.maxOutputTokens,
+      ),
       // INVARIANT: Chat-owned PreparedTurn budgets the companion reply, not
       // hidden chain-of-thought inside the sole DSH execution path.
       chat_template_kwargs: { enable_thinking: false },

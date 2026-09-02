@@ -19,7 +19,8 @@
 // INTENT: 公开读模型、feed id、举报、事件和请求原语都由具名模块提供；discovery
 // 只编排公开发现面，不再与 service 互相 import。
 import { Prisma } from "@prisma/client";
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { z } from "zod";
 import {
   getAuthCtx,
   requireAgeGate,
@@ -926,6 +927,24 @@ function activeFollowerCount(targetId: string) {
 
 // SPEC: public creator profile — displayName + totals + their public/approved characters.
 // INTENT: gives Community/Feed a place to lead to (§G); read-only, age-gated, no private data.
+const creatorCursorSchema = z.object({
+  scope: z.string().length(64),
+  createdAt: z.iso.datetime(),
+  id: z.string().min(1).max(200),
+}).strict();
+
+function creatorPageCursor(value: string | null, scope: string) {
+  if (!value) return null;
+  try {
+    if (value.length > 2_048) throw new Error("Cursor too large");
+    const cursor = creatorCursorSchema.parse(JSON.parse(Buffer.from(value, "base64url").toString("utf8")));
+    if (cursor.scope !== scope) throw new Error("Creator or viewer changed");
+    return { createdAt: new Date(cursor.createdAt), id: cursor.id };
+  } catch {
+    throw Errors.badRequest("Creator cursor does not match the current view. Refresh the creator profile.");
+  }
+}
+
 export async function creatorProfile(request: Request, creatorId: string) {
   const ctx = await getAuthCtx(request);
   requireAgeGate(ctx);
@@ -939,9 +958,14 @@ export async function creatorProfile(request: Request, creatorId: string) {
   });
   if (!creator) throw Errors.notFound("Creator not found");
   // 用户静音的标签在创作者主页同样生效。
-  const creatorMutedExclusion = mutedTagExclusionWhere(
-    ctx.userId ? await mutedTagSlugsForUser(ctx.userId) : [],
-  );
+  const mutedTags = ctx.userId ? await mutedTagSlugsForUser(ctx.userId) : [];
+  const creatorMutedExclusion = mutedTagExclusionWhere(mutedTags);
+  const url = new URL(request.url);
+  const limit = clampInt(url.searchParams.get("limit"), 1, 60, 24);
+  const cursorScope = createHash("sha256")
+    .update(JSON.stringify(["creator-newest-v1", creatorId, ctx.userId ?? null, [...mutedTags].sort()]))
+    .digest("hex");
+  const cursor = creatorPageCursor(url.searchParams.get("cursor"), cursorScope);
   const publicCreatorCharacterWhere: Prisma.CharacterWhereInput = {
     AND: [
       publicCharacterAudienceWhere,
@@ -951,11 +975,15 @@ export async function creatorProfile(request: Request, creatorId: string) {
   };
   const [characters, characterCount, characterTotals, followers, following] = await Promise.all([
     prisma.character.findMany({
-      where: publicCreatorCharacterWhere,
+      where: { AND: [publicCreatorCharacterWhere, ...(cursor ? [{ OR: [
+        { createdAt: { lt: cursor.createdAt } },
+        { createdAt: cursor.createdAt, id: { lt: cursor.id } },
+      ] }] : [])] },
       include: characterInclude(ctx.userId),
-      // 末位补唯一列：likesCount 与 createdAt 都可能并列，只靠它们排序不稳定。
-      orderBy: [{ stats: { likesCount: "desc" } }, { createdAt: "desc" }, { id: "desc" }],
-      take: 24,
+      // Likes change while readers paginate. Immutable creation order avoids
+      // skipping or repeating characters when another reader likes a card.
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: limit + 1,
     }),
     prisma.character.count({ where: publicCreatorCharacterWhere }),
     prisma.characterStats.aggregate({
@@ -980,6 +1008,8 @@ export async function creatorProfile(request: Request, creatorId: string) {
   ]);
   const totalLikes = characterTotals._sum.likesCount ?? 0;
   const totalChats = characterTotals._sum.chatsCount ?? 0;
+  const page = characters.slice(0, limit);
+  const last = page.at(-1);
   return ok({
     creator: {
       id: creator.id,
@@ -997,12 +1027,15 @@ export async function creatorProfile(request: Request, creatorId: string) {
         chatsCount: totalChats,
       },
     },
-    characters: characters.map((character) =>
+    characters: page.map((character) =>
       characterDTO(
         character,
         ctx.userId,
         new Set(following ? [creatorId] : []),
       ),
     ),
+    nextCursor: characters.length > limit && last
+      ? Buffer.from(JSON.stringify({ scope: cursorScope, createdAt: last.createdAt.toISOString(), id: last.id })).toString("base64url")
+      : null,
   });
 }

@@ -1,7 +1,44 @@
 import { z } from "zod";
 import { adminIdSchema, adminIsoDateTimeSchema, adminPageInfoSchema } from "./common";
 import { supportMessageBodySchema } from "../../contracts/support";
+import { PRODUCT_FEEDBACK_CATEGORIES, PRODUCT_FEEDBACK_STATUSES } from "../../catalog";
 export { supportConversationResponseSchema } from "../../contracts/support";
+
+export const productFeedbackListQuerySchema = z.object({
+  status: z.enum(["all", ...PRODUCT_FEEDBACK_STATUSES]).default("all"),
+  search: z.string().trim().max(200).optional(),
+  cursor: z.string().trim().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+}).strict();
+
+export const productFeedbackSchema = z.object({
+  id: adminIdSchema,
+  title: z.string(),
+  description: z.string(),
+  category: z.enum(PRODUCT_FEEDBACK_CATEGORIES),
+  status: z.enum(PRODUCT_FEEDBACK_STATUSES),
+  voteCount: z.number().int().nonnegative(),
+  createdAt: adminIsoDateTimeSchema,
+  updatedAt: adminIsoDateTimeSchema,
+}).strict();
+
+export const productFeedbackListResponseSchema = z.object({
+  items: z.array(productFeedbackSchema),
+  pageInfo: adminPageInfoSchema,
+}).strict();
+
+export const productFeedbackUpdateSchema = z.object({
+  status: z.enum(PRODUCT_FEEDBACK_STATUSES),
+  expectedUpdatedAt: adminIsoDateTimeSchema,
+  reason: z.string().trim().min(3).max(2_000),
+}).strict();
+
+export const productFeedbackMutationResponseSchema = z.object({
+  item: productFeedbackSchema,
+  replayed: z.boolean(),
+}).strict();
+
+export type ProductFeedback = z.infer<typeof productFeedbackSchema>;
 
 export const supportRequestStatusSchema = z.enum([
   "received",

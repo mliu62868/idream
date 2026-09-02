@@ -12,7 +12,8 @@ import {
 } from "@/lib/public-route-authority";
 import { OurdreamRoutePage } from "@/components/ourdream/OurdreamRoutePage";
 import { CmsRenderer } from "@/components/ourdream/CmsRenderer";
-import { loadPublishedRoutePage } from "@/server/cms/published-route";
+import { loadPublishedRoutePage, loadPublishedRoutePagesForDistribution } from "@/server/cms/published-route";
+import { buildResourceLibrary } from "@/lib/resource-library";
 import {
   hasTrustedStaticRouteContent,
   publicRouteRenderDecision,
@@ -29,6 +30,7 @@ type RouteParams = {
 
 type PageProps = {
   params: Promise<RouteParams>;
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 };
 
 function pathFromSlug(slug: string[]) {
@@ -85,7 +87,7 @@ export async function generateMetadata({
   };
 }
 
-export default async function Page({ params }: PageProps) {
+export default async function Page({ params, searchParams }: PageProps) {
   const { slug } = await params;
   const path = pathFromSlug(slug);
 
@@ -104,6 +106,12 @@ export default async function Page({ params }: PageProps) {
   // A route definition is navigation/editorial metadata, not publish proof.
   // Only the explicit dedicated-renderer registry may bypass CMS authority.
   if (renderDecision === "static" && route) {
+    if (path === "/resources-hub") {
+      const [pages, query] = await Promise.all([
+        loadPublishedRoutePagesForDistribution(), searchParams,
+      ]);
+      return <OurdreamRoutePage route={route} resourceLibrary={buildResourceLibrary(pages, query.page)} />;
+    }
     return <OurdreamRoutePage route={route} />;
   }
 

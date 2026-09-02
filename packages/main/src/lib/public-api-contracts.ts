@@ -467,6 +467,7 @@ const creatorResponseSchema = successEnvelope(
       })
       .passthrough(),
     characters: z.array(publicCharacterCardSchema),
+    nextCursor: nonEmptyString.nullable().default(null),
   }),
 );
 
@@ -671,7 +672,11 @@ export const feedbackItemSchema = z
   .passthrough();
 
 const feedbackItemsResponseSchema = successEnvelope(
-  z.object({ items: z.array(feedbackItemSchema) }),
+  z.object({
+    items: z.array(feedbackItemSchema),
+    nextCursor: nonEmptyString.nullable().default(null),
+    viewerId: nonEmptyString.nullable().default(null),
+  }),
 );
 
 const feedbackItemResponseSchema = successEnvelope(
@@ -883,6 +888,7 @@ const generationConfigSchema = z
         orientations: z.array(nonEmptyString),
         models: z.array(generationModelSchema),
         editModels: z.array(imageEditGenerationModelSchema).default([]),
+        enhance: z.object({ available: z.boolean(), scale: z.literal(2) }).strict().default({ available: false, scale: 2 }),
         recipes: z.array(imageGenerationRecipeSchema).optional(),
       })
       .strict(),
@@ -1051,6 +1057,14 @@ const generationQuoteResponseSchema = successEnvelope(
   z.object({ quote: generationQuoteSchema }).strict(),
 );
 
+const mediaEnhancementQuoteResponseSchema = successEnvelope(z.object({
+  quote: generationQuoteSchema,
+  enhancement: z.object({ sourceMediaId: nonEmptyString, scale: z.literal(2), sourceWidth: z.number().int().positive(), sourceHeight: z.number().int().positive(), width: z.number().int().positive(), height: z.number().int().positive() }).strict().refine(
+    (value) => value.width === value.sourceWidth * 2 && value.height === value.sourceHeight * 2,
+    { message: "enhancement must preserve the source dimensions at exactly 2×" },
+  ),
+}).strict());
+
 const generationRetryQuoteSchema = z
   .object({
     mode: z.enum(["image", "video"]),
@@ -1116,6 +1130,8 @@ const workspaceMediaItemSchema = z
     isSynthetic: z.boolean().optional(),
     canEditIdentity: z.boolean().optional(),
     imageEditModelIds: z.array(nonEmptyString).optional(),
+    enhanceEligible: z.boolean().optional(),
+    enhancement: z.object({ sourceMediaId: nonEmptyString, scale: z.literal(2) }).strict().nullish(),
     visualProfileId: z.string().nullable().optional(),
     visualProfileVersion: nonNegativeInteger.nullable().optional(),
     identity: z
@@ -1606,6 +1622,10 @@ export function parseGenerationQuoteResponse(payload: unknown) {
     payload,
     "generation quote",
   ).data;
+}
+
+export function parseMediaEnhancementQuoteResponse(payload: unknown) {
+  return parseContract(mediaEnhancementQuoteResponseSchema, payload, "image enhancement quote").data;
 }
 
 export function parseGenerationRetryQuoteResponse(payload: unknown) {

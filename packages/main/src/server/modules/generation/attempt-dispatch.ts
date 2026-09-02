@@ -23,6 +23,8 @@ import {
   PUBLIC_CATALOG_QUALIFICATION_SCHEMA_VERSION,
 } from "@/server/modules/ourdream/public-catalog-qualification";
 import { directCharacterAudienceWhere } from "@/server/modules/ourdream/public-content-audience";
+import { assertMediaEnhancementSource } from "@/server/modules/ourdream/media-enhancement-source";
+import { lockCharacterMediaAssetAuthorities } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 
 const LEGACY_CHARACTER_GENERATION_AUTHORITY_SCHEMA_VERSION_V1 =
   "legacy-character-generation-authority-v1";
@@ -341,7 +343,16 @@ export async function buildGenerationAttemptQueueInput(
       buildGenerationAttemptQueueInput(job, attempt, { ...input, db: tx })
     );
   }
-  await assertGenerationCharacterDispatchable(input.db, job);
+  if (job.sourceType === "media_enhance") {
+    if (job.mode !== "image" || job.outputCount !== 1 || job.model !== "realesrgan-x2plus-enhance") {
+      throw Errors.conflict("Enhancement dispatch authority is invalid");
+    }
+    const sourceId = stringFromRecord(jsonRecord(job.controls), "sourceImageAssetId");
+    await lockCharacterMediaAssetAuthorities(input.db, sourceId ? [sourceId] : []);
+    await assertMediaEnhancementSource(job, input.db);
+  } else {
+    await assertGenerationCharacterDispatchable(input.db, job);
+  }
   const runtime = await existingGenerationRuntime(input.db, job, attempt);
   const controls = runtime.controls;
   const modelCapabilities = modelCapabilitiesFromControls(controls);

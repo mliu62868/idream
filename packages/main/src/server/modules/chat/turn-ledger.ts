@@ -3,8 +3,10 @@ import { FREE_DAILY_MESSAGES } from "@idream/shared/chat/limits";
 import type {
   ChatExecutionSnapshot,
   ChatTerminalCommit,
+  ChatContextDirective,
+  ChatExperiencePreference,
 } from "@idream/shared/contracts";
-import { chatExecutionSnapshotSchema, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
+import { chatContextDirectivesSchema, chatExecutionSnapshotSchema, chatExperiencePreferenceSchema, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
@@ -206,6 +208,8 @@ export async function beginChatTurn(input: {
           tx,
           duplicate.id,
           duplicate.memoryEnabled && !memoryIsolated,
+          duplicate.executionSnapshot ? undefined : [],
+          duplicate.executionSnapshot ? undefined : null,
         ),
       };
     }
@@ -286,6 +290,9 @@ export async function regenerateChatTurn(userId: string, messageId: string) {
       throw Errors.conflict("A reply is already generating");
     }
     const previousAttempt = current.attempt;
+    const originalSnapshot = current.executionSnapshot ? chatExecutionSnapshotSchema.parse(current.executionSnapshot) : null;
+    const contextDirectives = originalSnapshot?.contextDirectives ?? [];
+    const experience = originalSnapshot?.experience ?? null;
     const sceneAnchor = await previousCommittedScene(tx, current);
     const regenerated = await tx.chatTurn.update({
       where: { id: turn.id },
@@ -314,7 +321,7 @@ export async function regenerateChatTurn(userId: string, messageId: string) {
       characterId: turn.session.characterId,
       purgeRunAttempts: [{ turnId: turn.id, throughAttempt: previousAttempt }],
     });
-    return { turn: regenerated, snapshot: await frozenExecutionSnapshot(tx, regenerated.id, false) };
+    return { turn: regenerated, snapshot: await frozenExecutionSnapshot(tx, regenerated.id, false, contextDirectives, experience) };
   });
   return {
     assistantMessageId: updated.turn.assistantMessageId,
@@ -352,6 +359,9 @@ export async function editChatTurn(userId: string, messageId: string, nextConten
       messageIds: [turn.userMessageId, turn.assistantMessageId],
     });
     const previousAttempt = current.attempt;
+    const originalSnapshot = current.executionSnapshot ? chatExecutionSnapshotSchema.parse(current.executionSnapshot) : null;
+    const contextDirectives = originalSnapshot?.contextDirectives ?? [];
+    const experience = originalSnapshot?.experience ?? null;
     const edited = await tx.chatTurn.update({
       where: { id: turn.id },
       data: {
@@ -385,7 +395,7 @@ export async function editChatTurn(userId: string, messageId: string, nextConten
     });
     return {
       turn: edited,
-      snapshot: blocked ? null : await frozenExecutionSnapshot(tx, edited.id, false),
+      snapshot: blocked ? null : await frozenExecutionSnapshot(tx, edited.id, false, contextDirectives, experience),
     };
   });
   return {
@@ -653,6 +663,8 @@ async function frozenExecutionSnapshot(
   tx: Prisma.TransactionClient,
   turnId: string,
   memoryEnabled = true,
+  preservedDirectives?: ChatContextDirective[],
+  preservedExperience?: ChatExperiencePreference | null,
 ): Promise<ChatExecutionSnapshot> {
   const turn = await tx.chatTurn.findUnique({ where: { id: turnId }, include: { session: true } });
   if (!turn) throw Errors.notFound("Chat turn not found");
@@ -677,6 +689,26 @@ async function frozenExecutionSnapshot(
     },
   });
   recent.reverse();
+  // Explicit settings are copied once, not ingested as synthetic chat messages.
+  // Revisions of the same Turn retain its original user context, including an
+  // empty historical snapshot; temporary igrep rebuild isolation does not erase it.
+  const contextDirectives = chatContextDirectivesSchema.parse(
+    (preservedDirectives ?? await tx.chatContextDirective.findMany({
+      where: {
+        userId: turn.session.userId,
+        characterId: turn.session.characterId,
+        status: "active",
+        ...(turn.memoryEnabled ? {} : { kind: "custom_instruction" }),
+      },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      select: { id: true, kind: true, content: true, version: true },
+    })).filter((item) => turn.memoryEnabled || item.kind === "custom_instruction"),
+  );
+  const experienceRow = preservedExperience !== undefined ? preservedExperience : await tx.chatExperiencePreference.findUnique({
+    where: { sessionId: turn.sessionId },
+    select: { responseLength: true, interactionIntensity: true, version: true },
+  });
+  const experience = experienceRow ? chatExperiencePreferenceSchema.parse(experienceRow) : null;
   const snapshot: ChatExecutionSnapshot = {
     version: 1,
     turnId: turn.id,
@@ -692,6 +724,8 @@ async function frozenExecutionSnapshot(
     characterVisualProfileId: turn.characterVisualProfileId,
     characterVisualProfileVersion: turn.characterVisualProfileVersion,
     memoryEnabled: turn.memoryEnabled && memoryEnabled,
+    contextDirectives,
+    ...(experience ? { experience } : {}),
     contextRevision: turn.session.contextRevision,
     userContent: turn.userContent,
     hasRecentImageContext: recent.some((item) =>

@@ -15,6 +15,8 @@ import {
 } from "@/components/admin/assets/assets-api";
 import { WorkspaceButton, fieldClass } from "@/features/operations/WorkspaceUi";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
+import { createLatestRequestGate } from "@/lib/latest-request";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import {
   CharacterVideoStudio,
   type RunCommittedMutation,
@@ -56,9 +58,11 @@ export function CharacterVideoLibrary({
   const [message, setMessage] = useState<string | null>(null);
   const [archiveSpec, setArchiveSpec] = useState<ConfirmSpec | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const requestGate = useRef(createLatestRequestGate());
 
   const loadAssets = useCallback(async () => {
     if (!canRead) return;
+    const request = requestGate.current.begin();
     setLoading(true);
     setLoadError(null);
     try {
@@ -69,18 +73,26 @@ export function CharacterVideoLibrary({
           limit: 100,
         }),
       );
-      setAssets(result.items.filter((asset) => asset.platformStatus !== "archived"));
+      if (request.isCurrent()) setAssets(result.items.filter((asset) => asset.platformStatus !== "archived"));
     } catch (cause) {
-      setLoadError(cause instanceof Error ? cause.message : t("Character videos could not be loaded"));
+      if (request.isCurrent()) setLoadError(cause instanceof Error ? cause.message : t("Character videos could not be loaded"));
     } finally {
-      setLoading(false);
+      if (request.isCurrent()) setLoading(false);
     }
   }, [canRead, data.character.id, t]);
 
   useEffect(() => {
+    if (!canRead) return;
+    const gate = requestGate.current;
+    const refresh = () => { void loadAssets(); };
     const timer = window.setTimeout(() => void loadAssets(), 0);
-    return () => window.clearTimeout(timer);
-  }, [loadAssets]);
+    window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
+    return () => {
+      gate.invalidate();
+      window.clearTimeout(timer);
+      window.removeEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
+    };
+  }, [canRead, loadAssets]);
 
   const refreshAfterProduction = useCallback(async () => {
     await onProjectReload();
@@ -129,8 +141,9 @@ export function CharacterVideoLibrary({
       summary: t("Videos used by an active campaign or release must be replaced first."),
       consequence: {
         effect: "The video will be archived and hidden from this Character's library.",
-        reversible: true,
+        reversible: false,
       },
+      destructive: { expectedName: asset.id.slice(0, 8) },
       reasonLabel: "Removal reason",
       submitLabel: "Remove from library",
       onSubmit: async (reason) => {

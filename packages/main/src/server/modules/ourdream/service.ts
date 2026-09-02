@@ -10,6 +10,8 @@ import { resolveLocalBlobPath, resolveLocalBlobRoot } from "@idream/shared/stora
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
+import { createMediaEnhancement, mediaEnhancementAvailable, mediaEnhancementBodySchema, mediaEnhancementQuoteBodySchema, quoteMediaEnhancement } from "./media-enhancement";
+import { isEnhanceEligible } from "./media-enhancement-source";
 import type { ChatImageRequestedPayload } from "@/server/ai/schemas";
 import {
   isProductionVideoProfile,
@@ -631,6 +633,9 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
     }
     if (id && action === "add-to-identity" && method === "POST") return addMediaToIdentity(request, id);
     if (id && action === "save-as-look" && method === "POST") return saveMediaAsCharacterLook(request, id);
+    if (id && action === "enhance" && method === "POST" && (!child || child === "quote")) {
+      return mediaEnhancement(request, id, child === "quote");
+    }
     if (id && action === "variation" && child === "quote" && method === "POST") {
       return mediaVariationQuote(request, id);
     }
@@ -1969,6 +1974,7 @@ async function generationConfig(request: Request) {
     },
     image: {
       availability: imageAvailability,
+      enhance: { available: await mediaEnhancementAvailable(entitlements), scale: 2 },
       orientations: availableImageProfile
         ? supportedProfileOrientations(availableImageProfile.allowedOrientations)
         : [],
@@ -2347,6 +2353,7 @@ async function listPresets(request: Request) {
   const url = new URL(request.url);
   const type = url.searchParams.get("type");
   const scope = url.searchParams.get("scope");
+  const category = url.searchParams.get("category");
   const q = url.searchParams.get("q");
   const ctx = await getAuthCtx(request);
   requireAgeGate(ctx);
@@ -2356,9 +2363,13 @@ async function listPresets(request: Request) {
       status: "active",
       type: type ?? undefined,
       scope: scope ?? undefined,
-      OR: ctx.userId
-        ? [{ ownerId: ctx.userId }, { scope: { in: ["built_in", "community"] } }]
-        : [{ scope: "built_in" }],
+      category: category ?? undefined,
+      // A catalog entry is shared only after public publication; owners retain
+      // access to their own private and unlisted reusable presets.
+      OR: [
+        { scope: { in: ["built_in", "community"] }, visibility: "public" },
+        ...(ctx.userId ? [{ ownerId: ctx.userId }] : []),
+      ],
       label: q ? { contains: q, mode: "insensitive" } : undefined,
     },
     orderBy: [{ scope: "asc" }, { type: "asc" }, { label: "asc" }],
@@ -3108,6 +3119,22 @@ async function resolveMediaVariationGenerationInput(
       outputCount: input.outputCount,
     },
   };
+}
+
+async function mediaEnhancement(request: Request, id: string, quoteOnly: boolean) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  const raw = await jsonBody(request);
+  if (quoteOnly) {
+    mediaEnhancementQuoteBodySchema.parse(raw);
+    return ok(await quoteMediaEnhancement(user.id, id));
+  }
+  const body = mediaEnhancementBodySchema.parse(raw);
+  const job = await createMediaEnhancement(user.id, id, body, requireGenerationWriteIdempotencyKey(request));
+  const persisted = await prisma.generationJob.findUniqueOrThrow({ where: { id: job.id }, include: generationJobInclude() });
+  return ok(generationJobResponse(persisted), { status: 202 });
 }
 
 async function mediaVariationQuote(request: Request, id: string) {
@@ -4279,6 +4306,10 @@ function mediaDTO(asset: {
     characterId,
     canEditIdentity: Boolean(characterId && options.editableCharacterIds?.has(characterId)),
     imageEditModelIds: options.imageEditModelIds ?? [],
+    enhanceEligible: isEnhanceEligible(asset),
+    enhancement: asset.sourceJob?.sourceType === "media_enhance"
+      ? { sourceMediaId: stringFromRecord(jsonRecord(asset.sourceJob.sourceMeta), "sourceMediaId"), scale: 2 }
+      : null,
     type: asset.type,
     url: displayUrl,
     thumbnailUrl: asset.storageKey ? displayUrl : (asset.thumbnailUrl ?? asset.url),

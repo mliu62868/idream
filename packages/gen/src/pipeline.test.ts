@@ -2,6 +2,8 @@
 // stubbed, so no Redis, HTTP, or disk are touched. Image/video outcomes persist
 // one terminal record before ACK across every image/video use case.
 import { deflateSync } from "node:zlib";
+import { createHash } from "node:crypto";
+import sharp from "sharp";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   type GenerationTerminalRecordIngest,
@@ -240,6 +242,125 @@ function makeMemoryBlob(): GenProviders["blob"] {
 }
 
 describe("processImageGenerate", () => {
+  it.each(["realesrgan-x2plus", "realesrgan-x2plus-enhance"])("pins Enhance %s to verified source bytes and persists the decoded two-times dimensions", async (model) => {
+    const source = patternedPng(4, 5);
+    const providers = makeProviders({ blob: makeMemoryBlob() });
+    vi.mocked(providers.image.generate).mockResolvedValue({ ok: true, data: { assets: [{
+      key: "enhanced.png", body: patternedPng(8, 10), contentType: "image/png", width: 999, height: 999,
+    }] } });
+    const deps = makePipelineDeps(providers);
+    const payload = enhancePayload(source);
+    payload.model = model;
+
+    await processImageGenerate(payload, deps);
+    await processImageGenerate(payload, deps);
+
+    expect(providers.image.generate).toHaveBeenCalledTimes(1);
+    expect(providers.image.generate).toHaveBeenCalledWith(expect.objectContaining({
+      referenceImages: [expect.objectContaining({ assetId: "source-1", role: "source_image", b64Json: Buffer.from(source).toString("base64"), width: 4, height: 5 })],
+    }));
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenLastCalledWith(expect.objectContaining({ terminalRecord: expect.objectContaining({
+      outcome: "succeeded", assets: [expect.objectContaining({ width: 8, height: 10 })],
+    }) }));
+  });
+
+  it.each(["sha", "dimensions"])("rejects mismatched Enhance source %s before provider invocation", async (mismatch) => {
+    const source = patternedPng(4, 5);
+    const payload = enhancePayload(source);
+    payload.controls.enhancement = { ...payload.controls.enhancement as object, ...(mismatch === "sha" ? { sourceSha256: "0".repeat(64) } : { sourceWidth: 5 }) };
+    const providers = makeProviders({ blob: makeMemoryBlob() });
+    const deps = makePipelineDeps(providers, { attemptsMade: 2, maxAttempts: 3 });
+
+    await processImageGenerate(payload, deps);
+
+    expect(providers.image.generate).not.toHaveBeenCalled();
+    expect(deps.recordTransportExecution).not.toHaveBeenCalled();
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({ terminalRecord: expect.objectContaining({
+      outcome: "failed", providerInvoked: false, usage: {}, error: expect.objectContaining({ code: "preparation_failed" }),
+    }) }));
+  });
+
+  it("fails Enhance delivery when decoded output is not two-times the source, then replays without reinvocation", async () => {
+    const providers = makeProviders({ blob: makeMemoryBlob() });
+    vi.mocked(providers.image.generate).mockResolvedValue({ ok: true, data: { assets: [{
+      key: "incorrect.png", body: patternedPng(4, 5), contentType: "image/png", width: 8, height: 10,
+    }] } });
+    const deps = makePipelineDeps(providers);
+    const payload = enhancePayload(patternedPng(4, 5));
+
+    await processImageGenerate(payload, deps);
+    await processImageGenerate(payload, deps);
+
+    expect(providers.image.generate).toHaveBeenCalledTimes(1);
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenLastCalledWith(expect.objectContaining({ terminalRecord: expect.objectContaining({
+      outcome: "failed", providerInvoked: true, error: expect.objectContaining({ code: "enhancement_output_invalid" }),
+    }) }));
+    expect(vi.mocked(deps.acknowledgeTerminalRecord).mock.calls[0]![0].terminalRecord).not.toHaveProperty("assets");
+    const writes = vi.mocked(providers.blob.putPrivateIfAbsent).mock.calls;
+    expect(writes.some(([input]) => input.key.startsWith(payload.outputPrefix))).toBe(false);
+  });
+
+  it.each(["model", "pin", "count", "reference", "workflow"])("rejects an invalid Enhance %s binding before invoking the provider", async (invalid) => {
+    const payload = enhancePayload(patternedPng(4, 5));
+    if (invalid === "model") payload.model = "another-model";
+    if (invalid === "pin") delete payload.controls.enhancement;
+    if (invalid === "count") payload.count = 2;
+    if (invalid === "reference") payload.referenceImages![0]!.assetId = "another-source";
+    if (invalid === "workflow") payload.controls.workflowVersion = 2;
+    const providers = makeProviders({ blob: makeMemoryBlob() });
+    const deps = makePipelineDeps(providers, { attemptsMade: 2, maxAttempts: 3 });
+
+    await processImageGenerate(payload, deps);
+
+    expect(providers.image.generate).not.toHaveBeenCalled();
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({ terminalRecord: expect.objectContaining({ outcome: "failed", providerInvoked: false, usage: {} }) }));
+  });
+
+  it("freezes remotely read source bytes so the provider cannot reread a changed URL", async () => {
+    const source = patternedPng(4, 5);
+    const payload = enhancePayload(source);
+    payload.referenceImages = [{ assetId: "source-1", role: "source_image", url: "https://storage.example/source.png", storageKey: "original.png" }];
+    globalThis.fetch = vi.fn(async () => new Response(source));
+    const providers = makeProviders({ blob: makeMemoryBlob() });
+    vi.mocked(providers.image.generate).mockResolvedValue({ ok: true, data: { assets: [{ body: patternedPng(8, 10), contentType: "image/png", width: 8, height: 10 }] } });
+
+    await processImageGenerate(payload, makePipelineDeps(providers));
+
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    const reference = vi.mocked(providers.image.generate).mock.calls[0]![0].referenceImages![0]!;
+    expect(reference.b64Json).toBe(Buffer.from(source).toString("base64"));
+    expect(reference).not.toHaveProperty("url");
+    expect(reference).not.toHaveProperty("storageKey");
+  });
+
+  it.each(["animated", "rotated", "truncated", "oversized"])("rejects a %s Enhance source using the actual decoder", async (invalid) => {
+    let source: Buffer = Buffer.from(patternedPng(4, 5));
+    if (invalid === "animated") {
+      source = await sharp(Buffer.concat([Buffer.alloc(4 * 5 * 3, 0), Buffer.alloc(4 * 5 * 3, 255)]), { raw: { width: 4, height: 10, channels: 3, pageHeight: 5 } }).webp().toBuffer();
+      expect((await sharp(source).metadata()).pages).toBe(2);
+    }
+    if (invalid === "rotated") source = await sharp(source).withMetadata({ orientation: 6 }).jpeg().toBuffer();
+    if (invalid === "truncated") source = source.subarray(0, 50);
+    if (invalid === "oversized") source = Buffer.from(patternedPng(2049, 2));
+    const providers = makeProviders({ blob: makeMemoryBlob() });
+    const deps = makePipelineDeps(providers, { attemptsMade: 2, maxAttempts: 3 });
+
+    await processImageGenerate(enhancePayload(source), deps);
+
+    expect(providers.image.generate).not.toHaveBeenCalled();
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({ terminalRecord: expect.objectContaining({ outcome: "failed", providerInvoked: false }) }));
+  });
+
+  it("does not persist an Enhance provider batch containing extra images", async () => {
+    const providers = makeProviders({ blob: makeMemoryBlob() });
+    const deps = makePipelineDeps(providers);
+
+    await processImageGenerate(enhancePayload(patternedPng(4, 5)), deps);
+
+    expect(deps.acknowledgeTerminalRecord).toHaveBeenCalledWith(expect.objectContaining({ terminalRecord: expect.objectContaining({ outcome: "failed", providerInvoked: true, error: expect.objectContaining({ code: "enhancement_output_invalid" }) }) }));
+    expect(vi.mocked(providers.blob.putPrivateIfAbsent).mock.calls.some(([input]) => input.key.startsWith("gen/job_img_1/"))).toBe(false);
+  });
+
   it("persists and acknowledges a succeeded terminal record", async () => {
     const providers = makeProviders();
     const acknowledgeTerminalRecord = vi.fn(async (_: GenerationTerminalRecordIngest) => {});
@@ -1105,6 +1226,17 @@ describe("processImageGenerate", () => {
     expect(deps.acknowledgeTerminalRecord).not.toHaveBeenCalled();
   });
 });
+
+function enhancePayload(source: Uint8Array): ImageGeneratePayload {
+  return imagePayload({
+    count: 1, model: "realesrgan-x2plus", controls: {
+      workflowKey: "realesrgan-x2plus-enhance", workflowVersion: 1,
+      width: 8, height: 10, sourceImageAssetId: "source-1",
+      enhancement: { sourceMediaId: "source-1", sourceSha256: createHash("sha256").update(source).digest("hex"), sourceWidth: 4, sourceHeight: 5, scale: 2 },
+    },
+    referenceImages: [{ assetId: "source-1", role: "source_image", b64Json: Buffer.from(source).toString("base64"), width: 900, height: 900 }],
+  });
+}
 
 function patternedPng(width: number, height: number) {
   const rows = Array.from({ length: height }, (_, y) => {

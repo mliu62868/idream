@@ -147,6 +147,88 @@ function submissionBody(overrides: Record<string, unknown> = {}) {
 
 // INVARIANT 1 — idempotency key rotation
 describe("generation request idempotency", () => {
+  it.each([200, 409])("a late HTTP %s from an older replay cannot clear a newer request's key", async (status) => {
+    const keys = createGenerationIdempotencyKeys();
+    const observed: string[] = [];
+    let resolveOld!: (response: Response) => void;
+    let resolveNew!: (response: Response) => void;
+    const oldResponse = new Promise<Response>((resolve) => { resolveOld = resolve; });
+    const newResponse = new Promise<Response>((resolve) => { resolveNew = resolve; });
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      observed.push(new Headers(init?.headers).get("idempotency-key") ?? "");
+      if (observed.length === 1) return oldResponse;
+      if (observed.length === 2) return jobResponse("accepted-old-job");
+      return newResponse;
+    });
+    const request: GenerationWriteRequest = { kind: "generation", body: submissionBody(), quote, quoteKey: "route-key" };
+    const context = () => ({ state: heldQuote(), dispatch: () => {}, effects: recordingEffects(), keys, fetcher });
+    const old = runGenerationWrite(request, context());
+    await runGenerationWrite(request, context());
+    expect(observed[1]).toBe(observed[0]);
+    const fresh = runGenerationWrite(request, context());
+    expect(observed[2]).not.toBe(observed[0]);
+    resolveOld(status === 200 ? jobResponse("accepted-old-job") : Response.json({ ok: false, error: { message: "Old rejection" } }, { status }));
+    await old;
+    expect([...keys.generation.values()]).toEqual([observed[2]]);
+    resolveNew(Response.json({ ok: false, error: { message: "Unconfirmed" } }, { status: 503 }));
+    await fresh;
+    expect([...keys.generation.values()]).toEqual([observed[2]]);
+  });
+
+  it.each(["generation", "variation", "retry"] as const)("checks the original unconfirmed %s when its route can no longer be quoted", async (kind) => {
+    const keys = createGenerationIdempotencyKeys();
+    const observed: Array<{ key: string; body: Record<string, unknown> }> = [];
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      observed.push({ key: new Headers(init?.headers).get("idempotency-key") ?? "", body: JSON.parse(String(init?.body)) });
+      if (observed.length === 1) throw new TypeError("Response lost after acceptance");
+      return jobResponse("accepted-job");
+    });
+    const request: GenerationWriteRequest = kind === "generation"
+      ? { kind, body: submissionBody(), quote, quoteKey: "route-key" }
+      : kind === "retry" ? { kind, jobId: "job-1" } : {
+        kind, mediaId: "image-1", outputCount: 1, consistencyMode: "balanced",
+        prompt: "A blue raincoat", quote, quoteKey: "route-key", queuedMessage: "Variation queued.",
+      };
+    expect((await runGenerationWrite(request, { state: stateWith({ retryQuotes: { "job-1": retryQuote } }),
+      dispatch: () => {}, effects: recordingEffects(), keys, fetcher })).kind).toBe("rejected");
+    const replay = await runGenerationWrite(request.kind === "retry" ? request : { ...request, quote: null, quoteKey: null }, {
+      state: stateWith(), dispatch: () => {}, effects: recordingEffects(), keys, fetcher,
+    });
+    expect(replay).toMatchObject({ kind: "queued", job: { id: "accepted-job" } });
+    expect(observed).toHaveLength(2);
+    expect(observed[1].key).toBe(observed[0].key);
+    expect(observed[1].body).toEqual(observed[0].body);
+    if (kind === "variation") expect(observed[1].body.orientation).toBe("4:5");
+  });
+
+  it.each(["variation", "retry"] as const)("checks the same unconfirmed %s after its accepted charge consumed the balance", async (kind) => {
+    const keys = createGenerationIdempotencyKeys();
+    const observed: string[] = [];
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      observed.push(new Headers(init?.headers).get("idempotency-key") ?? "");
+      if (observed.length === 1) throw new TypeError("Response lost after acceptance");
+      return jobResponse("accepted-job");
+    });
+    const request: GenerationWriteRequest = kind === "retry" ? { kind, jobId: "job-1" } : {
+      kind, mediaId: "image-1", outputCount: 1, consistencyMode: "balanced",
+      prompt: "A blue raincoat", quote, quoteKey: "route-key", queuedMessage: "Variation queued.",
+    };
+    const initial = await runGenerationWrite(request, {
+      state: stateWith({ retryQuotes: { "job-1": retryQuote } }), dispatch: () => {},
+      effects: recordingEffects(), keys, fetcher,
+    });
+    expect(initial.kind).toBe("rejected");
+    const replay = await runGenerationWrite(request.kind === "variation" ? { ...request, quote: { ...quote, balance: 0 } } : request, {
+      state: stateWith({ retryQuotes: { "job-1": { ...retryQuote, balance: 0 } } }),
+      dispatch: () => {}, effects: recordingEffects(), keys, fetcher,
+    });
+    expect(replay).toMatchObject({ kind: "queued", job: { id: "accepted-job" } });
+    expect(observed).toHaveLength(2);
+    expect(observed[0]).toBeTruthy();
+    expect(observed[1]).toBe(observed[0]);
+    expect(keys[kind].size).toBe(0);
+  });
+
   it("reuses the submission key after an ambiguous network failure and drops it once the write is known to have landed", async () => {
     const keys = createGenerationIdempotencyKeys();
     const observed: string[] = [];
@@ -797,6 +879,7 @@ describe("generation write outcome protocol", () => {
       let current = true;
       const dispatch = vi.fn();
       const effects = recordingEffects();
+      const keys = createGenerationIdempotencyKeys();
       const request: GenerationWriteRequest = kind === "generation"
         ? { kind, body: submissionBody(), quote, quoteKey: "route-key" }
         : kind === "retry"
@@ -807,13 +890,14 @@ describe("generation write outcome protocol", () => {
           };
       const pending = runGenerationWrite(request, {
         state: stateWith({ retryQuotes: { "job-1": retryQuote } }),
-        dispatch, effects, keys: createGenerationIdempotencyKeys(),
+        dispatch, effects, keys,
         fetcher: () => response,
         isCurrent: () => current,
       });
       current = false;
       resolve(jobResponse("previous-viewer-job"));
-      expect(await pending).toMatchObject({ kind: "queued" });
+      expect(await pending).toMatchObject({ kind: "rejected" });
+      expect(keys[kind].size).toBe(1);
       expect(dispatch.mock.calls.map(([action]) => action.type)).toEqual(["write_started"]);
       expect(effects.calls).toEqual([]);
     },

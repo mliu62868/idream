@@ -1,7 +1,9 @@
 import type { Prisma } from "@prisma/client";
+import { createHash } from "node:crypto";
 import {
   APPEAL_TARGET_TYPES,
   PRODUCT_FEEDBACK_CATEGORIES,
+  PRODUCT_FEEDBACK_STATUSES,
   SUPPORT_REQUEST_CATEGORIES,
 } from "@idream/shared/catalog";
 import { METRIC_PRODUCT_EVENTS, supportReplyRequestSchema } from "@idream/shared/contracts";
@@ -21,6 +23,7 @@ import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
 import { jsonBody } from "@/server/lib/request-json";
+import { clampInt } from "@/server/lib/request-query";
 import { enforceRateLimit } from "@/server/lib/rate-limit";
 import {
   isCustomerEngagementActor,
@@ -56,6 +59,12 @@ const feedbackItemCreateSchema = z.object({
   title: z.string().trim().min(3).max(120),
   description: z.string().trim().min(10).max(600),
 });
+
+const feedbackCursorSchema = z.object({
+  scope: z.string().length(64),
+  createdAt: z.string().datetime(),
+  id: z.string().min(1).max(160),
+}).strict();
 
 type ProductFeedbackItemRow = {
   id: string;
@@ -518,13 +527,48 @@ async function replyToSupportRequest(request: Request, ticketId: string) {
 
 async function listFeedbackItems(request: Request) {
   const ctx = await getAuthCtx(request);
+  const query = new URL(request.url).searchParams;
+  const limit = clampInt(query.get("limit"), 1, 60, 12);
+  const status = query.get("status");
+  if (status && !z.enum(PRODUCT_FEEDBACK_STATUSES).safeParse(status).success) {
+    throw Errors.badRequest("Unknown roadmap status");
+  }
+  const scope = createHash("sha256").update(JSON.stringify([ctx.userId ?? null, status || null])).digest("hex");
+  const rawCursor = query.get("cursor");
+  let cursor: z.infer<typeof feedbackCursorSchema> | null = null;
+  if (rawCursor) {
+    try {
+      if (rawCursor.length > 2_048) throw new Error("Cursor too large");
+      cursor = feedbackCursorSchema.parse(JSON.parse(Buffer.from(rawCursor, "base64url").toString("utf8")));
+      if (cursor.scope !== scope) throw new Error("Cursor scope changed");
+    } catch {
+      throw Errors.badRequest("Roadmap view changed or its cursor is invalid. Refresh the list");
+    }
+  }
   const items = await prisma.productFeedbackItem.findMany({
-    where: publicFeedbackAudienceWhere,
-    orderBy: [{ voteCount: "desc" }, { createdAt: "desc" }],
-    take: 12,
+    where: { AND: [
+      publicFeedbackAudienceWhere,
+      ...(status ? [{ status }] : []),
+      ...(cursor ? [{ OR: [
+        { createdAt: { lt: new Date(cursor.createdAt) } },
+        { createdAt: new Date(cursor.createdAt), id: { lt: cursor.id } },
+      ] }] : []),
+    ] },
+    // Votes and triage change while a reader pages. Immutable row keys keep
+    // those updates from skipping or repeating an idea at the page boundary.
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: limit + 1,
   });
-  const votedIds = await userFeedbackVoteIds(ctx.userId, items.map((item) => item.id));
-  return ok({ items: items.map((item) => feedbackItemDTO(item, votedIds)) });
+  const page = items.slice(0, limit);
+  const last = page.at(-1);
+  const votedIds = await userFeedbackVoteIds(ctx.userId, page.map((item) => item.id));
+  return ok({
+    items: page.map((item) => feedbackItemDTO(item, votedIds)),
+    nextCursor: items.length > limit && last
+      ? Buffer.from(JSON.stringify({ scope, createdAt: last.createdAt.toISOString(), id: last.id })).toString("base64url")
+      : null,
+    viewerId: ctx.userId ?? null,
+  });
 }
 
 async function createFeedbackItem(request: Request) {

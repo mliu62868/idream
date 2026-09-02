@@ -5,13 +5,18 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { adminV2Operation, apiGet } = vi.hoisted(() => ({
+const { adminV2Operation, apiGet, bulkArchiveAssets } = vi.hoisted(() => ({
   adminV2Operation: vi.fn(),
   apiGet: vi.fn(),
+  bulkArchiveAssets: vi.fn(),
 }));
 
 vi.mock("@/lib/admin-v2-operation", () => ({ adminV2Operation }));
 vi.mock("@/components/admin/api", () => ({ apiGet }));
+vi.mock("@/components/admin/assets/assets-api", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/components/admin/assets/assets-api")>(),
+  bulkArchiveAssets,
+}));
 vi.mock("next/image", () => ({
   default: ({ alt = "" }: { alt?: string }) => <span data-image-alt={alt} />,
 }));
@@ -40,6 +45,7 @@ import { characterWorkspaceDetail } from "./character-workspace-fixture";
 import { CharacterImageLibrary } from "./CharacterImageLibrary";
 import { CharacterVideoLibrary } from "./CharacterVideoLibrary";
 import { CharacterPlacementEditor } from "./CharacterPlacementEditor";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -112,6 +118,7 @@ describe("Character media availability", () => {
     root = createRoot(container);
     adminV2Operation.mockReset();
     apiGet.mockReset();
+    bulkArchiveAssets.mockReset();
   });
 
   afterEach(async () => {
@@ -130,13 +137,14 @@ describe("Character media availability", () => {
     kind: "images" | "videos",
     canImport = true,
     onProjectReload = async () => undefined,
+    canArchive = false,
   ) {
     const data = characterWorkspaceDetail({ visual: { identityBootstrap: { allowed: false } } });
     await act(async () => {
       root.render(kind === "images" ? (
         <CharacterImageLibrary
           actorId="operator-1"
-          canArchive={false}
+          canArchive={canArchive}
           canCreate
           canRead
           canReadProduction
@@ -150,7 +158,7 @@ describe("Character media availability", () => {
       ) : (
         <CharacterVideoLibrary
           actorId="operator-1"
-          canArchive={false}
+          canArchive={canArchive}
           canCreate
           canImport={canImport}
           canRead
@@ -178,6 +186,54 @@ describe("Character media availability", () => {
     expect(choose).not.toBeNull();
     await act(async () => choose?.click());
   }
+
+  it("videos: shell refresh preserves search and ignores an older library response", async () => {
+    let finishOld!: (value: unknown) => void;
+    apiGet.mockReturnValueOnce(new Promise((resolve) => { finishOld = resolve; }))
+      .mockResolvedValue({ items: [video] });
+    await renderLibrary("videos");
+    await waitUntil(() => apiGet.mock.calls.length === 1);
+    const search = container.querySelector<HTMLInputElement>('input[placeholder="Search videos"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(search, "retained");
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+      window.dispatchEvent(new Event(ADMIN_WORKSPACE_REFRESH_EVENT));
+    });
+    await waitUntil(() => apiGet.mock.calls.length === 2);
+    await waitUntil(() => container.querySelector("video") !== null);
+    await act(async () => finishOld({ items: [] }));
+    expect(container.querySelector("video")?.getAttribute("src")).toBe(video.url);
+    expect(search.value).toBe("retained");
+    expect(container.textContent).not.toContain("No matching videos");
+  });
+
+  it("videos: removal honestly requires confirmation for an action without an undo path", async () => {
+    apiGet.mockResolvedValue({ items: [video] });
+    bulkArchiveAssets.mockResolvedValue(undefined);
+    await renderLibrary("videos", true, undefined, true);
+    await waitUntil(() => container.querySelector("video") !== null);
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Remove video from library"]')!.click());
+    const dialog = document.querySelector('[role="dialog"]')!;
+    expect(dialog.textContent).toContain("This cannot be undone.");
+    expect(dialog.textContent).not.toContain("This can be undone later.");
+    const submit = [...dialog.querySelectorAll("button")].find((element) => element.textContent === "Remove from library")!;
+    const reason = dialog.querySelector<HTMLInputElement>('input[aria-label="Removal reason"]')!;
+    const confirmation = dialog.querySelector<HTMLInputElement>('input[aria-label="Type the name to confirm"]')!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      setter.call(reason, "Retire this unused clip");
+      reason.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(submit.disabled).toBe(true);
+    expect(bulkArchiveAssets).not.toHaveBeenCalled();
+    await act(async () => {
+      setter.call(confirmation, video.id.slice(0, 8));
+      confirmation.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(submit.disabled).toBe(false);
+    await act(async () => submit.click());
+    expect(bulkArchiveAssets).toHaveBeenCalledWith(expect.objectContaining({ assetIds: [video.id], reason: "Retire this unused clip" }));
+  });
 
   for (const kind of ["images", "videos"] as const) {
     const emptyLabel = `No ${kind} yet`;

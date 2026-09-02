@@ -40,6 +40,126 @@ function uniqueName(tag: string) {
   return `E2E ${tag} ${Date.now()} ${Math.floor(Math.random() * 1e6)}`;
 }
 
+test("creator profile paginates all 25 qualified public characters", async ({ page, browser }, testInfo) => {
+  await startSignedInAdultSession(page, "creator-pagination-viewer");
+  const prefix = `e2e-ui-creator-pages-${Date.now()}`;
+  const owner = await prisma.user.create({ data: {
+    id: `${prefix}-owner`, email: `${prefix}-owner@customer.invalid`, displayName: "E2E Paged Creator", dataClass: "customer",
+  } });
+  const ids = Array.from({ length: 25 }, (_, index) => `${prefix}-${String(index).padStart(2, "0")}`);
+  for (const [index, id] of ids.entries()) {
+    await prisma.character.create({ data: {
+      id, creatorId: owner.id, name: `E2E Paged Companion ${String(index).padStart(2, "0")}`, age: 28,
+      description: "A controlled public character for the creator pagination browser test.",
+      source: "user", visibility: "public", status: "approved", appearance: {}, advancedDetails: {},
+      createdAt: new Date("2030-01-01T00:00:00.000Z"),
+    } });
+    await seedStrictPublicCharacterAuthority({ characterId: id, ownerId: owner.id });
+  }
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await page.goto(`/creators/${owner.id}`);
+  await expect(page.locator("[data-age-gate-content]")).not.toHaveAttribute("inert", "");
+  await expect(page.getByRole("heading", { level: 1, name: owner.displayName! })).toBeVisible();
+  await expect(page.getByText("25 characters · 0 followers")).toBeVisible();
+  const cards = page.locator(`a[href^="/characters/${prefix}-"]`);
+  await expect(cards).toHaveCount(24);
+  const moreResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === `/api/v1/creators/${owner.id}` && url.searchParams.has("cursor");
+  }).then(async (response) => ({ status: response.status(), body: await response.json() }));
+  await page.getByRole("button", { name: "Load more characters", exact: true }).click();
+  const more = await moreResponse;
+  expect(more.status).toBe(200);
+  expect(more.body.data.characters.map((item: { id: string }) => item.id)).toEqual([ids[0]]);
+  expect(more.body.data.nextCursor).toBeNull();
+  await expect(cards).toHaveCount(25);
+  const hrefs = await cards.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("href")));
+  expect(hrefs).toEqual([...ids].reverse().map((id) => `/characters/${id}`));
+  expect(new Set(hrefs).size).toBe(25);
+  await page.screenshot({ path: testInfo.outputPath("creator-all-25.png"), fullPage: true });
+  await page.reload();
+  await expect(cards).toHaveCount(24);
+  await expect(page.locator("[data-age-gate-content]")).not.toHaveAttribute("inert", "");
+  await page.getByRole("button", { name: "Load more characters", exact: true }).click();
+  await expect(cards).toHaveCount(25);
+  await page.locator(`a[href="/characters/${ids[0]}"]`).click();
+  await expect(page.getByRole("heading", { level: 1, name: "E2E Paged Companion 00" })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("heading", { level: 1, name: "E2E Paged Companion 00" })).toBeVisible();
+  expect(await prisma.generationJob.count({ where: { userId: owner.id } })).toBe(0);
+  expect(pageErrors).toEqual([]);
+  await testInfo.attach("creator-pagination-evidence", { contentType: "application/json", body: JSON.stringify({
+    browser: browser.version(), channel: testInfo.project.use.channel, ownerId: owner.id,
+    qualifiedCharacters: 25, hrefs, lastPage: more.body.data, refresh: true, lastCharacterOpened: ids[0],
+    generationRequests: 0, pageErrors,
+  }, null, 2) });
+});
+
+test("roadmap paginates 13 ideas with persistent last-page voting and current status filters", async ({ page, browser }, testInfo) => {
+  const { email } = await startSignedInAdultSession(page, "roadmap-pagination");
+  const user = await prisma.user.findUniqueOrThrow({ where: { email } });
+  const prefix = `e2e-ui-roadmap-pages-${Date.now()}`;
+  const ids = Array.from({ length: 13 }, (_, index) => `${prefix}-${String(index).padStart(2, "0")}`);
+  await prisma.productFeedbackItem.createMany({ data: ids.map((id, index) => ({
+    id, createdById: user.id, source: "user", title: `E2E Roadmap page idea ${String(index).padStart(2, "0")}`,
+    description: "A controlled idea for real browser pagination and vote verification.", category: "feature", status: "under_review", voteCount: 0,
+    createdAt: new Date("2030-01-01T00:00:00.000Z"),
+  })) });
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await page.goto("/helpdesk");
+  await expect(page.locator("[data-age-gate-content]")).not.toHaveAttribute("inert", "");
+  const fixtureCards = page.getByTestId("feedback-items").locator("article").filter({ hasText: "E2E Roadmap page idea" });
+  await expect(fixtureCards).toHaveCount(12);
+  await page.getByRole("button", { name: "Load more ideas", exact: true }).click();
+  await expect(fixtureCards).toHaveCount(13);
+  const beforeVote = await fixtureCards.locator("h4").allTextContents();
+  expect(beforeVote).toEqual(ids.map((_, index) => `E2E Roadmap page idea ${String(index).padStart(2, "0")}`).reverse());
+  const last = fixtureCards.filter({ hasText: "E2E Roadmap page idea 00" });
+  const voteResponse = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/feedback/items/${ids[0]}/vote`)
+    .then(async (response) => ({ status: response.status(), body: await response.json() }));
+  await last.getByRole("button", { name: /Vote 0/ }).click();
+  const vote = await voteResponse;
+  expect(vote.status).toBe(200);
+  expect(vote.body.data.item).toMatchObject({ id: ids[0], userVoted: true, voteCount: 1 });
+  await expect(last.getByRole("button", { name: /Voted 1/ })).toHaveAttribute("aria-pressed", "true");
+  expect(await fixtureCards.locator("h4").allTextContents()).toEqual(beforeVote);
+  expect(await prisma.productFeedbackVote.count({ where: { userId: user.id, itemId: ids[0] } })).toBe(1);
+  await page.screenshot({ path: testInfo.outputPath("roadmap-all-13-voted.png"), fullPage: true });
+  await page.getByRole("button", { name: "Refresh roadmap items" }).click();
+  await expect(fixtureCards).toHaveCount(12);
+  await page.getByRole("button", { name: "Load more ideas", exact: true }).click();
+  await expect(fixtureCards).toHaveCount(13);
+  await expect(last.getByRole("button", { name: /Voted 1/ })).toHaveAttribute("aria-pressed", "true");
+  await page.reload();
+  await expect(fixtureCards).toHaveCount(12);
+  await expect(page.locator("[data-age-gate-content]")).not.toHaveAttribute("inert", "");
+  await page.getByRole("button", { name: "Load more ideas", exact: true }).click();
+  await expect(last.getByRole("button", { name: /Voted 1/ })).toHaveAttribute("aria-pressed", "true");
+  // This fixture transition isolates public projection from the independently
+  // covered Admin command workflow; the browser reads the same persisted row.
+  await prisma.productFeedbackItem.update({ where: { id: ids[0] }, data: { status: "planned" } });
+  await page.getByLabel("Roadmap status").selectOption("planned");
+  await expect(fixtureCards).toHaveCount(1);
+  await expect(last).toContainText("planned");
+  await prisma.productFeedbackItem.update({ where: { id: ids[0] }, data: { status: "shipped" } });
+  await page.getByRole("button", { name: "Refresh roadmap items" }).click();
+  await expect(fixtureCards).toHaveCount(0);
+  await page.getByLabel("Roadmap status").selectOption("shipped");
+  await expect(fixtureCards).toHaveCount(1);
+  await expect(last).toContainText("shipped");
+  await expect(last.getByRole("button", { name: /Voted 1/ })).toHaveAttribute("aria-pressed", "true");
+  expect(await prisma.productFeedbackItem.findUnique({ where: { id: ids[0] }, select: { voteCount: true, status: true } })).toEqual({ voteCount: 1, status: "shipped" });
+  expect(await prisma.generationJob.count({ where: { userId: user.id } })).toBe(0);
+  expect(pageErrors).toEqual([]);
+  await testInfo.attach("roadmap-pagination-evidence", { contentType: "application/json", body: JSON.stringify({
+    browser: browser.version(), channel: testInfo.project.use.channel, itemIds: ids, beforeVote,
+    lastItemId: ids[0], vote: vote.body.data.item, refreshedAndReloaded: true,
+    plannedThenShipped: true, onePersistedVote: true, generationRequests: 0, pageErrors,
+  }, null, 2) });
+});
+
 function helpDeskResumeTarget(page: Page) {
   const next = new URL(page.url()).searchParams.get("next");
   expect(next).toMatch(/^\/helpdesk\?resume=[\w-]+$/);

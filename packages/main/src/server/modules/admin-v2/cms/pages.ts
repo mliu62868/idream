@@ -97,6 +97,7 @@ function revalidateCmsPage(path: string) {
     revalidateTag("cms-pages", { expire: 0 });
     revalidateTag(cmsCacheTag(path), { expire: 0 });
     revalidatePath(path);
+    revalidatePath("/resources-hub");
     revalidatePath("/sitemap.xml");
     return true;
   } catch (error) {

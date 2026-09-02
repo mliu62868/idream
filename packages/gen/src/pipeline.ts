@@ -10,9 +10,7 @@
 //   - only provider-declared deterministic replay may retry provider invocation
 import {
   imageGeneratePayloadSchema,
-  type ImageGeneratePayload,
   videoGeneratePayloadSchema,
-  type VideoGeneratePayload,
 } from "@idream/shared/contracts";
 import { env } from "./env";
 import type { GenAdapter } from "./provider-vocabulary";
@@ -31,6 +29,7 @@ import {
   type GenerationExecutionPorts,
 } from "./generation-execution";
 import { hydratedImageReferenceInputs } from "./reference-images";
+import { enhancedImageDimensions, prepareImageEnhancement } from "./image-enhancement";
 
 type AttemptDeps = {
   attemptsMade?: number;
@@ -95,6 +94,7 @@ export async function processImageGenerate(
   if (await execution.resumeTerminalRecord()) return;
   let inputModeration;
   let referenceImages;
+  let enhancement;
   try {
     assertWorkerAdapterMatchesRecordedProvider(payload.provider, env.IMAGE_PROVIDER, "image");
     inputModeration = await providers.moderation.check({
@@ -107,6 +107,8 @@ export async function processImageGenerate(
     referenceImages = inputModeration.data.status === "blocked"
       ? []
       : await hydratedImageReferenceInputs(payload.referenceImages, providers.blob);
+    enhancement = inputModeration.data.status === "blocked" ? null : await prepareImageEnhancement(payload, referenceImages);
+    if (enhancement) referenceImages = [enhancement.reference];
   } catch (error) {
     await execution.failPreparation(error);
     return;
@@ -135,6 +137,9 @@ export async function processImageGenerate(
       ...(referenceImages.length > 0 ? { referenceImages } : {}),
     }),
     normalizeArtifacts: async (output) => {
+      if (enhancement && output.assets.length !== 1) {
+        throw new GenerationArtifactError("enhancement_output_invalid", "Enhance must return exactly one image", false);
+      }
       if (output.assets.length === 0) {
         throw new GenerationArtifactError(
           "empty_provider_result",
@@ -149,16 +154,13 @@ export async function processImageGenerate(
         // objects owned by this invocation and can roll them back exactly.
         const normalized = await Promise.all(output.assets.map(async (asset, index) => {
           const hasProviderMedia = Boolean(asset.body || asset.sourceUrl);
-          const contentType = hasProviderMedia
+          let contentType = hasProviderMedia
             ? (asset.contentType ?? "image/webp")
             : "image/png";
-          const key = generatedAssetStorageKey(
-            payload.outputPrefix,
-            `image-${index + 1}`,
-            contentType,
-            ".png",
-          );
           const body = await imageAssetBody(asset);
+          const dimensions = enhancement ? await enhancedImageDimensions(body, enhancement.pin) : null;
+          if (dimensions) contentType = dimensions.contentType;
+          const key = generatedAssetStorageKey(payload.outputPrefix, `image-${index + 1}`, contentType, ".png");
           const sanityEvidence = assertGeneratedImageSanity(
             Buffer.from(body),
             `${payload.generationJobId} asset ${index + 1}`,
@@ -168,7 +170,7 @@ export async function processImageGenerate(
                 "single_subject_single_frame",
             },
           );
-          return { asset, body, contentType, index, key, sanityEvidence };
+          return { asset, body, contentType, index, key, sanityEvidence, dimensions };
         }));
         const assets = [];
         for (const item of normalized) {
@@ -182,8 +184,8 @@ export async function processImageGenerate(
           assets.push({
             ordinal: item.index,
             key: item.key,
-            width: item.asset.width,
-            height: item.asset.height,
+            width: item.dimensions?.width ?? item.asset.width,
+            height: item.dimensions?.height ?? item.asset.height,
             contentType: item.contentType,
             providerKey: item.asset.key ?? null,
             quality: generatedImageQuality(item.sanityEvidence),
@@ -197,6 +199,7 @@ export async function processImageGenerate(
         await Promise.allSettled(
           createdKeys.map((key) => providers.blob.delete({ key })),
         );
+        if (error instanceof GenerationArtifactError) throw error;
         throw new GenerationArtifactError(
           error instanceof GeneratedImageSanityError ||
             error instanceof GeneratedAssetBodyMissingError

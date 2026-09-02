@@ -2,9 +2,10 @@
 
 import { Archive, Compass, Pencil, Plus, Trash2, X } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { parseChatSessionsResponse } from "@/lib/public-api-contracts";
 
-// SPEC: Slide-over listing up to 50 non-deleted chat sessions with Archive/Delete.
+// SPEC: Slide-over listing non-deleted chat sessions, revealed 50 at a time.
 // INTENT: lightweight "your chats" switcher; empty state guides to Explore/Create.
 // NOTE: GET /sessions passes through the BFF raw (a JSON array, not {ok,data}).
 type SessionRow = {
@@ -30,9 +31,12 @@ export function ChatSessionListDrawer({
   // Inline rename: editingId marks the row in edit mode, draft holds the input value.
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const [visibleCount, setVisibleCount] = useState(50);
+  const scopeEpoch = useRef(0);
 
   useEffect(() => {
     if (!open) return;
+    const epoch = ++scopeEpoch.current;
     let cancelled = false;
     async function load() {
       // Defer past a microtask so the loading reset isn't a synchronous setState
@@ -41,12 +45,17 @@ export function ChatSessionListDrawer({
       if (cancelled) return;
       setLoading(true);
       setError(null);
+      setSessions([]);
+      setVisibleCount(50);
+      setBusyId(null);
+      setEditingId(null);
+      setDeleteConfirmSessionId(null);
       try {
         const res = await fetch("/api/v1/chat/sessions");
         if (!res.ok) throw new Error("sessions unavailable");
-        const rows = (await res.json()) as SessionRow[];
+        const rows = parseChatSessionsResponse(await res.json());
         if (!cancelled) {
-          setSessions(rows.filter((row) => row.status !== "deleted").slice(0, 50));
+          setSessions(rows.filter((row) => row.status !== "deleted"));
         }
       } catch {
         if (!cancelled) setError("Couldn't load your chats.");
@@ -57,10 +66,12 @@ export function ChatSessionListDrawer({
     void load();
     return () => {
       cancelled = true;
+      if (scopeEpoch.current === epoch) scopeEpoch.current += 1;
     };
-  }, [open, retryIndex]);
+  }, [open, retryIndex, currentSessionId]);
 
   async function archive(sessionId: string) {
+    const epoch = scopeEpoch.current;
     setDeleteConfirmSessionId(null);
     setBusyId(sessionId);
     try {
@@ -68,15 +79,18 @@ export function ChatSessionListDrawer({
         `/api/v1/chat/sessions/${encodeURIComponent(sessionId)}/archive`,
         { method: "POST" },
       );
+      if (epoch !== scopeEpoch.current) return;
       if (res.ok) {
         setSessions((current) =>
           current.map((row) =>
             row.id === sessionId ? { ...row, status: "archived" } : row,
           ),
         );
-      }
+      } else setError("Couldn't archive this chat.");
+    } catch {
+      if (epoch === scopeEpoch.current) setError("Couldn't archive this chat.");
     } finally {
-      setBusyId(null);
+      if (epoch === scopeEpoch.current) setBusyId(null);
     }
   }
 
@@ -94,6 +108,7 @@ export function ChatSessionListDrawer({
   }
 
   async function saveRename(sessionId: string) {
+    const epoch = scopeEpoch.current;
     const title = draft.trim();
     if (!title) {
       cancelRename();
@@ -109,23 +124,25 @@ export function ChatSessionListDrawer({
       });
       if (res.ok) {
         const updated = (await res.json()) as { title: string | null };
+        if (epoch !== scopeEpoch.current) return;
         setSessions((current) =>
           current.map((row) =>
             row.id === sessionId ? { ...row, title: updated.title ?? title } : row,
           ),
         );
         cancelRename();
-      } else {
+      } else if (epoch === scopeEpoch.current) {
         setError("Couldn't rename this chat.");
       }
     } catch {
-      setError("Couldn't rename this chat.");
+      if (epoch === scopeEpoch.current) setError("Couldn't rename this chat.");
     } finally {
-      setBusyId(null);
+      if (epoch === scopeEpoch.current) setBusyId(null);
     }
   }
 
   async function remove(sessionId: string) {
+    const epoch = scopeEpoch.current;
     if (deleteConfirmSessionId !== sessionId) {
       setDeleteConfirmSessionId(sessionId);
       setError(null);
@@ -136,15 +153,18 @@ export function ChatSessionListDrawer({
       const res = await fetch(`/api/v1/chat/sessions/${encodeURIComponent(sessionId)}`, {
         method: "DELETE",
       });
+      if (epoch !== scopeEpoch.current) return;
       if (res.ok) {
         setSessions((current) => current.filter((row) => row.id !== sessionId));
         setDeleteConfirmSessionId(null);
         if (sessionId === currentSessionId) {
           window.location.assign("/chat");
         }
-      }
+      } else setError("Couldn't delete this chat.");
+    } catch {
+      if (epoch === scopeEpoch.current) setError("Couldn't delete this chat.");
     } finally {
-      setBusyId(null);
+      if (epoch === scopeEpoch.current) setBusyId(null);
     }
   }
 
@@ -237,7 +257,7 @@ export function ChatSessionListDrawer({
           ) : null}
 
           <ul className="flex flex-col gap-1">
-            {sessions.map((row) => (
+            {sessions.slice(0, visibleCount).map((row) => (
               <li
                 className={`group flex items-center gap-2 rounded-[12px] px-2 py-2 transition-colors hover:bg-[rgb(36,36,36)] ${
                   row.id === currentSessionId ? "bg-[rgb(36,36,36)]" : ""
@@ -324,6 +344,11 @@ export function ChatSessionListDrawer({
               </li>
             ))}
           </ul>
+          {!loading && !error && visibleCount < sessions.length ? (
+            <button className="mt-3 w-full rounded-full bg-white/10 px-4 py-2 text-sm font-bold" onClick={() => setVisibleCount(count => count + 50)} type="button">
+              Load more chats
+            </button>
+          ) : null}
         </div>
       </div>
     </div>

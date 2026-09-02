@@ -3,6 +3,7 @@ import {
   chatExecutionSnapshotSchema,
   chatTerminalCommitSchema,
   chatToolEffectSchema,
+  chatContextDirectivesSchema,
 } from "./chat-turns";
 
 const snapshot = {
@@ -27,6 +28,31 @@ const snapshot = {
 } as const;
 
 describe("Chat execution snapshot", () => {
+  it("keeps historical reply defaults implicit and accepts only versioned expression preferences", () => {
+    expect(chatExecutionSnapshotSchema.parse(snapshot)).not.toHaveProperty("experience");
+    const experience = { responseLength: "short", interactionIntensity: "gentle", version: 1 };
+    expect(chatExecutionSnapshotSchema.parse({ ...snapshot, experience }).experience).toEqual(experience);
+    for (const invalid of [
+      { ...experience, version: 0 },
+      { ...experience, responseLength: "unlimited" },
+      { ...experience, interactionIntensity: "unrestricted" },
+      { ...experience, imageToolEnabled: true },
+    ]) {
+      expect(chatExecutionSnapshotSchema.safeParse({ ...snapshot, experience: invalid }).success).toBe(false);
+    }
+  });
+
+  it("accepts historical context without settings, and bounds each explicit user context kind", () => {
+    expect(chatExecutionSnapshotSchema.parse(snapshot)).not.toHaveProperty("contextDirectives");
+    const pin = { id: "pin", kind: "pinned_memory", content: "My notebook is blue.", version: 1 };
+    expect(chatExecutionSnapshotSchema.parse({ ...snapshot, contextDirectives: [pin] }).contextDirectives).toEqual([pin]);
+    expect(chatContextDirectivesSchema.safeParse([{ ...pin, content: "x".repeat(501) }]).success).toBe(false);
+    expect(chatContextDirectivesSchema.safeParse(Array.from({ length: 9 }, (_, i) => ({ ...pin, id: `pin-${i}` }))).success).toBe(false);
+    expect(chatContextDirectivesSchema.safeParse([pin, pin]).success).toBe(false);
+    expect(chatContextDirectivesSchema.safeParse([{ ...pin, kind: "custom_instruction", content: "x".repeat(1_501) }]).success).toBe(false);
+    expect(chatContextDirectivesSchema.safeParse([{ ...pin, kind: "custom_instruction" }, { ...pin, id: "other", kind: "custom_instruction" }]).success).toBe(false);
+  });
+
   it("requires the immutable visual profile id and version to be pinned together", () => {
     expect(chatExecutionSnapshotSchema.safeParse(snapshot).success).toBe(true);
     expect(chatExecutionSnapshotSchema.safeParse({

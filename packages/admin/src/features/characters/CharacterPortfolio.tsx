@@ -14,6 +14,7 @@ import {
 } from "@/features/operations/WorkspaceUi";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import { useAuthorityResource } from "@/lib/authority-resource";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { cn } from "@/lib/utils";
 import {
   CHARACTER_PORTFOLIO_DEFAULT_SORT,
@@ -106,6 +107,13 @@ export function CharacterPortfolio({
       }
     }, [portfolioRequestKey, performanceMode]),
   });
+  const { refresh } = portfolio;
+  useEffect(() => {
+    if (!canRead) return;
+    const reload = () => { void refresh(); };
+    window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, reload);
+    return () => window.removeEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, reload);
+  }, [canRead, refresh]);
   const items = portfolio.data?.items ?? EMPTY_PORTFOLIO_ITEMS;
   const pageInfo = portfolio.data?.pageInfo ?? EMPTY_PORTFOLIO_PAGE_INFO;
   const asOf = portfolio.data?.asOf ?? null;

@@ -761,6 +761,8 @@ export const adminZhCharacters: Record<string, string> = {
   "More like this needs a compatible active Character identity route.":
     "生成相似图需要兼容且已启用的角色身份路由。",
   "Motion brief": "动作描述",
+  "Keep the motion brief and negative prompt within 2,000 characters each.":
+    "动作描述和负向提示词各不能超过 2,000 个字符。",
   "Motion matches the brief": "动作符合描述",
   "Move every character from the source tag to the target tag, then delete the source tag.":
     "将 source 标签下的角色全部迁移到 target 标签，然后删除 source 标签。",

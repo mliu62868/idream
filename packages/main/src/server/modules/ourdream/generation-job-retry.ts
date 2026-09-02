@@ -32,6 +32,7 @@ import {
 } from "./json-values";
 import { entitlementMap, lockUserLedger } from "./subscription-lifecycle";
 import { directCharacterAudienceWhere } from "./public-content-audience";
+import { assertMediaEnhancementSource } from "./media-enhancement-source";
 import { isExecutableGenerationProfile } from "./generation-profile-catalog";
 import {
   assertGenerationProfileCanDispatchReferences,
@@ -160,6 +161,7 @@ async function resolveGenerationRetryAuthority(
 ) {
   const entitlements = await entitlementMap(userId);
   const controls = jsonRecord(job.controls);
+  if (job.sourceType === "media_enhance") await assertMediaEnhancementSource(job);
   const retrySourceImageAssetId = stringFromRecord(
     controls,
     "sourceImageAssetId",
@@ -339,6 +341,7 @@ async function resolveGenerationRetryAuthority(
       orientation: job.orientation,
       outputCount: job.outputCount,
       costMultiplier: profile.costMultiplier,
+      enhancement: controls.enhancement ?? null,
     }))
     .digest("hex");
 
@@ -398,13 +401,6 @@ export async function retryGenerationJobForUser(input: {
     },
     "retry",
   );
-  const availableBalance = await dreamcoinBalance(userId);
-  if (availableBalance < cost) {
-    throw Errors.paymentRequired("Insufficient DreamCoins", {
-      required: cost,
-      available: availableBalance,
-    });
-  }
   const acceptedRetryQuoteAuthority = {
     schemaVersion: "generation-retry-quote-authority-v1",
     generationJobId: job.id,
@@ -468,7 +464,7 @@ export async function retryGenerationJobForUser(input: {
         max: 3,
       });
     }
-    if (job.characterId) {
+    if (job.characterId && job.sourceType !== "media_enhance") {
       await lockCharacterGenerationAuthority(tx, job.characterId);
       const character = await tx.character.findFirst({
         where: {
@@ -521,6 +517,7 @@ export async function retryGenerationJobForUser(input: {
       ...(retrySourceImageAssetId ? [retrySourceImageAssetId] : []),
       ...(retryLookReferenceAssetId ? [retryLookReferenceAssetId] : []),
     ]);
+    if (job.sourceType === "media_enhance") await assertMediaEnhancementSource(job, tx);
     await assertRetryGenerationReferenceAuthoritiesInTx(tx, {
       referenceAssetIds: retryReferenceAssetIds,
       characterId: job.characterId,
@@ -540,6 +537,32 @@ export async function retryGenerationJobForUser(input: {
       });
     }
     await lockUserLedger(tx, userId);
+    // Match Chat mutation lock order (user → session → Turn → attachment).
+    // The old Job remains an immutable failed request; only its still-current
+    // attachment may adopt the new retry, before an outbox can dispatch it.
+    let chatAttachment: Awaited<ReturnType<typeof tx.chatTurnAttachment.findUnique>> = null;
+    if (job.sourceType === "chat_image") {
+      const candidate = await tx.chatTurnAttachment.findFirst({
+        where: { generationJobId: job.id, ...(job.sourceId ? { id: job.sourceId } : {}), turn: { session: { userId } } }, include: { turn: true },
+      });
+      if (!candidate) throw Errors.conflict("The original Chat image is no longer available to retry");
+      await tx.$queryRaw`SELECT "sessionId" FROM "recent_chats" WHERE "sessionId" = ${candidate.turn.sessionId} FOR UPDATE`;
+      await tx.$queryRaw`SELECT id FROM "chat_turns" WHERE id = ${candidate.turnId} FOR UPDATE`;
+      await tx.$queryRaw`SELECT id FROM "chat_turn_attachments" WHERE id = ${candidate.id} FOR UPDATE`;
+      const current = await tx.chatTurnAttachment.findUnique({
+        where: { id: candidate.id }, include: { turn: { include: { session: true } } },
+      });
+      const metadata = jsonRecord(current?.metadata);
+      const effect = jsonRecord(metadata.effect);
+      const attempt = numberFromRecord(metadata, "attempt") ?? numberFromRecord(effect, "attempt") ?? 1;
+      if (!current || current.turn.session.userId !== userId ||
+        current.turn.session.characterId !== job.characterId || current.turn.session.status === "deleted" ||
+        current.kind !== "generated_image" || !["failed", "refunded"].includes(current.status) ||
+        current.generationJobId !== job.id || attempt !== current.turn.attempt) {
+        throw Errors.conflict("The Chat image changed before its retry could be reserved");
+      }
+      chatAttachment = current;
+    }
     const balance = await dreamcoinBalance(userId, tx);
     if (balance < cost) {
       throw Errors.paymentRequired("Insufficient dreamcoins", {
@@ -596,8 +619,24 @@ export async function retryGenerationJobForUser(input: {
         status: "queued",
         costDreamcoins: cost,
         provider: profile.runner,
+        // sourceId uniquely identifies the original request, not every retry.
+        // derivedFromJobId keeps lineage; the attachment's exact Job pointer
+        // is the delivery authority for the replacement.
+        ...(job.sourceType === "media_enhance" || job.sourceType === "chat_image" ? { sourceType: job.sourceType, sourceMeta: job.sourceMeta === null ? undefined : job.sourceMeta } : {}),
       },
     });
+    if (chatAttachment) {
+      await tx.chatTurnAttachment.update({
+        where: { id: chatAttachment.id },
+        data: {
+          generationJobId: created.id, status: "accepted", errorCode: null,
+          mediaAssetId: null, width: null, height: null,
+          // Keep effect identity/attempt: regenerate must ACK this replacement,
+          // rather than replay the failed Job or reserve another paid action.
+          metadata: toInputJson({ ...jsonRecord(chatAttachment.metadata), costDreamcoins: cost }),
+        },
+      });
+    }
     await appendGenerationEvent(tx, created.id, "created", "Retry generation job accepted", {
       derivedFromJobId: job.id,
     });
@@ -640,6 +679,7 @@ function generationJobRequiresPinnedLegacyAuthority(job: {
 }) {
   return (
     job.mode === "image" &&
+    job.sourceType !== "media_enhance" &&
     job.characterId !== null &&
     job.visualProfileId === null &&
     (

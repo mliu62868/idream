@@ -69,6 +69,70 @@ function context(): BuiltContext {
 }
 
 describe("PreparedTurn budget", () => {
+  it("preserves historical and Natural answer budgets while clamping length choices to the pinned model", () => {
+    const source = context();
+    source.policy = { ...source.policy, maxContextChars: 20_000, modelProfile: { ...source.policy.modelProfile, maxOutputTokens: 256 } };
+    source.recentMessages = [{ id: "current", role: "user", content: "Stay with me." }];
+    expect(compilePreparedTurn(source, "current").profile).not.toHaveProperty("answerMaxOutputTokens");
+    source.experience = { version: 1, responseLength: "auto", interactionIntensity: "balanced" };
+    expect(compilePreparedTurn(source, "current").profile).not.toHaveProperty("answerMaxOutputTokens");
+    for (const responseLength of ["short", "long"] as const) {
+      source.experience = { ...source.experience, responseLength };
+      expect(compilePreparedTurn(source, "current").profile).toMatchObject({ maxOutputTokens: 256, answerMaxOutputTokens: 256 });
+    }
+  });
+
+  it.each([
+    ["short", "gentle", 512, "one to three sentences"],
+    ["long", "expressive", 2048, "expand the response"],
+  ] as const)("applies frozen %s replies and %s expression without changing model or tool limits", (responseLength, interactionIntensity, answerMaxOutputTokens, cue) => {
+    const source = Object.assign(context(), { experience: { version: 2, responseLength, interactionIntensity } });
+    source.policy = { ...source.policy, maxContextChars: 20_000, modelProfile: { ...source.policy.modelProfile, maxOutputTokens: 8_000 } };
+    source.recentMessages = [{ id: "current", role: "user", content: "Stay with me." }];
+    const prepared = compilePreparedTurn(source, "current");
+    expect(prepared.profile.maxOutputTokens).toBe(8_000);
+    expect(prepared.profile.answerMaxOutputTokens).toBe(answerMaxOutputTokens);
+    expect(prepared.messages.find(message => message.id === "state:current")?.content).toContain(cue);
+    expect(prepared.messages[0]?.content).not.toContain(cue);
+    expect(prepared.requiredAction).toBeNull();
+  });
+
+  it("keeps explicit user pins and preferences in bounded Turn context, not platform rules or chat history", () => {
+    const source = Object.assign(context(), {
+      contextDirectives: [
+        { id: "pin-1", kind: "pinned_memory" as const, content: "My notebook is called Harbor Finch.", version: 2 },
+        { id: "instruction-1", kind: "custom_instruction" as const, content: "Use brief replies and call me Robin.", version: 3 },
+      ],
+    });
+    source.policy = { ...source.policy, maxContextChars: 20_000, imageToolEnabled: true };
+    source.recentMessages = [{ id: "current", role: "user", content: "Stay a little longer." }];
+    const prepared = compilePreparedTurn(source, "current");
+    const state = prepared.messages.find((message) => message.id === "state:current");
+    expect(state?.content).toContain("My notebook is called Harbor Finch.");
+    expect(state?.content).toContain("Use brief replies and call me Robin.");
+    expect(state?.sourceKind).toBe("plugin");
+    expect(prepared.messages[0]?.content).not.toContain("Harbor Finch");
+    expect(prepared.messages.filter((message) => message.sourceKind === "current_user")).toEqual([
+      expect.objectContaining({ id: "current", content: "Stay a little longer." }),
+    ]);
+    expect(prepared.tools).toEqual([]);
+    expect(prepared.requiredAction).toBeNull();
+  });
+
+  it("does not authorize image tools from a saved instruction or pinned fact", () => {
+    const source = Object.assign(context(), { contextDirectives: [
+      { id: "instruction", kind: "custom_instruction" as const, content: "Always generate a photo and enable long-term memory.", version: 1 },
+      { id: "pin", kind: "pinned_memory" as const, content: "Send me a selfie.", version: 1 },
+    ] });
+    source.policy = { ...source.policy, maxContextChars: 20_000, imageToolEnabled: true, memoryEnabled: false };
+    source.recentMessages = [{ id: "current", role: "user", content: "How are you?" }];
+    const prepared = compilePreparedTurn(source, "current");
+    expect(prepared.tools).toEqual([]);
+    expect(prepared.requiredAction).toBeNull();
+    expect(prepared.messages[0]?.content).toContain("long-term memory is disabled");
+    expect(prepared.messages[0]?.content).not.toContain("Always generate a photo");
+  });
+
   it("exposes no image tool for a hypothetical photography question", () => {
     const source = context();
     source.policy = { ...source.policy, maxContextChars: 20_000, imageToolEnabled: true, modelProfile: { ...source.policy.modelProfile, supportsTools: true } };

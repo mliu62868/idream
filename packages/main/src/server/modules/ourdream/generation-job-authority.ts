@@ -29,6 +29,7 @@ export function generationWriteRequestFingerprint(
   commandType:
     | "generation.create"
     | "media.variation.create"
+    | "media.enhance.create"
     | "character.preview.create",
   body: unknown,
   targetId?: string,

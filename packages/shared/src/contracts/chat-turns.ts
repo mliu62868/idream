@@ -1,5 +1,44 @@
 import { z } from "zod";
 
+export const CHAT_PIN_LIMIT = 8;
+export const CHAT_PIN_MAX_CHARS = 500;
+export const CHAT_INSTRUCTION_MAX_CHARS = 1_500;
+
+// Explicit user-authored context, not an automatic memory extract or a system rule.
+export const chatContextDirectiveSchema = z.object({
+  id: z.string().min(1).max(160),
+  kind: z.enum(["pinned_memory", "custom_instruction"]),
+  content: z.string().trim().min(1).max(CHAT_INSTRUCTION_MAX_CHARS),
+  version: z.number().int().positive(),
+}).strict().superRefine((value, context) => {
+  if (value.kind === "pinned_memory" && value.content.length > CHAT_PIN_MAX_CHARS) {
+    context.addIssue({ code: "custom", path: ["content"], message: `Pinned memories are limited to ${CHAT_PIN_MAX_CHARS} characters` });
+  }
+});
+
+export const chatContextDirectivesSchema = z.array(chatContextDirectiveSchema)
+  .max(CHAT_PIN_LIMIT + 1)
+  .superRefine((items, context) => {
+    if (
+      items.filter((item) => item.kind === "pinned_memory").length > CHAT_PIN_LIMIT ||
+      items.filter((item) => item.kind === "custom_instruction").length > 1 ||
+      new Set(items.map((item) => item.id)).size !== items.length
+    ) {
+      context.addIssue({ code: "custom", message: "Chat context exceeds its per-kind limit or repeats a directive" });
+    }
+  });
+
+export type ChatContextDirective = z.infer<typeof chatContextDirectiveSchema>;
+
+export const chatExperienceValuesSchema = z.object({
+  responseLength: z.enum(["auto", "short", "long"]),
+  interactionIntensity: z.enum(["gentle", "balanced", "expressive"]),
+}).strict();
+export const chatExperiencePreferenceSchema = chatExperienceValuesSchema.extend({
+  version: z.number().int().positive(),
+}).strict();
+export type ChatExperiencePreference = z.infer<typeof chatExperiencePreferenceSchema>;
+
 export const chatExecutionSnapshotSchema = z.object({
   version: z.literal(1),
   turnId: z.string().min(1),
@@ -14,6 +53,9 @@ export const chatExecutionSnapshotSchema = z.object({
   characterVisualProfileId: z.string().min(1).nullable(),
   characterVisualProfileVersion: z.number().int().positive().nullable(),
   memoryEnabled: z.boolean(),
+  // Missing only on historical snapshots; never backfill those with today's settings.
+  contextDirectives: chatContextDirectivesSchema.optional(),
+  experience: chatExperiencePreferenceSchema.optional(),
   contextRevision: z.number().int().nonnegative(),
   userContent: z.string(),
   hasRecentImageContext: z.boolean().default(false),

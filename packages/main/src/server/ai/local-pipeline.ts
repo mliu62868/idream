@@ -784,7 +784,6 @@ async function finalizeGenerationCompleted(
       "blocked",
       "output_blocked",
       job.sourceType,
-      job.sourceId,
       attemptId,
       {
         attemptOutcome: "blocked",
@@ -977,12 +976,12 @@ async function finalizeGenerationCompleted(
       });
     }
     const chatAsset = deliveredAssets[0];
-    if (chatAsset && job.sourceType === "chat_image" && job.sourceId) {
+    if (chatAsset && job.sourceType === "chat_image") {
       // Main owns both the Generation Request and the user-visible Turn. The
       // delivery transaction projects the attachment directly; no callback to
       // Chat and no second product-state machine are involved.
       await tx.chatTurnAttachment.updateMany({
-        where: { id: job.sourceId, generationJobId: job.id },
+        where: { generationJobId: job.id },
         data: {
           status: "completed",
           mediaAssetId: chatAsset.id,
@@ -1053,7 +1052,6 @@ async function finalizeGenerationFailed(
     "failed",
     payload.error.code,
     job.sourceType,
-    job.sourceId,
     resolved.attempt.id,
     {
       attemptOutcome: "failed",
@@ -1168,7 +1166,6 @@ async function finalizeGenerationBlocked(
     "blocked",
     payload.policyCode,
     job.sourceType,
-    job.sourceId,
     resolved.attempt.id,
     {
       attemptOutcome: "blocked",
@@ -1276,7 +1273,6 @@ async function refundGeneration(
   status: "failed" | "blocked",
   errorCode: string,
   sourceType: string,
-  sourceId: string | null,
   attemptId?: string,
   // INVARIANT: refunding settles a Request as failed/blocked, so the Attempt
   // outcome recorded here is never the ambiguous one — an unknown provider
@@ -1308,9 +1304,9 @@ async function refundGeneration(
       onConflict: "return-null",
     });
     if (!transitioned) return false;
-    if (sourceType === "chat_image" && sourceId) {
+    if (sourceType === "chat_image") {
       await tx.chatTurnAttachment.updateMany({
-        where: { id: sourceId, generationJobId: jobId },
+        where: { generationJobId: jobId },
         data: { status, errorCode },
       });
     }

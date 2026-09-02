@@ -26,6 +26,11 @@ describe("modelLoaderNodeForReference", () => {
       .toBeNull();
   });
 
+  it("checks the Enhance weights against UpscaleModelLoader only", () => {
+    expect(modelLoaderNodeForReference("UpscaleModelLoader", "model_name")).toBe("UpscaleModelLoader");
+    expect(modelLoaderNodeForReference("SomeOtherNode", "model_name")).toBeNull();
+  });
+
   it("enumerates every executable H3 node type for runner preflight", () => {
     expect(requiredComfyNodeTypes(h3Descriptor.apiPrompt)).toEqual(
       expect.arrayContaining([

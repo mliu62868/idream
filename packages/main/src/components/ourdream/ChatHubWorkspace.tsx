@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { ArrowRight, Compass, MessageCircle, Plus, Sparkles } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   parseCharacterListResponse,
   parseChatSessionsResponse,
@@ -38,12 +38,16 @@ export function ChatHubWorkspace() {
   const { accepted: ageGateAccepted } = useAgeGateAccess();
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [state, setState] = useState<HubState>("loading");
+  const [visibleCount, setVisibleCount] = useState(50);
+  const loadEpoch = useRef(0);
 
   const load = useCallback(async () => {
     if (!ageGateAccepted) return;
+    const epoch = ++loadEpoch.current;
     setState("loading");
     try {
       const result = await loadChatSessionsForViewer();
+      if (epoch !== loadEpoch.current) return;
       if (result.viewer === "anonymous") {
         setSessions([]);
         setState("signed-out");
@@ -57,15 +61,16 @@ export function ChatHubWorkspace() {
       }
       if (!res.ok) throw new Error("sessions unavailable");
       const rows = parseChatSessionsResponse(await res.json());
+      if (epoch !== loadEpoch.current) return;
       setSessions(
         rows
           .filter((row) => row.status !== "deleted")
-          .sort(byMostRecent)
-          .slice(0, 50),
+          .sort(byMostRecent),
       );
+      setVisibleCount(50);
       setState("ready");
     } catch {
-      setState("error");
+      if (epoch === loadEpoch.current) setState("error");
     }
   }, [ageGateAccepted]);
 
@@ -74,7 +79,7 @@ export function ChatHubWorkspace() {
   useEffect(() => {
     if (!ageGateAccepted) return;
     const timer = window.setTimeout(() => void load(), 0);
-    return () => window.clearTimeout(timer);
+    return () => { window.clearTimeout(timer); loadEpoch.current += 1; };
   }, [ageGateAccepted, load]);
 
   return (
@@ -185,7 +190,7 @@ export function ChatHubWorkspace() {
 
             {state === "ready" && sessions.length > 0 && (
               <ul className="grid gap-3 md:grid-cols-2">
-                {sessions.map((row) => (
+                {sessions.slice(0, visibleCount).map((row) => (
                   <li key={row.id}>
                     <Link
                       className="flex h-full flex-col rounded-[14px] border border-white/10 bg-[rgb(36,36,36)] p-4 transition-colors hover:bg-[rgb(46,46,46)]"
@@ -210,6 +215,11 @@ export function ChatHubWorkspace() {
                 ))}
               </ul>
             )}
+            {state === "ready" && visibleCount < sessions.length ? (
+              <button className="mt-4 rounded-full bg-white/10 px-4 py-2 text-sm font-bold" onClick={() => setVisibleCount(count => count + 50)} type="button">
+                Load more chats
+              </button>
+            ) : null}
           </div>
 
           {state !== "loading" ? <ChatStartPanel /> : null}

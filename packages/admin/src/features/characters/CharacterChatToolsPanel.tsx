@@ -17,11 +17,13 @@
 // - 写操作照本仓惯例：必填 reason + ConfirmDialog 说清后果；关闭是**可撤销**的（再打开即可），
 //   所以 reversible: true，不摆那句"无法撤回"。
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, Wand2 } from "lucide-react";
 import { apiGet, apiWrite } from "@/components/admin/api";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { ConfirmDialog, type ConfirmSpec } from "@/components/admin/ui/ConfirmDialog";
+import { createLatestRequestGate } from "@/lib/latest-request";
+import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 
 type ChatToolsDetail = { chatImageToolEnabled?: unknown };
 
@@ -41,16 +43,18 @@ export function CharacterChatToolsPanel({
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmSpec, setConfirmSpec] = useState<ConfirmSpec | null>(null);
+  const requestGate = useRef(createLatestRequestGate());
 
   const load = useCallback(async () => {
+    const request = requestGate.current.begin();
     setError(null);
     try {
       const data = await apiGet<ChatToolsDetail>(
         `/api/v2/admin/content/characters/${encodeURIComponent(characterId)}`,
       );
-      setEnabled(chatImageToolEnabledOf(data));
+      if (request.isCurrent()) setEnabled(chatImageToolEnabledOf(data));
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t("Chat tool state is unavailable"));
+      if (request.isCurrent()) setError(cause instanceof Error ? cause.message : t("Chat tool state is unavailable"));
     }
   }, [characterId, t]);
 
@@ -58,8 +62,15 @@ export function CharacterChatToolsPanel({
   // react-hooks/set-state-in-effect 判为级联渲染。本仓既有做法（WorkflowsView 同款）是把首次
   // 取数推出 effect 的同步阶段。
   useEffect(() => {
+    const gate = requestGate.current;
+    const refresh = () => { void load(); };
     const timer = window.setTimeout(() => { void load(); }, 0);
-    return () => window.clearTimeout(timer);
+    window.addEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
+    return () => {
+      gate.invalidate();
+      window.clearTimeout(timer);
+      window.removeEventListener(ADMIN_WORKSPACE_REFRESH_EVENT, refresh);
+    };
   }, [load]);
 
   function toggle(next: boolean) {
@@ -95,7 +106,10 @@ export function CharacterChatToolsPanel({
         {enabled === null && !error ? <Loader2 aria-hidden className="h-4 w-4 animate-spin" /> : null}
       </div>
       {error ? (
-        <p className="mt-2 text-sm text-[var(--ad-red-text)]" role="alert">{error}</p>
+        <p className="mt-2 text-sm text-[var(--ad-red-text)]" role="alert">
+          {error}{" "}
+          <button className="font-semibold underline" onClick={() => void load()} type="button">{t("Retry")}</button>
+        </p>
       ) : enabled === null ? null : (
         <>
           <p className="mt-2 text-sm text-[var(--ad-text-muted)]">

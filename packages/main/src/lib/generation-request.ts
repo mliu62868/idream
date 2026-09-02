@@ -12,6 +12,8 @@ import {
   GenerationRequestError,
   apiPayloadErrorMessage,
   exactGenerationQuoteForCount,
+  hasUnconfirmedGenerationRetry,
+  hasUnconfirmedGenerationSubmission,
   requestGenerationJobWithExactAuthority,
   requestGenerationRetryWithExactAuthority,
   requestMediaVariationWithExactQuote,
@@ -319,6 +321,8 @@ export type GenerationRequestView = {
   exactQuote: ReturnType<typeof exactGenerationQuoteForCount>;
   estimatedCost: number | null;
   insufficientBalance: boolean;
+  /** Target and viewer permit checking an existing request even if its old route cannot be quoted. */
+  hasSubmissionAuthority: boolean;
   canSubmit: boolean;
   submitting: boolean;
 };
@@ -351,6 +355,8 @@ export function projectGenerationRequest(
     state.submitting ||
     (typeof input.editSourceMediaId === "string" &&
       state.variationPendingMediaIds.has(input.editSourceMediaId));
+  const hasSubmissionAuthority = !submitting && input.hasTarget &&
+    input.configAuthority === "ready" && hasEditSource;
 
   return {
     quote,
@@ -361,17 +367,12 @@ export function projectGenerationRequest(
     exactQuote,
     estimatedCost,
     insufficientBalance,
+    hasSubmissionAuthority,
     submitting,
     // INVARIANT: only `ready` authority may submit. `anonymous` can see a price
     // but not spend; `suspended`/`revoked` have no config to price against.
     canSubmit:
-      !submitting &&
-      input.hasTarget &&
-      input.configAuthority === "ready" &&
-      estimatedCost !== null &&
-      input.modeAvailable &&
-      hasEditSource &&
-      !insufficientBalance,
+      hasSubmissionAuthority && input.modeAvailable && estimatedCost !== null && !insufficientBalance,
   };
 }
 
@@ -645,6 +646,7 @@ export async function loadGenerationRetryQuotes(
  * SPEC: one map per write intent. An entry survives only an *ambiguous* failure
  * — the write client removes it on success and on a 4xx, so the key rotates
  * exactly when the previous attempt is known not to have committed.
+ * The opaque map key retains the original body/quote; its value is the HTTP idempotency key.
  */
 export type GenerationIdempotencyKeys = {
   generation: Map<string, string>;
@@ -736,14 +738,16 @@ export type GenerationRetryRefusal =
  * Why a retry cannot be sent, or null when it can. Answered before anything is
  * marked in flight, so a refused retry never flashes a spinner.
  *
- * INVARIANT: a retry is never sent without its own exact quote. The main form's
- * quote prices a different route and cannot stand in for it.
+ * INVARIANT: a new retry needs its own exact quote. Only a retained receipt can
+ * check an earlier request using its original quote; the main form's quote cannot replace it.
  */
 export function generationRetryRefusal(
   state: GenerationRequestState,
   jobId: string,
+  idempotencyKeys?: ReadonlyMap<string, string>,
 ): GenerationRetryRefusal | null {
   if (state.retryingJobIds.has(jobId)) return { reason: "in_flight" };
+  if (hasUnconfirmedGenerationRetry(jobId, idempotencyKeys)) return null;
   const quote = state.retryQuotes[jobId];
   if (!quote) {
     return {
@@ -781,25 +785,29 @@ async function writeOnce(
   request: GenerationWriteRequest,
   context: GenerationRequestContext,
 ): Promise<GenerationWriteOutcome> {
-  const fetcher: GenerationFetcher = (input, init) => {
+  const fetcher: GenerationFetcher = async (input, init) => {
     // A variation can read its price before writing. Never continue that chain
     // with another viewer's cookies after the price response arrives.
     if (context.isCurrent?.() === false) {
-      return Promise.reject(new DOMException("Viewer changed", "AbortError"));
+      throw new DOMException("Viewer changed", "AbortError");
     }
-    return (context.fetcher ?? fetch)(input, init);
+    const response = await (context.fetcher ?? fetch)(input, init);
+    // A same-viewer revalidation may retain this receipt. Do not consume it
+    // when this older context can no longer publish the accepted job.
+    if (context.isCurrent?.() === false) throw new DOMException("Viewer changed", "AbortError");
+    return response;
   };
   try {
     if (request.kind === "generation") {
       // INVARIANT: refuse locally rather than spend a round trip proving the
       // form's authority no longer matches the quote it came from.
-      if (
+      if (!hasUnconfirmedGenerationSubmission(request.body, context.keys.generation) && (
         !request.quoteKey ||
         !quoteAuthorityMatchesQuote(
           request.body.quoteAuthority as GenerationQuoteAuthority | undefined,
           request.quote,
         )
-      ) {
+      )) {
         return {
           kind: "rejected",
           statusMessage: QUOTE_UNAVAILABLE,
@@ -807,7 +815,7 @@ async function writeOnce(
         };
       }
       const result = await requestGenerationJobWithExactAuthority(
-        { body: request.body, idempotencyKeys: context.keys.generation },
+        { body: request.body, idempotencyKeys: context.keys.generation, isCurrent: context.isCurrent },
         fetcher,
       );
       return {
@@ -827,6 +835,7 @@ async function writeOnce(
           prompt: request.prompt,
           quote: request.quote,
           idempotencyKeys: context.keys.variation,
+          isCurrent: context.isCurrent,
         },
         fetcher,
       );
@@ -836,21 +845,21 @@ async function writeOnce(
         statusMessage: request.queuedMessage,
       };
     }
-    // Guaranteed present: `runGenerationWrite` refuses a quoteless retry before
-    // it gets here.
-    const quote = context.state.retryQuotes[request.jobId]!;
+    // Only an unconfirmed key can reach this point without a new quote.
+    const quote = context.state.retryQuotes[request.jobId];
     const job = await requestGenerationRetryWithExactAuthority(
       {
         jobId: request.jobId,
         idempotencyKeys: context.keys.retry,
-        quoteAuthority: {
+        isCurrent: context.isCurrent,
+        quoteAuthority: quote ? {
           profileId: quote.profileId,
           profileVersion: quote.profileVersion,
           routeFingerprint: quote.routeFingerprint,
           pricingFingerprint: quote.pricing.fingerprint,
           outputCount: quote.outputCount,
           costDreamcoins: quote.costDreamcoins,
-        },
+        } : undefined,
       },
       fetcher,
     );
@@ -881,7 +890,7 @@ export async function runGenerationWrite(
   context: GenerationRequestContext,
 ): Promise<GenerationWriteOutcome> {
   if (request.kind === "retry") {
-    const refusal = generationRetryRefusal(context.state, request.jobId);
+    const refusal = generationRetryRefusal(context.state, request.jobId, context.keys.retry);
     if (refusal) {
       if (refusal.reason !== "in_flight") {
         context.effects.showStatus(refusal.message);

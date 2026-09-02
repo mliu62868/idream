@@ -21,7 +21,9 @@ import {
 import {
   exactGenerationQuoteForCount,
   requestGenerationJobWithExactAuthority,
+  requestMediaEnhancementWithExactQuote,
   requestMediaVariationWithExactQuote,
+  type GenerationFetcher,
 } from "@/lib/generation-write-client";
 import type { RuntimeGenerationQuote } from "@/lib/public-api-contracts";
 
@@ -562,6 +564,45 @@ describe("generator exact quote authority", () => {
       "stable-variation-key",
     ]);
     expect(idempotencyKeys.size).toBe(0);
+  });
+
+  it("confirms exactly one enhancement and retries an unknown outcome with the same key", async () => {
+    const idempotencyKeys = new Map<string, string>();
+    const writes: Array<{ path: string; key: string | null; body: unknown }> = [];
+    const fetcher: GenerationFetcher = async (input, init) => {
+      writes.push({ path: String(input), key: new Headers(init?.headers).get("idempotency-key"), body: JSON.parse(String(init?.body)) });
+      if (writes.length === 1) throw new TypeError("connection reset after commit");
+      return Response.json({ ok: true, data: { job: { id: "same-enhancement", mode: "image", status: "queued" }, assets: [] } });
+    };
+    const input = { mediaId: "source-image", quote: { ...quote, balance: 20 }, idempotencyKeys, createIdempotencyKey: () => "enhance-once" };
+    await expect(requestMediaEnhancementWithExactQuote(input, fetcher)).rejects.toThrow("connection reset");
+    await expect(requestMediaEnhancementWithExactQuote(input, fetcher)).resolves.toMatchObject({ job: { id: "same-enhancement" } });
+    expect(writes).toEqual([0, 1].map(() => ({
+      path: "/api/v1/media/source-image/enhance", key: "enhance-once",
+      body: { scale: 2, quoteAuthority: exactGenerationQuoteForCount(input.quote, 1)?.authority },
+    })));
+    expect(idempotencyKeys.size).toBe(0);
+  });
+
+  it("does not send an enhancement without an affordable exact single-image quote", async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    await expect(requestMediaEnhancementWithExactQuote({ mediaId: "source", quote: { ...quote, costs: [] } }, fetcher)).rejects.toThrow("exact enhancement price");
+    await expect(requestMediaEnhancementWithExactQuote({ mediaId: "source", quote: { ...quote, balance: 0 } }, fetcher)).rejects.toThrow("Need");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("checks an unconfirmed enhancement with its original key after its charge consumed the balance", async () => {
+    const keys = new Map<string, string>();
+    const observed: Array<string | null> = [];
+    const fetcher: GenerationFetcher = async (_input, init) => {
+      observed.push(new Headers(init?.headers).get("idempotency-key"));
+      if (observed.length === 1) throw new TypeError("connection lost after reservation");
+      return Response.json({ ok: true, data: { job: { id: "already-accepted" }, assets: [] } });
+    };
+    await expect(requestMediaEnhancementWithExactQuote({ mediaId: "source", quote: { ...quote, balance: 20 }, idempotencyKeys: keys, createIdempotencyKey: () => "accepted-enhancement" }, fetcher)).rejects.toThrow("connection lost");
+    await expect(requestMediaEnhancementWithExactQuote({ mediaId: "source", quote: { ...quote, balance: 0 }, idempotencyKeys: keys }, fetcher)).resolves.toMatchObject({ job: { id: "already-accepted" } });
+    expect(observed).toEqual(["accepted-enhancement", "accepted-enhancement"]);
+    expect(keys.size).toBe(0);
   });
 
 });

@@ -48,8 +48,10 @@ async function drain(adapter: OpenAiCompatibleAdapter): Promise<void> {
 describe("OpenAI-compatible DSH adapter", () => {
   it("forces the reserved image tool on the first Agent step only", async () => {
     const choices: unknown[] = [];
+    const tokenLimits: unknown[] = [];
     const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
       choices.push((JSON.parse(String(init?.body)) as Record<string, unknown>).tool_choice);
+      tokenLimits.push((JSON.parse(String(init?.body)) as Record<string, unknown>).max_tokens);
       const firstStep = choices.length === 1;
       return new Response(firstStep
         ? [
@@ -85,6 +87,7 @@ describe("OpenAI-compatible DSH adapter", () => {
         model: "deepseek/test",
         supportsTools: true,
         maxOutputTokens: 256,
+        answerMaxOutputTokens: 32,
         timeout: { firstTokenMs: 1_000, idleMs: 1_000 },
         sampling: { temperature: 0.9, topP: 0.95, repetitionPenalty: 1.05 },
       },
@@ -110,6 +113,7 @@ describe("OpenAI-compatible DSH adapter", () => {
       { type: "function", function: { name: "generate_image_async" } },
       "auto",
     ]);
+    expect(tokenLimits).toEqual([256, 32]);
   });
 
   it.each([
@@ -314,6 +318,7 @@ describe("OpenAI-compatible DSH adapter", () => {
         model: "deepseek/test",
         supportsTools: true,
         maxOutputTokens: 256,
+        answerMaxOutputTokens: 32,
         timeout: { firstTokenMs: 1_000, idleMs: 1_000 },
         sampling: { temperature: 0.9, topP: 0.95, repetitionPenalty: 1.05 },
       },
@@ -359,6 +364,7 @@ describe("OpenAI-compatible DSH adapter", () => {
     })) chunks.push(chunk as unknown as Record<string, unknown>);
 
     expect(requests).toHaveLength(2);
+    expect(requests.map(request => request.max_tokens)).toEqual([256, 256]);
     expect(requests[1]).toMatchObject({ temperature: 0 });
     expect(JSON.stringify(requests[1]?.messages)).toContain("Provider compatibility mode");
     expect(chunks.some((chunk) => chunk.type === "text-delta")).toBe(false);

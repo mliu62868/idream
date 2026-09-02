@@ -381,7 +381,7 @@ export const generationRecipeCreateRequestSchema = z
     recipeKey: z.string().trim().min(1).max(120),
     label: z.string().trim().min(1).max(120),
     mode: z.enum(["image", "video", "negative"]).default("image"),
-    useCase: z.enum(["character", "freeplay", "negative"]).default("character"),
+    useCase: z.enum(["character", "freeplay", "negative", "enhance"]).default("character"),
     body: z.string().trim().min(1).max(12_000),
     negativeBase: z.string().trim().max(4_000).nullable().optional(),
     presetOrder: z.array(z.string()).max(20).default([]),

@@ -65,6 +65,7 @@ export const preparedTurnProfileSchema = z.object({
   model: nonEmptyString,
   supportsTools: z.boolean(),
   maxOutputTokens: positiveInteger,
+  answerMaxOutputTokens: positiveInteger.optional(),
   timeout: z.object({ firstTokenMs: positiveInteger, idleMs: positiveInteger }).strict(),
   sampling: z.object({
     temperature: z.number().finite().min(0).max(2),

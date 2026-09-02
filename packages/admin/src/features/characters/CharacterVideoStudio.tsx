@@ -498,13 +498,13 @@ export function CharacterVideoStudio({
 
   const createVideo = async () => {
     if (!permissions.create || (!sourceAssetId && !createIntent)) return;
-    setBusy("create");
     setError(null);
     setMessage(null);
     let intent = createIntent;
-    let body = intent
-      ? savedCreateRequest(intent, data.character.id)
-      : creativeRunCreateRequestSchema.parse({
+    // Validate editable input before claiming a request or locking the form.
+    const parsed = intent
+      ? null
+      : creativeRunCreateRequestSchema.safeParse({
           title: `${data.character.name} motion portrait`,
           purpose: "character_video",
           targetType: "character",
@@ -521,6 +521,18 @@ export function CharacterVideoStudio({
           priority: "normal",
           reason: "Create one Character video for the role library",
         });
+    if (parsed && !parsed.success) {
+      setError(parsed.error.issues.some((issue) =>
+        issue.path[0] === "brief" || issue.path[0] === "negativePrompt",
+      )
+        ? t("Keep the motion brief and negative prompt within 2,000 characters each.")
+        : parsed.error.message);
+      return;
+    }
+    let body = intent
+      ? savedCreateRequest(intent, data.character.id)
+      : parsed?.data ?? null;
+    setBusy("create");
     try {
       if (
         intent &&

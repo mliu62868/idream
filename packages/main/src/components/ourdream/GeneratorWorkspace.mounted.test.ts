@@ -120,6 +120,453 @@ describe("GeneratorWorkspace media journeys", () => {
     expect(container.textContent).toContain("100 coins");
   }
 
+  it("quotes enhancement before confirmation and sends the exact price only after confirming", async () => {
+    const originalFetch = globalThis.fetch;
+    const writes: Array<{ body: unknown; key: string | null }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/generation/config") return Response.json({ ok: true, data: {
+        ...config, image: { ...config.image, enhance: { available: true, scale: 2 } },
+      } });
+      if (path.startsWith("/api/v1/media?")) return Response.json({ ok: true, data: {
+        items: [{ ...mediaItem("source-image"), enhanceEligible: true }], nextCursor: null,
+      } });
+      if (path.endsWith("/enhance/quote")) return Response.json({ ok: true, data: {
+        quote, enhancement: { sourceMediaId: "source-image", scale: 2, sourceWidth: 512, sourceHeight: 640, width: 1024, height: 1280 },
+      } });
+      if (path.endsWith("/enhance")) {
+        writes.push({ body: JSON.parse(String(init?.body)), key: new Headers(init?.headers).get("idempotency-key") });
+        if (writes.length === 1) return Response.json({ ok: false }, { status: 503 });
+        return Response.json({ ok: true, data: { job: {
+          id: "enhance-job", mode: "image", status: "queued", costDreamcoins: 5, outputCount: 1, errorCode: null, createdAt: new Date().toISOString(),
+        }, assets: [] } }, { status: 202 });
+      }
+      if (path === "/api/v1/generation/jobs/enhance-job") return Response.json({ ok: true, data: { job: {
+        id: "enhance-job", mode: "image", status: "queued", costDreamcoins: 5, outputCount: 1, errorCode: null, createdAt: new Date().toISOString(),
+      }, assets: [] } });
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(button("Enhance image 2×"));
+    expect(container.querySelector('[aria-label="Enhance image"]')?.textContent).toContain("512 × 640 → 1024 × 1280");
+    expect(writes).toHaveLength(0);
+    await click(button("Enhance 2× · 5 coins"));
+    expect(container.textContent).toContain("Retry to check the same request");
+    await click(button("Check enhancement request"));
+    expect(writes).toHaveLength(2);
+    expect(writes[0]).toEqual(writes[1]);
+    expect(writes[0].key).toBeTruthy();
+    expect(writes[0].body).toEqual({ scale: 2, quoteAuthority: {
+      profileId: quote.profileId, profileVersion: 1, routeFingerprint: quote.routeFingerprint,
+      pricingFingerprint: quote.pricing.fingerprint, outputCount: 1, costDreamcoins: 5,
+    } });
+    expect(container.querySelector('[aria-label="Enhance image"]')).toBeNull();
+    expect(container.querySelector('[data-generation-job-id="enhance-job"]')).not.toBeNull();
+  });
+
+  it("does not reopen a cancelled enhancement when its price arrives late", async () => {
+    const originalFetch = globalThis.fetch;
+    const pending = deferredResponse();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/generation/config") return Response.json({ ok: true, data: {
+        ...config, image: { ...config.image, enhance: { available: true, scale: 2 } },
+      } });
+      if (path.startsWith("/api/v1/media?")) return Response.json({ ok: true, data: {
+        items: [{ ...mediaItem("source-image"), enhanceEligible: true }], nextCursor: null,
+      } });
+      if (path.endsWith("/enhance/quote")) return pending.promise;
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(button("Enhance image 2×"));
+    expect(container.textContent).toContain("Checking enhancement price");
+    await click(button("Cancel enhancement"));
+    pending.resolve(Response.json({ ok: true, data: {
+      quote, enhancement: { sourceMediaId: "source-image", scale: 2, sourceWidth: 512, sourceHeight: 512, width: 1024, height: 1024 },
+    } }));
+    await settle();
+    expect(container.querySelector('[aria-label="Enhance image"]')).toBeNull();
+    expect(requests.some((path) => path.endsWith("/enhance"))).toBe(false);
+  });
+
+  it("does not offer enhancement when the backend is unavailable", async () => {
+    await mount();
+    expect(container.querySelector('button[aria-label="Enhance image 2×"]')).toBeNull();
+  });
+
+  it("checks an accepted but unconfirmed enhancement after reopening with no balance", async () => {
+    const originalFetch = globalThis.fetch;
+    const keys: Array<string | null> = [];
+    let quoteCount = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/generation/config") return Response.json({ ok: true, data: { ...config, image: { ...config.image, enhance: { available: true, scale: 2 } } } });
+      if (path.startsWith("/api/v1/media?")) return Response.json({ ok: true, data: { items: [{ ...mediaItem("source-image"), enhanceEligible: true }], nextCursor: null } });
+      if (path.endsWith("/enhance/quote")) return Response.json({ ok: true, data: {
+        quote: { ...quote, balance: quoteCount++ === 0 ? 5 : 0 }, enhancement: { sourceMediaId: "source-image", scale: 2, sourceWidth: 512, sourceHeight: 512, width: 1024, height: 1024 },
+      } });
+      const job = { id: "accepted-enhance", mode: "image", status: "queued", costDreamcoins: 5, outputCount: 1, errorCode: null, createdAt: new Date().toISOString() };
+      if (path.endsWith("/enhance")) {
+        keys.push(new Headers(init?.headers).get("idempotency-key"));
+        if (keys.length === 1) throw new TypeError("response lost after reservation");
+        return Response.json({ ok: true, data: { job, assets: [] } }, { status: 202 });
+      }
+      if (path === "/api/v1/generation/jobs/accepted-enhance") return Response.json({ ok: true, data: { job, assets: [] } });
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(button("Enhance image 2×"));
+    await click(button("Enhance 2× · 5 coins"));
+    await click(button("Cancel enhancement"));
+    await click(button("Enhance image 2×"));
+    const check = button("Check enhancement request");
+    expect((check as HTMLButtonElement).disabled).toBe(false);
+    await click(check);
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toBe(keys[1]);
+    expect(container.querySelector('[data-generation-job-id="accepted-enhance"]')).not.toBeNull();
+  });
+
+  it("keeps late Enhance quotes and writes isolated from another source and viewer", async () => {
+    const originalFetch = globalThis.fetch;
+    const oldQuote = deferredResponse();
+    const oldWrite = deferredResponse();
+    let viewerChanged = false;
+    const writes: string[] = [];
+    const polls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/generation/config") return Response.json({ ok: true, data: {
+        ...config, viewer: viewerChanged ? { authenticated: true, scope: "user:new-enhance-viewer" } : config.viewer,
+        image: { ...config.image, enhance: { available: true, scale: 2 } },
+      } });
+      if (path.startsWith("/api/v1/media?")) return Response.json({ ok: true, data: { items: (viewerChanged ? ["new-source"] : ["source-a", "source-b"]).map((id) => ({ ...mediaItem(id), enhanceEligible: true })), nextCursor: null } });
+      if (path === "/api/v1/media/source-a/enhance/quote") return oldQuote.promise;
+      if (path.endsWith("/enhance/quote")) return Response.json({ ok: true, data: { quote, enhancement: { sourceMediaId: "source-b", scale: 2, sourceWidth: 512, sourceHeight: 512, width: 1024, height: 1024 } } });
+      if (path.endsWith("/enhance")) { writes.push(path); return oldWrite.promise; }
+      if (path.includes("old-enhance-job")) polls.push(path);
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(container.querySelector('[data-media-id="source-a"] button[aria-label="Enhance image 2×"]')!);
+    await click(container.querySelector('[data-media-id="source-b"] button[aria-label="Enhance image 2×"]')!);
+    oldQuote.resolve(Response.json({ ok: true, data: { quote, enhancement: { sourceMediaId: "source-a", scale: 2, sourceWidth: 512, sourceHeight: 512, width: 1024, height: 1024 } } }));
+    await settle();
+    expect(container.querySelector('[alt="Image to enhance"]')?.getAttribute("src")).toContain("source-b");
+    await click(button("Enhance 2× · 5 coins"));
+    await click(button("Starting enhancement…"));
+    expect(writes).toEqual(["/api/v1/media/source-b/enhance"]);
+    viewerChanged = true;
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await settle();
+    oldWrite.resolve(Response.json({ ok: true, data: { job: { id: "old-enhance-job", mode: "image", status: "queued", costDreamcoins: 5, outputCount: 1, errorCode: null, createdAt: new Date().toISOString() }, assets: [] } }, { status: 202 }));
+    await settle();
+    expect(container.querySelector('[aria-label="Enhance image"]')).toBeNull();
+    expect(container.querySelector('[data-generation-job-id="old-enhance-job"]')).toBeNull();
+    expect(polls).toEqual([]);
+    expect(container.querySelector('[data-media-id="new-source"]')).not.toBeNull();
+  });
+
+  it("reconfirms changed pricing and refreshes Gallery with both original and completed copy", async () => {
+    const originalFetch = globalThis.fetch;
+    let quoteCount = 0;
+    let completed = false;
+    const writes: Array<{ key: string | null; cost: number }> = [];
+    const job = { id: "completed-enhance", mode: "image", status: "queued", costDreamcoins: 7, outputCount: 1, errorCode: null, createdAt: new Date().toISOString() };
+    const enhanced = { ...mediaItem("enhanced-copy"), width: 1024, height: 1024, enhancement: { sourceMediaId: "source-image", scale: 2 } };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/generation/config") return Response.json({ ok: true, data: { ...config, image: { ...config.image, enhance: { available: true, scale: 2 } } } });
+      if (path.startsWith("/api/v1/media?")) return Response.json({ ok: true, data: { items: [{ ...mediaItem("source-image"), enhanceEligible: true }, ...(completed ? [enhanced] : [])], nextCursor: null } });
+      if (path.endsWith("/enhance/quote")) return Response.json({ ok: true, data: { quote: { ...quote, costs: [{ outputCount: 1, costDreamcoins: quoteCount++ === 0 ? 5 : 7 }] }, enhancement: { sourceMediaId: "source-image", scale: 2, sourceWidth: 512, sourceHeight: 512, width: 1024, height: 1024 } } });
+      if (path.endsWith("/enhance")) {
+        writes.push({ key: new Headers(init?.headers).get("idempotency-key"), cost: JSON.parse(String(init?.body)).quoteAuthority.costDreamcoins });
+        return writes.length === 1 ? Response.json({ ok: false, error: { message: "Price changed" } }, { status: 409 }) : Response.json({ ok: true, data: { job, assets: [] } }, { status: 202 });
+      }
+      if (path === "/api/v1/generation/jobs/completed-enhance") {
+        completed = true;
+        return Response.json({ ok: true, data: { job: { ...job, status: "completed" }, assets: [enhanced] } });
+      }
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(button("Enhance image 2×"));
+    await click(button("Enhance 2× · 5 coins"));
+    expect(container.textContent).toContain("Check the price again before confirming");
+    await click(button("Check enhancement price"));
+    await click(button("Enhance 2× · 7 coins"));
+    expect(writes.map((write) => write.cost)).toEqual([5, 7]);
+    expect(writes[0].key).not.toBe(writes[1].key);
+    await settle();
+    expect(container.querySelector('[data-testid="gallery-media-card"][data-media-id="source-image"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="gallery-media-card"][data-media-id="enhanced-copy"]')).not.toBeNull();
+  });
+
+  it("names Gallery images and reveals their actions for keyboard focus", async () => {
+    await mount();
+    const card = container.querySelector('[data-testid="gallery-media-card"]')!;
+    expect(card.querySelector("img")?.getAttribute("alt")).toBe("Image creation");
+    const actions = Array.from(card.querySelectorAll('div[class*="md:opacity-0"]'));
+    expect(actions).toHaveLength(2);
+    for (const row of actions) expect(row.classList.contains("md:group-focus-within:opacity-100")).toBe(true);
+  });
+
+  it("uses public image context without exposing internal generation prompts in accessible names", async () => {
+    const originalFetch = globalThis.fetch;
+    const internalPrompt = "High quality in-character portrait. Locked identity: INTERNAL-VISUAL-AUTHORITY.";
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).startsWith("/api/v1/media?")) return Response.json({ ok: true, data: { items: [
+        { ...mediaItem("generic"), prompt: internalPrompt },
+        { ...mediaItem("enhanced"), prompt: internalPrompt,
+          enhancement: { sourceMediaId: "original", scale: 2 },
+          provenance: { sourceType: "chat", label: "Chat", sourceCharacterName: "Leo" } },
+      ], nextCursor: null } });
+      return originalFetch(input, init);
+    }));
+    await mount();
+    const names = Array.from(container.querySelectorAll('[data-testid="gallery-media-image"]'))
+      .map((image) => image.getAttribute("alt"));
+    expect(names).toEqual(["Image creation", "Enhanced image · Leo"]);
+    expect(names.join(" ")).not.toContain(internalPrompt);
+    expect(container.innerHTML).not.toContain("INTERNAL-VISUAL-AUTHORITY");
+  });
+
+  it("saves only the user's explicit styling description as a Look", async () => {
+    const originalFetch = globalThis.fetch;
+    const writes: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.startsWith("/api/v1/media?")) return Response.json({ ok: true, data: { items: [{
+        ...mediaItem("look-source"), characterId: "leo", canEditIdentity: true,
+        prompt: "High quality in-character portrait. Locked identity: INTERNAL-VISUAL-AUTHORITY.",
+      }], nextCursor: null } });
+      if (path === "/api/v1/media/look-source/save-as-look") {
+        writes.push(JSON.parse(String(init?.body)));
+        return Response.json({ ok: true, data: { look: { id: "saved-look" } } }, { status: 201 });
+      }
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(button("Save as Look"));
+    const description = container.querySelector<HTMLTextAreaElement>('[aria-label="Look styling description"]')!;
+    expect(description.value).toBe("");
+    expect(container.innerHTML).not.toContain("INTERNAL-VISUAL-AUTHORITY");
+    const name = container.querySelector<HTMLInputElement>('[aria-label="Look name"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(name, "Rainy day");
+      name.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await click(button("Save Look"));
+    expect(writes).toEqual([]);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(description, "Cream raincoat and amber umbrella");
+      description.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await click(button("Save Look"));
+    expect(writes).toEqual([{ label: "Rainy day", appearanceDelta: { description: "Cream raincoat and amber umbrella" } }]);
+  });
+
+  it.each((["generation", "variation", "retry"] as const).flatMap((kind) =>
+    (["balance", "route", "viewer", "late", "json", "config"] as const).map((scenario) => [kind, scenario] as const),
+  ))("checks unconfirmed %s after focus: %s", async (kind, scenario) => {
+    const originalFetch = globalThis.fetch;
+    const keys: string[] = [];
+    let changedViewer = false;
+    let configReads = 0;
+    const late = deferredResponse();
+    const failedJob = { id: "failed-job", mode: "image", status: "failed", errorCode: "provider_failed",
+      costDreamcoins: 5, outputCount: 1, createdAt: new Date().toISOString() };
+    const endpoint = kind === "generation" ? "/api/v1/generation/jobs"
+      : kind === "retry" ? "/api/v1/generation/jobs/failed-job/retry" : "/api/v1/media/only-image/variation";
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      const balance = keys.length ? 0 : 100;
+      if (path === "/api/v1/generation/config") {
+        configReads += 1;
+        if (scenario === "config" && configReads === 2) return Response.json({ ok: false }, { status: 503 });
+        return Response.json({ ok: true, data: {
+        ...config, viewer: changedViewer ? { authenticated: true, scope: "user:next-viewer" } : config.viewer,
+        dreamcoins: { balance }, pricing: { ...config.pricing, image: { baseCost: 5, maxCount: 1 } },
+        image: { ...config.image, availability: { state: "available" }, orientations: ["4:5"],
+          recipes: ["character", "freeplay"].map((useCase) => ({ id: `image-${useCase}`, rowId: `image-${useCase}-v1`, label: "Image", mode: "image", useCase, version: 1 })),
+          models: [{ id: "edit-model", label: "Image", maxCount: 1, costMultiplier: 1, entitlement: null }] },
+      } });
+      }
+      if (keys.length && scenario === "route" && (path === "/api/v1/generation/quote" || path.endsWith("/quote"))) {
+        return Response.json({ ok: false, error: { message: "The previous route is unavailable" } }, { status: 409 });
+      }
+      if (path === "/api/v1/generation/quote" || path.endsWith("/variation/quote")) {
+        return Response.json({ ok: true, data: { quote: { ...quote, balance } } });
+      }
+      if (path.endsWith("/retry/quote")) return Response.json({ ok: true, data: { quote: {
+        mode: "image", profileId: quote.profileId, profileVersion: quote.profileVersion,
+        routeFingerprint: quote.routeFingerprint, pricing: quote.pricing,
+        generationJobId: failedJob.id, outputCount: 1, costDreamcoins: 5, balance,
+      } } });
+      if (path.startsWith("/api/v1/media?")) return Response.json({ ok: true, data: { items: [mediaItem("only-image")], nextCursor: null } });
+      if (path === endpoint && init?.method === "POST") {
+        keys.push(new Headers(init.headers).get("idempotency-key") ?? "");
+        if (keys.length === 1) {
+          if (scenario === "late") return late.promise;
+          if (scenario === "json") {
+            const response = Response.json({ ok: true }, { status: 202 });
+            vi.spyOn(response, "json").mockImplementation(() => late.promise.then((body) => body.json()));
+            return response;
+          }
+          throw new TypeError("Lost response after accepted charge");
+        }
+        return Response.json({ ok: true, data: { job: { ...failedJob, id: "accepted-job", status: "completed", errorCode: null }, assets: [] } }, { status: 202 });
+      }
+      if (path === "/api/v1/generation/jobs/accepted-job") return Response.json({ ok: true, data: {
+        job: { ...failedJob, id: "accepted-job", status: "completed", errorCode: null }, assets: [],
+      } });
+      if (path.startsWith("/api/v1/generation/jobs")) return Response.json({ ok: true, data: { items: kind === "retry" ? [failedJob] : [] } });
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(button(kind === "generation" ? "Generate · 5 coins" : kind === "retry" ? "Retry · 5 coins" : "Create variation"));
+    expect(keys).toHaveLength(1);
+    changedViewer = scenario === "viewer";
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await settle();
+    if (scenario === "config") {
+      expect(container.textContent).toContain("Generation controls could not load");
+      await act(async () => window.dispatchEvent(new Event("focus")));
+      await settle();
+    }
+    if (scenario === "late" || scenario === "json") {
+      late.resolve(Response.json({ ok: true, data: { job: { ...failedJob, id: "accepted-job", status: "completed", errorCode: null }, assets: [] } }, { status: 202 }));
+      await settle();
+      expect(container.querySelector('[data-generation-job-id="accepted-job"]')).toBeNull();
+    }
+    expect(container.textContent).toContain("0 coins");
+    if (scenario === "viewer") {
+      expect(container.textContent).not.toContain("Check generation request");
+      expect(container.textContent).not.toContain("Check retry request");
+      const fresh = button(kind === "generation" ? "Generate · 5 coins" : kind === "retry" ? "Retry · 5 coins" : "Create variation");
+      if (kind === "variation") await click(fresh);
+      else expect(fresh.disabled).toBe(true);
+      expect(keys).toHaveLength(1);
+      return;
+    }
+    const check = button(kind === "generation" ? "Check generation request" : kind === "retry" ? "Check retry request" : "Create variation");
+    expect(check.disabled).toBe(false);
+    await click(check);
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toBeTruthy();
+    expect(keys[1]).toBe(keys[0]);
+    expect(container.querySelector('[data-generation-job-id="accepted-job"]')).not.toBeNull();
+  });
+
+  it.each(["generation", "image-edit", "gallery-variation"] as const)("keeps the original count, model, orientation and quote when the current %s route changes", async (kind) => {
+    const originalFetch = globalThis.fetch;
+    const writes: Array<{ key: string | null; body: Record<string, unknown> }> = [];
+    const endpoint = kind === "generation" ? "/api/v1/generation/jobs" : "/api/v1/media/image-1/variation";
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      const changed = writes.length > 0;
+      const maxCount = changed ? 1 : 2;
+      const orientation = changed ? "16:9" : "4:5";
+      const model = { id: changed ? "replacement-edit-model" : "edit-model", label: "Image", maxCount, costMultiplier: 1, entitlement: null };
+      if (path === "/api/v1/generation/config") return Response.json({ ok: true, data: {
+        ...config, pricing: { ...config.pricing, image: { baseCost: 5, maxCount } },
+        image: { ...config.image, availability: { state: "available" }, orientations: [orientation],
+          recipes: ["character", "freeplay"].map((useCase) => ({ id: `image-${useCase}`, rowId: `image-${useCase}-v1`, label: "Image", mode: "image", useCase, version: 1 })),
+          models: [model], editModels: [{ ...model, referenceMode: "source_only" }] },
+      } });
+      if (path === "/api/v1/generation/quote" || path.endsWith("/variation/quote")) return Response.json({ ok: true, data: { quote: {
+        ...quote, profileVersion: changed ? 2 : 1, routeFingerprint: (changed ? "d" : "a").repeat(64),
+        orientations: [orientation], defaultOrientation: orientation, maxCount,
+        costs: changed ? [{ outputCount: 1, costDreamcoins: 8 }] : [{ outputCount: 1, costDreamcoins: 5 }, { outputCount: 2, costDreamcoins: 10 }],
+      } } });
+      if (path === endpoint && init?.method === "POST") {
+        writes.push({ key: new Headers(init.headers).get("idempotency-key"), body: JSON.parse(String(init.body)) });
+        if (writes.length === 1) throw new TypeError("Response lost");
+        return Response.json({ ok: true, data: { job: { id: "original-job", mode: "image", status: "completed", costDreamcoins: kind === "gallery-variation" ? 5 : 10, outputCount: kind === "gallery-variation" ? 1 : 2, errorCode: null, createdAt: new Date().toISOString() }, assets: [] } }, { status: 202 });
+      }
+      return originalFetch(input, init);
+    }));
+    await mount();
+    if (kind === "image-edit") {
+      const card = container.querySelector('[data-testid="gallery-media-card"][data-media-id="image-1"]')!;
+      await click(card.querySelector('button[aria-label="Edit image"]')!);
+      const prompt = container.querySelector<HTMLTextAreaElement>('[aria-label="Edit instructions"]')!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(prompt, "Add a cream raincoat");
+        prompt.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    }
+    const model = container.querySelector<HTMLSelectElement>('#generator-model')!;
+    await act(async () => {
+      model.value = "edit-model";
+      model.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await settle();
+    if (kind !== "gallery-variation") {
+      const count = container.querySelector<HTMLInputElement>('#generator-output-count')!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(count, "2");
+        count.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    }
+    await click(button(kind === "gallery-variation" ? "Create variation" : kind === "generation" ? "Generate · 10 coins" : "Create edit · 10 coins"));
+    expect(writes).toHaveLength(1);
+    expect(kind === "generation" ? (writes[0].body.controls as { model: string }).model : writes[0].body.model).toBe("edit-model");
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await settle();
+    if (kind !== "gallery-variation") {
+      expect(container.querySelector<HTMLInputElement>('#generator-output-count')?.value).toBe("2");
+      if (kind === "generation") expect(container.querySelector<HTMLSelectElement>('#generator-orientation')?.value).toBe("4:5");
+      expect(container.querySelector<HTMLSelectElement>('#generator-model')?.value).toBe("edit-model");
+    }
+    const check = button(kind === "gallery-variation" ? "Create variation" : "Check generation request");
+    expect(check.disabled).toBe(false);
+    await click(check);
+    expect(writes).toHaveLength(2);
+    expect(writes[1]).toEqual(writes[0]);
+  });
+
+  it.each(["headers", "json"] as const)("checks a late accepted enhancement %s after focus even when its old route no longer quotes", async (stage) => {
+    const originalFetch = globalThis.fetch;
+    const late = deferredResponse();
+    const writes: Array<{ key: string | null; body: unknown }> = [];
+    const job = { id: "late-enhance", mode: "image", status: "completed", costDreamcoins: 5, outputCount: 1, errorCode: null, createdAt: new Date().toISOString() };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/generation/config") return Response.json({ ok: true, data: { ...config, image: { ...config.image, enhance: { available: true, scale: 2 } } } });
+      if (path.startsWith("/api/v1/media?")) return Response.json({ ok: true, data: { items: [{ ...mediaItem("source"), enhanceEligible: true }], nextCursor: null } });
+      if (path.endsWith("/enhance/quote")) return writes.length
+        ? Response.json({ ok: false, error: { message: "Previous enhancement route unavailable" } }, { status: 409 })
+        : Response.json({ ok: true, data: { quote, enhancement: { sourceMediaId: "source", scale: 2, sourceWidth: 512, sourceHeight: 512, width: 1024, height: 1024 } } });
+      if (path.endsWith("/enhance")) {
+        writes.push({ key: new Headers(init?.headers).get("idempotency-key"), body: JSON.parse(String(init?.body)) });
+        if (writes.length === 1) {
+          if (stage === "headers") return late.promise;
+          const response = Response.json({ ok: true }, { status: 202 });
+          vi.spyOn(response, "json").mockImplementation(() => late.promise.then((body) => body.json()));
+          return response;
+        }
+        return Response.json({ ok: true, data: { job, assets: [] } }, { status: 202 });
+      }
+      if (path === "/api/v1/generation/jobs/late-enhance") return Response.json({ ok: true, data: { job, assets: [] } });
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(button("Enhance image 2×"));
+    await click(button("Enhance 2× · 5 coins"));
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await settle();
+    late.resolve(Response.json({ ok: true, data: { job, assets: [] } }, { status: 202 }));
+    await settle();
+    expect(container.querySelector('[data-generation-job-id="late-enhance"]')).toBeNull();
+    await click(button("Enhance image 2×"));
+    await click(button("Check enhancement request"));
+    expect(writes).toHaveLength(2);
+    expect(writes[1]).toEqual(writes[0]);
+    expect(container.querySelector('[data-generation-job-id="late-enhance"]')).not.toBeNull();
+  });
+
   it("opens a linked saved preset using its own controls without submitting a generation", async () => {
     window.history.replaceState(null, "", "/generate?presetId=rain-preset");
     const originalFetch = globalThis.fetch;

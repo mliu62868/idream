@@ -41,6 +41,7 @@ import { PermissionNotice } from "@/components/admin/ui/PermissionNotice";
 import { useFailureToast, useToast } from "@/components/admin/ui/Toast";
 import { ADMIN_WORKSPACE_REFRESH_EVENT } from "@/features/workspace-refresh";
 import { createLatestRequestGate } from "@/lib/latest-request";
+import { FeedbackQueue } from "./FeedbackQueue";
 import {
   defaultSupportQuery,
   SUPPORT_PAGE_SIZE,
@@ -334,6 +335,7 @@ export function SupportWorkspace({
         purpose={t("Triage the complete support request authority with server filters, SLA state, saved views, and audited resolution commands.")}
         title={t("Support Cases")}
       />
+      <FeedbackQueue canWrite={canWrite} />
       <div
         className="flex flex-wrap justify-between gap-2 text-xs text-[var(--ad-text-muted)]"
         role="status"

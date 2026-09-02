@@ -46,6 +46,7 @@ import {
   parseGenerationJobDetailResponse,
   parseGenerationJobsResponse,
   parseGeneratorCharactersResponse,
+  parseMediaEnhancementQuoteResponse,
   parseUserPresetsResponse,
   parseWorkspaceMediaResponse,
   type RuntimeGenerationConfig,
@@ -79,6 +80,12 @@ import {
   type GenerationRequestEffects,
 } from "@/lib/generation-request";
 import { useGenerationRequest } from "@/hooks/useGenerationRequest";
+import {
+  exactGenerationQuoteForCount,
+  GenerationRequestError,
+  hasUnconfirmedMediaEnhancement,
+  requestMediaEnhancementWithExactQuote,
+} from "@/lib/generation-write-client";
 import { publicOptimisticMutationFailure } from "./optimistic-write-state";
 import { useReportDialog } from "./ReportDialog";
 import { canStartAgeGatedLoad } from "@/lib/age-gate";
@@ -98,6 +105,8 @@ type MediaItem = {
   canEditIdentity?: boolean;
   visualProfileId?: string | null;
   imageEditModelIds?: readonly string[];
+  enhanceEligible?: boolean;
+  enhancement?: { sourceMediaId: string; scale: 2 } | null;
   visualProfileVersion?: number | null;
   identity?: {
     selectedAsCharacterImage?: boolean;
@@ -121,6 +130,13 @@ type WorkspaceView = "create" | "jobs" | "gallery";
 type GalleryTab = "image" | "video" | "liked";
 type GalleryPageRequest = { tab: GalleryTab; cursors: Array<string | null> };
 type GalleryPage = { items: MediaItem[]; nextCursor?: string | null };
+type EnhancementConfirmation = {
+  source: MediaItem;
+  quote: ReturnType<typeof parseMediaEnhancementQuoteResponse> | null;
+  loading: boolean;
+  submitting: boolean;
+  error: string;
+};
 
 const galleryTabs: readonly GalleryTab[] = ["image", "video", "liked"];
 
@@ -526,6 +542,16 @@ export function GeneratorWorkspace() {
   const [deleteConfirmPresetId, setDeleteConfirmPresetId] = useState<string | null>(null);
   const [mediaCursorTrail, setMediaCursorTrail] = useState<Array<string | null>>([null]);
   const [imageEditSources, setImageEditSources] = useState<MediaItem[]>([]);
+  const [enhancement, setEnhancement] = useState<EnhancementConfirmation | null>(null);
+  const enhancementCost = enhancement?.quote ? exactGenerationQuoteForCount(enhancement.quote.quote, 1) : null;
+  const enhancementSerialRef = useRef(0);
+  const enhancementPendingRef = useRef(false);
+  const enhancementQuoteControllerRef = useRef<AbortController | null>(null);
+  const enhancementKeysRef = useRef({ scope: "", keys: new Map<string, string>() });
+  const generationKeysScopeRef = useRef<string | null>(null);
+  const unconfirmedFormRef = useRef(false);
+  const enhancementUnconfirmed = Boolean(enhancement && enhancementKeysRef.current.scope === config?.viewer.scope &&
+    hasUnconfirmedMediaEnhancement(enhancement.source.id, enhancementKeysRef.current.keys));
 
   const {
     data: mediaPage,
@@ -733,6 +759,7 @@ export function GeneratorWorkspace() {
         : undefined,
     },
     onQuoteResolved: (quote) => {
+      if (unconfirmedFormRef.current) return;
       setCount((current) => countWithinQuote(current, quote));
       setOrientation((current) => orientationWithinQuote(current, quote));
     },
@@ -744,9 +771,11 @@ export function GeneratorWorkspace() {
     retryQuoteFailures,
     retryingJobIds,
     variationPendingMediaIds: variationPendingIds,
+    hasUnconfirmedVariations,
   } = generationRequest;
   const {
     canSubmit,
+    hasSubmissionAuthority,
     estimatedCost,
     insufficientBalance,
     maxCount,
@@ -756,11 +785,44 @@ export function GeneratorWorkspace() {
     quoteError: generationQuoteError,
     submitting: pending,
   } = generationRequest.view;
-  const formCanSubmit =
-    canSubmit && (!imageEditMode || prompt.trim().length > 0);
   const modeUnavailableMessage = modeAvailable ? "" : generationModeUnavailableMessage(config, mode);
   const canUsePrompt = Boolean(config?.entitlements.premium_controls);
   const canDescribeMoment = canUsePrompt || characterImageMode;
+  const generationBody = {
+    mode,
+    characterId: freeplay ? undefined : characterId,
+    freeplay,
+    consistencyMode,
+    outputCount: mode === "video" ? 1 : count,
+    prompt: (canDescribeMoment || unconfirmedFormRef.current) && prompt ? prompt : undefined,
+    negativePrompt: (canUsePrompt || unconfirmedFormRef.current) && negativePrompt ? negativePrompt : undefined,
+    remixFeedItemId: remixFeedItemId || undefined,
+    controls: {
+      orientation,
+      model: modelSelection.explicit ? modelSelection.id : undefined,
+      // Main pins duration from the same production recipe used for the quote.
+      modePresetId: mode === "image" && modePresetId ? modePresetId : undefined,
+      backgroundPresetId: mode === "image" && backgroundPresetId ? backgroundPresetId : undefined,
+      posePresetId: mode === "image" && posePresetId ? posePresetId : undefined,
+      outfitPresetId: mode === "image" && outfitPresetId ? outfitPresetId : undefined,
+      lookId: characterImageMode && selectedLookId ? selectedLookId : undefined,
+    },
+  };
+  const formUnconfirmed = imageEditMode && selectedEditSource
+    ? generationRequest.isVariationUnconfirmed({ mediaId: selectedEditSource.id, outputCount: count, consistencyMode,
+      model: modelSelection.explicit ? modelSelection.id : undefined, quote: generationQuote,
+      prompt: prompt.trim(), negativePrompt: negativePrompt.trim() || undefined })
+    : generationRequest.isSubmissionUnconfirmed(generationBody);
+  useEffect(() => {
+    if (!config?.viewer.authenticated) return;
+    unconfirmedFormRef.current = formUnconfirmed;
+    if (!formUnconfirmed && generationQuote) {
+      setCount((current) => countWithinQuote(current, generationQuote));
+      setOrientation((current) => orientationWithinQuote(current, generationQuote));
+    }
+  }, [config?.viewer.authenticated, formUnconfirmed, generationQuote]);
+  const formCanSubmit = (canSubmit || (hasSubmissionAuthority && formUnconfirmed)) &&
+    (!imageEditMode || prompt.trim().length > 0);
   const anonymousViewer = config?.viewer?.authenticated === false;
   const configAuthorityUnavailable = Boolean(configError && !config);
   const upgradeHref = upgradeHrefForTarget(authReturnTarget);
@@ -852,6 +914,9 @@ export function GeneratorWorkspace() {
 
   const clearPrivateViewerProjections = useCallback(() => {
     abortPrivateViewerRequests();
+    enhancementSerialRef.current += 1;
+    enhancementPendingRef.current = false;
+    setEnhancement(null);
     looksRequestSerialRef.current += 1;
     resetJobs();
     resetMedia();
@@ -867,7 +932,7 @@ export function GeneratorWorkspace() {
     setBulkDeleteConfirmKey(null);
     setDeleteConfirmPresetId(null);
     setLookEditorMediaId(null);
-    resetGenerationRequestScope();
+    resetGenerationRequestScope(true);
     invalidateLookScope();
     setLooksAuthority(readyAuthorityStatus());
   }, [
@@ -1025,10 +1090,17 @@ export function GeneratorWorkspace() {
       }
       const data = parseGenerationConfigResponse(raw);
       const nextScope = data.viewer.scope;
+      const confirmedViewerChanged = generationKeysScopeRef.current !== nextScope;
+      if (confirmedViewerChanged || !data.viewer.authenticated) {
+        resetGenerationRequestScope();
+        generationKeysScopeRef.current = nextScope;
+        unconfirmedFormRef.current = false;
+      }
       if (viewerScopeRef.current !== nextScope) {
         viewerEpochRef.current += 1;
         viewerScopeRef.current = nextScope;
-        resetPrivateViewerData();
+        if (confirmedViewerChanged) resetPrivateViewerData();
+        else clearPrivateViewerProjections();
         invalidateViewerRelativeCharacterAuthority(true);
       }
       viewerAuthenticatedRef.current = data.viewer.authenticated;
@@ -1047,29 +1119,33 @@ export function GeneratorWorkspace() {
       });
       setConfigError("");
       const nextVideoModeEnabled = data.video.enabled && data.video.models.length > 0;
-      if (!nextVideoModeEnabled) {
+      if (!nextVideoModeEnabled && !unconfirmedFormRef.current) {
         setMode((current) => (current === "video" ? "image" : current));
       }
-      setModelSelection((current) =>
-        current.explicit &&
-        [
-          ...data.image.models,
-          ...data.image.editModels,
-          ...data.video.models,
-        ].some((item) => item.id === current.id)
-          ? current
-          : { id: "", explicit: false },
-      );
-      setOrientation((current) =>
-        data.image.orientations.includes(current)
-          ? current
-          : (data.image.orientations[0] ?? ""),
-      );
-      setCount((current) =>
-        data.pricing.image.maxCount === null
-          ? 1
-          : Math.min(current, data.pricing.image.maxCount),
-      );
+      if (!unconfirmedFormRef.current) {
+        // Gallery variations use the same explicit model control, but are not
+        // the form's active request. Retain it so their receipts still match.
+        if (!hasUnconfirmedVariations()) setModelSelection((current) =>
+          current.explicit &&
+          [
+            ...data.image.models,
+            ...data.image.editModels,
+            ...data.video.models,
+          ].some((item) => item.id === current.id)
+            ? current
+            : { id: "", explicit: false },
+        );
+        setOrientation((current) =>
+          data.image.orientations.includes(current)
+            ? current
+            : (data.image.orientations[0] ?? ""),
+        );
+        setCount((current) =>
+          data.pricing.image.maxCount === null
+            ? 1
+            : Math.min(current, data.pricing.image.maxCount),
+        );
+      }
       return data.viewer.authenticated;
     } catch (error) {
       if (
@@ -1095,9 +1171,12 @@ export function GeneratorWorkspace() {
       }
     }
   }, [
+    clearPrivateViewerProjections,
     failConfigAuthority,
+    hasUnconfirmedVariations,
     invalidateViewerRelativeCharacterAuthority,
     resetPrivateViewerData,
+    resetGenerationRequestScope,
   ]);
 
   const refreshBalanceAndQuoteAuthority = useCallback(() => {
@@ -1520,7 +1599,7 @@ export function GeneratorWorkspace() {
     setStatus("");
     if (imageEditMode && selectedEditSource) {
       await createMediaVariation(selectedEditSource, {
-        outputCount,
+        outputCount: formUnconfirmed ? count : outputCount,
         quote: generationQuote,
         prompt: prompt.trim(),
         negativePrompt: negativePrompt.trim() || undefined,
@@ -1529,24 +1608,9 @@ export function GeneratorWorkspace() {
     }
     await generationRequest.submit(
       {
-        mode,
-        characterId: freeplay ? undefined : characterId,
-        freeplay,
-        consistencyMode,
-        outputCount,
-        prompt: canDescribeMoment && prompt ? prompt : undefined,
-        negativePrompt: canUsePrompt && negativePrompt ? negativePrompt : undefined,
-        remixFeedItemId: remixFeedItemId || undefined,
-        controls: {
-          orientation,
-          model: modelSelectionProjection.requestModelId,
-          // Main pins duration from the same production recipe used for the quote.
-          modePresetId: mode === "image" && modePresetId ? modePresetId : undefined,
-          backgroundPresetId: mode === "image" && backgroundPresetId ? backgroundPresetId : undefined,
-          posePresetId: mode === "image" && posePresetId ? posePresetId : undefined,
-          outfitPresetId: mode === "image" && outfitPresetId ? outfitPresetId : undefined,
-          lookId: characterImageMode && selectedLookId ? selectedLookId : undefined,
-        },
+        ...generationBody,
+        outputCount: formUnconfirmed ? generationBody.outputCount : outputCount,
+        controls: { ...generationBody.controls, model: formUnconfirmed ? generationBody.controls.model : modelSelectionProjection.requestModelId },
       },
       generationRequestEffects,
     );
@@ -1554,6 +1618,91 @@ export function GeneratorWorkspace() {
 
   async function retryJob(jobId: string) {
     await generationRequest.retry(jobId, generationRequestEffects);
+  }
+
+  function closeEnhancement() {
+    if (enhancementPendingRef.current) return;
+    enhancementSerialRef.current += 1;
+    enhancementQuoteControllerRef.current?.abort();
+    setEnhancement(null);
+  }
+
+  async function quoteEnhancement(source: MediaItem) {
+    if (enhancementPendingRef.current) return;
+    const ticket = beginPrivateViewerRequest();
+    if (!ticket) return;
+    enhancementQuoteControllerRef.current?.abort();
+    enhancementQuoteControllerRef.current = ticket.controller;
+    const serial = ++enhancementSerialRef.current;
+    const current = () => serial === enhancementSerialRef.current &&
+      !ticket.controller.signal.aborted && privateViewerRequestIsCurrent(ticket);
+    setEnhancement({ source, quote: null, loading: true, submitting: false, error: "" });
+    try {
+      const response = await fetch(`/api/v1/media/${encodeURIComponent(source.id)}/enhance/quote`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ scale: 2 }), cache: "no-store", signal: ticket.controller.signal,
+      });
+      const raw: unknown = await response.json().catch(() => null);
+      if (!current()) return;
+      if (!response.ok) throw new Error(apiPayloadErrorMessage(raw) ?? "Enhancement price could not load.");
+      const result = parseMediaEnhancementQuoteResponse(raw);
+      if (result.enhancement.sourceMediaId !== source.id || !exactGenerationQuoteForCount(result.quote, 1)) {
+        throw new Error("This enhancement quote does not match the selected image. Check the price again.");
+      }
+      setEnhancement({ source, quote: result, loading: false, submitting: false, error: "" });
+    } catch (error) {
+      if (current()) setEnhancement({ source, quote: null, loading: false, submitting: false,
+        error: error instanceof Error ? error.message : "Enhancement price could not load." });
+    } finally {
+      finishPrivateViewerRequest(ticket);
+    }
+  }
+
+  async function submitEnhancement() {
+    if (!enhancement || (!enhancement.quote && !enhancementUnconfirmed) || enhancement.loading || enhancementPendingRef.current) return;
+    const ticket = beginPrivateViewerRequest();
+    if (!ticket) return;
+    const serial = enhancementSerialRef.current;
+    const current = () => serial === enhancementSerialRef.current &&
+      !ticket.controller.signal.aborted && privateViewerRequestIsCurrent(ticket);
+    enhancementPendingRef.current = true;
+    setEnhancement({ ...enhancement, submitting: true, error: "" });
+    // Keep an ambiguous request's key through a same-viewer reconnect; another viewer gets a fresh map.
+    if (enhancementKeysRef.current.scope !== ticket.scope) {
+      enhancementKeysRef.current = { scope: ticket.scope, keys: new Map() };
+    }
+    try {
+      const result = await requestMediaEnhancementWithExactQuote({
+        mediaId: enhancement.source.id,
+        quote: enhancement.quote?.quote ?? null,
+        idempotencyKeys: enhancementKeysRef.current.keys,
+        isCurrent: current,
+      }, async (url, init) => {
+        const response = await fetch(url, { ...init, signal: ticket.controller.signal });
+        if (!current()) throw new DOMException("Viewer changed", "AbortError");
+        return response;
+      });
+      if (!current()) return;
+      generationRequestEffects.applyJob(result.job);
+      generationRequestEffects.revealJobs();
+      generationRequestEffects.trackJob(result.job.id);
+      generationBalanceChanged();
+      generationRequestEffects.refreshBalance();
+      setStatus("Enhancement started. Your original image is kept in Gallery.");
+      setEnhancement(null);
+    } catch (error) {
+      if (!current()) return;
+      const needsQuote = error instanceof GenerationRequestError && (error.status === 409 || error.status === 402);
+      setEnhancement({ ...enhancement, submitting: false,
+        quote: needsQuote ? null : enhancement.quote,
+        error: needsQuote ? `${error.message} Check the price again before confirming.`
+          : "Enhancement could not be confirmed. Retry to check the same request.",
+      });
+      if (needsQuote) { generationBalanceChanged(); void refreshConfig(); }
+    } finally {
+      if (serial === enhancementSerialRef.current) enhancementPendingRef.current = false;
+      finishPrivateViewerRequest(ticket);
+    }
   }
 
   async function toggleLike(item: MediaItem) {
@@ -1675,7 +1824,7 @@ export function GeneratorWorkspace() {
   function openLookEditor(item: MediaItem) {
     setLookEditorMediaId(item.id);
     setLookLabel("");
-    setLookDescription(item.prompt ?? "");
+    setLookDescription("");
     setStatus("");
   }
 
@@ -1750,15 +1899,20 @@ export function GeneratorWorkspace() {
     },
   ) {
     if (item.type !== "image") return;
+    const originalInput = {
+      mediaId: item.id,
+      outputCount: options?.outputCount,
+      consistencyMode,
+      model: modelSelection.explicit ? modelSelection.id : undefined,
+      prompt: options?.prompt,
+      negativePrompt: options?.negativePrompt,
+      quote: options?.quote,
+    };
     await generationRequest.createVariation(
       {
-        mediaId: item.id,
-        outputCount: options?.outputCount,
-        consistencyMode,
-        model: modelSelectionProjection.requestModelId,
-        prompt: options?.prompt,
-        negativePrompt: options?.negativePrompt,
-        quote: options?.quote,
+        ...originalInput,
+        model: generationRequest.isVariationUnconfirmed(originalInput)
+          ? originalInput.model : modelSelectionProjection.requestModelId,
       },
       generationRequestEffects,
     );
@@ -2455,12 +2609,13 @@ export function GeneratorWorkspace() {
                   Orientation
                   <select
                     className="mt-2 h-11 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] font-semibold text-white outline-none"
-                    disabled={!modeAvailable || !generationQuote}
+                    disabled={formUnconfirmed || !modeAvailable || !generationQuote}
                     id="generator-orientation"
                     name="orientation"
                     onChange={(event) => setOrientation(event.target.value)}
                     value={orientation}
                   >
+                    {formUnconfirmed && !allowedGeneratorOrientations.includes(orientation) && <option value={orientation}>{orientation}</option>}
                     {allowedGeneratorOrientations.map((item) => (
                       <option key={item} value={item}>
                         {item}
@@ -2480,12 +2635,12 @@ export function GeneratorWorkspace() {
                       setCount(Math.max(1, Math.min(maxCount, Number(event.target.value))))
                     }
                     disabled={
-                      mode === "video" ||
+                      formUnconfirmed || mode === "video" ||
                       !modeAvailable ||
                       !generationQuote
                     }
                     type="number"
-                    value={outputCount}
+                    value={formUnconfirmed ? count : outputCount}
                   />
                 </label>
               </div>
@@ -2501,9 +2656,9 @@ export function GeneratorWorkspace() {
                   onChange={(event) =>
                     setCount(Math.max(1, Math.min(maxCount, Number(event.target.value))))
                   }
-                  disabled={!modeAvailable || !generationQuote}
+                  disabled={formUnconfirmed || !modeAvailable || !generationQuote}
                   type="number"
-                  value={outputCount}
+                  value={formUnconfirmed ? count : outputCount}
                 />
               </label>
             )}
@@ -2514,7 +2669,7 @@ export function GeneratorWorkspace() {
                 <select
                   aria-label="Model"
                   className="mt-2 h-11 w-full rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] font-semibold text-white outline-none"
-                  disabled={!modeAvailable}
+                  disabled={formUnconfirmed || !modeAvailable}
                   id="generator-model"
                   name="modelId"
                   onChange={(event) => {
@@ -2533,9 +2688,12 @@ export function GeneratorWorkspace() {
                       );
                     }
                   }}
-                  value={modelSelectionProjection.selectValue}
+                  value={formUnconfirmed && modelSelection.explicit ? modelSelection.id : modelSelectionProjection.selectValue}
                 >
                   <option value="">{modelSelectionProjection.displayedLabel}</option>
+                  {formUnconfirmed && modelSelection.explicit && !availableModels.some((item) => item.id === modelSelection.id) && (
+                    <option value={modelSelection.id}>Original model selection</option>
+                  )}
                   {availableModels.map((item) => (
                     <option key={item.id} value={item.id}>
                       {item.label}
@@ -2829,7 +2987,8 @@ export function GeneratorWorkspace() {
               </Link>
             )}
 
-            {insufficientBalance && (
+            {formUnconfirmed && <p className="mt-3 text-[12px] text-white/70">Check the existing request with its original settings and price before starting another.</p>}
+            {insufficientBalance && !formUnconfirmed && (
               <Link
                 className="mt-3 flex items-center justify-between gap-2 rounded-[10px] border border-[rgb(255,184,112)]/40 bg-[rgb(36,28,18)] px-4 py-3 text-[12px] font-semibold text-[rgb(255,184,112)]"
                 data-testid="generator-insufficient-balance"
@@ -2870,6 +3029,8 @@ export function GeneratorWorkspace() {
                   ? imageEditMode
                     ? "Queuing edit..."
                     : "Queuing..."
+                  : formUnconfirmed
+                    ? "Check generation request"
                   : config && !modeAvailable
                     ? `${mode === "image" ? "Image" : "Video"} generation unavailable`
                     : configError
@@ -3111,10 +3272,10 @@ export function GeneratorWorkspace() {
                           className="h-9 w-fit rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)] disabled:bg-[rgb(64,64,64)] disabled:text-[rgb(150,150,150)]"
                           disabled={
                             retryingJobIds.has(job.id) ||
-                            !retryQuotes[job.id] ||
+                            (!retryQuotes[job.id] && !generationRequest.isRetryUnconfirmed(job.id)) ||
                             (
-                              retryQuotes[job.id]!.costDreamcoins >
-                              retryQuotes[job.id]!.balance
+                              Boolean(retryQuotes[job.id] && retryQuotes[job.id]!.costDreamcoins >
+                              retryQuotes[job.id]!.balance) && !generationRequest.isRetryUnconfirmed(job.id)
                             )
                           }
                           onClick={() => retryJob(job.id)}
@@ -3122,6 +3283,7 @@ export function GeneratorWorkspace() {
                         >
                           {retryingJobIds.has(job.id)
                             ? "Retrying…"
+                            : generationRequest.isRetryUnconfirmed(job.id) ? "Check retry request"
                             : retryQuotes[job.id]
                               ? `Retry · ${retryQuotes[job.id]!.costDreamcoins} coins`
                               : retryQuoteFailures[job.id]
@@ -3129,7 +3291,9 @@ export function GeneratorWorkspace() {
                                 : "Checking retry price…"}
                         </button>
                         <p className="text-[12px] font-medium text-[rgb(170,170,170)]">
-                          {retryQuoteFailures[job.id]
+                          {generationRequest.isRetryUnconfirmed(job.id)
+                            ? "Check the existing request before starting another retry."
+                            : retryQuoteFailures[job.id]
                             ? retryQuoteFailures[job.id]
                             : retryQuotes[job.id] &&
                                 retryQuotes[job.id]!.costDreamcoins >
@@ -3279,6 +3443,45 @@ export function GeneratorWorkspace() {
                   Loading gallery…
                 </div>
               ) : null}
+              {enhancement && (
+                <section aria-label="Enhance image" className="mb-4 grid gap-3 rounded-[12px] border border-white/10 bg-[rgb(28,28,28)] p-4">
+                  <div className="flex items-center gap-4">
+                    <Image alt="Image to enhance" src={enhancement.source.thumbnailUrl || enhancement.source.url}
+                      width={72} height={90} unoptimized className="h-24 w-20 rounded-lg object-contain" />
+                    <div>
+                      <h3 className="text-[14px] font-black text-white">Enhance image · 2×</h3>
+                      <p className="mt-1 text-[12px] text-[rgb(170,170,170)]">Save a sharper, larger copy. Your original stays in Gallery.</p>
+                      {enhancement.quote && (
+                        <p className="mt-2 text-[13px] font-semibold text-white">
+                          {enhancement.quote.enhancement.sourceWidth} × {enhancement.quote.enhancement.sourceHeight}
+                          {" → "}{enhancement.quote.enhancement.width} × {enhancement.quote.enhancement.height}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  {enhancement.loading && <p role="status" className="text-[13px] text-white/70">Checking enhancement price…</p>}
+                  {enhancement.error && <p role="alert" className="text-[13px] text-[rgb(255,168,206)]">{enhancement.error}</p>}
+                  {enhancementUnconfirmed && <p className="text-[13px] text-white/70">Check the existing request before starting another enhancement.</p>}
+                  {enhancement.quote && !enhancementCost?.affordable && !enhancementUnconfirmed && (
+                    <p className="text-[13px] text-white/70">Need {enhancementCost?.costDreamcoins} coins · you have {enhancement.quote.quote.balance}.</p>
+                  )}
+                  <div className="flex justify-end gap-2">
+                    <button type="button" disabled={enhancement.submitting} onClick={closeEnhancement}
+                      className="h-9 rounded-full bg-white/10 px-4 text-[12px] font-bold text-white disabled:opacity-50">Cancel enhancement</button>
+                    {!enhancement.loading && !enhancement.quote && (
+                      <button type="button" onClick={() => void quoteEnhancement(enhancement.source)}
+                        className="h-9 rounded-full bg-white/10 px-4 text-[12px] font-bold text-white">Check enhancement price</button>
+                    )}
+                    {(enhancement.quote || enhancementUnconfirmed) && (
+                      <button type="button" disabled={enhancement.submitting || (!enhancementCost?.affordable && !enhancementUnconfirmed)}
+                        onClick={() => void submitEnhancement()}
+                        className="h-9 rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)] disabled:opacity-50">
+                        {enhancement.submitting ? "Starting enhancement…" : enhancementUnconfirmed ? "Check enhancement request" : `Enhance 2× · ${enhancementCost?.costDreamcoins} coins`}
+                      </button>
+                    )}
+                  </div>
+                </section>
+              )}
               {lookEditorMediaId && (
                 <div className="mb-4 grid gap-3 rounded-[12px] border border-white/10 bg-[rgb(28,28,28)] p-4">
                   <div>
@@ -3394,13 +3597,19 @@ export function GeneratorWorkspace() {
                       ) : (
                         <>
                           {item.type === "image" && (
-                            <div className="absolute left-2 top-2 flex gap-2 opacity-100 md:opacity-0 md:transition-opacity md:group-hover:opacity-100">
+                            <div className="absolute left-2 top-2 flex gap-2 opacity-100 md:opacity-0 md:transition-opacity md:group-hover:opacity-100 md:group-focus-within:opacity-100">
                               <IconButton
                                 label="Edit image"
                                 onClick={() => editGalleryImage(item)}
                               >
                                 <Pencil className="h-4 w-4" />
                               </IconButton>
+                              {config?.image.enhance?.available && item.enhanceEligible && !isUnavailable && (
+                                <IconButton label="Enhance image 2×" disabled={enhancement?.submitting === true}
+                                  onClick={() => void quoteEnhancement(item)}>
+                                  <WandSparkles className="h-4 w-4" />
+                                </IconButton>
+                              )}
                               {item.characterId && (
                                 <>
                                   <IconButton
@@ -3465,7 +3674,7 @@ export function GeneratorWorkspace() {
                           {item.provenance && (
                             <GalleryProvenanceBadge provenance={item.provenance} />
                           )}
-                          <div className="absolute inset-x-2 bottom-2 flex justify-end gap-2 opacity-100 md:opacity-0 md:transition-opacity md:group-hover:opacity-100">
+                          <div className="absolute inset-x-2 bottom-2 flex justify-end gap-2 opacity-100 md:opacity-0 md:transition-opacity md:group-hover:opacity-100 md:group-focus-within:opacity-100">
                             <IconButton
                               label={item.liked ? "Unlike" : "Like"}
                               onClick={() => toggleLike(item)}
@@ -3670,9 +3879,11 @@ function MediaPreview({
     );
   }
 
+  const imageLabel = item.enhancement ? "Enhanced image" : "Image creation";
+  const characterName = item.provenance?.sourceCharacterName?.replace(/\s+/g, " ").trim().slice(0, 80);
   return (
     <Image
-      alt=""
+      alt={characterName ? `${imageLabel} · ${characterName}` : imageLabel}
       className="object-cover object-top"
       data-testid={`${testIdPrefix}-media-image`}
       fill

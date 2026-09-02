@@ -240,6 +240,11 @@ export function HelpDeskWorkspace() {
   const [ticketId, setTicketId] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [feedbackItems, setFeedbackItems] = useState<FeedbackItem[]>([]);
+  const [feedbackNextCursor, setFeedbackNextCursor] = useState<string | null>(null);
+  const [feedbackFilter, setFeedbackFilter] = useState<ProductFeedbackStatus | "">("");
+  const [feedbackMoreLoading, setFeedbackMoreLoading] = useState(false);
+  const [feedbackPageError, setFeedbackPageError] = useState("");
+  const feedbackRequestRef = useRef<AbortController | null>(null);
   const [feedbackLoading, setFeedbackLoading] = useState(true);
   const [feedbackLoadError, setFeedbackLoadError] = useState("");
   const [feedbackStatus, setFeedbackStatus] = useState("");
@@ -256,6 +261,7 @@ export function HelpDeskWorkspace() {
   const [historyError, setHistoryError] = useState("");
   const [historyErrorRetryable, setHistoryErrorRetryable] = useState(true);
   const [viewerScope, setViewerScope] = useState<string | null>(null);
+  const [viewerReload, setViewerReload] = useState(0);
   const viewerScopeRef = useRef<string | null>(null);
   const hydratedViewerScopeRef = useRef<string | null>(null);
   const { category, description, diagnosticConsent, subject } = supportDraft;
@@ -309,8 +315,8 @@ export function HelpDeskWorkspace() {
     () =>
       feedbackTitle.trim().length >= 3 &&
       feedbackDescription.trim().length >= 10 &&
-      !feedbackSubmitting,
-    [feedbackDescription, feedbackSubmitting, feedbackTitle],
+      !feedbackSubmitting && !feedbackLoading && !feedbackMoreLoading,
+    [feedbackDescription, feedbackSubmitting, feedbackTitle, feedbackLoading, feedbackMoreLoading],
   );
 
   const canSubmitAppeal = useMemo(
@@ -321,28 +327,55 @@ export function HelpDeskWorkspace() {
     [appealSubmitting, appealTargetId, appealText],
   );
 
-  const loadFeedbackItems = useCallback(async () => {
+  const loadFeedbackItems = useCallback(async (cursor?: string) => {
+    const requestedScope = viewerScopeRef.current;
     if (!ageGateAccepted) return;
-    setFeedbackLoading(true);
+    if (!requestedScope) { setViewerReload((value) => value + 1); return; }
+    feedbackRequestRef.current?.abort();
+    const controller = new AbortController();
+    feedbackRequestRef.current = controller;
+    const isCurrent = () => feedbackRequestRef.current === controller && !controller.signal.aborted && viewerScopeRef.current === requestedScope;
+    setFeedbackMoreLoading(Boolean(cursor));
+    setFeedbackLoading(!cursor);
     setFeedbackLoadError("");
+    setFeedbackPageError("");
+    if (!cursor) { setFeedbackItems([]); setFeedbackNextCursor(null); }
     try {
-      const response = await fetch("/api/v1/feedback/items", { method: "GET" });
+      const query = new URLSearchParams();
+      if (feedbackFilter) query.set("status", feedbackFilter);
+      if (cursor) query.set("cursor", cursor);
+      const response = await fetch(`/api/v1/feedback/items${query.size ? `?${query}` : ""}`, { method: "GET", cache: "no-store", signal: controller.signal });
       const raw = await response.json();
+      if (!isCurrent()) return;
       if (!response.ok) {
-        setFeedbackItems([]);
-        setFeedbackLoadError(
-          apiErrorMessage(raw) ?? "Could not load feature voting.",
-        );
+        if ([400, 410].includes(response.status)) {
+          setFeedbackNextCursor(null);
+          setViewerReload((value) => value + 1);
+        }
+        (cursor ? setFeedbackPageError : setFeedbackLoadError)(apiErrorMessage(raw) ?? "Could not load feature voting.");
         return;
       }
-      setFeedbackItems(parseFeedbackItemsResponse(raw).items);
+      const page = parseFeedbackItemsResponse(raw);
+      const requestedUserId = requestedScope.startsWith("user:") ? requestedScope.slice(5) : null;
+      if (page.viewerId !== requestedUserId) {
+        setFeedbackItems([]); setFeedbackNextCursor(null);
+        viewerScopeRef.current = null; setViewerScope(null);
+        setViewerReload((value) => value + 1);
+        return;
+      }
+      setFeedbackItems((current) => cursor
+        ? [...current, ...page.items.filter((item) => !current.some((prior) => prior.id === item.id))]
+        : page.items);
+      setFeedbackNextCursor(page.nextCursor);
     } catch {
-      setFeedbackItems([]);
-      setFeedbackLoadError("Could not load feature voting.");
+      if (isCurrent()) (cursor ? setFeedbackPageError : setFeedbackLoadError)("Could not load feature voting.");
     } finally {
-      setFeedbackLoading(false);
+      if (feedbackRequestRef.current === controller) {
+        setFeedbackLoading(false);
+        setFeedbackMoreLoading(false);
+      }
     }
-  }, [ageGateAccepted]);
+  }, [ageGateAccepted, feedbackFilter]);
 
   const loadHelpDeskHistory = useCallback(async () => {
     const requestedScope = viewerScopeRef.current;
@@ -376,33 +409,57 @@ export function HelpDeskWorkspace() {
 
   useEffect(() => {
     if (!ageGateAccepted) return;
-    const controller = new AbortController();
-    fetch("/api/v1/me", {
-      cache: "no-store",
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        if (!response.ok) throw new Error("Viewer authority could not load.");
-        const payload = parseViewerAuthorityResponse(await response.json());
-        const user = payload.user;
-        const nextScope =
-          user
-            ? `user:${user.id}`
-            : typeof payload.anonymousId === "string"
-              ? `anonymous:${payload.anonymousId}`
-              : null;
-        if (!nextScope) throw new Error("Viewer authority was incomplete.");
-        viewerScopeRef.current = nextScope;
-        setViewerScope(nextScope);
+    let controller: AbortController;
+    function refreshViewer() {
+      controller?.abort();
+      controller = new AbortController();
+      const requested = controller;
+      void fetch("/api/v1/me", {
+        cache: "no-store",
+        signal: requested.signal,
       })
-      .catch((error: unknown) => {
-        if (error instanceof DOMException && error.name === "AbortError") return;
-        viewerScopeRef.current = null;
-        setViewerScope(null);
-        setStatus("Viewer authority could not load. Draft recovery is paused.");
-      });
-    return () => controller.abort();
-  }, [ageGateAccepted]);
+        .then(async (response) => {
+          if (!response.ok) throw new Error("Viewer authority could not load.");
+          const payload = parseViewerAuthorityResponse(await response.json());
+          if (requested.signal.aborted) return;
+          const user = payload.user;
+          const nextScope =
+            user
+              ? `user:${user.id}`
+              : typeof payload.anonymousId === "string"
+                ? `anonymous:${payload.anonymousId}`
+                : null;
+          if (!nextScope) throw new Error("Viewer authority was incomplete.");
+          if (viewerScopeRef.current !== nextScope) {
+            feedbackRequestRef.current?.abort();
+            setFeedbackItems([]); setFeedbackNextCursor(null); setFeedbackMoreLoading(false);
+            setFeedbackVotingId(""); setFeedbackSubmitting(false);
+          }
+          viewerScopeRef.current = nextScope;
+          setViewerScope(nextScope);
+        })
+        .catch((error: unknown) => {
+          if (requested.signal.aborted || (error instanceof DOMException && error.name === "AbortError")) return;
+          feedbackRequestRef.current?.abort();
+          setFeedbackItems([]); setFeedbackNextCursor(null); setFeedbackMoreLoading(false);
+          setFeedbackLoading(false); setFeedbackLoadError("Could not confirm your account. Refresh to try again.");
+          viewerScopeRef.current = null;
+          setViewerScope(null);
+          setStatus("Viewer authority could not load. Draft recovery is paused.");
+        });
+    }
+    const onVisible = () => { if (document.visibilityState === "visible") refreshViewer(); };
+    refreshViewer();
+    window.addEventListener("focus", refreshViewer);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { controller?.abort(); window.removeEventListener("focus", refreshViewer); document.removeEventListener("visibilitychange", onVisible); };
+  }, [ageGateAccepted, viewerReload]);
+
+  useEffect(() => {
+    if (!viewerScope) return;
+    const timer = window.setTimeout(() => { void loadFeedbackItems(); }, 0);
+    return () => { window.clearTimeout(timer); feedbackRequestRef.current?.abort(); };
+  }, [loadFeedbackItems, viewerScope]);
 
   useEffect(() => {
     if (!viewerScope) return;
@@ -478,10 +535,9 @@ export function HelpDeskWorkspace() {
         setAppealStatus("Your appeal draft was restored. Submit it when ready.");
       }
       if (restoredVote) setPendingFeedbackVote(restoredVote);
-      void loadFeedbackItems();
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [loadFeedbackItems, viewerScope]);
+  }, [viewerScope]);
 
   useEffect(() => {
     if (!viewerScope) return;
@@ -518,13 +574,13 @@ export function HelpDeskWorkspace() {
       !pendingFeedbackVote ||
       !viewerScope?.startsWith("user:") ||
       feedbackLoading ||
-      pendingFeedbackVoteApplyingRef.current === pendingFeedbackVote.itemId ||
-      !feedbackItems.some((item) => item.id === pendingFeedbackVote.itemId)
+      pendingFeedbackVoteApplyingRef.current === pendingFeedbackVote.itemId
     ) {
       return;
     }
 
     const vote = pendingFeedbackVote;
+    const requestedScope = viewerScope;
     let cancelled = false;
 
     async function applyPendingVote() {
@@ -533,7 +589,7 @@ export function HelpDeskWorkspace() {
           method: vote.action === "unvote" ? "DELETE" : "POST",
         });
         const raw = await response.json();
-        if (cancelled) return;
+        if (cancelled || viewerScopeRef.current !== requestedScope) return;
         if (!response.ok) {
           if (response.status === 401) {
             setPendingFeedbackVote(null);
@@ -547,16 +603,16 @@ export function HelpDeskWorkspace() {
           return;
         }
         const item = parseFeedbackItemResponse(raw).item;
-        setFeedbackItems((items) => upsertFeedbackItem(items, item));
+        setFeedbackItems((items) => items.some((prior) => prior.id === item.id) ? upsertFeedbackItem(items, item, feedbackFilter) : items);
         setFeedbackStatus(vote.action === "unvote" ? "Vote removed." : "Vote counted.");
         setPendingFeedbackVote(null);
       } catch {
-        if (!cancelled) {
+        if (!cancelled && viewerScopeRef.current === requestedScope) {
           setPendingFeedbackVote(null);
           setFeedbackStatus("Vote failed. Try again.");
         }
       } finally {
-        if (!cancelled) {
+        if (!cancelled && viewerScopeRef.current === requestedScope) {
           setFeedbackVotingId("");
         }
         if (pendingFeedbackVoteApplyingRef.current === vote.itemId) {
@@ -576,7 +632,7 @@ export function HelpDeskWorkspace() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [feedbackItems, feedbackLoading, pendingFeedbackVote, viewerScope]);
+  }, [feedbackFilter, feedbackLoading, pendingFeedbackVote, viewerScope]);
 
   async function submitRequest(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -634,6 +690,7 @@ export function HelpDeskWorkspace() {
   async function submitFeedbackItem(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!canSubmitFeedback) return;
+    const requestedScope = viewerScopeRef.current;
 
     setFeedbackSubmitting(true);
     setFeedbackStatus("");
@@ -648,6 +705,7 @@ export function HelpDeskWorkspace() {
         }),
       });
       const raw = await response.json();
+      if (viewerScopeRef.current !== requestedScope) return;
       if (!response.ok) {
         if (response.status === 401) {
           const scope = await resolveViewerScope().catch(() => null);
@@ -670,19 +728,20 @@ export function HelpDeskWorkspace() {
         return;
       }
       const item = parseFeedbackItemResponse(raw).item;
-      setFeedbackItems((items) => upsertFeedbackItem(items, item));
+      setFeedbackItems((items) => upsertFeedbackItem(items, item, feedbackFilter));
       setFeedbackStatus("Feature idea submitted and your vote was counted.");
       if (viewerScopeRef.current) clearFeedbackDraft(viewerScopeRef.current);
       setFeedbackDraft(INITIAL_FEEDBACK_DRAFT);
     } catch {
-      setFeedbackStatus("Feature idea failed. Try again.");
+      if (viewerScopeRef.current === requestedScope) setFeedbackStatus("Feature idea failed. Try again.");
     } finally {
-      setFeedbackSubmitting(false);
+      if (viewerScopeRef.current === requestedScope) setFeedbackSubmitting(false);
     }
   }
 
   async function toggleFeedbackVote(item: FeedbackItem) {
     if (feedbackVotingId) return;
+    const requestedScope = viewerScopeRef.current;
     setFeedbackVotingId(item.id);
     setFeedbackStatus("");
     try {
@@ -690,6 +749,7 @@ export function HelpDeskWorkspace() {
         method: item.userVoted ? "DELETE" : "POST",
       });
       const raw = await response.json();
+      if (viewerScopeRef.current !== requestedScope) return;
       if (!response.ok) {
         if (response.status === 401) {
           const scope = await resolveViewerScope().catch(() => null);
@@ -716,12 +776,12 @@ export function HelpDeskWorkspace() {
         return;
       }
       const next = parseFeedbackItemResponse(raw).item;
-      setFeedbackItems((items) => upsertFeedbackItem(items, next));
+      setFeedbackItems((items) => upsertFeedbackItem(items, next, feedbackFilter));
       setFeedbackStatus(item.userVoted ? "Vote removed." : "Vote counted.");
     } catch {
-      setFeedbackStatus("Vote failed. Try again.");
+      if (viewerScopeRef.current === requestedScope) setFeedbackStatus("Vote failed. Try again.");
     } finally {
-      setFeedbackVotingId("");
+      if (viewerScopeRef.current === requestedScope) setFeedbackVotingId("");
     }
   }
 
@@ -1071,12 +1131,34 @@ export function HelpDeskWorkspace() {
                   aria-label="Refresh roadmap items"
                   className="grid h-9 w-9 place-items-center rounded-full border border-white/10 bg-[rgb(36,36,36)] text-white transition hover:bg-[rgb(53,53,54)]"
                   data-testid="feedback-list-refresh"
+                  disabled={Boolean(feedbackVotingId) || feedbackSubmitting}
                   onClick={() => void loadFeedbackItems()}
                   type="button"
                 >
                   <RefreshCw className="h-4 w-4" />
                 </button>
               )}
+            </div>
+
+            <div className="mt-4 flex items-center justify-between gap-3">
+              <label className="text-[12px] font-semibold text-[rgb(170,170,170)]">
+                Status
+                <select
+                  aria-label="Roadmap status"
+                  className="ml-2 rounded-lg border border-white/10 bg-[rgb(36,36,36)] px-2 py-2 text-white"
+                  disabled={Boolean(feedbackVotingId) || feedbackSubmitting}
+                  onChange={(event) => {
+                    feedbackRequestRef.current?.abort();
+                    setFeedbackItems([]); setFeedbackNextCursor(null); setFeedbackLoading(true);
+                    setFeedbackFilter(event.target.value as ProductFeedbackStatus | "");
+                  }}
+                  value={feedbackFilter}
+                >
+                  <option value="">All statuses</option>
+                  {PRODUCT_FEEDBACK_STATUSES.map((value) => <option key={value} value={value}>{feedbackStatusLabel(value)}</option>)}
+                </select>
+              </label>
+              <span className="text-[12px] text-[rgb(170,170,170)]">Newest first</span>
             </div>
 
             <form className="mt-5 grid gap-3" data-testid="feedback-form" onSubmit={submitFeedbackItem}>
@@ -1185,7 +1267,7 @@ export function HelpDeskWorkspace() {
                     <button
                       aria-pressed={item.userVoted}
                       className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full border border-white/10 bg-[rgb(36,36,36)] px-3 text-[12px] font-black text-white transition hover:bg-[rgb(53,53,54)] disabled:cursor-wait disabled:opacity-70"
-                      disabled={feedbackVotingId === item.id}
+                      disabled={Boolean(feedbackVotingId) || feedbackMoreLoading || feedbackSubmitting}
                       onClick={() => void toggleFeedbackVote(item)}
                       type="button"
                     >
@@ -1210,6 +1292,17 @@ export function HelpDeskWorkspace() {
                   No roadmap items yet.
                 </p>
               )}
+              {feedbackPageError ? <p className="text-[13px] text-[rgb(255,138,128)]" role="alert">{feedbackPageError} Use Refresh to start from the newest items.</p> : null}
+              {feedbackNextCursor && !feedbackLoading ? (
+                <button
+                  className="h-10 rounded-full border border-white/10 bg-[rgb(36,36,36)] px-4 text-[13px] font-semibold text-white disabled:opacity-50"
+                  disabled={feedbackMoreLoading || Boolean(feedbackVotingId) || feedbackSubmitting}
+                  onClick={() => void loadFeedbackItems(feedbackNextCursor)}
+                  type="button"
+                >
+                  {feedbackMoreLoading ? "Loading more ideas..." : "Load more ideas"}
+                </button>
+              ) : null}
             </div>
           </div>
         </div>
@@ -1812,14 +1905,11 @@ function appealErrorMessage(status: number, fallback?: string) {
   return fallback ?? "Appeal failed. Try again.";
 }
 
-function upsertFeedbackItem(items: FeedbackItem[], next: FeedbackItem) {
+function upsertFeedbackItem(items: FeedbackItem[], next: FeedbackItem, status = "") {
+  if (status && next.status !== status) return items.filter((item) => item.id !== next.id);
   const replaced = items.map((item) => (item.id === next.id ? next : item));
-  if (replaced.some((item) => item.id === next.id)) return sortFeedbackItems(replaced);
-  return sortFeedbackItems([next, ...items]);
-}
-
-function sortFeedbackItems(items: FeedbackItem[]) {
-  return [...items].sort((a, b) => b.voteCount - a.voteCount || a.title.localeCompare(b.title));
+  if (replaced.some((item) => item.id === next.id)) return replaced;
+  return [next, ...items];
 }
 
 const feedbackStatusLabels: Record<ProductFeedbackStatus, string> = {

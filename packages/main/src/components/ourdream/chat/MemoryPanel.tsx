@@ -3,14 +3,16 @@
 import { RotateCcw, X } from "lucide-react";
 import { useState } from "react";
 import { MemoryToggle } from "./MemoryToggle";
+import { ChatContextSettings } from "./ChatContextSettings";
 
 // SPEC: Official igrep owns item-level generic memory inside DSH. The product
-// exposes only the supported authority controls: memory on/off and clear all.
-// It must not invent a second list/edit/delete authority.
+// exposes memory on/off and clear all. Explicit user settings have separate,
+// labelled Main authority; they are not a list of igrep's inferred memories.
 export function MemoryPanel({
   open,
   onClose,
   characterId,
+  sessionId,
   memoryEnabled,
   memoryPending,
   onToggleMemory,
@@ -18,6 +20,7 @@ export function MemoryPanel({
   open: boolean;
   onClose: () => void;
   characterId: string | null;
+  sessionId?: string;
   memoryEnabled: boolean;
   memoryPending: boolean;
   onToggleMemory: () => void;
@@ -113,8 +116,10 @@ export function MemoryPanel({
           <p className="mt-2 text-[12px] leading-4 text-[rgb(114,113,112)]">
             {memoryEnabled
               ? "This character can remember details across chats. Turn memory off for private turns."
-              : "Memory is off: new turns use a private workspace and are not retained."}
+              : "Memory is off: new messages do not read or save long-term memories. This chat stays in your history."}
           </p>
+
+          {sessionId ? <ChatContextSettings key={sessionId} sessionId={sessionId} memoryEnabled={memoryEnabled} /> : null}
 
           <div className="my-4 h-px bg-[rgb(36,36,36)]" />
 
@@ -123,8 +128,8 @@ export function MemoryPanel({
           </h3>
           <p className="mb-3 text-[12px] leading-4 text-[rgb(114,113,112)]">
             {resetConfirm
-              ? "This clears everything this character remembers about you and moves your current chats with them to the archive. You'll start a new conversation. Your old chats stay readable."
-              : "Clear everything this character remembers about you and start a new conversation."}
+              ? "This clears learned memories and your pinned facts, and moves your current chats with this character to the archive. You'll start a new conversation. Your old chats stay readable. Custom instructions stay until you remove them."
+              : "Clear learned memories and pinned facts, then start a new conversation. Custom instructions are kept."}
           </p>
           <button
             aria-label={resetConfirm ? "Confirm clear memory" : "Clear memory"}

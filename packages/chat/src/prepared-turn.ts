@@ -50,6 +50,9 @@ export function compilePreparedTurn(
     model: modelProfile.model,
     supportsTools: modelProfile.supportsTools,
     maxOutputTokens: modelProfile.maxOutputTokens,
+    ...(fitted.context.experience && fitted.context.experience.responseLength !== "auto" ? {
+      answerMaxOutputTokens: Math.min(modelProfile.maxOutputTokens, fitted.context.experience.responseLength === "short" ? 512 : 2048),
+    } : {}),
     timeout: {
       firstTokenMs: modelProfile.firstTokenTimeoutMs,
       idleMs: modelProfile.idleTimeoutMs,

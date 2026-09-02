@@ -13,6 +13,7 @@ export function modelLoaderNodeForReference(
   classType: string,
   slot: string,
 ): string | null {
+  if (slot === "model_name" && classType === "UpscaleModelLoader") return "UpscaleModelLoader";
   if (slot === "clip_name" && classType === "CLIPLoaderGGUF") {
     return "CLIPLoaderGGUF";
   }
