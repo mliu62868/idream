@@ -15,6 +15,7 @@ export function UserPersonaPanel() {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [accountChanged, setAccountChanged] = useState(false);
   const [reload, setReload] = useState(0);
   const epochRef = useRef(0);
   useEffect(() => {
@@ -40,14 +41,22 @@ export function UserPersonaPanel() {
     setError("");
     setNotice("");
     try {
-      const settings = await readResponse(await fetch(path, {
+      const response = await fetch(path, {
         method: clear ? "DELETE" : "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(clear ? { version: saved.version } : {
-          enabled: draft.enabled, name: draft.name, description: draft.description, version: saved.version,
+        body: JSON.stringify(clear ? { ownerScope: saved.ownerScope, version: saved.version } : {
+          enabled: draft.enabled, name: draft.name, description: draft.description, ownerScope: saved.ownerScope, version: saved.version,
         }),
-      }));
+      });
       if (epoch !== epochRef.current) return;
+      if (response.status === 403) {
+        setSaved(null);
+        setDraft(emptyDraft);
+        setAccountChanged(true);
+      }
+      const settings = await readResponse(response);
+      if (epoch !== epochRef.current) return;
+      if (settings.ownerScope !== saved.ownerScope) throw new Error("The signed-in account changed. Reload this page before editing your persona");
       setSaved(settings);
       setDraft(settings.persona ?? emptyDraft);
       setNotice(settings.persona?.enabled ? "Persona saved for new messages across your chats." : "New messages will not use your persona.");
@@ -88,7 +97,7 @@ export function UserPersonaPanel() {
       </div>
       {!saved && !error ? <p className="mt-3" role="status">Loading persona…</p> : null}
       {notice ? <p className="mt-3" role="status">{notice}</p> : null}
-      {error ? <div className="mt-3 text-[rgb(255,168,206)]" role="alert"><p>{error}</p><button className="mt-2 underline" disabled={pending} onClick={reloadSettings} type="button">Reload persona</button></div> : null}
+      {error ? <div className="mt-3 text-[rgb(255,168,206)]" role="alert"><p>{error}</p><button className="mt-2 underline" disabled={pending} onClick={accountChanged ? () => window.location.reload() : reloadSettings} type="button">{accountChanged ? "Reload this page" : "Reload persona"}</button></div> : null}
     </details>
   );
 }

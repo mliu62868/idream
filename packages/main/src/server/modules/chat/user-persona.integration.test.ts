@@ -16,7 +16,9 @@ afterAll(async () => {
 });
 
 const robin = { name: "Robin", description: "A botanist with a blue notebook.", enabled: true };
-const call = (userId: string, method: string, body?: unknown) => api(method, "profile/chat-persona", { userId, body });
+const call = (userId: string, method: string, body?: Record<string, unknown>) => api(method, "profile/chat-persona", {
+  userId, body: body === undefined ? undefined : { ownerScope: `user:${userId}`, ...body },
+});
 
 async function fixture(existingUserId?: string) {
   const userId = existingUserId ?? `${prefix}${randomUUID()}`;
@@ -59,7 +61,7 @@ describe("global user chat persona", () => {
       create: { userId: f.userId, locale: "fr", mutedTags: [], safeModeFlags: {}, notificationSettings: { emailUpdates: true } },
     });
     expect((await api("GET", "profile/chat-persona")).status).toBe(401);
-    expect((await call(f.userId, "GET")).data).toEqual({ persona: null, version: 0 });
+    expect((await call(f.userId, "GET")).data).toEqual({ ownerScope: `user:${f.userId}`, persona: null, version: 0 });
     for (const invalid of [
       { ...robin, name: "x".repeat(81) }, { ...robin, description: "x".repeat(1_501) },
       { ...robin, name: " ", description: " " }, { ...robin, userId: other.userId },
@@ -67,9 +69,9 @@ describe("global user chat persona", () => {
     const beforeEvents = await prisma.mainOutboxEvent.count({ where: { aggregateId: { startsWith: f.userId } } });
     const saved = await call(f.userId, "PUT", { ...robin, version: 0 });
     expect(saved.status).toBe(200);
-    expect(saved.data).toEqual({ persona: { ...robin, version: 1 }, version: 1 });
+    expect(saved.data).toEqual({ ownerScope: `user:${f.userId}`, persona: { ...robin, version: 1 }, version: 1 });
     expect((await call(f.userId, "PUT", { ...robin, version: 0 })).data).toEqual(saved.data);
-    expect((await call(other.userId, "GET")).data).toEqual({ persona: null, version: 0 });
+    expect((await call(other.userId, "GET")).data).toEqual({ ownerScope: `user:${other.userId}`, persona: null, version: 0 });
     expect(await prisma.mainOutboxEvent.count({ where: { aggregateId: { startsWith: f.userId } } })).toBe(beforeEvents);
     expect(await prisma.userPreferences.findUnique({ where: { userId: f.userId } })).toMatchObject({ locale: "fr", notificationSettings: { emailUpdates: true } });
     const concurrent = await Promise.all([
@@ -78,12 +80,26 @@ describe("global user chat persona", () => {
     ]);
     expect(concurrent.map(result => result.status).sort()).toEqual([200, 409]);
     const cleared = await call(f.userId, "DELETE", { version: 2 });
-    expect(cleared.data).toEqual({ persona: null, version: 3 });
+    expect(cleared.data).toEqual({ ownerScope: `user:${f.userId}`, persona: null, version: 3 });
     expect((await call(f.userId, "DELETE", { version: 2 })).data).toEqual(cleared.data);
     expect((await call(f.userId, "PUT", { ...robin, version: 1 })).status).toBe(409);
     expect((await call(f.userId, "GET")).data).toEqual(cleared.data);
     await prisma.user.delete({ where: { id: f.userId } });
     expect(await prisma.userPreferences.count({ where: { userId: f.userId } })).toBe(0);
+  });
+
+  it("rejects an old tab's write and clear when cookies switch to another account at the same version", async () => {
+    const a = await fixture();
+    const b = await fixture();
+    const aScope = (await call(a.userId, "GET")).data.ownerScope;
+    expect((await call(b.userId, "PUT", { ...robin, ownerScope: aScope, version: 0 })).status).toBe(403);
+    expect((await call(b.userId, "GET")).data).toMatchObject({ persona: null, version: 0 });
+    await call(a.userId, "PUT", { ...robin, version: 0 });
+    await call(b.userId, "PUT", { ...robin, name: "Cedar", version: 0 });
+    expect((await call(b.userId, "DELETE", { ownerScope: aScope, version: 1 })).status).toBe(403);
+    expect((await call(b.userId, "PUT", { ...robin, ownerScope: aScope, version: 1 })).status).toBe(403);
+    expect((await call(b.userId, "GET")).data.persona).toMatchObject({ name: "Cedar", version: 1 });
+    expect((await call(a.userId, "GET")).data.persona).toMatchObject({ name: "Robin", version: 1 });
   });
 
   it("freezes the same global persona across characters and keeps edit/regenerate history while new Turns observe changes", async () => {

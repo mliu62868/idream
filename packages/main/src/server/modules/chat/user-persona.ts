@@ -4,8 +4,8 @@ import { z } from "zod";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 
-const versionSchema = z.object({ version: z.number().int().nonnegative() }).strict();
-const updateSchema = userChatPersonaValuesSchema.extend({ version: z.number().int().nonnegative() }).strict()
+const versionSchema = z.object({ ownerScope: z.string().startsWith("user:").max(240), version: z.number().int().nonnegative() }).strict();
+const updateSchema = userChatPersonaValuesSchema.extend(versionSchema.shape).strict()
   .refine(value => Boolean(value.name || value.description), { message: "Add a name or description, or clear your persona" });
 
 async function requireActiveUser(db: Prisma.TransactionClient, userId: string) {
@@ -20,7 +20,7 @@ async function currentSettings(db: Prisma.TransactionClient, userId: string) {
   });
   const version = row?.chatPersonaVersion ?? 0;
   const persona = row?.chatPersona == null ? null : userChatPersonaSchema.parse({ ...userChatPersonaValuesSchema.parse(row.chatPersona), version });
-  return userChatPersonaResponseSchema.parse({ persona, version });
+  return userChatPersonaResponseSchema.parse({ ownerScope: `user:${userId}`, persona, version });
 }
 
 export async function getUserChatPersona(userId: string) {
@@ -36,7 +36,10 @@ export async function userChatPersonaForTurn(tx: Prisma.TransactionClient, userI
 export async function updateUserChatPersona(userId: string, body: unknown) {
   const parsed = updateSchema.safeParse(body);
   if (!parsed.success) throw Errors.badRequest("Invalid chat persona", { issues: parsed.error.issues });
-  const { version, ...persona } = parsed.data;
+  const { ownerScope, version, ...persona } = parsed.data;
+  // This is an expectation from GET, never authentication. Cookies may have
+  // switched accounts after the old page loaded, even at the same CAS version.
+  if (ownerScope !== `user:${userId}`) throw Errors.forbidden("The signed-in account changed. Reload this page before editing your persona");
   return prisma.$transaction(async tx => {
     // Serialize with Turn acceptance. Old responses may not restore cleared settings.
     await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId} FOR UPDATE`;
@@ -58,6 +61,7 @@ export async function updateUserChatPersona(userId: string, body: unknown) {
 export async function clearUserChatPersona(userId: string, body: unknown) {
   const parsed = versionSchema.safeParse(body);
   if (!parsed.success) throw Errors.badRequest("Invalid chat persona version", { issues: parsed.error.issues });
+  if (parsed.data.ownerScope !== `user:${userId}`) throw Errors.forbidden("The signed-in account changed. Reload this page before editing your persona");
   return prisma.$transaction(async tx => {
     await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId} FOR UPDATE`;
     await requireActiveUser(tx, userId);

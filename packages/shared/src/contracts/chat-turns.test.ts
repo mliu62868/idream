@@ -57,8 +57,9 @@ describe("Chat execution snapshot", () => {
       { ...userPersona, description: "x".repeat(1_501) }, { ...userPersona, name: " ", description: " " },
       { ...userPersona, characterReleaseId: "forged" },
     ]) expect(chatExecutionSnapshotSchema.safeParse({ ...snapshot, userPersona: invalid }).success).toBe(false);
-    expect(userChatPersonaResponseSchema.safeParse({ persona: userPersona, version: 1 }).success).toBe(false);
-    expect(userChatPersonaResponseSchema.parse({ persona: null, version: 3 })).toEqual({ persona: null, version: 3 });
+    expect(userChatPersonaResponseSchema.safeParse({ ownerScope: "user:one", persona: userPersona, version: 1 }).success).toBe(false);
+    expect(userChatPersonaResponseSchema.safeParse({ persona: userPersona, version: 2 }).success).toBe(false);
+    expect(userChatPersonaResponseSchema.parse({ ownerScope: "user:one", persona: null, version: 3 })).toEqual({ ownerScope: "user:one", persona: null, version: 3 });
   });
 
   it("accepts historical context without settings, and bounds each explicit user context kind", () => {

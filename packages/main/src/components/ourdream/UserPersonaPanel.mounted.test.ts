@@ -19,7 +19,7 @@ async function enter(label: string, value: string) {
   });
 }
 async function click(text: string) { await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === text)!.click()); }
-const success = (data: unknown) => Response.json({ ok: true, data });
+const success = (data: Record<string, unknown>, ownerScope = "user:one") => Response.json({ ok: true, data: { ownerScope, ...data } });
 
 describe("global persona settings", () => {
   it("saves exact in-progress text, restores it, disables it and clears with the last accepted version", async () => {
@@ -29,7 +29,7 @@ describe("global persona settings", () => {
       if (init?.method) {
         const body = JSON.parse(String(init.body));
         requests.push({ method: init.method, body });
-        settings = { persona: init.method === "DELETE" ? null : { ...body, version: body.version + 1 }, version: body.version + 1 };
+        settings = { persona: init.method === "DELETE" ? null : { name: body.name, description: body.description, enabled: body.enabled, version: body.version + 1 }, version: body.version + 1 };
       }
       return success(settings);
     }));
@@ -39,7 +39,7 @@ describe("global persona settings", () => {
     expect(field("About your persona").value).toBe("A botanist ");
     await enter("About your persona", "A botanist with a blue notebook.");
     await click("Save persona");
-    expect(requests[0]).toEqual({ method: "PUT", body: { enabled: true, name: "Robin", description: "A botanist with a blue notebook.", version: 0 } });
+    expect(requests[0]).toEqual({ method: "PUT", body: { enabled: true, name: "Robin", description: "A botanist with a blue notebook.", ownerScope: "user:one", version: 0 } });
     await act(async () => root.render(null));
     await render();
     expect(field("Persona name").value).toBe("Robin");
@@ -49,7 +49,7 @@ describe("global persona settings", () => {
     expect(requests[1]).toMatchObject({ method: "PUT", body: { enabled: false, version: 1 } });
     expect(container.textContent).toContain("New messages will not use your persona");
     await click("Clear persona");
-    expect(requests[2]).toEqual({ method: "DELETE", body: { version: 2 } });
+    expect(requests[2]).toEqual({ method: "DELETE", body: { ownerScope: "user:one", version: 2 } });
     expect(field("Persona name").value).toBe("");
     expect(container.textContent).not.toContain("Clear persona");
   });
@@ -74,13 +74,35 @@ describe("global persona settings", () => {
     let reads = 0;
     vi.stubGlobal("fetch", vi.fn(async (_url: unknown, init?: RequestInit) => init?.method === "PUT"
       ? new Promise<Response>(resolve => { resolveSave = resolve; })
-      : success({ persona: { name: ++reads === 1 ? "Robin" : "Cedar", description: "Reader", enabled: true, version: 1 }, version: 1 })));
+      : success({ persona: { name: ++reads === 1 ? "Robin" : "Cedar", description: "Reader", enabled: true, version: 1 }, version: 1 }, reads === 1 ? "user:one" : "user:two")));
     await render();
     await enter("Persona name", "Old account draft");
     await click("Save persona");
     await render("two");
     await act(async () => resolveSave(success({ persona: { name: "Old account draft", description: "Reader", enabled: true, version: 2 }, version: 2 })));
     expect(field("Persona name").value).toBe("Cedar");
+    expect(container.textContent).not.toContain("Persona saved for new messages");
+  });
+
+  it("keeps the loaded owner in writes and hides the old draft when the current account rejects it", async () => {
+    let currentOwner = "user:one";
+    const writes: Array<Record<string, unknown>> = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: unknown, init?: RequestInit) => {
+      if (!init?.method) return success({ persona: null, version: 0 }, currentOwner);
+      const body = JSON.parse(String(init.body));
+      writes.push(body);
+      return body.ownerScope !== currentOwner
+        ? Response.json({ error: { message: "The signed-in account changed. Reload this page before editing your persona" } }, { status: 403 })
+        : success({ persona: { name: body.name, description: body.description, enabled: body.enabled, version: 1 }, version: 1 }, currentOwner);
+    }));
+    await render();
+    await enter("Persona name", "Old account draft");
+    currentOwner = "user:two"; // Cookies changed in another tab; the parent never remounted.
+    await click("Save persona");
+    expect(writes).toEqual([{ ownerScope: "user:one", name: "Old account draft", description: "", enabled: true, version: 0 }]);
+    expect(field("Persona name").value).toBe("");
+    expect(field("Persona name").disabled).toBe(true);
+    expect(container.textContent).toContain("Reload this page");
     expect(container.textContent).not.toContain("Persona saved for new messages");
   });
 });

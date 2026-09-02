@@ -42,6 +42,7 @@ export const userChatPersonaSchema = userChatPersonaValuesSchema.extend({
   message: "Add a name or description, or clear your persona",
 });
 export const userChatPersonaResponseSchema = z.object({
+  ownerScope: z.string().startsWith("user:").max(240),
   persona: userChatPersonaSchema.nullable(),
   version: z.number().int().nonnegative(),
 }).strict().refine(value => value.persona === null || value.persona.version === value.version, {
