@@ -2041,6 +2041,7 @@ async function generationQuoteForUser(
 async function createGenerationJob(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
+  requireGeneratorViewer(request, user.id);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const body = generationJobSchema.parse(await jsonBody(request));
@@ -2072,6 +2073,15 @@ async function createGenerationJob(request: Request) {
     include: generationJobInclude(),
   });
   return ok(generationJobResponse(queued), { status: 202 });
+}
+
+// The expected viewer binds a retained form or receipt to its account. It is
+// never authentication: the current session remains the only user authority.
+function requireGeneratorViewer(request: Request, userId: string) {
+  const expected = request.headers.get("x-idream-viewer-scope");
+  if (expected !== null && expected !== `user:${userId}`) {
+    throw Errors.conflict("Your account changed. Reload before submitting or sign in to the original account to check its request.");
+  }
 }
 
 function requireGenerationWriteIdempotencyKey(request: Request) {
@@ -2321,6 +2331,7 @@ async function generationRetryQuote(request: Request, id: string) {
 async function retryGenerationJob(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
+  requireGeneratorViewer(request, user.id);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const retryIdempotencyKey = requireGenerationRetryIdempotencyKey(request);
@@ -3124,6 +3135,7 @@ async function resolveMediaVariationGenerationInput(
 async function mediaEnhancement(request: Request, id: string, quoteOnly: boolean) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
+  if (!quoteOnly) requireGeneratorViewer(request, user.id);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const raw = await jsonBody(request);
@@ -3176,6 +3188,7 @@ async function mediaVariationQuote(request: Request, id: string) {
 async function createMediaVariation(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
+  requireGeneratorViewer(request, user.id);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const body = z

@@ -319,6 +319,7 @@ async function requestIdempotentGenerationWrite(
     headers: {
       "content-type": "application/json",
       "idempotency-key": idempotencyKey,
+      ...(input.persistence ? { "x-idream-viewer-scope": input.persistence.ownerScope } : {}),
     },
     body: JSON.stringify(unconfirmed?.body ?? input.body),
   });

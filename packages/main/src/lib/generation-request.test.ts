@@ -1371,6 +1371,7 @@ describe("generation receipts across page lifetimes", () => {
     let sent = "";
     await expect(send(kind, new Map(), persistence, async (_url, init) => {
       expect(storage.values.size).toBe(1);
+      expect(new Headers(init?.headers).get("x-idream-viewer-scope")).toBe("user:one");
       sent = String(init?.body);
       throw new TypeError("connection lost");
     })).rejects.toThrow();
@@ -1381,6 +1382,7 @@ describe("generation receipts across page lifetimes", () => {
     const accepted = await requestGenerationReceipt(receipt, { idempotencyKeys: restored, persistence }, async (_url, init) => {
       expect(init?.body).toBe(sent);
       expect(new Headers(init?.headers).get("idempotency-key")).toBe(`${kind}-original-key`);
+      expect(new Headers(init?.headers).get("x-idream-viewer-scope")).toBe("user:one");
       return jobResponse("accepted-once");
     });
     expect(accepted.job.id).toBe("accepted-once");
