@@ -1,4 +1,4 @@
-import { chatOpsProviderHealth } from "@/server/modules/admin-v2/chat/ops-proxy";
+import { chatOpsProviderHealth } from "@/server/modules/admin-v2/chat/operations";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 
 export const dynamic = "force-dynamic";

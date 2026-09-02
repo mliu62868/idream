@@ -36,6 +36,7 @@ import {
   assertNoRecoveryAmbientLibpqTargetOverrides,
   parseRecoveryPostgresConnection,
   RECOVERY_AMBIENT_LIBPQ_TARGET_VARIABLES,
+  resolveRecoveryRehearsalSourceAuthority,
   selectLiveBlobVersions,
   validateRecoveryCounts,
   type LiveBlobVersion,
@@ -425,9 +426,15 @@ function bundleFiles(staging: string, bundleName: string) {
     roles: `${base}.roles.json`,
     databaseAuthority: `${base}.database-authority.json`,
     databaseAuthorityRestore: `${base}.database-authority.restore.sql`,
-    chatArchive: `${base}.chat-fs.tar.gz`,
-    chatSourceManifest: `${base}.chat-fs.source.sha256`,
-    chatRestoreManifest: `${base}.chat-fs.restore.sha256`,
+    agentRunArchive: `${base}.agent-run.tar.gz`,
+    agentRunSourceManifest: `${base}.agent-run.source.sha256`,
+    agentRunRestoreManifest: `${base}.agent-run.restore.sha256`,
+    dshCanonicalArchive: `${base}.dsh-canonical.tar.gz`,
+    dshCanonicalSourceManifest: `${base}.dsh-canonical.source.sha256`,
+    dshCanonicalRestoreManifest: `${base}.dsh-canonical.restore.sha256`,
+    dshPrivateArchive: `${base}.dsh-private.tar.gz`,
+    dshPrivateSourceManifest: `${base}.dsh-private.source.sha256`,
+    dshPrivateRestoreManifest: `${base}.dsh-private.restore.sha256`,
     blobArchive: `${base}.blob.tar.gz`,
     blobInventory: `${base}.blob-object-versions.json`,
     blobSourceManifest: `${base}.blob.source.sha256`,
@@ -1262,7 +1269,9 @@ async function writeBundleMetadata(input: {
   expectedMigrations: readonly ExpectedMigration[];
   roleAuthority: RoleAuthority;
   databaseAuthority: DatabaseAuthority;
-  chat: { files: number; bytes: number };
+  agentRun: { files: number; bytes: number };
+  dshCanonical: { files: number; bytes: number };
+  dshPrivate: { files: number; bytes: number };
   blob: { files: number; bytes: number };
   runner: RecoveryCommandRunner;
   env: NodeJS.ProcessEnv;
@@ -1276,8 +1285,19 @@ async function writeBundleMetadata(input: {
     renderRecoveryDatabaseAuthoritySql(input.databaseAuthority),
     { mode: 0o600 },
   );
+  const quiescenceReceiptSha256 = sha256(
+    await readFile(input.files.quiescenceReceipt),
+  );
   await writeFile(input.files.fileAuthorities, `${JSON.stringify({
-    chat_fs: input.chat,
+    agent_run: input.agentRun,
+    dsh: {
+      canonical: input.dshCanonical,
+      private: input.dshPrivate,
+    },
+    queue: {
+      ...input.sourceAuthority.queue,
+      quiescence_receipt_sha256: quiescenceReceiptSha256,
+    },
     blob: {
       authorities_match: true,
       main_effective: input.plan.blob,
@@ -1314,7 +1334,9 @@ async function writeBundleMetadata(input: {
     input.files.sourceCounts,
     input.files.sourceSchema,
     input.files.sourceLogical,
-    input.files.chatSourceManifest,
+    input.files.agentRunSourceManifest,
+    input.files.dshCanonicalSourceManifest,
+    input.files.dshPrivateSourceManifest,
     input.files.blobSourceManifest,
     ...(input.plan.blob.provider === "mock" ? [] : [input.files.blobInventory]),
   ];
@@ -1325,9 +1347,10 @@ async function writeBundleMetadata(input: {
     }))),
   );
   await writeFile(input.files.metadata, `${JSON.stringify({
-    schemaVersion: 1,
+    schemaVersion: 2,
     completedAt: new Date().toISOString(),
     sourceCheckpointSha256,
+    quiescenceReceiptSha256,
     sourceAuthority: input.sourceAuthority,
   }, null, 2)}\n`, { mode: 0o600 });
   const invocation = [
@@ -1343,12 +1366,12 @@ async function writeBundleMetadata(input: {
     `# iDream recovery rehearsal ${input.plan.bundleName}`,
     "",
     "This bundle was captured only after the production runtime and durable work reached a silent boundary.",
-    "It contains a PostgreSQL custom dump and PG16-normalized SQL, an exact Chat file archive, and either a local Blob archive or a versioned remote-object inventory.",
+    "It contains a PostgreSQL custom dump and PG16-normalized SQL; exact AgentRun, DSH canonical, and DSH private archives; and either a local Blob archive or a versioned remote-object inventory.",
     "",
     "1. Verify the adjacent `.sha256` manifest before reading any artifact.",
     "2. Provision the roles in `.roles.json` from the secret manager; passwords are deliberately absent.",
     "3. Create an isolated PostgreSQL 16 database with the recorded database authority, apply `.database-authority.restore.sql`, and restore `-pg16.sql` in one transaction.",
-    "4. Restore Chat FS and Blob into isolated targets and compare the source manifests before any cutover.",
+    "4. Restore AgentRun, DSH canonical, DSH private, and Blob into isolated targets and compare every source manifest before any cutover.",
     "5. Never restore directly over a live authority; repeat the same quiescence and operator approval fence used by this producer.",
     "",
   ].join("\n"), { mode: 0o600 });
@@ -1371,8 +1394,32 @@ async function publishChecksums(staging: string, files: BundleFiles) {
   }
 }
 
+function assertPlanMatchesSourceAuthority(
+  plan: RecoveryRehearsalPlan,
+  authority: RecoveryRehearsalSourceAuthority,
+) {
+  if (
+    plan.database.host !== authority.mainPostgres.host ||
+    plan.database.port !== authority.mainPostgres.port ||
+    plan.database.database !== authority.mainPostgres.database ||
+    plan.agentRunRoot !== authority.agentRun.root ||
+    plan.dshCanonicalRoot !== authority.dsh.canonicalRoot ||
+    plan.dshPrivateRoot !== authority.dsh.privateRoot ||
+    plan.queueAuthority.redis !== authority.queue.redis ||
+    plan.queueAuthority.prefix !== authority.queue.prefix ||
+    plan.blob.provider !== authority.blob.provider ||
+    plan.blob.endpoint !== authority.blob.endpoint ||
+    plan.blob.bucket !== authority.blob.bucket ||
+    plan.blob.root !== authority.blob.root ||
+    plan.blob.recovery.retentionDays !==
+      authority.blob.recoveryRetentionDays
+  ) {
+    throw new Error("recovery plan differs from current source authority");
+  }
+}
+
 // SPEC: apply produces one immutable flat bundle after a real same-source
-// PostgreSQL restore and a byte-equivalent Chat/Blob isolated restore.
+// PostgreSQL restore and byte-equivalent AgentRun, DSH, and Blob restores.
 // INTENT: all broad effects are created under fresh, validated names. Cleanup
 // only targets the recorded restore database, staging directory, lock, and exact
 // remote object versions produced by this invocation.
@@ -1405,6 +1452,12 @@ export async function executeRecoveryRehearsal(input: {
     connection,
     "RECOVERY_DATABASE_URL",
   );
+  const sourceAuthority = resolveRecoveryRehearsalSourceAuthority({
+    env: input.env,
+    workspaceRoot: input.workspaceRoot,
+    chatWorkingDirectory: path.join(input.workspaceRoot, "packages/chat"),
+  });
+  assertPlanMatchesSourceAuthority(input.plan, sourceAuthority);
   const parent = path.dirname(input.plan.bundlePath);
   const finalBundle = input.plan.bundlePath;
   const lockPath = path.join(parent, `.${input.plan.bundleName}.publish.lock`);
@@ -1499,7 +1552,18 @@ export async function executeRecoveryRehearsal(input: {
       throw new Error("recovery rehearsal requires PostgreSQL 16");
     }
 
-    const chatRoot = await ensureRealDirectory(input.plan.chatFsRoot!, "CHAT_FS_ROOT");
+    const agentRunRoot = await ensureRealDirectory(
+      sourceAuthority.agentRun.root,
+      "AgentRun authority root",
+    );
+    const dshCanonicalRoot = await ensureRealDirectory(
+      sourceAuthority.dsh.canonicalRoot,
+      "DSH canonical authority root",
+    );
+    const dshPrivateRoot = await ensureRealDirectory(
+      sourceAuthority.dsh.privateRoot,
+      "DSH private authority root",
+    );
     const roleAuthority = parseJson<RoleAuthority>(
       psql(runner, connection, input.env, "source_role_authority", ROLE_AUTHORITY_SQL),
       "source_role_authority",
@@ -1528,14 +1592,32 @@ export async function executeRecoveryRehearsal(input: {
     await writeFile(files.sourceSchema, sourceSchema, { mode: 0o600 });
     await writeFile(files.sourceLogical, sourceLogical, { mode: 0o600 });
 
-    const chat = await captureLocalFiles(
+    const agentRun = await captureLocalFiles(
       runner,
-      chatRoot,
-      files.chatArchive,
-      files.chatSourceManifest,
-      files.chatRestoreManifest,
+      agentRunRoot,
+      files.agentRunArchive,
+      files.agentRunSourceManifest,
+      files.agentRunRestoreManifest,
       scratch,
-      "chat_fs",
+      "agent_run",
+    );
+    const dshCanonical = await captureLocalFiles(
+      runner,
+      dshCanonicalRoot,
+      files.dshCanonicalArchive,
+      files.dshCanonicalSourceManifest,
+      files.dshCanonicalRestoreManifest,
+      scratch,
+      "dsh_canonical",
+    );
+    const dshPrivate = await captureLocalFiles(
+      runner,
+      dshPrivateRoot,
+      files.dshPrivateArchive,
+      files.dshPrivateSourceManifest,
+      files.dshPrivateRestoreManifest,
+      scratch,
+      "dsh_private",
     );
     let blob: {
       files: number;
@@ -1605,8 +1687,19 @@ export async function executeRecoveryRehearsal(input: {
     ) !== sourceLogical) {
       throw new Error("source logical authority changed during checkpoint");
     }
-    if (await buildFileAuthorityManifest(chatRoot) !== chat.manifest) {
-      throw new Error("CHAT_FS_ROOT changed during checkpoint");
+    if (await buildFileAuthorityManifest(agentRunRoot) !== agentRun.manifest) {
+      throw new Error("AgentRun authority changed during checkpoint");
+    }
+    if (
+      await buildFileAuthorityManifest(dshCanonicalRoot) !==
+        dshCanonical.manifest
+    ) {
+      throw new Error("DSH canonical authority changed during checkpoint");
+    }
+    if (
+      await buildFileAuthorityManifest(dshPrivateRoot) !== dshPrivate.manifest
+    ) {
+      throw new Error("DSH private authority changed during checkpoint");
     }
     if (input.plan.blob.provider === "mock") {
       if (await buildFileAuthorityManifest(input.plan.blob.root!) !== blob.manifest) {
@@ -1765,8 +1858,19 @@ export async function executeRecoveryRehearsal(input: {
     ) !== sourceLogical) {
       throw new Error("source logical authority changed during isolated restore");
     }
-    if (await buildFileAuthorityManifest(chatRoot) !== chat.manifest) {
-      throw new Error("CHAT_FS_ROOT changed during isolated restore");
+    if (await buildFileAuthorityManifest(agentRunRoot) !== agentRun.manifest) {
+      throw new Error("AgentRun authority changed during isolated restore");
+    }
+    if (
+      await buildFileAuthorityManifest(dshCanonicalRoot) !==
+        dshCanonical.manifest
+    ) {
+      throw new Error("DSH canonical authority changed during isolated restore");
+    }
+    if (
+      await buildFileAuthorityManifest(dshPrivateRoot) !== dshPrivate.manifest
+    ) {
+      throw new Error("DSH private authority changed during isolated restore");
     }
     if (input.plan.blob.provider === "mock") {
       if (await buildFileAuthorityManifest(input.plan.blob.root!) !== blob.manifest) {
@@ -1793,36 +1897,15 @@ export async function executeRecoveryRehearsal(input: {
     if (finalActiveClients !== "0") {
       throw new Error("source database gained active clients during isolated restore");
     }
-    const provider = input.plan.blob.provider;
-    if (provider !== "mock" && provider !== "r2" && provider !== "s3") {
-      throw new Error("recovery Blob provider is not exact");
-    }
-    const sourceAuthority: RecoveryRehearsalSourceAuthority = {
-      database: {
-        host: sourceConnection.host,
-        port: Number.parseInt(sourceConnection.port, 10),
-        database: sourceConnection.database,
-      },
-      chatFsRoot: chatRoot,
-      queue: {
-        redis: input.plan.queueAuthority.redis!,
-        prefix: input.plan.queueAuthority.prefix!,
-      },
-      blob: {
-        provider,
-        endpoint: input.plan.blob.endpoint,
-        bucket: input.plan.blob.bucket,
-        root: input.plan.blob.root,
-        recoveryRetentionDays: input.plan.blob.recovery.retentionDays,
-      },
-    };
     await writeBundleMetadata({
       plan: input.plan,
       files,
       expectedMigrations: input.expectedMigrations,
       roleAuthority,
       databaseAuthority,
-      chat,
+      agentRun,
+      dshCanonical,
+      dshPrivate,
       blob,
       runner,
       env: input.env,

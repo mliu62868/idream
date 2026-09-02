@@ -1,19 +1,78 @@
-// SPEC: Character images enter one library through generation or upload. The
-// three product placements select an available library asset directly; a
-// Creative review decision is not part of that operator action.
+// SPEC: Character images enter one library through generation or upload, pass
+// a visible Review decision, and only then become selectable for a placement.
+// Generation provenance and operator-upload provenance remain distinct facts.
 
 import { z } from "zod";
 import {
   adminIdSchema,
   adminIsoDateTimeSchema,
 } from "./common";
+import { CHARACTER_IDENTITY_APPROVAL_MIN_SCORE } from "./creative";
+
+export const characterImagePlacementPurposeSchema = z.enum([
+  "character_cover",
+  "character_hero",
+  "character_chat",
+]);
+
+export const characterImageQualificationStateSchema = z.enum([
+  "candidate",
+  "selectable",
+  "rejected",
+  "selected",
+  "release_qualified",
+]);
+
+export const characterImageQualificationBlockerSchema = z.enum([
+  "asset_unavailable",
+  "source_authority_invalid",
+  "purpose_mismatch",
+  "review_pending",
+  "review_rejected",
+  "review_authority_changed",
+  "review_evidence_incomplete",
+  "visual_authority_missing",
+  "visual_authority_changed",
+]);
+
+export const characterImageReviewQualitySchema = z.object({
+  artifactFree: z.boolean(),
+  singleSubject: z.boolean(),
+  intentMatch: z.boolean(),
+  noVisibleText: z.boolean(),
+}).strict();
+
+export const characterImageQualificationSchema = z.object({
+  source: z.enum(["generation", "operator_upload", "legacy"]),
+  state: characterImageQualificationStateSchema,
+  selectablePurposes: z.array(characterImagePlacementPurposeSchema).readonly(),
+  selectedPurposes: z.array(characterImagePlacementPurposeSchema).readonly(),
+  releaseQualifiedPurposes: z.array(characterImagePlacementPurposeSchema).readonly(),
+  blockers: z.array(characterImageQualificationBlockerSchema).readonly(),
+  authority: z.object({
+    runId: adminIdSchema.nullable(),
+    itemId: adminIdSchema.nullable(),
+    reviewDecisionId: adminIdSchema.nullable(),
+    generationJobId: adminIdSchema.nullable(),
+  }).strict(),
+  review: z.object({
+    id: adminIdSchema,
+    decision: z.enum(["approved", "rejected"]),
+    identityConsistency: z.enum(["passed", "failed", "unscored"]),
+    score: z.number().int().min(0).max(100).nullable(),
+    quality: characterImageReviewQualitySchema.nullable(),
+    reason: z.string(),
+    createdAt: adminIsoDateTimeSchema,
+  }).strict().nullable(),
+}).strict();
 
 export const characterDraftImageSelectionRequestSchema = z.object({
   entityVersion: z.number().int().nonnegative(),
-  purpose: z.enum(["character_cover", "character_hero", "character_chat"]),
+  purpose: characterImagePlacementPurposeSchema,
   assetId: adminIdSchema,
-  // Historical clients may still send generation lineage. It remains useful
-  // evidence when present, but never gates choosing an existing library asset.
+  // These optional assertions let an already-open generation workspace fail
+  // closed if Review authority changed. Main always resolves and persists the
+  // canonical lineage; caller-supplied IDs never create authority.
   runId: adminIdSchema.optional(),
   itemId: adminIdSchema.optional(),
   reviewDecisionId: adminIdSchema.optional(),
@@ -23,7 +82,7 @@ export const characterDraftImageSelectionRequestSchema = z.object({
 export const characterDraftImageSelectionResultSchema = z.object({
   characterId: adminIdSchema,
   projectVersion: z.number().int().positive(),
-  selectedPurpose: z.enum(["character_cover", "character_hero", "character_chat"]),
+  selectedPurpose: characterImagePlacementPurposeSchema,
   selectedAssetId: adminIdSchema,
   draftImageAssetId: adminIdSchema.nullable(),
   draftAssetPack: z.object({
@@ -40,6 +99,11 @@ export const characterImageSourceUploadRequestSchema = z
   })
   .strict();
 
+export const characterImageSourceQuerySchema = z.object({
+  purpose: z.enum(["identity_experiment_source", "character_library"])
+    .default("identity_experiment_source"),
+}).strict();
+
 export const characterImageSourceAssetSchema = z
   .object({
     id: adminIdSchema,
@@ -51,6 +115,7 @@ export const characterImageSourceAssetSchema = z
     width: z.number().int().positive(),
     height: z.number().int().positive(),
     createdAt: adminIsoDateTimeSchema,
+    qualification: characterImageQualificationSchema.nullable(),
   })
   .strict();
 
@@ -66,6 +131,49 @@ export const characterImageSourceUploadResponseSchema = z
     replayed: z.boolean(),
   })
   .strict();
+
+export const characterImageReviewRequestSchema = z.object({
+  supersedesDecisionId: adminIdSchema.optional(),
+  decision: z.enum(["approved", "rejected"]),
+  identityConsistency: z.enum(["passed", "failed"]),
+  score: z.number().int().min(0).max(100).optional(),
+  quality: characterImageReviewQualitySchema,
+  reason: z.string().trim().min(3).max(2_000),
+}).strict().superRefine((review, ctx) => {
+  if (review.decision !== "approved") return;
+  if (review.identityConsistency !== "passed") {
+    ctx.addIssue({
+      code: "custom",
+      path: ["identityConsistency"],
+      message: "An imported Character image can only be approved when identity consistency passes",
+    });
+  }
+  if (
+    review.score === undefined ||
+    review.score < CHARACTER_IDENTITY_APPROVAL_MIN_SCORE
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["score"],
+      message: `An imported Character image approval requires an identity score of at least ${CHARACTER_IDENTITY_APPROVAL_MIN_SCORE}`,
+    });
+  }
+  if (Object.values(review.quality).some((passed) => !passed)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["quality"],
+      message: "Every visible quality check must pass before approval",
+    });
+  }
+});
+
+export const characterImageReviewResultSchema = z.object({
+  characterId: adminIdSchema,
+  assetId: adminIdSchema,
+  decisionId: adminIdSchema,
+  qualification: characterImageQualificationSchema,
+  replayed: z.boolean(),
+}).strict();
 
 export const characterVideoSourceUploadRequestSchema = z
   .object({
@@ -97,6 +205,18 @@ export type CharacterImageSourceAsset = z.infer<
 
 export type CharacterImageSourceListResponse = z.infer<
   typeof characterImageSourceListResponseSchema
+>;
+
+export type CharacterImageQualification = z.infer<
+  typeof characterImageQualificationSchema
+>;
+
+export type CharacterImageReviewRequest = z.infer<
+  typeof characterImageReviewRequestSchema
+>;
+
+export type CharacterImageReviewResult = z.infer<
+  typeof characterImageReviewResultSchema
 >;
 
 export type CharacterImageSourceUploadRequest = z.infer<

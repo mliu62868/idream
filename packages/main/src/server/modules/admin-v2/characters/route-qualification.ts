@@ -321,7 +321,12 @@ export async function evaluateGenerationRouteQualification(input: {
     (typeof decisions)[number]
   >();
   for (const decision of decisions) {
-    if (!latestDecisionByItemId.has(decision.runItemId)) {
+    // This query is generated-only. Artifact-level operator-upload reviews
+    // deliberately have no runItemId and can never qualify a generation route.
+    if (
+      decision.runItemId &&
+      !latestDecisionByItemId.has(decision.runItemId)
+    ) {
       latestDecisionByItemId.set(decision.runItemId, decision);
     }
   }

@@ -253,8 +253,14 @@ describe("recovery rehearsal producer", () => {
       workspaceRoot: "/workspace/idream",
     });
 
-    expect(plan.chatFsRoot).toBe(
+    expect(plan.agentRunRoot).toBe(
       "/workspace/idream/packages/chat/data/chat",
+    );
+    expect(plan.dshCanonicalRoot).toBe(
+      "/workspace/idream/packages/chat/data/companion-memory",
+    );
+    expect(plan.dshPrivateRoot).toBe(
+      "/workspace/idream/packages/chat/data/companion-private",
     );
     expect(resolveRecoveryRehearsalSourceAuthority({
       env: {
@@ -267,12 +273,19 @@ describe("recovery rehearsal producer", () => {
       },
       workspaceRoot: "/workspace/idream",
     })).toEqual({
-      database: {
+      mainPostgres: {
         host: "db.internal",
         port: 5432,
         database: "idream",
       },
-      chatFsRoot: "/workspace/idream/packages/chat/data/chat",
+      agentRun: {
+        root: "/workspace/idream/packages/chat/data/chat",
+      },
+      dsh: {
+        canonicalRoot:
+          "/workspace/idream/packages/chat/data/companion-memory",
+        privateRoot: "/workspace/idream/packages/chat/data/companion-private",
+      },
       queue: {
         redis: "redis://redis.internal:6379/3",
         prefix: "idream:development",
@@ -286,6 +299,36 @@ describe("recovery rehearsal producer", () => {
       },
     });
 
+  });
+
+  it("rejects overlapping AgentRun, DSH, and local Blob authorities", () => {
+    const plan = resolveRecoveryRehearsalPlan({
+      options: {
+        apply: false,
+        bundleName: "idream-recovery-overlap-71",
+        bundleParent: "/srv/backups",
+        chatEnvFile: null,
+        confirmation: null,
+        genEnvFile: null,
+        help: false,
+        launchEnvFile: null,
+      },
+      env: {
+        CHAT_FS_ROOT: "/var/lib/idream/chat",
+        DSH_IGREP_CANONICAL_ROOT: "/var/lib/idream/chat/canonical",
+        DSH_IGREP_PRIVATE_ROOT: "/var/lib/idream/private",
+        BLOB_PROVIDER: "mock",
+        BLOB_ROOT: "/var/lib/idream/blob",
+      },
+      expectedMigrationCount: 71,
+      latestMigration: "migration-71",
+      workspaceRoot: "/workspace/idream",
+    });
+
+    expect(plan.safeToApply).toBe(false);
+    expect(plan.blockers).toContain(
+      "local recovery authorities overlap: AgentRun and DSH canonical",
+    );
   });
 
   it.each([

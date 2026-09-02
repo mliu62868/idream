@@ -1,6 +1,6 @@
 # iDream 管理后台第一性原理修复方案
 
-更新日期：2026-07-11
+更新日期：2026-09-01
 
 状态：目标产品设计 / 完整执行蓝图 / 尚未代表实现完成
 
@@ -28,7 +28,7 @@
 
 ### 1.1 后台的真正定位
 
-iDream 当前同时提供陪伴关系与视觉创作两条价值路径。本方案的第一性原理建议是 **companion-first**：长期核心价值不是“生成一张图”或“完成一次点击”，而是用户与一个角色建立并持续发展个性化陪伴关系，视觉生成增强角色表达和这段关系；但这属于产品战略选择，必须经 §13.1 的 `NS-01` 决策并同步 PRD，不能由 Admin 改造静默改写。无论是否批准，后台都必须完整支持并分别度量两条路径。
+iDream 是全面对标 OurDream 的 18+ AI 角色扮演 / AI 伴侣平台，并列提供发现、完整创建、聊天陪伴、图片/视频/语音生成、资产管理、社区分发、付费与内容获客。`NS-01` 的最终决策是保留 WPCU 为平台北极星，不把任何单一使用方式上升为产品总定位。后台必须完整支持、分别度量并串联这些路径。
 
 因此，管理后台不是内部 CRUD 网站，也不是数据库对象的可视化目录。它是公司的**决策执行系统**，唯一合理的价值函数是：
 
@@ -145,19 +145,19 @@ flowchart TD
 
 ### 3.1 价值单位
 
-在 NS-01 作出正式选择前，后台并列承认两个用户价值单位：
+后台并列承认多条用户价值路径。下列两个是 Chat 与 Generation 的可计算结果单位，不取代 Create、My AI、Feed/Community、Upgrade 和内容转化的独立度量：
 
 - `Qualified Companion Episode`：一次达到深度门槛的角色互动；长期价值是跨 engagement session、跨日持续的同角色关系。
 - `Successful Generation Delivery`：用户真正收到有效创作结果；长期价值是跨日重复创作，以及资产被保存、使用、发布或带回角色体验。
 
-消息数、job 数、按钮点击和 provider 成功都不是用户价值本身。若 NS-01 批准 companion-first，关系价值成为顶层 North Star、生成成为独立护栏与关系增强器；若不批准，两条价值路径继续并列，不影响状态与运营闭环修复。
+消息数、job 数、按钮点击和 provider 成功都不是用户价值本身。按 `NS-01`，WPCU 以真实付费状态加 eligible Chat exchange 或成功 Generation Delivery 覆盖平台核心价值；关系留存和跨日创作留存作为并列诊断，不对其他产品域降级。
 
 由此导出后台的经营优先级：
 
 1. 用户是否真正收到 QCE 或 Successful Generation Delivery，而非技术层假成功。
 2. 用户是否跨日持续关系或重复创作。
 3. 角色、视觉、生成、供给和分发的哪个版本推动或破坏了价值。
-4. 商业投入是否改善被 NS-01 选定的顶层价值，同时守住另一条路径。
+4. 商业投入是否改善 WPCU，并在 Chat、Create、Generation、资产、分发与付费各路径守住留存、交付和数据质量护栏。
 5. 系统故障和客户问题是否被快速、可靠地恢复。
 
 ### 3.2 六条不变量
@@ -653,7 +653,7 @@ Portfolio 不是角色 CRUD 表，而是供给投资组合。每个角色必须�
 - Session pin 不绕过 CharacterServing 的访问控制；paused/retired 等状态是否允许继续发消息仍由产品服务规则决定。
 - 兼容性修复需要迁移旧 Session 时，使用显式 `migrateSessionRelease` command，在下一 turn 生效并记录 old/new release、reason 和 compatibility QA；不允许后台静默改绑。
 - 紧急 rollback 默认只切 current serving pointer；确需把受影响活跃 Session 强制重绑时，使用单独的高风险 command 和完整影响预览。
-- Chat schema/view、main→chat 事件、outbox payload 和部署顺序必须通过 ADR 固化；任何服务无法识别新 releaseId 时不得开始 cutover。
+- Main Chat schema/`PreparedTurn` contract、main→chat 签名执行请求、`AgentRun` 兼容性和部署顺序必须通过 ADR 固化；任何服务无法识别新 releaseId 时不得开始 cutover。
 
 ## 9. Visual Identity：被选中不等于被验证
 
@@ -929,21 +929,21 @@ Customer 详情聚合：
 
 ## 13. 指标真相：先定义问题，再计算数字
 
-### 13.1 Product Decision Gate NS-01
+### 13.1 Product Metric Decision NS-01
 
-当前 PRD 的 WPCU 定义为“一周内有有效订阅且至少完成一次消息或生成的用户”。它能衡量付费活跃覆盖，却没有要求用户跨天返回，因此不能独自证明“持续陪伴”。
+历史 PRD 的 WPCU 定义为“一周内有有效付费访问且至少完成一次 eligible Chat exchange 或成功 Generation Delivery 的用户”。它衡量全平台付费核心价值覆盖；跨天陪伴和跨天创作需要独立诊断指标，但不应取代平台北极星。
 
-本文推荐 companion-first，但不在 Admin 修复文档中静默改写公司产品战略。Phase 0 必须召开一次有 Product DRI 的 `NS-01` 决策并同步 `PRD.md §10.1`。批准前 WPCU 仍是正式北极星，候选指标只 shadow：
+**决策记录（2026-09-01）**：Product DRI 保留 WPCU 为 `official` 平台北极星，并保留关系/创作指标作为 shadow/directional 诊断。checked-in Metric Registry 与该决策一致；生产回放、成熟窗口和质量认证影响指标可信度，不会触发北极星 cutover：
 
 | 状态/层级 | 指标 | 精确定义 |
 | --- | --- | --- |
-| 当前正式 | **WPCU — Weekly Paying Companion Users** | 保留 PRD 定义；准确描述为“付费周核心行为覆盖”，不单独宣称跨天持续 |
-| 推荐产品北极星 | **WSCU — Weekly Sustained Companion Users** | rolling 7d 内，同一 user-character pair 在不同 engagement session、不同 UTC 产品日完成两次 QCE，且第二次开始距第一次完成至少 12 小时的独立 eligible 用户数 |
+| 产品北极星 | **WPCU — Weekly Paying Companion Users** | 自然周内拥有有效付费访问，并至少完成一次 eligible Main committed Chat exchange 或成功 Generation Delivery 的独立用户数 |
+| 关系留存诊断 | **WSCU — Weekly Sustained Companion Users** | rolling 7d 内，同一 user-character pair 在不同 engagement session、不同 UTC 产品日完成两次 QCE，且第二次开始距第一次完成至少 12 小时的独立 eligible 用户数 |
 | 关系诊断 | **WSR — Weekly Sustained Relationships** | rolling 7d 内满足 WSCU 跨 engagement session、跨日、≥12h 条件的独立 user-character pair 数 |
-| 创作护栏 | **WSCrU — Weekly Sustained Creation Users** | rolling 7d 内，通过不同 generationRequestId、在不同 UTC 产品日分别收到成功 Generation Delivery，且两次 delivery 相距至少 12 小时的独立 eligible 用户数 |
-| 推荐商业结果 | **WPSCU — Weekly Paying Sustained Companion Users** | WSCU 中至少一次 qualifying episode 发生时拥有有效付费订阅的独立用户数 |
+| 创作留存诊断 | **WSCrU — Weekly Sustained Creation Users** | rolling 7d 内，通过不同 generationRequestId、在不同 UTC 产品日分别收到成功 Generation Delivery，且两次 delivery 相距至少 12 小时的独立 eligible 用户数 |
+| 付费关系诊断 | **WPSCU — Weekly Paying Sustained Companion Users** | WSCU 中至少一次 qualifying episode 发生时拥有有效付费访问的独立用户数 |
 
-推荐决策是：WSCU 成为产品北极星，WPSCU 成为商业结果，WPCU 与 WSCrU 继续作为商业覆盖和创作价值护栏。若 NS-01 不批准 companion-first，状态/工作流修复照常推进，Metric Registry 保留四项并以 PRD 的正式选择为顶层指标。
+最终决策是：WPCU 保持产品北极星；WSCU、WSCrU、WPSCU 与 WSR 作为 shadow/directional 诊断。历史快照不原地改写，但不存在待实施的北极星切换。
 
 ### 13.2 Qualified Conversation Episode v1
 
@@ -1134,7 +1134,7 @@ producer transactional outbox
 - 同 `(sourceService, sourceEventId)` 且 payloadHash 相同是安全重放；payloadHash 不同必须 quarantine 并告警，不能当普通重复跳过。
 - RecentChat、CharacterStats、Metric facts 等 projection 不全部塞进 ingress 大事务；每个 projector 使用独立 checkpoint/receipt，可重建、可重试。
 - 如果在 ACK 前连接断开，producer 重投并由 Receipt 幂等；如果 canonical commit 后 projector 崩溃，local projection outbox 继续恢复。
-- 反向 `main → chat` 同样遵守 durable ACK：main outbox 投递到 chat internal ingest，chat 在自己的数据库事务中先写 `ChatInboxEvent` 和本地工作意图，再返回 ACK；main 只有收到 ACK 才标 delivered，不能把 BullMQ enqueue 当 chat 持久化成功。
+- 反向 `main → chat` 以不可变 Turn 为边界：Main 先提交 `PreparedTurn`/`ChatTurn`，再发送签名执行请求；Chat 必须原子持久化 `input.json`、invocation/admission evidence 后才算接受。同一 turn/attempt 重试保持幂等；Chat 的 terminal candidate 只有经过 Main exact-attempt CAS/ACK 才成为产品事实，成功 ACK 后才可删除对应 `AgentRun`。Chat 不使用数据库或 BullMQ。
 
 ### 14.3 Typed Chat Exchange v2
 
@@ -1163,7 +1163,7 @@ interface ChatExchangeCompletedV2 {
 - chat 在接收 user turn 时按 versioned 30 分钟 inactivity rule 分配 `engagementSessionId`；重放或 regenerate 复用原 ID，main 不根据乱序到达时间临时猜测。
 - regenerate/selection change、user edit、delete/supersede 分别发 correction event；事实层保留历史 attempt，但只把当前 eligible selection 计入 QCE。
 - chat 生成上下文必须携带实际使用的 `characterContentVersionId` 和可选 `characterReleaseId`，main 消费时不得读取当前角色/Release 猜测。
-- 需要同步更新 chat schema、`core.chat_character_view`、版本化 `db/sql`、shared payload、chat Prisma client 和部署顺序；旧服务无法识别 content version 时不得启用 v2 指标。
+- 需要同步更新 Main schema/Serving pins、shared `PreparedTurn`/event payload、Chat `AgentRun` input renderer/compatibility 和部署顺序；Chat 不存在独立 schema/Prisma。旧服务无法识别 content version 时不得启用 v2 指标。
 
 ### 14.4 最小事实层
 
@@ -1440,7 +1440,7 @@ running/verifying 使用 lease：`leaseOwner/leaseExpiresAt/heartbeatAt/attemptC
 | `ControlPlaneCommand` | scope、idempotencyKey、commandType、target、actor、requestHash、expectedVersion、approvalId、status/result/error、needsReconciliation、leaseOwner/leaseExpiresAt/heartbeatAt、attemptCount/maxAttempts | `(scope,idempotencyKey)` unique；requestHash 完全相同才返回原结果 |
 | `ControlPlaneCommandAttempt` | commandId、attemptNo、status、error、startedAt、finishedAt | fan-out/worker execution 明细 |
 | `InboundEventReceipt` | sourceService、sourceEventId、payloadHash、processingState、processedAt | `(sourceService,sourceEventId)` unique；at-least-once 重投只产生一次副作用 |
-| `ChatInboxEvent`（chat DB） | sourceService、sourceEventId、payloadHash、status、processedAt | main→chat durable ACK authority；同 key 不同 payload quarantine |
+| `AgentRun` admission evidence（Chat local） | turnId、attempt、inputHash、PreparedTurn snapshot、invocation guard、terminal/ACK state | main→chat 重试幂等与有界恢复证据；不是产品历史或账本 |
 | `MainOutboxEvent` | eventType、aggregate、payload、status、attempts、nextRunAt | 领域 commit 与外部工作意图同事务 |
 | `ProductEvent` | eventId、sourceService、sourceEventId、payloadHash、schemaVersion、occurredAt、ingestedAt、context、environment、dataClass、trustClass | `(sourceService,sourceEventId)` unique、append-only |
 | `ExperimentDefinition` | key、version、hypothesis、eligibility、variants、salt、metrics、status | key+version immutable |
@@ -1616,7 +1616,7 @@ Expand → Backfill → Shadow → Reconcile → Read Cutover
 
 #### Metrics
 
-- 事件能从权威 outbox/chat DB 回放时才 backfill canonical fact。
+- 事件能从 Main 权威 outbox/已提交 Turns 回放时才 backfill canonical fact；`AgentRun` 文件只作为执行佐证，不作为事实源。
 - 无 release、placement 或 exposure context 的历史标 `exact_unattributed` 或 unavailable。
 - v2 metric 设置 `validFrom`，不将旧窗口中的错误 SQL 结果复制成新历史。
 
@@ -1662,7 +1662,7 @@ Backfill 工具必须支持 dry-run、keyset cursor、batch size、pause/resume�
 交付：
 
 - 当前 Activated、Conversion、D1/D7 返回 `invalid for decisions`，首页和实验页不再展示伪精确数值。
-- 完成 `NS-01` Product Decision Gate；未批准前 WPCU 仍是 PRD 北极星，WSCU/WSCrU 只 shadow。
+- `NS-01` 已于 2026-09-01 确认 WPCU 继续为 `official`；其他指标在生产回放、成熟窗口和质量认证前保持 shadow/directional 或 fail closed。
 - Experiments 在没有 assignment/exposure 时改称 `Flag Monitoring`。
 - Shell 显示 environment、data class、fixture 状态和 freshness。
 - publish 命令对所有状态路径统一执行服务端 checks，堵住历史状态绕过。
@@ -1734,7 +1734,7 @@ Backfill 工具必须支持 dry-run、keyset cursor、batch size、pause/resume�
 交付：
 
 - canonical facts、Metric Registry、quality/freshness 看板。
-- WPCU 与 shadow WSCU/WSCrU/WPSCU、Chat/Relationship/Generation Activation、严格 D1/D7/W1、cohort paid conversion；NS-01 批准后再切正式顶层指标。
+- WPCU、WSCU/WSCrU/WPSCU/WSR、Chat/Relationship/Generation Activation、严格 D1/D7/W1、cohort paid conversion；保持 WPCU official 与其他指标 shadow/directional 层级，补齐定义版本、回放和质量证据。
 - Character Performance by release/placement，7d/28d baseline 和版本 change marker。
 - AiUsageFact、成本与 contribution margin。
 - Portfolio Review 与 Decision Record。
@@ -1949,7 +1949,7 @@ flowchart TD
 ### 24.2 数据验收
 
 - 状态不变量违例为 0。
-- WPCU、shadow WSCU/WSCrU、Activation、D1/D7/W1、Conversion 通过 golden dataset；顶层 North Star 与 NS-01/PRD 一致。
+- WPCU、shadow WSCU/WSCrU/WPSCU、WSR、Activation、D1/D7/W1、Conversion 通过 golden dataset；WPCU 顶层 North Star 与 NS-01/PRD 一致。
 - 分子、分母、cohort、window、timezone、dedupe、version 和 freshness 可从 UI 查看。
 - 数据缺失时显示 invalid/degraded/null，不显示伪 0 或沿用旧数值。
 - release、placement、experiment attribution 只有在上下文真实存在时才计算。
@@ -1995,11 +1995,11 @@ flowchart TD
 - Generation 的意图、Attempt、Artifact、Delivery 和 ledger-linked settlement summary 分开；DreamcoinLedger 始终是资金 authority。
 - Job failure 先聚类为 Incident；记录先聚合为 typed Case。
 - Today 是领域 Work Item 聚合，不建设通用根状态工作流引擎。
-- North Star 不由 Admin 方案静默切换：NS-01 与 PRD 更新前 WPCU 保持正式北极星，WSCU/WSCrU/WPSCU 只 shadow；本方案明确推荐 WSCU companion-first 路线。
+- North Star 不由 Admin 方案静默切换：NS-01 与 PRD 已于 2026-09-01 正式保留 WPCU official；Registry 发布质量与生产认证沿独立 Gate 验证，不发起北极星迁移。
 - metric definition、事件时间、数据质量和样本成熟度均版本化。
 - Admin 采用 shared typed contracts + BFF/main authority，渐进解除源码耦合。
 
-NS-01 若批准 WSCU，必须在实现前同步修订 `PRD.md §10.1`；历史报表迁移期并列展示 WPCU、WSCU 与 WSCrU，清楚说明定义，不能无提示替换。
+NS-01 已保留 WPCU official 并同步 `PRD.md §10.1`；报表应并列展示 WPCU 与 shadow/directional 诊断，清楚说明定义与 publication status，不能把诊断项无提示替换为北极星。
 
 ### 25.2 可以校准但不阻塞启动
 

@@ -1098,7 +1098,9 @@ function CharacterDetail({
       >
         {tab === "project" ? (
           <CharacterOverview
-            canWrite={guardedPermissions.writeProject}
+            canReadContent={permissions.readContent}
+            canWriteTags={guardedPermissions.writeTags}
+            canManageChatTools={guardedPermissions.manageChatTools}
             data={data}
           />
         ) : tab === "soul" ? (
@@ -1126,7 +1128,10 @@ function CharacterDetail({
                 guardedPermissions.writeProject
               }
               canReview={guardedPermissions.reviewAssets}
-              canRead={permissions.readAssets}
+              canReviewImported={
+                guardedPermissions.reviewAssets && guardedPermissions.writeProject
+              }
+              canRead={permissions.readImages}
               canReadProduction={permissions.readProduction}
               commitProjectMutation={runCommittedMutation}
               data={data}
@@ -1139,7 +1144,10 @@ function CharacterDetail({
             actorId={actorId}
             canArchive={guardedPermissions.archiveAssets}
             canCreate={guardedPermissions.createAssets}
-            canRead={permissions.readAssets}
+            canImport={
+              guardedPermissions.createAssets && guardedPermissions.writeProject
+            }
+            canRead={permissions.readVideos}
             canReadProduction={permissions.readProduction}
             data={data}
             onCreateImage={() => selectTab("assets")}
@@ -1150,6 +1158,7 @@ function CharacterDetail({
           <CharacterVoicePanel
             canActivate={guardedPermissions.publishRelease}
             canManageDefaults={guardedPermissions.manageVoiceDefaults}
+            canPreview={permissions.previewVoice}
             canWrite={guardedPermissions.writeProject}
             data={data}
             releaseIdempotencyKey={journal.releaseIdempotencyKey}
@@ -1231,7 +1240,7 @@ export function CharacterWorkspace({
     />
   ) : (
     <CharacterPortfolio
-      canOpenAssets={permissions.readAssets}
+      canOpenAssets={permissions.readImages}
       canCreate={permissions.writeProject}
       canOpenProjects={permissions.read}
       canRead={permissions.read}
@@ -1250,10 +1259,13 @@ export function CharacterPerformanceWorkspace({
   //         `canOpenAssets || primaryImageSource !== "draft"` 恒假，主图来源为 draft 的角色
   //         在「角色表现」里一律显示灰色占位——同一个角色在「角色」里却有图。同一个标志还
   //         压着 canOpenNextAction，requiresAssets 的下一步动作被降级成「仅表现数据」。
-  //         视图不该替权限做决定：有 creative.run.read 就看得见，没有才占位。
+  //         与图片库使用相同的 operation 权限，避免把不完整的授权当成可用入口。
   return (
     <CharacterPortfolio
-      canOpenAssets={permissions.has("creative.run.read")}
+      canOpenAssets={adminV2OperationAllowed(
+        "GET /api/v2/admin/characters/:id/image-sources",
+        permissions,
+      )}
       canCreate={false}
       canOpenProjects={adminV2OperationAllowed(
         "GET /api/v2/admin/characters/:id",

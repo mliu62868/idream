@@ -179,9 +179,9 @@ export function draftAssetSourceRuntimeAuthority(input: {
 }
 
 /**
- * SPEC: 发布草稿只要求三个运营位各自指向本角色素材库中的可用图片。
- * INTENT: 生成、导入、外部制作只是素材进入图库的方式；人工评分和生成血缘不能成为
- *         运营选择 Cover / Hero / Chat 的资格门槛。Release 仍会冻结最终素材快照。
+ * SPEC: 本模块只回答草稿包的媒体可用性与锁定完整性；Review 与来源资格由
+ * image-qualification / Release validation 的独立事实回答。
+ * INTENT: 不在这里重抄审核或生成规则，避免第二个浅资格接口；三道裁决在 Release 时组合。
  */
 export async function evaluateDraftAssetPackAuthority(
   tx: DraftAssetPackAuthorityStore,

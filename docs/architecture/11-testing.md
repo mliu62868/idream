@@ -1,6 +1,6 @@
 # 11 · 测试策略
 
-更新日期：2026-06-25
+更新日期：2026-09-01
 
 对齐 global rules（L1–L4、TDD、覆盖率门）与 web 规则（Vitest/Playwright）。当前实现以 **bun workspace + Postgres 测试库 + Redis + mock providers** 为基线；早期 SQLite 双库设想已不再是默认执行路径。
 
@@ -26,13 +26,11 @@
 }
 ```
 
-## 2. Postgres 隔离测试（本项目特有，重点）
-
-主站和 chat 服务测试都必须跑在隔离 Postgres 测试库上：
+## 2. 持久状态隔离测试（本项目特有，重点）
 
 - `packages/main` 默认使用 `TEST_DATABASE_URL`，未设置时使用 `postgresql://postgres:postgres@localhost:5433/idream_test`；global setup 会重建 schema、执行 `db-push`、seed，并清空 Redis DB 15。
-- `packages/chat` 是 Postgres-native，global setup 会 push 主 schema、应用 chat boundary SQL，并清空 Redis DB 14。
-- 重点覆盖：`lib/db/search.ts` 的 `nameMatch`（大小写、模糊）、cursor 分页排序稳定性、队列认领并发、Json 字段读写、事务回滚、chat service DB 权限边界。
+- `packages/chat` 没有数据库；测试按用例使用唯一临时 `CHAT_FS_ROOT`/workspace，并在需要时注入隔离或 fake Redis，不得连接 Main 的开发库或生产库。
+- 重点覆盖 Main 的搜索、分页、队列认领、JSON、事务与产品事实持久化，以及 Chat `AgentRun` 的原子写入、重放、路径约束、SSE 与记忆投影契约。
 - 任何测试对开发库或生产库产生副作用都是阻断级问题。
 
 ## 3. Provider 测试替身
@@ -65,7 +63,7 @@
 - [ ] dedupeKey 防重复入队；handler 可重入。
 
 **核心流程**
-- [ ] explore 搜索/筛选/排序/cursor 分页（双库）。
+- [ ] explore 搜索/筛选/排序/cursor 分页（Main PostgreSQL）。
 - [ ] 发消息→入队→assistant 落库→刷新仍在（历史）。
 - [ ] 创建草稿→预览→提交→出现在 My AI。
 - [ ] 图片生成→状态→完成媒体进 Images。
@@ -76,17 +74,17 @@
 2. 注册/登录 → `/me` 反映状态。
 3. 开始聊天 → 发消息 → 刷新页面历史仍在。
 4. 创建多步草稿 → 预览 → 提交 → My AI 可见。
-5. 图片生成（mock provider 或本地 pipeline/sdcpp）→ 看到完成媒体。
+5. 图片生成（mock backend 或本地 Gen workflow-native backend）→ 看到完成媒体。
 6. upgrade → checkout(sandbox) → webhook → 权益生效（dreamcoin/entitlement）。
 7. 举报内容 → admin 队列可见 → 处置。
 
-E2E 默认用 **seed 数据 + mock provider**，跑在 preview 或本地 `next dev`；本地高保真验证可把图片 provider 切到 `pipeline`，指向 `serve:sdcpp-image` 的 OpenAI-compatible endpoint。生成相关 E2E 会轮询 worker/job 状态，允许真实图片 pipeline 的秒级耗时。artifacts（截图/视频/trace）上传 CI。
+E2E 默认用 **seed 数据 + mock backend**，跑在 preview 或本地 `next dev`；本地高保真验证通过 Gen `BackendRegistry` 选择实际 workflow-native backend（ComfyUI/Sdcpp/DrawThings），不经 deprecated external pipeline。生成相关 E2E 会轮询 Request/Attempt/Delivery 状态并保存 backend/workflow/request/artifact 证据。artifacts（截图/视频/trace）上传 CI。
 
 ## 6. TDD 工作流（global rule）
 
 1. 写测试（RED）→ 2. 跑（失败）→ 3. 最小实现（GREEN）→ 4. 跑（通过）→ 5. 重构 → 6. 覆盖率 ≥80%。
 - service 层逻辑（额度、ledger、审核、状态机）**先写测试**。
-- 不确定的复杂边界（双库、并发认领、provider SDK）先做 `demos/`（global rule Demo 驱动）验证再合并。
+- 不确定的复杂边界（Main 事务、AgentRun 恢复、并发认领、provider SDK）先做 `demos/`（global rule Demo 驱动）验证再合并。
 
 ## 7. 覆盖率门
 

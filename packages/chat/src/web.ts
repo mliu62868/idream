@@ -8,6 +8,7 @@ import {
 import { chatFsRootFingerprint } from "@idream/shared";
 import {
   ACCOUNT_DELETION_V2_INGEST_PATH,
+  CHAT_RUNTIME_DIAGNOSTICS_PATH,
   COMPANION_MEMORY_PURGE_PATH,
   COMPANION_MEMORY_REBUILD_PREPARE_PATH,
   COMPANION_MEMORY_REBUILD_PROMOTE_PATH,
@@ -16,12 +17,11 @@ import {
 import { consumeAccountDeletionRequest } from "./account-deletion.js";
 import { certifyAgentRuntime } from "./agent-runtime/runtime.js";
 import {
-  admitAgentRun,
   findAgentRunByAssistant,
   purgeAgentRunsForTurn,
   purgeAgentRunsThroughAttempt,
 } from "./agent-run-store.js";
-import { cancelAgentRun, startAgentRun } from "./agent-runner.js";
+import { acceptAgentRun, cancelAgentRun } from "./agent-runner.js";
 import {
   prepareCompanionMemory,
   promoteCompanionMemory,
@@ -135,6 +135,23 @@ export async function handleChatRequest(
     });
   }
 
+  if (url.pathname === CHAT_RUNTIME_DIAGNOSTICS_PATH && request.method === "GET") {
+    if (!internal(request)) return json(401, { error: "unauthorized" });
+    await readiness.refreshDependencies();
+    return json(200, {
+      version: 1,
+      service: "chat",
+      checkedAt: new Date().toISOString(),
+      sourceRevision: env.SOURCE_REVISION?.trim() || null,
+      runtime: readiness.snapshot(),
+      provider: {
+        adapter: env.CHAT_MODEL_PROVIDER,
+        model: env.CHAT_MODEL_NAME,
+        endpoint: env.CHAT_MODEL_PROVIDER === "mock" ? null : env.CHAT_MODEL_BASE_URL,
+      },
+    });
+  }
+
   if (url.pathname === "/internal/agent-runs" && request.method === "POST") {
     if (!internal(request)) return json(401, { error: "unauthorized" });
     await readiness.refreshDependencies();
@@ -148,7 +165,7 @@ export async function handleChatRequest(
     if (snapshot.userId !== signed.context.userId) {
       return json(409, { error: "turn_authority_mismatch" });
     }
-    const admitted = await admitAgentRun({
+    const admitted = await acceptAgentRun({
       schemaVersion: 1,
       admittedAt: new Date().toISOString(),
       snapshot,
@@ -157,7 +174,6 @@ export async function handleChatRequest(
     if (admitted.tombstoned) {
       return json(409, { error: "agent_run_attempt_tombstoned" });
     }
-    if (!admitted.terminal) startAgentRun(snapshot.turnId, snapshot.attempt, snapshot.userId);
     return json(202, { ok: true, duplicate: admitted.duplicate, terminal: admitted.terminal });
   }
 

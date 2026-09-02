@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AdminPermissionKey } from "@idream/shared/admin";
+import { resolveAdminPermissions, type AdminPermissionKey } from "@idream/shared/admin";
 import {
   CHARACTER_WORKSPACE_WRITES,
   characterWorkspacePermissions,
@@ -19,7 +19,8 @@ describe("Character workspace permission derivation", () => {
     const permissions = characterWorkspacePermissions(granted, false);
 
     expect(permissions.read).toBe(true);
-    expect(permissions.readAssets).toBe(true);
+    expect(permissions.readImages).toBe(true);
+    expect(permissions.readVideos).toBe(true);
     expect(permissions.readProduction).toBe(true);
     for (const capability of Object.keys(CHARACTER_WORKSPACE_WRITES)) {
       expect(permissions[capability as keyof typeof CHARACTER_WORKSPACE_WRITES], capability)
@@ -42,7 +43,8 @@ describe("Character workspace permission derivation", () => {
     }
     // 读不受写入锁影响：锁住的是写入，不是看见。
     expect(permissions.read).toBe(true);
-    expect(permissions.readAssets).toBe(true);
+    expect(permissions.readImages).toBe(true);
+    expect(permissions.readVideos).toBe(true);
     expect(permissions.readProduction).toBe(true);
   });
 
@@ -56,5 +58,21 @@ describe("Character workspace permission derivation", () => {
       partial.delete(missing);
       expect(characterWorkspacePermissions(partial, false).read, missing).toBe(false);
     }
+  });
+
+  it.each([
+    { revoked: "creative.run.read", readImages: false, readVideos: true },
+    { revoked: "creative.asset.read", readImages: true, readVideos: false },
+  ] as const)("respects an effective $revoked revoke without inferring another grant", ({ revoked, readImages, readVideos }) => {
+    const effective = resolveAdminPermissions({
+      role: "ops",
+      grantBundles: ["character_producer", "creative_operator"],
+      overrides: [{ permissionKey: revoked, effect: "revoke" }],
+    });
+    const permissions = characterWorkspacePermissions(effective, false);
+
+    expect(permissions.read).toBe(true);
+    expect(permissions.readImages).toBe(readImages);
+    expect(permissions.readVideos).toBe(readVideos);
   });
 });

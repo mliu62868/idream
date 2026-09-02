@@ -38,6 +38,22 @@ export interface AgentRunEvent {
   payload: unknown;
 }
 
+export interface AgentRunRecoveryCandidate {
+  turnId: string;
+  attempt: number;
+  userId: string;
+}
+
+export interface AgentRunRecoveryFailure {
+  evidencePath: string;
+  reason: string;
+}
+
+export interface AgentRunRecoveryScan {
+  runs: AgentRunRecoveryCandidate[];
+  failures: AgentRunRecoveryFailure[];
+}
+
 interface AgentRunTombstone {
   schemaVersion: 1;
   throughAttempt: number | null;
@@ -302,7 +318,9 @@ export async function readAgentRunCompletion(
   attempt: number,
 ): Promise<AgentRunCompletion | null> {
   try {
-    return JSON.parse(await readFile(completionFile(turnId, attempt), "utf8")) as AgentRunCompletion;
+    return parseAgentRunCompletion(
+      JSON.parse(await readFile(completionFile(turnId, attempt), "utf8")) as unknown,
+    );
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
@@ -310,51 +328,86 @@ export async function readAgentRunCompletion(
 }
 
 /** Startup repair input: complete input + no accepted or rejected completion. */
-export async function listIncompleteAgentRuns(): Promise<Array<{
-  turnId: string;
-  attempt: number;
-  userId: string;
-}>> {
-  await cleanupExpiredAgentRuns();
+export async function listIncompleteAgentRuns(): Promise<AgentRunRecoveryScan> {
+  const failures = await cleanupExpiredAgentRuns();
   const runsRoot = path.join(path.resolve(env.CHAT_FS_ROOT), "runs");
-  const result: Array<{ turnId: string; attempt: number; userId: string }> = [];
+  const runs: AgentRunRecoveryCandidate[] = [];
   for (const turn of await directories(runsRoot)) {
     for (const attemptName of await directories(path.join(runsRoot, turn))) {
       const attempt = Number(attemptName);
       if (!Number.isSafeInteger(attempt) || attempt < 1) continue;
-      const input = await readAgentRunInput(turn, attempt);
-      const completed = await exists(completionFile(turn, attempt));
-      if (input && !completed && !await isAgentRunTombstoned(turn, attempt)) {
-        result.push({ turnId: turn, attempt, userId: input.snapshot.userId });
+      let input: AgentRunInput | null;
+      try {
+        input = await readAgentRunInput(turn, attempt);
+      } catch (error) {
+        // INVARIANT: one corrupt local trace is evidence to repair, not a
+        // reason to starve every later recoverable AgentRun.
+        failures.push(recoveryFailure(
+          path.join("runs", turn, attemptName, "input.json"),
+          error,
+          "invalid AgentRun input",
+        ));
+        continue;
+      }
+      if (!input) continue;
+      try {
+        if (
+          !await exists(completionFile(turn, attempt))
+          && !await isAgentRunTombstoned(turn, attempt)
+        ) {
+          runs.push({ turnId: turn, attempt, userId: input.snapshot.userId });
+        }
+      } catch (error) {
+        failures.push(recoveryFailure(
+          path.join("runs", turn, attemptName),
+          error,
+          "invalid AgentRun recovery evidence",
+        ));
       }
     }
   }
-  return result;
+  return { runs, failures };
 }
 
-export async function cleanupExpiredAgentRuns(now = Date.now()): Promise<number> {
+async function cleanupExpiredAgentRuns(now = Date.now()): Promise<AgentRunRecoveryFailure[]> {
   const root = path.resolve(env.CHAT_FS_ROOT);
-  let removed = 0;
+  const failures: AgentRunRecoveryFailure[] = [];
   const runsRoot = path.join(root, "runs");
   for (const turnId of await directories(runsRoot)) {
     for (const attemptName of await directories(path.join(runsRoot, turnId))) {
       const attempt = Number(attemptName);
       if (!Number.isSafeInteger(attempt) || attempt < 1) continue;
-      const completion = await readAgentRunCompletion(turnId, attempt);
-      if (!completion || new Date(completion.expiresAt).getTime() > now) continue;
-      await rm(runDir(turnId, attempt), { recursive: true, force: true });
-      removed += 1;
+      try {
+        const completion = await readAgentRunCompletion(turnId, attempt);
+        if (!completion || Date.parse(completion.expiresAt) > now) continue;
+        await rm(runDir(turnId, attempt), { recursive: true, force: true });
+      } catch (error) {
+        // INVARIANT: cleanup never destroys evidence it cannot decode, and a
+        // single bad trace never blocks later recovery candidates.
+        failures.push(recoveryFailure(
+          path.join("runs", turnId, attemptName, "completion.json"),
+          error,
+          "invalid AgentRun completion evidence",
+        ));
+      }
     }
   }
   const indexRoot = path.join(root, "run-index", "assistant");
   for (const name of await files(indexRoot)) {
     const target = path.join(indexRoot, name);
-    const index = await readJsonFile<AgentRunIndex>(target);
-    if (!index?.terminal || !index.expiresAt || new Date(index.expiresAt).getTime() > now) continue;
-    await rm(target, { force: true });
-    removed += 1;
+    try {
+      const index = await readAgentRunIndexFile(target);
+      if (!index?.terminal || !index.expiresAt || Date.parse(index.expiresAt) > now) continue;
+      await rm(target, { force: true });
+    } catch (error) {
+      failures.push(recoveryFailure(
+        path.join("run-index", "assistant", name),
+        error,
+        "invalid AgentRun assistant index",
+      ));
+    }
   }
-  return removed;
+  return failures;
 }
 
 /** Account erasure removes only local execution evidence for the exact user. */
@@ -567,7 +620,12 @@ async function readJsonFile<T>(file: string): Promise<T | null> {
 }
 
 async function readAgentRunIndex(assistantMessageId: string): Promise<AgentRunIndex | null> {
-  return readJsonFile<AgentRunIndex>(assistantIndexFile(assistantMessageId));
+  return readAgentRunIndexFile(assistantIndexFile(assistantMessageId));
+}
+
+async function readAgentRunIndexFile(file: string): Promise<AgentRunIndex | null> {
+  const value = await readJsonFile<unknown>(file);
+  return value === null ? null : parseAgentRunIndex(value);
 }
 
 async function writeAgentRunIndex(
@@ -618,6 +676,62 @@ function admissionIdentity(input: AgentRunInput): string {
   // entitlement facts change; that retry must discover the existing run instead
   // of replacing it or rejecting exact product identity.
   return sha256(JSON.stringify(input.snapshot));
+}
+
+function parseAgentRunCompletion(value: unknown): AgentRunCompletion {
+  if (
+    !isRecord(value)
+    || value.schemaVersion !== 1
+    || typeof value.attemptId !== "string"
+    || !value.attemptId
+    || !["committed", "failed", "cancelled"].includes(String(value.outcome))
+    || !isRecord(value.evidence)
+    || !isDateString(value.completedAt)
+    || !isDateString(value.expiresAt)
+    || Date.parse(value.expiresAt) < Date.parse(value.completedAt)
+  ) {
+    throw new Error("invalid AgentRun completion evidence");
+  }
+  return value as unknown as AgentRunCompletion;
+}
+
+function parseAgentRunIndex(value: unknown): AgentRunIndex {
+  if (
+    !isRecord(value)
+    || value.schemaVersion !== 1
+    || typeof value.turnId !== "string"
+    || !value.turnId
+    || !Number.isSafeInteger(value.attempt)
+    || Number(value.attempt) < 1
+    || typeof value.userId !== "string"
+    || !value.userId
+    || typeof value.snapshotDigest !== "string"
+    || !/^[a-f0-9]{64}$/u.test(value.snapshotDigest)
+    || typeof value.terminal !== "boolean"
+    || (value.terminal ? !isDateString(value.expiresAt) : value.expiresAt !== null)
+  ) {
+    throw new Error("invalid AgentRun assistant index");
+  }
+  return value as unknown as AgentRunIndex;
+}
+
+function recoveryFailure(
+  evidencePath: string,
+  error: unknown,
+  fallbackReason: string,
+): AgentRunRecoveryFailure {
+  return {
+    evidencePath,
+    reason: error instanceof Error ? error.message : fallbackReason,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isDateString(value: unknown): value is string {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
 }
 
 async function withAdmissionLock<T>(key: string, action: () => Promise<T>): Promise<T> {

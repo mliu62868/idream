@@ -1,7 +1,7 @@
 # 内容与安全政策（Content Policy）
 
-更新日期：2026-06-24
-目标产品：Ourdream.ai 克隆（18+ AI 角色扮演 / AI 伴侣平台）
+更新日期：2026-09-01
+目标产品：全面对标 OurDream.ai 的 18+ AI 角色扮演 / AI 伴侣平台
 
 ## 0. 这份文档是什么
 
@@ -149,4 +149,4 @@ policyCode 与 07 §4 完全一致。
 - `architecture/05-module-design.md` —— admin 审核队列 / `moderation_reviews`（§15）。
 - `architecture/06-async-jobs-and-ai.md` —— moderation provider 抽象 / 异步深检。
 - `product/BackendFeatureSpec.md` —— 实体字段 / 状态机 / 授权矩阵（§3.6/§4.4/§6）。
-- 权威外链：`safety.ourdream.ai`（政策正文版本化镜像进 `policy_versions`，07 §7）。
+- 权威入口：iDream `/safety/*`（政策正文版本化进入 `policy_versions`，07 §7）；对标站链接只保留在研究材料中。

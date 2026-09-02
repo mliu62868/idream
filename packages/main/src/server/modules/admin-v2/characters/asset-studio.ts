@@ -2,10 +2,6 @@ import { characterDraftImageSelectionResultSchema } from "@idream/shared/admin";
 import type { Prisma } from "@prisma/client";
 import { inTransaction } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
-import {
-  hasHydratableMediaBlobAuthority,
-  isMediaAssetOperationalForAuthority,
-} from "@/server/lib/media-asset-authority";
 import type { AdminActor } from "@/server/modules/admin-v2/shared/authority";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { characterWorkspaceTabLink } from "./character-deep-link";
@@ -13,6 +9,7 @@ import {
   lockCharacterGenerationAuthority,
   lockCharacterMediaAssetAuthorities,
 } from "./generation-authority-lock";
+import { resolveSelectableCharacterImage } from "./image-qualification";
 
 type CharacterAssetPurpose =
   | "character_cover"
@@ -78,9 +75,9 @@ function draftAssetIds(value: Prisma.JsonValue) {
 }
 
 /**
- * SPEC: 运营位只选择角色素材库中一张可用图片。
- * INTENT: 生成 Run、人工评分与批准单是素材的历史，不是“让用户看到哪张图”的前置条件。
- *         选择时只锁角色、项目和媒体本身；Release 继续冻结最终三张图片的不可变快照。
+ * SPEC: 运营位只能选择 Review 已批准且来源权威完整的角色图片。
+ * INTENT: 选择动作不接收客户端创造的资格；Main 重新解析最新 Review，上传与生成各自保留
+ *         独立来源事实，再把精确 authority pin 进草稿供 Preview / Release 使用。
  */
 export async function selectCharacterDraftImage(
   input: {
@@ -130,59 +127,16 @@ export async function selectCharacterDraftImage(
       );
     }
 
-    const asset = await tx.mediaAsset.findUnique({ where: { id: input.assetId } });
-    if (
-      !asset ||
-      asset.deletedAt !== null ||
-      asset.type !== "image" ||
-      asset.safetyStatus !== "passed" ||
-      asset.characterId !== input.characterId ||
-      !isMediaAssetOperationalForAuthority(asset.metadata) ||
-      !hasHydratableMediaBlobAuthority(asset)
-    ) {
-      throw Errors.badRequest(
-        "Choose an available image from this Character's library",
-      );
-    }
-    const platformAsset = record(record(asset.metadata).platformAsset);
-    if (platformAsset.status === "archived") {
-      throw Errors.conflict("Archived images cannot be used in Character operations");
-    }
-
-    const item = input.itemId
-      ? await tx.contentProductionItem.findFirst({
-          where: {
-            id: input.itemId,
-            mediaAssetId: asset.id,
-            ...(input.runId ? { batchId: input.runId } : {}),
-          },
-          include: { job: true },
-        })
-      : await tx.contentProductionItem.findFirst({
-          where: { mediaAssetId: asset.id },
-          include: { job: true },
-          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-        });
-    const sourceMeta = record(item?.job?.sourceMeta);
-    const nextEntry: DraftAssetEntry = {
-      assetId: asset.id,
-      ...(item
-        ? {
-            runId: item.batchId,
-            itemId: item.id,
-            ...(item.jobId ? { generationJobId: item.jobId } : {}),
-            ...(typeof sourceMeta.generationRouteFingerprint === "string"
-              ? { generationRouteFingerprint: sourceMeta.generationRouteFingerprint }
-              : {}),
-            ...(sourceMeta.bootstrapIdentity === true
-              ? { bootstrapIdentity: true }
-              : {}),
-          }
-        : {}),
-      ...(input.reviewDecisionId
-        ? { reviewDecisionId: input.reviewDecisionId }
-        : {}),
-    };
+    const selection = await resolveSelectableCharacterImage(tx, {
+      characterId: input.characterId,
+      assetId: input.assetId,
+      purpose: input.purpose,
+      assertedRunId: input.runId,
+      assertedItemId: input.itemId,
+      assertedReviewDecisionId: input.reviewDecisionId,
+    });
+    const asset = selection.asset;
+    const nextEntry: DraftAssetEntry = selection.entry;
     const currentAssetPack = draftAssetEntries(project.draftAssetPack);
     const duplicatePurpose = Object.entries(currentAssetPack).find(
       ([purpose, entry]) =>

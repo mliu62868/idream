@@ -5915,7 +5915,7 @@ test("profile account management signs out sessions and deletes the account", as
   await expect(page.getByTestId("auth-status")).toHaveText("Account is not active");
 
   // INTENT: the browser proves the real 30-day contract above. This run owns
-  // its disposable Main/Chat DBs, Redis namespace, Chat FS, and Blob root, so
+  // its disposable Main DB, Redis namespace, Chat FS, and Blob root, so
   // advancing only this exact workflow is the safe clock seam for exercising
   // the destructive terminal chain without waiting 30 wall-clock days.
   const dueAt = new Date(deletion.requestedAt.getTime() + 1);

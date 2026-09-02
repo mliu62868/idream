@@ -26,6 +26,11 @@
 // the pm2 daemon's cwd under `--only`, which silently breaks per-app .env loading.
 const { existsSync, readFileSync } = require("node:fs");
 const path = require("path");
+const {
+  assertRuntimeMode,
+  createRuntimeTopology,
+  runtimeIdentityEnvironment,
+} = require("./scripts/runtime-topology.cjs");
 const dir = (rel) => path.join(__dirname, rel);
 const bunInterpreter = [
   process.env.BUN_EXEC_PATH,
@@ -37,30 +42,8 @@ const bunInterpreter = [
     : undefined,
 ].find((candidate) => candidate && existsSync(candidate)) ?? "bun";
 const runtimeMode = process.env.IDREAM_PM2_MODE ?? "development";
-if (runtimeMode !== "development" && runtimeMode !== "production") {
-  throw new Error(
-    `Invalid IDREAM_PM2_MODE "${runtimeMode}"; expected development or production`,
-  );
-}
+assertRuntimeMode(runtimeMode);
 const isDevelopment = runtimeMode === "development";
-const runtimeIdentityEnv = {
-  IDREAM_PM2_MODE: runtimeMode,
-  ...(process.env.IDREAM_SOURCE_REVISION
-    ? { IDREAM_SOURCE_REVISION: process.env.IDREAM_SOURCE_REVISION }
-    : {}),
-  ...(process.env.SENTRY_RELEASE
-    ? { SENTRY_RELEASE: process.env.SENTRY_RELEASE }
-    : {}),
-};
-const sourceWatch = (...paths) =>
-  isDevelopment
-    ? {
-        watch: paths.map(dir),
-        watch_delay: 500,
-      }
-    : {
-        watch: false,
-      };
 const localEnvValue = (envPath, key) => {
   if (!existsSync(envPath)) return undefined;
   for (const line of readFileSync(envPath, "utf8").split(/\r?\n/)) {
@@ -82,7 +65,6 @@ const genVideoProvider =
   process.env.GEN_VIDEO_PROVIDER ??
   localEnvValue(dir("packages/gen/.env"), "GEN_VIDEO_PROVIDER") ??
   "mock";
-const videoWorkerEnabled = genVideoProvider !== "mock";
 // REDIS_URL must resolve IDENTICALLY across main-web (which enqueues) and gen-finalizer
 // (which consumes) — otherwise generation jobs stick forever. Durable Main↔Chat delivery
 // does not use Redis. Which vars are cross-service, and their one set of defaults, is
@@ -115,27 +97,55 @@ const pocketTtsApiUrl = new URL(
   mainEnvValue("POCKET_TTS_API_URL", "http://127.0.0.1:8063/v1"),
 );
 const pocketTtsApiToken = mainEnvValue("POCKET_TTS_API_TOKEN");
-const configuredVoiceProviders = new Set([
-  mainEnvValue("VOICE_PROVIDER", "pocket-tts"),
-  mainEnvValue("VOICE_IDENTITY_PROVIDER"),
-]);
-const fishAudioEnabled = configuredVoiceProviders.has("fish-audio");
-const pocketTtsEnabled = configuredVoiceProviders.has("pocket-tts");
+const topologyEnvironment = {
+  ...process.env,
+  VOICE_PROVIDER: mainEnvValue("VOICE_PROVIDER", "pocket-tts"),
+  VOICE_IDENTITY_PROVIDER: mainEnvValue("VOICE_IDENTITY_PROVIDER"),
+};
+const runtimeTopology = createRuntimeTopology({
+  repoRoot: __dirname,
+  bunInterpreter,
+  mode: runtimeMode,
+  environment: topologyEnvironment,
+  videoProvider: genVideoProvider,
+});
+const runtimeIdentityEnv = runtimeIdentityEnvironment({
+  mode: runtimeMode,
+  sourceRevision: process.env.IDREAM_SOURCE_REVISION,
+  sentryRelease: process.env.SENTRY_RELEASE,
+});
+const runtimeProcess = (name) => {
+  const definition = runtimeTopology.definition(name);
+  if (!definition) throw new Error(`Unknown PM2 runtime process ${name}`);
+  return {
+    name: definition.name,
+    cwd: definition.cwd,
+    script: definition.script,
+    ...(definition.args.length === 0
+      ? {}
+      : {
+          args: definition.args.length === 1
+            ? definition.args[0]
+            : definition.args,
+        }),
+    interpreter: definition.execInterpreter,
+    exec_mode: definition.ecosystemExecMode,
+    instances: definition.instances,
+    watch: definition.watch,
+    ...(definition.watchDelay
+      ? { watch_delay: definition.watchDelay }
+      : {}),
+    ...(definition.killTimeout
+      ? { kill_timeout: definition.killTimeout }
+      : {}),
+  };
+};
 
 module.exports = {
   apps: [
     // Optional Fish Audio S2 Pro MLX runtime + durable reference-voice registry.
     {
-      name: "fish-audio",
-      cwd: dir("."),
-      script: "scripts/start-fish-audio.cjs",
-      interpreter: bunInterpreter,
-      exec_mode: "fork",
-      instances: 1,
-      ...sourceWatch(
-        "scripts/start-fish-audio.cjs",
-        "scripts/fish_audio_gateway.py",
-      ),
+      ...runtimeProcess("fish-audio"),
       env: {
         ...runtimeIdentityEnv,
         FISH_AUDIO_HOST: mainEnvValue(
@@ -182,19 +192,7 @@ module.exports = {
     },
     // Official Pocket TTS CPU runtime for default English speech and role voices.
     {
-      name: "pocket-tts",
-      cwd: dir("."),
-      script: "scripts/start-pocket-tts.cjs",
-      interpreter: bunInterpreter,
-      exec_mode: "fork",
-      instances: 1,
-      kill_timeout: 60_000,
-      ...sourceWatch(
-        "scripts/start-pocket-tts.cjs",
-        "scripts/pocket_tts_gateway.py",
-        "scripts/pocket-tts-requirements.in",
-        "scripts/pocket-tts-requirements.lock",
-      ),
+      ...runtimeProcess("pocket-tts"),
       env: {
         ...runtimeIdentityEnv,
         POCKET_TTS_HOST: mainEnvValue(
@@ -232,20 +230,10 @@ module.exports = {
     },
     // fast · synchronous — public pages, characters, billing, library, chat BFF
     {
-      name: "main-web",
-      cwd: isDevelopment ? dir("packages/main") : dir("."),
-      script: isDevelopment
-        ? "scripts/start-development.cjs"
-        : "scripts/start-next-standalone.cjs",
-      args: isDevelopment ? undefined : "packages/main",
-      interpreter: bunInterpreter,
-      exec_mode: isDevelopment ? "fork" : "cluster",
+      ...runtimeProcess("main-web"),
       // Was "max" → one worker per CPU core, which floods `pm2 list` on many-core
       // machines. Cap to a small fixed count (override with MAIN_WEB_INSTANCES).
       // Cluster mode still load-balances across these workers on one port.
-      instances: isDevelopment ? 1 : (process.env.MAIN_WEB_INSTANCES ?? 1),
-      // Next dev owns source watching/Fast Refresh. PM2 watch would fight it.
-      watch: false,
       env: {
         ...runtimeIdentityEnv,
         IDREAM_PM2_BUN_ENTRYPOINT: isDevelopment
@@ -268,17 +256,7 @@ module.exports = {
     },
     // fast · synchronous — internal admin control plane, isolated from public web
     {
-      name: "admin-web",
-      cwd: isDevelopment ? dir("packages/admin") : dir("."),
-      script: isDevelopment
-        ? "scripts/start-development.cjs"
-        : "scripts/start-next-standalone.cjs",
-      args: isDevelopment ? undefined : "packages/admin",
-      interpreter: bunInterpreter,
-      exec_mode: isDevelopment ? "fork" : "cluster",
-      instances: 1,
-      // Next dev owns source watching/Fast Refresh. PM2 watch would fight it.
-      watch: false,
+      ...runtimeProcess("admin-web"),
       env: {
         ...runtimeIdentityEnv,
         IDREAM_PM2_BUN_ENTRYPOINT: isDevelopment
@@ -300,16 +278,9 @@ module.exports = {
     },
     // fast I/O + slow generation — chat/web (API+SSE) + chat/worker, one process
     {
-      name: "chat",
-      cwd: dir("packages/chat"),
-      script: isDevelopment ? "src/main.ts" : "dist/main.js",
-      interpreter: bunInterpreter,
-      exec_mode: "fork",
-      instances: 1, // ⚠️ local FS single-writer
+      ...runtimeProcess("chat"), // ⚠️ local FS single-writer
       // Warm model calls and active generations are allowed to finish after
       // admission closes; PM2 must not cut the process off at its 1.6s default.
-      kill_timeout: 5 * 60 * 1_000,
-      ...sourceWatch("packages/chat/src", "packages/shared/src"),
       env: {
         ...runtimeIdentityEnv,
         ...sharedInternalEnv,
@@ -318,23 +289,12 @@ module.exports = {
     },
     // slow · async — pure generation, only writes blob, horizontally scalable
     {
-      name: "gen-image",
-      cwd: dir("packages/gen"),
-      script: isDevelopment ? "src/image.ts" : "dist/image.js",
-      interpreter: bunInterpreter,
-      exec_mode: "fork",
+      ...runtimeProcess("gen-image"),
       // One Apple GPU/unified-memory authority per host. The worker-level lease
       // also serializes against gen-video; extra image workers only add resident
       // model pressure, so scaling out must be an explicit operator decision.
-      instances: process.env.GEN_IMAGE_INSTANCES ?? 1,
       // Provider calls may outlive PM2's default kill window. Queue pause/drain
       // should make this idle; this is the last fail-safe against mid-job kill.
-      kill_timeout: 5 * 60 * 1_000,
-      ...sourceWatch(
-        "packages/gen/src",
-        "packages/gen/workflows",
-        "packages/shared/src",
-      ),
       env: {
         ...runtimeIdentityEnv,
         ...sharedInternalEnv,
@@ -347,20 +307,13 @@ module.exports = {
           : {}),
       },
     },
-    ...(videoWorkerEnabled
+    ...(runtimeTopology.enabled("gen-video")
       ? [
           {
-            name: "gen-video",
-            cwd: dir("packages/gen"),
-            script: isDevelopment ? "src/video.ts" : "dist/video.js",
-            interpreter: bunInterpreter,
-            exec_mode: "fork",
-            instances: 1,
-            kill_timeout: 35 * 60 * 1_000,
+            ...runtimeProcess("gen-video"),
             // Video jobs can run for 10–30 minutes. A dev watch restart after the
             // ComfyUI submit but before manifest ingest creates an orphan prompt and
-            // BullMQ retry duplicate, so this worker is always restarted explicitly.
-            watch: false,
+            // BullMQ retry duplicate, so runtime-topology keeps this worker off watch.
             env: {
               ...runtimeIdentityEnv,
               ...sharedInternalEnv,
@@ -381,20 +334,7 @@ module.exports = {
       : []),
     // medium · async — main-side authority write-back
     {
-      name: "gen-finalizer",
-      cwd: dir("packages/main"),
-      script: isDevelopment
-        ? "src/processes/finalizer.ts"
-        : "dist/finalizer.js",
-      interpreter: bunInterpreter,
-      exec_mode: "fork",
-      instances: 1,
-      kill_timeout: 5 * 60 * 1_000,
-      ...sourceWatch(
-        "packages/main/src/processes",
-        "packages/main/src/server",
-        "packages/shared/src",
-      ),
+      ...runtimeProcess("gen-finalizer"),
       env: {
         ...runtimeIdentityEnv,
         ...mainRedisEnv,
@@ -405,19 +345,7 @@ module.exports = {
       },
     },
     {
-      name: "main-event-consumer",
-      cwd: dir("packages/main"),
-      script: isDevelopment
-        ? "src/processes/event-consumer.ts"
-        : "dist/event-consumer.js",
-      interpreter: bunInterpreter,
-      exec_mode: "fork",
-      instances: 1,
-      ...sourceWatch(
-        "packages/main/src/processes",
-        "packages/main/src/server",
-        "packages/shared/src",
-      ),
+      ...runtimeProcess("main-event-consumer"),
       env: {
         ...runtimeIdentityEnv,
         ...sharedInternalEnv,
@@ -425,28 +353,12 @@ module.exports = {
     },
     // medium · async — authoritative Admin command execution and lease recovery
     {
-      name: "admin-command-worker",
-      cwd: dir("packages/main"),
-      script: isDevelopment
-        ? "src/processes/admin-command-worker.ts"
-        : "dist/admin-command-worker.js",
-      interpreter: bunInterpreter,
-      exec_mode: "fork",
-      instances: 1,
-      ...sourceWatch(
-        "packages/main/src/processes",
-        "packages/main/src/server",
-        "packages/shared/src",
-      ),
+      ...runtimeProcess("admin-command-worker"),
       env: {
         ...runtimeIdentityEnv,
         ...mainRedisEnv,
         ...sharedInternalEnv,
       },
     },
-  ].filter((app) => {
-    if (app.name === "fish-audio") return fishAudioEnabled;
-    if (app.name === "pocket-tts") return pocketTtsEnabled;
-    return true;
-  }),
+  ].filter((app) => runtimeTopology.enabled(app.name)),
 };

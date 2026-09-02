@@ -1,0 +1,17 @@
+{
+  "verifiedAt": "2026-09-02T11:50:22.291Z",
+  "sourceRevision": "idream-worktree-33c5ff154f268daa174954e9dca2dcbce836d024d03383b2f38513dcbae7ef70",
+  "baseHead": "3e8632ea0f974b24fc31568ccd1d5aeda0a76b1c",
+  "runtime": {
+    "mainWebListenerPid": 95820,
+    "adminWebListenerPid": 30107
+  },
+  "browser": {
+    "imageCount": 3,
+    "videoCount": 1,
+    "viewportWidth": 390,
+    "documentWidth": 390,
+    "consoleErrors": 0
+  },
+  "scope": "Character workspace repair in development; existing WIP preserved"
+}

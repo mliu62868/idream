@@ -41,6 +41,7 @@ export function CharacterVoicePanel({
   canWrite,
   canActivate,
   canManageDefaults,
+  canPreview,
   runCommittedMutation,
   takeIdempotencyKey,
   releaseIdempotencyKey,
@@ -49,6 +50,7 @@ export function CharacterVoicePanel({
   canWrite: boolean;
   canActivate: boolean;
   canManageDefaults: boolean;
+  canPreview: boolean;
   runCommittedMutation: RunCommittedMutation;
   /**
    * SPEC: 同一个业务签名跨刷新拿到同一个幂等键；写入落地后由 afterRefresh 释放。
@@ -373,7 +375,7 @@ export function CharacterVoicePanel({
   }
 
   async function previewCatalogVoice(voiceId: SystemVoiceCatalogVoiceId) {
-    if (previewBusy || busy) return;
+    if (!canPreview || previewBusy || busy) return;
     setPreviewBusy(voiceId);
     setError(null);
     try {
@@ -445,7 +447,7 @@ export function CharacterVoicePanel({
             <audio aria-label={t("System voice preview")} autoPlay className="w-full lg:w-80" controls src={catalogPreview.src} />
           ) : (
             <WorkspaceButton
-              disabled={previewBusy !== null || busy}
+              disabled={!canPreview || previewBusy !== null || busy}
               onClick={() =>
                 void previewCatalogVoice(data.voice.effectiveVoiceId)
               }
@@ -1110,6 +1112,7 @@ export function CharacterVoicePanel({
             <VoiceDefaultSelect
               active={data.voice.authoritySource === "system_default"}
               busy={previewBusy}
+              canPreview={canPreview}
               catalog={data.voice.systemDefaults.catalog}
               inputId="system-voice-default-global"
               label={t("System fallback identity")}
@@ -1475,6 +1478,7 @@ function VoiceDeliverySummary({
 function VoiceDefaultSelect({
   active,
   busy,
+  canPreview,
   catalog,
   inputId,
   label,
@@ -1485,6 +1489,7 @@ function VoiceDefaultSelect({
 }: {
   active: boolean;
   busy: SystemVoiceCatalogVoiceId | null;
+  canPreview: boolean;
   catalog: CharacterWorkspaceDetail["voice"]["systemDefaults"]["catalog"];
   inputId: string;
   label: string;
@@ -1533,7 +1538,7 @@ function VoiceDefaultSelect({
           aria-label={t("Preview {voice}", {
             voice: selected?.label ?? value,
           })}
-          disabled={busy !== null}
+          disabled={!canPreview || busy !== null}
           onClick={() => void onPreview(value)}
           type="button"
         >

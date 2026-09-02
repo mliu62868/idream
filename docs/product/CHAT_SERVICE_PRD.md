@@ -6,7 +6,7 @@ Companion Chat 是 Main 产品中的角色陪伴会话。用户看到的是稳�
 
 ### 1.1 所有角色共享的 Product Agent Contract
 
-`SOUL.md` 只定义「这个角色是谁、如何表达」。所有角色共同的陪伴产品行为由版本化的 Product Agent Contract 定义，并在每个 `PreparedTurn` 中固定版本：
+`SOUL.md` 只定义「这个角色是谁、如何表达」。所有角色共同的 Chat 产品行为由版本化的 Product Agent Contract 定义，并在每个 `PreparedTurn` 中固定版本：
 
 - 用户感受到的是主动、直接、在场的成人陪伴，而不是通用助手、客服流程或问卷。
 - 先完成最新且明确的用户意图，再用 Soul 添加角色语气、情绪、调侃和场景推进。

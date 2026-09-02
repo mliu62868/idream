@@ -1,6 +1,6 @@
 # ADR-11 · Admin 运营系统的权威、可靠性与渐进切换
 
-更新日期：2026-07-11
+更新日期：2026-09-01
 
 状态：已采纳；本地代码态完成，生产切换仍受观察 Gate 约束
 
@@ -18,7 +18,7 @@
 4. `ControlPlaneCommand` 是异步动作 aggregate。canonical request hash 绑定 command、target、payload、expected version 与 approval；approval 在同一事务条件消费。领域写、Command、Audit 和 Outbox 原子提交；lease 只对声明幂等的执行恢复。
 5. 跨服务只在 durable receipt/canonical row 已提交后 ACK。Generation provider 调用前先登记 TransportExecution；自动 transport retry 只允许 deterministic provider idempotency。provider 结果先写覆盖全部终态的 immutable terminal record，再进入 Main-owned durable relay；Main 短时不可用只重试 relay row，relay admission 中断只重投 record，不再次调用 provider。
 6. Incident 与 typed Case 是运营 authority；Today/Work Item 只是从领域根重建的排序投影，不拥有第二套状态。Incident occurrence assignment、Case Evidence、Review Decision、Metric definition 与发布快照由数据库拒绝原地改写。
-7. canonical Product Event、fact projector 与 typed Metric Registry 是指标 authority。无法证明 attribution、成熟度、coverage 或 freshness 时 fail closed 为 `null/invalid`；NS-01 未批准前 WPCU 正式、WSCU/WSCrU/WPSCU 仅 shadow。
+7. canonical Product Event、fact projector 与 typed Metric Registry 是指标 authority。无法证明 attribution、成熟度、coverage 或 freshness 时 fail closed 为 `null/invalid`。`NS-01` 的最终决策是保留 WPCU 为 `official` 平台北极星；WSCU/WSCrU/WPSCU 保持 `shadow/directional_only`，WSR 保持诊断。生产回放与成熟窗口认证是指标可信度 Gate，不是待执行的北极星迁移。
 8. 切换使用 expand → backfill → shadow → read canary → write canary → constraint validation → legacy sunset。任何 invariant、shadow mismatch、重复结算、权限或 Audit 原子性失败都阻止扩大流量。写代理故障 fail closed；回滚切流量/读路径，不删除 additive schema 或证据。
 
 ## Rejected alternatives

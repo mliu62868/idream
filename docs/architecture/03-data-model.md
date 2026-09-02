@@ -1,8 +1,8 @@
 # 03 · 数据模型与 Prisma Schema
 
-更新日期：2026-08-27
+更新日期：2026-09-01
 
-本文件把 `BackendFeatureSpec.md §3` 的实体表落地为 **PostgreSQL-only**（dev = prod = Postgres，见 ADR-2）的 Prisma schema 参考，并给出索引、迁移与 seed 策略。**schema 文件本身是数据形状的 SSoT**，本文是其忠实参考，非逐字镜像。
+本文件把 `BackendFeatureSpec.md §3` 的实体职责映射到 **PostgreSQL-only**（dev = prod = Postgres，见 ADR-2），并给出索引、迁移与 seed 策略。**`packages/main/prisma/schema.prisma` 是数据形状唯一 SSoT**；下列代码只展示关键结构和不变量，可能省略字段或关系，不得据此反向覆盖 schema。
 
 > **数据库边界**：只有 `packages/main/prisma/schema.prisma` 保存产品聊天、计费和生成事实。`packages/chat` 不使用 Prisma/PostgreSQL，只保存本地 AgentRun 文件（见 ADR-20 / 14）。
 
@@ -229,7 +229,7 @@ model Character {
   tags          CharacterTag[]
   stats         CharacterStats?
   submissions   CharacterSubmission[]
-  recentChats   RecentChat[]                      // chat 域已外迁，main 只保留 read projection（见 §3.4）
+  recentChats   RecentChat[]                      // Main-owned 关系/会话产品事实（见 §3.4）
   generationJobs GenerationJob[]
   likes         CharacterLike[]
 
@@ -408,9 +408,11 @@ model ChatTurnAttachment {
 }
 ```
 
-Chat 本地 `runs/<turnId>/<attempt>/` 不是数据库模型，也不进入 Prisma。通用记忆在 DSH/igrep；Relationship 产品状态不存在。
+Chat 本地 `runs/<turnId>/<attempt>/` 不是数据库模型，也不进入 Prisma。不建立可编辑的 Relationship stage/score/attributes 模型；Main 仍以 `CompanionMemoryAuthority` 维护 user-character aggregate 的单调版本，DSH/igrep 内容由 Main committed Turns 派生并可重建。
 
 ### 3.5 Generation & Media
+
+生成不是一张扁平 Job 表：`GenerationJob` 是产品 Request aggregate；每次执行由 `GenerationAttempt` 与 `GenerationTransportExecution` 记录，Gen 先持久化 immutable TerminalRecord，再由 Main 投影 `GenerationArtifact`、`GenerationDelivery` 和 `GenerationSettlementLink`。任何页面、worker 或重试逻辑都不得绕过这条权威链直接把 provider 成功写成已交付/已结算。
 
 ```prisma
 model GenerationPreset {
@@ -457,12 +459,77 @@ model GenerationJob {
   @@map("generation_jobs")
 }
 
+model GenerationAttempt {
+  id                String   @id @default(cuid())
+  requestId         String
+  attemptNo         Int
+  status            String   @default("queued")
+  profileKey        String?
+  profileVersion    Int?
+  workflowKey       String?
+  workflowVersion   Int?
+  terminalSequence  Int?
+  terminalRecordRef String?
+  errorCode         String?
+  createdAt         DateTime @default(now())
+  @@unique([requestId, attemptNo])
+  @@map("generation_attempts")
+}
+
+model GenerationTransportExecution {
+  id                 String   @id @default(cuid())
+  attemptId          String
+  transportAttemptNo Int
+  providerRequestId  String?
+  idempotencyKey     String?
+  status             String
+  terminalRecordRef  String?
+  startedAt          DateTime @default(now())
+  finishedAt         DateTime?
+  @@unique([attemptId, transportAttemptNo])
+  @@map("generation_transport_executions")
+}
+
+model GenerationArtifact {
+  id                     String   @id @default(cuid())
+  attemptId              String
+  ordinal                Int
+  terminalRecordChecksum String
+  validationState        String   @default("produced")
+  assetId                String?
+  createdAt              DateTime @default(now())
+  @@unique([attemptId, ordinal])
+  @@map("generation_artifacts")
+}
+
+model GenerationDelivery {
+  id          String   @id @default(cuid())
+  requestId   String
+  artifactId  String
+  targetType  String
+  targetId    String
+  status      String   @default("pending")
+  deliveredAt DateTime?
+  @@unique([artifactId, targetType, targetId])
+  @@map("generation_deliveries")
+}
+
+model GenerationSettlementLink {
+  id            String   @id @default(cuid())
+  requestId     String
+  ledgerEntryId String   @unique
+  kind          String
+  createdAt     DateTime @default(now())
+  @@index([requestId, kind])
+  @@map("generation_settlement_links")
+}
+
 model MediaAsset {
   id           String    @id @default(cuid())
   ownerId      String
   sourceJobId  String?
   characterId  String?
-  type         String                               /// enum: image | video
+  type         String                               /// enum: image | video | voice
   url          String                                // 对象存储 key（私有，签名访问）
   thumbnailUrl String?
   prompt       String?
@@ -527,7 +594,7 @@ model Plan {
   priceCents        Int
   currency          String   @default("usd")
   includedDreamcoins Int     @default(0)
-  features          Json     @default("{}")         // images/videos/voiceMin/messages/models/memory...
+  features          Json     @default("{}")         // generation/voice/messages entitlements; Chat identity and base memory are not plan-tiered
   active            Boolean  @default(true)
   subscriptions     Subscription[]
   @@unique([slug, billingPeriod])
@@ -543,7 +610,7 @@ model Subscription {
   providerSubscriptionId String?
   status                 String   @default("checkout_created") /// enum: checkout_created|checkout_completed|active|past_due|canceled|expired
   currentPeriodEnd       DateTime?
-  cancelAtPeriodEnd      Boolean  @default(false)
+  cancelAtPeriodEnd      Boolean  @default(false)   // legacy field；当前 prepaid provider 不发布 cancel/resume renewal
   createdAt              DateTime @default(now())
   updatedAt              DateTime @updatedAt
   user                   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -1013,7 +1080,7 @@ dev/prod 同为 Postgres（dev 用 `docker-compose.yml` 起本地 PG，见 10）
 | dev（应用内表） | `npm run db:push`（`packages/main/scripts/db-push.mjs` → `prisma db push` + `prisma generate`） | 快速同步 schema，无迁移文件 |
 | dev（验证迁移） | `npm run db:migrate:dev`（`prisma migrate dev`） | 产生迁移文件 |
 | CI / prod（应用内表） | `npm run db:migrate:deploy`（`prisma migrate deploy`） | **迁移文件是应用内表 DDL 的 SSoT** |
-| **DB 边界（schema/role/grant/view/chat 表）** | `db/sql/*.sql`（`db/sql/apply-validate.sh`） | **由用户在 prod 手工执行**（见 10 §6），是跨服务库边界的 SSoT |
+| legacy Chat 导入/cutover 与 schema/role 清理 | `db/sql/*.sql`（`db/sql/apply-validate.sh`） | **仅由用户在 prod 维护窗手工执行**（见 10 §6）；它们是迁移/退役工具，不是当前 Chat 产品 schema 的 SSoT。当前产品表仍以 Main Prisma migrations 为准 |
 
 `package.json` 关键脚本（`packages/main`）：
 
@@ -1053,7 +1120,7 @@ CREATE INDEX characters_name_trgm ON characters USING gin (name gin_trgm_ops);
 ## 7. 与 BackendFeatureSpec 的差异/补充
 
 - 队列状态在 Redis/BullMQ（ADR-5），关系库只存权威业务态 + 幂等记录；新增基础设施表：`ProviderEvent`、`AnalyticsEvent`、`RoutePage`、`CharacterLike`、`Follow`，spec 未显式列出但实现必需。
-- chat 域已外迁到 Chat Service（`packages/chat`，独立 `chat` schema + 视图）；main 仅保留 `RecentChat` read projection。通用记忆只在 DSH/igrep workspace，Chat 文件层仅承载 boundaries 与历史隔离文件，Scene 存在 Chat 账本中（§3.4）。
+- Chat 产品事实已收敛到 Main PostgreSQL：`RecentChat`、`ChatTurn`、`ChatTurnAttachment`、`Scene`、usage 与 settlement 均由 Main 持有。`packages/chat` 不使用 Prisma/Postgres，只保留本地 `AgentRun`、DSH/igrep 执行证据；记忆由 Main 已提交 Turns 派生（§3.4）。
 - 新增 Admin 控制平面表（§3.10）：审计/审批/特性开关/应用设置/生成模型·prompt·路由·定价的可治理配置/权限/支持授权/法务保留。
 - `Character.source`（official|user）区分官方 CMS 角色与用户角色；新增 `CharacterTemplate`（建角色起步模板）。
 - `MediaAsset.liked` 保留为拥有者快捷标记，多用户点赞用 `MediaLike`。

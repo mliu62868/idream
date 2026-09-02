@@ -1,0 +1,49 @@
+{
+  "at": "2026-09-02T11:47:19.077Z",
+  "characterId": "2414a1d9-74a2-4125-bf7c-92be6368f572",
+  "originalFailure": {
+    "status": 500,
+    "contentType": null,
+    "error": "PrismaClientValidationError: Argument runItemId is missing"
+  },
+  "results": [
+    {
+      "path": "/api/v2/admin/characters/2414a1d9-74a2-4125-bf7c-92be6368f572",
+      "status": 200,
+      "ok": true,
+      "elapsedMs": 849
+    },
+    {
+      "path": "/api/v2/admin/characters/2414a1d9-74a2-4125-bf7c-92be6368f572/image-sources?purpose=character_library",
+      "status": 200,
+      "ok": true,
+      "itemCount": 3,
+      "elapsedMs": 564,
+      "images": [
+        {
+          "id": "media_ybr4ign3gnmtfkdcoq",
+          "state": "release_qualified",
+          "blockers": []
+        },
+        {
+          "id": "media_uzmd51m3l7pmtfk6emn",
+          "state": "release_qualified",
+          "blockers": []
+        },
+        {
+          "id": "media_m11cku4ozgmtfk1gld",
+          "state": "release_qualified",
+          "blockers": []
+        }
+      ]
+    },
+    {
+      "path": "/api/v2/admin/assets?mediaType=video&targetId=2414a1d9-74a2-4125-bf7c-92be6368f572&limit=100",
+      "status": 200,
+      "ok": true,
+      "itemCount": 1,
+      "elapsedMs": 318,
+      "images": []
+    }
+  ]
+}

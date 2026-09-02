@@ -406,7 +406,7 @@ export const ADMIN_V2_API_OPERATIONS = [
     "GET",
     "/api/v2/admin/characters/:id/image-sources",
     allOf("character.project.read", "creative.run.read"),
-    "path:id",
+    "characterImageSourceQuerySchema",
     "characterImageSourceListResponseSchema",
   ),
   operation(
@@ -415,6 +415,13 @@ export const ADMIN_V2_API_OPERATIONS = [
     allOf("character.project.write", "creative.run.write"),
     "characterImageSourceUploadRequestSchema+idempotency-key",
     "characterImageSourceUploadResponseSchema",
+  ),
+  operation(
+    "POST",
+    "/api/v2/admin/characters/:id/image-sources/:assetId/reviews",
+    allOf("character.project.write", "creative.run.review"),
+    "characterImageReviewRequestSchema+idempotency-key",
+    "characterImageReviewResultSchema",
   ),
   operation(
     "POST",
@@ -1467,7 +1474,8 @@ export const ADMIN_V2_API_OPERATIONS = [
     "adminReferralListResponseSchema",
   ),
   // ---- platform: migrated from v1 ----
-  // Chat 只读运营视图（Main 代理 Chat 服务的 /internal/admin/*）。
+  // Chat product operations are Main projections; provider health adapts the
+  // narrow Chat runtime-diagnostics contract.
   operation(
     "GET",
     "/api/v2/admin/chat/overview",

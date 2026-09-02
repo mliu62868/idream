@@ -1,6 +1,6 @@
 # 02 · 关键技术决策（ADR）
 
-更新日期：2026-06-28
+更新日期：2026-09-01
 
 本文件逐条解决 `BackendFeatureSpec.md §10 Known Gaps`。每条 ADR 给出：决策、理由、备选、权衡、影响。**当本文件与其它文档冲突，以本文件为准。**
 
@@ -85,16 +85,16 @@
 3. 推荐 **BTCPay Server**（自托管、非托管、开源、无第三方 AUP/KYC 风险，最契合成人 + 隐私场景）；托管备选 NOWPayments / Cryptomus / CoinGate（集成快，但有第三方依赖）。
 
 **加密支付特性（影响计费建模，见 08）**：
-- **无卡式自动续费**：钱包不能被"拉"扣款 → 订阅按"预付周期 + 到期续费提醒"建模（08 §2）。
+- **无卡式自动续费**：钱包不能被"拉"扣款 → 付费访问按"一次性预付周期 + 到期提醒 + 用户主动重新购买"建模（08 §2）。
 - **天然异步**：需等区块确认，完美契合 job 队列 + IPN/webhook。
 - **汇率**：`plans` 存 USD 分；下单按当时汇率生成等值加密发票，处理器锁价一个时间窗。
 - dreamcoin 充值 = 一次性加密付款，直接好用。
 
 **决策含义**：
-- `subscriptions`/`entitlements`/`dreamcoin_ledger` 与具体处理器解耦。
+- legacy `subscriptions` physical model、`entitlements` 与 `dreamcoin_ledger` 和具体处理器解耦；公开产品语义是 prepaid access，不提供取消/恢复续费动作。
 - 工程用处理器 testnet/sandbox（BTCPay testnet 等）打通 invoice→IPN→权益→ledger 全链路。
 
-**权衡**：UX 比刷卡重（跳钱包/等确认）；无自动续费靠续费提醒维持留存；需处理欠付/超付/发票过期。换处理器只改 `providers/payment/<impl>` 与 IPN 适配。
+**权衡**：UX 比刷卡重（跳钱包/等确认）；无自动续费，只能通过到期提醒和用户主动重新购买维持留存；需处理欠付/超付/发票过期。换处理器只改 `providers/payment/<impl>` 与 IPN 适配。
 
 **影响**：08 全文、providers/payment、03（billing 表 provider 中立）。
 
@@ -125,7 +125,7 @@
 
 ---
 
-## ADR-6 · AI 供应商：全部抽象；自托管开源模型 + 内部流水线 API（已定）
+## ADR-6 · AI 供应商：全部抽象；Chat endpoint 与媒体 workflow backend 分离（已定）
 
 **状态**：已采纳
 
@@ -135,10 +135,10 @@
 - `Voice`（TTS，Premium 语音额度）
 - `Moderation`（输入/输出审核 + 未成年/CSAM/深伪检测）
 
-**决策细化**：生产实现统一对接**内部自托管的开源模型流水线 API**：
-- 文本：自托管开源模型（Llama/Qwen/Mistral 等的 roleplay/NSFW 微调，vLLM/TGI 部署），暴露 **OpenAI 兼容** chat completions（流式）。
-- 图像/视频：自托管 SD/Flux/视频模型，经流水线 API 的生成端点。
-- 接入：`PIPELINE_API_URL` + `PIPELINE_API_TOKEN` + 模型名参数化，一个内部网关后挂多模型。
+**决策细化**：生产实现按执行语义分两条接口：
+- 文本：自托管开源模型暴露 **OpenAI-compatible** chat completions（流式），由 Chat Agent runtime 调用。
+- 图像/视频：`GEN_IMAGE_PROVIDER=backend` / `GEN_VIDEO_PROVIDER=backend` 进入 `packages/gen/src/backend/` 的 `BackendRegistry`；workflow descriptor 固定 `backendKind`、模型文件、输入 slots 与版本，再由 `ComfyUIBackend`、`SdcppBackend` 或 `DrawThingsBackend` 执行。
+- `GEN_IMAGE_PROVIDER=pipeline` / `PIPELINE_API_URL` 只保留 legacy compatibility，已 deprecated，不是当前媒体运行权威，也不能作为新模型默认接入路径。
 
 **优势**：规避公有 API（OpenAI/Anthropic/Google）对露骨内容的禁令；prompt/产物**不出内网**，数据保留/训练授权自主可控（天然满足 07 §6）；成本/吞吐自控。
 
@@ -147,7 +147,7 @@
 **接口要点**：
 - 全部支持超时、重试、熔断；返回错误码与是否可重试。
 - dev 提供 **mock provider**（确定性假数据），本地无需真实模型即可跑通全链路与测试。
-- 流水线 API 应有内部鉴权 + 限流 + 排队；后台 worker 经 `JobQueue` 控制并发，避免打爆推理集群。
+- Chat endpoint 应有内部鉴权、限流与超时；媒体 backend 由 Gen worker、accelerator lease 与 workflow/profile Gate 控制并发，避免打爆推理资源。
 
 **审核例外**：未成年/CSAM/深伪检测**不能只靠通用开源模型**——文本/图像安全分类可跑同一流水线，但 **CSAM 哈希匹配（PhotoDNA/NCMEC）+ 法律上报**是专门能力、独立服务/密钥（见 07 §3，仍待落实）。
 
@@ -224,20 +224,22 @@
 
 ---
 
-## 决策对照（回填 BackendFeatureSpec §10）
+## 已关闭的基础技术决策（历史 BackendFeatureSpec §10 对照）
+
+下表只说明早期“待选技术”已经如何决策，不代表当前实施缺口或完成证明；当前缺口见 `BackendFeatureSpec.md §10`，实现状态见 `CURRENT_FUNCTIONAL_COVERAGE.md`。
 
 | Spec §10 Gap | 本文件决策 |
 | --- | --- |
 | backend stack 形态 | ADR-1 模块化单体 |
 | database & migration tool | ADR-2 Postgres-only（按包 schema）+ `db/sql` 边界迁移 |
 | auth provider | ADR-3 better-auth |
-| payment provider & webhook | ADR-4 抽象 + 加密货币（BTCPay 等），订阅预付周期 |
+| payment provider & webhook | ADR-4 抽象 + 加密货币（BTCPay 等），一次性预付访问周期 |
 | queue implementation | ADR-5 BullMQ + Redis（常驻 worker）|
-| model providers（chat/image/video）+ 数据保留 | ADR-6 抽象 + 自托管开源模型/内部流水线 API；prompt 不出内网 |
+| model providers（chat/image/video）+ 数据保留 | ADR-6：Chat 使用自托管 OpenAI-compatible endpoint；Image/Video 使用 workflow-native BackendRegistry；prompt 不出内网 |
 | identity age verification | ADR-7 provider 抽象（Go.cam 等） |
 | `/chat/` robots vs authenticated | 见 04 §1：`/api`、`/chat/` 子路径 robots-disallow，但鉴权产品可访问；SSR 私有不索引 |
-| safety 政策本地镜像 vs 外链 | 见 07 §7：政策正文版本化存 `policy_versions`，Safety Center 关键页本地镜像 + 外链权威源 |
-| Feed/Community 是否入 MVP | 见 12-roadmap：P1（MVP 仅留 API/上报骨架，UI 视觉已具备） |
+| safety 政策发布 | 见 07 §7：iDream 政策正文版本化存 `policy_versions`，只有 dedicated/CMS publication authority 的 `/safety/*` 页面公开 |
+| Feed/Community 范围 | 属于完整 OurDream 对标范围；P1 先保留小而真实的基础浏览/动作，个性化、激励与规模化按依赖和资源分期，不受单一 Chat 留存指标 Gate 约束 |
 | presets 来源 | 见 05(generation)：built-in 为产品 seed 数据 + user/community UGC，二者从第一天共存（scope 字段区分） |
 
-> ✅ ADR-4（加密货币）、ADR-6（自托管开源模型/流水线 API）已定。仍待敲定：ADR-7 年龄验证 provider（Go.cam 等）、CSAM 检测 + NCMEC 上报的专门服务与法律 runbook（07 §3.2，需法务）。工程侧先用抽象 + mock/testnet 推进，不阻塞。
+> ✅ ADR-4（加密货币）、ADR-6（Chat OpenAI-compatible endpoint + Image/Video workflow-native `BackendRegistry`）已定。仍待敲定：ADR-7 年龄验证 provider（Go.cam 等）、CSAM 检测 + NCMEC 上报的专门服务与法律 runbook（07 §3.2，需法务）。工程侧先用抽象 + mock/testnet 推进，不阻塞。

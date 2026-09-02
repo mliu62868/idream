@@ -1,21 +1,28 @@
 # 经济模型与定价（dreamcoin 费率卡）
 
-更新日期：2026-06-28
+更新日期：2026-09-01
 状态：产品定稿（数值最终以商务为准；本表为 SSoT 结构）
 
 > **本文是经济模型的单一事实来源（SSoT）。** 计划权益、生成扣费、免费档配额、退款规则均以此为准。
 > 工程落地见 `architecture/08-billing-and-entitlements.md`；**费率与计划数值的代码 SSoT 是 `packages/main/prisma/seed.ts`**（`PricingRule` / `Plan` 种子）。本文出现的具体数字若与 seed 不一致，以 seed 为准并回写本文。
 
+经济模型服务 Explore、Create、Chat、Generate、My AI、Feed/Community/Creator Economy、Upgrade 与 Affiliate 组成的完整平台循环，而不是用锁回历史制造续购：
+
+- 基础 Chat 人格、上下文和记忆质量不按计划分级；计划主要购买消息额度、高成本媒体、速度和高级创作控制。
+- 用户创建、购买或已交付的聊天与媒体在计划到期后仍可查看和下载。
+- 每次付费动作先展示成本再执行；失败、拦截或未交付按权威状态机幂等退款。
+- 计划是一次性预付的周期访问，当前 provider 不自动续订，到期后由用户自行重新购买。
+
 ---
 
 ## 0. 核心模型：单一货币（dreamcoin）
 
-复刻自 ourdream.ai 的真实模型，反推并验证得到以下结论：
+iDream 采用经过对标验证、并由自身账本与交付契约约束的单一消费货币模型：
 
 > **dreamcoin 是平台唯一的消耗型货币。** 图片/视频生成按费率扣 dreamcoin；语音优先消耗计划分钟额度，额度用尽后按 clip 兜底扣 dreamcoin。
 > 参考站计划卡上的「N 张图 / N 个视频 / N 分钟语音」不是三个独立配额，而是「把当月 dreamcoin 全部花在该类目时的上限示意」。当前 iDream 受控 beta 的 `/upgrade` 计划卡不展示这些媒体等价数字；若未来恢复，必须动态计算，且 `video_gen=false` 时不得展示视频承诺。
 
-官方文案佐证（对标站 ourdream.ai 计划卡文案）：
+早期方案曾参考 OurDream.ai 计划卡文案：
 
 > "1,000 dreamcoins is included in the subscription which **covers all your needs including videos**."
 
@@ -47,7 +54,7 @@
 | 图片生成（默认模型，1 张） | **5 币/张** | `count` 张则 ×count，如 4 张 = 20 币 |
 | 视频生成（默认时长） | **100 币/个** | 与默认时长绑定；更长时长 P1 另议 |
 | 语音（按条 TTS 朗读） | **计划分钟额度优先；超出后 2 币/条** | 先消耗 `Plan.features.voiceMinutes`（滚动 30 天窗口）；额度用尽后每条 clip 兜底扣币（`PricingRule` mode=`voice`，`baseCost` 默认 2，代码 SSoT 见 `seed.ts`）。同一 `messageId` 只生成/计费一次 |
-| 文字消息 | **0 币** | 订阅用户 unlimited；免费档按 `chat_usage` 周期限量（§3） |
+| 文字消息 | **0 币** | 有效付费访问用户 unlimited；免费档按 `chat_usage` 周期限量（§3） |
 | 音频消息（额度内 TTS 回复） | **0 币** | 计划分钟额度覆盖范围内不额外扣币 |
 
 ### 1.2 乘数（在基础单价上叠加）
@@ -76,9 +83,18 @@
 
 ---
 
-## 2. 订阅计划与权益
+## 2. 预付访问计划与权益
 
-价格与权益对齐真实站点 ourdream.ai；**数值 SSoT 为 `seed.ts` 的 `Plan` 种子**（`priceCents` / `includedDreamcoins` / `features`）。
+OurDream 公开价格、档位和权益结构是完整产品对标的一部分；iDream 当前可执行数值的 SSoT 仍为 `seed.ts` 的 `Plan` 种子（`priceCents` / `includedDreamcoins` / `features`）。两者不一致时，必须在 parity matrix 中明确标记差异与产品决策，不能静默把站点观察覆盖到运行配置。
+
+2026-09-01 官方公开面快照（证据见 [`OURDREAM_PRODUCT_PARITY_SNAPSHOT_2026-09-01.md`](../research/OURDREAM_PRODUCT_PARITY_SNAPSHOT_2026-09-01.md)）：
+
+| OurDream 公开档位 | Monthly | Annual | 公开权益摘要 |
+| --- | --- | --- | --- |
+| Premium | $19.99/month | $119.88/year（页面折算 $9.99/month） | 1,000 monthly Dreamcoins、20 分钟 voice、10 videos、unlimited messages/audio、image/video、voice calls、publish characters |
+| Deluxe | $59.99/month | $359.88/year（页面折算 $29.99/month） | 5,000 monthly Dreamcoins、100 分钟 voice、50 videos、premium chat models、更高 memory 宣称与 Premium 通用权益 |
+
+这些数字是带日期的竞品公开快照，不是 iDream 计费配置。OurDream 当前的自动续期与到期后重新模糊媒体/Packs 也不覆盖 iDream 的一次性预付、不自动续订、既有历史与媒体不锁回决策。完整对标要求档位比较、年/月选择、coin store、FAQ、支付状态和权益可解释，不要求复制动态价格或锁回策略。
 
 | 计划 | 月付 | 年付（一次付清 / 等效月价） | 当月 dreamcoin | 关键权益 |
 | --- | --- | --- | --- | --- |
@@ -88,7 +104,7 @@
 
 ### 2.1 年付促销
 
-- 年付**首次订阅**额外赠 1,000 dreamcoins（一次性，`reason=promo`）。
+- **首次年付购买**额外赠 1,000 dreamcoins（一次性，`reason=promo`）。
 - 年付一次性付清（加密支付无自动续费，见 08 §2）。
 
 ### 2.2 `Plan.features` 结构（SSoT 在 `seed.ts`）
@@ -110,9 +126,9 @@
 对应 `Plan` 顶层：`priceCents`（Premium 月 1999 / 年 9990；Deluxe 月 5999 / 年 29990）、`includedDreamcoins`（Premium 月 1500 / 年 18000；Deluxe 月 6000 / 年 72000）。
 
 > 注意：
-> - 旧 `features` 里的 `image_quota / video_quota` 计数器字段**已废弃**（被单一货币模型取代）；图片/视频额度统一折算 dreamcoin。
+> - 旧 `features` 里的 `image_quota / video_quota` 计数器字段**已废弃**（被单一货币模型取代）；图片/视频消耗统一使用 dreamcoin 报价与结算。
 > - `voiceMinutes` **仍在使用、并按滚动 30 天窗口计量**（见 §1.1），不是废弃字段。
-> - 当前计划卡 UI 展示 `includedDreamcoins` 与聊天/模型权益，不展示「N images / N videos」等媒体等价数字。若未来恢复媒体等价文案，必须由 `includedDreamcoins ÷ 费率` 动态算出，不硬编码，并且 `video_gen=false` 时隐藏视频等价。
+> - 当前计划卡 UI 展示 `includedDreamcoins`、消息权益与生成模型权益；Chat provider/model、角色人格和基础记忆不按计划分级。不展示「N images / N videos」等媒体等价数字。若未来恢复媒体等价文案，必须由 `includedDreamcoins ÷ 费率` 动态算出，不硬编码，并且 `video_gen=false` 时隐藏视频等价。
 > - 「custom prompt / negative prompt」等高阶控制由 entitlement / Chat Service 层计算，**不落在 `Plan.features`** 内。Deluxe 的 `premiumModels` 是生成模型权益；DSH Chat 不按方案切换 provider/model，也不承诺记忆倍率。
 
 ---
@@ -127,11 +143,11 @@
 | 文字消息 | **每日 30 条 / 角色不限** | 经 `chat_usage` 按自然日滚动计；超额提示升级 |
 | 聊天模型 | 当前配置的 DSH model | 所有方案使用同一 provider/model |
 | 聊天记忆 | official igrep + Chat 边界/关系投影 | 不按方案承诺倍率 |
-| 图片/视频/语音 | 仅用赠币或充值 | 无每月免费额度；赠币用完即需订阅或充值 |
+| 图片/视频/语音 | 仅用赠币或充值 | 无每月免费额度；赠币用完即需购买访问计划或充值 |
 | 发布角色 | 不可 | 仅可保存私有（My AI） |
 | 自定义 prompt / negative prompt / 高阶模型 | 不可 | premium 门 |
 
-> **设计意图**：免费档让用户走完「探索→创建→生成一次→看到结果」的 aha 时刻（250 币 ≈ 50 张图），但持续生成必须订阅。消息额度给足以体验聊天黏性，但限制日上限以保护成本与推动转化。
+> **设计意图**：免费档先让用户走完「Explore → Create/Chat/Generate → 获得一个真实可用结果」的 aha 时刻（250 币按当前基础费率约可试用 50 张图），但持续高成本生成需要购买访问计划或充值。消息日上限保护成本，但不把 Chat 留存定义为唯一的产品价值证明。
 > 具体数值（250 币 / 30 条）为**可调运营参数**，应进入 A/B 实验（见 PRD 指标章）；当前默认值的代码 SSoT 在 `seed.ts` / `service.ts`。
 
 ---
@@ -141,7 +157,7 @@
 ### 4.1 单独充值 dreamcoin
 
 - 一次性加密付款，确认到账后 `reason=topup` 入账（08 §2）。
-- 充值币与订阅赠币**同池**（都进同一 ledger），不区分有效期（MVP）。
+- 充值币与访问计划赠币**同池**（都进同一 ledger），不区分有效期（MVP）。
 
 ### 4.2 退款规则
 
@@ -150,21 +166,22 @@
 | 生成失败（provider 错误/超时） | 全额退预留币 | `refund` |
 | 输出被审核拦截 | 全额退预留币（用户无产出不应付费） | `refund` |
 | 多图部分被拦截 | 按未产出份额退 | `refund` |
-| 订阅争议/人工退款 | `admin_adjust` 冲正 + 留审计 | `admin_adjust` |
+| 访问计划争议/人工退款 | `admin_adjust` 冲正 + 留审计 | `admin_adjust` |
 | 已发放赠币 | **不回收**（除非欺诈） | — |
 
 ### 4.3 降级 / 到期
 
-- 订阅到期 → `recomputeEntitlements` 移除高阶权益（custom prompt / premium generation models / video entitlement 等）。
+- 访问权益到期 → `recomputeEntitlements` 移除高阶权益（custom prompt / premium generation models / video entitlement 等）。
 - **已发放的 dreamcoin 余额保留**，可继续按费率消费（降级不清零余额）。
 - 高阶模型生成入口在降级后置灰（entitlement 门控），但用户仍可用基础模型 + 余额生成。
+- **既有聊天历史保持可见，已交付媒体保持可见并可下载**；不得因到期重新模糊、隐藏或删除。计划变化只影响新的高阶请求。
 
 ---
 
 ## 5. 余额不足体验（UP-06）
 
 - 任何付费操作前，前端展示「本次消耗 X 币 / 当前余额 Y 币」。
-- 余额不足：展示**升级**（订阅，性价比最高）与**充值**两个 CTA，文案点明「1,000 币含在订阅中，覆盖图片与视频」。
+- 余额不足：展示**升级**（周期访问，性价比更高）与**充值**两个 CTA，并从当前 Plan 数据动态说明包含的 dreamcoin 和可覆盖能力，不硬编码币量。
 - 服务端在 `POST` 时二次校验余额（客户端余额不可信），不足返回 402 + 结构化 `insufficient_coins{ required, balance }`。
 
 ---
@@ -188,3 +205,4 @@
 - [ ] 免费档赠币、日消息额度为可配置运营参数，不写死在判定逻辑。
 - [ ] 失败/拦截/部分拦截退款幂等收敛（`sourceId=jobId`），不重复退、不漏退。
 - [ ] 降级不清零余额；已发赠币不回收。
+- [ ] 到期/降级不隐藏既有聊天或已交付媒体；媒体仍可下载，只关闭未来高阶能力。

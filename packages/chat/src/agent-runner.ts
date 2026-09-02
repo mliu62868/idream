@@ -16,15 +16,19 @@ import {
   runCompanion,
 } from "./agent-runtime/runtime.js";
 import {
+  admitAgentRun,
   appendAgentRunEvent,
   completeAgentRun,
   fenceAgentRunAttempt,
   isAgentRunTombstoned,
+  listIncompleteAgentRuns,
   readAgentRunInput,
   readAgentRunCompletion,
   readAgentRunProposal,
   writeAgentRunProposal,
+  type AgentRunInput,
   type AgentRunProposal,
+  type AgentRunRecoveryCandidate,
 } from "./agent-run-store.js";
 import { env } from "./env.js";
 import { logger } from "./logger.js";
@@ -45,7 +49,39 @@ type TerminalPromptAttribution = ChatTerminalCommit["terminalEvidence"]["prompt"
 
 const activeRuns = new Map<string, ActiveAgentRun>();
 
-export function startAgentRun(turnId: string, attempt: number, userId: string): boolean {
+/** The HTTP adapter hands over one signed input; this module owns admission and execution order. */
+export async function acceptAgentRun(
+  input: AgentRunInput,
+): Promise<{ duplicate: boolean; terminal: boolean; tombstoned?: true }> {
+  const admitted = await admitAgentRun(input);
+  if (!admitted.terminal && !admitted.tombstoned) {
+    startAgentRun({
+      turnId: input.snapshot.turnId,
+      attempt: input.snapshot.attempt,
+      userId: input.snapshot.userId,
+    });
+  }
+  return admitted;
+}
+
+/** Startup recovery is an AgentRun lifecycle operation, not worker orchestration. */
+export async function recoverIncompleteAgentRuns(): Promise<{
+  recovered: number;
+  failed: number;
+}> {
+  const scan = await listIncompleteAgentRuns();
+  for (const failure of scan.failures) {
+    logger.warn(failure, "skipping invalid AgentRun recovery evidence");
+  }
+  let recovered = 0;
+  for (const run of scan.runs) {
+    if (startAgentRun(run)) recovered += 1;
+  }
+  return { recovered, failed: scan.failures.length };
+}
+
+function startAgentRun(run: AgentRunRecoveryCandidate): boolean {
+  const { turnId, attempt, userId } = run;
   const key = runKey(turnId, attempt);
   if (activeRuns.has(key)) return false;
   const controller = new AbortController();

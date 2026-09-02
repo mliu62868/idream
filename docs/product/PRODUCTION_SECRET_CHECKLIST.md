@@ -1,6 +1,6 @@
 # iDream Production Secret Checklist
 
-Updated: 2026-07-18
+Updated: 2026-09-01
 
 Purpose: one place to prepare the production values required by `packages/main/.env.production.example`, `packages/chat/.env.production.example`, and `packages/gen/.env.production.example`.
 
@@ -22,7 +22,7 @@ Store these generated values:
 | `INTERNAL_TOKEN` | main-web, workers/internal callers | every caller that uses internal APIs |
 | `CRON_SECRET` | main-web cron endpoints | cron scheduler |
 | `CHAT_BFF_SIGNING_SECRET` | main-web, chat | exactly the same in both services |
-| `PIPELINE_API_TOKEN` | main-web, chat, gen | pipeline gateway |
+| `PIPELINE_API_TOKEN` | main-web；gen 仅在显式 legacy provider 时 | Main 的 OpenAI-compatible text/voice adapter；deprecated external image/video pipeline 只有显式选择时才使用，workflow-native backend 不依赖它 |
 | `AGE_VERIFY_API_KEY` | main-web | age gateway |
 | `AGE_VERIFY_WEBHOOK_SECRET` | main-web | age gateway callback signer |
 | `BTCPAY_WEBHOOK_SECRET` | main-web | BTCPay webhook signer |
@@ -70,15 +70,15 @@ Store these generated values:
 | `CHAT_MODEL_NAME` | Production chat model alias |
 | `CHAT_MODEL_API_KEY` | Chat gateway token |
 
-## Pipeline and Voice Values
+## Main Text/Voice and Legacy External Pipeline Values
 
 | Key | Notes |
 | --- | --- |
-| `PIPELINE_API_URL` | OpenAI-compatible chat or legacy image adapter URL; current image worker does not require 8091 |
+| `PIPELINE_API_URL` | Main OpenAI-compatible admin-text/fallback adapter URL；只有显式 legacy media provider 才复用它，当前 workflow-native image/video backend 不依赖该 URL |
 | `PIPELINE_IMAGE_MODEL_DEFAULT` | Legacy pipeline image alias only; not the current backend model authority |
-| `PIPELINE_CHAT_MODEL_DEFAULT` | Chat model alias exposed by pipeline |
-| `PIPELINE_VIDEO_MODEL_DEFAULT` | Required only when video is launched |
-| `PIPELINE_TIMEOUT_MS` | Image/chat timeout budget |
+| `PIPELINE_CHAT_MODEL_DEFAULT` | Main text adapter alias；split Chat runtime 使用 `CHAT_MODEL_*`，不以该值为模型权威 |
+| `PIPELINE_VIDEO_MODEL_DEFAULT` | Legacy pipeline video alias only; workflow-native video release does not require it |
+| `PIPELINE_TIMEOUT_MS` | Main/legacy adapter timeout budget |
 | `PIPELINE_VOICE_API_URL` | Explicit rollback voice gateway only |
 | `PIPELINE_VOICE_API_TOKEN` | Explicit rollback voice gateway token only |
 | `PIPELINE_VOICE_MODEL_DEFAULT` | Explicit rollback voice model alias only |

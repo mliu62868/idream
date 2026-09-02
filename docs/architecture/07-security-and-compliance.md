@@ -1,6 +1,6 @@
 # 07 · 安全与合规
 
-更新日期：2026-06-13
+更新日期：2026-09-01
 
 这是一个 **18+ 成人 AI 产品**。本文件的多数条目是**法律 / 平台政策强制**，不是可选优化。对齐 `BackendFeatureSpec §3.6/§4.4` 与 `PRD §6.1/§6.9`。
 
@@ -86,13 +86,13 @@
 - **PII 最小化**：日志不记明文密码/token/敏感内容；`ip`/`userAgent` 按需留存并设保留期。
 - 合规框架按辖区：GDPR（EU）、CCPA（加州）、各成人内容法。
 
-## 7. 政策内容（本地镜像 vs 外链）
+## 7. 政策内容（版本化本地发布权威）
 
 ADR-10 对照决策：
 
-- 权威政策源仍是 `safety.ourdream.ai`（外链）。
-- 关键政策正文**版本化镜像**进 `policy_versions`（slug+version+body），供 Safety Center 本地页、age gate、举报流引用，保证产品内可读且可追溯版本。
-- 16 个 `/safety/*` 镜像路由（已存在）由 seo 模块从 `policy_versions` 渲染。
+- iDream `policy_versions` 与明确 publication record 是政策正文和公开路径的权威；对标站链接只保留在研究材料中。
+- 关键政策正文以 `slug+version+body` 版本化，供 Safety Center、age gate 和举报流引用，保证产品内可读且可追溯版本。
+- `/safety/*` 只有 dedicated positive registry 或已发布 CMS 记录才渲染；历史路由库存没有 publication authority 时返回 404。
 
 ## 8. 应用安全（Web）
 

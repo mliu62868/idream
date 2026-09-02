@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { requireExecutableAdminV2Contract } from "@idream/shared/admin";
 import { Errors } from "@/server/lib/errors";
 import { ok } from "@/server/lib/http";
+import { logger } from "@/server/lib/logger";
 import { adminV2Route } from "./route-handler";
 
 const savedViewsUrl = "http://localhost/api/v2/admin/saved-views";
@@ -16,6 +17,7 @@ function validSavedViewList() {
 }
 
 describe("Admin v2 route seam", () => {
+  afterEach(() => vi.restoreAllMocks());
   it("ships a payload its declared response contract admits", async () => {
     const response = await adminV2Route(get(savedViewsUrl), () => validSavedViewList());
 
@@ -65,6 +67,28 @@ describe("Admin v2 route seam", () => {
 
     expect(response.status).toBe(403);
     expect(await response.json()).toMatchObject({ ok: false, error: { code: "forbidden" } });
+  });
+
+  it("keeps unexpected authority failures inside the JSON error envelope", async () => {
+    const failure = new Error("Prisma client rejected runItemId: null; private database details");
+    const logged = vi.spyOn(logger, "error").mockImplementation(() => {});
+    const request = new Request(savedViewsUrl, { headers: { "x-request-id": "authority-failure-test" } });
+    const response = await adminV2Route(request, async () => {
+      throw failure;
+    });
+
+    expect(response.status).toBe(500);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    expect(await response.json()).toEqual({
+      ok: false,
+      error: { code: "internal", message: "Internal error" },
+    });
+    expect(logged).toHaveBeenCalledWith({
+      err: failure,
+      method: "GET",
+      path: "/api/v2/admin/saved-views",
+      requestId: "authority-failure-test",
+    }, "Unhandled Admin v2 route error");
   });
 
   it("fails closed on a path the manifest does not declare", async () => {

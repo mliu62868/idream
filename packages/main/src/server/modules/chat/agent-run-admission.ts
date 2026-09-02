@@ -11,8 +11,15 @@ import {
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
+import { Errors } from "@/server/lib/errors";
 import { logger } from "@/server/lib/logger";
-import { executionSnapshot } from "./turn-ledger";
+import {
+  beginChatTurn,
+  cancelChatTurn,
+  editChatTurn,
+  executionSnapshot,
+  regenerateChatTurn,
+} from "./turn-ledger";
 import { loadChatAuthoritySnapshot } from "./chat-authority-snapshot";
 
 const ADMISSION_PATH = "/internal/agent-runs";
@@ -22,6 +29,69 @@ const ADMISSION_LEASE_MS = 15_000;
 export interface AgentRunAdmissionResult {
   admitted: boolean;
   reason?: string;
+}
+
+/**
+ * Product Turn commands own their durable mutation -> best-effort admission
+ * order. HTTP callers receive product state and never coordinate the two
+ * authorities themselves.
+ */
+export async function beginAdmittedChatTurn(input: {
+  userId: string;
+  sessionId: string;
+  content: string;
+  idempotencyKey: string;
+}) {
+  assertAgentRuntimeConfigured();
+  const begun = await beginChatTurn(input);
+  const admission = begun.snapshot
+    ? await attemptChatAgentRunAdmission(begun.snapshot)
+    : null;
+  const assistant = admission?.admitted
+    ? { ...begun.assistant, status: "generating" as const }
+    : begun.assistant;
+  return {
+    userMessage: begun.userMessage,
+    assistant,
+    assistantMessageId: assistant.id,
+    streamUrl: begun.streamUrl,
+    ...(begun.safety ? { safety: begun.safety } : {}),
+  };
+}
+
+export async function editAndAdmitChatTurn(
+  userId: string,
+  messageId: string,
+  content: string,
+) {
+  assertAgentRuntimeConfigured();
+  const result = await editChatTurn(userId, messageId, content);
+  const admission = result.snapshot
+    ? await attemptChatAgentRunAdmission(result.snapshot)
+    : null;
+  return publicRetry(result, admission?.admitted === true);
+}
+
+export async function regenerateAndAdmitChatTurn(userId: string, messageId: string) {
+  assertAgentRuntimeConfigured();
+  const result = await regenerateChatTurn(userId, messageId);
+  const admission = await attemptChatAgentRunAdmission(result.snapshot);
+  return publicRetry(result, admission.admitted);
+}
+
+export async function cancelAdmittedChatTurn(
+  userId: string,
+  messageId: string,
+  fetchImpl: typeof fetch = fetch,
+) {
+  const result = await cancelChatTurn(userId, messageId);
+  await cancelAdmittedAttempt(result.turnId, result.attempt, fetchImpl).catch((error) => {
+    logger.warn(
+      { err: error, turnId: result.turnId, attempt: result.attempt },
+      "immediate AgentRun cancellation failed; durable outbox remains authoritative",
+    );
+  });
+  return { ok: true, cancelled: result.cancelled };
 }
 
 /**
@@ -180,10 +250,34 @@ export async function dispatchPendingChatAgentRuns(
   });
   let admitted = 0;
   for (const row of rows) {
-    const result = await attemptChatAgentRunAdmission(await executionSnapshot(row.id));
+    const result = await attemptPersistedChatAgentRunAdmission(row.id);
     if (result.admitted) admitted += 1;
   }
   return { admitted, pending: rows.length - admitted };
+}
+
+async function attemptPersistedChatAgentRunAdmission(
+  turnId: string,
+): Promise<AgentRunAdmissionResult> {
+  try {
+    return await attemptChatAgentRunAdmission(await executionSnapshot(turnId));
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "invalid frozen execution snapshot";
+    // INVARIANT: one corrupt product snapshot remains visible for repair but
+    // cannot abort the rest of the due admission batch.
+    await prisma.chatTurn.updateMany({
+      where: { id: turnId, assistantStatus: "pending" },
+      data: {
+        admissionAttempts: { increment: 1 },
+        // A malformed immutable snapshot needs operator repair. Keep it
+        // visible in the ledger without hot-looping every dispatcher tick.
+        admissionNextRunAt: new Date(Date.now() + admissionBackoffMs(9)),
+        admissionLastError: { message: reason },
+      },
+    }).catch(() => undefined);
+    logger.warn({ turnId, reason }, "skipping invalid pending Chat Turn snapshot");
+    return { admitted: false, reason };
+  }
 }
 
 function admissionBackoffMs(attempts: number): number {
@@ -213,6 +307,30 @@ function configuredChatBase(): string {
     throw new Error("CHAT_BFF_SIGNING_SECRET not configured");
   }
   return env.CHAT_SERVICE_URL.replace(/\/$/u, "");
+}
+
+function assertAgentRuntimeConfigured(): void {
+  try {
+    configuredChatBase();
+  } catch (error) {
+    throw Errors.unavailable(error instanceof Error ? error.message : "Chat runtime not configured");
+  }
+}
+
+function publicRetry(result: {
+  assistantMessageId: string;
+  attempt: number;
+  status: "pending" | "blocked";
+  streamUrl: string | null;
+  safety?: { layer: "input"; policyCode?: string };
+}, admitted: boolean) {
+  return {
+    assistantMessageId: result.assistantMessageId,
+    attempt: result.attempt,
+    status: admitted && result.status === "pending" ? "generating" as const : result.status,
+    streamUrl: result.streamUrl,
+    ...(result.safety ? { safety: result.safety } : {}),
+  };
 }
 
 function signedAdmissionHeaders(

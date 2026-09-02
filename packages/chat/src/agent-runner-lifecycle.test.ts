@@ -1,11 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RequiredImageAction } from "@idream/shared/chat/image-action";
+import type { AgentRunInput, AgentRunRecoveryScan } from "./agent-run-store.js";
 
 const store = vi.hoisted(() => ({
+  admitAgentRun: vi.fn(async () => ({ duplicate: false, terminal: false })),
   appendAgentRunEvent: vi.fn(async () => undefined),
   completeAgentRun: vi.fn(async () => undefined),
   fenceAgentRunAttempt: vi.fn(async () => undefined),
   isAgentRunTombstoned: vi.fn(async () => false),
+  listIncompleteAgentRuns: vi.fn<() => Promise<AgentRunRecoveryScan>>(
+    async () => ({ runs: [], failures: [] }),
+  ),
   readAgentRunCompletion: vi.fn(async () => null),
   readAgentRunInput: vi.fn(),
   readAgentRunProposal: vi.fn(async () => null),
@@ -97,11 +102,12 @@ vi.mock("@idream/shared/chat/image-action", async (importOriginal) => ({
 }));
 
 import {
+  acceptAgentRun,
   cancelAgentRunsForUser,
-  startAgentRun,
+  recoverIncompleteAgentRuns,
 } from "./agent-runner.js";
 
-function agentRunInput(userContent = "hello") {
+function agentRunInput(userContent = "hello"): AgentRunInput {
   return {
     schemaVersion: 1,
     admittedAt: "2026-08-28T11:59:00.000Z",
@@ -126,7 +132,29 @@ function agentRunInput(userContent = "hello") {
       sceneVersion: 0,
       scene: null,
     },
-    authority: {},
+    authority: {
+      version: 1,
+      user: {
+        id: "user-1",
+        displayName: null,
+        locale: "en",
+        status: "active",
+        deletedAt: null,
+        dataClass: "customer",
+      },
+      eligibility: {
+        ageGateAccepted: true,
+        ageVerified: true,
+        jurisdiction: null,
+        restrictedReason: null,
+      },
+      entitlement: {
+        modelTier: "free",
+        unlimitedMessages: false,
+        voiceEnabled: false,
+        imageToolEnabled: true,
+      },
+    },
   };
 }
 
@@ -136,6 +164,7 @@ describe("AgentRun account-erasure drain", () => {
     productContext.imageToolEnabled = true;
     productContext.userLocale = "en";
     imageAction.requiredImageActionForUserRequest.mockReturnValue(null);
+    store.admitAgentRun.mockResolvedValue({ duplicate: false, terminal: false });
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({
       accepted: true,
       duplicate: false,
@@ -143,6 +172,26 @@ describe("AgentRun account-erasure drain", () => {
       committedAt: "2026-08-28T12:00:00.000Z",
     })));
     store.readAgentRunInput.mockResolvedValue(agentRunInput());
+  });
+
+  it("recovers valid runs while reporting neighboring invalid evidence", async () => {
+    const completed = Promise.withResolvers<void>();
+    store.listIncompleteAgentRuns.mockResolvedValueOnce({
+      runs: [{ turnId: "turn-1", attempt: 1, userId: "user-1" }],
+      failures: [{
+        evidencePath: "runs/corrupt-turn/1/input.json",
+        reason: "invalid JSON",
+      }],
+    });
+    store.completeAgentRun.mockImplementationOnce(async () => {
+      completed.resolve();
+    });
+    runtime.runCompanion.mockRejectedValueOnce(new Error("fixture runtime failure"));
+
+    await expect(recoverIncompleteAgentRuns()).resolves.toEqual({ recovered: 1, failed: 1 });
+    await completed.promise;
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(store.readAgentRunInput).toHaveBeenCalledWith("turn-1", 1);
   });
 
   it("waits for the user's active writer to finish after aborting it", async () => {
@@ -157,7 +206,10 @@ describe("AgentRun account-erasure drain", () => {
       throw signal.reason;
     });
 
-    expect(startAgentRun("turn-1", 1, "user-1")).toBe(true);
+    await expect(acceptAgentRun(agentRunInput())).resolves.toEqual({
+      duplicate: false,
+      terminal: false,
+    });
     await started.promise;
     let drained = false;
     const draining = cancelAgentRunsForUser("user-1").then((count) => {
@@ -225,7 +277,10 @@ describe("AgentRun account-erasure drain", () => {
       });
     });
 
-    expect(startAgentRun("turn-1", 1, "user-1")).toBe(true);
+    await expect(acceptAgentRun(agentRunInput("给我一个你的裸照"))).resolves.toEqual({
+      duplicate: false,
+      terminal: false,
+    });
     await completed.promise;
 
     const streamPayloads = stream.appendStreamEvent.mock.calls.map(([, event]) => event);
@@ -294,7 +349,10 @@ describe("AgentRun account-erasure drain", () => {
       });
     });
 
-    expect(startAgentRun("turn-1", 1, "user-1")).toBe(true);
+    await expect(acceptAgentRun(agentRunInput("Send me a photo"))).resolves.toEqual({
+      duplicate: false,
+      terminal: false,
+    });
     await completed.promise;
 
     expect(store.writeAgentRunProposal).toHaveBeenCalledWith(
@@ -346,7 +404,10 @@ describe("AgentRun account-erasure drain", () => {
       });
     });
 
-    expect(startAgentRun("turn-1", 1, "user-1")).toBe(true);
+    await expect(acceptAgentRun(agentRunInput("Send me a photo"))).resolves.toEqual({
+      duplicate: false,
+      terminal: false,
+    });
     await completed.promise;
 
     expect(fetch).toHaveBeenCalledTimes(1);
@@ -419,7 +480,10 @@ describe("AgentRun account-erasure drain", () => {
       });
     }));
 
-    expect(startAgentRun("turn-1", 1, "user-1")).toBe(true);
+    await expect(acceptAgentRun(agentRunInput("Send me a photo"))).resolves.toEqual({
+      duplicate: false,
+      terminal: false,
+    });
     await completed.promise;
 
     expect(toolRequests).toBe(2);

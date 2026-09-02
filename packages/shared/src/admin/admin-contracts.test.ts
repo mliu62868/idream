@@ -600,7 +600,8 @@ describe("Admin API v2 public contracts", () => {
       ),
     ).toMatchObject({
       publicationStatus: "official",
-      decisionGate: expect.stringContaining("NS-01"),
+      decisionGate:
+        "NS-01 final decision: WPCU remains official; sustained relationship and creation metrics stay diagnostic",
       qualityState: "invalid",
       decisionUse: "blocked",
       lastValidatedAt: null,

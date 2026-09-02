@@ -163,12 +163,14 @@ describe("CharacterVoicePanel voice identity controls", () => {
       canWrite?: boolean;
       canActivate?: boolean;
       canManageDefaults?: boolean;
+      canPreview?: boolean;
     } = {},
   ) {
     await act(async () => root.render(
       <CharacterVoicePanel
         canActivate={permissions.canActivate ?? true}
         canManageDefaults={permissions.canManageDefaults ?? true}
+        canPreview={permissions.canPreview ?? true}
         canWrite={permissions.canWrite ?? true}
         data={data}
         releaseIdempotencyKey={idempotencyKeys.release}

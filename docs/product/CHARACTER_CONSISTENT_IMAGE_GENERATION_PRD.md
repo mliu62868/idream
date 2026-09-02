@@ -233,11 +233,13 @@ Look 不改变脸和基础身份，只改变可切换造型。
 
 流程：
 
+> **历史实现说明**：以下 5 步是本专题成稿时的 as-built 流程，只用于解释视觉身份如何落点，不再定义当前完整对标目标。当前产品目标以 `PRD.md` 的六步 Style → General → Face → Body → Details → Image 为准；Quick Start 只能预填六步流程，不能替代其中任一能力。
+
 ```text
 Identity -> Appearance -> Personality -> Visual Preview -> Publish
 ```
 
-在现有 5 步向导基础上，Visual Preview 步升级为：
+把这份历史流程映射到当前六步目标时，下面的 Visual Preview 能力归入 Image 步：
 
 1. 系统根据 gender/style/appearance/hair/body/advancedDetails 生成 4 张候选预览。
 2. 用户选择最像预期的一张作为 `anchorAsset`。

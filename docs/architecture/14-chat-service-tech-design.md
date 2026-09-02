@@ -36,7 +36,7 @@ Chat 只构造一条 system message，层级固定：
 
 opening、历史 Turn、memory recall、Scene 与时间是可变事实，作为紧邻当前用户消息的 replay/plugin messages 输入；不得复制进 system prompt。`PreparedTurn.trace` 固定 Product Contract 版本、最终 system prompt SHA-256 与 Soul fingerprint，三者原样进入 Main 终态证据。
 
-Product Contract 决定「这是怎样的陪伴产品」，Soul 决定「此刻由谁、用什么声音表达」。Soul 不能覆盖 Product Contract 或 Runtime Authority，Runtime 也不能重写 Soul 的角色事实。
+Product Contract 决定「Chat 交互共同遵循什么产品行为」，Soul 决定「此刻由谁、用什么声音表达」。Soul 不能覆盖 Product Contract 或 Runtime Authority，Runtime 也不能重写 Soul 的角色事实。
 
 ## 3. Turn 热路径
 

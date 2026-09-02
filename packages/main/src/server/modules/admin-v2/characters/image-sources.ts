@@ -3,12 +3,17 @@ import {
   characterImageSourceListResponseSchema,
   characterImageSourceUploadRequestSchema,
   characterImageSourceUploadResponseSchema,
+  type CharacterImageQualification,
   type CharacterImageSourceAsset,
 } from "@idream/shared/admin";
 import type { MediaAsset, Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { env } from "@/server/lib/env";
 import { Errors } from "@/server/lib/errors";
+import {
+  mediaAssetPlatformStatus,
+  OPERATOR_UPLOAD_AUTHORITY_SCHEMA,
+} from "@/server/lib/media-asset-authority";
 import {
   operationalCharacterWhere,
   operationalMediaAssetWhere,
@@ -21,8 +26,9 @@ import {
 } from "@/server/modules/admin-v2/shared/image-upload";
 import { toInputJson } from "@/server/modules/admin-v2/shared/prisma-json";
 import { providers } from "@/server/providers";
+import { characterImageQualifications } from "./image-qualification";
 
-const LIST_LIMIT = 24;
+const LIST_LIMIT = 100;
 const IMAGE_SOURCE_PURPOSE = "identity_experiment_source";
 const CHARACTER_LIBRARY_PURPOSE = "character_library";
 
@@ -50,25 +56,80 @@ export async function parseCharacterImageSourceForm(
 
 export async function listCharacterImageSources(input: {
   characterId: string;
+  purpose?: CharacterImageUploadPurpose;
 }) {
   await requireCharacter(input.characterId);
+  const purpose = input.purpose ?? IMAGE_SOURCE_PURPOSE;
   const assets = await prisma.mediaAsset.findMany({
     where: operationalMediaAssetWhere({
       characterId: input.characterId,
       type: "image",
-      visibility: "private",
       safetyStatus: "passed",
       deletedAt: null,
-      metadata: {
-        path: ["purpose"],
-        equals: IMAGE_SOURCE_PURPOSE,
-      },
+      ...(purpose === IMAGE_SOURCE_PURPOSE
+        ? {
+            visibility: "private",
+            metadata: {
+              path: ["purpose"],
+              equals: IMAGE_SOURCE_PURPOSE,
+            },
+          }
+        : {
+            // Publication changes visibility, not membership in this library.
+            OR: [
+              {
+                metadata: {
+                  path: ["purpose"],
+                  equals: CHARACTER_LIBRARY_PURPOSE,
+                },
+              },
+              {
+                metadata: {
+                  path: ["platformAsset", "purpose"],
+                  equals: CHARACTER_LIBRARY_PURPOSE,
+                },
+              },
+              {
+                productionItems: {
+                  some: {
+                    batch: {
+                      targetType: "character",
+                      targetId: input.characterId,
+                      purpose: {
+                        in: [
+                          "character_cover",
+                          "character_hero",
+                          "character_chat",
+                        ],
+                      },
+                    },
+                  },
+                },
+              },
+            ],
+          }),
     }),
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     take: LIST_LIMIT,
   });
+  // Archive removes library membership; a rejected Review remains inspectable.
+  const visibleAssets = assets.filter((asset) =>
+    mediaAssetPlatformStatus(asset.metadata) !== "archived"
+  );
+  const qualifications = purpose === CHARACTER_LIBRARY_PURPOSE
+    ? await characterImageQualifications(
+        prisma,
+        input.characterId,
+        visibleAssets,
+      )
+    : new Map<string, CharacterImageQualification>();
   return characterImageSourceListResponseSchema.parse({
-    items: assets.map(characterImageSourceAssetDto),
+    items: visibleAssets.map((asset) =>
+      characterImageSourceAssetDto(
+        asset,
+        qualifications.get(asset.id) ?? null,
+      )
+    ),
   });
 }
 
@@ -82,7 +143,9 @@ export async function createCharacterImageSource(input: {
   await requireCharacter(input.characterId);
 
   const uploadId = randomUUID();
-  const assetId = `media_identity_source_${uploadId}`;
+  const assetId = input.form.purpose === CHARACTER_LIBRARY_PURPOSE
+    ? `media_character_upload_${uploadId}`
+    : `media_identity_source_${uploadId}`;
   const storageKey =
     `character-images/${input.characterId}/${uploadId}${input.form.image.extension}`;
   let preparedStored = false;
@@ -141,15 +204,23 @@ export async function createCharacterImageSource(input: {
             safetyStatus: "passed",
             metadata: toInputJson({
               purpose: input.form.purpose,
-              source: "admin_local_upload",
+              source: "admin_asset_upload",
+              synthetic: false,
               filename: input.form.image.filename,
               sizeBytes: input.form.image.body.byteLength,
               sha256: input.form.image.sha256,
+              uploadAuthority: {
+                schemaVersion: OPERATOR_UPLOAD_AUTHORITY_SCHEMA,
+                kind: "operator_upload",
+                assetId,
+                uploadedById: input.actor.id,
+                sha256: input.form.image.sha256,
+              },
               platformAsset: {
                 purpose: input.form.purpose,
-                status: input.form.purpose === CHARACTER_LIBRARY_PURPOSE
-                  ? "generated"
-                  : "draft",
+                status: "draft",
+                tags: [],
+                updatedAt: new Date().toISOString(),
               },
             }),
           },
@@ -180,7 +251,18 @@ export async function createCharacterImageSource(input: {
             requestId: input.requestId,
           },
         });
-        return { asset: characterImageSourceAssetDto(asset) };
+        const qualification = input.form.purpose === CHARACTER_LIBRARY_PURPOSE
+          ? (
+              await characterImageQualifications(
+                tx,
+                input.characterId,
+                [asset],
+              )
+            ).get(asset.id) ?? null
+          : null;
+        return {
+          asset: characterImageSourceAssetDto(asset, qualification),
+        };
       },
       decorateResult: (value, replayed) => ({
         ...(value as Record<string, unknown>),
@@ -203,6 +285,7 @@ export async function createCharacterImageSource(input: {
 
 function characterImageSourceAssetDto(
   asset: MediaAsset,
+  qualification: CharacterImageQualification | null,
 ): CharacterImageSourceAsset {
   const metadata = jsonObject(asset.metadata);
   return {
@@ -221,6 +304,7 @@ function characterImageSourceAssetDto(
     width: asset.width ?? 1,
     height: asset.height ?? 1,
     createdAt: asset.createdAt.toISOString(),
+    qualification,
   };
 }
 

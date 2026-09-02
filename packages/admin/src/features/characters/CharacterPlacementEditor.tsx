@@ -3,11 +3,12 @@
 import { useCallback, useState } from "react";
 import { Check, ImageIcon, Loader2, Replace } from "lucide-react";
 import Image from "next/image";
-import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
-import { apiGet } from "@/components/admin/api";
+import type {
+  CharacterImageSourceAsset,
+  CharacterWorkspaceDetail,
+} from "@idream/shared/admin";
 import { useAdminI18n } from "@/components/admin/i18n";
 import { AssetImage } from "@/components/admin/ui/AssetImage";
-import { assetsListPath, type ContentAsset } from "@/components/admin/assets/assets-api";
 import { WorkspaceButton } from "@/features/operations/WorkspaceUi";
 import { adminV2Operation } from "@/lib/admin-v2-operation";
 import type { RunCommittedCharacterMutation } from "./character-workspace-permissions";
@@ -30,22 +31,27 @@ export function CharacterPlacementEditor({
   runCommittedMutation: RunCommittedCharacterMutation;
 }) {
   const { t } = useAdminI18n();
-  const [assets, setAssets] = useState<ContentAsset[]>([]);
+  const [assets, setAssets] = useState<CharacterImageSourceAsset[]>([]);
   const [choosing, setChoosing] = useState<PlacementPurpose | null>(null);
   const [busyAssetId, setBusyAssetId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const loadAssets = useCallback(async () => {
     setLoading(true);
-    setError(null);
+    setLoadError(null);
     try {
-      const result = await apiGet<{ items: ContentAsset[] }>(
-        assetsListPath({ targetId: data.character.id, limit: 100 }),
+      const result = await adminV2Operation(
+        "GET /api/v2/admin/characters/:id/image-sources",
+        {
+          path: { id: data.character.id },
+          query: new URLSearchParams({ purpose: "character_library" }),
+        },
       );
-      setAssets(result.items.filter((asset) => asset.platformStatus !== "archived"));
+      setAssets([...result.items]);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t("Character images could not be loaded"));
+      setLoadError(cause instanceof Error ? cause.message : t("Character images could not be loaded"));
     } finally {
       setLoading(false);
     }
@@ -53,11 +59,15 @@ export function CharacterPlacementEditor({
 
   function openChooser(purpose: PlacementPurpose) {
     setChoosing(purpose);
+    setError(null);
     void loadAssets();
   }
 
-  async function selectAsset(purpose: PlacementPurpose, assetId: string) {
-    setBusyAssetId(assetId);
+  async function selectAsset(
+    purpose: PlacementPurpose,
+    asset: CharacterImageSourceAsset,
+  ) {
+    setBusyAssetId(asset.id);
     setError(null);
     try {
       await runCommittedMutation({
@@ -71,7 +81,16 @@ export function CharacterPlacementEditor({
             body: {
               entityVersion: data.project.version,
               purpose,
-              assetId,
+              assetId: asset.id,
+              ...(asset.qualification?.authority.runId
+                ? { runId: asset.qualification.authority.runId }
+                : {}),
+              ...(asset.qualification?.authority.itemId
+                ? { itemId: asset.qualification.authority.itemId }
+                : {}),
+              ...(asset.qualification?.authority.reviewDecisionId
+                ? { reviewDecisionId: asset.qualification.authority.reviewDecisionId }
+                : {}),
               reason: `Selected from ${data.character.name}'s image library`,
             },
           },
@@ -85,7 +104,11 @@ export function CharacterPlacementEditor({
     }
   }
 
-  const usedAssetIds = new Set(Object.values(data.project.draftAssetPack));
+  const selectableAssets = choosing
+    ? assets.filter((asset) =>
+        asset.qualification?.selectablePurposes.includes(choosing)
+      )
+    : [];
 
   return (
     <section className="mb-5 rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)] p-4 sm:p-5" aria-labelledby="character-placement-title">
@@ -141,28 +164,61 @@ export function CharacterPlacementEditor({
             <button className="min-h-10 text-sm font-semibold text-[var(--ad-text-muted)] hover:text-[var(--ad-ink)]" onClick={() => setChoosing(null)} type="button">{t("Cancel")}</button>
           </div>
           {error ? <p className="mt-3 rounded-lg bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">{t(error)}</p> : null}
-          {loading ? (
+          {loadError ? (
+            <div className="mt-3 rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">
+              <p className="font-semibold">{t("Character images could not be loaded")}</p>
+              {assets.length > 0 ? <p className="mt-1">{t("Showing previously loaded items.")}</p> : null}
+              <details className="mt-2">
+                <summary className="cursor-pointer">{t("Error details")}</summary>
+                <p className="mt-1 break-words">{t(loadError)}</p>
+              </details>
+              <WorkspaceButton className="mt-3" disabled={loading} onClick={() => void loadAssets()}>{t("Retry")}</WorkspaceButton>
+            </div>
+          ) : null}
+          {/* SPEC: A failed read cannot establish that no qualified choices exist. */}
+          {loading && assets.length === 0 ? (
             <div className="grid min-h-36 place-items-center"><Loader2 className="h-5 w-5 animate-spin" /></div>
-          ) : assets.length === 0 ? (
-            <p className="mt-4 rounded-lg border border-dashed border-[var(--ad-border)] p-6 text-center text-sm text-[var(--ad-text-muted)]">{t("No images are available. Create or import images in Images first.")}</p>
+          ) : loadError && selectableAssets.length === 0 ? null : selectableAssets.length === 0 ? (
+            <p className="mt-4 rounded-lg border border-dashed border-[var(--ad-border)] p-6 text-center text-sm text-[var(--ad-text-muted)]">{t("No reviewed images are selectable for this placement. Review an imported candidate or approve a matching generated image in Images first.")}</p>
           ) : (
             <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-6">
-              {assets.map((asset) => {
-                const current = data.project.draftAssetPack[choosing] === asset.id;
-                const usedElsewhere = !current && usedAssetIds.has(asset.id);
+              {selectableAssets.map((asset) => {
+                const selectedPurposes = asset.qualification?.selectedPurposes ?? [];
+                const current = selectedPurposes.includes(choosing);
+                const currentAuthorityStale = current &&
+                  !asset.qualification?.releaseQualifiedPurposes.includes(choosing);
+                const usedElsewhere = selectedPurposes.some(
+                  (purpose) => purpose !== choosing,
+                );
                 return (
                   <button
                     aria-label={t("Use image for {placement}", { placement: t(choosing) })}
                     className="overflow-hidden rounded-lg border border-[var(--ad-border)] text-left disabled:cursor-not-allowed disabled:opacity-40"
-                    disabled={!canWrite || busyAssetId !== null || current || usedElsewhere}
+                    disabled={
+                      !canWrite ||
+                      busyAssetId !== null ||
+                      (current && !currentAuthorityStale) ||
+                      usedElsewhere
+                    }
                     key={asset.id}
-                    onClick={() => void selectAsset(choosing, asset.id)}
+                    onClick={() => void selectAsset(choosing, asset)}
                     type="button"
                   >
-                    <AssetImage asset={{ url: asset.url, thumbnailUrl: asset.thumbnailUrl }} />
+                    <AssetImage asset={{
+                      url: asset.url,
+                      thumbnailUrl: asset.thumbnailUrl ?? asset.url,
+                    }} />
                     <span className="flex min-h-10 items-center gap-1.5 px-2 text-xs font-semibold">
                       {busyAssetId === asset.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : current ? <Check className="h-3.5 w-3.5" /> : null}
-                      {t(current ? "Current" : usedElsewhere ? "Used in another placement" : "Use image")}
+                      {t(
+                        currentAuthorityStale
+                          ? "Update Review authority"
+                          : current
+                            ? "Current"
+                            : usedElsewhere
+                              ? "Used in another placement"
+                              : "Use image",
+                      )}
                     </span>
                   </button>
                 );

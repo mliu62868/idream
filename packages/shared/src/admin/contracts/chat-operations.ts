@@ -207,16 +207,13 @@ export type MainToChatOutboxTargetMissingDispositionResult = z.infer<
 >;
 
 /**
- * SPEC: Chat 服务只读运营视图（overview / provider-health / sessions / usage /
- *   moderation-events）经 Main 代理后的公开形状。
- * INTENT: v1 把 Chat 的响应体整个 spread 进信封，Main 对里面有什么没有任何声明。
- *   这些 DTO 就是补上的那份声明 —— 权威仍在 Chat（`packages/chat/src/admin.ts`），
- *   Main 只承诺「过得了这个形状才会发出去」。
- * INVARIANT: Chat 不可达 / 未配置 / 形状对不上时，`configured=false` 且列表为空、
- *   `pageInfo=null`，而不是 500 —— 运营台要能看见「为什么是空的」，
- *   这也是 `diagnostics.reason` 存在的全部理由。
+ * SPEC: Main-owned Chat product operations views plus the narrow Chat runtime
+ *   diagnostics adapter share these public Admin response shapes.
+ * INVARIANT: sessions, usage, moderation events and overview are projections
+ *   of Main PostgreSQL. Only provider/runtime health may degrade when the Chat
+ *   process is unavailable or violates its shared diagnostics contract.
  */
-export const chatOpsProxyDiagnosticsSchema = z
+export const chatOpsDiagnosticsSchema = z
   .object({
     reason: z
       .enum([
@@ -374,21 +371,21 @@ export const chatOpsModerationEventSchema = z
   })
   .strict();
 
-const chatOpsProxyEnvelope = {
+const chatOpsEnvelope = {
   configured: z.boolean(),
-  diagnostics: chatOpsProxyDiagnosticsSchema,
+  diagnostics: chatOpsDiagnosticsSchema,
 } as const;
 
 export const chatOpsOverviewResponseSchema = z
   .object({
-    ...chatOpsProxyEnvelope,
+    ...chatOpsEnvelope,
     overview: chatOpsOverviewSchema.nullable(),
   })
   .strict();
 
 export const chatOpsProviderHealthResponseSchema = z
   .object({
-    ...chatOpsProxyEnvelope,
+    ...chatOpsEnvelope,
     checkedAt: adminIsoDateTimeSchema.nullable(),
     items: z.array(chatOpsProviderHealthItemSchema).readonly(),
   })
@@ -396,7 +393,7 @@ export const chatOpsProviderHealthResponseSchema = z
 
 export const chatOpsSessionListResponseSchema = z
   .object({
-    ...chatOpsProxyEnvelope,
+    ...chatOpsEnvelope,
     items: z.array(chatOpsSessionSchema).readonly(),
     pageInfo: adminPageInfoSchema.nullable(),
   })
@@ -404,7 +401,7 @@ export const chatOpsSessionListResponseSchema = z
 
 export const chatOpsUsageListResponseSchema = z
   .object({
-    ...chatOpsProxyEnvelope,
+    ...chatOpsEnvelope,
     freeDailyLimit: nonNegativeCount.nullable(),
     items: z.array(chatOpsUsageSchema).readonly(),
     pageInfo: adminPageInfoSchema.nullable(),
@@ -413,13 +410,13 @@ export const chatOpsUsageListResponseSchema = z
 
 export const chatOpsModerationEventListResponseSchema = z
   .object({
-    ...chatOpsProxyEnvelope,
+    ...chatOpsEnvelope,
     items: z.array(chatOpsModerationEventSchema).readonly(),
     pageInfo: adminPageInfoSchema.nullable(),
   })
   .strict();
 
-export type ChatOpsProxyDiagnostics = z.infer<typeof chatOpsProxyDiagnosticsSchema>;
+export type ChatOpsDiagnostics = z.infer<typeof chatOpsDiagnosticsSchema>;
 export type ChatOpsOverview = z.infer<typeof chatOpsOverviewSchema>;
 export type ChatOpsSession = z.infer<typeof chatOpsSessionSchema>;
 export type ChatOpsUsage = z.infer<typeof chatOpsUsageSchema>;

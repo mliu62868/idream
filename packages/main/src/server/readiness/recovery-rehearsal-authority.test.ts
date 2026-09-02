@@ -17,6 +17,7 @@ import type { ExpectedMigration } from "./migration-authority";
 import {
   inspectRecoveryRehearsalBundle,
   type RecoveryArchiveCommandRunner,
+  type RecoveryRehearsalSourceAuthority,
 } from "./recovery-rehearsal-authority";
 import { renderRecoveryDatabaseAuthoritySql } from "./recovery-database-authority";
 
@@ -25,6 +26,29 @@ const expectedMigrations: ExpectedMigration[] = [
   { migrationName: "001_baseline", checksum: "a".repeat(64) },
   { migrationName: "002_launch_authority", checksum: "b".repeat(64) },
 ];
+const currentSourceAuthority: RecoveryRehearsalSourceAuthority = {
+  mainPostgres: {
+    host: "db.internal",
+    port: 5432,
+    database: "idream",
+  },
+  agentRun: { root: "/var/lib/idream/agent-runs" },
+  dsh: {
+    canonicalRoot: "/var/lib/idream/dsh-canonical",
+    privateRoot: "/var/lib/idream/dsh-private",
+  },
+  queue: {
+    redis: "redis://redis.internal:6379/3",
+    prefix: "idream:development",
+  },
+  blob: {
+    provider: "r2",
+    endpoint: "https://account.r2.cloudflarestorage.com/",
+    bucket: "idream-production",
+    root: null,
+    recoveryRetentionDays: 30,
+  },
+};
 
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) {
@@ -70,6 +94,8 @@ function writeRecoveryBundle(overrides?: {
   corruptFile?: string;
   completedAt?: string;
   sourceCheckpointSha256?: string;
+  quiescenceReceiptSha256?: string;
+  dshPrivateRestoreManifest?: string;
   blobArtifactMode?: "remote" | "local" | "both";
   placeholderArchives?: boolean;
   quiescenceQueues?: readonly string[];
@@ -86,18 +112,31 @@ function writeRecoveryBundle(overrides?: {
   const base = path.join(bundle, bundleName);
   mkdirSync(bundle);
 
-  const chatFixture = path.join(parent, "chat");
-  mkdirSync(chatFixture, { mode: 0o755 });
-  writeFileSync(path.join(chatFixture, "session.json"), "chat", { mode: 0o600 });
-  const chatArchiveFixture = path.join(parent, "chat.tar.gz");
-  const archived = spawnSync(
-    "tar",
-    ["-czf", chatArchiveFixture, "-C", parent, "chat"],
-    { encoding: null },
+  const fileAuthorityFixture = (rootName: string, content: string) => {
+    const root = path.join(parent, rootName);
+    mkdirSync(root, { mode: 0o755 });
+    writeFileSync(path.join(root, "state.json"), content, { mode: 0o600 });
+    const archive = path.join(parent, `${rootName}.tar.gz`);
+    const archived = spawnSync(
+      "tar",
+      ["-czf", archive, "-C", parent, rootName],
+      { encoding: null },
+    );
+    if (archived.error || archived.status !== 0) {
+      throw archived.error ?? new Error(`could not create ${rootName} archive`);
+    }
+    return {
+      archive: readFileSync(archive),
+      manifest:
+        `directory\t755\t-\t.\nfile\t600\t${sha256(content)}\t./state.json\n`,
+    };
+  };
+  const agentRunFixture = fileAuthorityFixture("agent-runs", "agent-run");
+  const dshCanonicalFixture = fileAuthorityFixture(
+    "dsh-canonical",
+    "canonical",
   );
-  if (archived.error || archived.status !== 0) {
-    throw archived.error ?? new Error("could not create Chat fixture archive");
-  }
+  const dshPrivateFixture = fileAuthorityFixture("dsh-private", "private");
 
   const sourceCounts = JSON.stringify(
     {
@@ -225,8 +264,13 @@ function writeRecoveryBundle(overrides?: {
     "restore-schema.sql": schema,
     "source-logical.json": logical,
     "restore-logical.json": logical,
-    "chat-fs.source.sha256": `directory\t755\t-\t.\nfile\t600\t${sha256("chat")}\t./session.json\n`,
-    "chat-fs.restore.sha256": `directory\t755\t-\t.\nfile\t600\t${sha256("chat")}\t./session.json\n`,
+    "agent-run.source.sha256": agentRunFixture.manifest,
+    "agent-run.restore.sha256": agentRunFixture.manifest,
+    "dsh-canonical.source.sha256": dshCanonicalFixture.manifest,
+    "dsh-canonical.restore.sha256": dshCanonicalFixture.manifest,
+    "dsh-private.source.sha256": dshPrivateFixture.manifest,
+    "dsh-private.restore.sha256":
+      overrides?.dshPrivateRestoreManifest ?? dshPrivateFixture.manifest,
     "blob.source.sha256": `directory\t755\t-\t.\nfile\t600\t${"e".repeat(64)}\t./asset.bin\n`,
     "blob.restore.sha256": `directory\t755\t-\t.\nfile\t600\t${"e".repeat(64)}\t./asset.bin\n`,
   };
@@ -250,14 +294,32 @@ function writeRecoveryBundle(overrides?: {
     "database-authority.restore.sql": overrides?.placeholderArchives
       ? "-- \\set ON_ERROR_STOP on\n-- \\if :{?target_database}\n-- ALTER DATABASE\nSELECT 1;\n"
       : renderRecoveryDatabaseAuthoritySql(databaseAuthority),
-    "file-authorities.json":
-      '{"chat_fs":{"files":1,"bytes":16},"blob":{"authorities_match":true,"main_effective":{"provider":"r2"},"gen_effective":{"provider":"r2"},"files":1,"bytes":32}}\n',
+    "file-authorities.json": `${JSON.stringify({
+      agent_run: { files: 1, bytes: 9 },
+      dsh: {
+        canonical: { files: 1, bytes: 9 },
+        private: { files: 1, bytes: 7 },
+      },
+      queue: {
+        ...currentSourceAuthority.queue,
+        quiescence_receipt_sha256: sha256(quiescenceReceipt),
+      },
+      blob: {
+        authorities_match: true,
+        main_effective: { provider: "r2" },
+        gen_effective: { provider: "r2" },
+        files: 1,
+        bytes: 32,
+      },
+    })}\n`,
     "tool-versions.json":
       '{"bun":"1.3.14","pg_dump":"pg_dump (PostgreSQL) 18.3","pg_restore":"pg_restore (PostgreSQL) 18.3","psql":"psql (PostgreSQL) 18.3","server_version":"16.14","server_version_num":"160014"}\n',
     "quiescence-receipt.json": quiescenceReceipt,
-    "chat-fs.tar.gz": overrides?.placeholderArchives
+    "agent-run.tar.gz": overrides?.placeholderArchives
       ? gzipSync(Buffer.from("chat archive"))
-      : readFileSync(chatArchiveFixture),
+      : agentRunFixture.archive,
+    "dsh-canonical.tar.gz": dshCanonicalFixture.archive,
+    "dsh-private.tar.gz": dshPrivateFixture.archive,
     "blob-object-versions.json": `${JSON.stringify({
       provider: "r2",
       endpoint: "https://account.r2.cloudflarestorage.com/",
@@ -312,7 +374,9 @@ function writeRecoveryBundle(overrides?: {
     "source-counts.json",
     "source-schema.sql",
     "source-logical.json",
-    "chat-fs.source.sha256",
+    "agent-run.source.sha256",
+    "dsh-canonical.source.sha256",
+    "dsh-private.source.sha256",
     "blob.source.sha256",
     ...(files["blob-object-versions.json"]
       ? ["blob-object-versions.json"]
@@ -326,27 +390,17 @@ function writeRecoveryBundle(overrides?: {
     .sort()
     .join(""));
   files["metadata.json"] = `${JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
       completedAt: overrides?.completedAt ?? new Date().toISOString(),
       sourceCheckpointSha256:
         overrides?.sourceCheckpointSha256 ?? sourceCheckpointSha256,
+      quiescenceReceiptSha256:
+        overrides?.quiescenceReceiptSha256 ?? sha256(quiescenceReceipt),
       sourceAuthority: {
-        database: {
-          host: "db.internal",
-          port: 5432,
-          database: "idream",
-        },
-        chatFsRoot: "/var/lib/idream/chat",
+        ...currentSourceAuthority,
         queue: {
-          redis: "redis://redis.internal:6379/3",
+          ...currentSourceAuthority.queue,
           prefix: overrides?.queuePrefix ?? "idream:development",
-        },
-        blob: {
-          provider: "r2",
-          endpoint: "https://account.r2.cloudflarestorage.com/",
-          bucket: "idream-production",
-          root: null,
-          recoveryRetentionDays: 30,
         },
       },
     })}\n`;
@@ -487,27 +541,50 @@ describe("recovery rehearsal bundle authority", () => {
     );
   });
 
+  it("rejects metadata detached from the exact queue quiescence receipt", async () => {
+    const result = await inspectRecoveryRehearsalBundle({
+      bundlePath: writeRecoveryBundle({
+        quiescenceReceiptSha256: "f".repeat(64),
+      }),
+      expectedMigrations,
+      commandRunner: validArchiveRunner,
+      now: new Date(),
+      maxAgeMinutes: 60,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.problems).toContain(
+      "quiescence receipt identity does not match immutable recovery metadata",
+    );
+  });
+
+  it("rejects DSH private restore drift inside the same checkpoint bundle", async () => {
+    const result = await inspectRecoveryRehearsalBundle({
+      bundlePath: writeRecoveryBundle({
+        dshPrivateRestoreManifest:
+          `directory\t755\t-\t.\nfile\t600\t${"f".repeat(64)}\t./state.json\n`,
+      }),
+      expectedMigrations,
+      commandRunner: validArchiveRunner,
+      now: new Date(),
+      maxAgeMinutes: 60,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.problems).toContain(
+      "isolated restore differs from source authority: dsh-private.source.sha256",
+    );
+  });
+
   it("rejects a bundle captured from a different current source authority", async () => {
     const result = await inspectRecoveryRehearsalBundle({
       bundlePath: writeRecoveryBundle(),
       expectedMigrations,
       expectedSourceAuthority: {
-        database: {
-          host: "db.internal",
-          port: 5432,
-          database: "idream",
-        },
-        chatFsRoot: "/var/lib/idream/chat",
-        queue: {
-          redis: "redis://redis.internal:6379/3",
-          prefix: "idream:development",
-        },
+        ...currentSourceAuthority,
         blob: {
-          provider: "r2",
-          endpoint: "https://account.r2.cloudflarestorage.com/",
+          ...currentSourceAuthority.blob,
           bucket: "different-production-bucket",
-          root: null,
-          recoveryRetentionDays: 30,
         },
       },
       now: new Date(),
@@ -525,18 +602,10 @@ describe("recovery rehearsal bundle authority", () => {
       bundlePath: writeRecoveryBundle({ queuePrefix: "idream:development" }),
       expectedMigrations,
       expectedSourceAuthority: {
-        database: { host: "db.internal", port: 5432, database: "idream" },
-        chatFsRoot: "/var/lib/idream/chat",
+        ...currentSourceAuthority,
         queue: {
-          redis: "redis://redis.internal:6379/3",
+          ...currentSourceAuthority.queue,
           prefix: "idream:production",
-        },
-        blob: {
-          provider: "r2",
-          endpoint: "https://account.r2.cloudflarestorage.com/",
-          bucket: "idream-production",
-          root: null,
-          recoveryRetentionDays: 30,
         },
       },
       commandRunner: validArchiveRunner,
@@ -702,8 +771,8 @@ describe("recovery rehearsal bundle authority", () => {
     const bundleName = path.basename(bundle);
     const base = path.join(bundle, bundleName);
     const dumpName = `${bundleName}.dump`;
-    const archiveName = `${bundleName}.chat-fs.tar.gz`;
-    const manifestName = `${bundleName}.chat-fs.source.sha256`;
+    const archiveName = `${bundleName}.agent-run.tar.gz`;
+    const manifestName = `${bundleName}.agent-run.source.sha256`;
     const replacements = new Map([
       [dumpName, Buffer.from("not a pg_dump archive")],
       [archiveName, Buffer.from("not a gzip archive")],

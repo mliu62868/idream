@@ -1,5 +1,9 @@
 # AI 服务对接设计 (Chat / Image / Video)
 
+取代标记：2026-09-01
+
+> **历史研究稿，已被取代。** 本文记录旧的独立 Chat DB/BullMQ 方案，不是当前产品或架构权威，不得用于新实现或上线判断。当前边界以 [`../architecture/20-local-file-chat-authority.md`](../architecture/20-local-file-chat-authority.md)、[`../architecture/14-chat-service-tech-design.md`](../architecture/14-chat-service-tech-design.md)、[`../product/BackendFeatureSpec.md`](../product/BackendFeatureSpec.md) 和代码为准：Main 持有聊天产品事实，Chat 只持有本地 `AgentRun` 执行/恢复证据。
+
 > 目标：定义 Chat、Image、Video 三类生成能力的服务边界和可靠通讯。Chat Service 现在是完整 chat domain 服务，拥有自己的聊天数据库能力，并只读主站 User / Character / Entitlement / Eligibility 数据。Image / Video 仍按“主站创建业务任务，AI worker 生成媒体，主站 finalizer 落库结算”的模式对接。
 >
 > Chat Service 的产品能力、数据库边界、主站只读 view 和跨服务事件见 `docs/product/CHAT_SERVICE_PRD.md`。本文只定义跨服务传输层、队列拓扑和落地约束。

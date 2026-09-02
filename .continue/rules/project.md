@@ -2,7 +2,7 @@
      Run `bash scripts/sync-agent-rules.sh` to regenerate. -->
 
 ---
-description: Project conventions for AI Website Clone Template
+description: Project conventions for the iDream OurDream-parity AI companion product
 alwaysApply: true
 ---
 <!-- BEGIN:nextjs-agent-rules -->
@@ -19,15 +19,15 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - 外部 **Safety Gateway 故意不接入**：`MODERATION_PROVIDER=mock`，`safety-gateway` 分支保留但不启用。这是**有意决策**，不要当成"缺口 / 待办 / 风险"反复标记或写进审计报告。
 - 唯一保留、且**无需再讨论**的硬底线：mock provider 里的未成年关键词拦截（`underage/minor/csam`）与角色 `age≥18`。属既定状态，保持现状、不解释、也不协助移除。
 
-# iDream — Ourdream.ai 克隆（18+ AI 角色扮演 / AI 伴侣平台）
+# iDream — OurDream.ai 全面对标（18+ AI 角色扮演 / AI 伴侣平台）
 
 ## What This Is
-一个全栈 AI 伴侣产品（参考站点 https://ourdream.ai/）。bun + Turborepo monorepo，按执行时间分级拆服务。
+一个全面对标 OurDream.ai 的 18+ AI 角色扮演 / AI 伴侣平台，目标覆盖 Explore、完整 Create、Chat、Generate、My AI/Profile、Feed/Community/Creator Economy、Upgrade、Affiliate、Support 与公开内容页面族。bun + Turborepo monorepo，按执行时间分级拆服务。
 
 ## 技术栈里读不出来的部分
 - Next.js 16 的 middleware 已更名 Proxy
 - Main 使用 PostgreSQL；Chat 无数据库，只保存本地 AgentRun，**没有** SQLite 双库
-- AI 走自托管开源模型 + OpenAI 兼容流水线；支付走加密货币
+- Chat 走自托管开源模型的 OpenAI-compatible endpoint；图片/视频走 Gen workflow-native backend（ComfyUI/Sdcpp/DrawThings），legacy external pipeline 仅兼容保留；支付走加密货币
 
 ## 文档与事实来源（SSoT）
 - 产品：`docs/product/`（PRD / FeatureMap / BackendFeatureSpec / ECONOMY_AND_PRICING / CONTENT_POLICY / ADMIN_CONSOLE_PLAN）
@@ -52,4 +52,4 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - After editing `.claude/skills/clone-website/SKILL.md`, run `node scripts/sync-skills.mjs` to regenerate the skill for all platforms.
 
 ## 参考站点
-https://ourdream.ai/ —— 可参考学习、对比、验证。产品定位/功能取舍以 `docs/product/` 为准，不必逐像素复刻。
+https://ourdream.ai/ —— 其公开可验证功能、页面族和用户旅程定义 iDream 的产品完整度对标。iDream 的具体产品契约以 `docs/product/` 为准，当前实现和运行事实以代码与同 revision 证据为准；不复制对方的内部技术实现。

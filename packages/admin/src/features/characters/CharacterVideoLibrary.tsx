@@ -25,6 +25,7 @@ type CharacterVideoLibraryProps = {
   data: CharacterWorkspaceDetail;
   canRead: boolean;
   canReadProduction: boolean;
+  canImport: boolean;
   canCreate: boolean;
   canArchive: boolean;
   onCreateImage: () => void;
@@ -37,6 +38,7 @@ export function CharacterVideoLibrary({
   data,
   canRead,
   canReadProduction,
+  canImport,
   canCreate,
   canArchive,
   onCreateImage,
@@ -50,6 +52,7 @@ export function CharacterVideoLibrary({
   const [uploading, setUploading] = useState(false);
   const [creatorOpen, setCreatorOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [archiveSpec, setArchiveSpec] = useState<ConfirmSpec | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -57,7 +60,7 @@ export function CharacterVideoLibrary({
   const loadAssets = useCallback(async () => {
     if (!canRead) return;
     setLoading(true);
-    setError(null);
+    setLoadError(null);
     try {
       const result = await apiGet<{ items: ContentAsset[] }>(
         assetsListPath({
@@ -68,7 +71,7 @@ export function CharacterVideoLibrary({
       );
       setAssets(result.items.filter((asset) => asset.platformStatus !== "archived"));
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t("Character videos could not be loaded"));
+      setLoadError(cause instanceof Error ? cause.message : t("Character videos could not be loaded"));
     } finally {
       setLoading(false);
     }
@@ -87,7 +90,7 @@ export function CharacterVideoLibrary({
   async function upload(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0] ?? null;
     event.target.value = "";
-    if (!file || uploading || !canCreate) return;
+    if (!file || uploading || !canImport) return;
     if (file.size > 100 * 1024 * 1024) {
       setError(t("Video must be 100 MB or smaller"));
       return;
@@ -189,7 +192,7 @@ export function CharacterVideoLibrary({
               ref={inputRef}
               type="file"
             />
-            <WorkspaceButton disabled={!canCreate || uploading} onClick={() => inputRef.current?.click()}>
+            <WorkspaceButton disabled={!canImport || uploading} onClick={() => inputRef.current?.click()}>
               {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
               {t("Import video")}
             </WorkspaceButton>
@@ -213,6 +216,17 @@ export function CharacterVideoLibrary({
 
       {error ? <p className="rounded-lg bg-[var(--ad-red-bg)] p-3 text-sm text-[var(--ad-red-text)]" role="alert">{t(error)}</p> : null}
       {message ? <p className="rounded-lg bg-[var(--ad-green-bg)] p-3 text-sm text-[var(--ad-green-text)]" role="status">{message}</p> : null}
+      {loadError ? (
+        <div className="rounded-lg bg-[var(--ad-red-bg)] p-4 text-sm text-[var(--ad-red-text)]" role="alert">
+          <p className="font-semibold">{t("Character videos could not be loaded")}</p>
+          {assets.length > 0 ? <p className="mt-1">{t("Showing previously loaded items.")}</p> : null}
+          <details className="mt-2">
+            <summary className="cursor-pointer">{t("Error details")}</summary>
+            <p className="mt-1 break-words">{t(loadError)}</p>
+          </details>
+          <WorkspaceButton className="mt-3" disabled={loading} onClick={() => void loadAssets()}>{t("Retry")}</WorkspaceButton>
+        </div>
+      ) : null}
 
       {creatorOpen ? (
         <section aria-label={t("Video creator")} className="rounded-xl border border-[var(--ad-border)] bg-black/[0.015] p-3 sm:p-4">
@@ -229,16 +243,21 @@ export function CharacterVideoLibrary({
       ) : null}
 
       <section aria-busy={loading} aria-label={t("Character video library")}>
-        {loading ? (
+        {/* SPEC: Only a successful read can establish an empty library. */}
+        {loading && assets.length === 0 ? (
           <div className="grid min-h-48 place-items-center rounded-xl border border-[var(--ad-border)] bg-[var(--ad-surface)]">
             <Loader2 className="h-5 w-5 animate-spin" />
           </div>
-        ) : visibleAssets.length === 0 ? (
+        ) : loadError && assets.length === 0 ? null : visibleAssets.length === 0 ? (
           <div className="grid min-h-52 place-items-center rounded-xl border border-dashed border-[var(--ad-border)] bg-black/[0.015] p-8 text-center">
             <div>
               <Video className="mx-auto h-7 w-7 text-[var(--ad-text-muted)]" />
-              <h3 className="mt-3 font-semibold">{t("No videos yet")}</h3>
-              <p className="mt-1 text-sm text-[var(--ad-text-muted)]">{t("Create or import the first video for this Character.")}</p>
+              <h3 className="mt-3 font-semibold">{t(query ? "No matching videos" : "No videos yet")}</h3>
+              {query ? (
+                <WorkspaceButton className="mt-3" onClick={() => setSearch("")}>{t("Clear search")}</WorkspaceButton>
+              ) : (
+                <p className="mt-1 text-sm text-[var(--ad-text-muted)]">{t("Create or import the first video for this Character.")}</p>
+              )}
             </div>
           </div>
         ) : (

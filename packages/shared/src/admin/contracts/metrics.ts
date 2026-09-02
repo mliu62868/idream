@@ -318,7 +318,7 @@ export const ADMIN_METRIC_REGISTRY = defineMetricRegistry([
     cohort: "eligible customer users with a subscription active at any point in the current UTC Monday-Sunday calendar week",
     window: "current UTC calendar week from Monday 00:00 through asOf",
     publicationStatus: "official",
-    decisionGate: "NS-01 keeps WPCU official until Product DRI approval and PRD update",
+    decisionGate: "NS-01 final decision: WPCU remains official; sustained relationship and creation metrics stay diagnostic",
     sourceFacts: ["chat_exchange_fact", "generation_fulfillment_fact", "subscription_lifecycle_fact"],
     sourceEvents: ["chat.exchange.completed.v2", "chat.exchange.corrected.v2", "generation.delivery.completed.v2", "subscription.activated.v2", "subscription.ended.v2"],
     version: 2,

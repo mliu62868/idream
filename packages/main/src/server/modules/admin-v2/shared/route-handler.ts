@@ -7,6 +7,7 @@ import {
 } from "@idream/shared/admin";
 import { AppError, Errors } from "@/server/lib/errors";
 import { fail } from "@/server/lib/http";
+import { logger } from "@/server/lib/logger";
 
 /**
  * SPEC: the single door every Admin v2 Route Handler leaves through, and the only place a
@@ -67,7 +68,15 @@ export async function adminV2Route<T>(
     if (error instanceof ZodError || error instanceof SyntaxError) {
       return fail(Errors.badRequest("Validation failed", error instanceof ZodError ? error.flatten() : undefined));
     }
-    throw error;
+    // INVARIANT: an unexpected authority failure still uses the API envelope;
+    // Next's fallback response has no usable error contract for operator recovery.
+    logger.error({
+      err: error,
+      method: request.method,
+      path: new URL(request.url).pathname,
+      requestId: request.headers.get("x-request-id"),
+    }, "Unhandled Admin v2 route error");
+    return fail(Errors.internal("Internal error"));
   }
 }
 

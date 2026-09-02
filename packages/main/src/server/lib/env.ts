@@ -120,9 +120,9 @@ const EnvSchema = z.object({
   AGE_VERIFY_LINK_BACK_URL: z.string().url().optional(),
   AGE_VERIFY_CALLBACK_URL: z.string().url().optional(),
   AGE_VERIFY_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
-  // Chat Service split (design §1/§8). When CHAT_SERVICE_URL is set, main-web
-  // reverse-proxies /api/v1/chat/* to the chat service with a signed BFF context
-  // instead of handling chat in-process. Unset ⇒ monolith chat (dev/test).
+  // Main always owns the Chat product façade and Turn Ledger. CHAT_SERVICE_URL
+  // points only to the AgentRun execution/SSE runtime used for admission, cancel
+  // and stream transport. Unset means execution is unavailable outside injected tests.
   CHAT_SERVICE_URL: z.string().url().optional(),
   CHAT_BFF_SIGNING_SECRET: z.string().optional(),
   ADMIN_BFF_SIGNING_SECRET: z.string().min(32).optional(),

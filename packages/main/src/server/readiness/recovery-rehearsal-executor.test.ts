@@ -467,16 +467,22 @@ describe("recovery rehearsal executor", () => {
       .toThrow("database ACL grant chain is not replayable");
   });
 
-  it("publishes only after the isolated DB, Chat FS, and Blob restore all match", async () => {
+  it("publishes only after PostgreSQL, AgentRun, DSH, and Blob restores all match", async () => {
     const workspaceRoot = realpathSync(
       mkdtempSync(path.join(tmpdir(), "idream-recovery-executor-")),
     );
     temporaryDirectories.push(workspaceRoot);
-    const chatRoot = path.join(workspaceRoot, "chat");
+    const agentRunRoot = path.join(workspaceRoot, "agent-runs");
+    const dshCanonicalRoot = path.join(workspaceRoot, "dsh-canonical");
+    const dshPrivateRoot = path.join(workspaceRoot, "dsh-private");
     const blobRoot = path.join(workspaceRoot, "blob");
-    mkdirSync(path.join(chatRoot, "sessions"), { recursive: true, mode: 0o700 });
+    mkdirSync(path.join(agentRunRoot, "runs"), { recursive: true, mode: 0o700 });
+    mkdirSync(dshCanonicalRoot, { recursive: true, mode: 0o700 });
+    mkdirSync(dshPrivateRoot, { recursive: true, mode: 0o700 });
     mkdirSync(path.join(blobRoot, "objects"), { recursive: true, mode: 0o700 });
-    writeFileSync(path.join(chatRoot, "sessions", "one.json"), "chat", { mode: 0o600 });
+    writeFileSync(path.join(agentRunRoot, "runs", "one.json"), "agent", { mode: 0o600 });
+    writeFileSync(path.join(dshCanonicalRoot, "memory.md"), "canonical", { mode: 0o600 });
+    writeFileSync(path.join(dshPrivateRoot, "memory.md"), "private", { mode: 0o600 });
     writeFileSync(path.join(blobRoot, "objects", "one.bin"), "blob", { mode: 0o600 });
 
     const expectedMigrations: ExpectedMigration[] = [
@@ -492,7 +498,9 @@ describe("recovery rehearsal executor", () => {
         "postgresql://postgres:secret@db.internal:5432/idream",
       REDIS_URL: "redis://redis.internal:6379/3",
       BULLMQ_PREFIX: "idream:development",
-      CHAT_FS_ROOT: chatRoot,
+      CHAT_FS_ROOT: agentRunRoot,
+      DSH_IGREP_CANONICAL_ROOT: dshCanonicalRoot,
+      DSH_IGREP_PRIVATE_ROOT: dshPrivateRoot,
       BLOB_PROVIDER: "mock",
       GEN_BLOB_PROVIDER: "mock",
       BLOB_ROOT: blobRoot,
@@ -582,7 +590,9 @@ describe("recovery rehearsal executor", () => {
     ]);
     const entries = await readdir(result.bundlePath);
     expect(entries).toContain(`${bundleName}.dump`);
-    expect(entries).toContain(`${bundleName}.chat-fs.tar.gz`);
+    expect(entries).toContain(`${bundleName}.agent-run.tar.gz`);
+    expect(entries).toContain(`${bundleName}.dsh-canonical.tar.gz`);
+    expect(entries).toContain(`${bundleName}.dsh-private.tar.gz`);
     expect(entries).toContain(`${bundleName}.blob.tar.gz`);
     expect(entries).toContain(`${bundleName}.quiescence-receipt.json`);
     expect(entries).toContain(`${bundleName}.sha256`);
@@ -658,16 +668,84 @@ describe("recovery rehearsal executor", () => {
     expect(existsSync(path.join(workspaceRoot, "backups"))).toBe(false);
   });
 
+  it.each([
+    ["host", "stale-db.internal"],
+    ["port", 6543],
+    ["database", "stale_idream"],
+  ] as const)("rejects a stale planned Main PostgreSQL %s before every side effect", async (
+    field,
+    value,
+  ) => {
+    const workspaceRoot = realpathSync(
+      mkdtempSync(path.join(tmpdir(), "idream-recovery-stale-plan-")),
+    );
+    temporaryDirectories.push(workspaceRoot);
+    const env = {
+      APP_ENV: "production",
+      IDREAM_QUIESCED: "1",
+      DATABASE_URL: "postgresql://postgres:secret@db.internal:5432/idream",
+      RECOVERY_DATABASE_URL:
+        "postgresql://postgres:secret@db.internal:5432/idream",
+      REDIS_URL: "redis://redis.internal:6379/3",
+      BULLMQ_PREFIX: "idream:development",
+      CHAT_FS_ROOT: path.join(workspaceRoot, "agent-runs"),
+      BLOB_PROVIDER: "mock",
+      GEN_BLOB_PROVIDER: "mock",
+      BLOB_ROOT: path.join(workspaceRoot, "blob"),
+    };
+    const bundleName = "idream-recovery-stale-plan-1";
+    const plan = resolveRecoveryRehearsalPlan({
+      options: {
+        apply: true,
+        bundleName,
+        bundleParent: path.join(workspaceRoot, "backups"),
+        chatEnvFile: null,
+        confirmation: `CREATE RECOVERY REHEARSAL ${bundleName}`,
+        genEnvFile: null,
+        help: false,
+        launchEnvFile: null,
+      },
+      env,
+      expectedMigrationCount: 1,
+      latestMigration: "001_terminal",
+      workspaceRoot,
+    });
+    const stalePlan = {
+      ...plan,
+      database: { ...plan.database, [field]: value },
+    } as typeof plan;
+    const { calls, runner } = fakeRunner({});
+
+    await expect(executeRecoveryRehearsal({
+      plan: stalePlan,
+      env: env as unknown as NodeJS.ProcessEnv,
+      expectedMigrations: [
+        { migrationName: "001_terminal", checksum: "a".repeat(64) },
+      ],
+      workspaceRoot,
+      runner,
+    })).rejects.toThrow("recovery plan differs from current source authority");
+
+    expect(calls).toEqual([]);
+    expect(existsSync(path.join(workspaceRoot, "backups"))).toBe(false);
+  });
+
   it("drops only the fresh restore database and removes staging after failure", async () => {
     const workspaceRoot = realpathSync(
       mkdtempSync(path.join(tmpdir(), "idream-recovery-cleanup-")),
     );
     temporaryDirectories.push(workspaceRoot);
-    const chatRoot = path.join(workspaceRoot, "chat");
+    const agentRunRoot = path.join(workspaceRoot, "agent-runs");
+    const dshCanonicalRoot = path.join(workspaceRoot, "dsh-canonical");
+    const dshPrivateRoot = path.join(workspaceRoot, "dsh-private");
     const blobRoot = path.join(workspaceRoot, "blob");
-    mkdirSync(chatRoot, { recursive: true, mode: 0o700 });
+    mkdirSync(agentRunRoot, { recursive: true, mode: 0o700 });
+    mkdirSync(dshCanonicalRoot, { recursive: true, mode: 0o700 });
+    mkdirSync(dshPrivateRoot, { recursive: true, mode: 0o700 });
     mkdirSync(blobRoot, { recursive: true, mode: 0o700 });
-    writeFileSync(path.join(chatRoot, "one.json"), "chat", { mode: 0o600 });
+    writeFileSync(path.join(agentRunRoot, "one.json"), "agent", { mode: 0o600 });
+    writeFileSync(path.join(dshCanonicalRoot, "one.md"), "canonical", { mode: 0o600 });
+    writeFileSync(path.join(dshPrivateRoot, "one.md"), "private", { mode: 0o600 });
     writeFileSync(path.join(blobRoot, "one.bin"), "blob", { mode: 0o600 });
     const expectedMigrations: ExpectedMigration[] = [
       { migrationName: "001_terminal", checksum: "a".repeat(64) },
@@ -681,7 +759,9 @@ describe("recovery rehearsal executor", () => {
         "postgresql://postgres:secret@db.internal:5432/idream",
       REDIS_URL: "redis://redis.internal:6379/3",
       BULLMQ_PREFIX: "idream:development",
-      CHAT_FS_ROOT: chatRoot,
+      CHAT_FS_ROOT: agentRunRoot,
+      DSH_IGREP_CANONICAL_ROOT: dshCanonicalRoot,
+      DSH_IGREP_PRIVATE_ROOT: dshPrivateRoot,
       BLOB_PROVIDER: "mock",
       GEN_BLOB_PROVIDER: "mock",
       BLOB_ROOT: blobRoot,

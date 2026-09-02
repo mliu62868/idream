@@ -17,7 +17,7 @@ export type RecoveryRehearsalCliOptions = {
 };
 
 export type RecoveryRehearsalPlan = {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly mode: "dry_run" | "apply";
   readonly bundleName: string;
   readonly bundlePath: string;
@@ -36,7 +36,9 @@ export type RecoveryRehearsalPlan = {
     readonly database: string | null;
     readonly user: string | null;
   };
-  readonly chatFsRoot: string | null;
+  readonly agentRunRoot: string | null;
+  readonly dshCanonicalRoot: string;
+  readonly dshPrivateRoot: string;
   readonly queueAuthority: {
     readonly redis: string | null;
     readonly prefix: string | null;
@@ -296,6 +298,34 @@ function resolveLocalRoot(workspaceRoot: string, raw: string | undefined, fallba
   return path.resolve(workspaceRoot, raw?.trim() || fallback);
 }
 
+function pathsOverlap(left: string, right: string) {
+  const relative = path.relative(left, right);
+  return relative === "" || (
+    relative !== ".." &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
+}
+
+function overlappingAuthorityPair(roots: readonly {
+  readonly label: string;
+  readonly root: string;
+}[]) {
+  for (let left = 0; left < roots.length; left += 1) {
+    for (let right = left + 1; right < roots.length; right += 1) {
+      const first = roots[left]!;
+      const second = roots[right]!;
+      if (
+        pathsOverlap(first.root, second.root) ||
+        pathsOverlap(second.root, first.root)
+      ) {
+        return `${first.label} and ${second.label}`;
+      }
+    }
+  }
+  return null;
+}
+
 function resolveRecoverySourceTargets(input: {
   readonly env: RecoveryEnvironment;
   readonly workspaceRoot: string;
@@ -315,13 +345,33 @@ function resolveRecoverySourceTargets(input: {
   const root = provider === "mock"
     ? resolveLocalRoot(input.workspaceRoot, input.env.BLOB_ROOT, "data/blob")
     : null;
-  const chatFsRoot = input.env.CHAT_FS_ROOT?.trim()
+  const chatWorkingDirectory = input.chatWorkingDirectory ??
+    path.join(input.workspaceRoot, "packages/chat");
+  const agentRunRoot = input.env.CHAT_FS_ROOT?.trim()
     ? resolveChatFsRoot(
         input.env.CHAT_FS_ROOT,
-        input.chatWorkingDirectory ?? path.join(input.workspaceRoot, "packages/chat"),
+        chatWorkingDirectory,
       )
     : null;
-  return { database, provider, endpoint, bucket, region, root, chatFsRoot };
+  const dshCanonicalRoot = path.resolve(
+    chatWorkingDirectory,
+    input.env.DSH_IGREP_CANONICAL_ROOT?.trim() || "data/companion-memory",
+  );
+  const dshPrivateRoot = path.resolve(
+    chatWorkingDirectory,
+    input.env.DSH_IGREP_PRIVATE_ROOT?.trim() || "data/companion-private",
+  );
+  return {
+    database,
+    provider,
+    endpoint,
+    bucket,
+    region,
+    root,
+    agentRunRoot,
+    dshCanonicalRoot,
+    dshPrivateRoot,
+  };
 }
 
 export function resolveRecoveryRehearsalSourceAuthority(input: {
@@ -349,8 +399,8 @@ export function resolveRecoveryRehearsalSourceAuthority(input: {
   if (!targets.database) {
     throw new Error("DATABASE_URL must identify the current PostgreSQL source");
   }
-  if (!targets.chatFsRoot) {
-    throw new Error("CHAT_FS_ROOT must identify the current Chat file source");
+  if (!targets.agentRunRoot) {
+    throw new Error("CHAT_FS_ROOT must identify the current AgentRun source");
   }
   if (!mainRedis || mainRedis !== genRedis || !mainPrefix || mainPrefix !== genPrefix) {
     throw new Error("Main and Gen must use one exact Redis and BullMQ queue authority");
@@ -371,13 +421,26 @@ export function resolveRecoveryRehearsalSourceAuthority(input: {
   if (targets.provider !== "mock" && !recoveryRetentionDays) {
     throw new Error("remote Blob recovery retention authority is incomplete");
   }
+  const overlap = overlappingAuthorityPair([
+    { label: "AgentRun", root: targets.agentRunRoot },
+    { label: "DSH canonical", root: targets.dshCanonicalRoot },
+    { label: "DSH private", root: targets.dshPrivateRoot },
+    ...(targets.root ? [{ label: "Blob", root: targets.root }] : []),
+  ]);
+  if (overlap) {
+    throw new Error(`local recovery authorities overlap: ${overlap}`);
+  }
   return {
-    database: {
+    mainPostgres: {
       host: targets.database.host,
       port: Number.parseInt(targets.database.port, 10),
       database: targets.database.database,
     },
-    chatFsRoot: targets.chatFsRoot,
+    agentRun: { root: targets.agentRunRoot },
+    dsh: {
+      canonicalRoot: targets.dshCanonicalRoot,
+      privateRoot: targets.dshPrivateRoot,
+    },
     queue: { redis: mainRedis, prefix: mainPrefix },
     blob: {
       provider: targets.provider,
@@ -415,7 +478,9 @@ export function resolveRecoveryRehearsalPlan(input: {
     bucket,
     region,
     root,
-    chatFsRoot,
+    agentRunRoot,
+    dshCanonicalRoot,
+    dshPrivateRoot,
   } = sourceTargets;
   const recoveryDatabase = tryParsePostgresUrl(
     input.env.RECOVERY_DATABASE_URL,
@@ -491,7 +556,16 @@ export function resolveRecoveryRehearsalPlan(input: {
   ) {
     blockers.push("database authority contains placeholder values");
   }
-  if (!chatFsRoot) blockers.push("CHAT_FS_ROOT is required");
+  if (!agentRunRoot) blockers.push("CHAT_FS_ROOT is required for AgentRun authority");
+  if (agentRunRoot) {
+    const overlap = overlappingAuthorityPair([
+      { label: "AgentRun", root: agentRunRoot },
+      { label: "DSH canonical", root: dshCanonicalRoot },
+      { label: "DSH private", root: dshPrivateRoot },
+      ...(root ? [{ label: "Blob", root }] : []),
+    ]);
+    if (overlap) blockers.push(`local recovery authorities overlap: ${overlap}`);
+  }
   if (!new Set(["mock", "r2", "s3"]).has(provider)) {
     blockers.push("BLOB_PROVIDER must be mock, r2, or s3");
   }
@@ -593,7 +667,7 @@ export function resolveRecoveryRehearsalPlan(input: {
   }
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     mode: input.options.apply ? "apply" : "dry_run",
     bundleName,
     bundlePath: path.resolve(input.workspaceRoot, input.options.bundleParent, bundleName),
@@ -612,7 +686,9 @@ export function resolveRecoveryRehearsalPlan(input: {
       database: recoveryDatabase?.database ?? null,
       user: recoveryDatabase?.user ?? null,
     },
-    chatFsRoot,
+    agentRunRoot,
+    dshCanonicalRoot,
+    dshPrivateRoot,
     queueAuthority: {
       redis: mainRedis,
       prefix: mainPrefix,

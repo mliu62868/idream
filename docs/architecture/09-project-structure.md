@@ -1,6 +1,6 @@
 # 09 · 工程结构与约定
 
-更新日期：2026-06-28
+更新日期：2026-09-01
 
 落地 01 的分层到目录结构，定义命名与"东西放哪"。原则：**按 feature/domain 组织，不按类型**；many small files；代码、测试、文档就近（global rules）。
 
@@ -35,8 +35,8 @@ idream/
 │  │        │  └─ admin/               # service.ts + characters/（official/templates/tags/review/assist）
 │  │        ├─ jobs/queue.ts   # JobQueue + claim
 │  │        ├─ providers/      # Main 只注册 chat/voice/moderation/payment/blob/verify；不含 image/video
-│  │        ├─ bff/chat-proxy.ts   # 签名 + 反向代理到 Chat Service
-│  │        ├─ ai/             # local-pipeline、schemas
+│  │        ├─ bff/chat-proxy.ts   # legacy 文件名；Main Turn Ledger façade，仅 AgentRun admission/cancel/SSE 跨 Chat
+│  │        ├─ ai/             # Main 文本/兼容 schema；legacy external media adapter 不拥有 image/video 执行
 │  │        ├─ admin/          # permissions、effective-permissions、dev-login
 │  │        └─ lib/
 │  │           ├─ db.ts        # PrismaClient 单例
@@ -48,7 +48,7 @@ idream/
 │  │           ├─ better-auth.ts  prisma-adapter.ts
 │  │           ├─ auth/        # getAuthCtx, guards
 │  │           └─ http/        # envelope（ok/fail/empty）+ handle 包装器
-│  ├─ chat/                    # Chat Service（独立服务，独立 prisma/ + Postgres schema/views）
+│  ├─ chat/                    # AgentRun 执行/SSE 服务；本地文件 + Redis SSE，无 Prisma/Postgres
 │  ├─ gen/                     # 图片/视频唯一生成 worker；统一 GenerationExecution 生命周期
 │  ├─ admin/                   # Admin 控制台（独立 Next App，src/app）
 │  └─ shared/                  # 跨包契约/类型（bff/chat/contracts/media/moderation/storage）
@@ -64,9 +64,9 @@ idream/
 | `server/moderation/*` | `lib/db`、`lib/*`、`providers/*`；不 import 产品域模块 |
 | `providers/*` | SDK、`lib/*`（除业务模块） |
 | `lib/*` | 仅彼此与基础库，**不 import 任何 modules** |
-| 跨包 | 经 `packages/shared` 共享契约；chat 经 `server/bff/chat-proxy` 代理，不直连 |
+| 跨包 | 经 `packages/shared` 共享契约；Main 经 `server/bff/chat-proxy` 发送不可变 `PreparedTurn`，Chat 只返回执行证据 |
 
-**禁止**：catch-all route 写业务逻辑或直接用 Prisma；provider/lib import 业务模块；主站直接读写 Chat Service 权威表；循环依赖（用事件/job 打破）。
+**禁止**：catch-all route 写业务逻辑或直接用 Prisma；provider/lib import 业务模块；把 Chat 本地文件、SSE 或 DSH transcript 当成产品历史/账本；循环依赖（用事件/job 打破）。Chat 不拥有产品权威表。
 
 > 可用 ESLint `no-restricted-imports` / `eslint-plugin-boundaries` 把以上规则**机器化**（10 §CI）。
 

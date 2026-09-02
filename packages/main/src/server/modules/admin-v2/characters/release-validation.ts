@@ -9,9 +9,9 @@ import { env } from "@/server/lib/env";
 import {
   evaluateMediaAssetCustomerPublishability,
   hasHydratableMediaBlobAuthority,
+  inspectOperatorUploadAuthority,
 } from "@/server/lib/media-asset-authority";
 import { canonicalSha256 } from "../shared/canonical-json";
-import { characterIdentityReviewEvidencePassed } from "../shared/creative-review-quality";
 import { toInputJson } from "../shared/prisma-json";
 import {
   CHARACTER_RELEASE_POLICY_VERSION,
@@ -43,6 +43,10 @@ import {
   characterReferenceMediaAuthoritySelect,
   unavailableCharacterReferenceMediaIds,
 } from "./reference-media-authority";
+import {
+  evaluateCharacterImageReviewAuthority,
+  isCharacterLibraryOperatorUpload,
+} from "./image-qualification";
 
 export { CHARACTER_RELEASE_POLICY_VERSION };
 
@@ -319,20 +323,44 @@ export async function evaluateCharacterReleaseSnapshot(
   );
   const placementItems = await tx.contentProductionItem.findMany({
     where: {
-      id: {
-        in: manifestPlacements.flatMap((placement) =>
-          placement.itemId ? [placement.itemId] : [],
-        ),
-      },
+      OR: [
+        {
+          id: {
+            in: manifestPlacements.flatMap((placement) =>
+              placement.itemId ? [placement.itemId] : [],
+            ),
+          },
+        },
+        {
+          mediaAssetId: {
+            in: manifestPlacements.map((placement) => placement.assetId),
+          },
+        },
+      ],
     },
     include: { batch: true, job: true },
   });
   const placementItemById = new Map(
     placementItems.map((item) => [item.id, item]),
   );
+  const placementItemByAssetId = new Map(
+    placementItems.flatMap((item) =>
+      item.mediaAssetId ? [[item.mediaAssetId, item] as const] : []
+    ),
+  );
   const reviewDecisions = await tx.creativeReviewDecision.findMany({
     where: {
-      runItemId: { in: placementItems.map((item) => item.id) },
+      OR: [
+        ...(placementItems.length > 0
+          ? [{ runItemId: { in: placementItems.map((item) => item.id) } }]
+          : []),
+        {
+          runItemId: null,
+          artifactId: {
+            in: manifestPlacements.map((placement) => placement.assetId),
+          },
+        },
+      ],
     },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
   });
@@ -340,9 +368,21 @@ export async function evaluateCharacterReleaseSnapshot(
     string,
     (typeof reviewDecisions)[number]
   >();
+  const latestUploadReviewByAssetId = new Map<
+    string,
+    (typeof reviewDecisions)[number]
+  >();
   for (const decision of reviewDecisions) {
-    if (!latestReviewByItemId.has(decision.runItemId)) {
+    if (
+      decision.runItemId &&
+      !latestReviewByItemId.has(decision.runItemId)
+    ) {
       latestReviewByItemId.set(decision.runItemId, decision);
+    } else if (
+      decision.runItemId === null &&
+      !latestUploadReviewByAssetId.has(decision.artifactId)
+    ) {
+      latestUploadReviewByAssetId.set(decision.artifactId, decision);
     }
   }
   const placementAttempts = await tx.generationAttempt.findMany({
@@ -396,25 +436,47 @@ export async function evaluateCharacterReleaseSnapshot(
       );
       const pinned =
         pinnedCandidates.length === 1 ? pinnedCandidates[0] : undefined;
-      const hasGenerationLineage = Boolean(
-        placement.generationJobId || item || pinned,
-      );
-      const publishability = evaluateMediaAssetCustomerPublishability({
-        metadata: asset?.metadata,
-        pinnedProvider: pinned?.provider,
-        pinnedProviderRequired: strictGeneratedRelease && hasGenerationLineage,
-        pinnedProviderDuplicate: pinnedCandidates.length > 1,
-        pinnedProviderAssetMismatch: Boolean(
-          pinned &&
-          (pinned.assetId !== placement.assetId ||
-            pinned.generationJobId !== placement.generationJobId),
-        ),
-        jobProvider: job?.provider,
-        jobProviderRequired: strictGeneratedRelease && hasGenerationLineage,
-        latestAttemptProvider: latestAttempt?.provider,
-        latestAttemptProviderRequired:
-          strictGeneratedRelease && hasGenerationLineage,
-      });
+      const uploadAuthority = asset
+        ? inspectOperatorUploadAuthority(asset)
+        : null;
+      const publishability = strictGeneratedRelease && uploadAuthority
+        ? (() => {
+            const base = evaluateMediaAssetCustomerPublishability({
+              metadata: asset?.metadata,
+            });
+            const reasons = [
+              ...base.reasons,
+              ...uploadAuthority.reasons,
+              ...(
+                placement.runId ||
+                placement.itemId ||
+                placement.generationJobId ||
+                placementItemByAssetId.has(placement.assetId) ||
+                pinnedCandidates.length > 0
+                  ? ["operator_upload_generation_lineage_present" as const]
+                  : []
+              ),
+            ];
+            return {
+              publishable: reasons.length === 0,
+              reasons: [...new Set(reasons)],
+            };
+          })()
+        : evaluateMediaAssetCustomerPublishability({
+            metadata: asset?.metadata,
+            pinnedProvider: pinned?.provider,
+            pinnedProviderRequired: strictGeneratedRelease,
+            pinnedProviderDuplicate: pinnedCandidates.length > 1,
+            pinnedProviderAssetMismatch: Boolean(
+              pinned &&
+              (pinned.assetId !== placement.assetId ||
+                pinned.generationJobId !== placement.generationJobId),
+            ),
+            jobProvider: job?.provider,
+            jobProviderRequired: strictGeneratedRelease,
+            latestAttemptProvider: latestAttempt?.provider,
+            latestAttemptProviderRequired: strictGeneratedRelease,
+          });
       return publishability.publishable
         ? []
         : [
@@ -442,20 +504,59 @@ export async function evaluateCharacterReleaseSnapshot(
           ? []
           : [placement.slotKey];
       }
+      const uploadAuthority = asset
+        ? inspectOperatorUploadAuthority(asset)
+        : null;
       const item = placement.itemId
         ? placementItemById.get(placement.itemId)
         : null;
-      const review = item ? latestReviewByItemId.get(item.id) : null;
-      return asset?.characterId === project?.characterId &&
-        item?.mediaAssetId === placement.assetId &&
-        review?.artifactId === placement.assetId &&
-        characterIdentityReviewEvidencePassed({
-          bootstrapIdentity: placement.bootstrapIdentity,
-          decision: review.decision,
-          identityConsistency: review.identityConsistency,
-          score: review.score,
-          evidence: review.evidence,
-        })
+      const review = uploadAuthority
+        ? latestUploadReviewByAssetId.get(placement.assetId) ?? null
+        : item
+          ? latestReviewByItemId.get(item.id) ?? null
+          : null;
+      const visualAuthority =
+        profile?.immutableHash &&
+        referenceSet?.snapshotHash &&
+        referenceSet.references.length > 0
+          ? {
+              visualProfileId: profile.id,
+              visualProfileVersion: profile.version,
+              visualProfileHash: profile.immutableHash,
+              referenceSetRevisionId: referenceSet.id,
+              referenceSetSnapshotHash: referenceSet.snapshotHash,
+            }
+          : null;
+      const qualification = evaluateCharacterImageReviewAuthority({
+        source: uploadAuthority ? "operator_upload" : "generation",
+        characterId: project?.characterId ?? "",
+        assetId: placement.assetId,
+        assetAvailable: Boolean(
+          asset &&
+          asset.deletedAt === null &&
+          asset.safetyStatus === "passed" &&
+          hasHydratableMediaBlobAuthority(asset),
+        ),
+        sourceAuthorityValid: uploadAuthority
+          ? Boolean(
+              asset &&
+              isCharacterLibraryOperatorUpload(asset) &&
+              asset.characterId === project?.characterId &&
+              placement.runId === null &&
+              placement.itemId === null &&
+              placement.generationJobId === null &&
+              !placementItemByAssetId.has(placement.assetId),
+            )
+          : Boolean(
+              asset?.characterId === project?.characterId &&
+              item?.mediaAssetId === placement.assetId,
+            ),
+        bootstrapIdentity: placement.bootstrapIdentity,
+        review,
+        pinnedReviewDecisionId: placement.reviewDecisionId,
+        currentVisualAuthority: visualAuthority,
+      });
+      return qualification.qualified
         ? []
         : [placement.slotKey];
     },

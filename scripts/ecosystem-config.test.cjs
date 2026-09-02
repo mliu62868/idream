@@ -112,6 +112,7 @@ function pm2Process(name, status) {
       exec_mode: definition.execMode,
       watch: false,
       IDREAM_PM2_MODE: "production",
+      IDREAM_RUNTIME_CERTIFICATION: "revision-bound-immutable",
     },
   };
 }
@@ -129,6 +130,10 @@ function pm2ProcessFromApp(app, status, mode) {
       exec_mode: `${app.exec_mode}_mode`,
       watch: app.watch,
       IDREAM_PM2_MODE: mode,
+      IDREAM_RUNTIME_CERTIFICATION: app.env.IDREAM_RUNTIME_CERTIFICATION,
+      ...(app.env.IDREAM_SOURCE_REVISION
+        ? { IDREAM_SOURCE_REVISION: app.env.IDREAM_SOURCE_REVISION }
+        : {}),
     },
   };
 }
@@ -173,6 +178,10 @@ test("development is the source-backed default", () => {
   assert.equal(config.apps.length, 9);
   for (const app of config.apps) {
     assert.equal(app.env.IDREAM_PM2_MODE, "development");
+    assert.equal(
+      app.env.IDREAM_RUNTIME_CERTIFICATION,
+      "non-certifying-source-watch",
+    );
   }
   const mainWeb = byName(config, "main-web");
   const adminWeb = byName(config, "admin-web");
@@ -330,6 +339,11 @@ test("every runtime receives the operator-approved source identity", () => {
         "idream-worktree-test-release",
         `${app.name} Sentry release`,
       );
+      assert.equal(
+        app.env.IDREAM_RUNTIME_CERTIFICATION,
+        "non-certifying-source-watch",
+        `${app.name} development certification boundary`,
+      );
     }
   } finally {
     if (originalRevision === undefined) {
@@ -404,6 +418,10 @@ test("production keeps immutable standalone web releases and disables watch", ()
   for (const app of config.apps) {
     assert.equal(app.watch, false);
     assert.equal(app.env.IDREAM_PM2_MODE, "production");
+    assert.equal(
+      app.env.IDREAM_RUNTIME_CERTIFICATION,
+      "revision-bound-immutable",
+    );
   }
 });
 
@@ -530,6 +548,7 @@ test("every production definition field fails closed on drift", () => {
     { exec_mode: "fork_mode" },
     { watch: true },
     { IDREAM_PM2_MODE: "development" },
+    { IDREAM_RUNTIME_CERTIFICATION: "non-certifying-source-watch" },
   ];
   for (const mutation of mutations) {
     assert.equal(
@@ -540,6 +559,26 @@ test("every production definition field fails closed on drift", () => {
       false,
     );
   }
+});
+
+test("production definition certification is bound to one source revision", () => {
+  const exact = pm2Process("main-web", "online");
+  exact.pm2_env.IDREAM_SOURCE_REVISION = "idream-worktree-revision-a";
+
+  assert.equal(
+    matchesProductionProcessDefinition(exact, {
+      GEN_VIDEO_PROVIDER: "backend",
+      IDREAM_SOURCE_REVISION: "idream-worktree-revision-a",
+    }),
+    true,
+  );
+  assert.equal(
+    matchesProductionProcessDefinition(exact, {
+      GEN_VIDEO_PROVIDER: "backend",
+      IDREAM_SOURCE_REVISION: "idream-worktree-revision-b",
+    }),
+    false,
+  );
 });
 
 test("production stop phases classify every non-voice app exactly once", () => {

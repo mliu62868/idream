@@ -1,6 +1,6 @@
 # iDream 剩余工作执行计划
 
-更新日期：2026-08-28
+更新日期：2026-09-01
 
 本文件只保留尚未完成的工作。已完成能力与历史运行证据见 `CURRENT_FUNCTIONAL_COVERAGE.md`。
 
@@ -10,15 +10,22 @@
 - `packages/chat` 已移除 Prisma/PostgreSQL/BullMQ；其深模块内嵌执行 AgentRun、DSH/igrep，成功 run 在 Main ACK 后清理。
 - 图片 ToolEffect 已进入 Main Generation/Ledger，不采用成功后普通 hook 扣费。
 - Main migration 和旧 Chat 数据导入脚本已经存在，但本仓库修改不会替用户连接生产库执行。
-- 当前工作树同时包含大规模 Character/Admin 重构；它造成 shared/main 全门禁仍未恢复，不能把 Chat isolated green 写成全仓完成。
+- 2026-08-31 的实现审计已记录 Character/Admin 与 Companion 的当前证据；本文件不复述已完成项，任何运行态完成声明继续以 `CURRENT_FUNCTIONAL_COVERAGE.md` 和同 revision 验证为准。
+- 2026-09-01 的产品决策是完整对标 OurDream；WPCU 保持 Metric Registry `official`，WSCU/WSCrU/WPSCU/WSR 保持诊断用途，不存在待执行的北极星切换。目标文档仍不能冒充已上线能力。
 
-## 1. 先完成当前 Character/Admin 合并
+## 1. 收口完整 OurDream 对标缺口
 
-1. 修复 shared admin contract 的 permission/schema 漂移。
-2. 完成 Character Project/Release 简化 migration 和相关 API/UI 测试。
-3. 跑 shared、main、admin 的 focused tests，再跑全包 typecheck/test/build/lint。
+1. 建立带观察日期的逐功能 parity matrix，覆盖 Explore、完整 Create、Chat、Generate、My AI/Profile、Feed/Community/Creator Economy、Upgrade、Affiliate、Support 与公开内容。每项绑定 OurDream 可验证契约、iDream 当前代码/运行证据、真实缺口和退出 Gate。
+2. 区分“未实现空态”、“受 feature/provider/entitlement 条件限制”、“本地受控可用”和“公开生产已认证”，不用路由存在或历史截图代替能力证明。
+3. 保留完整六步 Create 为 P0 主能力：Style → General → Face → Body → Details → Image，覆盖 Gender/Style、外观/race、发型/面部、体型、名称、tags、personality/Soul、Voice、Occupation、hobbies/fetishes、relationship type、custom details、草稿恢复、视觉候选/anchor、私有/公开和 Release/Serving 边界；对 40+ personality、19 voice、135 occupation、29 relationship type 的日期化基线逐项记录 matched/equivalent/intentional divergence，Quick Start 只能预填这条完整链。
+4. 将 Recent、Characters、Presets、Created 和 Media 共同作为 My AI P0 核心面；Group Chats/Packs/Comics 作为 P1 对标缺口，发布前只显示明确 unavailable 空态或不暴露入口。
+5. 补齐 Generate 的 Presets、Create/Edit/Enhance、reference-guided lineage、Advanced Settings、Gallery 管理、多 scene/时长/比例/质量/AI voice Video 与 Chat Product Action 交接；持续保证 Character/Release/VisualProfile/Scene pins、quote、settlement/refund 和 replay 幂等。
+6. 补齐 Feed、Community、Creator Profile/levels/Studio、Pack 收益、Dreamcoin/现金激励、Remix/Like/Follow/Share/Report、Affiliate RevShare/CPA/归因/佣金、Images/Videos/Glossary/Authors、SEO/Library/Article/Comparison 和 Support 的真实数据、副作用、权限与发布证据；分期受依赖和资源约束，不受 WSCU 或同角色留存 Gate 约束。
+7. 保持 Chat 历史、Scene、official igrep memory、记忆控制、编辑/重生成、明确 Product Action 真实交付和角色身份连续性；补 Pinned Memories、Custom Instructions、conversation controls、5 档或功能等价 profiles、最多 12 角色 Group Chat 和双向 Voice Call。这些是完整 Chat 体验的能力，不是其他产品范围的 Gate。
+8. 保持 Upgrade/Profile 的一次性预付、`benefitsEndAt`、重新购买、no-renewal 与既有历史/媒体不锁回承诺；补真实 provider checkout→activation→expiry→repurchase probe。另补独立 dreamcoin coin store 的 offer→quote→one-time checkout→provider confirmation→幂等 topup ledger→购买历史闭环，充值不得创建、延长或续订访问计划。
+9. WPCU 保持 `official`；WSCU/WSCrU/WPSCU/WSR 保持 shadow/directional 诊断。补生产回放、成熟窗口和质量认证，但不执行指标 cutover。
 
-退出条件：没有依赖旧 Character contract 的编译或测试失败；每个可聊天角色都有 immutable content pin。
+退出条件：parity matrix 中每个目标域都有明确状态、真实产品能力与同 revision 浏览器/运行证据；所有公开声明与当前实现状态一致；指标保持 WPCU official 与其他诊断指标的正确层级。
 
 ## 2. 执行数据库 cutover
 
@@ -32,17 +39,16 @@
 6. 以新 Main history/BFF 启动；旧 Chat schema 保持只读观察。
 7. 观察期后再单独批准旧 schema/roles 的不可逆删除。
 
-## 3. 清理剩余迁移工具
+## 3. cutover 后清理迁移兼容面
 
-- 独立 `chat-agent` package/process、HTTP/NDJSON wire、rollout flags 与 cutover proof 已删除；旧 package/env 已可恢复隔离到 `.data/quarantine/`。
 - production cutover 对账通过后再清理不再可恢复的旧 runtime trace；本轮不做不可逆删除。
-- 删除只服务于旧 Chat PG recovery bundle 的 schema/role/inbox/file-mutation检查，更新 recovery producer/launch gate 为 Main PG + AgentRun + DSH + Blob。
+- recovery producer/executor/launch gate 已升级为 schema 2；下一目标 revision 必须生成并核准一份新的 Main PG + AgentRun + DSH canonical/private + Blob + queue receipt bundle，历史 schema-1 bundle 只保留历史证据。
 
 这些代码在实际 cutover 前保留是迁移保险；cutover 后继续长期保留才是结构债。
 
-## 4. 当前 revision 的完整验证
+## 4. 目标 revision 的完整再验证
 
-最小闭环必须覆盖：
+历史闭环证据见 `CURRENT_FUNCTIONAL_COVERAGE.md`；任何产品/代码切换后，目标 revision 仍必须重新覆盖：
 
 - 创建会话、发消息、刷新恢复、编辑、重生成、取消。
 - terminal exact replay；冲突 replay/旧 attempt 被拒。

@@ -1,10 +1,12 @@
 # iDream
 
-iDream is an AI companion product monorepo. It contains the public web app, admin console, chat service, generation workers, shared contracts, provider adapters, launch probes, and product documentation.
+iDream is an 18+ AI roleplay and AI companion platform built for complete product parity with [OurDream.ai](https://ourdream.ai/). The target covers Explore, the full multi-step creator, Chat, image/video/voice generation, My AI/Profile, Feed/Community/creator economy, paid access, Affiliate, support, and public content surfaces. This monorepo contains the public web app, admin console, Chat execution service, generation workers, shared contracts, provider adapters, launch probes, and product documentation. OurDream defines the product-completeness benchmark; [the PRD](docs/product/PRD.md), iDream source code, and same-revision evidence define our exact contract and current state.
 
-Current launch status: **not public-launch ready yet**. Local product flows pass, but production launch is blocked until real chat, image/video/voice, payment, object storage, age verification, and observability providers are configured and probed. See:
+Current launch status: **not public-launch ready yet**. Existing local journeys have controlled evidence, but complete OurDream parity still requires a dated feature-by-feature matrix and closure of real gaps such as Group Chats/Packs, an independently published Chat Video capability, full public-content coverage, and production-grade provider/storage/capacity/observability evidence. The complete multi-step Create flow and all My AI core tabs remain first-class targets; Quick Start is only an optional prefill. WPCU remains the official North Star, so no WSCU Metric Registry cutover is pending. See:
 
 - [Current functional coverage](docs/product/CURRENT_FUNCTIONAL_COVERAGE.md)
+- [OurDream public parity snapshot (2026-09-01)](docs/research/OURDREAM_PRODUCT_PARITY_SNAPSHOT_2026-09-01.md)
+- [Remaining work](docs/product/REMAINING_WORK_EXECUTION_PLAN.md)
 - [Launch readiness audit](docs/product/LAUNCH_READINESS_AUDIT.md)
 - [Operations runbook](docs/architecture/10-operations.md)
 
@@ -24,8 +26,8 @@ Current launch status: **not public-launch ready yet**. Local product flows pass
 | --- | --- |
 | `packages/main` | Public product app, API/BFF, auth, billing, admin API, finalizer |
 | `packages/admin` | Admin web console on port 3001 |
-| `packages/chat` | Split chat API/SSE service and chat storage |
-| `packages/gen` | Image/video generation workers and pipeline adapters |
+| `packages/chat` | AgentRun execution/SSE service with local recovery evidence; no product database |
+| `packages/gen` | Image/video workers, workflow-native backends, and the deprecated external pipeline adapter |
 | `packages/shared` | Cross-service contracts, media/storage/moderation helpers |
 
 ## Common Commands

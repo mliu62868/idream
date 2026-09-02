@@ -1005,7 +1005,7 @@ model MediaAssetPlacement {
 
 model CreativeReviewDecision {
   id                   String   @id @default(cuid())
-  runItemId            String
+  runItemId            String?
   artifactId           String
   supersedesDecisionId String?
   decision             String

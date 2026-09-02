@@ -50,6 +50,7 @@ describe("ourdream → admin dependency direction", () => {
       "subscription-lifecycle.ts",
       "billing-checkout.ts",
       "character-templates.ts",
+      "customer-care.ts",
     ]) {
       expect(files).toContain(required);
     }
@@ -73,6 +74,25 @@ describe("ourdream → admin dependency direction", () => {
 
     // 集合相等：多一条是新的错误依赖方向，少一条是白名单陈旧。
     expect([...found.keys()].sort()).toEqual([...ALLOWED_ADMIN_IMPORTS].sort());
+  });
+});
+
+describe("v1 Customer Care module locality", () => {
+  it("keeps route orchestration and customer-care rules behind one interface", async () => {
+    const serviceSource = await readFile(path.join(OURDREAM_ROOT, "service.ts"), "utf8");
+    const careSource = await readFile(path.join(OURDREAM_ROOT, "customer-care.ts"), "utf8");
+
+    expect(serviceSource).toContain("dispatchCustomerCareRequest(request, segments)");
+    for (const implementationFact of [
+      "async function reportStatus",
+      "async function createAppeal",
+      "async function submitSupportRequest",
+      "async function customerHelpDeskHistory",
+      "async function createFeedbackItem",
+    ]) {
+      expect(serviceSource).not.toContain(implementationFact);
+      expect(careSource).toContain(implementationFact);
+    }
   });
 });
 

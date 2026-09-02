@@ -30,7 +30,8 @@ function help() {
     "Apply establishes and verifies the Generation queue pause/drain boundary,",
     "then refuses non-terminal PM2/HTTP runtime, active database clients,",
     "non-exact migrations, in-flight durable mutations, split Main/Chat/Gen",
-    "authorities, symlinks (stable backlog is preserved), unversioned remote",
+    "authorities, overlapping AgentRun/DSH/Blob roots, symlinks (stable backlog",
+    "is preserved), unversioned remote",
     "objects, missing independent recovery Blob authority, and restore drift.",
     "",
   ].join("\n");

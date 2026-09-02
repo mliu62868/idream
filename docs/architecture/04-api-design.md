@@ -1,6 +1,6 @@
 # 04 · API 设计规范
 
-更新日期：2026-06-28
+更新日期：2026-09-01
 
 完整 API 端点清单见 `BackendFeatureSpec.md §5`（auth/explore/creator/chat/generation/library/profile/billing/safety/feed）。本文件定义**所有端点共享的实现规范**：组织、响应、错误、校验、分页、鉴权、限流、幂等、流式。
 
@@ -23,7 +23,7 @@ auth/{signup,login,logout}        me、me/preferences
 age-gate/accept                   age-verification/{status,sessions,webhooks/:provider}
 characters[/:id[/{like,report,duplicate}]]   tags、character-templates、search/suggest
 character-drafts[/:id[/{preview,submit,tags}]]
-chat/*、messages/*                → proxyChatRequest（反向代理到 Chat Service）
+chat/*、messages/*                → proxyChatRequest（legacy 名称；Main Turn Ledger façade）
 generation/{config,jobs[/:id/retry],voice,presets[/:id]}
 media[/:id/{like,content,download}]、media/bulk
 plans、billing/{checkout,portal,webhooks/:provider}、dreamcoins
@@ -231,61 +231,56 @@ export const requireEntitlement = async (c: AuthCtx, key: string) =>
 
 ## 8. 流式（SSE）聊天
 
-Chat SSE 由 Chat Service 提供；主站可以作为同源 BFF 代理，但不直接写 chat 表、不拼 prompt、不做 chat finalizer。
+浏览器 Chat API 与产品事实由 Main 提供。Main 在接纳请求时先按 `Idempotency-Key` 原子提交 Turn/attempt 与不可变 `PreparedTurn`；随后才把该快照送入 Chat `AgentRun`。Chat 负责 Agent 执行与 SSE transport，但其本地文件和 stream 不是产品历史；只有 Main 对 exact attempt 完成 CAS/finalize 后，assistant terminal、Scene、usage、附件和 settlement 才成为产品事实。
 
 标准两步：
 
 ```text
 POST /api/v1/chat/sessions/:id/messages
-GET  /api/v1/chat/streams/:assistantMessageId
+GET  /api/v1/messages/:assistantMessageId/stream?attempt=:attempt
 ```
 
 `POST` 返回 `assistantMessageId` 和 `streamUrl`；`GET` 返回 `text/event-stream`：
 
 ```ts
-// 简化骨架
+// 简化骨架；实际入口位于 server/bff/chat-proxy.ts，函数名为 legacy 名称
 export const POST = handle(async (req, { params }) => {
   const ctx = await getAuthCtx();
   const user = requireUser(ctx);
   const { content } = sendMessageBody.parse(await req.json());
-  const result = await chatClient.sendMessage({
-    signedUserContext: signInternalUserContext(user),
+  const idempotencyKey = requireIdempotencyKey(req);
+  const begun = await beginChatTurn({
+    userId: user.id,
     sessionId: params.id,
     content,
+    idempotencyKey,
   });
-  return accepted(result);
+  const admission = begun.snapshot
+    ? await attemptChatAgentRunAdmission(begun.snapshot)
+    : null;
+  return accepted({
+    assistantMessageId: begun.assistant.id,
+    streamUrl: begun.streamUrl,
+    admitted: admission?.admitted === true,
+  });
 });
 
 export const GET = handle(async (req, { params }) => {
   const ctx = await getAuthCtx();
   const user = requireUser(ctx);
-  const upstream = await chatClient.openStream({
-    signedUserContext: signInternalUserContext(user),
-    assistantMessageId: params.assistantMessageId,
-    lastEventId: req.headers.get("last-event-id"),
-  });
-  const encoder = new TextEncoder();
-  const body = new ReadableStream({
-    async start(controller) {
-      for await (const event of upstream) {
-        controller.enqueue(encoder.encode(event));
-      }
-      controller.close();
-    },
-  });
-  return new Response(body, { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" } });
+  return proxyAgentStream(req, user.id, params.assistantMessageId);
 });
 ```
 
-- 输出审核在 Chat Service 内对完整文本复核（见 06 §7）；流式期间命中高危可提前中断并发送安全错误事件。
+- SSE 只承载本次 `AgentRun` 的进度/候选终态；断流、重连或 transport `done` 不能绕过 Main exact-attempt terminal authority。
 - 设置较长 `maxDuration`（route segment config）适配流式；超时由前端可重连/轮询兜底。
 - 备选非流式：返回 `202 {assistantMessageId}`，前端轮询 `GET /api/v1/chat/sessions/:id` 直到 `sent`。
 
 ## 9. 幂等
 
 - **webhook**：`provider_events(provider, providerEventId)` 唯一约束去重（08 §3）。
-- **生成创建**：可选 `Idempotency-Key` 头 → `jobs.dedupeKey`，重复提交返回同一 job。
-- **聊天发消息**：由 Chat Service 按 `assistantMessageId` / request id 幂等，重复提交返回同一 stream/message。
+- **生成创建**：HTTP 写入口必填 8–160 字符的 `Idempotency-Key`；Main 以 `(userId,idempotencyKey)` 固定同一 Generation Request，同 intent 重放返回同一 job、冲突 intent fail closed。queue `dedupeKey` 只是执行层防重，不能替代产品幂等。
+- **聊天发消息**：由 Main Turn Ledger 按用户、会话与必填 `Idempotency-Key` 固定同一产品 Turn/attempt；同 intent 重放返回同一 message/stream，不同 intent 复用 key 返回 conflict。Chat `AgentRun` 的 admission/terminal replay 只提供执行侧幂等证据。
 - **like/follow**：用复合主键的 upsert/delete，天然幂等。
 - **redeem**：`redeem_code_redemptions(redeemCodeId,userId)` 唯一，重复兑换 `409`。
 

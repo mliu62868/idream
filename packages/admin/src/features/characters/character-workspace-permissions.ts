@@ -17,12 +17,22 @@ export const CHARACTER_WORKSPACE_WRITES = {
   reviewAssets: "creative.run.review",
   archiveAssets: "content.asset.review",
   manageVoiceDefaults: "generation.config.write",
+  // SPEC: 内容设置使用各自的写权限，character.project.write 不授予这些操作。
+  writeTags: "content.tag.write",
+  manageChatTools: "content.production.write",
 } as const satisfies Record<string, AdminPermissionKey>;
 
 type CharacterWorkspaceWrite = keyof typeof CHARACTER_WORKSPACE_WRITES;
 
 export type CharacterWorkspacePermissions =
-  & { readonly read: boolean; readonly readAssets: boolean; readonly readProduction: boolean }
+  & {
+    readonly read: boolean;
+    readonly readImages: boolean;
+    readonly readVideos: boolean;
+    readonly readProduction: boolean;
+    readonly readContent: boolean;
+    readonly previewVoice: boolean;
+  }
   & { readonly [Capability in CharacterWorkspaceWrite]: boolean };
 
 export function characterWorkspacePermissions(
@@ -37,8 +47,21 @@ export function characterWorkspacePermissions(
   ) as { [Capability in CharacterWorkspaceWrite]: boolean };
   return {
     read: adminV2OperationAllowed("GET /api/v2/admin/characters/:id", granted),
-    readAssets: granted.has("creative.asset.read"),
+    // SPEC: 图片库与视频库读取不同 operation，不能共用通用素材的权限。
+    readImages: adminV2OperationAllowed(
+      "GET /api/v2/admin/characters/:id/image-sources",
+      granted,
+    ),
+    readVideos: adminV2OperationAllowed("GET /api/v2/admin/assets", granted),
     readProduction: granted.has("creative.run.read"),
+    readContent: adminV2OperationAllowed(
+      "GET /api/v2/admin/content/characters/:id",
+      granted,
+    ),
+    previewVoice: adminV2OperationAllowed(
+      "POST /api/v2/admin/voice-defaults/preview",
+      granted,
+    ),
     ...writes,
   };
 }

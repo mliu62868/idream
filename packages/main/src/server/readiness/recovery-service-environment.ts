@@ -146,7 +146,16 @@ export function loadRecoveryServiceEnvironment(input: {
     processEnv: input.processEnv,
     loadDefaultFiles: defaults,
   });
+  const chatWorkingDirectory = path.join(input.workspaceRoot, "packages/chat");
   const chatRoot = chat.CHAT_FS_ROOT?.trim();
+  const dshCanonicalRoot = path.resolve(
+    chatWorkingDirectory,
+    chat.DSH_IGREP_CANONICAL_ROOT?.trim() || "data/companion-memory",
+  );
+  const dshPrivateRoot = path.resolve(
+    chatWorkingDirectory,
+    chat.DSH_IGREP_PRIVATE_ROOT?.trim() || "data/companion-private",
+  );
   const mainAppEnv = main.APP_ENV ?? DEFAULT_APP_ENV;
   const adminAppEnv = admin?.APP_ENV ?? DEFAULT_APP_ENV;
   const chatAppEnv = chat.APP_ENV ?? DEFAULT_APP_ENV;
@@ -184,9 +193,11 @@ export function loadRecoveryServiceEnvironment(input: {
     CHAT_FS_ROOT: chatRoot
       ? resolveChatFsRoot(
           chatRoot,
-          path.join(input.workspaceRoot, "packages/chat"),
+          chatWorkingDirectory,
         )
       : undefined,
+    DSH_IGREP_CANONICAL_ROOT: dshCanonicalRoot,
+    DSH_IGREP_PRIVATE_ROOT: dshPrivateRoot,
     GEN_BLOB_PROVIDER: gen.GEN_BLOB_PROVIDER ?? gen.BLOB_PROVIDER,
     IDREAM_GEN_BLOB_ENDPOINT: gen.BLOB_ENDPOINT,
     IDREAM_GEN_BLOB_BUCKET: gen.BLOB_BUCKET,

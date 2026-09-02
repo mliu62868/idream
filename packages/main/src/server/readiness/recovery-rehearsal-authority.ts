@@ -73,12 +73,18 @@ export type RecoveryRehearsalAuthority = {
 };
 
 export type RecoveryRehearsalSourceAuthority = {
-  readonly database: {
+  readonly mainPostgres: {
     readonly host: string;
     readonly port: number;
     readonly database: string;
   };
-  readonly chatFsRoot: string;
+  readonly agentRun: {
+    readonly root: string;
+  };
+  readonly dsh: {
+    readonly canonicalRoot: string;
+    readonly privateRoot: string;
+  };
   readonly queue: {
     readonly redis: string;
     readonly prefix: string;
@@ -93,9 +99,10 @@ export type RecoveryRehearsalSourceAuthority = {
 };
 
 type RecoveryRehearsalMetadata = {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly completedAt: string;
   readonly sourceCheckpointSha256: string;
+  readonly quiescenceReceiptSha256: string;
   readonly sourceAuthority: RecoveryRehearsalSourceAuthority;
 };
 
@@ -103,7 +110,9 @@ const pairedAuthoritySuffixes = [
   ["source-counts.json", "restore-counts.json"],
   ["source-schema.sql", "restore-schema.sql"],
   ["source-logical.json", "restore-logical.json"],
-  ["chat-fs.source.sha256", "chat-fs.restore.sha256"],
+  ["agent-run.source.sha256", "agent-run.restore.sha256"],
+  ["dsh-canonical.source.sha256", "dsh-canonical.restore.sha256"],
+  ["dsh-private.source.sha256", "dsh-private.restore.sha256"],
   ["blob.source.sha256", "blob.restore.sha256"],
 ] as const;
 
@@ -119,9 +128,15 @@ const requiredSuffixes = [
   "roles.json",
   "database-authority.json",
   "database-authority.restore.sql",
-  "chat-fs.tar.gz",
-  "chat-fs.source.sha256",
-  "chat-fs.restore.sha256",
+  "agent-run.tar.gz",
+  "agent-run.source.sha256",
+  "agent-run.restore.sha256",
+  "dsh-canonical.tar.gz",
+  "dsh-canonical.source.sha256",
+  "dsh-canonical.restore.sha256",
+  "dsh-private.tar.gz",
+  "dsh-private.source.sha256",
+  "dsh-private.restore.sha256",
   "blob.source.sha256",
   "blob.restore.sha256",
   "file-authorities.json",
@@ -176,6 +191,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNonNegativeInteger(value: unknown) {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function isFileAuthoritySummary(value: unknown) {
+  return isRecord(value) &&
+    isNonNegativeInteger(value.files) &&
+    isNonNegativeInteger(value.bytes);
 }
 
 function hasSha256(value: unknown): value is string {
@@ -657,6 +678,30 @@ function normalizedRedisAuthority(value: unknown) {
   }
 }
 
+function isCanonicalAbsolutePath(value: unknown): value is string {
+  return typeof value === "string" &&
+    path.isAbsolute(value) &&
+    path.normalize(value) === value;
+}
+
+function pathsOverlap(left: string, right: string) {
+  const relative = path.relative(left, right);
+  return relative === "" || (
+    relative !== ".." &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
+}
+
+function hasOverlappingAuthorityRoots(roots: readonly string[]) {
+  return roots.some((left, leftIndex) =>
+    roots.some((right, rightIndex) =>
+      leftIndex < rightIndex &&
+      (pathsOverlap(left, right) || pathsOverlap(right, left))
+    )
+  );
+}
+
 function validateRecoveryMetadata(
   value: Buffer | undefined,
   label: string,
@@ -668,8 +713,14 @@ function validateRecoveryMetadata(
   const sourceAuthority = isRecord(metadata.sourceAuthority)
     ? metadata.sourceAuthority
     : null;
-  const database = sourceAuthority && isRecord(sourceAuthority.database)
-    ? sourceAuthority.database
+  const database = sourceAuthority && isRecord(sourceAuthority.mainPostgres)
+    ? sourceAuthority.mainPostgres
+    : null;
+  const agentRun = sourceAuthority && isRecord(sourceAuthority.agentRun)
+    ? sourceAuthority.agentRun
+    : null;
+  const dsh = sourceAuthority && isRecord(sourceAuthority.dsh)
+    ? sourceAuthority.dsh
     : null;
   const blob = sourceAuthority && isRecord(sourceAuthority.blob)
     ? sourceAuthority.blob
@@ -681,7 +732,12 @@ function validateRecoveryMetadata(
   const validCompletedAt = completedAt !== null &&
     Number.isFinite(completedAtMs) &&
     new Date(completedAtMs).toISOString() === completedAt;
-  const chatFsRoot = sourceAuthority?.chatFsRoot;
+  const localAuthorityRoots = [
+    agentRun?.root,
+    dsh?.canonicalRoot,
+    dsh?.privateRoot,
+    blob?.provider === "mock" ? blob.root : null,
+  ].filter(isCanonicalAbsolutePath);
   const queue = sourceAuthority && isRecord(sourceAuthority.queue)
     ? sourceAuthority.queue
     : null;
@@ -704,18 +760,23 @@ function validateRecoveryMetadata(
       (recoveryRetentionDays as number) > 0 &&
       root === null);
   if (
-    metadata.schemaVersion !== 1 ||
+    metadata.schemaVersion !== 2 ||
     !validCompletedAt ||
     !hasSha256(metadata.sourceCheckpointSha256) ||
+    !hasSha256(metadata.quiescenceReceiptSha256) ||
     !database ||
     typeof database.host !== "string" || database.host.length === 0 ||
     !Number.isInteger(database.port) ||
     (database.port as number) < 1 ||
     (database.port as number) > 65_535 ||
     typeof database.database !== "string" || database.database.length === 0 ||
-    typeof chatFsRoot !== "string" ||
-    !path.isAbsolute(chatFsRoot) ||
-    path.normalize(chatFsRoot) !== chatFsRoot ||
+    !agentRun ||
+    !isCanonicalAbsolutePath(agentRun.root) ||
+    !dsh ||
+    !isCanonicalAbsolutePath(dsh.canonicalRoot) ||
+    !isCanonicalAbsolutePath(dsh.privateRoot) ||
+    localAuthorityRoots.length !== (blob?.provider === "mock" ? 4 : 3) ||
+    hasOverlappingAuthorityRoots(localAuthorityRoots) ||
     !queue ||
     normalizedRedisAuthority(queue.redis) !== queue.redis ||
     typeof queue.prefix !== "string" || queue.prefix.length === 0 ||
@@ -733,14 +794,20 @@ function compareSourceAuthority(
   problems: string[],
 ) {
   if (
-    actual.database.host.toLowerCase() !== expected.database.host.toLowerCase() ||
-    actual.database.port !== expected.database.port ||
-    actual.database.database !== expected.database.database
+    actual.mainPostgres.host.toLowerCase() !== expected.mainPostgres.host.toLowerCase() ||
+    actual.mainPostgres.port !== expected.mainPostgres.port ||
+    actual.mainPostgres.database !== expected.mainPostgres.database
   ) {
     problems.push("recovery source database does not match current authority");
   }
-  if (actual.chatFsRoot !== expected.chatFsRoot) {
-    problems.push("recovery Chat FS root does not match current authority");
+  if (actual.agentRun.root !== expected.agentRun.root) {
+    problems.push("recovery AgentRun root does not match current authority");
+  }
+  if (
+    actual.dsh.canonicalRoot !== expected.dsh.canonicalRoot ||
+    actual.dsh.privateRoot !== expected.dsh.privateRoot
+  ) {
+    problems.push("recovery DSH roots do not match current authority");
   }
   if (
     actual.queue.redis !== expected.queue.redis ||
@@ -760,8 +827,9 @@ function compareSourceAuthority(
 }
 
 // SPEC: launch accepts a recovery rehearsal only when one flat, checksummed
-// bundle proves the same Main DB, Chat FS and Blob authority before and after
-// an isolated restore, at the exact migration revision shipped by this build.
+// bundle proves the same Main PostgreSQL, AgentRun, DSH, queue receipt, and
+// Blob authority before and after an isolated restore, at the exact migration
+// revision shipped by this build.
 // INTENT: this is a read-only verifier. It never creates a backup, restores a
 // database, copies objects, or treats the historical migration-60 bundle as
 // current launch evidence.
@@ -941,7 +1009,9 @@ export async function inspectRecoveryRehearsalBundle(input: {
         filenameForSuffix("source-counts.json"),
         filenameForSuffix("source-schema.sql"),
         filenameForSuffix("source-logical.json"),
-        filenameForSuffix("chat-fs.source.sha256"),
+        filenameForSuffix("agent-run.source.sha256"),
+        filenameForSuffix("dsh-canonical.source.sha256"),
+        filenameForSuffix("dsh-private.source.sha256"),
         filenameForSuffix("blob.source.sha256"),
         ...(metadata.sourceAuthority.blob.provider === "mock"
           ? []
@@ -958,6 +1028,15 @@ export async function inspectRecoveryRehearsalBundle(input: {
       ) {
         problems.push(
           "source checkpoint identity does not match checksummed recovery artifacts",
+        );
+      }
+      const receiptBytes = artifact("quiescence-receipt.json");
+      if (
+        receiptBytes &&
+        sha256(receiptBytes) !== metadata.quiescenceReceiptSha256
+      ) {
+        problems.push(
+          "quiescence receipt identity does not match immutable recovery metadata",
         );
       }
     }
@@ -1012,11 +1091,17 @@ export async function inspectRecoveryRehearsalBundle(input: {
       problems,
       metadata?.sourceAuthority.queue ?? null,
     );
-    validateGzipArchive(
-      artifact("chat-fs.tar.gz"),
-      filenameForSuffix("chat-fs.tar.gz"),
-      problems,
-    );
+    for (const suffix of [
+      "agent-run.tar.gz",
+      "dsh-canonical.tar.gz",
+      "dsh-private.tar.gz",
+    ]) {
+      validateGzipArchive(
+        artifact(suffix),
+        filenameForSuffix(suffix),
+        problems,
+      );
+    }
     if (metadata?.sourceAuthority.blob.provider === "mock") {
       validateGzipArchive(
         artifact("blob.tar.gz"),
@@ -1049,14 +1134,38 @@ export async function inspectRecoveryRehearsalBundle(input: {
       );
     }
     if (metadata) {
-      await validateArchiveReconstruction({
-        archivePath: path.join(bundlePath, filenameForSuffix("chat-fs.tar.gz")),
-        archiveLabel: "Chat FS archive",
-        expectedRoot: path.basename(metadata.sourceAuthority.chatFsRoot),
-        expectedManifest: artifact("chat-fs.source.sha256"),
-        problems,
-        runner: commandRunner,
-      });
+      for (const authority of [
+        {
+          archive: "agent-run.tar.gz",
+          label: "AgentRun archive",
+          root: metadata.sourceAuthority.agentRun.root,
+          manifest: "agent-run.source.sha256",
+        },
+        {
+          archive: "dsh-canonical.tar.gz",
+          label: "DSH canonical archive",
+          root: metadata.sourceAuthority.dsh.canonicalRoot,
+          manifest: "dsh-canonical.source.sha256",
+        },
+        {
+          archive: "dsh-private.tar.gz",
+          label: "DSH private archive",
+          root: metadata.sourceAuthority.dsh.privateRoot,
+          manifest: "dsh-private.source.sha256",
+        },
+      ]) {
+        await validateArchiveReconstruction({
+          archivePath: path.join(
+            bundlePath,
+            filenameForSuffix(authority.archive),
+          ),
+          archiveLabel: authority.label,
+          expectedRoot: path.basename(authority.root),
+          expectedManifest: artifact(authority.manifest),
+          problems,
+          runner: commandRunner,
+        });
+      }
       if (metadata.sourceAuthority.blob.provider === "mock") {
         await validateArchiveReconstruction({
           archivePath: path.join(bundlePath, filenameForSuffix("blob.tar.gz")),
@@ -1069,8 +1178,12 @@ export async function inspectRecoveryRehearsalBundle(input: {
       }
     }
     for (const suffix of [
-      "chat-fs.source.sha256",
-      "chat-fs.restore.sha256",
+      "agent-run.source.sha256",
+      "agent-run.restore.sha256",
+      "dsh-canonical.source.sha256",
+      "dsh-canonical.restore.sha256",
+      "dsh-private.source.sha256",
+      "dsh-private.restore.sha256",
       "blob.source.sha256",
       "blob.restore.sha256",
     ]) {
@@ -1142,10 +1255,38 @@ export async function inspectRecoveryRehearsalBundle(input: {
     const authoritiesName = filenameForSuffix("file-authorities.json");
     const authoritiesBytes = fileBytes.get(authoritiesName);
     if (authoritiesBytes) {
-      const authorities = parseJson<{
-        blob?: { authorities_match?: unknown };
-      }>(authoritiesBytes, authoritiesName, problems);
-      if (authorities?.blob?.authorities_match !== true) {
+      const authorities = parseJson<Record<string, unknown>>(
+        authoritiesBytes,
+        authoritiesName,
+        problems,
+      );
+      const dsh = authorities && isRecord(authorities.dsh)
+        ? authorities.dsh
+        : null;
+      const queue = authorities && isRecord(authorities.queue)
+        ? authorities.queue
+        : null;
+      const blobAuthority = authorities && isRecord(authorities.blob)
+        ? authorities.blob
+        : null;
+      if (
+        !authorities ||
+        !isFileAuthoritySummary(authorities.agent_run) ||
+        !dsh ||
+        !isFileAuthoritySummary(dsh.canonical) ||
+        !isFileAuthoritySummary(dsh.private) ||
+        !queue ||
+        !metadata ||
+        queue.redis !== metadata.sourceAuthority.queue.redis ||
+        queue.prefix !== metadata.sourceAuthority.queue.prefix ||
+        queue.quiescence_receipt_sha256 !==
+          metadata.quiescenceReceiptSha256
+      ) {
+        problems.push(
+          "file authority inventory does not bind AgentRun, DSH, and queue receipt",
+        );
+      }
+      if (blobAuthority?.authorities_match !== true) {
         problems.push("Main and Gen Blob authorities do not match");
       }
     }

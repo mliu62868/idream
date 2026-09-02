@@ -493,7 +493,12 @@ export async function createCreativeRun(
     });
     const latestDecisionByItemId = new Map<string, (typeof latestVariationDecisions)[number]>();
     for (const decision of latestVariationDecisions) {
-      if (!latestDecisionByItemId.has(decision.runItemId)) {
+      // Variation sources are generated Run items. Artifact-level upload
+      // reviews have no runItemId and cannot substitute for this lineage.
+      if (
+        decision.runItemId &&
+        !latestDecisionByItemId.has(decision.runItemId)
+      ) {
         latestDecisionByItemId.set(decision.runItemId, decision);
       }
     }
@@ -1058,7 +1063,10 @@ export async function createCreativeRun(
         : [];
       const currentLatestDecisionByItemId = new Map<string, (typeof currentSourceDecisions)[number]>();
       for (const decision of currentSourceDecisions) {
-        if (!currentLatestDecisionByItemId.has(decision.runItemId)) {
+        if (
+          decision.runItemId &&
+          !currentLatestDecisionByItemId.has(decision.runItemId)
+        ) {
           currentLatestDecisionByItemId.set(decision.runItemId, decision);
         }
       }

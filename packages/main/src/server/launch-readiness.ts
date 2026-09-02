@@ -3640,9 +3640,9 @@ async function addRecoveryRehearsalPreflight(
       area: "Recovery",
       status: "fail",
       message:
-        "No current Main PostgreSQL + Chat FS + Blob recovery rehearsal bundle is configured.",
+        "No current Main PostgreSQL + AgentRun + DSH + Blob recovery rehearsal bundle is configured.",
       remediation:
-        "Create a fresh quiesced three-authority checkpoint, restore it into isolated targets, and set RECOVERY_REHEARSAL_BUNDLE to the published checksummed bundle.",
+        "Create a fresh quiesced checkpoint across Main PostgreSQL, AgentRun, DSH canonical/private, Blob, and the queue receipt; restore every persisted authority into isolated targets; then set RECOVERY_REHEARSAL_BUNDLE to the published checksummed bundle.",
     });
     return;
   }
@@ -3687,11 +3687,11 @@ async function addRecoveryRehearsalPreflight(
       area: "Recovery",
       status: authority.ok ? "pass" : "fail",
       message: authority.ok
-        ? `Current checksummed recovery bundle proves an isolated ${authority.migrationCount}/${expectedMigrations.length} restore of Main PostgreSQL, Chat FS and Blob.`
+        ? `Current checksummed recovery bundle proves an isolated ${authority.migrationCount}/${expectedMigrations.length} restore of Main PostgreSQL, AgentRun, DSH canonical/private, and Blob with an exact queue receipt.`
         : `Recovery rehearsal bundle is not launch authority: ${authority.problems.join("; ") || "unknown recovery evidence failure"}.`,
       remediation: authority.ok
         ? undefined
-        : "Create a fresh quiesced three-authority checkpoint at the exact repository migration revision, perform an isolated restore, publish all source/restore manifests in one checksummed bundle, and rerun check:launch.",
+        : "Create a fresh quiesced checkpoint at the exact repository migration revision, restore Main PostgreSQL, AgentRun, DSH canonical/private, and Blob into isolated targets, bind the queue receipt, publish every source/restore manifest in one checksummed bundle, and rerun check:launch.",
     });
   } catch (error) {
     checks.push({

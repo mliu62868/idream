@@ -7,7 +7,7 @@
 
 Soul 只解决一件事：让模型稳定地知道“这个角色是谁”。
 
-所有角色共享的陪伴产品行为不属于 Soul。它由版本化的 Companion Product Agent Contract 定义：直接回应最新意图、主动推进一拍、不默认盘问、不让角色张力否决已经可用或已接受的产品动作。Runtime Authority 再注入当前 Turn 的 memory/tool/事实约束。
+所有角色共享的 Chat 产品行为不属于 Soul。它由版本化的 Companion Product Agent Contract 定义：直接回应最新意图、主动推进一拍、不默认盘问、不让角色张力否决已经可用或已接受的产品动作。Runtime Authority 再注入当前 Turn 的 memory/tool/事实约束。
 
 创建者只需要填写：
 

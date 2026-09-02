@@ -11,20 +11,21 @@ import { AppError, Errors } from "@/server/lib/errors";
 import { logger } from "@/server/lib/logger";
 import {
   archiveChatSession,
-  beginChatTurn,
-  cancelChatTurn,
   chatVoiceAuthority,
   createChatSession,
   deleteChatMessage,
   deleteChatSession,
-  editChatTurn,
   getChatSession,
   listChatSessions,
-  regenerateChatTurn,
   renameChatSession,
   setChatMemory,
 } from "@/server/modules/chat/turn-ledger";
-import { attemptChatAgentRunAdmission } from "@/server/modules/chat/agent-run-admission";
+import {
+  beginAdmittedChatTurn,
+  cancelAdmittedChatTurn,
+  editAndAdmitChatTurn,
+  regenerateAndAdmitChatTurn,
+} from "@/server/modules/chat/agent-run-admission";
 import { clearCompanionMemory } from "@/server/modules/chat/companion-memory-authority";
 
 const PRIVATE_HEADERS = {
@@ -109,28 +110,14 @@ async function routeMainChat(request: Request, segments: string[], userId: strin
       }
     }
     if (path.length === 3 && path[2] === "messages" && method === "POST") {
-      requireAgentRuntime();
       const idempotencyKey = request.headers.get("idempotency-key")?.trim();
       if (!idempotencyKey) throw Errors.badRequest("Idempotency-Key is required");
-      const begun = await beginChatTurn({
+      return envelope(await beginAdmittedChatTurn({
         userId,
         sessionId,
         content: text(body.content),
         idempotencyKey,
-      });
-      const admission = begun.snapshot
-        ? await attemptChatAgentRunAdmission(begun.snapshot)
-        : null;
-      const assistant = admission?.admitted
-        ? { ...begun.assistant, status: "generating" as const }
-        : begun.assistant;
-      return envelope({
-        userMessage: begun.userMessage,
-        assistant,
-        assistantMessageId: assistant.id,
-        streamUrl: begun.streamUrl,
-        ...(begun.safety ? { safety: begun.safety } : {}),
-      }, 202);
+      }), 202);
     }
     if (path.length === 3 && path[2] === "archive" && method === "POST") {
       return json(await archiveChatSession(userId, sessionId));
@@ -155,23 +142,13 @@ async function routeMainChat(request: Request, segments: string[], userId: strin
       return json({ ok: true });
     }
     if (path.length === 2 && method === "PATCH") {
-      requireAgentRuntime();
-      const result = await editChatTurn(userId, messageId, text(body.content));
-      const admission = result.snapshot
-        ? await attemptChatAgentRunAdmission(result.snapshot)
-        : null;
-      return json(publicRetry(result, admission?.admitted === true), 202);
+      return json(await editAndAdmitChatTurn(userId, messageId, text(body.content)), 202);
     }
     if (path.length === 3 && path[2] === "regenerate" && method === "POST") {
-      requireAgentRuntime();
-      const result = await regenerateChatTurn(userId, messageId);
-      const admission = await attemptChatAgentRunAdmission(result.snapshot);
-      return json(publicRetry(result, admission.admitted), 202);
+      return json(await regenerateAndAdmitChatTurn(userId, messageId), 202);
     }
     if (path.length === 3 && path[2] === "cancel" && method === "POST") {
-      const result = await cancelChatTurn(userId, messageId);
-      await cancelAgentRun(result.turnId, result.attempt).catch(() => undefined);
-      return json({ ok: true, cancelled: result.cancelled });
+      return json(await cancelAdmittedChatTurn(userId, messageId));
     }
     if (path.length === 3 && path[2] === "stream" && method === "GET") {
       return proxyAgentStream(request, userId, messageId);
@@ -179,22 +156,6 @@ async function routeMainChat(request: Request, segments: string[], userId: strin
   }
 
   throw Errors.notFound("Chat route not found");
-}
-
-function publicRetry(result: {
-  assistantMessageId: string;
-  attempt: number;
-  status: "pending" | "blocked";
-  streamUrl: string | null;
-  safety?: { layer: "input"; policyCode?: string };
-}, admitted = false) {
-  return {
-    assistantMessageId: result.assistantMessageId,
-    attempt: result.attempt,
-    status: admitted && result.status === "pending" ? "generating" : result.status,
-    streamUrl: result.streamUrl,
-    ...(result.safety ? { safety: result.safety } : {}),
-  };
 }
 
 async function proxyAgentStream(request: Request, userId: string, messageId: string): Promise<Response> {
@@ -211,14 +172,6 @@ async function proxyAgentStream(request: Request, userId: string, messageId: str
   responseHeaders.set("cache-control", "private, no-cache, no-store, no-transform");
   responseHeaders.set("vary", "Cookie, Authorization");
   return new Response(response.body, { status: response.status, headers: responseHeaders });
-}
-
-async function cancelAgentRun(turnId: string, attempt: number): Promise<void> {
-  const base = requireAgentRuntime();
-  await fetch(`${base}/internal/agent-runs/${encodeURIComponent(turnId)}/${attempt}/cancel`, {
-    method: "POST",
-    headers: { "x-internal-token": env.INTERNAL_TOKEN },
-  });
 }
 
 function signedAgentHeaders(

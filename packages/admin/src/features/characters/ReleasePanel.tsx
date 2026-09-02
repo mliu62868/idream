@@ -1,13 +1,13 @@
 "use client";
 
 import { useAdminI18n } from "@/components/admin/i18n";
+import { EmptyState } from "@/components/admin/ui/EmptyState";
 import Link from "next/link";
 import type { CharacterWorkspaceDetail } from "@idream/shared/admin";
 import { Rocket, RotateCcw } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { characterReleaseCreateMutation } from "@/features/image-workflow-transport";
 import {
-  EmptyWorkspace,
   StatusBadge,
   WorkspaceButton,
   fieldClass,
@@ -450,7 +450,12 @@ export function ReleasePanel({
     <div className="grid gap-5 xl:grid-cols-[1fr_340px]">
       <div className="space-y-5">
         {data.releases.length === 0 ? (
-          <EmptyWorkspace filtered={false} onClear={() => undefined} />
+          <EmptyState
+            hint={canPublish
+              ? "Publish the current Character to create the first release."
+              : "Complete the release requirements shown here before creating the first release."}
+            title="No Character releases yet"
+          />
         ) : (
           <>
             {current ? (

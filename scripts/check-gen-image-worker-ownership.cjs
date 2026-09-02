@@ -2,6 +2,7 @@ const { spawnSync } = require("node:child_process");
 const { readFileSync } = require("node:fs");
 const { createRequire } = require("node:module");
 const path = require("node:path");
+const { createRuntimeTopology } = require("./runtime-topology.cjs");
 
 const repoRoot = path.resolve(__dirname, "..");
 const genCwd = path.join(repoRoot, "packages/gen");
@@ -13,20 +14,46 @@ const pm2BunProcessContainer = require.resolve(
   "pm2/lib/ProcessContainerForkBun.js",
 );
 const requireFromGen = createRequire(path.join(genCwd, "package.json"));
+
+const ownershipTopologies = Object.freeze(
+  Object.fromEntries(
+    ["development", "production"].map((mode) => [
+      mode,
+      createRuntimeTopology({
+        repoRoot,
+        bunInterpreter: "bun",
+        mode,
+        environment: {},
+        videoProvider: "backend",
+      }),
+    ]),
+  ),
+);
+
+function generationWorkerProcessAuthority(kind) {
+  const development =
+    ownershipTopologies.development.generationWorkerDefinition(kind);
+  const production =
+    ownershipTopologies.production.generationWorkerDefinition(kind);
+  if (!development || !production || development.name !== production.name) {
+    throw new Error(`runtime topology is missing the ${kind} worker authority`);
+  }
+  return Object.freeze({
+    name: development.name,
+    modes: Object.freeze({ development, production }),
+  });
+}
+
 const workerSpecs = {
   image: {
-    appName: "gen-image",
-    sourceEntrypoint: "src/image.ts",
-    builtEntrypoint: "dist/image.js",
+    processAuthority: generationWorkerProcessAuthority("image"),
     queue: "ai.image.generate",
     runIdEnv: "GEN_IMAGE_WORKER_RUN_ID",
     identityPattern:
       /^idream\.gen-image\.v1\.([a-zA-Z0-9_-]+)\.(\d+)\.(\d+)$/,
   },
   video: {
-    appName: "gen-video",
-    sourceEntrypoint: "src/video.ts",
-    builtEntrypoint: "dist/video.js",
+    processAuthority: generationWorkerProcessAuthority("video"),
     queue: "ai.video.generate",
     runIdEnv: "GEN_VIDEO_WORKER_RUN_ID",
     identityPattern:
@@ -79,15 +106,15 @@ function pm2Identity(process, spec) {
   const slot = Number(env.NODE_APP_INSTANCE);
   const pid = Number(process.pid);
   const pmId = Number(process.pm_id);
-  const expectedEntrypoint =
+  const expectedProcess =
     env.IDREAM_PM2_MODE === "production"
-      ? spec.builtEntrypoint
-      : spec.sourceEntrypoint;
+      ? spec.processAuthority.modes.production
+      : spec.processAuthority.modes.development;
   const interpreter = String(env.exec_interpreter ?? "");
   const correct =
-    process.name === spec.appName &&
-    env.pm_cwd === genCwd &&
-    env.pm_exec_path === path.join(genCwd, expectedEntrypoint) &&
+    process.name === spec.processAuthority.name &&
+    env.pm_cwd === expectedProcess.cwd &&
+    env.pm_exec_path === expectedProcess.execPath &&
     normalizeArgs(env.args).length === 0 &&
     (interpreter === "bun" || path.basename(interpreter) === "bun") &&
     Number.isSafeInteger(slot) &&
@@ -109,8 +136,8 @@ function pm2Identity(process, spec) {
 }
 
 function isWorkerRuntime(row, spec) {
-  return [spec.sourceEntrypoint, spec.builtEntrypoint].some((entrypoint) => {
-    const escaped = entrypoint.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return Object.values(spec.processAuthority.modes).some((definition) => {
+    const escaped = definition.script.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     return new RegExp(`(?:^|\\s)${escaped}(?:\\s|$)`).test(row.command);
   });
 }
@@ -163,7 +190,7 @@ function classifySingleOwnership(input, spec) {
     issues.push("invalid_phase_contract");
   }
   const pm2Rows = input.pm2Processes
-    .filter((process) => process?.name === spec.appName)
+    .filter((process) => process?.name === spec.processAuthority.name)
     .map((process) => pm2Identity(process, spec));
   // A stopped definition may be exactly the stale PM2 registration that the
   // gated delete/recreate phase is responsible for repairing. Quiescence only

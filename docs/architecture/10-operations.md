@@ -1,10 +1,12 @@
 # 10 · 运行与发布
 
-更新日期：2026-08-31
+更新日期：2026-09-02
 
 ## 1. 运行拓扑
 
-完整产品由 `ecosystem.config.js` 管理：
+完整产品的进程结构由 `scripts/runtime-topology.cjs` 唯一定义，
+`ecosystem.config.js` 只负责物化，gated PM2 wrapper 与 worker ownership
+检查消费同一份定义：
 
 | 进程 | 作用 |
 | --- | --- |
@@ -30,6 +32,8 @@ bun run pm2:start:production
 ```
 
 生产启动/重启只用仓库 wrapper；直接操作 PM2 会绕过 source revision、queue fence 和 readiness。
+development 的 source watch 明确是 `non-certifying-source-watch`；只有绑定单一
+source revision 的 production immutable topology 才能签发运行态证明。
 
 ## 2. 数据权威与运行目录
 
@@ -152,7 +156,11 @@ PM2 `online`、HTTP 200 或 mock 成功都不能单独作为发布通过证据�
 
 恢复必须进入 disposable DB/AgentRun/DSH/Blob 目标，比较 checksum、schema、计数、稳定 durable backlog 和引用完整性。数据库 restore 成功不等于聊天执行证据或媒体可恢复。
 
-现有 `bun run recovery:rehearse` 仍含旧 Chat PG/inbox/file-mutation时代的检查；在完成迁移专用清理前，它只能作为历史/迁移工具，**不能证明 ADR-20 当前四层 authority 已完整恢复**。刷新 producer、executor 和 launch gate 后，才可签发新的当前 recovery bundle。
+`bun run recovery:rehearse` 的 schema 2 已移除旧 Chat PG/inbox/file-mutation
+假设，并把 Main PostgreSQL、AgentRun、DSH canonical/private、Blob 与 queue
+receipt 固定进同一 checkpoint digest。schema-1 的历史 bundle 不再具备当前
+认证资格；每次迁移或 source revision 变化后都必须生成新的 schema-2 bundle，
+完成所有 authority 的隔离恢复并由 launch gate 验证。
 
 ## 8. 验证门
 

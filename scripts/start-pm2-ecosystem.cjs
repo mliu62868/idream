@@ -6,6 +6,16 @@ const {
   loadGenEnvironment,
 } = require("./check-gen-image-worker-ownership.cjs");
 const { computeSourceRevision } = require("./source-revision.cjs");
+const {
+  RUNTIME_CERTIFICATION,
+  configuredVoiceRuntimeTargets,
+  createRuntimeTopology,
+  matchesRuntimeProcessDefinition,
+  positiveInstanceCount,
+  processRuntimeMarker,
+  runtimeIdentityEnvironment,
+  videoWorkerCount,
+} = require("./runtime-topology.cjs");
 
 const repoRoot = path.resolve(__dirname, "..");
 const productionGateCwd = path.join(repoRoot, "packages/main");
@@ -31,179 +41,31 @@ const supportedActions = new Set([
   "quiesce",
   "stop",
 ]);
-const productionAdmissionTargets = [
-  "main-web",
-  "admin-web",
-  "chat",
-  "main-event-consumer",
-  "admin-command-worker",
-];
-const productionDrainWorkerTargets = [
-  "gen-image",
-  "gen-video",
-  // Finalizer stops last so an already-active terminal ingest/finalize
-  // transition can settle. New Gen terminal records remain durable in the
-  // globally paused relay queue until the verified runtime resumes it.
-  "gen-finalizer",
-];
+const structuralTopology = createRuntimeTopology({
+  repoRoot,
+  bunInterpreter,
+  mode: "production",
+  environment: {},
+  videoProvider: "mock",
+});
+const productionAdmissionTargets = structuralTopology.admissionTargets;
+// Finalizer stops last so an already-active terminal ingest/finalize
+// transition can settle. New Gen terminal records remain durable in the
+// globally paused relay queue until the verified runtime resumes it.
+const productionDrainWorkerTargets = structuralTopology.drainWorkerTargets;
 const productionQuiescenceTargets = [
   ...productionAdmissionTargets,
   ...productionDrainWorkerTargets,
 ];
-const voiceRuntimeTargets = ["fish-audio", "pocket-tts"];
-const productionRuntimeTargets = ["fish-audio", ...productionQuiescenceTargets];
+const voiceRuntimeTargets = structuralTopology.voiceRuntimeTargets;
+const productionRuntimeTargets = structuralTopology.definitionPlanTargets;
 const quiescedStatuses = new Set(["stopped", "errored"]);
-const runtimeModes = new Set(["development", "production"]);
-const productionProcessDefinitions = new Map([
-  ["fish-audio", {
-    cwd: repoRoot,
-    execPath: path.join(repoRoot, "scripts/start-fish-audio.cjs"),
-    args: [],
-    execInterpreter: bunInterpreter,
-    execMode: "fork_mode",
-  }],
-  ["pocket-tts", {
-    cwd: repoRoot,
-    execPath: path.join(repoRoot, "scripts/start-pocket-tts.cjs"),
-    args: [],
-    execInterpreter: bunInterpreter,
-    execMode: "fork_mode",
-  }],
-  ["main-web", {
-    cwd: repoRoot,
-    execPath: path.join(repoRoot, "scripts/start-next-standalone.cjs"),
-    args: ["packages/main"],
-    execInterpreter: bunInterpreter,
-    execMode: "cluster_mode",
-  }],
-  ["admin-web", {
-    cwd: repoRoot,
-    execPath: path.join(repoRoot, "scripts/start-next-standalone.cjs"),
-    args: ["packages/admin"],
-    execInterpreter: bunInterpreter,
-    execMode: "cluster_mode",
-  }],
-  ["chat", {
-    cwd: path.join(repoRoot, "packages/chat"),
-    execPath: path.join(repoRoot, "packages/chat/dist/main.js"),
-    args: [],
-    execInterpreter: bunInterpreter,
-    execMode: "fork_mode",
-  }],
-  ["gen-image", {
-    cwd: productionGenCwd,
-    execPath: path.join(productionGenCwd, "dist/image.js"),
-    args: [],
-    execInterpreter: bunInterpreter,
-    execMode: "fork_mode",
-  }],
-  ["gen-video", {
-    cwd: productionGenCwd,
-    execPath: path.join(productionGenCwd, "dist/video.js"),
-    args: [],
-    execInterpreter: bunInterpreter,
-    execMode: "fork_mode",
-  }],
-  ["gen-finalizer", {
-    cwd: productionGateCwd,
-    execPath: path.join(productionGateCwd, "dist/finalizer.js"),
-    args: [],
-    execInterpreter: bunInterpreter,
-    execMode: "fork_mode",
-  }],
-  ["main-event-consumer", {
-    cwd: productionGateCwd,
-    execPath: path.join(productionGateCwd, "dist/event-consumer.js"),
-    args: [],
-    execInterpreter: bunInterpreter,
-    execMode: "fork_mode",
-  }],
-  ["admin-command-worker", {
-    cwd: productionGateCwd,
-    execPath: path.join(productionGateCwd, "dist/admin-command-worker.js"),
-    args: [],
-    execInterpreter: bunInterpreter,
-    execMode: "fork_mode",
-  }],
-]);
-const developmentProcessDefinitions = new Map([
-  ["fish-audio", {
-    cwd: repoRoot,
-    execPath: path.join(repoRoot, "scripts/start-fish-audio.cjs"),
-    args: [],
-    execInterpreter: bunInterpreter,
-    execMode: "fork_mode",
-  }],
-  ["pocket-tts", {
-    cwd: repoRoot,
-    execPath: path.join(repoRoot, "scripts/start-pocket-tts.cjs"),
-    args: [],
-    execInterpreter: bunInterpreter,
-    execMode: "fork_mode",
-  }],
-  ["main-web", {
-    cwd: path.join(repoRoot, "packages/main"),
-    execPath: path.join(repoRoot, "packages/main/scripts/start-development.cjs"),
-    args: [],
-    execInterpreter: bunInterpreter,
-    execMode: "fork_mode",
-  }],
-  ["admin-web", {
-    cwd: path.join(repoRoot, "packages/admin"),
-    execPath: path.join(repoRoot, "packages/admin/scripts/start-development.cjs"),
-    args: [],
-    execInterpreter: bunInterpreter,
-    execMode: "fork_mode",
-  }],
-  ["chat", {
-    cwd: path.join(repoRoot, "packages/chat"),
-    execPath: path.join(repoRoot, "packages/chat/src/main.ts"),
-    args: [],
-    execInterpreter: bunInterpreter,
-    execMode: "fork_mode",
-  }],
-  ["gen-image", {
-    cwd: productionGenCwd,
-    execPath: path.join(productionGenCwd, "src/image.ts"),
-    args: [],
-    execInterpreter: bunInterpreter,
-    execMode: "fork_mode",
-  }],
-  ["gen-video", {
-    cwd: productionGenCwd,
-    execPath: path.join(productionGenCwd, "src/video.ts"),
-    args: [],
-    execInterpreter: bunInterpreter,
-    execMode: "fork_mode",
-  }],
-  ["gen-finalizer", {
-    cwd: productionGateCwd,
-    execPath: path.join(productionGateCwd, "src/processes/finalizer.ts"),
-    args: [],
-    execInterpreter: bunInterpreter,
-    execMode: "fork_mode",
-  }],
-  ["main-event-consumer", {
-    cwd: productionGateCwd,
-    execPath: path.join(productionGateCwd, "src/processes/event-consumer.ts"),
-    args: [],
-    execInterpreter: bunInterpreter,
-    execMode: "fork_mode",
-  }],
-  ["admin-command-worker", {
-    cwd: productionGateCwd,
-    execPath: path.join(productionGateCwd, "src/processes/admin-command-worker.ts"),
-    args: [],
-    execInterpreter: bunInterpreter,
-    execMode: "fork_mode",
-  }],
-]);
+const runtimeModes = new Set(Object.keys(RUNTIME_CERTIFICATION));
 
-function productionProcessEnv(env, mode) {
+function productionProcessEnv(env) {
   const redisUrl = env.MAIN_REDIS_URL ?? env.REDIS_URL;
   return {
     ...env,
-    ...(mode ? { IDREAM_PM2_MODE: mode } : {}),
     // Production injects both spellings so packages/gen/.env cannot supply a
     // higher-priority GEN_REDIS_URL that diverges from Main's queue authority.
     ...(redisUrl ? { REDIS_URL: redisUrl, GEN_REDIS_URL: redisUrl } : {}),
@@ -247,46 +109,50 @@ function processStatus(process) {
     : null;
 }
 
-function processRuntimeMarker(process) {
-  const pm2Env =
-    process && typeof process === "object" ? process.pm2_env : null;
-  if (!pm2Env || typeof pm2Env !== "object") return null;
-  const marker = pm2Env.IDREAM_PM2_MODE ?? pm2Env.env?.IDREAM_PM2_MODE;
-  return runtimeModes.has(marker) ? marker : null;
+function effectiveVideoProvider(mode, runtimeEnv) {
+  return mode === "development"
+    ? (loadGenEnvironment(runtimeEnv).GEN_VIDEO_PROVIDER ?? "mock")
+    : (runtimeEnv.GEN_VIDEO_PROVIDER ?? "mock");
 }
 
-function normalizePm2Args(value) {
-  if (Array.isArray(value)) return value.map(String);
-  if (typeof value === "string" && value.trim()) return [value.trim()];
-  return [];
+function runtimeTopology(mode, runtimeEnv = process.env) {
+  return createRuntimeTopology({
+    repoRoot,
+    bunInterpreter,
+    mode,
+    environment: runtimeEnv,
+    videoProvider: effectiveVideoProvider(mode, runtimeEnv),
+  });
 }
 
-function productionProcessDefinition(name) {
-  return productionProcessDefinitions.get(name) ?? null;
+function processDefinition(mode, name, runtimeEnv) {
+  const definition = runtimeTopology(mode, runtimeEnv).definition(name);
+  if (!definition) return null;
+  return {
+    cwd: definition.cwd,
+    execPath: definition.execPath,
+    args: definition.args,
+    execInterpreter: definition.execInterpreter,
+    execMode: definition.execMode,
+  };
 }
 
-function developmentProcessDefinition(name) {
-  return developmentProcessDefinitions.get(name) ?? null;
+function productionProcessDefinition(name, runtimeEnv = process.env) {
+  return processDefinition("production", name, runtimeEnv);
 }
 
-function matchesProductionProcessDefinition(process) {
-  const definition = productionProcessDefinition(process?.name);
-  const pm2Env = process?.pm2_env;
-  return Boolean(
-    definition &&
-      pm2Env &&
-      typeof pm2Env === "object" &&
-      pm2Env.pm_cwd === definition.cwd &&
-      pm2Env.pm_exec_path === definition.execPath &&
-      JSON.stringify(normalizePm2Args(pm2Env.args)) ===
-        JSON.stringify(definition.args) &&
-      JSON.stringify(normalizePm2Args(pm2Env.node_args)) ===
-        JSON.stringify(definition.nodeArgs ?? []) &&
-      (definition.execInterpreter === undefined ||
-        pm2Env.exec_interpreter === definition.execInterpreter) &&
-      pm2Env.exec_mode === definition.execMode &&
-      pm2Env.watch === false &&
-      processRuntimeMarker(process) === "production",
+function developmentProcessDefinition(name, runtimeEnv = process.env) {
+  return processDefinition("development", name, runtimeEnv);
+}
+
+function matchesProductionProcessDefinition(
+  pm2Process,
+  runtimeEnv = globalThis.process.env,
+) {
+  return matchesRuntimeProcessDefinition(
+    pm2Process,
+    runtimeTopology("production", runtimeEnv),
+    { sourceRevision: runtimeEnv.IDREAM_SOURCE_REVISION },
   );
 }
 
@@ -302,22 +168,14 @@ function productionDefinitionPlan(processes) {
   return { deleteNames, requiresStart: true };
 }
 
-function matchesDevelopmentProcessDefinition(process) {
-  const definition = developmentProcessDefinition(process?.name);
-  const pm2Env = process?.pm2_env;
-  return Boolean(
-    definition &&
-      pm2Env &&
-      typeof pm2Env === "object" &&
-      pm2Env.pm_cwd === definition.cwd &&
-      pm2Env.pm_exec_path === definition.execPath &&
-      JSON.stringify(normalizePm2Args(pm2Env.args)) ===
-        JSON.stringify(definition.args) &&
-      JSON.stringify(normalizePm2Args(pm2Env.node_args)) === "[]" &&
-      (definition.execInterpreter === undefined ||
-        pm2Env.exec_interpreter === definition.execInterpreter) &&
-      pm2Env.exec_mode === definition.execMode &&
-      processRuntimeMarker(process) === "development",
+function matchesDevelopmentProcessDefinition(
+  pm2Process,
+  runtimeEnv = globalThis.process.env,
+) {
+  return matchesRuntimeProcessDefinition(
+    pm2Process,
+    runtimeTopology("development", runtimeEnv),
+    { sourceRevision: runtimeEnv.IDREAM_SOURCE_REVISION },
   );
 }
 
@@ -325,14 +183,11 @@ function developmentDefinitionPlan(processes, runtimeEnv = process.env) {
   // PM2 restart/update-env does not replace an already-registered script or
   // interpreter or scale an existing app down. Recreate definitions whose
   // structure or instance cardinality differs from the current topology.
+  const topology = runtimeTopology("development", runtimeEnv);
   const expectedInstances = new Map(
-    productionRuntimeTargets.map((name) => [
+    [...productionRuntimeTargets, ...voiceRuntimeTargets].map((name) => [
       name,
-      name === "gen-image"
-        ? positiveInstanceCount(runtimeEnv.GEN_IMAGE_INSTANCES, 1)
-        : name === "gen-video"
-          ? developmentVideoWorkerCount(runtimeEnv)
-          : 1,
+      topology.instanceCount(name),
     ]),
   );
   const inactiveVoiceTargets = voiceRuntimeTargets.filter(
@@ -349,7 +204,7 @@ function developmentDefinitionPlan(processes, runtimeEnv = process.env) {
       registered.some(
         (process) =>
           typeof process?.pm2_env?.pm_exec_path === "string" &&
-          !matchesDevelopmentProcessDefinition(process),
+          !matchesDevelopmentProcessDefinition(process, runtimeEnv),
       );
   });
   return {
@@ -396,60 +251,32 @@ function resolveCurrentPm2Mode(processes) {
   return modes.size === 1 ? evidence[0] : null;
 }
 
-function positiveInstanceCount(value, fallback) {
-  const parsed = Number.parseInt(String(value ?? ""), 10);
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
-
 function productionVideoWorkerCount(runtimeEnv) {
-  const provider = runtimeEnv.GEN_VIDEO_PROVIDER ?? "mock";
-  if (provider === "mock") return 0;
-  if (provider === "backend") return 1;
-  throw new Error(
-    `Production video worker topology requires GEN_VIDEO_PROVIDER=mock or backend, received ${provider}`,
-  );
+  return videoWorkerCount("production", runtimeEnv.GEN_VIDEO_PROVIDER ?? "mock");
 }
 
 function developmentVideoWorkerCount(runtimeEnv) {
   // Gen loads packages/gen/.env non-overridingly. Use the same resolver as the
   // ownership collector so the expected topology matches the worker's actual
   // provider after shell-over-file precedence, including a default mock exit.
-  const provider = loadGenEnvironment(runtimeEnv).GEN_VIDEO_PROVIDER ?? "mock";
-  if (provider === "mock") return 0;
-  if (provider === "backend" || provider === "pipeline") return 1;
-  throw new Error(
-    `Development video worker topology requires GEN_VIDEO_PROVIDER=mock, backend or pipeline, received ${provider}`,
+  return videoWorkerCount(
+    "development",
+    loadGenEnvironment(runtimeEnv).GEN_VIDEO_PROVIDER ?? "mock",
   );
 }
 
 function productionExpectedInstances(runtimeEnv) {
+  const topology = runtimeTopology("production", runtimeEnv);
   const targets = [
-    ...configuredVoiceRuntimeTargets(runtimeEnv),
+    ...topology.configuredVoiceRuntimeTargets,
     ...productionQuiescenceTargets,
   ];
   return new Map(
-    targets.map((name) => [
-      name,
-      name === "main-web"
-        ? positiveInstanceCount(runtimeEnv.MAIN_WEB_INSTANCES, 1)
-        : name === "gen-image"
-          ? positiveInstanceCount(runtimeEnv.GEN_IMAGE_INSTANCES, 1)
-          : name === "gen-video"
-            ? productionVideoWorkerCount(runtimeEnv)
-            : 1,
-    ]),
+    targets.map((name) => [name, topology.instanceCount(name)]),
   );
 }
 
-function configuredVoiceRuntimeTargets(runtimeEnv) {
-  const configured = [
-    runtimeEnv.VOICE_PROVIDER ?? "pocket-tts",
-    runtimeEnv.VOICE_IDENTITY_PROVIDER,
-  ];
-  return voiceRuntimeTargets.filter((name) => configured.includes(name));
-}
-
-function runtimeIsOnline(processes, expectedInstances) {
+function runtimeIsOnline(processes, expectedInstances, runtimeEnv) {
   for (const [name, expected] of expectedInstances) {
     const instances = processes.filter((process) => process?.name === name);
     if (
@@ -457,7 +284,7 @@ function runtimeIsOnline(processes, expectedInstances) {
       instances.some(
         (process) =>
           processStatus(process) !== "online" ||
-          !matchesProductionProcessDefinition(process),
+          !matchesProductionProcessDefinition(process, runtimeEnv),
       )
     ) {
       return false;
@@ -484,11 +311,11 @@ function verifyProductionRuntime(options) {
     const listed = readPm2ProcessList(spawn, runtimeEnv);
     if (listed.ok) {
       lastProcesses = listed.processes;
-      if (runtimeIsOnline(lastProcesses, expectedInstances)) break;
+      if (runtimeIsOnline(lastProcesses, expectedInstances, runtimeEnv)) break;
     }
     if (attempt < attempts) delay(500);
   }
-  if (!runtimeIsOnline(lastProcesses, expectedInstances)) {
+  if (!runtimeIsOnline(lastProcesses, expectedInstances, runtimeEnv)) {
     const observed = [...expectedInstances.keys()].map((name) => ({
       name,
       statuses: lastProcesses
@@ -496,7 +323,9 @@ function verifyProductionRuntime(options) {
         .map(processStatus),
       definitionMatches: lastProcesses
         .filter((process) => process?.name === name)
-        .map(matchesProductionProcessDefinition),
+        .map((process) =>
+          matchesProductionProcessDefinition(process, runtimeEnv)
+        ),
     }));
     process.stderr.write(
       `Production runtime definition/readiness is invalid; Generation queues remain paused: ${JSON.stringify(observed)}\n`,
@@ -570,7 +399,7 @@ function verifyProductionRuntime(options) {
   const confirmed = readPm2ProcessList(spawn, runtimeEnv);
   if (
     !confirmed.ok ||
-    !runtimeIsOnline(confirmed.processes, expectedInstances)
+    !runtimeIsOnline(confirmed.processes, expectedInstances, runtimeEnv)
   ) {
     process.stderr.write(
       "Production runtime changed during readiness probes; Generation queues remain paused\n",
@@ -728,8 +557,12 @@ function runPm2Ecosystem(options = {}) {
       ? (options.computeSourceRevision ?? computeSourceRevision)(repoRoot)
       : undefined);
   const runtimeEnv = {
-    ...productionProcessEnv(env, mode),
-    ...(sourceRevision ? { IDREAM_SOURCE_REVISION: sourceRevision } : {}),
+    ...productionProcessEnv(env),
+    ...runtimeIdentityEnvironment({
+      mode,
+      sourceRevision,
+      sentryRelease: env.SENTRY_RELEASE,
+    }),
     GEN_IMAGE_WORKER_RUN_ID: workerRunId,
     GEN_VIDEO_WORKER_RUN_ID: workerRunId,
   };

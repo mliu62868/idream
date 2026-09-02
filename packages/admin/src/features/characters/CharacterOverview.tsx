@@ -109,10 +109,14 @@ export function characterRecentAssets(data: CharacterWorkspaceDetail) {
 }
 
 export function CharacterOverview({
-  canWrite,
+  canReadContent,
+  canWriteTags,
+  canManageChatTools,
   data,
 }: {
-  canWrite: boolean;
+  canReadContent: boolean;
+  canWriteTags: boolean;
+  canManageChatTools: boolean;
   data: CharacterWorkspaceDetail;
 }) {
   const { t } = useAdminI18n();
@@ -210,14 +214,23 @@ export function CharacterOverview({
                 {t("No recent assets")}
               </p>
             )}
-            <CharacterTagsPanel
-              canWrite={canWrite}
-              characterId={data.character.id}
-            />
-            <CharacterChatToolsPanel
-              canWrite={canWrite}
-              characterId={data.character.id}
-            />
+            {/* SPEC: 角色读取权限不含内容读取；缺少 content.read 时不发出必定被拒绝的请求。 */}
+            {canReadContent ? (
+              <>
+                <CharacterTagsPanel
+                  canWrite={canWriteTags}
+                  characterId={data.character.id}
+                />
+                <CharacterChatToolsPanel
+                  canWrite={canManageChatTools}
+                  characterId={data.character.id}
+                />
+              </>
+            ) : (
+              <p className="mt-7 text-xs text-[var(--ad-text-muted)]" role="status">
+                {t("Your effective grants do not include")} content.read
+              </p>
+            )}
           </div>
         </div>
       </section>

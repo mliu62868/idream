@@ -7,7 +7,10 @@ import {
   listCharacterImageSources,
   parseCharacterImageSourceForm,
 } from "@/server/modules/admin-v2/characters/image-sources";
-import { actorWithPermission } from "@/server/modules/admin-v2/shared/authority";
+import {
+  actorWithPermission,
+  queryParams,
+} from "@/server/modules/admin-v2/shared/authority";
 import { requireIdempotencyKey } from "@/server/modules/admin-v2/shared/idempotency";
 import { adminV2Route } from "@/server/modules/admin-v2/shared/route-handler";
 
@@ -25,8 +28,20 @@ export async function GET(
       "character.project.read",
       { characterId: id },
     );
+    await actorWithPermission(
+      request,
+      "creative.run.read",
+      { characterId: id },
+    );
+    const query = queryParams(
+      { url: request.url },
+      "GET /api/v2/admin/characters/:id/image-sources",
+    );
     return characterImageSourceListResponseSchema.parse(
-      await listCharacterImageSources({ characterId: id }),
+      await listCharacterImageSources({
+        characterId: id,
+        purpose: query.purpose,
+      }),
     );
   });
 }
@@ -40,6 +55,11 @@ export async function POST(
     const actor = await actorWithPermission(
       request,
       "character.project.write",
+      { characterId: id },
+    );
+    await actorWithPermission(
+      request,
+      "creative.run.write",
       { characterId: id },
     );
     const idempotencyKey = requireIdempotencyKey(request);

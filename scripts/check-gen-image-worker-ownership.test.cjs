@@ -1,6 +1,8 @@
 const assert = require("node:assert/strict");
+const { readFileSync } = require("node:fs");
 const test = require("node:test");
 const path = require("node:path");
+const { createRuntimeTopology } = require("./runtime-topology.cjs");
 const {
   classifyOwnership,
   mergeGenEnvironment,
@@ -11,45 +13,78 @@ const {
 } = require("./check-gen-image-worker-ownership.cjs");
 
 const repoRoot = path.resolve(__dirname, "..");
-const genCwd = path.join(repoRoot, "packages/gen");
 const bunPath = "/runtime/bun";
-const imageEntrypoint = path.join(genCwd, "src/image.ts");
-const videoEntrypoint = path.join(genCwd, "src/video.ts");
+const runtimeTopologies = Object.freeze(
+  Object.fromEntries(
+    ["development", "production"].map((mode) => [
+      mode,
+      createRuntimeTopology({
+        repoRoot,
+        bunInterpreter: bunPath,
+        mode,
+        environment: {},
+        videoProvider: "backend",
+      }),
+    ]),
+  ),
+);
+
+function generationWorkerDefinition(kind, mode = "development") {
+  const definition = runtimeTopologies[mode].generationWorkerDefinition(kind);
+  assert.ok(definition, `missing ${mode} ${kind} worker definition`);
+  return definition;
+}
+
+const genCwd = generationWorkerDefinition("image").cwd;
 const legacyTsxEntrypoint = path.join(genCwd, "node_modules/tsx/dist/cli.mjs");
 const pm2BunProcessContainer = require.resolve(
   "pm2/lib/ProcessContainerForkBun.js",
 );
 
-function pm2(pid, slot, status = "online", runId = "release1") {
+function pm2(
+  pid,
+  slot,
+  status = "online",
+  runId = "release1",
+  mode = "development",
+) {
+  const definition = generationWorkerDefinition("image", mode);
   return {
     pid,
     pm_id: 20 + slot,
-    name: "gen-image",
+    name: definition.name,
     pm2_env: {
       status,
-      pm_cwd: genCwd,
-      pm_exec_path: imageEntrypoint,
+      pm_cwd: definition.cwd,
+      pm_exec_path: definition.execPath,
       args: [],
       exec_interpreter: bunPath,
-      IDREAM_PM2_MODE: "development",
+      IDREAM_PM2_MODE: mode,
       ...(runId ? { GEN_IMAGE_WORKER_RUN_ID: runId } : {}),
       NODE_APP_INSTANCE: slot,
     },
   };
 }
 
-function videoPm2(pid, slot = 0, status = "online", runId = "release1") {
+function videoPm2(
+  pid,
+  slot = 0,
+  status = "online",
+  runId = "release1",
+  mode = "development",
+) {
+  const definition = generationWorkerDefinition("video", mode);
   return {
     pid,
     pm_id: 40 + slot,
-    name: "gen-video",
+    name: definition.name,
     pm2_env: {
       status,
-      pm_cwd: genCwd,
-      pm_exec_path: videoEntrypoint,
+      pm_cwd: definition.cwd,
+      pm_exec_path: definition.execPath,
       args: [],
       exec_interpreter: bunPath,
-      IDREAM_PM2_MODE: "development",
+      IDREAM_PM2_MODE: mode,
       ...(runId ? { GEN_VIDEO_WORKER_RUN_ID: runId } : {}),
       NODE_APP_INSTANCE: slot,
     },
@@ -60,12 +95,14 @@ function row(pid, ppid, pgid, command) {
   return { pid, ppid, pgid, startedAt: "Tue Aug 11 06:00:00 2026", command };
 }
 
-function imageRuntime(pid, daemonPid = 100) {
-  return row(pid, daemonPid, pid, `${bunPath} src/image.ts`);
+function imageRuntime(pid, daemonPid = 100, mode = "development") {
+  const definition = generationWorkerDefinition("image", mode);
+  return row(pid, daemonPid, pid, `${bunPath} ${definition.script}`);
 }
 
-function videoRuntime(pid, daemonPid = 100) {
-  return row(pid, daemonPid, pid, `${bunPath} src/video.ts`);
+function videoRuntime(pid, daemonPid = 100, mode = "development") {
+  const definition = generationWorkerDefinition("video", mode);
+  return row(pid, daemonPid, pid, `${bunPath} ${definition.script}`);
 }
 
 function pm2BunRuntime(pid, daemonPid = 100) {
@@ -77,20 +114,22 @@ function legacyWrapper(pid, daemonPid = 100) {
 }
 
 function legacyImageRuntime(pid, wrapperPid) {
+  const definition = generationWorkerDefinition("image");
   return row(
     pid,
     wrapperPid,
     wrapperPid,
-    `node --import tsx/loader.mjs src/image.ts`,
+    `node --import tsx/loader.mjs ${definition.script}`,
   );
 }
 
 function legacyVideoRuntime(pid, wrapperPid) {
+  const definition = generationWorkerDefinition("video");
   return row(
     pid,
     wrapperPid,
     wrapperPid,
-    `node --import tsx/loader.mjs src/video.ts`,
+    `node --import tsx/loader.mjs ${definition.script}`,
   );
 }
 
@@ -109,16 +148,33 @@ function videoRedis(runId, slot, pid, db = 0) {
 }
 
 test("parses PM2 warning prefixes and ps process identity", () => {
+  const imageScript = generationWorkerDefinition("image").script;
   assert.deepEqual(
     parseJsonArraySuffix(`warning\n${JSON.stringify([pm2(200, 0)])}`),
     [pm2(200, 0)],
   );
   const parsed = parsePsSnapshot(
-    `200 100 200 Tue Aug 11 06:00:00 2026 ${bunPath} src/image.ts\n`,
+    `200 100 200 Tue Aug 11 06:00:00 2026 ${bunPath} ${imageScript}\n`,
   );
   assert.equal(parsed[0].pid, 200);
-  assert.equal(parsed[0].command, `${bunPath} src/image.ts`);
+  assert.equal(parsed[0].command, `${bunPath} ${imageScript}`);
   assert.throws(() => parsePsSnapshot("collector format drift"));
+});
+
+test("deletes the ownership check's duplicate process identity map", () => {
+  const source = readFileSync(
+    path.join(__dirname, "check-gen-image-worker-ownership.cjs"),
+    "utf8",
+  );
+  assert.doesNotMatch(
+    source,
+    /\b(?:appName|sourceEntrypoint|builtEntrypoint)\b/,
+  );
+  assert.doesNotMatch(source, /["']gen-(?:image|video)["']/);
+  assert.doesNotMatch(
+    source,
+    /["'](?:src|dist)\/(?:image|video)\.(?:ts|js)["']/,
+  );
 });
 
 test("accepts exact PM2, OS and Redis ownership", () => {
@@ -174,6 +230,31 @@ test("accepts exact image and video PM2, OS and Redis ownership together", () =>
   });
   assert.equal(quiescent.ok, true);
   assert.equal(quiescent.video.groups.length, 0);
+});
+
+test("accepts production Generation identities from runtime topology", () => {
+  const report = classifyOwnership({
+    mode: "ready",
+    expected: 1,
+    expectedVideo: 1,
+    runId: "release1",
+    videoRunId: "release1",
+    pm2Processes: [
+      pm2(200, 0, "online", "release1", "production"),
+      videoPm2(400, 0, "online", "release1", "production"),
+    ],
+    psRows: [
+      row(100, 1, 100, "PM2 v6.0.14: God Daemon (/tmp/.pm2)"),
+      imageRuntime(200, 100, "production"),
+      videoRuntime(400, 100, "production"),
+    ],
+    redisWorkers: [redis("release1", 0, 200)],
+    videoRedisWorkers: [videoRedis("release1", 0, 400)],
+  });
+
+  assert.equal(report.ok, true);
+  assert.equal(report.image.groups[0].runtimePid, 200);
+  assert.equal(report.video.groups[0].runtimePid, 400);
 });
 
 test("accepts PM2 ProcessContainerForkBun as the registered Bun runtime", () => {

@@ -177,6 +177,28 @@ describe("Main-owned Chat façade", () => {
     ]));
   });
 
+  it("rejects a new Product Turn before mutation when AgentRun execution is unconfigured", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const sessionId = await ensureSession(proxyChatRequest);
+    const previous = env.CHAT_SERVICE_URL;
+    env.CHAT_SERVICE_URL = undefined;
+    try {
+      const response = await proxyChatRequest(authRequest(
+        `/api/v1/chat/sessions/${sessionId}/messages`,
+        {
+          method: "POST",
+          headers: { "idempotency-key": `runtime-preflight-${randomUUID()}` },
+          body: JSON.stringify({ content: "This must not create a Turn." }),
+        },
+      ), ["chat", "sessions", sessionId, "messages"]);
+      expect(response.status).toBe(503);
+      await expect(prisma.chatTurn.count({ where: { sessionId } })).resolves.toBe(0);
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      env.CHAT_SERVICE_URL = previous;
+    }
+  });
+
   it("requires public sessions to pin the live published Release and its visual identity", async () => {
     const suffix = randomUUID();
     const userId = `public-chat-user-${suffix}`;
@@ -389,6 +411,70 @@ describe("Main-owned Chat façade", () => {
       data: { admissionNextRunAt: new Date(0) },
     });
     await expect(dispatchPendingChatAgentRuns()).resolves.toEqual({ admitted: 1, pending: 0 });
+    await expect(prisma.chatTurn.findUniqueOrThrow({
+      where: { sessionId_idempotencyKey: { sessionId, idempotencyKey: key } },
+    })).resolves.toMatchObject({ assistantStatus: "generating" });
+  });
+
+  it("continues a pending admission batch after one frozen snapshot is corrupt", async () => {
+    const { proxyChatRequest } = await import("./chat-proxy");
+    const sessionId = await ensureSession(proxyChatRequest);
+    const key = `valid-after-corrupt-${randomUUID()}`;
+    fetchMock.mockResolvedValueOnce(Response.json({ error: "unavailable" }, { status: 503 }));
+    await proxyChatRequest(authRequest(`/api/v1/chat/sessions/${sessionId}/messages`, {
+      method: "POST",
+      headers: { "idempotency-key": key },
+      body: JSON.stringify({ content: "Do not let an earlier bad snapshot starve this Turn." }),
+    }), ["chat", "sessions", sessionId, "messages"]);
+
+    const corruptSessionId = `corrupt-session-${randomUUID()}`;
+    const corruptTurnId = `corrupt-turn-${randomUUID()}`;
+    await prisma.recentChat.create({
+      data: {
+        sessionId: corruptSessionId,
+        userId: USER_ID,
+        characterId: CHARACTER_ID,
+        status: "active",
+        activeKey: null,
+        memoryEnabled: true,
+        characterContentVersionId: CONTENT_ID,
+      },
+    });
+    await prisma.chatTurn.create({
+      data: {
+        id: corruptTurnId,
+        sessionId: corruptSessionId,
+        idempotencyKey: `corrupt-${randomUUID()}`,
+        requestHash: "corrupt-snapshot-fixture",
+        userMessageId: `corrupt-user-${randomUUID()}`,
+        assistantMessageId: `corrupt-assistant-${randomUUID()}`,
+        userContent: "corrupt fixture",
+        userStatus: "sent",
+        assistantContent: "",
+        assistantStatus: "pending",
+        characterContentVersionId: CONTENT_ID,
+        memoryEnabled: true,
+        executionSnapshot: { invalid: true },
+        admissionNextRunAt: new Date(0),
+      },
+    });
+    await prisma.chatTurn.updateMany({
+      where: { sessionId, idempotencyKey: key },
+      data: { admissionNextRunAt: new Date(1) },
+    });
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValue(Response.json({ ok: true }, { status: 202 }));
+
+    await expect(dispatchPendingChatAgentRuns()).resolves.toEqual({ admitted: 1, pending: 1 });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    await expect(prisma.chatTurn.findUniqueOrThrow({ where: { id: corruptTurnId } }))
+      .resolves.toMatchObject({
+        assistantStatus: "pending",
+        admissionAttempts: 1,
+        admissionLastError: expect.objectContaining({
+          message: expect.stringContaining("invalid frozen execution snapshot"),
+        }),
+      });
     await expect(prisma.chatTurn.findUniqueOrThrow({
       where: { sessionId_idempotencyKey: { sessionId, idempotencyKey: key } },
     })).resolves.toMatchObject({ assistantStatus: "generating" });

@@ -11,15 +11,20 @@ import { PATCH as patchCharacterProjectRoute } from "@/app/api/v2/admin/characte
 import { GET as getCharacterWorkspaceRoute } from "@/app/api/v2/admin/characters/[id]/route";
 import { getCharacterWorkspace } from "./workspace";
 import { updateCharacterProjectDraft } from "./project-draft";
-import { CHARACTER_RELEASE_POLICY_VERSION } from "./release-validation";
+import {
+  CHARACTER_RELEASE_POLICY_VERSION,
+  evaluateCharacterReleaseSnapshot,
+} from "./release-validation";
 import { env } from "@/server/lib/env";
 import {
+  characterReleaseSnapshotHash,
   characterVisualProfileSnapshotHash,
   referenceSetSnapshotHash,
 } from "./release-snapshot";
 import { canonicalSha256 } from "../shared/canonical-json";
 import { toInputJson } from "../shared/prisma-json";
 import { characterCommandCoordinationKey } from "./command-coordination";
+import { CHARACTER_IMAGE_IMPORT_REVIEW_EVIDENCE_SCHEMA } from "./image-qualification";
 
 describe("Character operator workspace", () => {
   const suffix = randomUUID();
@@ -433,6 +438,151 @@ describe("Character operator workspace", () => {
         productionDeepLink: `/admin/characters/${characterId}?tab=assets`,
       },
     });
+  });
+
+  it("accepts exact reviewed operator-upload pins without generation lineage", async () => {
+    const assetIds = [
+      `workspace-upload-cover-${suffix}`,
+      `workspace-upload-hero-${suffix}`,
+      `workspace-upload-chat-${suffix}`,
+    ] as const;
+    const reviewIds = assetIds.map((assetId) => `review-${assetId}`);
+    const digest = "b".repeat(64);
+    const profile = await prisma.characterVisualProfile.findUniqueOrThrow({
+      where: { id: visualProfileId },
+      select: { immutableHash: true },
+    });
+    if (!profile.immutableHash) throw new Error("Visual profile fixture is not sealed");
+
+    await prisma.mediaAsset.createMany({
+      data: assetIds.map((assetId) => ({
+        id: assetId,
+        ownerId: readOnlyActorId,
+        characterId,
+        type: "image" as const,
+        url: `/user-content/${assetId}/content.webp`,
+        storageKey: `test-fixtures/${assetId}.webp`,
+        visibility: "unlisted",
+        safetyStatus: "passed" as const,
+        metadata: {
+          source: "admin_asset_upload",
+          sha256: digest,
+          uploadAuthority: {
+            schemaVersion: "platform-asset-operator-upload-v1",
+            kind: "operator_upload",
+            assetId,
+            uploadedById: readOnlyActorId,
+            sha256: digest,
+          },
+          platformAsset: {
+            purpose: "character_library",
+            status: "draft",
+          },
+        },
+      })),
+    });
+    await prisma.creativeReviewDecision.createMany({
+      data: assetIds.map((assetId, index) => ({
+        id: reviewIds[index]!,
+        runItemId: null,
+        artifactId: assetId,
+        decision: "approved",
+        identityConsistency: "passed",
+        score: 96,
+        reason: "Reviewed against the exact sealed Character identity.",
+        reviewerId: readOnlyActorId,
+        evidence: {
+          quality: {
+            artifactFree: true,
+            singleSubject: true,
+            intentMatch: true,
+            noVisibleText: true,
+          },
+          characterImageImport: {
+            schemaVersion: CHARACTER_IMAGE_IMPORT_REVIEW_EVIDENCE_SCHEMA,
+            source: "operator_upload",
+            characterId,
+            assetId,
+            visualProfileId,
+            visualProfileVersion: 1,
+            visualProfileHash: profile.immutableHash,
+            referenceSetRevisionId: referenceSetId,
+            referenceSetSnapshotHash: referenceSnapshotHash,
+          },
+        },
+      })),
+    });
+
+    try {
+      const generationProvenance = {
+        schemaVersion: "character-release-generation-provenance-v2",
+        policyVersion: CHARACTER_RELEASE_POLICY_VERSION,
+        requiredReleaseRoute: {
+          routeFingerprint: `workspace-route-${suffix}`,
+          matrixKey: `workspace-matrix-${suffix}`,
+          generationProfileKey,
+          generationProfileVersion: 1,
+          workflowKey: "qwen-image-edit-img2img",
+          workflowVersion: 1,
+        },
+      };
+      const releasePlacementManifest = {
+        schemaVersion: 2,
+        placements: [
+          {
+            slotKey: "character_avatar",
+            slotVersion: 1,
+            assetId: assetIds[0],
+            reviewDecisionId: reviewIds[0],
+          },
+          {
+            slotKey: "character_hero",
+            slotVersion: 1,
+            assetId: assetIds[1],
+            reviewDecisionId: reviewIds[1],
+          },
+          {
+            slotKey: "character_chat",
+            slotVersion: 1,
+            assetId: assetIds[2],
+            reviewDecisionId: reviewIds[2],
+          },
+        ],
+      };
+      const snapshotFields = {
+        projectId,
+        revisionId,
+        characterContentVersionId: contentId,
+        visualProfileId,
+        visualProfileVersion: 1,
+        referenceSetRevisionId: referenceSetId,
+        generationProvenance,
+        releasePlacementManifest,
+      };
+      const evaluation = await prisma.$transaction((tx) =>
+        evaluateCharacterReleaseSnapshot(
+          tx,
+          {
+            ...snapshotFields,
+            snapshotHash: characterReleaseSnapshotHash(snapshotFields),
+            legacy: false,
+            rollbackOfReleaseId: null,
+          },
+          CHARACTER_RELEASE_POLICY_VERSION,
+          new Date(),
+        )
+      );
+      const checks = new Map(evaluation.checks.map((check) => [check.key, check]));
+
+      expect(checks.get("release_assets_customer_publishable")?.passed).toBe(true);
+      expect(checks.get("release_asset_review_authority")?.passed).toBe(true);
+      expect(checks.get("release_asset_generation_authority")?.passed).toBe(true);
+    } finally {
+      await prisma.creativeReviewDecision.deleteMany({
+        where: { id: { in: reviewIds } },
+      });
+      await prisma.mediaAsset.deleteMany({ where: { id: { in: [...assetIds] } } });
+    }
   });
 
   it("discovers the latest active command for the character authority only", async () => {

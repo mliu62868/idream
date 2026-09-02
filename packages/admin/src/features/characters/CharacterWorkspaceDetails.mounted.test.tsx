@@ -119,6 +119,270 @@ describe("Character workspace details", () => {
     ]);
   });
 
+  it("does not request content-only settings without their read permission", async () => {
+    await act(async () => {
+      root.render(
+        <AdminI18nProvider locale="en">
+          <CharacterWorkspace
+            actorId="operator-a"
+            permissions={permissions}
+            view={{ kind: "detail", id: "character-detail" }}
+          />
+        </AdminI18nProvider>,
+      );
+    });
+    await waitUntil(
+      () => container.textContent?.includes("Character profile and status") === true,
+      "Character overview",
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(adminV2Request.mock.calls.some(([path]) =>
+      typeof path === "string" && path.includes("/api/v2/admin/content/"),
+    )).toBe(false);
+    expect(container.textContent).toContain("content.read");
+  });
+
+  it.each([
+    { grant: "character.project.write", tags: false, chatTools: false },
+    { grant: "content.tag.write", tags: true, chatTools: false },
+    { grant: "content.production.write", tags: false, chatTools: true },
+  ] as const)("uses the actual settings grants with $grant", async ({ grant, tags, chatTools }) => {
+    const settingsPermissions = new Set<AdminPermissionKey>([
+      "character.project.read",
+      "character.release.read",
+      "character.performance.read",
+      "content.read",
+      grant,
+    ]);
+    adminV2Request.mockImplementation(async (path: string) => {
+      if (path.includes("/admin/content/tags")) {
+        return { items: [{ id: "tag-friendly", label: "Friendly", category: null, isSensitive: false }] };
+      }
+      if (/\/admin\/content\/characters\/[^/]+$/.test(path)) {
+        return { character: { tags: [] }, chatImageToolEnabled: true };
+      }
+      return workspace;
+    });
+
+    await act(async () => {
+      root.render(
+        <AdminI18nProvider locale="en">
+          <CharacterWorkspace
+            actorId="operator-a"
+            permissions={settingsPermissions}
+            view={{ kind: "detail", id: "character-detail" }}
+          />
+        </AdminI18nProvider>,
+      );
+    });
+    const tagButton = () => [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Friendly",
+    );
+    await waitUntil(() => Boolean(tagButton()), "the tag vocabulary");
+
+    expect(tagButton()?.disabled).toBe(!tags);
+    expect([...container.querySelectorAll("button")].some(
+      (button) => button.textContent === "Disable image tool",
+    )).toBe(chatTools);
+    if (tags) {
+      await act(async () => {
+        tagButton()?.click();
+      });
+      expect([...container.querySelectorAll("button")].some(
+        (button) => button.textContent === "Save tags",
+      )).toBe(true);
+    }
+  });
+
+  it.each([false, true])("requires project write for video import while keeping generation available: %s", async (canWriteProject) => {
+    window.history.replaceState(null, "", "/admin/characters/character-detail?tab=video");
+    const videoPermissions = new Set<AdminPermissionKey>([
+      "character.project.read",
+      "character.release.read",
+      "character.performance.read",
+      "creative.asset.read",
+      "creative.run.read",
+      "creative.run.write",
+      ...(canWriteProject ? ["character.project.write" as const] : []),
+    ]);
+    adminV2Request.mockImplementation(async (path: string) =>
+      path.startsWith("/api/v2/admin/assets") ? { items: [] } : workspace,
+    );
+    await act(async () => {
+      root.render(
+        <AdminI18nProvider locale="en">
+          <CharacterWorkspace
+            actorId="operator-a"
+            permissions={videoPermissions}
+            view={{ kind: "detail", id: "character-detail" }}
+          />
+        </AdminI18nProvider>,
+      );
+    });
+    const button = (label: string) => [...container.querySelectorAll("button")].find(
+      (item) => item.textContent === label,
+    );
+    await waitUntil(() => Boolean(button("Import video")), "the video library");
+
+    expect(button("Import video")?.disabled).toBe(!canWriteProject);
+    expect(button("Create video")?.disabled).toBe(false);
+  });
+
+  it.each([
+    { tab: "assets", grant: "creative.asset.read", canRead: false },
+    { tab: "assets", grant: "creative.run.read", canRead: true },
+    { tab: "video", grant: "creative.asset.read", canRead: true },
+    { tab: "video", grant: "creative.run.read", canRead: false },
+  ] as const)("uses the $tab library's actual read permission with $grant", async ({ tab, grant, canRead }) => {
+    window.history.replaceState(null, "", `/admin/characters/character-detail?tab=${tab}`);
+    const libraryPermissions = new Set<AdminPermissionKey>([
+      "character.project.read",
+      "character.release.read",
+      "character.performance.read",
+      grant,
+    ]);
+    const isLibraryRequest = (path: unknown) => typeof path === "string" && (
+      tab === "assets"
+        ? path.includes("/characters/character-detail/image-sources")
+        : path.startsWith("/api/v2/admin/assets")
+    );
+    adminV2Request.mockImplementation(async (path: string) =>
+      isLibraryRequest(path) ? { items: [] } : workspace,
+    );
+    await act(async () => {
+      root.render(
+        <AdminI18nProvider locale="en">
+          <CharacterWorkspace
+            actorId="operator-a"
+            permissions={libraryPermissions}
+            view={{ kind: "detail", id: "character-detail" }}
+          />
+        </AdminI18nProvider>,
+      );
+    });
+    const deniedMessage = tab === "assets" ? "No image library permission" : "No video library permission";
+    await waitUntil(() => canRead
+      ? adminV2Request.mock.calls.some(([path]) => isLibraryRequest(path))
+      : container.textContent?.includes(deniedMessage) === true,
+    "the library's permission decision");
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(adminV2Request.mock.calls.some(([path]) => isLibraryRequest(path))).toBe(canRead);
+    expect(container.textContent?.includes(deniedMessage)).toBe(!canRead);
+  });
+
+  it.each([false, true])("requires project write as well as creative Review for imported images: %s", async (canWriteProject) => {
+    window.history.replaceState(null, "", "/admin/characters/character-detail?tab=assets");
+    const reviewPermissions = new Set<AdminPermissionKey>([
+      "character.project.read",
+      "character.release.read",
+      "character.performance.read",
+      "creative.run.read",
+      "creative.run.review",
+      ...(canWriteProject ? ["character.project.write" as const] : []),
+    ]);
+    adminV2Request.mockImplementation(async (path: string) =>
+      path.includes("/characters/character-detail/image-sources")
+        ? { items: [{
+            id: "uploaded-candidate",
+            url: "/uploads/candidate.webp",
+            thumbnailUrl: null,
+            filename: "candidate.webp",
+            contentType: "image/webp",
+            sizeBytes: 1024,
+            width: 512,
+            height: 768,
+            createdAt: "2026-09-02T12:00:00.000Z",
+            qualification: {
+              source: "operator_upload",
+              state: "candidate",
+              selectablePurposes: [],
+              selectedPurposes: [],
+              releaseQualifiedPurposes: [],
+              blockers: ["review_pending"],
+              authority: { runId: null, itemId: null, reviewDecisionId: null, generationJobId: null },
+              review: null,
+            },
+          }] }
+        : workspace,
+    );
+    await act(async () => {
+      root.render(
+        <AdminI18nProvider locale="en">
+          <CharacterWorkspace
+            actorId="operator-a"
+            permissions={reviewPermissions}
+            view={{ kind: "detail", id: "character-detail" }}
+          />
+        </AdminI18nProvider>,
+      );
+    });
+    await waitUntil(() => container.textContent?.includes("candidate.webp") === true, "the imported candidate");
+
+    expect([...container.querySelectorAll("button")].some(
+      (button) => button.textContent === "Review image candidate",
+    )).toBe(canWriteProject);
+  });
+
+  it.each([false, true])("uses generation config read for both system voice preview buttons: %s", async (canPreview) => {
+    window.history.replaceState(null, "", "/admin/characters/character-detail?tab=voice");
+    const voicePermissions = new Set<AdminPermissionKey>([
+      "character.project.read",
+      "character.release.read",
+      "character.performance.read",
+      ...(canPreview ? ["generation.config.read" as const] : []),
+    ]);
+    adminV2Request.mockImplementation(async (path: string) =>
+      path === "/api/v2/admin/voice-defaults/preview"
+        ? { voiceId: "fish-female-default", contentType: "audio/wav", audioBase64: "dGVzdA==", durationMs: 100 }
+        : workspace,
+    );
+    await act(async () => {
+      root.render(
+        <AdminI18nProvider locale="en">
+          <CharacterWorkspace
+            actorId="operator-a"
+            permissions={voicePermissions}
+            view={{ kind: "detail", id: "character-detail" }}
+          />
+        </AdminI18nProvider>,
+      );
+    });
+    const previewButtons = () => [...container.querySelectorAll("button")].filter(
+      (button) => button.textContent === "Preview",
+    );
+    await waitUntil(() => previewButtons().length === 2, "both system voice preview buttons");
+
+    expect(previewButtons().map((button) => button.disabled)).toEqual([
+      !canPreview,
+      !canPreview,
+    ]);
+    if (!canPreview) {
+      await act(async () => {
+        previewButtons().forEach((button) => button.click());
+      });
+      expect(adminV2Request.mock.calls.some(([path]) =>
+        path === "/api/v2/admin/voice-defaults/preview",
+      )).toBe(false);
+    } else {
+      for (const button of previewButtons()) {
+        await act(async () => {
+          button.click();
+        });
+      }
+      expect(adminV2Request.mock.calls.filter(([path]) =>
+        path === "/api/v2/admin/voice-defaults/preview",
+      )).toHaveLength(2);
+      expect(container.querySelector('audio[aria-label="System voice preview"]')?.getAttribute("src"))
+        .toBe("data:audio/wav;base64,dGVzdA==");
+    }
+  });
+
   it("repairs a structured approved-customer Project gap and opens Images", async () => {
     let prepared = false;
     const submittedIdempotencyKeys: string[] = [];
