@@ -259,6 +259,25 @@ describe("GeneratorWorkspace owned preset editing", () => {
     expect(container.textContent).toContain('Updated preset "Rainy window".');
   });
 
+  it("cancels editing without changing the saved preset", async () => {
+    const writes: string[] = [];
+    const baseFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method && init.method !== "GET") writes.push(String(url));
+      return baseFetch(url, init);
+    }));
+    await mount();
+    await click(button("Edit preset Rainy window"));
+    await input("Preset name", "Discarded edit");
+    await input("Preset description", "Discarded description");
+    await click(button("Cancel editing"));
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Preset name"]')?.value).toBe("");
+    await click(button("Edit preset Rainy window"));
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Preset name"]')?.value).toBe("Rainy window");
+    expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Preset description"]')?.value).toBe("Rain on a cafe window");
+    expect(writes).toEqual([]);
+  });
+
   it("clears another viewer's edit and ignores a delayed save result after account change", async () => {
     const pending = deferredResponse();
     const baseFetch = globalThis.fetch;
