@@ -166,7 +166,7 @@ export function mediaCollectionInclude(publicOnly = false) {
   return {
     items: {
       where: { mediaAsset: { is: mediaAssetWhere } },
-      orderBy: { sortOrder: "asc" as const },
+      orderBy: [{ sortOrder: "asc" as const }, { mediaAssetId: "asc" as const }],
       take: 4,
       include: {
         mediaAsset: {
@@ -210,13 +210,18 @@ export function mediaCollectionDTO(collection: MediaCollectionWithRelations) {
       ? "Official collection"
       : (collection.owner.displayName ?? collection.owner.name),
     itemCount: collection._count.items,
-    previews: collection.items
-      .map(({ mediaAsset }) =>
-        mediaAsset.storageKey ? mediaViewUrl(mediaAsset) : (mediaAsset.thumbnailUrl ?? mediaAsset.url),
-      )
-      .filter((url): url is string => Boolean(url)),
+    previews: collection.items.map(({ mediaAsset }) => ({
+      id: mediaAsset.id,
+      type: mediaAsset.type,
+      url: collectionMediaViewUrl(mediaAsset),
+    })),
     createdAt: collection.createdAt.toISOString(),
   };
+}
+
+export function collectionMediaViewUrl(asset: Parameters<typeof mediaViewUrl>[0]) {
+  // Editorial static files already have an owned public URL; they have no blob key to sign.
+  return !asset.storageKey && asset.url.startsWith("/images/") ? asset.url : mediaViewUrl(asset);
 }
 
 export function mediaViewUrl(asset: {

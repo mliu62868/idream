@@ -508,7 +508,7 @@ describe("public API runtime contracts", () => {
               id: "collection-1",
               name: "Portraits",
               visibility: "public",
-              previews: ["/portrait.png"],
+              previews: [{ id: "portrait", type: "image", url: "/portrait.png" }],
             },
           ],
         },

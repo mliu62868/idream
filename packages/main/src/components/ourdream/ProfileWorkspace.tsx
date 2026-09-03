@@ -1501,6 +1501,14 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
             </button>
           )}
         </div>
+        {tab === "media" && mediaCollections.length > 0 && <section aria-label="Your collections" className="mt-4 rounded-xl border border-white/10 p-4">
+          <h2 className="mb-3 font-bold">Your collections</h2>
+          <ul className="grid gap-2 sm:grid-cols-2">
+            {mediaCollections.map((collection) => <li key={collection.id}><Link className="block rounded-lg bg-white/5 p-3 text-sm hover:bg-white/10" href={`/community?collection=${encodeURIComponent(collection.id)}`}>
+              {collection.name} · {collection.itemCount} items · {collection.visibility}
+            </Link></li>)}
+          </ul>
+        </section>}
         {tab === "media" && mediaCollectionsAuthority.phase === "error" ? (
           <ProfileAuthorityNotice
             hasSnapshot={mediaCollectionsAuthority.hasSnapshot}

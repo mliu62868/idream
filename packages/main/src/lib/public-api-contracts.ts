@@ -405,6 +405,12 @@ const feedCharacterItemSchema = z
   })
   .passthrough();
 
+const collectionMediaSchema = z.object({
+  id: nonEmptyString,
+  type: z.enum(["image", "video", "voice"]),
+  url: renderableMediaSourceSchema,
+}).strict();
+
 const feedCollectionItemSchema = z
   .object({
     id: z.string().startsWith("collection:"),
@@ -416,7 +422,7 @@ const feedCollectionItemSchema = z
         ownerId: z.string().nullable(),
         ownerName: z.string().nullable(),
         itemCount: nonNegativeInteger,
-        previews: z.array(renderableMediaSourceSchema),
+        previews: z.array(collectionMediaSchema),
         createdAt: timestamp,
       })
       .passthrough(),
@@ -742,7 +748,7 @@ const communityCollectionSchema = z
     visibility: nonEmptyString,
     ownerName: z.string().nullable().optional(),
     itemCount: nonNegativeInteger.optional(),
-    previews: z.array(renderableMediaSourceSchema).optional(),
+    previews: z.array(collectionMediaSchema).optional(),
   })
   .passthrough();
 
@@ -766,7 +772,7 @@ const communityLeaderboardsResponseSchema = successEnvelope(
 );
 
 const communityCollectionsResponseSchema = successEnvelope(
-  z.object({ collections: z.array(communityCollectionSchema) }),
+  z.object({ collections: z.array(communityCollectionSchema), nextCursor: nonEmptyString.nullable().optional().default(null) }),
 );
 
 const communityCampaignSchema = z
@@ -1255,6 +1261,18 @@ const mediaCollectionsResponseSchema = successEnvelope(
   z.object({ collections: z.array(mediaCollectionSchema) }),
 );
 
+const mediaCollectionDetailResponseSchema = successEnvelope(z.object({
+  collection: mediaCollectionSchema,
+  canManage: z.boolean(),
+  items: z.array(collectionMediaSchema.extend({ url: renderableMediaSourceSchema.nullable() })),
+  nextCursor: nonEmptyString.nullable(),
+}));
+
+const mediaCollectionMutationResponseSchema = successEnvelope(z.object({
+  collection: mediaCollectionSchema,
+  removed: z.boolean().optional(),
+}));
+
 const profilePreferencesResponseSchema = successEnvelope(
   z.object({
     preferences: z
@@ -1379,6 +1397,7 @@ export type RuntimeWorkspaceMediaItem = z.infer<
 export type RuntimeUserPreset = z.infer<typeof userPresetSchema>;
 export type RuntimeCharacterLook = z.infer<typeof characterLookSchema>;
 export type RuntimeLibraryItem = z.infer<typeof libraryItemSchema>;
+export type CollectionDetail = z.infer<typeof mediaCollectionDetailResponseSchema>["data"];
 export type RuntimeMediaCollection = z.infer<typeof mediaCollectionSchema>;
 export type RuntimeChatMessage = z.infer<typeof chatMessageSchema>;
 export type RuntimeChatAttachment = z.infer<typeof chatAttachmentSchema>;
@@ -1695,6 +1714,14 @@ export function parseGenerationJobDetailResponse(payload: unknown) {
 
 export function parseLibraryResponse(payload: unknown) {
   return parseContract(libraryResponseSchema, payload, "profile library").data;
+}
+
+export function parseMediaCollectionDetailResponse(payload: unknown) {
+  return parseContract(mediaCollectionDetailResponseSchema, payload, "collection details").data;
+}
+
+export function parseMediaCollectionMutationResponse(payload: unknown) {
+  return parseContract(mediaCollectionMutationResponseSchema, payload, "collection update").data;
 }
 
 export function parseMediaCollectionsResponse(payload: unknown) {
