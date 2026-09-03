@@ -368,6 +368,7 @@ export function CommunityWorkspace() {
     collectionPageControllerRef.current?.abort();
     setCollectionsPageBusy(false);
     setCollectionsPageError("");
+    setCollectionsNextCursor(null);
     const collectionSearch = focusedCollectionId
       ? `?collection=${encodeURIComponent(focusedCollectionId)}`
       : "";
@@ -418,7 +419,7 @@ export function CommunityWorkspace() {
   }, [ageGateAccepted, collectionsReloadToken, focusedCollectionId]);
 
   async function showMoreCollections() {
-    if (collectionsPageBusy) return;
+    if (collectionsPageBusy || collectionsAuthority.phase !== "ready") return;
     if (visibleCollectionCount < orderedCollections.length) {
       setVisibleCollectionCount((current) => Math.min(orderedCollections.length, current + 3));
       return;
@@ -848,7 +849,7 @@ export function CommunityWorkspace() {
           </div>
           {collectionsPageError && <p role="alert" className="mt-3 text-sm text-rose-300">{collectionsPageError}</p>}
           {orderedCollections.length > visibleCollections.length || collectionsNextCursor ? (
-            <button className="mt-4 w-full rounded-lg bg-white/10 py-3 text-sm font-bold" disabled={collectionsPageBusy} onClick={() => void showMoreCollections()} type="button">
+            <button className="mt-4 w-full rounded-lg bg-white/10 py-3 text-sm font-bold" disabled={collectionsPageBusy || collectionsAuthority.phase !== "ready"} onClick={() => void showMoreCollections()} type="button">
               {collectionsPageBusy ? "Loading collections…" : collectionsPageError ? "Retry more collections" : "Show more collections"}
             </button>
           ) : null}
