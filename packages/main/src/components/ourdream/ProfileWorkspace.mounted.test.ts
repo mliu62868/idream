@@ -59,6 +59,7 @@ describe("ProfileWorkspace media pagination", () => {
         balance: 100, subscription: null, billingAccess: null, entitlements: {},
       };
       else if (path === "/api/v1/profile/preferences") data = { preferences: {} };
+      else if (path === "/api/v1/profile/chat-persona") data = { ownerScope: `user:${viewer}`, persona: null, version: 0 };
       else if (path === "/api/v1/media/collections") data = { collections: [] };
       else if (path.startsWith("/api/v1/library/media?") && new URL(path, "http://localhost").searchParams.has("q")) {
         return searchPage(new URL(path, "http://localhost").searchParams.get("q")!);

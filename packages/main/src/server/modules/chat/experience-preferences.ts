@@ -1,11 +1,10 @@
-import { chatExperiencePreferenceSchema, chatExperienceValuesSchema } from "@idream/shared/contracts";
+import { chatExperiencePreferenceSchema, chatExperienceValuesSchema, DEFAULT_CHAT_EXPERIENCE } from "@idream/shared/contracts";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
 
 const inputSchema = chatExperienceValuesSchema.extend({ version: z.number().int().nonnegative() }).strict();
-const defaults = { responseLength: "auto", interactionIntensity: "balanced", version: 0 } as const;
 
 async function ownedSession(db: Prisma.TransactionClient, userId: string, sessionId: string) {
   const session = await db.recentChat.findFirst({
@@ -16,14 +15,14 @@ async function ownedSession(db: Prisma.TransactionClient, userId: string, sessio
   return session;
 }
 
-function dto(row: { responseLength: string; interactionIntensity: string; version: number }) {
-  return chatExperiencePreferenceSchema.parse({ responseLength: row.responseLength, interactionIntensity: row.interactionIntensity, version: row.version });
+function dto(row: { responseLength: string; interactionIntensity: string; sceneGeneration: string; version: number }) {
+  return chatExperiencePreferenceSchema.parse({ responseLength: row.responseLength, interactionIntensity: row.interactionIntensity, sceneGeneration: row.sceneGeneration, version: row.version });
 }
 
 export async function getChatExperiencePreference(userId: string, sessionId: string) {
   const session = await ownedSession(prisma, userId, sessionId);
   const row = await prisma.chatExperiencePreference.findUnique({ where: { sessionId } });
-  return { settings: row ? dto(row) : defaults, editable: session.status === "active" };
+  return { settings: row ? dto(row) : DEFAULT_CHAT_EXPERIENCE, editable: session.status === "active" };
 }
 
 export async function updateChatExperiencePreference(userId: string, sessionId: string, body: unknown) {
@@ -38,12 +37,12 @@ export async function updateChatExperiencePreference(userId: string, sessionId: 
     if (session.status !== "active") throw Errors.gone("This chat is archived. Open a current conversation to change its preferences");
     const prior = await tx.chatExperiencePreference.findUnique({ where: { sessionId } });
     if ((prior?.version ?? 0) !== input.version) {
-      if (prior?.version === input.version + 1 && prior.responseLength === input.responseLength && prior.interactionIntensity === input.interactionIntensity) {
+      if (prior?.version === input.version + 1 && prior.responseLength === input.responseLength && prior.interactionIntensity === input.interactionIntensity && prior.sceneGeneration === input.sceneGeneration) {
         return { settings: dto(prior), editable: true };
       }
       throw Errors.conflict("Conversation preferences changed elsewhere. Reload before saving");
     }
-    const data = { responseLength: input.responseLength, interactionIntensity: input.interactionIntensity, version: input.version + 1 };
+    const data = { responseLength: input.responseLength, interactionIntensity: input.interactionIntensity, sceneGeneration: input.sceneGeneration, version: input.version + 1 };
     const saved = prior
       ? await tx.chatExperiencePreference.update({ where: { sessionId }, data })
       : await tx.chatExperiencePreference.create({ data: { ...data, sessionId } });

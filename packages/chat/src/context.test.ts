@@ -52,6 +52,8 @@ describe("immutable opening continuity", () => {
         characterVisualProfileId: null,
         characterVisualProfileVersion: null,
         memoryEnabled: true,
+        userPersona: { name: "Robin", description: "A botanist.", enabled: true, version: 2 },
+        experience: { responseLength: "auto", interactionIntensity: "balanced", sceneGeneration: "advance", version: 3 },
         contextRevision: 0,
         userContent: "I finally made it.",
         hasRecentImageContext: false,
@@ -134,5 +136,9 @@ describe("immutable opening continuity", () => {
         content: "I finally made it.",
       },
     ]);
+    expect(context.userPersona).toEqual({ name: "Robin", description: "A botanist.", enabled: true, version: 2 });
+    expect(context.experience?.sceneGeneration).toBe("advance");
+    expect(context.persona.name).toBe("Melissa Burke");
+    expect(context.persona.characterReleaseId).toBe("release-1");
   });
 });

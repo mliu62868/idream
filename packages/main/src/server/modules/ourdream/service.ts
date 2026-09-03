@@ -60,6 +60,7 @@ import {
   lockMediaAssetAuthority,
 } from "@/server/modules/admin-v2/characters/generation-authority-lock";
 import { invalidateCharacterDraftAssetPack } from "@/server/modules/admin-v2/characters/draft-asset-authority";
+import { getUserChatPersona, updateUserChatPersona, clearUserChatPersona } from "@/server/modules/chat/user-persona";
 import { proxyChatRequest } from "@/server/bff/chat-proxy";
 import {
   METRIC_PRODUCT_EVENTS,
@@ -660,6 +661,12 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
   if (resource === "library" && id && method === "GET") return library(request, id);
 
   if (resource === "profile") {
+    if (id === "chat-persona" && !action) {
+      const user = requireUser(await getAuthCtx(request));
+      if (method === "GET") return ok(await getUserChatPersona(user.id));
+      if (method === "PUT") return ok(await updateUserChatPersona(user.id, await jsonBody(request)));
+      if (method === "DELETE") return ok(await clearUserChatPersona(user.id, await jsonBody(request)));
+    }
     if (!id && method === "GET") return profile(request);
     if (!id && method === "PATCH") return updateProfile(request);
     if (id === "preferences" && method === "GET") return profilePreferences(request);

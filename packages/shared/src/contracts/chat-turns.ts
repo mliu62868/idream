@@ -30,14 +30,43 @@ export const chatContextDirectivesSchema = z.array(chatContextDirectiveSchema)
 
 export type ChatContextDirective = z.infer<typeof chatContextDirectiveSchema>;
 
+export const CHAT_PERSONA_MAX_CHARS = 1_500;
+export const userChatPersonaValuesSchema = z.object({
+  enabled: z.boolean(),
+  name: z.string().trim().max(80),
+  description: z.string().trim().max(CHAT_PERSONA_MAX_CHARS),
+}).strict();
+export const userChatPersonaSchema = userChatPersonaValuesSchema.extend({
+  version: z.number().int().positive(),
+}).strict().refine(value => Boolean(value.name || value.description), {
+  message: "Add a name or description, or clear your persona",
+});
+export const userChatPersonaResponseSchema = z.object({
+  ownerScope: z.string().startsWith("user:").max(240),
+  persona: userChatPersonaSchema.nullable(),
+  version: z.number().int().nonnegative(),
+}).strict().refine(value => value.persona === null || value.persona.version === value.version, {
+  message: "Persona version does not match its settings",
+});
+export type UserChatPersona = z.infer<typeof userChatPersonaSchema>;
+
+export const chatSceneGenerationSchema = z.enum(["follow", "advance"]);
 export const chatExperienceValuesSchema = z.object({
   responseLength: z.enum(["auto", "short", "long"]),
   interactionIntensity: z.enum(["gentle", "balanced", "expressive"]),
+  sceneGeneration: chatSceneGenerationSchema.default("follow"),
 }).strict();
 export const chatExperiencePreferenceSchema = chatExperienceValuesSchema.extend({
-  version: z.number().int().positive(),
-}).strict();
+  // Historical accepted preferences predate this control; do not backfill them.
+  sceneGeneration: chatSceneGenerationSchema.optional(),
+  version: z.number().int().nonnegative(),
+}).strict().refine(value => value.version !== 0 || (
+  value.responseLength === "auto" && value.interactionIntensity === "balanced" && value.sceneGeneration === "follow"
+), { message: "Version zero is reserved for the default conversation preferences" });
 export type ChatExperiencePreference = z.infer<typeof chatExperiencePreferenceSchema>;
+export const DEFAULT_CHAT_EXPERIENCE = {
+  responseLength: "auto", interactionIntensity: "balanced", sceneGeneration: "follow", version: 0,
+} as const;
 
 export const chatExecutionSnapshotSchema = z.object({
   version: z.literal(1),
@@ -56,6 +85,7 @@ export const chatExecutionSnapshotSchema = z.object({
   // Missing only on historical snapshots; never backfill those with today's settings.
   contextDirectives: chatContextDirectivesSchema.optional(),
   experience: chatExperiencePreferenceSchema.optional(),
+  userPersona: userChatPersonaSchema.nullable().optional(),
   contextRevision: z.number().int().nonnegative(),
   userContent: z.string(),
   hasRecentImageContext: z.boolean().default(false),

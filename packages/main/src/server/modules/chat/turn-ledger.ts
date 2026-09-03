@@ -5,8 +5,9 @@ import type {
   ChatTerminalCommit,
   ChatContextDirective,
   ChatExperiencePreference,
+  UserChatPersona,
 } from "@idream/shared/contracts";
-import { chatContextDirectivesSchema, chatExecutionSnapshotSchema, chatExperiencePreferenceSchema, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
+import { chatContextDirectivesSchema, chatExecutionSnapshotSchema, chatExperiencePreferenceSchema, DEFAULT_CHAT_EXPERIENCE, MAIN_TO_CHAT_EVENTS } from "@idream/shared/contracts";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/server/lib/db";
 import { Errors } from "@/server/lib/errors";
@@ -22,6 +23,7 @@ import {
   scheduleCompanionMemoryProjection,
   scheduleCompanionMemoryRebuild,
 } from "./companion-memory-authority";
+import { userChatPersonaForTurn } from "./user-persona";
 
 const BLOCKED_NOTICE = "I can’t help with that request.";
 const ACTIVE_ASSISTANT_STATES = ["pending", "generating"];
@@ -210,6 +212,7 @@ export async function beginChatTurn(input: {
           duplicate.memoryEnabled && !memoryIsolated,
           duplicate.executionSnapshot ? undefined : [],
           duplicate.executionSnapshot ? undefined : null,
+          duplicate.executionSnapshot ? undefined : null,
         ),
       };
     }
@@ -293,6 +296,7 @@ export async function regenerateChatTurn(userId: string, messageId: string) {
     const originalSnapshot = current.executionSnapshot ? chatExecutionSnapshotSchema.parse(current.executionSnapshot) : null;
     const contextDirectives = originalSnapshot?.contextDirectives ?? [];
     const experience = originalSnapshot?.experience ?? null;
+    const userPersona = originalSnapshot?.userPersona ?? null;
     const sceneAnchor = await previousCommittedScene(tx, current);
     const regenerated = await tx.chatTurn.update({
       where: { id: turn.id },
@@ -321,7 +325,7 @@ export async function regenerateChatTurn(userId: string, messageId: string) {
       characterId: turn.session.characterId,
       purgeRunAttempts: [{ turnId: turn.id, throughAttempt: previousAttempt }],
     });
-    return { turn: regenerated, snapshot: await frozenExecutionSnapshot(tx, regenerated.id, false, contextDirectives, experience) };
+    return { turn: regenerated, snapshot: await frozenExecutionSnapshot(tx, regenerated.id, false, contextDirectives, experience, userPersona) };
   });
   return {
     assistantMessageId: updated.turn.assistantMessageId,
@@ -362,6 +366,7 @@ export async function editChatTurn(userId: string, messageId: string, nextConten
     const originalSnapshot = current.executionSnapshot ? chatExecutionSnapshotSchema.parse(current.executionSnapshot) : null;
     const contextDirectives = originalSnapshot?.contextDirectives ?? [];
     const experience = originalSnapshot?.experience ?? null;
+    const userPersona = originalSnapshot?.userPersona ?? null;
     const edited = await tx.chatTurn.update({
       where: { id: turn.id },
       data: {
@@ -395,7 +400,7 @@ export async function editChatTurn(userId: string, messageId: string, nextConten
     });
     return {
       turn: edited,
-      snapshot: blocked ? null : await frozenExecutionSnapshot(tx, edited.id, false, contextDirectives, experience),
+      snapshot: blocked ? null : await frozenExecutionSnapshot(tx, edited.id, false, contextDirectives, experience, userPersona),
     };
   });
   return {
@@ -655,7 +660,9 @@ export async function chatTurnForEffect(turnId: string) {
 export async function executionSnapshot(turnId: string): Promise<ChatExecutionSnapshot> {
   return prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "chat_turns" WHERE id = ${turnId} FOR UPDATE`;
-    return frozenExecutionSnapshot(tx, turnId);
+    // Newly accepted Turns already carry their explicit context. A legacy
+    // missing snapshot must not acquire today's settings during recovery.
+    return frozenExecutionSnapshot(tx, turnId, true, [], null, null);
   });
 }
 
@@ -665,6 +672,7 @@ async function frozenExecutionSnapshot(
   memoryEnabled = true,
   preservedDirectives?: ChatContextDirective[],
   preservedExperience?: ChatExperiencePreference | null,
+  preservedUserPersona?: UserChatPersona | null,
 ): Promise<ChatExecutionSnapshot> {
   const turn = await tx.chatTurn.findUnique({ where: { id: turnId }, include: { session: true } });
   if (!turn) throw Errors.notFound("Chat turn not found");
@@ -706,9 +714,11 @@ async function frozenExecutionSnapshot(
   );
   const experienceRow = preservedExperience !== undefined ? preservedExperience : await tx.chatExperiencePreference.findUnique({
     where: { sessionId: turn.sessionId },
-    select: { responseLength: true, interactionIntensity: true, version: true },
+    select: { responseLength: true, interactionIntensity: true, sceneGeneration: true, version: true },
   });
-  const experience = experienceRow ? chatExperiencePreferenceSchema.parse(experienceRow) : null;
+  const experience = experienceRow
+    ? chatExperiencePreferenceSchema.parse(experienceRow)
+    : preservedExperience === undefined ? DEFAULT_CHAT_EXPERIENCE : null;
   const snapshot: ChatExecutionSnapshot = {
     version: 1,
     turnId: turn.id,
@@ -726,6 +736,9 @@ async function frozenExecutionSnapshot(
     memoryEnabled: turn.memoryEnabled && memoryEnabled,
     contextDirectives,
     ...(experience ? { experience } : {}),
+    userPersona: preservedUserPersona === undefined
+      ? await userChatPersonaForTurn(tx, turn.session.userId)
+      : preservedUserPersona,
     contextRevision: turn.session.contextRevision,
     userContent: turn.userContent,
     hasRecentImageContext: recent.some((item) =>
