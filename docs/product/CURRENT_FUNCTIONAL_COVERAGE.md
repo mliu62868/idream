@@ -6,7 +6,21 @@
 
 Companion Agent 的共同产品人格、角色 Soul 与逐轮事实已经成为三类独立权威；截图中的“动作已执行、角色却口头拒绝”路径已在源码、终态证据和真实图片交付中闭合。iDream 的目标定位是全面对标 OurDream.ai 的 18+ AI 角色扮演 / AI 伴侣平台；身份、记忆和行动连续性是 Chat 质量能力，不是缩减 Create、Generate、My AI、Feed/Community 或公开内容范围的总定位。历史消息不改写，当前证据只证明本地受控运行，不代表公开生产发布签发。
 
-## 2026-09-02 第二轮产品完整性复查
+## 2026-09-02 第三轮日常使用与恢复能力
+
+本批继续补齐聊天设置、生成恢复、作品管理和公开合集。下表描述当前代码与已发生的定向验证；统一测试、构建、Chrome 和同版本运行结果另见 `.tmp/product-audit-20260902/iteration3-validation.json`，未通过的项目保持未验证。此前 144 个本轮范围内的 Chrome 用例已分段覆盖，`current-scope-chrome-segmented-coverage.json` 明确记录 `singleFullRunPassed=false`，不能称作当前版本单次全绿。
+
+| 用户任务 | 当前实现 | 本批验证边界 |
+| --- | --- | --- |
+| 指定场景推进与自己的身份 | 会话支持 Follow my lead / Develop the scene；Profile 支持一份全局、可停用和清除的聊天个人资料。Main 在接受新 Turn 时冻结版本，编辑和重生成沿用原版本，历史缺字段不回填。资料读写绑定 Profile 确认的账号。 | 已复现并修复 DELETE 正文被通用解析器丢弃的问题，6 条真实 PostgreSQL Persona 回归通过。当前版本真实模型旅程待执行。 |
+| 刷新后核对结果未知的生成请求 | Create、Variation、Retry、Enhance 在 POST 前按账号持久化原键、原正文与原报价；Jobs 的 Requests to check 独立核对原请求，不依赖当前表单、余额或首次 Job 列表。切换账号不复用旧账号请求。 | Main 定向 242 条、相关 Shared 6 条、Chat 23 条通过；整页刷新与迟到落库的 Chrome 回归纳入本批统一组合。存储不可用时明确提示仅当前页面保留。 |
+| 查找作品与管理预设 | Gallery 支持服务端搜索、发布范围过滤和稳定分页；Liked 在分页前筛选 image/video，语音仍保留在通用媒体库。预设支持来源/分类/搜索、自建片段、编辑和取消；16 个分类内置片段已通过仅插入 SQL 落库。 | 读写归属、媒体分页和报价数据库用例通过；预设保存跨焦点重验保持 pending，防止重复保存。当前界面 Chrome 验证待执行。 |
+| 理解视频输出并播放作品 | 视频报价展示固定配方的实际时长、分辨率和音频类型；内容 URL 与封面分离，原生播放失败可重新载入。 | 不把固定配方伪装成可选时长、质量或多场景编辑，旧视频生成证据不改标为新执行。 |
+| 浏览和管理完整合集 | Feed、Community、Profile 进入同一深链详情；公开列表每页 20、成员每页 12，图片/视频/语音使用真实内容。作者可改名、调整公开范围和移除关联，保留原始媒体与其他合集，空合集转私有。 | 首批 38 条前端测试通过；数据库夹具与焦点/翻页竞态正在收口，以本批统一报告为最终结果。 |
+
+运行库已备份并应用 `20260902233000_chat_scene_and_user_persona`，共 82 个迁移；205 条既有 Turn 快照哈希不变。迁移和预设插入重放证据分别为 `chat-scene-persona-runtime-migration.json`、`preset-catalog-runtime-rollout.json`。本段优先于下文历史轮次的剩余项描述，不代表完整 OurDream 对标或公开生产已认证。
+
+## 2026-09-02 第二轮产品完整性复查（历史批次）
 
 本轮继续检查首轮核心闭环以外的日常使用与运营缺口。以下已完成项有独立测试或真实 Chrome 证据；工作区仍在迭代，不能把首轮 `1ce5e2…` 的全套门禁自动算给这些新改动。支付、年龄检查与合规不在本轮范围。
 
@@ -20,7 +34,7 @@ Companion Agent 的共同产品人格、角色 Soul 与逐轮事实已经成为�
 | 作者作品与路线图 | Creator 按 `(createdAt,id)` 稳定分页，修复旧作品被截断；Help Desk 路线图有分页与状态筛选，末页投票可持久化。独立真实 Chrome 用 25 个角色和 13 条反馈证明跨页、刷新、末项详情与投票。 | Creator levels / Studio、公开集合及 Pack/Comic 等完整产品仍是剩余范围。 |
 | 反馈与内容运营 | Admin Support 内的 Product feedback 支持搜索、分页与 CAS 状态更新，沿用既有权限、幂等和审计。真实客户反馈经运营改为 Planned → Shipped，客户刷新同步。Resources Hub 使用公开 CMS read model；发布后可发现，撤下后移除，`noindex` / 非本页 canonical 不进入目录。24 项分页经 41 项真实 Chrome 夹具验证，夹具已清理。另有 CMS 发布 → 目录 → 撤下的真实 Chrome 自动回归。 | Images / Videos / Glossary / Authors 等完整内容族与非支付 Affiliate 运营仍需逐项落地。 |
 
-本轮 Main 新增 `20260902212500_chat_context_directives` 与 `20260902215000_chat_experience_preferences` 两个迁移，在本次明确 DB 授权下备份并应用到本地运行库；当前为 81 个迁移。`2026-09-02-image-enhance-2x.sql` 仅插入经验证的增强 profile/recipe，既有路线不改。数据与浏览器证据位于 `.tmp/product-audit-20260902/`：`chat-context-chrome-persistence-iteration2.json`、`enhance-chrome-iteration2.json`、`enhance-runtime-evidence.json`、`create-resources-chrome-iteration2.json`、`resources-pagination-chrome-iteration2.json`、`feedback-chrome-ui-iteration2.json`、`feedback-chrome-persistence-iteration2.json` 和 `platform-pages-e2e-final.md`。其中三条隔离 Chrome 自动回归全部通过，41.2 秒，退出 0，DB / Redis / 服务 / 临时目录均已清理。
+本轮 Main 新增 `20260902212500_chat_context_directives` 与 `20260902215000_chat_experience_preferences` 两个迁移，在本次明确 DB 授权下备份并应用到本地运行库；该批结束时为 81 个迁移。`2026-09-02-image-enhance-2x.sql` 仅插入经验证的增强 profile/recipe，既有路线不改。数据与浏览器证据位于 `.tmp/product-audit-20260902/`：`chat-context-chrome-persistence-iteration2.json`、`enhance-chrome-iteration2.json`、`enhance-runtime-evidence.json`、`create-resources-chrome-iteration2.json`、`resources-pagination-chrome-iteration2.json`、`feedback-chrome-ui-iteration2.json`、`feedback-chrome-persistence-iteration2.json` 和 `platform-pages-e2e-final.md`。其中三条隔离 Chrome 自动回归全部通过，41.2 秒，退出 0，DB / Redis / 服务 / 临时目录均已清理。
 
 Admin 随后的对抗审查已修复超长视频 brief/negative prompt 导致表单永久 busy：输入先验证，保留草稿并给出明确错误；Character Portfolio、Video Library 与 Chat Tools 接入已有顶栏 Refresh 事件，迟到读取不会覆盖较新结果，Chat Tools 首次加载失败可 Retry；视频移除不再错误承诺可撤销，沿用已有确认流程。39 项聚焦用例、局部 lint 通过。Next 自动生成的旧 validator 损坏另以官方 `next typegen` 重建后，Admin 标准 `tsc --noEmit --incremental false` 退出 0；原失败日志保留，没有手改生成正文。
 

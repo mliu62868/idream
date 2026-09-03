@@ -21,9 +21,9 @@
 2. 区分“未实现空态”、“受 feature/provider/entitlement 条件限制”、“本地受控可用”和“公开生产已认证”，不用路由存在或历史截图代替能力证明。
 3. Create 五步链及目录扩展已有实际证据：48 personality / 135 occupation / 29 relationship、运行声音目录 21 项；继续核对内容语义差异，不能只按总数认定 matched。沿用同一 Soul Markdown 与既有五步，Quick Start 只能预填这条链。
 4. 将 Recent、Characters、Presets、Created 和 Media 共同作为 My AI P0 核心面；Group Chats/Packs/Comics 作为 P1 对标缺口，发布前只显示明确 unavailable 空态或不暴露入口。
-5. Generate 的 Create / Edit / 独立 Enhance 2×、已发布 reference lineage 与单段视频已真实交付。剩余为完整 Preset 浏览/编辑与内容目录、Gallery 过滤与组织、Advanced seed / 合格 model 选择、多 scene / 可选时长 / 比例 / 质量 / AI voice Video，以及精确 Chat Product Action 上下文交接；同挂载未知提交恢复收口后，继续关闭整页刷新丢失 receipt、首次 Job 读取早于原提交落库的缺口，保证历史 pins、quote、settlement/refund 和 replay 幂等。
-6. Creator Profile 跨页可达、路线图分页投票、Admin feedback 状态运营、CMS 发布后的 Resources 发现与分页已补齐并有真实 Chrome 证据。继续覆盖 Feed / Community / Creator levels / Studio、公开集合、Pack / Comic、非支付 Affiliate 归因运营、Images / Videos / Glossary / Authors 与完整内容族的真实数据、副作用和权限；不因这些入口存在就推定完整能力。收益、充值和支付执行保留为后续独立范围。
-7. Pinned Memories、Custom Instructions 与 session 级回复长度/表达风格已实现，真实模型验证了版本冻结、重生成、no-memory 与清除。末条操作遮挡、失败图片 Retry 入口和 50 条以后会话可达性已有修复与聚焦证据，待本批统一门禁；后续补 Scene / 用户 persona、主动消息、5 档或功能等价 profiles、最多 12 角色 Group Chat 和双向 Voice Call。继续保持 Main 历史权威、official igrep、角色身份及 Product Action 连续性。
+5. Generate 的 Create / Edit / 独立 Enhance 2×、已发布 reference lineage 与单段视频已真实交付。第三轮已实现 Preset 浏览/编辑与分类目录、Gallery 过滤和整页刷新后的独立原请求核对，当前待统一 Chrome、测试与运行验证。继续核对 Advanced seed / 合格 model 选择、多 scene / 可选时长 / 比例 / 质量 / AI voice Video 及精确 Chat Product Action 上下文交接；固定配方的规格显示不等同于新增可选参数。历史 pins、quote、settlement/refund 和 replay 幂等保持。
+6. Creator Profile 跨页可达、路线图分页投票、Admin feedback 状态运营、CMS 发布后的 Resources 发现与分页已补齐并有真实 Chrome 证据。第三轮已补公开合集详情、分页和作者管理，待统一验证；继续覆盖 Feed / Community / Creator levels / Studio、Pack / Comic、非支付 Affiliate 归因运营、Images / Videos / Glossary / Authors 与完整内容族的真实数据、副作用和权限；不因这些入口存在就推定完整能力。收益、充值和支付执行保留为后续独立范围。
+7. Pinned Memories、Custom Instructions 与 session 级回复长度/表达风格已实现，真实模型验证了版本冻结、重生成、no-memory 与清除。末条操作遮挡、失败图片 Retry 入口和 50 条以后会话可达性已有修复与聚焦证据，待本批统一门禁；第三轮已实现 Scene 与全局用户 persona，待真实模型与同版本门禁；后续补主动消息、5 档或功能等价 profiles、最多 12 角色 Group Chat 和双向 Voice Call。继续保持 Main 历史权威、official igrep、角色身份及 Product Action 连续性。
 8. **本轮不执行支付范围**。后续独立工作仍包括 Upgrade/Profile 的 provider checkout → activation → expiry → repurchase，以及 coin store 的 offer → quote → one-time checkout → provider confirmation → 幂等 topup ledger → 购买历史。既有历史/媒体访问与一次性预付承诺保持；本轮内部测试加币不算用户充值产品闭环。
 9. WPCU 保持 `official`；WSCU/WSCrU/WPSCU/WSR 保持 shadow/directional 诊断。补生产回放、成熟窗口和质量认证，但不执行指标 cutover。
 
