@@ -158,8 +158,8 @@ describe("GeneratorWorkspace owned preset editing", () => {
   }
 
   async function select(label: string, value: string) {
-    const node = [...container.querySelectorAll("label")].find((candidate) => candidate.textContent?.includes(label))?.querySelector("select")!;
-    expect(node, label).not.toBeNull();
+    const node = [...container.querySelectorAll("label")].find((candidate) => candidate.textContent?.includes(label))?.querySelector("select");
+    if (!node) throw new Error(`Missing select: ${label}`);
     await act(async () => { node.value = value; node.dispatchEvent(new Event("change", { bubbles: true })); });
   }
 
