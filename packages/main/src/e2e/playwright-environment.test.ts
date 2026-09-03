@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   assertPlaywrightBlobRoot,
   assertPlaywrightDatabaseUrl,
@@ -13,7 +13,37 @@ import {
   createPlaywrightCleanupPlan,
 } from "./playwright-cleanup";
 
+const sourceAuthority = vi.hoisted(() => ({
+  computeSourceRevision: vi.fn(() => `idream-worktree-${"a".repeat(64)}`),
+}));
+
+vi.mock("../../../../scripts/source-revision.cjs", () => sourceAuthority);
+
 describe("managed Playwright environment", () => {
+  it("binds all eight services to current source instead of an ambient deployment stamp", async () => {
+    const previousEnv = { ...process.env };
+    try {
+      process.env.PW_RUN_ID = "a1b2c3d4";
+      process.env.IDREAM_SOURCE_REVISION = `idream-worktree-${"b".repeat(64)}`;
+      sourceAuthority.computeSourceRevision.mockClear();
+      vi.resetModules();
+
+      const config = (await import("../../playwright.config")).default;
+      const servers = config.webServer;
+      if (!Array.isArray(servers)) throw new Error("Expected managed Playwright services");
+
+      expect(process.env.IDREAM_SOURCE_REVISION).toBe(`idream-worktree-${"a".repeat(64)}`);
+      expect(servers).toHaveLength(8);
+      expect(servers.map((server) => server.env?.IDREAM_SOURCE_REVISION)).toEqual(
+        Array.from({ length: 8 }, () => `idream-worktree-${"a".repeat(64)}`),
+      );
+      expect(sourceAuthority.computeSourceRevision).toHaveBeenCalledExactlyOnceWith();
+    } finally {
+      process.env = previousEnv;
+      vi.resetModules();
+    }
+  });
+
   it("binds authority lifecycle to the first-started and last-stopped managed server", () => {
     const configSource = readFileSync(
       new URL("../../playwright.config.ts", import.meta.url),

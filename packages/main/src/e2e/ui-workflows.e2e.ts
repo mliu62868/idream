@@ -55,7 +55,12 @@ test("collections expose every member, native video, public pagination, and owne
     await prisma.mediaAsset.update({ where: { id: mediaId }, data: { width: 64, height: 64 } });
     mediaIds.push(mediaId);
   }
-  mediaIds.push(await seedDownloadableVideoMedia(email));
+  // A one-frame mock validates downloads, but cannot prove native playback.
+  // This fixture is CPU-generated testsrc, 3 seconds / 72 frames at 24 fps.
+  mediaIds.push(await seedDownloadableVideoMedia(
+    email,
+    await readFile(path.join(process.cwd(), "src/e2e/fixtures/collection-playback.mp4")),
+  ));
   await prisma.mediaAsset.updateMany({ where: { id: { in: mediaIds } }, data: { visibility: "public_pack" } });
   await prisma.mediaCollection.create({ data: {
     id, ownerId: user.id, name, visibility: "public",
@@ -85,7 +90,12 @@ test("collections expose every member, native video, public pagination, and owne
   await expect.poll(() => video.evaluate((element: HTMLVideoElement) => Number.isFinite(element.duration) && element.duration > 0)).toBe(true);
   await video.evaluate(async (element: HTMLVideoElement) => { element.muted = true; await element.play(); });
   await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentTime)).toBeGreaterThan(0.1);
-  const playback = await video.evaluate((element: HTMLVideoElement) => { element.pause(); return { duration: element.duration, currentTime: element.currentTime }; });
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.getVideoPlaybackQuality().totalVideoFrames)).toBeGreaterThan(1);
+  const playback = await video.evaluate((element: HTMLVideoElement) => {
+    element.pause();
+    return { duration: element.duration, currentTime: element.currentTime, decodedFrames: element.getVideoPlaybackQuality().totalVideoFrames };
+  });
+  expect(playback.duration).toBeCloseTo(3, 2);
 
   const removed = page.waitForResponse((response) => response.request().method() === "DELETE"
     && new URL(response.url()).pathname === `/api/v1/media/collections/${id}/items/${mediaIds[4]}`);
@@ -769,7 +779,7 @@ async function ensureGenerationPreset(
   });
 }
 
-async function seedDownloadableVideoMedia(email: string) {
+async function seedDownloadableVideoMedia(email: string, bytes: Uint8Array = mockVideoMp4Bytes()) {
   const user = await prisma.user.findUniqueOrThrow({
     where: { email },
     select: { id: true },
@@ -778,7 +788,7 @@ async function seedDownloadableVideoMedia(email: string) {
   const storageKey = `e2e/profile/${id}.mp4`;
   const target = resolveLocalBlobPath(storageKey);
   await mkdir(path.dirname(target), { recursive: true });
-  await writeFile(target, mockVideoMp4Bytes());
+  await writeFile(target, bytes);
   await prisma.mediaAsset.create({
     data: {
       id,
