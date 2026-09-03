@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 
@@ -39,20 +40,16 @@ function loadConfig(mode, overrides = {}) {
     }
     const videoProvider = Object.hasOwn(overrides, "GEN_VIDEO_PROVIDER")
       ? overrides.GEN_VIDEO_PROVIDER
-      : mode === "production"
-        ? "backend"
-        : originalVideoProvider;
+      : "backend";
     if (videoProvider === undefined) {
       delete process.env.GEN_VIDEO_PROVIDER;
     } else {
       process.env.GEN_VIDEO_PROVIDER = videoProvider;
     }
     process.env.VOICE_PROVIDER = overrides.VOICE_PROVIDER ?? "pocket-tts";
-    if (overrides.VOICE_IDENTITY_PROVIDER === undefined) {
-      delete process.env.VOICE_IDENTITY_PROVIDER;
-    } else {
-      process.env.VOICE_IDENTITY_PROVIDER = overrides.VOICE_IDENTITY_PROVIDER;
-    }
+    // An absent variable intentionally falls back to the operator's .env in
+    // production. Fixture defaults must shadow it; individual cases opt in.
+    process.env.VOICE_IDENTITY_PROVIDER = overrides.VOICE_IDENTITY_PROVIDER ?? "";
     delete require.cache[require.resolve(configPath)];
     return require(configPath);
   } finally {
@@ -294,6 +291,21 @@ test("the ecosystem loads Fish only when system or identity configuration requir
     withFishIdentity.apps.some((app) => app.name === "fish-audio"),
     true,
   );
+});
+
+test("configuration fixtures isolate their baseline from local Fish identity settings", (t) => {
+  const mainEnvPath = path.join(repoRoot, "packages/main/.env");
+  const existsSync = fs.existsSync;
+  const readFileSync = fs.readFileSync;
+  t.mock.method(fs, "existsSync", (filename) => filename === mainEnvPath || existsSync(filename));
+  t.mock.method(fs, "readFileSync", (filename, ...args) => filename === mainEnvPath
+    ? "VOICE_PROVIDER=pocket-tts\nVOICE_IDENTITY_PROVIDER=fish-audio\n"
+    : readFileSync(filename, ...args));
+
+  assert.equal(loadConfig("development").apps.some((app) => app.name === "fish-audio"), false);
+  assert.equal(loadConfig("production").apps.some((app) => app.name === "fish-audio"), false);
+  assert.equal(loadConfig("development", { VOICE_IDENTITY_PROVIDER: "fish-audio" }).apps.some((app) => app.name === "fish-audio"), true);
+  assert.equal(loadConfig("production", { VOICE_PROVIDER: "fish-audio" }).apps.some((app) => app.name === "fish-audio"), true);
 });
 
 test("obsolete rollout flags cannot enter the embedded Chat runtime", () => {
