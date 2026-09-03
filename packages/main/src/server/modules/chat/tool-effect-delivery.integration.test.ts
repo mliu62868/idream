@@ -56,18 +56,25 @@ describe("initial Chat image delivery", () => {
     const gen = await generationTestProviders();
     vi.spyOn(gen.image, "generate").mockResolvedValue({ ok: false, error: { code: "backend_error", message: "Controlled pre-submit connection refusal", retryable: false, outcome: "definitive" } });
     const create = generation.createChatImageGenerationJob;
+    let creationFailure: unknown;
     const createSpy = vi.spyOn(generation, "createChatImageGenerationJob").mockImplementationOnce(async (...args) => {
-      const job = await create(...args);
-      // Force the real Gen terminal + Main refund to commit before the caller
-      // receives its reservation ACK. No timing delay or fake Job status.
-      await runQueuedGenerationJobs();
-      expect(await prisma.generationJob.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({ status: "failed", errorCode: "backend_error" });
-      expect(await prisma.dreamcoinLedger.count({ where: { sourceId: job.id, reason: "refund" } })).toBe(1);
-      return job;
+      try {
+        const job = await create(...args);
+        // Force the real Gen terminal + Main refund to commit before the caller
+        // receives its reservation ACK. No timing delay or fake Job status.
+        await runQueuedGenerationJobs();
+        expect(await prisma.generationJob.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({ status: "failed", errorCode: "backend_error" });
+        expect(await prisma.dreamcoinLedger.count({ where: { sourceId: job.id, reason: "refund" } })).toBe(1);
+        return job;
+      } catch (error) {
+        creationFailure = error;
+        throw error;
+      }
     });
     const effect = { version: 2 as const, turnId: snapshot.turnId, attempt: 1, callId: randomUUID(), name: "generate_image_async" as const, effectScope: "turn_action" as const, intent: { requestedNudity: "unspecified" as const }, arguments: { prompt: "Avery beside the rainy window.", orientation: "4:5", outputCount: 1 } };
     const accepted = await applyChatToolEffect(effect);
-    expect(accepted).toMatchObject({ accepted: true, duplicate: false, generationJobId: expect.any(String) });
+    if (creationFailure) throw creationFailure;
+    expect(accepted, JSON.stringify(accepted)).toMatchObject({ accepted: true, duplicate: false, generationJobId: expect.any(String) });
     if (!accepted.accepted || !accepted.generationJobId) throw new Error("Missing original image action");
     expect(await prisma.chatTurnAttachment.findUniqueOrThrow({ where: { id: accepted.attachmentId } })).toMatchObject({ generationJobId: accepted.generationJobId, status: "failed", errorCode: "backend_error", mediaAssetId: null });
     await commitChatTerminal({ version: 1, turnId: snapshot.turnId, sessionId: snapshot.sessionId, assistantMessageId: snapshot.assistantMessageId, attempt: 1, status: "sent", content: "The image request failed.", model: "test", promptTokens: 1, completionTokens: 1, sceneVersion: 0, scene: null, terminalEvidence: { authority: "test", prompt: { productPromptVersion: "companion-product-1", preparedTurnVersion: 4, systemPromptDigest: "a".repeat(64), soulFingerprint: "b".repeat(64) } } });
