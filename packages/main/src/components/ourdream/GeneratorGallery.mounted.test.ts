@@ -158,12 +158,12 @@ describe("GeneratorWorkspace Gallery filters and video playback", () => {
     expect(requests).toContain("/api/v1/media?type=image&q=rooftop%20%E9%9B%A8&visibility=private&cursor=filtered-page");
     expect(container.querySelector('[data-media-id="filtered-second"]')).not.toBeNull();
     await click(button("Liked"));
-    expect(requests).toContain("/api/v1/media?liked=1&q=rooftop%20%E9%9B%A8&visibility=private");
+    expect(requests).toContain("/api/v1/media?liked=1&types=image,video&q=rooftop%20%E9%9B%A8&visibility=private");
     await act(async () => window.dispatchEvent(new Event("focus")));
     await settle();
     expect(requests.at(-1)).not.toContain("cursor=filtered-page");
     expect(container.querySelector<HTMLInputElement>('form[aria-label="Gallery filters"] input')?.value).toBe("  rooftop 雨  ");
-    expect(requests.filter((path) => path === "/api/v1/media?liked=1&q=rooftop%20%E9%9B%A8&visibility=private").length).toBeGreaterThanOrEqual(2);
+    expect(requests.filter((path) => path === "/api/v1/media?liked=1&types=image,video&q=rooftop%20%E9%9B%A8&visibility=private").length).toBeGreaterThanOrEqual(2);
   });
 
   it("drops late filter results and clears selection when the filter changes", async () => {

@@ -573,7 +573,7 @@ export function GeneratorWorkspace() {
     refresh: refreshMediaPage,
   } = useViewerResource<GalleryPage, GalleryPageRequest, PrivateViewerTicket>({
     request: ({ tab, cursors, q, visibility }) => ({
-      path: `/api/v1/media?${tab === "liked" ? "liked=1" : `type=${tab}`}${q ? `&q=${encodeURIComponent(q)}` : ""}${visibility ? `&visibility=${visibility}` : ""}${cursors.at(-1) ? `&cursor=${encodeURIComponent(cursors.at(-1)!)}` : ""}`,
+      path: `/api/v1/media?${tab === "liked" ? "liked=1&types=image,video" : `type=${tab}`}${q ? `&q=${encodeURIComponent(q)}` : ""}${visibility ? `&visibility=${visibility}` : ""}${cursors.at(-1) ? `&cursor=${encodeURIComponent(cursors.at(-1)!)}` : ""}`,
       init: { cache: "no-store" },
     }),
     parse: parseWorkspaceMediaResponse,
