@@ -515,6 +515,24 @@ describe("recovery rehearsal bundle authority", () => {
     });
   });
 
+  it("preserves archived permission modes when launch runs with a restrictive umask", async () => {
+    const bundle = writeRecoveryBundle({ pointerAuthority: "dsh-canonical" });
+    const originalUmask = process.umask(0o077);
+    try {
+      const result = await inspectRecoveryRehearsalBundle({
+        bundlePath: bundle,
+        expectedMigrations,
+        commandRunner: validArchiveRunner,
+        now: new Date(),
+        maxAgeMinutes: 60,
+      });
+
+      expect(result).toMatchObject({ ok: true, problems: [] });
+    } finally {
+      process.umask(originalUmask);
+    }
+  });
+
   it("accepts a canonical pointer only when real tar restore preserves its exact target", async () => {
     const result = await inspectRecoveryRehearsalBundle({
       bundlePath: writeRecoveryBundle({ pointerAuthority: "dsh-canonical" }),
