@@ -2454,6 +2454,12 @@ async function listMedia(request: Request) {
   const url = new URL(request.url);
   const liked = url.searchParams.get("liked") === "1";
   const type = url.searchParams.get("type");
+  const rawTypes = url.searchParams.get("types");
+  if (rawTypes !== null && type !== null) {
+    throw Errors.badRequest("Choose either type or types, not both");
+  }
+  const types = rawTypes === null ? undefined : z.array(z.enum(["image", "video", "voice"]))
+    .min(1).max(3).parse(rawTypes.split(",").map(value => value.trim()));
   const visibility = url.searchParams.get("visibility");
   const q = url.searchParams.get("q")?.trim() ?? "";
   // Media has no persisted title: the customer card uses a kind label. Search
@@ -2474,7 +2480,9 @@ async function listMedia(request: Request) {
         { contentType: null },
         { contentType: { not: "application/vnd.idream.pocket-tts-preset+json" } },
       ] }],
-      type: type ?? undefined,
+      // Apply the gallery's allowed kinds before its cursor/limit, so liked
+      // voice clips cannot consume an image/video page or break its contract.
+      type: types ? { in: types } : type ?? undefined,
       visibility: visibility ?? undefined,
       likes: liked ? { some: { userId: user.id } } : undefined,
       OR: q ? [
