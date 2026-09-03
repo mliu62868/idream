@@ -164,9 +164,10 @@ function installFailFastProbeFetch(
       if (!normal) {
         const content = JSON.parse(String(init?.body)) as { content: string };
         expect(content.content).not.toContain(seededRecallMarker);
-        expect(content.content).toContain(
-          'Call memory_search with query exactly "exact rooftop probe code word"',
+        expect(content.content).toBe(
+          "From our earlier chat, what was the exact rooftop code word we chose? Please say the code word exactly.",
         );
+        expect(content.content).not.toContain("memory_search");
       }
       return json({
         assistantMessageId: normal ? "assistant-normal" : "assistant-recall",
@@ -529,6 +530,11 @@ describe("chat service conversation probe", () => {
       memorySearchHit: true,
     });
     expect(JSON.stringify(evidence)).not.toContain(sentinel);
+    expect(evaluateDshRecallEvidence({
+      assistantContent: `I remember ${sentinel}.\n\n{memory_search: "exact rooftop probe code word"}`,
+      sentinel,
+      dsh: projectDshCompanionEvidence(completedDshTrace(), "normal"),
+    }).ok).toBe(false);
     expect(evaluateDshRecallEvidence({
       assistantContent: "I cannot recall it.",
       sentinel,

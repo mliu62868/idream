@@ -190,6 +190,7 @@ function requiredImageInvocation(): CompanionInvocation {
 async function engine(
   adapter: LlmAdapter,
   memoryBuilder?: CompanionEngineOptions["memoryBuilder"],
+  overrides: Partial<CompanionEngineOptions> = {},
 ): Promise<CompanionEngine> {
   const root = await mkdtemp(join(tmpdir(), "chat-runtime-engine-"));
   temporary.push(root);
@@ -203,8 +204,53 @@ async function engine(
     igrepCommand: "igrep",
     igrepLlm: IGREP_LLM,
     ...(memoryBuilder ? { memoryBuilder } : {}),
+    ...overrides,
   });
 }
+
+function normalInvocation(): CompanionInvocation {
+  const value = invocation();
+  return {
+    ...value,
+    memoryMode: "normal",
+    expectedProfileDigest: companionCompositionDigest(
+      "normal", companionIgrepConfig("normal", "igrep"),
+      { maxSteps: 8, igrepLlm: IGREP_LLM },
+    ),
+  };
+}
+
+class MemoryReplyAdapter extends LlmAdapter {
+  readonly requests: GenerateOptions[] = [];
+
+  constructor(private readonly text: string, private readonly nativeCall = false) { super(); }
+
+  async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    this.requests.push(options);
+    if (this.nativeCall && this.requests.length === 1) {
+      const args = JSON.stringify({ query: "rooftop code word" });
+      yield { type: "block-start", index: 0, blockType: "tool-call" };
+      yield { type: "tool-call-delta", index: 0, id: "memory-1" as never,
+        name: "memory_search", argumentsDelta: args };
+      yield { type: "block-end", index: 0, block: { type: "tool-call",
+        id: "memory-1" as never, name: "memory_search", arguments: args } };
+      yield { type: "finish", reason: { kind: "tool-calls" } };
+      return;
+    }
+    yield { type: "block-start", index: 0, blockType: "text" };
+    yield { type: "text-delta", index: 0, text: this.text };
+    yield { type: "block-end", index: 0, block: { type: "text", text: this.text } };
+    yield { type: "finish", reason: { kind: "stop" } };
+  }
+}
+
+const recallMarker = "idreamrecall_08a47391c06ac75d765597abfd2af7c5";
+const memoryPorts: Partial<CompanionEngineOptions> = {
+  observeWake: async () => ({ outcome: "empty", resultCount: 0, profile: "" }),
+  recallMemory: async () => ({ outcome: "hit", resultCount: 1,
+    results: [{ citation: "dialogue:1", snippet: recallMarker, sourceClass: "dialogue" }],
+    notes: [`The rooftop code word is ${recallMarker}.`] }),
+};
 
 function port(input?: {
   executeTool?: (call: CompanionToolCall) => Promise<CompanionToolResult>;
@@ -247,6 +293,68 @@ async function waitFor(check: () => boolean): Promise<void> {
 }
 
 describe("Chat embedded companion runtime", () => {
+  it("rejects the observed unexecuted memory call despite preRecall evidence, without another model call or commit", async () => {
+    const text = 'I can see the gardens below, rooftops layered against the fading light, and you here beside me. Before we decide on the trains, let me check what I remember from earlier sessions.\n\n{memory_search: "exact rooftop probe code word"}';
+    const adapter = new MemoryReplyAdapter(text);
+    const runtime = await engine(adapter, undefined, memoryPorts);
+    const connection = port();
+
+    await runtime.run(normalInvocation(), connection.runtimePort);
+
+    expect(adapter.requests).toHaveLength(1);
+    expect(JSON.stringify(adapter.requests[0].messages)).toContain(recallMarker);
+    expect(connection.events).toContainEqual(expect.objectContaining({
+      type: "igrep_observation", operation: "memory", outcome: "hit", evidenceMatches: 1,
+    }));
+    expect(connection.candidates).toEqual([]);
+    expect(connection.events.map(event => event.type)).not.toContain("terminal_candidate");
+    expect(connection.events.map(event => event.type)).not.toContain("tool_started");
+    expect(connection.events.at(-2)).toMatchObject({ type: "text_reset" });
+    expect(connection.events.at(-1)).toMatchObject({
+      type: "failed", error: { code: "unexecuted_tool_payload", retryable: true },
+    });
+  });
+
+  it.each([
+    "The memory_search tool can look up a previous conversation.",
+    'The literal text is \'{memory_search: "rooftop code word"}\'.',
+    'An inline example is `{memory_search: "rooftop code word"}`.',
+    'Example:\n\n```text\n{memory_search: "rooftop code word"}\n```',
+    'Example:\n\n```text\n{memory_search: "rooftop code word"}',
+    'You quoted:\n\n> {memory_search: "rooftop code word"}',
+  ])("preserves ordinary memory tool mentions and quoted examples: %s", async (text) => {
+    const adapter = new MemoryReplyAdapter(text);
+    const runtime = await engine(adapter, undefined, memoryPorts);
+    const connection = port();
+    await runtime.run(normalInvocation(), connection.runtimePort);
+    expect(adapter.requests).toHaveLength(1);
+    expect(connection.candidates[0]?.content).toBe(text);
+    expect(connection.events.some(event => event.type === "text_reset" || event.type === "failed")).toBe(false);
+  });
+
+  it("allows a native memory_search result followed by a normal final answer", async () => {
+    let executed = 0;
+    const adapter = new MemoryReplyAdapter(`We chose ${recallMarker}.`, true);
+    const runtime = await engine(adapter, undefined, {
+      ...memoryPorts,
+      plugin: async () => ({ name: "igrep", inject: ["tools"], apply(ctx) {
+        ctx.tools.register({
+          name: "memory_search", description: "Recall a shared conversation.",
+          parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+          output: { schema: { type: "string" }, render: (_args, value) => [{ type: "text", text: String(value) }] },
+          async execute() { executed += 1; return recallMarker; },
+        });
+      } }),
+    });
+    const connection = port();
+    await runtime.run(normalInvocation(), connection.runtimePort);
+    expect(executed).toBe(1);
+    expect(adapter.requests).toHaveLength(2);
+    expect(JSON.stringify(adapter.requests[1].messages)).toContain('"tool-result"');
+    expect(connection.candidates[0]?.content).toBe(`We chose ${recallMarker}.`);
+    expect(connection.events.some(event => event.type === "failed")).toBe(false);
+  });
+
   it("streams one terminal candidate and commits it directly through Chat", async () => {
     const runtime = await engine(new OneStepAdapter());
     const connection = port();
