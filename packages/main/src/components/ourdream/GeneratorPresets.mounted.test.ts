@@ -330,6 +330,38 @@ describe("GeneratorWorkspace owned preset editing", () => {
     expect(writes).toEqual([]);
   });
 
+  it("keeps a removed category filter visible and omits a deleted fragment from the next saved setup", async () => {
+    owned[0].category = "Reading";
+    let savedControls: Record<string, unknown> | undefined;
+    const baseFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "DELETE") {
+        owned = owned.filter((preset) => preset.id !== "own-scene");
+        return Response.json({ ok: true, data: { deleted: true } });
+      }
+      if (init?.method === "POST") {
+        const body = JSON.parse(String(init.body));
+        savedControls = body.controls;
+        return Response.json({ ok: true, data: { preset: { ...body, id: "new-setup", visibility: "private" } } });
+      }
+      return baseFetch(url, init);
+    }));
+    await mount();
+    await select("Background", "own-scene");
+    await select("Preset category", "Reading");
+    await click(button("Delete preset Rainy window"));
+    await click(button("Confirm delete preset Rainy window"));
+    const category = [...container.querySelectorAll("label")].find((node) => node.textContent?.startsWith("Preset category"))?.querySelector("select");
+    expect(category?.value).toBe("Reading");
+    await select("Preset category", "");
+    expect(container.querySelector('[data-testid="my-presets"]')?.textContent).toContain("Cafe setup");
+    await input("Prompt", "A fresh scene.");
+    await input("Preset name", "Fresh setup");
+    await click(button("Save"));
+    expect(savedControls).toBeDefined();
+    expect(savedControls?.backgroundPresetId).toBe("");
+  });
+
   it("clears another viewer's edit and ignores a delayed save result after account change", async () => {
     const pending = deferredResponse();
     const baseFetch = globalThis.fetch;
