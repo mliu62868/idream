@@ -724,6 +724,22 @@ async function seedPresets() {
       label: "Anime",
       controls: { style: "anime" },
     },
+    {"id": "seed-preset-background-rainy-cafe", "type": "background", "label": "Rainy Café", "category": "Everyday", "controls": {"background": "a quiet cafe beside a rain-streaked window", "lighting": "warm interior lamps and soft window light"}},
+    {"id": "seed-preset-background-sunlit-garden", "type": "background", "label": "Sunlit Garden", "category": "Outdoors", "controls": {"background": "a leafy garden path with flowering plants", "lighting": "soft late-afternoon daylight"}},
+    {"id": "seed-preset-background-city-evening", "type": "background", "label": "City Evening", "category": "Evening", "controls": {"background": "a city street at blue hour with distant shop lights", "lighting": "gentle evening reflections"}},
+    {"id": "seed-preset-background-quiet-library", "type": "background", "label": "Quiet Library", "category": "Everyday", "controls": {"background": "a reading corner with bookshelves and a wooden desk", "lighting": "warm reading lamp"}},
+    {"id": "seed-preset-pose-seated-portrait", "type": "pose", "label": "Seated Portrait", "category": "Studio", "controls": {"pose": "seated comfortably with relaxed shoulders, looking toward the camera"}},
+    {"id": "seed-preset-pose-walking", "type": "pose", "label": "Walking", "category": "Outdoors", "controls": {"pose": "walking naturally, caught mid-step in a candid moment"}},
+    {"id": "seed-preset-pose-over-shoulder", "type": "pose", "label": "Over the Shoulder", "category": "Studio", "controls": {"pose": "turned slightly away, looking back over one shoulder"}},
+    {"id": "seed-preset-pose-relaxed-reading", "type": "pose", "label": "Relaxed Reading", "category": "Everyday", "controls": {"pose": "sitting comfortably and reading an open book"}},
+    {"id": "seed-preset-outfit-knitwear", "type": "outfit", "label": "Knitwear", "category": "Everyday", "controls": {"outfit": "a soft knitted sweater and simple everyday trousers"}},
+    {"id": "seed-preset-outfit-evening-dress", "type": "outfit", "label": "Evening Dress", "category": "Evening", "controls": {"outfit": "an elegant evening dress with subtle accessories"}},
+    {"id": "seed-preset-outfit-athletic", "type": "outfit", "label": "Athletic", "category": "Outdoors", "controls": {"outfit": "a fitted sports top, track pants and running shoes"}},
+    {"id": "seed-preset-outfit-tailored-suit", "type": "outfit", "label": "Tailored Suit", "category": "Studio", "controls": {"outfit": "a tailored suit over a plain shirt"}},
+    {"id": "seed-preset-mode-editorial-photo", "type": "mode", "label": "Editorial Photo", "category": "Studio", "controls": {"style": "editorial portrait photography, natural skin texture, restrained color grading"}},
+    {"id": "seed-preset-mode-cinematic", "type": "mode", "label": "Cinematic", "category": "Evening", "controls": {"style": "cinematic composition, atmospheric lighting, subtle film color"}},
+    {"id": "seed-preset-mode-watercolor", "type": "mode", "label": "Watercolor", "category": "Illustration", "controls": {"style": "watercolor illustration with soft pigment washes and visible paper texture"}},
+    {"id": "seed-preset-mode-line-art", "type": "mode", "label": "Line Art", "category": "Illustration", "controls": {"style": "clean expressive line illustration with restrained flat colors"}},
   ];
 
   for (const preset of presets) {

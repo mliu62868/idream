@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
-import { api, createUser, dreamcoinBalance, expectOk, grantCoins, purgeTestData, type ApiResult } from "@/server/test/helpers";
+import { api, createUser, dreamcoinBalance, expectError, expectOk, grantCoins, purgeTestData, type ApiResult } from "@/server/test/helpers";
 
 const P = "zt-preset-query-";
 const owner = `${P}owner`;
@@ -148,5 +148,44 @@ describe("generation preset catalog authority", () => {
     expect(ownJob.prompt).toContain("community-unlisted-outdoor-scene");
     expect(ownJob.prompt).toContain("user-private-outdoor-scene");
     expect(ownJob.prompt).not.toContain("archived-scene");
+
+    const crossAccountCreate = await api("POST", "generation/presets", { userId: viewer, ageGate: true,
+      headers: { "x-idream-viewer-scope": `user:${owner}` }, body: { type: "background", label: `${P}Wrong account copy`, controls: { background: "Private old-account draft" } },
+    });
+    expectError(crossAccountCreate, 409, "conflict");
+    expect(await prisma.generationPreset.count({ where: { label: `${P}Wrong account copy` } })).toBe(0);
+    const created = await api("POST", "generation/presets", { userId: owner, ageGate: true, headers: { "x-idream-viewer-scope": `user:${owner}` }, body: {
+      type: "background", label: `${P}Editable scene`, category: "Indoor", controls: { background: "Original window scene" },
+    } });
+    expectOk(created);
+    const presetId = created.data.preset.id as string;
+    const edited = await api("PATCH", `generation/presets/${presetId}`, { userId: owner, ageGate: true, body: {
+      label: `${P}Evening window`, category: "Quiet scenes", controls: { background: "Amber lamps reflected in rainy glass" }, visibility: "private",
+    } });
+    expectOk(edited);
+    expect(edited.data.preset).toMatchObject({ id: presetId, ownerId: owner, scope: "user", category: "Quiet scenes", visibility: "private" });
+    for (const method of ["PATCH", "DELETE"]) {
+      const changedAccount = await api(method, `generation/presets/${presetId}`, { userId: owner, ageGate: true,
+        headers: { "x-idream-viewer-scope": `user:${viewer}` }, body: { label: "Wrong account edit" },
+      });
+      expectError(changedAccount, 409, "conflict");
+    }
+    expect(await prisma.generationPreset.findUnique({ where: { id: presetId } })).toMatchObject({ label: `${P}Evening window`, status: "active" });
+    const filtered = await api("GET", "generation/presets", { userId: owner, ageGate: true, query: { scope: "user", category: "Quiet scenes", q: "Evening window" } });
+    expect(ids(filtered)).toEqual([presetId]);
+    const forbidden = await api("PATCH", `generation/presets/${presetId}`, { userId: viewer, ageGate: true, body: { label: "Changed by another viewer" } });
+    expectError(forbidden, 404, "not_found");
+    const generated = await api("POST", "generation/jobs", { userId: owner, ageGate: true, body: {
+      mode: "image", freeplay: true, outputCount: 1, controls: { backgroundPresetId: presetId },
+    } });
+    expectOk(generated, 202);
+    const savedJob = await prisma.generationJob.findUniqueOrThrow({ where: { id: generated.data.job.id } });
+    expect(savedJob.prompt).toContain("Amber lamps reflected in rainy glass");
+    expect(savedJob.prompt).not.toContain("Original window scene");
+    const removed = await api("DELETE", `generation/presets/${presetId}`, { userId: owner, ageGate: true });
+    expectOk(removed);
+    const afterDelete = await api("GET", "generation/presets", { userId: owner, ageGate: true, query: { scope: "user", q: "Evening window" } });
+    expect(ids(afterDelete)).toEqual([]);
+    expect((await prisma.generationJob.findUniqueOrThrow({ where: { id: savedJob.id } })).prompt).toBe(savedJob.prompt);
   });
 });

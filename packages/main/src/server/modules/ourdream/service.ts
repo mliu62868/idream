@@ -2391,6 +2391,7 @@ async function listPresets(request: Request) {
 async function createPreset(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
+  requireGeneratorViewer(request, user.id);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const body = presetCreateSchema.parse(await jsonBody(request));
@@ -2411,6 +2412,7 @@ async function createPreset(request: Request) {
 async function archivePreset(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
+  requireGeneratorViewer(request, user.id);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   await prisma.generationPreset.updateMany({
@@ -2423,6 +2425,7 @@ async function archivePreset(request: Request, id: string) {
 async function updatePreset(request: Request, id: string) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
+  requireGeneratorViewer(request, user.id);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const body = z

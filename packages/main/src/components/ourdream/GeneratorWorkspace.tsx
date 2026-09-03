@@ -133,7 +133,8 @@ type ImageWorkflow = "presets" | "image-edit";
 type ConsistencyMode = "balanced" | "strict" | "creative";
 type WorkspaceView = "create" | "jobs" | "gallery";
 type GalleryTab = "image" | "video" | "liked";
-type GalleryPageRequest = { tab: GalleryTab; cursors: Array<string | null> };
+type GalleryFilters = { q: string; visibility: MediaAssetVisibility | "" };
+type GalleryPageRequest = GalleryFilters & { tab: GalleryTab; cursors: Array<string | null> };
 type GalleryPage = { items: MediaItem[]; nextCursor?: string | null };
 type EnhancementConfirmation = {
   source: MediaItem;
@@ -182,15 +183,13 @@ type PrivateViewerTicket = {
 type PresetConfig = {
   id: string;
   type: "background" | "pose" | "outfit" | "mode";
-  scope?: "built_in" | "community";
+  scope?: "built_in" | "community" | "user";
   category: string | null;
   label: string;
 };
 
-// US-GN-04: a user-saved preset. We store the active control selections
-// (background/pose/outfit ids + optional prompt) inside `controls` as a
-// string map, and use type "mode" so it stays a client-side container that
-// the server prompt-fragment resolver leaves untouched.
+// Saved setups retain their selected ids; reusable fragments retain their
+// description. Only fragments belong in the four generation selectors.
 type UserPreset = {
   id: string;
   type: string;
@@ -531,6 +530,10 @@ export function GeneratorWorkspace() {
   const [galleryTab, setGalleryTab] = useState<GalleryTab>("image");
   const galleryTabRef = useRef<GalleryTab>("image");
   useEffect(() => { galleryTabRef.current = galleryTab; }, [galleryTab]);
+  const [gallerySearch, setGallerySearch] = useState("");
+  const [galleryVisibility, setGalleryVisibility] = useState<GalleryFilters["visibility"]>("");
+  const [galleryFilters, setGalleryFilters] = useState<GalleryFilters>({ q: "", visibility: "" });
+  const galleryFiltersRef = useRef<GalleryFilters>({ q: "", visibility: "" });
   const [view, setView] = useState<WorkspaceView>("create");
   const [status, setStatus] = useState("");
   const { openReport, reportDialog } = useReportDialog(setStatus);
@@ -540,6 +543,15 @@ export function GeneratorWorkspace() {
   const [failedLatestResultIds, setFailedLatestResultIds] = useState<Set<string>>(() => new Set());
   const [invalidLatestResultIds, setInvalidLatestResultIds] = useState<Set<string>>(() => new Set());
   const [presetName, setPresetName] = useState("");
+  const [presetSearch, setPresetSearch] = useState("");
+  const [presetScope, setPresetScope] = useState<"all" | "built_in" | "community" | "user">("all");
+  const [presetFilterCategory, setPresetFilterCategory] = useState("");
+  const [editingPreset, setEditingPreset] = useState<UserPreset | null>(null);
+  const [presetEditorType, setPresetEditorType] = useState<"setup" | PresetConfig["type"]>("setup");
+  const [presetDescription, setPresetDescription] = useState("");
+  const [presetCategory, setPresetCategory] = useState("");
+  const [presetSaving, setPresetSaving] = useState(false);
+  const presetSavingRef = useRef(false);
   const [manageMode, setManageMode] = useState(false);
   const [selectedMediaIds, setSelectedMediaIds] = useState<Set<string>>(() => new Set());
   const [deleteConfirmMediaId, setDeleteConfirmMediaId] = useState<string | null>(null);
@@ -591,9 +603,9 @@ export function GeneratorWorkspace() {
     reset: resetMedia,
     refresh: refreshMediaPage,
   } = useViewerResource<GalleryPage, GalleryPageRequest, PrivateViewerTicket>({
-    request: ({ tab, cursors }) => ({
-      path: `/api/v1/media?${tab === "liked" ? "liked=1" : `type=${tab}`}${cursors.at(-1) ? `&cursor=${encodeURIComponent(cursors.at(-1)!)}` : ""}`,
-      init: { cache: "no-store" },
+    request: ({ tab, cursors, q, visibility }) => ({
+      path: `/api/v1/media?${tab === "liked" ? "liked=1&types=image,video" : `type=${tab}`}${q ? `&q=${encodeURIComponent(q)}` : ""}${visibility ? `&visibility=${visibility}` : ""}${cursors.at(-1) ? `&cursor=${encodeURIComponent(cursors.at(-1)!)}` : ""}`,
+      init: { cache: "no-store", headers: { "x-idream-viewer-scope": viewerScopeRef.current ?? "" } },
     }),
     parse: parseWorkspaceMediaResponse,
     fallbackError: "Gallery could not load.",
@@ -601,8 +613,8 @@ export function GeneratorWorkspace() {
     gate: privateViewerGate,
     // Each gallery tab is its own projection: switching tabs must drop the old
     // one rather than leave it on screen looking like the new tab's contents.
-    snapshotKey: ({ tab }) => tab,
-    initialSnapshotKey: "image",
+    snapshotKey: ({ tab, q, visibility }) => JSON.stringify([tab, q, visibility]),
+    initialSnapshotKey: JSON.stringify(["image", "", ""]),
     onSnapshotChange: () => {
       setSelectedMediaIds(new Set());
       setDeleteConfirmMediaId(null);
@@ -625,7 +637,7 @@ export function GeneratorWorkspace() {
     }));
   }, [setMediaPage]);
   const refreshMedia = useCallback(
-    (tab: GalleryTab) => refreshMediaPage({ tab, cursors: [null] }),
+    (tab: GalleryTab) => refreshMediaPage({ tab, ...galleryFiltersRef.current, cursors: [null] }),
     [refreshMediaPage],
   );
 
@@ -639,7 +651,7 @@ export function GeneratorWorkspace() {
     // background/pose/outfit presets arrive separately via the config endpoint).
     request: () => ({
       path: "/api/v1/generation/presets?scope=user",
-      init: { cache: "no-store" },
+      init: { cache: "no-store", headers: { "x-idream-viewer-scope": viewerScopeRef.current ?? "" } },
     }),
     parse: (raw) => parseUserPresetsResponse(raw).items,
     fallbackError: "Saved presets could not load.",
@@ -910,10 +922,24 @@ export function GeneratorWorkspace() {
       ),
     [characters],
   );
-  const presetsOf = useCallback(
-    (type: PresetConfig["type"]) => (config?.presets ?? []).filter((preset) => preset.type === type),
-    [config],
-  );
+  const presetCatalog: PresetConfig[] = [
+    ...(config?.presets ?? []),
+    ...userPresets.flatMap((preset) => {
+      const type = presetFragmentType(preset);
+      return type ? [{ id: preset.id, type, label: preset.label, category: preset.category, scope: "user" as const }] : [];
+    }),
+  ];
+  const presetCategories = [...new Set([...presetCatalog, ...userPresets].map((preset) => preset.category).filter((category): category is string => Boolean(category)))].sort();
+  const matchesPresetFilter = (preset: { label: string; category: string | null; scope?: string }) =>
+    (presetScope === "all" || (preset.scope ?? "built_in") === presetScope) &&
+    (!presetFilterCategory || preset.category === presetFilterCategory) &&
+    (!presetSearch.trim() || `${preset.label} ${preset.category ?? ""}`.toLocaleLowerCase().includes(presetSearch.trim().toLocaleLowerCase()));
+  const visibleUserPresets = userPresets.filter((preset) => matchesPresetFilter({ ...preset, scope: "user" }));
+  function presetsOf(type: PresetConfig["type"]) {
+    const selected = { mode: modePresetId, background: backgroundPresetId, pose: posePresetId, outfit: outfitPresetId }[type];
+    // Browsing another category never silently clears the active selection.
+    return presetCatalog.filter((preset) => preset.type === type && (preset.id === selected || matchesPresetFilter(preset)));
+  }
   const selectedMediaConfirmKey = Array.from(selectedMediaIds).sort().join("|");
   const bulkDeleteArmed =
     selectedMediaIds.size > 0 && bulkDeleteConfirmKey === selectedMediaConfirmKey;
@@ -949,6 +975,8 @@ export function GeneratorWorkspace() {
 
   const clearPrivateViewerProjections = useCallback(() => {
     abortPrivateViewerRequests();
+    presetSavingRef.current = false;
+    setPresetSaving(false);
     enhancementSerialRef.current += 1;
     enhancementPendingRef.current = false;
     setEnhancement(null);
@@ -982,7 +1010,18 @@ export function GeneratorWorkspace() {
   const resetPrivateViewerData = useCallback(() => {
     suspendedEditSourceRef.current = null;
     clearPrivateViewerProjections();
+    setEditingPreset(null);
     setPresetName("");
+    setPresetSearch("");
+    setPresetScope("all");
+    setPresetFilterCategory("");
+    setPresetEditorType("setup");
+    setPresetDescription("");
+    setPresetCategory("");
+    setGallerySearch("");
+    setGalleryVisibility("");
+    setGalleryFilters({ q: "", visibility: "" });
+    galleryFiltersRef.current = { q: "", visibility: "" };
     setModePresetId("");
     setBackgroundPresetId("");
     setPosePresetId("");
@@ -1227,6 +1266,7 @@ export function GeneratorWorkspace() {
       const response = await fetch("/api/v1/media?type=image&limit=60", {
         cache: "no-store",
         signal: viewerRequest.controller.signal,
+        headers: { "x-idream-viewer-scope": viewerRequest.scope },
       });
       const raw = await response.json().catch(() => null);
       if (!privateViewerRequestIsCurrent(viewerRequest)) return;
@@ -2007,6 +2047,16 @@ export function GeneratorWorkspace() {
     void refreshMedia(tab);
   }
 
+  function applyGalleryFilters(next: GalleryFilters) {
+    galleryFiltersRef.current = next;
+    setGalleryFilters(next);
+    setManageMode(false);
+    setSelectedMediaIds(new Set());
+    setDeleteConfirmMediaId(null);
+    setBulkDeleteConfirmKey(null);
+    void refreshMedia(galleryTab);
+  }
+
   function editGalleryImage(item: MediaItem) {
     setMode("image");
     setImageWorkflow("image-edit");
@@ -2019,32 +2069,54 @@ export function GeneratorWorkspace() {
   }
 
   async function saveCurrentPreset() {
+    if (presetSavingRef.current) return;
     const label = presetName.trim();
     if (!label) {
       setStatus("Name your preset before saving.");
       return;
     }
-    const controls = currentPresetControls({
+    const controls: Record<string, string> = presetEditorType === "setup" ? currentPresetControls({
       backgroundPresetId,
       canUsePrompt,
       modePresetId,
       outfitPresetId,
       posePresetId,
       prompt,
-    });
+    }) : { [presetEditorType === "mode" ? "style" : presetEditorType]: presetDescription.trim() };
+    if (presetEditorType !== "setup" && !presetDescription.trim()) {
+      setStatus("Describe this preset before saving.");
+      return;
+    }
+    // An unavailable premium control is not permission to erase the owner's
+    // previously saved prompt while they update the name or other fields.
+    if (editingPreset && presetEditorType === "setup" && !canUsePrompt) {
+      const originalPrompt = presetControlString(editingPreset.controls, "prompt");
+      if (originalPrompt) controls.prompt = originalPrompt;
+    }
     if (Object.keys(controls).length === 0) {
       setStatus("Pick a mode, background, pose, outfit, or prompt before saving a preset.");
       return;
     }
+    const viewer = { epoch: viewerEpochRef.current, scope: viewerScopeRef.current, authenticated: viewerAuthenticatedRef.current };
+    const isCurrent = () => viewer.epoch === viewerEpochRef.current && viewer.scope === viewerScopeRef.current && viewer.authenticated === viewerAuthenticatedRef.current;
+    if (!viewer.scope || viewer.authenticated === null) {
+      setStatus("Reconnect the generator before saving a preset.");
+      return;
+    }
+    const original = editingPreset;
+    presetSavingRef.current = true;
+    setPresetSaving(true);
     try {
-      const response = await fetch("/api/v1/generation/presets", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ type: "mode", label, controls, visibility: "private" }),
+      const response = await fetch(original ? `/api/v1/generation/presets/${encodeURIComponent(original.id)}` : "/api/v1/generation/presets", {
+        method: original ? "PATCH" : "POST",
+        headers: { "content-type": "application/json", "x-idream-viewer-scope": viewer.scope },
+        body: JSON.stringify({ ...(original ? {} : { type: presetEditorType === "setup" ? "mode" : presetEditorType }), label, controls,
+          category: presetCategory.trim(), visibility: original?.visibility ?? "private" }),
       });
       const payload = (await response.json()) as ApiPayload<{ preset: UserPreset }>;
+      if (!isCurrent()) return;
       if (!response.ok || !payload.ok) {
-        if (response.status === 401) {
+        if (response.status === 401 && !original && presetEditorType === "setup") {
           const viewerScope = viewerScopeRef.current;
           if (!viewerScope) {
             setStatus("Viewer authority could not be confirmed. Refresh and try again.");
@@ -2072,29 +2144,67 @@ export function GeneratorWorkspace() {
         return;
       }
       setPresetName("");
+      setEditingPreset(null);
+      setPresetEditorType("setup");
+      setPresetDescription("");
+      setPresetCategory("");
       setDeleteConfirmPresetId(null);
       if (viewerScopeRef.current) {
         clearPresetDraft(viewerScopeRef.current);
       }
-      setStatus(`Saved preset "${label}".`);
+      setStatus(`${original ? "Updated" : "Saved"} preset "${label}".`);
       void refreshPresets();
     } catch {
+      if (!isCurrent()) return;
       setStatus("Couldn't save preset. Check your connection and try again.");
+    } finally {
+      if (isCurrent()) {
+        presetSavingRef.current = false;
+        setPresetSaving(false);
+      }
     }
   }
 
   const applyPreset = useCallback((preset: UserPreset) => {
     const controls = isRecord(preset.controls) ? preset.controls : {};
-    setModePresetId(presetControlString(controls, "modePresetId"));
-    setBackgroundPresetId(presetControlString(controls, "backgroundPresetId"));
-    setPosePresetId(presetControlString(controls, "posePresetId"));
-    setOutfitPresetId(presetControlString(controls, "outfitPresetId"));
-    const savedPrompt = presetControlString(controls, "prompt");
-    if (savedPrompt && canUsePrompt) setPrompt(savedPrompt);
+    const fragmentType = presetFragmentType(preset);
+    if (fragmentType) {
+      const select = { mode: setModePresetId, background: setBackgroundPresetId, pose: setPosePresetId, outfit: setOutfitPresetId }[fragmentType];
+      select(preset.id);
+    } else {
+      setModePresetId(presetControlString(controls, "modePresetId"));
+      setBackgroundPresetId(presetControlString(controls, "backgroundPresetId"));
+      setPosePresetId(presetControlString(controls, "posePresetId"));
+      setOutfitPresetId(presetControlString(controls, "outfitPresetId"));
+      setPrompt(canUsePrompt ? presetControlString(controls, "prompt") : "");
+    }
     setMode("image");
+    setImageWorkflow("presets");
     setDeleteConfirmPresetId(null);
     setStatus(`Applied preset "${preset.label}".`);
   }, [canUsePrompt]);
+
+  function editPreset(preset: UserPreset) {
+    if (presetSavingRef.current) return;
+    const type = presetFragmentType(preset);
+    setEditingPreset(preset);
+    setPresetEditorType(type ?? "setup");
+    setPresetName(preset.label);
+    setPresetCategory(preset.category ?? "");
+    setPresetDescription(type ? Object.values(preset.controls).filter((value): value is string => typeof value === "string").join(", ") : "");
+    if (!type) applyPreset(preset);
+    setStatus(type ? `Editing preset "${preset.label}".` : `Editing "${preset.label}". Adjust its image controls above, then save changes.`);
+  }
+
+  function cancelPresetEdit() {
+    if (presetSavingRef.current) return;
+    setEditingPreset(null);
+    setPresetName("");
+    setPresetEditorType("setup");
+    setPresetDescription("");
+    setPresetCategory("");
+    setStatus("");
+  }
 
   useEffect(() => {
     const scope = config?.viewer.scope;
@@ -2119,24 +2229,47 @@ export function GeneratorWorkspace() {
   }, [applyPreset, config?.viewer.authenticated, config?.viewer.scope, presetsAuthority.phase, userPresets]);
 
   async function deletePreset(id: string) {
+    if (presetSavingRef.current) return;
     if (deleteConfirmPresetId !== id) {
       setDeleteConfirmPresetId(id);
       setStatus("Press Confirm delete preset to delete this preset.");
       return;
     }
+    const viewer = beginPrivateViewerRequest();
+    if (!viewer) return;
+    presetSavingRef.current = true;
+    setPresetSaving(true);
     try {
-      const response = await fetch(`/api/v1/generation/presets/${id}`, { method: "DELETE" });
+      const response = await fetch(`/api/v1/generation/presets/${encodeURIComponent(id)}`, {
+        method: "DELETE", signal: viewer.controller.signal,
+        headers: { "x-idream-viewer-scope": viewer.scope },
+      });
+      if (!privateViewerRequestIsCurrent(viewer)) return;
       if (!response.ok) {
         setDeleteConfirmPresetId(null);
         setStatus("Couldn't delete preset.");
         void refreshPresets();
         return;
       }
+      if (editingPreset?.id === id) {
+        setEditingPreset(null);
+        setPresetName("");
+        setPresetDescription("");
+        setPresetCategory("");
+        setPresetEditorType("setup");
+      }
       setStatus("Preset deleted.");
       await refreshPresets();
     } catch {
+      if (!privateViewerRequestIsCurrent(viewer)) return;
       setStatus("Couldn't delete preset. Check your connection and try again.");
       void refreshPresets();
+    } finally {
+      if (privateViewerRequestIsCurrent(viewer)) {
+        presetSavingRef.current = false;
+        setPresetSaving(false);
+      }
+      finishPrivateViewerRequest(viewer);
     }
   }
 
@@ -2799,9 +2932,35 @@ export function GeneratorWorkspace() {
             {mode === "image" &&
               !imageEditMode &&
               (!characterImageMode || advancedOpen) &&
-              (config?.presets?.length ?? 0) > 0 && (
+              (presetCatalog.length > 0 || userPresets.length > 0) && (
               <div className="mt-4 grid gap-3">
                 <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">Presets</p>
+                <label className="grid gap-1 text-[12px] font-semibold text-[rgb(170,170,170)]">
+                  Search presets
+                  <input className="h-11 min-w-0 rounded-[10px] bg-[rgb(36,36,36)] px-3 text-base text-white"
+                    maxLength={200} onChange={(event) => setPresetSearch(event.target.value)} type="search" value={presetSearch} />
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="grid gap-1 text-[12px] font-semibold text-[rgb(170,170,170)]">
+                    Preset source
+                    <select className="h-11 min-w-0 rounded-[10px] bg-[rgb(36,36,36)] px-3 text-base text-white"
+                      onChange={(event) => setPresetScope(event.target.value as typeof presetScope)} value={presetScope}>
+                      <option value="all">All presets</option><option value="built_in">Built-in</option>
+                      <option value="community">Community</option><option value="user">My presets</option>
+                    </select>
+                  </label>
+                  <label className="grid gap-1 text-[12px] font-semibold text-[rgb(170,170,170)]">
+                    Preset category
+                    <select className="h-11 min-w-0 rounded-[10px] bg-[rgb(36,36,36)] px-3 text-base text-white"
+                      onChange={(event) => setPresetFilterCategory(event.target.value)} value={presetFilterCategory}>
+                      <option value="">All categories</option>
+                      {presetCategories.map((category) => <option key={category} value={category}>{category}</option>)}
+                    </select>
+                  </label>
+                </div>
+                {!presetCatalog.some(matchesPresetFilter) && visibleUserPresets.length === 0 && (
+                  <p className="text-[13px] text-[rgb(170,170,170)]">No presets match these filters.</p>
+                )}
                 <div className="grid grid-cols-2 gap-2">
                   <PresetSelect
                     label="Mode preset"
@@ -2831,16 +2990,42 @@ export function GeneratorWorkspace() {
               </div>
             )}
 
-            {mode === "image" && !imageEditMode && (!characterImageMode || advancedOpen) && (
+            {config && mode === "image" && !imageEditMode && (!characterImageMode || advancedOpen) && (
               <div className="mt-4 grid gap-3" data-testid="my-presets">
                 <p className="text-[12px] font-bold uppercase text-[rgb(114,113,112)]">
                   My Presets
                 </p>
-                <div className="flex gap-2">
+                <fieldset className="grid min-w-0 gap-2" disabled={presetSaving}>
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="grid gap-1 text-[12px] font-semibold text-[rgb(170,170,170)]">
+                      Save as
+                      <select aria-label="Preset type" className="h-11 min-w-0 rounded-[10px] bg-[rgb(36,36,36)] px-3 text-base text-white disabled:opacity-60"
+                        disabled={Boolean(editingPreset) || anonymousViewer || configAuthorityUnavailable}
+                        onChange={(event) => setPresetEditorType(event.target.value as typeof presetEditorType)} value={presetEditorType}>
+                        <option value="setup">Current setup</option><option value="mode">Style</option>
+                        <option value="background">Background</option><option value="pose">Pose</option><option value="outfit">Outfit</option>
+                      </select>
+                    </label>
+                    <label className="grid gap-1 text-[12px] font-semibold text-[rgb(170,170,170)]">
+                      Category (optional)
+                      <input aria-label="Saved preset category" className="h-11 min-w-0 rounded-[10px] bg-[rgb(36,36,36)] px-3 text-base text-white"
+                        maxLength={80} onChange={(event) => setPresetCategory(event.target.value)} value={presetCategory} />
+                    </label>
+                  </div>
+                  {presetEditorType !== "setup" && (
+                    <label className="grid gap-1 text-[12px] font-semibold text-[rgb(170,170,170)]">
+                      Description
+                      <textarea aria-label="Preset description" className="min-h-24 min-w-0 rounded-[10px] bg-[rgb(36,36,36)] px-3 py-2 text-base text-white"
+                        maxLength={1500} onChange={(event) => setPresetDescription(event.target.value)}
+                        placeholder="Describe the setting, pose, outfit, or visual style to reuse." value={presetDescription} />
+                    </label>
+                  )}
+                  <div className="flex gap-2">
                   <input
                     aria-label="Preset name"
-                    className="h-11 flex-1 rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[13px] font-semibold text-white outline-none"
+                    className="h-11 min-w-0 flex-1 rounded-[10px] bg-[rgb(36,36,36)] px-3 text-base font-semibold text-white outline-none"
                     id="generator-preset-name"
+                    maxLength={80}
                     name="presetName"
                     onChange={(event) => setPresetName(event.target.value)}
                     placeholder="Name this preset"
@@ -2848,13 +3033,16 @@ export function GeneratorWorkspace() {
                   />
                   <button
                     className="h-11 shrink-0 rounded-full bg-white px-4 text-[12px] font-black text-[rgb(13,13,13)] disabled:bg-[rgb(64,64,64)] disabled:text-[rgb(150,150,150)]"
-                    disabled={!presetName.trim()}
+                    disabled={!presetName.trim() || presetSaving || configAuthorityUnavailable || (presetEditorType !== "setup" && !presetDescription.trim())}
                     onClick={() => void saveCurrentPreset()}
                     type="button"
                   >
-                    Save
+                    {presetSaving ? "Saving…" : editingPreset ? "Save changes" : "Save"}
                   </button>
                 </div>
+                  {editingPreset && <button className="justify-self-start rounded-full px-3 py-2 text-[13px] font-semibold text-white underline underline-offset-4"
+                    onClick={cancelPresetEdit} type="button">Cancel editing</button>}
+                </fieldset>
                 {anonymousViewer ? (
                   <GeneratorPrivateDataAuthHint label="your saved presets" />
                 ) : null}
@@ -2877,9 +3065,9 @@ export function GeneratorWorkspace() {
                   <p className="text-[12px] font-medium text-[rgb(114,113,112)]">
                     Save your current background, pose, outfit, or prompt to reuse later.
                   </p>
-                ) : userPresets.length > 0 ? (
+                ) : visibleUserPresets.length > 0 ? (
                   <ul className="grid gap-2">
-                    {userPresets.map((preset) => {
+                    {visibleUserPresets.map((preset) => {
                       const confirmingDelete = deleteConfirmPresetId === preset.id;
                       return (
                         <li
@@ -2893,11 +3081,14 @@ export function GeneratorWorkspace() {
                           <span className="flex shrink-0 flex-wrap justify-end gap-2">
                             <button
                               className="h-8 rounded-full bg-white px-3 text-[11px] font-black text-[rgb(13,13,13)]"
+                              disabled={presetSaving}
                               onClick={() => applyPreset(preset)}
                               type="button"
                             >
                               Apply
                             </button>
+                            <button aria-label={`Edit preset ${preset.label}`} className="h-8 rounded-full bg-black/40 px-3 text-[11px] font-black text-white"
+                              disabled={presetSaving} onClick={() => editPreset(preset)} type="button">Edit</button>
                             <button
                               aria-label={
                                 confirmingDelete
@@ -2909,6 +3100,7 @@ export function GeneratorWorkspace() {
                                   ? "bg-white px-3 text-[rgb(13,13,13)]"
                                   : "grid w-8 place-items-center bg-black/40 text-white"
                               }`}
+                              disabled={presetSaving}
                               onClick={() => void deletePreset(preset.id)}
                               title={confirmingDelete ? "Confirm delete preset" : "Delete preset"}
                               type="button"
@@ -3188,7 +3380,7 @@ export function GeneratorWorkspace() {
                 </div>
                 <div className="grid gap-4 sm:grid-cols-2">
                   {latestResults.map((item, index) => {
-                    const source = item.thumbnailUrl ?? item.url;
+                    const source = item.type === "video" ? item.url : (item.thumbnailUrl ?? item.url);
                     const previewUnavailable =
                       failedLatestResultIds.has(item.id) ||
                       invalidLatestResultIds.has(item.id) ||
@@ -3206,7 +3398,14 @@ export function GeneratorWorkspace() {
                               className="grid h-full place-items-center px-4 text-center text-[13px] font-semibold text-[rgb(170,170,170)]"
                               data-testid="latest-result-unavailable"
                             >
-                              Preview unavailable
+                              <div>
+                                Preview unavailable
+                                {item.type === "video" && failedLatestResultIds.has(item.id) && (
+                                  <button className="mt-3 block rounded-full bg-white px-4 py-2 text-[13px] font-bold text-black"
+                                    onClick={() => setFailedLatestResultIds((current) => { const next = new Set(current); next.delete(item.id); return next; })}
+                                    type="button">Retry preview</button>
+                                )}
+                              </div>
                             </div>
                           ) : (
                             <MediaPreview
@@ -3475,6 +3674,58 @@ export function GeneratorWorkspace() {
                 </div>
               </div>
 
+              {config?.viewer.authenticated === true && (
+                <form
+                  aria-label="Gallery filters"
+                  className="mb-4 flex flex-wrap items-end gap-2"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    applyGalleryFilters({ q: gallerySearch.trim(), visibility: galleryVisibility });
+                  }}
+                >
+                  <label className="grid min-w-0 flex-[1_1_12rem] gap-1 text-[12px] text-[rgb(170,170,170)]">
+                    Search Gallery
+                    <input
+                      className="h-11 min-w-0 rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[16px] text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                      maxLength={200}
+                      onChange={(event) => setGallerySearch(event.target.value)}
+                      placeholder="Search your images and videos"
+                      type="search"
+                      value={gallerySearch}
+                    />
+                  </label>
+                  <label className="grid gap-1 text-[12px] text-[rgb(170,170,170)]">
+                    Visibility
+                    <select
+                      className="h-11 rounded-[10px] bg-[rgb(36,36,36)] px-3 text-[16px] text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                      onChange={(event) => setGalleryVisibility(event.target.value as GalleryFilters["visibility"])}
+                      value={galleryVisibility}
+                    >
+                      <option value="">All visibility</option>
+                      <option value="private">Private</option>
+                      <option value="public_pack">Public</option>
+                      <option value="unlisted">Unlisted</option>
+                    </select>
+                  </label>
+                  <button className="h-11 rounded-full bg-white px-4 text-[13px] font-bold text-[rgb(13,13,13)]" type="submit">
+                    Apply filters
+                  </button>
+                  {(gallerySearch || galleryVisibility || galleryFilters.q || galleryFilters.visibility) && (
+                    <button
+                      className="h-11 rounded-full bg-[rgb(36,36,36)] px-4 text-[13px] font-bold text-white"
+                      onClick={() => {
+                        setGallerySearch("");
+                        setGalleryVisibility("");
+                        applyGalleryFilters({ q: "", visibility: "" });
+                      }}
+                      type="button"
+                    >
+                      Clear filters
+                    </button>
+                  )}
+                </form>
+              )}
+
               {manageMode && (
                 <div
                   className="mb-4 flex flex-wrap items-center gap-2 rounded-[10px] bg-[rgb(36,36,36)] p-3"
@@ -3632,7 +3883,7 @@ export function GeneratorWorkspace() {
               )}
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {!configAuthorityUnavailable && media.map((item, index) => {
-                  const source = item.thumbnailUrl ?? item.url;
+                  const source = item.type === "video" ? item.url : (item.thumbnailUrl ?? item.url);
                   const isUnavailable =
                     failedMediaIds.has(item.id) ||
                     invalidPreviewMediaIds.has(item.id) ||
@@ -3659,6 +3910,11 @@ export function GeneratorWorkspace() {
                           >
                             <ImageIcon className="h-5 w-5" />
                             Preview unavailable
+                            {item.type === "video" && failedMediaIds.has(item.id) && (
+                              <button className="mt-1 rounded-full bg-white px-4 py-2 text-[13px] font-bold text-black"
+                                onClick={() => setFailedMediaIds((current) => { const next = new Set(current); next.delete(item.id); return next; })}
+                                type="button">Retry preview</button>
+                            )}
                           </div>
                         </div>
                       ) : (
@@ -3782,7 +4038,7 @@ export function GeneratorWorkspace() {
                           {item.provenance && (
                             <GalleryProvenanceBadge provenance={item.provenance} />
                           )}
-                          <div className="absolute inset-x-2 bottom-2 flex justify-end gap-2 opacity-100 md:opacity-0 md:transition-opacity md:group-hover:opacity-100 md:group-focus-within:opacity-100">
+                          <div className={`absolute inset-x-2 ${item.type === "video" ? "top-2" : "bottom-2"} flex justify-end gap-2 opacity-100 md:opacity-0 md:transition-opacity md:group-hover:opacity-100 md:group-focus-within:opacity-100`}>
                             <IconButton
                               label={item.liked ? "Unlike" : "Like"}
                               onClick={() => toggleLike(item)}
@@ -3841,7 +4097,7 @@ export function GeneratorWorkspace() {
                   <div className="col-span-full grid min-h-40 place-items-center rounded-[10px] bg-[rgb(36,36,36)] text-[13px] font-medium text-[rgb(170,170,170)]">
                     <div className="flex items-center gap-2">
                       <ImageIcon className="h-4 w-4" />
-                      No media yet.
+                      {galleryFilters.q || galleryFilters.visibility ? "No media match these filters." : "No media yet."}
                     </div>
                   </div>
                 )}
@@ -3852,7 +4108,7 @@ export function GeneratorWorkspace() {
                   <button
                     className="h-9 rounded-full bg-[rgb(36,36,36)] px-4 text-[12px] font-bold text-white disabled:opacity-40"
                     disabled={mediaAuthority.phase === "loading" || mediaCursorTrail.length <= 1}
-                    onClick={() => void refreshMediaPage({ tab: galleryTab, cursors: mediaCursorTrail.slice(0, -1) })}
+                    onClick={() => void refreshMediaPage({ tab: galleryTab, ...galleryFiltersRef.current, cursors: mediaCursorTrail.slice(0, -1) })}
                     type="button"
                   >
                     Previous page
@@ -3861,7 +4117,7 @@ export function GeneratorWorkspace() {
                   <button
                     className="h-9 rounded-full bg-[rgb(36,36,36)] px-4 text-[12px] font-bold text-white disabled:opacity-40"
                     disabled={mediaAuthority.phase === "loading" || !mediaPage.nextCursor}
-                    onClick={() => void refreshMediaPage({ tab: galleryTab, cursors: [...mediaCursorTrail, mediaPage.nextCursor ?? null] })}
+                    onClick={() => void refreshMediaPage({ tab: galleryTab, ...galleryFiltersRef.current, cursors: [...mediaCursorTrail, mediaPage.nextCursor ?? null] })}
                     type="button"
                   >
                     Next page
@@ -3975,13 +4231,15 @@ function MediaPreview({
     return (
       <video
         aria-label="Generated video"
-        className="h-full w-full object-cover object-top"
+        className="h-full w-full object-contain"
         controls
         data-testid={`${testIdPrefix}-media-video`}
+        onError={onError}
         playsInline
+        poster={item.thumbnailUrl !== item.url && !isBuiltInMediaPlaceholderUrl(item.thumbnailUrl) ? item.thumbnailUrl : undefined}
         preload="none"
       >
-        <source src={source} type={item.contentType ?? "video/mp4"} />
+        <source onError={onError} src={item.url} type={item.contentType ?? "video/mp4"} />
         Video playback is not supported.
       </video>
     );
@@ -4089,6 +4347,12 @@ export async function fetchCharacterById(id: string) {
     );
   }
   return parseCharacterDetailResponse(raw).character;
+}
+
+function presetFragmentType(preset: UserPreset): PresetConfig["type"] | null {
+  if (preset.type !== "mode" && preset.type !== "background" && preset.type !== "pose" && preset.type !== "outfit") return null;
+  return ["modePresetId", "backgroundPresetId", "posePresetId", "outfitPresetId", "prompt"].some((key) => Object.hasOwn(preset.controls, key))
+    ? null : preset.type;
 }
 
 function presetControlString(controls: Record<string, unknown>, key: string): string {
