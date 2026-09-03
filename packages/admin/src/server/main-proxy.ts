@@ -194,6 +194,10 @@ export async function proxyToMain(request: Request, pathname: string): Promise<R
     }
     const responseHeaders = new Headers(upstream.headers);
     for (const name of responseHopByHopHeaders) responseHeaders.delete(name);
+    // Fetch has decoded compressed upstream bodies (including error streams).
+    // These headers describe the old wire bytes, not the body relayed here.
+    responseHeaders.delete("content-encoding");
+    responseHeaders.delete("content-length");
     recordProxyMetrics(request.method, upstream.status < 500 ? "completed" : "upstream_error", surface, routeClass, startedAt, domain, readAuthority);
     addProvenanceHeaders(responseHeaders, domain, readAuthority);
     return new Response(responseBody, {

@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createServer, type Server } from "node:http";
+import { gzipSync } from "node:zlib";
 import {
   ADMIN_V2_API_OPERATIONS,
   findAdminV2ApiOperation,
@@ -27,6 +29,61 @@ afterEach(() => {
 });
 
 describe("Admin main HTTP proxy", () => {
+  it.each([
+    { label: "successful JSON", status: 200, contentType: "application/json" },
+    { label: "failed HTML", status: 404, contentType: "text/html; charset=utf-8" },
+    { label: "failed JSON", status: 409, contentType: "application/json" },
+  ])("relays real gzip $label bytes without forwarding stale encoding or length", async ({ status, contentType }) => {
+    const pathname = "/api/v2/admin/bootstrap";
+    const body = status === 200
+      ? await validV2Response("GET", pathname).text()
+      : contentType.startsWith("text/html")
+        ? "<!doctype html><title>Not found</title><p>This route was not found.</p>"
+        : JSON.stringify({ ok: false, error: { code: "conflict", message: "The record changed." } });
+    const compressed = gzipSync(body);
+    const cookie = "idream_admin_session=renewed; Path=/; HttpOnly; SameSite=Strict";
+    const upstream = createServer((_request, response) => {
+      response.writeHead(status, {
+        "content-type": contentType,
+        "content-encoding": "gzip",
+        "content-length": compressed.length,
+        "cache-control": "private, no-store",
+        "set-cookie": cookie,
+      });
+      response.end(compressed);
+    });
+    let relay: Server | undefined;
+    try {
+      const upstreamUrl = await listen(upstream);
+      vi.stubEnv("MAIN_WEB_URL", upstreamUrl);
+      vi.stubEnv("ADMIN_BFF_SIGNING_SECRET", SIGNING_SECRET);
+      // Both hops use the actual platform fetch: the first decodes gzip while
+      // retaining upstream headers; the second consumes what a browser gets.
+      const proxied = await proxyToMain(new Request(`http://admin.local${pathname}`), pathname);
+      const decoded = Buffer.from(await proxied.arrayBuffer());
+      expect(decoded.toString()).toBe(body);
+      relay = createServer((_request, response) => {
+        response.writeHead(proxied.status, Object.fromEntries(proxied.headers));
+        response.end(decoded);
+      });
+      const browserResponse = await fetch(await listen(relay));
+      expect(browserResponse.status).toBe(status);
+      await expect(browserResponse.text()).resolves.toBe(body);
+      expect(proxied.headers.get("content-encoding")).toBeNull();
+      expect(proxied.headers.get("content-length")).toBeNull();
+      expect(browserResponse.headers.get("content-type")).toBe(contentType);
+      expect(browserResponse.headers.get("cache-control")).toBe("private, no-store");
+      expect(browserResponse.headers.get("set-cookie")).toBe(cookie);
+      expect(browserResponse.headers.get("x-idream-admin-read-authority")).toBe("canonical_v2");
+    } finally {
+      for (const server of [relay, upstream]) {
+        if (!server?.listening) continue;
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+      }
+    }
+  });
+
   it("binds every declared operation response to the runtime BFF contract gate", async () => {
     vi.stubGlobal("fetch", vi.fn(async (target: URL, init: RequestInit) =>
       validV2Response(init.method ?? "GET", target.pathname)));
@@ -355,3 +412,13 @@ describe("Admin main HTTP proxy", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+async function listen(server: Server): Promise<string> {
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Missing local HTTP test address");
+  return `http://127.0.0.1:${address.port}`;
+}
