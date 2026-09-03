@@ -84,7 +84,12 @@ import {
   exactGenerationQuoteForCount,
   GenerationRequestError,
   hasUnconfirmedMediaEnhancement,
+  listGenerationReceipts,
+  readGenerationReceipts,
+  requestGenerationReceipt,
   requestMediaEnhancementWithExactQuote,
+  type GenerationReceipt,
+  type GenerationQuoteAuthority,
 } from "@/lib/generation-write-client";
 import { publicOptimisticMutationFailure } from "./optimistic-write-state";
 import { useReportDialog } from "./ReportDialog";
@@ -548,10 +553,36 @@ export function GeneratorWorkspace() {
   const enhancementPendingRef = useRef(false);
   const enhancementQuoteControllerRef = useRef<AbortController | null>(null);
   const enhancementKeysRef = useRef({ scope: "", keys: new Map<string, string>() });
+  const [receiptStorageWarning, setReceiptStorageWarning] = useState("");
+  const [enhancementReceipts, setEnhancementReceipts] = useState<GenerationReceipt[]>([]);
+  const [enhancementCheckKey, setEnhancementCheckKey] = useState<string | null>(null);
+  const enhancementCheckRef = useRef<string | null>(null);
+  const receiptOwnerScope = config?.viewer.authenticated ? config.viewer.scope : null;
   const generationKeysScopeRef = useRef<string | null>(null);
   const unconfirmedFormRef = useRef(false);
   const enhancementUnconfirmed = Boolean(enhancement && enhancementKeysRef.current.scope === config?.viewer.scope &&
     hasUnconfirmedMediaEnhancement(enhancement.source.id, enhancementKeysRef.current.keys));
+
+  useEffect(() => {
+    enhancementCheckRef.current = null;
+    setEnhancementCheckKey(null);
+    if (!receiptOwnerScope) { setEnhancementReceipts([]); return; }
+    setReceiptStorageWarning("");
+    if (enhancementKeysRef.current.scope !== receiptOwnerScope) {
+      enhancementKeysRef.current = { scope: receiptOwnerScope, keys: new Map() };
+    }
+    const restore = () => {
+      for (const receipt of readGenerationReceipts({ ownerScope: receiptOwnerScope, onWarning: setReceiptStorageWarning })) {
+        if (receipt.kind === "media_enhancement" && !enhancementKeysRef.current.keys.has(receipt.record)) {
+          enhancementKeysRef.current.keys.set(receipt.record, receipt.key);
+        }
+      }
+      setEnhancementReceipts(listGenerationReceipts(enhancementKeysRef.current.keys));
+    };
+    restore();
+    window.addEventListener("storage", restore);
+    return () => window.removeEventListener("storage", restore);
+  }, [receiptOwnerScope]);
 
   const {
     data: mediaPage,
@@ -746,6 +777,8 @@ export function GeneratorWorkspace() {
           .join("|")
       : "";
   const generationRequest = useGenerationRequest({
+    receiptOwnerScope,
+    onReceiptWarning: setReceiptStorageWarning,
     quoteRequest: generationQuoteRequest,
     retryQuoteScopeKey,
     view: {
@@ -773,6 +806,8 @@ export function GeneratorWorkspace() {
     variationPendingMediaIds: variationPendingIds,
     hasUnconfirmedVariations,
   } = generationRequest;
+  const pendingReceipts = receiptOwnerScope ? [...generationRequest.receipts,
+    ...(enhancementKeysRef.current.scope === receiptOwnerScope ? enhancementReceipts : [])] : [];
   const {
     canSubmit,
     hasSubmissionAuthority,
@@ -1677,6 +1712,7 @@ export function GeneratorWorkspace() {
         quote: enhancement.quote?.quote ?? null,
         idempotencyKeys: enhancementKeysRef.current.keys,
         isCurrent: current,
+        persistence: { ownerScope: ticket.scope, onWarning: setReceiptStorageWarning },
       }, async (url, init) => {
         const response = await fetch(url, { ...init, signal: ticket.controller.signal });
         if (!current()) throw new DOMException("Viewer changed", "AbortError");
@@ -1692,15 +1728,52 @@ export function GeneratorWorkspace() {
       setEnhancement(null);
     } catch (error) {
       if (!current()) return;
-      const needsQuote = error instanceof GenerationRequestError && (error.status === 409 || error.status === 402);
+      const stillUnconfirmed = hasUnconfirmedMediaEnhancement(enhancement.source.id, enhancementKeysRef.current.keys);
+      const needsQuote = !stillUnconfirmed && error instanceof GenerationRequestError && (error.status === 409 || error.status === 402);
       setEnhancement({ ...enhancement, submitting: false,
         quote: needsQuote ? null : enhancement.quote,
         error: needsQuote ? `${error.message} Check the price again before confirming.`
           : "Enhancement could not be confirmed. Retry to check the same request.",
       });
       if (needsQuote) { generationBalanceChanged(); void refreshConfig(); }
+      else if (error instanceof GenerationRequestError && error.status === 401) void refreshConfig();
     } finally {
+      if (current()) setEnhancementReceipts(listGenerationReceipts(enhancementKeysRef.current.keys));
       if (serial === enhancementSerialRef.current) enhancementPendingRef.current = false;
+      finishPrivateViewerRequest(ticket);
+    }
+  }
+
+  async function recoverEnhancementReceipt(receipt: GenerationReceipt) {
+    if (enhancementCheckRef.current) return;
+    const ticket = beginPrivateViewerRequest();
+    if (!ticket || enhancementKeysRef.current.scope !== ticket.scope) return;
+    const current = () => !ticket.controller.signal.aborted && privateViewerRequestIsCurrent(ticket);
+    enhancementCheckRef.current = receipt.key;
+    setEnhancementCheckKey(receipt.key);
+    try {
+      const result = await requestGenerationReceipt(receipt, {
+        idempotencyKeys: enhancementKeysRef.current.keys, isCurrent: current,
+        persistence: { ownerScope: ticket.scope, onWarning: setReceiptStorageWarning },
+      }, (url, init) => fetch(url, { ...init, signal: ticket.controller.signal }));
+      if (!current()) return;
+      generationRequestEffects.applyJob(result.job);
+      generationRequestEffects.revealJobs();
+      generationRequestEffects.trackJob(result.job.id);
+      generationRequestEffects.refreshBalance();
+      setStatus("Original enhancement request confirmed. Your original image is kept.");
+    } catch (error) {
+      if (!current()) return;
+      if (error instanceof GenerationRequestError && error.status === 401) generationRequestEffects.refreshBalance();
+      setStatus(error instanceof GenerationRequestError && error.status === 401
+        ? "Sign in to the same account to check this request. Your pending request is kept."
+        : `${error instanceof Error ? error.message : "The request could not be confirmed."} Your original request is kept; check again or contact support.`);
+    } finally {
+      if (enhancementCheckRef.current === receipt.key) enhancementCheckRef.current = null;
+      if (current()) {
+        setEnhancementCheckKey(null);
+        setEnhancementReceipts(listGenerationReceipts(enhancementKeysRef.current.keys));
+      }
       finishPrivateViewerRequest(ticket);
     }
   }
@@ -1908,10 +1981,16 @@ export function GeneratorWorkspace() {
       negativePrompt: options?.negativePrompt,
       quote: options?.quote,
     };
+    const unconfirmed = generationRequest.isVariationUnconfirmed(originalInput);
+    if (!options?.quote && pendingReceipts.length > 0 && !unconfirmed) {
+      editGalleryImage(item);
+      setStatus("Your earlier request is still unconfirmed. Describe and confirm this new edit at its current price.");
+      return;
+    }
     await generationRequest.createVariation(
       {
         ...originalInput,
-        model: generationRequest.isVariationUnconfirmed(originalInput)
+        model: unconfirmed
           ? originalInput.model : modelSelectionProjection.requestModelId,
       },
       generationRequestEffects,
@@ -2987,7 +3066,14 @@ export function GeneratorWorkspace() {
               </Link>
             )}
 
-            {formUnconfirmed && <p className="mt-3 text-[12px] text-white/70">Check the existing request with its original settings and price before starting another.</p>}
+            {mode === "video" && !formUnconfirmed && generationQuote?.video && (
+              <p className="mt-3 text-[12px] text-white/70" data-testid="generator-video-specifications">
+                About {Math.round(generationQuote.video.durationSeconds)} seconds · {generationQuote.video.width}×{generationQuote.video.height} · {generationQuote.video.audio === "generated" ? "Generated audio" : "No audio"}
+              </p>
+            )}
+            {formUnconfirmed && <p className="mt-3 text-[12px] text-white/70">Check the existing request with its original settings and price.</p>}
+            {!formUnconfirmed && pendingReceipts.length > 0 && <p className="mt-3 text-[12px] text-white/70">You have an earlier request to check in Jobs. This changed request uses the new price below and may create another job.</p>}
+            {receiptOwnerScope && receiptStorageWarning && <p role="status" className="mt-3 text-[12px] text-white/70">{receiptStorageWarning}</p>}
             {insufficientBalance && !formUnconfirmed && (
               <Link
                 className="mt-3 flex items-center justify-between gap-2 rounded-[10px] border border-[rgb(255,184,112)]/40 bg-[rgb(36,28,18)] px-4 py-3 text-[12px] font-semibold text-[rgb(255,184,112)]"
@@ -3041,7 +3127,7 @@ export function GeneratorWorkspace() {
                           ? generationQuoteError
                             ? "Exact price unavailable"
                             : "Checking exact price…"
-                          : `${imageEditMode ? "Create edit" : characterImageMode ? "Generate this moment" : "Generate"} · ${estimatedCost} coins`}
+                          : `${pendingReceipts.length > 0 ? "Generate new" : imageEditMode ? "Create edit" : characterImageMode ? "Generate this moment" : "Generate"} · ${estimatedCost} coins`}
               </button>
             )}
             {generationQuoteError && (
@@ -3206,6 +3292,28 @@ export function GeneratorWorkspace() {
                 </button>
               </div>
               <div className="grid gap-3">
+                {receiptOwnerScope && pendingReceipts.length > 0 && (
+                  <div className="rounded-[10px] border border-white/20 p-4" data-testid="generation-pending-requests">
+                    <h3 className="text-[14px] font-bold text-white">Requests to check</h3>
+                    <p className="mt-1 text-[12px] text-white/70">Check the original settings and price. This may complete the original submission if it had not reached the server. It does not use your current form.</p>
+                    {pendingReceipts.map((receipt) => {
+                      const quote = receipt.body.quoteAuthority as GenerationQuoteAuthority;
+                      const controls = isRecord(receipt.body.controls) ? receipt.body.controls : {};
+                      const orientation = receipt.body.orientation ?? controls.orientation;
+                      const busy = generationRequest.recoveringReceiptKeys.has(receipt.key) || enhancementCheckKey === receipt.key;
+                      return <div className="mt-3 rounded-lg bg-black/20 p-3" data-pending-request-key={receipt.key} key={receipt.key}>
+                        <p className="text-[13px] font-bold text-white">{receipt.kind === "media_enhancement" ? "Enhance 2×" : receipt.kind === "generation_retry" ? "Generation retry" : receipt.kind === "media_variation" ? "Image edit" : receipt.body.mode === "video" ? "Video" : "Image"} · {quote.outputCount} output{quote.outputCount === 1 ? "" : "s"}{orientation ? ` · ${String(orientation)}` : ""} · {quote.costDreamcoins} coins</p>
+                        {typeof receipt.body.prompt === "string" && receipt.body.prompt && <p className="mt-1 break-words text-[12px] text-white/70">{receipt.body.prompt.slice(0, 180)}</p>}
+                        <p className="mt-1 break-all text-[11px] text-white/50">Request {receipt.key}</p>
+                        <button className="mt-2 rounded-full bg-white px-4 py-2 text-[12px] font-bold text-black disabled:opacity-50" disabled={busy} type="button"
+                          onClick={() => receipt.kind === "media_enhancement" ? void recoverEnhancementReceipt(receipt) : void generationRequest.recoverReceipt(receipt, generationRequestEffects)}>
+                          {busy ? "Checking original request…" : "Check original request"}
+                        </button>
+                        <Link className="ml-3 text-[12px] text-white underline" href="/helpdesk">Get help</Link>
+                      </div>;
+                    })}
+                  </div>
+                )}
                 {configAuthorityUnavailable ? (
                   <GeneratorAuthorityNotice
                     hasSnapshot={false}

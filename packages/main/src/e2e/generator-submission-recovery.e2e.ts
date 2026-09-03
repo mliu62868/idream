@@ -9,7 +9,7 @@ async function json(route: Route, data: unknown, status = 200) {
 
 // SPEC: this browser test controls the API boundary, including its accepted
 // receipts and debit count. It does not claim a database debit or call a model.
-async function installSubmissionFixture(page: Page, firstResponse: "lost" | "late") {
+async function installSubmissionFixture(page: Page, firstResponse: "lost" | "late" | "uncommitted") {
   const baseURL = test.info().project.use.baseURL;
   if (typeof baseURL !== "string") throw new Error("Playwright baseURL is required");
   await page.context().addCookies([{ name: "AdultContentAcceptedOD", value: "true", url: baseURL }]);
@@ -26,6 +26,7 @@ async function installSubmissionFixture(page: Page, firstResponse: "lost" | "lat
   let releaseFirst!: () => void;
   const firstMayRespond = new Promise<void>((resolve) => { releaseFirst = resolve; });
   let rejectedQuotes = 0;
+  let nextCheckStatus: number | null = null;
 
   await page.route("**/api/v1/age-gate/accept", (route) => json(route, { ok: true, data: {} }));
   await page.route("**/api/v1/me", (route) => json(route, { ok: true, data: {
@@ -41,7 +42,7 @@ async function installSubmissionFixture(page: Page, firstResponse: "lost" | "lat
   await page.route("**/api/v1/generation/**", async (route) => {
     const request = route.request();
     const pathname = new URL(request.url()).pathname;
-    const changedRoute = firstResponse === "lost" && viewer === "first" && receipts.size > 0;
+    const changedRoute = firstResponse !== "late" && viewer === "first" && writes.length > 0;
     const orientation = changedRoute ? "16:9" : "4:5";
     const maxCount = changedRoute ? 1 : 2;
     if (pathname === "/api/v1/generation/config") {
@@ -86,6 +87,12 @@ async function installSubmissionFixture(page: Page, firstResponse: "lost" | "lat
       const body = request.postData() ?? "";
       writes.push({ viewer: requestViewer, key, body });
       if (!key) return json(route, { ok: false, error: { message: "Idempotency-Key required" } }, 400);
+      if (writes.length === 1 && firstResponse === "uncommitted") return route.abort("failed");
+      if (nextCheckStatus !== null) {
+        const status = nextCheckStatus;
+        nextCheckStatus = null;
+        return json(route, { ok: false, error: { message: "The current route cannot accept this request yet." } }, status);
+      }
       const receiptKey = `${requestViewer}:${key}`;
       let receipt = receipts.get(receiptKey);
       if (receipt && receipt.body !== body) {
@@ -124,6 +131,17 @@ async function installSubmissionFixture(page: Page, firstResponse: "lost" | "lat
   return {
     balances, writes, receipts, configReads, jobReads, releaseFirst,
     switchViewer() { viewer = "second"; },
+    rejectNextCheck(status: number) { nextCheckStatus = status; },
+    commitFirst() {
+      const first = writes[0];
+      const parsed = JSON.parse(first.body) as { outputCount: number; quoteAuthority: { costDreamcoins: number } };
+      const cost = parsed.quoteAuthority.costDreamcoins;
+      balances.first -= cost;
+      receipts.set(`first:${first.key}`, { body: first.body, job: {
+        id: "accepted-first-1", mode: "image", status: "completed", costDreamcoins: cost,
+        outputCount: parsed.outputCount, errorCode: null, createdAt: "2026-09-02T00:00:00.000Z",
+      } });
+    },
     rejectedQuoteCount() { return rejectedQuotes; },
   };
 }
@@ -212,4 +230,44 @@ test("generator ignores an old viewer's late accepted response and starts the ne
   } finally {
     fixture.releaseFirst();
   }
+});
+
+test("generator reload keeps the original request through a pre-commit 409 and leaving the page", async ({ page }, testInfo) => {
+  const fixture = await installSubmissionFixture(page, "uncommitted");
+  await openTwoImageForm(page);
+  await page.getByRole("button", { name: "Generate · 10 coins", exact: true }).click();
+  await expect.poll(() => fixture.writes.length).toBe(1);
+  await expect(page.getByTestId("generator-status")).toContainText("Check your connection");
+  expect(fixture.receipts.size).toBe(0);
+
+  await page.reload();
+  const pending = page.getByTestId("generation-pending-requests");
+  await expect(pending).toBeVisible();
+  await expect(pending).toContainText("2 outputs · 4:5 · 10 coins");
+  await expect(page.getByRole("textbox", { name: "Prompt", exact: true })).toHaveValue("");
+  expect(fixture.writes).toHaveLength(1);
+  fixture.rejectNextCheck(409);
+  await pending.getByRole("button", { name: "Check original request", exact: true }).click();
+  await expect.poll(() => fixture.writes.length).toBe(2);
+  await expect(page.getByTestId("generator-status")).toContainText("original request is kept");
+  await expect(pending).toBeVisible();
+  expect(fixture.receipts.size).toBe(0);
+
+  fixture.commitFirst();
+  await page.goto("about:blank");
+  await page.goto("/generate");
+  await expect(pending).toBeVisible();
+  await expect(page.getByText("0 coins", { exact: true })).toBeVisible();
+  await pending.getByRole("button", { name: "Check original request", exact: true }).click();
+  await expect(page.locator('[data-generation-job-id="accepted-first-1"]')).toBeVisible();
+  await expect(pending).toHaveCount(0);
+  expect(fixture.writes).toHaveLength(3);
+  expect(fixture.writes[1]).toEqual(fixture.writes[0]);
+  expect(fixture.writes[2]).toEqual(fixture.writes[0]);
+  expect(fixture.balances.first).toBe(0);
+  expect(fixture.receipts.size).toBe(1);
+  await testInfo.attach("reload-recovery-fixture-evidence", { contentType: "application/json", body: JSON.stringify({
+    evidenceBoundary: "Real document reload/navigation; controlled delayed commit and one debit, no database or model request",
+    writes: fixture.writes, acceptedJobs: [...fixture.receipts.values()].map((receipt) => receipt.job.id), balance: fixture.balances.first,
+  }, null, 2) });
 });

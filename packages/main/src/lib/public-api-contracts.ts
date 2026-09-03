@@ -1025,9 +1025,18 @@ const generationQuoteSchema = z
     // 这一单会不会带角色身份参考去生成。旧服务端不返回时按 false 处理 ——
     // 不知道就不许界面打包票。
     identityLocked: z.boolean().default(false),
+    video: z.object({
+      durationSeconds: z.number().positive(),
+      width: z.number().int().positive(),
+      height: z.number().int().positive(),
+      audio: z.enum(["generated", "none"]),
+    }).strict().optional(),
   })
   .strict()
   .superRefine((quote, ctx) => {
+    if (quote.video && quote.mode !== "video") {
+      ctx.addIssue({ code: "custom", path: ["video"], message: "video specifications require a video quote" });
+    }
     if (
       quote.orientations[0] !== quote.defaultOrientation ||
       !quote.orientations.includes(quote.defaultOrientation)

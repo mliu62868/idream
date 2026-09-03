@@ -19,6 +19,7 @@ import {
   requestMediaVariationWithExactQuote,
   type GenerationFetcher,
   type GenerationQuoteAuthority,
+  type GenerationReceiptPersistence,
   type GenerationWriteJob,
 } from "@/lib/generation-write-client";
 
@@ -644,8 +645,8 @@ export async function loadGenerationRetryQuotes(
 
 /**
  * SPEC: one map per write intent. An entry survives only an *ambiguous* failure
- * — the write client removes it on success and on a 4xx, so the key rotates
- * exactly when the previous attempt is known not to have committed.
+ * — the write client removes it on a Job ACK or a first definite refusal.
+ * A rejected check cannot prove that an earlier ambiguous POST did not commit.
  * The opaque map key retains the original body/quote; its value is the HTTP idempotency key.
  */
 export type GenerationIdempotencyKeys = {
@@ -708,6 +709,7 @@ export type GenerationRequestContext = {
   fetcher?: GenerationFetcher;
   /** The surface invalidates this write when its viewer is no longer confirmed. */
   isCurrent?: () => boolean;
+  persistence?: GenerationReceiptPersistence;
 };
 
 /**
@@ -815,7 +817,7 @@ async function writeOnce(
         };
       }
       const result = await requestGenerationJobWithExactAuthority(
-        { body: request.body, idempotencyKeys: context.keys.generation, isCurrent: context.isCurrent },
+        { body: request.body, idempotencyKeys: context.keys.generation, isCurrent: context.isCurrent, persistence: context.persistence },
         fetcher,
       );
       return {
@@ -836,6 +838,7 @@ async function writeOnce(
           quote: request.quote,
           idempotencyKeys: context.keys.variation,
           isCurrent: context.isCurrent,
+          persistence: context.persistence,
         },
         fetcher,
       );
@@ -852,6 +855,7 @@ async function writeOnce(
         jobId: request.jobId,
         idempotencyKeys: context.keys.retry,
         isCurrent: context.isCurrent,
+        persistence: context.persistence,
         quoteAuthority: quote ? {
           profileId: quote.profileId,
           profileVersion: quote.profileVersion,

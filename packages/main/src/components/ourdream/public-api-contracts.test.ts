@@ -865,6 +865,27 @@ describe("public API runtime contracts", () => {
     ).toThrow(PublicApiContractError);
   });
 
+  it("preserves quoted video output specifications and rejects invented audio or image envelopes", () => {
+    const quote = {
+      mode: "video", profileId: "profile_video_h3_v1", profileVersion: 4,
+      routeFingerprint: "a".repeat(64),
+      pricing: { ruleId: "video-price", ruleKey: "video", version: 1, effectiveFrom: null, fingerprint: "b".repeat(64) },
+      orientations: ["1:1"], defaultOrientation: "1:1", maxCount: 1,
+      costs: [{ outputCount: 1, costDreamcoins: 3 }], balance: 3,
+      video: { durationSeconds: 124 / 24, width: 512, height: 512, audio: "generated" },
+    };
+    const parse = (value: unknown) => parseGenerationQuoteResponse({ ok: true, data: { quote: value } }).quote;
+    expect(parse(quote).video).toEqual(quote.video);
+    expect(parse({ ...quote, video: { ...quote.video, audio: "none" } }).video?.audio).toBe("none");
+    expect(parse({ ...quote, video: undefined }).video).toBeUndefined();
+    for (const invalid of [
+      { ...quote, mode: "image" },
+      { ...quote, video: { ...quote.video, width: 0 } },
+      { ...quote, video: { ...quote.video, durationSeconds: -1 } },
+      { ...quote, video: { ...quote.video, audio: "character_voice" } },
+    ]) expect(() => parse(invalid)).toThrow(PublicApiContractError);
+  });
+
   it("accepts image-to-video config with a character recipe only", () => {
     expect(
       parseGenerationConfigResponse({
