@@ -154,6 +154,35 @@ describe("GeneratorWorkspace media journeys", () => {
     expect(container.querySelector('[aria-label="Gallery filters"]')).not.toBeNull();
   });
 
+  it("keeps a superseded Chat failure visible without offering a paid retry", async () => {
+    const originalFetch = globalThis.fetch;
+    const retryWrites: string[] = [];
+    const message = "This Chat image is no longer available to retry. Check the chat for its current result.";
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.startsWith("/api/v1/generation/jobs?")) return Response.json({ ok: true, data: { items: [
+        { id: "old-chat-image", mode: "image", status: "failed", errorCode: "backend_error", costDreamcoins: 8, outputCount: 1, createdAt: "2026-09-03T02:53:10.437Z" },
+        { id: "replacement-chat-image", mode: "image", status: "completed", errorCode: null, costDreamcoins: 8, outputCount: 1, createdAt: "2026-09-03T02:54:36.379Z" },
+      ] } });
+      if (path === "/api/v1/generation/jobs/old-chat-image/retry/quote") return Response.json({ ok: false, error: { code: "conflict", message } }, { status: 409 });
+      if (path === "/api/v1/generation/jobs/old-chat-image/retry") retryWrites.push(path);
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(button("Jobs"));
+    const card = container.querySelector('[data-generation-job-id="old-chat-image"]')!;
+    expect(card).not.toBeNull();
+    expect(card.textContent).toContain(message);
+    expect(card.textContent).not.toContain("Retry · 8 coins");
+    const retryButton = button("Retry price unavailable");
+    expect(retryButton.disabled).toBe(true);
+    await click(retryButton);
+    await click(button("Retry price check"));
+    expect(button("Retry price unavailable").disabled).toBe(true);
+    expect(retryWrites).toEqual([]);
+    expect(container.querySelector('[data-generation-job-id="replacement-chat-image"]')).not.toBeNull();
+  });
+
   it("binds Jobs reads to the confirmed viewer even before a cookie change has raised a focus event", async () => {
     const originalFetch = globalThis.fetch;
     const scopes: Array<string | null> = [];
