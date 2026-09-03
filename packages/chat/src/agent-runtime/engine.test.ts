@@ -319,8 +319,9 @@ describe("Chat embedded companion runtime", () => {
     "The memory_search tool can look up a previous conversation.",
     'The literal text is \'{memory_search: "rooftop code word"}\'.',
     'An inline example is `{memory_search: "rooftop code word"}`.',
-    'Example:\n\n```text\n{memory_search: "rooftop code word"}\n```',
-    'Example:\n\n```text\n{memory_search: "rooftop code word"}',
+    'Example:\n\n```text\n\n{memory_search: "rooftop code word"}\n```',
+    'Example:\n\n```text\n\n{memory_search: "rooftop code word"}',
+    'Example:\n\n    {memory_search: "rooftop code word"}',
     'You quoted:\n\n> {memory_search: "rooftop code word"}',
   ])("preserves ordinary memory tool mentions and quoted examples: %s", async (text) => {
     const adapter = new MemoryReplyAdapter(text);

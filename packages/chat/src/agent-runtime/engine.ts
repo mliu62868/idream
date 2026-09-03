@@ -16,6 +16,7 @@ import {
 import { Session, SessionId, type SessionEvent, type TurnEndReason } from "@deepseek-ai/dsh-session";
 import { type JsonValue, type ToolDefinition } from "@deepseek-ai/dsh-tools";
 import {
+  hasUnexecutedMemorySearchPayload,
   type CompanionReadiness,
 } from "@idream/shared/chat/companion-runtime";
 import { requiredImageReplyMatchesUserScript } from "@idream/shared/chat/image-action";
@@ -948,13 +949,16 @@ export class CompanionEngine {
             if (!latestAssistant || !latestFinish) throw new Error("turn stopped without a terminal assistant candidate");
             const content = assistantText(latestAssistant);
             if (!content) throw new Error("terminal assistant candidate is empty");
-            if (isUnexecutedImageToolPayload(content, invocation.preparedTurn.tools)) {
+            if (
+              hasUnexecutedMemorySearchPayload(content) ||
+              isUnexecutedImageToolPayload(content, invocation.preparedTurn.tools)
+            ) {
               terminalValidationCode = "unexecuted_tool_payload";
               if (currentStepText) {
                 currentStepText = "";
                 event({ type: "text_reset" });
               }
-              throw new Error("terminal assistant candidate contained an unexecuted image tool payload");
+              throw new Error("terminal assistant candidate contained an unexecuted tool payload");
             }
             const requiredAction = invocation.preparedTurn.requiredAction;
             if (

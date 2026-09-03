@@ -10,6 +10,7 @@ import { loadCharacterSoulSnapshot } from "@idream/shared";
 import { createSessionToken, SESSION_COOKIE } from "./lib/auth";
 import {
   companionProbeDshEvidenceSchema,
+  hasUnexecutedMemorySearchPayload,
   projectCompanionProbeDshEvidence,
   type CompanionProbeDshEvidence,
 } from "@idream/shared/chat/companion-runtime";
@@ -174,7 +175,8 @@ export function evaluateDshRecallEvidence(input: {
     (input.dsh?.memorySearchEvidenceMatches ?? 0) > 0 &&
     input.dsh?.memorySearchFailures === 0;
   return {
-    ok: recallMatched && wakeObserved && memorySearchHit,
+    ok: recallMatched && wakeObserved && memorySearchHit &&
+      !hasUnexecutedMemorySearchPayload(input.assistantContent ?? ""),
     recallMatched,
     wakeObserved,
     memorySearchHit,
@@ -186,6 +188,7 @@ export function describeDshRecallFailure(
   dsh?: DshCompanionProbeEvidence,
 ): string {
   return [
+    `accepted=${recall.ok}`,
     `matched=${recall.recallMatched}`,
     `wake=${recall.wakeObserved}`,
     `memorySearch=${recall.memorySearchHit}`,
@@ -812,8 +815,7 @@ async function probeConversation(input: {
       path: `/api/v1/chat/sessions/${recallSessionId}/messages`,
       body: JSON.stringify({
         content:
-          'Call memory_search with query exactly "exact rooftop probe code word". ' +
-          "Use only that tool result to recall the code word from a prior session, then say it exactly.",
+          "From our earlier chat, what was the exact rooftop code word we chose? Please say the code word exactly.",
       }),
       idempotencyKey: `chat-probe:${input.runId}:cross-session-recall`,
     });

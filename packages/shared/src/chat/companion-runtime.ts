@@ -8,6 +8,24 @@ export const COMPANION_DSH_COMMIT =
   "b150a551b8d465e31e418e1b2eaf5e79bbb7d28e" as const;
 export const COMPANION_IGREP_PLUGIN_VERSION = "0.1.0" as const;
 
+/**
+ * SPEC: an unquoted terminal memory-search command is not a completed answer.
+ * This recognizes the observed pseudo-call, never executes it or strips it into
+ * a pretend answer. Ordinary mentions and quoted/code examples remain text.
+ */
+export function hasUnexecutedMemorySearchPayload(content: string): boolean {
+  const match = /(?:^|\n[ \t]*\n) {0,3}\{[ \t]*memory_search[ \t]*:[ \t]*"(?:[^"\\\r\n]|\\[^\r\n])*"[ \t]*\}[ \t]*$/u.exec(content.trimEnd());
+  if (!match) return false;
+  let fence: string | undefined;
+  for (const line of content.slice(0, match.index).split(/\r?\n/u)) {
+    const marker = /^ {0,3}(`{3,}|~{3,})/u.exec(line)?.[1];
+    if (!marker) continue;
+    if (!fence) fence = marker;
+    else if (marker[0] === fence[0] && marker.length >= fence.length) fence = undefined;
+  }
+  return !fence;
+}
+
 const nonEmptyStringSchema = z.string().trim().min(1);
 const isoDateTimeSchema = z.string().datetime({ offset: true });
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);

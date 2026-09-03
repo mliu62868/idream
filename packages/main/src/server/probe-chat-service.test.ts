@@ -535,6 +535,16 @@ describe("chat service conversation probe", () => {
       sentinel,
       dsh: projectDshCompanionEvidence(completedDshTrace(), "normal"),
     }).ok).toBe(false);
+    for (const example of [
+      `The phrase is ${sentinel}. You quoted '{memory_search: "example"}'.`,
+      `The phrase is ${sentinel}.\n\nExample:\n\n\`\`\`text\n\n{memory_search: "example"}\n\`\`\``,
+    ]) {
+      expect(evaluateDshRecallEvidence({
+        assistantContent: example,
+        sentinel,
+        dsh: projectDshCompanionEvidence(completedDshTrace(), "normal"),
+      }).ok).toBe(true);
+    }
     expect(evaluateDshRecallEvidence({
       assistantContent: "I cannot recall it.",
       sentinel,
@@ -553,7 +563,7 @@ describe("chat service conversation probe", () => {
       wakeObserved: true,
       memorySearchHit: false,
     }, projectDshCompanionEvidence(unrelated, "normal"))).toBe(
-      "matched=false;wake=true;memorySearch=false;calls=1;hits=1;evidenceMatches=0",
+      "accepted=false;matched=false;wake=true;memorySearch=false;calls=1;hits=1;evidenceMatches=0",
     );
   });
 
