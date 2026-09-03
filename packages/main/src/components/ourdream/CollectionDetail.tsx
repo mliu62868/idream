@@ -13,7 +13,8 @@ import {
 export function CollectionDetail({ id, onChanged }: { id: string; onChanged?: () => void }) {
   const { accepted } = useAgeGateAccess();
   const [detail, setDetail] = useState<CollectionDetailData | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [writing, setWriting] = useState(false);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
   const [name, setName] = useState("");
@@ -21,13 +22,29 @@ export function CollectionDetail({ id, onChanged }: { id: string; onChanged?: ()
   const [retryCursor, setRetryCursor] = useState<string | null>(null);
   const requestRef = useRef(0);
   const controllerRef = useRef<AbortController | null>(null);
+  const writeRef = useRef<{ controller: AbortController; canProject: boolean } | null>(null);
+  const draftRef = useRef<{ name?: string; isPublic?: boolean }>({});
+  const completionRef = useRef("");
+  const onChangedRef = useRef(onChanged);
+  const busy = loading || writing;
+
+  useEffect(() => { onChangedRef.current = onChanged; }, [onChanged]);
+
+  const clearManagement = useCallback(() => {
+    draftRef.current = {};
+    completionRef.current = "";
+    if (writeRef.current) writeRef.current.canProject = false;
+    setName("");
+    setIsPublic(false);
+    setStatus("");
+  }, []);
 
   const load = useCallback(async (cursor: string | null = null) => {
     const request = ++requestRef.current;
     controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
-    setBusy(true);
+    setLoading(true);
     setError("");
     setRetryCursor(cursor);
     // Focus may mean another account now owns the cookie. Clear private content before revalidating.
@@ -41,47 +58,60 @@ export function CollectionDetail({ id, onChanged }: { id: string; onChanged?: ()
         if ([400, 401, 403, 404].includes(response.status)) {
           setDetail(null);
           setRetryCursor(null);
+          clearManagement();
         }
         throw new Error(parsePublicApiError(body)?.message ?? "Collection could not load.");
       }
       const next = parseMediaCollectionDetailResponse(body);
+      if (!next.canManage) clearManagement();
       setDetail((current) => cursor && current
         ? { ...next, items: [...current.items, ...next.items.filter((item) => !current.items.some((existing) => existing.id === item.id))] }
         : next);
-      if (!cursor) {
-        setName(next.collection.name);
-        setIsPublic(next.collection.visibility === "public");
+      if (!cursor && next.canManage) {
+        setName(draftRef.current.name ?? next.collection.name);
+        setIsPublic(draftRef.current.isPublic ?? next.collection.visibility === "public");
+      }
+      // Only a post-ACK read for the current owner may announce the write.
+      if (next.canManage && completionRef.current) {
+        setStatus(completionRef.current);
+        completionRef.current = "";
+        onChangedRef.current?.();
       }
     } catch (cause) {
       if (request !== requestRef.current || controller.signal.aborted) return;
       setError(cause instanceof Error ? cause.message : "Collection could not load.");
     } finally {
-      if (request === requestRef.current) setBusy(false);
+      if (request === requestRef.current) setLoading(false);
     }
-  }, [id]);
+  }, [clearManagement, id]);
 
   useEffect(() => {
     if (!accepted) return;
-    void load();
+    const timer = window.setTimeout(() => { void load(); }, 0);
     const refresh = () => { setStatus(""); void load(); };
     const visible = () => { if (document.visibilityState === "visible") refresh(); };
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", visible);
     return () => {
+      window.clearTimeout(timer);
       requestRef.current += 1;
       controllerRef.current?.abort();
+      writeRef.current?.controller.abort();
+      writeRef.current = null;
+      draftRef.current = {};
+      completionRef.current = "";
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", visible);
     };
   }, [accepted, load]);
 
   async function mutate(mediaId?: string) {
-    if (busy || !detail?.canManage) return;
-    const request = ++requestRef.current;
-    controllerRef.current?.abort();
+    if (busy || writeRef.current || !detail?.canManage) return;
     const controller = new AbortController();
-    controllerRef.current = controller;
-    setBusy(true);
+    // A focus revalidation can cancel reads, but cannot roll back an accepted write.
+    const write = { controller, canProject: true };
+    writeRef.current = write;
+    setWriting(true);
     setError("");
     setStatus("");
     setRetryCursor(null);
@@ -93,17 +123,22 @@ export function CollectionDetail({ id, onChanged }: { id: string; onChanged?: ()
         ...(!mediaId ? { headers: { "content-type": "application/json" }, body: JSON.stringify({ name: name.trim(), visibility: isPublic ? "public" : "private" }) } : {}),
       });
       const body: unknown = await response.json();
-      if (request !== requestRef.current) return;
+      if (writeRef.current !== write) return;
       if (!response.ok) throw new Error(parsePublicApiError(body)?.message ?? "Collection update failed.");
       parseMediaCollectionMutationResponse(body);
-      onChanged?.();
-      setStatus(mediaId ? "Removed from this collection. The original media stays in your Gallery." : "Collection updated.");
+      if (write.canProject) {
+        if (!mediaId) draftRef.current = {};
+        completionRef.current = mediaId ? "Removed from this collection. The original media stays in your Gallery." : "Collection updated.";
+      }
       await load();
     } catch (cause) {
-      if (request !== requestRef.current || controller.signal.aborted) return;
+      if (writeRef.current !== write || !write.canProject || controller.signal.aborted) return;
       setError(cause instanceof Error ? cause.message : "Collection update failed.");
     } finally {
-      if (request === requestRef.current) setBusy(false);
+      if (writeRef.current === write) {
+        writeRef.current = null;
+        setWriting(false);
+      }
     }
   }
 
@@ -122,8 +157,8 @@ export function CollectionDetail({ id, onChanged }: { id: string; onChanged?: ()
       {detail && <>
         <p className="mb-4 text-sm text-white/60">{detail.collection.itemCount} items · {detail.collection.visibility}</p>
         {detail.canManage && <form className="mb-5 flex flex-wrap items-end gap-3" onSubmit={(event) => { event.preventDefault(); void mutate(); }}>
-          <label className="grid gap-1 text-sm">Collection name<input className="rounded border border-white/20 bg-transparent p-2" disabled={busy} maxLength={80} onChange={(event) => setName(event.target.value)} value={name} /></label>
-          <label className="flex gap-2 py-2 text-sm"><input checked={isPublic} disabled={busy} onChange={(event) => setIsPublic(event.target.checked)} type="checkbox" />Public in Community</label>
+          <label className="grid gap-1 text-sm">Collection name<input className="rounded border border-white/20 bg-transparent p-2 text-base" disabled={busy} maxLength={80} onChange={(event) => { draftRef.current.name = event.target.value; setName(event.target.value); }} value={name} /></label>
+          <label className="flex gap-2 py-2 text-sm"><input checked={isPublic} disabled={busy} onChange={(event) => { draftRef.current.isPublic = event.target.checked; setIsPublic(event.target.checked); }} type="checkbox" />Public in Community</label>
           <button className="rounded bg-white/10 px-3 py-2 text-sm" disabled={busy || !name.trim()} type="submit">Save collection</button>
         </form>}
         {detail.items.length === 0 ? <p className="text-sm">This collection is empty. Add media from <Link className="underline" href="/profile?tab=media">your Gallery</Link>.</p> : <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">

@@ -31,7 +31,8 @@ describe("collection details and membership", () => {
     const { id, mediaIds } = await collection("mixed", 13);
     const first = await api("GET", `media/collections/${id}`, { ageGate: true });
     expectOk(first);
-    expect(first.headers.get("cache-control")).toBe("no-store");
+    expect(first.headers.get("cache-control")).toContain("no-store");
+    expect(first.headers.get("cache-control")).toContain("private");
     expect(first.data.canManage).toBe(false);
     expect(first.data.items).toHaveLength(12);
     expect(first.data.items.map((item: { id: string }) => item.id)).toEqual(mediaIds.slice(0, 12));
@@ -109,7 +110,7 @@ describe("collection details and membership", () => {
     const mediaId = `${prefix}list-media`;
     await createMedia({ id: mediaId, ownerId: owner, visibility: "public_pack" });
     const ids = Array.from({ length: 21 }, (_, i) => `${prefix}list-${String(i).padStart(2, "0")}`);
-    for (const id of ids) await prisma.mediaCollection.create({ data: { id, name: id, ownerId: owner, visibility: "public", createdAt: new Date("2099-01-01T00:00:00Z"), items: { create: { mediaAssetId } } } });
+    for (const id of ids) await prisma.mediaCollection.create({ data: { id, name: id, ownerId: owner, visibility: "public", createdAt: new Date("2099-01-01T00:00:00Z"), items: { create: { mediaAssetId: mediaId } } } });
     const first = await api("GET", "community/collections", { ageGate: true, query: { collection: ids[0] } });
     expectOk(first);
     expect(first.data.collections.map((item: { id: string }) => item.id)).toEqual([...ids].reverse());
