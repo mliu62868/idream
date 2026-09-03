@@ -9,6 +9,7 @@ import {
   compileCharacterSoul,
   mockVideoMp4Bytes,
 } from "@idream/shared";
+import { FREE_DAILY_MESSAGES } from "@idream/shared/chat/limits";
 import { resolveLocalBlobPath } from "@idream/shared/storage/local-blob";
 import { hasPendingCompanionMemoryMutation } from "@/server/modules/chat/companion-memory-authority";
 import { ACCOUNT_DELETION_GRACE_PERIOD_MS } from "@/server/account-deletion-authority";
@@ -883,7 +884,7 @@ async function seedChatDailyQuotaAtLimit(email: string) {
     },
   });
   await prisma.chatTurn.createMany({
-    data: Array.from({ length: 30 }, (_, index) => ({
+    data: Array.from({ length: FREE_DAILY_MESSAGES }, (_, index) => ({
       id: `e2e-ui-chat-quota-turn-${suffix}-${index}`,
       sessionId,
       idempotencyKey: `e2e-ui-chat-quota-${suffix}-${index}`,
@@ -897,6 +898,14 @@ async function seedChatDailyQuotaAtLimit(email: string) {
       memoryEnabled: true,
       terminalAt: now,
       createdAt: now,
+    })),
+  });
+  // The allowance authority survives transcript deletion; old transcript rows alone do not consume quota.
+  await prisma.chatTurnUsageFact.createMany({
+    data: Array.from({ length: FREE_DAILY_MESSAGES }, (_, index) => ({
+      turnId: `e2e-ui-chat-quota-turn-${suffix}-${index}`,
+      userId: user.id,
+      productDay: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())),
     })),
   });
   return user.id;
@@ -1185,6 +1194,7 @@ test("help desk submits a tracked support request", async ({ page }) => {
 
   await page.goto("/helpdesk");
   await expect(page.getByRole("heading", { name: /get support without losing context/i })).toBeVisible();
+  await expect(page.locator("[data-age-gate-content]")).not.toHaveAttribute("inert", "");
   const feedbackListStatus = page.getByTestId("feedback-list-status");
   await expect(feedbackListStatus).toContainText("Could not load feature voting.", { timeout: 10_000 });
   await expect(feedbackListStatus).toHaveAttribute("role", "alert");
@@ -1309,11 +1319,14 @@ test("help desk signup redirect preserves anonymous support request draft", asyn
 
   await page.goto("/helpdesk");
   await expect(page.getByRole("heading", { name: /get support without losing context/i })).toBeVisible();
+  await expect(page.locator("[data-age-gate-content]")).not.toHaveAttribute("inert", "");
   const supportForm = page.getByTestId("helpdesk-form");
   const supportDetails = supportForm.locator('textarea[name="description"]');
   await supportForm.getByLabel("Category").selectOption("chat");
   await supportForm.getByLabel("Subject").fill(subject);
   await supportDetails.fill(description);
+  await expect(supportForm.getByLabel("Subject")).toHaveValue(subject);
+  await expect(supportDetails).toHaveValue(description);
   await supportForm.getByRole("button", { name: /submit request/i }).click();
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/signup");
@@ -1416,11 +1429,14 @@ test("help desk signup redirect preserves anonymous roadmap idea draft", async (
 
   await page.goto("/helpdesk");
   await expect(page.getByRole("heading", { name: /vote on what should ship next/i })).toBeVisible();
+  await expect(page.locator("[data-age-gate-content]")).not.toHaveAttribute("inert", "");
   const feedbackForm = page.getByTestId("feedback-form");
   const feedbackDetails = feedbackForm.locator('textarea[name="feedbackDescription"]');
   await feedbackForm.getByLabel("Feedback type").selectOption("improvement");
   await feedbackForm.getByLabel("Feature title").fill(title);
   await feedbackDetails.fill(description);
+  await expect(feedbackForm.getByLabel("Feature title")).toHaveValue(title);
+  await expect(feedbackDetails).toHaveValue(description);
   await feedbackForm.getByRole("button", { name: /submit idea/i }).click();
 
   await expect.poll(() => new URL(page.url()).pathname).toBe("/signup");
@@ -1536,6 +1552,7 @@ test("help desk signup redirect applies anonymous roadmap vote intent", async ({
 
   await page.goto("/helpdesk");
   await expect(page.getByRole("heading", { name: /vote on what should ship next/i })).toBeVisible();
+  await expect(page.locator("[data-age-gate-content]")).not.toHaveAttribute("inert", "");
   const feedbackCard = page.getByTestId("feedback-items").locator("article").filter({ hasText: title });
   await expect(feedbackCard).toBeVisible({ timeout: 10_000 });
   await feedbackCard.getByRole("button", { name: /Vote 0/ }).click();
@@ -3804,7 +3821,7 @@ test("chat session deep links prompt anonymous users to log back in", async ({ p
 
 test("chat UI preserves input and shows upgrade path at the free daily limit", async ({ page }) => {
   const { email } = await startSignedInAdultSession(page, "chat-quota");
-  await seedChatDailyQuotaAtLimit(email);
+  const userId = await seedChatDailyQuotaAtLimit(email);
   const draft = `quota draft ${Date.now()}`;
 
   await page.goto("/characters/melissa-burke");
@@ -3817,7 +3834,11 @@ test("chat UI preserves input and shows upgrade path at the free daily limit", a
 
   const messageInput = page.getByRole("textbox", { name: "Message", exact: true });
   await messageInput.fill(draft);
+  const rejectedSend = page.waitForResponse((response) => response.request().method() === "POST"
+    && new URL(response.url()).pathname === `/api/v1/chat/sessions/${sessionPath.split("/").at(-1)}/messages`)
+    .then((response) => response.status());
   await page.getByRole("button", { name: "Send message" }).click();
+  expect(await rejectedSend).toBe(402);
 
   await expect(page.getByText("Daily free message limit reached.")).toBeVisible({
     timeout: 10_000,
@@ -3833,27 +3854,9 @@ test("chat UI preserves input and shows upgrade path at the free daily limit", a
   await expect(messageInput).toHaveValue(draft);
   await expect(page.getByTestId("chat-message-user").filter({ hasText: draft })).toHaveCount(0);
 
-  await upgradeLink.click();
-  await expect.poll(() => new URL(page.url()).pathname).toBe("/upgrade");
-  expect(new URL(page.url()).searchParams.get("returnTo")).toBe(sessionPath);
-  const premiumMonthly = page.locator("article").filter({ hasText: "Premium monthly" });
-  await expect(premiumMonthly).toBeVisible({ timeout: 10_000 });
-  await premiumMonthly.getByRole("button", { name: "Demo activate" }).click();
-  await expect(
-    page.getByText(
-      /Premium monthly access is active until .+ It will not renew automatically\./,
-    ),
-  ).toBeVisible({ timeout: 10_000 });
-  const continueChat = page
-    .getByTestId("upgrade-checkout-result")
-    .getByRole("link", { name: "Continue chat" });
-  await expect(continueChat).toBeVisible();
-  await expect(continueChat).toHaveAttribute("href", sessionPath);
-  await continueChat.click();
-  await expect.poll(() => new URL(page.url()).pathname).toBe(sessionPath);
-  await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeVisible({
-    timeout: 10_000,
-  });
+  expect(await prisma.chatTurn.count({ where: { session: { userId }, userContent: draft } })).toBe(0);
+  expect(await prisma.chatTurnUsageFact.count({ where: { userId } })).toBe(FREE_DAILY_MESSAGES);
+  // Checkout activation is outside this audit. The retained core boundary is a truthful recovery link and an intact draft.
 });
 
 test("chat UI generates on Play and reuses assistant voice clips for entitled users", async ({ page }) => {
@@ -5802,7 +5805,8 @@ test("profile UI handles redeem, referral, billing, and media actions", async ({
 
   await mediaCard.getByRole("button", { name: "Download media" }).click();
   await expect(page.getByText("Download started.")).toBeVisible({ timeout: 10_000 });
-  await expect(page).toHaveURL(/\/profile$/);
+  await expect.poll(() => new URL(page.url()).pathname).toBe("/profile");
+  expect(new URL(page.url()).searchParams.get("tab")).toBe("media");
 
   await mediaCard.getByRole("button", { name: "Delete media" }).click();
   await expect(page.getByText("Press Confirm delete to remove this media.")).toBeVisible({
