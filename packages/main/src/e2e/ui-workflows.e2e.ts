@@ -40,6 +40,89 @@ function uniqueName(tag: string) {
   return `E2E ${tag} ${Date.now()} ${Math.floor(Math.random() * 1e6)}`;
 }
 
+test("collections expose every member, native video, public pagination, and owner-only removal", async ({ page, browser }, testInfo) => {
+  const { email } = await startSignedInAdultSession(page, "collection-details");
+  const user = await prisma.user.findUniqueOrThrow({ where: { email }, select: { id: true } });
+  const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  const id = `e2e-ui-collection-details-${suffix}`;
+  const name = `E2E Mixed collection ${suffix}`;
+  const mediaIds: string[] = [];
+  for (let index = 0; index < 12; index += 1) {
+    const mediaId = await seedDownloadableMedia(email);
+    const asset = await prisma.mediaAsset.findUniqueOrThrow({ where: { id: mediaId }, select: { storageKey: true } });
+    await writeFile(resolveLocalBlobPath(asset.storageKey!), whitePng(64, 64));
+    await prisma.mediaAsset.update({ where: { id: mediaId }, data: { width: 64, height: 64 } });
+    mediaIds.push(mediaId);
+  }
+  mediaIds.push(await seedDownloadableVideoMedia(email));
+  await prisma.mediaAsset.updateMany({ where: { id: { in: mediaIds } }, data: { visibility: "public_pack" } });
+  await prisma.mediaCollection.create({ data: {
+    id, ownerId: user.id, name, visibility: "public",
+    items: { create: mediaIds.map((mediaAssetId, sortOrder) => ({ mediaAssetId, sortOrder })) },
+  } });
+  const listIds = Array.from({ length: 21 }, (_, index) => `e2e-ui-collection-page-${suffix}-${String(index).padStart(2, "0")}`);
+  for (const [index, collectionId] of listIds.entries()) await prisma.mediaCollection.create({ data: {
+    id: collectionId, ownerId: user.id, name: `Paged collection ${index} ${suffix}`, visibility: "public",
+    items: { create: { mediaAssetId: mediaIds[4]! } },
+  } });
+  const contentUrl = (mediaId: string, extension: string) => `/user-content/${Buffer.from(mediaId).toString("base64url")}/content.${extension}`;
+  const href = `/community?collection=${encodeURIComponent(id)}`;
+  await page.goto(`/feed?item=${encodeURIComponent(`collection:${id}`)}`);
+  const feedCard = page.getByTestId("feed-collection-card").filter({ hasText: name });
+  await expect(feedCard).toBeVisible();
+  await feedCard.getByRole("link", { name: "View", exact: true }).click();
+  const detail = page.getByRole("region", { name: "Collection details" });
+  await expect(detail.getByTestId("collection-detail-item")).toHaveCount(12);
+  const fifth = detail.locator(`img[src="${contentUrl(mediaIds[4]!, "png")}"]`);
+  await fifth.scrollIntoViewIfNeeded();
+  await expect.poll(() => fifth.evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth === 64)).toBe(true);
+  await detail.getByRole("button", { name: "Load more items" }).click();
+  await expect(detail.getByTestId("collection-detail-item")).toHaveCount(13);
+  const video = detail.locator("video");
+  await expect(video).toHaveAttribute("src", contentUrl(mediaIds[12]!, "mp4"));
+  await video.scrollIntoViewIfNeeded();
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => Number.isFinite(element.duration) && element.duration > 0)).toBe(true);
+  await video.evaluate(async (element: HTMLVideoElement) => { element.muted = true; await element.play(); });
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentTime)).toBeGreaterThan(0.1);
+  const playback = await video.evaluate((element: HTMLVideoElement) => { element.pause(); return { duration: element.duration, currentTime: element.currentTime }; });
+
+  const removed = page.waitForResponse((response) => response.request().method() === "DELETE"
+    && new URL(response.url()).pathname === `/api/v1/media/collections/${id}/items/${mediaIds[4]}`);
+  await detail.getByRole("button", { name: "Remove item 5 from collection", exact: true }).click();
+  expect((await removed).status()).toBe(200);
+  await expect(detail.locator(`[data-media-id="${mediaIds[4]}"]`)).toHaveCount(0);
+  await expect.poll(() => prisma.mediaCollectionItem.count({ where: { collectionId: id, mediaAssetId: mediaIds[4] } })).toBe(0);
+  expect(await prisma.mediaAsset.findUnique({ where: { id: mediaIds[4]! }, select: { deletedAt: true } })).toEqual({ deletedAt: null });
+  expect(await prisma.mediaCollectionItem.count({ where: { collectionId: listIds[0], mediaAssetId: mediaIds[4] } })).toBe(1);
+  await page.reload();
+  await expect(detail.getByTestId("collection-detail-item")).toHaveCount(12);
+  await expect(detail.locator(`[data-media-id="${mediaIds[4]}"]`)).toHaveCount(0);
+
+  await page.goto("/profile?tab=media");
+  await expect(page.locator(`[data-media-id="${mediaIds[4]}"]`)).toBeVisible();
+  await page.getByRole("region", { name: "Your collections" }).getByRole("link").filter({ hasText: name }).click();
+  await expect(detail.getByRole("heading", { name, exact: true })).toBeVisible();
+  await detail.getByRole("link", { name: "All collections" }).click();
+  const pageRequests: string[] = [];
+  page.on("request", (request) => { const url = new URL(request.url()); if (url.pathname === "/api/v1/community/collections" && url.searchParams.has("cursor")) pageRequests.push(url.search); });
+  const lastCard = page.getByTestId("community-collection-card").filter({ hasText: `Paged collection 0 ${suffix}` });
+  for (let index = 0; index < 10 && await lastCard.count() === 0; index += 1) await page.getByRole("button", { name: "Show more collections", exact: true }).click();
+  await expect(lastCard).toBeVisible();
+  expect(pageRequests.length).toBeGreaterThan(0);
+
+  const visitor = await browser.newContext({ baseURL: new URL(page.url()).origin });
+  try {
+    const anonymous = await visitor.newPage();
+    await anonymous.request.post("/api/v1/age-gate/accept", { data: { sourcePath: href } });
+    await anonymous.goto(href);
+    const publicDetail = anonymous.getByRole("region", { name: "Collection details" });
+    await expect(publicDetail.getByTestId("collection-detail-item")).toHaveCount(12);
+    await expect(publicDetail.getByRole("button", { name: "Save collection" })).toHaveCount(0);
+    await expect(publicDetail.getByRole("button", { name: /Remove item/ })).toHaveCount(0);
+  } finally { await visitor.close(); }
+  await testInfo.attach("collection-consumption", { body: JSON.stringify({ collectionId: id, mediaIds, removedMediaId: mediaIds[4], playback, collectionPageRequests: pageRequests.length, fixture: "run-owned PNG and MP4 bytes; no model requests" }, null, 2), contentType: "application/json" });
+});
+
 test("creator profile paginates all 25 qualified public characters", async ({ page, browser }, testInfo) => {
   await startSignedInAdultSession(page, "creator-pagination-viewer");
   const prefix = `e2e-ui-creator-pages-${Date.now()}`;

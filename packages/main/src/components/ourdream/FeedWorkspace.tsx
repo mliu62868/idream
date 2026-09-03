@@ -492,17 +492,17 @@ function CollectionFeedCard({
     <>
       <Link className="relative block aspect-[16/11]" href={collectionHref}>
         <div className="absolute inset-0 grid grid-cols-2 gap-1 bg-[rgb(28,28,28)]">
-          {item.collection.previews.slice(0, 4).map((src, previewIndex) => (
-            <div className="relative overflow-hidden bg-[rgb(36,36,36)]" key={`${item.id}-${src}`}>
-              <Image
+          {item.collection.previews.slice(0, 4).map((preview, previewIndex) => (
+            <div className="relative overflow-hidden bg-[rgb(36,36,36)]" key={`${item.id}-${preview.id}`}>
+              {preview.type === "image" ? <Image
                 alt=""
                 className="object-cover"
                 fill
                 loading={eager && previewIndex === 0 ? "eager" : "lazy"}
                 sizes="240px"
-                src={src}
-                unoptimized={shouldBypassNextImageOptimizer(src)}
-              />
+                src={preview.url}
+                unoptimized={shouldBypassNextImageOptimizer(preview.url)}
+              /> : <span className="grid h-full place-items-center text-sm text-white/70">{preview.type === "video" ? "Video" : "Audio"}</span>}
             </div>
           ))}
           {Array.from({

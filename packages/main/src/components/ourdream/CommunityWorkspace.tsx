@@ -23,6 +23,7 @@ import {
 } from "@/lib/character-taxonomy";
 import { shouldBypassNextImageOptimizer } from "@/lib/image-delivery";
 import { useAgeGateAccess } from "./AgeGateBoundary";
+import { CollectionDetail } from "./CollectionDetail";
 import { countLabel } from "./workspace-helpers";
 import {
   authorityShowsEmpty,
@@ -159,6 +160,11 @@ export function CommunityWorkspace() {
   const [campaignIndex, setCampaignIndex] = useState(0);
   const [dreamers, setDreamers] = useState<Dreamer[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
+  const [collectionsNextCursor, setCollectionsNextCursor] = useState<string | null>(null);
+  const [collectionsPageBusy, setCollectionsPageBusy] = useState(false);
+  const [collectionsPageError, setCollectionsPageError] = useState("");
+  const collectionRequestRef = useRef(0);
+  const collectionPageControllerRef = useRef<AbortController | null>(null);
   const [gender, setGender] = useState("any");
   const [style, setStyle] = useState("any");
   const [release, setRelease] = useState("all");
@@ -358,6 +364,10 @@ export function CommunityWorkspace() {
     if (!ageGateAccepted) return;
     let active = true;
     const controller = new AbortController();
+    const request = ++collectionRequestRef.current;
+    collectionPageControllerRef.current?.abort();
+    setCollectionsPageBusy(false);
+    setCollectionsPageError("");
     const collectionSearch = focusedCollectionId
       ? `?collection=${encodeURIComponent(focusedCollectionId)}`
       : "";
@@ -381,11 +391,10 @@ export function CommunityWorkspace() {
           { signal: controller.signal },
         );
         if (!response.ok) throw new Error("Public collections could not load.");
-        const nextCollections = parseCommunityCollectionsResponse(
-          await response.json(),
-        ).collections;
-        if (!active) return;
-        setCollections(nextCollections);
+        const next = parseCommunityCollectionsResponse(await response.json());
+        if (!active || request !== collectionRequestRef.current) return;
+        setCollections(next.collections);
+        setCollectionsNextCursor(next.nextCursor);
         setVisibleCollectionCount(COMMUNITY_INITIAL_COLLECTIONS);
         setCollectionsAuthority(readyAuthorityStatus());
       } catch (error) {
@@ -402,9 +411,40 @@ export function CommunityWorkspace() {
     void loadCollections();
     return () => {
       active = false;
+      collectionRequestRef.current += 1;
       controller.abort();
+      collectionPageControllerRef.current?.abort();
     };
   }, [ageGateAccepted, collectionsReloadToken, focusedCollectionId]);
+
+  async function showMoreCollections() {
+    if (collectionsPageBusy) return;
+    if (visibleCollectionCount < orderedCollections.length) {
+      setVisibleCollectionCount((current) => Math.min(orderedCollections.length, current + 3));
+      return;
+    }
+    if (!collectionsNextCursor) return;
+    const request = ++collectionRequestRef.current;
+    const controller = new AbortController();
+    collectionPageControllerRef.current?.abort();
+    collectionPageControllerRef.current = controller;
+    setCollectionsPageBusy(true);
+    setCollectionsPageError("");
+    try {
+      const response = await fetch(`/api/v1/community/collections?cursor=${encodeURIComponent(collectionsNextCursor)}`, { signal: controller.signal });
+      if (!response.ok) throw new Error("More collections could not load.");
+      const next = parseCommunityCollectionsResponse(await response.json());
+      if (request !== collectionRequestRef.current) return;
+      setCollections((current) => [...current, ...next.collections.filter((item) => !current.some((existing) => existing.id === item.id))]);
+      setCollectionsNextCursor(next.nextCursor);
+      setVisibleCollectionCount((current) => current + 3);
+    } catch (cause) {
+      if (request !== collectionRequestRef.current || controller.signal.aborted) return;
+      setCollectionsPageError(communityRequestError(cause, "More collections could not load."));
+    } finally {
+      if (request === collectionRequestRef.current) setCollectionsPageBusy(false);
+    }
+  }
 
   useEffect(() => {
     if (!ageGateAccepted) return;
@@ -445,22 +485,9 @@ export function CommunityWorkspace() {
   }, [ageGateAccepted, campaignsReloadToken]);
 
   useEffect(() => {
-    if (
-      !focusedCollectionId ||
-      (collectionsAuthority.phase === "loading" &&
-        !collectionsAuthority.hasSnapshot) ||
-      !focusedCollection
-    ) {
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      const target = Array.from(
-        document.querySelectorAll<HTMLElement>("[data-collection-id]"),
-      ).find((element) => element.dataset.collectionId === focusedCollectionId);
-      target?.scrollIntoView({ block: "center" });
-    }, 50);
-    return () => window.clearTimeout(timer);
-  }, [collectionsAuthority, focusedCollection, focusedCollectionId]);
+    if (!ageGateAccepted || !focusedCollectionId) return;
+    document.querySelector<HTMLElement>('[data-testid="collection-detail"]')?.scrollIntoView({ block: "start" });
+  }, [ageGateAccepted, focusedCollectionId]);
 
   async function toggleFollowCreator(creatorId: string, isFollowing: boolean) {
     if (followPendingIds.has(creatorId)) return;
@@ -752,6 +779,7 @@ export function CommunityWorkspace() {
             <Users className="h-5 w-5 text-[rgb(253,95,194)]" />
             <h2 className="text-[22px] font-black uppercase">Collections</h2>
           </div>
+          {focusedCollectionId && <CollectionDetail id={focusedCollectionId} key={focusedCollectionId} onChanged={() => setCollectionsReloadToken((current) => current + 1)} />}
           {collectionsAuthority.phase === "error" ? (
             <CommunityAuthorityNotice
               hasSnapshot={collectionsAuthority.hasSnapshot}
@@ -767,7 +795,8 @@ export function CommunityWorkspace() {
               <CollectionSkeletons />
             ) : collections.length > 0 ? (
               visibleCollections.map((collection) => (
-                <div
+                <Link
+                  href={`/community?collection=${encodeURIComponent(collection.id)}`}
                   className={`overflow-hidden rounded-[12px] border bg-[rgb(36,36,36)] ${
                     collection.id === focusedCollectionId
                       ? "border-[rgb(253,95,194)] shadow-[0_0_0_1px_rgba(253,95,194,0.55)]"
@@ -779,16 +808,16 @@ export function CommunityWorkspace() {
                   key={collection.id}
                 >
                   <div className="grid h-[132px] grid-cols-2 grid-rows-2 gap-0.5 bg-black/30">
-                    {(collection.previews ?? []).slice(0, 4).map((src) => (
-                      <div className="relative min-h-0" key={src}>
-                        <Image
+                    {(collection.previews ?? []).slice(0, 4).map((preview) => (
+                      <div className="relative min-h-0" key={preview.id}>
+                        {preview.type === "image" ? <Image
                           alt=""
                           className="object-cover object-top"
                           fill
                           sizes="180px"
-                          src={src}
-                          unoptimized={shouldBypassNextImageOptimizer(src)}
-                        />
+                          src={preview.url}
+                          unoptimized={shouldBypassNextImageOptimizer(preview.url)}
+                        /> : <span className="grid h-full place-items-center text-sm text-white/60">{preview.type === "video" ? "Video" : "Audio"}</span>}
                       </div>
                     ))}
                     {Array.from({
@@ -809,7 +838,7 @@ export function CommunityWorkspace() {
                       {collection.ownerName ? ` · by ${collection.ownerName}` : ""}
                     </p>
                   </div>
-                </div>
+                </Link>
               ))
             ) : authorityShowsEmpty(collectionsAuthority, collections.length) ? (
               <p className="text-[13px] font-medium text-[rgb(170,170,170)]">
@@ -817,15 +846,11 @@ export function CommunityWorkspace() {
               </p>
             ) : null}
           </div>
-          {orderedCollections.length > visibleCollections.length ? (
-            <CommunityShowMoreButton
-              label="Show more collections"
-              onClick={() =>
-                setVisibleCollectionCount((current) =>
-                  Math.min(orderedCollections.length, current + 3),
-                )
-              }
-            />
+          {collectionsPageError && <p role="alert" className="mt-3 text-sm text-rose-300">{collectionsPageError}</p>}
+          {orderedCollections.length > visibleCollections.length || collectionsNextCursor ? (
+            <button className="mt-4 w-full rounded-lg bg-white/10 py-3 text-sm font-bold" disabled={collectionsPageBusy} onClick={() => void showMoreCollections()} type="button">
+              {collectionsPageBusy ? "Loading collections…" : collectionsPageError ? "Retry more collections" : "Show more collections"}
+            </button>
           ) : null}
         </section>
       </div>

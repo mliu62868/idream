@@ -607,6 +607,11 @@ function interleaveFeedItems<T, U>(primary: T[], secondary: U[]) {
   return items;
 }
 
+const communityCollectionsCursorSchema = z.object({
+  createdAt: z.iso.datetime(),
+  id: z.string().min(1).max(200),
+}).strict();
+
 export async function community(request: Request, segments: string[]) {
   const ctx = await getAuthCtx(request);
   requireAgeGate(ctx);
@@ -615,12 +620,23 @@ export async function community(request: Request, segments: string[]) {
 
   if (view === "collections") {
     const focusedCollectionId = url.searchParams.get("collection")?.trim() ?? "";
+    const limit = clampInt(url.searchParams.get("limit"), 1, 60, 20);
+    let cursor: z.infer<typeof communityCollectionsCursorSchema> | null = null;
+    const encodedCursor = url.searchParams.get("cursor");
+    if (encodedCursor) {
+      try {
+        if (encodedCursor.length > 2_048) throw new Error("Cursor too large");
+        cursor = communityCollectionsCursorSchema.parse(JSON.parse(Buffer.from(encodedCursor, "base64url").toString("utf8")));
+      } catch {
+        throw Errors.badRequest("Invalid collections cursor. Refresh the collection list.");
+      }
+    }
     const [recentCollections, focusedCollection] = await Promise.all([
       prisma.mediaCollection.findMany({
-        where: publicCollectionAudienceWhere,
+        where: { AND: [publicCollectionAudienceWhere, ...(cursor ? [{ OR: [{ createdAt: { lt: new Date(cursor.createdAt) } }, { createdAt: new Date(cursor.createdAt), id: { lt: cursor.id } }] }] : [])] },
         include: mediaCollectionInclude(true),
-        orderBy: { createdAt: "desc" },
-        take: 20,
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: limit + 1,
       }),
       focusedCollectionId
         ? prisma.mediaCollection.findFirst({
@@ -634,12 +650,16 @@ export async function community(request: Request, segments: string[]) {
           })
         : Promise.resolve(null),
     ]);
-    const collections =
-      focusedCollection &&
-      !recentCollections.some((collection) => collection.id === focusedCollection.id)
-        ? [...recentCollections, focusedCollection]
-        : recentCollections;
-    return ok({ collections: collections.map(mediaCollectionDTO) });
+    const page = recentCollections.slice(0, limit);
+    const last = page.at(-1);
+    // A deep-linked older collection is extra context, never the cursor for the real page.
+    const collections = focusedCollection && !page.some((collection) => collection.id === focusedCollection.id)
+      ? [...page, focusedCollection]
+      : page;
+    return ok({
+      collections: collections.map(mediaCollectionDTO),
+      nextCursor: recentCollections.length > limit && last ? Buffer.from(JSON.stringify({ createdAt: last.createdAt.toISOString(), id: last.id })).toString("base64url") : null,
+    });
   }
 
   if (view === "campaigns") {

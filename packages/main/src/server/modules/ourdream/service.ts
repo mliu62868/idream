@@ -182,6 +182,7 @@ import {
   publicCharacterAudienceWhere,
   directCharacterAudienceWhere,
   publicReadableMediaAssetWhere,
+  publicCollectionAudienceWhere,
   resolvePublicCharacterReleaseAssetPack,
 } from "./public-content-audience";
 import {
@@ -189,6 +190,7 @@ import {
   characterInclude,
   mediaCollectionDTO,
   mediaCollectionInclude,
+  collectionMediaViewUrl,
   mediaFileExtension,
   mediaViewUrl,
   visualProfileDTO,
@@ -618,6 +620,12 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
     if (!id && method === "GET") return listMedia(request);
     if (id === "collections" && !action && method === "GET") return listMediaCollections(request);
     if (id === "collections" && !action && method === "POST") return createMediaCollection(request);
+    if (id === "collections" && action && !child && method === "GET") {
+      return getMediaCollection(request, action);
+    }
+    if (id === "collections" && action && child === "items" && grandchild && method === "DELETE") {
+      return removeMediaFromCollection(request, action, grandchild);
+    }
     if (id === "collections" && action && !child && method === "PATCH") {
       return updateMediaCollection(request, action);
     }
@@ -2601,9 +2609,85 @@ async function listMediaCollections(request: Request) {
   const collections = await prisma.mediaCollection.findMany({
     where: { ownerId: user.id },
     include: mediaCollectionInclude(),
-    orderBy: { createdAt: "desc" },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
   });
   return ok({ collections: collections.map(mediaCollectionDTO) });
+}
+
+const collectionItemsCursorSchema = z.object({
+  scope: z.string().length(64),
+  sortOrder: z.number().int().nonnegative(),
+  id: z.string().min(1).max(200),
+}).strict();
+
+async function getMediaCollection(request: Request, collectionId: string) {
+  const ctx = await getAuthCtx(request);
+  requireAgeGate(ctx);
+  const url = new URL(request.url);
+  const limit = clampInt(url.searchParams.get("limit"), 1, 60, 12);
+  const scope = canonicalJsonHash({ collectionId, viewerId: ctx.userId ?? null });
+  let cursor: z.infer<typeof collectionItemsCursorSchema> | null = null;
+  const encodedCursor = url.searchParams.get("cursor");
+  if (encodedCursor) {
+    try {
+      if (encodedCursor.length > 2_048) throw new Error("Cursor too large");
+      cursor = collectionItemsCursorSchema.parse(JSON.parse(Buffer.from(encodedCursor, "base64url").toString("utf8")));
+      if (cursor.scope !== scope) throw new Error("Collection or viewer changed");
+    } catch {
+      throw Errors.badRequest("Collection cursor does not match the current view. Refresh the collection.");
+    }
+  }
+  // SPEC: recheck the public audience on every page; an owner may also manage private or empty collections.
+  const data = await prisma.$transaction(async (tx) => {
+    const collection = await tx.mediaCollection.findFirst({
+      where: { id: collectionId, OR: [publicCollectionAudienceWhere, ...(ctx.userId ? [{ ownerId: ctx.userId }] : [])] },
+      include: mediaCollectionInclude(),
+    });
+    if (!collection) throw Errors.notFound("Collection not found");
+    const canManage = collection.ownerId === ctx.userId;
+    const items = await tx.mediaCollectionItem.findMany({
+      where: {
+        collectionId,
+        ...(cursor ? { OR: [{ sortOrder: { gt: cursor.sortOrder } }, { sortOrder: cursor.sortOrder, mediaAssetId: { gt: cursor.id } }] } : {}),
+      },
+      orderBy: [{ sortOrder: "asc" }, { mediaAssetId: "asc" }],
+      take: limit + 1,
+      include: { mediaAsset: { select: { id: true, type: true, url: true, storageKey: true, contentType: true, deletedAt: true, safetyStatus: true, metadata: true } } },
+    });
+    const page = items.slice(0, limit);
+    const last = page.at(-1);
+    return {
+      collection: { ...mediaCollectionDTO(collection), itemCount: await tx.mediaCollectionItem.count({ where: { collectionId } }) },
+      canManage,
+      items: page.map(({ mediaAsset }) => ({
+        id: mediaAsset.id,
+        type: mediaAsset.type,
+        // An unavailable member remains removable by its owner without exposing its bytes.
+        url: mediaAsset.deletedAt || mediaAsset.safetyStatus !== "passed" || !isMediaAssetOperationalForAuthority(mediaAsset.metadata) ? null : collectionMediaViewUrl(mediaAsset),
+      })),
+      nextCursor: items.length > limit && last ? Buffer.from(JSON.stringify({ scope, sortOrder: last.sortOrder, id: last.mediaAssetId })).toString("base64url") : null,
+    };
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+  return ok(data, { headers: { "cache-control": "no-store" } });
+}
+
+async function removeMediaFromCollection(request: Request, collectionId: string, mediaAssetId: string) {
+  const ctx = await getAuthCtx(request);
+  const user = requireUser(ctx);
+  requireAgeGate(ctx);
+  requireAgeVerified(ctx);
+  const result = await prisma.$transaction(async (tx) => {
+    // All membership and visibility writes serialize on the collection, so removing the last item cannot leave it public.
+    const owned = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`SELECT id FROM media_collections WHERE id = ${collectionId} AND "ownerId" = ${user.id} FOR UPDATE`);
+    if (!owned.length) throw Errors.notFound("Collection not found");
+    const removed = await tx.mediaCollectionItem.deleteMany({ where: { collectionId, mediaAssetId } });
+    const remaining = await tx.mediaCollectionItem.count({ where: { collectionId } });
+    if (!remaining) await tx.mediaCollection.update({ where: { id: collectionId }, data: { visibility: "private" } });
+    const collection = await tx.mediaCollection.findUniqueOrThrow({ where: { id: collectionId }, include: mediaCollectionInclude() });
+    return { removed: removed.count > 0, collection };
+  });
+  if (result.removed) await trackEvent("media_collection_item_removed", { collectionId, mediaAssetId }, ctx);
+  return ok({ removed: result.removed, collection: mediaCollectionDTO(result.collection) });
 }
 
 async function createMediaCollection(request: Request) {
@@ -2666,13 +2750,9 @@ async function updateMediaCollection(request: Request, collectionId: string) {
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const body = mediaCollectionUpdateSchema.parse(await jsonBody(request));
-  const existing = await prisma.mediaCollection.findFirst({
-    where: { id: collectionId, ownerId: user.id },
-    select: { id: true },
-  });
-  if (!existing) throw Errors.notFound("Collection not found");
-
   const collection = await prisma.$transaction(async (tx) => {
+    const owned = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`SELECT id FROM media_collections WHERE id = ${collectionId} AND "ownerId" = ${user.id} FOR UPDATE`);
+    if (!owned.length) throw Errors.notFound("Collection not found");
     if (body.visibility === "public") {
       const items = await tx.mediaCollectionItem.findMany({
         where: { collectionId },
@@ -2722,17 +2802,12 @@ async function addMediaToCollection(request: Request, collectionId: string) {
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const body = mediaCollectionItemSchema.parse(await jsonBody(request));
-  const [collection, media] = await Promise.all([
-    prisma.mediaCollection.findFirst({
-      where: { id: collectionId, ownerId: user.id },
-      select: { id: true, visibility: true },
-    }),
-    assertMediaOwner(body.mediaAssetId, user.id),
-  ]);
-  if (!collection) throw Errors.notFound("Collection not found");
-
+  const media = await assertMediaOwner(body.mediaAssetId, user.id);
   const updated = await prisma.$transaction(async (tx) => {
-    const sortOrder = await tx.mediaCollectionItem.count({ where: { collectionId } });
+    const [collection] = await tx.$queryRaw<Array<{ id: string; visibility: string }>>(Prisma.sql`SELECT id, visibility FROM media_collections WHERE id = ${collectionId} AND "ownerId" = ${user.id} FOR UPDATE`);
+    if (!collection) throw Errors.notFound("Collection not found");
+    const maximum = await tx.mediaCollectionItem.aggregate({ where: { collectionId }, _max: { sortOrder: true } });
+    const sortOrder = (maximum._max.sortOrder ?? -1) + 1;
     if (collection.visibility === "public") {
       assertPublicCollectionMediaAsset(media);
       await tx.mediaAsset.update({

@@ -351,7 +351,7 @@ describe("community collections", () => {
       id: string;
       itemCount: number;
       ownerName: string | null;
-      previews: string[];
+      previews: Array<{ id: string; type: string; url: string }>;
     }>).find((item) => item.id === `${P}coll-1`);
     expect(collection).toBeUndefined();
   });
@@ -402,7 +402,7 @@ describe("community collections", () => {
     const collection = (response.data.collections as Array<{
       id: string;
       itemCount: number;
-      previews: string[];
+      previews: Array<{ id: string; type: string; url: string }>;
     }>).find((item) => item.id === collectionId);
 
     expect(collection).toBeUndefined();
@@ -454,7 +454,7 @@ describe("community collections", () => {
       id: string;
       itemCount: number;
       name: string;
-      previews: string[];
+      previews: Array<{ id: string; type: string; url: string }>;
     }>).find((item) => item.id === created.data.collection.id);
     expect(publicCollection).toMatchObject({
       itemCount: 1,
@@ -899,7 +899,7 @@ describe("feed share and remix provenance", () => {
       feed.data.items as Array<{
         id: string;
         type: string;
-        collection?: { name: string; itemCount: number; previews: string[] };
+        collection?: { name: string; itemCount: number; previews: Array<{ id: string; type: string; url: string }> };
       }>
     ).find((item) => item.id === itemId);
     expect(collectionItem).toMatchObject({
@@ -908,9 +908,11 @@ describe("feed share and remix provenance", () => {
       collection: {
         name: "Feed Collection Board",
         itemCount: 1,
-        previews: [
-          `/user-content/${Buffer.from(mediaId, "utf8").toString("base64url")}/content.webp`,
-        ],
+        previews: [{
+          id: mediaId,
+          type: "image",
+          url: `/user-content/${Buffer.from(mediaId, "utf8").toString("base64url")}/content.webp`,
+        }],
       },
     });
 
