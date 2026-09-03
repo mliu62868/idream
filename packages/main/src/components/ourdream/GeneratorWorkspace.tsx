@@ -518,7 +518,7 @@ export function GeneratorWorkspace() {
   } = useViewerResource<GenerationJob[], void, PrivateViewerTicket>({
     request: () => ({
       path: "/api/v1/generation/jobs?limit=20",
-      init: { cache: "no-store" },
+      init: { cache: "no-store", headers: viewerScopeRef.current ? { "x-idream-viewer-scope": viewerScopeRef.current } : undefined },
     }),
     parse: (raw) => parseGenerationJobsResponse(raw).items,
     fallbackError: "Jobs could not load.",
