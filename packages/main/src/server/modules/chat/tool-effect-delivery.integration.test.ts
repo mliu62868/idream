@@ -56,8 +56,8 @@ describe("initial Chat image delivery", () => {
     const gen = await generationTestProviders();
     vi.spyOn(gen.image, "generate").mockResolvedValue({ ok: false, error: { code: "backend_error", message: "Controlled pre-submit connection refusal", retryable: false, outcome: "definitive" } });
     const create = generation.createChatImageGenerationJob;
-    const createSpy = vi.spyOn(generation, "createChatImageGenerationJob").mockImplementationOnce(async payload => {
-      const job = await create(payload);
+    const createSpy = vi.spyOn(generation, "createChatImageGenerationJob").mockImplementationOnce(async (...args) => {
+      const job = await create(...args);
       // Force the real Gen terminal + Main refund to commit before the caller
       // receives its reservation ACK. No timing delay or fake Job status.
       await runQueuedGenerationJobs();
