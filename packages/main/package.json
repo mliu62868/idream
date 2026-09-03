@@ -104,7 +104,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@playwright/test": "1.61.0",
+    "@playwright/test": "1.61.1",
     "@prisma/engines": "7.6.0",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^24",
