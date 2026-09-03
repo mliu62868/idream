@@ -308,7 +308,7 @@ export function generatorVideoModeCopy(characterTitle: string) {
     promptPlaceholder:
       "Describe movement, camera motion, and pacing for this starting image",
     sourceTitle: "Animate this image",
-    sourceDescription: `This exact ${characterTitle} image is the first frame. Video adds motion; it does not replace the outfit, lighting, or location.`,
+    sourceDescription: `This image of ${characterTitle} is the animation reference. Describe how they should move.`,
   } as const;
 }
 

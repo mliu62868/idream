@@ -106,14 +106,14 @@ describe("generator model selection authority", () => {
 });
 
 describe("generator video product contract", () => {
-  it("explains that video animates the pinned character image", () => {
+  it("identifies the character image as an animation reference without promising an exact first frame", () => {
     expect(generatorVideoModeCopy("Alexa Reeves")).toEqual({
       promptLabel: "Motion direction",
       promptPlaceholder:
         "Describe movement, camera motion, and pacing for this starting image",
       sourceTitle: "Animate this image",
       sourceDescription:
-        "This exact Alexa Reeves image is the first frame. Video adds motion; it does not replace the outfit, lighting, or location.",
+        "This image of Alexa Reeves is the animation reference. Describe how they should move.",
     });
   });
 
