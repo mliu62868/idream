@@ -26,6 +26,60 @@ async function waitUntil(predicate: () => boolean) {
   }
 }
 
+describe("disabled model profile visibility", () => {
+  let container: HTMLDivElement;
+  let root: Root | null;
+
+  beforeEach(() => {
+    apiGet.mockReset();
+    apiWrite.mockReset();
+    apiGet.mockImplementation(async (path) => ({
+      items: path.startsWith("/api/v2/admin/generation/model-profiles") ? [
+        { id: "h3", label: "H3", mode: "video", status: "active", version: 4, enabled: false },
+        { id: "redgraft", label: "RedGraft", mode: "video", status: "active", version: 2, enabled: true },
+      ] : [],
+      pageInfo: { endCursor: null, hasNextPage: false },
+    }));
+    window.history.replaceState(null, "", "/admin/ops/profiles");
+    container = document.createElement("div");
+    document.body.append(container);
+    root = null;
+  });
+
+  afterEach(async () => {
+    await act(async () => root?.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    ["en", "Profile disabled", "Disable", "New requests stop using this profile. Restore service only after the replacement profile is validated and published."],
+    ["zh", "已停用", "禁用", "新请求将不再使用此配置。替代配置通过验证并发布后，才能恢复服务。"],
+  ] as const)("distinguishes a disabled active profile and explains restoration in %s", async (locale, disabled, disableAction, restoration) => {
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<AdminI18nProvider locale={locale}><GenerationConfigWorkspace permissions={{ manageFlags: true, manageProfiles: true }} /></AdminI18nProvider>);
+    });
+    await waitUntil(() => [...container.querySelectorAll("h2")].some(heading => heading.textContent === "H3"));
+    const rows = [...container.querySelectorAll("button")];
+    const h3 = rows.find(button => button.querySelector("span")?.textContent === "H3")!;
+    const redgraft = rows.find(button => button.querySelector("span")?.textContent === "RedGraft")!;
+    expect(h3.textContent).toContain(disabled);
+    expect(h3.textContent).toContain("v4");
+    expect(redgraft.textContent).not.toContain(disabled);
+    const detail = () => [...container.querySelectorAll("h2")].find(heading => ["H3", "RedGraft"].includes(heading.textContent ?? ""))!.closest("section")!;
+    expect(detail().textContent).toContain(disabled);
+    expect([...detail().querySelectorAll("button")].some(button => button.textContent === disableAction)).toBe(false);
+
+    await act(async () => redgraft.click());
+    expect(detail().textContent).not.toContain(disabled);
+    await act(async () => [...detail().querySelectorAll("button")].find(button => button.textContent === disableAction)!.click());
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(restoration);
+    expect(document.querySelector('[role="dialog"]')?.textContent).not.toContain("second edit on this same profile");
+    expect(apiWrite).not.toHaveBeenCalled();
+  });
+});
+
 /**
  * SPEC: 功能开关这张表走 ui/DataTable，和后台其它十几张列表同一套表现层。
  *
