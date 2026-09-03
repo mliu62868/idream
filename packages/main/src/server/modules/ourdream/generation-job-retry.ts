@@ -135,7 +135,7 @@ export async function quoteGenerationRetry(input: {
     // A failed Job remains history after its attachment adopts a replacement.
     // Do not advertise another paid retry; reservation still rechecks this
     // binding under locks, and an accepted key bypasses quotes when replayed.
-    const attachment = await prisma.chatTurnAttachment.findFirst({
+    const attachment = job.characterId ? await prisma.chatTurnAttachment.findFirst({
       where: {
         generationJobId: job.id,
         ...(job.sourceId ? { id: job.sourceId } : {}),
@@ -144,7 +144,7 @@ export async function quoteGenerationRetry(input: {
         turn: { session: { userId: input.userId, characterId: job.characterId, status: { not: "deleted" } } },
       },
       select: { metadata: true, turn: { select: { attempt: true } } },
-    });
+    }) : null;
     const metadata = jsonRecord(attachment?.metadata);
     const effect = jsonRecord(metadata.effect);
     const attempt = numberFromRecord(metadata, "attempt") ?? numberFromRecord(effect, "attempt") ?? 1;
