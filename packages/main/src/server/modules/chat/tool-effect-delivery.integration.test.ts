@@ -3,9 +3,11 @@ import { compileCharacterSoul } from "@idream/shared";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { providers } from "@/server/providers";
-import { createCharacter, createUser, dreamcoinBalance, generationTestProviders, grantCoins, purgeTestData, runQueuedGenerationJobs } from "@/server/test/helpers";
+import { api, createCharacter, createUser, dreamcoinBalance, expectOk, generationTestProviders, grantCoins, purgeTestData, runQueuedGenerationJobs } from "@/server/test/helpers";
+import { parseGenerationRetryQuoteResponse } from "@/lib/public-api-contracts";
 import * as generation from "../ourdream/service";
 import { createReferenceSetRevision } from "../ourdream/generation-reference-set";
+import { quoteAuthorityFor } from "../ourdream/generation-quote";
 import { applyChatToolEffect } from "./tool-effect";
 import { beginChatTurn, commitChatTerminal, createChatSession, getChatSession } from "./turn-ledger";
 
@@ -34,7 +36,7 @@ afterAll(async () => {
 });
 
 describe("initial Chat image delivery", () => {
-  it("keeps a definitive failure and refund visible when Gen finishes before the first ToolEffect ACK", async () => {
+  it.each(["failed", "completed", "retry-completed"] as const)("keeps %s delivery visible when Gen finishes before the first ToolEffect ACK", async outcome => {
     const userId = `${prefix}${randomUUID()}`;
     await createUser({ id: userId });
     await grantCoins(userId, 40);
@@ -54,17 +56,40 @@ describe("initial Chat image delivery", () => {
     const { snapshot } = await beginChatTurn({ userId, sessionId: session.id, content: "Send me a portrait beside the rainy window.", idempotencyKey: randomUUID() });
     if (!snapshot) throw new Error("Missing accepted Turn");
     const gen = await generationTestProviders();
-    vi.spyOn(gen.image, "generate").mockResolvedValue({ ok: false, error: { code: "backend_error", message: "Controlled pre-submit connection refusal", retryable: false, outcome: "definitive" } });
+    const generate = vi.spyOn(gen.image, "generate");
+    if (outcome !== "completed") generate.mockResolvedValueOnce({ ok: false, error: { code: "backend_error", message: "Controlled pre-submit connection refusal", retryable: false, outcome: "definitive" } });
     const create = generation.createChatImageGenerationJob;
     let creationFailure: unknown;
+    let originalJobId = "";
+    let replacementJobId: string | null = null;
+    let finalCost = 0;
     const createSpy = vi.spyOn(generation, "createChatImageGenerationJob").mockImplementationOnce(async (...args) => {
       try {
         const job = await create(...args);
+        originalJobId = job.id;
+        finalCost = job.costDreamcoins;
         // Force the real Gen terminal + Main refund to commit before the caller
         // receives its reservation ACK. No timing delay or fake Job status.
         await runQueuedGenerationJobs();
-        expect(await prisma.generationJob.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({ status: "failed", errorCode: "backend_error" });
-        expect(await prisma.dreamcoinLedger.count({ where: { sourceId: job.id, reason: "refund" } })).toBe(1);
+        expect(await prisma.generationJob.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject(outcome === "completed" ? { status: "completed" } : { status: "failed", errorCode: "backend_error" });
+        expect(await prisma.dreamcoinLedger.count({ where: { sourceId: job.id, reason: "refund" } })).toBe(outcome === "completed" ? 0 : 1);
+        if (outcome === "retry-completed") {
+          // A faster second browser can observe the failure and retry while
+          // the first invocation's ACK is still in flight. Only this new Job
+          // may own the attachment when the original invocation returns.
+          const quoteResponse = await api("POST", `generation/jobs/${job.id}/retry/quote`, { userId, ageGate: true });
+          expectOk(quoteResponse);
+          const { quote } = parseGenerationRetryQuoteResponse(quoteResponse.json);
+          const retryOptions = { userId, ageGate: true, headers: { "Idempotency-Key": `${userId}:retry` }, body: { quoteAuthority: quoteAuthorityFor(quote, 1) } };
+          const retried = await api("POST", `generation/jobs/${job.id}/retry`, retryOptions);
+          expectOk(retried, 202);
+          replacementJobId = retried.data.job.id;
+          finalCost = retried.data.job.costDreamcoins;
+          const repeated = await api("POST", `generation/jobs/${job.id}/retry`, retryOptions);
+          expectOk(repeated, 202);
+          expect(repeated.data.job.id).toBe(replacementJobId);
+          await runQueuedGenerationJobs();
+        }
         return job;
       } catch (error) {
         creationFailure = error;
@@ -76,13 +101,18 @@ describe("initial Chat image delivery", () => {
     if (creationFailure) throw creationFailure;
     expect(accepted, JSON.stringify(accepted)).toMatchObject({ accepted: true, duplicate: false, generationJobId: expect.any(String) });
     if (!accepted.accepted || !accepted.generationJobId) throw new Error("Missing original image action");
-    expect(await prisma.chatTurnAttachment.findUniqueOrThrow({ where: { id: accepted.attachmentId } })).toMatchObject({ generationJobId: accepted.generationJobId, status: "failed", errorCode: "backend_error", mediaAssetId: null });
+    const finalJobId = replacementJobId ?? originalJobId;
+    expect(accepted.generationJobId).toBe(finalJobId);
+    const delivery = outcome === "failed"
+      ? { generationJobId: finalJobId, status: "failed", errorCode: "backend_error", mediaAssetId: null }
+      : { generationJobId: finalJobId, status: "completed", errorCode: null, mediaAssetId: expect.any(String) };
+    expect(await prisma.chatTurnAttachment.findUniqueOrThrow({ where: { id: accepted.attachmentId } })).toMatchObject(delivery);
     await commitChatTerminal({ version: 1, turnId: snapshot.turnId, sessionId: snapshot.sessionId, assistantMessageId: snapshot.assistantMessageId, attempt: 1, status: "sent", content: "The image request failed.", model: "test", promptTokens: 1, completionTokens: 1, sceneVersion: 0, scene: null, terminalEvidence: { authority: "test", prompt: { productPromptVersion: "companion-product-1", preparedTurnVersion: 4, systemPromptDigest: "a".repeat(64), soulFingerprint: "b".repeat(64) } } });
-    expect((await getChatSession(userId, session.id)).messages.find(message => message.id === snapshot.assistantMessageId)?.attachments).toEqual([expect.objectContaining({ generationJobId: accepted.generationJobId, status: "failed", errorCode: "backend_error" })]);
+    expect((await getChatSession(userId, session.id)).messages.find(message => message.id === snapshot.assistantMessageId)?.attachments).toEqual([expect.objectContaining(delivery)]);
     await applyChatToolEffect(effect);
     expect(createSpy).toHaveBeenCalledTimes(1);
-    expect(await prisma.generationJob.count({ where: { userId } })).toBe(1);
-    expect(await prisma.dreamcoinLedger.count({ where: { userId, reason: "generation_spend" } })).toBe(1);
-    expect(await dreamcoinBalance(userId)).toBe(40);
+    expect(await prisma.generationJob.count({ where: { userId } })).toBe(outcome === "retry-completed" ? 2 : 1);
+    expect(await prisma.dreamcoinLedger.count({ where: { userId, reason: "generation_spend" } })).toBe(outcome === "retry-completed" ? 2 : 1);
+    expect(await dreamcoinBalance(userId)).toBe(outcome === "failed" ? 40 : 40 - finalCost);
   });
 });

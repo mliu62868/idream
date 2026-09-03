@@ -45,11 +45,19 @@ async function fixture() {
   if (!snapshot) throw new Error("Missing accepted Turn");
   // Start at an already failed provider request. Retry itself uses the real
   // quote, reservation, queue, Gen test adapter and Main delivery transaction.
-  vi.spyOn(generation, "createChatImageGenerationJob").mockImplementationOnce(async payload => prisma.generationJob.create({ data: {
+  vi.spyOn(generation, "createChatImageGenerationJob").mockImplementationOnce(async payload => {
+    const job = await prisma.generationJob.create({ data: {
     id: `${userId}-failed`, userId, characterId: character.id, mode: "image", prompt: payload.promptHint, status: "failed", errorCode: "provider_error", controls: { width: 512, height: 640, workflowKey: "qwen-image-edit-img2img", workflowVersion: 2 }, presetIds: [],
     sourceType: "chat_image", sourceId: payload.attachmentId, sourceMeta: { sessionId: session.id, exchangeId: snapshot.turnId, messageId: snapshot.assistantMessageId, promptHint: payload.promptHint },
     visualProfileId: visual.id, visualProfileVersion: visual.version, referenceAssetIds: [source.id], referenceManifest: [{ mediaAssetId: source.id, role: "identity_anchor" }], model: "qwen-image-edit-img2img", profileId: profileKey, profileVersion: 1, provider: "comfyui", orientation: "4:5", outputCount: 1, costDreamcoins: 5,
-  } }));
+    } });
+    const attachment = await prisma.chatTurnAttachment.findUniqueOrThrow({ where: { id: payload.attachmentId } });
+    await prisma.chatTurnAttachment.update({ where: { id: attachment.id }, data: {
+      status: "accepted", generationJobId: job.id,
+      metadata: { ...JSON.parse(JSON.stringify(attachment.metadata)), costDreamcoins: job.costDreamcoins },
+    } });
+    return job;
+  });
   const effect = { version: 2 as const, turnId: snapshot.turnId, attempt: 1, callId: randomUUID(), name: "generate_image_async" as const, effectScope: "turn_action" as const, intent: { requestedNudity: "unspecified" as const }, arguments: { prompt: "Avery beside the rainy window.", orientation: "4:5", outputCount: 1 } };
   const accepted = await applyChatToolEffect(effect);
   if (!accepted.accepted || !accepted.generationJobId) throw new Error("Missing original image action");
