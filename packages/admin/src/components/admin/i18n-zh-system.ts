@@ -54,7 +54,8 @@ export const adminZhSystem: Record<string, string> = {
   "Filter approvals": "筛选审批",
   "Filter users": "筛选用户",
   "Generate test image on {id}": "用 {id} 出一张测试图",
-  "Generations stop routing to this profile immediately. Re-enabling it is a second edit on this same profile.": "生成会立即不再路由到这个配置。重新启用就是在同一个配置上再改一次。",
+  "New requests stop using this profile. Restore service only after the replacement profile is validated and published.": "新请求将不再使用此配置。替代配置通过验证并发布后，才能恢复服务。",
+  "Profile disabled": "已停用",
   "Grant, revoke, or clear one effective permission without changing the user role.":
     "在不改变用户角色的情况下，授予、撤销或清除一项有效权限。",
   "Loading team access…": "正在加载团队权限…",
