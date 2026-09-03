@@ -47,7 +47,7 @@ describe("initial Chat image delivery", () => {
     sourceKeys.push(sourceKey);
     await providers.blob.putPrivate({ key: sourceKey, body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlZlE0AAAAASUVORK5CYII=", "base64"), contentType: "image/png" });
     const source = await prisma.mediaAsset.create({ data: { id: `${userId}-source`, ownerId: userId, characterId: character.id, type: "image", url: `/api/media/${userId}-source/content.png`, storageKey: sourceKey, contentType: "image/png", visibility: "private", safetyStatus: "passed", width: 1, height: 1, metadata: {} } });
-    const visual = await prisma.characterVisualProfile.create({ data: { characterId: character.id, identityPrompt: "Avery", faceTraits: {}, hairTraits: {}, bodyTraits: {}, signatureTraits: {}, styleTraits: {}, anchorAssetIds: [source.id], adapterRefs: {}, createdFrom: "test" } });
+    const visual = await prisma.characterVisualProfile.create({ data: { characterId: character.id, status: "active", identityPrompt: "Avery", faceTraits: {}, hairTraits: {}, bodyTraits: {}, signatureTraits: {}, styleTraits: {}, anchorAssetIds: [source.id], adapterRefs: {}, createdFrom: "test" } });
     await prisma.$transaction(tx => createReferenceSetRevision(tx, visual, "test", [{ mediaAssetId: source.id, position: 0, role: "primary_face", weight: 1, selectionReason: "primary_identity_anchor" }]));
     const session = await createChatSession(userId, { characterId: character.id });
     await prisma.recentChat.update({ where: { sessionId: session.id }, data: { memoryEnabled: false } });
