@@ -825,6 +825,62 @@ describe("GeneratorWorkspace media journeys", () => {
     expect(container.querySelector('[data-testid="generator-video-specifications"]')).toBeNull();
   });
 
+  it.each([
+    { mode: "video", modelId: "h3-model", modelLabel: "H3 Video", autoLabel: "Auto (animate source)" },
+    { mode: "image", modelId: "premium-image", modelLabel: "Premium image", autoLabel: "Auto (identity-aware)" },
+  ] as const)("keeps Auto distinct from an explicit $mode model and requotes the automatic route", async ({ mode, modelId, modelLabel, autoLabel }) => {
+    const originalFetch = globalThis.fetch;
+    const quoteBodies: Array<{ mode: string; controls: { model?: string } }> = [];
+    const model = { id: modelId, label: modelLabel, maxCount: 1, costMultiplier: 1, entitlement: null };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/generation/config") return Response.json({ ok: true, data: {
+        ...config, entitlements: { premium_controls: true, video_generation: true },
+        pricing: { ...config.pricing, image: { baseCost: 5, maxCount: 1 } },
+        image: { ...config.image, availability: { state: "available" }, orientations: ["4:5"], models: [model],
+          recipes: ["character", "freeplay"].map((useCase) => ({ id: `image-${useCase}`, rowId: `image-${useCase}-v1`, label: "Image", mode: "image", useCase, version: 1 })) },
+        video: { ...config.video, enabled: true, availability: { state: "available" }, models: [model],
+          recipes: [{ id: "video-recipe", rowId: "video-recipe-v1", label: "Animate character", mode: "video", useCase: "character", version: 1 }] },
+      } });
+      if (path.startsWith("/api/v1/characters?")) return Response.json({ ok: true, data: {
+        items: [{ id: "character", title: "Mira", age: "28", description: "Photographer",
+          likes: "0", chats: "0", creator: "iDream", image: "/user-content/portrait.png" }], nextCursor: null,
+      } });
+      if (path === "/api/v1/generation/quote") {
+        const body = JSON.parse(String(init?.body));
+        quoteBodies.push(body);
+        return Response.json({ ok: true, data: { quote: {
+          ...quote, mode: body.mode, profileId: body.controls.model ?? "automatic-route",
+        } } });
+      }
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(mode === "video" ? button("Video") : container.querySelector("#generator-freeplay")!);
+    const select = container.querySelector<HTMLSelectElement>('[aria-label="Model"]')!;
+    await act(async () => {
+      select.value = modelId;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await settle();
+    expect(select.value).toBe(modelId);
+    expect(select.options[select.selectedIndex].textContent).toBe(modelLabel);
+    expect(quoteBodies.at(-1)).toMatchObject({ mode, controls: { model: modelId } });
+    expect(select.querySelector('option[value=""]')?.textContent).toBe(autoLabel);
+
+    const quotesBeforeAuto = quoteBodies.length;
+    await act(async () => {
+      select.value = "";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await settle();
+    expect(select.value).toBe("");
+    expect(select.options[select.selectedIndex].textContent).toBe(autoLabel);
+    expect(quoteBodies.length).toBeGreaterThan(quotesBeforeAuto);
+    expect(quoteBodies.at(-1)).toMatchObject({ mode });
+    expect(quoteBodies.at(-1)?.controls).not.toHaveProperty("model");
+  });
+
   it("shows an unconfirmed job with support access instead of queue or retry promises", async () => {
     const originalFetch = globalThis.fetch;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

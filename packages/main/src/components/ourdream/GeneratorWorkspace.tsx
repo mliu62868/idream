@@ -2916,7 +2916,7 @@ export function GeneratorWorkspace() {
                   }}
                   value={formUnconfirmed && modelSelection.explicit ? modelSelection.id : modelSelectionProjection.selectValue}
                 >
-                  <option value="">{modelSelectionProjection.displayedLabel}</option>
+                  <option value="">{mode === "video" ? "Auto (animate source)" : "Auto (identity-aware)"}</option>
                   {formUnconfirmed && modelSelection.explicit && !availableModels.some((item) => item.id === modelSelection.id) && (
                     <option value={modelSelection.id}>Original model selection</option>
                   )}
