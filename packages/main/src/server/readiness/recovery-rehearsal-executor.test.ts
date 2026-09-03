@@ -249,7 +249,7 @@ function fakeRunner(
       }
       if (input.stage.endsWith("_restore") || input.stage.endsWith("_extract")) {
         const args = input.args ?? [];
-        const archive = args[args.indexOf("-xzf") + 1]!;
+        const archive = args[args.findIndex((arg) => arg === "-xzf" || arg === "-pxzf") + 1]!;
         const target = args[args.indexOf("-C") + 1]!;
         const source = archives.get(archive)!;
         const restored = path.join(target, path.basename(source));

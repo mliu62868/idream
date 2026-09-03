@@ -291,7 +291,8 @@ async function validateArchiveReconstruction(input: {
     scratch = await mkdtemp(path.join(tmpdir(), "idream-recovery-inspect-"));
     input.runner.run({
       command: "tar",
-      args: ["-xzf", input.archivePath, "-C", scratch],
+      // INVARIANT: archived modes are authority; the caller's umask cannot change them.
+      args: ["-pxzf", input.archivePath, "-C", scratch],
       stage: `recovery_bundle_${input.archiveLabel}_extract`,
     });
     const topLevel = await readdir(scratch, { withFileTypes: true });
