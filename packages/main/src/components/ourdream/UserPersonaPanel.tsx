@@ -8,8 +8,8 @@ type Settings = z.infer<typeof userChatPersonaResponseSchema>;
 const emptyDraft = { enabled: true, name: "", description: "" };
 const path = "/api/v1/profile/chat-persona";
 
-/** The parent keys this panel by the authenticated account, so drafts never cross users. */
-export function UserPersonaPanel() {
+/** Reads and writes must match the account already confirmed by the profile page. */
+export function UserPersonaPanel({ ownerScope }: { ownerScope: string }) {
   const [saved, setSaved] = useState<Settings | null>(null);
   const [draft, setDraft] = useState(emptyDraft);
   const [pending, setPending] = useState(false);
@@ -21,10 +21,20 @@ export function UserPersonaPanel() {
   useEffect(() => {
     const epoch = ++epochRef.current;
     const controller = new AbortController();
+    setSaved(null);
+    setDraft(emptyDraft);
+    setPending(false);
+    setError("");
+    setNotice("");
+    setAccountChanged(false);
     void (async () => {
       try {
         const settings = await readResponse(await fetch(path, { cache: "no-store", signal: controller.signal }));
         if (epoch !== epochRef.current) return;
+        if (settings.ownerScope !== ownerScope) {
+          setAccountChanged(true);
+          throw new Error("The signed-in account changed. Reload this page before editing your persona");
+        }
         setSaved(settings);
         setDraft(settings.persona ?? emptyDraft);
       } catch (cause) {
@@ -32,10 +42,10 @@ export function UserPersonaPanel() {
       }
     })();
     return () => { epochRef.current += 1; controller.abort(); };
-  }, [reload]);
+  }, [ownerScope, reload]);
 
   async function save(clear = false) {
-    if (!saved || pending) return;
+    if (!saved || saved.ownerScope !== ownerScope || pending || accountChanged) return;
     const epoch = epochRef.current;
     setPending(true);
     setError("");

@@ -9,7 +9,7 @@ let container: HTMLDivElement;
 let root: Root;
 beforeEach(() => { container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container); });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
-async function render(viewer = "one") { await act(async () => root.render(createElement(UserPersonaPanel, { key: viewer }))); }
+async function render(viewer = "one", key = viewer) { await act(async () => root.render(createElement(UserPersonaPanel, { key, ownerScope: `user:${viewer}` }))); }
 function field(label: string) { return container.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[aria-label="${label}"]`)!; }
 async function enter(label: string, value: string) {
   await act(async () => {
@@ -69,7 +69,7 @@ describe("global persona settings", () => {
     expect(container.textContent).not.toContain("changed elsewhere");
   });
 
-  it("ignores a previous account's late save after the panel is keyed to a different viewer", async () => {
+  it("ignores a previous account's late save when the confirmed owner changes without a remount", async () => {
     let resolveSave!: (response: Response) => void;
     let reads = 0;
     vi.stubGlobal("fetch", vi.fn(async (_url: unknown, init?: RequestInit) => init?.method === "PUT"
@@ -78,10 +78,23 @@ describe("global persona settings", () => {
     await render();
     await enter("Persona name", "Old account draft");
     await click("Save persona");
-    await render("two");
+    await render("two", "one");
     await act(async () => resolveSave(success({ persona: { name: "Old account draft", description: "Reader", enabled: true, version: 2 }, version: 2 })));
     expect(field("Persona name").value).toBe("Cedar");
     expect(container.textContent).not.toContain("Persona saved for new messages");
+  });
+
+  it("rejects a first persona read for a different account than the profile page", async () => {
+    const fetcher = vi.fn(async () => success({ persona: { name: "Other account", description: "Private description", enabled: true, version: 1 }, version: 1 }, "user:two"));
+    vi.stubGlobal("fetch", fetcher);
+    await render("one");
+    expect(field("Persona name").value).toBe("");
+    expect(field("About your persona").value).toBe("");
+    expect(field("Persona name").disabled).toBe(true);
+    expect(container.textContent).toContain("Reload this page");
+    expect(container.textContent).not.toContain("Other account");
+    await click("Save persona");
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the loaded owner in writes and hides the old draft when the current account rejects it", async () => {

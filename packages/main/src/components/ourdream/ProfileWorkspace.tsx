@@ -274,7 +274,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
   const [entitlements, setEntitlements] = useState<Record<string, unknown>>({});
   const [displayName, setDisplayName] = useState("");
   const [profileName, setProfileName] = useState("");
-  const [profileViewerKey, setProfileViewerKey] = useState("");
+  const [profileOwnerScope, setProfileOwnerScope] = useState("");
   const [tab, setTab] = useState<LibraryTab>(() =>
     typeof window === "undefined" ? "recent" : libraryTabFromSearch(window.location.search),
   );
@@ -333,7 +333,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
     setEntitlements({});
     setDisplayName("");
     setProfileName("");
-    setProfileViewerKey("");
+    setProfileOwnerScope("");
     setItems([]);
     setLibraryAuthority(initialAuthorityStatus());
     setEmailUpdates(null);
@@ -382,7 +382,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
       setAuthState("authenticated");
       setDisplayName(nextName);
       setProfileName(nextName);
-      setProfileViewerKey(user.email);
+      setProfileOwnerScope(`user:${user.id}`);
       setBalance(profileData.balance);
       setSubscription(profileData.subscription);
       setBillingAccess(profileData.billingAccess);
@@ -1352,7 +1352,7 @@ export function ProfileWorkspace({ routePath }: Readonly<ProfileWorkspaceProps>)
                 </button>
               </div>
             </label>
-            {profileViewerKey ? <UserPersonaPanel key={profileViewerKey} /> : null}
+            {profileOwnerScope ? <UserPersonaPanel key={profileOwnerScope} ownerScope={profileOwnerScope} /> : null}
             <div
               className="mt-4 rounded-[10px] bg-[rgb(36,36,36)] p-3"
               data-testid="profile-notifications-panel"
