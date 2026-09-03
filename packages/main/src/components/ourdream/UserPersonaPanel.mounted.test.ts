@@ -69,17 +69,25 @@ describe("global persona settings", () => {
     expect(container.textContent).not.toContain("changed elsewhere");
   });
 
-  it("ignores a previous account's late save when the confirmed owner changes without a remount", async () => {
+  it("ignores a previous account's late save when the confirmed owner changes without a parent remount", async () => {
     let resolveSave!: (response: Response) => void;
+    let resolveNextRead!: (response: Response) => void;
     let reads = 0;
     vi.stubGlobal("fetch", vi.fn(async (_url: unknown, init?: RequestInit) => init?.method === "PUT"
       ? new Promise<Response>(resolve => { resolveSave = resolve; })
-      : success({ persona: { name: ++reads === 1 ? "Robin" : "Cedar", description: "Reader", enabled: true, version: 1 }, version: 1 }, reads === 1 ? "user:one" : "user:two")));
+      : ++reads === 1
+        ? success({ persona: { name: "Robin", description: "Reader", enabled: true, version: 1 }, version: 1 })
+        : new Promise<Response>(resolve => { resolveNextRead = resolve; })));
     await render();
     await enter("Persona name", "Old account draft");
     await click("Save persona");
     await render("two", "one");
+    expect(field("Persona name").value).toBe("");
+    expect(field("Persona name").disabled).toBe(true);
     await act(async () => resolveSave(success({ persona: { name: "Old account draft", description: "Reader", enabled: true, version: 2 }, version: 2 })));
+    expect(field("Persona name").value).toBe("");
+    expect(container.textContent).not.toContain("Persona saved for new messages");
+    await act(async () => resolveNextRead(success({ persona: { name: "Cedar", description: "Reader", enabled: true, version: 1 }, version: 1 }, "user:two")));
     expect(field("Persona name").value).toBe("Cedar");
     expect(container.textContent).not.toContain("Persona saved for new messages");
   });
