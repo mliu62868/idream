@@ -71,7 +71,16 @@ describe("GeneratorWorkspace owned preset editing", () => {
 
   beforeEach(() => {
     window.history.replaceState(null, "", "/generate");
-    window.localStorage.clear();
+    // Keep browser storage isolated from Node's optional file-backed storage.
+    const stored = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      get length() { return stored.size; },
+      key: (index: number) => [...stored.keys()][index] ?? null,
+      getItem: (key: string) => stored.get(key) ?? null,
+      setItem: (key: string, value: string) => { stored.set(key, String(value)); },
+      removeItem: (key: string) => { stored.delete(key); },
+      clear: () => stored.clear(),
+    });
     requests = [];
     scope = config.viewer.scope;
     premium = true;
@@ -262,6 +271,44 @@ describe("GeneratorWorkspace owned preset editing", () => {
     await click(button("Save changes"));
     expect(calls).toBe(2);
     expect(container.textContent).toContain('Updated preset "Rainy window".');
+  });
+
+  it.each([true, false])("keeps an outstanding save locked across focus, including ACK during revalidation: %s", async ackDuringRevalidation => {
+    const pending = deferredResponse();
+    const reconnect = deferredResponse();
+    let configReads = 0;
+    let writes = 0;
+    const created = { id: "pending-setup", type: "mode", label: "Pending setup", category: "", visibility: "private", controls: { backgroundPresetId: "cafe" } };
+    const baseFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (String(url) === "/api/v1/generation/config" && ++configReads === 2) return reconnect.promise;
+      if (init?.method === "POST") { writes += 1; return pending.promise; }
+      return baseFetch(url, init);
+    }));
+    await mount();
+    await select("Background", "cafe");
+    await input("Preset name", created.label);
+    await click(button("Save"));
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await settle();
+    expect(container.querySelector('[data-testid="my-presets"]')).toBeNull();
+    const acknowledge = async () => {
+      owned.push(created);
+      pending.resolve(Response.json({ ok: true, data: { preset: created } }));
+      await settle();
+    };
+    if (ackDuringRevalidation) await acknowledge();
+    reconnect.resolve(Response.json({ ok: true, data: { ...config, presets: catalog } }));
+    await settle();
+    if (!ackDuringRevalidation) {
+      expect(button("Saving…").disabled).toBe(true);
+      await click(button("Saving…"));
+      expect(writes).toBe(1);
+      await acknowledge();
+    }
+    expect(writes).toBe(1);
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Preset name"]')?.value).toBe("");
+    expect([...container.querySelectorAll('[data-testid="my-preset-item"]')].filter(row => row.textContent?.includes(created.label))).toHaveLength(1);
   });
 
   it("cancels editing without changing the saved preset", async () => {

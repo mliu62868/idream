@@ -64,7 +64,16 @@ describe("GeneratorWorkspace Gallery filters and video playback", () => {
 
   beforeEach(() => {
     window.history.replaceState(null, "", "/generate");
-    window.localStorage.clear();
+    // Keep browser storage isolated from Node's optional file-backed storage.
+    const stored = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      get length() { return stored.size; },
+      key: (index: number) => [...stored.keys()][index] ?? null,
+      getItem: (key: string) => stored.get(key) ?? null,
+      setItem: (key: string, value: string) => { stored.set(key, String(value)); },
+      removeItem: (key: string) => { stored.delete(key); },
+      clear: () => stored.clear(),
+    });
     requests = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);

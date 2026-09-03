@@ -551,7 +551,7 @@ export function GeneratorWorkspace() {
   const [presetDescription, setPresetDescription] = useState("");
   const [presetCategory, setPresetCategory] = useState("");
   const [presetSaving, setPresetSaving] = useState(false);
-  const presetSavingRef = useRef(false);
+  const presetSavingRef = useRef<symbol | null>(null);
   const [manageMode, setManageMode] = useState(false);
   const [selectedMediaIds, setSelectedMediaIds] = useState<Set<string>>(() => new Set());
   const [deleteConfirmMediaId, setDeleteConfirmMediaId] = useState<string | null>(null);
@@ -975,8 +975,6 @@ export function GeneratorWorkspace() {
 
   const clearPrivateViewerProjections = useCallback(() => {
     abortPrivateViewerRequests();
-    presetSavingRef.current = false;
-    setPresetSaving(false);
     enhancementSerialRef.current += 1;
     enhancementPendingRef.current = false;
     setEnhancement(null);
@@ -1010,6 +1008,8 @@ export function GeneratorWorkspace() {
   const resetPrivateViewerData = useCallback(() => {
     suspendedEditSourceRef.current = null;
     clearPrivateViewerProjections();
+    presetSavingRef.current = null;
+    setPresetSaving(false);
     setEditingPreset(null);
     setPresetName("");
     setPresetSearch("");
@@ -2097,14 +2097,17 @@ export function GeneratorWorkspace() {
       setStatus("Pick a mode, background, pose, outfit, or prompt before saving a preset.");
       return;
     }
-    const viewer = { epoch: viewerEpochRef.current, scope: viewerScopeRef.current, authenticated: viewerAuthenticatedRef.current };
-    const isCurrent = () => viewer.epoch === viewerEpochRef.current && viewer.scope === viewerScopeRef.current && viewer.authenticated === viewerAuthenticatedRef.current;
+    const viewer = { scope: viewerScopeRef.current, authenticated: viewerAuthenticatedRef.current };
     if (!viewer.scope || viewer.authenticated === null) {
       setStatus("Reconnect the generator before saving a preset.");
       return;
     }
     const original = editingPreset;
-    presetSavingRef.current = true;
+    const operation = Symbol("save preset");
+    const isCurrent = () => presetSavingRef.current === operation;
+    // A focus refresh does not finish the outstanding write. Only changing
+    // accounts revokes this operation; its own completion releases the lock.
+    presetSavingRef.current = operation;
     setPresetSaving(true);
     try {
       const response = await fetch(original ? `/api/v1/generation/presets/${encodeURIComponent(original.id)}` : "/api/v1/generation/presets", {
@@ -2149,17 +2152,16 @@ export function GeneratorWorkspace() {
       setPresetDescription("");
       setPresetCategory("");
       setDeleteConfirmPresetId(null);
-      if (viewerScopeRef.current) {
-        clearPresetDraft(viewerScopeRef.current);
-      }
-      setStatus(`${original ? "Updated" : "Saved"} preset "${label}".`);
+      clearPresetDraft(viewer.scope);
+      setStatus(viewerAuthenticatedRef.current === true && viewerScopeRef.current === viewer.scope
+        ? `${original ? "Updated" : "Saved"} preset "${label}".` : "Preset saved.");
       void refreshPresets();
     } catch {
       if (!isCurrent()) return;
       setStatus("Couldn't save preset. Check your connection and try again.");
     } finally {
       if (isCurrent()) {
-        presetSavingRef.current = false;
+        presetSavingRef.current = null;
         setPresetSaving(false);
       }
     }
@@ -2237,7 +2239,8 @@ export function GeneratorWorkspace() {
     }
     const viewer = beginPrivateViewerRequest();
     if (!viewer) return;
-    presetSavingRef.current = true;
+    const operation = Symbol("delete preset");
+    presetSavingRef.current = operation;
     setPresetSaving(true);
     try {
       const response = await fetch(`/api/v1/generation/presets/${encodeURIComponent(id)}`, {
@@ -2265,8 +2268,8 @@ export function GeneratorWorkspace() {
       setStatus("Couldn't delete preset. Check your connection and try again.");
       void refreshPresets();
     } finally {
-      if (privateViewerRequestIsCurrent(viewer)) {
-        presetSavingRef.current = false;
+      if (presetSavingRef.current === operation) {
+        presetSavingRef.current = null;
         setPresetSaving(false);
       }
       finishPrivateViewerRequest(viewer);
