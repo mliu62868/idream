@@ -2082,12 +2082,12 @@ async function createGenerationJob(request: Request) {
   return ok(generationJobResponse(queued), { status: 202 });
 }
 
-// The expected viewer binds a retained form or receipt to its account. It is
+// The expected viewer binds private reads and retained forms to their account. It is
 // never authentication: the current session remains the only user authority.
 function requireGeneratorViewer(request: Request, userId: string) {
   const expected = request.headers.get("x-idream-viewer-scope");
   if (expected !== null && expected !== `user:${userId}`) {
-    throw Errors.conflict("Your account changed. Reload before submitting or sign in to the original account to check its request.");
+    throw Errors.conflict("Your account changed. Reload this page, or sign in to the original account to check its request.");
   }
 }
 
@@ -2257,6 +2257,7 @@ async function chatReleaseGenerationPin(payload: ChatImageRequestedPayload) {
 async function listGenerationJobs(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
+  requireGeneratorViewer(request, user.id);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const url = new URL(request.url);
@@ -2374,6 +2375,7 @@ async function listPresets(request: Request) {
   const category = url.searchParams.get("category");
   const q = url.searchParams.get("q");
   const ctx = await getAuthCtx(request);
+  if (request.headers.has("x-idream-viewer-scope")) requireGeneratorViewer(request, requireUser(ctx).id);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const items = await prisma.generationPreset.findMany({
@@ -2463,6 +2465,7 @@ async function updatePreset(request: Request, id: string) {
 async function listMedia(request: Request) {
   const ctx = await getAuthCtx(request);
   const user = requireUser(ctx);
+  requireGeneratorViewer(request, user.id);
   requireAgeGate(ctx);
   requireAgeVerified(ctx);
   const url = new URL(request.url);

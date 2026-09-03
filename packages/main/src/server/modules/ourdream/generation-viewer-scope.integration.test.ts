@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
-import { api, createUser, dreamcoinBalance, expectError, expectOk, grantCoins, purgeTestData } from "@/server/test/helpers";
+import { api, createMedia, createUser, dreamcoinBalance, expectError, expectOk, grantCoins, purgeTestData } from "@/server/test/helpers";
 import { quoteAuthorityFor } from "./generation-quote";
 
 const prefix = "zt-generation-viewer-";
@@ -89,6 +89,38 @@ describe("generation writes bind retained UI authority to its expected account",
     expectOk(currentReplay, 202);
     expect(currentReplay.data.job.id).toBe(current.data.job.id);
     expect(await writeFacts()).toEqual(afterCurrent);
+  });
+
+  it.each(["jobs", "presets", "media"] as const)("binds private %s reads to the viewer confirmed before cookies changed", async kind => {
+    const a = `${prefix}${kind}-a`;
+    const b = `${prefix}${kind}-b`;
+    for (const id of [a, b]) {
+      await createUser({ id });
+      if (kind === "jobs") await prisma.generationJob.create({ data: {
+        id: `${id}-private`, userId: id, mode: "image", status: "completed", prompt: `${id} private result`, controls: {}, presetIds: [],
+      } });
+      else if (kind === "presets") await prisma.generationPreset.create({ data: {
+        id: `${id}-private`, ownerId: id, scope: "user", visibility: "private", type: "background", label: `${id} private preset`, controls: {},
+      } });
+      else await createMedia({ id: `${id}-private`, ownerId: id, visibility: "private" });
+    }
+    const path = kind === "media" ? "media" : `generation/${kind}`;
+    const query = kind === "presets" ? { scope: "user" } : undefined;
+    const wrong = await api("GET", path, { userId: b, ageGate: true, query, headers: { "x-idream-viewer-scope": `user:${a}` } });
+    expectError(wrong, 409);
+    expect(wrong.error?.message).toContain("Your account changed");
+    expect(JSON.stringify(wrong.json)).not.toContain(`${b}-private`);
+    for (const headers of [{ "x-idream-viewer-scope": `user:${b}` }, undefined]) {
+      const current = await api("GET", path, { userId: b, ageGate: true, query, headers });
+      expectOk(current);
+      expect(current.data.items.map((item: { id: string }) => item.id)).toContain(`${b}-private`);
+      expect(current.data.items.map((item: { id: string }) => item.id)).not.toContain(`${a}-private`);
+    }
+  });
+
+  it("retains anonymous public preset reads but never treats an expected user as authentication", async () => {
+    expectOk(await api("GET", "generation/presets", { ageGate: true }));
+    expectError(await api("GET", "generation/presets", { ageGate: true, headers: { "x-idream-viewer-scope": `user:${owner}` } }), 401);
   });
 
   it("does not authenticate a request with a viewer header", async () => {

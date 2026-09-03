@@ -121,6 +121,28 @@ describe("GeneratorWorkspace media journeys", () => {
     expect(container.textContent).toContain("100 coins");
   }
 
+  it("binds Jobs reads to the confirmed viewer even before a cookie change has raised a focus event", async () => {
+    const originalFetch = globalThis.fetch;
+    const scopes: Array<string | null> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).startsWith("/api/v1/generation/jobs?")) {
+        const scope = new Headers(init?.headers).get("x-idream-viewer-scope");
+        scopes.push(scope);
+        // Config just confirmed A; the actual request is now authenticated as B.
+        return scope === "user:generator-viewer"
+          ? Response.json({ ok: false, error: { message: "Your account changed. Reload this page." } }, { status: 409 })
+          : Response.json({ ok: true, data: { items: [{ id: "other-account-job", mode: "image", status: "completed", costDreamcoins: 5, outputCount: 1, errorCode: null, createdAt: new Date().toISOString() }] } });
+      }
+      return originalFetch(input, init);
+    }));
+    await mount();
+    await click(button("Jobs"));
+    expect(scopes.length).toBeGreaterThan(0);
+    expect(scopes.every(scope => scope === "user:generator-viewer")).toBe(true);
+    expect(container.querySelector('[data-generation-job-id="other-account-job"]')).toBeNull();
+    expect(container.textContent).toContain("Your account changed");
+  });
+
   it.each(["variation", "enhance"] as const)("restores an independent %s request after unmount, without its source or quote, and hides it from another viewer", async (kind) => {
     const originalFetch = globalThis.fetch;
     const writes: Array<{ key: string | null; body: string }> = [];
