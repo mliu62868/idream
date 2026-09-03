@@ -9,11 +9,16 @@ import {
 } from "./playwright-environment";
 import { createPlaywrightCleanupPlan } from "./src/e2e/playwright-cleanup";
 import { createPlaywrightLifecycleVerifier } from "./src/e2e/playwright-lifecycle-receipt";
+import { computeSourceRevision } from "../../scripts/source-revision.cjs";
 
 // Browser tests own every writable dependency. Ambient Main/Admin/Chat/Gen
 // processes, Main's generation finalizer, CHAT_SERVICE_URL,
 // Redis db 0, and the live chat file store are never reused.
-const environment = resolvePlaywrightEnvironment(process.env);
+// The managed services execute this checkout, not the deployment named in .env.
+const environment = resolvePlaywrightEnvironment({
+  ...process.env,
+  IDREAM_SOURCE_REVISION: computeSourceRevision(),
+});
 const cleanupPlan = createPlaywrightCleanupPlan(environment);
 Object.assign(process.env, environment.serviceEnv, {
   PW_WEBSERVER: "1",

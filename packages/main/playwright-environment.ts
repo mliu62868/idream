@@ -149,7 +149,10 @@ export function resolvePlaywrightEnvironment(
     ci: input.CI === "true",
     confirmedDatabaseName: input.CHAT_TEST_RESET_CONFIRM ?? null,
   } as const;
-  const serviceEnv = {
+  const serviceEnv: Record<string, string> = {
+    ...(input.IDREAM_SOURCE_REVISION
+      ? { IDREAM_SOURCE_REVISION: input.IDREAM_SOURCE_REVISION }
+      : {}),
     APP_ENV: "test",
     PLAYWRIGHT_E2E: "1",
     PW_RUN_ID: runId,
@@ -193,7 +196,7 @@ export function resolvePlaywrightEnvironment(
     NEXT_PUBLIC_SITE_REDDIT_URL: "",
     NEXT_PUBLIC_SITE_SUPPORT_EMAIL: "",
     NEXT_PUBLIC_SITE_X_URL: "",
-  } as const;
+  };
 
   return {
     mainBaseURL,
@@ -281,7 +284,7 @@ export function managedPlaywrightWebServers(
       reuseExistingServer: false,
       timeout: 30_000,
       env: {
-        APP_ENV: "test",
+        ...environment.serviceEnv,
       },
     },
     {
