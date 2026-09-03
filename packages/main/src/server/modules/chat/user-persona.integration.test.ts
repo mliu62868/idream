@@ -4,6 +4,7 @@ import { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "@/server/lib/db";
 import { api, createCharacter, createUser, purgeTestData } from "@/server/test/helpers";
+import { dispatchV1 } from "@/server/modules/ourdream/service";
 import { beginChatTurn, commitChatTerminal, createChatSession, editChatTurn, executionSnapshot, regenerateChatTurn, setChatMemory } from "./turn-ledger";
 import { clearCompanionMemory } from "./companion-memory-authority";
 
@@ -80,12 +81,30 @@ describe("global user chat persona", () => {
     ]);
     expect(concurrent.map(result => result.status).sort()).toEqual([200, 409]);
     const cleared = await call(f.userId, "DELETE", { version: 2 });
+    expect(cleared.status).toBe(200);
     expect(cleared.data).toEqual({ ownerScope: `user:${f.userId}`, persona: null, version: 3 });
     expect((await call(f.userId, "DELETE", { version: 2 })).data).toEqual(cleared.data);
     expect((await call(f.userId, "PUT", { ...robin, version: 1 })).status).toBe(409);
     expect((await call(f.userId, "GET")).data).toEqual(cleared.data);
     await prisma.user.delete({ where: { id: f.userId } });
     expect(await prisma.userPreferences.count({ where: { userId: f.userId } })).toBe(0);
+  });
+
+  it("reads DELETE authority from its JSON body and rejects missing or malformed bodies without clearing", async () => {
+    const userId = `${prefix}${randomUUID()}`;
+    await createUser({ id: userId });
+    const saved = await call(userId, "PUT", { ...robin, version: 0 });
+    expect(saved.status).toBe(200);
+    const clear = (body?: string) => dispatchV1(new Request("http://localhost/api/v1/profile/chat-persona", {
+      method: "DELETE", headers: { "content-type": "application/json", "x-idream-user-id": userId }, body,
+    }), ["profile", "chat-persona"]);
+    for (const body of [undefined, "{", JSON.stringify({ version: 1 })]) {
+      expect((await clear(body)).status).toBe(400);
+      expect((await call(userId, "GET")).data).toEqual(saved.data);
+    }
+    const cleared = await clear(JSON.stringify({ ownerScope: saved.data.ownerScope, version: saved.data.version }));
+    expect(cleared.status).toBe(200);
+    expect(await cleared.json()).toMatchObject({ ok: true, data: { persona: null, version: 2 } });
   });
 
   it("rejects an old tab's write and clear when cookies switch to another account at the same version", async () => {
@@ -133,7 +152,7 @@ describe("global user chat persona", () => {
     await finish(disabled.snapshot!);
     await clearCompanionMemory(f.userId, f.characterId);
     expect((await call(f.userId, "GET")).data.persona).toEqual(disabled.snapshot?.userPersona);
-    await call(f.userId, "DELETE", { version: 3 });
+    expect((await call(f.userId, "DELETE", { version: 3 })).status).toBe(200);
     const withoutPersona = await otherCharacter.begin();
     expect(withoutPersona.snapshot?.userPersona).toBeNull();
     expect((await prisma.chatTurn.findUniqueOrThrow({ where: { id: first.snapshot!.turnId } })).executionSnapshot).toMatchObject({ userPersona: { ...robin, version: 1 } });

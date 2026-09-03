@@ -10,6 +10,11 @@ const path = "/api/v1/profile/chat-persona";
 
 /** Reads and writes must match the account already confirmed by the profile page. */
 export function UserPersonaPanel({ ownerScope }: { ownerScope: string }) {
+  // React discards every draft and pending state before the new account renders.
+  return <PersonaSettings key={ownerScope} ownerScope={ownerScope} />;
+}
+
+function PersonaSettings({ ownerScope }: { ownerScope: string }) {
   const [saved, setSaved] = useState<Settings | null>(null);
   const [draft, setDraft] = useState(emptyDraft);
   const [pending, setPending] = useState(false);
@@ -21,12 +26,6 @@ export function UserPersonaPanel({ ownerScope }: { ownerScope: string }) {
   useEffect(() => {
     const epoch = ++epochRef.current;
     const controller = new AbortController();
-    setSaved(null);
-    setDraft(emptyDraft);
-    setPending(false);
-    setError("");
-    setNotice("");
-    setAccountChanged(false);
     void (async () => {
       try {
         const settings = await readResponse(await fetch(path, { cache: "no-store", signal: controller.signal }));
@@ -79,6 +78,7 @@ export function UserPersonaPanel({ ownerScope }: { ownerScope: string }) {
 
   function reloadSettings() {
     setSaved(null);
+    setDraft(emptyDraft);
     setError("");
     setNotice("");
     setReload(value => value + 1);
