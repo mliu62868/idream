@@ -133,11 +133,13 @@ export function useGenerationRequest(
   const keysRef = useRef(createGenerationIdempotencyKeys());
   const receiptOwnerRef = useRef<GenerationReceiptPersistence | undefined>(undefined);
   const lastReceiptOwnerRef = useRef<string | null>(null);
-  const [receipts, setReceipts] = useState<GenerationReceipt[]>([]);
+  const [receiptSnapshot, setReceiptSnapshot] = useState<{ ownerScope: string | null; items: GenerationReceipt[] }>({ ownerScope: null, items: [] });
   const [recoveringReceiptKeys, setRecoveringReceiptKeys] = useState<Set<string>>(new Set());
   const receiptChecksRef = useRef(new Set<string>());
-  const refreshReceipts = useCallback(() => setReceipts(receiptOwnerRef.current
-    ? Object.values(keysRef.current).flatMap(listGenerationReceipts) : []), []);
+  const refreshReceipts = useCallback(() => {
+    const ownerScope = receiptOwnerRef.current?.ownerScope ?? null;
+    setReceiptSnapshot({ ownerScope, items: ownerScope ? Object.values(keysRef.current).flatMap(listGenerationReceipts) : [] });
+  }, []);
   const viewerEpochRef = useRef(0);
   const quoteControllerRef = useRef<AbortController | null>(null);
   const retryQuoteControllerRef = useRef<AbortController | null>(null);
@@ -145,7 +147,7 @@ export function useGenerationRequest(
   useEffect(() => {
     const scope = options.receiptOwnerScope;
     receiptOwnerRef.current = scope ? { ownerScope: scope, onWarning: options.onReceiptWarning } : undefined;
-    if (!scope) { setReceipts([]); return; }
+    if (!scope) return;
     if (lastReceiptOwnerRef.current !== scope) {
       keysRef.current = createGenerationIdempotencyKeys();
       lastReceiptOwnerRef.current = scope;
@@ -159,12 +161,18 @@ export function useGenerationRequest(
           : receipt.kind === "generation_retry" ? keysRef.current.retry : null;
         if (map && !map.has(receipt.record)) map.set(receipt.record, receipt.key);
       }
-      refreshReceipts();
     };
+    // Restore keys before any user event can submit; publish the owner-bound
+    // browser snapshot separately, without deriving rendered authority from a ref.
     restore();
+    const timer = window.setTimeout(refreshReceipts, 0);
+    const onStorage = () => { restore(); refreshReceipts(); };
     // This only refreshes the local list; it never submits or chooses a viewer.
-    window.addEventListener("storage", restore);
-    return () => window.removeEventListener("storage", restore);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("storage", onStorage);
+    };
   }, [options.receiptOwnerScope, options.onReceiptWarning, refreshReceipts]);
 
   useEffect(
@@ -371,7 +379,7 @@ export function useGenerationRequest(
     viewerEpochRef.current += 1;
     receiptChecksRef.current = new Set();
     setRecoveringReceiptKeys(new Set());
-    setReceipts([]);
+    setReceiptSnapshot({ ownerScope: null, items: [] });
     if (!preserveUnconfirmed) keysRef.current = createGenerationIdempotencyKeys();
     quoteControllerRef.current?.abort();
     retryQuoteControllerRef.current?.abort();
@@ -386,7 +394,7 @@ export function useGenerationRequest(
     hasUnconfirmedGenerationRetry(jobId, keysRef.current.retry), []);
 
   return {
-    receipts: options.receiptOwnerScope && options.receiptOwnerScope === lastReceiptOwnerRef.current ? receipts : [],
+    receipts: options.receiptOwnerScope && options.receiptOwnerScope === receiptSnapshot.ownerScope ? receiptSnapshot.items : [],
     recoveringReceiptKeys,
     recoverReceipt,
     view,
