@@ -359,7 +359,7 @@ describe("GeneratorWorkspace owned preset editing", () => {
     await input("Preset name", "Fresh setup");
     await click(button("Save"));
     expect(savedControls).toBeDefined();
-    expect(savedControls?.backgroundPresetId).toBe("");
+    expect(savedControls?.backgroundPresetId).toBeUndefined();
   });
 
   it("clears another viewer's edit and ignores a delayed save result after account change", async () => {

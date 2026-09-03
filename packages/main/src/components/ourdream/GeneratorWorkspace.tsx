@@ -935,7 +935,7 @@ export function GeneratorWorkspace() {
       return type ? [{ id: preset.id, type, label: preset.label, category: preset.category, scope: "user" as const }] : [];
     }),
   ];
-  const presetCategories = [...new Set([...presetCatalog, ...userPresets].map((preset) => preset.category).filter((category): category is string => Boolean(category)))].sort();
+  const presetCategories = [...new Set([presetFilterCategory, ...[...presetCatalog, ...userPresets].map((preset) => preset.category)].filter((category): category is string => Boolean(category)))].sort();
   const matchesPresetFilter = (preset: { label: string; category: string | null; scope?: string }) =>
     (presetScope === "all" || (preset.scope ?? "built_in") === presetScope) &&
     (!presetFilterCategory || preset.category === presetFilterCategory) &&
@@ -2269,6 +2269,10 @@ export function GeneratorWorkspace() {
         setPresetEditorType("setup");
       }
       setStatus("Preset deleted.");
+      setModePresetId((current) => current === id ? "" : current);
+      setBackgroundPresetId((current) => current === id ? "" : current);
+      setPosePresetId((current) => current === id ? "" : current);
+      setOutfitPresetId((current) => current === id ? "" : current);
       await refreshPresets();
     } catch {
       if (!privateViewerRequestIsCurrent(viewer)) return;
