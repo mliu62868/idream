@@ -131,6 +131,27 @@ export async function quoteGenerationRetry(input: {
   });
   if (!job) throw Errors.notFound("Generation job not found");
   assertGenerationJobIsRetryable(job);
+  if (job.sourceType === "chat_image") {
+    // A failed Job remains history after its attachment adopts a replacement.
+    // Do not advertise another paid retry; reservation still rechecks this
+    // binding under locks, and an accepted key bypasses quotes when replayed.
+    const attachment = await prisma.chatTurnAttachment.findFirst({
+      where: {
+        generationJobId: job.id,
+        ...(job.sourceId ? { id: job.sourceId } : {}),
+        kind: "generated_image",
+        status: { in: ["failed", "refunded"] },
+        turn: { session: { userId: input.userId, characterId: job.characterId, status: { not: "deleted" } } },
+      },
+      select: { metadata: true, turn: { select: { attempt: true } } },
+    });
+    const metadata = jsonRecord(attachment?.metadata);
+    const effect = jsonRecord(metadata.effect);
+    const attempt = numberFromRecord(metadata, "attempt") ?? numberFromRecord(effect, "attempt") ?? 1;
+    if (!attachment || attempt !== attachment.turn.attempt) {
+      throw Errors.conflict("This Chat image is no longer available to retry. Check the chat for its current result.");
+    }
+  }
   const authority = await resolveGenerationRetryAuthority(input.userId, job);
   const balance = await dreamcoinBalance(input.userId);
   return {
