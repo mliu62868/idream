@@ -665,7 +665,12 @@ async function dispatchV1Unsafe(request: Request, segments: string[]) {
       const user = requireUser(await getAuthCtx(request));
       if (method === "GET") return ok(await getUserChatPersona(user.id));
       if (method === "PUT") return ok(await updateUserChatPersona(user.id, await jsonBody(request)));
-      if (method === "DELETE") return ok(await clearUserChatPersona(user.id, await jsonBody(request)));
+      if (method === "DELETE") {
+        // Unlike bodyless resource deletion, clearing a persona requires the
+        // loaded owner and CAS version; the general DELETE reader discards them.
+        const body: unknown = await request.json().catch(() => null);
+        return ok(await clearUserChatPersona(user.id, body));
+      }
     }
     if (!id && method === "GET") return profile(request);
     if (!id && method === "PATCH") return updateProfile(request);
