@@ -2128,7 +2128,10 @@ async function resolveFeedRemixGenerationSource(
   };
 }
 
-export async function createChatImageGenerationJob(payload: ChatImageRequestedPayload) {
+export async function createChatImageGenerationJob(payload: ChatImageRequestedPayload, turnAttempt?: number) {
+  if (turnAttempt !== undefined && !payload.exchangeId) {
+    throw Errors.badRequest("A Chat image attachment requires its Turn identity");
+  }
   const user = await prisma.user.findUnique({ where: { id: payload.userId } });
   if (!user || user.status !== "active" || user.deletedAt) {
     throw Errors.forbidden("User cannot generate images");
@@ -2173,6 +2176,9 @@ export async function createChatImageGenerationJob(payload: ChatImageRequestedPa
     },
     {
       idempotencyKey: idempotencyKeys.chatImage(payload.attachmentId),
+      chatAttachment: turnAttempt !== undefined && payload.exchangeId
+        ? { sessionId: payload.sessionId, turnId: payload.exchangeId, attempt: turnAttempt }
+        : undefined,
       source: {
         sourceType: "chat_image",
         sourceId: payload.attachmentId,

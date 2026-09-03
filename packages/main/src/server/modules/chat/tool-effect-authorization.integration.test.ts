@@ -36,11 +36,22 @@ async function fixture() {
   const session = await createChatSession(userId, { characterId: character.id });
   const begin = (text: string) => beginChatTurn({ userId, sessionId: session.id, content: text, idempotencyKey: randomUUID() });
   const generated = vi.spyOn(generation, "createChatImageGenerationJob").mockImplementation(async payload =>
-    prisma.generationJob.create({ data: {
+    bindFixtureJob(payload.attachmentId, await prisma.generationJob.create({ data: {
       userId, characterId: character.id, mode: "image", prompt: payload.promptHint, controls: {}, presetIds: [],
       sourceType: "chat_image", sourceId: payload.attachmentId, costDreamcoins: 8,
-    } }));
+    } })));
   return { userId, characterId: character.id, contentVersionId: content.id, begin, generated };
+}
+
+// This authorization fixture replaces Generation's reservation, including its
+// atomic delivery binding. The separate delivery suite runs the real owner.
+async function bindFixtureJob(attachmentId: string, job: Awaited<ReturnType<typeof prisma.generationJob.create>>) {
+  const attachment = await prisma.chatTurnAttachment.findUniqueOrThrow({ where: { id: attachmentId } });
+  await prisma.chatTurnAttachment.update({ where: { id: attachmentId }, data: {
+    status: "accepted", generationJobId: job.id,
+    metadata: { ...JSON.parse(JSON.stringify(attachment.metadata)), costDreamcoins: job.costDreamcoins },
+  } });
+  return job;
 }
 
 function effect(snapshot: NonNullable<Awaited<ReturnType<typeof beginChatTurn>>["snapshot"]>): ChatToolEffect {
@@ -58,12 +69,12 @@ describe("Main image action authorization", () => {
       characterId, identityPrompt: "Mira, the cafe photographer", faceTraits: {}, hairTraits: {}, bodyTraits: {},
       signatureTraits: {}, styleTraits: {}, anchorAssetIds: [], adapterRefs: {}, createdFrom: "test",
     } });
-    generated.mockImplementationOnce(async payload => prisma.generationJob.create({ data: {
+    generated.mockImplementationOnce(async payload => bindFixtureJob(payload.attachmentId, await prisma.generationJob.create({ data: {
       userId, characterId, mode: "image", prompt: payload.promptHint, controls: {}, presetIds: [],
       sourceType: "chat_image", sourceId: payload.attachmentId, costDreamcoins: 8,
       provider: "mock", model: "mock-image",
       visualProfileId: visualProfile.id, visualProfileVersion: visualProfile.version,
-    } }));
+    } })));
     const { snapshot } = await begin("Send me a portrait by the rainy cafe window.");
     if (!snapshot) throw new Error("Missing snapshot");
     const accepted = await applyChatToolEffect(effect(snapshot));

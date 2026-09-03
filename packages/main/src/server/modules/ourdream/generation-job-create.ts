@@ -20,7 +20,7 @@ import {
   isMediaAssetOperationalForAuthority,
 } from "@/server/lib/media-asset-authority";
 import { isRecord, toInputJson } from "@/server/lib/request-json";
-import { jsonStringArray, pruneUndefined } from "./json-values";
+import { jsonRecord, jsonStringArray, pruneUndefined } from "./json-values";
 import { dimensionsForImageOrientation } from "./generation-dimensions";
 import {
   resolveGenerationVisualProfile,
@@ -80,6 +80,7 @@ export async function createGenerationJobForUser(
     idempotencyKey?: string | null;
     requestFingerprint?: string;
     source?: GenerationSource;
+    chatAttachment?: { sessionId: string; turnId: string; attempt: number };
     fallbackToActiveOnStaleVisualProfile?: boolean;
     requireCharacterVisualIdentity?: boolean;
     profileSelectionAuthority?: GenerationProfileSelectionAuthority;
@@ -461,6 +462,36 @@ export async function createGenerationJobForUser(
         : undefined,
     });
     await lockUserLedger(tx, userId);
+    let chatAttachment: Awaited<ReturnType<typeof tx.chatTurnAttachment.findUnique>> = null;
+    if (options.chatAttachment) {
+      const binding = options.chatAttachment;
+      const attachmentId = options.source?.sourceId;
+      if (options.source?.sourceType !== "chat_image" || !attachmentId) {
+        throw Errors.badRequest("Chat attachment binding requires its image action source");
+      }
+      // Another invocation may have accepted this exact action while this one
+      // waited for the user lock. Replay before checking its depleted balance.
+      const existing = await tx.generationJob.findFirst({ where: { userId, sourceType: "chat_image", sourceId: attachmentId } });
+      if (existing) {
+        // Terminal settlement locks Job before user. Wake only after releasing
+        // this user lock, so an exact duplicate cannot invert that lock order.
+        return { job: existing, outboxId: null };
+      }
+      // Match Chat mutation / retry order: user → session → Turn → attachment.
+      await tx.$queryRaw`SELECT "sessionId" FROM "recent_chats" WHERE "sessionId" = ${binding.sessionId} FOR UPDATE`;
+      await tx.$queryRaw`SELECT id FROM "chat_turns" WHERE id = ${binding.turnId} FOR UPDATE`;
+      await tx.$queryRaw`SELECT id FROM "chat_turn_attachments" WHERE id = ${attachmentId} FOR UPDATE`;
+      const current = await tx.chatTurnAttachment.findUnique({ where: { id: attachmentId }, include: { turn: { include: { session: true } } } });
+      if (!current || current.kind !== "generated_image" || current.status !== "requesting" ||
+        current.generationJobId !== null || current.turnId !== binding.turnId ||
+        current.turn.sessionId !== binding.sessionId || current.turn.session.userId !== userId ||
+        current.turn.session.characterId !== body.characterId || current.turn.session.status === "deleted" ||
+        current.turn.attempt !== binding.attempt || jsonRecord(current.metadata).attempt !== binding.attempt ||
+        !["pending", "generating"].includes(current.turn.assistantStatus)) {
+        throw Errors.conflict("The Chat image changed before its request could be reserved");
+      }
+      chatAttachment = current;
+    }
     const balance = await dreamcoinBalance(userId, tx);
     if (balance < cost) {
       throw Errors.paymentRequired("Insufficient dreamcoins", {
@@ -512,6 +543,14 @@ export async function createGenerationJobForUser(
         sourceMeta: options.source?.sourceMeta,
       },
     });
+    if (chatAttachment) {
+      // The delivery pointer commits with the debit and outbox. Even an
+      // immediate provider terminal must find this attachment before its ACK.
+      await tx.chatTurnAttachment.update({ where: { id: chatAttachment.id }, data: {
+        generationJobId: created.id, status: "accepted", errorCode: null,
+        metadata: toInputJson({ ...jsonRecord(chatAttachment.metadata), costDreamcoins: cost }),
+      } });
+    }
     await appendGenerationEvent(tx, created.id, "created", "Generation job accepted", {
       mode: created.mode,
       profileId: created.profileId,
@@ -559,6 +598,8 @@ export async function createGenerationJobForUser(
     await dispatchGenerationAttemptOutbox(prisma, {
       outboxIds: [reservation.outboxId],
     });
+  } else {
+    await wakeQueuedGenerationDispatch(job);
   }
   return job;
 }
