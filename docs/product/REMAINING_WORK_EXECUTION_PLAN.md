@@ -4,7 +4,7 @@
 
 本文件只保留尚未完成的工作。已完成能力与历史运行证据见 `CURRENT_FUNCTIONAL_COVERAGE.md`。
 
-2026-09-02 首轮核心审计已真实完成 Create 私有保存/声音/聊天/图片、两条视频、Admin 三图审核发布/回滚和客服多轮闭环；原冻结版本的结果见 `.tmp/product-audit-20260902/FINAL_REPORT.md`。第二轮新增记忆设置、会话偏好、Enhance、目录广度与公开内容/反馈分页的实际证据见 `CURRENT_FUNCTIONAL_COVERAGE.md`，仍在修复下一轮发现的缺陷并等待新的统一门禁。首轮报告不能替代新改动的验证。支付、年龄检查与合规不在本轮范围。
+2026-09-02 首轮核心审计已真实完成 Create 私有保存/声音/聊天/图片、两条视频、Admin 三图审核发布/回滚和客服多轮闭环；原冻结版本的结果见 `.tmp/product-audit-20260902/FINAL_REPORT.md`。后续新增能力与候选 `eb7b9bef…` 的 146/146 Chrome、测试构建、恢复及真实模型证据见 `CURRENT_FUNCTIONAL_COVERAGE.md`。最后的旧 Chat 图片 Retry 报价资格修复与最终同版本视频/上线门禁继续在 `.tmp/product-audit-20260902/iteration3-validation.json` 收口；历史报告不能替代新改动的验证。支付、年龄检查与合规不在本轮范围。
 
 ## 当前状态
 

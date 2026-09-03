@@ -8,7 +8,9 @@ Companion Agent 的共同产品人格、角色 Soul 与逐轮事实已经成为�
 
 ## 2026-09-02 第三轮日常使用与恢复能力
 
-本批继续补齐聊天设置、生成恢复、作品管理和公开合集。下表描述当前代码与已发生的定向验证；统一测试、构建、Chrome 和同版本运行结果另见 `.tmp/product-audit-20260902/iteration3-validation.json`，未通过的项目保持未验证。此前 144 个本轮范围内的 Chrome 用例已分段覆盖，`current-scope-chrome-segmented-coverage.json` 明确记录 `singleFullRunPassed=false`，不能称作当前版本单次全绿。
+本批继续补齐聊天设置、生成恢复、作品管理和公开合集。候选 `eb7b9bef…` 已通过 4945 条默认测试、120 条 PM2 契约测试、lint/typecheck/build 和一次 146/146 Chrome 回归；Chrome 使用只读路由诊断，模型由受控夹具提供。真实模型另验证了 Persona/Scene 的四次版本冻结请求、signed Chat、Admin 文案、Pocket/Fish 语音、聊天图片失败退款→原位 Retry→同键重放→Regenerate，以及默认图片交付。82 迁移的恢复演练和十个服务同源运行核对通过；当前运行仍是 development。最后增补的旧图片 Retry 报价资格修复及最终版本门禁以 `.tmp/product-audit-20260902/iteration3-validation.json` 为准，不把前序候选证据改标为新执行。
+
+聊天图片首绑已进入 Job/扣款/outbox 同一事务，快速失败不会被迟到 ACK 覆盖为 accepted。真实依赖停机样本在原附件显示失败并退回 8 coins；恢复后一次 Retry 交付同一位置，重放和重生成不多扣。已换绑的旧失败 Job 仍保留历史，但不再提供收费 Retry 报价，界面沿用现有不可重试说明。早先偶发的 Admin 首请求 HTML 404 在后续完整组合未复现，根因尚未证实；不把代理解压修复或 Playwright 升级解释为其根因修复。
 
 | 用户任务 | 当前实现 | 本批验证边界 |
 | --- | --- | --- |
