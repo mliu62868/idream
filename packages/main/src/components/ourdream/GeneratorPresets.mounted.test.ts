@@ -79,12 +79,15 @@ describe("GeneratorWorkspace owned preset editing", () => {
       { id: "own-scene", type: "background", label: "Rainy window", category: "Indoor", controls: { background: "Rain on a cafe window" }, visibility: "private" },
       { id: "own-setup", type: "mode", label: "Cafe setup", category: "Indoor", controls: { backgroundPresetId: "cafe" }, visibility: "private" },
     ];
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       requests.push(path);
       let data: unknown = { items: [] };
       if (path === "/api/v1/generation/config") data = { ...config, viewer: { authenticated: true, scope }, entitlements: { premium_controls: premium }, presets: catalog };
-      else if (path === "/api/v1/generation/presets?scope=user") data = { items: owned };
+      else if (path === "/api/v1/generation/presets?scope=user") {
+        expect(new Headers(init?.headers).get("x-idream-viewer-scope")).toBe(scope);
+        data = { items: owned };
+      }
       else if (path.endsWith("/variation/quote")) data = { quote };
       else if (path.startsWith("/api/v1/media?")) {
         const url = new URL(path, "http://localhost");

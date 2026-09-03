@@ -574,7 +574,7 @@ export function GeneratorWorkspace() {
   } = useViewerResource<GalleryPage, GalleryPageRequest, PrivateViewerTicket>({
     request: ({ tab, cursors, q, visibility }) => ({
       path: `/api/v1/media?${tab === "liked" ? "liked=1&types=image,video" : `type=${tab}`}${q ? `&q=${encodeURIComponent(q)}` : ""}${visibility ? `&visibility=${visibility}` : ""}${cursors.at(-1) ? `&cursor=${encodeURIComponent(cursors.at(-1)!)}` : ""}`,
-      init: { cache: "no-store" },
+      init: { cache: "no-store", headers: { "x-idream-viewer-scope": viewerScopeRef.current ?? "" } },
     }),
     parse: parseWorkspaceMediaResponse,
     fallbackError: "Gallery could not load.",
@@ -620,7 +620,7 @@ export function GeneratorWorkspace() {
     // background/pose/outfit presets arrive separately via the config endpoint).
     request: () => ({
       path: "/api/v1/generation/presets?scope=user",
-      init: { cache: "no-store" },
+      init: { cache: "no-store", headers: { "x-idream-viewer-scope": viewerScopeRef.current ?? "" } },
     }),
     parse: (raw) => parseUserPresetsResponse(raw).items,
     fallbackError: "Saved presets could not load.",
@@ -1231,6 +1231,7 @@ export function GeneratorWorkspace() {
       const response = await fetch("/api/v1/media?type=image&limit=60", {
         cache: "no-store",
         signal: viewerRequest.controller.signal,
+        headers: { "x-idream-viewer-scope": viewerRequest.scope },
       });
       const raw = await response.json().catch(() => null);
       if (!privateViewerRequestIsCurrent(viewerRequest)) return;

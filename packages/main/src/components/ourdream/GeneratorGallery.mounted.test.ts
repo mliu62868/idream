@@ -66,13 +66,14 @@ describe("GeneratorWorkspace Gallery filters and video playback", () => {
     window.history.replaceState(null, "", "/generate");
     window.localStorage.clear();
     requests = [];
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       requests.push(path);
       let data: unknown = { items: [] };
       if (path === "/api/v1/generation/config") data = config;
       else if (path.endsWith("/variation/quote")) data = { quote };
       else if (path.startsWith("/api/v1/media?")) {
+        expect(new Headers(init?.headers).get("x-idream-viewer-scope")).toMatch(/^user:/);
         const url = new URL(path, "http://localhost");
         data = url.searchParams.get("type") === "video"
           ? { items: [mediaItem("video-1", "video")], nextCursor: null }
