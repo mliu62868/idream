@@ -699,7 +699,10 @@ describe("GeneratorWorkspace media journeys", () => {
     expect(container.textContent).not.toContain("Applied preset");
   });
 
-  it("submits video with the quoted recipe instead of overriding its duration", async () => {
+  it.each([
+    { durationSeconds: 121 / 24, width: 768, height: 1152, audio: "generated", orientation: "2:3" },
+    { durationSeconds: 124 / 24, width: 512, height: 512, audio: "generated", orientation: "1:1" },
+  ])("shows the quoted $width×$height video envelope before submitting without a duration override", async ({ orientation, ...video }) => {
     const originalFetch = globalThis.fetch;
     const submitted: Array<{ mode: string; controls: Record<string, unknown> }> = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -718,7 +721,7 @@ describe("GeneratorWorkspace media journeys", () => {
           likes: "0", chats: "0", creator: "iDream", image: "/user-content/portrait.png" }], nextCursor: null,
       } });
       if (url === "/api/v1/generation/quote") return Response.json({ ok: true, data: {
-        quote: { ...quote, mode: "video", profileId: "video-model" },
+        quote: { ...quote, mode: "video", profileId: "video-model", orientations: [orientation], defaultOrientation: orientation, video },
       } });
       if (url === "/api/v1/generation/jobs" && init?.method === "POST") {
         submitted.push(JSON.parse(String(init.body)));
@@ -728,10 +731,14 @@ describe("GeneratorWorkspace media journeys", () => {
     }));
     await mount();
     await click(button("Video"));
+    expect(container.querySelector('[data-testid="generator-video-specifications"]')?.textContent).toBe(`About 5 seconds · ${video.width}×${video.height} · Generated audio`);
     await click(button("Generate · 5 coins"));
     expect(submitted).toHaveLength(1);
     expect(submitted[0].mode).toBe("video");
     expect(submitted[0].controls).not.toHaveProperty("seconds");
+    expect(submitted[0].controls.orientation).toBe(orientation);
+    // An unresolved request checks its original authority, not today's quote.
+    expect(container.querySelector('[data-testid="generator-video-specifications"]')).toBeNull();
   });
 
   it("shows an unconfirmed job with support access instead of queue or retry promises", async () => {

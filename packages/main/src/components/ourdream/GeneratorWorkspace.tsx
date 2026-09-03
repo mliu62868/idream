@@ -3066,6 +3066,11 @@ export function GeneratorWorkspace() {
               </Link>
             )}
 
+            {mode === "video" && !formUnconfirmed && generationQuote?.video && (
+              <p className="mt-3 text-[12px] text-white/70" data-testid="generator-video-specifications">
+                About {Math.round(generationQuote.video.durationSeconds)} seconds · {generationQuote.video.width}×{generationQuote.video.height} · {generationQuote.video.audio === "generated" ? "Generated audio" : "No audio"}
+              </p>
+            )}
             {formUnconfirmed && <p className="mt-3 text-[12px] text-white/70">Check the existing request with its original settings and price.</p>}
             {!formUnconfirmed && pendingReceipts.length > 0 && <p className="mt-3 text-[12px] text-white/70">You have an earlier request to check in Jobs. This changed request uses the new price below and may create another job.</p>}
             {receiptOwnerScope && receiptStorageWarning && <p role="status" className="mt-3 text-[12px] text-white/70">{receiptStorageWarning}</p>}

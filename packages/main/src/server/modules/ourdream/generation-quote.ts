@@ -399,6 +399,13 @@ export interface GenerationQuotePayload {
   readonly balance: number;
   /** 这一单会不会带着角色的身份参考去生成。见构造处的 SPEC。 */
   readonly identityLocked: boolean;
+  /** Result envelope from the exact selected production recipe, not UI defaults. */
+  readonly video?: {
+    readonly durationSeconds: number;
+    readonly width: number;
+    readonly height: number;
+    readonly audio: "generated" | "none";
+  };
 }
 
 // SPEC: 握手的第一步 —— 解析计划、算两个指纹、给出各张数档位的价格与余额。
@@ -482,6 +489,12 @@ export async function quoteGeneration(input: {
       //   纯文生图（见 loadLockedLiveEditorialLegacyGenerationAuthority）。
       //   于是界面会替一次不会发生的事情打包票。这里报的是实际选中的那条路线。
       identityLocked: plan.referenceRequirements.length > 0,
+      ...(plan.videoRecipe ? { video: {
+        durationSeconds: plan.videoRecipe.expectedDurationSeconds,
+        width: plan.videoRecipe.width,
+        height: plan.videoRecipe.height,
+        audio: plan.videoRecipe.capabilities.includes("audio") ? "generated" as const : "none" as const,
+      } } : {}),
     },
   };
 }
