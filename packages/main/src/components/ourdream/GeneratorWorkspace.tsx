@@ -524,6 +524,12 @@ export function GeneratorWorkspace() {
     initialData: [],
     gate: privateViewerGate,
   });
+  const [showOlderCompletedJobs, setShowOlderCompletedJobs] = useState(false);
+  const completedJobs = jobs.filter((job) => job.status === "completed");
+  const recentCompletedIds = new Set(completedJobs.slice(0, 3).map((job) => job.id));
+  // Keep actionable jobs visible while completed history stays out of the Gallery's way.
+  const visibleJobs = showOlderCompletedJobs ? jobs : jobs.filter((job) =>
+    job.status !== "completed" || recentCompletedIds.has(job.id));
   const [latestResults, setLatestResults] = useState<MediaItem[]>([]);
   const [identityMedia, setIdentityMedia] = useState<MediaItem[]>([]);
   const [identityMediaAuthority, setIdentityMediaAuthority] = useState(initialAuthorityStatus);
@@ -1010,6 +1016,7 @@ export function GeneratorWorkspace() {
     clearPrivateViewerProjections();
     presetSavingRef.current = null;
     setPresetSaving(false);
+    setShowOlderCompletedJobs(false);
     setEditingPreset(null);
     setPresetName("");
     setPresetSearch("");
@@ -3482,7 +3489,7 @@ export function GeneratorWorkspace() {
               className={`${view === "jobs" ? "block" : "hidden"} rounded-[14px] border border-white/10 bg-[rgb(18,18,18)] p-4 lg:block`}
             >
               <div className="mb-4 flex items-center justify-between gap-3">
-                <h2 className="text-[16px] font-black text-white">Active Jobs</h2>
+                <h2 className="text-[16px] font-black text-white">Recent jobs</h2>
                 <button
                   aria-label="Refresh jobs"
                   className="grid h-9 w-9 place-items-center rounded-full bg-[rgb(36,36,36)] text-white"
@@ -3549,7 +3556,7 @@ export function GeneratorWorkspace() {
                     No jobs yet.
                   </div>
                 )}
-                {!configAuthorityUnavailable && jobs.map((job) => (
+                {!configAuthorityUnavailable && visibleJobs.map((job) => (
                   <div
                     className="rounded-[10px] bg-[rgb(36,36,36)] p-4"
                     data-generation-job-id={job.id}
@@ -3639,6 +3646,16 @@ export function GeneratorWorkspace() {
                     )}
                   </div>
                 ))}
+                {!configAuthorityUnavailable && !anonymousViewer && completedJobs.length > 3 && (
+                  <button
+                    aria-expanded={showOlderCompletedJobs}
+                    className="w-fit rounded-full border border-white/20 px-4 py-2 text-[12px] font-bold text-white"
+                    onClick={() => setShowOlderCompletedJobs((current) => !current)}
+                    type="button"
+                  >
+                    {showOlderCompletedJobs ? "Hide older completed jobs" : `Show ${completedJobs.length - 3} older completed jobs`}
+                  </button>
+                )}
               </div>
             </section>
 

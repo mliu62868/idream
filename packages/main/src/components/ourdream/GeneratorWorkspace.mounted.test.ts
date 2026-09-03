@@ -130,6 +130,30 @@ describe("GeneratorWorkspace media journeys", () => {
     expect(container.textContent).toContain("100 coins");
   }
 
+  it("keeps actionable jobs visible and lets completed history expand without displacing the Gallery", async () => {
+    const originalFetch = globalThis.fetch;
+    const completed = Array.from({ length: 6 }, (_, index) => ({
+      id: `completed-${index}`, mode: "image", status: "completed", costDreamcoins: 5,
+      outputCount: 1, errorCode: null, createdAt: new Date().toISOString(),
+    }));
+    const items = [...completed, ...["queued", "failed"].map((status) => ({ ...completed[0], id: status, status }))];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
+      String(input).startsWith("/api/v1/generation/jobs?")
+        ? Response.json({ ok: true, data: { items } })
+        : originalFetch(input, init)));
+    await mount();
+    const cards = () => [...container.querySelectorAll("[data-generation-job-id]")].map((node) => node.getAttribute("data-generation-job-id"));
+    expect(cards()).toEqual(["completed-0", "completed-1", "completed-2", "queued", "failed"]);
+    await click(button("Show 3 older completed jobs"));
+    expect(cards()).toEqual(items.map((job) => job.id));
+    expect(button("Hide older completed jobs").getAttribute("aria-expanded")).toBe("true");
+    await click(button("Hide older completed jobs"));
+    expect(cards()).toContain("queued");
+    expect(cards()).toContain("failed");
+    expect(cards()).not.toContain("completed-5");
+    expect(container.querySelector('[aria-label="Gallery filters"]')).not.toBeNull();
+  });
+
   it("binds Jobs reads to the confirmed viewer even before a cookie change has raised a focus event", async () => {
     const originalFetch = globalThis.fetch;
     const scopes: Array<string | null> = [];
