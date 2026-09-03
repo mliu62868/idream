@@ -1,6 +1,6 @@
 # iDream 当前功能覆盖审计
 
-更新日期：2026-09-02
+更新日期：2026-09-03
 
 ## 结论
 
@@ -8,7 +8,7 @@ Companion Agent 的共同产品人格、角色 Soul 与逐轮事实已经成为�
 
 ## 2026-09-02 第三轮日常使用与恢复能力
 
-本批继续补齐聊天设置、生成恢复、作品管理和公开合集。候选 `eb7b9bef…` 已通过 4945 条默认测试、120 条 PM2 契约测试、lint/typecheck/build 和一次 146/146 Chrome 回归；Chrome 使用只读路由诊断，模型由受控夹具提供。真实模型另验证了 Persona/Scene 的四次版本冻结请求、signed Chat、Admin 文案、Pocket/Fish 语音、聊天图片失败退款→原位 Retry→同键重放→Regenerate，以及默认图片交付。82 迁移的恢复演练和十个服务同源运行核对通过；当前运行仍是 development。最后增补的旧图片 Retry 报价资格修复及最终版本门禁以 `.tmp/product-audit-20260902/iteration3-validation.json` 为准，不把前序候选证据改标为新执行。
+本批继续补齐聊天设置、生成恢复、作品管理和公开合集。候选 `eb7b9bef…` 已通过 4945 条默认测试、120 条 PM2 契约测试、lint/typecheck/build 和一次 146/146 Chrome 回归；Chrome 使用只读路由诊断，模型由受控夹具提供。真实模型另验证了 Persona/Scene 的四次版本冻结请求、signed Chat、Admin 文案、Pocket/Fish 语音、聊天图片失败退款→原位 Retry→同键重放→Regenerate，以及默认图片交付。82 迁移的恢复演练和十个服务同源运行核对通过；当前运行仍是 development。后续 `64a9ec74…` 已通过 4946 条默认测试、check/build 和另一次 146/146 Chrome，实际验证旧 Retry 报价拒绝及原键重放，余额与交付不变。该候选的正式回忆探针仍发现伪工具正文；一次自然问题对照通过，不代替修复后的正式验收。最新回忆输出校验及最终版本门禁以 `.tmp/product-audit-20260902/iteration3-validation.json` 为准，不把前序候选证据改标为新执行。
 
 聊天图片首绑已进入 Job/扣款/outbox 同一事务，快速失败不会被迟到 ACK 覆盖为 accepted。真实依赖停机样本在原附件显示失败并退回 8 coins；恢复后一次 Retry 交付同一位置，重放和重生成不多扣。已换绑的旧失败 Job 仍保留历史，但不再提供收费 Retry 报价，界面沿用现有不可重试说明。早先偶发的 Admin 首请求 HTML 404 在后续完整组合未复现，根因尚未证实；不把代理解压修复或 Playwright 升级解释为其根因修复。
 
@@ -40,7 +40,7 @@ Companion Agent 的共同产品人格、角色 Soul 与逐轮事实已经成为�
 
 Admin 随后的对抗审查已修复超长视频 brief/negative prompt 导致表单永久 busy：输入先验证，保留草稿并给出明确错误；Character Portfolio、Video Library 与 Chat Tools 接入已有顶栏 Refresh 事件，迟到读取不会覆盖较新结果，Chat Tools 首次加载失败可 Retry；视频移除不再错误承诺可撤销，沿用已有确认流程。39 项聚焦用例、局部 lint 通过。Next 自动生成的旧 validator 损坏另以官方 `next typegen` 重建后，Admin 标准 `tsc --noEmit --incremental false` 退出 0；原失败日志保留，没有手改生成正文。
 
-生成未知提交的本次挂载内恢复已修复：保留原幂等键、提交正文与报价，跨同一用户的 focus / 配置重验证核对原请求；新报价改变数量、比例或移除显式模型时，不能把核对变成新生成。generation / variation / retry / Enhance 的响应正文迟到与账号切换均有回归，158 项聚焦用例、Main tsc 与局部 lint 通过。整页刷新会丢失当前内存 receipt；若首次 Job 读取早于原提交落库，仍有遗漏发现和重复提交风险，此项明确留待下一小轮关闭。不能把 focus 恢复称为整页刷新恢复。本批完整测试、构建和统一门禁仍未完成，上述新增能力不等于全产品或公开生产已通过。
+第二轮当时只完成挂载内恢复：保留原幂等键、提交正文与报价，跨同一用户的 focus / 配置重验证核对原请求；新报价改变数量、比例或移除显式模型时，不能把核对变成新生成。generation / variation / retry / Enhance 的响应正文迟到与账号切换均有回归，158 项聚焦用例、Main tsc 与局部 lint 通过。当时整页刷新丢失内存 receipt、首次 Job 读取早于落库的缺口，已由上文第三轮的账号级持久化 receipt、独立 Requests to check 和整页刷新 Chrome 用例闭合。第二轮聚焦证据与后续完整组合分别保留，不把旧证据改标为新执行。
 
 ## 2026-09-02 核心产品与运营闭环复查
 
